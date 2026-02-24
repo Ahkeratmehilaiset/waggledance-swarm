@@ -1,0 +1,67 @@
+facts:
+  apiary_count: 35
+  business_name: JKH Service
+  colony_count: 202
+  evira: '18533284'
+  owner: Jani Korpi
+  y_tunnus: 2828492-2
+hivemind:
+  heartbeat_interval: 30
+  idle_research_enabled: true
+  max_concurrent_agents: 30
+learning:
+  auto_evolve: false
+  distill_interval_min: 15
+  eval_queue_size: 20
+  evolve_interval_min: 30
+  min_finetune_score: 7.0
+llm:
+  base_url: http://localhost:11434
+  model: phi4-mini
+  num_gpu: 99
+  temperature: 0.4
+  timeout: 30
+llm_heartbeat:
+  base_url: http://localhost:11434
+  model: llama3.2:1b
+  num_gpu: 99
+  temperature: 0.6
+  timeout: 15
+memory:
+  db_path: data/waggle_dance.db
+ops_agent:
+  auto_model_switch: false
+  error_rate_critical: 0.25
+  error_rate_warning: 0.1
+  gpu_memory_critical: 95
+  latency_critical_ms: 30000
+  latency_warning_ms: 12000
+  monitor_interval: 15
+  quality_eval_every: 30
+  queue_critical: 4
+swarm:
+  cooldown_max: 5
+  enabled: true
+  exploration_rate: 0.2
+  load_penalty: 0.15
+  low_usage_bonus: 0.15
+  min_bids_per_day: 3
+  min_tasks_per_day: 2
+  newcomer_boost: 0.2
+  top_k: 8
+token_economy:
+  welcome_bonus: 5
+yaml_bridge:
+  agents_dir: knowledge
+agent_levels:
+  enabled: true
+round_table:
+  enabled: true
+  every_n_heartbeat: 20
+  agent_count: 6
+  min_agents: 3
+night_mode:
+  enabled: true
+  idle_threshold_min: 30
+  max_hours: 8
+  interval_s: 10

@@ -101,7 +101,7 @@ AUTO-CONFIGURE
 
 **Real example from this system:**
 ```
-Detected:  NVIDIA RTX A2000 8GB + 32GB RAM
+Detected:  NVIDIA RTX A2000 8GB + 127GB RAM
 Selected:  STANDARD+ profile
   → phi4-mini (3.8B) for chat
   → llama3.2:1b for background learning

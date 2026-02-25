@@ -80,7 +80,7 @@ Translation via Helsinki-NLP Opus-MT models (GPU-accelerated).
 ```
 GPU:  NVIDIA RTX A2000 8GB VRAM (Ampere, FP16 capable)
 CPU:  AMD/Intel (multi-core)
-RAM:  32 GB
+RAM:  128 GB
 Disk: NVMe SSD
 OS:   Windows 11
 ```

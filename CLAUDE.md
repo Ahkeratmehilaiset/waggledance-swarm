@@ -1649,7 +1649,7 @@ enterprise (80GB):
 ║ WaggleDance v0.2.0                   ║
 ║ Hardware: standard                   ║
 ║ GPU: NVIDIA RTX A2000         8192MB ║
-║ RAM: 32GB                            ║
+║ RAM: 128GB                           ║
 ╠══════════════════════════════════════╣
 ║ Chat model:    phi4-mini             ║
 ║ BG model:      llama3.2:1b           ║
@@ -1921,7 +1921,7 @@ schtasks /create /tn "WaggleDance" /tr "python U:\project\main.py" /sc onstart
 ```
 CURRENT (Phase 2, standard tier):
   GPU:  4.3G / 8.0G (54%)
-  RAM:  ~2G / 32G (6%)
+  RAM:  ~2G / 128G (2%)
   Disk: ~12MB ChromaDB
 
 v0.2.0 (all features, standard tier):

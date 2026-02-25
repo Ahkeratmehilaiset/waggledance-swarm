@@ -114,6 +114,8 @@ Selected:  STANDARD+ profile
   → VRAM budget: 4.3G / 8.0G (54%)
 ```
 
+![Hardware Detection](docs/images/boot-hwdetect.png)
+
 ---
 
 ## 🇫🇮 Native Finnish — Fastest Local Finnish AI on Small Hardware

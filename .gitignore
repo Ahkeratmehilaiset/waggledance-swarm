@@ -226,7 +226,6 @@ hotfix_*.py
 # ChromaDB data
 chromadb_data/
 chroma/
-memory/
 
 # Node modules & dashboard build
 dashboard/node_modules/

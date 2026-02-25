@@ -1,6 +1,6 @@
 # 🐝 WaggleDance SWARM AI
 
-![WaggleDance Dashboard](docs/images/dashboard-home.png)
+![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
 > **Local-first self-learning multi-agent AI with adaptive hardware scaling.**
 > 50+ agents. Vector memory. Autonomous evolution.
@@ -31,7 +31,7 @@ Originally built for Finnish beekeeping (300 hives), it scales to smart homes, f
 - 🎯 **97.7% routing accuracy** across 50 agent specializations
 - 🛡️ **Round Table consensus** — up to 6 agents cross-validate every answer (1.8% hallucination)
 - 🔒 **Zero cloud dependency** — everything runs locally, your data stays yours
-- 📡 **4 deployment profiles** — GADGET / HOME / COTTAGE / FACTORY
+- 📡 **4 deployment profiles** — GADGET / COTTAGE / HOME / FACTORY
 
 ---
 
@@ -197,11 +197,10 @@ User (Finnish / English) → FastAPI (port 8000)
       ├── CPU / GPU / VRAM gauges
       ├── Interactive chat
       ├── FI/EN language toggle
-      └── 4 domain tabs: GADGET / HOME / COTTAGE / FACTORY
+      └── 4 domain tabs: GADGET / COTTAGE / HOME / FACTORY
 ```
 
 ![Boot Sequence](docs/images/boot-alive.png)
-![Cottage Intelligence](docs/images/dashboard-cottage.png)
 
 ---
 
@@ -232,14 +231,22 @@ Year 3:      55,000+ facts (deeper than any human expert)
 ### 📡 GADGET — Edge Intelligence
 ESP32, Raspberry Pi, wearables, old phones. TinyML classifiers, mesh networking, sensor fusion. Perfect for remote hive monitoring or distributed sensor networks.
 
-### 🏠 HOME — Smart Living
-Mac Mini, NUC, any decent PC. Home Assistant bridge (2000+ integrations), voice control, energy optimization, security, room-by-room climate learning.
+![Gadget Dashboard](docs/images/dashboard-gadget.png)
 
 ### 🏡 COTTAGE — Off-Grid Intelligence
 Purpose-built for Finnish beekeeping. 300 hive monitoring, varroa detection, weather integration, FMI data, acoustic analysis, wildlife cameras, spot price optimization.
 
+![Cottage Dashboard](docs/images/dashboard-cottage.png)
+
+### 🏠 HOME — Smart Living
+Mac Mini, NUC, any decent PC. Home Assistant bridge (2000+ integrations), voice control, energy optimization, security, room-by-room climate learning.
+
+![Home Dashboard](docs/images/dashboard-home.png)
+
 ### ⚙️ FACTORY — Industrial Scale
 DGX / server rack. Predictive maintenance, yield prediction (98.7%), SPC monitoring, shift handover, root cause analysis. Air-gapped, ISO 27001 compatible.
+
+![Factory Dashboard](docs/images/dashboard-factory.png)
 
 ---
 

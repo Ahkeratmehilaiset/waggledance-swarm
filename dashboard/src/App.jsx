@@ -25,8 +25,8 @@ const L = {
     send: "SEND",
     domains: {
       gadget: { label: "GADGET", tag: "ESP32 • RPi • wearables • edge intelligence everywhere" },
-      home: { label: "HOME", tag: "47 devices • 6 rooms • smart living" },
       cottage: { label: "COTTAGE", tag: "300 hives • sauna • off-grid intelligence" },
+      home: { label: "HOME", tag: "47 devices • 6 rooms • smart living" },
       factory: { label: "FACTORY", tag: "142 equipment • 24/7 semiconductor production" },
     },
     feats: {
@@ -224,8 +224,8 @@ Install. Connect. Walk away.
     send: "LÄHETÄ",
     domains: {
       gadget: { label: "LAITE", tag: "ESP32 • RPi • puettavat • reunaälyä kaikkialle" },
-      home: { label: "KOTI", tag: "47 laitetta • 6 huonetta • älykäs asuminen" },
       cottage: { label: "MÖKKI", tag: "300 pesää • sauna • off-grid-älykkyys" },
+      home: { label: "KOTI", tag: "47 laitetta • 6 huonetta • älykäs asuminen" },
       factory: { label: "TEHDAS", tag: "142 laitetta • 24/7 puolijohdetuotanto" },
     },
     feats: {

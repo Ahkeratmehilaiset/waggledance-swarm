@@ -1,5 +1,7 @@
 # 🐝 WaggleDance SWARM AI
 
+![WaggleDance Dashboard](docs/images/dashboard-home.png)
+
 > **Local-first self-learning multi-agent AI with adaptive hardware scaling.**
 > 50+ agents. Vector memory. Autonomous evolution.
 > Runs on anything — auto-detects your hardware and optimizes itself.
@@ -197,6 +199,9 @@ User (Finnish / English) → FastAPI (port 8000)
       ├── FI/EN language toggle
       └── 4 domain tabs: GADGET / HOME / COTTAGE / FACTORY
 ```
+
+![Boot Sequence](docs/images/boot-alive.png)
+![Cottage Intelligence](docs/images/dashboard-cottage.png)
 
 ---
 

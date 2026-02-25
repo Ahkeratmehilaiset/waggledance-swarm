@@ -2,6 +2,7 @@
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
+
 > **Local-first self-learning multi-agent AI with adaptive hardware scaling.**
 > 50+ agents. Vector memory. Autonomous evolution.
 > Runs on anything — auto-detects your hardware and optimizes itself.

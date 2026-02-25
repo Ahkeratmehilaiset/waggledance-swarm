@@ -91,14 +91,14 @@ export function useApi() {
   }, [poll]);
 
   // Send chat message
-  const sendChat = useCallback(async (message) => {
+  const sendChat = useCallback(async (message, lang = "auto") => {
     if (!message.trim()) return null;
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, lang }),
       });
       if (res.ok) {
         const data = await res.json();

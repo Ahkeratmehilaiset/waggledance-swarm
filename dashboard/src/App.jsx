@@ -712,7 +712,7 @@ export default function App(){
 
   // ═══ CHAT — uses API with mock fallback ═══
   const handleChat=async()=>{if(!chatIn.trim())return;const msg=chatIn.trim();setChatIn("");setChatMsgs(p=>[...p,{role:"user",text:msg}]);setThink(true);
-    const response = await api.sendChat(msg);
+    const response = await api.sendChat(msg, lang);
     setThink(false);
     setChatMsgs(p=>[...p,{role:"ai",text:response}]);
   };

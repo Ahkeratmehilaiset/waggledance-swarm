@@ -555,10 +555,11 @@ loadFeeds();
     @app.post("/api/chat")
     async def chat(data: dict):
         msg = data.get("message", "")
+        lang = data.get("lang", "auto")
         if not msg:
             return {"error": "Tyhjä viesti"}
         try:
-            response = await hivemind.chat(msg)
+            response = await hivemind.chat(msg, language=lang)
             return {"response": response}
         except Exception as e:
             return {"error": str(e)}

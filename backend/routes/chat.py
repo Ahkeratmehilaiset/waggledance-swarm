@@ -22,9 +22,47 @@ log = logging.getLogger("waggledance-chat")
 
 class ChatRequest(BaseModel):
     message: str = ""
+    lang: str = "auto"
 
 
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Language detection (lightweight, no dependencies)
+# ---------------------------------------------------------------------------
+
+_FI_CHARS = set("äöåÄÖÅ")
+_FI_SUFFIXES = ("ssa", "ssä", "lla", "llä", "sta", "stä", "lle", "lta", "ltä",
+                "een", "iin", "nko", "nkö", "ista", "istä")
+_EN_WORDS = {"the", "is", "are", "was", "were", "have", "has", "been", "will",
+             "would", "could", "should", "what", "how", "when", "where", "which",
+             "that", "this", "with", "from", "about", "into", "does", "not"}
+
+
+def _detect_language(text_lower: str) -> str:
+    """Fast language detection: 'fi', 'en', or 'fi' (default)."""
+    # Level 1: Finnish characters → Finnish (almost certain)
+    if _FI_CHARS & set(text_lower):
+        return "fi"
+    # Level 2: Word scoring
+    words = set(re.findall(r"[a-zäöå]+", text_lower))
+    en_score = len(words & _EN_WORDS)
+    fi_score = 0
+    for w in words:
+        for sfx in _FI_SUFFIXES:
+            if w.endswith(sfx) and len(w) > len(sfx) + 2:
+                fi_score += 1
+                break
+    if en_score > fi_score and en_score >= 2:
+        return "en"
+    return "fi"  # default to Finnish
+
+
+_FALLBACK_EN = [
+    "I'm still learning! Try asking about varroa treatment, hive inspections, or honey extraction. 🐝",
+    "Hmm, I don't have a specific answer yet. Ask me about beekeeping topics! 🍯",
+    "I'm a beekeeping AI assistant. Try questions about colony management, diseases, or seasonal tasks.",
+]
 
 # ---------------------------------------------------------------------------
 # Text normalization helpers
@@ -662,27 +700,52 @@ async def chat(data: ChatRequest):
 
     msg_lower = message.lower()
 
+    # ── Language detection ────────────────────────────────────
+    detected_lang = data.lang
+    if detected_lang == "auto":
+        detected_lang = _detect_language(msg_lower)
+
+    # ── English fast path — skip Finnish keyword layer ────────
+    if detected_lang == "en":
+        # English greetings
+        if msg_lower in ("hi", "hello", "hey", "good morning", "good evening"):
+            return {"response": "Hi! I'm WaggleDance — a local AI assistant for beekeeping. Ask me anything! 🐝",
+                    "lang": "en"}
+
+        # Try YAML routing (works for both languages)
+        yaml_answer = _find_yaml_answer(msg_lower, min_score=0.5, min_overlap=2)
+        if yaml_answer:
+            return {"response": yaml_answer, "lang": "en"}
+
+        yaml_answer = _find_yaml_answer(msg_lower, min_score=0.4)
+        if yaml_answer:
+            return {"response": yaml_answer, "lang": "en"}
+
+        return {"response": random.choice(_FALLBACK_EN), "lang": "en"}
+
+    # ── Finnish pipeline (unchanged) ──────────────────────────
     # Bare greetings (exact match)
     if msg_lower in ("moi", "hei", "terve", "morjens", "huomenta", "iltaa"):
-        return {"response": "Moi! Olen WaggleDance — paikallinen tekoälyavustaja. Kysy mitä vain! 🐝"}
+        return {"response": "Moi! Olen WaggleDance — paikallinen tekoälyavustaja. Kysy mitä vain! 🐝",
+                "lang": "fi"}
 
     # Layer 2A: YAML eval_questions — high confidence (need >=2 content words matching)
     yaml_answer = _find_yaml_answer(msg_lower, min_score=0.5, min_overlap=2)
     if yaml_answer:
-        return {"response": yaml_answer}
+        return {"response": yaml_answer, "lang": "fi"}
 
     # Layer 1: Hand-crafted keyword matching (fast, morphology-aware)
     for keywords, response in _RESPONSES:
         if _match(msg_lower, keywords):
-            return {"response": response}
+            return {"response": response, "lang": "fi"}
 
     # Layer 2B: YAML eval_questions — lower threshold (partial match)
     yaml_answer = _find_yaml_answer(msg_lower, min_score=0.4)
     if yaml_answer:
-        return {"response": yaml_answer}
+        return {"response": yaml_answer, "lang": "fi"}
 
     # Layer 3: Fallback
-    return {"response": random.choice(_FALLBACK)}
+    return {"response": random.choice(_FALLBACK), "lang": "fi"}
 
 
 # ---------------------------------------------------------------------------

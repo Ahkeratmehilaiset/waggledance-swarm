@@ -16,7 +16,8 @@
       "Bash(cd U:/project && PYTHONUTF8=1 python tools/scan_knowledge.py 2>&1)",
       "Bash(sort:*)",
       "Bash(cd /u/project)",
-      "Bash(*)"
+      "Bash(*)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

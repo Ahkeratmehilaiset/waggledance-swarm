@@ -205,3 +205,46 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ============================================
+# WaggleDance project-specific
+# ============================================
+
+# Backups
+*_backup_*.py
+backups/
+
+# Benchmark results (keep scripts, remove outputs)
+benchmark_*.json
+
+# Patch/fix scripts (one-time use, not needed in repo)
+fix_*.py
+patch_*.py
+hotfix_*.py
+*_mega_patch.py
+
+# ChromaDB data
+chromadb_data/
+chroma/
+memory/
+
+# Node modules & dashboard build
+dashboard/node_modules/
+dashboard/dist/
+
+# Logs
+logs/
+
+# Model artifacts
+*.pt
+*.onnx
+micro_models/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

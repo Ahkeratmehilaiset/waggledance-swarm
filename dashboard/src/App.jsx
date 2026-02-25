@@ -111,6 +111,9 @@ Up to 50 agents debate. Queen synthesizes. Hallucination: 1.8%.
   ✗ 500-3000ms latency     ✓ 0.08ms with MicroModel
   ✗ Rate limits            ✓ Unlimited 24/7
 
+▸ WHY OFFLINE BY DEFAULT?
+This system intentionally runs without internet. The architecture is ready for web browsing, RSS feeds, and cloud AI APIs (Claude, GPT) — but they are disabled on purpose. A 3.8B model that answers in 3ms from 47,000 learned facts is a fundamentally different achievement from fetching answers from a 400B cloud model. We want the local intelligence to prove itself first. Once it does, expanding to web and API sources is one config toggle away.
+
 ▸ HARDWARE SCALING
   ESP32 (€8) → RPi (€80) → NUC (€650) → Mac (€2.2K) → DGX (€400K)
   Same code. Only speed differs.
@@ -324,6 +327,9 @@ Jopa 50 agenttia väittelee. Kuningatar syntetisoi. Hallusinaatio: 1.8%.
   ✗ Geneerinen              ✓ SINUN alueesi asiantuntija
   ✗ 500-3000ms viive        ✓ 0.08ms MikroMallilla
   ✗ Rajoitukset             ✓ Rajaton 24/7
+
+▸ MIKSI OLETUKSENA OFFLINE?
+Järjestelmä toimii tarkoituksella ilman internetiä. Arkkitehtuuri tukee valmiiksi verkkoselailua, RSS-syötteitä ja pilvi-AI-rajapintoja (Claude, GPT) — mutta ne on kytketty pois tahallaan. 3.8B malli joka vastaa 3ms:ssa 47 000 opitusta faktasta on perustavanlaatuisesti eri saavutus kuin vastausten hakeminen 400B pilvimallilta. Haluamme paikallisen älykkyyden todistavan itsensä ensin. Kun se on tehty, laajennus verkkoon ja rajapintoihin on yhden asetuksen päässä.
 
 ▸ LAITTEISTON SKAALAUTUVUUS
   ESP32 (8€) → RPi (80€) → NUC (650€) → Mac (2,2K€) → DGX (400K€)

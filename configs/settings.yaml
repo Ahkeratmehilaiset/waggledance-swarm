@@ -55,13 +55,73 @@ yaml_bridge:
   agents_dir: knowledge
 agent_levels:
   enabled: true
+routing:
+  confusion_memory: true
+  topic_fingerprints: true
 round_table:
   enabled: true
   every_n_heartbeat: 20
   agent_count: 6
   min_agents: 3
+  version: 2
 night_mode:
   enabled: true
   idle_threshold_min: 30
   max_hours: 8
   interval_s: 10
+advanced_learning:
+  corrections_enabled: true
+  active_learning_enabled: true
+  active_learning_min_memory: 100
+  embedding_augmentation: true
+  multi_hop_enabled: true
+  multi_hop_max_hops: 2
+  episodic_memory: true
+  seasonal_boost: 1.2
+  bilingual_index: true
+  hot_cache_size: 500
+  enrichment_enabled: true
+  enrichment_confidence: 0.80
+  web_learning_enabled: true
+  web_learning_daily_budget: 50
+  distillation_enabled: false
+  distillation_api_key: ""
+  distillation_model: "claude-haiku-4-5-20251001"
+  distillation_weekly_budget_eur: 5.0
+  meta_learning_enabled: true
+  code_review_enabled: true
+  micro_model_enabled: true
+  micro_model_v2_enabled: true
+  micro_model_v3_enabled: false
+  micro_model_training_interval: 50
+  micro_model_min_pairs: 100
+  enrichment_temporal_check: true
+  failure_twin_enabled: true
+  failure_twin_threshold: 0.60
+  micro_model_promotion_enabled: true
+  micro_model_promotion_min_pairs: 200
+  micro_model_promotion_max_error: 0.03
+  agent_overlap_detection: true
+feeds:
+  enabled: false
+  weather:
+    enabled: true
+    provider: fmi
+    locations:
+      - Helsinki
+      - Kouvola
+    interval_min: 30
+  electricity:
+    enabled: true
+    provider: porssisahko
+    interval_min: 15
+  rss:
+    enabled: true
+    interval_min: 120
+    feeds:
+      - url: "https://www.mehilaishoitajat.fi/feed"
+        name: SML
+        critical: false
+      - url: "https://www.ruokavirasto.fi/rss"
+        name: Ruokavirasto
+        critical: true

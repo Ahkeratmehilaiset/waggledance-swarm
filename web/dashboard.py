@@ -26,6 +26,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 
 
+def _get_seasonal_focus():
+    """Get current month's seasonal keywords from consciousness module."""
+    try:
+        from consciousness import SEASONAL_BOOST
+        return SEASONAL_BOOST.get(datetime.now().month, [])
+    except ImportError:
+        return []
+
+
 def create_app(hivemind):
     app = FastAPI(title="WaggleDance Swarm AI Dashboard")
 
@@ -132,7 +141,7 @@ def create_app(hivemind):
   </div>
   <div class="topbar-center">
     <h1>🐝 <span class="t-main">WaggleDance Swarm AI</span> <span class="t-sub">(on-prem)</span></h1>
-    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v0.1.0 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span></div>
+    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v0.1.0 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
   </div>
   <div class="topbar-right">
     <div class="mbadge">
@@ -175,6 +184,19 @@ def create_app(hivemind):
     <div id="opsagent"></div>
     <h2 style="margin-top:14px">🧬 Oppiminen</h2>
     <div id="learning"></div>
+  </div>
+  <div class="card">
+    <h2>🧠 Tietoisuus (Phase 4)</h2>
+    <div id="consciousness-stats"></div>
+  </div>
+  <div class="card">
+    <h2>📝 Korjaukset &amp; Oppiminen</h2>
+    <div id="corrections-feed" class="feed" style="max-height:200px"></div>
+  </div>
+  <div class="card">
+    <h2>📡 Data Feeds (Phase 8)</h2>
+    <div id="feeds-status"></div>
+    <button onclick="loadFeeds()" style="margin-top:8px">🔄 Päivitä</button>
   </div>
   <div id="rt-card" class="card rt-card" style="grid-column:1/3">
     <h2>🏛️ Round Table <span id="rt-status" style="color:#484f58;font-weight:400"></span></h2>
@@ -229,6 +251,82 @@ ws.onmessage=e=>{{
     const nb=document.getElementById('night-badge');
     nb.style.display='inline';
     nb.textContent=`🌙 NIGHT (${{d.facts_learned||0}})`;
+  }}
+
+  // Phase 4: Correction stored
+  if(tp==='correction_stored'){{
+    const cf=document.getElementById('corrections-feed');
+    const div=document.createElement('div');
+    div.innerHTML=`<span style="color:#da3688">📝</span> Korjaus: ${{d.query||''}} → ${{d.good_answer||''}}`;
+    cf.prepend(div);
+    if(cf.children.length>20)cf.lastChild.remove();
+    const cb=document.getElementById('corrections-badge');
+    cb.style.display='inline';
+    const n=parseInt(cb.textContent.match(/\\d+/)||[0])+1;
+    cb.textContent=`📝 ${{n}}`;
+  }}
+
+  // Phase 8: Feed update
+  if(tp==='feed_update'){{
+    const cf=document.getElementById('corrections-feed');
+    const div=document.createElement('div');
+    div.innerHTML=`<span style="color:#58a6ff">📡</span> ${{d.feed||'feed'}}: ${{d.facts_stored||0}} facts`;
+    cf.prepend(div);
+    if(cf.children.length>20)cf.lastChild.remove();
+  }}
+
+  // Phase 4k: Enrichment
+  if(tp==='enrichment'){{
+    const cf=document.getElementById('corrections-feed');
+    const div=document.createElement('div');
+    div.innerHTML=`<span style="color:#f0b429">✨</span> Enrichment: ${{d.facts_stored||0}} facts (${{d.total_enriched||0}} total)`;
+    cf.prepend(div);
+    if(cf.children.length>20)cf.lastChild.remove();
+  }}
+
+  // Phase 9: Web learning
+  if(tp==='web_learning'){{
+    const cf=document.getElementById('corrections-feed');
+    const div=document.createElement('div');
+    div.innerHTML=`<span style="color:#58a6ff">🌐</span> Web: ${{d.facts_stored||0}} facts (${{d.total_web||0}} total, ${{d.searches_today||0}} searches)`;
+    cf.prepend(div);
+    if(cf.children.length>20)cf.lastChild.remove();
+  }}
+
+  // Phase 9: Distillation
+  if(tp==='distillation'){{
+    const cf=document.getElementById('corrections-feed');
+    const div=document.createElement('div');
+    div.innerHTML=`<span style="color:#a371f7">🧠</span> Distill: ${{d.facts_stored||0}} facts (${{d.total_distilled||0}} total, €${{d.cost_eur||0}})`;
+    cf.prepend(div);
+    if(cf.children.length>20)cf.lastChild.remove();
+  }}
+
+  // Phase 9: Meta-learning report
+  if(tp==='meta_report'){{
+    const cf=document.getElementById('corrections-feed');
+    const div=document.createElement('div');
+    div.innerHTML=`<span style="color:#d29922">📊</span> Meta: ${{d.suggestions||0}} suggestions, ${{d.optimizations_applied||0}} auto-applied`;
+    cf.prepend(div);
+    if(cf.children.length>20)cf.lastChild.remove();
+  }}
+
+  // Phase 9: Code suggestion
+  if(tp==='code_suggestion'){{
+    const cf=document.getElementById('corrections-feed');
+    const div=document.createElement('div');
+    div.innerHTML=`<span style="color:#f85149">🔍</span> Code review: ${{d.new_suggestions||0}} new (${{d.total_pending||0}} pending)`;
+    cf.prepend(div);
+    if(cf.children.length>20)cf.lastChild.remove();
+  }}
+
+  // Phase 4: User teaching
+  if(tp==='user_teaching'){{
+    const cf=document.getElementById('corrections-feed');
+    const div=document.createElement('div');
+    div.innerHTML=`<span style="color:#3fb950">🎓</span> Opittu: ${{d.teaching||''}}`;
+    cf.prepend(div);
+    if(cf.children.length>20)cf.lastChild.remove();
   }}
 
   // Default live feed
@@ -347,6 +445,33 @@ async function loadStatus(){{
       <div style="margin:6px 0">${{modelHtml}}</div>
       ${{decHtml?'<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:4px"><span style="color:#484f58;font-size:10px">Päätökset:</span>'+decHtml+'</div>':''}}`;
 
+    // Phase 4: Consciousness stats
+    const cs=document.getElementById('consciousness-stats');
+    const con=d.consciousness||{{}};
+    const corrCount=d.corrections_count||0;
+    const epCount=d.episodes_count||0;
+    cs.innerHTML=`
+      <div class="stat">Muisti: ${{con.memories||0}}</div>
+      <div class="stat">Swarm: ${{con.swarm_facts||0}}</div>
+      <div class="stat" style="color:#da3688">Korjaukset: ${{con.corrections||corrCount}}</div>
+      <div class="stat">Episodit: ${{con.episodes||epCount}}</div>
+      <div class="stat">Kyselyt: ${{con.total_queries||0}}</div>
+      <div class="stat">Prefilter: ${{con.prefilter_hits||0}}</div>
+      <div class="stat" style="color:#f85149">Hallus: ${{con.hallucinations_caught||0}}</div>
+      <div class="stat">Cache: ${{con.cache_hit_rate||'0%'}}</div>
+      <div class="stat" style="color:#3fb950">Active learning: ${{con.active_learning_count||0}}</div>
+      <div class="stat">Synonyms: ${{con.domain_synonyms||0}}</div>
+      <div class="stat">Jono: ${{con.learn_queue_size||0}}</div>
+      <div class="stat" style="color:#f0b429">FI-index: ${{con.bilingual_fi_count||0}}</div>
+      ${{con.hot_cache?`<div class="stat" style="color:#58a6ff">Cache: ${{con.hot_cache.size||0}}/${{con.hot_cache.max_size||500}} (${{(con.hot_cache.hit_rate*100||0).toFixed(0)}}% hit)</div>`:''}}
+    `;
+    // Update corrections badge
+    if(corrCount>0){{
+      const cb=document.getElementById('corrections-badge');
+      cb.style.display='inline';
+      cb.textContent=`📝 ${{corrCount}}`;
+    }}
+
     // LearningEngine
     const le=document.getElementById('learning');
     const lr=d.learning||{{}};
@@ -392,10 +517,32 @@ async function loadSys(){{
   }}catch(e){{}}
 }}
 
+async function loadFeeds(){{
+  try{{
+    const r=await fetch('/api/feeds');const d=await r.json();
+    const fs=document.getElementById('feeds-status');
+    if(!d.enabled){{fs.innerHTML='<span style="color:#484f58">Disabled</span>';return;}}
+    const feeds=d.feeds||{{}};
+    let html='';
+    for(const[name,f] of Object.entries(feeds)){{
+      const ago=f.last_run_ago_s?Math.round(f.last_run_ago_s/60)+'min ago':'never';
+      const ec=f.error_count>0?'#f85149':'#3fb950';
+      html+=`<div class="stat" style="border-left:3px solid ${{ec}}">${{name}}: ${{f.run_count||0}} runs (${{ago}}) ${{f.error_count?'❌'+f.error_count:''}}</div>`;
+    }}
+    const alerts=d.critical_alerts||[];
+    if(alerts.length>0){{
+      html+='<div style="margin-top:6px;color:#f85149;font-size:10px">⚠️ '+alerts.length+' critical alerts</div>';
+    }}
+    fs.innerHTML=html||'No feeds';
+  }}catch(e){{}}
+}}
+
 setTimeout(loadStatus,500);
 setInterval(loadStatus,12000);
 setInterval(loadSys,3000);
+setInterval(loadFeeds,30000);
 loadSys();
+loadFeeds();
 </script></body></html>"""
 
         # KRIITTINEN: charset=utf-8 HTTP-headerissa
@@ -416,6 +563,20 @@ loadSys();
         except Exception as e:
             return {"error": str(e)}
 
+    @app.post("/api/confusion")
+    async def report_confusion(data: dict):
+        """Record a routing mistake so confusion memory can learn from it."""
+        try:
+            from backend.routes.chat import record_confusion
+            q = data.get("question", "")
+            wrong = data.get("wrong_agent", "")
+            correct = data.get("correct_agent", "")
+            if q and wrong and correct:
+                record_confusion(q, wrong, correct)
+            return {"status": "ok"}
+        except Exception as e:
+            return {"error": str(e)}
+
     @app.get("/api/status")
     async def status():
         try:
@@ -429,6 +590,56 @@ loadSys();
         if hivemind.agent_levels:
             return {"levels": hivemind.agent_levels.get_all_stats()}
         return {"levels": {}}
+
+    @app.get("/api/consciousness")
+    async def consciousness_stats():
+        """Phase 4: Full consciousness stats for feedback dashboard."""
+        if not hasattr(hivemind, 'consciousness') or not hivemind.consciousness:
+            return JSONResponse({"error": "no consciousness"})
+        c = hivemind.consciousness
+        return JSONResponse({
+            "memory_count": c.memory.count,
+            "corrections_count": c.memory.corrections.count(),
+            "episodes_count": c.memory.episodes.count(),
+            "swarm_facts_count": c.memory.swarm_facts.count(),
+            "cache_hit_rate": c.embed.cache_hit_rate,
+            "hallucination_rate": (c._hallucination_count
+                                   / max(c._total_queries, 1)),
+            "prefilter_rate": (c._prefilter_hits
+                               / max(c._total_queries, 1)),
+            "total_queries": c._total_queries,
+            "insights_stored": c._insight_counter,
+            "active_learning_count": c._active_learning_count,
+            "domain_synonyms": len(c._domain_synonyms),
+            "agent_levels": (hivemind.agent_levels.get_all_stats()
+                             if hivemind.agent_levels else {}),
+            "seasonal_focus": _get_seasonal_focus(),
+            "learn_queue_size": len(c._learn_queue),
+            "hot_cache": (c.hot_cache.stats
+                          if hasattr(c, 'hot_cache') and c.hot_cache
+                          else {}),
+            "bilingual_fi_count": (c.bilingual.fi_count
+                                   if hasattr(c, 'bilingual')
+                                   and c.bilingual else 0),
+            "enrichment": (hivemind.enrichment.stats
+                           if hasattr(hivemind, 'enrichment')
+                           and hivemind.enrichment else {}),
+            "web_learner": (hivemind.web_learner.stats
+                            if hasattr(hivemind, 'web_learner')
+                            and hivemind.web_learner else {}),
+            "distiller": (hivemind.distiller.stats
+                          if hasattr(hivemind, 'distiller')
+                          and hivemind.distiller else {}),
+            "meta_learning": (hivemind.meta_learning.stats
+                              if hasattr(hivemind, 'meta_learning')
+                              and hivemind.meta_learning else {}),
+            "code_reviewer": (hivemind.code_reviewer.stats
+                              if hasattr(hivemind, 'code_reviewer')
+                              and hivemind.code_reviewer else {}),
+            "micro_model": (hivemind.micro_model.stats
+                            if hasattr(hivemind, 'micro_model')
+                            and hivemind.micro_model else {}),
+        })
 
     @app.get("/api/system")
     async def system_stats():
@@ -480,6 +691,83 @@ loadSys();
                 "leaderboard": hivemind.learning.get_leaderboard(),
             }
         return {"status": {}, "leaderboard": []}
+
+    @app.get("/api/feeds")
+    async def feeds_status():
+        """Phase 8: Data feed status + critical RSS alerts."""
+        if not hasattr(hivemind, 'data_feeds') or not hivemind.data_feeds:
+            return JSONResponse({"enabled": False, "feeds": {}})
+        status = hivemind.data_feeds.get_status()
+        # Add critical alerts from RSS feed
+        rss = hivemind.data_feeds._feeds.get("rss")
+        if rss:
+            status["critical_alerts"] = rss.critical_alerts
+        return JSONResponse(status)
+
+    @app.post("/api/feeds/{feed_name}/refresh")
+    async def feeds_refresh(feed_name: str):
+        """Phase 8: Force immediate feed update."""
+        if not hasattr(hivemind, 'data_feeds') or not hivemind.data_feeds:
+            return JSONResponse({"error": "feeds not enabled"}, status_code=400)
+        stored = await hivemind.data_feeds.force_update(feed_name)
+        return JSONResponse({"feed": feed_name, "facts_stored": stored})
+
+    @app.get("/api/meta_report")
+    async def meta_report():
+        """Phase 9: Latest meta-learning weekly report."""
+        if (not hasattr(hivemind, 'meta_learning')
+                or not hivemind.meta_learning):
+            return JSONResponse({"report": None, "available": False})
+        ml = hivemind.meta_learning
+        return JSONResponse({
+            "available": True,
+            "report": ml._last_report,
+            "stats": ml.stats,
+        })
+
+    @app.get("/api/code_suggestions")
+    async def code_suggestions():
+        """Phase 9: Pending code review suggestions."""
+        if (not hasattr(hivemind, 'code_reviewer')
+                or not hivemind.code_reviewer):
+            return JSONResponse({"suggestions": [], "available": False})
+        cr = hivemind.code_reviewer
+        return JSONResponse({
+            "available": True,
+            "pending": cr.get_pending_suggestions(),
+            "stats": cr.stats,
+        })
+
+    @app.post("/api/code_suggestions/{index}/accept")
+    async def code_suggestion_accept(index: int):
+        """Phase 9: Accept a code review suggestion."""
+        if (not hasattr(hivemind, 'code_reviewer')
+                or not hivemind.code_reviewer):
+            return JSONResponse({"error": "code reviewer not available"},
+                                status_code=400)
+        hivemind.code_reviewer.accept_suggestion(index)
+        return JSONResponse({"status": "accepted", "index": index})
+
+    @app.post("/api/code_suggestions/{index}/reject")
+    async def code_suggestion_reject(index: int):
+        """Phase 9: Reject a code review suggestion."""
+        if (not hasattr(hivemind, 'code_reviewer')
+                or not hivemind.code_reviewer):
+            return JSONResponse({"error": "code reviewer not available"},
+                                status_code=400)
+        hivemind.code_reviewer.reject_suggestion(index)
+        return JSONResponse({"status": "rejected", "index": index})
+
+    @app.get("/api/micro_model")
+    async def micro_model_stats():
+        """Phase 10: Micro-model training stats and availability."""
+        if (not hasattr(hivemind, 'micro_model')
+                or not hivemind.micro_model):
+            return JSONResponse({"available": False, "stats": {}})
+        return JSONResponse({
+            "available": True,
+            "stats": hivemind.micro_model.stats,
+        })
 
     @app.get("/api/monitor/history")
     async def monitor_history():

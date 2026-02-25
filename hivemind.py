@@ -24,6 +24,7 @@ Aiemmat korjaukset (v0.0.1):
 
 import asyncio
 import json
+import logging
 import time
 import yaml
 from contextlib import contextmanager
@@ -52,6 +53,8 @@ except ImportError:
     _TRANSLATION_AVAILABLE = False
     def detect_language(t): return "fi"
     def is_finnish(t): return True
+
+log = logging.getLogger("hivemind")
 
 try:
     from en_validator import ENValidator
@@ -166,6 +169,31 @@ class HiveMind:
         self._night_mode_active = False
         self._night_mode_start = 0.0
         self._night_mode_facts_learned = 0
+
+        # ── Phase 4: Advanced Learning ────────────────────
+        self._last_chat_message = ""       # for correction detection
+        self._last_chat_response = ""      # for correction detection
+        self._last_chat_method = ""        # "active_learning" etc
+        self._last_chat_agent_id = ""      # which agent answered
+        self._last_episode_id = None       # episodic chain
+
+        # ── Phase 4k: Fact Enrichment Engine ─────────────
+        self.enrichment = None  # Lazy init when night mode starts
+
+        # ── Phase 9: Autonomous Learning Layers 3-6 ────
+        self.web_learner = None
+        self.distiller = None
+        self.meta_learning = None
+        self.code_reviewer = None
+        self._meta_learning_last_run = 0.0
+        self._code_review_last_run = 0.0
+
+        # ── Phase 10: Micro-Model Training ────────────
+        self.micro_model = None
+        self.training_collector = None
+
+        # ── Phase 8: External Data Feeds ────────────────
+        self.data_feeds = None
 
     def _load_config(self) -> dict:
         path = Path(self.config_path)
@@ -434,6 +462,30 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                 print(f'  ⚠️  Tietoisuus: {e}', flush=True)
                 self.consciousness = None
 
+        # ── Phase 8: External Data Feeds ────────────────────
+        feeds_cfg = self.config.get("feeds", {})
+        if feeds_cfg.get("enabled", False):
+            try:
+                from integrations.data_scheduler import DataFeedScheduler
+                self.data_feeds = DataFeedScheduler(
+                    config=feeds_cfg,
+                    consciousness=self.consciousness,
+                    priority_lock=self.priority)
+                await self.data_feeds.start()
+                active = list(self.data_feeds._feeds.keys())
+                print(f"  ✅ Data Feeds ({', '.join(active)})", flush=True)
+            except Exception as e:
+                print(f"  ⚠️  Data Feeds: {e}", flush=True)
+                self.data_feeds = None
+        else:
+            print("  ℹ️  Data Feeds DISABLED (feeds.enabled: false)", flush=True)
+
+        # ── Improvement 5: Cache Warming at startup ───────────
+        try:
+            self._warm_caches()
+        except Exception as e:
+            print(f"  ⚠️  Cache warming: {e}", flush=True)
+
         self.running = True
         self.started_at = datetime.now()
         self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -479,6 +531,17 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                     print(f"  ✅ Consciousness flush: {flushed} facts stored")
             except Exception as e:
                 print(f"  ⚠️  Consciousness flush: {e}")
+
+        # Phase 9: Save code review suggestions
+        if hasattr(self, 'code_reviewer') and self.code_reviewer:
+            try:
+                self.code_reviewer._save_suggestions()
+            except Exception:
+                pass
+
+        # Phase 8: Stop data feeds
+        if hasattr(self, 'data_feeds') and self.data_feeds:
+            await self.data_feeds.stop()
 
         if self.translation_proxy:
             self.translation_proxy.close()
@@ -572,6 +635,58 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
         if language == "auto":
             self._detected_lang = detect_language(message) if _TRANSLATION_AVAILABLE else "fi"
 
+        # ═══ Phase 4: Detect user correction ("ei", "väärin", correction text) ═══
+        _CORRECTION_WORDS = {"ei", "väärin", "wrong", "väärä", "virhe",
+                             "korjaus", "eikä", "ei ole"}
+        if (self._last_chat_message and self._last_chat_response
+                and hasattr(self, 'consciousness') and self.consciousness):
+            msg_words = set(message.lower().split())
+            if msg_words & _CORRECTION_WORDS and len(message) > 5:
+                self.consciousness.store_correction(
+                    query=self._last_chat_message,
+                    bad_answer=self._last_chat_response,
+                    good_answer=message,
+                    agent_id=self._last_chat_agent_id or "unknown")
+                # Penalize agent trust
+                if self.agent_levels and self._last_chat_agent_id:
+                    try:
+                        self.agent_levels.record_response(
+                            agent_id=self._last_chat_agent_id,
+                            agent_type="unknown",
+                            was_correct=False, was_hallucination=False,
+                            was_corrected=True)
+                    except Exception:
+                        pass
+                if self.monitor:
+                    await self.monitor.system("📝 Korjaus tallennettu — opin virheestä!")
+                await self._notify_ws("correction_stored", {
+                    "query": self._last_chat_message[:100],
+                    "good_answer": message[:100],
+                })
+                response = "Kiitos korjauksesta! Opin virheestä ja muistan tämän jatkossa."
+                self._last_chat_message = message
+                self._last_chat_response = response
+                self._last_chat_method = ""
+                return response
+
+        # ═══ Phase 4: Detect user teaching (after active_learning response) ═══
+        if (self._last_chat_method == "active_learning"
+                and hasattr(self, 'consciousness') and self.consciousness
+                and self.consciousness.detect_user_teaching(
+                    message, self._last_chat_method)):
+            self.consciousness.learn_from_user(message, self._last_chat_message)
+            if self.monitor:
+                await self.monitor.system(f"🎓 Opittu käyttäjältä: {message[:60]}")
+            await self._notify_ws("user_teaching", {
+                "query": self._last_chat_message[:100],
+                "teaching": message[:100],
+            })
+            response = f"Kiitos! Opin juuri: {message[:100]}. Muistan tämän jatkossa."
+            self._last_chat_message = message
+            self._last_chat_response = response
+            self._last_chat_method = ""
+            return response
+
         # ═══ PHASE1 TASK4: Smart Router — confidence-based model selection ═══
         if self.consciousness:
             _pre = self.consciousness.before_llm(message)
@@ -584,6 +699,16 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                     "language": self._detected_lang,
                     "method": _pre.method
                 })
+                # Phase 4: track for correction detection + episode
+                self._last_chat_message = message
+                self._last_chat_response = _pre.answer
+                self._last_chat_method = _pre.method
+                self._last_chat_agent_id = "consciousness"
+                if self.consciousness:
+                    self._last_episode_id = self.consciousness.store_episode(
+                        query=message, response=_pre.answer,
+                        prev_episode_id=self._last_episode_id,
+                        quality=_pre.confidence)
                 return _pre.answer
 
             # Tier 2: memory_fast → llama1b formats answer with context
@@ -603,6 +728,16 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                             "language": self._detected_lang,
                             "method": "smart_router_fast"
                         })
+                        # Phase 4: track for correction detection + episode
+                        self._last_chat_message = message
+                        self._last_chat_response = response
+                        self._last_chat_method = "memory_fast"
+                        self._last_chat_agent_id = "llama1b"
+                        if self.consciousness:
+                            self._last_episode_id = self.consciousness.store_episode(
+                                query=message, response=response,
+                                prev_episode_id=self._last_episode_id,
+                                quality=_pre.confidence)
                         return response
                 except Exception:
                     pass  # Fall through to normal routing
@@ -658,9 +793,20 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
             delegate_to, best_score = self._legacy_route(msg_lower, routing_rules)
 
         if delegate_to and best_score > 0:
-            return await self._delegate_to_agent(
+            response = await self._delegate_to_agent(
                 delegate_to, self._routed_message, context, msg_lower
             )
+            # Phase 4: track for correction detection + episode
+            self._last_chat_message = message
+            self._last_chat_response = response
+            self._last_chat_method = (_pre.method
+                                      if self.consciousness else "")
+            self._last_chat_agent_id = delegate_to
+            if hasattr(self, 'consciousness') and self.consciousness:
+                self._last_episode_id = self.consciousness.store_episode(
+                    query=message, response=response,
+                    prev_episode_id=self._last_episode_id)
+            return response
         else:
             # AUDIT FIX: Negatiiviset avainsanat → pakota delegointi
             # Jos viesti sisältää spesialistin termejä, ÄLÄ anna masterille
@@ -671,9 +817,20 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                         if neg_kw in keywords or any(
                             neg_kw in kw for kw in keywords
                         ):
-                            return await self._delegate_to_agent(
+                            response = await self._delegate_to_agent(
                                 agent_type, message, context, msg_lower
                             )
+                            # Phase 4: track
+                            self._last_chat_message = message
+                            self._last_chat_response = response
+                            self._last_chat_method = (_pre.method
+                                                      if self.consciousness else "")
+                            self._last_chat_agent_id = agent_type
+                            if hasattr(self, 'consciousness') and self.consciousness:
+                                self._last_episode_id = self.consciousness.store_episode(
+                                    query=message, response=response,
+                                    prev_episode_id=self._last_episode_id)
+                            return response
                     break  # Ei löytynyt → anna masterille
 
             # Fallback: Master (Swarm Queen)
@@ -688,6 +845,12 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                     _consciousness_context = self.consciousness.get_context(_ctx_q)
                     if _consciousness_context:
                         _consciousness_context = "\n" + _consciousness_context
+                    # Phase 4: inject corrections context
+                    _corrections_ctx = self.consciousness.check_previous_corrections(message)
+                    if _corrections_ctx:
+                        _consciousness_context += (
+                            "\n\nCORRECTIONS (avoid repeating these mistakes):\n"
+                            + _corrections_ctx)
                 self.master_agent.system_prompt = f"Date: {_dt.now():%Y-%m-%d %H:%M}. " + AGENT_EN_PROMPTS["hivemind"] + _consciousness_context
             try:
                 with self._enriched_prompt(self.master_agent, knowledge_max_chars=2000):
@@ -720,6 +883,18 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                 "message": message, "response": response,
                 "language": self._detected_lang, "translated": self._translation_used
             })
+            # Phase 4: track for correction detection + episode
+            self._last_chat_message = message
+            self._last_chat_response = response
+            self._last_chat_method = (_pre.method
+                                      if self.consciousness else "")
+            self._last_chat_agent_id = "master"
+            if hasattr(self, 'consciousness') and self.consciousness:
+                _quality = _hall.relevance if not _hall.is_suspicious else 0.3
+                self._last_episode_id = self.consciousness.store_episode(
+                    query=message, response=response,
+                    prev_episode_id=self._last_episode_id,
+                    quality=_quality)
             return response
 
     def _swarm_route(self, msg_lower: str, routing_rules: dict) -> tuple:
@@ -831,6 +1006,14 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
         with self._enriched_prompt(agent, inject_date=True,
                                     inject_knowledge=True,
                                     knowledge_max_chars=2000):
+            # Phase 4: Failure Twin — inject agent-specific error warnings
+            if hasattr(self, 'consciousness') and self.consciousness:
+                _ft_warning = self.consciousness.get_agent_error_patterns(
+                    agent_id=getattr(agent, 'id', ''),
+                    query=message)
+                if _ft_warning:
+                    agent.system_prompt = agent.system_prompt + "\n\n" + _ft_warning
+
             try:
                 # Merkitse task alkaneeksi schedulerille
                 if self.scheduler:
@@ -1151,6 +1334,33 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
             "consciousness": (self.consciousness.stats
                               if hasattr(self, 'consciousness')
                               and self.consciousness else {}),
+            "corrections_count": (self.consciousness.memory.corrections.count()
+                                  if hasattr(self, 'consciousness')
+                                  and self.consciousness else 0),
+            "episodes_count": (self.consciousness.memory.episodes.count()
+                               if hasattr(self, 'consciousness')
+                               and self.consciousness else 0),
+            "enrichment": (self.enrichment.stats
+                           if hasattr(self, 'enrichment')
+                           and self.enrichment else {}),
+            "web_learner": (self.web_learner.stats
+                            if hasattr(self, 'web_learner')
+                            and self.web_learner else {}),
+            "distiller": (self.distiller.stats
+                          if hasattr(self, 'distiller')
+                          and self.distiller else {}),
+            "meta_learning": (self.meta_learning.stats
+                              if hasattr(self, 'meta_learning')
+                              and self.meta_learning else {}),
+            "code_reviewer": (self.code_reviewer.stats
+                              if hasattr(self, 'code_reviewer')
+                              and self.code_reviewer else {}),
+            "data_feeds": (self.data_feeds.get_status()
+                           if hasattr(self, 'data_feeds')
+                           and self.data_feeds else {}),
+            "micro_model": (self.micro_model.stats
+                            if hasattr(self, 'micro_model')
+                            and self.micro_model else {}),
         }
 
 
@@ -1174,6 +1384,69 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
             "en_prompts": list(AGENT_EN_PROMPTS.keys()),
             "stats": self.translation_proxy.get_stats() if self.translation_proxy else {},
         }
+
+    # ── Improvement 5: Cache Warming ─────────────────────────
+
+    def _warm_caches(self):
+        """Warm hot cache and micro-model V1 from YAML Q&A pairs at startup."""
+        try:
+            from backend.routes.chat import _YAML_QA
+        except ImportError:
+            log.debug("Cannot import _YAML_QA for cache warming")
+            return
+
+        if not _YAML_QA:
+            return
+
+        # Filter usable pairs (answer > 20 chars)
+        usable = [(q, a, aid) for q, a, aid in _YAML_QA if len(a) > 20]
+        if not usable:
+            return
+
+        # Seasonal boost keywords for current month
+        try:
+            from consciousness import SEASONAL_BOOST
+            month = datetime.now().month
+            seasonal_kws = SEASONAL_BOOST.get(month, [])
+            if isinstance(seasonal_kws, str):
+                seasonal_kws = seasonal_kws.split()
+        except ImportError:
+            seasonal_kws = []
+
+        # 1. Hot Cache warming
+        hot_cache_count = 0
+        if (hasattr(self, 'consciousness') and self.consciousness
+                and self.consciousness.hot_cache):
+            cache = self.consciousness.hot_cache
+            # Prioritize seasonal entries
+            seasonal_pairs = []
+            other_pairs = []
+            for q, a, _aid in usable:
+                text_lower = (q + " " + a).lower()
+                if seasonal_kws and any(kw.lower() in text_lower for kw in seasonal_kws):
+                    seasonal_pairs.append((q, a))
+                else:
+                    other_pairs.append((q, a))
+            # Load seasonal first, then others, up to 300
+            for q, a in (seasonal_pairs + other_pairs)[:300]:
+                cache.put(q, a, score=0.90, source="cache_warming")
+                hot_cache_count += 1
+
+        # 2. Micro-Model V1 warming
+        v1_count = 0
+        if (hasattr(self, 'consciousness') and self.consciousness
+                and self.consciousness.micro_model
+                and hasattr(self.consciousness.micro_model, 'v1')):
+            v1 = self.consciousness.micro_model.v1
+            v1_pairs = [{"pattern": q, "answer": a, "confidence": 0.92}
+                        for q, a, _aid in usable]
+            if v1_pairs:
+                v1.train(v1_pairs)
+                v1_count = v1.stats.get("lookup_count", 0)
+
+        if hot_cache_count > 0 or v1_count > 0:
+            print(f"  ✅ Cache warming: hot_cache={hot_cache_count}, "
+                  f"V1 patterns={v1_count}", flush=True)
 
     # ── Heartbeat ───────────────────────────────────────────
 
@@ -1298,8 +1571,13 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                 if (self._heartbeat_count % _rt_every == 0
                         and self.spawner
                         and self.config.get("round_table", {}).get("enabled", True)):
-                    asyncio.create_task(
-                        _guarded(self._round_table))
+                    _rt_version = self.config.get("round_table", {}).get("version", 1)
+                    if _rt_version >= 2:
+                        asyncio.create_task(
+                            _guarded(self._round_table_v2))
+                    else:
+                        asyncio.create_task(
+                            _guarded(self._round_table))
 
                 # Phase 3: Night mode learning (every other cycle)
                 if (self._night_mode_active
@@ -1766,6 +2044,192 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
             "agent_count": len(discussion),
         })
 
+    # ── Round Table v2 ─────────────────────────────────────
+
+    async def _round_table_v2(self, topic: str = None, agent_count: int = 6):
+        """Round Table v2: blind phase + informed phase + Queen synthesis.
+
+        Phase 0 (Blind): 2 agents answer WITHOUT seeing others — independent views
+        Phase 1 (Informed): 4 agents see both blind responses — react, agree/disagree
+        Phase 2 (Queen): Queen finds disagreements or explains why consensus is strong
+        """
+        if not self.spawner:
+            return
+        _rt_cfg = self.config.get("round_table", {})
+        if not _rt_cfg.get("enabled", True):
+            return
+        agent_count = _rt_cfg.get("agent_count", agent_count)
+        min_agents = _rt_cfg.get("min_agents", 3)
+
+        agents = list(self.spawner.active_agents.values())
+        if len(agents) < min_agents:
+            return
+
+        try:
+            # Generate topic if not given
+            if not topic:
+                all_recent = await self.memory.get_recent_memories(limit=10)
+                insights = [m.get("content", "")[:100] for m in all_recent
+                            if m.get("memory_type") == "insight"]
+                if insights:
+                    _hb = self.llm_heartbeat
+                    _prompt = (f"Recent insights:\n" +
+                               "\n".join(insights[:5]) +
+                               "\n\nSuggest ONE specific discussion topic for a panel "
+                               "of beekeeping experts. One sentence in English.")
+                    async with self.throttle:
+                        _resp = await _hb.generate(_prompt, max_tokens=80)
+                    topic = _resp.content.strip() if _resp and not _resp.error else None
+                if not topic:
+                    topic = "Current best practices for Finnish beekeeping"
+
+            log.info(f"🏛️ Round Table v2 starting: {topic[:80]}")
+            await self._notify_ws("round_table_start", {
+                "topic": topic,
+                "agent_count": agent_count,
+                "version": 2,
+                "time": datetime.now().isoformat(),
+            })
+
+            # Select agents
+            selected = self._select_round_table_agents(agents, topic, agent_count)
+            if len(selected) < 2:
+                return
+
+            # === Phase 0: BLIND — 2 agents answer independently ===
+            blind_agents = selected[:2]
+            blind_responses = []
+            for agent in blind_agents:
+                await self.priority.wait_if_chat()
+                _prompt = (
+                    f"ROUND TABLE DISCUSSION (BLIND PHASE)\nTopic: {topic}\n"
+                    f"You are {agent.name} ({agent.agent_type}). "
+                    f"Share your independent expert perspective. "
+                    f"You have NOT seen other responses. 2 sentences max in English."
+                )
+                _hb = self.llm_heartbeat
+                try:
+                    async with self.throttle:
+                        with self._enriched_prompt(agent, inject_date=True,
+                                                    inject_knowledge=True,
+                                                    knowledge_max_chars=800):
+                            _resp = await _hb.generate(
+                                _prompt, system=agent.system_prompt,
+                                max_tokens=150)
+                    response = _resp.content if _resp and not _resp.error else ""
+                except Exception:
+                    response = ""
+
+                if response and self._is_valid_response(response):
+                    entry = {
+                        "agent": agent.name,
+                        "agent_type": agent.agent_type,
+                        "agent_id": agent.id,
+                        "response": response,
+                        "phase": "blind",
+                    }
+                    blind_responses.append(entry)
+                    if self.agent_levels:
+                        try:
+                            self.agent_levels.record_response(
+                                agent_id=agent.id,
+                                agent_type=agent.agent_type,
+                                was_correct=True,
+                                was_hallucination=False)
+                        except Exception:
+                            pass
+
+            if not blind_responses:
+                return
+
+            # === Phase 1: INFORMED — remaining agents see blind responses ===
+            blind_text = "\n".join(
+                [f"[{d['agent']}]: {d['response']}" for d in blind_responses])
+            informed_agents = selected[2:]
+            informed_responses = []
+            for agent in informed_agents:
+                await self.priority.wait_if_chat()
+                _prompt = (
+                    f"ROUND TABLE DISCUSSION (INFORMED PHASE)\nTopic: {topic}\n\n"
+                    f"Independent expert responses (blind phase):\n{blind_text}\n\n"
+                    f"You are {agent.name} ({agent.agent_type}). "
+                    f"React to the blind responses: agree, disagree, or add "
+                    f"a new perspective. 2 sentences max in English."
+                )
+                _hb = self.llm_heartbeat
+                try:
+                    async with self.throttle:
+                        with self._enriched_prompt(agent, inject_date=True,
+                                                    inject_knowledge=True,
+                                                    knowledge_max_chars=800):
+                            _resp = await _hb.generate(
+                                _prompt, system=agent.system_prompt,
+                                max_tokens=150)
+                    response = _resp.content if _resp and not _resp.error else ""
+                except Exception:
+                    response = ""
+
+                if response and self._is_valid_response(response):
+                    entry = {
+                        "agent": agent.name,
+                        "agent_type": agent.agent_type,
+                        "agent_id": agent.id,
+                        "response": response,
+                        "phase": "informed",
+                    }
+                    informed_responses.append(entry)
+                    if self.agent_levels:
+                        try:
+                            self.agent_levels.record_response(
+                                agent_id=agent.id,
+                                agent_type=agent.agent_type,
+                                was_correct=True,
+                                was_hallucination=False)
+                        except Exception:
+                            pass
+
+            # === Phase 2: Queen synthesis ===
+            all_discussion = blind_responses + informed_responses
+            if not all_discussion:
+                return
+
+            all_responses = "\n".join(
+                [f"[{d['agent']} ({d['phase']})] {d['response']}"
+                 for d in all_discussion])
+            _synth_prompt = (
+                f"ROUND TABLE v2 SYNTHESIS\nTopic: {topic}\n\n"
+                f"Agent responses:\n{all_responses}\n\n"
+                f"Find disagreements between agents. If none exist, explain "
+                f"why the consensus is strong. Identify the most important "
+                f"practical takeaway. 3 sentences in English."
+            )
+            _hb = self.llm_heartbeat
+            async with self.throttle:
+                _resp = await _hb.generate(
+                    _synth_prompt,
+                    system=self.master_agent.system_prompt[:500],
+                    max_tokens=200)
+            synthesis = _resp.content if _resp and not _resp.error else ""
+
+            # Store + stream
+            if synthesis and self._is_valid_response(synthesis):
+                if self.consciousness:
+                    self.consciousness.learn(
+                        synthesis, agent_id="round_table",
+                        source_type="round_table",
+                        confidence=0.85, validated=True,
+                        metadata={"topic": topic[:200], "version": 2})
+
+                await self._theater_stream_round_table(
+                    topic, all_discussion, synthesis)
+                log.info(f"🏛️ Round Table v2 done: "
+                         f"{len(blind_responses)} blind + "
+                         f"{len(informed_responses)} informed, "
+                         f"topic: {topic[:60]}")
+
+        except Exception as e:
+            log.error(f"Round Table v2 error: {e}")
+
     # ── Phase 3: Night Mode ───────────────────────────────
 
     def _check_night_mode(self) -> bool:
@@ -1798,9 +2262,165 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
         base = _nm_cfg.get("interval_s", 10)
         return base + random.uniform(0, 5)
 
+    def _init_learning_engines(self, al_cfg: dict):
+        """Lazy-initialize all learning engines (enrichment + Phase 9 layers)."""
+        # Layer 2: Enrichment engine
+        if (not self.enrichment
+                and al_cfg.get("enrichment_enabled", True)
+                and self.llm_heartbeat and self.llm):
+            try:
+                from core.fast_memory import FactEnrichmentEngine
+                self.enrichment = FactEnrichmentEngine(
+                    self.consciousness, self.llm_heartbeat, self.llm)
+                log.info("✨ FactEnrichmentEngine initialized")
+            except Exception as e:
+                log.warning(f"FactEnrichmentEngine init failed: {e}")
+
+        # Layer 3: Web learning agent
+        if (not self.web_learner
+                and al_cfg.get("web_learning_enabled", True)
+                and self.llm_heartbeat and self.llm):
+            try:
+                from core.web_learner import WebLearningAgent
+                budget = al_cfg.get("web_learning_daily_budget", 50)
+                self.web_learner = WebLearningAgent(
+                    self.consciousness, self.llm_heartbeat, self.llm,
+                    daily_budget=budget)
+                log.info("🌐 WebLearningAgent initialized")
+            except Exception as e:
+                log.warning(f"WebLearningAgent init failed: {e}")
+
+        # Layer 4: Knowledge distiller
+        if (not self.distiller
+                and al_cfg.get("distillation_enabled", False)):
+            try:
+                from core.knowledge_distiller import KnowledgeDistiller
+                self.distiller = KnowledgeDistiller(
+                    self.consciousness,
+                    api_key=al_cfg.get("distillation_api_key", ""),
+                    model=al_cfg.get("distillation_model",
+                                     "claude-haiku-4-5-20251001"),
+                    weekly_budget_eur=al_cfg.get(
+                        "distillation_weekly_budget_eur", 5.0))
+                log.info("🧠 KnowledgeDistiller initialized")
+            except Exception as e:
+                log.warning(f"KnowledgeDistiller init failed: {e}")
+
+        # Layer 5: Meta-learning engine
+        if (not self.meta_learning
+                and al_cfg.get("meta_learning_enabled", True)):
+            try:
+                from core.meta_learning import MetaLearningEngine
+                self.meta_learning = MetaLearningEngine(
+                    self.consciousness,
+                    agent_levels=self.agent_levels,
+                    enrichment=self.enrichment,
+                    web_learner=self.web_learner,
+                    distiller=self.distiller)
+                log.info("📊 MetaLearningEngine initialized")
+            except Exception as e:
+                log.warning(f"MetaLearningEngine init failed: {e}")
+
+        # Layer 6: Code self-review
+        if (not self.code_reviewer
+                and al_cfg.get("code_review_enabled", True)
+                and self.llm):
+            try:
+                from core.code_reviewer import CodeSelfReview
+                self.code_reviewer = CodeSelfReview(
+                    self.consciousness, self.llm,
+                    meta_learning=self.meta_learning)
+                log.info("🔍 CodeSelfReview initialized")
+            except Exception as e:
+                log.warning(f"CodeSelfReview init failed: {e}")
+
+        # Phase 10: Micro-model orchestrator
+        if (not getattr(self, 'micro_model', None)
+                and al_cfg.get("micro_model_enabled", True)):
+            try:
+                from core.training_collector import TrainingDataCollector
+                from core.micro_model import MicroModelOrchestrator
+                self.training_collector = TrainingDataCollector(
+                    self.consciousness)
+                self.micro_model = MicroModelOrchestrator(
+                    self.consciousness, self.training_collector)
+                # Wire into consciousness for router access
+                self.consciousness.micro_model = self.micro_model
+                log.info("🤖 MicroModelOrchestrator initialized")
+            except Exception as e:
+                log.warning(f"MicroModel init failed: {e}")
+
     async def _night_learning_cycle(self):
-        """Night mode: get guided task, process with llama1b, learn result."""
-        if not self.consciousness or not self.consciousness.task_queue:
+        """Night mode: guided task, enrichment, web learning, distillation.
+
+        5-way rotation:
+          %5 == 0,1: guided task
+          %5 == 2: enrichment (Layer 2)
+          %5 == 3: web learning (Layer 3)
+          %5 == 4: distillation (Layer 4, if available) — else guided task
+
+        Plus weekly meta-learning (Layer 5) and monthly code review (Layer 6).
+        """
+        if not self.consciousness:
+            return
+
+        # Lazy init all learning engines
+        _al_cfg = self.config.get("advanced_learning", {})
+        self._init_learning_engines(_al_cfg)
+
+        cycle_mod = self._night_mode_facts_learned % 5
+
+        # ── Layer 2: Enrichment (every 5th cycle, slot 2) ──
+        if cycle_mod == 2 and self.enrichment:
+            try:
+                stored = await self.enrichment.enrichment_cycle(self.throttle)
+                if stored:
+                    self._night_mode_facts_learned += stored
+                    await self._notify_ws("enrichment", {
+                        "facts_stored": stored,
+                        "total_enriched": self.enrichment.stats["validated"],
+                        "facts_learned": self._night_mode_facts_learned,
+                    })
+                return
+            except Exception as e:
+                log.error(f"Enrichment cycle error: {e}")
+
+        # ── Layer 3: Web learning (every 5th cycle, slot 3) ──
+        if cycle_mod == 3 and self.web_learner:
+            try:
+                stored = await self.web_learner.web_learning_cycle(
+                    self.throttle)
+                if stored:
+                    self._night_mode_facts_learned += stored
+                    await self._notify_ws("web_learning", {
+                        "facts_stored": stored,
+                        "total_web": self.web_learner.stats["facts_stored"],
+                        "searches_today": self.web_learner.stats["searches_today"],
+                        "facts_learned": self._night_mode_facts_learned,
+                    })
+                return
+            except Exception as e:
+                log.error(f"Web learning cycle error: {e}")
+
+        # ── Layer 4: Distillation (every 5th cycle, slot 4) ──
+        if cycle_mod == 4 and self.distiller:
+            try:
+                stored = await self.distiller.distillation_cycle(
+                    self.throttle)
+                if stored:
+                    self._night_mode_facts_learned += stored
+                    await self._notify_ws("distillation", {
+                        "facts_stored": stored,
+                        "total_distilled": self.distiller.stats["facts_stored"],
+                        "cost_eur": self.distiller.stats["week_cost_eur"],
+                        "facts_learned": self._night_mode_facts_learned,
+                    })
+                return
+            except Exception as e:
+                log.error(f"Distillation cycle error: {e}")
+
+        # ── Guided task (slots 0, 1, and fallthrough) ──
+        if not self.consciousness.task_queue:
             return
         try:
             task = self.consciousness.task_queue.next_task()
@@ -1831,6 +2451,48 @@ DELEGOINTISÄÄNNÖT (TÄRKEÄ):
                 })
         except Exception as e:
             log.error(f"Night learning error: {e}")
+
+        # ── Layer 5: Weekly meta-learning check ──
+        if self.meta_learning and self.meta_learning.is_due():
+            try:
+                report = await self.meta_learning.weekly_analysis()
+                applied = await self.meta_learning.auto_apply_safe_optimizations(
+                    report.get("suggestions", []))
+                await self._notify_ws("meta_report", {
+                    "suggestions": len(report.get("suggestions", [])),
+                    "optimizations_applied": applied,
+                    "memory_stats": report.get("memory_stats", {}),
+                    "weakest_areas": report.get("weakest_areas", []),
+                })
+            except Exception as e:
+                log.error(f"Meta-learning error: {e}")
+
+        # ── Layer 6: Monthly code review check ──
+        if self.code_reviewer and self.code_reviewer.is_due():
+            try:
+                suggestions = await self.code_reviewer.monthly_code_review(
+                    self.throttle)
+                if suggestions:
+                    await self._notify_ws("code_suggestion", {
+                        "new_suggestions": len(suggestions),
+                        "total_pending": len(
+                            self.code_reviewer.get_pending_suggestions()),
+                    })
+            except Exception as e:
+                log.error(f"Code review error: {e}")
+
+        # ── Phase 10: Micro-model training check (every 50 cycles) ──
+        if (self.micro_model
+                and self.micro_model.is_training_due(
+                    self._night_mode_facts_learned)):
+            try:
+                await self.micro_model.maybe_train(
+                    self._night_mode_facts_learned, self.throttle)
+                await self._notify_ws("micro_training", {
+                    "stats": self.micro_model.stats,
+                })
+            except Exception as e:
+                log.error(f"Micro-model training error: {e}")
 
     def _save_learning_progress(self):
         """Save night mode learning progress to file."""

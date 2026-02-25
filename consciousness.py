@@ -426,8 +426,20 @@ class MemoryStore:
             name="swarm_facts",
             metadata={"hnsw:space": "cosine"}
         )
+        # Phase 4: Corrections — contrastive learning from user corrections
+        self.corrections = self.client.get_or_create_collection(
+            name="corrections",
+            metadata={"hnsw:space": "cosine"}
+        )
+        # Phase 4: Episodes — conversation turn chains
+        self.episodes = self.client.get_or_create_collection(
+            name="episodes",
+            metadata={"hnsw:space": "cosine"}
+        )
         log.info(f"MemoryStore: {self.count} muistoa, "
-                 f"{self.swarm_facts.count()} swarm facts ({path})")
+                 f"{self.swarm_facts.count()} swarm facts, "
+                 f"{self.corrections.count()} corrections, "
+                 f"{self.episodes.count()} episodes ({path})")
 
     def store(self, obs_id, text, embedding, metadata=None):
         self.collection.upsert(
@@ -446,7 +458,7 @@ class MemoryStore:
         )
 
     def search(self, embedding, top_k=5, min_score=0.3,
-               where=None) -> List[MemoryMatch]:
+               where=None, seasonal_boost=None) -> List[MemoryMatch]:
         if self.count == 0:
             return []
         kwargs = {
@@ -476,7 +488,19 @@ class MemoryStore:
                     text_fi=meta.get("text_fi", ""),
                     text_en=meta.get("text_en", doc)
                 ))
-        return sorted(matches, key=lambda m: m.score, reverse=True)
+        matches = sorted(matches, key=lambda m: m.score, reverse=True)
+        # Phase 4: Seasonal scoring boost (1.2x for seasonal keywords)
+        if seasonal_boost and matches:
+            if isinstance(seasonal_boost, list):
+                boost_kws = [kw.lower() for kw in seasonal_boost]
+            else:
+                boost_kws = seasonal_boost.lower().split()
+            for match in matches:
+                text_lower = (match.text or "").lower()
+                if any(kw in text_lower for kw in boost_kws):
+                    match.score = min(match.score * 1.2, 1.0)
+            matches.sort(key=lambda m: m.score, reverse=True)
+        return matches
 
     @property
     def count(self):
@@ -690,12 +714,385 @@ class Consciousness:
             f"muisti={self.memory.count}, math=✅"
         )
 
+        # Phase 4: correction tracking
+        self._corrections_count = 0
+        self._active_learning_count = 0
+
+        # Phase 4: episodic memory
+        self._episode_counter = 0
+        self._current_session_id = f"session_{int(time.time())}"
+
+        # Phase 4: embedding augmentation synonyms (load once)
+        self._domain_synonyms = self._load_domain_synonyms()
+
+        # Phase 4i/4j: Bilingual index + Hot cache
+        try:
+            from core.fast_memory import BilingualMemoryStore, HotCache
+            _al_cfg = self._load_advanced_learning_config()
+            if _al_cfg.get("bilingual_index", True):
+                self.bilingual = BilingualMemoryStore(self.memory, self.embed)
+            else:
+                self.bilingual = None
+            _cache_size = _al_cfg.get("hot_cache_size", 500)
+            self.hot_cache = HotCache(max_size=_cache_size)
+        except Exception as e:
+            log.warning(f"Phase 4i/4j init: {e}")
+            self.bilingual = None
+            self.hot_cache = None
+
+        # Phase 10: Micro-model orchestrator (wired by hivemind)
+        self.micro_model = None
+
         # Phase 3: task queue (must be after class body is fully defined at module level,
         # but LearningTaskQueue is defined below — use lazy init in init_task_queue())
         self.task_queue = None
 
     def set_translation_proxy(self, proxy):
         self.opus.set_proxy(proxy)
+
+    def _load_advanced_learning_config(self) -> dict:
+        """Load advanced_learning config section from settings.yaml."""
+        try:
+            import yaml as _yaml
+            path = Path("configs/settings.yaml")
+            if path.exists():
+                with open(path, encoding="utf-8") as f:
+                    cfg = _yaml.safe_load(f) or {}
+                return cfg.get("advanced_learning", {})
+        except Exception:
+            pass
+        return {}
+
+    # ── Phase 4: Domain Synonyms ──────────────────────────────
+
+    def _load_domain_synonyms(self) -> dict:
+        """Load beekeeping-specific FI→EN synonym mappings for embedding augmentation.
+
+        Returns dict mapping Finnish term → augmented English text.
+        Only domain-specific terms (not common words).
+        """
+        synonyms = {}
+        # Built-in beekeeping domain synonyms
+        _builtin = {
+            "toukkamätä": "Foulbrood | AFB | American Foulbrood | Paenibacillus larvae",
+            "eurooppalainen toukkamätä": "EFB | European Foulbrood | Melissococcus plutonius",
+            "nosema": "Nosema | Nosema ceranae | Nosema apis | microsporidian",
+            "varroa": "Varroa destructor | varroa mite | parasitic mite",
+            "kalkkisikiötauti": "Chalkbrood | Ascosphaera apis | fungal disease",
+            "oksaalihappo": "Oxalic acid | OA treatment | varroa treatment",
+            "muurahaishappo": "Formic acid | MAQS | varroa treatment",
+            "kuningatar": "Queen bee | queen | mated queen | virgin queen",
+            "pesäkatsaus": "Hive inspection | colony inspection",
+            "kevättarkastus": "Spring inspection | spring check",
+            "syysruokinta": "Autumn feeding | fall feeding | sugar syrup",
+            "talvehtiminen": "Wintering | overwintering | winter cluster",
+            "linkous": "Honey extraction | harvesting | uncapping",
+            "parveilu": "Swarming | swarm | swarm prevention",
+            "yhdyskunta": "Colony | bee colony | hive",
+            "siitepöly": "Pollen | bee pollen | pollen collection",
+            "mesikausi": "Nectar flow | honey flow | main flow",
+            "mehiläisvaha": "Beeswax | wax | comb wax",
+        }
+        synonyms.update(_builtin)
+
+        # Load from translation proxy dictionary if available
+        if (self.opus._proxy and hasattr(self.opus._proxy, 'dict_fi_en')
+                and self.opus._proxy.dict_fi_en):
+            # Only add beekeeping-specific terms (> 5 chars, not common words)
+            _common = {"ja", "on", "ei", "tai", "kun", "miten", "mikä", "se",
+                       "tämä", "niin", "kuin", "hän", "minä", "sinä", "he",
+                       "olla", "tulla", "saada", "voida", "pitää", "myös"}
+            for fi_term, en_term in self.opus._proxy.dict_fi_en.items():
+                if (len(fi_term) > 5 and fi_term not in _common
+                        and fi_term not in synonyms):
+                    synonyms[fi_term] = en_term
+
+        # Load extra synonyms from file if present
+        _syn_path = Path("data/domain_synonyms.json")
+        if _syn_path.exists():
+            try:
+                with open(_syn_path, encoding="utf-8") as f:
+                    extra = json.load(f)
+                if isinstance(extra, dict):
+                    synonyms.update(extra)
+            except Exception:
+                pass
+
+        log.info(f"Phase 4: {len(synonyms)} domain synonyms loaded")
+        return synonyms
+
+    # ── Phase 4: Contrastive Learning ─────────────────────────
+
+    def store_correction(self, query, bad_answer, good_answer, agent_id="unknown"):
+        """Store user correction in corrections collection."""
+        text_en = (f"Q: {self._to_english(query)} "
+                   f"BAD: {self._to_english(bad_answer[:300])} "
+                   f"GOOD: {self._to_english(good_answer[:300])}")
+        embedding = self.embed.embed_document(text_en)
+        if not embedding:
+            return False
+        self._corrections_count += 1
+        obs_id = f"correction_{agent_id}_{int(time.time())}_{self._corrections_count:04d}"
+        # Determine error type for failure twin analysis
+        _ba_lower = bad_answer.lower()
+        if len(bad_answer) < 50:
+            _error_type = "too_brief"
+        elif "en tiedä" in _ba_lower or "en osaa" in _ba_lower:
+            _error_type = "knowledge_gap"
+        else:
+            _error_type = "wrong_content"
+        self.memory.corrections.upsert(
+            ids=[obs_id], embeddings=[embedding], documents=[text_en],
+            metadatas=[{
+                "query": query[:200], "bad_answer": bad_answer[:300],
+                "good_answer": good_answer[:300], "agent_id": agent_id,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "error_type": _error_type,
+            }])
+        # Also learn the correct answer with high confidence
+        self.learn(f"Q: {query} → A: {good_answer}", agent_id=agent_id,
+                   source_type="user_correction", confidence=0.9,
+                   validated=True, immediate=True)
+        log.info(f"📝 Correction stored: {query[:60]} → {good_answer[:60]}")
+        return True
+
+    def check_previous_corrections(self, query, top_k=2):
+        """Check if this query has prior corrections — inject warning context."""
+        if self.memory.corrections.count() == 0:
+            return ""
+        q_en = self._to_english(query)
+        q_vec = self.embed.embed_query(q_en)
+        if not q_vec:
+            return ""
+        results = self.memory.corrections.query(
+            query_embeddings=[q_vec], n_results=top_k,
+            include=["metadatas", "distances"])
+        if not results["distances"] or not results["distances"][0]:
+            return ""
+        corrections = []
+        for i, dist in enumerate(results["distances"][0]):
+            score = 1.0 - (dist / 2.0)
+            if score > 0.70:
+                meta = results["metadatas"][0][i]
+                corrections.append(
+                    f"Previously wrong: {meta.get('bad_answer', '')}. "
+                    f"Correct: {meta.get('good_answer', '')}")
+        return "\n".join(corrections)
+
+    def get_agent_error_patterns(self, agent_id: str, query: str, top_k: int = 3) -> str:
+        """Search corrections collection for known mistakes by this specific agent.
+
+        Returns formatted warning string if similar query found, else empty string.
+        """
+        if self.memory.corrections.count() == 0:
+            return ""
+        # Check config
+        try:
+            _cfg = self._load_advanced_learning_config()
+            if not _cfg.get("failure_twin_enabled", True):
+                return ""
+            threshold = _cfg.get("failure_twin_threshold", 0.60)
+        except Exception:
+            threshold = 0.60
+
+        q_en = self._to_english(query)
+        q_vec = self.embed.embed_query(q_en)
+        if not q_vec:
+            return ""
+
+        try:
+            results = self.memory.corrections.query(
+                query_embeddings=[q_vec], n_results=min(top_k * 2, 10),
+                include=["metadatas", "distances"])
+        except Exception:
+            return ""
+
+        if not results["distances"] or not results["distances"][0]:
+            return ""
+
+        warnings = []
+        for i, dist in enumerate(results["distances"][0]):
+            score = 1.0 - (dist / 2.0)
+            if score < threshold:
+                continue
+            meta = results["metadatas"][0][i]
+            if meta.get("agent_id") != agent_id:
+                continue
+            bad = meta.get("bad_answer", "")[:150]
+            good = meta.get("good_answer", "")[:150]
+            warnings.append(f"- Previously gave wrong answer: '{bad}'. Correct was: '{good}'")
+
+        if not warnings:
+            return ""
+
+        return ("FAILURE TWIN WARNING — Avoid repeating these known mistakes:\n"
+                + "\n".join(warnings[:top_k]))
+
+    # ── Phase 4: Active Learning ──────────────────────────────
+
+    def detect_user_teaching(self, message, prev_method=None):
+        """Return True if this message is a teaching response after active_learning."""
+        if prev_method != "active_learning":
+            return False
+        # Short messages ("ei", "joo") are not teaching
+        if len(message.strip()) < 20:
+            return False
+        # Negation patterns — user saying "no" not teaching
+        _neg = {"en tiedä", "en osaa", "ei kiinnosta", "skip", "ohita"}
+        msg_lower = message.lower().strip()
+        if any(neg in msg_lower for neg in _neg):
+            return False
+        return True
+
+    def learn_from_user(self, teaching_text, original_query):
+        """Store user-taught fact with high confidence."""
+        fact = f"Q: {original_query} → A: {teaching_text}"
+        self._active_learning_count += 1
+        return self.learn(fact, agent_id="user", source_type="user_teaching",
+                          confidence=0.9, validated=True, immediate=True)
+
+    # ── Phase 4: Embedding Augmentation ───────────────────────
+
+    def _augment_text_for_embedding(self, text_en, text_fi_original=""):
+        """Append domain synonyms to text for richer embedding vectors."""
+        if not self._domain_synonyms:
+            return text_en
+        text_lower = (text_fi_original or text_en).lower()
+        augmented_terms = []
+        for fi_term, en_synonyms in self._domain_synonyms.items():
+            if fi_term in text_lower:
+                augmented_terms.append(en_synonyms)
+        if augmented_terms:
+            return f"{text_en} | {' | '.join(augmented_terms[:5])}"
+        return text_en
+
+    # ── Phase 4: Multi-hop RAG ────────────────────────────────
+
+    def multi_hop_search(self, query, max_hops=2):
+        """2-hop search: first results → extract entities → second search → merge."""
+        q_en = self._to_english(query)
+        q_vec = self.embed.embed_query(q_en)
+        if not q_vec:
+            return []
+
+        # Get seasonal boost for current month
+        _month = datetime.now().month
+        _seasonal = SEASONAL_BOOST.get(_month, "")
+
+        # Hop 1: standard search
+        hop1 = self.memory.search(q_vec, top_k=3, min_score=0.3,
+                                  seasonal_boost=_seasonal)
+        if not hop1 or hop1[0].score > 0.70:
+            return hop1  # Good enough, no need for hop 2
+
+        # Extract entities from hop 1 results
+        entities = self._extract_entities(hop1)
+        if not entities:
+            return hop1
+
+        # Hop 2: search for each entity
+        hop2_results = []
+        seen_ids = set()
+        for m in hop1:
+            _oid = m.metadata.get("obs_id", "") if m.metadata else ""
+            if _oid:
+                seen_ids.add(_oid)
+
+        for entity in entities[:3]:
+            e_vec = self.embed.embed_query(entity)
+            if not e_vec:
+                continue
+            matches = self.memory.search(e_vec, top_k=2, min_score=0.4,
+                                         seasonal_boost=_seasonal)
+            for m in matches:
+                oid = m.metadata.get("obs_id", "") if m.metadata else ""
+                if oid and oid not in seen_ids:
+                    hop2_results.append(m)
+                    seen_ids.add(oid)
+                elif not oid:
+                    hop2_results.append(m)
+
+        # Merge and rank by score
+        all_results = hop1 + hop2_results
+        all_results.sort(key=lambda m: m.score, reverse=True)
+        return all_results[:5]
+
+    def _extract_entities(self, matches):
+        """Simple entity extraction from memory match text.
+
+        Finds capitalized terms, domain-specific nouns, quoted terms.
+        """
+        entities = []
+        seen = set()
+        for m in matches:
+            text = m.text_en or m.text or ""
+            # Find capitalized multi-word terms (e.g., "Varroa destructor")
+            caps = re.findall(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*', text)
+            for cap in caps:
+                if len(cap) > 3 and cap.lower() not in seen:
+                    entities.append(cap)
+                    seen.add(cap.lower())
+            # Find domain terms in parentheses or after colons
+            parens = re.findall(r'\(([^)]+)\)', text)
+            for p in parens:
+                p = p.strip()
+                if len(p) > 3 and p.lower() not in seen:
+                    entities.append(p)
+                    seen.add(p.lower())
+            # Find terms after ":" or "→"
+            after_colon = re.findall(r'[→:]\s*([A-Za-z][A-Za-z\s]{3,30})', text)
+            for ac in after_colon:
+                ac = ac.strip()
+                if ac.lower() not in seen:
+                    entities.append(ac)
+                    seen.add(ac.lower())
+        return entities[:6]
+
+    # ── Phase 4: Episodic Memory ──────────────────────────────
+
+    def store_episode(self, query, response, session_id=None,
+                      prev_episode_id=None, quality=0.7, resolved=True):
+        """Store conversation turn as episode with chain linking."""
+        sid = session_id or self._current_session_id
+        self._episode_counter += 1
+        ep_id = f"ep_{sid}_{self._episode_counter:06d}"
+        text_en = (f"Q: {self._to_english(query[:200])} "
+                   f"A: {self._to_english(response[:300])}")
+        embedding = self.embed.embed_document(text_en)
+        if not embedding:
+            return None
+        self.memory.episodes.upsert(
+            ids=[ep_id], embeddings=[embedding], documents=[text_en],
+            metadatas=[{
+                "session_id": sid,
+                "prev_episode_id": prev_episode_id or "",
+                "query": query[:200], "response": response[:300],
+                "quality": quality, "resolved": resolved,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }])
+        return ep_id
+
+    def get_episode_chain(self, episode_id, max_depth=10):
+        """Follow prev_episode_id links to retrieve full conversation chain."""
+        chain = []
+        current_id = episode_id
+        for _ in range(max_depth):
+            if not current_id:
+                break
+            try:
+                result = self.memory.episodes.get(
+                    ids=[current_id],
+                    include=["metadatas", "documents"])
+                if not result["ids"]:
+                    break
+                meta = result["metadatas"][0] if result["metadatas"] else {}
+                doc = result["documents"][0] if result["documents"] else ""
+                chain.append({"id": current_id, "text": doc, "metadata": meta})
+                current_id = meta.get("prev_episode_id", "")
+            except Exception:
+                break
+        chain.reverse()  # oldest first
+        return chain
 
     @staticmethod
     def _is_finnish(text):
@@ -726,6 +1123,30 @@ class Consciousness:
         """
         self._total_queries += 1
 
+        # Phase 10: Layer -1 — Micro-Model (0.01-1ms)
+        if hasattr(self, 'micro_model') and self.micro_model:
+            mm_result = self.micro_model.predict(message)
+            if mm_result and mm_result.get("confidence", 0) > 0.85:
+                self._prefilter_hits += 1
+                log.info(f"🤖 MicroModel {mm_result.get('method', 'v1')} "
+                         f"({mm_result['confidence']:.0%}): "
+                         f"{mm_result['answer'][:80]}")
+                return PreFilterResult(
+                    handled=True, answer=mm_result["answer"],
+                    method=f"micro_{mm_result.get('method', 'v1')}",
+                    confidence=mm_result["confidence"])
+
+        # Phase 4j: Layer 0 — Hot Cache (5ms, zero GPU)
+        if self.hot_cache:
+            cache_hit = self.hot_cache.get(message)
+            if cache_hit and cache_hit["score"] > 0.85:
+                self._prefilter_hits += 1
+                log.info(f"🔥 Hot cache ({cache_hit['score']:.0%}): "
+                         f"{cache_hit['answer'][:80]}")
+                return PreFilterResult(
+                    handled=True, answer=cache_hit["answer"],
+                    method="hot_cache", confidence=cache_hit["score"])
+
         # 1. Math — direct answer, no LLM
         if self.math.is_math(message):
             result = self.math.solve(message)
@@ -736,13 +1157,45 @@ class Consciousness:
                     handled=True, answer=result,
                     method="math", confidence=1.0)
 
+        # Phase 4i: Layer 2 — FI-direct ChromaDB (55ms, skip translation)
+        if (self.bilingual and self._is_finnish(message)
+                and self.bilingual.fi_count > 0):
+            _month_fi = datetime.now().month
+            _seasonal_fi = SEASONAL_BOOST.get(_month_fi, "")
+            fi_matches = self.bilingual.search_fi(
+                message, top_k=5, min_score=0.3,
+                seasonal_boost=_seasonal_fi)
+            if fi_matches and fi_matches[0].score > 0.90:
+                best_fi = fi_matches[0]
+                if (best_fi.metadata.get("validated")
+                        and best_fi.metadata.get("confidence", 0) > 0.8):
+                    self._prefilter_hits += 1
+                    answer = best_fi.text_fi or best_fi.text
+                    # Auto-populate hot cache
+                    if self.hot_cache:
+                        self.hot_cache.put(message, answer,
+                                           best_fi.score, source="fi_direct")
+                    log.info(f"🇫🇮 FI-direct ({best_fi.score:.0%}): "
+                             f"{answer[:80]}")
+                    return PreFilterResult(
+                        handled=True, answer=answer,
+                        method="fi_direct", confidence=best_fi.score)
+
         # 2. Memory search (EN embedding + query prefix)
         if self.embed.available and self.memory.count > 0:
             msg_en = self._to_english(message)
             q_vec = self.embed.embed_query(msg_en)
 
             if q_vec:
-                matches = self.memory.search(q_vec, top_k=5, min_score=0.3)
+                # Phase 4: seasonal boost for current month
+                _month = datetime.now().month
+                _seasonal = SEASONAL_BOOST.get(_month, "")
+                matches = self.memory.search(q_vec, top_k=5, min_score=0.3,
+                                             seasonal_boost=_seasonal)
+
+                # Phase 4: inject corrections context if any
+                _corrections_ctx = self.check_previous_corrections(message)
+
                 if matches:
                     best = matches[0]
 
@@ -752,6 +1205,10 @@ class Consciousness:
                             and best.metadata.get("confidence", 0) > 0.8):
                         self._prefilter_hits += 1
                         answer = best.text_fi or best.text
+                        # Phase 4j: auto-populate hot cache
+                        if self.hot_cache:
+                            self.hot_cache.put(message, answer,
+                                               best.score, source="memory_direct")
                         log.info(f"🧠 Muistista suoraan ({best.score:.0%}): {answer[:80]}")
                         return PreFilterResult(
                             handled=True, answer=answer,
@@ -764,6 +1221,8 @@ class Consciousness:
                             en = m.text_en or m.text
                             parts.append(f"[{m.score:.0%}] {en}")
                         context = "KNOWN FACTS (use if relevant):\n" + "\n".join(parts)
+                        if _corrections_ctx:
+                            context += f"\n\nCORRECTIONS (avoid repeating):\n{_corrections_ctx}"
                         log.info(f"🧠 Konteksti llama1b:lle ({best.score:.0%})")
                         return PreFilterResult(
                             handled=False, context=context,
@@ -771,20 +1230,37 @@ class Consciousness:
 
                     # Tier 3: >0.50 → use phi4-mini with full context
                     if best.score > 0.50:
+                        # Phase 4: try multi-hop for better context
+                        multi_results = self.multi_hop_search(message)
+                        if multi_results and multi_results[0].score > best.score:
+                            matches = multi_results
+
                         parts = []
                         for m in matches[:5]:
                             en = m.text_en or m.text
                             parts.append(f"[{m.score:.0%}] {en}")
                         context = "KNOWN FACTS (use if relevant):\n" + "\n".join(parts)
+                        if _corrections_ctx:
+                            context += f"\n\nCORRECTIONS (avoid repeating):\n{_corrections_ctx}"
                         log.info(f"🧠 Konteksti phi4-mini:lle ({best.score:.0%})")
                         return PreFilterResult(
                             handled=False, context=context,
                             method="memory_context", confidence=best.score)
 
-        # Tier 4: no good context — phi4-mini without context
+        # Tier 4: no good context
         # Phase 3: record for guided learning
         if hasattr(self, 'task_queue') and self.task_queue:
             self.task_queue.record_low_confidence_query(message, 0.0)
+
+        # Phase 4: Active Learning — ask user instead of hallucinating
+        if self.memory.count > 100:
+            self._active_learning_count += 1
+            log.info(f"🎓 Active learning: {message[:60]}")
+            return PreFilterResult(
+                handled=True,
+                answer="En ole varma tästä aiheesta. Tiedätkö mikä on vastaus? Voin oppia sinulta!",
+                method="active_learning", confidence=0.0)
+
         return PreFilterResult(handled=False, method="none")
 
     def get_context(self, message, top_k=3):
@@ -897,7 +1373,9 @@ class Consciousness:
         text_en = self._to_english(text)
         combined = f"{text_fi} | {text_en}" if text_en != text_fi else text
 
-        embedding = self.embed.embed_document(text_en)
+        # Phase 4: embedding augmentation — append domain synonyms
+        text_for_embed = self._augment_text_for_embedding(text_en, text_fi)
+        embedding = self.embed.embed_document(text_for_embed)
         if not embedding:
             return False
 
@@ -919,6 +1397,12 @@ class Consciousness:
             meta.update(metadata)
 
         self.memory.store(obs_id, combined, embedding, meta)
+
+        # Phase 4i: store in bilingual FI collection
+        if self.bilingual:
+            self.bilingual.store_bilingual(
+                obs_id, text_fi, text_en, embedding, meta)
+
         log.info(f"📝 Opittu #{self.memory.count}: [{agent_id}] {text[:60]}")
         return True
 
@@ -963,8 +1447,14 @@ class Consciousness:
                 for idx in fi_indices:
                     texts_en[idx] = self.opus.fi_to_en(texts[idx])
 
-        # Batch embed all EN texts
-        embeddings = self.embed.embed_batch(texts_en, mode="document")
+        # Phase 4: embedding augmentation before batch embed
+        texts_for_embed = []
+        for text_fi, text_en in zip(texts, texts_en):
+            augmented = self._augment_text_for_embedding(text_en, text_fi)
+            texts_for_embed.append(augmented)
+
+        # Batch embed all EN texts (augmented)
+        embeddings = self.embed.embed_batch(texts_for_embed, mode="document")
 
         # Dedup + collect survivors for batch insert
         ids_to_store = []
@@ -1008,6 +1498,21 @@ class Consciousness:
         if ids_to_store:
             self.memory.store_batch(ids_to_store, docs_to_store,
                                     embs_to_store, metas_to_store)
+
+            # Phase 4i: batch store in FI collection
+            if self.bilingual:
+                fi_texts = [m.get("text_fi", "") for m in metas_to_store]
+                fi_embeddings = self.embed.embed_batch(fi_texts, mode="document")
+                valid = [(i, e) for i, e in enumerate(fi_embeddings)
+                         if e is not None and fi_texts[i]]
+                if valid:
+                    v_ids = [ids_to_store[i] for i, _ in valid]
+                    v_fi = [fi_texts[i] for i, _ in valid]
+                    v_embs = [e for _, e in valid]
+                    v_metas = [metas_to_store[i] for i, _ in valid]
+                    self.bilingual.store_bilingual_batch(
+                        v_ids, v_fi, v_embs, v_metas)
+
             log.info(f"📝 Batch opittu {stored} faktaa (muisti={self.memory.count})")
 
         return stored
@@ -1054,6 +1559,8 @@ class Consciousness:
         return {
             "memories": self.memory.count,
             "swarm_facts": self.memory.swarm_facts.count(),
+            "corrections": self.memory.corrections.count(),
+            "episodes": self.memory.episodes.count(),
             "embed_available": self.embed.available,
             "eval_embed_available": self.eval_embed.available,
             "embed_latency_ms": f"{self.embed.avg_latency_ms:.1f}",
@@ -1064,6 +1571,14 @@ class Consciousness:
             "hallucinations_caught": self._hallucination_count,
             "insights_stored": self._insight_counter,
             "learn_queue_size": len(self._learn_queue),
+            "active_learning_count": self._active_learning_count,
+            "domain_synonyms": len(self._domain_synonyms),
+            "hot_cache": self.hot_cache.stats if self.hot_cache else {},
+            "bilingual_fi_count": (self.bilingual.fi_count
+                                   if self.bilingual else 0),
+            "micro_model": (self.micro_model.stats
+                            if hasattr(self, 'micro_model')
+                            and self.micro_model else {}),
         }
 
 

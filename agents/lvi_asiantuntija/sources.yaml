@@ -1,0 +1,8 @@
+sources:
+- id: src:LVI1
+  org: Paikallinen huolto-ohjeistus (täydennettävä)
+  title: Mökin LVI-talvikunnostus (checklist + hälytyslogiikka)
+  year: 2026
+  url: N/A
+  what_it_supports: Prosessilista talvikuntoon laittoon; raja-arvot jätetään UNKNOWN
+    kunnes data/ohjeet vahvistetaan.

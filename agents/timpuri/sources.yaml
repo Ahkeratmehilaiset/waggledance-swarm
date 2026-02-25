@@ -1,0 +1,19 @@
+sources:
+- id: src:TI1
+  org: RIL/RT
+  title: Puurakenteiden ohjeistot
+  year: 2024
+  url: https://www.ril.fi/
+  supports: Puun kosteus, tuuletus, kunnossapito.
+- id: src:TI2
+  org: RIL
+  title: RIL 201-1-2017 Rakenteiden kuormat
+  year: 2017
+  url: https://www.ril.fi/
+  supports: Lumikuormat.
+- id: src:TI3
+  org: Oikeusministeriö
+  title: Rakentamislaki 751/2023
+  year: 2023
+  url: https://finlex.fi/fi/laki/ajantasa/2023/20230751
+  supports: Kunnossapito.

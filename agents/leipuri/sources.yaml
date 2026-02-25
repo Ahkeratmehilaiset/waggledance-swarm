@@ -1,0 +1,13 @@
+sources:
+- id: src:LE1
+  org: Marttaliitto
+  title: Leipäohjeistot
+  year: 2025
+  url: https://www.martat.fi/
+  supports: Reseptit, lämpötilat, hapanjuuri.
+- id: src:LE2
+  org: Ruokavirasto
+  title: Kotitalouden myynti
+  year: 2025
+  url: https://www.ruokavirasto.fi/
+  supports: Elintarvikemyynti.

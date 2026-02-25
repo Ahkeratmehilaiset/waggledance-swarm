@@ -1,0 +1,236 @@
+﻿header:
+  agent_id: limnologi
+  agent_name: Limnologi (JÃ¤rvitutkija)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- HuhdasjÃ¤rvi, Kouvola â€” pieni metsÃ¤jÃ¤rvi
+- 'KÃ¤yttÃ¶: uinti, kalastus, veneily, veden laatu'
+DECISION_METRICS_AND_THRESHOLDS:
+  water_temp_swimming_min_c:
+    value: 15
+    action: <15Â°C â†’ hypotermia-varoitus
+    source: src:LIM1
+  secchi_depth_m:
+    value: Normaali 2-4 m
+    action: <1.5 m â†’ levÃ¤kukinta-epÃ¤ily
+    source: src:LIM1
+  cyanobacteria_visual:
+    value: VihreÃ¤ maalivana pinnalla
+    action: UINTIKIELTO, ilmoita rantavahdille, nÃ¤yte SYKE:lle
+    source: src:LIM2
+  ph_range:
+    value: Normaali humusjÃ¤rvi 5.5-7.0
+    action: <5.0 â†’ happamoituminen, >8.5 â†’ levÃ¤kukinta
+    source: src:LIM1
+  oxygen_mg_per_l:
+    value: '>6 mg/l normaali'
+    action: <4 mg/l â†’ kalakuolemaviski, <2 mg/l â†’ anoxia
+    source: src:LIM1
+  phosphorus_ug_per_l:
+    value: <15 karu, 15-25 lievÃ¤sti rehevÃ¤, >50 rehevÃ¤
+    source: src:LIM1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] JÃ¤iden lÃ¤hdÃ¶n jÃ¤lkeen kevÃ¤ttÃ¤yskierto. VesinÃ¤yte touko-kesÃ¤kuussa.'
+  source: src:LIM1
+- season: KesÃ¤
+  action: '[vko 22-35] LevÃ¤kukintaseuranta viikoittain. Termokliini. SinilevÃ¤varoitukset.'
+  source: src:LIM2
+- season: Syksy
+  action: '[vko 36-48] SyystÃ¤yskierto. VesinÃ¤yte syyskuussa.'
+  source: src:LIM1
+- season: Talvi
+  action: '[vko 49-13] JÃ¤Ã¤n alla happi kuluu. TalvinÃ¤yte helmikuussa. Lumi estÃ¤Ã¤ valoa
+    â†’ happi laskee.'
+  source: src:LIM1
+FAILURE_MODES:
+- mode: SinilevÃ¤havainto
+  detection: VihreÃ¤ maalivana, haju
+  action: UINTIKIELTO, nÃ¤yte SYKE:lle, ilmoita kunnan ympÃ¤ristÃ¶viranomaiselle
+  source: src:LIM2
+- mode: Kalakuolema
+  detection: Kuolleita kaloja pinnalla/rannalla
+  action: Ilmoita ELY-keskukselle, vesinÃ¤yte (happi+lÃ¤mpÃ¶), dokumentoi
+  source: src:LIM1
+PROCESS_FLOWS:
+- flow_id: FLOW_LIMN_01
+  trigger: water_temp_swimming_min_c ylittÃ¤Ã¤ kynnysarvon (15)
+  action: <15Â°C â†’ hypotermia-varoitus
+  output: Tilanneraportti
+  source: src:LIMN
+- flow_id: FLOW_LIMN_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] JÃ¤iden lÃ¤hdÃ¶n jÃ¤lkeen kevÃ¤ttÃ¤yskierto. VesinÃ¤yte touko-kesÃ¤kuussa.'
+  output: Tarkistuslista
+  source: src:LIMN
+- flow_id: FLOW_LIMN_03
+  trigger: 'Havaittu: SinilevÃ¤havainto'
+  action: UINTIKIELTO, nÃ¤yte SYKE:lle, ilmoita kunnan ympÃ¤ristÃ¶viranomaiselle
+  output: Poikkeamaraportti
+  source: src:LIMN
+- flow_id: FLOW_LIMN_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'limnologi: rutiiniarviointi'
+  output: Status-raportti
+  source: src:LIMN
+KNOWLEDGE_TABLES:
+  lake_status:
+  - indicator: Secchi
+    good: '>3 m'
+    poor: <1.5 m
+  - indicator: Kok.fosfori
+    good: <15 Î¼g/l
+    poor: '>40 Î¼g/l'
+  - indicator: Happi (pohja)
+    good: '>6 mg/l'
+    poor: <2 mg/l
+  - indicator: Klorofylli-a
+    good: <4 Î¼g/l
+    poor: '>20 Î¼g/l'
+COMPLIANCE_AND_LEGAL:
+  water_quality: 'YmpÃ¤ristÃ¶nsuojelulaki 527/2014: pilaamiskielto [src:LIM3]'
+  bathing_water: SinilevÃ¤ â†’ uintikielto uimavesidirektiivin mukaisesti [src:LIM2]
+UNCERTAINTY_NOTES:
+- Pienen metsÃ¤jÃ¤rven tila voi vaihdella nopeasti sÃ¤Ã¤n mukaan.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LIM1
+    org: SYKE
+    title: Pintavesien tila
+    year: 2024
+    url: https://www.syke.fi/
+    supports: Vedenlaatu, indikaattorit.
+  - id: src:LIM2
+    org: THL/SYKE
+    title: SinilevÃ¤opas
+    year: 2025
+    url: https://www.jarviwiki.fi/
+    supports: SinilevÃ¤tunnistus.
+  - id: src:LIM3
+    org: OikeusministeriÃ¶
+    title: YmpÃ¤ristÃ¶nsuojelulaki 527/2014
+    year: 2014
+    url: https://finlex.fi/fi/laki/ajantasa/2014/20140527
+    supports: Pilaamiskielto.
+eval_questions:
+- q: MikÃ¤ on mukava uintilÃ¤mpÃ¶tila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_temp_swimming_min_c
+  source: src:LIM1
+- q: Miten sinilevÃ¤kukinta tunnistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cyanobacteria_visual.value
+  source: src:LIM2
+- q: Kenelle kalakuolema ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LIM1
+- q: MikÃ¤ on karun jÃ¤rven fosforiraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.phosphorus_ug_per_l.value
+  source: src:LIM1
+- q: MikÃ¤ on anoxian happiraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oxygen_mg_per_l.action
+  source: src:LIM1
+- q: Kenelle sinilevÃ¤varoitus annetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LIM2
+- q: Milloin talvinÃ¤yte otetaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LIM1
+- q: MikÃ¤ on kevÃ¤ttÃ¤yskierron merkitys?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LIM1
+- q: Miten lumi vaikuttaa talvella happeen?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LIM1
+- q: MikÃ¤ on Secchi-syvyyden hyvÃ¤ arvo?
+  a_ref: KNOWLEDGE_TABLES.lake_status[0].good
+  source: src:LIM1
+- q: MikÃ¤ on uintiveden minimilÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_temp_swimming_min_c
+  source: src:LIM1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun uintiveden minimilÃ¤mpÃ¶tila (Â°C) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_temp_swimming_min_c.action
+  source: src:LIM1
+- q: MikÃ¤ on Secchi-syvyys (m)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.secchi_depth_m
+  source: src:LIM1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun Secchi-syvyys (m) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.secchi_depth_m.action
+  source: src:LIM1
+- q: MikÃ¤ on cyanobacteria visual?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cyanobacteria_visual
+  source: src:LIM1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun cyanobacteria visual ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cyanobacteria_visual.action
+  source: src:LIM1
+- q: MikÃ¤ on pH-alue?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ph_range
+  source: src:LIM1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun pH-alue ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ph_range.action
+  source: src:LIM1
+- q: MikÃ¤ on oxygen mg per l?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oxygen_mg_per_l
+  source: src:LIM1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun oxygen mg per l ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oxygen_mg_per_l.action
+  source: src:LIM1
+- q: MikÃ¤ on phosphorus ug per l?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.phosphorus_ug_per_l
+  source: src:LIM1
+- q: MitÃ¤ kevÃ¤t huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LIM1
+- q: MitÃ¤ kesÃ¤ huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LIM1
+- q: MitÃ¤ syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LIM1
+- q: MitÃ¤ talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LIM1
+- q: Miten 'SinilevÃ¤havainto' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:LIM1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'SinilevÃ¤havainto'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LIM1
+- q: Miten 'Kalakuolema' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LIM1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Kalakuolema'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LIM1
+- q: MikÃ¤ on water quality -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.water_quality
+  source: src:LIM1
+- q: MikÃ¤ on bathing water -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.bathing_water
+  source: src:LIM1
+- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LIM1
+- q: MitkÃ¤ ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1

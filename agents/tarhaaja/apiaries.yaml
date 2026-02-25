@@ -1,0 +1,56 @@
+﻿# JKH Service / Jani Korpi â€” PesÃ¤rekisteri 2024
+# Evira tilatunnus: 18533284
+# KoordinaattijÃ¤rjestelmÃ¤: ETRS-TM35FIN
+evira_tilatunnus: "18533284"
+yritys: "JKH Service"
+omistaja: "Jani Korpi"
+vuosi: 2024
+yhteensa:
+  yhdyskunnat: 202
+  tarhapaikat: 35
+  rodut:
+    italMeh: 22
+    grnMeh: 13
+alueet:
+  tuusula: { pesÃ¤t: 36, tarhapaikat: 2 }
+  helsinki: { pesÃ¤t: 20, tarhapaikat: 2 }
+  vantaa: { pesÃ¤t: 16, tarhapaikat: 1 }
+  espoo: { pesÃ¤t: 66, tarhapaikat: 10 }
+  polvijarvi: { pesÃ¤t: 3, tarhapaikat: 1 }
+  kouvola: { pesÃ¤t: 61, tarhapaikat: 19 }
+tarhat:
+  - {tunnus: FI000014370043, kunta: Tuusula, nimi: KiilinmÃ¤kiMÃ¤ki, pesÃ¤t: 11, rotu: italMeh, E: 386501, N: 6692581}
+  - {tunnus: FI000014370144, kunta: Tuusula, nimi: KiilinmÃ¤kiPelto, pesÃ¤t: 25, rotu: italMeh, E: 386889, N: 6692618}
+  - {tunnus: FI000012046588, kunta: Helsinki, nimi: MalminK, pesÃ¤t: 15, rotu: italMeh, E: 381995, N: 6681300}
+  - {tunnus: FI000017025520, kunta: Helsinki, nimi: "MalminK skeittipuisto", pesÃ¤t: 5, rotu: grnMeh, E: 381481, N: 6680084}
+  - {tunnus: FI000018652086, kunta: Helsinki, nimi: "ITIS katto", pesÃ¤t: 0, rotu: grnMeh, E: 393711, N: 6676473, huom: "Ei pesÃ¤llisenÃ¤ 2024"}
+  - {tunnus: FI000017025419, kunta: Vantaa, nimi: VehkolanmÃ¤ki, pesÃ¤t: 16, rotu: grnMeh, E: 379733, N: 6685433}
+  - {tunnus: FI000013521594, kunta: Espoo, nimi: NuuksioSaari, pesÃ¤t: 0, rotu: grnMeh, E: 364808, N: 6684435, huom: "Ei pesÃ¤llisenÃ¤ 2024"}
+  - {tunnus: FI000014370245, kunta: Espoo, nimi: NuuksioVM, pesÃ¤t: 5, rotu: italMeh, E: 364961, N: 6684485}
+  - {tunnus: FI000014414503, kunta: Espoo, nimi: NuuksioPiha, pesÃ¤t: 6, rotu: italMeh, E: 365020, N: 6684452}
+  - {tunnus: FI000014414402, kunta: Espoo, nimi: NuuksioKallio, pesÃ¤t: 6, rotu: italMeh, E: 365097, N: 6684296}
+  - {tunnus: FI000014370346, kunta: Espoo, nimi: NuuksiokÃ¤Ã¤ntÃ¶paikka, pesÃ¤t: 8, rotu: italMeh, E: 364979, N: 6684538}
+  - {tunnus: FI000014370447, kunta: Espoo, nimi: IhamuotilaMetsÃ¤, pesÃ¤t: 12, rotu: italMeh, E: 365713, N: 6682188}
+  - {tunnus: FI000014370548, kunta: Espoo, nimi: IhamuotilaKallio, pesÃ¤t: 14, rotu: italMeh, E: 365319, N: 6682124}
+  - {tunnus: FI000018652187, kunta: Espoo, nimi: "Hista mummonmÃ¶kki", pesÃ¤t: 3, rotu: grnMeh, E: 365007, N: 6682050}
+  - {tunnus: FI000014369841, kunta: Espoo, nimi: GittaPiha, pesÃ¤t: 3, rotu: italMeh, E: 365851, N: 6681244}
+  - {tunnus: FI000018652288, kunta: Espoo, nimi: "Luukintie28 mÃ¤ki", pesÃ¤t: 6, rotu: grnMeh, E: 371943, N: 6687498}
+  - {tunnus: FI000018651985, kunta: Espoo, nimi: "NorrkullanmÃ¤ki 4", pesÃ¤t: 3, rotu: grnMeh, E: 371356, N: 6685180}
+  - {tunnus: FI000014415109, kunta: PolvijÃ¤rvi, nimi: Oriniemi, pesÃ¤t: 3, rotu: italMeh, E: 632307, N: 6979265}
+  - {tunnus: FI000014367215, kunta: Kouvola, nimi: Jaala_kesÃ¤mÃ¶kki, pesÃ¤t: 5, rotu: italMeh, E: 477622, N: 6786336}
+  - {tunnus: FI000014367316, kunta: Kouvola, nimi: Jaala_KarhuniementienpÃ¤Ã¤, pesÃ¤t: 5, rotu: italMeh, E: 476034, N: 6788283}
+  - {tunnus: FI000014367417, kunta: Kouvola, nimi: Jaala_mattinokkanen_tienlaita, pesÃ¤t: 0, rotu: grnMeh, E: 447638, N: 6788389, huom: "Ei pesÃ¤llisenÃ¤ 2024"}
+  - {tunnus: FI000014367619, kunta: Kouvola, nimi: Jaala_mattinokkanen_mÃ¤enlaki, pesÃ¤t: 5, rotu: grnMeh, E: 478552, N: 6788668}
+  - {tunnus: FI000014367720, kunta: Kouvola, nimi: Jaala_mattinokkanen_hakkuuaukio, pesÃ¤t: 0, rotu: grnMeh, E: 478058, N: 6787787, huom: "Ei pesÃ¤llisenÃ¤ 2024"}
+  - {tunnus: FI000014368023, kunta: Kouvola, nimi: Jaala_tapaniarvilanmÃ¤ki_laki, pesÃ¤t: 0, rotu: italMeh, E: 479271, N: 6784096, huom: "Ei pesÃ¤llisenÃ¤ 2024"}
+  - {tunnus: FI000014368124, kunta: Kouvola, nimi: Jaala_tapaniarvilanmÃ¤ki_rinne, pesÃ¤t: 8, rotu: italMeh, E: 479357, N: 6783838}
+  - {tunnus: FI000014368326, kunta: Kouvola, nimi: Jaala_tapaniarvilanmÃ¤ki_notko, pesÃ¤t: 0, rotu: italMeh, E: 479243, N: 6783646, huom: "Ei pesÃ¤llisenÃ¤ 2024"}
+  - {tunnus: FI000014368528, kunta: Kouvola, nimi: Jaala_tuomashoikkala_mÃ¤enlaki, pesÃ¤t: 5, rotu: italMeh, E: 478427, N: 6784936}
+  - {tunnus: FI000014368629, kunta: Kouvola, nimi: Jaala_tuomashoikkala_mÃ¤enlaki2, pesÃ¤t: 5, rotu: grnMeh, E: 477949, N: 6785160}
+  - {tunnus: FI000014368730, kunta: Kouvola, nimi: Jaala_tuomashoikkala_notko, pesÃ¤t: 4, rotu: italMeh, E: 477169, N: 6785438}
+  - {tunnus: FI000014368831, kunta: Kouvola, nimi: Jaala_pasilevikari_metsÃ¤saareke, pesÃ¤t: 5, rotu: grnMeh, E: 481461, N: 6780693}
+  - {tunnus: FI000014368932, kunta: Kouvola, nimi: Jaala_pasilevikari_tienvarsi, pesÃ¤t: 8, rotu: grnMeh, E: 481091, N: 6780966}
+  - {tunnus: FI000014369033, kunta: Kouvola, nimi: Jaala_pasilevikari_tienpÃ¤Ã¤, pesÃ¤t: 1, rotu: grnMeh, E: 480506, N: 6781161}
+  - {tunnus: FI000014369538, kunta: Kouvola, nimi: Jaala_harrisuikkanen_peltorinne, pesÃ¤t: 0, rotu: grnMeh, E: 479314, N: 6782419, huom: "Ei pesÃ¤llisenÃ¤ 2024"}
+  - {tunnus: FI000014369639, kunta: Kouvola, nimi: Jaala_harrisuikkanen_joenvarsi, pesÃ¤t: 5, rotu: grnMeh, E: 479187, N: 6782397}
+  - {tunnus: FI000014369740, kunta: Kouvola, nimi: Jaala_harrisuikkanen_pellonpÃ¤Ã¤ty, pesÃ¤t: 5, rotu: grnMeh, E: 479083, N: 6782346}

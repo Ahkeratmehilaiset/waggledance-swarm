@@ -1,0 +1,25 @@
+sources:
+- id: src:HOR1
+  org: Luonnonvarakeskus (Luke)
+  title: Puutarhan hoito-ohjeet
+  year: 2024
+  url: https://www.luke.fi/fi/tietoa-luonnonvaroista/puutarha
+  supports: Maaperä, lannoitus, kastelu, tuholaistorjunta.
+- id: src:HOR2
+  org: Ilmatieteen laitos
+  title: Kasvukauden olosuhteet
+  year: 2024
+  url: https://www.ilmatieteenlaitos.fi/kasvukauden-olosuhteet
+  supports: Hallavapaat päivät, kasvuvyöhykkeet.
+- id: src:HOR3
+  org: LuontoPortti
+  title: Kasvit — kukinta-ajat
+  year: 2024
+  url: https://luontoportti.com/
+  supports: Kasvien kukinta-ajat ja mesiarvot.
+- id: src:HOR4
+  org: Oikeusministeriö
+  title: Vieraslajilaki 1709/2015
+  year: 2015
+  url: https://www.finlex.fi/fi/laki/ajantasa/2015/20151709
+  supports: Vieraslajien torjuntavelvollisuus, kasvinsuojeluainelaki.

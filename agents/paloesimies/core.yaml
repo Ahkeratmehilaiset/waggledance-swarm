@@ -1,0 +1,230 @@
+header:
+  agent_id: paloesimies
+  agent_name: Paloesimies (häkä, palovaroittimet, lämpöanomaliat)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan kiinteistöjen paloturvallisuus
+- IoT-lämpökamerat ja häkäanturit mahdollisia
+DECISION_METRICS_AND_THRESHOLDS:
+  smoke_detector_test_months:
+    value: 1
+    action: Testaa kuukausittain painikkeesta
+    source: src:PA1
+  smoke_detector_replace_years:
+    value: 10
+    action: Vaihda 10v välein
+    source: src:PA1
+  co_alarm_ppm:
+    value: 50 ppm → hälytin soi
+    action: '>100 ppm → evakuoi, soita 112'
+    source: src:PA1
+  thermal_anomaly_c:
+    value: Pintalämpö >60°C sähkökeskuksessa/johdossa
+    action: 'HÄLYTYS: kytke sähkö pois, kutsu sähköasentaja'
+    source: src:PA1
+  extinguisher_distance_m:
+    value: 15
+    action: Max 15 m etäisyys jokaisesta pisteestä
+    source: src:PA1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Palovaroittimien testaus. Sammuttimien tarkistus. Grillikausi.'
+  source: src:PA1
+- season: Kesä
+  action: '[vko 22-35] Maastopalovaara (kuiva jakso). Grillaus-turvallisuus. Kulotuskielto.'
+  source: src:PA1
+- season: Syksy
+  action: Lämmityskausi → tulisijat ja hormit. Palovaroitinpäivä 1.12.
+  source: src:PA1
+- season: Talvi
+  action: '[vko 49-13] Häkävaara puulämmityksessä. Kynttilät. Sähkölaitteiden ylikuumeneminen.'
+  source: src:PA1
+FAILURE_MODES:
+- mode: Palovaroitin ei toimi
+  detection: Testipainike ei anna ääntä
+  action: Vaihda paristo HETI, testaa. Ei toimi → vaihda varoitin.
+  source: src:PA1
+- mode: Häkähälytys
+  detection: CO-hälytin soi
+  action: Ikkunat auki, tulisija kiinni, ulos, 112 jos oireita
+  source: src:PA1
+PROCESS_FLOWS:
+- flow_id: FLOW_PALO_01
+  trigger: smoke_detector_test_months ylittää kynnysarvon (1)
+  action: Testaa kuukausittain painikkeesta
+  output: Tilanneraportti
+  source: src:PALO
+- flow_id: FLOW_PALO_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Palovaroittimien testaus. Sammuttimien tarkistus. Grillikausi.'
+  output: Tarkistuslista
+  source: src:PALO
+- flow_id: FLOW_PALO_03
+  trigger: 'Havaittu: Palovaroitin ei toimi'
+  action: Vaihda paristo HETI, testaa. Ei toimi → vaihda varoitin.
+  output: Poikkeamaraportti
+  source: src:PALO
+- flow_id: FLOW_PALO_04
+  trigger: Säännöllinen heartbeat
+  action: 'paloesimies: rutiiniarviointi'
+  output: Status-raportti
+  source: src:PALO
+KNOWLEDGE_TABLES:
+- table_id: TBL_PALO_01
+  title: Paloesimies (häkä, palovaroittimet, lämpöanomaliat) — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: smoke_detector_test_months
+    value: '1'
+    action: Testaa kuukausittain painikkeesta
+  - metric: smoke_detector_replace_years
+    value: '10'
+    action: Vaihda 10v välein
+  - metric: co_alarm_ppm
+    value: 50 ppm → hälytin soi
+    action: '>100 ppm → evakuoi, soita 112'
+  - metric: thermal_anomaly_c
+    value: Pintalämpö >60°C sähkökeskuksessa/johdossa
+    action: 'HÄLYTYS: kytke sähkö pois, kutsu sähköasentaja'
+  - metric: extinguisher_distance_m
+    value: '15'
+    action: Max 15 m etäisyys jokaisesta pisteestä
+  source: src:PALO
+COMPLIANCE_AND_LEGAL:
+  palovaroitin: 'Pelastuslaki 379/2011: pakollinen [src:PA1]'
+  sammutin: Kiinteistön omistajan velvollisuus [src:PA1]
+UNCERTAINTY_NOTES:
+- IoT-lämpökameroiden tarkkuus ±2°C — ei korvaa ammattilaisen arviota.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PA1
+    org: Pelastuslaitos
+    title: Paloturvallisuus
+    year: 2025
+    url: https://www.pelastustoimi.fi/
+    supports: Palovaroittimet, häkä, sammuttimet.
+eval_questions:
+- q: Mikä on palovaroittimen testausväli (kk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_detector_test_months
+  source: src:PA1
+- q: 'Toimenpide: palovaroittimen testausvÃ¤li (kk)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_detector_test_months.action
+  source: src:PA1
+- q: Mikä on palovaroittimen vaihtoväli (v)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_detector_replace_years
+  source: src:PA1
+- q: 'Toimenpide: palovaroittimen vaihtovÃ¤li (v)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_detector_replace_years.action
+  source: src:PA1
+- q: Mikä on häkähälyttimen raja (ppm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co_alarm_ppm
+  source: src:PA1
+- q: 'Toimenpide: hÃ¤kÃ¤hÃ¤lyttimen raja (ppm)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co_alarm_ppm.action
+  source: src:PA1
+- q: Mikä on lämpöanomalia (°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.thermal_anomaly_c
+  source: src:PA1
+- q: 'Toimenpide: lÃ¤mpÃ¶anomalia (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.thermal_anomaly_c.action
+  source: src:PA1
+- q: Mikä on sammuttimen enimmäisetäisyys (m)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.extinguisher_distance_m
+  source: src:PA1
+- q: 'Toimenpide: sammuttimen enimmÃ¤isetÃ¤isyys (m)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.extinguisher_distance_m.action
+  source: src:PA1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PA1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PA1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PA1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PA1
+- q: 'Havainto: Palovaroitin ei toimi?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PA1
+- q: 'Toiminta: Palovaroitin ei toimi?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:PA1
+- q: 'Havainto: Häkähälytys?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:PA1
+- q: 'Toiminta: Häkähälytys?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:PA1
+- q: 'Sääntö: palovaroitin?'
+  a_ref: COMPLIANCE_AND_LEGAL.palovaroitin
+  source: src:PA1
+- q: 'Sääntö: sammutin?'
+  a_ref: COMPLIANCE_AND_LEGAL.sammutin
+  source: src:PA1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PA1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #12?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #13?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #14?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #15?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #16?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #17?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1
+- q: 'Kytkentä muihin agentteihin #18?'
+  a_ref: ASSUMPTIONS
+  source: src:PA1

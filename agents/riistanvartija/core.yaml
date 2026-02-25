@@ -1,0 +1,257 @@
+header:
+  agent_id: riistanvartija
+  agent_name: Riistanvartija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenranta, Kouvola — riistanhoitoyhdistys Kouvolan alue
+- Hirvieläinten, karhujen ja pienpetojen seuranta
+- Ei aktiivista metsästystä agentin toimesta — seuranta ja hälytys
+DECISION_METRICS_AND_THRESHOLDS:
+  bear_proximity_alert_m:
+    value: 200
+    action: <200 m pesistä → P1 hälytys. Meluesteet päälle. Ei ruokajätettä ulkona.
+      Sähköaidan jännite varmistettu ≥4 kV.
+    source: src:RII1
+  moose_collision_risk:
+    value: Hirvi tien lähellä pimeällä → ilmoita logistikko-agentille
+    source: src:RII2
+    action: Hirvi tien lähellä <50 m → ilmoita logistikolle. Huhti-touko (vasominen)
+      ja loka-marras (kiima) = huippuriski.
+  wolf_territory_check:
+    value: Susi-ilmoitus <5 km säteellä → seuranta-mode
+    source: src:RII1
+    action: Susi <5 km → seurantataso 2. <2 km → ilmoita core_dispatcherille. <500
+      m → P1. Susi EU liite IV, tappaminen vain poikkeusluvalla.
+  hunting_season_dates:
+    value: 'Hirvi: 10.10–31.12 (jahtilupa-alue), Karhu: 20.8–31.10 (kiintiö), Jänis:
+      1.9–28.2'
+    source: src:RII3
+  game_camera_battery_v:
+    value: 6.0
+    action: Alle 6V → vaihda akku, ilmoita laitehuoltajalle
+    source: src:RII1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Karhut heräävät talviunilta (maalis-huhti), erityisvarovaisuus.
+    Hirvet vasovat touko-kesäkuussa.'
+  source: src:RII1
+- season: Kesä
+  action: '[vko 22-35] Karhujen aktiivinen ruokailukaika, kaatopaikkavaroitus. Villisian
+    mahdolliset havainnot.'
+  source: src:RII1
+- season: Syksy
+  action: '[vko 36-48] Hirvenmetsästyskausi alkaa. Lisää varovaisuutta liikkuessa
+    metsässä. Karhun kiintiöpyynti.'
+  source: src:RII3
+- season: Talvi
+  action: '[vko 49-13] Susilauma-seuranta, jälkiseuranta lumella. Riistakameroiden
+    akkujen kylmäkestävyys.'
+  source: src:RII1
+FAILURE_MODES:
+- mode: Karhu pesien lähellä
+  detection: Kamera- tai silmähavainto <200m
+  action: HÄLYTYS P1, meluesteet, varmista ettei ruokajätettä ulkona
+  source: src:RII1
+- mode: Riistakamera offline
+  detection: Ei kuvia >24h
+  action: Tarkista akku ja SIM, ilmoita laitehuoltajalle
+  source: src:RII1
+PROCESS_FLOWS:
+- flow_id: FLOW_RIIS_01
+  trigger: bear_proximity_alert_m ylittää kynnysarvon (200)
+  action: <200 m pesistä → P1 hälytys. Meluesteet päälle. Ei ruokajätettä ulkona.
+    Sähköaidan jännite varmistettu ≥4 kV.
+  output: Tilanneraportti
+  source: src:RIIS
+- flow_id: FLOW_RIIS_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Karhut heräävät talviunilta (maalis-huhti), erityisvarovaisuus.
+    Hirvet vasovat touko-kes'
+  output: Tarkistuslista
+  source: src:RIIS
+- flow_id: FLOW_RIIS_03
+  trigger: 'Havaittu: Karhu pesien lähellä'
+  action: HÄLYTYS P1, meluesteet, varmista ettei ruokajätettä ulkona
+  output: Poikkeamaraportti
+  source: src:RIIS
+- flow_id: FLOW_RIIS_04
+  trigger: Säännöllinen heartbeat
+  action: 'riistanvartija: rutiiniarviointi'
+  output: Status-raportti
+  source: src:RIIS
+KNOWLEDGE_TABLES:
+  local_game_species:
+  - species: Karhu (Ursus arctos)
+    status: Riistaeläin, kiintiömetsästys
+    risk_level: KORKEA pihapiirissä
+    source: src:RII3
+  - species: Hirvi (Alces alces)
+    status: Riistaeläin
+    risk_level: KESKITASO (liikenne)
+    source: src:RII3
+  - species: Valkohäntäpeura (Odocoileus virginianus)
+    status: Riistaeläin
+    risk_level: MATALA
+    source: src:RII3
+  - species: Susi (Canis lupus)
+    status: Tiukasti suojeltu (luontodirektiivin liite IV)
+    risk_level: KORKEA lemmikkieläimille
+    source: src:RII1
+  - species: Kettu (Vulpes vulpes)
+    status: Riistaeläin
+    risk_level: MATALA (mehiläispesät)
+    source: src:RII3
+  - species: Mäyrä (Meles meles)
+    status: Riistaeläin
+    risk_level: MATALA
+    source: src:RII3
+COMPLIANCE_AND_LEGAL:
+  metsastyslaki: Metsästyslaki 615/1993 säätelee metsästysajat ja -tavat [src:RII3]
+  susi_suojelu: Susi on EU:n luontodirektiivin liitteen IV laji — tappaminen vain
+    poikkeusluvalla [src:RII1]
+  rauhoitusaika: Riistaeläinten rauhoitusajat noudatettava ehdottomasti [src:RII3]
+UNCERTAINTY_NOTES:
+- Karhupopulaation tarkat liikkeet alueella eivät ole ennakoitavissa.
+- Susihavainnot perustuvat usein jälkiin, varma tunnistus vaatii kuvaa tai DNA:ta.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:RII1
+    org: Luonnonvarakeskus (Luke)
+    title: Suurpetotutkimus
+    year: 2025
+    url: https://www.luke.fi/fi/tutkimus/suurpetotutkimus
+    supports: Karhu-, susi- ja ilvespopulaatiot, käyttäytyminen.
+  - id: src:RII2
+    org: Väylävirasto
+    title: Hirvieläinonnettomuudet
+    year: 2025
+    url: https://vayla.fi/vaylista/tilastot/hirvielainonnettomuudet
+    supports: Hirvionnettomuustilastot ja riskialueet.
+  - id: src:RII3
+    org: Oikeusministeriö
+    title: Metsästyslaki 615/1993
+    year: 1993
+    url: https://www.finlex.fi/fi/laki/ajantasa/1993/19930615
+    supports: Metsästysajat, riistaeläimet, rauhoitukset.
+eval_questions:
+- q: Mikä on karhuhälytyksen etäisyysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bear_proximity_alert_m.value
+  source: src:RII1
+- q: Milloin hirvenmetsästyskausi alkaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Onko susi rauhoitettu Suomessa?
+  a_ref: COMPLIANCE_AND_LEGAL.susi_suojelu
+  source: src:RII1
+- q: Mikä laki säätelee metsästystä?
+  a_ref: COMPLIANCE_AND_LEGAL.metsastyslaki
+  source: src:RII3
+- q: Mikä on riistakameran akkujännitteen hälytysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.game_camera_battery_v.value
+  source: src:RII1
+- q: Mitä tehdään karhuhavainnossa pihapiirissä?
+  a_ref: FAILURE_MODES[0].action
+  source: src:RII1
+- q: Milloin karhut heräävät talviunilta?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:RII1
+- q: Mikä on suden suojelustatus EU:ssa?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[3].status
+  source: src:RII1
+- q: Milloin karhujen kiintiöpyynti on?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Mikä on hirven riski pihapiirissä?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[1].risk_level
+  source: src:RII3
+- q: Mitä tehdään riistakameran ollessa offline?
+  a_ref: FAILURE_MODES[1].action
+  source: src:RII1
+- q: Mikä on ketun riski mehiläispesille?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[4].risk_level
+  source: src:RII3
+- q: Milloin hirvet vasovat?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:RII1
+- q: Mitä talvella seurataan lumella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:RII1
+- q: Mikä on jäniksen metsästysaika?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Kenelle hirvihavainnosta tien lähellä ilmoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.moose_collision_risk.value
+  source: src:RII2
+- q: Mikä on suden hälytysraja (km)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wolf_territory_check.value
+  source: src:RII1
+- q: Mikä on karhun riski pihapiirissä?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[0].risk_level
+  source: src:RII1
+- q: Onko valkohäntäpeura riistaeläin?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[2].status
+  source: src:RII3
+- q: Mitä kesällä huomioidaan karhujen osalta?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:RII1
+- q: Milloin hirven metsästyskausi päättyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Voiko sutta metsästää vapaasti?
+  a_ref: COMPLIANCE_AND_LEGAL.susi_suojelu
+  source: src:RII1
+- q: Mikä on mäyrän riski?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[5].risk_level
+  source: src:RII3
+- q: Onko mäyrä riistaeläin?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[5].status
+  source: src:RII3
+- q: Mikä on karhun metsästyskauden alkupäivä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Tarvitaanko suden tappamiseen lupa?
+  a_ref: COMPLIANCE_AND_LEGAL.susi_suojelu
+  source: src:RII1
+- q: Miten ruokajätteet vaikuttavat karhuriskiin?
+  a_ref: FAILURE_MODES[0].action
+  source: src:RII1
+- q: Mikä on metsästyslain numero?
+  a_ref: COMPLIANCE_AND_LEGAL.metsastyslaki
+  source: src:RII3
+- q: Onko kettu riistaeläin?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[4].status
+  source: src:RII3
+- q: Milloin varovaisuutta metsässä lisätään?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:RII3
+- q: Mikä on karhun latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[0].species
+  source: src:RII3
+- q: Miten susijälki tunnistetaan?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:RII1
+- q: Onko karhu riistaeläin?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[0].status
+  source: src:RII3
+- q: Mitä tarkoittaa kiintiömetsästys?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[0].status
+  source: src:RII3
+- q: Mikä on hirven latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[1].species
+  source: src:RII3
+- q: Millainen on suden riski lemmikkieläimille?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[3].risk_level
+  source: src:RII1
+- q: Mitä tehdään villisianhavainnossa?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:RII1
+- q: Onko karhupopulaation liikkeet ennustettavissa?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:RII1
+- q: Pitääkö rauhoitusaikoja noudattaa?
+  a_ref: COMPLIANCE_AND_LEGAL.rauhoitusaika
+  source: src:RII3
+- q: Kenelle karhuhavainnosta ilmoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bear_proximity_alert_m.action
+  source: src:RII1

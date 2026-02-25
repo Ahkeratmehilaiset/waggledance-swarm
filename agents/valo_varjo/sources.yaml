@@ -1,0 +1,14 @@
+sources:
+- id: src:VAL1
+  org: Ilmatieteen laitos / USNO
+  title: Aurinkolaskelmat 60°N
+  year: 2026
+  url: https://aa.usno.navy.mil/data/RS_OneYear
+  supports: Auringonnousu/-lasku, elevation, päivänpituus.
+- id: src:VAL2
+  org: SML / Eva Crane Trust
+  title: Mehiläispesien sijoittelu
+  year: 2011
+  url: null
+  identifier: ISBN 978-952-92-9184-4
+  supports: Pesien suuntaus ja varjostus.

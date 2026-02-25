@@ -1,0 +1,20 @@
+sources:
+- id: src:TAR1
+  org: Ruokavirasto
+  title: Mehiläisten taudit ja pito
+  year: 2025
+  url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
+  supports: AFB, varroa, rekisteröinti.
+- id: src:TAR2
+  org: Suomen Mehiläishoitajain Liitto
+  title: Mehiläishoitoa käytännössä
+  year: 2011
+  url: null
+  identifier: ISBN 978-952-92-9184-4
+  supports: Pesänhoitosykli, varroa, ruokinta, parveilunhallinta.
+- id: src:TAR3
+  org: Verohallinto / Ruokavirasto
+  title: ALV ja alkutuotanto
+  year: 2026
+  url: https://www.vero.fi/
+  supports: Hunajan ALV, suoramyyntiraja.

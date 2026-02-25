@@ -1,0 +1,19 @@
+sources:
+- id: src:LIM1
+  org: SYKE
+  title: Pintavesien tila
+  year: 2024
+  url: https://www.syke.fi/
+  supports: Vedenlaatu, indikaattorit.
+- id: src:LIM2
+  org: THL/SYKE
+  title: Sinileväopas
+  year: 2025
+  url: https://www.jarviwiki.fi/
+  supports: Sinilevätunnistus.
+- id: src:LIM3
+  org: Oikeusministeriö
+  title: Ympäristönsuojelulaki 527/2014
+  year: 2014
+  url: https://finlex.fi/fi/laki/ajantasa/2014/20140527
+  supports: Pilaamiskielto.

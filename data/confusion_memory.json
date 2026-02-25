@@ -1,0 +1,56 @@
+{
+  "gdpr": {
+    "wrong_agents": {
+      "Core/Dispatcher (Päällikkö)": 4,
+      "Privaattisuuden suojelija": 2
+    },
+    "correct_agent": "Kybervahti (tietoturva)",
+    "example_question": "Sääntö: gdpr?"
+  },
+  "cvr|lasketaan": {
+    "wrong_agents": {
+      "Fenologi": 2,
+      "Matemaatikko ja fyysikko (laskenta + mallit)": 1
+    },
+    "correct_agent": "Fenologi",
+    "example_question": "Miten °Cvr lasketaan?"
+  },
+  "palovaroitin": {
+    "wrong_agents": {
+      "Paloesimies": 6
+    },
+    "correct_agent": "Paloesimies (häkä, palovaroittimet, lämpöanomaliat)",
+    "example_question": "Sääntö: palovaroitin?"
+  },
+  "sammutin": {
+    "wrong_agents": {
+      "Paloesimies": 3
+    },
+    "correct_agent": "Paloesimies (häkä, palovaroittimet, lämpöanomaliat)",
+    "example_question": "Sääntö: sammutin?"
+  },
+  "kameravalvonta": {
+    "wrong_agents": {
+      "Pihavahti (ihmishavainnot)": 2,
+      "Privaattisuuden suojelija": 1
+    },
+    "correct_agent": "Pihavahti (ihmishavainnot)",
+    "example_question": "Sääntö: kameravalvonta?"
+  },
+  "ilmoitetaan|karhuhavainnosta": {
+    "wrong_agents": {
+      "Luontokuvaaja (PTZ-operaattori)": 2,
+      "Riistanvartija": 1
+    },
+    "correct_agent": "Luontokuvaaja (PTZ-operaattori)",
+    "example_question": "Kenelle karhuhavainnosta ilmoitetaan?"
+  },
+  "afb|tunnistetaan": {
+    "wrong_agents": {
+      "Tarhaaja (Päämehiläishoitaja)": 2,
+      "Tautivahti (mehiläiset)": 1
+    },
+    "correct_agent": "Tarhaaja (Päämehiläishoitaja)",
+    "example_question": "Miten AFB tunnistetaan?"
+  }
+}

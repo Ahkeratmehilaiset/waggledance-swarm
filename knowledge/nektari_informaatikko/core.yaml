@@ -1,0 +1,256 @@
+﻿header:
+  agent_id: nektari_informaatikko
+  agent_name: Nektari-informaatikko
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- YhdistÃ¤Ã¤ fenologin, hortonomin ja lentosÃ¤Ã¤n datat satoennusteeksi
+- 'PÃ¤Ã¤satokasvit: maitohorsma, vadelma, apilat, rypsi, lehmus'
+DECISION_METRICS_AND_THRESHOLDS:
+  nectar_flow_start_indicator:
+    value: Painonnousu >0.5 kg/pv + T >18Â°C + fenologinen kynnys â†’ satokausi kÃ¤ynnissÃ¤
+    source: src:NEK1
+  peak_flow_rate_kg_per_day:
+    value: 2-5 kg/pv pesÃ¤Ã¤ kohti â†’ huippusato (maitohorsma)
+    source: src:NEK1
+  flow_end_indicator:
+    value: Painonnousu <0.2 kg/pv 3 perÃ¤kkÃ¤isenÃ¤ pv â†’ satokausi hiipuu
+    source: src:NEK1
+  super_addition_trigger:
+    value: â‰¥75% kehyksistÃ¤ tÃ¤ynnÃ¤ â†’ lisÃ¤Ã¤ korotus HETI
+    source: src:NEK1
+  honey_moisture_check:
+    value: Refraktometri <18% â†’ linkoamiskelpoinen
+    source: src:NEK1
+  daily_weight_gain_kg:
+    value: Seuranta puntaripesÃ¤llÃ¤
+    action: '>0.5 kg/pv + T>18Â°C â†’ satokausi ALKAA, aseta korotukset. <0.2 kg/pv 3
+      pv â†’ satokausi HIIPUU.'
+    source: src:NEK1
+  peak_flow_kg_day:
+    value: Maitohorsma 2-5 kg/pv, rypsi 1-3 kg/pv, lehmus 1-3 kg/pv
+    action: '>3 kg/pv â†’ tarkista korotustila, lisÃ¤Ã¤ jos â‰¥75% kehyksistÃ¤ tÃ¤ynnÃ¤.'
+    source: src:NEK1
+  moisture_content_pct:
+    value: 18
+    action: <18% â†’ linkoamiskelpoinen (refraktometri). >20% â†’ EI linkoa, anna kypsyÃ¤.
+      Rypsi >19% â†’ kiteytymisriski, linkoa HETI.
+    source: src:NEK1
+  nectar_secretion_conditions:
+    value: T>15Â°C + RH 50-80% + aurinkoista
+    action: Optimaaliolosuhteet â†’ ilmoita tarhaajalle satokauden alkamisesta. T<13Â°C
+      tai RH<40% â†’ eritys pysÃ¤htyy.
+    source: src:NEK1
+  season_end_trigger:
+    value: PainonlisÃ¤ys <0.2 kg/pv + maitohorsma kukkinut â†’ satokausi ohi
+    action: 'Ilmoita tarhaajalle: aloita linkoaminen ja syysruokintasuunnittelu vko
+      32-34.'
+    source: src:NEK1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Seuraa pajun kukintaa â†’ ensimmÃ¤inen nektarivirtaus. Ei vielÃ¤
+    satoa.'
+  source: src:NEK1
+- season: KesÃ¤
+  action: '[vko 22-35] Rypsi- ja vadelmavirtaus. Korotusten lisÃ¤ys ajoissa. Linkoaminen
+    rypsin jÃ¤lkeen (kiteytymisriski).'
+  source: src:NEK1
+- season: LoppukesÃ¤
+  action: '[vko 22-35] Maitohorsma = pÃ¤Ã¤sato. Seuraa painoa pÃ¤ivittÃ¤in. Viimeinen
+    linkoaminen elo-syyskuussa.'
+  source: src:NEK1
+- season: Syksy-talvi
+  action: '[vko 36-48] Ei nektarivirtausta. Varastojen seuranta.'
+  source: src:NEK1
+FAILURE_MODES:
+- mode: Satokausi jÃ¤Ã¤ lyhyeksi (kuivuus/kylmyys)
+  detection: Painonnousu <50% edellisen vuoden vastaavaan jaksoon verrattuna
+  action: 'Varoita tarhaajaa: ruokintamÃ¤Ã¤rÃ¤n nosto syksyllÃ¤'
+  source: src:NEK1
+- mode: Rypsin nopea kiteytyminen kehyksissÃ¤
+  detection: Rypsi kukkii + hunaja kehyksissÃ¤ paksua/vaaleaa
+  action: Linkoa pikaisesti ennen kiteytymistÃ¤
+  source: src:NEK1
+PROCESS_FLOWS:
+- flow_id: FLOW_NEKT_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Seuraa pajun kukintaa â†’ ensimmÃ¤inen nektarivirtaus. Ei vielÃ¤
+    satoa.'
+  output: Tarkistuslista
+  source: src:NEKT
+- flow_id: FLOW_NEKT_03
+  trigger: 'Havaittu: Satokausi jÃ¤Ã¤ lyhyeksi (kuivuus/kylmyys)'
+  action: 'Varoita tarhaajaa: ruokintamÃ¤Ã¤rÃ¤n nosto syksyllÃ¤'
+  output: Poikkeamaraportti
+  source: src:NEKT
+- flow_id: FLOW_NEKT_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'nektari_informaatikko: rutiiniarviointi'
+  output: Status-raportti
+  source: src:NEKT
+KNOWLEDGE_TABLES:
+  nectar_sources:
+  - plant: Pajut
+    period: Huhti-touko
+    type: KevÃ¤travinto
+    flow_kg_day: 0.1-0.3
+    source: src:NEK1
+  - plant: Rypsi
+    period: KesÃ¤kuu
+    type: PÃ¤Ã¤sato (peltoalue)
+    flow_kg_day: 1-3
+    source: src:NEK1
+  - plant: Vadelma
+    period: KesÃ¤-heinÃ¤kuu
+    type: PÃ¤Ã¤sato (metsÃ¤reuna)
+    flow_kg_day: 1-2
+    source: src:NEK1
+  - plant: Maitohorsma
+    period: HeinÃ¤-elokuu
+    type: PÃ¤Ã¤sato (hakkuualueet)
+    flow_kg_day: 2-5
+    source: src:NEK1
+  - plant: Lehmus
+    period: HeinÃ¤kuu
+    type: Kaupunkisato
+    flow_kg_day: 1-3
+    source: src:NEK1
+  - plant: Apilat
+    period: KesÃ¤-elokuu
+    type: Jatkuva tÃ¤ydennys
+    flow_kg_day: 0.5-1.5
+    source: src:NEK1
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Nektarieritys on voimakkaasti sÃ¤Ã¤riippuvaista â€” kuivuus voi nollata sadon.
+- PesÃ¤kohtaiset tuotantoerot voivat olla 50-100%.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:NEK1
+    org: SML
+    title: MehilÃ¤ishoitoa kÃ¤ytÃ¤nnÃ¶ssÃ¤ + satokasvitiedot
+    year: 2011
+    url: null
+    identifier: ISBN 978-952-92-9184-4
+    supports: Satokasvit, nektarivirtaus, linkoaminen.
+eval_questions:
+- q: MikÃ¤ on nektarivirtauksen aloitusindikaattori?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nectar_flow_start_indicator.value
+  source: src:NEK1
+- q: MikÃ¤ on huippusadon pÃ¤ivÃ¤taso?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.peak_flow_rate_kg_per_day.value
+  source: src:NEK1
+- q: Milloin satokausi hiipuu?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.flow_end_indicator.value
+  source: src:NEK1
+- q: Milloin korotus lisÃ¤tÃ¤Ã¤n?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.super_addition_trigger.value
+  source: src:NEK1
+- q: MikÃ¤ on hunajan linkoamiskelpoinen kosteus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_moisture_check.value
+  source: src:NEK1
+- q: MikÃ¤ on maitohorsman satokausi?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[3].period
+  source: src:NEK1
+- q: MikÃ¤ on maitohorsman tuotto kg/pv?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[3].flow_kg_day
+  source: src:NEK1
+- q: Miksi rypsi linkotaan nopeasti?
+  a_ref: FAILURE_MODES[1].action
+  source: src:NEK1
+- q: MitÃ¤ tehdÃ¤Ã¤n heikon sadon jÃ¤lkeen?
+  a_ref: FAILURE_MODES[0].action
+  source: src:NEK1
+- q: Milloin viimeinen linkoaminen on?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:NEK1
+- q: MikÃ¤ on rypsin satokausi?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[1].period
+  source: src:NEK1
+- q: MikÃ¤ on lehmuksen tuotto?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[4].flow_kg_day
+  source: src:NEK1
+- q: Milloin pajun nektari virtaa?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[0].period
+  source: src:NEK1
+- q: MikÃ¤ on apilan rooli?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[5].type
+  source: src:NEK1
+- q: Miten kuivuus vaikuttaa satoon?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:NEK1
+- q: Miten heikko satokausi havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:NEK1
+- q: MikÃ¤ on vadelma-sadon ajankohta?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[2].period
+  source: src:NEK1
+- q: Miten rypsin kiteytyminen tunnistetaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:NEK1
+- q: MikÃ¤ on pajun sadon merkitys?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[0].type
+  source: src:NEK1
+- q: MikÃ¤ on vadelma-virtauksen kg/pv?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[2].flow_kg_day
+  source: src:NEK1
+- q: Miten painonseurantaa kÃ¤ytetÃ¤Ã¤n satoennusteessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nectar_flow_start_indicator.value
+  source: src:NEK1
+- q: MitkÃ¤ ovat rypsin kiteytymisen merkit?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:NEK1
+- q: Milloin lehmussato on?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[4].period
+  source: src:NEK1
+- q: MikÃ¤ on satokauden pituus tyypillisesti?
+  a_ref: SEASONAL_RULES
+  source: src:NEK1
+- q: Kenelle satokauden loppumisesta ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:NEK1
+- q: Kuinka suuri pesÃ¤kohtainen tuotantoero voi olla?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:NEK1
+- q: MikÃ¤ on refraktometrin kÃ¤yttÃ¶tarkoitus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_moisture_check.value
+  source: src:NEK1
+- q: Miten korotuspÃ¤Ã¤tÃ¶s tehdÃ¤Ã¤n?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.super_addition_trigger.value
+  source: src:NEK1
+- q: MikÃ¤ on apilan tuotto?
+  a_ref: KNOWLEDGE_TABLES.nectar_sources[5].flow_kg_day
+  source: src:NEK1
+- q: Miten sÃ¤Ã¤riippuvuus vaikuttaa suunnitteluun?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:NEK1
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #7?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #8?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #9?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #10?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:NEKT

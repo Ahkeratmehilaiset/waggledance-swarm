@@ -1,0 +1,244 @@
+header:
+  agent_id: pesaturvallisuus
+  agent_name: Pesäturvallisuuspäällikkö (karhut ym.)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Karhu- ja mäyrävahinkojen ehkäisy mehiläistarhoilla
+- Sähköaita ensisijainen suojakeino
+- Korvenranta + kaikki muut tarha-sijainnit
+DECISION_METRICS_AND_THRESHOLDS:
+  electric_fence_voltage_kv:
+    value: 4-7 kV (minimi 3 kV, alle → ei estä karhua)
+    action: Mittaa vähintään 2x/kk, ennen karhukautta (touko) viikoittain
+    source: src:PETU1
+  fence_ground_resistance_ohm:
+    value: <300 Ω
+    action: '>300 Ω → paranna maadoitusta (lisää sauvoja, kastele)'
+    source: src:PETU1
+  bear_damage_radius_km:
+    value: 5
+    action: Karhuhavainto <5 km → nosta varotaso, tarkista aidat
+    source: src:PETU2
+  fence_height_cm:
+    value: 90-120
+    note: Karhulle riittävä, alin lanka 20 cm maasta
+    source: src:PETU1
+  grass_under_fence_max_cm:
+    value: 10
+    action: Ruoho >10 cm → niitä, vuotaa maahan
+    source: src:PETU1
+SEASONAL_RULES:
+- season: Kevät (huhti-touko)
+  action: '[vko 14-22] Sähköaidan pystytys/tarkistus ENNEN karhun heräämistä. Jännitemittaus.
+    Maadoituksen testaus.'
+  source: src:PETU1
+- season: Kesä
+  action: Ruohon niitto aidan alla 2x/kk. Jännite 2x/kk. Riistanvartijalta karhu-info
+    seurantaan.
+  source: src:PETU1
+- season: Syksy
+  action: '[vko 36-48] Aita pidetään päällä lokakuun loppuun. Pesäkohtaiset suojaukset
+    talvipesille (hiiri, tikka).'
+  source: src:PETU1
+- season: Talvi
+  action: '[vko 49-13] Aita voidaan poistaa lumitöiden ajaksi (karhu talviunessa).
+    Hiiriverkon tarkistus.'
+  source: src:PETU1
+FAILURE_MODES:
+- mode: Karhu murtautunut aitaan
+  detection: Kaatuneet pylväät, tuhoutuneet pesät, karhun jäljet
+  action: 1. Dokumentoi (valokuva + päiväys), 2. Ilmoita poliisille ja riistanhoitoyhdistykselle,
+    3. Hae korvaus Maaseutuvirastosta
+  source: src:PETU2
+- mode: Aidan jännite liian matala
+  detection: Mittari <3 kV
+  action: 'Tarkista: ruoho, maadoitus, akku/verkkosyöttö, johdon eristeet'
+  source: src:PETU1
+PROCESS_FLOWS:
+- flow_id: FLOW_PESA_01
+  trigger: electric_fence_voltage_kv ylittää kynnysarvon (4-7 kV (minimi 3 kV, alle
+    → ei estä karhua))
+  action: Mittaa vähintään 2x/kk, ennen karhukautta (touko) viikoittain
+  output: Tilanneraportti
+  source: src:PESA
+- flow_id: FLOW_PESA_02
+  trigger: 'Kausi vaihtuu: Kevät (huhti-touko)'
+  action: '[vko 14-22] Sähköaidan pystytys/tarkistus ENNEN karhun heräämistä. Jännitemittaus.
+    Maadoituksen test'
+  output: Tarkistuslista
+  source: src:PESA
+- flow_id: FLOW_PESA_03
+  trigger: 'Havaittu: Karhu murtautunut aitaan'
+  action: 1. Dokumentoi (valokuva + päiväys), 2. Ilmoita poliisille ja riistanhoitoyhdistykselle,
+    3. Hae korvaus Maaseutuvirastosta
+  output: Poikkeamaraportti
+  source: src:PESA
+- flow_id: FLOW_PESA_04
+  trigger: Säännöllinen heartbeat
+  action: 'pesaturvallisuus: rutiiniarviointi'
+  output: Status-raportti
+  source: src:PESA
+KNOWLEDGE_TABLES:
+  threats:
+  - threat: Karhu
+    severity: KRIITTINEN
+    damage: Pesät tuhoutuvat täysin
+    protection: Sähköaita
+    source: src:PETU2
+  - threat: Mäyrä
+    severity: KESKITASO
+    damage: Kaivaa pesän alta
+    protection: Sähköaita + verkko maahan
+    source: src:PETU1
+  - threat: Tikka
+    severity: MATALA
+    damage: Hakkaa pesän kylkeä talvella
+    protection: Metalliverkko pesän ympärille
+    source: src:PETU1
+  - threat: Hiiret
+    severity: MATALA
+    damage: Talvipesässä vahakennon tuhoaminen
+    protection: Lennonsäätäjä pienennä 6mm
+    source: src:PETU1
+COMPLIANCE_AND_LEGAL:
+  damage_compensation: Petoeläinten aiheuttamista mehiläisvahingoista voi hakea korvausta
+    Ruokavirastolta (vahingot ilmoitettava 7 pv sisällä) [src:PETU2]
+  electric_fence: Sähköaitapaimenen tulee täyttää SFS-EN 60335-2-76 standardi [src:PETU1]
+UNCERTAINTY_NOTES:
+- Karhun käyttäytyminen on yksilöllistä — kokenut karhu voi oppia kiertämään aidan.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PETU1
+    org: SML / ProAgria
+    title: Mehiläistarhan sähköaita
+    year: 2024
+    url: null
+    supports: Sähköaitaaminen, jännite, maadoitus, ylläpito.
+  - id: src:PETU2
+    org: Luonnonvarakeskus (Luke)
+    title: Petovahingot ja korvaukset
+    year: 2025
+    url: https://www.luke.fi/fi/tutkimus/suurpetotutkimus
+    supports: Karhuvahingot, korvausmenettely.
+eval_questions:
+- q: Mikä on sähköaidan minimijännite?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.value
+  source: src:PETU1
+- q: Mikä on maadoituksen maksimiresistanssi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_ground_resistance_ohm.value
+  source: src:PETU1
+- q: Milloin aita tarkistetaan useimmin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.action
+  source: src:PETU1
+- q: Mikä on karhuhavainnon hälytysraja (km)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bear_damage_radius_km.value
+  source: src:PETU2
+- q: Mikä on aidan korkeus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_height_cm.value
+  source: src:PETU1
+- q: Miksi ruoho pitää leikata aidan alla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.grass_under_fence_max_cm.action
+  source: src:PETU1
+- q: Mitä tehdään karhuvahingon jälkeen?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PETU2
+- q: Mistä karhuvahingon korvaus haetaan?
+  a_ref: COMPLIANCE_AND_LEGAL.damage_compensation
+  source: src:PETU2
+- q: Mikä on vahingon ilmoitusaika?
+  a_ref: COMPLIANCE_AND_LEGAL.damage_compensation
+  source: src:PETU2
+- q: Miten matala jännite korjataan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PETU1
+- q: Mikä on karhun uhkataso pesille?
+  a_ref: KNOWLEDGE_TABLES.threats[0].severity
+  source: src:PETU2
+- q: Miten mäyrältä suojaudutaan?
+  a_ref: KNOWLEDGE_TABLES.threats[1].protection
+  source: src:PETU1
+- q: Miten tikka vahingoittaa pesää?
+  a_ref: KNOWLEDGE_TABLES.threats[2].damage
+  source: src:PETU1
+- q: Miten hiiriltä suojaudutaan talvella?
+  a_ref: KNOWLEDGE_TABLES.threats[3].protection
+  source: src:PETU1
+- q: Milloin aita pystytetään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PETU1
+- q: Kuinka usein ruoho niitetään?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PETU1
+- q: Milloin aita voidaan poistaa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PETU1
+- q: Mikä standardi koskee sähköpaimenta?
+  a_ref: COMPLIANCE_AND_LEGAL.electric_fence
+  source: src:PETU1
+- q: Mikä on alin langan korkeus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_height_cm.note
+  source: src:PETU1
+- q: Voiko karhu kiertää aidan?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PETU2
+- q: Kenelle karhuvahinko ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PETU2
+- q: Mikä on ruohon maksimikorkeus aidan alla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.grass_under_fence_max_cm.value
+  source: src:PETU1
+- q: Miten jännite mitataan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.action
+  source: src:PETU1
+- q: Miten maadoitusta parannetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_ground_resistance_ohm.action
+  source: src:PETU1
+- q: Mikä on mäyrän vahinkotaso?
+  a_ref: KNOWLEDGE_TABLES.threats[1].severity
+  source: src:PETU1
+- q: Mitä talvipesille tehdään syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PETU1
+- q: Milloin aita pidetään viimeksi päällä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PETU1
+- q: Mikä on lennonsäätäjän merkitys hiirien torjunnassa?
+  a_ref: KNOWLEDGE_TABLES.threats[3].protection
+  source: src:PETU1
+- q: Miten karhujäljet tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PETU2
+- q: Kuka tarkistaa aidan jännitteen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.action
+  source: src:PETU1
+- q: 'Operatiivinen päätöskysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #7?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #8?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #9?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen päätöskysymys #10?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA

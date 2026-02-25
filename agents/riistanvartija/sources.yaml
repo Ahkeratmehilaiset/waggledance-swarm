@@ -1,0 +1,19 @@
+sources:
+- id: src:RII1
+  org: Luonnonvarakeskus (Luke)
+  title: Suurpetotutkimus
+  year: 2025
+  url: https://www.luke.fi/fi/tutkimus/suurpetotutkimus
+  supports: Karhu-, susi- ja ilvespopulaatiot, käyttäytyminen.
+- id: src:RII2
+  org: Väylävirasto
+  title: Hirvieläinonnettomuudet
+  year: 2025
+  url: https://vayla.fi/vaylista/tilastot/hirvielainonnettomuudet
+  supports: Hirvionnettomuustilastot ja riskialueet.
+- id: src:RII3
+  org: Oikeusministeriö
+  title: Metsästyslaki 615/1993
+  year: 1993
+  url: https://www.finlex.fi/fi/laki/ajantasa/1993/19930615
+  supports: Metsästysajat, riistaeläimet, rauhoitukset.

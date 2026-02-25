@@ -1,0 +1,236 @@
+header:
+  agent_id: kalastusopas
+  agent_name: Kalastusopas
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Huhdasjärvi + lähivesistöt
+- Onkiminen, pilkkiminen, heittokalastus
+DECISION_METRICS_AND_THRESHOLDS:
+  pike_active_temp_c:
+    value: 8-18°C
+    source: src:KAL1
+    action: 8-18°C → aktiivisin. >20°C → siirtyvät syvemmälle, vaihda painotettu viehe.
+      <5°C → hauki passiivinen, hidas esitys.
+  perch_spawn_temp_c:
+    value: 8-12°C (huhti-touko)
+    source: src:KAL1
+    action: 8-12°C (vko 18-21 Kouvolassa) → RAUHOITA kutualueet. Vältä rantakalastusta
+      kutuaikaan.
+  fishing_license:
+    value: Kalastonhoitomaksu 18-64v, 45€/v (2026)
+    source: src:KAL2
+  pike_min_size_cm:
+    value: 40
+    source: src:KAL2
+  zander_min_size_cm:
+    value: 42
+    source: src:KAL2
+  barometric_optimal_hpa:
+    value: 1010-1020, laskeva → aktiivinen syönti
+    action: 1010-1020 hPa laskeva → paras syönti. >1025 nouseva → heikko syönti. Muutos
+      >10 hPa/12h → kalat aktiivisia.
+    source: src:KAL1
+SEASONAL_RULES:
+- season: Kevät
+  action: Hauki rauhoitettu 1.4.-31.5. Jäiden lähtö → ensimmäiset kalastusmahdollisuudet.
+  source: src:KAL2
+- season: Kesä
+  action: Ahven/kuha aktiivisia. Veden lämmetessä >20°C kalat syvemmällä.
+  source: src:KAL1
+- season: Syksy
+  action: '[vko 36-48] Paras hauenkalastuskausi. Kuha aktiivinen hämärässä.'
+  source: src:KAL1
+- season: Talvi
+  action: Pilkkiminen jään tultua (>10 cm). Ahven parasta.
+  source: src:KAL1
+FAILURE_MODES:
+- mode: Kalastus rauhoitusaikana
+  detection: Käyttäjä ei tiedä rauhoitusta
+  action: Tarkista Kalastusrajoitus.fi ennen kalastusta
+  source: src:KAL2
+- mode: Alamittoinen kala
+  detection: Kala alle alamitan
+  action: Vapauta VEDESSÄ, älä nosta veneeseen
+  source: src:KAL2
+PROCESS_FLOWS:
+- flow_id: FLOW_KALA_01
+  trigger: pike_active_temp_c ylittää kynnysarvon (8-18°C)
+  action: 8-18°C → aktiivisin. >20°C → siirtyvät syvemmälle, vaihda painotettu viehe.
+    <5°C → hauki passiivinen, hidas esitys.
+  output: Tilanneraportti
+  source: src:KALA
+- flow_id: FLOW_KALA_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: Hauki rauhoitettu 1.4.-31.5. Jäiden lähtö → ensimmäiset kalastusmahdollisuudet.
+  output: Tarkistuslista
+  source: src:KALA
+- flow_id: FLOW_KALA_03
+  trigger: 'Havaittu: Kalastus rauhoitusaikana'
+  action: Tarkista Kalastusrajoitus.fi ennen kalastusta
+  output: Poikkeamaraportti
+  source: src:KALA
+- flow_id: FLOW_KALA_04
+  trigger: Säännöllinen heartbeat
+  action: 'kalastusopas: rutiiniarviointi'
+  output: Status-raportti
+  source: src:KALA
+KNOWLEDGE_TABLES:
+  species:
+  - laji: Hauki
+    rauhoitus: 1.4.-31.5.
+    alamitta_cm: 40
+    paras_aika: Touko-kesä, syys-loka
+  - laji: Ahven
+    rauhoitus: Ei
+    alamitta_cm: Ei
+    paras_aika: Kesä, talvi (pilkki)
+  - laji: Kuha
+    rauhoitus: 15.4.-15.6. (aluekohtainen)
+    alamitta_cm: 42
+    paras_aika: Kesäillat, syksy
+  - laji: Lahna
+    rauhoitus: Ei
+    alamitta_cm: Ei
+    paras_aika: Kesäkuu, loppukesä
+COMPLIANCE_AND_LEGAL:
+  kalastonhoitomaksu: Kalastuslaki 379/2015 [src:KAL2]
+  rauhoitukset: Hauki 1.4.-31.5., Kuha 15.4.-15.6. (aluekohtainen) [src:KAL2]
+  vesialueen_lupa: Viehekalastus vaatii vesialueen luvat [src:KAL2]
+UNCERTAINTY_NOTES:
+- Alamitat ja rauhoitukset voivat muuttua — tarkista Kalastusrajoitus.fi.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:KAL1
+    org: Luke
+    title: Kalalajien ekologia
+    year: 2024
+    url: https://www.luke.fi/
+    supports: Kalojen käyttäytyminen.
+  - id: src:KAL2
+    org: MMM
+    title: Kalastuslaki 379/2015
+    year: 2015
+    url: https://kalastusrajoitus.fi/
+    supports: Luvat, rauhoitukset, alamitat.
+eval_questions:
+- q: Milloin hauki on rauhoitettu?
+  a_ref: KNOWLEDGE_TABLES.species[0].rauhoitus
+  source: src:KAL2
+- q: Mikä on hauen alamitta?
+  a_ref: KNOWLEDGE_TABLES.species[0].alamitta_cm
+  source: src:KAL2
+- q: Mikä on kuhan alamitta?
+  a_ref: KNOWLEDGE_TABLES.species[2].alamitta_cm
+  source: src:KAL2
+- q: Tarvitaanko kalastonhoitomaksu?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fishing_license
+  source: src:KAL2
+- q: Onko ahvenella alamittaa?
+  a_ref: KNOWLEDGE_TABLES.species[1].alamitta_cm
+  source: src:KAL2
+- q: Milloin kuha on aktiivisin?
+  a_ref: KNOWLEDGE_TABLES.species[2].paras_aika
+  source: src:KAL2
+- q: Miten alamittoinen kala käsitellään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:KAL2
+- q: Mikä sää on paras kalastukseen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.barometric_optimal_hpa
+  source: src:KAL1
+- q: Mikä on jään minimipaksuus pilkinnälle?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:KAL1
+- q: Mikä laki säätelee kalastusta?
+  a_ref: COMPLIANCE_AND_LEGAL.kalastonhoitomaksu
+  source: src:KAL2
+- q: Mikä on hauen aktiivisuuslämpötila (°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pike_active_temp_c
+  source: src:KAL1
+- q: Mikä on ahvenen kutulämpötila (°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.perch_spawn_temp_c
+  source: src:KAL1
+- q: Mikä on fishing license?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fishing_license
+  source: src:KAL1
+- q: Mikä on hauen alamitta (cm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pike_min_size_cm
+  source: src:KAL1
+- q: Mikä on kuhan alamitta (cm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.zander_min_size_cm
+  source: src:KAL1
+- q: Mikä on barometric optimal hpa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.barometric_optimal_hpa
+  source: src:KAL1
+- q: Mitä tehdään kun barometric optimal hpa ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.barometric_optimal_hpa.action
+  source: src:KAL1
+- q: Mitä kevät huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:KAL1
+- q: Mitä kesä huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:KAL1
+- q: Mitä syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:KAL1
+- q: Mitä talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:KAL1
+- q: Miten 'Kalastus rauhoitusaikana' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:KAL1
+- q: Mitä tehdään tilanteessa 'Kalastus rauhoitusaikana'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:KAL1
+- q: Miten 'Alamittoinen kala' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:KAL1
+- q: Mitä tehdään tilanteessa 'Alamittoinen kala'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:KAL1
+- q: Mikä on kalastonhoitomaksu -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.kalastonhoitomaksu
+  source: src:KAL1
+- q: Mikä on rauhoitukset -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.rauhoitukset
+  source: src:KAL1
+- q: Mikä on vesialueen lupa -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.vesialueen_lupa
+  source: src:KAL1
+- q: Mitkä ovat merkittävimmät epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:KAL1
+- q: Mitkä ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:KAL1

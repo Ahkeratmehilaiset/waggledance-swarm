@@ -1,0 +1,40 @@
+﻿# Suomen mesi- ja siitepÃ¶lykasvit â€” Operatiivinen tietokanta
+# VyÃ¶hykkeet I-VIII, kukintaviikot EtelÃ¤-/Keski-Suomi
+# M=Mesi, S=SiitepÃ¶ly, Arvo 1-3
+
+saaennot:
+  lampotilasaanto: "PÃ¤Ã¤satokasvit vaativat >=18Â°C. Lentely alkaa +12Â°C."
+  kosteussaanto: "Kuiva helle = painajainen. Optimi: lÃ¤mmin, hiostava, ukkosaltis."
+  kiteytymissaanto: "Glukoosia/fruktoosia suhde. Rypsi/voikukka: viikot. Kanerva: kuukausia."
+
+kevat_vk14_23:
+  tarkoitus: "SiitepÃ¶lyÃ¤ ja mettÃ¤ sikiÃ¶innin kÃ¤ynnistÃ¤miseen"
+  kasvit:
+    - {laji: "Pajut (Salix spp.)", vyohyke: "I-VIII", vk: "14-20", M: 2, S: 3, saa: ">8-10Â°C lentokeli", hunaja: "Keltaista, nopeasti kiteytyvÃ¤Ã¤. Kulutetaan kevÃ¤tkehitykseen."}
+    - {laji: "LepÃ¤t (Alnus spp.)", vyohyke: "I-VIII", vk: "12-16", M: 0, S: 2, saa: "TuulipÃ¶lytteinen", hunaja: "Ei tuota mettÃ¤."}
+    - {laji: "Vaahtera (Acer platanoides)", vyohyke: "I-IV", vk: "18-21", M: 3, S: 2, saa: ">15Â°C, tyyntÃ¤", hunaja: "Vaalea, miedon makuinen. Voi antaa kevÃ¤tsadon."}
+    - {laji: "Voikukka (Taraxacum)", vyohyke: "I-VIII", vk: "19-24", M: 2, S: 3, saa: ">15Â°C, aurinkoa", hunaja: "Keltainen, karvas, erittÃ¤in nopea kiteytyminen."}
+    - {laji: "Omena (Malus domestica)", vyohyke: "I-V", vk: "20-23", M: 2, S: 2, saa: ">15Â°C tyyntÃ¤", hunaja: "Vaalea, hedelmÃ¤inen."}
+    - {laji: "Kirsikka/Luumu (Prunus spp.)", vyohyke: "I-III", vk: "19-22", M: 2, S: 2, saa: "HerkkÃ¤ halloille", hunaja: "Vaalea, mantelinen."}
+    - {laji: "Mustikka (Vaccinium myrtillus)", vyohyke: "I-VIII", vk: "19-23", M: 2, S: 1, saa: "HerkkÃ¤ yÃ¶pakkasille", hunaja: "Punertava, mieto."}
+
+kesa_paasato_vk24_33:
+  tarkoitus: "Kaupallinen hunajasato"
+  kasvit:
+    - {laji: "Vadelma (Rubus idaeus)", vyohyke: "I-VIII", vk: "24-28", M: 3, S: 2, saa: "Sadetta ennen, lÃ¤mpÃ¶Ã¤ kukinnan aikana", hunaja: "Suomen suosituin lajihunaja. Vaalea, hedelmÃ¤inen."}
+    - {laji: "Rypsi/Rapsi (Brassica)", vyohyke: "I-V", vk: "25-30", M: 3, S: 3, saa: "ErittÃ¤Ã¤ lÃ¤hes aina, riittÃ¤vÃ¤ kosteus", hunaja: "Valkoinen, neutraali. ErittÃ¤in nopea kiteytyminen."}
+    - {laji: "Valkoapila (Trifolium repens)", vyohyke: "I-VIII", vk: "25-33", M: 3, S: 2, saa: ">18-20Â°C, korkea yÃ¶kosteus", hunaja: "Vesivaaleaa, hienorakeinen kidehunaja."}
+    - {laji: "Maitohorsma (Chamaenerion angustifolium)", vyohyke: "I-VIII", vk: "27-33", M: 3, S: 2, saa: "HellettÃ¤, ukkossÃ¤Ã¤tÃ¤. Kuivassa tuulessa kuivuu.", hunaja: "Vesivaalea, hienostunut. Lumivalkoinen kide."}
+    - {laji: "Hunajakukka (Phacelia)", vyohyke: "I-V (viljelty)", vk: "26-34", M: 3, S: 3, saa: "KestÃ¤Ã¤ kuivuutta, erittÃ¤Ã¤ koko pÃ¤ivÃ¤n", hunaja: "KellertÃ¤vÃ¤Ã¤, mieto. Erinomainen laidunkasvi."}
+    - {laji: "ValkomesikkÃ¤ (Melilotus albus)", vyohyke: "I-V", vk: "28-34", M: 3, S: 2, saa: "KestÃ¤Ã¤ kuivuutta (paalujuuri)", hunaja: "Vaalea, vaniljamainen."}
+    - {laji: "Lehmus (Tilia cordata)", vyohyke: "I-III", vk: "28-30", M: 2.5, S: 1, saa: "Oikukas. >20Â°C hiostava.", hunaja: "VihertÃ¤vÃ¤, mentolinen/lÃ¤Ã¤kemÃ¤inen."}
+    - {laji: "Puna-apila (Trifolium pratense)", vyohyke: "I-VIII", vk: "26-33", M: 1, S: 3, saa: "Kukintaputki liian pitkÃ¤, paitsi kuivina kesinÃ¤", hunaja: "Tumma, voimakas."}
+
+loppukesa_syksy_vk31_37:
+  tarkoitus: "MyÃ¶hÃ¤inen sato + vitellogeniinin rakennusaineet talvimehilÃ¤isille"
+  kasvit:
+    - {laji: "Kanerva (Calluna vulgaris)", vyohyke: "I-VIII", vk: "31-36", M: 3, S: 1, saa: "ViileitÃ¤ kasteisia Ã¶itÃ¤, lÃ¤mpimiÃ¤ pÃ¤iviÃ¤", hunaja: "Meripihka, tiksotrooppinen (hyytelÃ¶). Erikoislinko. Ei kiteydy."}
+    - {laji: "Tattari (Fagopyrum esculentum)", vyohyke: "I-IV", vk: "30-34", M: 2, S: 2, saa: "ErittÃ¤Ã¤ vain aamupÃ¤ivisin 8-12", hunaja: "Musta, maltainen/siirappinen."}
+    - {laji: "Kultapiisku (Solidago virgaurea)", vyohyke: "I-VIII", vk: "30-36", M: 1, S: 2, saa: "KestÃ¤Ã¤ viilentymistÃ¤", hunaja: "Keltainen, voimakas tuoksu."}
+    - {laji: "Syysmaitiainen (Leontodon autumnalis)", vyohyke: "I-VIII", vk: "31-37", M: 0, S: 3, saa: "Kukkii pitkÃ¤lle syksyyn", hunaja: "ELINTÃ„RKEÃ„ siitepÃ¶lylÃ¤hde talvimehilÃ¤isten vitellogeniinille."}
+    - {laji: "Ohdakkeet (Cirsium spp.)", vyohyke: "I-VI", vk: "28-34", M: 2, S: 2, saa: "KestÃ¤Ã¤ kuivuutta", hunaja: "Vaalea, mieto, kirkas."}

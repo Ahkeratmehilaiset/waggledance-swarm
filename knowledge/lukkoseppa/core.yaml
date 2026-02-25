@@ -1,0 +1,234 @@
+﻿header:
+  agent_id: lukkoseppa
+  agent_name: LukkoseppÃ¤ (Ã¤lylukot)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Korvenranta: mekaaninen + Ã¤lylukko'
+- PIN, RFID, mobiili, avain varavaihtoehtona
+DECISION_METRICS_AND_THRESHOLDS:
+  battery_pct:
+    value: <20% â†’ vaihda
+    action: Varavirta USB-C
+    source: src:LU1
+  lock_jam:
+    value: Moottori ei saa lukkoa kiinni/auki 3 yrityksellÃ¤
+    action: Mekaaninen avain, tarkista lukkorunko
+    source: src:LU1
+  access_anomaly_hours:
+    value: 02:00-05:00
+    action: Avaus yÃ¶llÃ¤ â†’ P2 hÃ¤lytys pihavahdille
+    source: src:LU1
+  pin_change_months:
+    value: 6
+    source: src:LU1
+  temp_range_c:
+    value: -25 to +60
+    action: <-25Â°C â†’ mekanismi jÃ¤Ã¤tyy, jÃ¤Ã¤nesto
+    source: src:LU1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Puhdistus ja voitelu talven jÃ¤lkeen.'
+  source: src:LU1
+- season: KesÃ¤
+  action: '[vko 22-35] Normaali. PÃ¤Ã¤syoikeuksien tarkistus (vieraat?).'
+  source: src:LU1
+- season: Syksy
+  action: '[vko 36-48] Akut tarkistus ennen talvea. Varavirta testaus.'
+  source: src:LU1
+- season: Talvi
+  action: JÃ¤Ã¤tymisesto (-25Â°C). Mekaaninen avain aina mukana.
+  source: src:LU1
+FAILURE_MODES:
+- mode: Lukko jÃ¤Ã¤tynyt
+  detection: Mekanismi ei liiku
+  action: JÃ¤Ã¤nestosuihke, Ã„LÃ„ vÃ¤Ã¤nnÃ¤, lÃ¤mmin avain
+  source: src:LU1
+- mode: Akku tyhjÃ¤
+  detection: Ei reagoi
+  action: USB-C varavirta tai mekaaninen avain
+  source: src:LU1
+PROCESS_FLOWS:
+- flow_id: FLOW_LUKK_01
+  trigger: battery_pct ylittÃ¤Ã¤ kynnysarvon (<20% â†’ vaihda)
+  action: Varavirta USB-C
+  output: Tilanneraportti
+  source: src:LUKK
+- flow_id: FLOW_LUKK_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Puhdistus ja voitelu talven jÃ¤lkeen.'
+  output: Tarkistuslista
+  source: src:LUKK
+- flow_id: FLOW_LUKK_03
+  trigger: 'Havaittu: Lukko jÃ¤Ã¤tynyt'
+  action: JÃ¤Ã¤nestosuihke, Ã„LÃ„ vÃ¤Ã¤nnÃ¤, lÃ¤mmin avain
+  output: Poikkeamaraportti
+  source: src:LUKK
+- flow_id: FLOW_LUKK_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'lukkoseppa: rutiiniarviointi'
+  output: Status-raportti
+  source: src:LUKK
+KNOWLEDGE_TABLES:
+- table_id: TBL_LUKK_01
+  title: LukkoseppÃ¤ (Ã¤lylukot) â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: battery_pct
+    value: <20% â†’ vaihda
+    action: Varavirta USB-C
+  - metric: lock_jam
+    value: Moottori ei saa lukkoa kiinni/auki 3 yrityksellÃ¤
+    action: Mekaaninen avain, tarkista lukkorunko
+  - metric: access_anomaly_hours
+    value: 02:00-05:00
+    action: Avaus yÃ¶llÃ¤ â†’ P2 hÃ¤lytys pihavahdille
+  - metric: pin_change_months
+    value: '6'
+    action: ''
+  - metric: temp_range_c
+    value: -25 to +60
+    action: <-25Â°C â†’ mekanismi jÃ¤Ã¤tyy, jÃ¤Ã¤nesto
+  source: src:LUKK
+COMPLIANCE_AND_LEGAL:
+  vakuutus: VakuutusyhtiÃ¶n hyvÃ¤ksymÃ¤ murtosuojaus [src:LU2]
+UNCERTAINTY_NOTES:
+- Ã„lylukon kyberturvallisuus riippuu valmistajasta.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LU1
+    org: Lukkoliikkeet
+    title: Ã„lylukot
+    year: 2025
+    url: null
+    supports: Huolto, jÃ¤Ã¤tyminen.
+  - id: src:LU2
+    org: Finanssiala ry
+    title: Murtosuojaus
+    year: 2025
+    url: https://www.finanssiala.fi/
+    supports: Vakuutusvaatimukset.
+eval_questions:
+- q: MikÃ¤ on akun varaustaso (%)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.battery_pct
+  source: src:LU1
+- q: 'Toimenpide: akun varaustaso (%)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.battery_pct.action
+  source: src:LU1
+- q: MikÃ¤ on lock jam?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lock_jam
+  source: src:LU1
+- q: 'Toimenpide: lock jam?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lock_jam.action
+  source: src:LU1
+- q: MikÃ¤ on kulkuanomalia-aika (h)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.access_anomaly_hours
+  source: src:LU1
+- q: 'Toimenpide: kulkuanomalia-aika (h)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.access_anomaly_hours.action
+  source: src:LU1
+- q: MikÃ¤ on PIN-koodin vaihtovÃ¤li (kk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pin_change_months
+  source: src:LU1
+- q: MikÃ¤ on kÃ¤yttÃ¶lÃ¤mpÃ¶tila-alue (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.temp_range_c
+  source: src:LU1
+- q: 'Toimenpide: kÃ¤yttÃ¶lÃ¤mpÃ¶tila-alue (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.temp_range_c.action
+  source: src:LU1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LU1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LU1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LU1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LU1
+- q: 'Havainto: Lukko jÃ¤Ã¤tynyt?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:LU1
+- q: 'Toiminta: Lukko jÃ¤Ã¤tynyt?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:LU1
+- q: 'Havainto: Akku tyhjÃ¤?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LU1
+- q: 'Toiminta: Akku tyhjÃ¤?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:LU1
+- q: 'SÃ¤Ã¤ntÃ¶: vakuutus?'
+  a_ref: COMPLIANCE_AND_LEGAL.vakuutus
+  source: src:LU1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LU1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #12?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #13?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #14?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #15?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #16?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #17?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #18?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #19?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1
+- q: 'KytkentÃ¤ muihin agentteihin #20?'
+  a_ref: ASSUMPTIONS
+  source: src:LU1

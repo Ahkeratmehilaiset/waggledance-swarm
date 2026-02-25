@@ -1,0 +1,264 @@
+﻿header:
+  agent_id: riistanvartija
+  agent_name: Riistanvartija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Kalibroitu pixel-to-meter mapping (PTZ-kameran asennuskorkeus ja kulma).
+- Frigate lÃ¤hettÃ¤Ã¤ 'bear', 'wolf', 'deer', 'dog' luokittelut.
+DECISION_METRICS_AND_THRESHOLDS:
+  bear_proximity_alert_m:
+    value: 200
+    action: <200 m pesistÃ¤ â†’ P1 hÃ¤lytys. Meluesteet pÃ¤Ã¤lle. Ei ruokajÃ¤tettÃ¤ ulkona. SÃ¤hkÃ¶aidan jÃ¤nnite varmistettu â‰¥4 kV.
+    source: src:RII1
+  moose_collision_risk:
+    value: Hirvi tien lÃ¤hellÃ¤ pimeÃ¤llÃ¤ â†’ ilmoita logistikko-agentille
+    source: src:RII2
+    action: Hirvi tien lÃ¤hellÃ¤ <50 m â†’ ilmoita logistikolle. Huhti-touko (vasominen) ja loka-marras (kiima) = huippuriski.
+  wolf_territory_check:
+    value: Susi-ilmoitus <5 km sÃ¤teellÃ¤ â†’ seuranta-mode
+    source: src:RII1
+    action: Susi <5 km â†’ seurantataso 2. <2 km â†’ ilmoita core_dispatcherille. <500 m â†’ P1. Susi EU liite IV, tappaminen vain
+      poikkeusluvalla.
+  hunting_season_dates:
+    value: 'Hirvi: 10.10â€“31.12 (jahtilupa-alue), Karhu: 20.8â€“31.10 (kiintiÃ¶), JÃ¤nis: 1.9â€“28.2'
+    source: src:RII3
+  game_camera_battery_v:
+    value: 6.0
+    action: Alle 6V â†’ vaihda akku, ilmoita laitehuoltajalle
+    source: src:RII1
+  distance_to_building_m:
+    value: 50
+    source: src:RII1
+    action: Petovaroitus + ulkovalot + Ã¤Ã¤nikarkotin.
+  object_confidence_pct:
+    value: 85
+    source: src:RII1
+    action: Kirjaa suurriista lokiin, seuraa kameralla.
+  garden_dwell_time_s:
+    value: 120
+    source: src:RII2
+    action: LievÃ¤ karkote (ultraÃ¤Ã¤ni/valo) hirvielÃ¤imille.
+  human_animal_distance_m:
+    value: 100
+    source: src:RII1
+    action: HÃ¤tÃ¤hÃ¤lytys + Ã¤lylukkien lukitus (karhu + ihmisiÃ¤ ulkona).
+  pack_size_bboxes:
+    value: 3
+    source: src:RII1
+    action: Laumahavainto â†’ ilmoitus petoyhdyshenkilÃ¶lle.
+SEASONAL_RULES:
+- season: KevÃ¤t (huhti-toukokuu)
+  rule: Karhujen herÃ¤Ã¤minen + pentuaika. EtÃ¤isyyskynnys 50mâ†’100m. Emo + pennut = erittÃ¤in vaarallinen.
+- season: Syksy (syys-joulukuu)
+  rule: MetsÃ¤styskausi. 'dog' metsÃ¤ssÃ¤ ilman ihmistÃ¤ = viivÃ¤stÃ¤ 15 min (metsÃ¤styskoira), ellei pihapiiriin.
+FAILURE_MODES:
+- failure: Dog vs Wolf Confusion
+  recovery: 'Tarkista Pihavahdilta: ''person'' < 20m elÃ¤imestÃ¤ â†’ koira, vaimenna petohÃ¤lytys.'
+- failure: IR Reflection Blooming
+  recovery: 'Luontokuvaaja: kameraa 5Â° tai IR-teho -20% hahmon tunnistamiseksi.'
+PROCESS_FLOWS:
+- flow_id: FLOW_RIIS_01
+  trigger: bear_proximity_alert_m ylittÃ¤Ã¤ kynnysarvon (200)
+  action: <200 m pesistÃ¤ â†’ P1 hÃ¤lytys. Meluesteet pÃ¤Ã¤lle. Ei ruokajÃ¤tettÃ¤ ulkona. SÃ¤hkÃ¶aidan jÃ¤nnite varmistettu â‰¥4 kV.
+  output: Tilanneraportti
+  source: src:RIIS
+- flow_id: FLOW_RIIS_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Karhut herÃ¤Ã¤vÃ¤t talviunilta (maalis-huhti), erityisvarovaisuus. Hirvet vasovat touko-kes'
+  output: Tarkistuslista
+  source: src:RIIS
+- flow_id: FLOW_RIIS_03
+  trigger: 'Havaittu: Karhu pesien lÃ¤hellÃ¤'
+  action: HÃ„LYTYS P1, meluesteet, varmista ettei ruokajÃ¤tettÃ¤ ulkona
+  output: Poikkeamaraportti
+  source: src:RIIS
+- flow_id: FLOW_RIIS_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'riistanvartija: rutiiniarviointi'
+  output: Status-raportti
+  source: src:RIIS
+KNOWLEDGE_TABLES:
+- local_game_species:
+  - species: Karhu (Ursus arctos)
+    status: RiistaelÃ¤in, kiintiÃ¶metsÃ¤stys
+    risk_level: KORKEA pihapiirissÃ¤
+    source: src:RII3
+  - species: Hirvi (Alces alces)
+    status: RiistaelÃ¤in
+    risk_level: KESKITASO (liikenne)
+    source: src:RII3
+  - species: ValkohÃ¤ntÃ¤peura (Odocoileus virginianus)
+    status: RiistaelÃ¤in
+    risk_level: MATALA
+    source: src:RII3
+  - species: Susi (Canis lupus)
+    status: Tiukasti suojeltu (luontodirektiivin liite IV)
+    risk_level: KORKEA lemmikkielÃ¤imille
+    source: src:RII1
+  - species: Kettu (Vulpes vulpes)
+    status: RiistaelÃ¤in
+    risk_level: MATALA (mehilÃ¤ispesÃ¤t)
+    source: src:RII3
+  - species: MÃ¤yrÃ¤ (Meles meles)
+    status: RiistaelÃ¤in
+    risk_level: MATALA
+    source: src:RII3
+- table_id: TBL_ANIMAL_BEHAVIOR
+  title: ElÃ¤inprofiilit
+  rows:
+  - animal: Karhu (bear)
+    risk: Kriittinen
+    deterrent: Voimakas valo + matalataajuinen Ã¤Ã¤ni. VÃ¤ltÃ¤ yllÃ¤ttÃ¤mistÃ¤.
+  - animal: Hirvi/Peura (deer)
+    risk: Matala (kasvivahingot)
+    deterrent: UltraÃ¤Ã¤ni, liiketunnistinvalo.
+  - animal: Supikoira
+    risk: Keskiverto (tautiriski, vieraslaji)
+    deterrent: Ilmoitus tuholaisasiantuntijalle.
+COMPLIANCE_AND_LEGAL:
+- 'MetsÃ¤styslain 39 Â§: elÃ¤imiÃ¤ ei saa tarpeettomasti hÃ¤iritÃ¤. Karkotus sallittu vain vaaran tai merkittÃ¤vÃ¤n vahingon uhatessa
+  [src:RII2].'
+UNCERTAINTY_NOTES:
+- 'Kameran kyky erottaa iso koira sudesta hÃ¤mÃ¤rÃ¤ssÃ¤. VALUE: UNKNOWN. TO_VERIFY: Ihmishavainto samassa ruudussa.'
+SOURCE_REGISTRY:
+  sources:
+  - id: src:RII1
+    org: Luonnonvarakeskus (Luke)
+    title: Suurpetotutkimus
+    year: 2025
+    url: https://www.luke.fi/fi/tutkimus/suurpetotutkimus
+    supports: Karhu-, susi- ja ilvespopulaatiot, kÃ¤yttÃ¤ytyminen.
+  - id: src:RII2
+    org: VÃ¤ylÃ¤virasto
+    title: HirvielÃ¤inonnettomuudet
+    year: 2025
+    url: https://vayla.fi/vaylista/tilastot/hirvielainonnettomuudet
+    supports: Hirvionnettomuustilastot ja riskialueet.
+  - id: src:RII3
+    org: OikeusministeriÃ¶
+    title: MetsÃ¤styslaki 615/1993
+    year: 1993
+    url: https://www.finlex.fi/fi/laki/ajantasa/1993/19930615
+    supports: MetsÃ¤stysajat, riistaelÃ¤imet, rauhoitukset.
+eval_questions:
+- q: MikÃ¤ on karhuhÃ¤lytyksen etÃ¤isyysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bear_proximity_alert_m.value
+  source: src:RII1
+- q: Milloin hirvenmetsÃ¤styskausi alkaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Onko susi rauhoitettu Suomessa?
+  a_ref: COMPLIANCE_AND_LEGAL.susi_suojelu
+  source: src:RII1
+- q: MikÃ¤ laki sÃ¤Ã¤telee metsÃ¤stystÃ¤?
+  a_ref: COMPLIANCE_AND_LEGAL.metsastyslaki
+  source: src:RII3
+- q: MikÃ¤ on riistakameran akkujÃ¤nnitteen hÃ¤lytysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.game_camera_battery_v.value
+  source: src:RII1
+- q: MitÃ¤ tehdÃ¤Ã¤n karhuhavainnossa pihapiirissÃ¤?
+  a_ref: FAILURE_MODES[0].action
+  source: src:RII1
+- q: Milloin karhut herÃ¤Ã¤vÃ¤t talviunilta?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:RII1
+- q: MikÃ¤ on suden suojelustatus EU:ssa?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[3].status
+  source: src:RII1
+- q: Milloin karhujen kiintiÃ¶pyynti on?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: MikÃ¤ on hirven riski pihapiirissÃ¤?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[1].risk_level
+  source: src:RII3
+- q: MitÃ¤ tehdÃ¤Ã¤n riistakameran ollessa offline?
+  a_ref: FAILURE_MODES[1].action
+  source: src:RII1
+- q: MikÃ¤ on ketun riski mehilÃ¤ispesille?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[4].risk_level
+  source: src:RII3
+- q: Milloin hirvet vasovat?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:RII1
+- q: MitÃ¤ talvella seurataan lumella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:RII1
+- q: MikÃ¤ on jÃ¤niksen metsÃ¤stysaika?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Kenelle hirvihavainnosta tien lÃ¤hellÃ¤ ilmoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.moose_collision_risk.value
+  source: src:RII2
+- q: MikÃ¤ on suden hÃ¤lytysraja (km)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wolf_territory_check.value
+  source: src:RII1
+- q: MikÃ¤ on karhun riski pihapiirissÃ¤?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[0].risk_level
+  source: src:RII1
+- q: Onko valkohÃ¤ntÃ¤peura riistaelÃ¤in?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[2].status
+  source: src:RII3
+- q: MitÃ¤ kesÃ¤llÃ¤ huomioidaan karhujen osalta?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:RII1
+- q: Milloin hirven metsÃ¤styskausi pÃ¤Ã¤ttyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Voiko sutta metsÃ¤stÃ¤Ã¤ vapaasti?
+  a_ref: COMPLIANCE_AND_LEGAL.susi_suojelu
+  source: src:RII1
+- q: MikÃ¤ on mÃ¤yrÃ¤n riski?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[5].risk_level
+  source: src:RII3
+- q: Onko mÃ¤yrÃ¤ riistaelÃ¤in?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[5].status
+  source: src:RII3
+- q: MikÃ¤ on karhun metsÃ¤styskauden alkupÃ¤ivÃ¤?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hunting_season_dates.value
+  source: src:RII3
+- q: Tarvitaanko suden tappamiseen lupa?
+  a_ref: COMPLIANCE_AND_LEGAL.susi_suojelu
+  source: src:RII1
+- q: Miten ruokajÃ¤tteet vaikuttavat karhuriskiin?
+  a_ref: FAILURE_MODES[0].action
+  source: src:RII1
+- q: MikÃ¤ on metsÃ¤styslain numero?
+  a_ref: COMPLIANCE_AND_LEGAL.metsastyslaki
+  source: src:RII3
+- q: Onko kettu riistaelÃ¤in?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[4].status
+  source: src:RII3
+- q: Milloin varovaisuutta metsÃ¤ssÃ¤ lisÃ¤tÃ¤Ã¤n?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:RII3
+- q: MikÃ¤ on karhun latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[0].species
+  source: src:RII3
+- q: Miten susijÃ¤lki tunnistetaan?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:RII1
+- q: Onko karhu riistaelÃ¤in?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[0].status
+  source: src:RII3
+- q: MitÃ¤ tarkoittaa kiintiÃ¶metsÃ¤stys?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[0].status
+  source: src:RII3
+- q: MikÃ¤ on hirven latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[1].species
+  source: src:RII3
+- q: Millainen on suden riski lemmikkielÃ¤imille?
+  a_ref: KNOWLEDGE_TABLES.local_game_species[3].risk_level
+  source: src:RII1
+- q: MitÃ¤ tehdÃ¤Ã¤n villisianhavainnossa?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:RII1
+- q: Onko karhupopulaation liikkeet ennustettavissa?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:RII1
+- q: PitÃ¤Ã¤kÃ¶ rauhoitusaikoja noudattaa?
+  a_ref: COMPLIANCE_AND_LEGAL.rauhoitusaika
+  source: src:RII3
+- q: Kenelle karhuhavainnosta ilmoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bear_proximity_alert_m.action
+  source: src:RII1

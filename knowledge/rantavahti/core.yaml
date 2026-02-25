@@ -1,0 +1,235 @@
+﻿header:
+  agent_id: rantavahti
+  agent_name: Rantavahti
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- HuhdasjÃ¤rven ranta
+- Uimarien/veneilijÃ¶iden turvallisuus
+DECISION_METRICS_AND_THRESHOLDS:
+  swim_temp_min_c:
+    value: 15
+    action: <15Â°C â†’ hypotermia-varoitus
+    source: src:RV1
+  wave_height_warning_cm:
+    value: 30
+    action: '>30 cm â†’ pienveneilyvaroitus'
+    source: src:RV1
+  visibility_fog_m:
+    value: 50
+    action: <50 m â†’ venetoiminta rajoitettu
+    source: src:RV1
+  thunderstorm_km:
+    value: 10
+    action: <10 km â†’ VEDESTÃ„ POIS
+    source: src:RV2
+  child_depth_max_cm:
+    value: 30
+    action: Lapsi <10v aina seurassa vedessÃ¤
+    source: src:RV1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] JÃ¤iden lÃ¤htÃ¶ â†’ ranta vaarallinen. Ei uintikautta.'
+  source: src:RV1
+- season: KesÃ¤
+  action: '[vko 22-35] Uintikausi. SinilevÃ¤tarkistus pÃ¤ivittÃ¤in. Pelastusrengas paikallaan.'
+  source: src:RV1
+- season: Syksy
+  action: '[vko 36-48] Vesi viilenee â†’ hypotermiaviski. Veneilyn lopetus.'
+  source: src:RV1
+- season: Talvi
+  action: Avantouinti valvotusti. Max 1-2 min. JÃ¤Ã¤asiantuntijalta kantavuus.
+  source: src:RV1
+FAILURE_MODES:
+- mode: Hukkumisvaara
+  detection: HenkilÃ¶ vaikeuksissa vedessÃ¤
+  action: HeitÃ¤ pelastusrengas, soita 112, Ã„LÃ„ mene veteen yksin
+  source: src:RV2
+- mode: SinilevÃ¤myrkytys
+  detection: Iho-oireita uinnin jÃ¤lkeen
+  action: Huuhtele, myrkytystietokeskus 0800 147 111
+  source: src:RV2
+PROCESS_FLOWS:
+- flow_id: FLOW_RANT_01
+  trigger: swim_temp_min_c ylittÃ¤Ã¤ kynnysarvon (15)
+  action: <15Â°C â†’ hypotermia-varoitus
+  output: Tilanneraportti
+  source: src:RANT
+- flow_id: FLOW_RANT_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] JÃ¤iden lÃ¤htÃ¶ â†’ ranta vaarallinen. Ei uintikautta.'
+  output: Tarkistuslista
+  source: src:RANT
+- flow_id: FLOW_RANT_03
+  trigger: 'Havaittu: Hukkumisvaara'
+  action: HeitÃ¤ pelastusrengas, soita 112, Ã„LÃ„ mene veteen yksin
+  output: Poikkeamaraportti
+  source: src:RANT
+- flow_id: FLOW_RANT_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'rantavahti: rutiiniarviointi'
+  output: Status-raportti
+  source: src:RANT
+KNOWLEDGE_TABLES:
+- table_id: TBL_RANT_01
+  title: Rantavahti â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: swim_temp_min_c
+    value: '15'
+    action: <15Â°C â†’ hypotermia-varoitus
+  - metric: wave_height_warning_cm
+    value: '30'
+    action: '>30 cm â†’ pienveneilyvaroitus'
+  - metric: visibility_fog_m
+    value: '50'
+    action: <50 m â†’ venetoiminta rajoitettu
+  - metric: thunderstorm_km
+    value: '10'
+    action: <10 km â†’ VEDESTÃ„ POIS
+  - metric: child_depth_max_cm
+    value: '30'
+    action: Lapsi <10v aina seurassa vedessÃ¤
+  source: src:RANT
+COMPLIANCE_AND_LEGAL:
+  pelastusvaline: RannanpitÃ¤jÃ¤n velvollisuus pelastusvÃ¤lineeseen [src:RV2]
+UNCERTAINTY_NOTES:
+- Pienen jÃ¤rven aallokko riippuu tuulensuunnasta.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:RV1
+    org: SUH
+    title: Vesiturvallisuus
+    year: 2025
+    url: https://www.suh.fi/
+    supports: Uintiturvallisuus.
+  - id: src:RV2
+    org: Pelastuslaitos/THL
+    title: HÃ¤tÃ¤ohjeet
+    year: 2025
+    url: https://www.112.fi/
+    supports: Ensiapu, hÃ¤tÃ¤numerot.
+eval_questions:
+- q: MikÃ¤ on uintilÃ¤mpÃ¶tilan minimi (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.swim_temp_min_c
+  source: src:RV1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun uintilÃ¤mpÃ¶tilan minimi (Â°C) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.swim_temp_min_c.action
+  source: src:RV1
+- q: MikÃ¤ on aaltokorkeusvaroitus (cm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wave_height_warning_cm
+  source: src:RV1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun aaltokorkeusvaroitus (cm) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wave_height_warning_cm.action
+  source: src:RV1
+- q: MikÃ¤ on visibility fog m?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.visibility_fog_m
+  source: src:RV1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun visibility fog m ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.visibility_fog_m.action
+  source: src:RV1
+- q: MikÃ¤ on thunderstorm km?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.thunderstorm_km
+  source: src:RV1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun thunderstorm km ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.thunderstorm_km.action
+  source: src:RV1
+- q: MikÃ¤ on lasten enimmÃ¤issyvyys (cm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.child_depth_max_cm
+  source: src:RV1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun lasten enimmÃ¤issyvyys (cm) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.child_depth_max_cm.action
+  source: src:RV1
+- q: MitÃ¤ kevÃ¤t huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:RV1
+- q: MitÃ¤ kesÃ¤ huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:RV1
+- q: MitÃ¤ syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:RV1
+- q: MitÃ¤ talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:RV1
+- q: Miten 'Hukkumisvaara' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:RV1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Hukkumisvaara'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:RV1
+- q: Miten 'SinilevÃ¤myrkytys' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:RV1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'SinilevÃ¤myrkytys'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:RV1
+- q: MikÃ¤ on pelastusvaline -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.pelastusvaline
+  source: src:RV1
+- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:RV1
+- q: MitkÃ¤ ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#11)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#12)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#13)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#14)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#15)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#16)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#17)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#18)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#19)?
+  a_ref: ASSUMPTIONS
+  source: src:RV1

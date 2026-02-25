@@ -1,0 +1,251 @@
+header:
+  agent_id: valo_varjo
+  agent_name: Valo- ja varjoanalyytikko
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenranta 60.9°N, 26.7°E
+- Aurinkokulman analyysi mehiläispesien, kasvimaiden, aurinkopaneelien ja asumisen
+  optimointiin
+- Kytketty valaistusmestari-, hortonomi-, tarhaaja-agentteihin
+DECISION_METRICS_AND_THRESHOLDS:
+  solar_noon_elevation_summer:
+    value: 52.6° (kesäpäivänseisaus, 60.9°N)
+    source: src:VAL1
+    action: Talvipäivänseisaus 5.8° → varjot pitkät, paneelien kulma 70°. Päivänvalo
+      5.7h. Valaistusautomaation kytkentä vko 43.
+  solar_noon_elevation_winter:
+    value: 5.8° (talvipäivänseisaus)
+    source: src:VAL1
+  daylength_midsummer_h:
+    value: 19.1 h (sis. siviilikrepuskulaari)
+    source: src:VAL1
+  daylength_midwinter_h:
+    value: 5.7 h
+    source: src:VAL1
+  bee_hive_optimal_morning_sun:
+    value: Pesän suuaukko itään-kaakkoon → aamuaurinko lämmittää ja aktivoi
+    action: Jos pesä varjossa klo 8-10 kesällä → suosittele siirtoa
+    source: src:VAL2
+  solar_panel_tilt_optimal:
+    value: 40-45° (vuosikeskiarvo 60°N)
+    note: Talvi 70°, kesä 15-20°
+    source: src:VAL1
+    action: 'Varjossa oleva paneeli: -20% tuotto. Yksikin varjostettu kenno → koko
+      stringi kärsii. Oksien leikkaus 2x/v (kevät + syksy).'
+SEASONAL_RULES:
+- season: Kevät
+  action: Varjoanalyys kasvimaalle (puut lehdettömiä → tilanne muuttuu). Aurinkopaneelien
+    kallistus 30-35°.
+  source: src:VAL1
+- season: Kesä
+  action: Yötön yö-valaistus huomioitava (kameran IR-kytkentä). Pesien ylilämpenemisriski
+    suorassa auringossa >35°C.
+  source: src:VAL2
+- season: Syksy
+  action: Varjojen pidentyminen → tarkista aurinkopaneelien tuottoennuste. Kallistus
+    50-60°.
+  source: src:VAL1
+- season: Talvi
+  action: Aurinko vain 5.8° korkealla → varjot erittäin pitkiä. Lumipeite heijastaa
+    (albedo 0.8-0.9). Paneelikallistus 70°.
+  source: src:VAL1
+FAILURE_MODES:
+- mode: Paneeli varjossa uuden puun takia
+  detection: Sähköntuotanto pudonnut >20% edelliseen vuoteen verrattuna
+  action: Varjoanalyysi, puun oksien leikkaus tai paneelin siirto
+  source: src:VAL1
+- mode: Pesien ylilämpö kesällä
+  detection: Pesälämpötila >38°C + suora aurinko
+  action: Varjostus (lauta pesän päälle), ilmoita tarhaajalle
+  source: src:VAL2
+PROCESS_FLOWS:
+- flow_id: FLOW_VALO_01
+  trigger: solar_noon_elevation_summer ylittää kynnysarvon (52.6° (kesäpäivänseisaus,
+    60.9°N))
+  action: Talvipäivänseisaus 5.8° → varjot pitkät, paneelien kulma 70°. Päivänvalo
+    5.7h. Valaistusautomaation kytkentä vko 43.
+  output: Tilanneraportti
+  source: src:VALO
+- flow_id: FLOW_VALO_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: Varjoanalyys kasvimaalle (puut lehdettömiä → tilanne muuttuu). Aurinkopaneelien
+    kallistus 30-35°.
+  output: Tarkistuslista
+  source: src:VALO
+- flow_id: FLOW_VALO_03
+  trigger: 'Havaittu: Paneeli varjossa uuden puun takia'
+  action: Varjoanalyysi, puun oksien leikkaus tai paneelin siirto
+  output: Poikkeamaraportti
+  source: src:VALO
+- flow_id: FLOW_VALO_04
+  trigger: Säännöllinen heartbeat
+  action: 'valo_varjo: rutiiniarviointi'
+  output: Status-raportti
+  source: src:VALO
+KNOWLEDGE_TABLES:
+  solar_calendar:
+  - date: 21.3. (kevätpäiväntasaus)
+    sunrise: ~06:20
+    sunset: ~18:35
+    daylength_h: 12.2
+    sun_noon_elev: 29.2°
+    source: src:VAL1
+  - date: 21.6. (kesäpäivänseisaus)
+    sunrise: ~03:35
+    sunset: ~22:45
+    daylength_h: 19.1
+    sun_noon_elev: 52.6°
+    source: src:VAL1
+  - date: 23.9. (syyspäiväntasaus)
+    sunrise: ~07:00
+    sunset: ~19:15
+    daylength_h: 12.2
+    sun_noon_elev: 29.2°
+    source: src:VAL1
+  - date: 21.12. (talvipäivänseisaus)
+    sunrise: ~09:25
+    sunset: ~15:10
+    daylength_h: 5.7
+    sun_noon_elev: 5.8°
+    source: src:VAL1
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Pilvisyys vaikuttaa merkittävästi todellisiin aurinkoenergiamääriin — laskennalliset
+  arvot ovat kirkas-taivas-maksimeja.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:VAL1
+    org: Ilmatieteen laitos / USNO
+    title: Aurinkolaskelmat 60°N
+    year: 2026
+    url: https://aa.usno.navy.mil/data/RS_OneYear
+    supports: Auringonnousu/-lasku, elevation, päivänpituus.
+  - id: src:VAL2
+    org: SML / Eva Crane Trust
+    title: Mehiläispesien sijoittelu
+    year: 2011
+    url: null
+    identifier: ISBN 978-952-92-9184-4
+    supports: Pesien suuntaus ja varjostus.
+eval_questions:
+- q: Mikä on auringon korkeus keskipäivällä kesäpäivänseisauksena?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_noon_elevation_summer.value
+  source: src:VAL1
+- q: Mikä on auringon korkeus talvipäivänseisauksena?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_noon_elevation_winter.value
+  source: src:VAL1
+- q: Kuinka pitkä on päivä keskikesällä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.daylength_midsummer_h.value
+  source: src:VAL1
+- q: Kuinka pitkä on päivä keskitalvella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.daylength_midwinter_h.value
+  source: src:VAL1
+- q: Mihin suuntaan mehiläispesän suuaukko pitäisi osoittaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bee_hive_optimal_morning_sun.value
+  source: src:VAL2
+- q: Mikä on optimaalinen aurinkopaneelin kallistuskulma?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_panel_tilt_optimal.value
+  source: src:VAL1
+- q: Milloin aurinko nousee kesäpäivänseisauksena?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[1].sunrise
+  source: src:VAL1
+- q: Milloin aurinko laskee talvipäivänseisauksena?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[3].sunset
+  source: src:VAL1
+- q: Mitä tapahtuu kun pesä ylikuumenee?
+  a_ref: FAILURE_MODES[1].action
+  source: src:VAL2
+- q: Miten paneelin varjostus havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:VAL1
+- q: Mikä on talven paneelikallistus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_panel_tilt_optimal.note
+  source: src:VAL1
+- q: Mikä on lumen albedo?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:VAL1
+- q: Milloin varjoanalyysi kasvimaalle tehdään?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:VAL1
+- q: Mikä on pesän ylilämpenemisraja?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:VAL2
+- q: Miten yötön yö vaikuttaa kameroihin?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:VAL1
+- q: Mikä on auringon korkeus kevätpäiväntasauksena?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[0].sun_noon_elev
+  source: src:VAL1
+- q: Mikä on kesän paneelikallistus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_panel_tilt_optimal.note
+  source: src:VAL1
+- q: Mitä pesälle tehdään suorassa auringossa?
+  a_ref: FAILURE_MODES[1].action
+  source: src:VAL2
+- q: Milloin varjot ovat pisimmillään?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:VAL1
+- q: Mikä on syksyn paneelikallistus?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:VAL1
+- q: Vaikuttaako pilvisyys laskelmiin?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:VAL1
+- q: Mikä on päivän pituus syyspäiväntasauksena?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[2].daylength_h
+  source: src:VAL1
+- q: Kenelle pesän ylilämmöstä ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:VAL2
+- q: Milloin pesä on varjossa ongelmallisesti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bee_hive_optimal_morning_sun.action
+  source: src:VAL2
+- q: Mikä on Korvenrannan leveysaste?
+  a_ref: ASSUMPTIONS
+  source: src:VAL1
+- q: Mikä on kevätpäiväntasauksen päivänpituus?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[0].daylength_h
+  source: src:VAL1
+- q: Miten puiden varjot muuttuvat keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:VAL1
+- q: Milloin aurinkoenergian tuottoennuste tarkistetaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:VAL1
+- q: Mikä on paneelituoton pudotusraja hälytykselle?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:VAL1
+- q: Miten puun varjostus korjataan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:VAL1
+- q: Milloin aurinko nousee talvipäivänseisauksena?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[3].sunrise
+  source: src:VAL1
+- q: Mikä on kesäauringon korkeuskulma?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[1].sun_noon_elev
+  source: src:VAL1
+- q: Kenelle varjostusongelmasta ilmoitetaan (paneeli)?
+  a_ref: FAILURE_MODES[0].action
+  source: src:VAL1
+- q: Miten lumi vaikuttaa valon heijastukseen?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:VAL1
+- q: Milloin aurinko laskee kesäpäivänseisauksena?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[1].sunset
+  source: src:VAL1
+- q: Mikä on päivänvalo-ero kesä- ja talvipäivänseisauksen välillä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:VAL1
+- q: Miten pesien ylilämpeneminen estetään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:VAL2
+- q: Onko Korvenrannassa yötöntä yötä?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[1]
+  source: src:VAL1
+- q: Mikä on auringon korkeuskulma talvella?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[3].sun_noon_elev
+  source: src:VAL1
+- q: Milloin aurinko nousee kevätpäiväntasauksena?
+  a_ref: KNOWLEDGE_TABLES.solar_calendar[0].sunrise
+  source: src:VAL1

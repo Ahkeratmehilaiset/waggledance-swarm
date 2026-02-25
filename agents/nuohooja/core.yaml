@@ -1,0 +1,234 @@
+header:
+  agent_id: nuohooja
+  agent_name: Nuohooja / Paloturva-asiantuntija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Korvenranta: puulämmitys (takka, leivinuuni, puukiuas)'
+- Nuohous lakisääteinen
+- Kytketty paloesimies-, ilmanlaatu-, timpuri-agentteihin
+DECISION_METRICS_AND_THRESHOLDS:
+  chimney_sweep_interval:
+    value: 'Päälämmityslähde: 1x/v, vapaa-ajan: 3v välein'
+    source: src:NU1
+  creosote_mm:
+    value: <3 mm OK
+    action: '>3 mm → nuohous pian, >6 mm → VÄLITÖN (palovaara)'
+    source: src:NU1
+  chimney_draft_pa:
+    value: 10-20 Pa normaali
+    action: <5 Pa → huono veto, savukaasut sisään, tarkista hormi
+    source: src:NU1
+  co_detector:
+    value: Suositus kaikissa puulämmitteissä tiloissa
+    action: Hälytin joka kerrokseen
+    source: src:NU2
+  extinguisher_check_years:
+    value: 2
+    action: Tarkista 2v välein, huolla 5v välein
+    source: src:NU2
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Nuohouksen tilaus ennen seuraavaa kautta. Hormin tarkistus
+    (halkeamat, tiiveys).'
+  source: src:NU1
+- season: Kesä
+  action: '[vko 22-35] Hormien korjaustyöt (muuraus, pellitys). Ei aktiivista lämmitystä.'
+  source: src:NU1
+- season: Syksy
+  action: '[vko 36-48] Lämmityskausi alkaa. Varmista nuohous tehty. Palovaroittimet
+    testattu.'
+  source: src:NU2
+- season: Talvi
+  action: '[vko 49-13] Aktiivinen lämmitys. Kreosootinkertymä. Häkävaroitin toiminnassa.'
+  source: src:NU1
+FAILURE_MODES:
+- mode: Nokipalo (hormipalo)
+  detection: Kova hurina hormissa, kipinöitä piipun päästä, kuuma hormipinta
+  action: Sulje ilmaläpät ja pellit, soita 112, ÄLÄ sammuta vedellä, evakuoi
+  source: src:NU2
+- mode: Savukaasut sisälle
+  detection: CO-hälytin, päänsärky, pahoinvointi
+  action: Avaa ikkunat, sammuta tulisija, ulos, soita 112
+  source: src:NU2
+PROCESS_FLOWS:
+- flow_id: FLOW_NUOH_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Nuohouksen tilaus ennen seuraavaa kautta. Hormin tarkistus
+    (halkeamat, tiiveys).'
+  output: Tarkistuslista
+  source: src:NUOH
+- flow_id: FLOW_NUOH_03
+  trigger: 'Havaittu: Nokipalo (hormipalo)'
+  action: Sulje ilmaläpät ja pellit, soita 112, ÄLÄ sammuta vedellä, evakuoi
+  output: Poikkeamaraportti
+  source: src:NUOH
+- flow_id: FLOW_NUOH_04
+  trigger: Säännöllinen heartbeat
+  action: 'nuohooja: rutiiniarviointi'
+  output: Status-raportti
+  source: src:NUOH
+KNOWLEDGE_TABLES:
+- table_id: TBL_NUOH_01
+  title: Nuohooja / Paloturva-asiantuntija — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: chimney_sweep_interval
+    value: 'Päälämmityslähde: 1x/v, vapaa-ajan: 3v välein'
+    action: ''
+  - metric: creosote_mm
+    value: <3 mm OK
+    action: '>3 mm → nuohous pian, >6 mm → VÄLITÖN (palovaara)'
+  - metric: chimney_draft_pa
+    value: 10-20 Pa normaali
+    action: <5 Pa → huono veto, savukaasut sisään, tarkista hormi
+  - metric: co_detector
+    value: Suositus kaikissa puulämmitteissä tiloissa
+    action: Hälytin joka kerrokseen
+  - metric: extinguisher_check_years
+    value: '2'
+    action: Tarkista 2v välein, huolla 5v välein
+  source: src:NUOH
+COMPLIANCE_AND_LEGAL:
+  nuohouslaki: 'Pelastuslaki 379/2011 §59: nuohousvelvollisuus [src:NU1]'
+  palovaroitin: 'Pelastuslaki: pakollinen jokaiseen asuntoon [src:NU2]'
+UNCERTAINTY_NOTES:
+- Kreosootinkertymänopeus riippuu polttotavoista — märkä puu kerää nopeammin.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:NU1
+    org: Nuohousalan Keskusliitto
+    title: Nuohousohje
+    year: 2024
+    url: https://www.nuohoojat.fi/
+    supports: Nuohousvälit, kreosootti.
+  - id: src:NU2
+    org: Pelastuslaitos
+    title: Paloturvallisuus
+    year: 2025
+    url: https://www.pelastustoimi.fi/
+    supports: Palovaroittimet, häkä.
+eval_questions:
+- q: Kuinka usein nuohotaan päälämmityslähde?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chimney_sweep_interval.value
+  source: src:NU1
+- q: Mikä kreosoottikerros on vaarallinen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.creosote_mm.action
+  source: src:NU1
+- q: Mitä tehdään nokipalossa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:NU2
+- q: Saako nokipaloa sammuttaa vedellä?
+  a_ref: FAILURE_MODES[0].action
+  source: src:NU2
+- q: Mikä on normaalin vedon arvo?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chimney_draft_pa.value
+  source: src:NU1
+- q: Mikä on nuohousväli?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chimney_sweep_interval
+  source: src:NU1
+- q: Mikä on kreosoottikerros (mm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.creosote_mm
+  source: src:NU1
+- q: 'Toimenpide: kreosoottikerros?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.creosote_mm.action
+  source: src:NU1
+- q: Mikä on savuhormin veto (Pa)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chimney_draft_pa
+  source: src:NU1
+- q: 'Toimenpide: savuhormin veto?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chimney_draft_pa.action
+  source: src:NU1
+- q: Mikä on häkävaroitin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co_detector
+  source: src:NU1
+- q: 'Toimenpide: hÃ¤kÃ¤varoitin?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co_detector.action
+  source: src:NU1
+- q: Mikä on sammuttimen tarkistusväli (vuotta)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.extinguisher_check_years
+  source: src:NU1
+- q: 'Toimenpide: sammuttimen tarkistusvÃ¤li?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.extinguisher_check_years.action
+  source: src:NU1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:NU1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:NU1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:NU1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:NU1
+- q: 'Havainto: Nokipalo (hormipalo)?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:NU1
+- q: 'Toiminta: Nokipalo (hormipalo)?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:NU1
+- q: 'Havainto: Savukaasut sisälle?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:NU1
+- q: 'Toiminta: Savukaasut sisälle?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:NU1
+- q: 'Sääntö: nuohouslaki?'
+  a_ref: COMPLIANCE_AND_LEGAL.nuohouslaki
+  source: src:NU1
+- q: 'Sääntö: palovaroitin?'
+  a_ref: COMPLIANCE_AND_LEGAL.palovaroitin
+  source: src:NU1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:NU1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #12?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #13?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1
+- q: 'Kytkentä muihin agentteihin #14?'
+  a_ref: ASSUMPTIONS
+  source: src:NU1

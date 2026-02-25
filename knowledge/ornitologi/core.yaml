@@ -1,0 +1,278 @@
+﻿header:
+  agent_id: ornitologi
+  agent_name: Ornitologi (LintutieteilijÃ¤)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Sijainti: HuhdasjÃ¤rvi/Kouvola, Kaakkois-Suomi (vyÃ¶hyke II-III)'
+- Lintulautakulku ja jÃ¤rvenrantaympÃ¤ristÃ¶
+- Havainnot PTZ-kameralta ja kÃ¤yttÃ¤jÃ¤n ilmoituksista
+DECISION_METRICS_AND_THRESHOLDS:
+  rarity_alert_threshold:
+    value: Uhanalaisuusluokka CR/EN/VU tai alueella harvinainen
+    action: Ilmoita vÃ¤littÃ¶mÃ¤sti + tallenna havainto + geolokaatio
+    source: src:ORN1
+  nest_protection_zone_m:
+    value: 50
+    note: PesimÃ¤aikana 50m suojaetÃ¤isyys rauhoitetun lajin pesÃ¤lle
+    source: src:ORN2
+  spring_migration_start_date:
+    value: Maaliskuun loppu (vko 12-13)
+    note: 'EnsimmÃ¤iset muuttajat: kiuru, tÃ¶yhtÃ¶hyyppÃ¤, vÃ¤stÃ¤rÃ¤kki'
+    source: src:ORN2
+    action: '>50 muuttajaa/h â†’ ilmoita luontokuvaajalle (PTZ kohdistus). KevÃ¤t vko 18-22, syksy vko 36-42.'
+  autumn_migration_peak:
+    value: Syyskuu (vko 36-40)
+    note: Kurkimuutto, petolintumuutto
+    source: src:ORN3
+  feeder_refill_trigger:
+    value: LintulautakÃ¤ynnit laskevat >30% 3 pÃ¤ivÃ¤ssÃ¤
+    action: Tarkista ruoan laatu ja tÃ¤yttÃ¶aste
+    source: src:ORN1
+  acoustic_confidence:
+    value: 0.9
+    source: UNKNOWN
+    action: Kirjaa havainto.
+    to_verify: Paikkakohtainen validointi.
+  wind_noise_db:
+    value: 50
+    source: UNKNOWN
+    action: KeskeytÃ¤ analyysi.
+    to_verify: Mikrofonin SNR + tuulisuoja.
+  high_freq_khz:
+    value: 8
+    source: UNKNOWN
+    action: Lepakko/pÃ¶llÃ¶ â†’ suuntaa PTZ.
+    to_verify: Spektritestit yÃ¶datasta.
+  species_anomaly_per_hour:
+    value: 10x normaali
+    source: UNKNOWN
+    action: MuuttolintuhÃ¤lytys + 15min tallennus.
+    to_verify: Baseline 30 pÃ¤ivÃ¤n datasta.
+  proximity_dbfs:
+    value: -10
+    source: UNKNOWN
+    action: Lintu kameran pÃ¤Ã¤llÃ¤. Linssinpuhdistus.
+SEASONAL_RULES:
+- season: KevÃ¤t (maalis-toukokuu)
+  rule: 'KevÃ¤tmuutto 24/7. PesimÃ¤rauha: EI PTZ-zoomia pesiin.'
+- season: Talvi (marraskuu-helmikuu)
+  rule: Ruokintapaikalle (Preset 'Feeder'). Analyysi vain valoisaan aikaan.
+FAILURE_MODES:
+- failure: False Positive Loop
+  recovery: MykistÃ¤ kyseinen laji 60 min (debounce).
+- failure: Microphone Clipping
+  recovery: AGC -6 dB.
+PROCESS_FLOWS:
+- flow_id: FLOW_ORNI_01
+  trigger: rarity_alert_threshold ylittÃ¤Ã¤ kynnysarvon (Uhanalaisuusluokka CR/EN/VU tai alueella harvinainen)
+  action: Ilmoita vÃ¤littÃ¶mÃ¤sti + tallenna havainto + geolokaatio
+  output: Tilanneraportti
+  source: src:ORNI
+- flow_id: FLOW_ORNI_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t (maalis-touko)'
+  action: '[vko 14-22] Muuttolintuseuranta, pesÃ¤laatikoiden tarkistus, pÃ¶ntÃ¶istÃ¤ vanhan pesÃ¤materiaalin poisto '
+  output: Tarkistuslista
+  source: src:ORNI
+- flow_id: FLOW_ORNI_03
+  trigger: 'Havaittu: Lintuinfluenssa-epÃ¤ily (kuolleet linnut)'
+  action: Ã„LÃ„ koske â€” ilmoita Ruokavirastolle (p. 029 530 0400), ilmoita tautivahti-agentille
+  output: Poikkeamaraportti
+  source: src:ORNI
+- flow_id: FLOW_ORNI_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'ornitologi: rutiiniarviointi'
+  output: Status-raportti
+  source: src:ORNI
+KNOWLEDGE_TABLES:
+- common_species_huhdasjarvi:
+  - species: Talitiainen (Parus major)
+    status: Yleinen, paikkalintu
+    feeder: true
+    source: src:ORN3
+  - species: Sinitiainen (Cyanistes caeruleus)
+    status: Yleinen, paikkalintu
+    feeder: true
+    source: src:ORN3
+  - species: KÃ¤pytikka (Dendrocopos major)
+    status: Yleinen
+    feeder: true
+    source: src:ORN3
+  - species: Kuukkeli (Perisoreus infaustus)
+    status: NT (silmÃ¤llÃ¤pidettÃ¤vÃ¤)
+    feeder: false
+    source: src:ORN1
+  - species: PalokÃ¤rki (Dryocopus martius)
+    status: LC, EU:n lintudirektiivin liite I
+    feeder: false
+    source: src:ORN1
+  - species: Kurki (Grus grus)
+    status: LC, rauhoitettu
+    feeder: false
+    source: src:ORN1
+  - species: KalasÃ¤Ã¤ski (Pandion haliaetus)
+    status: LC, EU lintudirektiivin liite I
+    feeder: false
+    source: src:ORN1
+- table_id: TBL_PROTECTED_ZONES
+  title: SuojeluvyÃ¶hykkeet
+  rows:
+  - type: Suurpetolintujen pesÃ¤t
+    restriction: 'KuvauskieltoetÃ¤isyys: UNKNOWN (lajikohtainen). TO_VERIFY: BirdLife/viranomaisohje.'
+    src: src:ORN1
+  - type: Pikkulintujen ruokintapaikka
+    restriction: VÃ¤ltÃ¤ PTZ-moottorin surinaa.
+    src: src:ORN1
+COMPLIANCE_AND_LEGAL:
+- Luonnonsuojelulaki kieltÃ¤Ã¤ rauhoitettujen elÃ¤inten tahallisen hÃ¤iritsemisen lisÃ¤Ã¤ntymisaikana ja muuton levÃ¤hdysalueilla
+  [src:ORN1].
+UNCERTAINTY_NOTES:
+- Muuttoaikataulut vaihtelevat vuosittain sÃ¤Ã¤n mukaan â€” pÃ¤ivÃ¤mÃ¤Ã¤rÃ¤t ovat keskiarvoja.
+- Kameratunnistuksen tarkkuus pienille lajeille on rajallinen, vaatii kÃ¤yttÃ¤jÃ¤n varmistuksen.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:ORN1
+    org: Suomen ympÃ¤ristÃ¶keskus (SYKE)
+    title: Suomen lajien uhanalaisuus â€“ Punainen kirja 2019
+    year: 2019
+    url: https://punainenkirja.laji.fi/
+    supports: Uhanalaisuusluokat CR/EN/VU/NT/LC.
+  - id: src:ORN2
+    org: OikeusministeriÃ¶
+    title: Luonnonsuojelulaki 9/2023
+    year: 2023
+    url: https://www.finlex.fi/fi/laki/ajantasa/2023/20230009
+    supports: Rauhoitetut lajit, pesien suojelu, hÃ¤irinnÃ¤n kielto.
+  - id: src:ORN3
+    org: BirdLife Suomi
+    title: Lintutietokanta ja muuttoseuranta
+    year: 2025
+    url: https://www.birdlife.fi/
+    supports: Muuttoaikataulut, lajitiedot, pesimÃ¤biologia.
+  - id: src:ORN4
+    org: Ruokavirasto
+    title: Lintuinfluenssa
+    year: 2025
+    url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/linnut/lintuinfluenssa/
+    supports: Lintuinfluenssan tunnistus ja ilmoitusmenettely.
+eval_questions:
+- q: Milloin kevÃ¤tmuutto alkaa Kaakkois-Suomessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spring_migration_start_date.value
+  source: src:ORN3
+- q: MikÃ¤ on syysmuuton huippu?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.autumn_migration_peak.value
+  source: src:ORN3
+- q: MikÃ¤ suojaetÃ¤isyys pesÃ¤lle vaaditaan pesimÃ¤aikana?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nest_protection_zone_m.value
+  source: src:ORN2
+- q: Milloin harvinaisuudesta ilmoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.rarity_alert_threshold.value
+  source: src:ORN1
+- q: MitÃ¤ tehdÃ¤Ã¤n kuolleiden lintujen lÃ¶ytyessÃ¤?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ORN4
+- q: Ovatko kaikki linnut rauhoitettuja?
+  a_ref: COMPLIANCE_AND_LEGAL.protected_species
+  source: src:ORN2
+- q: MikÃ¤ on kuukkelin uhanalaisuusluokka?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[3].status
+  source: src:ORN1
+- q: MitkÃ¤ linnut kÃ¤yttÃ¤vÃ¤t lintulautaa?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi
+  source: src:ORN3
+- q: Saako pesÃ¤n tuhota pesimÃ¤aikana?
+  a_ref: COMPLIANCE_AND_LEGAL.nest_destruction
+  source: src:ORN2
+- q: MitÃ¤ tehdÃ¤Ã¤n petolintu lintulaudalla?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ORN3
+- q: Milloin pÃ¶ntÃ¶t puhdistetaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:ORN3
+- q: MitÃ¤ talvella tarjotaan lintulaudalla?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:ORN3
+- q: MitkÃ¤ ovat ensimmÃ¤iset kevÃ¤tmuuttajat?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spring_migration_start_date.note
+  source: src:ORN3
+- q: MikÃ¤ on EU:n lintudirektiivin merkitys?
+  a_ref: COMPLIANCE_AND_LEGAL.eu_birds_directive
+  source: src:ORN2
+- q: Onko palokÃ¤rki EU:n lintudirektiivin laji?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[4].status
+  source: src:ORN1
+- q: Milloin lintulaudan ruoka tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.feeder_refill_trigger.value
+  source: src:ORN1
+- q: MikÃ¤ on kalasÃ¤Ã¤sken suojelustatus?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[6].status
+  source: src:ORN1
+- q: Onko kurki rauhoitettu?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[5].status
+  source: src:ORN1
+- q: MistÃ¤ numerosta ilmoitetaan lintuinfluenssaepÃ¤ilystÃ¤?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ORN4
+- q: MitÃ¤ kesÃ¤llÃ¤ huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ORN2
+- q: Saako puita kaataa pesÃ¤puiden lÃ¤hellÃ¤ kesÃ¤llÃ¤?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ORN2
+- q: Kuinka monta kuollutta lintua laukaisee ilmoituksen?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:ORN4
+- q: Milloin pesÃ¤laatikot tarkistetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:ORN3
+- q: Milloin vanha pesÃ¤materiaali poistetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:ORN3
+- q: MikÃ¤ on lintulaudan ruoan laadun tarkistusvÃ¤li?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.feeder_refill_trigger.action
+  source: src:ORN1
+- q: Vaihtelevako muuttoajat vuosittain?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:ORN3
+- q: MikÃ¤ on HuhdasjÃ¤rven kasvuvyÃ¶hyke?
+  a_ref: ASSUMPTIONS
+  source: src:ORN3
+- q: Onko sinitiainen paikkalintu?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[1].status
+  source: src:ORN3
+- q: MikÃ¤ on kÃ¤pytikan suojelustatus?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[2].status
+  source: src:ORN3
+- q: KÃ¤yttÃ¤Ã¤kÃ¶ kurki lintulautaa?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[5].feeder
+  source: src:ORN1
+- q: MikÃ¤ on kurjen latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[5].species
+  source: src:ORN1
+- q: Onko kuukkeli uhanalaisluettelossa?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[3].status
+  source: src:ORN1
+- q: Kenelle petolintuhavainnosta ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ORN3
+- q: MikÃ¤ on kurkimuuton ajankohta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.autumn_migration_peak.note
+  source: src:ORN3
+- q: Voiko kameratunnistukseen luottaa pienillÃ¤ lajeilla?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:ORN1
+- q: MikÃ¤ on talitiaisen latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[0].species
+  source: src:ORN3
+- q: Tarvitseeko lintulaudalla olla vettÃ¤ talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:ORN3
+- q: MikÃ¤ on kalasÃ¤Ã¤sken latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[6].species
+  source: src:ORN1
+- q: Milloin syysmuuttoa seurataan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:ORN3
+- q: Kenelle lintuinfluenssaepÃ¤ilystÃ¤ ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ORN4

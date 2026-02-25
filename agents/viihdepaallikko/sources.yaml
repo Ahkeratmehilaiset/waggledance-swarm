@@ -1,0 +1,13 @@
+sources:
+- id: src:VI1
+  org: Sony / THL
+  title: Peliturvallisuus ja ergonomia
+  year: 2025
+  url: null
+  supports: Ruutuaika, ylikuumeneminen, UPS.
+- id: src:VI2
+  org: Suomen Mölkky ry / perinnepelit
+  title: Perinnepelit
+  year: 2025
+  url: null
+  supports: Mölkky, korttipelit, tikanheitto.

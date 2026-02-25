@@ -1,0 +1,13 @@
+sources:
+- id: src:KI1
+  org: Kouvolan Jätehuolto
+  title: Lajitteluohje
+  year: 2025
+  url: null
+  supports: Lajittelu, kompostointi.
+- id: src:KI2
+  org: Oikeusministeriö
+  title: Jätelaki 646/2011
+  year: 2011
+  url: https://finlex.fi/fi/laki/ajantasa/2011/20110646
+  supports: Lajitteluvelvollisuus, vaarallinen jäte.

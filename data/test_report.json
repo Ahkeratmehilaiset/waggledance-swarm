@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-02-24T09:23:40.047698",
+  "results": {
+    "pass": 66,
+    "fail": 1,
+    "warn": 1,
+    "errors": [
+      "Whisper: 'WhisperProtocol' object has no attribute 'is_crowned'"
+    ]
+  }
+}

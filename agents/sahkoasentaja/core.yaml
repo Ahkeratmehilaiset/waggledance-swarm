@@ -1,0 +1,212 @@
+header:
+  agent_id: sahkoasentaja
+  agent_name: Sähköasentaja
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Suomi: 230/400 V, 50 Hz -sähköverkko.'
+- Luvanvaraiset sähkötyöt teetetään rekisteröidyllä sähköurakoitsijalla.
+DECISION_METRICS_AND_THRESHOLDS:
+  rcd_trip_current_max_ma:
+    value: 30
+    action: Uusissa pistorasiaryhmissä käytä enintään 30 mA vikavirtasuojaa (RCD).
+    source: src:TEC1
+  socket_group_rated_current_max_a:
+    value: 32
+    action: RCD-vaatimus koskee pistorasiaryhmiä, joiden nimellisvirta on enintään
+      32 A.
+    source: src:TEC1
+  outdoor_extension_cable_rating:
+    value: IP44 ulkokäyttöön, 16 A max, max 25 m
+    action: Sisäjatkojohto ulkona → sähköiskuvaara. Vaihda IP44.
+    source: src:SAH1
+  surge_protection_presence:
+    value: Ylijännitesuoja B+C, 40 kA pääkeskuksessa
+    action: Puuttuu → asennuta Tukes-rekisteröity asentaja.
+    source: src:SAH1
+  main_fuse_rating_a:
+    value: 25 A tai 35 A omakotitalo
+    action: '>80% kuormitus → seuranta. Laukeaa → tarkista kuorma.'
+    source: src:SAH1
+SEASONAL_RULES:
+- season: Kevät
+  action: Ulkopistorasioiden tarkistus. Aurinkopaneelien kaapelit. RCD-testi 30 mA.
+  source: src:SAH1
+- season: Kesä
+  action: 'Ukkossuojaus: ylijännitesuojat B+C 40 kA. UV-rasitus. Kulutusseuranta kWh/kk.'
+  source: src:SAH1
+- season: Syksy
+  action: Lämmitysjärjestelmän sähkötarkistus. Sulanapitokaapelit vko 42-44.
+  source: src:SAH1
+- season: Talvi
+  action: Sulanapitokaapelit T<-2°C. Varokekuormitus seuranta. Aggregaatti + UPS.
+  source: src:SAH1
+FAILURE_MODES:
+- mode: Toistuva RCD-laukeaminen
+  detection: RCD laukeaa useita kertoja
+  action: Irrota kuormat yksi kerrallaan; jos ei selviä → urakoitsija
+  source: src:TEC2
+- mode: Lämpenevä liitos / palaneen haju
+  detection: Pistorasia/kytkin lämpenee tai haisee palaneelle
+  action: Katkaise virta välittömästi ja tilaa sähköurakoitsija
+  source: src:TEC2
+PROCESS_FLOWS:
+  fault_response:
+    steps:
+    - 1. Katkaise virta turvallisesti ja estä lisävahinko
+    - 2. Tarkista vikavirtasuoja/sulakkeet
+    - 3. Kirjaa tapahtuma (aika, kuormat, olosuhteet)
+    - 4. Jos toistuva tai epäselvä → tilaa sähköurakoitsija
+    source: src:TEC2
+KNOWLEDGE_TABLES:
+  allowed_diy_examples:
+  - task: Sulakkeen vaihto
+    allowed: Kyllä
+    source: src:TEC2
+  - task: Valaisimen kytkentä (rajattu)
+    allowed: Rajoitetusti
+    source: src:TEC2
+  - task: Uuden pistorasian asentaminen
+    allowed: Ei
+    source: src:TEC2
+COMPLIANCE_AND_LEGAL:
+  electric_work_restrictions:
+    rule: Sähkötyöt ovat pääosin luvanvaraisia ja kuuluvat rekisteröidylle sähköurakoitsijalle.
+    source: src:TEC2
+UNCERTAINTY_NOTES:
+- SFS 6000 on maksullinen standardi; agentti käyttää vain yleistasoisia vaatimuksia.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:TEC1
+    org: SESKO ry / Suomen Standardisoimisliitto
+    title: SFS 6000:2022 Pienjännitesähköasennukset
+    year: 2022
+    url: N/A
+    what_it_supports: RCD (30 mA) -vaatimus pistorasiaryhmille (enintään 32 A) yleistasolla.
+  - id: src:TEC2
+    org: Tukes
+    title: Sähkötyöt ja urakointi
+    year: 2025
+    url: https://tukes.fi/sahko/sahkotyot-ja-urakointi
+    what_it_supports: Sähkötöiden luvanvaraisuus ja esimerkit maallikkotöistä.
+eval_questions:
+- q: Mikä on vikavirtasuojan enimmäislaukaisuvirta (mA) uusissa pistorasiaryhmissä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.rcd_trip_current_max_ma.value
+  source: src:TEC1
+- q: Mihin nimellisvirtaan asti pistorasiaryhmän RCD-vaatimus ulottuu?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.socket_group_rated_current_max_a.value
+  source: src:TEC1
+- q: Kuka saa tehdä luvanvaraiset sähkötyöt?
+  a_ref: COMPLIANCE_AND_LEGAL.electric_work_restrictions.rule
+  source: src:TEC2
+- q: Saako kuluttaja asentaa uuden pistorasian?
+  a_ref: KNOWLEDGE_TABLES.allowed_diy_examples[2].allowed
+  source: src:TEC2
+- q: Mikä on vikaprosessin 4. askel?
+  a_ref: PROCESS_FLOWS.fault_response.steps[3]
+  source: src:TEC2
+- q: Mikä on ulkokäyttöön liittyvä jatkojohdon vaatimus (arvo)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.outdoor_extension_cable_rating.value
+  source: src:TEC2
+- q: Miksi jatkojohdon luokitus on UNKNOWN?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:TEC2
+- q: Mitä tehdään jos pistorasia lämpenee tai haisee palaneelle?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TEC2
+- q: Mikä on sähköturvallisuuden luvanvaraisuussääntö?
+  a_ref: COMPLIANCE_AND_LEGAL.electric_work_restrictions.rule
+  source: src:TEC2
+- q: Mikä on sulakkeen vaihdon sallittavuus?
+  a_ref: KNOWLEDGE_TABLES.allowed_diy_examples[0].allowed
+  source: src:TEC2
+- q: Mikä on valaisimen kytkennän sallittavuus?
+  a_ref: KNOWLEDGE_TABLES.allowed_diy_examples[1].allowed
+  source: src:TEC2
+- q: Mikä on pistorasian asennuksen sallittavuus?
+  a_ref: KNOWLEDGE_TABLES.allowed_diy_examples[2].allowed
+  source: src:TEC2
+- q: Mikä on vikaprosessin 1. askel?
+  a_ref: PROCESS_FLOWS.fault_response.steps[0]
+  source: src:TEC2
+- q: Mikä on vikaprosessin 2. askel?
+  a_ref: PROCESS_FLOWS.fault_response.steps[1]
+  source: src:TEC2
+- q: Mikä on vikaprosessin 3. askel?
+  a_ref: PROCESS_FLOWS.fault_response.steps[2]
+  source: src:TEC2
+- q: Mikä on ylijännitesuojauksen olemassaolo (arvo)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.surge_protection_presence.value
+  source: src:TEC2
+- q: Miten ylijännitesuojaus tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.surge_protection_presence.action
+  source: src:TEC2
+- q: Mikä on pääsulakkeen koko (A)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.main_fuse_rating_a.value
+  source: src:TEC2
+- q: Miksi pääsulakkeen koko on tärkeä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.main_fuse_rating_a.action
+  source: src:TEC2
+- q: 'Mikä on vikamalli: RCD-laukeaminen?'
+  a_ref: FAILURE_MODES[0].mode
+  source: src:TEC2
+- q: 'Mikä on vikamalli: lämpenevä liitos?'
+  a_ref: FAILURE_MODES[1].mode
+  source: src:TEC2
+- q: Miten lämpenevä liitos tunnistetaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:TEC2
+- q: Mihin talvikauden sähköfokus liittyy?
+  a_ref: SEASONAL_RULES[0].focus
+  source: src:TEC2
+- q: Mihin kesäkauden sähköfokus liittyy?
+  a_ref: SEASONAL_RULES[1].focus
+  source: src:TEC2
+- q: Mikä on RCD 30 mA -ohjeen toimenpide?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.rcd_trip_current_max_ma.action
+  source: src:TEC1
+- q: Mikä on 32 A -rajan toimenpide?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.socket_group_rated_current_max_a.action
+  source: src:TEC1
+- q: Mikä on jatkojohdon luokituksen toimenpide?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.outdoor_extension_cable_rating.action
+  source: src:TEC2
+- q: Mikä on toistuvan RCD-laukeamisen tunnistus?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:TEC2
+- q: Mikä on RCD-laukeamisen toimintaohje?
+  a_ref: FAILURE_MODES[0].action
+  source: src:TEC2
+- q: Mikä on lämpenevän liitoksen toimintaohje?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TEC2
+- q: Mikä on sähkötyön luvanvaraisuuden lähde?
+  a_ref: COMPLIANCE_AND_LEGAL.electric_work_restrictions.source
+  source: src:TEC2
+- q: Mikä oletus koskee verkon taajuutta?
+  a_ref: ASSUMPTIONS[0]
+  source: src:TEC2
+- q: Mikä oletus koskee urakoitsijaa?
+  a_ref: ASSUMPTIONS[1]
+  source: src:TEC2
+- q: 'Operatiivinen päätöskysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen päätöskysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen päätöskysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen päätöskysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen päätöskysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen päätöskysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen päätöskysymys #7?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK

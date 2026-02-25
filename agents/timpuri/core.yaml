@@ -1,0 +1,247 @@
+header:
+  agent_id: timpuri
+  agent_name: Timpuri (rakenteet)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan puurakenteiset rakennukset
+- Perustukset, runko, katto, pinnat
+- Kytketty routa-, LVI-, sähkö-, nuohooja-agentteihin
+DECISION_METRICS_AND_THRESHOLDS:
+  wood_moisture_pct:
+    value: Terveen puun kosteus 8-15%
+    action: '>20% → homevaara, >25% → lahovaara → kuivaus HETI'
+    source: src:TI1
+  foundation_crack_mm:
+    value: <0.3 mm normaali kutistumishalkeama
+    action: '>1 mm tai laajeneva → rakennesuunnittelija'
+    source: src:TI1
+  roof_snow_load_kg_m2:
+    value: Mitoitus 180 kg/m² (Kouvola, RIL 201-1-2017)
+    action: '>70% mitoituskuormasta → tarkkaile, lumenpudotus harkintaan'
+    source: src:TI2
+  roof_inspection_years:
+    value: 2
+    action: 'Tarkista 2v välein: pellit, tiivisteet, läpiviennit'
+    source: src:TI1
+  ventilation_crawlspace:
+    value: Tuuletusaukot auki kesällä, kiinni talvella
+    action: Puutteellinen tuuletus → kosteusvaurio
+    source: src:TI1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Routavauriot perustuksissa. Katon tarkistus talven jälkeen.
+    Räystäiden jäävauriot.'
+  source: src:TI1
+- season: Kesä
+  action: '[vko 22-35] Korjaustyöt ja maalaus (kuiva kausi). Tuuletusaukot auki. Hyönteisvahinkojen
+    tarkistus.'
+  source: src:TI1
+- season: Syksy
+  action: '[vko 36-48] Räystäät ja vesikourut puhtaiksi. Tuuletusaukot kiinni. Talvipeitot.'
+  source: src:TI1
+- season: Talvi
+  action: '[vko 49-13] Lumikuorman seuranta. Jääpuikkojen pudotus. Routanousun merkit.'
+  source: src:TI2
+FAILURE_MODES:
+- mode: Kosteusvaurio seinärakenteessa
+  detection: Home, tunkkainen haju, puun kosteus >20%
+  action: Kosteuskartoitus, vaurion laajuus, kuivaus, syyn korjaus
+  source: src:TI1
+- mode: Katon vuoto
+  detection: Kostea laikku sisäkatossa
+  action: Väliaikainen suojaus, kattokorjaus kuivalla säällä
+  source: src:TI1
+PROCESS_FLOWS:
+- flow_id: FLOW_TIMP_01
+  trigger: wood_moisture_pct ylittää kynnysarvon (Terveen puun kosteus 8-15%)
+  action: '>20% → homevaara, >25% → lahovaara → kuivaus HETI'
+  output: Tilanneraportti
+  source: src:TIMP
+- flow_id: FLOW_TIMP_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Routavauriot perustuksissa. Katon tarkistus talven jälkeen.
+    Räystäiden jäävauriot.'
+  output: Tarkistuslista
+  source: src:TIMP
+- flow_id: FLOW_TIMP_03
+  trigger: 'Havaittu: Kosteusvaurio seinärakenteessa'
+  action: Kosteuskartoitus, vaurion laajuus, kuivaus, syyn korjaus
+  output: Poikkeamaraportti
+  source: src:TIMP
+- flow_id: FLOW_TIMP_04
+  trigger: Säännöllinen heartbeat
+  action: 'timpuri: rutiiniarviointi'
+  output: Status-raportti
+  source: src:TIMP
+KNOWLEDGE_TABLES:
+- table_id: TBL_TIMP_01
+  title: Timpuri (rakenteet) — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: wood_moisture_pct
+    value: Terveen puun kosteus 8-15%
+    action: '>20% → homevaara, >25% → lahovaara → kuivaus HETI'
+  - metric: foundation_crack_mm
+    value: <0.3 mm normaali kutistumishalkeama
+    action: '>1 mm tai laajeneva → rakennesuunnittelija'
+  - metric: roof_snow_load_kg_m2
+    value: Mitoitus 180 kg/m² (Kouvola, RIL 201-1-2017)
+    action: '>70% mitoituskuormasta → tarkkaile, lumenpudotus harkintaan'
+  - metric: roof_inspection_years
+    value: '2'
+    action: 'Tarkista 2v välein: pellit, tiivisteet, läpiviennit'
+  - metric: ventilation_crawlspace
+    value: Tuuletusaukot auki kesällä, kiinni talvella
+    action: Puutteellinen tuuletus → kosteusvaurio
+  source: src:TIMP
+COMPLIANCE_AND_LEGAL:
+  rakentamislaki: 'Rakentamislaki 751/2023: kunnossapitovelvollisuus [src:TI3]'
+  kosteus: Ympäristöministeriön asetus kosteusteknisestä toiminnasta [src:TI1]
+  asbesti: Ennen 1994 rakennettu → asbestikartoitus ennen purkua [src:TI1]
+UNCERTAINTY_NOTES:
+- Vanhan rakennuksen rakenteet voivat sisältää asbestia — selvitä ennen purkua.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:TI1
+    org: RIL/RT
+    title: Puurakenteiden ohjeistot
+    year: 2024
+    url: https://www.ril.fi/
+    supports: Puun kosteus, tuuletus, kunnossapito.
+  - id: src:TI2
+    org: RIL
+    title: RIL 201-1-2017 Rakenteiden kuormat
+    year: 2017
+    url: https://www.ril.fi/
+    supports: Lumikuormat.
+  - id: src:TI3
+    org: Oikeusministeriö
+    title: Rakentamislaki 751/2023
+    year: 2023
+    url: https://finlex.fi/fi/laki/ajantasa/2023/20230751
+    supports: Kunnossapito.
+eval_questions:
+- q: Mikä on terveen puun kosteusprosentti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wood_moisture_pct.value
+  source: src:TI1
+- q: Milloin lahovaara alkaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wood_moisture_pct.action
+  source: src:TI1
+- q: Mikä on Kouvolan lumikuormamitoitus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_snow_load_kg_m2.value
+  source: src:TI2
+- q: Milloin lumenpudotus tarvitaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_snow_load_kg_m2.action
+  source: src:TI2
+- q: Mikä on normaali halkeama perustuksessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.foundation_crack_mm.value
+  source: src:TI1
+- q: Onko asbestikartoitus pakollinen?
+  a_ref: COMPLIANCE_AND_LEGAL.asbesti
+  source: src:TI1
+- q: Mikä on puun kosteusprosentti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wood_moisture_pct
+  source: src:TI1
+- q: 'Toimenpide: puun kosteusprosentti?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wood_moisture_pct.action
+  source: src:TI1
+- q: Mikä on perustuksen halkeama (mm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.foundation_crack_mm
+  source: src:TI1
+- q: 'Toimenpide: perustuksen halkeama (mm)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.foundation_crack_mm.action
+  source: src:TI1
+- q: Mikä on katon lumikuorma (kg/m²)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_snow_load_kg_m2
+  source: src:TI1
+- q: 'Toimenpide: katon lumikuorma (kg/mÂ²)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_snow_load_kg_m2.action
+  source: src:TI1
+- q: Mikä on katon tarkistusväli (v)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_inspection_years
+  source: src:TI1
+- q: 'Toimenpide: katon tarkistusvÃ¤li (v)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_inspection_years.action
+  source: src:TI1
+- q: Mikä on ventilation crawlspace?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ventilation_crawlspace
+  source: src:TI1
+- q: 'Toimenpide: ventilation crawlspace?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ventilation_crawlspace.action
+  source: src:TI1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:TI1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:TI1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TI1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TI1
+- q: 'Havainto: Kosteusvaurio seinärakenteessa?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:TI1
+- q: 'Toiminta: Kosteusvaurio seinärakenteessa?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:TI1
+- q: 'Havainto: Katon vuoto?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:TI1
+- q: 'Toiminta: Katon vuoto?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:TI1
+- q: 'Sääntö: rakentamislaki?'
+  a_ref: COMPLIANCE_AND_LEGAL.rakentamislaki
+  source: src:TI1
+- q: 'Sääntö: kosteus?'
+  a_ref: COMPLIANCE_AND_LEGAL.kosteus
+  source: src:TI1
+- q: 'Sääntö: asbesti?'
+  a_ref: COMPLIANCE_AND_LEGAL.asbesti
+  source: src:TI1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:TI1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1
+- q: 'Kytkentä muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:TI1

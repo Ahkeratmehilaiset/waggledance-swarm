@@ -1,0 +1,207 @@
+header:
+  agent_id: lvi_asiantuntija
+  agent_name: LVI-asiantuntija (Putkimies)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Mökillä on vesijärjestelmä, jossa on jäätymisriski.
+- Pysyvät putkiasennukset teetetään ammattilaisella.
+DECISION_METRICS_AND_THRESHOLDS:
+  pipe_freeze_risk_temp_c:
+    value: -5°C jäätymisraja eristämättömälle
+    action: T<-5°C → sulanapitokaapeli. <-10°C → jäätyy 2-4h.
+    source: src:LVI1
+  indoor_humidity_high_rh:
+    value: 40-60% RH normaali sisäilma
+    action: '>70% → kondensoitumisriski. <25% → kosteuta.'
+    source: src:LVI1
+  water_meter_leak_delta:
+    value: 0 l/h yön yli kun ei käyttöä
+    action: '>0.5 l/h → vuoto. >5 l/h → sulje päävesi HETI.'
+    source: src:LVI1
+  boiler_drain_required:
+    value: UNKNOWN
+    action: Jos lämminvesivaraaja käytössä ja mökki jätetään kylmäksi → selvitä tyhjennystarve
+      valmistajan ohjeesta.
+    source: src:LVI1
+  sewer_trap_dry_risk_days:
+    value: 30 pv käyttämättä → vesilukko kuivuu
+    action: 2 dl vettä 1x/kk. Haju → kuivunut vesilukko.
+    source: src:LVI1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Räystäskourujen puhdistus. Sadevesijärjestelmä. Salaojat. Vesimittari.'
+  source: src:LVI1
+- season: Kesä
+  action: Ulkovesipisteet auki. Lämminvesi 65°C legionella. Kastelujärjestelmä.
+  source: src:LVI1
+- season: Syksy
+  action: Ulkovesipisteiden tyhjennys vko 40-42. Lämmityksen ilmaus. Paine 1.0-1.5
+    bar.
+  source: src:LVI1
+- season: Talvi
+  action: Putkien jäätymisesto eristys + kaapeli T<-5°C. Vuotolukema. Paine 1.0-1.5
+    bar.
+  source: src:LVI1
+FAILURE_MODES:
+- mode: Putkien jäätyminen
+  detection: Putkitilan lämpötila laskee
+  action: Nosta peruslämpöä tai tyhjennä järjestelmä
+  source: src:LVI1
+- mode: Hidas vuoto
+  detection: Vesimittarin kulutus ilman käyttöä
+  action: Sulje päävesihana ja tilaa ammattilainen
+  source: src:LVI1
+PROCESS_FLOWS:
+  freeze_prevention:
+    steps:
+    - 1. Seuraa putkitilan lämpötila-antureita
+    - 2. Jos riski kasvaa → nosta peruslämpöä tai tyhjennä järjestelmä
+    - '3. Talvikäytössä: sulje päävesihana, tyhjennä putket, jätä hanat auki'
+    - '4. Palatessa: tarkista vuodot ja vesimittarin kulutus'
+    source: src:LVI1
+KNOWLEDGE_TABLES:
+  winterization_checklist:
+  - task: Sulje päävesihana
+    source: src:LVI1
+  - task: Tyhjennä putkisto
+    source: src:LVI1
+  - task: Tarkista lattiakaivot ja hajulukot
+    source: src:LVI1
+COMPLIANCE_AND_LEGAL:
+  note:
+    rule: Agentti tuottaa huoltotoimenpiteiden listoja ja hälytyslogiikkaa, ei vaarallisia
+      DIY-asennusohjeita.
+    source: src:LVI1
+UNCERTAINTY_NOTES:
+- Raja-arvot riippuvat rakenteista ja putkireitityksestä; vaatii paikallisen mittausdatan.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LVI1
+    org: Paikallinen huolto-ohjeistus (täydennettävä)
+    title: Mökin LVI-talvikunnostus (checklist + hälytyslogiikka)
+    year: 2026
+    url: N/A
+    what_it_supports: Prosessilista talvikuntoon laittoon; raja-arvot jätetään UNKNOWN
+      kunnes data/ohjeet vahvistetaan.
+eval_questions:
+- q: Mikä on putkien jäätymisriskin lämpötilaraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pipe_freeze_risk_temp_c.value
+  source: src:LVI1
+- q: Miksi jäätymisraja on UNKNOWN?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LVI1
+- q: Mikä on talvikunnostuksen 1. kohta?
+  a_ref: KNOWLEDGE_TABLES.winterization_checklist[0].task
+  source: src:LVI1
+- q: Mikä on jäätymissuojauksen 4. askel?
+  a_ref: PROCESS_FLOWS.freeze_prevention.steps[3]
+  source: src:LVI1
+- q: Mitä agentti ei tee?
+  a_ref: COMPLIANCE_AND_LEGAL.note.rule
+  source: src:LVI1
+- q: Mikä on RH-hälytysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_humidity_high_rh.value
+  source: src:LVI1
+- q: Mitä tehdään jos RH ylittää rajan pitkään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_humidity_high_rh.action
+  source: src:LVI1
+- q: Mikä on vesimittarin vuotopoikkeaman raja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_meter_leak_delta.value
+  source: src:LVI1
+- q: Mitä vesimittarin poikkeamasta tehdään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_meter_leak_delta.action
+  source: src:LVI1
+- q: Tarvitseeko varaaja tyhjentää?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.boiler_drain_required.value
+  source: src:LVI1
+- q: Mistä varaajan tyhjennystarve varmistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.boiler_drain_required.action
+  source: src:LVI1
+- q: Mikä on hajulukon kuivumisriskin raja päivissä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sewer_trap_dry_risk_days.value
+  source: src:LVI1
+- q: Mitä tehdään hajulukon kuivumisriskissä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sewer_trap_dry_risk_days.action
+  source: src:LVI1
+- q: Mikä on jäätymissuojauksen 1. askel?
+  a_ref: PROCESS_FLOWS.freeze_prevention.steps[0]
+  source: src:LVI1
+- q: Mikä on jäätymissuojauksen 2. askel?
+  a_ref: PROCESS_FLOWS.freeze_prevention.steps[1]
+  source: src:LVI1
+- q: Mikä on jäätymissuojauksen 3. askel?
+  a_ref: PROCESS_FLOWS.freeze_prevention.steps[2]
+  source: src:LVI1
+- q: Mikä on jäätymissuojauksen 4. askel?
+  a_ref: PROCESS_FLOWS.freeze_prevention.steps[3]
+  source: src:LVI1
+- q: 'Mikä on vikamalli: putkien jäätyminen?'
+  a_ref: FAILURE_MODES[0].mode
+  source: src:LVI1
+- q: 'Mikä on vikamalli: hidas vuoto?'
+  a_ref: FAILURE_MODES[1].mode
+  source: src:LVI1
+- q: Miten hidas vuoto tunnistetaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LVI1
+- q: Mitä tehdään hitaan vuodon epäilyssä?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LVI1
+- q: Mikä on talvikunnostuksen 2. kohta?
+  a_ref: KNOWLEDGE_TABLES.winterization_checklist[1].task
+  source: src:LVI1
+- q: Mikä on talvikunnostuksen 3. kohta?
+  a_ref: KNOWLEDGE_TABLES.winterization_checklist[2].task
+  source: src:LVI1
+- q: Mikä on syksyn fokus?
+  a_ref: SEASONAL_RULES[0].focus
+  source: src:LVI1
+- q: Mikä on kevään fokus?
+  a_ref: SEASONAL_RULES[1].focus
+  source: src:LVI1
+- q: Mikä on jäätymisriskin raja-arvon toimintalogiikka?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pipe_freeze_risk_temp_c.action
+  source: src:LVI1
+- q: Mikä on RH-metriikan toimintalogiikka?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_humidity_high_rh.action
+  source: src:LVI1
+- q: Mikä on vesimittari-metriikan toimintalogiikka?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_meter_leak_delta.action
+  source: src:LVI1
+- q: Mikä on varaaja-metriikan toimintalogiikka?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.boiler_drain_required.action
+  source: src:LVI1
+- q: Mikä on hajulukko-metriikan toimintalogiikka?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sewer_trap_dry_risk_days.action
+  source: src:LVI1
+- q: Mikä on hitaan vuodon tunnistuslogiikka?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LVI1
+- q: Mikä oletus koskee jäätymisriskiä?
+  a_ref: ASSUMPTIONS[0]
+  source: src:LVI1
+- q: Mikä oletus koskee ammattilaista?
+  a_ref: ASSUMPTIONS[1]
+  source: src:LVI1
+- q: Mikä on talvikunnostuksen lähde?
+  a_ref: KNOWLEDGE_TABLES.winterization_checklist[0].source
+  source: src:LVI1
+- q: 'Operatiivinen päätöskysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:LVI_
+- q: 'Operatiivinen päätöskysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:LVI_
+- q: 'Operatiivinen päätöskysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:LVI_
+- q: 'Operatiivinen päätöskysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:LVI_
+- q: 'Operatiivinen päätöskysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:LVI_
+- q: 'Operatiivinen päätöskysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:LVI_

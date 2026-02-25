@@ -1,0 +1,7 @@
+sources:
+- id: src:LA1
+  org: Laitevalmistajat
+  title: IoT-laitehuolto
+  year: 2025
+  url: null
+  supports: Akku, WiFi, NAS, firmware.

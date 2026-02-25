@@ -1,0 +1,13 @@
+sources:
+- id: src:LO1
+  org: Traficom / Tesla
+  title: Sähköauton käyttö Suomessa
+  year: 2026
+  url: https://www.traficom.fi/
+  supports: Toimintamatka, lataus, liikenne.
+- id: src:LO2
+  org: SML
+  title: Hunajan käsittely ja kuljetus
+  year: 2011
+  url: null
+  supports: Hunajan kuljetuslämpötilat.

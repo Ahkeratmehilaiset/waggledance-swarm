@@ -1,0 +1,233 @@
+header:
+  agent_id: mikroilmasto
+  agent_name: Mikroilmasto-asiantuntija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Korvenranta: järven vaikutus, metsänsuoja, avoin piha'
+- Oma sääasema vs. IL:n data
+DECISION_METRICS_AND_THRESHOLDS:
+  lake_effect_c:
+    value: '±2-3°C ero: keväällä kylmempi, syksyllä lämpimämpi'
+    source: src:MI1
+    action: 'Kevät: ranta 2-3°C kylmempi → halla myöhemmin kuin avomaa. Syksy: 2-3°C
+      lämpimämpi → kasvukausi 1-2 vko pidempi. Ilmoita hortonomille.'
+  forest_wind_reduction_pct:
+    value: 30-60%
+    source: src:MI1
+  frost_pocket_risk:
+    value: Painanne → kylmäilma-allas, halla 2-3°C aiemmin
+    action: Painanne pihapiirissä → kylmäilma-allas, T jopa 3°C alempi kuin rinne.
+      EI herkkiä kasveja (tomaatti, kurkku) painanteeseen.
+    source: src:MI1
+  south_wall_bonus_c:
+    value: 3-5°C lämmpimämpi
+    source: src:MI1
+    action: Eteläseinä +3-5°C aurinkopäivänä. Viiniköynnös/ruusut/varhaisperunat eteläseinälle.
+      Kasvuvyöhyke tehollisesti +1.
+  dew_point_gap_fog_c:
+    value: T - kastepiste <2°C → sumu/huurre
+    source: src:MI1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Järvi viilentää rantaa → halla-viski. Negatiivinen keväällä.'
+  source: src:MI1
+- season: Kesä
+  action: '[vko 22-35] Eteläseinä hyödyksi kasvien sijoittelussa.'
+  source: src:MI1
+- season: Syksy
+  action: '[vko 36-48] Järvi lämmittää → kasvukausi pitenee. Aamu-sumu.'
+  source: src:MI1
+- season: Talvi
+  action: '[vko 49-13] Kylmäilma-altaat. Inversio (pakkas + tyyni → häkä).'
+  source: src:MI1
+FAILURE_MODES:
+- mode: Paikallinen halla vastoin ennustetta
+  detection: T<0°C paikallisesti, ennuste >0°C
+  action: HÄLYTYS hortonomille, tarhaajalle
+  source: src:MI1
+- mode: Inversio + häkä
+  detection: Tyyni kirkas pakkanen
+  action: Ilmoita paloesimiehelle (häkävaara)
+  source: src:MI1
+PROCESS_FLOWS:
+- flow_id: FLOW_MIKR_01
+  trigger: 'lake_effect_c ylittää kynnysarvon (±2-3°C ero: keväällä kylmempi, syksyllä
+    lämpimämpi)'
+  action: 'Kevät: ranta 2-3°C kylmempi → halla myöhemmin kuin avomaa. Syksy: 2-3°C
+    lämpimämpi → kasvukausi 1-2 vko pidempi. Ilmoita hortonomille.'
+  output: Tilanneraportti
+  source: src:MIKR
+- flow_id: FLOW_MIKR_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Järvi viilentää rantaa → halla-viski. Negatiivinen keväällä.'
+  output: Tarkistuslista
+  source: src:MIKR
+- flow_id: FLOW_MIKR_03
+  trigger: 'Havaittu: Paikallinen halla vastoin ennustetta'
+  action: HÄLYTYS hortonomille, tarhaajalle
+  output: Poikkeamaraportti
+  source: src:MIKR
+- flow_id: FLOW_MIKR_04
+  trigger: Säännöllinen heartbeat
+  action: 'mikroilmasto: rutiiniarviointi'
+  output: Status-raportti
+  source: src:MIKR
+KNOWLEDGE_TABLES:
+- table_id: TBL_MIKR_01
+  title: Mikroilmasto-asiantuntija — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: lake_effect_c
+    value: '±2-3°C ero: keväällä kylmempi, syksyllä lämpimämpi'
+    action: 'Kevät: ranta 2-3°C kylmempi → halla myöhemmin kuin avomaa. Syksy: 2-3°C
+      lämpimäm'
+  - metric: forest_wind_reduction_pct
+    value: 30-60%
+    action: ''
+  - metric: frost_pocket_risk
+    value: Painanne → kylmäilma-allas, halla 2-3°C aiemmin
+    action: Painanne pihapiirissä → kylmäilma-allas, T jopa 3°C alempi kuin rinne.
+      EI herkki
+  - metric: south_wall_bonus_c
+    value: 3-5°C lämmpimämpi
+    action: Eteläseinä +3-5°C aurinkopäivänä. Viiniköynnös/ruusut/varhaisperunat eteläseinäl
+  - metric: dew_point_gap_fog_c
+    value: T - kastepiste <2°C → sumu/huurre
+    action: ''
+  source: src:MIKR
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Mikroilmastodata ei yleistettävissä edes 500m etäisyydelle.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:MI1
+    org: Ilmatieteen laitos
+    title: Paikallinen ilmasto
+    year: 2024
+    url: https://www.ilmatieteenlaitos.fi/
+    supports: Järviefekti, metsäsuoja, halla, inversio.
+eval_questions:
+- q: Mikä on lake effect c?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lake_effect_c
+  source: src:MI1
+- q: Mikä on metsän tuulensuojavaikutus (%)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.forest_wind_reduction_pct
+  source: src:MI1
+- q: Mikä on hallantaskuriski?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.frost_pocket_risk
+  source: src:MI1
+- q: Mitä tehdään kun hallantaskuriski ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.frost_pocket_risk.action
+  source: src:MI1
+- q: Mikä on south wall bonus c?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.south_wall_bonus_c
+  source: src:MI1
+- q: Mikä on dew point gap fog c?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.dew_point_gap_fog_c
+  source: src:MI1
+- q: Mitä kevät huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MI1
+- q: Mitä kesä huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:MI1
+- q: Mitä syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:MI1
+- q: Mitä talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:MI1
+- q: Miten 'Paikallinen halla vastoin ennustetta' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:MI1
+- q: Mitä tehdään tilanteessa 'Paikallinen halla vastoin ennustetta'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:MI1
+- q: Miten 'Inversio + häkä' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:MI1
+- q: Mitä tehdään tilanteessa 'Inversio + häkä'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MI1
+- q: Mitkä ovat merkittävimmät epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:MI1
+- q: Mitkä ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#11)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#12)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#13)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#14)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#15)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#16)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#17)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#18)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#19)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#20)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#21)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#22)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#23)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#24)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1

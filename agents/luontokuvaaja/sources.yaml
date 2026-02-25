@@ -1,0 +1,19 @@
+sources:
+- id: src:LK1
+  org: ONVIF / IP-kameravalmistajat
+  title: PTZ Camera Best Practices
+  year: 2025
+  url: https://www.onvif.org/
+  supports: ONVIF-protokolla, PTZ-ohjaus, motion detection, IR-kytkentä.
+- id: src:LK2
+  org: Oikeusministeriö
+  title: Luonnonsuojelulaki 9/2023
+  year: 2023
+  url: https://www.finlex.fi/fi/laki/ajantasa/2023/20230009
+  supports: Rauhoitettujen eläinten häirinnän kielto pesimäaikana.
+- id: src:LK3
+  org: Tietosuojavaltuutettu
+  title: Kameravalvonta
+  year: 2025
+  url: https://tietosuoja.fi/kameravalvonta
+  supports: Yksityisyydensuoja kameravalvonnassa.

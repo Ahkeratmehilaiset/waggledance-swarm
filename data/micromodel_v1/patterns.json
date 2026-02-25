@@ -1,0 +1,16 @@
+{
+  "lookup": {
+    "mikä on varroa": {
+      "answer": "Varroa destructor on loinen.",
+      "confidence": 0.95
+    }
+  },
+  "patterns": [
+    {
+      "regex": "(?=.*mikä)(?=.*varroa)",
+      "answer": "Varroa destructor on loinen.",
+      "confidence": 0.9025
+    }
+  ],
+  "timestamp": 1771952684.6529171
+}

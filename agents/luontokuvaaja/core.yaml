@@ -1,0 +1,275 @@
+header:
+  agent_id: luontokuvaaja
+  agent_name: Luontokuvaaja (PTZ-operaattori)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- PTZ (Pan-Tilt-Zoom) IP-kamera ulkona, Korvenrannan pihapiirissä
+- ONVIF-yhteensopiva, RTSP-striimi saatavilla
+- Kuvankäsittely paikallisesti (YOLO/ONNX tai vastaava)
+- Tallennus paikalliselle NAS:lle tai SD-kortille
+DECISION_METRICS_AND_THRESHOLDS:
+  motion_detection_sensitivity:
+    value: Medium (50-70%)
+    note: Liian herkkä → puiden liike aiheuttaa väärähälytyksiä
+    source: src:LK1
+  object_detection_confidence_min:
+    value: 0.6
+    action: Alle 0.6 → ei tallenneta havaintona, logiin kuitenkin
+    source: src:LK1
+  fps_recording:
+    value: 15
+    note: Eläinhavainto-tallennukseen riittävä, säästää levytilaa
+    source: src:LK1
+  night_ir_switch_lux:
+    value: 10
+    action: Alle 10 lux → vaihda IR-tilaan automaattisesti
+    source: src:LK1
+  storage_retention_days:
+    value: 30
+    action: Yli 30 pv → poista ei-merkityt tallenteet
+    source: src:LK1
+  ptz_preset_return_timeout_s:
+    value: 300
+    action: 5 min inaktiviteetin jälkeen → palaa kotipositioon
+    source: src:LK1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Muuttolintujen seuranta, pesimäajan herkkyys, vältä häirintää
+    pesäpuiden lähellä'
+  source: src:LK2
+- season: Kesä
+  action: '[vko 22-35] Yöttömän yön valotasapaino, IR pois käytöstä vaaleiden öiden
+    aikaan (kesäkuu)'
+  source: src:LK1
+- season: Syksy
+  action: '[vko 36-48] Muuttolintujen lähtö, hirvivaroitukset, lyhenevä päivä → IR-tilan
+    aikaistaminen'
+  source: src:LK2
+- season: Talvi
+  action: Kameran lämmitys päälle <-15°C, linssin jäänesto, lumisateen motion filter
+  source: src:LK1
+FAILURE_MODES:
+- mode: Kamera jäätynyt / linssi huurussa
+  detection: Kuva valkoinen/sumea >10 min
+  action: Aktivoi lämmityselementti, ilmoita laitehuoltajalle
+  source: src:LK1
+- mode: Levytila loppu
+  detection: NAS <5% vapaata
+  action: Poista vanhimmat ei-merkityt tallenteet, ilmoita inventaariopäällikölle
+  source: src:LK1
+- mode: PTZ jumissa
+  detection: Preset-siirto ei toteudu 10s sisällä
+  action: Reboot kamera, ilmoita laitehuoltajalle
+  source: src:LK1
+PROCESS_FLOWS:
+  animal_detection:
+    steps:
+    - 1. Motion trigger → aloita tallennus
+    - 2. Aja YOLO-tunnistus ensimmäiselle framelle
+    - 3. Jos eläin tunnistettu (confidence >0.6) → tallenna luokka ja timestamp
+    - 4. Seuraa kohteen liikettä PTZ:llä (auto-track)
+    - 5. Kohteen poistuessa → palaa preset-positioon
+    - 6. Ilmoita ornitologille/riistanvartijalle lajin mukaan
+    source: src:LK1
+  timelapse:
+    interval_min: 10
+    duration_h: 24
+    use_case: Vuodenaikojen seuranta, pilvimuodostumat, auringonnousu/-lasku
+    source: src:LK1
+KNOWLEDGE_TABLES:
+  camera_presets:
+  - preset: 1
+    name: Lintulautakuva
+    pan: 45
+    tilt: -10
+    zoom: 3
+  - preset: 2
+    name: Pesäpanoraama (mehiläistarha)
+    pan: 120
+    tilt: -5
+    zoom: 1
+  - preset: 3
+    name: Järvinäkymä
+    pan: 200
+    tilt: 0
+    zoom: 2
+  - preset: 4
+    name: Piha-alue (turvallisuus)
+    pan: 0
+    tilt: -15
+    zoom: 1
+  - preset: 5
+    name: Taivasnäkymä (revontulet/tähtikuvat)
+    pan: 180
+    tilt: 60
+    zoom: 1
+  detection_classes:
+  - class: bird
+    notify: ornitologi
+    priority: 3
+  - class: bear
+    notify: pesaturvallisuus + core_dispatcher
+    priority: 1
+  - class: deer
+    notify: riistanvartija
+    priority: 4
+  - class: person
+    notify: pihavahti
+    priority: 2
+  - class: fox
+    notify: riistanvartija
+    priority: 4
+  - class: moose
+    notify: riistanvartija
+    priority: 3
+COMPLIANCE_AND_LEGAL:
+  wildlife_disturbance: Luonnonsuojelulaki 9/2023 kieltää rauhoitettujen eläinten
+    tahallisen häirinnän pesimäaikana [src:LK2]
+  privacy: Kameran kuvausalue ei saa kattaa naapurikiinteistöä tai yleistä tietä tunnistettavasti
+    [src:LK3]
+UNCERTAINTY_NOTES:
+- YOLO-mallin tarkkuus suomalaisille eläinlajeille vaihtelee — hirvi/karhu hyvä (>90%),
+  pienet linnut heikko (<60%).
+- PTZ preset -kulmat ovat esimerkkilukuja, kalibroitava asennuksen yhteydessä.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LK1
+    org: ONVIF / IP-kameravalmistajat
+    title: PTZ Camera Best Practices
+    year: 2025
+    url: https://www.onvif.org/
+    supports: ONVIF-protokolla, PTZ-ohjaus, motion detection, IR-kytkentä.
+  - id: src:LK2
+    org: Oikeusministeriö
+    title: Luonnonsuojelulaki 9/2023
+    year: 2023
+    url: https://www.finlex.fi/fi/laki/ajantasa/2023/20230009
+    supports: Rauhoitettujen eläinten häirinnän kielto pesimäaikana.
+  - id: src:LK3
+    org: Tietosuojavaltuutettu
+    title: Kameravalvonta
+    year: 2025
+    url: https://tietosuoja.fi/kameravalvonta
+    supports: Yksityisyydensuoja kameravalvonnassa.
+eval_questions:
+- q: Mikä on kohteentunnistuksen minimivarmuus tallennukselle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.object_detection_confidence_min.value
+  source: src:LK1
+- q: Milloin kamera vaihtaa IR-tilaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.night_ir_switch_lux.value
+  source: src:LK1
+- q: Kuinka kauan tallenteet säilytetään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.storage_retention_days.value
+  source: src:LK1
+- q: Kenelle ilmoitetaan karhuhavainnosta?
+  a_ref: KNOWLEDGE_TABLES.detection_classes[1].notify
+  source: src:LK1
+- q: Mikä on karhuhavainnon prioriteetti?
+  a_ref: KNOWLEDGE_TABLES.detection_classes[1].priority
+  source: src:LK1
+- q: Milloin PTZ palaa kotipositioon?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ptz_preset_return_timeout_s.value
+  source: src:LK1
+- q: Mikä on tallennuksen FPS?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fps_recording.value
+  source: src:LK1
+- q: Mitä tapahtuu jos linssi on huurussa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LK1
+- q: Kenelle ilmoitetaan lintuhavainnosta?
+  a_ref: KNOWLEDGE_TABLES.detection_classes[0].notify
+  source: src:LK1
+- q: Mikä laki kieltää pesimäaikaisen häirinnän?
+  a_ref: COMPLIANCE_AND_LEGAL.wildlife_disturbance
+  source: src:LK2
+- q: Saako kamera kuvata naapurikiinteistöä?
+  a_ref: COMPLIANCE_AND_LEGAL.privacy
+  source: src:LK3
+- q: Mikä on timelapse-kuvaväli?
+  a_ref: PROCESS_FLOWS.timelapse.interval_min
+  source: src:LK1
+- q: Mikä on liiketunnistuksen herkkyystaso?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.motion_detection_sensitivity.value
+  source: src:LK1
+- q: Mitä tapahtuu levytilan loppuessa?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LK1
+- q: Mihin preset 3 osoittaa?
+  a_ref: KNOWLEDGE_TABLES.camera_presets[2].name
+  source: src:LK1
+- q: Milloin kameran lämmitys aktivoidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LK1
+- q: Miksi IR kytketään pois kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LK1
+- q: Miten lumisade vaikuttaa liiketunnistukseen?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LK1
+- q: Mikä on eläintunnistuksen tarkkuus pienille linnuille?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LK1
+- q: Miten auto-track toimii?
+  a_ref: PROCESS_FLOWS.animal_detection.steps
+  source: src:LK1
+- q: Kenelle ilmoitetaan ihmishavainnosta?
+  a_ref: KNOWLEDGE_TABLES.detection_classes[3].notify
+  source: src:LK1
+- q: Mikä on ihmishavainnon prioriteetti?
+  a_ref: KNOWLEDGE_TABLES.detection_classes[3].priority
+  source: src:LK1
+- q: Mitä keväällä seurataan erityisesti?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LK2
+- q: Mikä on hirven tunnistustarkkuus?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LK1
+- q: Mitä syksyllä huomioidaan valaistuksessa?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LK1
+- q: Mikä on PTZ jumiin jäämisen vasteaika?
+  a_ref: FAILURE_MODES[2].detection
+  source: src:LK1
+- q: Kenelle ilmoitetaan hirvihavainnosta?
+  a_ref: KNOWLEDGE_TABLES.detection_classes[4].notify
+  source: src:LK1
+- q: Mikä on ketun havainnon prioriteetti?
+  a_ref: KNOWLEDGE_TABLES.detection_classes[4].priority
+  source: src:LK1
+- q: Mitä preset 1 kuvaa?
+  a_ref: KNOWLEDGE_TABLES.camera_presets[0].name
+  source: src:LK1
+- q: Mikä on timelapse-kuvauksen kesto?
+  a_ref: PROCESS_FLOWS.timelapse.duration_h
+  source: src:LK1
+- q: Missä lämpötilassa kameran lämmitys aktivoidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LK1
+- q: Mihin preset 5 osoittaa?
+  a_ref: KNOWLEDGE_TABLES.camera_presets[4].name
+  source: src:LK1
+- q: Onko ONVIF-yhteensopivuus oletus?
+  a_ref: ASSUMPTIONS
+  source: src:LK1
+- q: Mistä tallennuksen RTSP-striimi saadaan?
+  a_ref: ASSUMPTIONS
+  source: src:LK1
+- q: Miten elÃ¤intunnistusprosessi etenee?
+  a_ref: PROCESS_FLOWS.animal_detection.steps
+  source: src:LK1
+- q: Mikä on peurahavainnon prioriteetti?
+  a_ref: KNOWLEDGE_TABLES.detection_classes[2].priority
+  source: src:LK1
+- q: Mitä tapahtuu confidence <0.6 havainnolle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.object_detection_confidence_min.action
+  source: src:LK1
+- q: Mikä on pesäpanoraaman preset-numero?
+  a_ref: KNOWLEDGE_TABLES.camera_presets[1].preset
+  source: src:LK1
+- q: Mitä hirvivaroituksella tarkoitetaan syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LK2
+- q: Mikä on NAS-levytilan hälytysraja?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LK1

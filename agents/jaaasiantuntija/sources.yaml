@@ -1,0 +1,13 @@
+sources:
+- id: src:JA1
+  org: SUH/Pelastuslaitos
+  title: Jääturvallisuus
+  year: 2025
+  url: https://www.suh.fi/
+  supports: Jäänpaksuus, mittaus.
+- id: src:JA2
+  org: Pelastuslaitos
+  title: Jäähänputoaminen
+  year: 2025
+  url: https://pelastustoimi.fi/
+  supports: Pelastustoimet.

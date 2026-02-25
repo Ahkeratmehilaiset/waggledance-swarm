@@ -1,0 +1,13 @@
+sources:
+- id: src:SA1
+  org: Suomen Saunaseura
+  title: Saunomisohje
+  year: 2025
+  url: https://www.sauna.fi/
+  supports: Lämpötilat, turvallisuus, kiuas.
+- id: src:SA2
+  org: Pelastuslaitos
+  title: Nuohous
+  year: 2025
+  url: https://www.pelastustoimi.fi/
+  supports: Saunan hormin nuohous.

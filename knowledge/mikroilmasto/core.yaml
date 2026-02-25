@@ -1,0 +1,233 @@
+﻿header:
+  agent_id: mikroilmasto
+  agent_name: Mikroilmasto-asiantuntija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Korvenranta: jÃ¤rven vaikutus, metsÃ¤nsuoja, avoin piha'
+- Oma sÃ¤Ã¤asema vs. IL:n data
+DECISION_METRICS_AND_THRESHOLDS:
+  lake_effect_c:
+    value: 'Â±2-3Â°C ero: kevÃ¤Ã¤llÃ¤ kylmempi, syksyllÃ¤ lÃ¤mpimÃ¤mpi'
+    source: src:MI1
+    action: 'KevÃ¤t: ranta 2-3Â°C kylmempi â†’ halla myÃ¶hemmin kuin avomaa. Syksy: 2-3Â°C
+      lÃ¤mpimÃ¤mpi â†’ kasvukausi 1-2 vko pidempi. Ilmoita hortonomille.'
+  forest_wind_reduction_pct:
+    value: 30-60%
+    source: src:MI1
+  frost_pocket_risk:
+    value: Painanne â†’ kylmÃ¤ilma-allas, halla 2-3Â°C aiemmin
+    action: Painanne pihapiirissÃ¤ â†’ kylmÃ¤ilma-allas, T jopa 3Â°C alempi kuin rinne.
+      EI herkkiÃ¤ kasveja (tomaatti, kurkku) painanteeseen.
+    source: src:MI1
+  south_wall_bonus_c:
+    value: 3-5Â°C lÃ¤mmpimÃ¤mpi
+    source: src:MI1
+    action: EtelÃ¤seinÃ¤ +3-5Â°C aurinkopÃ¤ivÃ¤nÃ¤. ViinikÃ¶ynnÃ¶s/ruusut/varhaisperunat etelÃ¤seinÃ¤lle.
+      KasvuvyÃ¶hyke tehollisesti +1.
+  dew_point_gap_fog_c:
+    value: T - kastepiste <2Â°C â†’ sumu/huurre
+    source: src:MI1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] JÃ¤rvi viilentÃ¤Ã¤ rantaa â†’ halla-viski. Negatiivinen kevÃ¤Ã¤llÃ¤.'
+  source: src:MI1
+- season: KesÃ¤
+  action: '[vko 22-35] EtelÃ¤seinÃ¤ hyÃ¶dyksi kasvien sijoittelussa.'
+  source: src:MI1
+- season: Syksy
+  action: '[vko 36-48] JÃ¤rvi lÃ¤mmittÃ¤Ã¤ â†’ kasvukausi pitenee. Aamu-sumu.'
+  source: src:MI1
+- season: Talvi
+  action: '[vko 49-13] KylmÃ¤ilma-altaat. Inversio (pakkas + tyyni â†’ hÃ¤kÃ¤).'
+  source: src:MI1
+FAILURE_MODES:
+- mode: Paikallinen halla vastoin ennustetta
+  detection: T<0Â°C paikallisesti, ennuste >0Â°C
+  action: HÃ„LYTYS hortonomille, tarhaajalle
+  source: src:MI1
+- mode: Inversio + hÃ¤kÃ¤
+  detection: Tyyni kirkas pakkanen
+  action: Ilmoita paloesimiehelle (hÃ¤kÃ¤vaara)
+  source: src:MI1
+PROCESS_FLOWS:
+- flow_id: FLOW_MIKR_01
+  trigger: 'lake_effect_c ylittÃ¤Ã¤ kynnysarvon (Â±2-3Â°C ero: kevÃ¤Ã¤llÃ¤ kylmempi, syksyllÃ¤
+    lÃ¤mpimÃ¤mpi)'
+  action: 'KevÃ¤t: ranta 2-3Â°C kylmempi â†’ halla myÃ¶hemmin kuin avomaa. Syksy: 2-3Â°C
+    lÃ¤mpimÃ¤mpi â†’ kasvukausi 1-2 vko pidempi. Ilmoita hortonomille.'
+  output: Tilanneraportti
+  source: src:MIKR
+- flow_id: FLOW_MIKR_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] JÃ¤rvi viilentÃ¤Ã¤ rantaa â†’ halla-viski. Negatiivinen kevÃ¤Ã¤llÃ¤.'
+  output: Tarkistuslista
+  source: src:MIKR
+- flow_id: FLOW_MIKR_03
+  trigger: 'Havaittu: Paikallinen halla vastoin ennustetta'
+  action: HÃ„LYTYS hortonomille, tarhaajalle
+  output: Poikkeamaraportti
+  source: src:MIKR
+- flow_id: FLOW_MIKR_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'mikroilmasto: rutiiniarviointi'
+  output: Status-raportti
+  source: src:MIKR
+KNOWLEDGE_TABLES:
+- table_id: TBL_MIKR_01
+  title: Mikroilmasto-asiantuntija â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: lake_effect_c
+    value: 'Â±2-3Â°C ero: kevÃ¤Ã¤llÃ¤ kylmempi, syksyllÃ¤ lÃ¤mpimÃ¤mpi'
+    action: 'KevÃ¤t: ranta 2-3Â°C kylmempi â†’ halla myÃ¶hemmin kuin avomaa. Syksy: 2-3Â°C
+      lÃ¤mpimÃ¤m'
+  - metric: forest_wind_reduction_pct
+    value: 30-60%
+    action: ''
+  - metric: frost_pocket_risk
+    value: Painanne â†’ kylmÃ¤ilma-allas, halla 2-3Â°C aiemmin
+    action: Painanne pihapiirissÃ¤ â†’ kylmÃ¤ilma-allas, T jopa 3Â°C alempi kuin rinne.
+      EI herkki
+  - metric: south_wall_bonus_c
+    value: 3-5Â°C lÃ¤mmpimÃ¤mpi
+    action: EtelÃ¤seinÃ¤ +3-5Â°C aurinkopÃ¤ivÃ¤nÃ¤. ViinikÃ¶ynnÃ¶s/ruusut/varhaisperunat etelÃ¤seinÃ¤l
+  - metric: dew_point_gap_fog_c
+    value: T - kastepiste <2Â°C â†’ sumu/huurre
+    action: ''
+  source: src:MIKR
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Mikroilmastodata ei yleistettÃ¤vissÃ¤ edes 500m etÃ¤isyydelle.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:MI1
+    org: Ilmatieteen laitos
+    title: Paikallinen ilmasto
+    year: 2024
+    url: https://www.ilmatieteenlaitos.fi/
+    supports: JÃ¤rviefekti, metsÃ¤suoja, halla, inversio.
+eval_questions:
+- q: MikÃ¤ on lake effect c?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lake_effect_c
+  source: src:MI1
+- q: MikÃ¤ on metsÃ¤n tuulensuojavaikutus (%)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.forest_wind_reduction_pct
+  source: src:MI1
+- q: MikÃ¤ on hallantaskuriski?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.frost_pocket_risk
+  source: src:MI1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun hallantaskuriski ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.frost_pocket_risk.action
+  source: src:MI1
+- q: MikÃ¤ on south wall bonus c?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.south_wall_bonus_c
+  source: src:MI1
+- q: MikÃ¤ on dew point gap fog c?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.dew_point_gap_fog_c
+  source: src:MI1
+- q: MitÃ¤ kevÃ¤t huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MI1
+- q: MitÃ¤ kesÃ¤ huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:MI1
+- q: MitÃ¤ syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:MI1
+- q: MitÃ¤ talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:MI1
+- q: Miten 'Paikallinen halla vastoin ennustetta' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:MI1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Paikallinen halla vastoin ennustetta'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:MI1
+- q: Miten 'Inversio + hÃ¤kÃ¤' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:MI1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Inversio + hÃ¤kÃ¤'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MI1
+- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:MI1
+- q: MitkÃ¤ ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#11)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#12)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#13)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#14)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#15)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#16)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#17)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#18)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#19)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#20)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#21)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#22)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#23)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#24)?
+  a_ref: ASSUMPTIONS
+  source: src:MI1

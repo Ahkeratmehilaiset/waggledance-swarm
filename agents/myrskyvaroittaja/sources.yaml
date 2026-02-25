@@ -1,0 +1,7 @@
+sources:
+- id: src:MY1
+  org: Ilmatieteen laitos
+  title: Varoitukset
+  year: 2026
+  url: https://www.ilmatieteenlaitos.fi/varoitukset
+  supports: Myrsky, salama, varoitusrajat.

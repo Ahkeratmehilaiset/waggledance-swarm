@@ -1,0 +1,25 @@
+sources:
+- id: src:ENT1
+  org: Ruokavirasto
+  title: Mehiläisten terveys ja taudit
+  year: 2025
+  url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
+  supports: Varroa, vahakoi, pesäkuoriainen.
+- id: src:ENT2
+  org: Luonnonvarakeskus (Luke)
+  title: Kirjanpainajan torjunta
+  year: 2024
+  url: https://www.luke.fi/fi/tutkimus/metsakasvinsuojelu
+  supports: Kirjanpainaja, feromonipyydykset, epidemiarajat.
+- id: src:ENT3
+  org: Tukes
+  title: Kasvinsuojeluainerekisteri
+  year: 2025
+  url: https://tukes.fi/kemikaalit/kasvinsuojeluaineet
+  supports: Hyväksytyt valmisteet, biologinen torjunta.
+- id: src:ENT4
+  org: Ruokavirasto
+  title: Aethina tumida -seuranta
+  year: 2025
+  url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
+  supports: Pieni pesäkuoriainen, EU-seuranta.

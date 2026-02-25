@@ -1,0 +1,13 @@
+sources:
+- id: src:KAT1
+  org: Luke
+  title: Suomen kalat
+  year: 2024
+  url: https://www.luke.fi/
+  supports: Lajintunnistus.
+- id: src:KAT2
+  org: MMM/ELY
+  title: Suojelu ja vieraslajit
+  year: 2025
+  url: https://kalastusrajoitus.fi/
+  supports: Rauhoitukset, vieraslajit.

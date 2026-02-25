@@ -1,0 +1,559 @@
+{
+  "timestamp": "2026-02-25T12:11:12",
+  "total": 1235,
+  "correct_agent_pct": 97.7,
+  "content_match_pct": 78.5,
+  "fallback_pct": 0.0,
+  "wrong_agent_pct": 0.7,
+  "layer1_hijack_count": 19,
+  "per_agent": {
+    "core_dispatcher": {
+      "total": 40,
+      "correct_agent": 39,
+      "content_match": 17,
+      "fallback": 0,
+      "wrong_agent": 1
+    },
+    "elokuva_asiantuntija": {
+      "total": 12,
+      "correct_agent": 12,
+      "content_match": 10,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "entomologi": {
+      "total": 40,
+      "correct_agent": 40,
+      "content_match": 40,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "erakokki": {
+      "total": 25,
+      "correct_agent": 25,
+      "content_match": 23,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "fenologi": {
+      "total": 40,
+      "correct_agent": 39,
+      "content_match": 39,
+      "fallback": 0,
+      "wrong_agent": 1
+    },
+    "hortonomi": {
+      "total": 40,
+      "correct_agent": 40,
+      "content_match": 9,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "ilmanlaatu": {
+      "total": 17,
+      "correct_agent": 16,
+      "content_match": 16,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "inventaariopaallikko": {
+      "total": 14,
+      "correct_agent": 14,
+      "content_match": 12,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "jaaasiantuntija": {
+      "total": 16,
+      "correct_agent": 15,
+      "content_match": 15,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "kalantunnistaja": {
+      "total": 23,
+      "correct_agent": 22,
+      "content_match": 22,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "kalastusopas": {
+      "total": 25,
+      "correct_agent": 24,
+      "content_match": 21,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "kierratys_jate": {
+      "total": 13,
+      "correct_agent": 13,
+      "content_match": 11,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "kybervahti": {
+      "total": 14,
+      "correct_agent": 13,
+      "content_match": 11,
+      "fallback": 0,
+      "wrong_agent": 1
+    },
+    "laitehuoltaja": {
+      "total": 13,
+      "correct_agent": 13,
+      "content_match": 11,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "leipuri": {
+      "total": 14,
+      "correct_agent": 13,
+      "content_match": 11,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "lentosaa": {
+      "total": 40,
+      "correct_agent": 38,
+      "content_match": 38,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "limnologi": {
+      "total": 28,
+      "correct_agent": 27,
+      "content_match": 26,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "logistikko": {
+      "total": 14,
+      "correct_agent": 14,
+      "content_match": 12,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "lukkoseppa": {
+      "total": 14,
+      "correct_agent": 14,
+      "content_match": 11,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "luontokuvaaja": {
+      "total": 40,
+      "correct_agent": 39,
+      "content_match": 15,
+      "fallback": 0,
+      "wrong_agent": 1
+    },
+    "lvi_asiantuntija": {
+      "total": 33,
+      "correct_agent": 32,
+      "content_match": 25,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "matemaatikko_fyysikko": {
+      "total": 19,
+      "correct_agent": 19,
+      "content_match": 17,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "meteorologi": {
+      "total": 11,
+      "correct_agent": 10,
+      "content_match": 10,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "metsanhoitaja": {
+      "total": 40,
+      "correct_agent": 40,
+      "content_match": 10,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "mikroilmasto": {
+      "total": 11,
+      "correct_agent": 10,
+      "content_match": 10,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "myrskyvaroittaja": {
+      "total": 15,
+      "correct_agent": 14,
+      "content_match": 14,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "nektari_informaatikko": {
+      "total": 30,
+      "correct_agent": 30,
+      "content_match": 30,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "nuohooja": {
+      "total": 20,
+      "correct_agent": 19,
+      "content_match": 17,
+      "fallback": 0,
+      "wrong_agent": 1
+    },
+    "ornitologi": {
+      "total": 39,
+      "correct_agent": 39,
+      "content_match": 11,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "paloesimies": {
+      "total": 16,
+      "correct_agent": 14,
+      "content_match": 12,
+      "fallback": 0,
+      "wrong_agent": 2
+    },
+    "parveiluvahti": {
+      "total": 30,
+      "correct_agent": 29,
+      "content_match": 28,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "pesalampo": {
+      "total": 30,
+      "correct_agent": 30,
+      "content_match": 30,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "pesaturvallisuus": {
+      "total": 30,
+      "correct_agent": 30,
+      "content_match": 30,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "pienelain_tuholais": {
+      "total": 40,
+      "correct_agent": 40,
+      "content_match": 40,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "pihavahti": {
+      "total": 16,
+      "correct_agent": 14,
+      "content_match": 12,
+      "fallback": 0,
+      "wrong_agent": 1
+    },
+    "privaattisuus": {
+      "total": 15,
+      "correct_agent": 15,
+      "content_match": 13,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "rantavahti": {
+      "total": 16,
+      "correct_agent": 15,
+      "content_match": 15,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "ravintoterapeutti": {
+      "total": 11,
+      "correct_agent": 11,
+      "content_match": 9,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "riistanvartija": {
+      "total": 40,
+      "correct_agent": 40,
+      "content_match": 12,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "routa_maapera": {
+      "total": 15,
+      "correct_agent": 14,
+      "content_match": 14,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "sahkoasentaja": {
+      "total": 33,
+      "correct_agent": 33,
+      "content_match": 26,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "saunamajuri": {
+      "total": 21,
+      "correct_agent": 21,
+      "content_match": 19,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "siivousvastaava": {
+      "total": 15,
+      "correct_agent": 15,
+      "content_match": 13,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "tahtitieteilija": {
+      "total": 41,
+      "correct_agent": 41,
+      "content_match": 40,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "tarhaaja": {
+      "total": 40,
+      "correct_agent": 37,
+      "content_match": 24,
+      "fallback": 0,
+      "wrong_agent": 1
+    },
+    "tautivahti": {
+      "total": 30,
+      "correct_agent": 30,
+      "content_match": 30,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "timpuri": {
+      "total": 23,
+      "correct_agent": 23,
+      "content_match": 21,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "valaistusmestari": {
+      "total": 14,
+      "correct_agent": 14,
+      "content_match": 12,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "valo_varjo": {
+      "total": 40,
+      "correct_agent": 39,
+      "content_match": 38,
+      "fallback": 0,
+      "wrong_agent": 0
+    },
+    "viihdepaallikko": {
+      "total": 19,
+      "correct_agent": 19,
+      "content_match": 17,
+      "fallback": 0,
+      "wrong_agent": 0
+    }
+  },
+  "failures": [
+    {
+      "agent": "core_dispatcher",
+      "q": "Miten GDPR huomioidaan?",
+      "expected": "Core/Dispatcher (Päällikkö)",
+      "got": "Privaattisuuden suojelija",
+      "response": "[Privaattisuuden suojelija] GDPR: oikeutettu etu tai suostumus [src:PR1]"
+    },
+    {
+      "agent": "fenologi",
+      "q": "Miten °Cvr lasketaan?",
+      "expected": "Fenologi",
+      "got": "Matemaatikko ja fyysikko (laskenta + mallit)",
+      "response": "[Matemaatikko ja fyysikko (laskenta + mallit)] °Cvr = Σ max(0, T_avg - T_base), T_base = 5°C"
+    },
+    {
+      "agent": "ilmanlaatu",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Ilmanlaadun tarkkailija",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "jaaasiantuntija",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Jääasiantuntija",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "kalantunnistaja",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Kalantunnistaja",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "kalastusopas",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Kalastusopas",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "kybervahti",
+      "q": "Sääntö: gdpr?",
+      "expected": "Kybervahti (tietoturva)",
+      "got": "Privaattisuuden suojelija",
+      "response": "[Privaattisuuden suojelija] GDPR: oikeutettu etu tai suostumus [src:PR1]"
+    },
+    {
+      "agent": "leipuri",
+      "q": "Sääntö: myynti?",
+      "expected": "Leipuri",
+      "got": null,
+      "response": "Hunajanmyyntikanavat: Wolt, verkkokauppa, torit, suoramyynti. Lajihunajan kilohinta 12-25 €. Muista elintarvikelainsäädäntö ja pakkausmerkinnät."
+    },
+    {
+      "agent": "lentosaa",
+      "q": "Mikä on puhdistuslento?",
+      "expected": "Lentosää-analyytikko",
+      "got": null,
+      "response": "Mehiläisen siivet lyövät ~200 kertaa sekunnissa. Lentonopeus 24 km/h, kantama ~3 km pesältä. Kuormassa (nektari/siitepöly) nopeus laskee. Siipiä 2 paria, kiinnittyvät toisiinsa koukuilla."
+    },
+    {
+      "agent": "lentosaa",
+      "q": "Milloin oksaalihappohoito tehdään?",
+      "expected": "Lentosää-analyytikko",
+      "got": null,
+      "response": "Oksaalihappo: tehokas sikiöttömänä aikana (loka-marraskuu), tihkutus tai höyrytys. Muurahaishappo: käytetään satokauden jälkeen, tehoaa myös peitettyyn sikiöön. 60 % liuos, 20 ml/kehäväli."
+    },
+    {
+      "agent": "limnologi",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Limnologi (Järvitutkija)",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "luontokuvaaja",
+      "q": "Kenelle ilmoitetaan karhuhavainnosta?",
+      "expected": "Luontokuvaaja (PTZ-operaattori)",
+      "got": "Riistanvartija",
+      "response": "[Riistanvartija] <200 m pesistÃ¤ â†’ P1 hÃ¤lytys. Meluesteet pÃ¤Ã¤lle. Ei ruokajÃ¤tettÃ¤ ulkona. SÃ¤hkÃ¶aidan jÃ¤nnite varmistettu â‰¥4 kV."
+    },
+    {
+      "agent": "lvi_asiantuntija",
+      "q": "Mitä agentti ei tee?",
+      "expected": "LVI-asiantuntija (Putkimies)",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "meteorologi",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Meteorologi",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "mikroilmasto",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Mikroilmasto-asiantuntija",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "myrskyvaroittaja",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Myrskyvaroittaja",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "nuohooja",
+      "q": "Sääntö: palovaroitin?",
+      "expected": "Nuohooja / Paloturva-asiantuntija",
+      "got": "Paloesimies",
+      "response": "[Paloesimies] Palovaroitin testataan kuukausittain painikkeesta. Vaihda 10 v välein. Sammutin max 15 m jokaisesta pisteestä. CO-hälytin: >50 ppm → soi, >100 ppm → evakuoi, soita 112."
+    },
+    {
+      "agent": "paloesimies",
+      "q": "Sääntö: palovaroitin?",
+      "expected": "Paloesimies (häkä, palovaroittimet, lämpöanomaliat)",
+      "got": "Paloesimies",
+      "response": "[Paloesimies] Palovaroitin testataan kuukausittain painikkeesta. Vaihda 10 v välein. Sammutin max 15 m jokaisesta pisteestä. CO-hälytin: >50 ppm → soi, >100 ppm → evakuoi, soita 112."
+    },
+    {
+      "agent": "paloesimies",
+      "q": "Sääntö: sammutin?",
+      "expected": "Paloesimies (häkä, palovaroittimet, lämpöanomaliat)",
+      "got": "Paloesimies",
+      "response": "[Paloesimies] Palovaroitin testataan kuukausittain painikkeesta. Vaihda 10 v välein. Sammutin max 15 m jokaisesta pisteestä. CO-hälytin: >50 ppm → soi, >100 ppm → evakuoi, soita 112."
+    },
+    {
+      "agent": "parveiluvahti",
+      "q": "Mikä on parveilukausi?",
+      "expected": "Parveiluvahti",
+      "got": null,
+      "response": "Parveilu on mehiläisten luontainen lisääntymistapa. Estä: anna tilaa, pidä nuori emo, riko emocellien alkuja. Parveiluvietti vahvimmillaan touko-kesäkuussa."
+    },
+    {
+      "agent": "pihavahti",
+      "q": "Sääntö: kameravalvonta?",
+      "expected": "Pihavahti (ihmishavainnot)",
+      "got": "Privaattisuuden suojelija",
+      "response": "[Privaattisuuden suojelija] Tietosuojavaltuutetun kameraohje [src:PR2]"
+    },
+    {
+      "agent": "pihavahti",
+      "q": "Sääntö: rekisteriseloste?",
+      "expected": "Pihavahti (ihmishavainnot)",
+      "got": null,
+      "response": "Mehiläistenpidon aloitus: ilmoitus kuntaan ja Ruokavirasto-rekisteriin. Pesien sijoituksesta ei ole valtakunnallista etäisyyssääntöä, mutta kunnat voivat säätää paikallisesti."
+    },
+    {
+      "agent": "rantavahti",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Rantavahti",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "routa_maapera",
+      "q": "Mitkä ovat agentin oletukset?",
+      "expected": "Routa- ja maaperäanalyytikko",
+      "got": null,
+      "response": "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."
+    },
+    {
+      "agent": "tarhaaja",
+      "q": "Miten AFB tunnistetaan?",
+      "expected": "Tarhaaja (Päämehiläishoitaja)",
+      "got": "Tautivahti (mehiläiset)",
+      "response": "[Tautivahti (mehiläiset)] Tikkulankatesti positiivinen + haju"
+    },
+    {
+      "agent": "tarhaaja",
+      "q": "Milloin talvipakkaus tehdään?",
+      "expected": "Tarhaaja (Päämehiläishoitaja)",
+      "got": null,
+      "response": "Talvehtimisen onnistuminen riippuu: riittävä ravinto (15-20 kg), matala varroa-taso, nuori emo, hyvä tuuletus. Syötä sokeriliuosta (3:2) syys-lokakuussa."
+    },
+    {
+      "agent": "tarhaaja",
+      "q": "Mikä on linkoamiskausi?",
+      "expected": "Tarhaaja (Päämehiläishoitaja)",
+      "got": null,
+      "response": "Linkous: kehät auki veitsellä tai kuorintahaarukalla. Lingon kierrosnopeus tasaisesti ylös. Siivilöi hunaja 200 µm siivilän läpi. Kosteus alle 20 % — mittaa refraktometrillä."
+    },
+    {
+      "agent": "valo_varjo",
+      "q": "Mikä on päivänvalo-ero kesä- ja talvipäivänseisauksen välillä?",
+      "expected": "Valo- ja varjoanalyytikko",
+      "got": null,
+      "response": "Talvehtimisen onnistuminen riippuu: riittävä ravinto (15-20 kg), matala varroa-taso, nuori emo, hyvä tuuletus. Syötä sokeriliuosta (3:2) syys-lokakuussa."
+    }
+  ]
+}

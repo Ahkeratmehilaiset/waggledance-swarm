@@ -1,0 +1,9 @@
+{"suggestion": "Increase hot cache from 500 to 1000", "impact": "Better hit rate for repeated questions", "risk": "low", "timestamp": "2026-02-24T16:28:56.369989", "status": "accepted", "review_number": 1, "resolved_at": "2026-02-24T16:29:08.853612"}
+{"suggestion": "Add connection pooling for Ollama", "impact": "Reduced latency for concurrent requests", "risk": "medium", "timestamp": "2026-02-24T16:28:56.369993", "status": "rejected", "review_number": 1, "resolved_at": "2026-02-24T16:29:08.853877"}
+{"suggestion": "test", "impact": "test", "risk": "low", "timestamp": "2026-02-24T16:28:56.567006", "status": "pending", "review_number": 1}
+{"suggestion": "Increase hot cache from 500 to 1000", "impact": "Better hit rate for repeated questions", "risk": "low", "timestamp": "2026-02-24T16:29:08.853223", "status": "pending", "review_number": 1}
+{"suggestion": "Add connection pooling for Ollama", "impact": "Reduced latency for concurrent requests", "risk": "medium", "timestamp": "2026-02-24T16:29:08.853228", "status": "pending", "review_number": 1}
+{"suggestion": "test", "impact": "test", "risk": "low", "timestamp": "2026-02-24T16:29:09.001816", "status": "pending", "review_number": 1}
+{"suggestion": "test", "impact": "test", "risk": "low", "timestamp": "2026-02-24T16:29:30.613725", "status": "pending", "review_number": 1}
+{"suggestion": "test", "impact": "test", "risk": "low", "timestamp": "2026-02-24T19:06:07.690056", "status": "pending", "review_number": 1}
+{"suggestion": "test", "impact": "test", "risk": "low", "timestamp": "2026-02-24T19:10:47.666175", "status": "pending", "review_number": 1}

@@ -1,0 +1,230 @@
+﻿header:
+  agent_id: routa_maapera
+  agent_name: Routa- ja maaperÃ¤analyytikko
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenranta, Kouvola â€” savi/moreeni
+- Routasyvyys kriittistÃ¤ perustuksille ja putkistoille
+DECISION_METRICS_AND_THRESHOLDS:
+  frost_depth_max_cm:
+    value: 100-150 (Kouvola, normaali talvi)
+    source: src:RO1
+  pipe_burial_min_cm:
+    value: 180-200 tai eristetty
+    action: <180 cm â†’ routasuojaus
+    source: src:RO1
+  frost_heave_risk:
+    value: Siltti/savi + vesi â†’ korkea routanousu
+    action: Seuraa perustusten liikkeitÃ¤
+    source: src:RO1
+  thaw_spring:
+    value: Sulaminen huhti-touko ylhÃ¤Ã¤ltÃ¤
+    action: Maan paineen lisÃ¤Ã¤ntyessÃ¤ perustusten tarkistus
+    source: src:RO1
+  soil_moisture_pct:
+    value: 30-40% (savi kenttÃ¤kapasiteetti)
+    action: '>90% saturaatio â†’ tulva/salaojatarkistus'
+    source: src:RO1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Roudan sulaminen. Kelirikko. Perustusten tarkistus.'
+  source: src:RO1
+- season: KesÃ¤
+  action: '[vko 22-35] MaaperÃ¤n kuivuminen. Savimaan kutistuminen â†’ halkeamia.'
+  source: src:RO1
+- season: Syksy
+  action: '[vko 36-48] Kosteus nousee. Salaojien tarkistus. Routa alkaa.'
+  source: src:RO1
+- season: Talvi
+  action: Routasyvyyden seuranta. Lumi (>50 cm) eristÃ¤Ã¤ â†’ routa matalampi.
+  source: src:RO1
+FAILURE_MODES:
+- mode: Putken jÃ¤Ã¤tyminen
+  detection: Virtaus loppuu pakkasella
+  action: Sulata (vastuskaapeli/lÃ¤mmin vesi), ilmoita LVI-agentille
+  source: src:RO1
+- mode: Perustuksen routanousu
+  detection: Karmi vÃ¤Ã¤ntyvÃ¤t, halkeamia seinissÃ¤
+  action: Dokumentoi, rakennesuunnittelija, ilmoita timpurille
+  source: src:RO1
+PROCESS_FLOWS:
+- flow_id: FLOW_ROUT_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Roudan sulaminen. Kelirikko. Perustusten tarkistus.'
+  output: Tarkistuslista
+  source: src:ROUT
+- flow_id: FLOW_ROUT_03
+  trigger: 'Havaittu: Putken jÃ¤Ã¤tyminen'
+  action: Sulata (vastuskaapeli/lÃ¤mmin vesi), ilmoita LVI-agentille
+  output: Poikkeamaraportti
+  source: src:ROUT
+- flow_id: FLOW_ROUT_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'routa_maapera: rutiiniarviointi'
+  output: Status-raportti
+  source: src:ROUT
+KNOWLEDGE_TABLES:
+- table_id: TBL_ROUT_01
+  title: Routa- ja maaperÃ¤analyytikko â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: frost_depth_max_cm
+    value: 100-150 (Kouvola, normaali talvi)
+    action: ''
+  - metric: pipe_burial_min_cm
+    value: 180-200 tai eristetty
+    action: <180 cm â†’ routasuojaus
+  - metric: frost_heave_risk
+    value: Siltti/savi + vesi â†’ korkea routanousu
+    action: Seuraa perustusten liikkeitÃ¤
+  - metric: thaw_spring
+    value: Sulaminen huhti-touko ylhÃ¤Ã¤ltÃ¤
+    action: Maan paineen lisÃ¤Ã¤ntyessÃ¤ perustusten tarkistus
+  - metric: soil_moisture_pct
+    value: 30-40% (savi kenttÃ¤kapasiteetti)
+    action: '>90% saturaatio â†’ tulva/salaojatarkistus'
+  source: src:ROUT
+COMPLIANCE_AND_LEGAL:
+  perustaminen: 'Rakentamislaki 751/2023: perustus routarajan alapuolelle [src:RO2]'
+UNCERTAINTY_NOTES:
+- Routasyvyys vaihtelee Â±30% lumi- ja lÃ¤mpÃ¶tilaolojen mukaan.
+- MaaperÃ¤ voi vaihdella pienellÃ¤ alueella merkittÃ¤vÃ¤sti.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:RO1
+    org: GTK/IL
+    title: Routatiedot
+    year: 2025
+    url: https://www.gtk.fi/
+    supports: Routasyvyys, maaperÃ¤.
+  - id: src:RO2
+    org: OikeusministeriÃ¶
+    title: Rakentamislaki 751/2023
+    year: 2023
+    url: https://finlex.fi/fi/laki/ajantasa/2023/20230751
+    supports: Perustamisvaatimukset.
+eval_questions:
+- q: MikÃ¤ on roudan enimmÃ¤issyvyys (cm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.frost_depth_max_cm
+  source: src:RO1
+- q: MikÃ¤ on pipe burial min cm?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pipe_burial_min_cm
+  source: src:RO1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun pipe burial min cm ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pipe_burial_min_cm.action
+  source: src:RO1
+- q: MikÃ¤ on routanousuriski?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.frost_heave_risk
+  source: src:RO1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun routanousuriski ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.frost_heave_risk.action
+  source: src:RO1
+- q: MikÃ¤ on thaw spring?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.thaw_spring
+  source: src:RO1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun thaw spring ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.thaw_spring.action
+  source: src:RO1
+- q: MikÃ¤ on maaperÃ¤n kosteus (%)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.soil_moisture_pct
+  source: src:RO1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun maaperÃ¤n kosteus (%) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.soil_moisture_pct.action
+  source: src:RO1
+- q: MitÃ¤ kevÃ¤t huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:RO1
+- q: MitÃ¤ kesÃ¤ huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:RO1
+- q: MitÃ¤ syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:RO1
+- q: MitÃ¤ talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:RO1
+- q: Miten 'Putken jÃ¤Ã¤tyminen' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:RO1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Putken jÃ¤Ã¤tyminen'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:RO1
+- q: Miten 'Perustuksen routanousu' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:RO1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Perustuksen routanousu'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:RO1
+- q: MikÃ¤ on perustaminen -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.perustaminen
+  source: src:RO1
+- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:RO1
+- q: MitkÃ¤ ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#11)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#12)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#13)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#14)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#15)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#16)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#17)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#18)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#19)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#20)?
+  a_ref: ASSUMPTIONS
+  source: src:RO1

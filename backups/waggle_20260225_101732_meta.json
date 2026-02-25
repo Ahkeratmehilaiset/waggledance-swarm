@@ -1,0 +1,62 @@
+{
+  "version": "2.0",
+  "timestamp": "20260225_101732",
+  "datetime": "2026-02-25T10:17:33.125528",
+  "files": 287,
+  "size_bytes": 25101933,
+  "zip_size_bytes": 15120775,
+  "python_version": "3.13.7",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "hardware": {
+    "cpu": "12th Gen Intel(R) Core(TM) i7-12850HX",
+    "ram_gb": 127.2,
+    "gpu": "NVIDIA RTX A2000 8GB Laptop GPU",
+    "vram_gb": 8.0
+  },
+  "ollama_models": [
+    "claude-haiku-4-5-20251001",
+    "llama3.2:1b",
+    "phi4-mini"
+  ],
+  "python_deps": [
+    "aiohttp",
+    "aiosqlite",
+    "anthropic",
+    "chromadb",
+    "distill_from_opus",
+    "duckduckgo_search",
+    "fastapi",
+    "feedparser",
+    "fitz",
+    "httpx",
+    "libvoikko",
+    "nltk",
+    "peft",
+    "psutil",
+    "pydantic",
+    "pyyaml",
+    "requests",
+    "routes",
+    "starlette",
+    "torch",
+    "transformers",
+    "uvicorn[standard]"
+  ],
+  "file_types": {
+    ".py": 82,
+    ".yaml": 157,
+    ".jsx": 3,
+    ".md": 15,
+    ".bat": 1,
+    ".json": 9,
+    ".bin": 4,
+    ".db": 2,
+    ".txt": 2,
+    ".sqlite3": 1,
+    ".js": 2,
+    ".sh": 1,
+    ".html": 1,
+    ".jsonl": 6,
+    ".pickle": 1
+  }
+}

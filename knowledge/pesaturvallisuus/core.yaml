@@ -1,0 +1,244 @@
+﻿header:
+  agent_id: pesaturvallisuus
+  agent_name: PesÃ¤turvallisuuspÃ¤Ã¤llikkÃ¶ (karhut ym.)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Karhu- ja mÃ¤yrÃ¤vahinkojen ehkÃ¤isy mehilÃ¤istarhoilla
+- SÃ¤hkÃ¶aita ensisijainen suojakeino
+- Korvenranta + kaikki muut tarha-sijainnit
+DECISION_METRICS_AND_THRESHOLDS:
+  electric_fence_voltage_kv:
+    value: 4-7 kV (minimi 3 kV, alle â†’ ei estÃ¤ karhua)
+    action: Mittaa vÃ¤hintÃ¤Ã¤n 2x/kk, ennen karhukautta (touko) viikoittain
+    source: src:PETU1
+  fence_ground_resistance_ohm:
+    value: <300 Î©
+    action: '>300 Î© â†’ paranna maadoitusta (lisÃ¤Ã¤ sauvoja, kastele)'
+    source: src:PETU1
+  bear_damage_radius_km:
+    value: 5
+    action: Karhuhavainto <5 km â†’ nosta varotaso, tarkista aidat
+    source: src:PETU2
+  fence_height_cm:
+    value: 90-120
+    note: Karhulle riittÃ¤vÃ¤, alin lanka 20 cm maasta
+    source: src:PETU1
+  grass_under_fence_max_cm:
+    value: 10
+    action: Ruoho >10 cm â†’ niitÃ¤, vuotaa maahan
+    source: src:PETU1
+SEASONAL_RULES:
+- season: KevÃ¤t (huhti-touko)
+  action: '[vko 14-22] SÃ¤hkÃ¶aidan pystytys/tarkistus ENNEN karhun herÃ¤Ã¤mistÃ¤. JÃ¤nnitemittaus.
+    Maadoituksen testaus.'
+  source: src:PETU1
+- season: KesÃ¤
+  action: Ruohon niitto aidan alla 2x/kk. JÃ¤nnite 2x/kk. Riistanvartijalta karhu-info
+    seurantaan.
+  source: src:PETU1
+- season: Syksy
+  action: '[vko 36-48] Aita pidetÃ¤Ã¤n pÃ¤Ã¤llÃ¤ lokakuun loppuun. PesÃ¤kohtaiset suojaukset
+    talvipesille (hiiri, tikka).'
+  source: src:PETU1
+- season: Talvi
+  action: '[vko 49-13] Aita voidaan poistaa lumitÃ¶iden ajaksi (karhu talviunessa).
+    Hiiriverkon tarkistus.'
+  source: src:PETU1
+FAILURE_MODES:
+- mode: Karhu murtautunut aitaan
+  detection: Kaatuneet pylvÃ¤Ã¤t, tuhoutuneet pesÃ¤t, karhun jÃ¤ljet
+  action: 1. Dokumentoi (valokuva + pÃ¤ivÃ¤ys), 2. Ilmoita poliisille ja riistanhoitoyhdistykselle,
+    3. Hae korvaus Maaseutuvirastosta
+  source: src:PETU2
+- mode: Aidan jÃ¤nnite liian matala
+  detection: Mittari <3 kV
+  action: 'Tarkista: ruoho, maadoitus, akku/verkkosyÃ¶ttÃ¶, johdon eristeet'
+  source: src:PETU1
+PROCESS_FLOWS:
+- flow_id: FLOW_PESA_01
+  trigger: electric_fence_voltage_kv ylittÃ¤Ã¤ kynnysarvon (4-7 kV (minimi 3 kV, alle
+    â†’ ei estÃ¤ karhua))
+  action: Mittaa vÃ¤hintÃ¤Ã¤n 2x/kk, ennen karhukautta (touko) viikoittain
+  output: Tilanneraportti
+  source: src:PESA
+- flow_id: FLOW_PESA_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t (huhti-touko)'
+  action: '[vko 14-22] SÃ¤hkÃ¶aidan pystytys/tarkistus ENNEN karhun herÃ¤Ã¤mistÃ¤. JÃ¤nnitemittaus.
+    Maadoituksen test'
+  output: Tarkistuslista
+  source: src:PESA
+- flow_id: FLOW_PESA_03
+  trigger: 'Havaittu: Karhu murtautunut aitaan'
+  action: 1. Dokumentoi (valokuva + pÃ¤ivÃ¤ys), 2. Ilmoita poliisille ja riistanhoitoyhdistykselle,
+    3. Hae korvaus Maaseutuvirastosta
+  output: Poikkeamaraportti
+  source: src:PESA
+- flow_id: FLOW_PESA_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'pesaturvallisuus: rutiiniarviointi'
+  output: Status-raportti
+  source: src:PESA
+KNOWLEDGE_TABLES:
+  threats:
+  - threat: Karhu
+    severity: KRIITTINEN
+    damage: PesÃ¤t tuhoutuvat tÃ¤ysin
+    protection: SÃ¤hkÃ¶aita
+    source: src:PETU2
+  - threat: MÃ¤yrÃ¤
+    severity: KESKITASO
+    damage: Kaivaa pesÃ¤n alta
+    protection: SÃ¤hkÃ¶aita + verkko maahan
+    source: src:PETU1
+  - threat: Tikka
+    severity: MATALA
+    damage: Hakkaa pesÃ¤n kylkeÃ¤ talvella
+    protection: Metalliverkko pesÃ¤n ympÃ¤rille
+    source: src:PETU1
+  - threat: Hiiret
+    severity: MATALA
+    damage: TalvipesÃ¤ssÃ¤ vahakennon tuhoaminen
+    protection: LennonsÃ¤Ã¤tÃ¤jÃ¤ pienennÃ¤ 6mm
+    source: src:PETU1
+COMPLIANCE_AND_LEGAL:
+  damage_compensation: PetoelÃ¤inten aiheuttamista mehilÃ¤isvahingoista voi hakea korvausta
+    Ruokavirastolta (vahingot ilmoitettava 7 pv sisÃ¤llÃ¤) [src:PETU2]
+  electric_fence: SÃ¤hkÃ¶aitapaimenen tulee tÃ¤yttÃ¤Ã¤ SFS-EN 60335-2-76 standardi [src:PETU1]
+UNCERTAINTY_NOTES:
+- Karhun kÃ¤yttÃ¤ytyminen on yksilÃ¶llistÃ¤ â€” kokenut karhu voi oppia kiertÃ¤mÃ¤Ã¤n aidan.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PETU1
+    org: SML / ProAgria
+    title: MehilÃ¤istarhan sÃ¤hkÃ¶aita
+    year: 2024
+    url: null
+    supports: SÃ¤hkÃ¶aitaaminen, jÃ¤nnite, maadoitus, yllÃ¤pito.
+  - id: src:PETU2
+    org: Luonnonvarakeskus (Luke)
+    title: Petovahingot ja korvaukset
+    year: 2025
+    url: https://www.luke.fi/fi/tutkimus/suurpetotutkimus
+    supports: Karhuvahingot, korvausmenettely.
+eval_questions:
+- q: MikÃ¤ on sÃ¤hkÃ¶aidan minimijÃ¤nnite?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.value
+  source: src:PETU1
+- q: MikÃ¤ on maadoituksen maksimiresistanssi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_ground_resistance_ohm.value
+  source: src:PETU1
+- q: Milloin aita tarkistetaan useimmin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.action
+  source: src:PETU1
+- q: MikÃ¤ on karhuhavainnon hÃ¤lytysraja (km)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bear_damage_radius_km.value
+  source: src:PETU2
+- q: MikÃ¤ on aidan korkeus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_height_cm.value
+  source: src:PETU1
+- q: Miksi ruoho pitÃ¤Ã¤ leikata aidan alla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.grass_under_fence_max_cm.action
+  source: src:PETU1
+- q: MitÃ¤ tehdÃ¤Ã¤n karhuvahingon jÃ¤lkeen?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PETU2
+- q: MistÃ¤ karhuvahingon korvaus haetaan?
+  a_ref: COMPLIANCE_AND_LEGAL.damage_compensation
+  source: src:PETU2
+- q: MikÃ¤ on vahingon ilmoitusaika?
+  a_ref: COMPLIANCE_AND_LEGAL.damage_compensation
+  source: src:PETU2
+- q: Miten matala jÃ¤nnite korjataan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PETU1
+- q: MikÃ¤ on karhun uhkataso pesille?
+  a_ref: KNOWLEDGE_TABLES.threats[0].severity
+  source: src:PETU2
+- q: Miten mÃ¤yrÃ¤ltÃ¤ suojaudutaan?
+  a_ref: KNOWLEDGE_TABLES.threats[1].protection
+  source: src:PETU1
+- q: Miten tikka vahingoittaa pesÃ¤Ã¤?
+  a_ref: KNOWLEDGE_TABLES.threats[2].damage
+  source: src:PETU1
+- q: Miten hiiriltÃ¤ suojaudutaan talvella?
+  a_ref: KNOWLEDGE_TABLES.threats[3].protection
+  source: src:PETU1
+- q: Milloin aita pystytetÃ¤Ã¤n kevÃ¤Ã¤llÃ¤?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PETU1
+- q: Kuinka usein ruoho niitetÃ¤Ã¤n?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PETU1
+- q: Milloin aita voidaan poistaa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PETU1
+- q: MikÃ¤ standardi koskee sÃ¤hkÃ¶paimenta?
+  a_ref: COMPLIANCE_AND_LEGAL.electric_fence
+  source: src:PETU1
+- q: MikÃ¤ on alin langan korkeus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_height_cm.note
+  source: src:PETU1
+- q: Voiko karhu kiertÃ¤Ã¤ aidan?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PETU2
+- q: Kenelle karhuvahinko ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PETU2
+- q: MikÃ¤ on ruohon maksimikorkeus aidan alla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.grass_under_fence_max_cm.value
+  source: src:PETU1
+- q: Miten jÃ¤nnite mitataan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.action
+  source: src:PETU1
+- q: Miten maadoitusta parannetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_ground_resistance_ohm.action
+  source: src:PETU1
+- q: MikÃ¤ on mÃ¤yrÃ¤n vahinkotaso?
+  a_ref: KNOWLEDGE_TABLES.threats[1].severity
+  source: src:PETU1
+- q: MitÃ¤ talvipesille tehdÃ¤Ã¤n syksyllÃ¤?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PETU1
+- q: Milloin aita pidetÃ¤Ã¤n viimeksi pÃ¤Ã¤llÃ¤?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PETU1
+- q: MikÃ¤ on lennonsÃ¤Ã¤tÃ¤jÃ¤n merkitys hiirien torjunnassa?
+  a_ref: KNOWLEDGE_TABLES.threats[3].protection
+  source: src:PETU1
+- q: Miten karhujÃ¤ljet tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PETU2
+- q: Kuka tarkistaa aidan jÃ¤nnitteen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.action
+  source: src:PETU1
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #7?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #8?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #9?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #10?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA

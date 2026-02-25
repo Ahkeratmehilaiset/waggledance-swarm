@@ -1,0 +1,254 @@
+header:
+  agent_id: tarhaaja
+  agent_name: Tarhaaja (Päämehiläishoitaja)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 202 yhdyskuntaa (35 tarhaa), useita tarhoja (Helsinki, Kouvola, Huhdasjärvi)
+- JKH Service Y-tunnus 2828492-2
+- Vuosituotanto ~10 000 kg hunajaa
+- 'Hoitomalli: Langstroth-kehykset'
+DECISION_METRICS_AND_THRESHOLDS:
+  varroa_threshold_per_100:
+    value: 3
+    action: '>3 punkkia/100 mehiläistä → kemiallinen hoito välittömästi'
+    source: src:TAR1
+  colony_weight_spring_min_kg:
+    value: 15
+    action: Alle 15 kg keväällä → hätäruokinta sokeriliuoksella (1:1)
+    source: src:TAR2
+  winter_cluster_core_temp_c:
+    value: 20
+    action: 'Ydinlämpö <20°C → KRIITTINEN: yhdyskunta heikkenee'
+    source: src:TAR2
+  brood_frame_count_spring_min:
+    value: 3
+    action: Alle 3 sikiökehystä huhtikuussa → pesä heikko, yhdistämisharkinta
+    source: src:TAR2
+  honey_moisture_max_pct:
+    value: 18.0
+    action: Yli 18% → ei linkota, anna kuivua kannessa
+    source: src:TAR2
+  swarming_risk_indicators:
+    value: Emokopat, pesä ahdas, nuoret mehiläiset kaarella
+    action: Jaa pesä tai poista emokopat 7pv välein
+    source: src:TAR2
+  feeding_autumn_sugar_kg:
+    value: 15-20 kg sokeria / pesä (vyöhyke II-III)
+    source: src:TAR2
+  deg_day_threshold_feeding_start:
+    value: Alle 1000 °Cvr → aloita syysruokinta viimeistään vko 34
+    source: src:TAR2
+SEASONAL_RULES:
+- season: Kevät
+  action: Kevättarkastus kun vrk-T >10°C kahtena peräkkäisenä pv. Ruokavarastojen
+    tarkistus. Emon haku. Laajennukset.
+  source: src:TAR2
+- season: Kesä
+  action: Korotukset satomaiden mukaan. Parveiluntarkistus 7pv välein. Hunajan linkoaminen
+    RH<18%.
+  source: src:TAR2
+- season: Syksy
+  action: Varroa-hoito heti viimeisen linkoamisen jälkeen. Syysruokinta 15-20 kg sokeria/pesä.
+    Talvipakkaus lokakuussa.
+  source: src:TAR2
+- season: Talvi
+  action: EI avata pesiä. Painonseuranta (heiluri/vaaka). Jos paino putoaa >0.5 kg/vko
+    marras-helmikuussa → harkitse hätäruokintaa.
+  source: src:TAR2
+FAILURE_MODES:
+- mode: Emottomaksi jäänyt pesä
+  detection: Ei sikiötä, hajakuviollista munintaa, aggressiivisuus
+  action: Yhdistä lehtipaperilla naapuripesään TAI anna uusi emo
+  source: src:TAR2
+- mode: AFB-epäily
+  detection: Itiöiset, uponneet kannet, tikkulanka, haju
+  action: ÄLÄ siirrä kehyksiä! Ilmoita Ruokavirastolle. Eristä pesä.
+  source: src:TAR1
+- mode: Talvikuolema
+  detection: Keväällä tyhjä pesä, mehiläiset kuolleina pohjalla
+  action: Dokumentoi, tarkista varroa-jäämät, älä kierrätä kehyksiä ennen tautitarkistusta
+  source: src:TAR2
+PROCESS_FLOWS:
+  annual_cycle:
+    steps:
+    - 'Maalis: kevättarkastus (ruokavarastot, emo, sikiö)'
+    - 'Huhti-touko: laajentaminen, korotukset, emontarkkailu'
+    - 'Kesä-heinä: hunajalinkoaminen, parveilunhallinta'
+    - 'Elo: viimeinen lintaus, varroa-hoito, syysruokinta alkaa'
+    - 'Syys: ruokinta valmis viim. syyskuun loppu, talvipakkaus'
+    - 'Loka-maalis: talvilevo, painonseuranta, ei avata pesiä'
+KNOWLEDGE_TABLES:
+  apiaries:
+  - location: Huhdasjärvi
+    hive_count: ~50
+    zone: II-III
+    main_flora: Maitohorsma, vadelma, apilat
+    source: src:TAR2
+  - location: Kouvolan alue
+    hive_count: ~100
+    zone: II
+    main_flora: Rypsi, vadelma, hedelmäpuut
+    source: src:TAR2
+  - location: Helsinki/Itäkeskus
+    hive_count: ~50
+    zone: I
+    main_flora: Puistokasvit, lehmukset, apilat
+    source: src:TAR2
+  - location: Muut sijainnit
+    hive_count: ~100
+    zone: I-III
+    main_flora: Vaihteleva
+    source: src:TAR2
+COMPLIANCE_AND_LEGAL:
+  registration: Eläintenpitäjäksi rekisteröityminen Ruokavirastoon pakollinen [src:TAR1]
+  afb_notification: AFB on valvottava eläintauti — aina ilmoitus Ruokavirastolle [src:TAR1]
+  honey_direct_sale: Suoramyynti kuluttajalle max 2500 kg/vuosi ilman huoneistoilmoitusta
+    [src:TAR3]
+  vat: Hunaja ALV 13.5% (elintarvike, 1.1.2026 alkaen) [src:TAR3]
+UNCERTAINTY_NOTES:
+- Varroa-kynnys 3/100 on yleisesti käytetty mutta ei absoluuttinen — hoidon ajoitus
+  riippuu myös vuodenajasta.
+- Talviruokinnan tarve vaihtelee pesän vahvuuden ja syksyn satokauden mukaan.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:TAR1
+    org: Ruokavirasto
+    title: Mehiläisten taudit ja pito
+    year: 2025
+    url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
+    supports: AFB, varroa, rekisteröinti.
+  - id: src:TAR2
+    org: Suomen Mehiläishoitajain Liitto
+    title: Mehiläishoitoa käytännössä
+    year: 2011
+    url: null
+    identifier: ISBN 978-952-92-9184-4
+    supports: Pesänhoitosykli, varroa, ruokinta, parveilunhallinta.
+  - id: src:TAR3
+    org: Verohallinto / Ruokavirasto
+    title: ALV ja alkutuotanto
+    year: 2026
+    url: https://www.vero.fi/
+    supports: Hunajan ALV, suoramyyntiraja.
+eval_questions:
+- q: Mikä on varroa-hoitokynnys?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.varroa_threshold_per_100.value
+  source: src:TAR1
+- q: Mikä on pesän minimipaino keväällä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.colony_weight_spring_min_kg.value
+  source: src:TAR2
+- q: Mikä on talvipallon ytimen kriittinen lämpötila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.winter_cluster_core_temp_c.value
+  source: src:TAR2
+- q: Mikä on hunajan kosteusyläraja linkoamiselle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_moisture_max_pct.value
+  source: src:TAR2
+- q: Kuinka paljon sokeria syysruokintaan per pesä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.feeding_autumn_sugar_kg.value
+  source: src:TAR2
+- q: Mitkä ovat parveilun merkit?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.swarming_risk_indicators.value
+  source: src:TAR2
+- q: Milloin varroa-hoito tehdään?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TAR2
+- q: Mitä tehdään AFB-epäilyssä?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TAR1
+- q: Milloin kevättarkastus tehdään?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:TAR2
+- q: Mikä on syysruokinnan viimeinen ajankohta?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TAR2
+- q: Miten talvella seurataan pesää?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TAR2
+- q: Mikä on painonpudotuksen hälytysraja talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TAR2
+- q: Paljonko pesillä on Huhdasjärvellä?
+  a_ref: KNOWLEDGE_TABLES.apiaries[0].hive_count
+  source: src:TAR2
+- q: Mikä on ALV hunajalle?
+  a_ref: COMPLIANCE_AND_LEGAL.vat
+  source: src:TAR3
+- q: Mikä on suoramyynnin kiloraja?
+  a_ref: COMPLIANCE_AND_LEGAL.honey_direct_sale
+  source: src:TAR3
+- q: Miten emoton pesä tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:TAR2
+- q: Mitä tehdään emottomalle pesälle?
+  a_ref: FAILURE_MODES[0].action
+  source: src:TAR2
+- q: Mikä °Cvr-raja laukaisee ruokinnan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deg_day_threshold_feeding_start.value
+  source: src:TAR2
+- q: Mikä on sikiökehysten minimiraja keväällä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.brood_frame_count_spring_min.value
+  source: src:TAR2
+- q: Onko AFB ilmoitettava tauti?
+  a_ref: COMPLIANCE_AND_LEGAL.afb_notification
+  source: src:TAR1
+- q: Miten talvikuolema dokumentoidaan?
+  a_ref: FAILURE_MODES[2].action
+  source: src:TAR2
+- q: Mikä on parveiluntarkistusväli?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:TAR2
+- q: Onko rekisteröityminen pakollista?
+  a_ref: COMPLIANCE_AND_LEGAL.registration
+  source: src:TAR1
+- q: Miten hätäruokinta tehdään keväällä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.colony_weight_spring_min_kg.action
+  source: src:TAR2
+- q: Milloin pesiä ei saa avata?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TAR2
+- q: Mitä kehyksille tehdään talvikuoleman jälkeen?
+  a_ref: FAILURE_MODES[2].action
+  source: src:TAR2
+- q: Miten AFB tunnistetaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:TAR1
+- q: Mikä on Helsingissä pääkasvilajisto?
+  a_ref: KNOWLEDGE_TABLES.apiaries[2].main_flora
+  source: src:TAR2
+- q: Paljonko pesiä on yhteensä?
+  a_ref: ASSUMPTIONS
+  source: src:TAR2
+- q: Miten heikko pesä vahvistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.brood_frame_count_spring_min.action
+  source: src:TAR2
+- q: Mikä on vuosituotannon arvio?
+  a_ref: ASSUMPTIONS
+  source: src:TAR2
+- q: Milloin talvipakkaus tehdään?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TAR2
+- q: Miten syysruokinta ajoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deg_day_threshold_feeding_start.value
+  source: src:TAR2
+- q: Mikä on linkoamiskausi?
+  a_ref: PROCESS_FLOWS.annual_cycle.steps
+  source: src:TAR2
+- q: Saako AFB-kehyksiä siirtää?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TAR1
+- q: Milloin emontarkkailu on kriittistä?
+  a_ref: PROCESS_FLOWS.annual_cycle.steps
+  source: src:TAR2
+- q: Mikä on Huhdasjärven pääkasvilajisto?
+  a_ref: KNOWLEDGE_TABLES.apiaries[0].main_flora
+  source: src:TAR2
+- q: Onko varroa-kynnys absoluuttinen?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:TAR1
+- q: Mikä on hoitomalli?
+  a_ref: ASSUMPTIONS
+  source: src:TAR2
+- q: Mikä on Huhdasjärven vyöhyke?
+  a_ref: KNOWLEDGE_TABLES.apiaries[0].zone
+  source: src:TAR2

@@ -1,0 +1,256 @@
+﻿header:
+  agent_id: core_dispatcher
+  agent_name: Core/Dispatcher (PÃ¤Ã¤llikkÃ¶)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan mÃ¶kkiympÃ¤ristÃ¶, Kouvola-HuhdasjÃ¤rvi
+- 50 agentin multi-agent-jÃ¤rjestelmÃ¤, Ollama + paikallinen LLM
+- KÃ¤yttÃ¤jÃ¤ on yksi henkilÃ¶ (Jani), priorisoidaan hÃ¤nen tavoitteitaan
+DECISION_METRICS_AND_THRESHOLDS:
+  agent_response_time_max_s:
+    value: 30
+    action: Jos agentti ei vastaa 30s â†’ merkitse unresponsive, delegoi toiselle
+    source: src:CORE1
+  concurrent_active_agents_max:
+    value: 8
+    action: Yli 8 aktiivista â†’ priorisoi ja pysÃ¤ytÃ¤ matalan prioriteetin agentit
+    source: src:CORE1
+  memory_db_size_max_mb:
+    value: 500
+    action: Yli 500 MB â†’ aja muistin tiivistys ja vanhojen merkintÃ¶jen arkistointi
+    source: src:CORE1
+  heartbeat_interval_s:
+    value: 30
+    source: src:CORE1
+  task_queue_max:
+    value: 50
+    action: Yli 50 odottavaa â†’ hylkÃ¤Ã¤ matalan prioriteetin tehtÃ¤vÃ¤t
+    source: src:CORE1
+  event_bus_latency_ms:
+    value: 500
+    source: UNKNOWN
+    action: Pudota matalan prioriteetin eventit.
+    to_verify: End-to-end latenssi tuotantolaitteistolla.
+  system_cpu_load_pct:
+    value: 90% yli 60s
+    source: UNKNOWN
+    action: Rajoita videonkÃ¤sittelyÃ¤, laske FPS.
+    to_verify: Rasitustesti + SLA.
+  ups_battery_runtime_min:
+    value: 30
+    source: UNKNOWN
+    action: Aja non-critical kontit alas.
+    to_verify: UPS-kuormatesti.
+  mqtt_queue_size:
+    value: 1000
+    source: UNKNOWN
+    action: Tutki viestitulva, Ã„LÃ„ automaattisesti restarttaa brokeria.
+    to_verify: Mosquitto-mittarit.
+  node_heartbeat_timeout_s:
+    value: 120
+    source: UNKNOWN
+    action: Merkitse UNAVAILABLE, fallback.
+    to_verify: Per-agentti heartbeat-interval.
+SEASONAL_RULES:
+- season: Talvi (marraskuu-maaliskuu)
+  rule: VirransÃ¤Ã¤stÃ¶ ensisijainen. SÃ¤hkÃ¶katkossa pudota kaikki paitsi LVI ja pakkasmittarit.
+- season: KesÃ¤ (kesÃ¤-elokuu)
+  rule: Korkean IO-kuorman tila. Kamerat ja AI 100% teholla jÃ¤Ã¤hdytyksen riittÃ¤essÃ¤.
+FAILURE_MODES:
+- failure: Network Partition
+  recovery: Siirry lokaaliin tilakoneeseen. Ã„lÃ¤ hae pilvi-API:a ennen WAN-vahvistusta.
+- failure: Database Corruption
+  recovery: PysÃ¤ytÃ¤ kirjoitus, lataa klo 03:00 snapshot RAM-levylle, jatka read-only.
+PROCESS_FLOWS:
+  message_routing:
+    steps:
+    - 1. Vastaanota kÃ¤yttÃ¤jÃ¤n viesti
+    - 2. Tokenisoi ja tunnista avainsanat
+    - 3. PisteytetÃ¤Ã¤n agenttityypit keyword-matchilla
+    - 4. Jos multi-agent â†’ kÃ¤ynnistÃ¤ rinnakkaiset kyselyt
+    - 5. Kootaan vastaus ja palautetaan kÃ¤yttÃ¤jÃ¤lle
+    source: src:CORE1
+  escalation:
+    levels:
+    - INFO â†’ normaali reititys
+    - WARNING â†’ priorisoi + ilmoita kÃ¤yttÃ¤jÃ¤lle
+    - CRITICAL â†’ keskeytÃ¤ muut, kÃ¤sittele heti
+    source: src:CORE1
+KNOWLEDGE_TABLES:
+- priority_matrix:
+  - category: Turvallisuus (palo, murtohÃ¤lytys, karhuhavainto)
+    priority: 1
+    max_response_s: 5
+  - category: SÃ¤Ã¤-hÃ¤lytykset (myrsky, jÃ¤Ã¤, tulva)
+    priority: 2
+    max_response_s: 10
+  - category: MehilÃ¤ishoito (parveilu, tautiepÃ¤ily)
+    priority: 3
+    max_response_s: 30
+  - category: KiinteistÃ¶huolto (sÃ¤hkÃ¶, LVI, rakenteet)
+    priority: 4
+    max_response_s: 60
+  - category: Viihde, ruoka, yleistieto
+    priority: 5
+    max_response_s: 120
+- table_id: TBL_PRIORITY
+  title: Prioriteettitasot
+  rows:
+  - level: 1
+    name: HÃ¤tÃ¤/Turvallisuus
+    agents: Paloesimies, LukkoseppÃ¤, SÃ¤hkÃ¶asentaja
+  - level: 2
+    name: YllÃ¤pito/Infra
+    agents: LVI-asiantuntija, Laitehuoltaja
+  - level: 3
+    name: Operatiivinen
+    agents: Tarhaaja, Luontokuvaaja
+COMPLIANCE_AND_LEGAL:
+  data_retention: Kaikki agenttidata sÃ¤ilytetÃ¤Ã¤n paikallisesti, ei pilvipalveluja
+  gdpr_note: HenkilÃ¶tietojen kÃ¤sittely vain paikallisesti, ei jaeta kolmansille osapuolille
+UNCERTAINTY_NOTES:
+- Priorisointimatriisi on heuristinen, ei absoluuttinen. KÃ¤yttÃ¤jÃ¤ voi ohittaa.
+- Agenttien max-mÃ¤Ã¤rÃ¤ riippuu kÃ¤ytettÃ¤vissÃ¤ olevasta VRAM/RAM-kapasiteetista.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:CORE1
+    org: OpenClaw
+    title: HiveMind System Architecture v2
+    year: 2026
+    url: null
+    supports: JÃ¤rjestelmÃ¤arkkitehtuuri, priorisointisÃ¤Ã¤nnÃ¶t, heartbeat-protokolla.
+  - id: src:COR1
+    org: SFS
+    title: SFS-EN IEC 62443 Teollisuusautomaation tietoturva
+    year: 2021
+    url: N/A
+    identifier: SFS-EN IEC 62443
+    supports: AutomaatiojÃ¤rjestelmÃ¤n vikasietoisuus ja looginen segmentointi.
+  - id: src:COR2
+    org: Home Assistant
+    title: 'Developer Docs: Architecture (overview)'
+    year: 2025
+    url: https://developers.home-assistant.io/docs/architecture/
+    supports: Yleiskuva arkkitehtuurista (core, integrations, event loop). Ei numeerisia latenssikynnyksiÃ¤.
+eval_questions:
+- q: MikÃ¤ on agentin maksimivasteaika ennen uudelleenohjausta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.agent_response_time_max_s.value
+  source: src:CORE1
+- q: Kuinka monta agenttia voi olla aktiivisena samanaikaisesti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.concurrent_active_agents_max.value
+  source: src:CORE1
+- q: MikÃ¤ on muistitietokannan maksimikoko?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.memory_db_size_max_mb.value
+  source: src:CORE1
+- q: MitkÃ¤ tehtÃ¤vÃ¤t ovat prioriteetti 1?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[0].category
+  source: src:CORE1
+- q: MikÃ¤ on prioriteetti 1 -tehtÃ¤vÃ¤n maksimivasteaika?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[0].max_response_s
+  source: src:CORE1
+- q: MitÃ¤ tapahtuu kun tehtÃ¤vÃ¤jono ylittÃ¤Ã¤ 50?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.task_queue_max.action
+  source: src:CORE1
+- q: Miten viesti reititetÃ¤Ã¤n oikealle agentille?
+  a_ref: PROCESS_FLOWS.message_routing.steps
+  source: src:CORE1
+- q: MitkÃ¤ ovat eskalaatiotasot?
+  a_ref: PROCESS_FLOWS.escalation.levels
+  source: src:CORE1
+- q: MikÃ¤ on heartbeat-vÃ¤li?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.heartbeat_interval_s.value
+  source: src:CORE1
+- q: MitÃ¤ tehdÃ¤Ã¤n jos Ollama ei vastaa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:CORE1
+- q: MikÃ¤ laukaisee circuit breakerin?
+  a_ref: FAILURE_MODES[2].detection
+  source: src:CORE1
+- q: Mihin kevÃ¤Ã¤n agenttiprioriteetti keskittyy?
+  a_ref: SEASONAL_RULES[0].focus
+  source: src:CORE1
+- q: Mihin kesÃ¤n agenttiprioriteetti keskittyy?
+  a_ref: SEASONAL_RULES[1].focus
+  source: src:CORE1
+- q: Mihin syksyn agenttiprioriteetti keskittyy?
+  a_ref: SEASONAL_RULES[2].focus
+  source: src:CORE1
+- q: Mihin talven agenttiprioriteetti keskittyy?
+  a_ref: SEASONAL_RULES[3].focus
+  source: src:CORE1
+- q: Miten muisti tiivistetÃ¤Ã¤n?
+  a_ref: FAILURE_MODES[1].action
+  source: src:CORE1
+- q: SÃ¤ilytetÃ¤Ã¤nkÃ¶ data pilvessÃ¤?
+  a_ref: COMPLIANCE_AND_LEGAL.data_retention
+  source: src:CORE1
+- q: MikÃ¤ on mehilÃ¤ishoidon prioriteettitaso?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[2].priority
+  source: src:CORE1
+- q: MikÃ¤ on viihdetehtÃ¤vien maksimivasteaika?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[4].max_response_s
+  source: src:CORE1
+- q: Milloin vanha muisti arkistoidaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:CORE1
+- q: Onko priorisointimatriisi absoluuttinen?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:CORE1
+- q: MitÃ¤ tapahtuu multi-agent -kyselyssÃ¤?
+  a_ref: PROCESS_FLOWS.message_routing.steps
+  source: src:CORE1
+- q: Kuinka monta odottavaa tehtÃ¤vÃ¤Ã¤ on maksimi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.task_queue_max.value
+  source: src:CORE1
+- q: MikÃ¤ on kiinteistÃ¶huollon prioriteettitaso?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[3].priority
+  source: src:CORE1
+- q: Miten GDPR huomioidaan?
+  a_ref: COMPLIANCE_AND_LEGAL.gdpr_note
+  source: src:CORE1
+- q: MikÃ¤ on sÃ¤Ã¤-hÃ¤lytysten vasteaika?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[1].max_response_s
+  source: src:CORE1
+- q: MitÃ¤ cooldown tarkoittaa loopissa?
+  a_ref: FAILURE_MODES[2].action
+  source: src:CORE1
+- q: Miten agentti merkitÃ¤Ã¤n epÃ¤responsiiviseksi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.agent_response_time_max_s.action
+  source: src:CORE1
+- q: MikÃ¤ on turvallisuustapahtuman vasteaika?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[0].max_response_s
+  source: src:CORE1
+- q: Voidaanko prioriteettia muuttaa?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:CORE1
+- q: MikÃ¤ on Dispatcherin pÃ¤Ã¤tehtÃ¤vÃ¤?
+  a_ref: PROCESS_FLOWS.message_routing
+  source: src:CORE1
+- q: MitÃ¤ tapahtuu yli 8 aktiivisella agentilla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.concurrent_active_agents_max.action
+  source: src:CORE1
+- q: MikÃ¤ on levytilan minimiraja?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:CORE1
+- q: Milloin karhuhavainto kÃ¤sitellÃ¤Ã¤n?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[0]
+  source: src:CORE1
+- q: Miten nuohouksen ajoitus vaikuttaa syksyn prioriteetteihin?
+  a_ref: SEASONAL_RULES[2].focus
+  source: src:CORE1
+- q: Onko jÃ¤Ã¤turvallisuus talven prioriteetti?
+  a_ref: SEASONAL_RULES[3].focus
+  source: src:CORE1
+- q: MikÃ¤ on parveilu-ilmoituksen prioriteettitaso?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[2]
+  source: src:CORE1
+- q: Miten rinnakkaiskyselyt toteutetaan?
+  a_ref: PROCESS_FLOWS.message_routing.steps
+  source: src:CORE1
+- q: MitÃ¤ WARNING-taso tarkoittaa?
+  a_ref: PROCESS_FLOWS.escalation.levels
+  source: src:CORE1
+- q: MitÃ¤ CRITICAL-taso tarkoittaa?
+  a_ref: PROCESS_FLOWS.escalation.levels
+  source: src:CORE1

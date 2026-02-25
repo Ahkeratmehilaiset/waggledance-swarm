@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(cd U:/project && python consciousness.py 2>&1)",
+      "Bash(cd U:/project && PYTHONUTF8=1 python consciousness.py 2>&1)",
+      "Bash(cd U:/project && PYTHONUTF8=1 python -c \"import hivemind; print\\('hivemind imports OK'\\)\" 2>&1)",
+      "Bash(cd U:/project && PYTHONUTF8=1 python -c \"import hivemind; print\\('PriorityLock OK:', hasattr\\(hivemind, 'PriorityLock'\\)\\)\" 2>&1)",
+      "Bash(cd U:/project && PYTHONUTF8=1 python -c \"import hivemind; print\\('Smart Router OK'\\)\" 2>&1)",
+      "Bash(cd U:/project && PYTHONUTF8=1 python tools/scan_knowledge.py --count 2>&1)",
+      "Bash(tail:*)",
+      "Bash(cd U:/project && PYTHONUTF8=1 python -c \"import hivemind; print\\('Auto-seed integration OK'\\)\" 2>&1)",
+      "Bash(cd U:/project && PYTHONUTF8=1 python -c \"import main; import os; print\\('OLLAMA_KEEP_ALIVE:', os.environ.get\\('OLLAMA_KEEP_ALIVE'\\)\\); print\\('OLLAMA_MAX_LOADED_MODELS:', os.environ.get\\('OLLAMA_MAX_LOADED_MODELS'\\)\\)\" 2>&1)",
+      "Bash(head:*)",
+      "Bash(cd U:/project && PYTHONUTF8=1 python tools/scan_knowledge.py 2>&1)",
+      "Bash(sort:*)",
+      "Bash(cd /u/project)",
+      "Bash(*)"
+    ]
+  }
+}

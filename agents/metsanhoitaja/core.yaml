@@ -1,0 +1,240 @@
+header:
+  agent_id: metsanhoitaja
+  agent_name: Metsänhoitaja
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan kiinteistön metsäala ~5 ha
+- Havupuuvaltainen sekametsä (kuusi, mänty, koivu)
+- 'Tavoite: kestävä metsänhoito, mehiläislaidun huomiointi'
+DECISION_METRICS_AND_THRESHOLDS:
+  harvesting_volume_m3_ha:
+    value: 50-80 (harvennushakkuu), 150-250 (päätehakkuu)
+    source: src:MET1
+    action: Harvennushakkuu 50-80 m³/ha → korjuu. Päätehakkuu >150 m³/ha. Metsänkäyttöilmoitus
+      ≥10 pv ennen hakkuuta.
+  regeneration_deadline_years:
+    value: 3
+    action: Uudistaminen aloitettava 3 vuoden sisällä päätehakkuusta
+    source: src:MET2
+  seedling_density_per_ha:
+    value: 1800-2000 (kuusi), 2000-2500 (mänty)
+    source: src:MET1
+    action: Kuusi 1800-2000/ha, mänty 2000-2500/ha. <1500 → täydennysistutus. Tarkistus
+      3v päästä.
+  thinning_trigger_basal_area_m2:
+    value: 22-26 (mänty), 24-28 (kuusi) m²/ha → harvennustarve
+    source: src:MET1
+    action: 'Mänty: harvennusraja 22-26 m²/ha (Etelä-Suomi). Kuusi: 24-28 m²/ha. Ylitys
+      → harvennus.'
+  windthrow_risk_after_harvest:
+    value: KORKEA ensimmäiset 5 vuotta reunametsässä
+    action: Jätä suojavyöhyke 10-20m
+    source: src:MET1
+SEASONAL_RULES:
+- season: Kevät (huhti-touko)
+  action: '[vko 14-22] EI hakkuita lintujen pesimäaikana (touko-heinä suositus). Taimien
+    istutus touko-kesäkuu.'
+  source: src:MET2
+- season: Kesä
+  action: '[vko 22-35] Taimikonhoito, heinäntorjunta uudistusaloilla. Kirjanpainaja-seuranta
+    kuusikoissa.'
+  source: src:MET1
+- season: Syksy
+  action: '[vko 36-48] Harvennushakkuut mahdollisia (maa jäässä → vähemmän juurivaurioita).
+    Metsäsuunnittelu.'
+  source: src:MET1
+- season: Talvi
+  action: '[vko 49-13] Paras hakkuuaika (maa jäässä, vähiten vaurioita). Puutavaran
+    korjuu.'
+  source: src:MET1
+FAILURE_MODES:
+- mode: Kirjanpainajahyönteiset kuusikossa
+  detection: Ruskehtavat kuuset, kaarnassa purujauho
+  action: Poista saastuneet rungot HETI (ennen aikuisten kuoriutumista), ilmoita entomologille
+  source: src:MET1
+- mode: Myrskytuho
+  detection: Kaatuneet puut >10 runkoa/ha
+  action: Korjuu viipymättä (kirjanpainajariski), ilmoita myrskyvaroittajalle ja timpurille
+  source: src:MET1
+PROCESS_FLOWS:
+- flow_id: FLOW_METS_01
+  trigger: harvesting_volume_m3_ha ylittää kynnysarvon (50-80 (harvennushakkuu), 150-250
+    (päätehakkuu))
+  action: Harvennushakkuu 50-80 m³/ha → korjuu. Päätehakkuu >150 m³/ha. Metsänkäyttöilmoitus
+    ≥10 pv ennen hakkuuta.
+  output: Tilanneraportti
+  source: src:METS
+- flow_id: FLOW_METS_02
+  trigger: 'Kausi vaihtuu: Kevät (huhti-touko)'
+  action: '[vko 14-22] EI hakkuita lintujen pesimäaikana (touko-heinä suositus). Taimien
+    istutus touko-kesäkuu.'
+  output: Tarkistuslista
+  source: src:METS
+- flow_id: FLOW_METS_03
+  trigger: 'Havaittu: Kirjanpainajahyönteiset kuusikossa'
+  action: Poista saastuneet rungot HETI (ennen aikuisten kuoriutumista), ilmoita entomologille
+  output: Poikkeamaraportti
+  source: src:METS
+- flow_id: FLOW_METS_04
+  trigger: Säännöllinen heartbeat
+  action: 'metsanhoitaja: rutiiniarviointi'
+  output: Status-raportti
+  source: src:METS
+KNOWLEDGE_TABLES:
+  tree_species:
+  - species: Kuusi (Picea abies)
+    rotation_years: 60-80
+    growth_m3_per_ha_yr: 6-10
+    source: src:MET1
+  - species: Mänty (Pinus sylvestris)
+    rotation_years: 70-100
+    growth_m3_per_ha_yr: 4-7
+    source: src:MET1
+  - species: Rauduskoivu (Betula pendula)
+    rotation_years: 50-70
+    growth_m3_per_ha_yr: 5-8
+    source: src:MET1
+COMPLIANCE_AND_LEGAL:
+  metsalaki: 'Metsälaki 1093/1996: uudistamisvelvollisuus, luontokohteiden suojelu
+    [src:MET2]'
+  metsanhakkuuilmoitus: Hakkuista tehtävä metsänkäyttöilmoitus metsäkeskukselle vähintään
+    10 päivää ennen [src:MET2]
+UNCERTAINTY_NOTES:
+- Harvennusmallit ovat keskiarvoja — optimaalinen ajankohta riippuu kasvupaikkatyypistä.
+- Ilmastonmuutos voi siirtää kuusen sopivaa kasvualuetta pohjoisemmaksi.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:MET1
+    org: Luonnonvarakeskus (Luke) / Tapio
+    title: Hyvän metsänhoidon suositukset
+    year: 2024
+    url: https://tapio.fi/julkaisut/hyvan-metsanhoidon-suositukset/
+    supports: Harvennusmallit, taimikot, kasvuarviot, kirjanpainajatorjunta.
+  - id: src:MET2
+    org: Oikeusministeriö
+    title: Metsälaki 1093/1996
+    year: 1996
+    url: https://www.finlex.fi/fi/laki/ajantasa/1996/19961093
+    supports: Uudistamisvelvollisuus, metsänkäyttöilmoitus, luontokohteet.
+eval_questions:
+- q: Mikä on kuusen kiertoaika?
+  a_ref: KNOWLEDGE_TABLES.tree_species[0].rotation_years
+  source: src:MET1
+- q: Milloin uudistaminen on aloitettava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.regeneration_deadline_years.value
+  source: src:MET2
+- q: Mikä on kuusen taimitiheys per hehtaari?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.seedling_density_per_ha.value
+  source: src:MET1
+- q: Milloin harvennushakkuu on tarpeen (kuusi)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.thinning_trigger_basal_area_m2.value
+  source: src:MET1
+- q: Mikä on paras hakkuuaika?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:MET1
+- q: Miten kirjanpainaja tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:MET1
+- q: Mitä tehdään kirjanpainajahyökkäyksessä?
+  a_ref: FAILURE_MODES[0].action
+  source: src:MET1
+- q: Pitääkö hakkuista ilmoittaa?
+  a_ref: COMPLIANCE_AND_LEGAL.metsanhakkuuilmoitus
+  source: src:MET2
+- q: Kuinka paljon ennen hakkuuilmoitus tehdään?
+  a_ref: COMPLIANCE_AND_LEGAL.metsanhakkuuilmoitus
+  source: src:MET2
+- q: Mikä laki säätelee metsänhoitoa?
+  a_ref: COMPLIANCE_AND_LEGAL.metsalaki
+  source: src:MET2
+- q: Miksi keväällä ei haketa?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MET2
+- q: Mikä on tuulenkaadon riski hakkuun jälkeen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.windthrow_risk_after_harvest
+  source: src:MET1
+- q: Mikä on harvennushakkuun korjuumäärä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.harvesting_volume_m3_ha.value
+  source: src:MET1
+- q: Mikä on männyn kiertoaika?
+  a_ref: KNOWLEDGE_TABLES.tree_species[1].rotation_years
+  source: src:MET1
+- q: Milloin taimia istutetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MET1
+- q: Mitä taimikonhoidossa tehdään kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:MET1
+- q: Mikä on myrskytuhojen jälkitoimenpide?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MET1
+- q: Mikä on suojavyöhykkeen leveys?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.windthrow_risk_after_harvest.action
+  source: src:MET1
+- q: Mikä on koivun kasvu kuutioina?
+  a_ref: KNOWLEDGE_TABLES.tree_species[2].growth_m3_per_ha_yr
+  source: src:MET1
+- q: Mikä on rauduskoivun kiertoaika?
+  a_ref: KNOWLEDGE_TABLES.tree_species[2].rotation_years
+  source: src:MET1
+- q: Milloin harvennushakkuu on mahdollista syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:MET1
+- q: Miksi jäinen maa on parempi hakkuussa?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:MET1
+- q: Mikä on männyn taimitiheys?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.seedling_density_per_ha.value
+  source: src:MET1
+- q: Onko luontokohteiden suojelu pakollista?
+  a_ref: COMPLIANCE_AND_LEGAL.metsalaki
+  source: src:MET2
+- q: Mikä on päätehakkuun korjuumäärä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.harvesting_volume_m3_ha.value
+  source: src:MET1
+- q: Miksi kirjanpainajarungot poistetaan heti?
+  a_ref: FAILURE_MODES[0].action
+  source: src:MET1
+- q: Mikä on kuusen kasvu kuutioina vuodessa?
+  a_ref: KNOWLEDGE_TABLES.tree_species[0].growth_m3_per_ha_yr
+  source: src:MET1
+- q: Kenelle myrskytuho ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MET1
+- q: Montako kaatunutta puuta laukaisee korjuutarpeen?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:MET1
+- q: Voiko ilmastonmuutos vaikuttaa kuusen kasvuun?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:MET1
+- q: Mikä on männyn kasvu kuutioina?
+  a_ref: KNOWLEDGE_TABLES.tree_species[1].growth_m3_per_ha_yr
+  source: src:MET1
+- q: Milloin heinäntorjuntaa tehdään?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:MET1
+- q: Mikä on männyn pohjapinta-alan harvennusraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.thinning_trigger_basal_area_m2.value
+  source: src:MET1
+- q: Mitä metsäsuunnittelulla tarkoitetaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:MET1
+- q: Miten kirjanpainaja-seuranta tehdään?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:MET1
+- q: Mikä on myrskytuhojen kirjanpainajariski?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MET1
+- q: Kenelle kirjanpainajatuho ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:MET1
+- q: Milloin metsänkäyttöilmoitus tehdään?
+  a_ref: COMPLIANCE_AND_LEGAL.metsanhakkuuilmoitus
+  source: src:MET2
+- q: Onko hakkuu sallittua pesimäaikana?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MET2
+- q: Mihin metsäkeskukseen ilmoitus tehdään?
+  a_ref: COMPLIANCE_AND_LEGAL.metsanhakkuuilmoitus
+  source: src:MET2

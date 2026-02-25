@@ -1,0 +1,238 @@
+﻿header:
+  agent_id: matemaatikko_fyysikko
+  agent_name: Matemaatikko ja fyysikko (laskenta + mallit)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Laskennallinen tuki kaikille agenteille
+- 'Fysiikan mallit: lÃ¤mmÃ¶nsiirto, nestevirtaus, optiikka, mekaniikka'
+- 'Matemaattiset mallit: tilastot, ennusteet, optimointi'
+DECISION_METRICS_AND_THRESHOLDS:
+  deg_day_formula:
+    value: Â°Cvr = Î£ max(0, T_avg - T_base), T_base = 5Â°C
+    source: src:MA1
+    action: 'Kynnykset: pajun kukinta 50-80Â°Cvr, voikukka 150-200, omena 300-350,
+      varroa-hoito 1200. Laske pÃ¤ivittÃ¤in kevÃ¤Ã¤stÃ¤ alkaen.'
+  wind_chill_formula:
+    value: WCI = 13.12 + 0.6215T - 11.37V^0.16 + 0.3965TV^0.16
+    note: T in Â°C, V in km/h
+    source: src:MA1
+  heat_loss_u_value:
+    value: Q = U Ã— A Ã— Î”T (W)
+    note: U = lÃ¤mmÃ¶nlÃ¤pÃ¤isykerroin (W/mÂ²K)
+    source: src:MA2
+    action: Hirsi U=0.40, mineraalivilla 150mm U=0.24, passiivi U=0.10. KokonaishÃ¤viÃ¶
+      Q=Î£(UÃ—AÃ—Î”T). Budjetti kW vertailuun.
+  solar_angle_formula:
+    value: Î¸ = 90Â° - Ï† + Î´ (noon elevation)
+    note: Ï† = leveysaste, Î´ = auringon deklinaatio
+    source: src:MA1
+  statistical_confidence:
+    value: 95% luottamusvÃ¤li vakiomÃ¤Ã¤ritelmÃ¤
+    action: <90% CI â†’ ilmoita 'luottamus riittÃ¤mÃ¤tÃ¶n, tarvitaan lisÃ¤Ã¤ datapisteitÃ¤'.
+      n<30 â†’ kÃ¤ytÃ¤ bootstrap tai Bayesian.
+    source: src:MA1
+  optimization_constraints:
+    value: 'LP/NLP-ongelmat: tarhojen sijoittelu, reittioptimointi'
+    source: src:MA1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Â°Cvr-kertymÃ¤n laskenta alkaa. Aurinkokulmalaskelmat kasvimaalle.'
+  source: src:MA1
+- season: KesÃ¤
+  action: '[vko 22-35] Satoennustemallit (lineaarinen regressio painodatan perusteella).
+    UV-indeksi.'
+  source: src:MA1
+- season: Syksy
+  action: '[vko 36-48] Routasyvyysennuste (pakkasvuorokausikertymÃ¤). Lumikuormalaskelmat.'
+  source: src:MA2
+- season: Talvi
+  action: '[vko 49-13] LÃ¤mpÃ¶hÃ¤viÃ¶laskelmat rakennuksille. Tuulen hyytÃ¤vyysindeksi.
+    JÃ¤Ã¤n kantavuuslaskenta.'
+  source: src:MA2
+FAILURE_MODES:
+- mode: Malli antaa epÃ¤realistisen tuloksen
+  detection: Tulos fysikaalisesti mahdoton (esim. negatiivinen massa)
+  action: Tarkista syÃ¶tedata, mallin rajaehdot, yksikkÃ¶muunnokset
+  source: src:MA1
+- mode: Liian vÃ¤hÃ¤n datapisteitÃ¤
+  detection: n < 30 â†’ tilastollinen voima riittÃ¤mÃ¤tÃ¶n
+  action: Ilmoita epÃ¤varmuus, kÃ¤ytÃ¤ Bayesian-menetelmiÃ¤ tai bootstrappia
+  source: src:MA1
+PROCESS_FLOWS:
+  calculation_service:
+    steps:
+    - 1. Vastaanota laskentapyyntÃ¶ agentilta
+    - 2. Tunnista malli (tilasto, fysiikka, optimointi)
+    - 3. Suorita laskenta parametreilla
+    - 4. Palauta tulos + epÃ¤varmuusarvio
+    - 5. Dokumentoi olettamukset
+KNOWLEDGE_TABLES:
+- table_id: TBL_MATE_01
+  title: Matemaatikko ja fyysikko (laskenta + mallit) â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: deg_day_formula
+    value: Â°Cvr = Î£ max(0, T_avg - T_base), T_base = 5Â°C
+    action: 'Kynnykset: pajun kukinta 50-80Â°Cvr, voikukka 150-200, omena 300-350,
+      varroa-hoit'
+  - metric: wind_chill_formula
+    value: WCI = 13.12 + 0.6215T - 11.37V^0.16 + 0.3965TV^0.16
+    action: ''
+  - metric: heat_loss_u_value
+    value: Q = U Ã— A Ã— Î”T (W)
+    action: Hirsi U=0.40, mineraalivilla 150mm U=0.24, passiivi U=0.10. KokonaishÃ¤viÃ¶
+      Q=Î£(UÃ—
+  - metric: solar_angle_formula
+    value: Î¸ = 90Â° - Ï† + Î´ (noon elevation)
+    action: ''
+  - metric: statistical_confidence
+    value: 95% luottamusvÃ¤li vakiomÃ¤Ã¤ritelmÃ¤
+    action: '<90% CI â†’ ilmoita ''luottamus riittÃ¤mÃ¤tÃ¶n, tarvitaan lisÃ¤Ã¤ datapisteitÃ¤''.
+      n<30 â†’ '
+  - metric: optimization_constraints
+    value: 'LP/NLP-ongelmat: tarhojen sijoittelu, reittioptimointi'
+    action: ''
+  source: src:MATE
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Kaikki mallit ovat yksinkertaistuksia â€” todellinen maailma on monimutkaisempi.
+- Monte Carlo -simulaatio hyÃ¶dyllinen kun analyyttinen ratkaisu ei ole mahdollinen.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:MA1
+    org: Ilmatieteen laitos / yleinen fysiikka
+    title: Laskentakaavat
+    year: 2026
+    url: null
+    supports: Termodynamiikka, optiikka, tilastotiede.
+  - id: src:MA2
+    org: RIL/RT
+    title: Rakennusfysiikka
+    year: 2024
+    url: https://www.ril.fi/
+    supports: LÃ¤mmÃ¶nlÃ¤pÃ¤isy, lumikuorma, routalaskelmat.
+eval_questions:
+- q: Miten Â°Cvr lasketaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deg_day_formula.value
+  source: src:MA1
+- q: MikÃ¤ on tuulen hyytÃ¤vyyden kaava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wind_chill_formula.value
+  source: src:MA1
+- q: Miten lÃ¤mpÃ¶hÃ¤viÃ¶ lasketaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.heat_loss_u_value.value
+  source: src:MA2
+- q: Miten aurinkokulma lasketaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_angle_formula.value
+  source: src:MA1
+- q: MikÃ¤ on tilastollisen merkitsevyyden raja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.statistical_confidence.value
+  source: src:MA1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun dataa on liian vÃ¤hÃ¤n?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MA1
+- q: Miten laskentapyyntÃ¶ kÃ¤sitellÃ¤Ã¤n?
+  a_ref: PROCESS_FLOWS.calculation_service.steps
+  source: src:MA1
+- q: MikÃ¤ on LP-optimoinnin kÃ¤yttÃ¶kohde?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.optimization_constraints.value
+  source: src:MA1
+- q: MikÃ¤ on astepÃ¤ivÃ¤kaava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deg_day_formula
+  source: src:MA1
+- q: MikÃ¤ on tuulen hyytÃ¤vyyskaava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wind_chill_formula
+  source: src:MA1
+- q: MikÃ¤ on lÃ¤mpÃ¶hÃ¤viÃ¶n U-arvo?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.heat_loss_u_value
+  source: src:MA1
+- q: MikÃ¤ on auringon kulmakaava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_angle_formula
+  source: src:MA1
+- q: MikÃ¤ on statistical confidence?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.statistical_confidence
+  source: src:MA1
+- q: 'Toimenpide: statistical confidence?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.statistical_confidence.action
+  source: src:MA1
+- q: MikÃ¤ on optimization constraints?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.optimization_constraints
+  source: src:MA1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MA1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:MA1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:MA1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:MA1
+- q: 'Havainto: Malli antaa epÃ¤realistisen tul?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:MA1
+- q: 'Toiminta: Malli antaa epÃ¤realistisen tul?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:MA1
+- q: 'Havainto: Liian vÃ¤hÃ¤n datapisteitÃ¤?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:MA1
+- q: 'Toiminta: Liian vÃ¤hÃ¤n datapisteitÃ¤?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:MA1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:MA1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1
+- q: 'Operatiivinen lisÃ¤kysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:MA1

@@ -1,0 +1,13 @@
+sources:
+- id: src:MET1
+  org: Luonnonvarakeskus (Luke) / Tapio
+  title: Hyvän metsänhoidon suositukset
+  year: 2024
+  url: https://tapio.fi/julkaisut/hyvan-metsanhoidon-suositukset/
+  supports: Harvennusmallit, taimikot, kasvuarviot, kirjanpainajatorjunta.
+- id: src:MET2
+  org: Oikeusministeriö
+  title: Metsälaki 1093/1996
+  year: 1996
+  url: https://www.finlex.fi/fi/laki/ajantasa/1996/19961093
+  supports: Uudistamisvelvollisuus, metsänkäyttöilmoitus, luontokohteet.

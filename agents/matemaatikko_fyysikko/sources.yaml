@@ -1,0 +1,13 @@
+sources:
+- id: src:MA1
+  org: Ilmatieteen laitos / yleinen fysiikka
+  title: Laskentakaavat
+  year: 2026
+  url: null
+  supports: Termodynamiikka, optiikka, tilastotiede.
+- id: src:MA2
+  org: RIL/RT
+  title: Rakennusfysiikka
+  year: 2024
+  url: https://www.ril.fi/
+  supports: Lämmönläpäisy, lumikuorma, routalaskelmat.

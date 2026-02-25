@@ -1,0 +1,14 @@
+sources:
+- id: src:LSA1
+  org: SML
+  title: Mehiläishoitoa käytännössä
+  year: 2011
+  url: null
+  identifier: ISBN 978-952-92-9184-4
+  supports: Lentolämpötilat, sää-optimaalisuus.
+- id: src:LSA2
+  org: LuontoPortti / Luke
+  title: Kasvien nektarieritys ja sääolosuhteet
+  year: 2024
+  url: https://luontoportti.com/
+  supports: Nektarierityksen sääriippuvuus.

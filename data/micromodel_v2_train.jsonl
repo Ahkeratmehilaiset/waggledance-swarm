@@ -1,0 +1,4 @@
+{"generation": 1, "num_classes": 5, "num_samples": 50, "epochs": 30, "best_val_acc": 0.20000000298023224, "timestamp": 1771952555.0938098}
+{"generation": 1, "num_classes": 5, "num_samples": 50, "epochs": 30, "best_val_acc": 0.4000000059604645, "timestamp": 1771952611.0635426}
+{"generation": 1, "num_classes": 5, "num_samples": 50, "epochs": 30, "best_val_acc": 0.10000000149011612, "timestamp": 1771952684.6471596}
+{"generation": 1, "num_classes": 5, "num_samples": 50, "epochs": 30, "best_val_acc": 0.10000000149011612, "timestamp": 1771952759.5166795}

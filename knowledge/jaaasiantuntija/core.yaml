@@ -1,0 +1,237 @@
+﻿header:
+  agent_id: jaaasiantuntija
+  agent_name: JÃ¤Ã¤asiantuntija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- HuhdasjÃ¤rven jÃ¤Ã¤
+- PilkintÃ¤, retkiluistelu, moottorikelkkailu
+DECISION_METRICS_AND_THRESHOLDS:
+  ice_walk_cm:
+    value: 5
+    action: â‰¥5 cm terÃ¤sjÃ¤Ã¤ â†’ jalankulku
+    source: src:JA1
+  ice_snowmobile_cm:
+    value: 15
+    action: â‰¥15 cm â†’ kelkka
+    source: src:JA1
+  ice_car_cm:
+    value: 40
+    action: â‰¥40 cm â†’ auto (EI suositella)
+    source: src:JA1
+  weak_ice_signs:
+    value: Tumma jÃ¤Ã¤, virtapaikat, kaislikon reuna
+    action: VÃ„LTÃ„ aina, mittaa 50m vÃ¤lein
+    source: src:JA1
+  spring_deterioration:
+    value: Maaliskuun loppu (vrk-T >0Â°C)
+    action: LOPETA jÃ¤Ã¤llÃ¤ liikkuminen kun yÃ¶pakkaset loppuvat
+    source: src:JA1
+SEASONAL_RULES:
+- season: Syksy
+  action: '[vko 36-48] JÃ¤Ã¤ muodostuu. EnsijÃ¤Ã¤ petollinen â€” mittaa AINA.'
+  source: src:JA1
+- season: Talvi
+  action: '[vko 49-13] Vahvimmillaan. Lumikuorma heikentÃ¤Ã¤. KohvajÃ¤Ã¤ = puolet terÃ¤sjÃ¤Ã¤n
+    kantavuudesta.'
+  source: src:JA1
+- season: KevÃ¤t
+  action: '[vko 14-22] Haurastuu nopeasti. Virtapaikat sulavat ensin.'
+  source: src:JA1
+- season: KesÃ¤
+  action: '[vko 22-35] Ei jÃ¤Ã¤tÃ¤.'
+  source: src:JA1
+FAILURE_MODES:
+- mode: JÃ¤Ã¤n murtuminen
+  detection: Ratinaa, vesi pinnalle
+  action: MAHALLEEN, ryÃ¶mi taaksepÃ¤in, levitÃ¤ paino, soita 112
+  source: src:JA1
+- mode: HenkilÃ¶ pudonnut jÃ¤ihin
+  detection: Avanto
+  action: HeitÃ¤ kÃ¶ysi/oksa, Ã„LÃ„ mene heikolle jÃ¤Ã¤lle, soita 112
+  source: src:JA2
+PROCESS_FLOWS:
+- flow_id: FLOW_JAAA_01
+  trigger: ice_walk_cm ylittÃ¤Ã¤ kynnysarvon (5)
+  action: â‰¥5 cm terÃ¤sjÃ¤Ã¤ â†’ jalankulku
+  output: Tilanneraportti
+  source: src:JAAA
+- flow_id: FLOW_JAAA_02
+  trigger: 'Kausi vaihtuu: Syksy'
+  action: '[vko 36-48] JÃ¤Ã¤ muodostuu. EnsijÃ¤Ã¤ petollinen â€” mittaa AINA.'
+  output: Tarkistuslista
+  source: src:JAAA
+- flow_id: FLOW_JAAA_03
+  trigger: 'Havaittu: JÃ¤Ã¤n murtuminen'
+  action: MAHALLEEN, ryÃ¶mi taaksepÃ¤in, levitÃ¤ paino, soita 112
+  output: Poikkeamaraportti
+  source: src:JAAA
+- flow_id: FLOW_JAAA_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'jaaasiantuntija: rutiiniarviointi'
+  output: Status-raportti
+  source: src:JAAA
+KNOWLEDGE_TABLES:
+- table_id: TBL_JAAA_01
+  title: JÃ¤Ã¤asiantuntija â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: ice_walk_cm
+    value: '5'
+    action: â‰¥5 cm terÃ¤sjÃ¤Ã¤ â†’ jalankulku
+  - metric: ice_snowmobile_cm
+    value: '15'
+    action: â‰¥15 cm â†’ kelkka
+  - metric: ice_car_cm
+    value: '40'
+    action: â‰¥40 cm â†’ auto (EI suositella)
+  - metric: weak_ice_signs
+    value: Tumma jÃ¤Ã¤, virtapaikat, kaislikon reuna
+    action: VÃ„LTÃ„ aina, mittaa 50m vÃ¤lein
+  - metric: spring_deterioration
+    value: Maaliskuun loppu (vrk-T >0Â°C)
+    action: LOPETA jÃ¤Ã¤llÃ¤ liikkuminen kun yÃ¶pakkaset loppuvat
+  source: src:JAAA
+COMPLIANCE_AND_LEGAL:
+  vastuu: JÃ¤Ã¤llÃ¤ omalla vastuulla [src:JA1]
+UNCERTAINTY_NOTES:
+- JÃ¤Ã¤n paksuus vaihtelee samalla jÃ¤rvellÃ¤ huomattavasti.
+- KohvajÃ¤Ã¤ kantaa ~50% terÃ¤sjÃ¤Ã¤n verran.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:JA1
+    org: SUH/Pelastuslaitos
+    title: JÃ¤Ã¤turvallisuus
+    year: 2025
+    url: https://www.suh.fi/
+    supports: JÃ¤Ã¤npaksuus, mittaus.
+  - id: src:JA2
+    org: Pelastuslaitos
+    title: JÃ¤Ã¤hÃ¤nputoaminen
+    year: 2025
+    url: https://pelastustoimi.fi/
+    supports: Pelastustoimet.
+eval_questions:
+- q: MikÃ¤ on jÃ¤Ã¤n kÃ¤velykantokyky (cm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ice_walk_cm
+  source: src:JA1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun jÃ¤Ã¤n kÃ¤velykantokyky (cm) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ice_walk_cm.action
+  source: src:JA1
+- q: MikÃ¤ on jÃ¤Ã¤n moottorikelkkakantokyky (cm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ice_snowmobile_cm
+  source: src:JA1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun jÃ¤Ã¤n moottorikelkkakantokyky (cm) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ice_snowmobile_cm.action
+  source: src:JA1
+- q: MikÃ¤ on jÃ¤Ã¤n autokantokyky (cm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ice_car_cm
+  source: src:JA1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun jÃ¤Ã¤n autokantokyky (cm) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ice_car_cm.action
+  source: src:JA1
+- q: MikÃ¤ on weak ice signs?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weak_ice_signs
+  source: src:JA1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun weak ice signs ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weak_ice_signs.action
+  source: src:JA1
+- q: MikÃ¤ on spring deterioration?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spring_deterioration
+  source: src:JA1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun spring deterioration ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spring_deterioration.action
+  source: src:JA1
+- q: MitÃ¤ syksy huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:JA1
+- q: MitÃ¤ talvi huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:JA1
+- q: MitÃ¤ kevÃ¤t huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:JA1
+- q: MitÃ¤ kesÃ¤ huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:JA1
+- q: Miten 'JÃ¤Ã¤n murtuminen' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:JA1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'JÃ¤Ã¤n murtuminen'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:JA1
+- q: Miten 'HenkilÃ¶ pudonnut jÃ¤ihin' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:JA1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'HenkilÃ¶ pudonnut jÃ¤ihin'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:JA1
+- q: MikÃ¤ on vastuu -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.vastuu
+  source: src:JA1
+- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:JA1
+- q: MitkÃ¤ ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#11)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#12)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#13)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#14)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#15)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#16)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#17)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#18)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#19)?
+  a_ref: ASSUMPTIONS
+  source: src:JA1

@@ -1,0 +1,235 @@
+header:
+  agent_id: kybervahti
+  agent_name: Kybervahti (tietoturva)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Kotiverkko + IoT
+- Ollama paikallisesti
+- VPN etäyhteydellä
+DECISION_METRICS_AND_THRESHOLDS:
+  failed_login_max:
+    value: 5
+    action: '>5 epäonnistunutta / 10min → IP-esto 1h'
+    source: src:KY1
+  cve_check_days:
+    value: 7
+    action: IoT-laitteiden CVE-tiedotteet viikoittain
+    source: src:KY1
+  unknown_device:
+    value: Tuntematon MAC verkossa
+    action: Eristä VLAN, tunnista, blokkaa/hyväksy
+    source: src:KY1
+  vpn_required:
+    value: Etäyhteys VAIN VPN:n kautta
+    source: src:KY1
+  password_min_len:
+    value: 12
+    action: 'Kaikki laitteet: ≥12 merkkiä, uniikki per laite'
+    source: src:KY1
+SEASONAL_RULES:
+- season: Kevät
+  action: Salasanojen vaihto 6kk sykli. Firmware-päivitykset.
+  source: src:KY1
+- season: Kesä
+  action: '[vko 22-35] Lomakausi: etäyhteyksien seuranta.'
+  source: src:KY1
+- season: Syksy
+  action: '[vko 36-48] Salasanarotaatio. Varmuuskopiopalautustesti.'
+  source: src:KY1
+- season: Talvi
+  action: '[vko 49-13] UPS + verkkolaitteiden sähkön laatu aggregaattikäytössä.'
+  source: src:KY1
+FAILURE_MODES:
+- mode: Tuntematon laite verkossa
+  detection: 'Verkkoskannaus: tuntematon MAC'
+  action: Eristä VLAN, tunnista, blokkaa reitittimestä
+  source: src:KY1
+- mode: Brute force
+  detection: '>20 epäonnistunutta / 1h'
+  action: IP-esto, lokit, fail2ban
+  source: src:KY1
+PROCESS_FLOWS:
+- flow_id: FLOW_KYBE_01
+  trigger: failed_login_max ylittää kynnysarvon (5)
+  action: '>5 epäonnistunutta / 10min → IP-esto 1h'
+  output: Tilanneraportti
+  source: src:KYBE
+- flow_id: FLOW_KYBE_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: Salasanojen vaihto 6kk sykli. Firmware-päivitykset.
+  output: Tarkistuslista
+  source: src:KYBE
+- flow_id: FLOW_KYBE_03
+  trigger: 'Havaittu: Tuntematon laite verkossa'
+  action: Eristä VLAN, tunnista, blokkaa reitittimestä
+  output: Poikkeamaraportti
+  source: src:KYBE
+- flow_id: FLOW_KYBE_04
+  trigger: Säännöllinen heartbeat
+  action: 'kybervahti: rutiiniarviointi'
+  output: Status-raportti
+  source: src:KYBE
+KNOWLEDGE_TABLES:
+- table_id: TBL_KYBE_01
+  title: Kybervahti (tietoturva) — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: failed_login_max
+    value: '5'
+    action: '>5 epäonnistunutta / 10min → IP-esto 1h'
+  - metric: cve_check_days
+    value: '7'
+    action: IoT-laitteiden CVE-tiedotteet viikoittain
+  - metric: unknown_device
+    value: Tuntematon MAC verkossa
+    action: Eristä VLAN, tunnista, blokkaa/hyväksy
+  - metric: vpn_required
+    value: Etäyhteys VAIN VPN:n kautta
+    action: ''
+  - metric: password_min_len
+    value: '12'
+    action: 'Kaikki laitteet: ≥12 merkkiä, uniikki per laite'
+  source: src:KYBE
+COMPLIANCE_AND_LEGAL:
+  gdpr: 'GDPR: henkilötietojen suojaus myös kotiverkossa [src:KY2]'
+UNCERTAINTY_NOTES:
+- IoT-laitteiden tietoturva usein heikko — oletussalasanat.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:KY1
+    org: Kyberturvallisuuskeskus
+    title: Kyberturvallisuus kotona
+    year: 2025
+    url: https://www.kyberturvallisuuskeskus.fi/
+    supports: Kotiverkko, IoT.
+  - id: src:KY2
+    org: Tietosuojavaltuutettu
+    title: GDPR
+    year: 2025
+    url: https://tietosuoja.fi/
+    supports: Henkilötiedot.
+eval_questions:
+- q: Mikä on failed login max?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.failed_login_max
+  source: src:KY1
+- q: 'Toimenpide: failed login max?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.failed_login_max.action
+  source: src:KY1
+- q: Mikä on haavoittuvuustarkistuksen väli (pv)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cve_check_days
+  source: src:KY1
+- q: 'Toimenpide: haavoittuvuustarkistuksen vÃ¤li (pv)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cve_check_days.action
+  source: src:KY1
+- q: Mikä on unknown device?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.unknown_device
+  source: src:KY1
+- q: 'Toimenpide: unknown device?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.unknown_device.action
+  source: src:KY1
+- q: Mikä on vpn required?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vpn_required
+  source: src:KY1
+- q: Mikä on password min len?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.password_min_len
+  source: src:KY1
+- q: 'Toimenpide: password min len?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.password_min_len.action
+  source: src:KY1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:KY1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:KY1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:KY1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:KY1
+- q: 'Havainto: Tuntematon laite verkossa?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:KY1
+- q: 'Toiminta: Tuntematon laite verkossa?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:KY1
+- q: 'Havainto: Brute force?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:KY1
+- q: 'Toiminta: Brute force?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:KY1
+- q: 'Sääntö: gdpr?'
+  a_ref: COMPLIANCE_AND_LEGAL.gdpr
+  source: src:KY1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:KY1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #12?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #13?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #14?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #15?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #16?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #17?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #18?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #19?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1
+- q: 'Kytkentä muihin agentteihin #20?'
+  a_ref: ASSUMPTIONS
+  source: src:KY1

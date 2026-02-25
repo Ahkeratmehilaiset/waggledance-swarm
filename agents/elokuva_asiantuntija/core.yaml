@@ -1,0 +1,249 @@
+header:
+  agent_id: elokuva_asiantuntija
+  agent_name: Elokuva-asiantuntija (Suomi-elokuvat)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Suomalaisen elokuvan tuntemus
+- Mökkielokuvaillat
+- Suositukset tunnelman, kauden ja seuran mukaan
+DECISION_METRICS_AND_THRESHOLDS:
+  audience_rating_min:
+    value: 6.5
+    action: IMDb <6.5 → suosittele vain jos erityinen syy (ohjaaja, teema). <5.0 →
+      älä suosittele.
+    source: src:EL1
+  runtime_max_min:
+    value: 120
+    action: '>120 min arki-illalle → varoita (''pitkä elokuva''). >180 min → ehdota
+      viikonloppua.'
+    source: src:EL1
+  content_rating:
+    value: K7/K12/K16/K18
+    action: Lapsia <16v paikalla → max K12. Rikkomus → Kuvaohjelmalaki 710/2011.
+    source: src:EL2
+  genre_mood_mapping:
+    value: 'Kevyt: komedia, Jännittävä: trilleri, Syvällinen: draama, Klassikko: sota/historia'
+    source: src:EL1
+  streaming_availability:
+    value: Yle Areena (ilmainen), Elisa Viihde, Netflix (rajallinen FI-valikoima)
+    source: src:EL1
+  streaming_check:
+    value: Tarkista Yle Areena → Elisa Viihde → Netflix → kirjasto
+    action: Ei löydy mistään → ilmoita käyttäjälle, ehdota DVD/Blu-ray lainaus kirjastosta.
+    source: src:EL1
+  mood_algorithm:
+    value: 'Syötteenä: tunnelma + seurue + kausi'
+    action: Pimeä talvi-ilta + 2 hlö → draama/jännitys. Kesäilta + ryhmä → komedia.
+      Itsenäisyyspäivä → Tuntematon sotilas.
+    source: src:EL1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Kevätväsymys → kevyet komediat. Pääsiäiselokuvat.'
+  source: src:EL1
+- season: Kesä
+  action: '[vko 22-35] Mökkielokuvat ulkona (projektorilla?). Kevyitä kesäkomedioita.'
+  source: src:EL1
+- season: Syksy
+  action: '[vko 36-48] Pimenevät illat → pidemmät draamat, trilogiat. Dokumentit.'
+  source: src:EL1
+- season: Talvi
+  action: '[vko 49-13] Itsenäisyyspäivä: Tuntematon sotilas. Joulu: klassikoita. Pitkät
+    illat → sarjat.'
+  source: src:EL1
+FAILURE_MODES:
+- mode: Elokuva ei saatavilla streamingissä
+  detection: Hakutulokset tyhjät
+  action: Tarkista Yle Areena, Elisa, kirjasto (DVD/Blu-ray lainaus)
+  source: src:EL1
+- mode: Ikärajaylitys (lapset paikalla)
+  detection: Elokuva K16 + lapsi <16v
+  action: Vaihda elokuva tai sovi aikuisten ilta erikseen
+  source: src:EL1
+PROCESS_FLOWS:
+- flow_id: FLOW_ELOK_01
+  trigger: audience_rating_min ylittää kynnysarvon (6.5)
+  action: IMDb <6.5 → suosittele vain jos erityinen syy (ohjaaja, teema). <5.0 → älä
+    suosittele.
+  output: Tilanneraportti
+  source: src:ELOK
+- flow_id: FLOW_ELOK_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Kevätväsymys → kevyet komediat. Pääsiäiselokuvat.'
+  output: Tarkistuslista
+  source: src:ELOK
+- flow_id: FLOW_ELOK_03
+  trigger: 'Havaittu: Elokuva ei saatavilla streamingissä'
+  action: Tarkista Yle Areena, Elisa, kirjasto (DVD/Blu-ray lainaus)
+  output: Poikkeamaraportti
+  source: src:ELOK
+- flow_id: FLOW_ELOK_04
+  trigger: Säännöllinen heartbeat
+  action: 'elokuva_asiantuntija: rutiiniarviointi'
+  output: Status-raportti
+  source: src:ELOK
+KNOWLEDGE_TABLES:
+  classics:
+  - title: Tuntematon sotilas (2017)
+    genre: Sota/draama
+    rating: K16
+    runtime: 180
+  - title: Miekkailija (2015)
+    genre: Draama/historia
+    rating: K7
+    runtime: 93
+  - title: Hytti nro 6 (2021)
+    genre: Draama
+    rating: K12
+    runtime: 107
+  - title: Härmä (2012)
+    genre: Toiminta/historia
+    rating: K16
+    runtime: 115
+  - title: Miehen työ (2007)
+    genre: Draama
+    rating: K12
+    runtime: 92
+  - title: Napapiirin sankarit (2010)
+    genre: Komedia
+    rating: K7
+    runtime: 92
+COMPLIANCE_AND_LEGAL:
+  ikarajat: 'Kuvaohjelmalaki 710/2011: ikärajat sitovia [src:EL2]'
+UNCERTAINTY_NOTES:
+- Streaming-valikoimat muuttuvat kuukausittain.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:EL1
+    org: Elonet / SES
+    title: Suomalaiset elokuvat
+    year: 2025
+    url: https://elonet.finna.fi/
+    supports: Elokuvatiedot, arviot.
+  - id: src:EL2
+    org: KAVI
+    title: Kuvaohjelmalaki 710/2011
+    year: 2011
+    url: https://www.kavi.fi/
+    supports: Ikärajat.
+eval_questions:
+- q: Mikä on katsojaarvostelun minimiraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.audience_rating_min
+  source: src:EL1
+- q: Mikä on elokuvan enimmÃ¤iskesto (min)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.runtime_max_min
+  source: src:EL1
+- q: Mikä on sisÃ¤ltÃ¶luokitus (ikÃ¤raja)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.content_rating
+  source: src:EL1
+- q: Mikä on lajityypin tunnelmakartoitus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.genre_mood_mapping
+  source: src:EL1
+- q: Mikä on suoratoistopalvelun saatavuus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.streaming_availability
+  source: src:EL1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:EL1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:EL1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:EL1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:EL1
+- q: 'Havainto: Elokuva ei saatavilla streamin?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:EL1
+- q: 'Toiminta: Elokuva ei saatavilla streamin?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:EL1
+- q: 'Havainto: Ikärajaylitys (lapset paikalla?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:EL1
+- q: 'Toiminta: Ikärajaylitys (lapset paikalla?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:EL1
+- q: 'Sääntö: ikarajat?'
+  a_ref: COMPLIANCE_AND_LEGAL.ikarajat
+  source: src:EL1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:EL1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #16?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #17?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #18?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #19?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #20?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #21?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #22?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #23?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1
+- q: 'Operatiivinen lisäkysymys #24?'
+  a_ref: ASSUMPTIONS
+  source: src:EL1

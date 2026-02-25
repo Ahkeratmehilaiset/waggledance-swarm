@@ -1,0 +1,228 @@
+header:
+  agent_id: laitehuoltaja
+  agent_name: Laitehuoltaja (IoT, akut, verkot)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Korvenrannan IoT: kamerat, anturit, gateway, NAS, Ollama-palvelin'
+- 'Verkko: WiFi, BLE, 4G-vara'
+DECISION_METRICS_AND_THRESHOLDS:
+  battery_voltage_iot_v:
+    value: Tyypillisesti 3.0-3.6V (lithium)
+    action: <3.0V → vaihda/lataa, <2.8V → laite sammuu
+    source: src:LA1
+  wifi_signal_dbm:
+    value: -30 erinomainen, -50 hyvä, -70 kohtalainen
+    action: <-75 → vahvistin tai lisätukiasema
+    source: src:LA1
+  nas_disk_smart_pct:
+    value: '>90% OK'
+    action: <85% → varmuuskopioi ja vaihda levy
+    source: src:LA1
+  uptime_target_pct:
+    value: 99.5%
+    note: ≈43h max seisokkia/vuosi
+    source: src:LA1
+  firmware_update_months:
+    value: 3
+    action: Tarkista 3 kk välein, kriittiset heti
+    source: src:LA1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Ulkolaitteiden tarkistus talven jälkeen. Akkujen testaus.'
+  source: src:LA1
+- season: Kesä
+  action: '[vko 22-35] Ylilämpenemisriski (NAS, palvelin). Jäähdytys.'
+  source: src:LA1
+- season: Syksy
+  action: '[vko 36-48] Varmuuskopiot. UPS-testaus ennen talvea.'
+  source: src:LA1
+- season: Talvi
+  action: 'Lithium-akut: -20°C raja. Sähkökatkosvarautuminen.'
+  source: src:LA1
+FAILURE_MODES:
+- mode: IoT-laite offline >1h
+  detection: Ei dataa
+  action: Akku → yhteys → firmware. Reboot. Ilmoita relevanteille.
+  source: src:LA1
+- mode: NAS-levyvika
+  detection: SMART-varoitus
+  action: Varmuuskopioi HETI, vaihda levy, RAID rebuild
+  source: src:LA1
+PROCESS_FLOWS:
+- flow_id: FLOW_LAIT_01
+  trigger: battery_voltage_iot_v ylittää kynnysarvon (Tyypillisesti 3.0-3.6V (lithium))
+  action: <3.0V → vaihda/lataa, <2.8V → laite sammuu
+  output: Tilanneraportti
+  source: src:LAIT
+- flow_id: FLOW_LAIT_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Ulkolaitteiden tarkistus talven jälkeen. Akkujen testaus.'
+  output: Tarkistuslista
+  source: src:LAIT
+- flow_id: FLOW_LAIT_03
+  trigger: 'Havaittu: IoT-laite offline >1h'
+  action: Akku → yhteys → firmware. Reboot. Ilmoita relevanteille.
+  output: Poikkeamaraportti
+  source: src:LAIT
+- flow_id: FLOW_LAIT_04
+  trigger: Säännöllinen heartbeat
+  action: 'laitehuoltaja: rutiiniarviointi'
+  output: Status-raportti
+  source: src:LAIT
+KNOWLEDGE_TABLES:
+- table_id: TBL_LAIT_01
+  title: Laitehuoltaja (IoT, akut, verkot) — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: battery_voltage_iot_v
+    value: Tyypillisesti 3.0-3.6V (lithium)
+    action: <3.0V → vaihda/lataa, <2.8V → laite sammuu
+  - metric: wifi_signal_dbm
+    value: -30 erinomainen, -50 hyvä, -70 kohtalainen
+    action: <-75 → vahvistin tai lisätukiasema
+  - metric: nas_disk_smart_pct
+    value: '>90% OK'
+    action: <85% → varmuuskopioi ja vaihda levy
+  - metric: uptime_target_pct
+    value: 99.5%
+    action: ''
+  - metric: firmware_update_months
+    value: '3'
+    action: Tarkista 3 kk välein, kriittiset heti
+  source: src:LAIT
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Lithium-akkujen kylmänkestävyys vaihtelee merkittävästi.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LA1
+    org: Laitevalmistajat
+    title: IoT-laitehuolto
+    year: 2025
+    url: null
+    supports: Akku, WiFi, NAS, firmware.
+eval_questions:
+- q: Mikä on IoT-laitteen akkujännite (V)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.battery_voltage_iot_v
+  source: src:LA1
+- q: 'Toimenpide: IoT-laitteen akkujÃ¤nnite (V)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.battery_voltage_iot_v.action
+  source: src:LA1
+- q: Mikä on WiFi-signaalin voimakkuus (dBm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wifi_signal_dbm
+  source: src:LA1
+- q: 'Toimenpide: WiFi-signaalin voimakkuus (dBm)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wifi_signal_dbm.action
+  source: src:LA1
+- q: Mikä on nas disk smart pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nas_disk_smart_pct
+  source: src:LA1
+- q: 'Toimenpide: nas disk smart pct?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nas_disk_smart_pct.action
+  source: src:LA1
+- q: Mikä on käytettävyystavoite (%)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.uptime_target_pct
+  source: src:LA1
+- q: Mikä on laiteohjelmiston päivitysväli (kk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.firmware_update_months
+  source: src:LA1
+- q: 'Toimenpide: laiteohjelmiston pÃ¤ivitysvÃ¤li (kk)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.firmware_update_months.action
+  source: src:LA1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LA1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LA1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LA1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LA1
+- q: 'Havainto: IoT-laite offline >1h?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:LA1
+- q: 'Toiminta: IoT-laite offline >1h?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:LA1
+- q: 'Havainto: NAS-levyvika?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LA1
+- q: 'Toiminta: NAS-levyvika?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:LA1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LA1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #12?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #13?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #14?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #15?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #16?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #17?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #18?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #19?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #20?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1
+- q: 'Kytkentä muihin agentteihin #21?'
+  a_ref: ASSUMPTIONS
+  source: src:LA1

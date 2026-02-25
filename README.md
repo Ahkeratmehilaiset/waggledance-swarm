@@ -361,22 +361,99 @@ DGX / server rack. Predictive maintenance, yield prediction (98.7%), SPC monitor
 
 ---
 
-## Quick Start
+## Installation
+
+### Option A: Docker (recommended — works on Linux, Windows, macOS)
 
 ```bash
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-
-# Backend
-pip install -r requirements.txt
-uvicorn backend.main:app --port 8000 &
-
-# Dashboard (optional — WaggleDance works without it)
-cd dashboard && npm install && npm run dev
-# → http://localhost:5173
+docker compose up -d
 ```
 
-WaggleDance auto-detects your hardware on first boot and configures itself.
+This starts both Ollama (with GPU) and WaggleDance. On first run it pulls the required models automatically.
+
+Open **http://localhost:8000** — done.
+
+> **GPU note:** Docker GPU passthrough requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on Linux, or Docker Desktop with WSL2 GPU support on Windows.
+> No GPU? Remove the `deploy.resources` block from `docker-compose.yml` — it works on CPU too (slower).
+
+---
+
+### Option B: Native Install — Linux / macOS
+
+```bash
+# 1. Install Ollama
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# 2. Pull models (one-time, ~3GB total)
+ollama pull phi4-mini
+ollama pull llama3.2:1b
+ollama pull nomic-embed-text
+ollama pull all-minilm
+
+# 3. Clone and install
+git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
+cd waggledance-swarm
+pip install -r requirements.txt
+
+# 4. Run
+python main.py
+# → http://localhost:8000
+```
+
+### Option C: Native Install — Windows
+
+```powershell
+# 1. Install Ollama (download from https://ollama.ai/download)
+winget install Ollama.Ollama
+
+# 2. Pull models (open a new terminal after Ollama install)
+ollama pull phi4-mini
+ollama pull llama3.2:1b
+ollama pull nomic-embed-text
+ollama pull all-minilm
+
+# 3. Clone and install
+git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
+cd waggledance-swarm
+pip install -r requirements.txt
+
+# 4. Run
+python main.py
+# → http://localhost:8000
+```
+
+### Dashboard UI (optional)
+
+The dashboard is built into the backend at port 8000. If you want the development version with hot reload:
+
+```bash
+cd dashboard
+npm install
+npm run dev
+# → http://localhost:5173 (proxies API to :8000)
+```
+
+### Verify Installation
+
+```bash
+python tools/waggle_backup.py --tests-only
+```
+
+This runs all component tests and generates a health report. Expected: 60+ tests pass, 0 failures.
+
+### What Happens on First Boot
+
+1. Hardware auto-detected (GPU, RAM, CPU)
+2. Optimal model tier selected (EDGE → LIGHT → STANDARD → PRO → BEAST)
+3. 50 agent knowledge bases loaded from YAML
+4. ChromaDB vector memory initialized
+5. Opus-MT translation models loaded (Finnish ↔ English)
+6. Background learning begins immediately
+7. Dashboard ready at http://localhost:8000
+
+WaggleDance auto-detects your hardware and configures itself. No YAML editing needed.
 
 ---
 

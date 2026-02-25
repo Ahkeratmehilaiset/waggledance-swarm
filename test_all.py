@@ -21,6 +21,18 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+# ── Windows UTF-8 ──────────────────────────────────────────
+if sys.platform == "win32":
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
 # Värit
 G = "\033[92m"; R = "\033[91m"; Y = "\033[93m"; B = "\033[94m"; W = "\033[0m"
 os.system("")  # ANSI Windows
@@ -29,21 +41,21 @@ RESULTS = {"pass": 0, "fail": 0, "warn": 0, "errors": []}
 
 def OK(msg):
     RESULTS["pass"] += 1
-    print(f"  {G}✅ {msg}{W}")
+    print(f"  {G}OK  {msg}{W}")
 
 def FAIL(msg):
     RESULTS["fail"] += 1
     RESULTS["errors"].append(msg)
-    print(f"  {R}❌ {msg}{W}")
+    print(f"  {R}FAIL {msg}{W}")
 
 def WARN(msg):
     RESULTS["warn"] += 1
-    print(f"  {Y}⚠️  {msg}{W}")
+    print(f"  {Y}WARN {msg}{W}")
 
 def SECTION(title):
-    print(f"\n{B}{'═'*50}")
+    print(f"\n{B}{'='*50}")
     print(f"  {title}")
-    print(f"{'═'*50}{W}")
+    print(f"{'='*50}{W}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -428,12 +440,12 @@ async def test_whisper():
             WARN(f"Hieroglyfi: {e}")
 
         # Crown check
-        is_crowned = wp.is_crowned("agent_a")
-        OK(f"Crown (50🪙): {is_crowned} (pitäisi olla False, raja 100)")
+        has = wp.has_crown("agent_a")
+        OK(f"Crown (50 tokens): {has} (should be False, threshold 100)")
 
         await te.reward("agent_a", "task_completed", custom_amount=60)
-        is_crowned2 = wp.is_crowned("agent_a")
-        OK(f"Crown (110🪙): {is_crowned2} (pitäisi olla True)")
+        has2 = wp.has_crown("agent_a")
+        OK(f"Crown (110 tokens): {has2} (should be True)")
 
         await mem.close()
         try:
@@ -777,10 +789,10 @@ async def main():
     offline = "--offline" in sys.argv
 
     print(f"""
-{B}╔══════════════════════════════════════════════════╗
-║  OpenClaw v1.4 — Täysdiagnostiikka               ║
-║  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                          ║
-╚══════════════════════════════════════════════════╝{W}
+{B}{'='*52}
+  WaggleDance v1.4 -- Full Diagnostics
+  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+{'='*52}{W}
 """)
 
     # Synkroniset testit
@@ -801,17 +813,17 @@ async def main():
         await test_inter_agent()
         await test_heartbeat()
     else:
-        print(f"\n{Y}  ℹ️  --offline: Dashboard-, inter-agent- ja heartbeat-testit ohitettu{W}")
+        print(f"\n{Y}  [offline] Dashboard, inter-agent and heartbeat tests skipped{W}")
 
     # ── YHTEENVETO ───────────────────────────────────────────
     print(f"""
-{B}{'═'*50}
+{B}{'='*50}
   YHTEENVETO
-{'═'*50}{W}
+{'='*50}{W}
 
-  {G}✅ Läpäisseet: {RESULTS['pass']}{W}
-  {Y}⚠️  Varoitukset: {RESULTS['warn']}{W}
-  {R}❌ Virheet:     {RESULTS['fail']}{W}
+  {G}PASS: {RESULTS['pass']}{W}
+  {Y}WARN: {RESULTS['warn']}{W}
+  {R}FAIL: {RESULTS['fail']}{W}
 """)
 
     if RESULTS["errors"]:
@@ -820,9 +832,9 @@ async def main():
             print(f"  {R}{i}. {err}{W}")
 
     if RESULTS["fail"] == 0:
-        print(f"\n{G}🎉 KAIKKI TESTIT LÄPI!{W}")
+        print(f"\n{G}ALL TESTS PASSED{W}")
     else:
-        print(f"\n{Y}💡 Korjaa virheet ja aja uudelleen: python test_all.py{W}")
+        print(f"\n{Y}Fix errors and re-run: python test_all.py{W}")
 
     # Tallenna raportti
     report = Path("data/test_report.json")

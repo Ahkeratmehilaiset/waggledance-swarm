@@ -1,0 +1,13 @@
+sources:
+- id: src:KAL1
+  org: Luke
+  title: Kalalajien ekologia
+  year: 2024
+  url: https://www.luke.fi/
+  supports: Kalojen käyttäytyminen.
+- id: src:KAL2
+  org: MMM
+  title: Kalastuslaki 379/2015
+  year: 2015
+  url: https://kalastusrajoitus.fi/
+  supports: Luvat, rauhoitukset, alamitat.

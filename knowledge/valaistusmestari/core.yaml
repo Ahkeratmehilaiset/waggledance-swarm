@@ -1,0 +1,229 @@
+﻿header:
+  agent_id: valaistusmestari
+  agent_name: Valaistusmestari
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan sisÃ¤- ja ulkovalaistus
+- LED pÃ¤Ã¤osin
+- Valohaaste luonnolle huomioitava
+DECISION_METRICS_AND_THRESHOLDS:
+  lux_indoor_work:
+    value: 300-500 lux tyÃ¶tila
+    source: src:VA1
+  lux_outdoor_path:
+    value: 5-20 lux pihapolku
+    source: src:VA1
+  color_temp_evening_k:
+    value: <3000 K illalla
+    action: KylmÃ¤ valo illalla hÃ¤iritsee unta ja elÃ¤imiÃ¤
+    source: src:VA1
+  motion_timeout_min:
+    value: 5
+    action: Ulkovalo 5 min liiketunnistimella â†’ energiansÃ¤Ã¤stÃ¶
+    source: src:VA1
+  light_pollution_amber:
+    value: Ulkovalot amber/lÃ¤mmin â†’ vÃ¤hemmÃ¤n hÃ¤iriÃ¶tÃ¤
+    action: Ilmoita tÃ¤htitieteilijÃ¤lle valosaasteesta
+    source: src:VA2
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Ulkovalojen tarkistus. Ajastimien pÃ¤ivitys pÃ¤ivÃ¤nvalon mukaan.'
+  source: src:VA1
+- season: KesÃ¤
+  action: '[vko 22-35] YÃ¶tÃ¶n yÃ¶: ulkovalot minimiin. Amber-valo hyÃ¶nteishÃ¤iriÃ¶n estoon.'
+  source: src:VA2
+- season: Syksy
+  action: '[vko 36-48] Pimenee: ulkovalot pÃ¤Ã¤lle, turvavalaistus. Ajastimet.'
+  source: src:VA1
+- season: Talvi
+  action: '[vko 49-13] Pisin pimeÃ¤ â†’ valaistus kriittinen. Jouluvalojen sÃ¤hkÃ¶nkulutus.'
+  source: src:VA1
+FAILURE_MODES:
+- mode: LED vilkkuu
+  detection: Vilkkuva tai himmenevÃ¤ valo
+  action: Tarkista muuntaja/driver, himmentimen yhteensopivuus
+  source: src:VA1
+- mode: Liiketunnistin jatkuvasti pÃ¤Ã¤llÃ¤
+  detection: Valo ei sammu
+  action: Herkkyys, suuntaus, elÃ¤imet/kasvit laukaisijoina?
+  source: src:VA1
+PROCESS_FLOWS:
+- flow_id: FLOW_VALA_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Ulkovalojen tarkistus. Ajastimien pÃ¤ivitys pÃ¤ivÃ¤nvalon mukaan.'
+  output: Tarkistuslista
+  source: src:VALA
+- flow_id: FLOW_VALA_03
+  trigger: 'Havaittu: LED vilkkuu'
+  action: Tarkista muuntaja/driver, himmentimen yhteensopivuus
+  output: Poikkeamaraportti
+  source: src:VALA
+- flow_id: FLOW_VALA_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'valaistusmestari: rutiiniarviointi'
+  output: Status-raportti
+  source: src:VALA
+KNOWLEDGE_TABLES:
+- table_id: TBL_VALA_01
+  title: Valaistusmestari â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: lux_indoor_work
+    value: 300-500 lux tyÃ¶tila
+    action: ''
+  - metric: lux_outdoor_path
+    value: 5-20 lux pihapolku
+    action: ''
+  - metric: color_temp_evening_k
+    value: <3000 K illalla
+    action: KylmÃ¤ valo illalla hÃ¤iritsee unta ja elÃ¤imiÃ¤
+  - metric: motion_timeout_min
+    value: '5'
+    action: Ulkovalo 5 min liiketunnistimella â†’ energiansÃ¤Ã¤stÃ¶
+  - metric: light_pollution_amber
+    value: Ulkovalot amber/lÃ¤mmin â†’ vÃ¤hemmÃ¤n hÃ¤iriÃ¶tÃ¤
+    action: Ilmoita tÃ¤htitieteilijÃ¤lle valosaasteesta
+  source: src:VALA
+COMPLIANCE_AND_LEGAL:
+  valohaaste: Ei saa kohdistaa naapuriin. Kunnan jÃ¤rjestyssÃ¤Ã¤ntÃ¶. [src:VA2]
+UNCERTAINTY_NOTES:
+- LED-kÃ¤yttÃ¶ikÃ¤ vaihtelee valmistajittain merkittÃ¤vÃ¤sti.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:VA1
+    org: Suomen Valoteknillinen Seura
+    title: Valaistussuositukset
+    year: 2024
+    url: https://www.valosto.com/
+    supports: Lux, vÃ¤rilÃ¤mpÃ¶tila.
+  - id: src:VA2
+    org: IDA/Ursa
+    title: Valosaaste
+    year: 2025
+    url: https://www.darksky.org/
+    supports: Valosaasteentorjunta.
+eval_questions:
+- q: MikÃ¤ on sisÃ¤tyÃ¶alueen valaistusvoimakkuus (lux)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lux_indoor_work
+  source: src:VA1
+- q: MikÃ¤ on ulkopolun valaistusvoimakkuus (lux)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lux_outdoor_path
+  source: src:VA1
+- q: MikÃ¤ on illan vÃ¤rilÃ¤mpÃ¶tila (K)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.color_temp_evening_k
+  source: src:VA1
+- q: 'Toimenpide: illan vÃ¤rilÃ¤mpÃ¶tila (K)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.color_temp_evening_k.action
+  source: src:VA1
+- q: MikÃ¤ on liiketunnistuksen aikakatkaisu (min)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.motion_timeout_min
+  source: src:VA1
+- q: 'Toimenpide: liiketunnistuksen aikakatkaisu (min)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.motion_timeout_min.action
+  source: src:VA1
+- q: MikÃ¤ on light pollution amber?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.light_pollution_amber
+  source: src:VA1
+- q: 'Toimenpide: light pollution amber?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.light_pollution_amber.action
+  source: src:VA1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:VA1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:VA1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:VA1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:VA1
+- q: 'Havainto: LED vilkkuu?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:VA1
+- q: 'Toiminta: LED vilkkuu?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:VA1
+- q: 'Havainto: Liiketunnistin jatkuvasti pÃ¤Ã¤l?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:VA1
+- q: 'Toiminta: Liiketunnistin jatkuvasti pÃ¤Ã¤l?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:VA1
+- q: 'SÃ¤Ã¤ntÃ¶: valohaaste?'
+  a_ref: COMPLIANCE_AND_LEGAL.valohaaste
+  source: src:VA1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:VA1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #12?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #13?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #14?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #15?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #16?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #17?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #18?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #19?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #20?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1
+- q: 'KytkentÃ¤ muihin agentteihin #21?'
+  a_ref: ASSUMPTIONS
+  source: src:VA1

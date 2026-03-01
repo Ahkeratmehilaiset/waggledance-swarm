@@ -1,0 +1,256 @@
+﻿header:
+  agent_id: logistikko
+  agent_name: Logistikko (reitti + ajoajat)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenranta â†” Helsinki, Kouvola, tarha-alueet
+- Tesla Model Y (sÃ¤hkÃ¶auto)
+- MehilÃ¤istarvikkeiden ja hunajan kuljetus
+DECISION_METRICS_AND_THRESHOLDS:
+  range_km_winter:
+    value: 'Tesla Model Y: ~350 km (kesÃ¤), ~250 km (talvi -20Â°C)'
+    source: src:LO1
+    action: 'Talvi -20Â°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku
+      â†’ etsi lataus HETI (Tesla SC Kouvola/Lahti).'
+  charging_plan:
+    value: Latauspisteet reitillÃ¤ ennakkosuunnittelu >200 km matkoilla
+    action: 'Ennakkosuunnittelu: A Better Routeplanner (ABRP). >200 km â†’ 1 lataustauko.
+      Talvella +30% aikaa. EsilÃ¤mmitys 30 min ennen.'
+    source: src:LO1
+  korvenranta_helsinki_km:
+    value: ~150 km, ~1h 50min (E75/VT12)
+    source: src:LO1
+  korvenranta_kouvola_km:
+    value: ~25 km, ~30 min
+    source: src:LO1
+  honey_transport_temp_c:
+    value: 'Hunaja: 15-25Â°C (ei jÃ¤Ã¤dytÃ¤, ei kuumenna >40Â°C)'
+    action: 15-25Â°C. <0Â°C â†’ hunaja kiteytyy, auton sisÃ¤lÃ¤mpÃ¶ riittÃ¤Ã¤. >40Â°C â†’ entsyymit
+      tuhoutuvat, EI jÃ¤tÃ¤ aurinkoon.
+    source: src:LO2
+  load_capacity_kg:
+    value: 'Tesla Model Y: ~500 kg kuorma'
+    source: src:LO1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Kelirikko â†’ hiekkateillÃ¤ varovaisuus. Renkaanvaihto (huhti-touko).
+    Tarhakierros alkaa.'
+  source: src:LO1
+- season: KesÃ¤
+  action: '[vko 22-35] Hunajan kuljetuskausi. LÃ¤mpÃ¶ â†’ hunajan suojaus. PitkÃ¤t pÃ¤ivÃ¤t
+    â†’ ajoaika joustava.'
+  source: src:LO2
+- season: Syksy
+  action: Syysruokinnan sokerikuljetukset (4500-6000 kg koko kausi). Rengasvaihto
+    (loka-marras).
+  source: src:LO1
+- season: Talvi
+  action: SÃ¤hkÃ¶auton toimintamatka -30%. EsilÃ¤mmitys. Liukkaat tiet. TarhakÃ¤ynnit
+    harvinaisempia.
+  source: src:LO1
+FAILURE_MODES:
+- mode: Akku loppuu kesken matkan
+  detection: Varoitus <10%
+  action: Hae lÃ¤hin pikalatausasema (Plugit, K-Lataus, Tesla SC). Ekoajo pÃ¤Ã¤lle.
+  source: src:LO1
+- mode: Kelirikko estÃ¤Ã¤ tien
+  detection: Hiekka-/sorapohja upottaa
+  action: Vaihtoehtoinen reitti (pÃ¤Ã¤llystetylle tielle), lykkÃ¤Ã¤ matkaa, informoi tarhaajaa
+  source: src:LO1
+PROCESS_FLOWS:
+- flow_id: FLOW_LOGI_01
+  trigger: 'range_km_winter ylittÃ¤Ã¤ kynnysarvon (Tesla Model Y: ~350 km (kesÃ¤), ~250
+    km (talvi -20Â°C))'
+  action: 'Talvi -20Â°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku â†’
+    etsi lataus HETI (Tesla SC Kouvola/Lahti).'
+  output: Tilanneraportti
+  source: src:LOGI
+- flow_id: FLOW_LOGI_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Kelirikko â†’ hiekkateillÃ¤ varovaisuus. Renkaanvaihto (huhti-touko).
+    Tarhakierros alkaa.'
+  output: Tarkistuslista
+  source: src:LOGI
+- flow_id: FLOW_LOGI_03
+  trigger: 'Havaittu: Akku loppuu kesken matkan'
+  action: Hae lÃ¤hin pikalatausasema (Plugit, K-Lataus, Tesla SC). Ekoajo pÃ¤Ã¤lle.
+  output: Poikkeamaraportti
+  source: src:LOGI
+- flow_id: FLOW_LOGI_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'logistikko: rutiiniarviointi'
+  output: Status-raportti
+  source: src:LOGI
+KNOWLEDGE_TABLES:
+- table_id: TBL_LOGI_01
+  title: Logistikko (reitti + ajoajat) â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: range_km_winter
+    value: 'Tesla Model Y: ~350 km (kesÃ¤), ~250 km (talvi -20Â°C)'
+    action: 'Talvi -20Â°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku
+      â†’ etsi lata'
+  - metric: charging_plan
+    value: Latauspisteet reitillÃ¤ ennakkosuunnittelu >200 km matkoilla
+    action: 'Ennakkosuunnittelu: A Better Routeplanner (ABRP). >200 km â†’ 1 lataustauko.
+      Talve'
+  - metric: korvenranta_helsinki_km
+    value: ~150 km, ~1h 50min (E75/VT12)
+    action: ''
+  - metric: korvenranta_kouvola_km
+    value: ~25 km, ~30 min
+    action: ''
+  - metric: honey_transport_temp_c
+    value: 'Hunaja: 15-25Â°C (ei jÃ¤Ã¤dytÃ¤, ei kuumenna >40Â°C)'
+    action: 15-25Â°C. <0Â°C â†’ hunaja kiteytyy, auton sisÃ¤lÃ¤mpÃ¶ riittÃ¤Ã¤. >40Â°C â†’ entsyymit
+      tuho
+  - metric: load_capacity_kg
+    value: 'Tesla Model Y: ~500 kg kuorma'
+    action: ''
+  source: src:LOGI
+COMPLIANCE_AND_LEGAL:
+  kuorma: 'Tieliikennelaki: kuorman sidonta ja painorajat [src:LO1]'
+  ajo_lepo: Ammattimaisessa liikenteessÃ¤ ajo-lepoaikasÃ¤Ã¤nnÃ¶t (ei koske omaa ajoa)
+    [src:LO1]
+UNCERTAINTY_NOTES:
+- SÃ¤hkÃ¶auton todellinen talvitoimintamatka vaihtelee lÃ¤mpÃ¶tilan ja ajotavan mukaan.
+- Kelirikkoajat vaihtelevat vuosittain merkittÃ¤vÃ¤sti.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LO1
+    org: Traficom / Tesla
+    title: SÃ¤hkÃ¶auton kÃ¤yttÃ¶ Suomessa
+    year: 2026
+    url: https://www.traficom.fi/
+    supports: Toimintamatka, lataus, liikenne.
+  - id: src:LO2
+    org: SML
+    title: Hunajan kÃ¤sittely ja kuljetus
+    year: 2011
+    url: null
+    supports: Hunajan kuljetuslÃ¤mpÃ¶tilat.
+eval_questions:
+- q: MikÃ¤ on talvitoimintasÃ¤de (km)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.range_km_winter
+  source: src:LO1
+- q: MikÃ¤ on charging plan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.charging_plan
+  source: src:LO1
+- q: 'Toimenpide: charging plan?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.charging_plan.action
+  source: src:LO1
+- q: MikÃ¤ on korvenranta helsinki km?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.korvenranta_helsinki_km
+  source: src:LO1
+- q: MikÃ¤ on korvenranta kouvola km?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.korvenranta_kouvola_km
+  source: src:LO1
+- q: MikÃ¤ on hunajan kuljetuslÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_transport_temp_c
+  source: src:LO1
+- q: 'Toimenpide: hunajan kuljetuslÃ¤mpÃ¶tila (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_transport_temp_c.action
+  source: src:LO1
+- q: MikÃ¤ on kantavuus (kg)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.load_capacity_kg
+  source: src:LO1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LO1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LO1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LO1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LO1
+- q: 'Havainto: Akku loppuu kesken matkan?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:LO1
+- q: 'Toiminta: Akku loppuu kesken matkan?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:LO1
+- q: 'Havainto: Kelirikko estÃ¤Ã¤ tien?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LO1
+- q: 'Toiminta: Kelirikko estÃ¤Ã¤ tien?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:LO1
+- q: 'SÃ¤Ã¤ntÃ¶: kuorma?'
+  a_ref: COMPLIANCE_AND_LEGAL.kuorma
+  source: src:LO1
+- q: 'SÃ¤Ã¤ntÃ¶: ajo lepo?'
+  a_ref: COMPLIANCE_AND_LEGAL.ajo_lepo
+  source: src:LO1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LO1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #16?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #17?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #18?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #19?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1
+- q: 'Operatiivinen lisÃ¤kysymys #20?'
+  a_ref: ASSUMPTIONS
+  source: src:LO1

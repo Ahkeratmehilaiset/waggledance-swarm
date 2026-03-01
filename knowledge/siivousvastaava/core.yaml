@@ -1,0 +1,227 @@
+﻿header:
+  agent_id: siivousvastaava
+  agent_name: Siivousvastaava
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan mÃ¶kkikiinteistÃ¶
+- Puupinnat, saunan pesu, ulkoterassit
+DECISION_METRICS_AND_THRESHOLDS:
+  sauna_wash_interval_weeks:
+    value: 1-2 (aktiivikÃ¤ytÃ¶ssÃ¤)
+    source: src:SI1
+  mold_detection:
+    value: SilminnÃ¤hden tumma laikku tai pistÃ¤vÃ¤ haju
+    action: Suojaus (maski FFP2), pesu natriumhypokloriitilla, syyn selvitys
+    source: src:SI1
+  indoor_air_quality_co2_ppm:
+    value: <1000 ppm
+    action: '>1200 â†’ tuuleta, tarkista ilmanvaihto'
+    source: src:SI1
+  deep_clean_interval_months:
+    value: 3
+    action: Perusteellinen siivous 4x/vuosi
+    source: src:SI1
+  cleaning_products_eco:
+    value: Joutsenmerkki/EU Ecolabel suositeltava
+    action: EI happamia pesuaineita marmoripinnoille, EI kloorivetyÃ¤ alumiinille
+    source: src:SI1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] KevÃ¤tsiivoukset: ikkunat, pÃ¶lyt, tekstiilit. Talven lian poisto.'
+  source: src:SI1
+- season: KesÃ¤
+  action: '[vko 22-35] Terassin pesu. Saunan pesu tiheÃ¤mmin. HyÃ¶nteisten jÃ¤ljet.'
+  source: src:SI1
+- season: Syksy
+  action: '[vko 36-48] Syysisosiivous ennen talvea. Vesipisteiden puhdistus. Saunan
+    kuivatus.'
+  source: src:SI1
+- season: Talvi
+  action: '[vko 49-13] VÃ¤hemmÃ¤n ulkosiivousta. SisÃ¤ilman kosteus seurannassa. Tulisijan
+    tuhkan siivous.'
+  source: src:SI1
+FAILURE_MODES:
+- mode: Homeen lÃ¶ytÃ¶
+  detection: Tumma laikku, haju, allergiaoireita
+  action: FFP2-maski, pesu (hypkloriitti 1:10), syyn selvitys (kosteuslÃ¤hde), ilmoita
+    timpurille
+  source: src:SI1
+- mode: ViemÃ¤rin haju
+  detection: Paha haju lattikaivosta
+  action: Kaada vettÃ¤ kaivoon (vesilukko kuivunut), puhdista
+  source: src:SI1
+PROCESS_FLOWS:
+- flow_id: FLOW_SIIV_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] KevÃ¤tsiivoukset: ikkunat, pÃ¶lyt, tekstiilit. Talven lian poisto.'
+  output: Tarkistuslista
+  source: src:SIIV
+- flow_id: FLOW_SIIV_03
+  trigger: 'Havaittu: Homeen lÃ¶ytÃ¶'
+  action: FFP2-maski, pesu (hypkloriitti 1:10), syyn selvitys (kosteuslÃ¤hde), ilmoita
+    timpurille
+  output: Poikkeamaraportti
+  source: src:SIIV
+- flow_id: FLOW_SIIV_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'siivousvastaava: rutiiniarviointi'
+  output: Status-raportti
+  source: src:SIIV
+KNOWLEDGE_TABLES:
+- table_id: TBL_SIIV_01
+  title: Siivousvastaava â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: sauna_wash_interval_weeks
+    value: 1-2 (aktiivikÃ¤ytÃ¶ssÃ¤)
+    action: ''
+  - metric: mold_detection
+    value: SilminnÃ¤hden tumma laikku tai pistÃ¤vÃ¤ haju
+    action: Suojaus (maski FFP2), pesu natriumhypokloriitilla, syyn selvitys
+  - metric: indoor_air_quality_co2_ppm
+    value: <1000 ppm
+    action: '>1200 â†’ tuuleta, tarkista ilmanvaihto'
+  - metric: deep_clean_interval_months
+    value: '3'
+    action: Perusteellinen siivous 4x/vuosi
+  - metric: cleaning_products_eco
+    value: Joutsenmerkki/EU Ecolabel suositeltava
+    action: EI happamia pesuaineita marmoripinnoille, EI kloorivetyÃ¤ alumiinille
+  source: src:SIIV
+COMPLIANCE_AND_LEGAL:
+  kemikaalit: Pesuaineiden kÃ¤yttÃ¶turvallisuustiedotteet (KTT) saatavilla [src:SI1]
+UNCERTAINTY_NOTES:
+- Puupintojen pesuvastustus vaihtelee â€” testaa aina piilossa olevasta kohdasta.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:SI1
+    org: Puhtausala / Marttaliitto
+    title: Siivousohjeistot
+    year: 2025
+    url: https://www.martat.fi/
+    supports: PuhdistusmenetelmÃ¤t, aineet.
+eval_questions:
+- q: MikÃ¤ on saunan pesuvÃ¤li (vk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sauna_wash_interval_weeks
+  source: src:SI1
+- q: MikÃ¤ on hometunnistus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mold_detection
+  source: src:SI1
+- q: 'Toimenpide: hometunnistus?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mold_detection.action
+  source: src:SI1
+- q: MikÃ¤ on sisÃ¤ilman CO2-pitoisuus (ppm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_air_quality_co2_ppm
+  source: src:SI1
+- q: 'Toimenpide: sisÃ¤ilman CO2-pitoisuus (ppm)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_air_quality_co2_ppm.action
+  source: src:SI1
+- q: MikÃ¤ on syvÃ¤puhdistusvÃ¤li (kk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deep_clean_interval_months
+  source: src:SI1
+- q: 'Toimenpide: syvÃ¤puhdistusvÃ¤li (kk)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deep_clean_interval_months.action
+  source: src:SI1
+- q: MikÃ¤ on cleaning products eco?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cleaning_products_eco
+  source: src:SI1
+- q: 'Toimenpide: cleaning products eco?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cleaning_products_eco.action
+  source: src:SI1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:SI1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:SI1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:SI1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SI1
+- q: 'Havainto: Homeen lÃ¶ytÃ¶?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:SI1
+- q: 'Toiminta: Homeen lÃ¶ytÃ¶?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:SI1
+- q: 'Havainto: ViemÃ¤rin haju?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:SI1
+- q: 'Toiminta: ViemÃ¤rin haju?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:SI1
+- q: 'SÃ¤Ã¤ntÃ¶: kemikaalit?'
+  a_ref: COMPLIANCE_AND_LEGAL.kemikaalit
+  source: src:SI1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:SI1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #16?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #17?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #18?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #19?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1
+- q: 'Operatiivinen lisÃ¤kysymys #20?'
+  a_ref: ASSUMPTIONS
+  source: src:SI1

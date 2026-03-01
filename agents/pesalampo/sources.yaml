@@ -1,0 +1,7 @@
+sources:
+- id: src:PES1
+  org: SML / Arnia Ltd
+  title: Pesänseurantatekniikka
+  year: 2024
+  url: https://www.arnia.co.uk/
+  supports: IoT-pesäseuranta, lämpö-/kosteus-/painodata.

@@ -1,0 +1,13 @@
+sources:
+- id: src:NU1
+  org: Nuohousalan Keskusliitto
+  title: Nuohousohje
+  year: 2024
+  url: https://www.nuohoojat.fi/
+  supports: Nuohousvälit, kreosootti.
+- id: src:NU2
+  org: Pelastuslaitos
+  title: Paloturvallisuus
+  year: 2025
+  url: https://www.pelastustoimi.fi/
+  supports: Palovaroittimet, häkä.

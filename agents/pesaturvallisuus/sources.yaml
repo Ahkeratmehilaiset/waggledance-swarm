@@ -1,0 +1,13 @@
+sources:
+- id: src:PETU1
+  org: SML / ProAgria
+  title: Mehiläistarhan sähköaita
+  year: 2024
+  url: null
+  supports: Sähköaitaaminen, jännite, maadoitus, ylläpito.
+- id: src:PETU2
+  org: Luonnonvarakeskus (Luke)
+  title: Petovahingot ja korvaukset
+  year: 2025
+  url: https://www.luke.fi/fi/tutkimus/suurpetotutkimus
+  supports: Karhuvahingot, korvausmenettely.

@@ -1,0 +1,259 @@
+﻿header:
+  agent_id: privaattisuus
+  agent_name: Privaattisuuden suojelija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Valvoo KAIKKIEN agenttien tietosuojaa
+- GDPR + kansallinen tietosuojalaki
+- Kamera-, Ã¤Ã¤ni-, sijaintidata
+DECISION_METRICS_AND_THRESHOLDS:
+  camera_coverage:
+    value: 0% naapurikiinteistÃ¶Ã¤, 0% yleistÃ¤ tietÃ¤ tunnistettavasti
+    action: Yli 0% â†’ suuntaa kamera HETI, pienennÃ¤ kuvakulma. Tarkistus 2x/v + asennuksen
+      jÃ¤lkeen.
+    source: src:PR1
+  data_retention_days:
+    value: 30
+    action: '>30 pv â†’ automaattipoisto (ei-merkityt). PoliisipyynnÃ¶n tallenteet 90
+      pv.'
+    source: src:PR1
+  audio_recording:
+    value: 0
+    note: 0 = pois pÃ¤Ã¤ltÃ¤ ulkokameroissa
+    action: Ã„Ã¤nitallenne ulkona ilman informointia â†’ GDPR-rike. Pois tai kyltti 'Alueella
+      tallentava kameravalvonta'.
+    source: src:PR1
+  data_local_only:
+    value: HenkilÃ¶tiedot paikallisesti, ei pilveen
+    source: src:PR1
+  access_control:
+    value: Vain kiinteistÃ¶n omistaja tai poliisin pyynnÃ¶stÃ¤
+    source: src:PR1
+  data_local_pct:
+    value: 100
+    action: 100% paikallisesti. Pilvipalveluun lÃ¤hettÃ¤minen â†’ blokkaa palomuurissa,
+      ilmoita kybervahdille.
+    source: src:PR1
+  access_log_audit_days:
+    value: 7
+    action: Tarkista kameratallenteiden katseluloki 7 pv vÃ¤lein. Luvaton katselu â†’
+      GDPR-rike.
+    source: src:PR1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Kasvillisuus muuttuu â†’ kamera-alueiden tarkistus. NaapurikiinteistÃ¶?'
+  source: src:PR1
+- season: KesÃ¤
+  action: '[vko 22-35] Vierailija-infomerkit. MÃ¶kkikauden yksityisyys.'
+  source: src:PR1
+- season: Syksy
+  action: '[vko 36-48] Lehdet putoavat â†’ kuvakulmat laajenevat, tarkista.'
+  source: src:PR1
+- season: Talvi
+  action: '[vko 49-13] Lumisateet voivat siirtÃ¤Ã¤ kameroita â†’ suuntauksen tarkistus.'
+  source: src:PR1
+FAILURE_MODES:
+- mode: Kamera kuvaa naapurikiinteistÃ¶Ã¤
+  detection: Naapurin valitus tai oma tarkistus
+  action: Suuntaa HETI, pienennÃ¤ kuvakulmaa
+  source: src:PR1
+- mode: Data lÃ¤hetetty pilveen
+  detection: IoT lÃ¤hettÃ¤Ã¤ ulkoiseen palvelimeen
+  action: Blokkaa palomuurissa, vaihda laite, kybervahdille
+  source: src:PR1
+PROCESS_FLOWS:
+- flow_id: FLOW_PRIV_01
+  trigger: camera_coverage ylittÃ¤Ã¤ kynnysarvon (0% naapurikiinteistÃ¶Ã¤, 0% yleistÃ¤
+    tietÃ¤ tunnistettavasti)
+  action: Yli 0% â†’ suuntaa kamera HETI, pienennÃ¤ kuvakulma. Tarkistus 2x/v + asennuksen
+    jÃ¤lkeen.
+  output: Tilanneraportti
+  source: src:PRIV
+- flow_id: FLOW_PRIV_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Kasvillisuus muuttuu â†’ kamera-alueiden tarkistus. NaapurikiinteistÃ¶?'
+  output: Tarkistuslista
+  source: src:PRIV
+- flow_id: FLOW_PRIV_03
+  trigger: 'Havaittu: Kamera kuvaa naapurikiinteistÃ¶Ã¤'
+  action: Suuntaa HETI, pienennÃ¤ kuvakulmaa
+  output: Poikkeamaraportti
+  source: src:PRIV
+- flow_id: FLOW_PRIV_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'privaattisuus: rutiiniarviointi'
+  output: Status-raportti
+  source: src:PRIV
+KNOWLEDGE_TABLES:
+- table_id: TBL_PRIV_01
+  title: Privaattisuuden suojelija â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: camera_coverage
+    value: 0% naapurikiinteistÃ¶Ã¤, 0% yleistÃ¤ tietÃ¤ tunnistettavasti
+    action: Yli 0% â†’ suuntaa kamera HETI, pienennÃ¤ kuvakulma. Tarkistus 2x/v + asennuksen
+      jÃ¤
+  - metric: data_retention_days
+    value: '30'
+    action: '>30 pv â†’ automaattipoisto (ei-merkityt). PoliisipyynnÃ¶n tallenteet 90
+      pv.'
+  - metric: audio_recording
+    value: '0'
+    action: Ã„Ã¤nitallenne ulkona ilman informointia â†’ GDPR-rike. Pois tai kyltti 'Alueella
+      ta
+  - metric: data_local_only
+    value: HenkilÃ¶tiedot paikallisesti, ei pilveen
+    action: ''
+  - metric: access_control
+    value: Vain kiinteistÃ¶n omistaja tai poliisin pyynnÃ¶stÃ¤
+    action: ''
+  - metric: data_local_pct
+    value: '100'
+    action: '100% paikallisesti. Pilvipalveluun lÃ¤hettÃ¤minen â†’ blokkaa palomuurissa,
+      ilmoita '
+  source: src:PRIV
+COMPLIANCE_AND_LEGAL:
+  gdpr: 'GDPR: oikeutettu etu tai suostumus [src:PR1]'
+  tietosuojalaki: Tietosuojalaki 1050/2018 [src:PR1]
+  kameravalvonta: Tietosuojavaltuutetun kameraohje [src:PR2]
+UNCERTAINTY_NOTES:
+- GDPR:n kotitalouspoikkeus vs systemaattinen valvonta â€” tulkinnanvarainen.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PR1
+    org: Tietosuojavaltuutettu
+    title: HenkilÃ¶tiedot
+    year: 2025
+    url: https://tietosuoja.fi/
+    supports: GDPR, kameravalvonta.
+  - id: src:PR2
+    org: Tietosuojavaltuutettu
+    title: Kameravalvontaohje
+    year: 2025
+    url: https://tietosuoja.fi/kameravalvonta
+    supports: Sijoittelu, yksityisyys.
+eval_questions:
+- q: MikÃ¤ on kameravalvonnan kattavuus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.camera_coverage
+  source: src:PR1
+- q: 'Toimenpide: kameravalvonnan kattavuus?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.camera_coverage.action
+  source: src:PR1
+- q: MikÃ¤ on datan sÃ¤ilytysaika (pv)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.data_retention_days
+  source: src:PR1
+- q: 'Toimenpide: datan sÃ¤ilytysaika (pv)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.data_retention_days.action
+  source: src:PR1
+- q: MikÃ¤ on audio recording?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.audio_recording
+  source: src:PR1
+- q: 'Toimenpide: audio recording?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.audio_recording.action
+  source: src:PR1
+- q: MikÃ¤ on data local only?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.data_local_only
+  source: src:PR1
+- q: MikÃ¤ on access control?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.access_control
+  source: src:PR1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PR1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PR1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PR1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PR1
+- q: 'Havainto: Kamera kuvaa naapurikiinteistÃ¶?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PR1
+- q: 'Toiminta: Kamera kuvaa naapurikiinteistÃ¶?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:PR1
+- q: 'Havainto: Data lÃ¤hetetty pilveen?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:PR1
+- q: 'Toiminta: Data lÃ¤hetetty pilveen?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:PR1
+- q: 'SÃ¤Ã¤ntÃ¶: gdpr?'
+  a_ref: COMPLIANCE_AND_LEGAL.gdpr
+  source: src:PR1
+- q: 'SÃ¤Ã¤ntÃ¶: tietosuojalaki?'
+  a_ref: COMPLIANCE_AND_LEGAL.tietosuojalaki
+  source: src:PR1
+- q: 'SÃ¤Ã¤ntÃ¶: kameravalvonta?'
+  a_ref: COMPLIANCE_AND_LEGAL.kameravalvonta
+  source: src:PR1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PR1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #12?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #13?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #14?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #15?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #16?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #17?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #18?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1
+- q: 'KytkentÃ¤ muihin agentteihin #19?'
+  a_ref: ASSUMPTIONS
+  source: src:PR1

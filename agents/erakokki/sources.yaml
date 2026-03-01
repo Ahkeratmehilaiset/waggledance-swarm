@@ -1,0 +1,19 @@
+sources:
+- id: src:ER1
+  org: Ruokavirasto
+  title: Elintarviketurvallisuus
+  year: 2025
+  url: https://www.ruokavirasto.fi/
+  supports: Lämpötilat, kylmäketju, ruokamyrkytys.
+- id: src:ER2
+  org: Luonnontieteellinen museo
+  title: Sienten tunnistus
+  year: 2025
+  url: https://www.luomus.fi/
+  supports: Sienet, myrkkysienet.
+- id: src:ER3
+  org: Pelastuslaitos
+  title: Avotulen teko
+  year: 2025
+  url: https://www.pelastustoimi.fi/
+  supports: Nuotio, metsäpalovaroitus.

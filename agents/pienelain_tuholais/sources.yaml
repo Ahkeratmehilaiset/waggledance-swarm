@@ -1,0 +1,25 @@
+sources:
+- id: src:PIE1
+  org: Tukes
+  title: Tuholaistorjunta
+  year: 2025
+  url: https://tukes.fi/kemikaalit/biosidivalmisteet/tuholaistorjunta
+  supports: Jyrsijätorjunta, ampiaistorjunta, muurahaiset.
+- id: src:PIE2
+  org: THL
+  title: Puutiaisten levittämät taudit
+  year: 2025
+  url: https://thl.fi/fi/web/infektiotaudit-ja-rokotukset/taudit-ja-torjunta/taudit-ja-taudinaiheuttajat-a-o/puutiaisaivotulehdus
+  supports: Borrelioosi, TBE, punkkien aktiivisuuskaudet.
+- id: src:PIE3
+  org: Tukes
+  title: Tuholaistorjujatutkinto
+  year: 2025
+  url: https://tukes.fi/kemikaalit/biosidivalmisteet/tuholaistorjuja
+  supports: Ammattimaisen torjunnan pätevyysvaatimukset.
+- id: src:PIE4
+  org: Oikeusministeriö
+  title: Luonnonsuojelulaki 9/2023
+  year: 2023
+  url: https://www.finlex.fi/fi/laki/ajantasa/2023/20230009
+  supports: Suojellut eläinlajit, pesäpaikkojen turvaaminen.

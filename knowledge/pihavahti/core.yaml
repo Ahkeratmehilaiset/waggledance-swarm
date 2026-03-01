@@ -1,0 +1,237 @@
+﻿header:
+  agent_id: pihavahti
+  agent_name: Pihavahti (ihmishavainnot)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- PTZ-kamera + liiketunnistus
+- Korvenrannan pihapiiri
+- Kytketty lukkoseppÃ¤Ã¤n, privaattisuuteen, corehen
+DECISION_METRICS_AND_THRESHOLDS:
+  person_confidence:
+    value: 0.7
+    action: <0.7 â†’ logi, >0.7 â†’ hÃ¤lytys jos tuntematon
+    source: src:PI1
+  night_alert_hours:
+    value: 22:00-06:00
+    action: Ihmishavainto yÃ¶llÃ¤ â†’ P2 hÃ¤lytys
+    source: src:PI1
+  whitelist:
+    value: Kasvo/mobiilit tunnistetut â†’ ei hÃ¤lytystÃ¤
+    action: Tuntematon â†’ kuva + ilmoitus
+    source: src:PI1
+  vehicle_detection:
+    value: Tuntematon auto pihalla
+    action: Rekisterikilpi (jos luettavissa), aika, tallenne
+    source: src:PI1
+  loitering_min:
+    value: 5
+    action: '>5 min paikallaan ilman syytÃ¤ â†’ hÃ¤lytys'
+    source: src:PI1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] PihatyÃ¶lÃ¤iset â†’ pÃ¤ivitÃ¤ whitelist.'
+  source: src:PI1
+- season: KesÃ¤
+  action: '[vko 22-35] MÃ¶kkikausi: enemmÃ¤n ihmisiÃ¤ â†’ herkkyystaso alas.'
+  source: src:PI1
+- season: Syksy
+  action: '[vko 36-48] Pimenee â†’ IR-tunnistuksen merkitys kasvaa.'
+  source: src:PI1
+- season: Talvi
+  action: '[vko 49-13] LumityÃ¶ntekijÃ¤t â†’ whitelist. JÃ¤ljet lumessa.'
+  source: src:PI1
+FAILURE_MODES:
+- mode: Tuntematon yÃ¶llÃ¤
+  detection: Confidence >0.7, klo 22-06, ei whitelistissÃ¤
+  action: Tallenna, hÃ¤lytÃ¤, aktivoi valaistus
+  source: src:PI1
+- mode: VÃ¤Ã¤rÃ¤hÃ¤lytys (elÃ¤in/varjo)
+  detection: Toistuva hÃ¤lytys samasta pisteestÃ¤
+  action: Herkkyys, kasvillisuus, liiketunnistimen kulma
+  source: src:PI1
+PROCESS_FLOWS:
+- flow_id: FLOW_PIHA_01
+  trigger: person_confidence ylittÃ¤Ã¤ kynnysarvon (0.7)
+  action: <0.7 â†’ logi, >0.7 â†’ hÃ¤lytys jos tuntematon
+  output: Tilanneraportti
+  source: src:PIHA
+- flow_id: FLOW_PIHA_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] PihatyÃ¶lÃ¤iset â†’ pÃ¤ivitÃ¤ whitelist.'
+  output: Tarkistuslista
+  source: src:PIHA
+- flow_id: FLOW_PIHA_03
+  trigger: 'Havaittu: Tuntematon yÃ¶llÃ¤'
+  action: Tallenna, hÃ¤lytÃ¤, aktivoi valaistus
+  output: Poikkeamaraportti
+  source: src:PIHA
+- flow_id: FLOW_PIHA_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'pihavahti: rutiiniarviointi'
+  output: Status-raportti
+  source: src:PIHA
+KNOWLEDGE_TABLES:
+- table_id: TBL_PIHA_01
+  title: Pihavahti (ihmishavainnot) â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: person_confidence
+    value: '0.7'
+    action: <0.7 â†’ logi, >0.7 â†’ hÃ¤lytys jos tuntematon
+  - metric: night_alert_hours
+    value: 22:00-06:00
+    action: Ihmishavainto yÃ¶llÃ¤ â†’ P2 hÃ¤lytys
+  - metric: whitelist
+    value: Kasvo/mobiilit tunnistetut â†’ ei hÃ¤lytystÃ¤
+    action: Tuntematon â†’ kuva + ilmoitus
+  - metric: vehicle_detection
+    value: Tuntematon auto pihalla
+    action: Rekisterikilpi (jos luettavissa), aika, tallenne
+  - metric: loitering_min
+    value: '5'
+    action: '>5 min paikallaan ilman syytÃ¤ â†’ hÃ¤lytys'
+  source: src:PIHA
+COMPLIANCE_AND_LEGAL:
+  kameravalvonta: EI naapurikiinteistÃ¶Ã¤. Tietosuojavaltuutetun ohje. [src:PI2]
+  rekisteriseloste: 'GDPR: kameravalvonnan rekisteriseloste [src:PI2]'
+UNCERTAINTY_NOTES:
+- 'YÃ¶nÃ¤kÃ¶: ~60% tarkkuus vs 90% pÃ¤ivÃ¤llÃ¤.'
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PI1
+    org: Turva-ala
+    title: Kotiturvallisuus
+    year: 2025
+    url: null
+    supports: Kamera, ihmistunnistus.
+  - id: src:PI2
+    org: Tietosuojavaltuutettu
+    title: Kameravalvonta GDPR
+    year: 2025
+    url: https://tietosuoja.fi/kameravalvonta
+    supports: Yksityisyys.
+eval_questions:
+- q: MikÃ¤ on henkilÃ¶ntunnistuksen luotettavuus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.person_confidence
+  source: src:PI1
+- q: 'Toimenpide: henkilÃ¶ntunnistuksen luotettavuus?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.person_confidence.action
+  source: src:PI1
+- q: MikÃ¤ on yÃ¶hÃ¤lytyksen tunnit?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.night_alert_hours
+  source: src:PI1
+- q: 'Toimenpide: yÃ¶hÃ¤lytyksen tunnit?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.night_alert_hours.action
+  source: src:PI1
+- q: MikÃ¤ on whitelist?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.whitelist
+  source: src:PI1
+- q: 'Toimenpide: whitelist?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.whitelist.action
+  source: src:PI1
+- q: MikÃ¤ on ajoneuvontunnistus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vehicle_detection
+  source: src:PI1
+- q: 'Toimenpide: ajoneuvontunnistus?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vehicle_detection.action
+  source: src:PI1
+- q: MikÃ¤ on loitering min?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.loitering_min
+  source: src:PI1
+- q: 'Toimenpide: loitering min?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.loitering_min.action
+  source: src:PI1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PI1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PI1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PI1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PI1
+- q: 'Havainto: Tuntematon yÃ¶llÃ¤?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PI1
+- q: 'Toiminta: Tuntematon yÃ¶llÃ¤?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:PI1
+- q: 'Havainto: VÃ¤Ã¤rÃ¤hÃ¤lytys (elÃ¤in/varjo)?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:PI1
+- q: 'Toiminta: VÃ¤Ã¤rÃ¤hÃ¤lytys (elÃ¤in/varjo)?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:PI1
+- q: 'SÃ¤Ã¤ntÃ¶: kameravalvonta?'
+  a_ref: COMPLIANCE_AND_LEGAL.kameravalvonta
+  source: src:PI1
+- q: 'SÃ¤Ã¤ntÃ¶: rekisteriseloste?'
+  a_ref: COMPLIANCE_AND_LEGAL.rekisteriseloste
+  source: src:PI1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PI1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #1?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #2?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #3?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #4?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #5?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #6?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #7?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #8?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #9?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #10?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #11?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #12?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #13?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #14?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #15?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #16?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #17?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1
+- q: 'KytkentÃ¤ muihin agentteihin #18?'
+  a_ref: ASSUMPTIONS
+  source: src:PI1

@@ -1,0 +1,240 @@
+﻿header:
+  agent_id: erakokki
+  agent_name: ErÃ¤kokki
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan mÃ¶kkikeittiÃ¶ + ulkogrilli + nuotiopaikka
+- 'Raaka-aineet: kala (HuhdasjÃ¤rvi), riista, marjat, sienet, puutarha'
+- Ruokaturvallisuus priorisoitu
+DECISION_METRICS_AND_THRESHOLDS:
+  fridge_temp_c:
+    value: 2-4Â°C
+    action: '>6Â°C â†’ tarkista, >8Â°C â†’ ruokaturvallisuusviski'
+    source: src:ER1
+  meat_core_temp_c:
+    value: Kala â‰¥63Â°C, siipikarjan â‰¥75Â°C, riista â‰¥72Â°C
+    action: Mittaa AINA sisÃ¤lÃ¤mpÃ¶mittarilla
+    source: src:ER1
+  fish_freshness_hours:
+    value: 'KylmÃ¤ketju: jÃ¤illÃ¤ 0-2Â°C, kÃ¤yttÃ¶ 24h sisÃ¤llÃ¤ pyynnistÃ¤'
+    action: Jos epÃ¤ilys â†’ hylkÃ¤Ã¤ (haju, tektuuri, silmÃ¤t sameat)
+    source: src:ER1
+  mushroom_identification_confidence:
+    value: 100% varma â†’ syÃ¶, epÃ¤varma â†’ hylkÃ¤Ã¤
+    action: VAIN tunnetut lajit. Myrkkysienet voivat olla tappavia.
+    source: src:ER2
+  fire_safety_distance_m:
+    value: 8
+    action: Nuotio/grilli â‰¥8 m rakennuksesta, tuulesta riippuen enemmÃ¤n
+    source: src:ER3
+  smoke_cooking_temp_c:
+    value: KylmÃ¤savustus <30Â°C, kuumasavustus 60-120Â°C
+    source: src:ER1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Nokkoskeitto, voikukkasalaatti. Ahvenfileet. Koivunmahlan kerÃ¤ys
+    (huhti).'
+  source: src:ER1
+- season: KesÃ¤
+  action: '[vko 22-35] Grillaus, savustus, marjasÃ¤ilÃ¶ntÃ¤. Kalan nopea kÃ¤sittely helteellÃ¤.'
+  source: src:ER1
+- season: Syksy
+  action: 'Sienisesonki: tunnista 100% varmuudella. Riistan kÃ¤sittely. Puolukkahillo.'
+  source: src:ER2
+- season: Talvi
+  action: '[vko 49-13] Nuotiokokkaus (tikkupulla, muurinpohjalettu). Pakasteiden kÃ¤yttÃ¶.
+    Pimeyden illalliset.'
+  source: src:ER1
+FAILURE_MODES:
+- mode: RuokamyrkytysepÃ¤ily
+  detection: Pahoinvointi, ripuli 2-48h ruokailun jÃ¤lkeen
+  action: NesteitÃ¤, lepo. NÃ¤yte jÃ¤ljellÃ¤ olevasta ruoasta. LÃ¤Ã¤kÃ¤ri jos kova kuume
+    tai veriripuli.
+  source: src:ER1
+- mode: MyrkkysieniepÃ¤ily
+  detection: Oksentelu 6-24h sieniaterian jÃ¤lkeen
+  action: HÃ„TÃ„NUMERO 112 + Myrkytystietokeskus 0800 147 111. NÃ¤yte jÃ¤ljellÃ¤ olevista
+    sienistÃ¤.
+  source: src:ER2
+PROCESS_FLOWS:
+- flow_id: FLOW_ERAK_01
+  trigger: fridge_temp_c ylittÃ¤Ã¤ kynnysarvon (2-4Â°C)
+  action: '>6Â°C â†’ tarkista, >8Â°C â†’ ruokaturvallisuusviski'
+  output: Tilanneraportti
+  source: src:ERAK
+- flow_id: FLOW_ERAK_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Nokkoskeitto, voikukkasalaatti. Ahvenfileet. Koivunmahlan kerÃ¤ys
+    (huhti).'
+  output: Tarkistuslista
+  source: src:ERAK
+- flow_id: FLOW_ERAK_03
+  trigger: 'Havaittu: RuokamyrkytysepÃ¤ily'
+  action: NesteitÃ¤, lepo. NÃ¤yte jÃ¤ljellÃ¤ olevasta ruoasta. LÃ¤Ã¤kÃ¤ri jos kova kuume
+    tai veriripuli.
+  output: Poikkeamaraportti
+  source: src:ERAK
+- flow_id: FLOW_ERAK_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'erakokki: rutiiniarviointi'
+  output: Status-raportti
+  source: src:ERAK
+KNOWLEDGE_TABLES:
+  seasonal_ingredients:
+  - season: KevÃ¤t
+    ingredients: Nokkonen, voikukka, koivunmahla, ahven (kutu), hauki (toukokuu)
+  - season: KesÃ¤
+    ingredients: Marjat (mansikka, mustikka, puolukka), uudet perunat, yrtit, vadelma
+  - season: Syksy
+    ingredients: Sienet (kantarelli, herkkutatti, suppilovahvero), puolukka, karpalo,
+      riista
+  - season: Talvi
+    ingredients: SÃ¤ilÃ¶ntÃ¤tuotteet, pakastettu riista, kuivatut sienet, juurekset
+COMPLIANCE_AND_LEGAL:
+  tulenteko: 'Avotulen teko: metsÃ¤palovaroituksen aikana KIELLETTY [src:ER3]'
+  elintarviketurvallisuus: 'Kotitalouden ruoka omaan kÃ¤yttÃ¶Ã¶n: ei lupaa vaadita [src:ER1]'
+UNCERTAINTY_NOTES:
+- 'Sienten tunnistus: jotkin myrkylliset lajit muistuttavat syÃ¶tÃ¤viÃ¤ â€” VAIN 100% varmuus.'
+- Riistan lihan pilaantuminen nopeutuu yli 10Â°C â€” kylmÃ¤ketjun merkitys korostuu.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:ER1
+    org: Ruokavirasto
+    title: Elintarviketurvallisuus
+    year: 2025
+    url: https://www.ruokavirasto.fi/
+    supports: LÃ¤mpÃ¶tilat, kylmÃ¤ketju, ruokamyrkytys.
+  - id: src:ER2
+    org: Luonnontieteellinen museo
+    title: Sienten tunnistus
+    year: 2025
+    url: https://www.luomus.fi/
+    supports: Sienet, myrkkysienet.
+  - id: src:ER3
+    org: Pelastuslaitos
+    title: Avotulen teko
+    year: 2025
+    url: https://www.pelastustoimi.fi/
+    supports: Nuotio, metsÃ¤palovaroitus.
+eval_questions:
+- q: MikÃ¤ on jÃ¤Ã¤kaapin tavoitelÃ¤mpÃ¶tila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fridge_temp_c.value
+  source: src:ER1
+- q: MikÃ¤ on kalan sisÃ¤lÃ¤mpÃ¶tila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.meat_core_temp_c.value
+  source: src:ER1
+- q: Miten kalan tuoreus tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fish_freshness_hours.action
+  source: src:ER1
+- q: Voiko epÃ¤varmaa sientÃ¤ syÃ¶dÃ¤?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mushroom_identification_confidence.action
+  source: src:ER2
+- q: MikÃ¤ on nuotion turvaetÃ¤isyys?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fire_safety_distance_m.value
+  source: src:ER3
+- q: MitÃ¤ tehdÃ¤Ã¤n myrkkysieniepÃ¤ilyssÃ¤?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ER2
+- q: Onko avotuli sallittu metsÃ¤palovaroituksella?
+  a_ref: COMPLIANCE_AND_LEGAL.tulenteko
+  source: src:ER3
+- q: MitkÃ¤ sienet kerÃ¤tÃ¤Ã¤n syksyllÃ¤?
+  a_ref: KNOWLEDGE_TABLES.seasonal_ingredients[2].ingredients
+  source: src:ER2
+- q: MikÃ¤ on jÃ¤Ã¤kaapin lÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fridge_temp_c
+  source: src:ER1
+- q: 'Toimenpide: jÃ¤Ã¤kaapin lÃ¤mpÃ¶tila (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fridge_temp_c.action
+  source: src:ER1
+- q: MikÃ¤ on lihan sisÃ¤lÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.meat_core_temp_c
+  source: src:ER1
+- q: 'Toimenpide: lihan sisÃ¤lÃ¤mpÃ¶tila (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.meat_core_temp_c.action
+  source: src:ER1
+- q: MikÃ¤ on kalan tuoreusaika (h)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fish_freshness_hours
+  source: src:ER1
+- q: 'Toimenpide: kalan tuoreusaika (h)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fish_freshness_hours.action
+  source: src:ER1
+- q: MikÃ¤ on mushroom identification confidence?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mushroom_identification_confidence
+  source: src:ER1
+- q: 'Toimenpide: mushroom identification confidence?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mushroom_identification_confidence.action
+  source: src:ER1
+- q: MikÃ¤ on fire safety distance m?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fire_safety_distance_m
+  source: src:ER1
+- q: 'Toimenpide: fire safety distance m?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fire_safety_distance_m.action
+  source: src:ER1
+- q: MikÃ¤ on savustuslÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_cooking_temp_c
+  source: src:ER1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:ER1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ER1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:ER1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:ER1
+- q: 'Havainto: RuokamyrkytysepÃ¤ily?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:ER1
+- q: 'Toiminta: RuokamyrkytysepÃ¤ily?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:ER1
+- q: 'Havainto: MyrkkysieniepÃ¤ily?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:ER1
+- q: 'Toiminta: MyrkkysieniepÃ¤ily?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:ER1
+- q: 'SÃ¤Ã¤ntÃ¶: tulenteko?'
+  a_ref: COMPLIANCE_AND_LEGAL.tulenteko
+  source: src:ER1
+- q: 'SÃ¤Ã¤ntÃ¶: elintarviketurvallisuus?'
+  a_ref: COMPLIANCE_AND_LEGAL.elintarviketurvallisuus
+  source: src:ER1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:ER1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1
+- q: 'Operatiivinen lisÃ¤kysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:ER1

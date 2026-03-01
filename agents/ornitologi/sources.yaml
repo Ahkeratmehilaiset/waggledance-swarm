@@ -1,0 +1,25 @@
+sources:
+- id: src:ORN1
+  org: Suomen ympäristökeskus (SYKE)
+  title: Suomen lajien uhanalaisuus – Punainen kirja 2019
+  year: 2019
+  url: https://punainenkirja.laji.fi/
+  supports: Uhanalaisuusluokat CR/EN/VU/NT/LC.
+- id: src:ORN2
+  org: Oikeusministeriö
+  title: Luonnonsuojelulaki 9/2023
+  year: 2023
+  url: https://www.finlex.fi/fi/laki/ajantasa/2023/20230009
+  supports: Rauhoitetut lajit, pesien suojelu, häirinnän kielto.
+- id: src:ORN3
+  org: BirdLife Suomi
+  title: Lintutietokanta ja muuttoseuranta
+  year: 2025
+  url: https://www.birdlife.fi/
+  supports: Muuttoaikataulut, lajitiedot, pesimäbiologia.
+- id: src:ORN4
+  org: Ruokavirasto
+  title: Lintuinfluenssa
+  year: 2025
+  url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/linnut/lintuinfluenssa/
+  supports: Lintuinfluenssan tunnistus ja ilmoitusmenettely.

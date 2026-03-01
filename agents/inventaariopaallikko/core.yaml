@@ -1,0 +1,233 @@
+header:
+  agent_id: inventaariopaallikko
+  agent_name: Inventaariopäällikkö
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Korvenrannan varasto: työkalut, mehiläistarvikkeet, elintarvikkeet, polttoaineet'
+- Inventointi systemaattisesti
+- Kytketty logistikko-, eräkokki-, tarhaaja-agentteihin
+DECISION_METRICS_AND_THRESHOLDS:
+  reorder_point_sugar_kg:
+    value: 50
+    action: Sokerivarasto <50 kg → tilaus (syysruokinta ~15-20 kg/pesä × 300 pesää)
+    source: src:IN1
+  fuel_reserve_days:
+    value: 7
+    action: Polttopuut + bensiini ≥7 pv varmuusvarasto
+    source: src:IN1
+  tool_condition_check_months:
+    value: 3
+    action: Työkalujen kunto 3 kk välein
+    source: src:IN1
+  food_expiry_check_weeks:
+    value: 2
+    action: Elintarvikkeiden parasta ennen -tarkistus 2x/kk
+    source: src:IN1
+  inventory_full_audit_months:
+    value: 6
+    action: Täysinventointi 2x/vuosi (kevät + syksy)
+    source: src:IN1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Kevätinventointi. Mehiläistarvikkeiden tilaus (kehykset, vaha,
+    sokerit). Puutarhatyökalut.'
+  source: src:IN1
+- season: Kesä
+  action: '[vko 22-35] Linkoamistarvikkeet. Polttoaineet (venemoottori, ruohonleikkuri).
+    Grillikaasu.'
+  source: src:IN1
+- season: Syksy
+  action: '[vko 36-48] Syksyinventointi. Sokerin suurhankinta (ruokinta). Polttopuuvarasto
+    ennen talvea.'
+  source: src:IN1
+- season: Talvi
+  action: '[vko 49-13] Talvivarmuusvarasto. Polttoaineet. Eläinruoat (lintulauta).'
+  source: src:IN1
+FAILURE_MODES:
+- mode: Sokeri loppuu ruokintakauden aikana
+  detection: Varasto <50 kg + syysruokinta käynnissä
+  action: 'PIKATILAUS. Väliaikaisesti: inverttisiirappi tai valmiit sokerikakut.'
+  source: src:IN1
+- mode: Työkalu rikkoutunut
+  detection: Työkalu ei toimi, vaarallinen
+  action: Merkitse käyttökieltoon, tilaa varaosa/korvaava, ilmoita logistikolle
+  source: src:IN1
+PROCESS_FLOWS:
+- flow_id: FLOW_INVE_01
+  trigger: reorder_point_sugar_kg ylittää kynnysarvon (50)
+  action: Sokerivarasto <50 kg → tilaus (syysruokinta ~15-20 kg/pesä × 300 pesää)
+  output: Tilanneraportti
+  source: src:INVE
+- flow_id: FLOW_INVE_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Kevätinventointi. Mehiläistarvikkeiden tilaus (kehykset, vaha,
+    sokerit). Puutarhatyökalu'
+  output: Tarkistuslista
+  source: src:INVE
+- flow_id: FLOW_INVE_03
+  trigger: 'Havaittu: Sokeri loppuu ruokintakauden aikana'
+  action: 'PIKATILAUS. Väliaikaisesti: inverttisiirappi tai valmiit sokerikakut.'
+  output: Poikkeamaraportti
+  source: src:INVE
+- flow_id: FLOW_INVE_04
+  trigger: Säännöllinen heartbeat
+  action: 'inventaariopaallikko: rutiiniarviointi'
+  output: Status-raportti
+  source: src:INVE
+KNOWLEDGE_TABLES:
+- table_id: TBL_INVE_01
+  title: Inventaariopäällikkö — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: reorder_point_sugar_kg
+    value: '50'
+    action: Sokerivarasto <50 kg → tilaus (syysruokinta ~15-20 kg/pesä × 300 pesää)
+  - metric: fuel_reserve_days
+    value: '7'
+    action: Polttopuut + bensiini ≥7 pv varmuusvarasto
+  - metric: tool_condition_check_months
+    value: '3'
+    action: Työkalujen kunto 3 kk välein
+  - metric: food_expiry_check_weeks
+    value: '2'
+    action: Elintarvikkeiden parasta ennen -tarkistus 2x/kk
+  - metric: inventory_full_audit_months
+    value: '6'
+    action: Täysinventointi 2x/vuosi (kevät + syksy)
+  source: src:INVE
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Mehiläistarvikkeiden toimitusajat voivat olla pitkiä keväällä — ennakkotilaus.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:IN1
+    org: JKH Service sisäinen
+    title: Varastohallinta
+    year: 2026
+    url: null
+    supports: Inventointi, tilauspisteet.
+eval_questions:
+- q: Mikä on reorder point sugar kg?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.reorder_point_sugar_kg
+  source: src:IN1
+- q: 'Toimenpide: reorder point sugar kg?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.reorder_point_sugar_kg.action
+  source: src:IN1
+- q: Mikä on polttoainereservi (pv)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fuel_reserve_days
+  source: src:IN1
+- q: 'Toimenpide: polttoainereservi (pv)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fuel_reserve_days.action
+  source: src:IN1
+- q: Mikä on työkalujen tarkistusväli (kk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.tool_condition_check_months
+  source: src:IN1
+- q: 'Toimenpide: tyÃ¶kalujen tarkistusvÃ¤li (kk)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.tool_condition_check_months.action
+  source: src:IN1
+- q: Mikä on ruoan viimeinen käyttöpäivä -tarkistus (vk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.food_expiry_check_weeks
+  source: src:IN1
+- q: 'Toimenpide: ruoan viimeinen kÃ¤yttÃ¶pÃ¤ivÃ¤ -tarkistus (vk)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.food_expiry_check_weeks.action
+  source: src:IN1
+- q: Mikä on inventaarion kokonaistarkistus (kk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.inventory_full_audit_months
+  source: src:IN1
+- q: 'Toimenpide: inventaarion kokonaistarkistus (kk)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.inventory_full_audit_months.action
+  source: src:IN1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:IN1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:IN1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:IN1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:IN1
+- q: 'Havainto: Sokeri loppuu ruokintakauden a?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:IN1
+- q: 'Toiminta: Sokeri loppuu ruokintakauden a?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:IN1
+- q: 'Havainto: Työkalu rikkoutunut?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:IN1
+- q: 'Toiminta: Työkalu rikkoutunut?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:IN1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:IN1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #16?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #17?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #18?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #19?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1
+- q: 'Operatiivinen lisäkysymys #20?'
+  a_ref: ASSUMPTIONS
+  source: src:IN1

@@ -1,0 +1,256 @@
+﻿header:
+  agent_id: tahtitieteilija
+  agent_name: TÃ¤htitieteilijÃ¤
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Havainnointipaikka: Korvenranta, Kouvola (~60.9Â°N, 26.7Â°E)'
+- Matala valosaaste (Bortle 3-4)
+- PTZ-kamera preset 5 (taivasnÃ¤kymÃ¤) tai erillinen tÃ¤htitieteellinen kamera
+DECISION_METRICS_AND_THRESHOLDS:
+  aurora_kp_threshold:
+    value: 3
+    action: Kpâ‰¥3 â†’ revontulimahdollisuus, ilmoita luontokuvaajalle. Kpâ‰¥5 â†’ todennÃ¤kÃ¶iset,
+      PTZ pohjoiseen. Kpâ‰¥7 â†’ poikkeuksellinen, kaikki ulos.
+    source: src:TAH1
+  seeing_arcsec:
+    value: <3 arcsekuntia â†’ hyvÃ¤, <2 â†’ erinomainen
+    source: src:TAH1
+    action: <2" â†’ erinomainen (planeetat). <3" â†’ hyvÃ¤ (syvÃ¤avaruus). >4" â†’ heikko,
+      ei kannata teleskoopilla. Tarkista Meteoblue.
+  light_pollution_bortle:
+    value: 3-4 (maaseututason)
+    note: Kouvolan keskustan valonlÃ¤hde etelÃ¤ssÃ¤
+    source: src:TAH2
+  moon_illumination_limit:
+    value: Kuun valaistus >50% â†’ syvÃ¤avaruuskohteet heikosti
+    action: Ohjaa kuukuvausaiheisiin tai planetaarisiin kohteisiin
+    source: src:TAH2
+  meteor_shower_zenithal_rate:
+    value: '>20 meteoria/h â†’ mainitsemisen arvoinen, >100/h â†’ hÃ¤lytys (Persidit, Geminidit)'
+    source: src:TAH2
+    action: '>20/h â†’ maininta kÃ¤yttÃ¤jÃ¤lle. >100/h (Perseidit 11-13.8) â†’ HÃ„LYTYS luontokuvaajalle,
+      valmista PTZ.'
+  iss_pass_brightness_mag:
+    value: <-2.0 â†’ nÃ¤kyvÃ¤ silminnÃ¤hden, ilmoita kÃ¤yttÃ¤jÃ¤lle
+    source: src:TAH3
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Galaxikausi (Virgo/Coma-klusterit). Revontuliseuranta (equinox-efekti
+    maalis-huhtikuussa). Lyridit huhtikuussa.'
+  source: src:TAH2
+- season: KesÃ¤
+  action: '[vko 22-35] YÃ¶tÃ¶n yÃ¶: pimeimmillÃ¤Ã¤nkin tÃ¤htivalokuvaus hankalaa kesÃ¤-heinÃ¤kuussa.
+    NLC-pilvet (valaistut yÃ¶pilvet) seurannassa.'
+  source: src:TAH2
+- season: Syksy
+  action: '[vko 36-48] HyvÃ¤ pimeys palaa syyskuussa. Perseidit elokuussa. Andromeda-galaksi
+    korkealla.'
+  source: src:TAH2
+- season: Talvi
+  action: '[vko 49-13] Paras havaintokausi: pitkÃ¤t yÃ¶t, Orion, Geminidit. Pakkanen
+    â†’ kameran akku ja optiikan huurtuminen huomioitava.'
+  source: src:TAH2
+FAILURE_MODES:
+- mode: Optiikka huurussa
+  detection: TÃ¤htikuvat sumeita, kastepiste lÃ¤hellÃ¤
+  action: LÃ¤mmityspanta linssille, tai kuivauspussi kameran viereen
+  source: src:TAH2
+- mode: Valosaastepiikki
+  detection: Tausta-kirkkaus nousee odottamattomasti
+  action: Tarkista suunta (vÃ¤ltÃ¤ Kouvolan suuntaa), ilmoita valaistusmestari-agentille
+  source: src:TAH2
+PROCESS_FLOWS:
+- flow_id: FLOW_TAHT_01
+  trigger: aurora_kp_threshold ylittÃ¤Ã¤ kynnysarvon (3)
+  action: Kpâ‰¥3 â†’ revontulimahdollisuus, ilmoita luontokuvaajalle. Kpâ‰¥5 â†’ todennÃ¤kÃ¶iset,
+    PTZ pohjoiseen. Kpâ‰¥7 â†’ poikkeuksellinen, kaikki ulos.
+  output: Tilanneraportti
+  source: src:TAHT
+- flow_id: FLOW_TAHT_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Galaxikausi (Virgo/Coma-klusterit). Revontuliseuranta (equinox-efekti
+    maalis-huhtikuussa'
+  output: Tarkistuslista
+  source: src:TAHT
+- flow_id: FLOW_TAHT_03
+  trigger: 'Havaittu: Optiikka huurussa'
+  action: LÃ¤mmityspanta linssille, tai kuivauspussi kameran viereen
+  output: Poikkeamaraportti
+  source: src:TAHT
+- flow_id: FLOW_TAHT_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'tahtitieteilija: rutiiniarviointi'
+  output: Status-raportti
+  source: src:TAHT
+KNOWLEDGE_TABLES:
+  annual_events:
+  - event: Perseidit
+    date: 11.-13.8.
+    rate: 100-150/h
+    source: src:TAH3
+  - event: Geminidit
+    date: 13.-14.12.
+    rate: 120-150/h
+    source: src:TAH3
+  - event: Quadrantidit
+    date: 3.-4.1.
+    rate: 80-120/h
+    source: src:TAH3
+  - event: Lyridit
+    date: 22.-23.4.
+    rate: 15-20/h
+    source: src:TAH3
+  - event: YÃ¶tÃ¶n yÃ¶ (astron. hÃ¤mÃ¤rÃ¤ ei pÃ¤Ã¤ty)
+    date: ~25.5.â€“18.7. (60Â°N)
+    note: SyvÃ¤avaruuskuvaus mahdotonta
+    source: src:TAH2
+  - event: Paras pimeÃ¤ kausi
+    date: Joulu-tammikuu
+    note: 17+ h pimeÃ¤Ã¤, paras syvÃ¤avaruuskausi
+    source: src:TAH2
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Revontuliennusteet ovat luotettavia vain 1-2h ennakolta.
+- MeteorimÃ¤Ã¤rien ZHR on ideaaliolosuhdeluku â€” todellinen havaittava mÃ¤Ã¤rÃ¤ 30-50% tÃ¤stÃ¤.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:TAH1
+    org: Ilmatieteen laitos
+    title: AvaruussÃ¤Ã¤ ja revontulet
+    year: 2025
+    url: https://www.ilmatieteenlaitos.fi/revontulet
+    supports: Kp-indeksi, revontuliennusteet, aurinkotuuli.
+  - id: src:TAH2
+    org: TÃ¤htitieteellinen yhdistys Ursa
+    title: TÃ¤htitaivaan seuranta
+    year: 2025
+    url: https://www.ursa.fi/
+    supports: Seeing, Bortle, havaintokohteet, fenologia.
+  - id: src:TAH3
+    org: International Meteor Organization
+    title: Meteor Shower Calendar
+    year: 2026
+    url: https://www.imo.net/
+    supports: Meteorisuihkut, ZHR-arvot, ajankohdat.
+eval_questions:
+- q: MikÃ¤ Kp-indeksi tarvitaan revontulille HuhdasjÃ¤rvellÃ¤?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.aurora_kp_threshold.value
+  source: src:TAH1
+- q: Milloin Perseidit ovat huipussaan?
+  a_ref: KNOWLEDGE_TABLES.annual_events[0].date
+  source: src:TAH3
+- q: MikÃ¤ on Bortle-luokka Korvenrannassa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.light_pollution_bortle.value
+  source: src:TAH2
+- q: Milloin syvÃ¤avaruuskuvaus on parhaimmillaan?
+  a_ref: KNOWLEDGE_TABLES.annual_events[5]
+  source: src:TAH2
+- q: Milloin yÃ¶tÃ¶n yÃ¶ alkaa 60Â°N?
+  a_ref: KNOWLEDGE_TABLES.annual_events[4].date
+  source: src:TAH2
+- q: MikÃ¤ on ISS:n nÃ¤kyvyysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.iss_pass_brightness_mag.value
+  source: src:TAH3
+- q: MikÃ¤ kuun valaistus rajoittaa syvÃ¤avaruuskuvausta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.moon_illumination_limit.value
+  source: src:TAH2
+- q: MikÃ¤ on hyvÃ¤ seeing-arvo?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.seeing_arcsec.value
+  source: src:TAH2
+- q: Milloin revontuliennusteet ovat luotettavimpia?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:TAH1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun optiikka huurustuu?
+  a_ref: FAILURE_MODES[0].action
+  source: src:TAH2
+- q: MikÃ¤ on Geminidien huippu?
+  a_ref: KNOWLEDGE_TABLES.annual_events[1].date
+  source: src:TAH3
+- q: MikÃ¤ on Perseidien ZHR?
+  a_ref: KNOWLEDGE_TABLES.annual_events[0].rate
+  source: src:TAH3
+- q: Miksi Kouvolan suuntaa vÃ¤ltetÃ¤Ã¤n?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.light_pollution_bortle.note
+  source: src:TAH2
+- q: MitÃ¤ NLC-pilvet ovat?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:TAH2
+- q: MikÃ¤ on paras galaksikuvauskausi?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:TAH2
+- q: Milloin equinox-efekti lisÃ¤Ã¤ revontulitodennÃ¤kÃ¶isyyttÃ¤?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:TAH2
+- q: MikÃ¤ on meteorimÃ¤Ã¤rien todellinen havaittavuus vs ZHR?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:TAH3
+- q: MikÃ¤ on Kp â‰¥5 merkitys?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.aurora_kp_threshold.action
+  source: src:TAH1
+- q: Milloin pimeÃ¤ kausi on pisin?
+  a_ref: KNOWLEDGE_TABLES.annual_events[5].date
+  source: src:TAH2
+- q: MitÃ¤ talvella huomioidaan kameran kanssa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TAH2
+- q: MikÃ¤ on meteorisuihkun ilmoitusraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.meteor_shower_zenithal_rate.value
+  source: src:TAH3
+- q: Milloin Orion on parhaiten nÃ¤kyvissÃ¤?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TAH2
+- q: Milloin Andromeda on korkealla?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TAH2
+- q: MikÃ¤ on Quadrantidien ajankohta?
+  a_ref: KNOWLEDGE_TABLES.annual_events[2].date
+  source: src:TAH3
+- q: Kenelle valosaasteesta ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TAH2
+- q: MikÃ¤ on Lyridien ajankohta?
+  a_ref: KNOWLEDGE_TABLES.annual_events[3].date
+  source: src:TAH3
+- q: MikÃ¤ on havainnointipaikan leveys- ja pituusaste?
+  a_ref: ASSUMPTIONS
+  source: src:TAH2
+- q: Onko Perseidit vai Geminidit runsaampi?
+  a_ref: KNOWLEDGE_TABLES.annual_events
+  source: src:TAH3
+- q: Milloin pimeÃ¤ kausi alkaa syksyllÃ¤?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TAH2
+- q: MitÃ¤ kuun valossa voi kuvata?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.moon_illumination_limit.action
+  source: src:TAH2
+- q: MikÃ¤ on Geminidien ZHR?
+  a_ref: KNOWLEDGE_TABLES.annual_events[1].rate
+  source: src:TAH3
+- q: MistÃ¤ valosaaste tulee?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.light_pollution_bortle.note
+  source: src:TAH2
+- q: MikÃ¤ kamera-preset on taivasnÃ¤kymÃ¤lle?
+  a_ref: ASSUMPTIONS
+  source: src:TAH2
+- q: Milloin yÃ¶valokuvaus on mahdotonta?
+  a_ref: KNOWLEDGE_TABLES.annual_events[4].note
+  source: src:TAH2
+- q: MikÃ¤ on Lyridien ZHR?
+  a_ref: KNOWLEDGE_TABLES.annual_events[3].rate
+  source: src:TAH3
+- q: Miten valosaastepiikki havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:TAH2
+- q: MikÃ¤ on erinomainen seeing?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.seeing_arcsec.value
+  source: src:TAH2
+- q: Miksi pakkasessa kameran akku on ongelma?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TAH2
+- q: Kuinka pitkÃ¤ pimeÃ¤ kausi on joulukuussa 60Â°N?
+  a_ref: KNOWLEDGE_TABLES.annual_events[5].note
+  source: src:TAH2
+- q: Mihin kohteisiin kuunvalon aikaan ohjataan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.moon_illumination_limit.action
+  source: src:TAH2

@@ -1,0 +1,238 @@
+﻿header:
+  agent_id: viihdepaallikko
+  agent_name: ViihdepÃ¤Ã¤llikkÃ¶ (PS5 + lautapelit + perinnepelit)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan mÃ¶kin viihdejÃ¤rjestelmÃ¤
+- PS5 + TV, lautapelikokoelma, suomalaiset perinnepelit
+- Kytketty sÃ¤hkÃ¶-, valaistusmestari-, saunamajuri-agentteihin
+DECISION_METRICS_AND_THRESHOLDS:
+  screen_time_max_h:
+    value: 'Suositus: max 2-3h yhtÃ¤jaksoista peliaikaa'
+    action: Tauko 15 min / 2h â†’ silmÃ¤t, liikkuminen
+    source: src:VI1
+  ps5_ventilation_temp_c:
+    value: YmpÃ¤ristÃ¶ <35Â°C
+    action: '>35Â°C â†’ ylikuumenee, sammuta tai tuuleta'
+    source: src:VI1
+  game_night_players_optimal:
+    value: 4-6 henkilÃ¶Ã¤ â†’ paras lautapeli-ilta
+    note: '2-3: strategiapelit, 6+: ryhmÃ¤pelit/Alias'
+    source: src:VI1
+  ups_for_ps5:
+    value: UPS suositeltava sÃ¤hkÃ¶katkosalueella
+    action: SÃ¤hkÃ¶katkos â†’ menetÃ¤t tallentamattoman edistyksen
+    source: src:VI1
+  traditional_games:
+    value: MÃ¶lkky (ulkona), korttipelit (ristiseiska, kasino), tikanheitto
+    source: src:VI2
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Ulkopelit aloittavat: mÃ¶lkky, tikanheitto pihalla. Lautapeli-iltojen
+    vÃ¤hentyminen.'
+  source: src:VI2
+- season: KesÃ¤
+  action: Ulkopelit pÃ¤Ã¤osassa. PS5 vÃ¤hemmÃ¤llÃ¤. YÃ¶ttÃ¶mÃ¤n yÃ¶n pelit (palapeli, Alias).
+  source: src:VI2
+- season: Syksy
+  action: PimeÃ¤ kausi â†’ lautapeli-illat. PS5 intensiivisemmin. Halloween-pelit.
+  source: src:VI1
+- season: Talvi
+  action: '[vko 49-13] Peli-iltojen huippukausi. Joulu: uudet pelit. PitkÃ¤t illat
+    â†’ strategiapelit.'
+  source: src:VI1
+FAILURE_MODES:
+- mode: PS5 ylikuumenee
+  detection: Puhallin tÃ¤ysillÃ¤, varoitusilmoitus, sammuu
+  action: Puhdista tuuletusaukot, varmista ilmankierto, ulkoinen tuuletin
+  source: src:VI1
+- mode: SÃ¤hkÃ¶katkos pelisession aikana
+  detection: Kaikki pimeÃ¤Ã¤
+  action: UPS yllÃ¤pitÃ¤Ã¤ 5-15 min â†’ tallenna ja sammuta hallitusti
+  source: src:VI1
+PROCESS_FLOWS:
+- flow_id: FLOW_VIIH_01
+  trigger: 'screen_time_max_h ylittÃ¤Ã¤ kynnysarvon (Suositus: max 2-3h yhtÃ¤jaksoista
+    peliaikaa)'
+  action: Tauko 15 min / 2h â†’ silmÃ¤t, liikkuminen
+  output: Tilanneraportti
+  source: src:VIIH
+- flow_id: FLOW_VIIH_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Ulkopelit aloittavat: mÃ¶lkky, tikanheitto pihalla. Lautapeli-iltojen
+    vÃ¤hentyminen.'
+  output: Tarkistuslista
+  source: src:VIIH
+- flow_id: FLOW_VIIH_03
+  trigger: 'Havaittu: PS5 ylikuumenee'
+  action: Puhdista tuuletusaukot, varmista ilmankierto, ulkoinen tuuletin
+  output: Poikkeamaraportti
+  source: src:VIIH
+- flow_id: FLOW_VIIH_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'viihdepaallikko: rutiiniarviointi'
+  output: Status-raportti
+  source: src:VIIH
+KNOWLEDGE_TABLES:
+- table_id: TBL_VIIH_01
+  title: ViihdepÃ¤Ã¤llikkÃ¶ (PS5 + lautapelit + perinnepelit) â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: screen_time_max_h
+    value: 'Suositus: max 2-3h yhtÃ¤jaksoista peliaikaa'
+    action: Tauko 15 min / 2h â†’ silmÃ¤t, liikkuminen
+  - metric: ps5_ventilation_temp_c
+    value: YmpÃ¤ristÃ¶ <35Â°C
+    action: '>35Â°C â†’ ylikuumenee, sammuta tai tuuleta'
+  - metric: game_night_players_optimal
+    value: 4-6 henkilÃ¶Ã¤ â†’ paras lautapeli-ilta
+    action: ''
+  - metric: ups_for_ps5
+    value: UPS suositeltava sÃ¤hkÃ¶katkosalueella
+    action: SÃ¤hkÃ¶katkos â†’ menetÃ¤t tallentamattoman edistyksen
+  - metric: traditional_games
+    value: MÃ¶lkky (ulkona), korttipelit (ristiseiska, kasino), tikanheitto
+    action: ''
+  source: src:VIIH
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- PS5:n SSD-tallennustila tÃ¤yttyy nopeasti â€” seuraa levytilaa.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:VI1
+    org: Sony / THL
+    title: Peliturvallisuus ja ergonomia
+    year: 2025
+    url: null
+    supports: Ruutuaika, ylikuumeneminen, UPS.
+  - id: src:VI2
+    org: Suomen MÃ¶lkky ry / perinnepelit
+    title: Perinnepelit
+    year: 2025
+    url: null
+    supports: MÃ¶lkky, korttipelit, tikanheitto.
+eval_questions:
+- q: MikÃ¤ on PS5:n ympÃ¤ristÃ¶lÃ¤mpÃ¶tilan raja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ps5_ventilation_temp_c.value
+  source: src:VI1
+- q: MikÃ¤ on suositeltu ruutuaika?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.screen_time_max_h.value
+  source: src:VI1
+- q: MitÃ¤ perinnepelejÃ¤ suositellaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.traditional_games.value
+  source: src:VI2
+- q: Miksi UPS tarvitaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ups_for_ps5.action
+  source: src:VI1
+- q: Montako pelaajaa on optimaalinen lautapeli-iltaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.game_night_players_optimal.value
+  source: src:VI1
+- q: MitÃ¤ tehdÃ¤Ã¤n PS5 ylikuumentuessa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:VI1
+- q: MitÃ¤ pelejÃ¤ pelataan kesÃ¤llÃ¤ ulkona?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:VI2
+- q: MikÃ¤ on screen time max h?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.screen_time_max_h
+  source: src:VI1
+- q: 'Toimenpide: screen time max h?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.screen_time_max_h.action
+  source: src:VI1
+- q: MikÃ¤ on PS5:n tuuletuslÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ps5_ventilation_temp_c
+  source: src:VI1
+- q: 'Toimenpide: PS5:n tuuletuslÃ¤mpÃ¶tila (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ps5_ventilation_temp_c.action
+  source: src:VI1
+- q: MikÃ¤ on game night players optimal?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.game_night_players_optimal
+  source: src:VI1
+- q: MikÃ¤ on PS5:n UPS-suojaus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ups_for_ps5
+  source: src:VI1
+- q: 'Toimenpide: PS5:n UPS-suojaus?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ups_for_ps5.action
+  source: src:VI1
+- q: MikÃ¤ on traditional games?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.traditional_games
+  source: src:VI1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:VI1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:VI1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:VI1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:VI1
+- q: 'Havainto: PS5 ylikuumenee?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:VI1
+- q: 'Toiminta: PS5 ylikuumenee?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:VI1
+- q: 'Havainto: SÃ¤hkÃ¶katkos pelisession aikana?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:VI1
+- q: 'Toiminta: SÃ¤hkÃ¶katkos pelisession aikana?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:VI1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:VI1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1
+- q: 'Operatiivinen lisÃ¤kysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:VI1

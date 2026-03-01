@@ -1,0 +1,236 @@
+header:
+  agent_id: limnologi
+  agent_name: Limnologi (Järvitutkija)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Huhdasjärvi, Kouvola — pieni metsäjärvi
+- 'Käyttö: uinti, kalastus, veneily, veden laatu'
+DECISION_METRICS_AND_THRESHOLDS:
+  water_temp_swimming_min_c:
+    value: 15
+    action: <15°C → hypotermia-varoitus
+    source: src:LIM1
+  secchi_depth_m:
+    value: Normaali 2-4 m
+    action: <1.5 m → leväkukinta-epäily
+    source: src:LIM1
+  cyanobacteria_visual:
+    value: Vihreä maalivana pinnalla
+    action: UINTIKIELTO, ilmoita rantavahdille, näyte SYKE:lle
+    source: src:LIM2
+  ph_range:
+    value: Normaali humusjärvi 5.5-7.0
+    action: <5.0 → happamoituminen, >8.5 → leväkukinta
+    source: src:LIM1
+  oxygen_mg_per_l:
+    value: '>6 mg/l normaali'
+    action: <4 mg/l → kalakuolemaviski, <2 mg/l → anoxia
+    source: src:LIM1
+  phosphorus_ug_per_l:
+    value: <15 karu, 15-25 lievästi rehevä, >50 rehevä
+    source: src:LIM1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Jäiden lähdön jälkeen kevättäyskierto. Vesinäyte touko-kesäkuussa.'
+  source: src:LIM1
+- season: Kesä
+  action: '[vko 22-35] Leväkukintaseuranta viikoittain. Termokliini. Sinilevävaroitukset.'
+  source: src:LIM2
+- season: Syksy
+  action: '[vko 36-48] Syystäyskierto. Vesinäyte syyskuussa.'
+  source: src:LIM1
+- season: Talvi
+  action: '[vko 49-13] Jään alla happi kuluu. Talvinäyte helmikuussa. Lumi estää valoa
+    → happi laskee.'
+  source: src:LIM1
+FAILURE_MODES:
+- mode: Sinilevähavainto
+  detection: Vihreä maalivana, haju
+  action: UINTIKIELTO, näyte SYKE:lle, ilmoita kunnan ympäristöviranomaiselle
+  source: src:LIM2
+- mode: Kalakuolema
+  detection: Kuolleita kaloja pinnalla/rannalla
+  action: Ilmoita ELY-keskukselle, vesinäyte (happi+lämpö), dokumentoi
+  source: src:LIM1
+PROCESS_FLOWS:
+- flow_id: FLOW_LIMN_01
+  trigger: water_temp_swimming_min_c ylittää kynnysarvon (15)
+  action: <15°C → hypotermia-varoitus
+  output: Tilanneraportti
+  source: src:LIMN
+- flow_id: FLOW_LIMN_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Jäiden lähdön jälkeen kevättäyskierto. Vesinäyte touko-kesäkuussa.'
+  output: Tarkistuslista
+  source: src:LIMN
+- flow_id: FLOW_LIMN_03
+  trigger: 'Havaittu: Sinilevähavainto'
+  action: UINTIKIELTO, näyte SYKE:lle, ilmoita kunnan ympäristöviranomaiselle
+  output: Poikkeamaraportti
+  source: src:LIMN
+- flow_id: FLOW_LIMN_04
+  trigger: Säännöllinen heartbeat
+  action: 'limnologi: rutiiniarviointi'
+  output: Status-raportti
+  source: src:LIMN
+KNOWLEDGE_TABLES:
+  lake_status:
+  - indicator: Secchi
+    good: '>3 m'
+    poor: <1.5 m
+  - indicator: Kok.fosfori
+    good: <15 μg/l
+    poor: '>40 μg/l'
+  - indicator: Happi (pohja)
+    good: '>6 mg/l'
+    poor: <2 mg/l
+  - indicator: Klorofylli-a
+    good: <4 μg/l
+    poor: '>20 μg/l'
+COMPLIANCE_AND_LEGAL:
+  water_quality: 'Ympäristönsuojelulaki 527/2014: pilaamiskielto [src:LIM3]'
+  bathing_water: Sinilevä → uintikielto uimavesidirektiivin mukaisesti [src:LIM2]
+UNCERTAINTY_NOTES:
+- Pienen metsäjärven tila voi vaihdella nopeasti sään mukaan.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LIM1
+    org: SYKE
+    title: Pintavesien tila
+    year: 2024
+    url: https://www.syke.fi/
+    supports: Vedenlaatu, indikaattorit.
+  - id: src:LIM2
+    org: THL/SYKE
+    title: Sinileväopas
+    year: 2025
+    url: https://www.jarviwiki.fi/
+    supports: Sinilevätunnistus.
+  - id: src:LIM3
+    org: Oikeusministeriö
+    title: Ympäristönsuojelulaki 527/2014
+    year: 2014
+    url: https://finlex.fi/fi/laki/ajantasa/2014/20140527
+    supports: Pilaamiskielto.
+eval_questions:
+- q: Mikä on mukava uintilämpötila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_temp_swimming_min_c
+  source: src:LIM1
+- q: Miten sinileväkukinta tunnistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cyanobacteria_visual.value
+  source: src:LIM2
+- q: Kenelle kalakuolema ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LIM1
+- q: Mikä on karun järven fosforiraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.phosphorus_ug_per_l.value
+  source: src:LIM1
+- q: Mikä on anoxian happiraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oxygen_mg_per_l.action
+  source: src:LIM1
+- q: Kenelle sinilevävaroitus annetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LIM2
+- q: Milloin talvinäyte otetaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LIM1
+- q: Mikä on kevättäyskierron merkitys?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LIM1
+- q: Miten lumi vaikuttaa talvella happeen?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LIM1
+- q: Mikä on Secchi-syvyyden hyvä arvo?
+  a_ref: KNOWLEDGE_TABLES.lake_status[0].good
+  source: src:LIM1
+- q: Mikä on uintiveden minimilämpötila (°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_temp_swimming_min_c
+  source: src:LIM1
+- q: Mitä tehdään kun uintiveden minimilämpötila (°C) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_temp_swimming_min_c.action
+  source: src:LIM1
+- q: Mikä on Secchi-syvyys (m)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.secchi_depth_m
+  source: src:LIM1
+- q: Mitä tehdään kun Secchi-syvyys (m) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.secchi_depth_m.action
+  source: src:LIM1
+- q: Mikä on cyanobacteria visual?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cyanobacteria_visual
+  source: src:LIM1
+- q: Mitä tehdään kun cyanobacteria visual ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cyanobacteria_visual.action
+  source: src:LIM1
+- q: Mikä on pH-alue?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ph_range
+  source: src:LIM1
+- q: Mitä tehdään kun pH-alue ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ph_range.action
+  source: src:LIM1
+- q: Mikä on oxygen mg per l?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oxygen_mg_per_l
+  source: src:LIM1
+- q: Mitä tehdään kun oxygen mg per l ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oxygen_mg_per_l.action
+  source: src:LIM1
+- q: Mikä on phosphorus ug per l?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.phosphorus_ug_per_l
+  source: src:LIM1
+- q: Mitä kevät huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LIM1
+- q: Mitä kesä huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LIM1
+- q: Mitä syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LIM1
+- q: Mitä talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LIM1
+- q: Miten 'Sinilevähavainto' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:LIM1
+- q: Mitä tehdään tilanteessa 'Sinilevähavainto'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LIM1
+- q: Miten 'Kalakuolema' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LIM1
+- q: Mitä tehdään tilanteessa 'Kalakuolema'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LIM1
+- q: Mikä on water quality -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.water_quality
+  source: src:LIM1
+- q: Mikä on bathing water -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.bathing_water
+  source: src:LIM1
+- q: Mitkä ovat merkittävimmät epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LIM1
+- q: Mitkä ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:LIM1

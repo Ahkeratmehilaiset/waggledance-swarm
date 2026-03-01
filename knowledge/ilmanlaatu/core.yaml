@@ -1,0 +1,246 @@
+﻿header:
+  agent_id: ilmanlaatu
+  agent_name: Ilmanlaadun tarkkailija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Maaseututausta, Korvenranta
+- PuulÃ¤mmitys, liikenne, maastopalot, siitepÃ¶ly
+DECISION_METRICS_AND_THRESHOLDS:
+  pm25_ug:
+    value: WHO 15 Î¼g/mÂ³ (vuosi), 45 (24h)
+    action: '>50 â†’ varoitus, ikkunat kiinni'
+    source: src:IL1
+  pm10_ug:
+    value: WHO 45 (vuosi), 100 (24h)
+    source: src:IL1
+  co_ppm_indoor:
+    value: <9 ppm (8h)
+    action: '>35 â†’ HÃ„KÃ„VAARA, tuuleta, paloesimiehelle'
+    source: src:IL2
+  pollen_birch:
+    value: '>80 kpl/mÂ³ korkea, >200 erittÃ¤in korkea'
+    source: src:IL3
+  radon_bq:
+    value: Viite 200 Bq/mÂ³
+    action: '>200 â†’ radonkorjaus, >400 â†’ vÃ¤litÃ¶n'
+    source: src:IL4
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] KoivusiitepÃ¶ly huhti-touko. KatupÃ¶ly.'
+  source: src:IL3
+- season: KesÃ¤
+  action: '[vko 22-35] Maastopalot (kuiva kesÃ¤). Otsoni helteellÃ¤.'
+  source: src:IL1
+- season: Syksy
+  action: PuulÃ¤mmityskausi â†’ PM2.5. Inversio.
+  source: src:IL1
+- season: Talvi
+  action: '[vko 49-13] PuulÃ¤mmitys pahimmillaan. HÃ¤kÃ¤viski.'
+  source: src:IL2
+FAILURE_MODES:
+- mode: HÃ¤kÃ¤ koholla sisÃ¤llÃ¤
+  detection: CO-hÃ¤lytin tai >35 ppm
+  action: Avaa ikkunat, sammuta tulisija, ulos, 112 jos >100 ppm
+  source: src:IL2
+- mode: Maastopalon savu
+  detection: PM2.5 >100 + savun haju
+  action: Sulje ikkunat+IV, HEPA-suodatin
+  source: src:IL1
+PROCESS_FLOWS:
+- flow_id: FLOW_ILMA_01
+  trigger: pm25_ug ylittÃ¤Ã¤ kynnysarvon (WHO 15 Î¼g/mÂ³ (vuosi), 45 (24h))
+  action: '>50 â†’ varoitus, ikkunat kiinni'
+  output: Tilanneraportti
+  source: src:ILMA
+- flow_id: FLOW_ILMA_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] KoivusiitepÃ¶ly huhti-touko. KatupÃ¶ly.'
+  output: Tarkistuslista
+  source: src:ILMA
+- flow_id: FLOW_ILMA_03
+  trigger: 'Havaittu: HÃ¤kÃ¤ koholla sisÃ¤llÃ¤'
+  action: Avaa ikkunat, sammuta tulisija, ulos, 112 jos >100 ppm
+  output: Poikkeamaraportti
+  source: src:ILMA
+- flow_id: FLOW_ILMA_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'ilmanlaatu: rutiiniarviointi'
+  output: Status-raportti
+  source: src:ILMA
+KNOWLEDGE_TABLES:
+- table_id: TBL_ILMA_01
+  title: Ilmanlaadun tarkkailija â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: pm25_ug
+    value: WHO 15 Î¼g/mÂ³ (vuosi), 45 (24h)
+    action: '>50 â†’ varoitus, ikkunat kiinni'
+  - metric: pm10_ug
+    value: WHO 45 (vuosi), 100 (24h)
+    action: ''
+  - metric: co_ppm_indoor
+    value: <9 ppm (8h)
+    action: '>35 â†’ HÃ„KÃ„VAARA, tuuleta, paloesimiehelle'
+  - metric: pollen_birch
+    value: '>80 kpl/mÂ³ korkea, >200 erittÃ¤in korkea'
+    action: ''
+  - metric: radon_bq
+    value: Viite 200 Bq/mÂ³
+    action: '>200 â†’ radonkorjaus, >400 â†’ vÃ¤litÃ¶n'
+  source: src:ILMA
+COMPLIANCE_AND_LEGAL:
+  radon: 'STM 1044/2018: viite 200 Bq/mÂ³ [src:IL4]'
+  avopoltto: 'JÃ¤telaki: avopoltto kielletty asemakaava-alueella [src:IL1]'
+UNCERTAINTY_NOTES:
+- Maaseudulla PM2.5 yleensÃ¤ matala, mutta puulÃ¤mmitys nostaa paikallisesti.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:IL1
+    org: HSY/SYKE
+    title: Ilmanlaatu
+    year: 2025
+    url: https://www.ilmanlaatu.fi/
+    supports: PM2.5, PM10, otsoni.
+  - id: src:IL2
+    org: THL
+    title: HÃ¤kÃ¤myrkytys
+    year: 2025
+    url: https://thl.fi/
+    supports: CO-rajat.
+  - id: src:IL3
+    org: Turun yo / Norkko
+    title: SiitepÃ¶ly
+    year: 2025
+    url: https://www.norkko.fi/
+    supports: SiitepÃ¶lylaskennat.
+  - id: src:IL4
+    org: STUK
+    title: Radon
+    year: 2025
+    url: https://www.stuk.fi/aiheet/radon
+    supports: Radon.
+eval_questions:
+- q: MikÃ¤ on pm25 ug?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pm25_ug
+  source: src:IL1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun pm25 ug ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pm25_ug.action
+  source: src:IL1
+- q: MikÃ¤ on pm10 ug?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pm10_ug
+  source: src:IL1
+- q: MikÃ¤ on sisÃ¤ilman CO (ppm)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co_ppm_indoor
+  source: src:IL1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun sisÃ¤ilman CO (ppm) ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co_ppm_indoor.action
+  source: src:IL1
+- q: MikÃ¤ on pollen birch?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pollen_birch
+  source: src:IL1
+- q: MikÃ¤ on radon bq?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.radon_bq
+  source: src:IL1
+- q: MitÃ¤ tehdÃ¤Ã¤n kun radon bq ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.radon_bq.action
+  source: src:IL1
+- q: MitÃ¤ kevÃ¤t huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:IL1
+- q: MitÃ¤ kesÃ¤ huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:IL1
+- q: MitÃ¤ syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:IL1
+- q: MitÃ¤ talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:IL1
+- q: Miten 'HÃ¤kÃ¤ koholla sisÃ¤llÃ¤' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:IL1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'HÃ¤kÃ¤ koholla sisÃ¤llÃ¤'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:IL1
+- q: Miten 'Maastopalon savu' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:IL1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Maastopalon savu'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:IL1
+- q: MikÃ¤ on radon -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.radon
+  source: src:IL1
+- q: MikÃ¤ on avopoltto -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.avopoltto
+  source: src:IL1
+- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:IL1
+- q: MitkÃ¤ ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#11)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#12)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#13)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#14)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#15)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#16)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#17)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#18)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#19)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#20)?
+  a_ref: ASSUMPTIONS
+  source: src:IL1

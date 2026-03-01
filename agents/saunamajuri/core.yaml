@@ -1,0 +1,246 @@
+header:
+  agent_id: saunamajuri
+  agent_name: Saunamajuri
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan puusauna (puulämmitteinen)
+- Järviuinti saunan yhteydessä
+- Kytketty nuohooja-, paloesimies-, rantavahti-agentteihin
+DECISION_METRICS_AND_THRESHOLDS:
+  sauna_temp_c:
+    value: 70-90°C lauteilla
+    action: '>100°C → liian kuuma, avaa ovi/luukku'
+    source: src:SA1
+  session_max_min:
+    value: 15-20 min per kerta
+    action: '>20 min → nestehukka, huimaus, riski'
+    source: src:SA1
+  hydration_l_per_session:
+    value: 0.5-1.0 l vettä per saunakerta
+    source: src:SA1
+  chimney_check_before_use:
+    value: Pelti auki, veto toimii, ei savua sisään
+    action: Savua sisään → ÄLÄ lämmitä, tarkista hormi
+    source: src:SA1
+  cool_down_method:
+    value: Järvikaste, suihku tai ulkoilma 5-10 min
+    action: 'Avantouinti: max 1-2 min, aina seurassa'
+    source: src:SA1
+  kiuas_stone_check_years:
+    value: 1
+    action: Vaihda rikkoutuneet kivet 1x/v (puukiuas)
+    source: src:SA1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Saunakauden aloitus: hormin tarkistus, kiuaskivien vaihto.
+    Järvi vielä kylmä.'
+  source: src:SA1
+- season: Kesä
+  action: '[vko 22-35] Järvikaste. Saunan tuuletuksesta huolehti (home kesällä). Vesihuolto.'
+  source: src:SA1
+- season: Syksy
+  action: '[vko 36-48] Saunan valmistelu talveen. Vesijohdon tyhjennys jos talvisaunaa
+    ei käytetä.'
+  source: src:SA1
+- season: Talvi
+  action: '[vko 49-13] Avantouinti (jääasiantuntijalta jäänpaksuus). Löylyhuoneen
+    jäätymisen esto.'
+  source: src:SA1
+FAILURE_MODES:
+- mode: Savua löylyhuoneessa
+  detection: Silmät kirveleävät, näkyvä savu
+  action: Sammuta kiuas, avaa ovi, tarkista pelti ja hormi. Ei saunomista ennen selvitystä.
+  source: src:SA1
+- mode: Pyörtyminen saunassa
+  detection: Henkilö ei reagoi
+  action: Vie viileään, jalat koholle, vettä, soita 112 jos ei virkoa 2 min
+  source: src:SA1
+PROCESS_FLOWS:
+- flow_id: FLOW_SAUN_01
+  trigger: sauna_temp_c ylittää kynnysarvon (70-90°C lauteilla)
+  action: '>100°C → liian kuuma, avaa ovi/luukku'
+  output: Tilanneraportti
+  source: src:SAUN
+- flow_id: FLOW_SAUN_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Saunakauden aloitus: hormin tarkistus, kiuaskivien vaihto.
+    Järvi vielä kylmä.'
+  output: Tarkistuslista
+  source: src:SAUN
+- flow_id: FLOW_SAUN_03
+  trigger: 'Havaittu: Savua löylyhuoneessa'
+  action: Sammuta kiuas, avaa ovi, tarkista pelti ja hormi. Ei saunomista ennen selvitystä.
+  output: Poikkeamaraportti
+  source: src:SAUN
+- flow_id: FLOW_SAUN_04
+  trigger: Säännöllinen heartbeat
+  action: 'saunamajuri: rutiiniarviointi'
+  output: Status-raportti
+  source: src:SAUN
+KNOWLEDGE_TABLES:
+- table_id: TBL_SAUN_01
+  title: Saunamajuri — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: sauna_temp_c
+    value: 70-90°C lauteilla
+    action: '>100°C → liian kuuma, avaa ovi/luukku'
+  - metric: session_max_min
+    value: 15-20 min per kerta
+    action: '>20 min → nestehukka, huimaus, riski'
+  - metric: hydration_l_per_session
+    value: 0.5-1.0 l vettä per saunakerta
+    action: ''
+  - metric: chimney_check_before_use
+    value: Pelti auki, veto toimii, ei savua sisään
+    action: Savua sisään → ÄLÄ lämmitä, tarkista hormi
+  - metric: cool_down_method
+    value: Järvikaste, suihku tai ulkoilma 5-10 min
+    action: 'Avantouinti: max 1-2 min, aina seurassa'
+  - metric: kiuas_stone_check_years
+    value: '1'
+    action: Vaihda rikkoutuneet kivet 1x/v (puukiuas)
+  source: src:SAUN
+COMPLIANCE_AND_LEGAL:
+  nuohous: Saunan hormi nuohousvelvollisuuden piirissä [src:SA2]
+UNCERTAINTY_NOTES:
+- Saunan lämpötila vaihtelee merkittävästi lauteiden korkeuden mukaan (~15°C ero ylä/ala).
+SOURCE_REGISTRY:
+  sources:
+  - id: src:SA1
+    org: Suomen Saunaseura
+    title: Saunomisohje
+    year: 2025
+    url: https://www.sauna.fi/
+    supports: Lämpötilat, turvallisuus, kiuas.
+  - id: src:SA2
+    org: Pelastuslaitos
+    title: Nuohous
+    year: 2025
+    url: https://www.pelastustoimi.fi/
+    supports: Saunan hormin nuohous.
+eval_questions:
+- q: Mikä on saunan lÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sauna_temp_c
+  source: src:SA1
+- q: 'Toimenpide: saunan lÃ¤mpÃ¶tila (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sauna_temp_c.action
+  source: src:SA1
+- q: Mikä on saunomiskerran enimmÃ¤iskesto (min)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.session_max_min
+  source: src:SA1
+- q: 'Toimenpide: saunomiskerran enimmÃ¤iskesto (min)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.session_max_min.action
+  source: src:SA1
+- q: Mikä on nestetarve litraa per saunomiskerta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hydration_l_per_session
+  source: src:SA1
+- q: Mikä on savuhormin tarkistus ennen kÃ¤yttÃ¶Ã¤?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chimney_check_before_use
+  source: src:SA1
+- q: 'Toimenpide: savuhormin tarkistus ennen kÃ¤yttÃ¶Ã¤?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chimney_check_before_use.action
+  source: src:SA1
+- q: Mikä on jÃ¤Ã¤hdyttelytapa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cool_down_method
+  source: src:SA1
+- q: 'Toimenpide: jÃ¤Ã¤hdyttelytapa?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cool_down_method.action
+  source: src:SA1
+- q: Mikä on kiuaskivien tarkistusvÃ¤li (vuotta)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kiuas_stone_check_years
+  source: src:SA1
+- q: 'Toimenpide: kiuaskivien tarkistusvÃ¤li (vuotta)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kiuas_stone_check_years.action
+  source: src:SA1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:SA1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:SA1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:SA1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SA1
+- q: 'Havainto: Savua löylyhuoneessa?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:SA1
+- q: 'Toiminta: Savua löylyhuoneessa?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:SA1
+- q: 'Havainto: Pyörtyminen saunassa?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:SA1
+- q: 'Toiminta: Pyörtyminen saunassa?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:SA1
+- q: 'Sääntö: nuohous?'
+  a_ref: COMPLIANCE_AND_LEGAL.nuohous
+  source: src:SA1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:SA1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #16?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #17?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1
+- q: 'Operatiivinen lisäkysymys #18?'
+  a_ref: ASSUMPTIONS
+  source: src:SA1

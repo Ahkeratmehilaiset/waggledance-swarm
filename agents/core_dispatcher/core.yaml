@@ -1,0 +1,222 @@
+header:
+  agent_id: core_dispatcher
+  agent_name: Core/Dispatcher (Päällikkö)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan mökkiympäristö, Kouvola-Huhdasjärvi
+- 50 agentin multi-agent-järjestelmä, Ollama + paikallinen LLM
+- Käyttäjä on yksi henkilö (Jani), priorisoidaan hänen tavoitteitaan
+DECISION_METRICS_AND_THRESHOLDS:
+  agent_response_time_max_s:
+    value: 30
+    action: Jos agentti ei vastaa 30s → merkitse unresponsive, delegoi toiselle
+    source: src:CORE1
+  concurrent_active_agents_max:
+    value: 8
+    action: Yli 8 aktiivista → priorisoi ja pysäytä matalan prioriteetin agentit
+    source: src:CORE1
+  memory_db_size_max_mb:
+    value: 500
+    action: Yli 500 MB → aja muistin tiivistys ja vanhojen merkintöjen arkistointi
+    source: src:CORE1
+  heartbeat_interval_s:
+    value: 30
+    source: src:CORE1
+  task_queue_max:
+    value: 50
+    action: Yli 50 odottavaa → hylkää matalan prioriteetin tehtävät
+    source: src:CORE1
+SEASONAL_RULES:
+- season: Kevät (huhti-touko)
+  focus: '[vko 14-22] Mehiläisten kevättarkastus, lintumuutto, jäätilanne, routa'
+  source: src:CORE1
+- season: Kesä (kesä-elo)
+  focus: '[vko 22-35] Sadonkorjuu, uintikelpoisuus, myrskyvahti, tuholaisseuranta'
+  source: src:CORE1
+- season: Syksy (syys-marras)
+  focus: '[vko 36-48] Talvivalmistelut, nuohous, varastoinventointi, puunkaato'
+  source: src:CORE1
+- season: Talvi (joulu-maalis)
+  focus: '[vko 49-13] Jääturvallisuus, lämmitys, lumikuorma, häkävaroittimet'
+  source: src:CORE1
+FAILURE_MODES:
+- mode: LLM ei vastaa (Ollama down)
+  detection: Heartbeat timeout >60s
+  action: Käynnistä Ollama uudelleen, ilmoita käyttäjälle
+  source: src:CORE1
+- mode: Muisti täynnä
+  detection: SQLite >500 MB tai levy <1 GB
+  action: Tiivistä muisti, arkistoi >30pv merkinnät
+  source: src:CORE1
+- mode: Agenttien looppi
+  detection: Sama agentti kutsuttu >10x 60s sisällä
+  action: Circuit breaker, cooldown 5min
+  source: src:CORE1
+PROCESS_FLOWS:
+  message_routing:
+    steps:
+    - 1. Vastaanota käyttäjän viesti
+    - 2. Tokenisoi ja tunnista avainsanat
+    - 3. Pisteytetään agenttityypit keyword-matchilla
+    - 4. Jos multi-agent → käynnistä rinnakkaiset kyselyt
+    - 5. Kootaan vastaus ja palautetaan käyttäjälle
+    source: src:CORE1
+  escalation:
+    levels:
+    - INFO → normaali reititys
+    - WARNING → priorisoi + ilmoita käyttäjälle
+    - CRITICAL → keskeytä muut, käsittele heti
+    source: src:CORE1
+KNOWLEDGE_TABLES:
+  priority_matrix:
+  - category: Turvallisuus (palo, murtohälytys, karhuhavainto)
+    priority: 1
+    max_response_s: 5
+  - category: Sää-hälytykset (myrsky, jää, tulva)
+    priority: 2
+    max_response_s: 10
+  - category: Mehiläishoito (parveilu, tautiepäily)
+    priority: 3
+    max_response_s: 30
+  - category: Kiinteistöhuolto (sähkö, LVI, rakenteet)
+    priority: 4
+    max_response_s: 60
+  - category: Viihde, ruoka, yleistieto
+    priority: 5
+    max_response_s: 120
+COMPLIANCE_AND_LEGAL:
+  data_retention: Kaikki agenttidata säilytetään paikallisesti, ei pilvipalveluja
+  gdpr_note: Henkilötietojen käsittely vain paikallisesti, ei jaeta kolmansille osapuolille
+UNCERTAINTY_NOTES:
+- Priorisointimatriisi on heuristinen, ei absoluuttinen. Käyttäjä voi ohittaa.
+- Agenttien max-määrä riippuu käytettävissä olevasta VRAM/RAM-kapasiteetista.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:CORE1
+    org: OpenClaw
+    title: HiveMind System Architecture v2
+    year: 2026
+    url: null
+    supports: Järjestelmäarkkitehtuuri, priorisointisäännöt, heartbeat-protokolla.
+eval_questions:
+- q: Mikä on agentin maksimivasteaika ennen uudelleenohjausta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.agent_response_time_max_s.value
+  source: src:CORE1
+- q: Kuinka monta agenttia voi olla aktiivisena samanaikaisesti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.concurrent_active_agents_max.value
+  source: src:CORE1
+- q: Mikä on muistitietokannan maksimikoko?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.memory_db_size_max_mb.value
+  source: src:CORE1
+- q: Mitkä tehtävät ovat prioriteetti 1?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[0].category
+  source: src:CORE1
+- q: Mikä on prioriteetti 1 -tehtävän maksimivasteaika?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[0].max_response_s
+  source: src:CORE1
+- q: Mitä tapahtuu kun tehtäväjono ylittää 50?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.task_queue_max.action
+  source: src:CORE1
+- q: Miten viesti reititetään oikealle agentille?
+  a_ref: PROCESS_FLOWS.message_routing.steps
+  source: src:CORE1
+- q: Mitkä ovat eskalaatiotasot?
+  a_ref: PROCESS_FLOWS.escalation.levels
+  source: src:CORE1
+- q: Mikä on heartbeat-väli?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.heartbeat_interval_s.value
+  source: src:CORE1
+- q: Mitä tehdään jos Ollama ei vastaa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:CORE1
+- q: Mikä laukaisee circuit breakerin?
+  a_ref: FAILURE_MODES[2].detection
+  source: src:CORE1
+- q: Mihin kevään agenttiprioriteetti keskittyy?
+  a_ref: SEASONAL_RULES[0].focus
+  source: src:CORE1
+- q: Mihin kesän agenttiprioriteetti keskittyy?
+  a_ref: SEASONAL_RULES[1].focus
+  source: src:CORE1
+- q: Mihin syksyn agenttiprioriteetti keskittyy?
+  a_ref: SEASONAL_RULES[2].focus
+  source: src:CORE1
+- q: Mihin talven agenttiprioriteetti keskittyy?
+  a_ref: SEASONAL_RULES[3].focus
+  source: src:CORE1
+- q: Miten muisti tiivistetään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:CORE1
+- q: Säilytetäänkö data pilvessä?
+  a_ref: COMPLIANCE_AND_LEGAL.data_retention
+  source: src:CORE1
+- q: Mikä on mehiläishoidon prioriteettitaso?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[2].priority
+  source: src:CORE1
+- q: Mikä on viihdetehtävien maksimivasteaika?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[4].max_response_s
+  source: src:CORE1
+- q: Milloin vanha muisti arkistoidaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:CORE1
+- q: Onko priorisointimatriisi absoluuttinen?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:CORE1
+- q: Mitä tapahtuu multi-agent -kyselyssä?
+  a_ref: PROCESS_FLOWS.message_routing.steps
+  source: src:CORE1
+- q: Kuinka monta odottavaa tehtävää on maksimi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.task_queue_max.value
+  source: src:CORE1
+- q: Mikä on kiinteistöhuollon prioriteettitaso?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[3].priority
+  source: src:CORE1
+- q: Miten GDPR huomioidaan?
+  a_ref: COMPLIANCE_AND_LEGAL.gdpr_note
+  source: src:CORE1
+- q: Mikä on sää-hälytysten vasteaika?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[1].max_response_s
+  source: src:CORE1
+- q: Mitä cooldown tarkoittaa loopissa?
+  a_ref: FAILURE_MODES[2].action
+  source: src:CORE1
+- q: Miten agentti merkitään epäresponsiiviseksi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.agent_response_time_max_s.action
+  source: src:CORE1
+- q: Mikä on turvallisuustapahtuman vasteaika?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[0].max_response_s
+  source: src:CORE1
+- q: Voidaanko prioriteettia muuttaa?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:CORE1
+- q: Mikä on Dispatcherin päätehtävä?
+  a_ref: PROCESS_FLOWS.message_routing
+  source: src:CORE1
+- q: Mitä tapahtuu yli 8 aktiivisella agentilla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.concurrent_active_agents_max.action
+  source: src:CORE1
+- q: Mikä on levytilan minimiraja?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:CORE1
+- q: Milloin karhuhavainto käsitellään?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[0]
+  source: src:CORE1
+- q: Miten nuohouksen ajoitus vaikuttaa syksyn prioriteetteihin?
+  a_ref: SEASONAL_RULES[2].focus
+  source: src:CORE1
+- q: Onko jääturvallisuus talven prioriteetti?
+  a_ref: SEASONAL_RULES[3].focus
+  source: src:CORE1
+- q: Mikä on parveilu-ilmoituksen prioriteettitaso?
+  a_ref: KNOWLEDGE_TABLES.priority_matrix[2]
+  source: src:CORE1
+- q: Miten rinnakkaiskyselyt toteutetaan?
+  a_ref: PROCESS_FLOWS.message_routing.steps
+  source: src:CORE1
+- q: Mitä WARNING-taso tarkoittaa?
+  a_ref: PROCESS_FLOWS.escalation.levels
+  source: src:CORE1
+- q: Mitä CRITICAL-taso tarkoittaa?
+  a_ref: PROCESS_FLOWS.escalation.levels
+  source: src:CORE1

@@ -1,0 +1,266 @@
+header:
+  agent_id: ornitologi
+  agent_name: Ornitologi (Lintutieteilijä)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Sijainti: Huhdasjärvi/Kouvola, Kaakkois-Suomi (vyöhyke II-III)'
+- Lintulautakulku ja järvenrantaympäristö
+- Havainnot PTZ-kameralta ja käyttäjän ilmoituksista
+DECISION_METRICS_AND_THRESHOLDS:
+  rarity_alert_threshold:
+    value: Uhanalaisuusluokka CR/EN/VU tai alueella harvinainen
+    action: Ilmoita välittömästi + tallenna havainto + geolokaatio
+    source: src:ORN1
+  nest_protection_zone_m:
+    value: 50
+    note: Pesimäaikana 50m suojaetäisyys rauhoitetun lajin pesälle
+    source: src:ORN2
+  spring_migration_start_date:
+    value: Maaliskuun loppu (vko 12-13)
+    note: 'Ensimmäiset muuttajat: kiuru, töyhtöhyyppä, västäräkki'
+    source: src:ORN2
+    action: '>50 muuttajaa/h → ilmoita luontokuvaajalle (PTZ kohdistus). Kevät vko
+      18-22, syksy vko 36-42.'
+  autumn_migration_peak:
+    value: Syyskuu (vko 36-40)
+    note: Kurkimuutto, petolintumuutto
+    source: src:ORN3
+  feeder_refill_trigger:
+    value: Lintulautakäynnit laskevat >30% 3 päivässä
+    action: Tarkista ruoan laatu ja täyttöaste
+    source: src:ORN1
+SEASONAL_RULES:
+- season: Kevät (maalis-touko)
+  action: '[vko 14-22] Muuttolintuseuranta, pesälaatikoiden tarkistus, pöntöistä vanhan
+    pesämateriaalin poisto (maalis)'
+  source: src:ORN3
+- season: Kesä (kesä-heinä)
+  action: '[vko 22-35] Pesimärauha — minimoi häirintä, ei puunkaatoa pesäpuiden lähellä'
+  source: src:ORN2
+- season: Syksy (elo-marras)
+  action: '[vko 36-48] Muuttoseuranta, pöntöttien puhdistus pesimäkauden jälkeen'
+  source: src:ORN3
+- season: Talvi (joulu-helmi)
+  action: '[vko 49-13] Lintulaudan ylläpito, auringonkukansiemenet + talipallo, vesipisteen
+    avaus'
+  source: src:ORN3
+FAILURE_MODES:
+- mode: Lintuinfluenssa-epäily (kuolleet linnut)
+  detection: ≥3 kuollutta lintua lyhyellä aikavälillä
+  action: ÄLÄ koske — ilmoita Ruokavirastolle (p. 029 530 0400), ilmoita tautivahti-agentille
+  source: src:ORN4
+- mode: Petolintuhavainto pesien lähellä
+  detection: Kanahaukka/varpushaukka lintulaudalla toistuvasti
+  action: Siirrä lintulautaa suojaisempaan paikkaan, ilmoita riistanvartijalle
+  source: src:ORN3
+PROCESS_FLOWS:
+- flow_id: FLOW_ORNI_01
+  trigger: rarity_alert_threshold ylittää kynnysarvon (Uhanalaisuusluokka CR/EN/VU
+    tai alueella harvinainen)
+  action: Ilmoita välittömästi + tallenna havainto + geolokaatio
+  output: Tilanneraportti
+  source: src:ORNI
+- flow_id: FLOW_ORNI_02
+  trigger: 'Kausi vaihtuu: Kevät (maalis-touko)'
+  action: '[vko 14-22] Muuttolintuseuranta, pesälaatikoiden tarkistus, pöntöistä vanhan
+    pesämateriaalin poisto '
+  output: Tarkistuslista
+  source: src:ORNI
+- flow_id: FLOW_ORNI_03
+  trigger: 'Havaittu: Lintuinfluenssa-epäily (kuolleet linnut)'
+  action: ÄLÄ koske — ilmoita Ruokavirastolle (p. 029 530 0400), ilmoita tautivahti-agentille
+  output: Poikkeamaraportti
+  source: src:ORNI
+- flow_id: FLOW_ORNI_04
+  trigger: Säännöllinen heartbeat
+  action: 'ornitologi: rutiiniarviointi'
+  output: Status-raportti
+  source: src:ORNI
+KNOWLEDGE_TABLES:
+  common_species_huhdasjarvi:
+  - species: Talitiainen (Parus major)
+    status: Yleinen, paikkalintu
+    feeder: true
+    source: src:ORN3
+  - species: Sinitiainen (Cyanistes caeruleus)
+    status: Yleinen, paikkalintu
+    feeder: true
+    source: src:ORN3
+  - species: Käpytikka (Dendrocopos major)
+    status: Yleinen
+    feeder: true
+    source: src:ORN3
+  - species: Kuukkeli (Perisoreus infaustus)
+    status: NT (silmälläpidettävä)
+    feeder: false
+    source: src:ORN1
+  - species: Palokärki (Dryocopus martius)
+    status: LC, EU:n lintudirektiivin liite I
+    feeder: false
+    source: src:ORN1
+  - species: Kurki (Grus grus)
+    status: LC, rauhoitettu
+    feeder: false
+    source: src:ORN1
+  - species: Kalasääski (Pandion haliaetus)
+    status: LC, EU lintudirektiivin liite I
+    feeder: false
+    source: src:ORN1
+COMPLIANCE_AND_LEGAL:
+  protected_species: Kaikki luonnonvaraiset linnut ovat rauhoitettuja lukuun ottamatta
+    riistalajeja niiden metsästysaikana [src:ORN2]
+  eu_birds_directive: EU:n lintudirektiivin (2009/147/EY) liitteen I lajit vaativat
+    erityistä suojelua [src:ORN2]
+  nest_destruction: Pesän tuhoaminen pesimäaikana on kielletty luonnonsuojelulain
+    nojalla [src:ORN2]
+UNCERTAINTY_NOTES:
+- Muuttoaikataulut vaihtelevat vuosittain sään mukaan — päivämäärät ovat keskiarvoja.
+- Kameratunnistuksen tarkkuus pienille lajeille on rajallinen, vaatii käyttäjän varmistuksen.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:ORN1
+    org: Suomen ympäristökeskus (SYKE)
+    title: Suomen lajien uhanalaisuus – Punainen kirja 2019
+    year: 2019
+    url: https://punainenkirja.laji.fi/
+    supports: Uhanalaisuusluokat CR/EN/VU/NT/LC.
+  - id: src:ORN2
+    org: Oikeusministeriö
+    title: Luonnonsuojelulaki 9/2023
+    year: 2023
+    url: https://www.finlex.fi/fi/laki/ajantasa/2023/20230009
+    supports: Rauhoitetut lajit, pesien suojelu, häirinnän kielto.
+  - id: src:ORN3
+    org: BirdLife Suomi
+    title: Lintutietokanta ja muuttoseuranta
+    year: 2025
+    url: https://www.birdlife.fi/
+    supports: Muuttoaikataulut, lajitiedot, pesimäbiologia.
+  - id: src:ORN4
+    org: Ruokavirasto
+    title: Lintuinfluenssa
+    year: 2025
+    url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/linnut/lintuinfluenssa/
+    supports: Lintuinfluenssan tunnistus ja ilmoitusmenettely.
+eval_questions:
+- q: Milloin kevätmuutto alkaa Kaakkois-Suomessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spring_migration_start_date.value
+  source: src:ORN3
+- q: Mikä on syysmuuton huippu?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.autumn_migration_peak.value
+  source: src:ORN3
+- q: Mikä suojaetäisyys pesälle vaaditaan pesimäaikana?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nest_protection_zone_m.value
+  source: src:ORN2
+- q: Milloin harvinaisuudesta ilmoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.rarity_alert_threshold.value
+  source: src:ORN1
+- q: Mitä tehdään kuolleiden lintujen löytyessä?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ORN4
+- q: Ovatko kaikki linnut rauhoitettuja?
+  a_ref: COMPLIANCE_AND_LEGAL.protected_species
+  source: src:ORN2
+- q: Mikä on kuukkelin uhanalaisuusluokka?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[3].status
+  source: src:ORN1
+- q: Mitkä linnut käyttävät lintulautaa?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi
+  source: src:ORN3
+- q: Saako pesän tuhota pesimäaikana?
+  a_ref: COMPLIANCE_AND_LEGAL.nest_destruction
+  source: src:ORN2
+- q: Mitä tehdään petolintu lintulaudalla?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ORN3
+- q: Milloin pöntöt puhdistetaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:ORN3
+- q: Mitä talvella tarjotaan lintulaudalla?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:ORN3
+- q: Mitkä ovat ensimmäiset kevätmuuttajat?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spring_migration_start_date.note
+  source: src:ORN3
+- q: Mikä on EU:n lintudirektiivin merkitys?
+  a_ref: COMPLIANCE_AND_LEGAL.eu_birds_directive
+  source: src:ORN2
+- q: Onko palokärki EU:n lintudirektiivin laji?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[4].status
+  source: src:ORN1
+- q: Milloin lintulaudan ruoka tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.feeder_refill_trigger.value
+  source: src:ORN1
+- q: Mikä on kalasääsken suojelustatus?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[6].status
+  source: src:ORN1
+- q: Onko kurki rauhoitettu?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[5].status
+  source: src:ORN1
+- q: Mistä numerosta ilmoitetaan lintuinfluenssaepäilystä?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ORN4
+- q: Mitä kesällä huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ORN2
+- q: Saako puita kaataa pesäpuiden lähellä kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ORN2
+- q: Kuinka monta kuollutta lintua laukaisee ilmoituksen?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:ORN4
+- q: Milloin pesälaatikot tarkistetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:ORN3
+- q: Milloin vanha pesämateriaali poistetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:ORN3
+- q: Mikä on lintulaudan ruoan laadun tarkistusväli?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.feeder_refill_trigger.action
+  source: src:ORN1
+- q: Vaihtelevako muuttoajat vuosittain?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:ORN3
+- q: Mikä on Huhdasjärven kasvuvyöhyke?
+  a_ref: ASSUMPTIONS
+  source: src:ORN3
+- q: Onko sinitiainen paikkalintu?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[1].status
+  source: src:ORN3
+- q: Mikä on käpytikan suojelustatus?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[2].status
+  source: src:ORN3
+- q: Käyttääkö kurki lintulautaa?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[5].feeder
+  source: src:ORN1
+- q: Mikä on kurjen latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[5].species
+  source: src:ORN1
+- q: Onko kuukkeli uhanalaisluettelossa?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[3].status
+  source: src:ORN1
+- q: Kenelle petolintuhavainnosta ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ORN3
+- q: Mikä on kurkimuuton ajankohta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.autumn_migration_peak.note
+  source: src:ORN3
+- q: Voiko kameratunnistukseen luottaa pienillä lajeilla?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:ORN1
+- q: Mikä on talitiaisen latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[0].species
+  source: src:ORN3
+- q: Tarvitseeko lintulaudalla olla vettä talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:ORN3
+- q: Mikä on kalasääsken latinankielinen nimi?
+  a_ref: KNOWLEDGE_TABLES.common_species_huhdasjarvi[6].species
+  source: src:ORN1
+- q: Milloin syysmuuttoa seurataan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:ORN3
+- q: Kenelle lintuinfluenssaepäilystä ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ORN4

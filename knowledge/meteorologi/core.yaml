@@ -1,0 +1,274 @@
+﻿header:
+  agent_id: meteorologi
+  agent_name: Meteorologi
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Ilmatieteen laitos + paikallinen sÃ¤Ã¤asema Korvenrannassa
+- SÃ¤Ã¤data kaikille agenteille
+DECISION_METRICS_AND_THRESHOLDS:
+  temperature_c:
+    value: Jatkuva seuranta
+    thresholds:
+      frost: 0
+      heat: 25
+      extreme_cold: -25
+      extreme_heat: 30
+    action: T<0Â°C â†’ hallavaroitus hortonomille+tarhaajalle. T>25Â°C â†’ hellevaroitus.
+      T<-25Â°C â†’ putkijÃ¤Ã¤tymisvaara LVI:lle.
+    source: src:ME1
+  wind_ms:
+    value: Jatkuva seuranta
+    thresholds:
+      moderate: 8
+      strong: 14
+      storm: 21
+    action: '>8 m/s â†’ mehilÃ¤isten lentoaktiivisuus laskee. >14 m/s â†’ varoitus ulkoagenteille.
+      >21 m/s â†’ MYRSKY, myrskyvaroittajalle.'
+    source: src:ME1
+  precip_mm_h:
+    value: Seuranta
+    thresholds:
+      light: 0.5
+      moderate: 4
+      heavy: 8
+    action: '>0.5 mm/h â†’ mehilÃ¤iset eivÃ¤t lennÃ¤. >4 mm/h â†’ tulvariski salaojille.
+      >8 mm/h â†’ veden nousu.'
+    source: src:ME1
+  humidity_rh:
+    value: Seuranta 40-85% normaali
+    thresholds:
+      dry: 30
+      damp: 85
+    action: <30% RH â†’ kuivuusvaara kasveille, ilmoita hortonomille. >85% â†’ homeriski,
+      ilmoita timpurille.
+    source: src:ME1
+  pressure_hpa:
+    value: 1010-1025 hPa normaali
+    thresholds:
+      low: 1000
+      high: 1035
+    action: <1000 hPa + laskeva trendi â†’ myrsky tulossa, ilmoita myrskyvaroittajalle.
+      Laskeva paine â†’ kalastusoppaalle (syÃ¶nti parantuu).
+    source: src:ME1
+  uv_index:
+    value: KesÃ¤llÃ¤ 0-8
+    thresholds:
+      moderate: 3
+      high: 6
+      very_high: 8
+    action: UV>6 â†’ suojautumisvaroitus. UV>8 â†’ rajoita ulkotyÃ¶ klo 11-15.
+    source: src:ME1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: Hallavaroitukset kun T<0Â°C yÃ¶llÃ¤ (huhti-touko). Tulvariskin seuranta lumien
+    sulaessa. JÃ¤iden lÃ¤htÃ¶ vko 16-19 Kouvolassa.
+  source: src:ME1
+- season: KesÃ¤
+  action: Ukkosvaroitukset (kesÃ¤-elo). Hellevaroitus T>25Â°C yli 3 pv. UV>6 klo 11-15.
+    Nektarieritys optimaalinen T>18Â°C + RH 50-80%.
+  source: src:ME1
+- season: Syksy
+  action: 'Myrskykausi loka-joulukuu: tuulivaroitukset >14 m/s. Ensipakkaset tyypillisesti
+    vko 40-44. SÃ¤hkÃ¶katkosriski myrskyssÃ¤.'
+  source: src:ME1
+- season: Talvi
+  action: Pakkasvaroitus T<-25Â°C (putkijÃ¤Ã¤tyminen). Liukkausvaroitus T lÃ¤hellÃ¤ 0Â°C.
+    Lumikuormavaroitus >150 kg/mÂ². HÃ¤kÃ¤vaara inversiossa.
+  source: src:ME1
+FAILURE_MODES:
+- mode: SÃ¤Ã¤asema offline
+  detection: Ei dataa >30 min
+  action: 'Fallback: Ilmatieteen laitos API, ilmoita laitehuoltajalle'
+  source: src:ME1
+- mode: Ennustevirhe >5Â°C
+  detection: Toteutunut vs. ennuste
+  action: PÃ¤ivitÃ¤ agenttien tilannekuva reaaliajassa
+  source: src:ME1
+PROCESS_FLOWS:
+- flow_id: FLOW_METE_01
+  trigger: temperature_c ylittÃ¤Ã¤ kynnysarvon (Jatkuva seuranta)
+  action: T<0Â°C â†’ hallavaroitus hortonomille+tarhaajalle. T>25Â°C â†’ hellevaroitus.
+    T<-25Â°C â†’ putkijÃ¤Ã¤tymisvaara LVI:lle.
+  output: Tilanneraportti
+  source: src:METE
+- flow_id: FLOW_METE_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: Hallavaroitukset kun T<0Â°C yÃ¶llÃ¤ (huhti-touko). Tulvariskin seuranta lumien
+    sulaessa. JÃ¤iden lÃ¤htÃ¶ v
+  output: Tarkistuslista
+  source: src:METE
+- flow_id: FLOW_METE_03
+  trigger: 'Havaittu: SÃ¤Ã¤asema offline'
+  action: 'Fallback: Ilmatieteen laitos API, ilmoita laitehuoltajalle'
+  output: Poikkeamaraportti
+  source: src:METE
+- flow_id: FLOW_METE_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'meteorologi: rutiiniarviointi'
+  output: Status-raportti
+  source: src:METE
+KNOWLEDGE_TABLES:
+- table_id: TBL_METE_01
+  title: Meteorologi â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: temperature_c
+    value: Jatkuva seuranta
+    action: 'T<0Â°C â†’ hallavaroitus hortonomille+tarhaajalle. T>25Â°C â†’ hellevaroitus.
+      T<-25Â°C '
+  - metric: wind_ms
+    value: Jatkuva seuranta
+    action: '>8 m/s â†’ mehilÃ¤isten lentoaktiivisuus laskee. >14 m/s â†’ varoitus ulkoagenteille.'
+  - metric: precip_mm_h
+    value: Seuranta
+    action: '>0.5 mm/h â†’ mehilÃ¤iset eivÃ¤t lennÃ¤. >4 mm/h â†’ tulvariski salaojille.
+      >8 mm/h â†’ v'
+  - metric: humidity_rh
+    value: Seuranta 40-85% normaali
+    action: <30% RH â†’ kuivuusvaara kasveille, ilmoita hortonomille. >85% â†’ homeriski,
+      ilmoit
+  - metric: pressure_hpa
+    value: 1010-1025 hPa normaali
+    action: <1000 hPa + laskeva trendi â†’ myrsky tulossa, ilmoita myrskyvaroittajalle.
+      Laskev
+  - metric: uv_index
+    value: KesÃ¤llÃ¤ 0-8
+    action: UV>6 â†’ suojautumisvaroitus. UV>8 â†’ rajoita ulkotyÃ¶ klo 11-15.
+  source: src:METE
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Paikallinen sÃ¤Ã¤ voi poiketa (jÃ¤rvi/metsÃ¤efekti).
+- Tarkkuus heikkenee >3 pv ennusteissa.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:ME1
+    org: Ilmatieteen laitos
+    title: SÃ¤Ã¤ennusteet ja varoitukset
+    year: 2026
+    url: https://www.ilmatieteenlaitos.fi/
+    supports: SÃ¤Ã¤data, ennusteet, varoitusrajat.
+eval_questions:
+- q: MikÃ¤ on lÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.temperature_c
+  source: src:ME1
+- q: MikÃ¤ on tuulen nopeus (m/s)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wind_ms
+  source: src:ME1
+- q: MikÃ¤ on sademÃ¤Ã¤rÃ¤ (mm/h)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.precip_mm_h
+  source: src:ME1
+- q: MikÃ¤ on ilmankosteus (RH %)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.humidity_rh
+  source: src:ME1
+- q: MikÃ¤ on ilmanpaine (hPa)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pressure_hpa
+  source: src:ME1
+- q: MikÃ¤ on UV-indeksi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.uv_index
+  source: src:ME1
+- q: MitÃ¤ kevÃ¤t huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:ME1
+- q: MitÃ¤ kesÃ¤ huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ME1
+- q: MitÃ¤ syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:ME1
+- q: MitÃ¤ talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:ME1
+- q: Miten 'SÃ¤Ã¤asema offline' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:ME1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'SÃ¤Ã¤asema offline'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ME1
+- q: Miten 'Ennustevirhe >5Â°C' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:ME1
+- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Ennustevirhe >5Â°C'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ME1
+- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:ME1
+- q: MitkÃ¤ ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#11)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#12)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#13)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#14)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#15)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#16)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#17)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#18)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#19)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#20)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#21)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#22)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#23)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1
+- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#24)?
+  a_ref: ASSUMPTIONS
+  source: src:ME1

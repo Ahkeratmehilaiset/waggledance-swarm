@@ -1,0 +1,7 @@
+sources:
+- id: src:TAU1
+  org: Ruokavirasto
+  title: Mehiläisten taudit
+  year: 2025
+  url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
+  supports: AFB, EFB, nosema, kalkkisikiö, DWV.

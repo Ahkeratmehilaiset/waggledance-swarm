@@ -1,0 +1,13 @@
+sources:
+- id: src:KY1
+  org: Kyberturvallisuuskeskus
+  title: Kyberturvallisuus kotona
+  year: 2025
+  url: https://www.kyberturvallisuuskeskus.fi/
+  supports: Kotiverkko, IoT.
+- id: src:KY2
+  org: Tietosuojavaltuutettu
+  title: GDPR
+  year: 2025
+  url: https://tietosuoja.fi/
+  supports: Henkilötiedot.

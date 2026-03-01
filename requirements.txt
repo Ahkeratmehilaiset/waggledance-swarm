@@ -1,0 +1,46 @@
+# WaggleDance Swarm AI — Python Dependencies
+# Python 3.13+ required (tested on 3.13.x)
+# Install: pip install -r requirements.txt
+
+# === CORE (always needed) ===
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0
+aiosqlite>=0.20.0
+websockets>=13.0
+pyyaml>=6.0
+psutil>=5.9.0
+chromadb>=0.5.0
+
+# === TRANSLATION (Opus-MT Finnish <-> English) ===
+transformers>=4.40.0
+torch>=2.1.0
+sentencepiece>=0.1.99
+
+# === SEARCH & WEB ===
+duckduckgo-search>=6.0     # Web learning agent (Phase 9)
+aiohttp>=3.9.0             # Weather + electricity APIs (Phase 8)
+feedparser>=6.0.11         # RSS feed monitor (Phase 8)
+
+# === OPTIONAL: Claude API distillation (Phase 9 Layer 4) ===
+# Set ANTHROPIC_API_KEY env var to enable. Weekly budget: ~5€.
+anthropic>=0.30.0
+
+# === OPTIONAL: LoRA fine-tuning (Phase 10 MicroModel V3) ===
+# peft>=0.11.0
+# accelerate>=0.30.0
+
+# === OPTIONAL: Voice interface (Phase 7) ===
+# openai-whisper>=20231117     # STT
+# faster-whisper>=1.0.0        # Faster STT alternative
+# webrtcvad>=2.0.10            # Voice Activity Detection
+# openwakeword>=0.6.0          # Wake word detection
+
+# === OPTIONAL: Audio sensors (Phase 6) ===
+# scipy>=1.12.0                # FFT analysis
+# tflite-runtime>=2.14.0       # YAMNet audio classifier
+# birdnetlib>=0.9.0            # BirdNET bird identification
+# paho-mqtt>=2.0.0             # ESP32 MQTT communication
+
+# === OPTIONAL: PDF parsing ===
+# PyMuPDF>=1.23.0              # fitz — PDF knowledge import

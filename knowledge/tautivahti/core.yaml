@@ -1,0 +1,252 @@
+﻿header:
+  agent_id: tautivahti
+  agent_name: Tautivahti (mehilÃ¤iset)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Seuraa kaikkien tarhojen tautitilannetta
+- KytkentÃ¤ tarhaajaan, entomologiin ja Ruokavirastoon
+DECISION_METRICS_AND_THRESHOLDS:
+  afb_zero_tolerance:
+    value: Yksikin AFB-epÃ¤ily â†’ HETI Ruokavirasto + eristys
+    source: src:TAU1
+  efb_threshold:
+    value: EpÃ¤ily â†’ nÃ¤ytteenotto, torjuntatoimet
+    source: src:TAU1
+  nosema_spore_count:
+    value: '>1 milj. itiÃ¶tÃ¤/mehilÃ¤inen â†’ hoitotarve'
+    source: src:TAU1
+  chalkbrood_frame_pct:
+    value: 10
+    action: '>10% kehyksistÃ¤ kalkkisikiÃ¶tÃ¤ â†’ vaihda emo, paranna ilmanvaihtoa, poista
+      pahimmat kehykset'
+    source: src:TAU1
+  deformed_wing_virus_signs:
+    value: Surkastuneet siivet nuorilla mehilÃ¤isillÃ¤ â†’ osoittaa vakavaa varroa-infektiota
+    action: VÃ¤litÃ¶n varroa-hoito
+    source: src:TAU1
+  afb_tolerance:
+    value: 0
+    action: 'AFB: NOLLATOLERANSSI â†’ ilmoita Ruokavirasto 029 530 0400, eristÃ¤ tarha,
+      Ã„LÃ„ siirrÃ¤ kehyksiÃ¤'
+    source: src:TAU1
+  efb_detection:
+    value: Mosaiikkimainen sikiÃ¶peite, kellertÃ¤vÃ¤t toukat
+    action: EFB-epÃ¤ily â†’ nÃ¤ytteenotto Ruokavirastolle, eristÃ¤ pesÃ¤
+    source: src:TAU1
+  nosema_spores_per_bee:
+    value: 1000000
+    action: '>1 milj. itiÃ¶tÃ¤/mehilÃ¤inen â†’ fumagilliinikiellon takia hoito oksa- tai
+      etikkahapolla'
+    source: src:TAU1
+  dwv_detection:
+    value: Surkastuneet siivet kuoriutuvilla mehilÃ¤isillÃ¤
+    action: DWV havaittu â†’ vÃ¤litÃ¶n varroa-mittaus. >3/100 â†’ kemiallinen hoito vaikka
+      satokausi.
+    source: src:TAU1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: 'Ensitarkistus vko 16-18: sikiÃ¶peite, ruokavarasto >5 kg. Nosema-nÃ¤yte 30
+    mehilÃ¤isestÃ¤ jos epÃ¤ily. KalkkisikiÃ¶n tarkistus.'
+  source: src:TAU1
+- season: KesÃ¤
+  action: '[vko 22-35] AFB-tarkistus jokaisella satokehysten kÃ¤sittelyllÃ¤. Siirtoihin
+    ei tartuntatarhan kehyksiÃ¤. DWV-seuranta.'
+  source: src:TAU1
+- season: Syksy
+  action: 'Varroa-hoito elokuussa hunajankorjuun jÃ¤lkeen: oksaalihappo tai amitraz.
+    Jos >3/100 â†’ toinen kierros syyskuussa.'
+  source: src:TAU1
+- season: Talvi
+  action: 'Oksaalihappohoito joulukuussa (sikiÃ¶ttÃ¶mÃ¤Ã¤n aikaan, T<5Â°C). Kuolleisuusseuranta:
+    >30% â†’ dokumentoi, tarkista varroa+nosema.'
+  source: src:TAU1
+FAILURE_MODES:
+- mode: AFB-lÃ¶ydÃ¶s
+  detection: Tikkulankatesti positiivinen + haju
+  action: Ã„LÃ„ siirrÃ¤ kehyksiÃ¤. Ilmoita Ruokavirastolle 029 530 0400. EristÃ¤ tarha.
+  source: src:TAU1
+- mode: Massakuolema
+  detection: '>30% pesistÃ¤ kuollut samalla tarhalla'
+  action: Tarkista myrkytys, varroa, nosema. KerÃ¤Ã¤ nÃ¤ytteet. Ilmoita Ruokavirastolle.
+  source: src:TAU1
+PROCESS_FLOWS:
+- flow_id: FLOW_TAUT_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: 'Ensitarkistus vko 16-18: sikiÃ¶peite, ruokavarasto >5 kg. Nosema-nÃ¤yte 30
+    mehilÃ¤isestÃ¤ jos epÃ¤ily. Ka'
+  output: Tarkistuslista
+  source: src:TAUT
+- flow_id: FLOW_TAUT_03
+  trigger: 'Havaittu: AFB-lÃ¶ydÃ¶s'
+  action: Ã„LÃ„ siirrÃ¤ kehyksiÃ¤. Ilmoita Ruokavirastolle 029 530 0400. EristÃ¤ tarha.
+  output: Poikkeamaraportti
+  source: src:TAUT
+- flow_id: FLOW_TAUT_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'tautivahti: rutiiniarviointi'
+  output: Status-raportti
+  source: src:TAUT
+KNOWLEDGE_TABLES:
+  diseases:
+  - disease: AFB
+    pathogen: Paenibacillus larvae
+    status: Valvottava elÃ¤intauti
+    action: Ilmoitus + eristys + viranomaisohje
+    source: src:TAU1
+  - disease: EFB
+    pathogen: Melissococcus plutonius
+    status: Ei valvottava
+    action: NÃ¤ytteenotto, torjuntatoimet
+    source: src:TAU1
+  - disease: Nosema
+    pathogen: Nosema ceranae / N. apis
+    status: Yleinen
+    action: PesÃ¤n vahvistaminen, kevÃ¤Ã¤llÃ¤ emonvaihto
+    source: src:TAU1
+  - disease: KalkkisikiÃ¶
+    pathogen: Ascosphaera apis
+    status: Yleinen
+    action: Ilmanvaihto, heikon emon vaihto
+    source: src:TAU1
+  - disease: DWV (siipiepÃ¤muodostuma)
+    pathogen: Deformed Wing Virus
+    status: Liittyy varroaan
+    action: Varroa-hoito
+    source: src:TAU1
+COMPLIANCE_AND_LEGAL:
+  afb: AFB on valvottava elÃ¤intauti â€” ilmoitus lakisÃ¤Ã¤teisesti pakollinen [src:TAU1]
+  veterinary: LÃ¤Ã¤kinnÃ¤lliset valmisteet vain elÃ¤inlÃ¤Ã¤kÃ¤rin luvalla tai Ruokaviraston
+    hyvÃ¤ksyminÃ¤ [src:TAU1]
+UNCERTAINTY_NOTES:
+- Nosema-itiÃ¶mÃ¤Ã¤rÃ¤n kynnysarvo vaihtelee lÃ¤hteittÃ¤in 0.5-2 milj.
+- AFB voi olla piilevÃ¤nÃ¤ pitkÃ¤Ã¤n ennen kliinisiÃ¤ oireita.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:TAU1
+    org: Ruokavirasto
+    title: MehilÃ¤isten taudit
+    year: 2025
+    url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
+    supports: AFB, EFB, nosema, kalkkisikiÃ¶, DWV.
+eval_questions:
+- q: MikÃ¤ on AFB:n toleranssi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.afb_zero_tolerance.value
+  source: src:TAU1
+- q: Miten AFB tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:TAU1
+- q: Kenelle AFB:stÃ¤ ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:TAU1
+- q: MikÃ¤ on noseman hoitoraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nosema_spore_count.value
+  source: src:TAU1
+- q: MitÃ¤ DWV osoittaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deformed_wing_virus_signs.value
+  source: src:TAU1
+- q: MikÃ¤ on kalkkisikiÃ¶n hÃ¤lytysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chalkbrood_frame_pct.value
+  source: src:TAU1
+- q: Onko AFB ilmoitusvelvollisuus?
+  a_ref: COMPLIANCE_AND_LEGAL.afb
+  source: src:TAU1
+- q: Miten massakuolema tutkitaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TAU1
+- q: Milloin nosema-nÃ¤yte otetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:TAU1
+- q: MitÃ¤ DWV-lÃ¶ydÃ¶kselle tehdÃ¤Ã¤n?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deformed_wing_virus_signs.action
+  source: src:TAU1
+- q: Miten EFB eroaa AFB:stÃ¤ valvonnan osalta?
+  a_ref: KNOWLEDGE_TABLES.diseases[1].status
+  source: src:TAU1
+- q: MikÃ¤ on noseman aiheuttaja?
+  a_ref: KNOWLEDGE_TABLES.diseases[2].pathogen
+  source: src:TAU1
+- q: MikÃ¤ aiheuttaa kalkkisikiÃ¶n?
+  a_ref: KNOWLEDGE_TABLES.diseases[3].pathogen
+  source: src:TAU1
+- q: Milloin AFB/EFB-tarkkailu on tÃ¤rkeintÃ¤?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:TAU1
+- q: MitÃ¤ massakuolema tarkoittaa?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:TAU1
+- q: MikÃ¤ on Ruokaviraston puhelinnumero?
+  a_ref: FAILURE_MODES[0].action
+  source: src:TAU1
+- q: Miten kalkkisikiÃ¶ hoidetaan?
+  a_ref: KNOWLEDGE_TABLES.diseases[3].action
+  source: src:TAU1
+- q: Saako AFB-pesÃ¤n kehyksiÃ¤ kierrÃ¤ttÃ¤Ã¤?
+  a_ref: FAILURE_MODES[0].action
+  source: src:TAU1
+- q: MitÃ¤ kesÃ¤llÃ¤ seurataan taudeista?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:TAU1
+- q: Miten syksyn kuolleet pesÃ¤t kÃ¤sitellÃ¤Ã¤n?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TAU1
+- q: Vaatiiko lÃ¤Ã¤kinnÃ¤llinen hoito lupaa?
+  a_ref: COMPLIANCE_AND_LEGAL.veterinary
+  source: src:TAU1
+- q: Voiko AFB olla piilevÃ¤?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:TAU1
+- q: Miten nosemaa hoidetaan?
+  a_ref: KNOWLEDGE_TABLES.diseases[2].action
+  source: src:TAU1
+- q: Onko EFB valvottava?
+  a_ref: KNOWLEDGE_TABLES.diseases[1].status
+  source: src:TAU1
+- q: MikÃ¤ aiheuttaa DWV:n?
+  a_ref: KNOWLEDGE_TABLES.diseases[4].pathogen
+  source: src:TAU1
+- q: Mihin DWV liittyy?
+  a_ref: KNOWLEDGE_TABLES.diseases[4].status
+  source: src:TAU1
+- q: MikÃ¤ on tikkulankatesti?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:TAU1
+- q: Milloin talvikuolleisuutta seurataan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TAU1
+- q: Vaihteleeko nosema-kynnys?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:TAU1
+- q: Kenelle massakuolemasta ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TAU1
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #7?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #8?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #9?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #10?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:TAUT

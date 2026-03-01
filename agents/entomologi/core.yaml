@@ -1,0 +1,263 @@
+header:
+  agent_id: entomologi
+  agent_name: Entomologi (Hyönteistutkija)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Fokus: mehiläisiin vaikuttavat hyönteiset + kasvintuholaiset + metsätuholaiset'
+- Korvenrannan lähiympäristö, vyöhyke II-III
+- Kytkentä tarhaaja-, metsänhoitaja- ja hortonomi-agentteihin
+DECISION_METRICS_AND_THRESHOLDS:
+  varroa_mite_threshold_per_100_bees:
+    value: 3
+    action: '>3/100 → kemiallinen hoito (amitraz/oksaalihappo). <1/100 → seuranta
+      riittää. Hoitoajankohta: elokuu (satokehysten poiston jälkeen).'
+    source: src:ENT1
+  bark_beetle_trap_threshold:
+    value: Feromonipyydyksessä >500 kirjanpainajaa / 2 viikkoa → hakkuuhälytys
+    source: src:ENT2
+    action: '>500/2vko → hakkuuhälytys metsänhoitajalle. Poista tuoreita kaatopuita
+      riskialueelta HETI.'
+  pollinator_diversity_index:
+    value: Shannon H' >2.0 normaali, <1.5 hälytys
+    action: H'<1.5 → ekologinen hälytys, selvitä syy (torjunta-aine, elinympäristömuutos).
+      H'>2.0 → normaali.
+    source: src:ENT1
+  aphid_colony_density:
+    value: '>50 kirvaa / verso → biologinen torjunta (leppäpirkot)'
+    source: src:ENT3
+  wax_moth_detection:
+    value: Toukkien seittiverkkoa kehyksillä → puhdista ja pakasta kehykset -18°C
+      48h
+    source: src:ENT1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Varroa-pudotusalustan asennus huhti-toukokuussa. Kirjanpainaja-pyydykset
+    paikoilleen toukokuussa.'
+  source: src:ENT1
+- season: Kesä
+  action: '[vko 22-35] Kirvapopulaation seuranta, leppäpirkkojen suojelu (EI laaja-alaista
+    torjuntaruiskutusta). Varroa-luontainen pudotus seurannassa.'
+  source: src:ENT1
+- season: Syksy
+  action: '[vko 36-48] Varroa-hoito oksaalihapolla (pesimättömänä aikana). Vahakoi-kehysten
+    pakastus ennen varastointia.'
+  source: src:ENT1
+- season: Talvi
+  action: '[vko 49-13] Kehysvarastojen seuranta (vahakoi, hiiret). Varroahoitotuloksen
+    arviointi keväällä.'
+  source: src:ENT1
+FAILURE_MODES:
+- mode: Varroa-hoito epäonnistunut
+  detection: Pudotusmäärä edelleen >3/100 hoidon jälkeen
+  action: Toinen hoitokierros eri valmisteella. Ilmoita tautivahti-agentille.
+  source: src:ENT1
+- mode: Kirjanpainajaepidemia
+  detection: '>500 yksilöä pyydyksessä tai useita kuivuvia kuusia'
+  action: Välitön puunkaato. Ilmoita metsänhoitajalle. Kaarnan poltto.
+  source: src:ENT2
+PROCESS_FLOWS:
+- flow_id: FLOW_ENTO_01
+  trigger: varroa_mite_threshold_per_100_bees ylittää kynnysarvon (3)
+  action: '>3/100 → kemiallinen hoito (amitraz/oksaalihappo). <1/100 → seuranta riittää.
+    Hoitoajankohta: elokuu (satokehysten poiston jälkeen).'
+  output: Tilanneraportti
+  source: src:ENTO
+- flow_id: FLOW_ENTO_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Varroa-pudotusalustan asennus huhti-toukokuussa. Kirjanpainaja-pyydykset
+    paikoilleen tou'
+  output: Tarkistuslista
+  source: src:ENTO
+- flow_id: FLOW_ENTO_03
+  trigger: 'Havaittu: Varroa-hoito epäonnistunut'
+  action: Toinen hoitokierros eri valmisteella. Ilmoita tautivahti-agentille.
+  output: Poikkeamaraportti
+  source: src:ENTO
+- flow_id: FLOW_ENTO_04
+  trigger: Säännöllinen heartbeat
+  action: 'entomologi: rutiiniarviointi'
+  output: Status-raportti
+  source: src:ENTO
+KNOWLEDGE_TABLES:
+  key_insects:
+  - insect: Varroapunkki (Varroa destructor)
+    role: Mehiläisparasiitti
+    severity: KRIITTINEN
+    monitoring: Pudotusalustamittaus, sokerijauhomenetelmä
+    source: src:ENT1
+  - insect: Kirjanpainaja (Ips typographus)
+    role: Kuusen tuholainen
+    severity: KORKEA
+    monitoring: Feromonipyydykset touko-elokuussa
+    source: src:ENT2
+  - insect: Leppäpirkko (Coccinellidae)
+    role: Kirvansyöjä (biologinen torjunta)
+    severity: HYÖDYLLINEN
+    monitoring: Populaatioseuranta puutarhassa
+    source: src:ENT3
+  - insect: Vahakoi (Galleria mellonella)
+    role: Mehiläispesän tuholainen
+    severity: KESKITASO
+    monitoring: Varastoitujen kehysten tarkistus
+    source: src:ENT1
+  - insect: Pieni pesäkuoriainen (Aethina tumida)
+    role: Mehiläisparasiitti (EI vielä Suomessa)
+    severity: POTENTIAALINEN
+    monitoring: EU-tarkkailu, ilmoita havainnoista Ruokavirastolle
+    source: src:ENT4
+COMPLIANCE_AND_LEGAL:
+  varroa_treatment: Lääkinnälliset varroa-valmisteet vain eläinlääkkeinä hyväksytyt
+    (Ruokavirasto) [src:ENT4]
+  pesticide_reporting: 'Kasvinsuojeluainerekisteri (Tukes): vain hyväksytyt valmisteet
+    [src:ENT3]'
+UNCERTAINTY_NOTES:
+- Pieni pesäkuoriainen voi levitä Suomeen ilmastonmuutoksen myötä — seuranta tärkeä.
+- Varroa-resistenssi hoitoaineille kasvava ongelma Euroopassa.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:ENT1
+    org: Ruokavirasto
+    title: Mehiläisten terveys ja taudit
+    year: 2025
+    url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
+    supports: Varroa, vahakoi, pesäkuoriainen.
+  - id: src:ENT2
+    org: Luonnonvarakeskus (Luke)
+    title: Kirjanpainajan torjunta
+    year: 2024
+    url: https://www.luke.fi/fi/tutkimus/metsakasvinsuojelu
+    supports: Kirjanpainaja, feromonipyydykset, epidemiarajat.
+  - id: src:ENT3
+    org: Tukes
+    title: Kasvinsuojeluainerekisteri
+    year: 2025
+    url: https://tukes.fi/kemikaalit/kasvinsuojeluaineet
+    supports: Hyväksytyt valmisteet, biologinen torjunta.
+  - id: src:ENT4
+    org: Ruokavirasto
+    title: Aethina tumida -seuranta
+    year: 2025
+    url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
+    supports: Pieni pesäkuoriainen, EU-seuranta.
+eval_questions:
+- q: Mikä on varroa-kynnys hoitotoimenpiteelle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.varroa_mite_threshold_per_100_bees.value
+  source: src:ENT1
+- q: Mikä on kirjanpainajapyydyksen hälytysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bark_beetle_trap_threshold.value
+  source: src:ENT2
+- q: Mikä on hyvä pölyttäjädiversiteetti (Shannon H')?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pollinator_diversity_index.value
+  source: src:ENT1
+- q: Mikä on kirvatiheyden hälytysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.aphid_colony_density.value
+  source: src:ENT3
+- q: Miten vahakoi havaitaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wax_moth_detection.value
+  source: src:ENT1
+- q: Miten varroa-pudotusta seurataan?
+  a_ref: KNOWLEDGE_TABLES.key_insects[0].monitoring
+  source: src:ENT1
+- q: Onko pieni pesäkuoriainen Suomessa?
+  a_ref: KNOWLEDGE_TABLES.key_insects[4].role
+  source: src:ENT4
+- q: Milloin varroa-hoito oksaalihapolla tehdään?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:ENT1
+- q: Mitä tehdään epäonnistuneen varroa-hoidon jälkeen?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ENT1
+- q: Milloin kirjanpainajapyydykset asennetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:ENT1
+- q: Miksi laaja-alaista ruiskutusta vältetään?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ENT1
+- q: Miten vahakoidelta suojaudutaan talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:ENT1
+- q: Mikä on leppäpirkon hyöty?
+  a_ref: KNOWLEDGE_TABLES.key_insects[2].role
+  source: src:ENT3
+- q: Kenelle kirjanpainajaepidemiasta ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ENT2
+- q: Ovatko varroa-valmisteet vapaasti ostettavissa?
+  a_ref: COMPLIANCE_AND_LEGAL.varroa_treatment
+  source: src:ENT4
+- q: Mikä on varroapunkin vakavuusaste?
+  a_ref: KNOWLEDGE_TABLES.key_insects[0].severity
+  source: src:ENT1
+- q: Miten kirjanpainajaa seurataan?
+  a_ref: KNOWLEDGE_TABLES.key_insects[1].monitoring
+  source: src:ENT2
+- q: Millä lämpötilalla vahakoidevelykset tuhotaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wax_moth_detection.value
+  source: src:ENT1
+- q: Onko varroa-resistenssi ongelma?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:ENT1
+- q: Kenelle varroa-epäonnistumisesta ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:ENT1
+- q: Mikä on kirvankontrollin biologinen keino?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.aphid_colony_density.value
+  source: src:ENT3
+- q: Mikä taho hyväksyy kasvinsuojeluaineet?
+  a_ref: COMPLIANCE_AND_LEGAL.pesticide_reporting
+  source: src:ENT3
+- q: Mitä tehdään kirjanpainajaepidemiassa?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ENT2
+- q: Onko vahakoi kriittinen tuholainen?
+  a_ref: KNOWLEDGE_TABLES.key_insects[3].severity
+  source: src:ENT1
+- q: Kenelle pienestä pesäkuoriaisesta ilmoitetaan?
+  a_ref: KNOWLEDGE_TABLES.key_insects[4].monitoring
+  source: src:ENT4
+- q: Mikä on kirjanpainajan merkitys metsätaloudelle?
+  a_ref: KNOWLEDGE_TABLES.key_insects[1].severity
+  source: src:ENT2
+- q: Miten alhainen pölyttäjädiversiteetti korjataan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pollinator_diversity_index.action
+  source: src:ENT1
+- q: Milloin varroa-pudotusalusta asennetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:ENT1
+- q: Mikä on sokerijauhomenetelmä?
+  a_ref: KNOWLEDGE_TABLES.key_insects[0].monitoring
+  source: src:ENT1
+- q: Voiko pieni pesäkuoriainen levitä Suomeen?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:ENT4
+- q: Mikä on varroa-hoidon onnistumisen mittari?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:ENT1
+- q: Mihin toimenpiteeseen >500 kirjanpainajaa johtaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bark_beetle_trap_threshold.value
+  source: src:ENT2
+- q: Miten kaarnaa käsitellään kirjanpainajatuhon jälkeen?
+  a_ref: FAILURE_MODES[1].action
+  source: src:ENT2
+- q: Milloin kirjanpainajia seurataan?
+  a_ref: KNOWLEDGE_TABLES.key_insects[1].monitoring
+  source: src:ENT2
+- q: Mikä on vahakoin tunnistustapa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wax_moth_detection.value
+  source: src:ENT1
+- q: Mitä kehyksille tehdään ennen varastointia?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:ENT1
+- q: Mikä on varroa-pudotuksen merkitys kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ENT1
+- q: Miten leppäpirkkoja suojellaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:ENT1
+- q: Onko pieni pesäkuoriainen EU:n tarkkailussa?
+  a_ref: KNOWLEDGE_TABLES.key_insects[4].monitoring
+  source: src:ENT4
+- q: Mikä on Shannon diversiteetti-indeksin hälytystaso?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pollinator_diversity_index.value
+  source: src:ENT1

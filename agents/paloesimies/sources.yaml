@@ -1,0 +1,7 @@
+sources:
+- id: src:PA1
+  org: Pelastuslaitos
+  title: Paloturvallisuus
+  year: 2025
+  url: https://www.pelastustoimi.fi/
+  supports: Palovaroittimet, häkä, sammuttimet.

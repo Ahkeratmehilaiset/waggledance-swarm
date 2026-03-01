@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+"""
+WaggleDance Restore & Environment Validator v1.0
+=================================================
+Validates the environment and restores from a backup zip if needed.
+
+Usage:
+    python tools/waggle_restore.py              # Validate only (no restore)
+    python tools/waggle_restore.py --restore ZIPFILE  # Restore from zip + validate
+    python tools/waggle_restore.py --run-tests  # Validate + run all tests
+    python tools/waggle_restore.py --restore ZIPFILE --run-tests
+
+Exit code: 0 = all OK, 1 = warnings/failures
+"""
+
+import argparse
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+# ── Windows UTF-8 ─────────────────────────────────────────────────
+if sys.platform == "win32":
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
+# ── Constants ─────────────────────────────────────────────────────
+_script_dir = Path(__file__).resolve().parent
+PROJECT_ROOT = _script_dir.parent if _script_dir.name == "tools" else _script_dir
+
+REQUIRED_PYTHON = (3, 13)
+REQUIRED_MODELS = ["phi4-mini", "llama3.2:1b", "nomic-embed-text", "all-minilm"]
+REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
+
+REQUIRED_DATA_DIRS = [
+    "data",
+    "data/chroma_db",
+    "data/micromodel_v1",
+]
+
+G = "\033[92m"; R = "\033[91m"; Y = "\033[93m"; B = "\033[94m"
+C = "\033[96m"; W = "\033[0m"; BOLD = "\033[1m"
+os.system("")  # Enable ANSI on Windows
+
+
+# ── Result tracker ────────────────────────────────────────────────
+class CheckResult:
+    def __init__(self):
+        self.checks = []  # (name, status, detail)  status: OK/WARN/FAIL
+
+    def ok(self, name, detail=""):
+        self.checks.append((name, "OK", detail))
+        print(f"  {G}OK{W}    {name}" + (f"  — {detail}" if detail else ""))
+
+    def warn(self, name, detail=""):
+        self.checks.append((name, "WARN", detail))
+        print(f"  {Y}WARN{W}  {name}" + (f"  — {detail}" if detail else ""))
+
+    def fail(self, name, detail=""):
+        self.checks.append((name, "FAIL", detail))
+        print(f"  {R}FAIL{W}  {name}" + (f"  — {detail}" if detail else ""))
+
+    @property
+    def has_failures(self):
+        return any(s == "FAIL" for _, s, _ in self.checks)
+
+    @property
+    def has_warnings(self):
+        return any(s == "WARN" for _, s, _ in self.checks)
+
+    def summary(self):
+        ok = sum(1 for _, s, _ in self.checks if s == "OK")
+        warn = sum(1 for _, s, _ in self.checks if s == "WARN")
+        fail = sum(1 for _, s, _ in self.checks if s == "FAIL")
+        return ok, warn, fail
+
+
+# ── Check functions ───────────────────────────────────────────────
+def check_python(r: CheckResult):
+    """Check Python version >= 3.13."""
+    major, minor = sys.version_info.major, sys.version_info.minor
+    ver = f"{major}.{minor}.{sys.version_info.micro}"
+    req_maj, req_min = REQUIRED_PYTHON
+    if (major, minor) >= (req_maj, req_min):
+        r.ok("Python version", f"{ver} (>= {req_maj}.{req_min} required)")
+    else:
+        r.fail("Python version", f"{ver} — need {req_maj}.{req_min}+. Install from python.org")
+
+
+def check_pip_dependencies(r: CheckResult):
+    """Check that required pip packages are installed."""
+    if not REQUIREMENTS_FILE.exists():
+        r.warn("requirements.txt", "file not found — skipping pip check")
+        return
+
+    missing = []
+    outdated = []
+
+    # Parse requirements.txt for package names (ignore comments, optional)
+    reqs = []
+    for line in REQUIREMENTS_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Skip commented-out optional packages
+        pkg_spec = line.split(">=")[0].split("==")[0].split("[")[0].strip()
+        if pkg_spec:
+            reqs.append(pkg_spec)
+
+    for pkg in reqs:
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "show", pkg],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                missing.append(pkg)
+        except Exception:
+            missing.append(pkg)
+
+    if missing:
+        r.fail("pip dependencies", f"Missing: {', '.join(missing)}")
+        print(f"         Run: pip install -r requirements.txt")
+    else:
+        r.ok("pip dependencies", f"{len(reqs)} packages OK")
+
+
+def check_ollama(r: CheckResult):
+    """Check Ollama is running and accessible."""
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            installed_models = []
+            for line in result.stdout.strip().splitlines()[1:]:
+                name = line.split()[0] if line.strip() else ""
+                if name:
+                    installed_models.append(name)
+            r.ok("Ollama running", f"{len(installed_models)} models installed")
+            return installed_models
+        else:
+            r.fail("Ollama running", "ollama list failed — is Ollama running?")
+    except FileNotFoundError:
+        r.fail("Ollama running", "ollama not found in PATH — install from ollama.com")
+    except subprocess.TimeoutExpired:
+        r.fail("Ollama running", "timeout — Ollama not responding")
+    except Exception as e:
+        r.fail("Ollama running", str(e))
+    return []
+
+
+def check_ollama_models(r: CheckResult, installed_models: list):
+    """Check that all required models are installed."""
+    installed_names = {m.split(":")[0] if ":" in m else m for m in installed_models}
+    # Also include full names
+    installed_names.update(installed_models)
+
+    missing = []
+    for model in REQUIRED_MODELS:
+        base = model.split(":")[0]
+        # Check both "phi4-mini" and "phi4-mini:latest" style
+        found = any(
+            m == model or m.startswith(model + ":") or m.startswith(base + ":")
+            for m in installed_models
+        )
+        if not found:
+            missing.append(model)
+
+    if missing:
+        r.fail("Required Ollama models", f"Missing: {', '.join(missing)}")
+        for m in missing:
+            print(f"         Run: ollama pull {m}")
+    else:
+        r.ok("Required Ollama models", f"All present: {', '.join(REQUIRED_MODELS)}")
+
+
+def check_chromadb(r: CheckResult):
+    """Check ChromaDB is importable and data directory exists."""
+    try:
+        import chromadb  # noqa: F401
+        r.ok("ChromaDB import", chromadb.__version__)
+    except ImportError:
+        r.fail("ChromaDB import", "chromadb not installed — run: pip install chromadb")
+        return
+
+    chroma_path = PROJECT_ROOT / "data" / "chroma_db"
+    if chroma_path.exists():
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path=str(chroma_path))
+            collections = client.list_collections()
+            total_facts = 0
+            for col in collections:
+                try:
+                    total_facts += col.count()
+                except Exception:
+                    pass
+            r.ok("ChromaDB data", f"{len(collections)} collections, {total_facts} facts")
+        except Exception as e:
+            r.warn("ChromaDB data", f"Could not open: {e}")
+    else:
+        r.warn("ChromaDB data", "data/chroma_db/ not found — empty system (no knowledge)")
+
+
+def check_voikko(r: CheckResult):
+    """Check Voikko Finnish morphology library."""
+    try:
+        import libvoikko  # noqa: F401
+        r.ok("Voikko (Finnish normalizer)", "libvoikko available")
+    except ImportError:
+        r.warn(
+            "Voikko (Finnish normalizer)",
+            "libvoikko not installed — normalizer will use fallback. "
+            "Install from: https://voikko.puimula.org/",
+        )
+
+
+def check_translation_models(r: CheckResult):
+    """Check Helsinki-NLP Opus-MT translation models are available."""
+    try:
+        import transformers  # noqa: F401
+        r.ok("transformers", transformers.__version__)
+    except ImportError:
+        r.fail("transformers", "not installed — run: pip install transformers")
+        return
+
+    # Check model cache (HuggingFace default location)
+    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+    opus_fi_en = any(
+        "Helsinki-NLP--opus-mt-fi-en" in str(p) or "opus-mt-fi-en" in str(p)
+        for p in hf_cache.rglob("*.json") if hf_cache.exists()
+    )
+    opus_en_fi = any(
+        "Helsinki-NLP--opus-mt-en-fi" in str(p) or "opus-mt-en-fi" in str(p)
+        for p in hf_cache.rglob("*.json") if hf_cache.exists()
+    )
+
+    if opus_fi_en and opus_en_fi:
+        r.ok("Opus-MT models", "FI→EN and EN→FI both cached")
+    elif not hf_cache.exists():
+        r.warn("Opus-MT models", "HuggingFace cache not found — models will download on first run")
+    else:
+        missing = []
+        if not opus_fi_en:
+            missing.append("opus-mt-fi-en")
+        if not opus_en_fi:
+            missing.append("opus-mt-en-fi")
+        r.warn("Opus-MT models", f"Not cached: {', '.join(missing)} — will download on first run")
+
+
+def check_data_dirs(r: CheckResult):
+    """Check required data directories exist (create if missing)."""
+    created = []
+    exists = []
+    for dir_rel in REQUIRED_DATA_DIRS:
+        d = PROJECT_ROOT / dir_rel
+        if d.exists():
+            exists.append(dir_rel)
+        else:
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                created.append(dir_rel)
+            except Exception as e:
+                r.fail(f"Directory {dir_rel}", f"Cannot create: {e}")
+                return
+
+    detail_parts = []
+    if exists:
+        detail_parts.append(f"{len(exists)} existed")
+    if created:
+        detail_parts.append(f"created: {', '.join(created)}")
+    r.ok("Data directories", ", ".join(detail_parts) if detail_parts else "all OK")
+
+
+def check_readiness_c4(r: CheckResult):
+    """Run the C4 readiness test as a subprocess for an independent check."""
+    test_path = PROJECT_ROOT / "tests" / "test_c4_readiness.py"
+    if not test_path.exists():
+        r.warn("C4 Readiness check", "test_c4_readiness.py not found — skipping")
+        return
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(test_path)],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(PROJECT_ROOT),
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+        output = result.stdout + result.stderr
+        # Check for FAIL: pattern
+        import re
+        fail_m = re.search(r"FAIL:\s*(\d+)", output)
+        pass_m = re.search(r"PASS:\s*(\d+)", output)
+        n_fail = int(fail_m.group(1)) if fail_m else 0
+        n_pass = int(pass_m.group(1)) if pass_m else 0
+        if n_fail > 0:
+            r.fail("C4 Readiness check", f"{n_pass} pass, {n_fail} fail")
+        elif n_pass > 0:
+            r.ok("C4 Readiness check", f"{n_pass} tests passed")
+        elif result.returncode == 0:
+            r.ok("C4 Readiness check", "passed")
+        else:
+            r.warn("C4 Readiness check", "uncertain result — check manually")
+    except subprocess.TimeoutExpired:
+        r.warn("C4 Readiness check", "timeout (30s)")
+    except Exception as e:
+        r.warn("C4 Readiness check", str(e))
+
+
+# ── Restore from backup ───────────────────────────────────────────
+def restore_from_zip(zip_path: Path, r: CheckResult):
+    """Restore project files from a backup zip."""
+    if not zip_path.exists():
+        r.fail("Backup zip", f"File not found: {zip_path}")
+        return False
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"\n{C}Restoring from: {zip_path.name} ({size_mb:.1f} MB){W}")
+
+    # Read companion meta if available
+    meta_path = zip_path.with_name(zip_path.stem + "_meta.json")
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            ts = meta.get("timestamp", "unknown")
+            facts = meta.get("data_stats", {}).get("scan_facts", "?")
+            print(f"  Backup timestamp: {ts}  |  Facts: {facts}")
+        except Exception:
+            pass
+
+    # Confirm (non-interactive skips if stdout is not a tty)
+    if sys.stdout.isatty():
+        confirm = input(f"  Restore to {PROJECT_ROOT}? This overwrites existing files. [y/N] ")
+        if confirm.strip().lower() != "y":
+            print("  Restore cancelled.")
+            return False
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            file_count = len(zf.namelist())
+            zf.extractall(str(PROJECT_ROOT))
+        r.ok("Restore", f"{file_count} files extracted to {PROJECT_ROOT}")
+        return True
+    except zipfile.BadZipFile:
+        r.fail("Restore", "zip file is corrupted")
+        return False
+    except PermissionError as e:
+        r.fail("Restore", f"Permission denied: {e}")
+        return False
+    except Exception as e:
+        r.fail("Restore", f"Unexpected error: {e}")
+        return False
+
+
+# ── Run all tests ─────────────────────────────────────────────────
+def run_all_tests(r: CheckResult):
+    """Run all registered tests via waggle_backup.py --tests-only."""
+    backup_tool = PROJECT_ROOT / "tools" / "waggle_backup.py"
+    if not backup_tool.exists():
+        r.warn("Run all tests", "waggle_backup.py not found")
+        return
+
+    print(f"\n{C}Running all tests via waggle_backup.py --tests-only...{W}\n")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(backup_tool), "--tests-only"],
+            cwd=str(PROJECT_ROOT),
+            timeout=1800,  # 30 min max
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+        if result.returncode == 0:
+            r.ok("All tests", "completed (see output above)")
+        else:
+            r.warn("All tests", f"completed with issues (exit code {result.returncode})")
+    except subprocess.TimeoutExpired:
+        r.fail("All tests", "timeout after 30 minutes")
+    except Exception as e:
+        r.fail("All tests", str(e))
+
+
+# ── Main ──────────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v1.0")
+    parser.add_argument("--restore", metavar="ZIPFILE", help="Restore from backup zip file")
+    parser.add_argument("--run-tests", action="store_true", help="Run all tests after validation")
+    args = parser.parse_args()
+
+    print(f"\n{B}{'='*55}")
+    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v1.0")
+    print(f"  Project: {PROJECT_ROOT}")
+    print(f"{'='*55}{W}\n")
+
+    r = CheckResult()
+
+    # 1. Restore from zip (if requested)
+    if args.restore:
+        zip_path = Path(args.restore).resolve()
+        restored = restore_from_zip(zip_path, r)
+        if not restored:
+            print(f"\n{R}Restore failed — aborting.{W}")
+            sys.exit(1)
+
+    # 2. Run all checks
+    print(f"{C}Checking environment...{W}")
+
+    check_python(r)
+    check_pip_dependencies(r)
+
+    print()
+    installed_models = check_ollama(r)
+    if installed_models is not None:
+        check_ollama_models(r, installed_models)
+
+    print()
+    check_chromadb(r)
+    check_voikko(r)
+    check_translation_models(r)
+
+    print()
+    check_data_dirs(r)
+    check_readiness_c4(r)
+
+    # 3. Run all tests (if requested)
+    if args.run_tests:
+        run_all_tests(r)
+
+    # 4. Summary
+    ok, warn, fail = r.summary()
+    print(f"\n{B}{'='*55}")
+    print(f"  VALIDATION SUMMARY")
+    print(f"{'='*55}{W}")
+    print(f"  {G}OK{W}:   {ok}")
+    print(f"  {Y}WARN{W}: {warn}")
+    print(f"  {R}FAIL{W}: {fail}")
+
+    if fail > 0:
+        print(f"\n  {R}Environment has issues. Fix FAIL items above before starting WaggleDance.{W}")
+        sys.exit(1)
+    elif warn > 0:
+        print(f"\n  {Y}Environment ready with warnings. WaggleDance will start but some features may be limited.{W}")
+        sys.exit(0)
+    else:
+        print(f"\n  {G}Environment fully ready. Start WaggleDance with: python main.py{W}")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

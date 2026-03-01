@@ -1,0 +1,7 @@
+sources:
+- id: src:MI1
+  org: Ilmatieteen laitos
+  title: Paikallinen ilmasto
+  year: 2024
+  url: https://www.ilmatieteenlaitos.fi/
+  supports: Järviefekti, metsäsuoja, halla, inversio.

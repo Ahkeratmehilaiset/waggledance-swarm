@@ -1,0 +1,13 @@
+sources:
+- id: src:PR1
+  org: Tietosuojavaltuutettu
+  title: Henkilötiedot
+  year: 2025
+  url: https://tietosuoja.fi/
+  supports: GDPR, kameravalvonta.
+- id: src:PR2
+  org: Tietosuojavaltuutettu
+  title: Kameravalvontaohje
+  year: 2025
+  url: https://tietosuoja.fi/kameravalvonta
+  supports: Sijoittelu, yksityisyys.

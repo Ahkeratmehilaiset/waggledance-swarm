@@ -1,0 +1,239 @@
+﻿header:
+  agent_id: kierratys_jate
+  agent_name: KierrÃ¤tys- ja jÃ¤teneuvoja
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Korvenranta: haja-asutusalueen jÃ¤tehuolto'
+- 'Lajittelu: bio, paperi, kartonki, lasi, metalli, muovi, seka'
+- Kompostointi oma
+DECISION_METRICS_AND_THRESHOLDS:
+  waste_sorting_categories:
+    value: 7 jaetta + vaarallinen jÃ¤te erikseen
+    source: src:KI1
+  compost_temp_c:
+    value: 50-65Â°C aktiivivaiheessa
+    action: <40Â°C â†’ lisÃ¤Ã¤ typpipitoista (ruoantÃ¤hteet, nurmi). >70Â°C â†’ kÃ¤Ã¤nnÃ¤ (liian
+      kuuma tappaa hyÃ¶dylliset). 50-65Â°C = optimaalinen 2-4 vko.
+    source: src:KI1
+  hazardous_waste:
+    value: Akut, maalit, lÃ¤Ã¤kkeet, kemikaalit â†’ kerÃ¤yspiste
+    action: Akut/maalit/lÃ¤Ã¤kkeet â†’ Kouvolan jÃ¤teasema (KÃ¤yrÃ¤lammentie). EI sekajÃ¤tteeseen.
+      Asbesti â†’ erikoiskerÃ¤ys ilmoituksella.
+    source: src:KI2
+  bin_pickup_interval_weeks:
+    value: 'Seka: 4 vko, bio: 2 vko (kesÃ¤), muut: sopimuksen mukaan'
+    source: src:KI1
+  recycling_rate_target_pct:
+    value: 55
+    note: 'EU-tavoite 2025: 55% kierrÃ¤tysaste'
+    source: src:KI2
+    action: '<55% â†’ tarkista lajittelukÃ¤ytÃ¤nnÃ¶t. Suurin ongelma: muovi seassa biossa,
+      biojÃ¤te seassa sekassa.'
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Kompostin herÃ¤tys (kÃ¤Ã¤nnÃ¤, lisÃ¤Ã¤ tuoretta). KevÃ¤tsiivousjÃ¤tteet.'
+  source: src:KI1
+- season: KesÃ¤
+  action: '[vko 22-35] Bio-jÃ¤tteen haju â†’ biojÃ¤teastian pesu. Komposti aktiivinen.
+    PuutarhajÃ¤te.'
+  source: src:KI1
+- season: Syksy
+  action: '[vko 36-48] PuutarhajÃ¤tteet kompostiin. Vaarallisten jÃ¤tteiden kerÃ¤yspÃ¤ivÃ¤
+    (kunta).'
+  source: src:KI2
+- season: Talvi
+  action: '[vko 49-13] Bio-jÃ¤te jÃ¤Ã¤tyy â†’ kompostointi hidastuu. Tuhkan kÃ¤sittely (puulÃ¤mmitys).'
+  source: src:KI1
+FAILURE_MODES:
+- mode: Komposti haisee
+  detection: MÃ¤tÃ¤nemisen haju (anaerobinen)
+  action: KÃ¤Ã¤nnÃ¤, lisÃ¤Ã¤ kuivaa ainesta (haketta, olkea), ilmaa
+  source: src:KI1
+- mode: Vaarallinen jÃ¤te sekajÃ¤tteessÃ¤
+  detection: Akku tai kemikaali havaittu
+  action: Poista HETI, toimita kerÃ¤yspisteeseen
+  source: src:KI2
+PROCESS_FLOWS:
+- flow_id: FLOW_KIER_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Kompostin herÃ¤tys (kÃ¤Ã¤nnÃ¤, lisÃ¤Ã¤ tuoretta). KevÃ¤tsiivousjÃ¤tteet.'
+  output: Tarkistuslista
+  source: src:KIER
+- flow_id: FLOW_KIER_03
+  trigger: 'Havaittu: Komposti haisee'
+  action: KÃ¤Ã¤nnÃ¤, lisÃ¤Ã¤ kuivaa ainesta (haketta, olkea), ilmaa
+  output: Poikkeamaraportti
+  source: src:KIER
+- flow_id: FLOW_KIER_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'kierratys_jate: rutiiniarviointi'
+  output: Status-raportti
+  source: src:KIER
+KNOWLEDGE_TABLES:
+- table_id: TBL_KIER_01
+  title: KierrÃ¤tys- ja jÃ¤teneuvoja â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: waste_sorting_categories
+    value: 7 jaetta + vaarallinen jÃ¤te erikseen
+    action: ''
+  - metric: compost_temp_c
+    value: 50-65Â°C aktiivivaiheessa
+    action: <40Â°C â†’ lisÃ¤Ã¤ typpipitoista (ruoantÃ¤hteet, nurmi). >70Â°C â†’ kÃ¤Ã¤nnÃ¤ (liian
+      kuuma t
+  - metric: hazardous_waste
+    value: Akut, maalit, lÃ¤Ã¤kkeet, kemikaalit â†’ kerÃ¤yspiste
+    action: Akut/maalit/lÃ¤Ã¤kkeet â†’ Kouvolan jÃ¤teasema (KÃ¤yrÃ¤lammentie). EI sekajÃ¤tteeseen.
+      A
+  - metric: bin_pickup_interval_weeks
+    value: 'Seka: 4 vko, bio: 2 vko (kesÃ¤), muut: sopimuksen mukaan'
+    action: ''
+  - metric: recycling_rate_target_pct
+    value: '55'
+    action: '<55% â†’ tarkista lajittelukÃ¤ytÃ¤nnÃ¶t. Suurin ongelma: muovi seassa biossa,
+      biojÃ¤te'
+  source: src:KIER
+COMPLIANCE_AND_LEGAL:
+  jatelaki: 'JÃ¤telaki 646/2011: lajitteluvelvollisuus [src:KI2]'
+  kompostointi: Kompostointi-ilmoitus kunnan jÃ¤tehuoltoviranomaiselle [src:KI2]
+UNCERTAINTY_NOTES:
+- Haja-asutusalueen jÃ¤tehuollon palvelutaso vaihtelee kunnittain.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:KI1
+    org: Kouvolan JÃ¤tehuolto
+    title: Lajitteluohje
+    year: 2025
+    url: null
+    supports: Lajittelu, kompostointi.
+  - id: src:KI2
+    org: OikeusministeriÃ¶
+    title: JÃ¤telaki 646/2011
+    year: 2011
+    url: https://finlex.fi/fi/laki/ajantasa/2011/20110646
+    supports: Lajitteluvelvollisuus, vaarallinen jÃ¤te.
+eval_questions:
+- q: MikÃ¤ on waste sorting categories?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.waste_sorting_categories
+  source: src:KI1
+- q: MikÃ¤ on kompostin lÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.compost_temp_c
+  source: src:KI1
+- q: 'Toimenpide: kompostin lÃ¤mpÃ¶tila (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.compost_temp_c.action
+  source: src:KI1
+- q: MikÃ¤ on hazardous waste?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hazardous_waste
+  source: src:KI1
+- q: 'Toimenpide: hazardous waste?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hazardous_waste.action
+  source: src:KI1
+- q: MikÃ¤ on jÃ¤teastian tyhjennysvÃ¤li (vk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bin_pickup_interval_weeks
+  source: src:KI1
+- q: MikÃ¤ on kierrÃ¤tysasteen tavoite (%)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.recycling_rate_target_pct
+  source: src:KI1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:KI1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:KI1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:KI1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:KI1
+- q: 'Havainto: Komposti haisee?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:KI1
+- q: 'Toiminta: Komposti haisee?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:KI1
+- q: 'Havainto: Vaarallinen jÃ¤te sekajÃ¤tteessÃ¤?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:KI1
+- q: 'Toiminta: Vaarallinen jÃ¤te sekajÃ¤tteessÃ¤?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:KI1
+- q: 'SÃ¤Ã¤ntÃ¶: jatelaki?'
+  a_ref: COMPLIANCE_AND_LEGAL.jatelaki
+  source: src:KI1
+- q: 'SÃ¤Ã¤ntÃ¶: kompostointi?'
+  a_ref: COMPLIANCE_AND_LEGAL.kompostointi
+  source: src:KI1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:KI1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #16?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #17?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #18?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #19?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #20?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1
+- q: 'Operatiivinen lisÃ¤kysymys #21?'
+  a_ref: ASSUMPTIONS
+  source: src:KI1

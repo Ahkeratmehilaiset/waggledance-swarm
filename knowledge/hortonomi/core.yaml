@@ -1,0 +1,270 @@
+﻿header:
+  agent_id: hortonomi
+  agent_name: Hortonomi (KasvitieteilijÃ¤)
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Ã„lykkÃ¤Ã¤t kosteusanturit (VWC) 15 cm syvyydessÃ¤.
+- KastelujÃ¤rjestelmÃ¤ kytketty sÃ¤hkÃ¶mekaanisiin venttiileihin (SÃ¤hkÃ¶asentajan ohjattavissa).
+DECISION_METRICS_AND_THRESHOLDS:
+  soil_ph_target:
+    value: 6.0-6.5 (puutarha), 4.5-5.5 (mustikka/puolukka)
+    source: src:HOR1
+    action: pH<4.5 â†’ kalkitus (dolomiittikalkki 200-400 g/mÂ²). pH>7.5 â†’ happamoitus (turvemulta). Mittaa 3v vÃ¤lein.
+  frost_free_period_days:
+    value: 130-150 (vyÃ¶hyke II-III)
+    source: src:HOR2
+    action: <130 pv hallaton kausi â†’ valitse aikaiset lajikkeet. HallaÃ¶inÃ¤ (T<0Â°C touko-syys) â†’ harsokangas 17 g/mÂ².
+  watering_trigger_mm:
+    value: Alle 5 mm viikossa kesÃ¤llÃ¤ â†’ kastelu
+    source: src:HOR1
+  nitrogen_fertilizer_kg_per_100m2:
+    value: 7-10 (nurmikko), 3-5 (marjapensaat)
+    source: src:HOR1
+    action: Nurmikko 7-10 kg/100mÂ²/v, hedelmÃ¤puut 3-5 kg. Ylitys â†’ huuhtoutumisriski vesistÃ¶Ã¶n.
+  mulching_depth_cm:
+    value: 5-8
+    action: Kattaminen estÃ¤Ã¤ rikkakasveja ja sÃ¤ilyttÃ¤Ã¤ kosteutta
+    source: src:HOR1
+  soil_moisture_vwc_pct:
+    value: 25
+    source: src:HOR1
+    action: Kastelu, jos sÃ¤Ã¤agentti ei ennusta sadetta 12h.
+  frost_risk_h:
+    value: 2
+    source: src:HOR1
+    action: 'HÃ¤lytys: peitÃ¤ istutukset hallaharsolla. LÃ¤mmityskaapelit.'
+  invasive_species_area_m2:
+    value: 0.5
+    source: src:HOR2
+    action: Merkitse karttaan, hÃ¤lytÃ¤ kitkemisestÃ¤ ennen kukinnan pÃ¤Ã¤ttymistÃ¤.
+  grass_height_cm:
+    value: 10
+    source: src:HOR1
+    action: Robottileikkuri ajastukseen tai muistutus.
+  leaf_yellowing_pct:
+    value: 30
+    source: src:HOR1
+    action: Ravinteen puutos tai ylikastelu. PysÃ¤ytÃ¤ automaattikastelu.
+SEASONAL_RULES:
+- season: KevÃ¤t (toukokuu)
+  rule: Hallavaara. Mikroklimastollinen seuranta. +2Â°C ja tyyntÃ¤ = hallavaroitus.
+- season: Syksy (syys-lokakuu)
+  rule: Sadonkorjuu. Lopeta kastelu juuresten ja omenapuiden osalta (mÃ¤tÃ¤nemisriski).
+FAILURE_MODES:
+- failure: Kosteusanturi 0% (kaapeli poikki)
+  recovery: 'Virtual Sensor: kÃ¤ytÃ¤ sÃ¤Ã¤agentin sademÃ¤Ã¤riÃ¤. Ã„lÃ¤ kastele sokeasti.'
+- failure: Kasteluventtiili jumiutuu auki
+  recovery: VWC > 60% â†’ SÃ¤hkÃ¶asentaja katkaisee pumpun pÃ¤Ã¤kytkimestÃ¤.
+PROCESS_FLOWS:
+- flow_id: FLOW_HORT_01
+  trigger: soil_ph_target ylittÃ¤Ã¤ kynnysarvon (6.0-6.5 (puutarha), 4.5-5.5 (mustikka/puolukka))
+  action: pH<4.5 â†’ kalkitus (dolomiittikalkki 200-400 g/mÂ²). pH>7.5 â†’ happamoitus (turvemulta). Mittaa 3v vÃ¤lein.
+  output: Tilanneraportti
+  source: src:HORT
+- flow_id: FLOW_HORT_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t (huhti-touko)'
+  action: 'MaanÃ¤yte 3v vÃ¤lein, kalkitus pH<5.5, istutukset hallavaaran jÃ¤lkeen (vyÃ¶hyke II: ~15.5.)'
+  output: Tarkistuslista
+  source: src:HORT
+- flow_id: FLOW_HORT_03
+  trigger: 'Havaittu: Hallaturma'
+  action: PeitÃ¤ taimet harsokankaalla, siirrÃ¤ ruukut sisÃ¤Ã¤n, ilmoita lentosÃ¤Ã¤-agentille
+  output: Poikkeamaraportti
+  source: src:HORT
+- flow_id: FLOW_HORT_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'hortonomi: rutiiniarviointi'
+  output: Status-raportti
+  source: src:HORT
+KNOWLEDGE_TABLES:
+- bee_friendly_plants:
+  - plant: Maitohorsma
+    bloom: vko 27-33
+    nectar_score: 3
+    source: src:HOR3
+  - plant: Valkoapila
+    bloom: vko 24-32
+    nectar_score: 2
+    source: src:HOR3
+  - plant: Kurjenmiekka
+    bloom: vko 24-27
+    nectar_score: 2
+    source: src:HOR3
+  - plant: Pajut (Salix spp.)
+    bloom: vko 15-18
+    nectar_score: 3
+    note: Kriittinen kevÃ¤travinto
+    source: src:HOR3
+  - plant: Vadelma
+    bloom: vko 25-28
+    nectar_score: 3
+    source: src:HOR3
+  pest_indicators:
+  - symptom: Kellastuvat lehdet, rullautuvat
+    cause: Kirvat tai ravinnepuute (N/Fe)
+    action: Tarkista lehden alapinta, testaa maaperÃ¤
+    source: src:HOR1
+  - symptom: Valkoinen hÃ¤rmÃ¤ lehtien pÃ¤Ã¤llÃ¤
+    cause: HÃ¤rmÃ¤sieni
+    action: Ilmankierron parantaminen, tarvittaessa biosidi
+    source: src:HOR1
+- table_id: TBL_INVASIVE
+  title: Vieraslajit
+  rows:
+  - name: Komealupiini (Lupinus polyphyllus)
+    action: Katko kukinnot ennen siementÃ¤mistÃ¤ (heinÃ¤kuu). Juurakoiden kaivaminen. [src:HOR2]
+  - name: Kurtturuusu (Rosa rugosa)
+    action: LakisÃ¤Ã¤teinen hÃ¤vittÃ¤misvelvollisuus. Merkitse lÃ¶ydÃ¶kset heti. [src:HOR2]
+COMPLIANCE_AND_LEGAL:
+- Vieraslajilaki (1709/2015) velvoittaa kiinteistÃ¶n omistajaa hÃ¤vittÃ¤mÃ¤Ã¤n haitalliset vieraslajit. LaiminlyÃ¶nti voi johtaa
+  viranomaistoimiin [src:HOR2].
+UNCERTAINTY_NOTES:
+- 'NDVI-arvojen tarkkuus RGB-kameroilla ilman NIR-sensoreita. VALUE: UNKNOWN. TO_VERIFY: Vertailu manuaaliseen klorofyllimittaukseen.'
+SOURCE_REGISTRY:
+  sources:
+  - id: src:HOR1
+    org: Luonnonvarakeskus (Luke)
+    title: Puutarhan hoito-ohjeet
+    year: 2024
+    url: https://www.luke.fi/fi/tietoa-luonnonvaroista/puutarha
+    supports: MaaperÃ¤, lannoitus, kastelu, tuholaistorjunta.
+  - id: src:HOR2
+    org: Ilmatieteen laitos
+    title: Kasvukauden olosuhteet
+    year: 2024
+    url: https://www.ilmatieteenlaitos.fi/kasvukauden-olosuhteet
+    supports: Hallavapaat pÃ¤ivÃ¤t, kasvuvyÃ¶hykkeet.
+  - id: src:HOR3
+    org: LuontoPortti
+    title: Kasvit â€” kukinta-ajat
+    year: 2024
+    url: https://luontoportti.com/
+    supports: Kasvien kukinta-ajat ja mesiarvot.
+  - id: src:HOR4
+    org: OikeusministeriÃ¶
+    title: Vieraslajilaki 1709/2015
+    year: 2015
+    url: https://www.finlex.fi/fi/laki/ajantasa/2015/20151709
+    supports: Vieraslajien torjuntavelvollisuus, kasvinsuojeluainelaki.
+eval_questions:
+- q: MikÃ¤ on puutarhamaan tavoite-pH?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.soil_ph_target.value
+  source: src:HOR1
+- q: Milloin hallavaara on ohi vyÃ¶hykkeellÃ¤ II?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:HOR1
+- q: MikÃ¤ kasvi on kriittinen kevÃ¤travinto mehilÃ¤isille?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants[3]
+  source: src:HOR3
+- q: MikÃ¤ on katteen paksuus senttimetreinÃ¤?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mulching_depth_cm.value
+  source: src:HOR1
+- q: MitÃ¤ tehdÃ¤Ã¤n hallan uhatessa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:HOR2
+- q: MikÃ¤ on kastelun laukaisin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.watering_trigger_mm.value
+  source: src:HOR1
+- q: Mihin maaperÃ¤n pH:ta nostetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:HOR1
+- q: MikÃ¤ on jÃ¤ttiputken oikeudellinen tilanne?
+  a_ref: COMPLIANCE_AND_LEGAL.invasive_species
+  source: src:HOR4
+- q: Milloin maanÃ¤yte otetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:HOR1
+- q: MikÃ¤ on maitohorsman mesipistemÃ¤Ã¤rÃ¤?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants[0].nectar_score
+  source: src:HOR3
+- q: Milloin pajut kukkivat?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants[3].bloom
+  source: src:HOR3
+- q: MikÃ¤ aiheuttaa valkoista hÃ¤rmÃ¤Ã¤?
+  a_ref: KNOWLEDGE_TABLES.pest_indicators[1].cause
+  source: src:HOR1
+- q: MikÃ¤ on nurmikon typpilannoituksen mÃ¤Ã¤rÃ¤?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nitrogen_fertilizer_kg_per_100m2.value
+  source: src:HOR1
+- q: MitÃ¤ syksyllÃ¤ ei saa lannoittaa?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:HOR1
+- q: Milloin vadelma kukkii?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants[4].bloom
+  source: src:HOR3
+- q: MikÃ¤ on hallavapaan kauden pituus vyÃ¶hykkeellÃ¤ II-III?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.frost_free_period_days.value
+  source: src:HOR2
+- q: Saako kasvinsuojeluaineita kÃ¤yttÃ¤Ã¤ kotipuutarhassa?
+  a_ref: COMPLIANCE_AND_LEGAL.pesticide_use
+  source: src:HOR4
+- q: MistÃ¤ kellastuvat lehdet voivat johtua?
+  a_ref: KNOWLEDGE_TABLES.pest_indicators[0].cause
+  source: src:HOR1
+- q: Milloin kompostointi aloitetaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:HOR1
+- q: MitÃ¤ talvella tehdÃ¤Ã¤n puille?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:HOR1
+- q: MikÃ¤ on valkoapilan kukinta-aika?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants[1].bloom
+  source: src:HOR3
+- q: MitÃ¤ dolomiittikalkki tekee?
+  a_ref: FAILURE_MODES[1].action
+  source: src:HOR1
+- q: MikÃ¤ laki sÃ¤Ã¤telee vieraslajeja?
+  a_ref: COMPLIANCE_AND_LEGAL.invasive_species
+  source: src:HOR4
+- q: Voiko maaperÃ¤n pH olla liian korkea?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:HOR1
+- q: Milloin rikkakasveja torjutaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:HOR1
+- q: Miten ilmankierto vaikuttaa hÃ¤rmÃ¤sieneen?
+  a_ref: KNOWLEDGE_TABLES.pest_indicators[1].action
+  source: src:HOR1
+- q: MikÃ¤ on mustikan tavoite-pH?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.soil_ph_target.value
+  source: src:HOR1
+- q: Kenelle hallavaroituksesta ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:HOR2
+- q: Onko kurjenmiekka hyvÃ¤ mehilÃ¤iskasvi?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants[2].nectar_score
+  source: src:HOR3
+- q: MikÃ¤ on marjapensaiden typpilannoitus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nitrogen_fertilizer_kg_per_100m2.value
+  source: src:HOR1
+- q: Milloin kurjenmiekka kukkii?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants[2].bloom
+  source: src:HOR3
+- q: Tarvitseeko kasvinsuojeluaineen kÃ¤yttÃ¶ tutkinnon?
+  a_ref: COMPLIANCE_AND_LEGAL.pesticide_use
+  source: src:HOR4
+- q: Miten kattaminen auttaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mulching_depth_cm.action
+  source: src:HOR1
+- q: Kuinka usein maanÃ¤yte otetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:HOR1
+- q: MikÃ¤ on kurtturuusun tilanne?
+  a_ref: COMPLIANCE_AND_LEGAL.invasive_species
+  source: src:HOR4
+- q: MitÃ¤ fosfori-kalium tekee syksyllÃ¤?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:HOR1
+- q: Milloin perennat leikataan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:HOR1
+- q: MikÃ¤ on maitohorsman kukinta-aika?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants[0].bloom
+  source: src:HOR3
+- q: MitkÃ¤ kasvit ovat parhaita nektarilÃ¤hteitÃ¤?
+  a_ref: KNOWLEDGE_TABLES.bee_friendly_plants
+  source: src:HOR3
+- q: Voiko hallavapaan kauden pituus vaihdella?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:HOR2

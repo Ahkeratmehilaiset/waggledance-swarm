@@ -1,0 +1,212 @@
+﻿header:
+  agent_id: sahkoasentaja
+  agent_name: SÃ¤hkÃ¶asentaja
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'Suomi: 230/400 V, 50 Hz -sÃ¤hkÃ¶verkko.'
+- Luvanvaraiset sÃ¤hkÃ¶tyÃ¶t teetetÃ¤Ã¤n rekisterÃ¶idyllÃ¤ sÃ¤hkÃ¶urakoitsijalla.
+DECISION_METRICS_AND_THRESHOLDS:
+  rcd_trip_current_max_ma:
+    value: 30
+    action: Uusissa pistorasiaryhmissÃ¤ kÃ¤ytÃ¤ enintÃ¤Ã¤n 30 mA vikavirtasuojaa (RCD).
+    source: src:TEC1
+  socket_group_rated_current_max_a:
+    value: 32
+    action: RCD-vaatimus koskee pistorasiaryhmiÃ¤, joiden nimellisvirta on enintÃ¤Ã¤n
+      32 A.
+    source: src:TEC1
+  outdoor_extension_cable_rating:
+    value: IP44 ulkokÃ¤yttÃ¶Ã¶n, 16 A max, max 25 m
+    action: SisÃ¤jatkojohto ulkona â†’ sÃ¤hkÃ¶iskuvaara. Vaihda IP44.
+    source: src:SAH1
+  surge_protection_presence:
+    value: YlijÃ¤nnitesuoja B+C, 40 kA pÃ¤Ã¤keskuksessa
+    action: Puuttuu â†’ asennuta Tukes-rekisterÃ¶ity asentaja.
+    source: src:SAH1
+  main_fuse_rating_a:
+    value: 25 A tai 35 A omakotitalo
+    action: '>80% kuormitus â†’ seuranta. Laukeaa â†’ tarkista kuorma.'
+    source: src:SAH1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: Ulkopistorasioiden tarkistus. Aurinkopaneelien kaapelit. RCD-testi 30 mA.
+  source: src:SAH1
+- season: KesÃ¤
+  action: 'Ukkossuojaus: ylijÃ¤nnitesuojat B+C 40 kA. UV-rasitus. Kulutusseuranta kWh/kk.'
+  source: src:SAH1
+- season: Syksy
+  action: LÃ¤mmitysjÃ¤rjestelmÃ¤n sÃ¤hkÃ¶tarkistus. Sulanapitokaapelit vko 42-44.
+  source: src:SAH1
+- season: Talvi
+  action: Sulanapitokaapelit T<-2Â°C. Varokekuormitus seuranta. Aggregaatti + UPS.
+  source: src:SAH1
+FAILURE_MODES:
+- mode: Toistuva RCD-laukeaminen
+  detection: RCD laukeaa useita kertoja
+  action: Irrota kuormat yksi kerrallaan; jos ei selviÃ¤ â†’ urakoitsija
+  source: src:TEC2
+- mode: LÃ¤mpenevÃ¤ liitos / palaneen haju
+  detection: Pistorasia/kytkin lÃ¤mpenee tai haisee palaneelle
+  action: Katkaise virta vÃ¤littÃ¶mÃ¤sti ja tilaa sÃ¤hkÃ¶urakoitsija
+  source: src:TEC2
+PROCESS_FLOWS:
+  fault_response:
+    steps:
+    - 1. Katkaise virta turvallisesti ja estÃ¤ lisÃ¤vahinko
+    - 2. Tarkista vikavirtasuoja/sulakkeet
+    - 3. Kirjaa tapahtuma (aika, kuormat, olosuhteet)
+    - 4. Jos toistuva tai epÃ¤selvÃ¤ â†’ tilaa sÃ¤hkÃ¶urakoitsija
+    source: src:TEC2
+KNOWLEDGE_TABLES:
+  allowed_diy_examples:
+  - task: Sulakkeen vaihto
+    allowed: KyllÃ¤
+    source: src:TEC2
+  - task: Valaisimen kytkentÃ¤ (rajattu)
+    allowed: Rajoitetusti
+    source: src:TEC2
+  - task: Uuden pistorasian asentaminen
+    allowed: Ei
+    source: src:TEC2
+COMPLIANCE_AND_LEGAL:
+  electric_work_restrictions:
+    rule: SÃ¤hkÃ¶tyÃ¶t ovat pÃ¤Ã¤osin luvanvaraisia ja kuuluvat rekisterÃ¶idylle sÃ¤hkÃ¶urakoitsijalle.
+    source: src:TEC2
+UNCERTAINTY_NOTES:
+- SFS 6000 on maksullinen standardi; agentti kÃ¤yttÃ¤Ã¤ vain yleistasoisia vaatimuksia.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:TEC1
+    org: SESKO ry / Suomen Standardisoimisliitto
+    title: SFS 6000:2022 PienjÃ¤nnitesÃ¤hkÃ¶asennukset
+    year: 2022
+    url: N/A
+    what_it_supports: RCD (30 mA) -vaatimus pistorasiaryhmille (enintÃ¤Ã¤n 32 A) yleistasolla.
+  - id: src:TEC2
+    org: Tukes
+    title: SÃ¤hkÃ¶tyÃ¶t ja urakointi
+    year: 2025
+    url: https://tukes.fi/sahko/sahkotyot-ja-urakointi
+    what_it_supports: SÃ¤hkÃ¶tÃ¶iden luvanvaraisuus ja esimerkit maallikkotÃ¶istÃ¤.
+eval_questions:
+- q: MikÃ¤ on vikavirtasuojan enimmÃ¤islaukaisuvirta (mA) uusissa pistorasiaryhmissÃ¤?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.rcd_trip_current_max_ma.value
+  source: src:TEC1
+- q: Mihin nimellisvirtaan asti pistorasiaryhmÃ¤n RCD-vaatimus ulottuu?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.socket_group_rated_current_max_a.value
+  source: src:TEC1
+- q: Kuka saa tehdÃ¤ luvanvaraiset sÃ¤hkÃ¶tyÃ¶t?
+  a_ref: COMPLIANCE_AND_LEGAL.electric_work_restrictions.rule
+  source: src:TEC2
+- q: Saako kuluttaja asentaa uuden pistorasian?
+  a_ref: KNOWLEDGE_TABLES.allowed_diy_examples[2].allowed
+  source: src:TEC2
+- q: MikÃ¤ on vikaprosessin 4. askel?
+  a_ref: PROCESS_FLOWS.fault_response.steps[3]
+  source: src:TEC2
+- q: MikÃ¤ on ulkokÃ¤yttÃ¶Ã¶n liittyvÃ¤ jatkojohdon vaatimus (arvo)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.outdoor_extension_cable_rating.value
+  source: src:TEC2
+- q: Miksi jatkojohdon luokitus on UNKNOWN?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:TEC2
+- q: MitÃ¤ tehdÃ¤Ã¤n jos pistorasia lÃ¤mpenee tai haisee palaneelle?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TEC2
+- q: MikÃ¤ on sÃ¤hkÃ¶turvallisuuden luvanvaraisuussÃ¤Ã¤ntÃ¶?
+  a_ref: COMPLIANCE_AND_LEGAL.electric_work_restrictions.rule
+  source: src:TEC2
+- q: MikÃ¤ on sulakkeen vaihdon sallittavuus?
+  a_ref: KNOWLEDGE_TABLES.allowed_diy_examples[0].allowed
+  source: src:TEC2
+- q: MikÃ¤ on valaisimen kytkennÃ¤n sallittavuus?
+  a_ref: KNOWLEDGE_TABLES.allowed_diy_examples[1].allowed
+  source: src:TEC2
+- q: MikÃ¤ on pistorasian asennuksen sallittavuus?
+  a_ref: KNOWLEDGE_TABLES.allowed_diy_examples[2].allowed
+  source: src:TEC2
+- q: MikÃ¤ on vikaprosessin 1. askel?
+  a_ref: PROCESS_FLOWS.fault_response.steps[0]
+  source: src:TEC2
+- q: MikÃ¤ on vikaprosessin 2. askel?
+  a_ref: PROCESS_FLOWS.fault_response.steps[1]
+  source: src:TEC2
+- q: MikÃ¤ on vikaprosessin 3. askel?
+  a_ref: PROCESS_FLOWS.fault_response.steps[2]
+  source: src:TEC2
+- q: MikÃ¤ on ylijÃ¤nnitesuojauksen olemassaolo (arvo)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.surge_protection_presence.value
+  source: src:TEC2
+- q: Miten ylijÃ¤nnitesuojaus tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.surge_protection_presence.action
+  source: src:TEC2
+- q: MikÃ¤ on pÃ¤Ã¤sulakkeen koko (A)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.main_fuse_rating_a.value
+  source: src:TEC2
+- q: Miksi pÃ¤Ã¤sulakkeen koko on tÃ¤rkeÃ¤?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.main_fuse_rating_a.action
+  source: src:TEC2
+- q: 'MikÃ¤ on vikamalli: RCD-laukeaminen?'
+  a_ref: FAILURE_MODES[0].mode
+  source: src:TEC2
+- q: 'MikÃ¤ on vikamalli: lÃ¤mpenevÃ¤ liitos?'
+  a_ref: FAILURE_MODES[1].mode
+  source: src:TEC2
+- q: Miten lÃ¤mpenevÃ¤ liitos tunnistetaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:TEC2
+- q: Mihin talvikauden sÃ¤hkÃ¶fokus liittyy?
+  a_ref: SEASONAL_RULES[0].focus
+  source: src:TEC2
+- q: Mihin kesÃ¤kauden sÃ¤hkÃ¶fokus liittyy?
+  a_ref: SEASONAL_RULES[1].focus
+  source: src:TEC2
+- q: MikÃ¤ on RCD 30 mA -ohjeen toimenpide?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.rcd_trip_current_max_ma.action
+  source: src:TEC1
+- q: MikÃ¤ on 32 A -rajan toimenpide?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.socket_group_rated_current_max_a.action
+  source: src:TEC1
+- q: MikÃ¤ on jatkojohdon luokituksen toimenpide?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.outdoor_extension_cable_rating.action
+  source: src:TEC2
+- q: MikÃ¤ on toistuvan RCD-laukeamisen tunnistus?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:TEC2
+- q: MikÃ¤ on RCD-laukeamisen toimintaohje?
+  a_ref: FAILURE_MODES[0].action
+  source: src:TEC2
+- q: MikÃ¤ on lÃ¤mpenevÃ¤n liitoksen toimintaohje?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TEC2
+- q: MikÃ¤ on sÃ¤hkÃ¶tyÃ¶n luvanvaraisuuden lÃ¤hde?
+  a_ref: COMPLIANCE_AND_LEGAL.electric_work_restrictions.source
+  source: src:TEC2
+- q: MikÃ¤ oletus koskee verkon taajuutta?
+  a_ref: ASSUMPTIONS[0]
+  source: src:TEC2
+- q: MikÃ¤ oletus koskee urakoitsijaa?
+  a_ref: ASSUMPTIONS[1]
+  source: src:TEC2
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #7?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:SAHK

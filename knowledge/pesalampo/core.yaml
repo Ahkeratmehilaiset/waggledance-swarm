@@ -1,0 +1,224 @@
+﻿header:
+  agent_id: pesalampo
+  agent_name: PesÃ¤lÃ¤mpÃ¶- ja kosteusmittaaja
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- IoT-anturit pesÃ¤ssÃ¤ (lÃ¤mpÃ¶, kosteus, paino)
+- BLE/WiFi â†’ paikallinen gateway â†’ tietokanta
+DECISION_METRICS_AND_THRESHOLDS:
+  brood_nest_temp_c:
+    value: 34-36
+    action: <34Â°C â†’ sikiÃ¶ kehittyy hitaasti, >37Â°C â†’ sikiÃ¶vauriot
+    source: src:PES1
+  winter_cluster_core_c:
+    value: 20-35
+    action: <20Â°C â†’ kriittinen, yhdyskunta heikkenee
+    source: src:PES1
+  hive_humidity_rh_pct:
+    value: 50-70
+    action: '>80% â†’ homevaara, tuuletusaukot, <40% â†’ kuivuusstressi'
+    source: src:PES1
+  weight_loss_winter_kg_per_week:
+    value: 0.3
+    action: '>0.5 kg/vko â†’ ruokavarasto hupenee, harkitse ruokintaa'
+    source: src:PES1
+  sudden_weight_drop_kg:
+    value: 2
+    action: '>2 kg Ã¤killinen pudotus â†’ parveilu tai ryÃ¶stÃ¶, ilmoita tarhaajalle'
+    source: src:PES1
+  spring_weight_increase_start:
+    value: Painonnousu kevÃ¤Ã¤llÃ¤ â†’ meden kerÃ¤ily alkaa, ilmoita tarhaajalle
+    source: src:PES1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] SikiÃ¶pesÃ¤n lÃ¤mpÃ¶tilan seuranta erityisen kriittistÃ¤. Painonnousu
+    osoittaa kerÃ¤ilyn alkua.'
+  source: src:PES1
+- season: KesÃ¤
+  action: '[vko 22-35] YlilÃ¤mpenemisriski helteellÃ¤. Kosteus nousee linkoamisen aikoihin.
+    Painon nopea nousu = satohuippu.'
+  source: src:PES1
+- season: Syksy
+  action: '[vko 36-48] Painon stabiloituminen syysruokinnan jÃ¤lkeen. Kosteus seurannassa
+    (homevaara mÃ¤rÃ¤ssÃ¤ syksyssÃ¤).'
+  source: src:PES1
+- season: Talvi
+  action: Jatkuva painonseuranta (0.3 kg/vko normaali). YdinlÃ¤mpÃ¶ >20Â°C. Kosteus 50-70%.
+  source: src:PES1
+FAILURE_MODES:
+- mode: Anturi ei lÃ¤hetÃ¤ dataa
+  detection: Ei dataa >1h
+  action: Tarkista akku, BLE-yhteys, ilmoita laitehuoltajalle
+  source: src:PES1
+- mode: LÃ¤mpÃ¶tila putoaa Ã¤kisti
+  detection: '>5Â°C pudotus 2h sisÃ¤llÃ¤'
+  action: 'HÃ„LYTYS tarhaajalle: mahdollinen emokato tai parveilu'
+  source: src:PES1
+PROCESS_FLOWS:
+  monitoring:
+    steps:
+    - 1. Lue anturi 15 min vÃ¤lein
+    - 2. Vertaa kynnysarvoihin
+    - 3. Jos poikkeama â†’ HÃ„LYTYS relevanteille agenteille
+    - 4. Tallenna aikasarja tietokantaan
+    - 5. Viikkoraportti tarhaajalle
+KNOWLEDGE_TABLES:
+- table_id: TBL_PESA_01
+  title: PesÃ¤lÃ¤mpÃ¶- ja kosteusmittaaja â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: brood_nest_temp_c
+    value: 34-36
+    action: <34Â°C â†’ sikiÃ¶ kehittyy hitaasti, >37Â°C â†’ sikiÃ¶vauriot
+  - metric: winter_cluster_core_c
+    value: 20-35
+    action: <20Â°C â†’ kriittinen, yhdyskunta heikkenee
+  - metric: hive_humidity_rh_pct
+    value: 50-70
+    action: '>80% â†’ homevaara, tuuletusaukot, <40% â†’ kuivuusstressi'
+  - metric: weight_loss_winter_kg_per_week
+    value: '0.3'
+    action: '>0.5 kg/vko â†’ ruokavarasto hupenee, harkitse ruokintaa'
+  - metric: sudden_weight_drop_kg
+    value: '2'
+    action: '>2 kg Ã¤killinen pudotus â†’ parveilu tai ryÃ¶stÃ¶, ilmoita tarhaajalle'
+  - metric: spring_weight_increase_start
+    value: Painonnousu kevÃ¤Ã¤llÃ¤ â†’ meden kerÃ¤ily alkaa, ilmoita tarhaajalle
+    action: ''
+  source: src:PESA
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Anturin sijainti pesÃ¤ssÃ¤ vaikuttaa lukemin â€” reuna vs. keskusta voi erota 10Â°C.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PES1
+    org: SML / Arnia Ltd
+    title: PesÃ¤nseurantatekniikka
+    year: 2024
+    url: https://www.arnia.co.uk/
+    supports: IoT-pesÃ¤seuranta, lÃ¤mpÃ¶-/kosteus-/painodata.
+eval_questions:
+- q: MikÃ¤ on sikiÃ¶pesÃ¤n normaalilÃ¤mpÃ¶tila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.brood_nest_temp_c.value
+  source: src:PES1
+- q: MikÃ¤ on talvipallon kriittinen alaraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.winter_cluster_core_c.action
+  source: src:PES1
+- q: MikÃ¤ on kosteuteen normaali vaihteluvÃ¤li?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hive_humidity_rh_pct.value
+  source: src:PES1
+- q: MikÃ¤ on normaali talvinen painohÃ¤viÃ¶ per viikko?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weight_loss_winter_kg_per_week.value
+  source: src:PES1
+- q: MikÃ¤ Ã¤killinen painonpudotus tarkoittaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sudden_weight_drop_kg.action
+  source: src:PES1
+- q: Kuinka usein anturia luetaan?
+  a_ref: PROCESS_FLOWS.monitoring.steps
+  source: src:PES1
+- q: MitÃ¤ >80% kosteus aiheuttaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hive_humidity_rh_pct.action
+  source: src:PES1
+- q: Miten painon nousu kevÃ¤Ã¤llÃ¤ tulkitaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spring_weight_increase_start.value
+  source: src:PES1
+- q: MitÃ¤ tapahtuu anturikatossa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PES1
+- q: MikÃ¤ laukaisee lÃ¤mpÃ¶tilahÃ¤lytyksen?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:PES1
+- q: MikÃ¤ on sikiÃ¶vaurion lÃ¤mpÃ¶tilaraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.brood_nest_temp_c.action
+  source: src:PES1
+- q: Kenelle painohÃ¤lytyksestÃ¤ ilmoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sudden_weight_drop_kg.action
+  source: src:PES1
+- q: MikÃ¤ on ylilÃ¤mpenemisriski kesÃ¤llÃ¤?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PES1
+- q: Miten syysruokinnan onnistuminen nÃ¤kyy painossa?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PES1
+- q: MikÃ¤ on normaali talvipallon lÃ¤mpÃ¶tilavÃ¤li?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.winter_cluster_core_c.value
+  source: src:PES1
+- q: Miten painonpudotusraja lasketaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weight_loss_winter_kg_per_week.action
+  source: src:PES1
+- q: MitÃ¤ Ã¤killinen lÃ¤mpÃ¶tilan lasku voi tarkoittaa?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PES1
+- q: MikÃ¤ on satohuipun painosignaali?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PES1
+- q: Miten anturin paikka vaikuttaa lukemiin?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PES1
+- q: MikÃ¤ on kuivuusstressin kosteusraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hive_humidity_rh_pct.action
+  source: src:PES1
+- q: MikÃ¤ on viikkoraportin sisÃ¤ltÃ¶?
+  a_ref: PROCESS_FLOWS.monitoring.steps
+  source: src:PES1
+- q: Miten homevaara tunnistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hive_humidity_rh_pct.action
+  source: src:PES1
+- q: MikÃ¤ on BLE-yhteyden tarkistustapa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PES1
+- q: Kuinka usein data tallennetaan?
+  a_ref: PROCESS_FLOWS.monitoring.steps
+  source: src:PES1
+- q: Miten kevÃ¤Ã¤llÃ¤ lÃ¤mpÃ¶tilaa seurataan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PES1
+- q: MikÃ¤ on painon nousun merkitys kevÃ¤Ã¤llÃ¤?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PES1
+- q: MikÃ¤ on kriittisen talvinen viikkohÃ¤viÃ¶?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weight_loss_winter_kg_per_week.action
+  source: src:PES1
+- q: Miten ryÃ¶stÃ¶ nÃ¤kyy painossa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sudden_weight_drop_kg.action
+  source: src:PES1
+- q: Kenelle anturivika ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PES1
+- q: MikÃ¤ on datan hÃ¤lytysviive?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PES1
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #7?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #8?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #9?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA
+- q: 'Operatiivinen pÃ¤Ã¤tÃ¶skysymys #10?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PESA

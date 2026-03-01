@@ -1,0 +1,174 @@
+facts:
+  apiary_count: 35
+  business_name: JKH Service
+  colony_count: 202
+  evira: '18533284'
+  owner: Jani Korpi
+  y_tunnus: 2828492-2
+hivemind:
+  heartbeat_interval: 30
+  idle_research_enabled: true
+  max_concurrent_agents: 30
+learning:
+  auto_evolve: false
+  distill_interval_min: 15
+  eval_queue_size: 20
+  evolve_interval_min: 30
+  min_finetune_score: 7.0
+llm:
+  base_url: http://localhost:11434
+  model: phi4-mini
+  num_gpu: 99
+  temperature: 0.4
+  timeout: 30
+llm_heartbeat:
+  base_url: http://localhost:11434
+  model: llama3.2:1b
+  num_gpu: 99
+  temperature: 0.6
+  timeout: 15
+memory:
+  db_path: data/waggle_dance.db
+ops_agent:
+  auto_model_switch: false
+  error_rate_critical: 0.25
+  error_rate_warning: 0.1
+  gpu_memory_critical: 95
+  latency_critical_ms: 30000
+  latency_warning_ms: 12000
+  monitor_interval: 15
+  quality_eval_every: 30
+  queue_critical: 4
+swarm:
+  cooldown_max: 5
+  enabled: true
+  exploration_rate: 0.2
+  load_penalty: 0.15
+  low_usage_bonus: 0.15
+  min_bids_per_day: 3
+  min_tasks_per_day: 2
+  newcomer_boost: 0.2
+  top_k: 8
+token_economy:
+  welcome_bonus: 5
+yaml_bridge:
+  agents_dir: knowledge
+agent_levels:
+  enabled: true
+routing:
+  confusion_memory: true
+  topic_fingerprints: true
+round_table:
+  enabled: true
+  every_n_heartbeat: 20
+  agent_count: 6
+  min_agents: 3
+  version: 2
+night_mode:
+  enabled: true
+  idle_threshold_min: 30
+  max_hours: 8
+  interval_s: 10
+advanced_learning:
+  corrections_enabled: true
+  active_learning_enabled: true
+  active_learning_min_memory: 100
+  embedding_augmentation: true
+  multi_hop_enabled: true
+  multi_hop_max_hops: 2
+  episodic_memory: true
+  seasonal_boost: 1.2
+  bilingual_index: true
+  hot_cache_size: 500
+  fi_fast_enabled: true
+  enrichment_enabled: true
+  enrichment_confidence: 0.80
+  web_learning_enabled: true
+  web_learning_daily_budget: 50
+  distillation_enabled: false
+  distillation_api_key: ""
+  distillation_model: "claude-haiku-4-5-20251001"
+  distillation_weekly_budget_eur: 5.0
+  meta_learning_enabled: true
+  code_review_enabled: true
+  micro_model_enabled: true
+  micro_model_v2_enabled: true
+  micro_model_v3_enabled: false
+  micro_model_training_interval: 50
+  micro_model_min_pairs: 100
+  enrichment_temporal_check: true
+  failure_twin_enabled: true
+  failure_twin_threshold: 0.60
+  micro_model_promotion_enabled: true
+  micro_model_promotion_min_pairs: 200
+  micro_model_promotion_max_error: 0.03
+  agent_overlap_detection: true
+  night_enricher:
+    enabled: true
+    chat_history_enabled: false
+    rss_feed_enabled: false
+    benchmark_count: 5
+    rebalance_every: 50
+    burst_threshold: 0.80
+    burst_max_share: 0.80
+    throttle_pass_rate: 0.15
+    throttle_window: 30
+    throttle_pause_seconds: 600
+    gap_high_threshold: 20
+    gap_medium_threshold: 50
+    gap_normal_threshold: 100
+    novelty_score_threshold: 0.85
+    dedup_score_threshold: 0.93
+    # D1: External source cycle frequencies (0 = disabled)
+    ext_web_every_cycles: 10
+    ext_distill_every_cycles: 20
+    ext_rss_every_cycles: 50
+    # D2: Convergence detection
+    convergence_novelty_threshold: 0.20
+    convergence_patience: 3
+    convergence_pause_s: 1800
+    convergence_window: 20
+  memory_limits:
+    enabled: true
+    max_facts: 200000
+    eviction_check_every_n_flushes: 10
+    eviction_batch_size: 500
+    ttl_rules:
+      weather: 1           # hours
+      electricity: 1
+      electricity_optimization: 6
+      camera_event: 168    # 7 days
+      audio_event: 168
+      news: 720            # 30 days
+      self_enrichment: 2160  # 90 days
+      web_learning: 2160
+    protected_sources:
+      - user_teaching
+      - user_correction
+      - yaml_scan
+      - conversation
+      - round_table
+      - distillation
+feeds:
+  enabled: false
+  weather:
+    enabled: true
+    provider: fmi
+    locations:
+      - Helsinki
+      - Kouvola
+    interval_min: 30
+  electricity:
+    enabled: true
+    provider: porssisahko
+    interval_min: 15
+  rss:
+    enabled: true
+    interval_min: 120
+    feeds:
+      - url: "https://www.mehilaishoitajat.fi/feed"
+        name: SML
+        critical: false
+      - url: "https://www.ruokavirasto.fi/rss"
+        name: Ruokavirasto
+        critical: true

@@ -1,0 +1,231 @@
+header:
+  agent_id: kalantunnistaja
+  agent_name: Kalantunnistaja
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Tunnistaa lajit kuvasta/kuvauksesta
+- Huhdasjärvi + Kaakkois-Suomen vesistöt
+DECISION_METRICS_AND_THRESHOLDS:
+  confidence_min_pct:
+    value: 80
+    action: <80% → pyydä lisäkuva (sivuprofiili + evät auki) tai mittaus
+    source: src:KAT1
+  protected_species:
+    value: Järvitaimen, nieriä, ankerias
+    action: VAPAUTA VEDESSÄ heti, ÄLÄ nosta. Dokumentoi kuva + GPS + aika. Ilmoita
+      ELY-keskukselle.
+    source: src:KAT2
+  invasive_species:
+    value: Hopearuutana (Carassius gibelio)
+    action: EI takaisin veteen. Lopeta. Ilmoita ELY-keskukselle 2 pv sisällä.
+    source: src:KAT2
+  measurement:
+    value: 'Kokonaispituus: kuono → pyrstön kärki'
+    source: src:KAT1
+  key_features_5:
+    value: 1=evien lkm/sijainti, 2=suomut, 3=väri, 4=suun muoto, 5=kylkiviiva
+    action: Jos ≤3 piirrettä nähtävissä → varmuus <80%, pyydä lisäkuva
+    source: src:KAT1
+  measurement_mm:
+    value: Kokonaispituus kuono→pyrstön kärki, ±5 mm tarkkuus
+    action: 'Mittaa AINA ennen päätöstä pitää/vapauttaa. Alamitta: hauki 400 mm, kuha
+      420 mm.'
+    source: src:KAT1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] Kutuväritys muuttaa tunnistusta. Ahven/lahna kirkastuvat.'
+  source: src:KAT1
+- season: Kesä
+  action: '[vko 22-35] Poikaset vaikeita — käytä evälaskentaa.'
+  source: src:KAT1
+- season: Syksy
+  action: '[vko 36-48] Syöntiväritys ≠ kutuväri. Kuha/made aktiivisempia.'
+  source: src:KAT1
+- season: Talvi
+  action: '[vko 49-13] Pilkkikalat: ahven vs kiiski (kiiski limaisempi).'
+  source: src:KAT1
+FAILURE_MODES:
+- mode: Virheellinen lajintunnistus
+  detection: Väärä alamittapäätös
+  action: Mittaa AINA + valokuva ennen päätöstä
+  source: src:KAT1
+- mode: Suojeltu laji pyydetty
+  detection: Järvitaimen/rauhoitettu
+  action: Vapauta VEDESSÄ, dokumentoi, ilmoita ELY:lle
+  source: src:KAT2
+PROCESS_FLOWS:
+- flow_id: FLOW_KALA_01
+  trigger: confidence_min_pct ylittää kynnysarvon (80)
+  action: <80% → pyydä lisäkuva (sivuprofiili + evät auki) tai mittaus
+  output: Tilanneraportti
+  source: src:KALA
+- flow_id: FLOW_KALA_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Kutuväritys muuttaa tunnistusta. Ahven/lahna kirkastuvat.'
+  output: Tarkistuslista
+  source: src:KALA
+- flow_id: FLOW_KALA_03
+  trigger: 'Havaittu: Virheellinen lajintunnistus'
+  action: Mittaa AINA + valokuva ennen päätöstä
+  output: Poikkeamaraportti
+  source: src:KALA
+- flow_id: FLOW_KALA_04
+  trigger: Säännöllinen heartbeat
+  action: 'kalantunnistaja: rutiiniarviointi'
+  output: Status-raportti
+  source: src:KALA
+KNOWLEDGE_TABLES:
+  species:
+  - laji: Ahven
+    piirteet: Tummat poikkijuovat, punainen pyrstö, 2 selkäevää
+  - laji: Hauki
+    piirteet: Pitkä litteä kuono, vihertävä, selkäevä takana
+  - laji: Kuha
+    piirteet: Lasimaiset silmät, piikikkäät selkäevät
+  - laji: Lahna
+    piirteet: Korkea/litteä, pronssinvärinen aikuisena
+  - laji: Särki
+    piirteet: Hopeinen, punaiset silmät
+  - laji: Made
+    piirteet: Litteä pää, viikset, limainen, yöaktiivinen
+COMPLIANCE_AND_LEGAL:
+  protected: Järvitaimen rauhoitettu useilla alueilla [src:KAT2]
+  invasive: Hopearuutanaa ei saa palauttaa veteen [src:KAT2]
+UNCERTAINTY_NOTES:
+- Risteymät (lahna×särki) tekevät tunnistamisesta vaikeaa — DNA ainoa varma keino.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:KAT1
+    org: Luke
+    title: Suomen kalat
+    year: 2024
+    url: https://www.luke.fi/
+    supports: Lajintunnistus.
+  - id: src:KAT2
+    org: MMM/ELY
+    title: Suojelu ja vieraslajit
+    year: 2025
+    url: https://kalastusrajoitus.fi/
+    supports: Rauhoitukset, vieraslajit.
+eval_questions:
+- q: Miten ahven tunnistetaan?
+  a_ref: KNOWLEDGE_TABLES.species[0].piirteet
+  source: src:KAT1
+- q: Miten hauki tunnistetaan?
+  a_ref: KNOWLEDGE_TABLES.species[1].piirteet
+  source: src:KAT1
+- q: Mikä on kuha-tunnistuksen avain?
+  a_ref: KNOWLEDGE_TABLES.species[2].piirteet
+  source: src:KAT1
+- q: Mikä on mateen erityispiirre?
+  a_ref: KNOWLEDGE_TABLES.species[5].piirteet
+  source: src:KAT1
+- q: Miten risteymä tunnistetaan?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:KAT1
+- q: Saako hopearuutanan vapauttaa?
+  a_ref: COMPLIANCE_AND_LEGAL.invasive
+  source: src:KAT2
+- q: Mitkä ovat 5 tunnistuspiirrettä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.key_features_5
+  source: src:KAT1
+- q: Miten kutuväritys vaikuttaa?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:KAT1
+- q: Mikä on confidence min pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.confidence_min_pct
+  source: src:KAT1
+- q: Mitä tehdään kun confidence min pct ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.confidence_min_pct.action
+  source: src:KAT1
+- q: Mikä on rauhoitettu laji?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.protected_species
+  source: src:KAT1
+- q: Mitä tehdään kun rauhoitettu laji ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.protected_species.action
+  source: src:KAT1
+- q: Mikä on vieraslaji?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.invasive_species
+  source: src:KAT1
+- q: Mitä tehdään kun vieraslaji ylittyy?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.invasive_species.action
+  source: src:KAT1
+- q: Mikä on measurement?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.measurement
+  source: src:KAT1
+- q: Mikä on key features 5?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.key_features_5
+  source: src:KAT1
+- q: Mitä kevät huomioidaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:KAT1
+- q: Mitä kesä huomioidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:KAT1
+- q: Mitä syksy huomioidaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:KAT1
+- q: Mitä talvi huomioidaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:KAT1
+- q: Miten 'Virheellinen lajintunnistus' havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:KAT1
+- q: Mitä tehdään tilanteessa 'Virheellinen lajintunnistus'?
+  a_ref: FAILURE_MODES[0].action
+  source: src:KAT1
+- q: Miten 'Suojeltu laji pyydetty' havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:KAT1
+- q: Mitä tehdään tilanteessa 'Suojeltu laji pyydetty'?
+  a_ref: FAILURE_MODES[1].action
+  source: src:KAT1
+- q: Mikä on protected -vaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.protected
+  source: src:KAT1
+- q: Mikä on vieraslajin torjuntavaatimus?
+  a_ref: COMPLIANCE_AND_LEGAL.invasive
+  source: src:KAT1
+- q: Mitkä ovat merkittävimmät epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:KAT1
+- q: Mitkä ovat agentin oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#1)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#2)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#3)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#4)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#5)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#6)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#7)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#8)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#9)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#10)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#11)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#12)?
+  a_ref: ASSUMPTIONS
+  source: src:KAT1

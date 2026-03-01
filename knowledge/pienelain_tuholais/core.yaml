@@ -1,0 +1,256 @@
+﻿header:
+  agent_id: pienelain_tuholais
+  agent_name: PienelÃ¤in- ja tuholaisasiantuntija
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Korvenrannan mÃ¶kkiympÃ¤ristÃ¶ â€” metsÃ¤ ja jÃ¤rvi
+- JyrsijÃ¤t, kÃ¤rpÃ¤set, hyttyset, punkit, muurahaiset, ampiaisen
+- Torjunta ensisijaisesti mekaanisin ja biologisin keinoin
+DECISION_METRICS_AND_THRESHOLDS:
+  mouse_activity_threshold:
+    value: JÃ¤tÃ¶ksiÃ¤ >10 kpl / mÂ² tai purusahanjauhoa rakenteissa
+    action: Aseta loukkuja, tarkista rakenteiden tiiveys, ilmoita timpurille
+    source: src:PIE1
+  tick_risk_level:
+    value: Aktiivinen kun vrk-keskilÃ¤mpÃ¶ >5Â°C (huhtiâ€“marras)
+    action: Punkkitarkistus ulkoilun jÃ¤lkeen, repellenttiÃ¤
+    source: src:PIE2
+  wasp_nest_proximity_m:
+    value: 5
+    action: AmpiaispesÃ¤ <5m oleskelualueesta â†’ poisto tai merkintÃ¤
+    source: src:PIE1
+  mosquito_peak_conditions:
+    value: IltalÃ¤mpÃ¶ >15Â°C + kosteus >70% + tuuleton â†’ huippu
+    source: src:PIE1
+  rat_sign_threshold:
+    value: Yksikin rotanjÃ¤tÃ¶s sisÃ¤tiloissa â†’ vÃ¤litÃ¶n toimenpide
+    action: Ammattilainen paikalle, elintarvikkeet turvaan
+    source: src:PIE1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] Hiirten talvivaurioiden tarkistus puutarhassa. Punkkikausi
+    alkaa. Muurahaiskartoitus rakennusten seinustoilla.'
+  source: src:PIE1
+- season: KesÃ¤
+  action: '[vko 22-35] Hyttystorjunta (seisova vesi pois), ampiaispesien kartoitus
+    heinÃ¤kuusta, kÃ¤rpÃ¤sten torjunta (kompostialueet).'
+  source: src:PIE1
+- season: Syksy
+  action: Hiirten sisÃ¤Ã¤ntunkeutumisen esto â€” tiivistÃ¤ aukot <6mm. Rotat etsivÃ¤t suojaa.
+    Punkkikausi jatkuu lokakuuhun.
+  source: src:PIE1
+- season: Talvi
+  action: Myyrien lumireiÃ¤t ja jÃ¤ljet seurannassa. Loukut tarkistetaan 2x/vko. Hiiret
+    aktiivisia sisÃ¤tiloissa.
+  source: src:PIE1
+FAILURE_MODES:
+- mode: Rottahavainto
+  detection: JÃ¤tÃ¶kset (12-18mm, tummat) tai kaivautumisreiÃ¤t perustuksissa
+  action: Ammattimainen rotantorjunta VÃ„LITTÃ–MÃ„STI, ilmoita terveystarkastajalle tarvittaessa
+  source: src:PIE1
+- mode: AmpiaispesÃ¤ seinÃ¤rakenteessa
+  detection: Ampiaiset lentÃ¤vÃ¤t rakenteen sisÃ¤Ã¤n/ulos
+  action: Ã„LÃ„ tuki reikÃ¤Ã¤ â†’ ampiaiset tulevat sisÃ¤kautta. Kutsu tuholaistorjuja.
+  source: src:PIE1
+PROCESS_FLOWS:
+- flow_id: FLOW_PIEN_01
+  trigger: mouse_activity_threshold ylittÃ¤Ã¤ kynnysarvon (JÃ¤tÃ¶ksiÃ¤ >10 kpl / mÂ² tai
+    purusahanjauhoa rakenteissa)
+  action: Aseta loukkuja, tarkista rakenteiden tiiveys, ilmoita timpurille
+  output: Tilanneraportti
+  source: src:PIEN
+- flow_id: FLOW_PIEN_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] Hiirten talvivaurioiden tarkistus puutarhassa. Punkkikausi
+    alkaa. Muurahaiskartoitus rak'
+  output: Tarkistuslista
+  source: src:PIEN
+- flow_id: FLOW_PIEN_03
+  trigger: 'Havaittu: Rottahavainto'
+  action: Ammattimainen rotantorjunta VÃ„LITTÃ–MÃ„STI, ilmoita terveystarkastajalle tarvittaessa
+  output: Poikkeamaraportti
+  source: src:PIEN
+- flow_id: FLOW_PIEN_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'pienelain_tuholais: rutiiniarviointi'
+  output: Status-raportti
+  source: src:PIEN
+KNOWLEDGE_TABLES:
+  common_pests:
+  - pest: MetsÃ¤myyrÃ¤ (Myodes glareolus)
+    risk: Puunkuoren kalvaminen talvella, jÃ¤ljet puutarhassa
+    control: Suojukset taimiin, loukkupyynti
+    source: src:PIE1
+  - pest: Kotihiiri (Mus musculus)
+    risk: Elintarvikkeet, johdot, eristeet
+    control: Loukkupyynti, tiivistÃ¤minen
+    source: src:PIE1
+  - pest: Puutiainen (Ixodes ricinus)
+    risk: Borrelioosi, TBE
+    control: Repellentti, pukeutuminen, tarkistus
+    source: src:PIE2
+  - pest: Yleinen ampiainen (Vespula vulgaris)
+    risk: Pistot, allergiariski
+    control: PesÃ¤n poisto (ammattilainen), syÃ¶ttiloukut
+    source: src:PIE1
+  - pest: Muurahainen (Camponotus spp.)
+    risk: Puurakenteissa â†’ rakennevauriot
+    control: Paikanna pesÃ¤, boorihapon syÃ¶tti
+    source: src:PIE1
+COMPLIANCE_AND_LEGAL:
+  rodenticides: JyrsijÃ¤myrkkyjen ammattimainen kÃ¤yttÃ¶ vaatii tuholaistorjuja-tutkinnon
+    (Tukes) [src:PIE3]
+  protected_species: Liito-orava, lepakot â€” suojeltuja, pesÃ¤paikkoja ei saa tuhota
+    [src:PIE4]
+UNCERTAINTY_NOTES:
+- Punkin levittÃ¤mien tautien esiintyvyys vaihtelee alueittain â€” TBE-riski Kaakkois-Suomessa
+  matala mutta kasvava.
+- MyyrÃ¤syklin huippuvuosien ennustaminen on epÃ¤tarkkaa.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PIE1
+    org: Tukes
+    title: Tuholaistorjunta
+    year: 2025
+    url: https://tukes.fi/kemikaalit/biosidivalmisteet/tuholaistorjunta
+    supports: JyrsijÃ¤torjunta, ampiaistorjunta, muurahaiset.
+  - id: src:PIE2
+    org: THL
+    title: Puutiaisten levittÃ¤mÃ¤t taudit
+    year: 2025
+    url: https://thl.fi/fi/web/infektiotaudit-ja-rokotukset/taudit-ja-torjunta/taudit-ja-taudinaiheuttajat-a-o/puutiaisaivotulehdus
+    supports: Borrelioosi, TBE, punkkien aktiivisuuskaudet.
+  - id: src:PIE3
+    org: Tukes
+    title: Tuholaistorjujatutkinto
+    year: 2025
+    url: https://tukes.fi/kemikaalit/biosidivalmisteet/tuholaistorjuja
+    supports: Ammattimaisen torjunnan pÃ¤tevyysvaatimukset.
+  - id: src:PIE4
+    org: OikeusministeriÃ¶
+    title: Luonnonsuojelulaki 9/2023
+    year: 2023
+    url: https://www.finlex.fi/fi/laki/ajantasa/2023/20230009
+    supports: Suojellut elÃ¤inlajit, pesÃ¤paikkojen turvaaminen.
+eval_questions:
+- q: MikÃ¤ on hiirihavainnon kynnys toimenpiteelle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mouse_activity_threshold.value
+  source: src:PIE1
+- q: Milloin punkkikausi alkaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.tick_risk_level.value
+  source: src:PIE2
+- q: MikÃ¤ on ampiaispesÃ¤n vÃ¤himmÃ¤isetÃ¤isyys?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wasp_nest_proximity_m.value
+  source: src:PIE1
+- q: Milloin hyttyset ovat aktiivisimmillaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mosquito_peak_conditions.value
+  source: src:PIE1
+- q: MitÃ¤ tehdÃ¤Ã¤n rottahavainnossa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PIE1
+- q: MikÃ¤ on rotan jÃ¤tÃ¶ksen koko?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PIE1
+- q: Saako ampiaispesÃ¤n reiÃ¤n tukkia?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PIE1
+- q: Vaatiiko jyrsijÃ¤myrkyn kÃ¤yttÃ¶ tutkinnon?
+  a_ref: COMPLIANCE_AND_LEGAL.rodenticides
+  source: src:PIE3
+- q: Onko liito-orava suojeltu?
+  a_ref: COMPLIANCE_AND_LEGAL.protected_species
+  source: src:PIE4
+- q: MikÃ¤ aukon koko estÃ¤Ã¤ hiiren sisÃ¤Ã¤npÃ¤Ã¤syn?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PIE1
+- q: Miten metsÃ¤myyrÃ¤ tunnistetaan?
+  a_ref: KNOWLEDGE_TABLES.common_pests[0].risk
+  source: src:PIE1
+- q: MikÃ¤ on puutiaisen terveysriski?
+  a_ref: KNOWLEDGE_TABLES.common_pests[2].risk
+  source: src:PIE2
+- q: Miten muurahaispesÃ¤ puurakenteessa havaitaan?
+  a_ref: KNOWLEDGE_TABLES.common_pests[4].risk
+  source: src:PIE1
+- q: Kuinka usein loukkuja tarkistetaan talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PIE1
+- q: MistÃ¤ seisova vesi poistetaan kesÃ¤llÃ¤?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PIE1
+- q: Milloin ampiaispesien kartoitus tehdÃ¤Ã¤n?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PIE1
+- q: MikÃ¤ torjuntakeino muurahaisille?
+  a_ref: KNOWLEDGE_TABLES.common_pests[4].control
+  source: src:PIE1
+- q: MitÃ¤ hiiri tuhoaa sisÃ¤tiloissa?
+  a_ref: KNOWLEDGE_TABLES.common_pests[1].risk
+  source: src:PIE1
+- q: MikÃ¤ on TBE-riski Kaakkois-Suomessa?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PIE2
+- q: Milloin metsÃ¤myyrÃ¤n tuhoja tarkistetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PIE1
+- q: MikÃ¤ on ampiaisen riski?
+  a_ref: KNOWLEDGE_TABLES.common_pests[3].risk
+  source: src:PIE1
+- q: Miten ratanjÃ¤tÃ¶s eroaa hiiren jÃ¤tÃ¶ksestÃ¤?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PIE1
+- q: Kenelle hiirituhoista ilmoitetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mouse_activity_threshold.action
+  source: src:PIE1
+- q: Onko myyrÃ¤sykli ennustettavissa?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PIE1
+- q: Milloin punkkikausi pÃ¤Ã¤ttyy?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PIE1
+- q: Miten hiiren sisÃ¤Ã¤npÃ¤Ã¤sy estetÃ¤Ã¤n?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PIE1
+- q: MikÃ¤ on hiiriloukkupyynnin ensisijainen keino?
+  a_ref: KNOWLEDGE_TABLES.common_pests[1].control
+  source: src:PIE1
+- q: Onko lepakko suojeltu?
+  a_ref: COMPLIANCE_AND_LEGAL.protected_species
+  source: src:PIE4
+- q: MikÃ¤ on ampiaisen torjuntakeino?
+  a_ref: KNOWLEDGE_TABLES.common_pests[3].control
+  source: src:PIE1
+- q: MitÃ¤ kevÃ¤Ã¤llÃ¤ tarkistetaan muurahaisista?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PIE1
+- q: Milloin rotat etsivÃ¤t suojaa?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PIE1
+- q: MikÃ¤ on punkin torjuntakeino?
+  a_ref: KNOWLEDGE_TABLES.common_pests[2].control
+  source: src:PIE2
+- q: MitÃ¤ puutiainen levittÃ¤Ã¤?
+  a_ref: KNOWLEDGE_TABLES.common_pests[2].risk
+  source: src:PIE2
+- q: Kenelle rotasta ilmoitetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PIE1
+- q: Miten kompostialueen kÃ¤rpÃ¤set torjutaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PIE1
+- q: MikÃ¤ on myyrien torjuntakeino talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PIE1
+- q: Voiko metsÃ¤myyrÃ¤ vahingoittaa puutarhaa?
+  a_ref: KNOWLEDGE_TABLES.common_pests[0].risk
+  source: src:PIE1
+- q: Kenelle ampiaispesÃ¤stÃ¤ seinÃ¤rakenteessa ilmoitetaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PIE1
+- q: MikÃ¤ on ensisijainen torjuntaperiaate?
+  a_ref: ASSUMPTIONS
+  source: src:PIE1
+- q: MikÃ¤ on rottahavainnon prioriteetti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.rat_sign_threshold.action
+  source: src:PIE1

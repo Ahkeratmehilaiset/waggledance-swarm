@@ -1,0 +1,55 @@
+# WaggleDance — Beekeeping Compound Terms for Voikko Normalizer
+# Voikko doesn't know these domain-specific compound words.
+# Format: compound -> list of lemma parts
+# Used by core/normalizer.py normalize_fi()
+
+bee_terms:
+  # Hive management
+  mehiläishoitaja: ["mehiläinen", "hoitaja"]
+  mehiläishoito: ["mehiläinen", "hoito"]
+  mehiläispesä: ["mehiläinen", "pesä"]
+  mehiläistarhaus: ["mehiläinen", "tarhaus"]
+  mehiläisvaha: ["mehiläinen", "vaha"]
+
+  # Hive components
+  pesäkortti: ["pesä", "kortti"]
+  pesätarkastus: ["pesä", "tarkastus"]
+  pesätyökalu: ["pesä", "työkalu"]
+  satokehä: ["sato", "kehä"]
+  hoitokehä: ["hoito", "kehä"]
+  lentoaukko: ["lento", "aukko"]
+  vahalevy: ["vaha", "levy"]
+
+  # Treatments
+  varroapudotus: ["varroa", "pudotus"]
+  varroahoito: ["varroa", "hoito"]
+  oksaalihappohoito: ["oksaalihappo", "hoito"]
+  muurahaishappohoito: ["muurahaishappo", "hoito"]
+
+  # Feeding
+  syysruokinta: ["syksy", "ruokinta"]
+  kevätruokinta: ["kevät", "ruokinta"]
+  talviruokinta: ["talvi", "ruokinta"]
+  sokeriliuos: ["sokeri", "liuos"]
+
+  # Diseases
+  toukkamätä: ["toukka", "mätä"]
+  esikotelomätä: ["esikotelo", "mätä"]
+  pesäkuoriainen: ["pesä", "kuoriainen"]
+  kalkkisikiö: ["kalkki", "sikiö"]
+
+  # Season & inspection
+  kevättarkastus: ["kevät", "tarkastus"]
+  kuningataresulkija: ["kuningatar", "sulkija"]
+  emottaminen: ["emo", "vaihtaminen"]
+
+  # Equipment & products
+  hunajalinko: ["hunaja", "linko"]
+  hunajankorjuu: ["hunaja", "korjuu"]
+  hunajamyynti: ["hunaja", "myynti"]
+  siitepölyloukku: ["siitepöly", "loukku"]
+
+  # Environment
+  sähköaita: ["sähkö", "aita"]
+  hiirisuoja: ["hiiri", "suoja"]
+  pörssisähkö: ["pörssi", "sähkö"]

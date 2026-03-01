@@ -1,0 +1,246 @@
+header:
+  agent_id: ravintoterapeutti
+  agent_name: Ravintoterapeutti
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Janin ja perheen ravintosuositukset
+- Fyysisesti aktiivinen (mehiläishoito, metsätyö, mökkielämä)
+- Paikallisten raaka-aineiden hyödyntäminen
+DECISION_METRICS_AND_THRESHOLDS:
+  daily_energy_kcal:
+    value: 2500-3000 kcal (aktiivinen mies, 52v)
+    note: Raskaan työn päivinä (mehiläiset, puunkaato) +500 kcal
+    source: src:RA1
+    action: '2500-3000 kcal/pv perus. Raskas työpäivä (puunkaato, mehiläishoito) →
+      +500 kcal. Eväät mukaan: 600-800 kcal välipalana.'
+  protein_g_per_kg:
+    value: 1.2-1.6 g/kg/pv (aktiivinen aikuinen)
+    source: src:RA1
+  hydration_l_per_day:
+    value: 2.5-3.5 l (sis. ruoan nesteen)
+    action: 2.5-3.5 l/pv. Kuuma ulkotyö (>25°C) → +1 l. Tumma virtsa → välitön nestely.
+      Suola + vesi (1/4 tl / 0.5 l).
+    source: src:RA1
+  vitamin_d_ug:
+    value: 10-20 μg/pv (talvella lisäravinne suositeltava)
+    source: src:RA1
+    action: 'Lokakuu-maaliskuu: lisäravinne 20 μg/pv. Kesällä auringosta riittävästi.
+      Tarkista verikoe 2v välein.'
+  omega3_weekly_fish:
+    value: 2-3 kala-ateriaa viikossa
+    source: src:RA1
+  sugar_max_energy_pct:
+    value: <10% kokonaisenergiasta
+    source: src:RA1
+SEASONAL_RULES:
+- season: Kevät
+  action: '[vko 14-22] D-vitamiini vielä tärkeä. Tuoreet villivihannekset (nokkonen).
+    Kevään väsymys → rautapitoisuus.'
+  source: src:RA1
+- season: Kesä
+  action: Nesteytys kriittistä ulkotyössä. Marjat antioksidantteja. Kalan omega-3.
+  source: src:RA1
+- season: Syksy
+  action: '[vko 36-48] Sieni-/marjasäilöntä talveksi. Kauden juurekset. Immuniteetin
+    vahvistus.'
+  source: src:RA1
+- season: Talvi
+  action: D-vitamiinilisä 20 μg/pv. Pakastetut marjat C-vitamiiniin. Lämmin ruoka.
+  source: src:RA1
+FAILURE_MODES:
+- mode: Dehydraatio ulkotyössä
+  detection: Päänsärky, väsymys, tumma virtsa
+  action: Juomatauko 15min välein, suolaa + vettä, varjoon
+  source: src:RA1
+- mode: Energiavaje pitkänä työpäivänä
+  detection: Väsymys, huimaus klo 14-16
+  action: 'Eväät mukaan: pähkinät, leipä, juoma. Tauko 2h välein.'
+  source: src:RA1
+PROCESS_FLOWS:
+- flow_id: FLOW_RAVI_01
+  trigger: daily_energy_kcal ylittää kynnysarvon (2500-3000 kcal (aktiivinen mies,
+    52v))
+  action: '2500-3000 kcal/pv perus. Raskas työpäivä (puunkaato, mehiläishoito) → +500
+    kcal. Eväät mukaan: 600-800 kcal välipalana.'
+  output: Tilanneraportti
+  source: src:RAVI
+- flow_id: FLOW_RAVI_02
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] D-vitamiini vielä tärkeä. Tuoreet villivihannekset (nokkonen).
+    Kevään väsymys → rautapit'
+  output: Tarkistuslista
+  source: src:RAVI
+- flow_id: FLOW_RAVI_03
+  trigger: 'Havaittu: Dehydraatio ulkotyössä'
+  action: Juomatauko 15min välein, suolaa + vettä, varjoon
+  output: Poikkeamaraportti
+  source: src:RAVI
+- flow_id: FLOW_RAVI_04
+  trigger: Säännöllinen heartbeat
+  action: 'ravintoterapeutti: rutiiniarviointi'
+  output: Status-raportti
+  source: src:RAVI
+KNOWLEDGE_TABLES:
+- table_id: TBL_RAVI_01
+  title: Ravintoterapeutti — Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: daily_energy_kcal
+    value: 2500-3000 kcal (aktiivinen mies, 52v)
+    action: 2500-3000 kcal/pv perus. Raskas työpäivä (puunkaato, mehiläishoito) →
+      +500 kcal.
+  - metric: protein_g_per_kg
+    value: 1.2-1.6 g/kg/pv (aktiivinen aikuinen)
+    action: ''
+  - metric: hydration_l_per_day
+    value: 2.5-3.5 l (sis. ruoan nesteen)
+    action: 2.5-3.5 l/pv. Kuuma ulkotyö (>25°C) → +1 l. Tumma virtsa → välitön nestely.
+      Suol
+  - metric: vitamin_d_ug
+    value: 10-20 μg/pv (talvella lisäravinne suositeltava)
+    action: 'Lokakuu-maaliskuu: lisäravinne 20 μg/pv. Kesällä auringosta riittävästi.
+      Tarkist'
+  - metric: omega3_weekly_fish
+    value: 2-3 kala-ateriaa viikossa
+    action: ''
+  - metric: sugar_max_energy_pct
+    value: <10% kokonaisenergiasta
+    action: ''
+  source: src:RAVI
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Ravintosuositukset ovat väestötason ohjeita — yksilölliset tarpeet vaihtelevat.
+- 'Hunajan ravintosisältö: pääosin sokereita, vähän mikroravinteita.'
+SOURCE_REGISTRY:
+  sources:
+  - id: src:RA1
+    org: THL / Ruokavirasto
+    title: Suomalaiset ravitsemussuositukset
+    year: 2024
+    url: https://www.ruokavirasto.fi/teemat/terveytta-edistava-ruokavalio/
+    supports: Energia, proteiini, D-vitamiini, nesteytys.
+eval_questions:
+- q: Mikä on päivittäinen energiantarve (kcal)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.daily_energy_kcal
+  source: src:RA1
+- q: Mikä on proteiini (g/painokilo)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.protein_g_per_kg
+  source: src:RA1
+- q: Mikä on nestetarve (l/päivä)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hydration_l_per_day
+  source: src:RA1
+- q: 'Toimenpide: nestetarve (l/pÃ¤ivÃ¤)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hydration_l_per_day.action
+  source: src:RA1
+- q: Mikä on vitamin d ug?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vitamin_d_ug
+  source: src:RA1
+- q: Mikä on omega-3 viikkokala-annos?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.omega3_weekly_fish
+  source: src:RA1
+- q: Mikä on sugar max energy pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sugar_max_energy_pct
+  source: src:RA1
+- q: Kausiohje (Kevät)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:RA1
+- q: Kausiohje (Kesä)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:RA1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:RA1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:RA1
+- q: 'Havainto: Dehydraatio ulkotyössä?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:RA1
+- q: 'Toiminta: Dehydraatio ulkotyössä?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:RA1
+- q: 'Havainto: Energiavaje pitkänä työpäivänä?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:RA1
+- q: 'Toiminta: Energiavaje pitkänä työpäivänä?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:RA1
+- q: Epävarmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:RA1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #16?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #17?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #18?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #19?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #20?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #21?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #22?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1
+- q: 'Operatiivinen lisäkysymys #23?'
+  a_ref: ASSUMPTIONS
+  source: src:RA1

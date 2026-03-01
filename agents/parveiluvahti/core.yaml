@@ -1,0 +1,208 @@
+header:
+  agent_id: parveiluvahti
+  agent_name: Parveiluvahti
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- Valvoo parveiluriskiä kaikilla tarhoilla
+- Saa dataa pesälämpö-agentilta, lentosää-agentilta ja tarhaajalta
+DECISION_METRICS_AND_THRESHOLDS:
+  swarm_season:
+    value: Touko-heinäkuu, huippu kesäkuun 2. viikko
+    source: src:PAR1
+  inspection_interval_days:
+    value: 7
+    action: Parveilukauden aikana tarkistus 7 pv välein
+    source: src:PAR1
+  queen_cell_count_trigger:
+    value: 1
+    action: ≥1 emokoppa → välitön toimenpide (jako tai poisto)
+    source: src:PAR1
+  colony_overcrowding_indicator:
+    value: Kaarella (pesän ulkopuolella) >200 mehiläistä illalla
+    action: Lisää korotus tai jaa pesä
+    source: src:PAR1
+  weather_swarm_risk:
+    value: T >20°C, tuuleton, aurinkoinen → korkea parveilupäivä
+    source: src:PAR1
+  post_swarm_signs:
+    value: Äkillinen mehiläismäärän lasku, tyhjät emokopat
+    action: Tarkista onko emo jäljellä, sulje ylimääräiset lennot
+    source: src:PAR1
+SEASONAL_RULES:
+- season: Kevät (touko)
+  action: Parveilukausi alkaa. Aloita 7pv tarkistussykli. Varmista tilaa pesässä.
+  source: src:PAR1
+- season: Kesä (kesä-heinä)
+  action: '[vko 22-35] Huippukausi. Hellepäivinä erityisvarovaisuus. Parviloukut paikoilleen.'
+  source: src:PAR1
+- season: Syksy
+  action: '[vko 36-48] Parveiluriski ohi. Tarkista emontilanne: onko uusi emo muniva?'
+  source: src:PAR1
+- season: Talvi
+  action: '[vko 49-13] Ei parveiluriskiä. Suunnittele kevään ehkäisytoimet.'
+  source: src:PAR1
+FAILURE_MODES:
+- mode: Parvi lähtenyt
+  detection: Suuri mehiläispilvi ilmassa, pesän populaatio pudonnut äkisti
+  action: Paikanna parvi (usein lähipuussa 24h), kerää kiinni, aseta uuteen pesään
+  source: src:PAR1
+- mode: Emoton pesä parveilun jälkeen
+  detection: Ei emoa eikä avoimia emokoppia 2 viikon jälkeen
+  action: Yhdistä lehtipaperilla tai anna uusi emo
+  source: src:PAR1
+PROCESS_FLOWS:
+  swarm_prevention:
+    steps:
+    - 1. Tarkista emokopat joka 7. pv touko-heinäkuussa
+    - '2. Jos emokoppia → päätä: jako vai poisto'
+    - '3. Jako: siirrä vanha emo + 3 kehystä uuteen pesään'
+    - '4. Poisto: murskaa kaikki emokopat (EI jätä yhtäkään)'
+    - 5. Lisää tilaa (korotus) jos pesä ahdas
+KNOWLEDGE_TABLES:
+  swarm_triggers:
+  - trigger: Emokopat rakennettu
+    severity: KRIITTINEN
+    response_time: 24h
+  - trigger: Kaarella >200 mehiläistä
+    severity: KORKEA
+    response_time: 48h
+  - trigger: Pesässä >10 kehystä sikiötä
+    severity: KESKITASO
+    response_time: 7 pv
+  - trigger: Uusi emo kuoriutumassa
+    severity: KRIITTINEN
+    response_time: Välitön
+COMPLIANCE_AND_LEGAL: {}
+UNCERTAINTY_NOTES:
+- Parveilu on mehiläisten luontainen lisääntymistapa — täydellinen esto ei aina mahdollista.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PAR1
+    org: SML
+    title: Mehiläishoitoa käytännössä
+    year: 2011
+    url: null
+    identifier: ISBN 978-952-92-9184-4
+    supports: Parveilunhallinta.
+eval_questions:
+- q: Mikä on parveilukausi?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.swarm_season.value
+  source: src:PAR1
+- q: Kuinka usein emokopat tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.inspection_interval_days.value
+  source: src:PAR1
+- q: Montako emokoppaa laukaisee toimenpiteen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.queen_cell_count_trigger.value
+  source: src:PAR1
+- q: Mikä on kaarella-ilmiön raja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.colony_overcrowding_indicator.value
+  source: src:PAR1
+- q: Millainen sää lisää parveiluriskiä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weather_swarm_risk.value
+  source: src:PAR1
+- q: Miten parvi kerätään?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PAR1
+- q: Miten jako tehdään?
+  a_ref: PROCESS_FLOWS.swarm_prevention.steps
+  source: src:PAR1
+- q: Mikä on emokopin vastausaika?
+  a_ref: KNOWLEDGE_TABLES.swarm_triggers[0].response_time
+  source: src:PAR1
+- q: Mitä tehdään parveilun jälkeisessä emottomassa pesässä?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PAR1
+- q: Milloin huippukausi on?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.swarm_season.value
+  source: src:PAR1
+- q: Miten emokopat poistetaan?
+  a_ref: PROCESS_FLOWS.swarm_prevention.steps
+  source: src:PAR1
+- q: Mitä ovat parveilun jälkeiset merkit?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.post_swarm_signs.value
+  source: src:PAR1
+- q: Miksi kaikkia emokoppia ei saa jättää?
+  a_ref: PROCESS_FLOWS.swarm_prevention.steps
+  source: src:PAR1
+- q: Mistä tietää onko parvi lähtenyt?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PAR1
+- q: Milloin parveilukausi päättyy?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PAR1
+- q: Mikä on parviloukkujen käyttöaika?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PAR1
+- q: Voiko parveilun kokonaan estää?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PAR1
+- q: Miten tila vaikuttaa parveiluun?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.colony_overcrowding_indicator.action
+  source: src:PAR1
+- q: Mitä talvella suunnitellaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PAR1
+- q: Kuinka nopeasti emokopista kuoriutuu?
+  a_ref: KNOWLEDGE_TABLES.swarm_triggers[3].response_time
+  source: src:PAR1
+- q: Miten pesän populaation lasku havaitaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PAR1
+- q: Onko 10 sikiökehystä riskitekijä?
+  a_ref: KNOWLEDGE_TABLES.swarm_triggers[2]
+  source: src:PAR1
+- q: Miten ahdas pesä tunnistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.colony_overcrowding_indicator.value
+  source: src:PAR1
+- q: Mikä on korotuksen tarkoitus?
+  a_ref: PROCESS_FLOWS.swarm_prevention.steps
+  source: src:PAR1
+- q: Mistä parvi löytyy lähtemisen jälkeen?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PAR1
+- q: Miten jako tehdään konkreettisesti?
+  a_ref: PROCESS_FLOWS.swarm_prevention.steps
+  source: src:PAR1
+- q: Pitääkö uutta emoa odottaa 2 viikkoa?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:PAR1
+- q: Millainen on korkean riskin tarkistussykli?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.inspection_interval_days
+  source: src:PAR1
+- q: Miten hellepäivät liittyvät parveiluun?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PAR1
+- q: Miten emoton pesä yhdistetään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PAR1
+- q: 'Operatiivinen päätöskysymys #1?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #2?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #3?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #4?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #5?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #6?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #7?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #8?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #9?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV
+- q: 'Operatiivinen päätöskysymys #10?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS
+  source: src:PARV

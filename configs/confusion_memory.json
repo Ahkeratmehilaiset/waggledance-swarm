@@ -1,0 +1,31 @@
+{
+  "gdpr": {
+    "Core/Dispatcher (Päällikkö)": 4,
+    "Privaattisuuden suojelija": 2
+  },
+  "cvr|lasketaan": {
+    "Fenologi": 2,
+    "Matemaatikko ja fyysikko (laskenta + mallit)": 1
+  },
+  "palovaroitin": {
+    "Paloesimies": 6
+  },
+  "sammutin": {
+    "Paloesimies": 3
+  },
+  "kameravalvonta": {
+    "Pihavahti (ihmishavainnot)": 2,
+    "Privaattisuuden suojelija": 1
+  },
+  "ilmoitetaan|karhuhavainnosta": {
+    "Luontokuvaaja (PTZ-operaattori)": 2,
+    "Riistanvartija": 1
+  },
+  "afb|tunnistetaan": {
+    "Tarhaaja (Päämehiläishoitaja)": 2,
+    "Tautivahti (mehiläiset)": 1
+  },
+  "12345|aihe|erikoin|erikoinen|kysymys|testi": {
+    "TestiAgentti": 8
+  }
+}

@@ -1,0 +1,239 @@
+﻿header:
+  agent_id: leipuri
+  agent_name: Leipuri
+  version: 1.0.0
+  last_updated: '2026-02-21'
+ASSUMPTIONS:
+- 'MÃ¶kkileipominen: leivinuuni, puulÃ¤mmitteinen'
+- Hapanjuuri, ruisleipÃ¤, pulla, karjalanpiirakat
+DECISION_METRICS_AND_THRESHOLDS:
+  oven_temp_bread_c:
+    value: 220-250Â°C (ruisleipÃ¤), 200-220Â°C (vehnÃ¤leipÃ¤)
+    source: src:LE1
+  sourdough_activity:
+    value: Tupla tilavuus 4-8h huoneenlÃ¤mmÃ¶ssÃ¤
+    action: 'Ei nouse â†’ elvytÃ¤: uusi jauholisÃ¤ys, lÃ¤mpÃ¶ 25-28Â°C'
+    source: src:LE1
+  dough_hydration_pct:
+    value: RuisleipÃ¤ 75-85%, vehnÃ¤ 65-75%
+    source: src:LE1
+  bread_core_temp_c:
+    value: 96-98Â°C â†’ kypsÃ¤
+    action: Mittaa pitkÃ¤llÃ¤ piikkimittarilla
+    source: src:LE1
+  flour_storage_months:
+    value: TÃ¤ysjyvÃ¤jauho 3-6 kk, valkoinen 12 kk viileÃ¤ssÃ¤
+    action: Haju tai hyÃ¶nteiset â†’ hylkÃ¤Ã¤
+    source: src:LE1
+  leivinuuni_heat_hours:
+    value: LÃ¤mmitys 2-3h, leipominen kun luukku suljettu ja T 220-280Â°C
+    source: src:LE1
+SEASONAL_RULES:
+- season: KevÃ¤t
+  action: '[vko 14-22] PÃ¤Ã¤siÃ¤isleipÃ¤ (mÃ¤mmi, pasha). Hapanjuuren elvytys talven jÃ¤lkeen.'
+  source: src:LE1
+- season: KesÃ¤
+  action: '[vko 22-35] KesÃ¤leivÃ¤t (nuotioleipÃ¤, grillileipÃ¤). Taikinan nostatus nopeutuu
+    lÃ¤mmÃ¶ssÃ¤.'
+  source: src:LE1
+- season: Syksy
+  action: '[vko 36-48] SadonkorjuuleipÃ¤. Joulupiparkakkujen valmistelu. Ruisjauhosadon
+    kÃ¤yttÃ¶Ã¶notto.'
+  source: src:LE1
+- season: Talvi
+  action: '[vko 49-13] JoululeipiÃ¤: pipari, tortut, pulla. Leivinuunin hyÃ¶dyntÃ¤minen
+    lÃ¤mmitykseen.'
+  source: src:LE1
+FAILURE_MODES:
+- mode: Hapanjuuri kuollut
+  detection: Ei kuplia, paha haju, ei nouse
+  action: 'Aloita uusi: ruis+vesi, 5pv kÃ¤yminen. Tai hanki startteria naapurilta.'
+  source: src:LE1
+- mode: LeipÃ¤ ei kypsÃ¤ sisÃ¤ltÃ¤
+  detection: Tahmea sisus, sisÃ¤lÃ¤mpÃ¶ <95Â°C
+  action: Jatka paistoa alhaisemmalla lÃ¤mmÃ¶llÃ¤ (180Â°C) 15-20 min
+  source: src:LE1
+PROCESS_FLOWS:
+- flow_id: FLOW_LEIP_02
+  trigger: 'Kausi vaihtuu: KevÃ¤t'
+  action: '[vko 14-22] PÃ¤Ã¤siÃ¤isleipÃ¤ (mÃ¤mmi, pasha). Hapanjuuren elvytys talven jÃ¤lkeen.'
+  output: Tarkistuslista
+  source: src:LEIP
+- flow_id: FLOW_LEIP_03
+  trigger: 'Havaittu: Hapanjuuri kuollut'
+  action: 'Aloita uusi: ruis+vesi, 5pv kÃ¤yminen. Tai hanki startteria naapurilta.'
+  output: Poikkeamaraportti
+  source: src:LEIP
+- flow_id: FLOW_LEIP_04
+  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  action: 'leipuri: rutiiniarviointi'
+  output: Status-raportti
+  source: src:LEIP
+KNOWLEDGE_TABLES:
+- table_id: TBL_LEIP_01
+  title: Leipuri â€” Kynnysarvot
+  columns:
+  - metric
+  - value
+  - action
+  rows:
+  - metric: oven_temp_bread_c
+    value: 220-250Â°C (ruisleipÃ¤), 200-220Â°C (vehnÃ¤leipÃ¤)
+    action: ''
+  - metric: sourdough_activity
+    value: Tupla tilavuus 4-8h huoneenlÃ¤mmÃ¶ssÃ¤
+    action: 'Ei nouse â†’ elvytÃ¤: uusi jauholisÃ¤ys, lÃ¤mpÃ¶ 25-28Â°C'
+  - metric: dough_hydration_pct
+    value: RuisleipÃ¤ 75-85%, vehnÃ¤ 65-75%
+    action: ''
+  - metric: bread_core_temp_c
+    value: 96-98Â°C â†’ kypsÃ¤
+    action: Mittaa pitkÃ¤llÃ¤ piikkimittarilla
+  - metric: flour_storage_months
+    value: TÃ¤ysjyvÃ¤jauho 3-6 kk, valkoinen 12 kk viileÃ¤ssÃ¤
+    action: Haju tai hyÃ¶nteiset â†’ hylkÃ¤Ã¤
+  - metric: leivinuuni_heat_hours
+    value: LÃ¤mmitys 2-3h, leipominen kun luukku suljettu ja T 220-280Â°C
+    action: ''
+  source: src:LEIP
+COMPLIANCE_AND_LEGAL:
+  myynti: 'Satunnaisesta kotileipomisesta myyntiin: omavalvontasuunnitelma Ruokavirastoon
+    jos sÃ¤Ã¤nnÃ¶llistÃ¤ [src:LE2]'
+UNCERTAINTY_NOTES:
+- Leivinuunin lÃ¤mpÃ¶tila vaihtelee â€” termometri hormiin/uuniin on vÃ¤lttÃ¤mÃ¤tÃ¶n.
+- Hapanjuuren aktiivisuus riippuu ympÃ¤ristÃ¶oloista â€” ei aina toistettavissa.
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LE1
+    org: Marttaliitto
+    title: LeipÃ¤ohjeistot
+    year: 2025
+    url: https://www.martat.fi/
+    supports: Reseptit, lÃ¤mpÃ¶tilat, hapanjuuri.
+  - id: src:LE2
+    org: Ruokavirasto
+    title: Kotitalouden myynti
+    year: 2025
+    url: https://www.ruokavirasto.fi/
+    supports: Elintarvikemyynti.
+eval_questions:
+- q: MikÃ¤ on uunin leipomislÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oven_temp_bread_c
+  source: src:LE1
+- q: MikÃ¤ on sourdough activity?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sourdough_activity
+  source: src:LE1
+- q: 'Toimenpide: sourdough activity?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sourdough_activity.action
+  source: src:LE1
+- q: MikÃ¤ on taikinan nestepitoisuus (%)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.dough_hydration_pct
+  source: src:LE1
+- q: MikÃ¤ on leivÃ¤n sisÃ¤lÃ¤mpÃ¶tila (Â°C)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bread_core_temp_c
+  source: src:LE1
+- q: 'Toimenpide: leivÃ¤n sisÃ¤lÃ¤mpÃ¶tila (Â°C)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bread_core_temp_c.action
+  source: src:LE1
+- q: MikÃ¤ on jauhojen sÃ¤ilyvyys (kk)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.flour_storage_months
+  source: src:LE1
+- q: 'Toimenpide: jauhojen sÃ¤ilyvyys (kk)?'
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.flour_storage_months.action
+  source: src:LE1
+- q: MikÃ¤ on leivinuunin lÃ¤mmitysaika (h)?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.leivinuuni_heat_hours
+  source: src:LE1
+- q: Kausiohje (KevÃ¤t)?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LE1
+- q: Kausiohje (KesÃ¤)?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LE1
+- q: Kausiohje (Syksy)?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LE1
+- q: Kausiohje (Talvi)?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LE1
+- q: 'Havainto: Hapanjuuri kuollut?'
+  a_ref: FAILURE_MODES[0].detection
+  source: src:LE1
+- q: 'Toiminta: Hapanjuuri kuollut?'
+  a_ref: FAILURE_MODES[0].action
+  source: src:LE1
+- q: 'Havainto: LeipÃ¤ ei kypsÃ¤ sisÃ¤ltÃ¤?'
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LE1
+- q: 'Toiminta: LeipÃ¤ ei kypsÃ¤ sisÃ¤ltÃ¤?'
+  a_ref: FAILURE_MODES[1].action
+  source: src:LE1
+- q: 'SÃ¤Ã¤ntÃ¶: myynti?'
+  a_ref: COMPLIANCE_AND_LEGAL.myynti
+  source: src:LE1
+- q: EpÃ¤varmuudet?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LE1
+- q: Oletukset?
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #1?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #2?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #3?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #4?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #5?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #6?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #7?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #8?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #9?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #10?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #11?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #12?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #13?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #14?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #15?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #16?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #17?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #18?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #19?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1
+- q: 'Operatiivinen lisÃ¤kysymys #20?'
+  a_ref: ASSUMPTIONS
+  source: src:LE1

@@ -1406,7 +1406,25 @@ class TranslationProxy:
     def _opus_translate(self, text: str, direction: str, t0: float,
                         lemma_map=None, translated_terms=None,
                         unknown_words=None) -> 'TranslationResult':
-        """Opus-MT fallback-käännös."""
+        """Opus-MT fallback-käännös. LAZY: Don't load models during startup."""
+
+        # Check if models are ACTUALLY loaded in OpusMTFallback
+        # (self.opus is OpusMTFallback instance with _fi_en and _en_fi attributes)
+        models_loaded = False
+        if hasattr(self, 'opus') and self.opus:
+            if hasattr(self.opus, '_fi_en') and hasattr(self.opus, '_en_fi'):
+                models_loaded = (self.opus._fi_en is not None or self.opus._en_fi is not None)
+
+        if not models_loaded:
+            # Models not loaded yet - skip to avoid loading during startup
+            # Return passthrough (original text) - LLMs can handle Finnish too
+            latency = (time.perf_counter() - t0) * 1000
+            self._update_latency(latency)
+            return TranslationResult(
+                text=text, method="dict_only_startup", latency_ms=latency,
+                coverage=0.0, unknown_words=unknown_words or [])
+
+        # Models already loaded - safe to translate
         if direction == "fi_to_en":
             result = self.opus.fi_to_en(text)
         else:

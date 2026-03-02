@@ -239,7 +239,7 @@ class HiveMind:
 
         # ── Phase 3: Social Learning ───────────────────────
         self.agent_levels = None           # AgentLevelManager
-        self._last_user_chat_time = 0.0    # monotonic, for night mode idle detection
+        self._last_user_chat_time = time.monotonic()  # prime at init so night mode can activate without chat
         self._night_mode_active = False
         self._night_mode_start = 0.0
         self._night_mode_facts_learned = 0
@@ -1869,13 +1869,14 @@ DELEGATION RULES (IMPORTANT):
                             _guarded(self._round_table))
 
                 # Phase 3: Night mode learning (every other cycle)
+                # Night learn bypasses _guarded — it's the whole point
+                # of night mode and should not be starved by other tasks
                 if (self._night_mode_active
                         and self._heartbeat_count % 2 == 0):
                     _actions.append("night_learn")
-                    asyncio.create_task(
-                        _guarded(self._night_learning_cycle))
-                    # Save progress periodically
-                    if self._heartbeat_count % 20 == 0:
+                    asyncio.create_task(self._night_learning_cycle())
+                    # Save progress every 5th heartbeat (was 20)
+                    if self._heartbeat_count % 5 == 0:
                         self._save_learning_progress()
 
                 # Odottavat tehtävät (max 1 kerrallaan)
@@ -2574,8 +2575,6 @@ DELEGATION RULES (IMPORTANT):
         _nm_cfg = self.config.get("night_mode", {})
         if not _nm_cfg.get("enabled", True):
             return False
-        if self._last_user_chat_time == 0.0:
-            return False  # No chat yet
         idle_threshold = _nm_cfg.get("idle_threshold_min", 30) * 60
         max_hours = _nm_cfg.get("max_hours", 8)
         idle = time.monotonic() - self._last_user_chat_time
@@ -2785,6 +2784,15 @@ DELEGATION RULES (IMPORTANT):
                     self.throttle)
                 if stored:
                     self._night_mode_facts_learned += stored
+                    log.info(
+                        f"🌙 Night enrichment: +{stored} facts "
+                        f"(total {self._night_mode_facts_learned})")
+                    if hasattr(self, 'structured_logger') and self.structured_logger:
+                        self.structured_logger.log_learning(
+                            event="night_enrichment",
+                            count=stored,
+                            duration_ms=0,
+                            source="night_enricher")
                     await self._notify_ws("enrichment", {
                         "facts_stored": stored,
                         "total_stored": self.night_enricher.stats[
@@ -2792,6 +2800,7 @@ DELEGATION RULES (IMPORTANT):
                         "facts_learned": self._night_mode_facts_learned,
                         "source": "night_enricher",
                     })
+                    self._save_learning_progress()
                 return
             except Exception as e:
                 log.error(f"NightEnricher cycle error: {e}")

@@ -1437,8 +1437,27 @@ class Consciousness:
         return has_fi_char or len(words & fi_words) >= 2
 
     def _to_english(self, text):
-        if self._is_finnish(text) and self.opus.available:
-            return self.opus.fi_to_en(text)
+        """Translate Finnish to English. LAZY: Don't load models during startup."""
+        if not self._is_finnish(text):
+            return text
+        if not self.opus.available:
+            return text
+
+        # Check if models are ACTUALLY loaded (not just available)
+        if self.opus._proxy:
+            # Check if Opus-MT models are loaded in the proxy
+            opus_loaded = (
+                hasattr(self.opus._proxy, 'opus') and
+                self.opus._proxy.opus and
+                (self.opus._proxy.opus._fi_en is not None or
+                 self.opus._proxy.opus._en_fi is not None)
+            )
+            if opus_loaded:
+                # Models already loaded - safe to translate
+                return self.opus.fi_to_en(text)
+
+        # Models not loaded yet - skip translation to avoid loading during startup
+        # YAML seeding will work fine with mixed FI/EN facts
         return text
 
     # ── A) PRE-FILTER ─────────────────────────────────────────

@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WaggleDance Latenssivertailu &mdash; Demo &amp; Tuotanto vs. Cloud AI</title>
+    <style>
+        @media print {
+            body { margin: 0; padding: 10px; background: white; }
+            .page-break { page-break-before: always; }
+            .cover { border-radius: 0; margin: 0; min-height: 100vh; }
+        }
+
+        :root {
+            --honey: #F5A623;
+            --honey-dark: #D4880F;
+            --honey-light: #FFF4E0;
+            --navy: #1B2A4A;
+            --navy-light: #2C3E6B;
+            --green: #27AE60;
+            --green-light: #E8F8F0;
+            --red: #E74C3C;
+            --red-light: #FDEDEC;
+            --blue: #2980B9;
+            --blue-light: #EBF5FB;
+            --bg: #F7F8FA;
+            --card: #FFFFFF;
+            --border: #E5E8ED;
+            --text: #2C3E50;
+            --text-sec: #6B7B8D;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            line-height: 1.65;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 0 20px;
+            color: var(--text);
+            background: var(--bg);
+        }
+
+        /* COVER */
+        .cover {
+            background: linear-gradient(160deg, var(--navy) 0%, var(--navy-light) 50%, #3a5a8c 100%);
+            color: white;
+            padding: 60px 50px 50px;
+            text-align: center;
+            border-radius: 0 0 20px 20px;
+            margin: 0 -20px 40px;
+            position: relative;
+        }
+        .cover::before {
+            content: '';
+            position: absolute; inset: 0;
+            background: radial-gradient(ellipse at 30% 40%, rgba(245,166,35,0.12) 0%, transparent 50%);
+        }
+        .cover h1 { font-size: 2.4em; font-weight: 700; margin-bottom: 6px; position: relative; }
+        .cover .sub { font-size: 1.05em; opacity: 0.8; margin-bottom: 12px; position: relative; }
+        .cover .sub2 { font-size: 0.88em; opacity: 0.6; margin-bottom: 35px; position: relative; }
+        .cover-stats {
+            display: flex; justify-content: center; gap: 36px; flex-wrap: wrap; position: relative;
+        }
+        .cover-stat .val { font-size: 2.2em; font-weight: 800; color: var(--honey); line-height: 1.1; }
+        .cover-stat .lbl { font-size: 0.82em; opacity: 0.75; margin-top: 4px; }
+        .cover-meta { font-size: 0.82em; opacity: 0.6; margin-top: 30px; position: relative; }
+
+        /* SECTIONS */
+        .section-header {
+            margin: 45px 0 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid var(--honey);
+        }
+        .section-header h2 { font-size: 1.55em; color: var(--navy); font-weight: 700; }
+        .section-header .sh-sub { color: var(--text-sec); font-size: 0.9em; margin-top: 3px; }
+
+        h3 { color: var(--navy); font-size: 1.05em; font-weight: 600; margin: 16px 0 10px; }
+
+        /* CARDS */
+        .card {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 24px;
+            margin: 16px 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.03);
+            border: 1px solid var(--border);
+        }
+        .card-accent { border-left: 4px solid var(--honey); }
+
+        /* TABLES */
+        table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 0.9em; }
+        thead th {
+            background: var(--navy); color: white; padding: 11px 14px;
+            text-align: left; font-weight: 600; font-size: 0.86em;
+        }
+        thead th:first-child { border-radius: 8px 0 0 0; }
+        thead th:last-child { border-radius: 0 8px 0 0; }
+        td { padding: 9px 14px; border-bottom: 1px solid var(--border); }
+        tbody tr:nth-child(even) { background: #FAFBFC; }
+        .pro { color: var(--green); font-weight: 600; }
+        .con { color: var(--red); }
+        .best { color: var(--green); font-weight: 700; }
+        .highlight {
+            background: var(--honey); color: white; padding: 2px 10px; border-radius: 4px;
+            font-weight: 700; font-size: 0.86em; white-space: nowrap;
+        }
+        .highlight-green {
+            background: var(--green); color: white; padding: 2px 10px; border-radius: 4px;
+            font-weight: 700; font-size: 0.86em; white-space: nowrap;
+        }
+        .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.82em; font-weight: 600; }
+        .badge-green { background: var(--green-light); color: var(--green); }
+        .badge-red { background: var(--red-light); color: var(--red); }
+        .badge-blue { background: var(--blue-light); color: var(--blue); }
+
+        /* METRIC BOX */
+        .metric {
+            background: linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 100%);
+            color: white; padding: 28px; border-radius: 12px;
+            text-align: center; margin: 24px 0;
+        }
+        .metric h3 { color: var(--honey); font-size: 1em; margin-bottom: 6px; }
+        .metric .big { font-size: 2.8em; font-weight: 800; line-height: 1.1; }
+        .metric p { opacity: 0.8; font-size: 0.9em; margin-top: 6px; }
+
+        /* BAR CHARTS */
+        .bar-chart { margin: 16px 0; }
+        .bar-row { display: flex; align-items: center; margin: 8px 0; font-size: 0.85em; }
+        .bar-label { width: 170px; flex-shrink: 0; text-align: right; padding-right: 12px; font-weight: 500; color: var(--text-sec); }
+        .bar-track { flex: 1; background: #EEF0F4; border-radius: 6px; height: 26px; position: relative; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 6px; display: flex; align-items: center; padding: 0 10px; font-size: 0.8em; font-weight: 700; color: white; white-space: nowrap; }
+        .bar-fill.cloud { background: linear-gradient(90deg, #e74c3c, #c0392b); }
+        .bar-fill.demo { background: linear-gradient(90deg, var(--blue), #2471a3); }
+        .bar-fill.prod { background: linear-gradient(90deg, var(--green), #219a52); }
+        .bar-value { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 0.8em; font-weight: 600; color: var(--text-sec); }
+
+        /* FLOW DIAGRAM */
+        .flow { background: #1d1f27; color: #e8e8e8; padding: 18px 20px; border-radius: 8px; font-family: 'Consolas','Fira Code',monospace; font-size: 0.83em; line-height: 1.6; overflow-x: auto; margin: 12px 0; }
+        .flow .hl-green { color: #6dde8a; font-weight: 700; }
+        .flow .hl-red { color: #ff6b6b; font-weight: 700; }
+        .flow .hl-dim { color: #777; }
+        .flow .hl-honey { color: #f5a623; font-weight: 700; }
+        .flow .hl-blue { color: #5dade2; font-weight: 700; }
+
+        /* SPLIT */
+        .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+        .triple { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin: 16px 0; }
+        @media (max-width: 800px) { .split, .triple { grid-template-columns: 1fr; } }
+
+        /* HW CARDS */
+        .hw-card {
+            background: var(--card); border-radius: 12px; padding: 22px;
+            border: 1px solid var(--border); text-align: center;
+        }
+        .hw-card h4 { font-size: 0.88em; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+        .hw-card .hw-name { font-size: 1.1em; font-weight: 700; color: var(--navy); margin-bottom: 12px; }
+        .hw-card .hw-specs { font-size: 0.82em; color: var(--text-sec); line-height: 1.9; text-align: left; }
+        .hw-card .hw-specs strong { color: var(--text); }
+        .hw-card.cloud-hw { border-top: 4px solid var(--red); }
+        .hw-card.demo-hw { border-top: 4px solid var(--blue); }
+        .hw-card.prod-hw { border-top: 4px solid var(--green); }
+        .hw-tag { display: inline-block; padding: 3px 12px; border-radius: 12px; font-size: 0.78em; font-weight: 700; margin-bottom: 10px; }
+
+        /* SCENARIO BOX */
+        .scenario {
+            background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+            padding: 20px; margin: 16px 0;
+        }
+        .scenario h4 { font-size: 0.95em; color: var(--navy); margin-bottom: 6px; }
+        .scenario .goal { font-size: 0.85em; color: var(--text-sec); margin-bottom: 12px; }
+    </style>
+</head>
+<body>
+
+<!-- ===== COVER ===== -->
+<div class="cover">
+    <div style="font-size: 3em; margin-bottom: 8px; filter: drop-shadow(0 3px 6px rgba(0,0,0,0.3));">&#x26A1;</div>
+    <h1>WaggleDance Latenssivertailu</h1>
+    <div class="sub">Paikallinen AI vs. teollisuuden pilvi-AI</div>
+    <div class="sub2">Demo (HP ZBook) pyörii nyt &mdash; tuotantoarviot (DGX B200) laskettu</div>
+
+    <div class="cover-stats">
+        <div class="cover-stat"><div class="val">~1 ms</div><div class="lbl">B200 cache-osuma</div></div>
+        <div class="cover-stat"><div class="val">~12 ms</div><div class="lbl">B200 keskiarvo</div></div>
+        <div class="cover-stat"><div class="val">100&ndash;350&times;</div><div class="lbl">nopeutuminen vs. pilvi</div></div>
+        <div class="cover-stat"><div class="val">93 %</div><div class="lbl">kustannusero</div></div>
+    </div>
+
+    <div class="cover-meta">
+        Demo: HP ZBook (RTX A2000 8GB, i7-12850HX, 128 GB) &middot;
+        Tuotanto: NVIDIA DGX B200 (8&times; B200 GPU, 1 536 GB HBM3e) &middot;
+        WaggleDance v0.2.0 &middot; 2.3.2026
+    </div>
+</div>
+
+<!-- ===== HARDWARE COMPARISON ===== -->
+<div class="section-header">
+    <h2>Laitteistovertailu</h2>
+    <div class="sh-sub">Demo pyörii kannettavalla &mdash; tuotannossa DGX B200:n suorituskyky on luokkaa 100&times;</div>
+</div>
+
+<div class="triple">
+    <div class="hw-card cloud-hw">
+        <div class="hw-tag" style="background: var(--red-light); color: var(--red);">VERTAILUKOHTA</div>
+        <div class="hw-name">Pilvi-AI (Azure / AWS)</div>
+        <div class="hw-specs">
+            <strong>GPU:</strong> Jaettu (ei dedikoitu)<br>
+            <strong>Verkko:</strong> Internet (50&ndash;300 ms viive)<br>
+            <strong>Sijainti:</strong> Datacenter, ulkomailla<br>
+            <strong>Kustannus:</strong> &euro;5 136&ndash;7 200/v<br>
+            <strong>Data:</strong> Pilvipalvelimella
+        </div>
+    </div>
+    <div class="hw-card demo-hw">
+        <div class="hw-tag" style="background: var(--blue-light); color: var(--blue);">DEMO &mdash; PYÖRII NYT</div>
+        <div class="hw-name">HP ZBook Workstation</div>
+        <div class="hw-specs">
+            <strong>CPU:</strong> i7-12850HX 16C/24T<br>
+            <strong>RAM:</strong> 128 GB DDR5<br>
+            <strong>GPU:</strong> RTX A2000 8 GB GDDR6<br>
+            <strong>SSD:</strong> Samsung 2 TB NVMe<br>
+            <strong>Teho:</strong> ~150 W<br>
+            <strong>Hinta:</strong> ~&euro;3 500
+        </div>
+    </div>
+    <div class="hw-card prod-hw">
+        <div class="hw-tag" style="background: var(--green-light); color: var(--green);">TUOTANTO &mdash; TEHTAALLE</div>
+        <div class="hw-name">NVIDIA DGX B200</div>
+        <div class="hw-specs">
+            <strong>CPU:</strong> 2&times; Xeon Platinum 8570, 112C<br>
+            <strong>RAM:</strong> 4 096 GB DDR5<br>
+            <strong>GPU:</strong> 8&times; B200 1 536 GB HBM3e<br>
+            <strong>Suorituskyky:</strong> 72 000 TFLOPS FP16<br>
+            <strong>Teho:</strong> 14,4 kW<br>
+            <strong>Hinta:</strong> ~&euro;475 000
+        </div>
+    </div>
+</div>
+
+<div class="card card-accent">
+    <h3 style="margin-top:0;">Komponenttikohtaiset latenssit</h3>
+    <table>
+        <thead>
+            <tr><th>Komponentti</th><th>Demo (ZBook)</th><th>Tuotanto (B200)</th><th>Kerroin</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>phi4-mini inference (1K tok)</td><td>800&ndash;1 500 ms</td><td class="best">5&ndash;15 ms</td><td><span class="highlight-green">~100&times;</span></td></tr>
+            <tr><td>llama 3.2 1B (heartbeat)</td><td>400&ndash;800 ms</td><td class="best">2&ndash;5 ms</td><td><span class="highlight-green">~150&times;</span></td></tr>
+            <tr><td>nomic-embed (100 tekstiä)</td><td>3&ndash;5 s</td><td class="best">20&ndash;50 ms</td><td><span class="highlight-green">~100&times;</span></td></tr>
+            <tr><td>ChromaDB-haku (3 147 faktaa)</td><td>15&ndash;30 ms</td><td class="best">5&ndash;10 ms</td><td><span class="highlight-green">~3&times;</span></td></tr>
+            <tr><td>Opus-MT käännös</td><td>200&ndash;500 ms</td><td class="best">5&ndash;10 ms</td><td><span class="highlight-green">~50&times;</span></td></tr>
+            <tr><td>NightEnricher (per fakta)</td><td>5&ndash;10 s</td><td class="best">50&ndash;100 ms</td><td><span class="highlight-green">~100&times;</span></td></tr>
+            <tr><td>Round Table (50 agenttia)</td><td>30&ndash;60 s</td><td class="best">200&ndash;500 ms</td><td><span class="highlight-green">~100&times;</span></td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== SUMMARY ===== -->
+<div class="section-header">
+    <h2>Tiivistelmä &mdash; kokonaislatenssit</h2>
+    <div class="sh-sub">Käyttäjän kokema kokonaisviive: Cloud AI vs. Demo (mitattu) vs. Tuotanto (laskettu)</div>
+</div>
+
+<div class="card card-accent">
+    <table>
+        <thead>
+            <tr><th>Operaatio</th><th>Cloud AI</th><th>Demo (ZBook)</th><th>Tuotanto (B200)</th><th>B200 vs. Cloud</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Vektorihaku</td>
+                <td class="con">350 ms</td>
+                <td>5 ms</td>
+                <td class="best">~3 ms</td>
+                <td><span class="highlight-green">117&times;</span></td>
+            </tr>
+            <tr>
+                <td>Yksinkertainen kysymys</td>
+                <td class="con">1 200 ms</td>
+                <td>55 ms</td>
+                <td class="best">~12 ms</td>
+                <td><span class="highlight-green">100&times;</span></td>
+            </tr>
+            <tr>
+                <td>Monimutkainen analyysi</td>
+                <td class="con">4 000 ms</td>
+                <td>500 ms</td>
+                <td class="best">~45 ms</td>
+                <td><span class="highlight-green">89&times;</span></td>
+            </tr>
+            <tr>
+                <td>Batch-käsittely (50 kpl)</td>
+                <td class="con">35 000 ms</td>
+                <td>2 800 ms</td>
+                <td class="best">~80 ms</td>
+                <td><span class="highlight-green">438&times;</span></td>
+            </tr>
+            <tr>
+                <td>Cache-osuma</td>
+                <td class="con">1 200 ms</td>
+                <td>5 ms</td>
+                <td class="best">~1 ms</td>
+                <td><span class="highlight-green">1 200&times;</span></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="metric">
+    <h3>Tuotannon nopeutuminen (DGX B200 vs. pilvi-AI)</h3>
+    <div class="big">100&ndash;1 200&times;</div>
+    <p>Ja jo demo-koneella 22&ndash;240&times; nopeampi kuin pilvipalvelut</p>
+</div>
+
+<!-- ===== 1. VEKTORIHAKU ===== -->
+<div class="section-header">
+    <h2>1. Vektorihaku (tietokantahaku)</h2>
+</div>
+
+<div class="triple">
+    <div class="card" style="border-left: 4px solid var(--red);">
+        <h3 style="margin-top: 0; color: var(--red);">Cloud AI</h3>
+        <div class="flow">
+<span class="hl-dim">Asiakas</span> &#8594; Internet <span class="hl-red">(50&ndash;100 ms)</span>
+   &#8594; Load Balancer <span class="hl-red">(20&ndash;50 ms)</span>
+   &#8594; API Gateway <span class="hl-red">(10&ndash;30 ms)</span>
+   &#8594; Pinecone <span class="hl-red">(50&ndash;200 ms)</span>
+   &#8594; Paluu <span class="hl-red">(80&ndash;180 ms)</span>
+&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;
+TYYPILLINEN: <span class="hl-red">350 ms</span>
+        </div>
+        <p style="font-size:0.82em; margin-top: 8px;">&euro;70/milj. kyselyä</p>
+    </div>
+    <div class="card" style="border-left: 4px solid var(--blue);">
+        <h3 style="margin-top: 0; color: var(--blue);">Demo (ZBook)</h3>
+        <div class="flow">
+<span class="hl-dim">Asiakas</span> &#8594; Localhost <span class="hl-blue">(1 ms)</span>
+   &#8594; ChromaDB (SSD) <span class="hl-blue">(3&ndash;4 ms)</span>
+   &#8594; Paluu <span class="hl-blue">(1 ms)</span>
+&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;
+YHTEENSÄ: <span class="hl-blue">5 ms</span>
+        </div>
+        <p style="font-size:0.82em; margin-top: 8px;"><span class="badge badge-blue">Mitattu</span></p>
+    </div>
+    <div class="card" style="border-left: 4px solid var(--green);">
+        <h3 style="margin-top: 0; color: var(--green);">Tuotanto (B200)</h3>
+        <div class="flow">
+<span class="hl-dim">Asiakas</span> &#8594; Localhost <span class="hl-green">(&lt;1 ms)</span>
+   &#8594; ChromaDB (NVMe RAID) <span class="hl-green">(2 ms)</span>
+   &#8594; Paluu <span class="hl-green">(&lt;1 ms)</span>
+&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;
+YHTEENSÄ: <span class="hl-green">~3 ms</span>
+        </div>
+        <p style="font-size:0.82em; margin-top: 8px;"><span class="badge badge-green">Laskettu</span> &euro;0</p>
+    </div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== 2. YKSINKERTAINEN KYSYMYS ===== -->
+<div class="section-header">
+    <h2>2. Yksinkertainen kysymys</h2>
+    <div class="sh-sub">Esimerkki: &quot;Mikä on UPS:n runtime minimum tehtaalla?&quot;</div>
+</div>
+
+<div class="triple">
+    <div class="card" style="border-left: 4px solid var(--red);">
+        <h3 style="margin-top:0; color: var(--red);">Cloud AI</h3>
+        <div class="flow">
+Internet + Azure <span class="hl-red">(50&ndash;150 ms)</span>
+API endpoint <span class="hl-red">(20&ndash;50 ms)</span>
+GPT-4 inference <span class="hl-red">(300&ndash;800 ms)</span>
+Embed search <span class="hl-red">(100&ndash;300 ms)</span>
+Response <span class="hl-red">(200&ndash;500 ms)</span>
+Return <span class="hl-red">(70&ndash;200 ms)</span>
+&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;
+<span class="hl-red">1 200 ms</span>
+        </div>
+    </div>
+    <div class="card" style="border-left: 4px solid var(--blue);">
+        <h3 style="margin-top:0; color: var(--blue);">Demo (ZBook)</h3>
+        <div class="flow">
+<span class="hl-honey">CACHE HIT:</span>
+Hot Cache <span class="hl-blue">(0,1 ms)</span> &#8594; HIT!
+Vastaus <span class="hl-blue">(0,5 ms)</span>
+= <span class="hl-blue">5 ms</span>
+
+<span class="hl-honey">CACHE MISS:</span>
+nomic-embed <span class="hl-blue">(15 ms)</span>
+ChromaDB <span class="hl-blue">(35 ms)</span>
+Return <span class="hl-blue">(5 ms)</span>
+= <span class="hl-blue">55 ms</span>
+        </div>
+    </div>
+    <div class="card" style="border-left: 4px solid var(--green);">
+        <h3 style="margin-top:0; color: var(--green);">Tuotanto (B200)</h3>
+        <div class="flow">
+<span class="hl-honey">CACHE HIT:</span>
+Hot Cache <span class="hl-green">(&lt;0,1 ms)</span>
+Vastaus <span class="hl-green">(&lt;1 ms)</span>
+= <span class="hl-green">~1 ms</span>
+
+<span class="hl-honey">CACHE MISS:</span>
+nomic-embed <span class="hl-green">(1 ms)</span>
+ChromaDB <span class="hl-green">(8 ms)</span>
+Return <span class="hl-green">(3 ms)</span>
+= <span class="hl-green">~12 ms</span>
+        </div>
+    </div>
+</div>
+
+<div class="card card-accent">
+    <h3 style="margin-top: 0;">Visuaalinen vertailu (cache miss)</h3>
+    <div class="bar-chart">
+        <div class="bar-row">
+            <div class="bar-label">Cloud AI</div>
+            <div class="bar-track"><div class="bar-fill cloud" style="width:100%;">1 200 ms</div></div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">Demo (ZBook)</div>
+            <div class="bar-track">
+                <div class="bar-fill demo" style="width:4.6%;">55 ms</div>
+                <div class="bar-value">22&times; nopeampi</div>
+            </div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">Tuotanto (B200)</div>
+            <div class="bar-track">
+                <div class="bar-fill prod" style="width:1%; min-width: 55px;">12 ms</div>
+                <div class="bar-value"><strong>100&times; nopeampi</strong></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 3. MONIMUTKAINEN ANALYYSI ===== -->
+<div class="section-header">
+    <h2>3. Monimutkainen analyysi</h2>
+    <div class="sh-sub">Esimerkki: &quot;Analysoi 50 huoltoraporttia ja anna suositus ennakkohuollolle&quot;</div>
+</div>
+
+<div class="triple">
+    <div class="card" style="border-left: 4px solid var(--red);">
+        <h3 style="margin-top:0; color: var(--red);">Cloud AI (GPT-4 + RAG)</h3>
+        <div class="flow">
+Upload 50 raporttia <span class="hl-red">(200&ndash;500 ms)</span>
+Embedding 50&times; <span class="hl-red">(500&ndash;1 000 ms)</span>
+Vector search <span class="hl-red">(500&ndash;1 500 ms)</span>
+Context asm <span class="hl-red">(100&ndash;300 ms)</span>
+GPT-4 inference <span class="hl-red">(1 000&ndash;2 000 ms)</span>
+Response <span class="hl-red">(200&ndash;500 ms)</span>
+&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;
+<span class="hl-red">4 000 ms</span>
+        </div>
+        <p style="font-size:0.82em; margin-top: 8px;">~&euro;1,05/kysely</p>
+    </div>
+    <div class="card" style="border-left: 4px solid var(--blue);">
+        <h3 style="margin-top:0; color: var(--blue);">Demo (ZBook)</h3>
+        <div class="flow">
+Batch embed (50) <span class="hl-blue">(55 ms)</span>
+ChromaDB batch <span class="hl-blue">(150 ms)</span>
+phi4-mini infer. <span class="hl-blue">(250 ms)</span>
+Context asm <span class="hl-blue">(20 ms)</span>
+Response <span class="hl-blue">(25 ms)</span>
+&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;
+<span class="hl-blue">500 ms</span>
+        </div>
+        <p style="font-size:0.82em; margin-top: 8px;">&euro;0</p>
+    </div>
+    <div class="card" style="border-left: 4px solid var(--green);">
+        <h3 style="margin-top:0; color: var(--green);">Tuotanto (B200)</h3>
+        <div class="flow">
+Batch embed (50) <span class="hl-green">(5 ms)</span>
+ChromaDB batch <span class="hl-green">(10 ms)</span>
+phi4-mini infer. <span class="hl-green">(15 ms)</span>
+Context asm <span class="hl-green">(10 ms)</span>
+Response <span class="hl-green">(5 ms)</span>
+&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;&#8212;
+<span class="hl-green">~45 ms</span>
+        </div>
+        <p style="font-size:0.82em; margin-top: 8px;">&euro;0 &mdash; <strong>89&times; nopeampi</strong></p>
+    </div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== 4. BATCH ===== -->
+<div class="section-header">
+    <h2>4. Batch-käsittely (50 dokumenttia)</h2>
+</div>
+
+<div class="card card-accent">
+    <div class="bar-chart">
+        <div class="bar-row">
+            <div class="bar-label">Cloud AI</div>
+            <div class="bar-track"><div class="bar-fill cloud" style="width:100%;">35 000 ms</div></div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">Demo (ZBook)</div>
+            <div class="bar-track">
+                <div class="bar-fill demo" style="width:8%;">2 800 ms</div>
+                <div class="bar-value">12&times; nopeampi</div>
+            </div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">Tuotanto (B200)</div>
+            <div class="bar-track">
+                <div class="bar-fill prod" style="width:0.5%; min-width:55px;">~80 ms</div>
+                <div class="bar-value"><strong>438&times; nopeampi</strong></div>
+            </div>
+        </div>
+    </div>
+    <p style="font-size: 0.85em; color: var(--text-sec); margin-top: 10px;">
+        Demo: nomic-embed batch 2 758 ms (mitattu) + ChromaDB 40 ms.<br>
+        B200: nomic-embed batch ~50 ms (laskettu, 100&times; GPU-teho) + ChromaDB ~20 ms.
+    </p>
+</div>
+
+<!-- ===== 5. REAL-TIME SCENARIOS ===== -->
+<div class="section-header">
+    <h2>5. Reaaliaikaskenaariot</h2>
+    <div class="sh-sub">Käytännön esimerkkejä tehtaan arjesta</div>
+</div>
+
+<div class="split">
+    <div class="scenario">
+        <h4>Skenaario A: Koneen vikahälytys</h4>
+        <div class="goal">Hälytys &#8594; Analyysi &#8594; Toimenpide-ehdotus</div>
+        <table>
+            <thead><tr><th>Vaihe</th><th>Cloud</th><th>Demo</th><th>B200</th></tr></thead>
+            <tbody>
+                <tr><td>Alert &#8594; API</td><td class="con">200 ms</td><td>1 ms</td><td class="best">&lt;1 ms</td></tr>
+                <tr><td>Lokit</td><td class="con">500 ms</td><td>10 ms</td><td class="best">2 ms</td></tr>
+                <tr><td>Haku</td><td class="con">800 ms</td><td>35 ms</td><td class="best">8 ms</td></tr>
+                <tr><td>Analyysi</td><td class="con">2 000 ms</td><td>400 ms</td><td class="best">15 ms</td></tr>
+                <tr><td>Vastaus</td><td class="con">200 ms</td><td>5 ms</td><td class="best">2 ms</td></tr>
+                <tr style="font-weight:700; background: var(--honey-light);">
+                    <td>Yhteensä</td><td class="con">3,7 s</td><td>0,45 s</td><td class="best">~28 ms</td>
+                </tr>
+            </tbody>
+        </table>
+        <p style="font-size: 0.82em; margin-top: 8px; color: var(--text-sec);">
+            B200: vikahälytyksen käsittely <strong>alle 30 ms</strong> &mdash; nopeampi kuin silmänräpäys.
+        </p>
+    </div>
+
+    <div class="scenario">
+        <h4>Skenaario B: Ohjeita mobiililla</h4>
+        <div class="goal">&quot;Miten vaihdan tämän koneen suodattimen?&quot;</div>
+        <table>
+            <thead><tr><th>Vaihe</th><th>Cloud</th><th>Demo</th><th>B200</th></tr></thead>
+            <tbody>
+                <tr><td>WiFi</td><td class="con">50&ndash;200 ms</td><td>10&ndash;30 ms</td><td class="best">10&ndash;30 ms</td></tr>
+                <tr><td>Käsittely</td><td class="con">1 000&ndash;2 000 ms</td><td>5 ms</td><td class="best">~1 ms</td></tr>
+                <tr><td>Paluu</td><td class="con">150&ndash;500 ms</td><td>10&ndash;30 ms</td><td class="best">10&ndash;30 ms</td></tr>
+                <tr style="font-weight:700; background: var(--honey-light);">
+                    <td>Yhteensä</td><td class="con">1,3&ndash;3,0 s</td><td>25&ndash;65 ms</td><td class="best">21&ndash;61 ms</td>
+                </tr>
+            </tbody>
+        </table>
+        <p style="font-size: 0.82em; margin-top: 8px; color: var(--text-sec);">
+            Molemmissa paikallisissa vaihtoehdoissa WiFi-viive dominoi &mdash; käsittelyaika on marginaalinen.
+        </p>
+    </div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== 6. LEARNING SPEED ===== -->
+<div class="section-header">
+    <h2>6. Oppimisnopeuden vaikutus (B200 vs. Demo)</h2>
+    <div class="sh-sub">DGX B200:n teho mahdollistaa dramaattisesti nopeamman tietokannan kasvun</div>
+</div>
+
+<div class="card card-accent">
+    <table>
+        <thead>
+            <tr><th>Oppimismittari</th><th>Demo (ZBook)</th><th>Tuotanto (B200)</th><th>Kerroin</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>NightEnricher</strong> (per fakta)</td>
+                <td>5&ndash;10 s</td>
+                <td class="best">50&ndash;100 ms</td>
+                <td><span class="highlight-green">~100&times;</span></td>
+            </tr>
+            <tr>
+                <td><strong>Faktoja per yö</strong> (8h)</td>
+                <td>~2 880&ndash;5 760</td>
+                <td class="best">~288 000&ndash;576 000</td>
+                <td><span class="highlight-green">100&times;</span></td>
+            </tr>
+            <tr>
+                <td><strong>Round Table</strong> (50 agenttia)</td>
+                <td>30&ndash;60 s</td>
+                <td class="best">200&ndash;500 ms</td>
+                <td><span class="highlight-green">~100&times;</span></td>
+            </tr>
+            <tr>
+                <td><strong>Aika &quot;ekspertiksi&quot;</strong></td>
+                <td>~6 kuukautta</td>
+                <td class="best">~2 viikkoa</td>
+                <td><span class="highlight-green">~12&times;</span></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="metric">
+    <h3>B200: Ensimmäinen yö</h3>
+    <div class="big">~300 000 faktaa</div>
+    <p>DGX B200 oppii yhdessä yössä saman määrän kuin demo-kone kolmessa kuukaudessa</p>
+</div>
+
+<!-- ===== 7. COST ===== -->
+<div class="section-header">
+    <h2>7. Kustannusvertailu</h2>
+    <div class="sh-sub">Standard-tason (RTX A2000) kustannusvertailu pilvipalveluihin</div>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>Kustannuserä</th><th>Cloud AI</th><th>WaggleDance Standard</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Azure OpenAI (GPT-4)</td><td class="con">&euro;1 800/v</td><td class="pro">&euro;0</td></tr>
+            <tr><td>Embeddings API</td><td class="con">&euro;96/v</td><td class="pro">&euro;0</td></tr>
+            <tr><td>Vector DB (Pinecone)</td><td class="con">&euro;3 000/v</td><td class="pro">&euro;0</td></tr>
+            <tr><td>API Gateway / egress</td><td class="con">&euro;240/v</td><td class="pro">&euro;0</td></tr>
+            <tr><td>Laitteisto</td><td>&mdash;</td><td>&euro;1 600 (kertaluonteinen)</td></tr>
+            <tr><td>Sähkö (120W 24/7)</td><td>&mdash;</td><td>&euro;200/v</td></tr>
+            <tr style="background: var(--green-light); font-weight: 700;">
+                <td>Vuosi 1</td><td class="con">&euro;5 136</td><td class="pro">&euro;1 800</td>
+            </tr>
+            <tr style="background: var(--green-light); font-weight: 700;">
+                <td>Vuosi 2+</td><td class="con">&euro;5 136</td><td class="pro">&euro;200</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="metric">
+    <h3>Säästöt (Standard-taso)</h3>
+    <div style="display: flex; justify-content: center; gap: 40px; flex-wrap: wrap; margin: 10px 0;">
+        <div><div style="font-size: 2em; font-weight: 800;">&euro;3 336</div><div style="opacity:0.7; font-size:0.85em;">säästö vuosi 1</div></div>
+        <div><div style="font-size: 2em; font-weight: 800;">&euro;4 936</div><div style="opacity:0.7; font-size:0.85em;">säästö vuosi 2+</div></div>
+        <div><div style="font-size: 2em; font-weight: 800;">&euro;23 000+</div><div style="opacity:0.7; font-size:0.85em;">säästö 5 vuodessa</div></div>
+    </div>
+    <p>ROI: <strong>3&ndash;4 kuukautta</strong></p>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== 8. UX ===== -->
+<div class="section-header">
+    <h2>8. Latenssin vaikutus käyttäjäkokemukseen</h2>
+    <div class="sh-sub">Lähteet: Google (2009), Amazon (2012)</div>
+</div>
+
+<div class="card card-accent">
+    <table>
+        <thead>
+            <tr><th>Viive</th><th>Käyttö laskee</th><th>Taso</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>100 ms</td><td>1 %</td><td><span class="badge badge-green">Huomaamaton</span></td></tr>
+            <tr><td>500 ms</td><td>20 %</td><td><span class="badge" style="background: var(--honey-light); color: var(--honey-dark);">Havaittava</span></td></tr>
+            <tr><td>1 000 ms</td><td>50 %</td><td><span class="badge badge-red">Turhauttava</span></td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h3 style="margin-top: 0;">Latenssiluokat vertailussa</h3>
+    <div class="bar-chart">
+        <div class="bar-row">
+            <div class="bar-label">B200 cache (~1 ms)</div>
+            <div class="bar-track"><div class="bar-fill prod" style="width:1%; min-width:80px;">Välitön</div></div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">B200 kysely (~12 ms)</div>
+            <div class="bar-track"><div class="bar-fill prod" style="width:1%; min-width:110px;">Huomaamaton</div></div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">Demo cache (5 ms)</div>
+            <div class="bar-track"><div class="bar-fill demo" style="width:1%; min-width:80px;">Välitön</div></div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">Demo kysely (55 ms)</div>
+            <div class="bar-track"><div class="bar-fill demo" style="width:5%; min-width:110px;">Huomaamaton</div></div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">Demo analyysi (500 ms)</div>
+            <div class="bar-track"><div class="bar-fill" style="width:42%; background: linear-gradient(90deg, var(--honey), var(--honey-dark)); min-width: 60px;">Nopea</div></div>
+        </div>
+        <div class="bar-row">
+            <div class="bar-label">Cloud AI (1 200 ms)</div>
+            <div class="bar-track"><div class="bar-fill cloud" style="width:100%;">Hidas</div></div>
+        </div>
+    </div>
+</div>
+
+<div class="card card-accent">
+    <h3 style="margin-top: 0;">Työntekijän tuottavuus (50 kyselyä/pv)</h3>
+    <table>
+        <thead>
+            <tr><th></th><th>Cloud AI</th><th>Demo (ZBook)</th><th>Tuotanto (B200)</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Odotusaika / päivä</td><td class="con">60 s</td><td>2,75 s</td><td class="best">0,6 s</td></tr>
+            <tr><td>Hukka-aika / vuosi / käyttäjä</td><td class="con">4 tuntia</td><td>11 minuuttia</td><td class="best">2,5 minuuttia</td></tr>
+            <tr style="background: var(--honey-light); font-weight: 700;">
+                <td>Säästö (10 käyttäjää / vuosi)</td><td colspan="3" style="text-align:center;"><span class="highlight">B200: ~40 työtuntia</span> &nbsp; Demo: ~39 työtuntia</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== 9. OFFLINE + DATA ===== -->
+<div class="section-header">
+    <h2>9. Offline-toiminta ja data-suvereniteetti</h2>
+</div>
+
+<div class="split">
+    <div class="card" style="border-left: 4px solid var(--red);">
+        <h3 style="margin-top:0; color: var(--red);">Cloud AI</h3>
+        <ul style="list-style: none; padding: 0; font-size: 0.9em; line-height: 2;">
+            <li>&#x274C; Internet poikki = järjestelmä pysähtyy</li>
+            <li>&#x274C; 100 % verkkoriippuvainen</li>
+            <li>&#x274C; Data ulkomaisilla palvelimilla</li>
+            <li>&#x274C; Rajallinen kontrolli</li>
+            <li>&#x274C; GDPR-haasteet, kolmannen osapuolen TOS</li>
+            <li>&#x274C; Yökäyttö ilman IT:ta ongelmallinen</li>
+        </ul>
+    </div>
+    <div class="card" style="border-left: 4px solid var(--green);">
+        <h3 style="margin-top:0; color: var(--green);">WaggleDance (paikallinen)</h3>
+        <ul style="list-style: none; padding: 0; font-size: 0.9em; line-height: 2;">
+            <li>&#x2705; Internet poikki = järjestelmä toimii normaalisti</li>
+            <li>&#x2705; 0 % verkkoriippuvuus</li>
+            <li>&#x2705; 100 % data omalla palvelimella</li>
+            <li>&#x2705; Täysi kontrolli</li>
+            <li>&#x2705; GDPR yksinkertainen, ei ulkoisia ehtoja</li>
+            <li>&#x2705; Yökäyttö täydellä teholla</li>
+        </ul>
+    </div>
+</div>
+
+<!-- ===== 10. SCALE ===== -->
+<div class="section-header">
+    <h2>10. Skaalautuvuus</h2>
+</div>
+
+<div class="card card-accent">
+    <table>
+        <thead>
+            <tr><th>Käyttäjiä</th><th>Cloud AI (&euro;/v)</th><th>WaggleDance (&euro;/v)</th><th>Säästö</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>1</td><td class="con">&euro;720</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;520</span></td></tr>
+            <tr><td>10</td><td class="con">&euro;7 200</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;7 000</span></td></tr>
+            <tr><td>50</td><td class="con">&euro;36 000</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;35 800</span></td></tr>
+            <tr><td>100</td><td class="con">&euro;72 000</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;71 800</span></td></tr>
+        </tbody>
+    </table>
+    <p style="text-align:center; margin-top:12px; font-size:1.05em;">
+        <strong>WaggleDance: sama &euro;200/vuosi riippumatta käyttäjämäärästä.</strong>
+    </p>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== SUMMARY ===== -->
+<div class="section-header">
+    <h2>Yhteenveto</h2>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>Mittari</th><th>Cloud AI</th><th>Demo (ZBook)</th><th>Tuotanto (B200)</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><strong>Latenssi (cache)</strong></td><td class="con">1 200 ms</td><td>5 ms</td><td class="best">~1 ms</td></tr>
+            <tr><td><strong>Latenssi (keskim.)</strong></td><td class="con">1 200 ms</td><td>55 ms</td><td class="best">~12 ms</td></tr>
+            <tr><td><strong>Analyysi (50 rap.)</strong></td><td class="con">4 000 ms</td><td>500 ms</td><td class="best">~45 ms</td></tr>
+            <tr><td><strong>Batch (50 kpl)</strong></td><td class="con">35 000 ms</td><td>2 800 ms</td><td class="best">~80 ms</td></tr>
+            <tr><td><strong>Round Table</strong></td><td>&mdash;</td><td>30&ndash;60 s</td><td class="best">0,2&ndash;0,5 s</td></tr>
+            <tr><td><strong>Oppiminen / yö</strong></td><td>&mdash;</td><td>~3 000 faktaa</td><td class="best">~300 000 faktaa</td></tr>
+            <tr><td><strong>Kustannus/vuosi</strong></td><td class="con">&euro;5 136</td><td class="pro">&euro;200</td><td class="pro">&euro;200*</td></tr>
+            <tr><td><strong>Offline</strong></td><td><span class="badge badge-red">Ei toimi</span></td><td><span class="badge badge-green">Toimii</span></td><td><span class="badge badge-green">Toimii</span></td></tr>
+            <tr><td><strong>Data-suvereniteetti</strong></td><td><span class="badge badge-red">Pilvi</span></td><td><span class="badge badge-green">Paikallinen</span></td><td><span class="badge badge-green">Paikallinen</span></td></tr>
+        </tbody>
+    </table>
+    <p style="font-size: 0.82em; color: var(--text-sec); margin-top: 8px;">
+        * Sähkö. DGX B200 sähkö ~&euro;25 000/v (14,4 kW 24/7), mutta tuotantoympäristössä kustannus jakautuu useille järjestelmille.
+    </p>
+</div>
+
+<div class="metric" style="margin-top: 30px;">
+    <h3>Suositus</h3>
+    <p style="font-size: 1.1em; margin: 12px 0; line-height: 1.8;">
+        <strong>Demo todistaa konseptin</strong> &mdash; jo kannettavalla 22&ndash;240&times; nopeampi kuin pilvi-AI.<br>
+        <strong>DGX B200 tuotannossa</strong> &mdash; 100&ndash;1 200&times; nopeampi, 300 000 faktaa per yö.<br>
+        Sama ohjelmisto. Sama data. Eri laitteisto.
+    </p>
+    <div class="big">ROI: 3&ndash;4 kk</div>
+</div>
+
+<div style="text-align: center; color: var(--text-sec); margin-top: 40px; padding: 20px; border-top: 1px solid var(--border); font-size: 0.85em;">
+    <strong>WaggleDance Swarm AI</strong> &middot; v0.2.0 &middot; 2.3.2026<br>
+    Jani Korpi &middot; JKH Service Oy (Y-2828492-2)<br>
+    <em>Demo: HP ZBook (RTX A2000 8GB, i7-12850HX, 128 GB DDR5). Tuotanto: NVIDIA DGX B200 (8&times; B200, 1 536 GB HBM3e).</em>
+</div>
+
+</body>
+</html>

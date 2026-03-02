@@ -194,10 +194,12 @@ class SelfGenerateSource(EnrichmentSource):
                 resp = await self.llm_fast.generate(
                     gen_prompt, max_tokens=200)
         except Exception as e:
-            log.error(f"SelfGenerate error: {e}")
+            log.error(f"SelfGenerate LLM error: {e}")
             return []
 
         if not resp or (hasattr(resp, 'error') and resp.error):
+            log.warning(f"SelfGenerate: empty/error response "
+                        f"(resp={resp!r:.100})")
             return []
 
         content = resp.content if hasattr(resp, 'content') else str(resp)
@@ -215,6 +217,8 @@ class SelfGenerateSource(EnrichmentSource):
                     agent_id=agent_id,
                     gap_topic=topic,
                 ))
+        log.info(f"SelfGenerate: {len(candidates)} candidates from "
+                 f"{len(lines)} lines (topic={topic[:40]})")
         return candidates
 
 
@@ -646,17 +650,28 @@ class AdaptiveTuner:
         """Record outcome and check for rebalance/throttle."""
         self._total_results += 1
 
-        # Throttle check
+        # Throttle check — never pause the last available source
         metrics = self.sm.get_metrics(source_id)
         if metrics:
             if (metrics.consecutive_failures >= self.throttle_window
                     and metrics.pass_rate < self.throttle_pass_rate):
-                metrics.pause(self.throttle_pause_seconds)
-                log.info(
-                    f"AdaptiveTuner: paused '{source_id}' for "
-                    f"{self.throttle_pause_seconds}s "
-                    f"(failures={metrics.consecutive_failures}, "
-                    f"pass_rate={metrics.pass_rate:.2f})")
+                other_available = [
+                    sid for sid in self.sm.available_ids
+                    if sid != source_id
+                ]
+                if other_available:
+                    metrics.pause(self.throttle_pause_seconds)
+                    log.info(
+                        f"AdaptiveTuner: paused '{source_id}' for "
+                        f"{self.throttle_pause_seconds}s "
+                        f"(failures={metrics.consecutive_failures}, "
+                        f"pass_rate={metrics.pass_rate:.2f})")
+                else:
+                    # Last source standing — reset failures instead of pausing
+                    metrics._consecutive_failures = 0
+                    log.info(
+                        f"AdaptiveTuner: '{source_id}' is last source, "
+                        f"reset failures (pass_rate={metrics.pass_rate:.2f})")
 
         # Rebalance check
         if (self._total_results - self._last_rebalance
@@ -907,10 +922,12 @@ class ConvergenceDetector:
         self._converged_at: Dict[str, float] = {}
         self._total_convergences: int = 0
 
-    def check(self, source_id: str, metrics: SourceMetrics) -> bool:
+    def check(self, source_id: str, metrics: SourceMetrics,
+              source_manager: "SourceManager | None" = None) -> bool:
         """Check if source has converged. Returns True if newly converged.
 
-        Side effect: pauses the source if converged.
+        Side effect: pauses the source if converged (unless it is the last
+        available source).
         """
         if metrics.is_paused:
             return False  # Already paused (by AdaptiveTuner or previous convergence)
@@ -927,6 +944,19 @@ class ConvergenceDetector:
             self._consecutive_below[source_id] = 0
 
         if self._consecutive_below.get(source_id, 0) >= self.patience:
+            # Never pause the last available source
+            if source_manager is not None:
+                other_available = [
+                    sid for sid in source_manager.available_ids
+                    if sid != source_id
+                ]
+                if not other_available:
+                    self._consecutive_below[source_id] = 0
+                    log.info(
+                        f"ConvergenceDetector: '{source_id}' converged but "
+                        f"is last source, skipping pause")
+                    return False
+
             # Convergence confirmed — pause the source
             metrics.pause(self.pause_s)
             self._consecutive_below[source_id] = 0
@@ -1150,6 +1180,8 @@ class NightEnricher:
 
         source_id = self.tuner.next_source()
         if not source_id:
+            log.debug(f"NightEnricher: no source available "
+                      f"(available={self.source_manager.available_ids})")
             return ext_stored
 
         source = self.source_manager.get_source(source_id)
@@ -1157,6 +1189,8 @@ class NightEnricher:
             return 0
 
         agent_id, topic = self.gap_scheduler.next_agent_and_topic()
+        log.info(f"NightEnricher: source={source_id}, agent={agent_id}, "
+                 f"topic={topic[:60]}")
 
         t0 = time.monotonic()
         try:
@@ -1167,6 +1201,7 @@ class NightEnricher:
             return 0
 
         if not candidates:
+            log.info(f"NightEnricher: no candidates from {source_id}")
             # Record empty result as failure for tuner
             cycle_time = time.monotonic() - t0
             source.metrics.record_outcome(False, False, cycle_time)
@@ -1193,7 +1228,7 @@ class NightEnricher:
                 source_id, verdict.passed, verdict.novel)
 
             # D2: Convergence check after each outcome
-            self.convergence.check(source_id, source.metrics)
+            self.convergence.check(source_id, source.metrics, self.source_manager)
 
             if verdict.passed:
                 try:

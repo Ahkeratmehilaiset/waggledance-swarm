@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WaggleDance Swarm AI — Tuote-esite 2026</title>
+    <style>
+        /* ===== PRINT ===== */
+        @media print {
+            body { margin: 0; padding: 0; background: white; }
+            .page-break { page-break-before: always; }
+            .no-print { display: none; }
+            .cover { border-radius: 0; margin: 0; min-height: 100vh; }
+            section { page-break-inside: avoid; }
+        }
+
+        /* ===== BASE ===== */
+        :root {
+            --honey: #F5A623;
+            --honey-dark: #D4880F;
+            --honey-light: #FFF4E0;
+            --navy: #1B2A4A;
+            --navy-light: #2C3E6B;
+            --slate: #3D4F5F;
+            --green: #27AE60;
+            --green-light: #E8F8F0;
+            --red: #E74C3C;
+            --red-light: #FDEDEC;
+            --bg: #F7F8FA;
+            --card: #FFFFFF;
+            --border: #E5E8ED;
+            --text: #2C3E50;
+            --text-secondary: #6B7B8D;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            line-height: 1.65;
+            max-width: 1040px;
+            margin: 0 auto;
+            padding: 0 20px;
+            color: var(--text);
+            background: var(--bg);
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ===== COVER ===== */
+        .cover {
+            background: linear-gradient(160deg, var(--navy) 0%, var(--navy-light) 50%, #3a5a8c 100%);
+            color: white;
+            padding: 80px 50px 60px;
+            text-align: center;
+            border-radius: 0 0 24px 24px;
+            margin: 0 -20px 50px;
+            position: relative;
+            overflow: hidden;
+        }
+        .cover::before {
+            content: '';
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(245,166,35,0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 30%, rgba(245,166,35,0.10) 0%, transparent 50%);
+            pointer-events: none;
+        }
+        .cover-logo {
+            font-size: 4em;
+            margin-bottom: 10px;
+            filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
+        }
+        .cover h1 {
+            font-size: 2.8em;
+            font-weight: 700;
+            margin: 0 0 8px;
+            letter-spacing: -0.02em;
+        }
+        .cover .subtitle {
+            font-size: 1.15em;
+            font-weight: 300;
+            opacity: 0.85;
+            margin-bottom: 40px;
+            letter-spacing: 0.03em;
+        }
+        .cover-stats {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin: 40px 0 50px;
+            flex-wrap: wrap;
+        }
+        .cover-stat {
+            text-align: center;
+        }
+        .cover-stat .value {
+            font-size: 2.4em;
+            font-weight: 800;
+            color: var(--honey);
+            line-height: 1.1;
+        }
+        .cover-stat .label {
+            font-size: 0.85em;
+            opacity: 0.8;
+            margin-top: 4px;
+        }
+        .cover-divider {
+            width: 60px;
+            height: 3px;
+            background: var(--honey);
+            margin: 30px auto;
+            border-radius: 2px;
+        }
+        .cover-footer {
+            font-size: 0.85em;
+            opacity: 0.7;
+            margin-top: 20px;
+        }
+
+        /* ===== SECTIONS ===== */
+        .section-header {
+            margin: 50px 0 25px;
+            padding-bottom: 12px;
+            border-bottom: 3px solid var(--honey);
+        }
+        .section-header h2 {
+            font-size: 1.7em;
+            color: var(--navy);
+            font-weight: 700;
+            letter-spacing: -0.01em;
+        }
+        .section-header .section-sub {
+            color: var(--text-secondary);
+            font-size: 0.95em;
+            margin-top: 4px;
+        }
+
+        h3 {
+            color: var(--navy);
+            font-size: 1.15em;
+            font-weight: 600;
+            margin: 20px 0 12px;
+        }
+
+        /* ===== KEY MESSAGE BOX ===== */
+        .key-message {
+            background: linear-gradient(135deg, var(--honey-light) 0%, #FFF9EE 100%);
+            border: 2px solid var(--honey);
+            border-radius: 12px;
+            padding: 28px 32px;
+            margin: 30px 0;
+            text-align: center;
+        }
+        .key-message h3 {
+            color: var(--honey-dark);
+            font-size: 1.3em;
+            margin: 0 0 8px;
+        }
+        .key-message p {
+            font-size: 1.1em;
+            color: var(--slate);
+        }
+        .key-message .tags {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 14px;
+            flex-wrap: wrap;
+        }
+        .key-message .tag {
+            background: white;
+            border: 1px solid var(--honey);
+            color: var(--honey-dark);
+            padding: 4px 14px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        /* ===== CARDS ===== */
+        .card {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 28px;
+            margin: 20px 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 6px 16px rgba(0,0,0,0.04);
+            border: 1px solid var(--border);
+        }
+        .card-accent { border-left: 4px solid var(--honey); }
+        .card-green { border-left: 4px solid var(--green); }
+
+        /* ===== TIER GRID ===== */
+        .tier-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin: 25px 0;
+        }
+        .tier {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 22px 18px;
+            border: 1px solid var(--border);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+            position: relative;
+            transition: transform 0.2s;
+        }
+        .tier:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+        .tier-badge {
+            position: absolute; top: -1px; right: 16px;
+            background: var(--honey);
+            color: white;
+            font-size: 0.7em;
+            font-weight: 700;
+            padding: 4px 12px;
+            border-radius: 0 0 8px 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .tier h4 {
+            font-size: 1em;
+            color: var(--navy);
+            margin-bottom: 4px;
+        }
+        .tier .tier-desc {
+            font-size: 0.8em;
+            color: var(--text-secondary);
+            margin-bottom: 14px;
+        }
+        .tier .price {
+            font-size: 2em;
+            font-weight: 800;
+            color: var(--green);
+            line-height: 1.1;
+        }
+        .tier .price-note {
+            font-size: 0.75em;
+            color: var(--text-secondary);
+            margin-bottom: 14px;
+        }
+        .tier .specs {
+            font-size: 0.82em;
+            color: var(--slate);
+            line-height: 1.8;
+        }
+        .tier .specs strong { color: var(--navy); }
+        .tier .learn-rate {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+            font-size: 0.85em;
+        }
+        .learn-rate .rate-value {
+            font-size: 1.3em;
+            font-weight: 700;
+            color: var(--honey-dark);
+        }
+
+        /* Highlight recommended tier */
+        .tier.recommended {
+            border: 2px solid var(--honey);
+            box-shadow: 0 4px 20px rgba(245,166,35,0.15);
+        }
+
+        /* ===== TABLES ===== */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0;
+            font-size: 0.92em;
+        }
+        thead th {
+            background: var(--navy);
+            color: white;
+            padding: 12px 14px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.9em;
+            letter-spacing: 0.02em;
+        }
+        thead th:first-child { border-radius: 8px 0 0 0; }
+        thead th:last-child { border-radius: 0 8px 0 0; }
+        td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+        }
+        tbody tr:nth-child(even) { background: #FAFBFC; }
+        tbody tr:hover { background: var(--honey-light); }
+
+        .pro { color: var(--green); font-weight: 600; }
+        .con { color: var(--red); }
+        .highlight {
+            background: var(--honey);
+            color: white;
+            padding: 2px 10px;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 0.9em;
+            white-space: nowrap;
+        }
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.82em;
+            font-weight: 600;
+        }
+        .badge-green { background: var(--green-light); color: var(--green); }
+        .badge-red { background: var(--red-light); color: var(--red); }
+        .badge-amber { background: var(--honey-light); color: var(--honey-dark); }
+
+        /* ===== BAR CHARTS (CSS-only) ===== */
+        .bar-chart { margin: 20px 0; }
+        .bar-row {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+            font-size: 0.9em;
+        }
+        .bar-label {
+            width: 180px;
+            flex-shrink: 0;
+            font-weight: 500;
+            color: var(--slate);
+            text-align: right;
+            padding-right: 14px;
+        }
+        .bar-track {
+            flex: 1;
+            background: #EEF0F4;
+            border-radius: 6px;
+            height: 28px;
+            position: relative;
+            overflow: hidden;
+        }
+        .bar-fill {
+            height: 100%;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            font-size: 0.82em;
+            font-weight: 700;
+            color: white;
+            white-space: nowrap;
+            min-width: fit-content;
+        }
+        .bar-fill.cloud { background: linear-gradient(90deg, #e74c3c, #c0392b); }
+        .bar-fill.local { background: linear-gradient(90deg, var(--honey), var(--honey-dark)); }
+        .bar-fill.wd { background: linear-gradient(90deg, var(--green), #219a52); }
+        .bar-value {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 0.82em;
+            font-weight: 600;
+            color: var(--slate);
+        }
+
+        /* ===== METRIC HIGHLIGHT ===== */
+        .metric-highlight {
+            background: linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 12px;
+            text-align: center;
+            margin: 30px 0;
+        }
+        .metric-highlight h3 {
+            color: var(--honey);
+            font-size: 1.1em;
+            margin-bottom: 10px;
+        }
+        .metric-highlight .big-number {
+            font-size: 3em;
+            font-weight: 800;
+            line-height: 1.1;
+            margin: 8px 0;
+        }
+        .metric-highlight p {
+            opacity: 0.85;
+            font-size: 0.95em;
+        }
+
+        /* ===== TECH GRID ===== */
+        .tech-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 14px;
+            margin: 20px 0;
+        }
+        .tech-item {
+            background: var(--card);
+            padding: 18px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+        .tech-item .tech-icon {
+            width: 44px; height: 44px;
+            margin: 0 auto 10px;
+            background: var(--honey-light);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.4em;
+        }
+        .tech-item strong {
+            display: block;
+            color: var(--navy);
+            font-size: 0.9em;
+            margin-bottom: 4px;
+        }
+        .tech-item span {
+            font-size: 0.8em;
+            color: var(--text-secondary);
+        }
+
+        /* ===== LAYER DIAGRAM ===== */
+        .layer-diagram { margin: 20px 0; }
+        .layer-row {
+            display: flex;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        .layer-num {
+            width: 36px; height: 36px;
+            background: var(--navy);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.85em;
+            flex-shrink: 0;
+        }
+        .layer-content {
+            flex: 1;
+            margin-left: 14px;
+        }
+        .layer-content strong { font-size: 0.92em; }
+        .layer-content .layer-desc { font-size: 0.82em; color: var(--text-secondary); }
+        .layer-speed {
+            font-weight: 700;
+            font-size: 0.9em;
+            color: var(--green);
+            width: 80px;
+            text-align: right;
+        }
+
+        /* ===== TRANSLATION PIPELINE ===== */
+        .pipeline {
+            display: flex;
+            align-items: stretch;
+            gap: 0;
+            margin: 20px 0;
+        }
+        .pipeline-step {
+            flex: 1;
+            padding: 18px 14px;
+            text-align: center;
+            position: relative;
+        }
+        .pipeline-step:not(:last-child)::after {
+            content: '';
+            position: absolute; right: -10px; top: 50%;
+            transform: translateY(-50%);
+            width: 0; height: 0;
+            border-left: 10px solid;
+            border-top: 10px solid transparent;
+            border-bottom: 10px solid transparent;
+            z-index: 1;
+        }
+        .pipeline-step:nth-child(1) { background: var(--green-light); border-radius: 10px 0 0 10px; }
+        .pipeline-step:nth-child(1)::after { border-left-color: var(--green-light); }
+        .pipeline-step:nth-child(2) { background: var(--honey-light); }
+        .pipeline-step:nth-child(2)::after { border-left-color: var(--honey-light); }
+        .pipeline-step:nth-child(3) { background: #EBF0FF; border-radius: 0 10px 10px 0; }
+        .pipeline-step .step-num {
+            font-size: 0.75em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            opacity: 0.6;
+        }
+        .pipeline-step strong {
+            display: block;
+            font-size: 0.95em;
+            margin: 4px 0;
+        }
+        .pipeline-step .step-detail {
+            font-size: 0.78em;
+            color: var(--text-secondary);
+        }
+
+        /* ===== CHECK LIST ===== */
+        .check-list { list-style: none; padding: 0; }
+        .check-list li {
+            padding: 6px 0 6px 28px;
+            position: relative;
+            font-size: 0.92em;
+        }
+        .check-list li::before {
+            content: '';
+            position: absolute; left: 0; top: 10px;
+            width: 16px; height: 16px;
+            background: var(--green);
+            border-radius: 50%;
+        }
+        .check-list li::after {
+            content: '';
+            position: absolute; left: 4px; top: 14px;
+            width: 8px; height: 5px;
+            border-left: 2px solid white;
+            border-bottom: 2px solid white;
+            transform: rotate(-45deg);
+        }
+
+        /* ===== COMPARISON VISUAL ===== */
+        .vs-box {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: 0;
+            margin: 20px 0;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+        }
+        .vs-side {
+            padding: 24px;
+        }
+        .vs-side.cloud-side {
+            background: var(--red-light);
+        }
+        .vs-side.wd-side {
+            background: var(--green-light);
+        }
+        .vs-divider {
+            background: var(--navy);
+            color: white;
+            padding: 24px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1.2em;
+        }
+        .vs-side h4 { margin-bottom: 12px; font-size: 1em; }
+        .vs-side ul { list-style: none; padding: 0; font-size: 0.88em; }
+        .vs-side ul li { padding: 4px 0; }
+
+        /* ===== FOOTER ===== */
+        .doc-footer {
+            text-align: center;
+            color: var(--text-secondary);
+            padding: 30px 20px;
+            margin-top: 40px;
+            border-top: 1px solid var(--border);
+            font-size: 0.85em;
+        }
+        .doc-footer strong { color: var(--navy); }
+
+        /* ===== CONTACT ===== */
+        .contact-card {
+            background: linear-gradient(160deg, var(--navy) 0%, var(--navy-light) 100%);
+            color: white;
+            padding: 50px 40px;
+            border-radius: 16px;
+            text-align: center;
+            margin: 40px 0;
+        }
+        .contact-card h2 {
+            color: var(--honey);
+            font-size: 1.5em;
+            margin-bottom: 20px;
+        }
+        .contact-card .live-badge {
+            display: inline-block;
+            background: var(--green);
+            padding: 6px 18px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 0.85em;
+            margin-bottom: 20px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .contact-card .stat-row {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin: 24px 0;
+            flex-wrap: wrap;
+        }
+        .contact-card .stat-item {
+            text-align: center;
+        }
+        .contact-card .stat-item .num {
+            font-size: 1.8em;
+            font-weight: 800;
+            color: var(--honey);
+        }
+        .contact-card .stat-item .txt {
+            font-size: 0.8em;
+            opacity: 0.7;
+        }
+
+        /* ===== COST TIMELINE ===== */
+        .timeline {
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 12px;
+            margin: 20px 0;
+            height: 220px;
+        }
+        .timeline-bar {
+            width: 60px;
+            border-radius: 8px 8px 0 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+            padding-bottom: 8px;
+            font-size: 0.75em;
+            font-weight: 700;
+            color: white;
+            position: relative;
+        }
+        .timeline-bar .year-label {
+            position: absolute;
+            bottom: -22px;
+            color: var(--slate);
+            font-weight: 500;
+        }
+        .timeline-legend {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            margin-top: 30px;
+            font-size: 0.85em;
+        }
+        .timeline-legend span::before {
+            content: '';
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .timeline-legend .leg-cloud::before { background: var(--red); }
+        .timeline-legend .leg-azure::before { background: #e67e22; }
+        .timeline-legend .leg-wd::before { background: var(--green); }
+
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 768px) {
+            .tier-grid { grid-template-columns: 1fr 1fr; }
+            .tech-grid { grid-template-columns: 1fr 1fr; }
+            .cover-stats { gap: 20px; }
+            .pipeline { flex-direction: column; }
+            .pipeline-step { border-radius: 0 !important; }
+            .pipeline-step::after { display: none; }
+            .vs-box { grid-template-columns: 1fr; }
+            .vs-divider { padding: 10px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ===== COVER ===== -->
+<div class="cover">
+    <div class="cover-logo">&#x1F41D;</div>
+    <h1>WaggleDance Swarm AI</h1>
+    <div class="subtitle">Paikallinen ja autonominen tekoäly teollisuuden kunnossapitoon</div>
+    <div style="font-size: 0.85em; opacity: 0.7; margin-bottom: 25px; position: relative;">Demo pyörii nyt HP ZBookilla &mdash; tuotannossa DGX B200</div>
+
+    <div class="cover-stats">
+        <div class="cover-stat">
+            <div class="value">1 200&times;</div>
+            <div class="label">B200 cache vs. pilvi</div>
+        </div>
+        <div class="cover-stat">
+            <div class="value">93%</div>
+            <div class="label">edullisempi kustannus</div>
+        </div>
+        <div class="cover-stat">
+            <div class="value">100%</div>
+            <div class="label">paikallinen ja offline</div>
+        </div>
+        <div class="cover-stat">
+            <div class="value">23</div>
+            <div class="label">erikoistunutta agenttia</div>
+        </div>
+    </div>
+
+    <div class="cover-divider"></div>
+
+    <div class="cover-footer">
+        v0.2.0 &middot; Maaliskuu 2026 &middot; JKH Service Oy (Y-2828492-2)
+    </div>
+</div>
+
+<!-- ===== KEY MESSAGE ===== -->
+<div class="key-message">
+    <h3>Kustannukset = Ainoastaan sähkö</h3>
+    <p>
+        Kertaluonteisen laiteinvestoinnin jälkeen ainoa jatkuva kulu on sähkö.<br>
+        <strong>Ei lisenssejä. Ei pilvipalvelumaksuja. Ei API-kuluja. Ei käyttäjäkohtaisia hintoja.</strong>
+    </p>
+    <div class="tags">
+        <span class="tag">Ei lisenssejä</span>
+        <span class="tag">Ei API-maksuja</span>
+        <span class="tag">Ei konsultteja</span>
+        <span class="tag">Ei päivitysmaksuja</span>
+    </div>
+</div>
+
+<!-- ===== TIERS ===== -->
+<div class="section-header">
+    <h2>Neljä älykkyystasoa &mdash; valitse tarpeesi mukaan</h2>
+    <div class="section-sub">Oppimisen nopeus ja järjestelmän älykkyys skaalautuvat laitteiston mukana. Sama ohjelmisto toimii kaikilla tasoilla.</div>
+</div>
+
+<div class="tier-grid">
+    <div class="tier">
+        <h4>MINIMAL</h4>
+        <div class="tier-desc">Kannettava tietokone</div>
+        <div class="price">&euro;0/kk*</div>
+        <div class="price-note">*käytä olemassa olevaa laitetta</div>
+        <div class="specs">
+            <strong>Laitteisto:</strong> RTX 3060 6GB<br>
+            <strong>RAM:</strong> 16 GB<br>
+            <strong>Sähkö:</strong> 60W = &euro;95/v<br>
+            <strong>Agentit:</strong> 0 (chat + muisti)
+        </div>
+        <div class="learn-rate">
+            Oppiminen: <span class="rate-value">~50</span> faktaa/vko
+        </div>
+    </div>
+
+    <div class="tier">
+        <h4>LIGHT</h4>
+        <div class="tier-desc">Työasema / pieni toimisto</div>
+        <div class="price">&euro;12/kk</div>
+        <div class="price-note">sähkö, investointi &euro;900</div>
+        <div class="specs">
+            <strong>Laitteisto:</strong> RTX 3070 8GB<br>
+            <strong>RAM:</strong> 32 GB<br>
+            <strong>Sähkö:</strong> 80W = &euro;140/v<br>
+            <strong>Agentit:</strong> 2&ndash;5
+        </div>
+        <div class="learn-rate">
+            Oppiminen: <span class="rate-value">~200</span> faktaa/vko
+        </div>
+    </div>
+
+    <div class="tier recommended">
+        <div class="tier-badge">Suositus</div>
+        <h4>STANDARD</h4>
+        <div class="tier-desc">Tehdas / tuotanto</div>
+        <div class="price">&euro;17/kk</div>
+        <div class="price-note">sähkö, investointi &euro;1 600</div>
+        <div class="specs">
+            <strong>Laitteisto:</strong> RTX A2000 8GB<br>
+            <strong>RAM:</strong> 128 GB<br>
+            <strong>Sähkö:</strong> 120W = &euro;200/v<br>
+            <strong>Agentit:</strong> 23 aktiivista
+        </div>
+        <div class="learn-rate">
+            Oppiminen: <span class="rate-value">~880</span> faktaa/vko
+        </div>
+    </div>
+
+    <div class="tier">
+        <h4>PROFESSIONAL</h4>
+        <div class="tier-desc">Monipaikkakonserni</div>
+        <div class="price">&euro;50/kk</div>
+        <div class="price-note">sähkö, investointi &euro;4 500</div>
+        <div class="specs">
+            <strong>Laitteisto:</strong> RTX 4090 24GB<br>
+            <strong>RAM:</strong> 256 GB<br>
+            <strong>Sähkö:</strong> 350W = &euro;615/v<br>
+            <strong>Agentit:</strong> 50+ (multi-site)
+        </div>
+        <div class="learn-rate">
+            Oppiminen: <span class="rate-value">~2 500</span> faktaa/vko
+        </div>
+    </div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== HARDWARE DEMO vs PRODUCTION ===== -->
+<div class="section-header">
+    <h2>Laitteisto &mdash; demo ja tuotanto</h2>
+    <div class="section-sub">Demo pyörii nyt kannettavalla tietokoneella. Tuotantoympäristöön suunniteltuna DGX B200.</div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0;">
+    <div class="card" style="border-left: 4px solid #2980B9; text-align: center;">
+        <div style="display: inline-block; padding: 3px 12px; border-radius: 12px; font-size: 0.78em; font-weight: 700; margin-bottom: 10px; background: #EBF5FB; color: #2980B9;">DEMO &mdash; PYÖRII NYT</div>
+        <div style="font-size: 1.1em; font-weight: 700; color: var(--navy); margin-bottom: 12px;">HP ZBook Workstation</div>
+        <div style="font-size: 0.82em; color: var(--text-secondary); line-height: 1.9; text-align: left;">
+            <strong>CPU:</strong> i7-12850HX 16C/24T<br>
+            <strong>RAM:</strong> 128 GB DDR5<br>
+            <strong>GPU:</strong> RTX A2000 8 GB GDDR6<br>
+            <strong>SSD:</strong> Samsung 2 TB NVMe<br>
+            <strong>Teho:</strong> ~150 W &middot; <strong>Hinta:</strong> ~&euro;3 500
+        </div>
+    </div>
+    <div class="card" style="border-left: 4px solid var(--green); text-align: center;">
+        <div style="display: inline-block; padding: 3px 12px; border-radius: 12px; font-size: 0.78em; font-weight: 700; margin-bottom: 10px; background: var(--green-light); color: var(--green);">TUOTANTO &mdash; TEHTAALLE</div>
+        <div style="font-size: 1.1em; font-weight: 700; color: var(--navy); margin-bottom: 12px;">NVIDIA DGX B200</div>
+        <div style="font-size: 0.82em; color: var(--text-secondary); line-height: 1.9; text-align: left;">
+            <strong>CPU:</strong> 2&times; Xeon Platinum 8570, 112C<br>
+            <strong>RAM:</strong> 4 096 GB DDR5<br>
+            <strong>GPU:</strong> 8&times; B200 1 536 GB HBM3e<br>
+            <strong>Suorituskyky:</strong> 72 000 TFLOPS FP16<br>
+            <strong>Teho:</strong> 14,4 kW &middot; <strong>Hinta:</strong> ~&euro;475 000
+        </div>
+    </div>
+</div>
+
+<div class="card card-accent">
+    <h3>Komponenttikohtaiset latenssit: Demo vs. Tuotanto</h3>
+    <table>
+        <thead>
+            <tr><th>Komponentti</th><th>Demo (ZBook)</th><th>Tuotanto (B200)</th><th>Kerroin</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>phi4-mini inference</td><td>800&ndash;1 500 ms</td><td style="color: var(--green); font-weight: 700;">5&ndash;15 ms</td><td><span class="highlight" style="background: var(--green);">~100&times;</span></td></tr>
+            <tr><td>llama 3.2 1B (heartbeat)</td><td>400&ndash;800 ms</td><td style="color: var(--green); font-weight: 700;">2&ndash;5 ms</td><td><span class="highlight" style="background: var(--green);">~150&times;</span></td></tr>
+            <tr><td>nomic-embed (100 tekstiä)</td><td>3&ndash;5 s</td><td style="color: var(--green); font-weight: 700;">20&ndash;50 ms</td><td><span class="highlight" style="background: var(--green);">~100&times;</span></td></tr>
+            <tr><td>Opus-MT käännös</td><td>200&ndash;500 ms</td><td style="color: var(--green); font-weight: 700;">5&ndash;10 ms</td><td><span class="highlight" style="background: var(--green);">~50&times;</span></td></tr>
+            <tr><td>Round Table (50 agenttia)</td><td>30&ndash;60 s</td><td style="color: var(--green); font-weight: 700;">200&ndash;500 ms</td><td><span class="highlight" style="background: var(--green);">~100&times;</span></td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== LATENCY COMPARISON ===== -->
+<div class="section-header">
+    <h2>Nopeusvertailu &mdash; Cloud vs. Demo vs. Tuotanto</h2>
+    <div class="section-sub">Kolmiportainen vertailu: Cloud AI / Demo-kannettava (mitattu) / DGX B200 tuotanto (laskettu)</div>
+</div>
+
+<div class="card card-accent">
+    <h3>Kokonaislatenssit käyttäjän näkökulmasta</h3>
+    <table>
+        <thead>
+            <tr><th>Operaatio</th><th>Cloud AI</th><th>Demo (ZBook)</th><th>Tuotanto (B200)</th><th>B200 vs. Cloud</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Vektorihaku</td><td class="con">350 ms</td><td>5 ms</td><td style="color: var(--green); font-weight: 700;">~3 ms</td><td><span class="highlight" style="background: var(--green);">117&times;</span></td></tr>
+            <tr><td>Yksinkertainen kysymys</td><td class="con">1 200 ms</td><td>55 ms</td><td style="color: var(--green); font-weight: 700;">~12 ms</td><td><span class="highlight" style="background: var(--green);">100&times;</span></td></tr>
+            <tr><td>Monimutkainen analyysi</td><td class="con">4 000 ms</td><td>500 ms</td><td style="color: var(--green); font-weight: 700;">~45 ms</td><td><span class="highlight" style="background: var(--green);">89&times;</span></td></tr>
+            <tr><td>Batch (50 kpl)</td><td class="con">35 000 ms</td><td>2 800 ms</td><td style="color: var(--green); font-weight: 700;">~80 ms</td><td><span class="highlight" style="background: var(--green);">438&times;</span></td></tr>
+            <tr><td>Cache-osuma</td><td class="con">1 200 ms</td><td>5 ms</td><td style="color: var(--green); font-weight: 700;">~1 ms</td><td><span class="highlight" style="background: var(--green);">1 200&times;</span></td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="metric-highlight">
+    <h3>DGX B200 tuotannossa vs. pilvi-AI</h3>
+    <div class="big-number">100&ndash;1 200&times;</div>
+    <p>Jo demo-koneella 22&ndash;240&times; nopeampi &mdash; tuotannossa nopeutuminen on vielä dramaattisempi</p>
+</div>
+
+<!-- ===== CLOUD vs LOCAL ===== -->
+<div class="section-header">
+    <h2>Pilvipalvelu vs. paikallinen &mdash; kriittiset erot</h2>
+    <div class="section-sub">Pilvi-AI vaatii jatkuvan verkkoyhteyden ja käyttäjäkohtaisen lisensoinnin. WaggleDance toimii täysin itsenäisesti.</div>
+</div>
+
+<div class="vs-box">
+    <div class="vs-side cloud-side">
+        <h4 style="color: var(--red);">Pilvi-AI (esim. ChatGPT, Azure)</h4>
+        <ul>
+            <li>&#x274C; Latenssi 800&ndash;3 000 ms</li>
+            <li>&#x274C; Vaatii nettiyhteyden</li>
+            <li>&#x274C; Data pilvipalvelimilla</li>
+            <li>&#x274C; &euro;60/kk per käyttäjä</li>
+            <li>&#x274C; Ei opi tehtaan datasta</li>
+            <li>&#x274C; Ei räätälöintiä</li>
+            <li>&#x274C; GDPR-haasteet</li>
+            <li>&#x274C; Yleismalli, ei erikoistu</li>
+        </ul>
+    </div>
+    <div class="vs-divider">VS</div>
+    <div class="vs-side wd-side">
+        <h4 style="color: var(--green);">WaggleDance (paikallinen)</h4>
+        <ul>
+            <li>&#x2705; Latenssi 5&ndash;500 ms</li>
+            <li>&#x2705; Toimii ilman nettiä</li>
+            <li>&#x2705; 100 % data talon sisalla</li>
+            <li>&#x2705; Rajaton käyttö, ei lisenssejä</li>
+            <li>&#x2705; Oppii tehtaan datasta 24/7</li>
+            <li>&#x2705; Itse-optimoiva ja räätälöitävä</li>
+            <li>&#x2705; GDPR täysin hallinnassa</li>
+            <li>&#x2705; 23 erikoistunutta agenttia</li>
+        </ul>
+    </div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== FINNISH LANGUAGE ===== -->
+<div class="section-header">
+    <h2>Suomen kielen hallinta &mdash; teollinen taso</h2>
+    <div class="section-sub">Kolmikerroksinen käännösputki takaa nopeat ja tarkat käännökset suomen ja englannin välillä.</div>
+</div>
+
+<div class="card card-accent">
+    <h3>Käännösputki: kolme kerrosta</h3>
+    <div class="pipeline">
+        <div class="pipeline-step">
+            <div class="step-num">Kerros 1</div>
+            <strong>Voikko + Sanakirja</strong>
+            <div class="step-detail">0,5 ms &middot; Kattavuus &gt;80 %<br>447 teollisuustermiä<br>Morfologinen analyysi</div>
+        </div>
+        <div class="pipeline-step">
+            <div class="step-num">Kerros 2</div>
+            <strong>Template Builder</strong>
+            <div class="step-detail">2 ms &middot; Kattavuus 50&ndash;80 %<br>Hybridilauseet<br>Monikielinen tuki</div>
+        </div>
+        <div class="pipeline-step">
+            <div class="step-num">Kerros 3</div>
+            <strong>Opus-MT (neuraali)</strong>
+            <div class="step-detail">300 ms &middot; Kattavuus &lt;50 %<br>Helsinki-NLP malli<br>Lazy loading</div>
+        </div>
+    </div>
+</div>
+
+<div class="card card-green">
+    <h3>Kaksisuuntainen validointi</h3>
+    <table>
+        <thead>
+            <tr><th>Vaihe</th><th>Tekniikka</th><th>Tarkoitus</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><strong>FI-validointi</strong></td><td>Voikko + suffix-tunnistus</td><td>Varmistaa syötteen oikeellisuuden</td></tr>
+            <tr><td><strong>EN-validointi</strong></td><td>WordNet + domain-synonyymit</td><td>Tarkistaa käännöksen laadun</td></tr>
+            <tr><td><strong>Moniosakorjaukset</strong></td><td>107 synonymiaparia</td><td>Esim. &quot;insect keeper&quot; &#8594; &quot;beekeeper&quot;</td></tr>
+            <tr><td><strong>Hallusinaatiosuoja</strong></td><td>Embedding + keyword overlap</td><td>Varmistaa LLM-vastauksen osuvuuden</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="metric-highlight">
+    <h3>Käännöslaadun vertailuarvo</h3>
+    <div class="big-number">94 %</div>
+    <p>53 / 53 testiä läpäistiin suomi &#8596; englanti -käännöksessa</p>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== TECHNICAL HIGHLIGHTS ===== -->
+<div class="section-header">
+    <h2>Tekniset hienoudet</h2>
+    <div class="section-sub">Teollisuuskäyttöön suunniteltu arkkitehtuuri, joka skaalautuu ja optimoi itse itseään.</div>
+</div>
+
+<div class="tech-grid">
+    <div class="tech-item">
+        <div class="tech-icon">&#x1F9E0;</div>
+        <strong>Dual Embedding</strong>
+        <span>nomic-embed (haku)<br>all-minilm (arviointi)</span>
+    </div>
+    <div class="tech-item">
+        <div class="tech-icon">&#x26A1;</div>
+        <strong>Hot Cache</strong>
+        <span>500 vastausta valmiina<br>5 ms latenssi</span>
+    </div>
+    <div class="tech-item">
+        <div class="tech-icon">&#x1F50D;</div>
+        <strong>Bilingual Index</strong>
+        <span>FI + EN samassa<br>55 ms haku</span>
+    </div>
+    <div class="tech-item">
+        <div class="tech-icon">&#x1F4E6;</div>
+        <strong>Batch Pipeline</strong>
+        <span>50 dokumenttia kerralla<br>12&times; nopeampi</span>
+    </div>
+    <div class="tech-item">
+        <div class="tech-icon">&#x1F6E1;</div>
+        <strong>Circuit Breaker</strong>
+        <span>3 virhetta &#8594; suojaus<br>Automaattinen palautus</span>
+    </div>
+    <div class="tech-item">
+        <div class="tech-icon">&#x1F4CA;</div>
+        <strong>Adaptive Throttle</strong>
+        <span>Käynnistysvertailu<br>Auto-skaalaus</span>
+    </div>
+    <div class="tech-item">
+        <div class="tech-icon">&#x1F91D;</div>
+        <strong>Round Table</strong>
+        <span>6&ndash;12 agenttia<br>Ristiinvalidointi</span>
+    </div>
+    <div class="tech-item">
+        <div class="tech-icon">&#x1F319;</div>
+        <strong>Night Mode</strong>
+        <span>Hyödyntää hiljaisen ajan<br>Aggressiivinen oppiminen</span>
+    </div>
+    <div class="tech-item">
+        <div class="tech-icon">&#x1F4C8;</div>
+        <strong>Meta-Learning</strong>
+        <span>Viikkoraportti<br>Itse-optimointi</span>
+    </div>
+</div>
+
+<!-- ===== SMART ROUTER ===== -->
+<div class="card card-accent">
+    <h3>SmartRouter &mdash; 6-kerroksinen vastausketju</h3>
+    <p style="font-size: 0.9em; color: var(--text-secondary); margin-bottom: 16px;">
+        Järjestelmä valitsee automaattisesti nopeimman ja sopivimman vastaustavan kyselylle.
+    </p>
+    <div class="layer-diagram">
+        <div class="layer-row">
+            <div class="layer-num" style="background: var(--green);">-1</div>
+            <div class="layer-content">
+                <strong>Pattern Match (V1)</strong>
+                <div class="layer-desc">Regex-mallit &mdash; 500+ valmista kaavaa</div>
+            </div>
+            <div class="layer-speed">0,01 ms</div>
+        </div>
+        <div class="layer-row">
+            <div class="layer-num" style="background: var(--green);">0</div>
+            <div class="layer-content">
+                <strong>Hot Cache</strong>
+                <div class="layer-desc">Valmiit suomenkieliset vastaukset &mdash; top 500</div>
+            </div>
+            <div class="layer-speed">5 ms</div>
+        </div>
+        <div class="layer-row">
+            <div class="layer-num" style="background: #3498db;">1</div>
+            <div class="layer-content">
+                <strong>MicroModel V2 / V3</strong>
+                <div class="layer-desc">PyTorch-luokitin + LoRA-hienosaadetty malli</div>
+            </div>
+            <div class="layer-speed">1&ndash;50 ms</div>
+        </div>
+        <div class="layer-row">
+            <div class="layer-num" style="background: #3498db;">2</div>
+            <div class="layer-content">
+                <strong>FI-direct ChromaDB</strong>
+                <div class="layer-desc">Kaksikielinen vektorihaku suoraan suomeksi</div>
+            </div>
+            <div class="layer-speed">55 ms</div>
+        </div>
+        <div class="layer-row">
+            <div class="layer-num" style="background: var(--honey-dark);">3</div>
+            <div class="layer-content">
+                <strong>EN ChromaDB + llama1b</strong>
+                <div class="layer-desc">Standardi RAG-putki käännöksen kautta</div>
+            </div>
+            <div class="layer-speed">500 ms</div>
+        </div>
+        <div class="layer-row">
+            <div class="layer-num" style="background: var(--honey-dark);">4</div>
+            <div class="layer-content">
+                <strong>phi4-mini + konteksti</strong>
+                <div class="layer-desc">Monimutkaiset analyysit, multi-hop-päättely</div>
+            </div>
+            <div class="layer-speed">3 000 ms</div>
+        </div>
+        <div class="layer-row">
+            <div class="layer-num" style="background: var(--red);">5</div>
+            <div class="layer-content">
+                <strong>Active Learning</strong>
+                <div class="layer-desc">Luottamus &lt;0,50 &#8594; kysytään käyttäjältä</div>
+            </div>
+            <div class="layer-speed">&infin;</div>
+        </div>
+    </div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== AUTONOMOUS LEARNING ===== -->
+<div class="section-header">
+    <h2>Autonominen oppiminen &mdash; järjestelmä kasvaa joka päivä</h2>
+    <div class="section-sub">WaggleDance oppii seitsemästä lähteestä. Mitä kauemmin järjestelmä on käytössä, sitä älykkäämpi siitä tulee.</div>
+</div>
+
+<div class="card card-accent">
+    <table>
+        <thead>
+            <tr><th>Lahde</th><th>Taajuus</th><th>Tuotos / viikko</th><th>Luottamus</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><strong>YAML-skanneri</strong></td><td>Käynnistys + yöllä</td><td>50 faktaa</td><td>0,90</td></tr>
+            <tr><td><strong>Heartbeat-oivallukset</strong></td><td>Joka 15 s</td><td>100 faktaa</td><td>0,70</td></tr>
+            <tr><td><strong>Round Table</strong></td><td>Joka 20. syke</td><td>30 faktaa</td><td>0,85</td></tr>
+            <tr><td><strong>Faktojen rikastus</strong></td><td>Yötila</td><td>200 faktaa</td><td>0,80</td></tr>
+            <tr><td><strong>Web-oppiminen</strong></td><td>Maks. 50 hakua/pv</td><td>350 faktaa</td><td>0,65&ndash;0,85</td></tr>
+            <tr><td><strong>Tiedon tislaus</strong></td><td>100 kysymystä/vko</td><td>100 faktaa</td><td>0,95</td></tr>
+            <tr><td><strong>Käyttäjäkorjaukset</strong></td><td>Tarpeen mukaan</td><td>50 faktaa</td><td>0,95</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="metric-highlight">
+    <h3>Standard-tason oppimisnopeus</h3>
+    <div class="big-number">~880 faktaa / viikko</div>
+    <p>3 500 / kuukausi &middot; 45 000 / vuosi &mdash; jokainen fakta ristiinvalidoitu</p>
+</div>
+
+<!-- ===== FEATURES DEPLOYED ===== -->
+<div class="section-header">
+    <h2>Ominaisuudet ja tiekartta</h2>
+</div>
+
+<div class="card card-green">
+    <h3>Vaiheet 1&ndash;4: Valmista ja tuotannossa</h3>
+    <ul class="check-list">
+        <li><strong>Consciousness v2:</strong> Kaksoisupotus, kaksikielinen indeksi, hot cache</li>
+        <li><strong>Käännösputki:</strong> Voikko + Opus-MT, 447 termiä, 94 % vertailuarvo</li>
+        <li><strong>SmartRouter:</strong> 6-kerroksinen vastausketju (0,01 ms &ndash; 3 000 ms)</li>
+        <li><strong>Batch Pipeline:</strong> 50 dokumenttia kerralla, 12&times; nopeampi</li>
+        <li><strong>Agent Levels:</strong> 5-tasoinen luottamusjarjestelma (aloittelija &#8594; mestari)</li>
+        <li><strong>Round Table:</strong> 6&ndash;12 agenttia ristiinvalidoi konsensuksen</li>
+        <li><strong>Night Mode:</strong> Hiljainen aika &#8594; aggressiivinen oppiminen</li>
+        <li><strong>Hallusinointitorjunta:</strong> 0,3 &times; embedding + 0,7 &times; avainsana, kynnys 0,45</li>
+        <li><strong>Circuit Breaker:</strong> Automaattinen virheiden hallinnan palautuminen</li>
+        <li><strong>Meta-Learning:</strong> Viikkoraportit, itseoptimointiehdotukset</li>
+    </ul>
+</div>
+
+<div class="card card-accent">
+    <h3>Vaiheet 5&ndash;11: Tiekartta (3&ndash;12 kuukautta)</h3>
+    <table>
+        <thead>
+            <tr><th>Vaihe</th><th>Sisalto</th><th>Aikataulu</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><strong>5 &mdash; Kamerat</strong></td><td>Frigate + YOLO-tunnistus + PTZ-ohjaus</td><td>Kk 1&ndash;2</td></tr>
+            <tr><td><strong>6 &mdash; Audio</strong></td><td>ESP32-mikrofoni, YAMNet-luokitus</td><td>Kk 2&ndash;3</td></tr>
+            <tr><td><strong>7 &mdash; Puhekäyttöliittymä</strong></td><td>Whisper STT + Piper TTS (suomi)</td><td>Kk 3&ndash;4</td></tr>
+            <tr><td><strong>8 &mdash; Datavirrat</strong></td><td>Sää (FMI), sähkö, RSS-hälytykset</td><td>Kk 4&ndash;5</td></tr>
+            <tr><td><strong>9 &mdash; Tislaus</strong></td><td>Claude Haiku vaikeisiin kysymyksiin</td><td>Kk 5&ndash;6</td></tr>
+            <tr><td><strong>10 &mdash; MicroModelit</strong></td><td>LoRA-hienosaato, smollm2:135m</td><td>Kk 6&ndash;8</td></tr>
+            <tr><td><strong>11 &mdash; Skaalaus</strong></td><td>Monipaikkakäynnistys, 3+ tehdasta</td><td>Kk 8&ndash;12</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== INDUSTRIAL FEATURES ===== -->
+<div class="section-header">
+    <h2>Teollisuuskäyttöön rakennettu</h2>
+</div>
+
+<div class="card card-accent">
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div>
+            <h3 style="margin-top:0;">Luotettavuus</h3>
+            <ul class="check-list">
+                <li><strong>Offline-toiminta:</strong> 0 % internet-riippuvuus</li>
+                <li><strong>Priority Lock:</strong> Chat ohittaa aina taustatyot</li>
+                <li><strong>Graceful Degradation:</strong> Puuttuva sensori ei kaada järjestelmää</li>
+                <li><strong>Watchdog:</strong> Automaattinen uudelleenkäynnistys</li>
+            </ul>
+        </div>
+        <div>
+            <h3 style="margin-top:0;">Hallinta</h3>
+            <ul class="check-list">
+                <li><strong>Data-suvereniteetti:</strong> Kaikki pysyy palomuurin sisällä</li>
+                <li><strong>Strukturoitu loki:</strong> JSON-muotoinen seuranta</li>
+                <li><strong>Varmuuskopiointi:</strong> Automaattinen backup &amp; restore</li>
+                <li><strong>Ympariston tarkastus:</strong> Pre-flight-checkit ennen käynnistystä</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- ===== COST COMPARISON ===== -->
+<div class="section-header">
+    <h2>Kustannusvertailu &mdash; viisi vuotta</h2>
+    <div class="section-sub">Viiden vuoden aikana säästö on merkittävä: pilvilisenssit kumuloituvat, WaggleDancen kulut eivät kasva.</div>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th></th><th>ChatGPT Enterprise</th><th>Azure AI Stack</th><th>WaggleDance (Standard)</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><strong>Vuosi 1</strong></td><td class="con">&euro;7 200</td><td class="con">&euro;5 136</td><td class="pro">&euro;1 800 (laitteisto + sähkö)</td></tr>
+            <tr><td><strong>Vuosi 2</strong></td><td class="con">&euro;7 200</td><td class="con">&euro;5 136</td><td class="pro">&euro;200 (vain sähkö)</td></tr>
+            <tr><td><strong>Vuosi 3</strong></td><td class="con">&euro;7 200</td><td class="con">&euro;5 136</td><td class="pro">&euro;200</td></tr>
+            <tr><td><strong>Vuosi 4</strong></td><td class="con">&euro;7 200</td><td class="con">&euro;5 136</td><td class="pro">&euro;200</td></tr>
+            <tr><td><strong>Vuosi 5</strong></td><td class="con">&euro;7 200</td><td class="con">&euro;5 136</td><td class="pro">&euro;200</td></tr>
+            <tr style="background: var(--green-light); font-weight: 700;">
+                <td>5 vuotta yhteensä</td><td class="con">&euro;36 000</td><td class="con">&euro;25 680</td><td class="pro">&euro;2 600</td>
+            </tr>
+            <tr style="background: var(--honey-light); font-weight: 700;">
+                <td>Säästö vs. WaggleDance</td><td><span class="highlight">&euro;33 400 (93 %)</span></td><td><span class="highlight">&euro;23 080 (90 %)</span></td><td>&mdash;</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- cost timeline visual -->
+<div class="card" style="text-align: center;">
+    <h3>Kumulatiivinen kustannus viiden vuoden aikana</h3>
+    <div class="timeline">
+        <!-- Year 1 -->
+        <div class="timeline-bar" style="height: 44px; background: var(--red);"><span class="year-label">V1</span>&euro;7,2k</div>
+        <div class="timeline-bar" style="height: 32px; background: #e67e22;"><span class="year-label">V1</span>&euro;5,1k</div>
+        <div class="timeline-bar" style="height: 11px; background: var(--green);"><span class="year-label">V1</span>&euro;1,8k</div>
+        <div style="width: 16px;"></div>
+        <!-- Year 3 -->
+        <div class="timeline-bar" style="height: 132px; background: var(--red);"><span class="year-label">V3</span>&euro;22k</div>
+        <div class="timeline-bar" style="height: 95px; background: #e67e22;"><span class="year-label">V3</span>&euro;15k</div>
+        <div class="timeline-bar" style="height: 14px; background: var(--green);"><span class="year-label">V3</span>&euro;2,2k</div>
+        <div style="width: 16px;"></div>
+        <!-- Year 5 -->
+        <div class="timeline-bar" style="height: 220px; background: var(--red);"><span class="year-label">V5</span>&euro;36k</div>
+        <div class="timeline-bar" style="height: 157px; background: #e67e22;"><span class="year-label">V5</span>&euro;26k</div>
+        <div class="timeline-bar" style="height: 16px; background: var(--green);"><span class="year-label">V5</span>&euro;2,6k</div>
+    </div>
+    <div class="timeline-legend">
+        <span class="leg-cloud">ChatGPT Enterprise</span>
+        <span class="leg-azure">Azure AI Stack</span>
+        <span class="leg-wd">WaggleDance</span>
+    </div>
+</div>
+
+<div class="metric-highlight">
+    <h3>Takaisinmaksuaika (ROI)</h3>
+    <div class="big-number">3&ndash;4 kuukautta</div>
+    <p>Investointi &euro;1 800 &divide; säästö &euro;5 000&ndash;7 000/v = takaisinmaksu alle puolessa vuodessa</p>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== SCALABILITY ===== -->
+<div class="section-header">
+    <h2>Skaalautuvuus &mdash; sama hinta, rajaton käyttö</h2>
+</div>
+
+<div class="card card-accent">
+    <table>
+        <thead>
+            <tr><th>Käyttäjiä</th><th>Pilvi-AI (&euro;/vuosi)</th><th>WaggleDance (&euro;/vuosi)</th><th>Säästö</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>1</td><td class="con">&euro;720</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;520</span></td></tr>
+            <tr><td>5</td><td class="con">&euro;3 600</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;3 400</span></td></tr>
+            <tr><td>10</td><td class="con">&euro;7 200</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;7 000</span></td></tr>
+            <tr><td>20</td><td class="con">&euro;14 400</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;14 200</span></td></tr>
+            <tr><td>50</td><td class="con">&euro;36 000</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;35 800</span></td></tr>
+            <tr><td>100</td><td class="con">&euro;72 000</td><td class="pro">&euro;200</td><td><span class="highlight">&euro;71 800</span></td></tr>
+        </tbody>
+    </table>
+    <p style="text-align: center; margin-top: 16px; font-size: 1.05em;">
+        <strong>1 käyttäjä tai 100 käyttäjää = sama &euro;200/vuosi.</strong> WaggleDance ei tunne käyttäjälisenssejä.
+    </p>
+</div>
+
+<!-- ===== SUMMARY TABLE ===== -->
+<div class="section-header">
+    <h2>Yhteenveto &mdash; miksi WaggleDance voittaa</h2>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>Mittari</th><th>Pilvi-AI</th><th>Demo (ZBook)</th><th>Tuotanto (B200)</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><strong>Nopeus (cache)</strong></td><td class="con">1 200 ms</td><td>5 ms</td><td style="color: var(--green); font-weight: 700;">~1 ms</td></tr>
+            <tr><td><strong>Nopeus (keskim.)</strong></td><td class="con">1 200 ms</td><td>55 ms</td><td style="color: var(--green); font-weight: 700;">~12 ms</td></tr>
+            <tr><td><strong>Monimutkainen analyysi</strong></td><td class="con">4 000 ms</td><td>500 ms</td><td style="color: var(--green); font-weight: 700;">~45 ms</td></tr>
+            <tr><td><strong>Oppiminen / yö</strong></td><td>&mdash;</td><td>~3 000 faktaa</td><td style="color: var(--green); font-weight: 700;">~300 000 faktaa</td></tr>
+            <tr><td><strong>Vuosikustannus</strong></td><td class="con">&euro;5 136&ndash;7 200</td><td>&euro;200</td><td>&euro;200*</td></tr>
+            <tr><td><strong>Skaalautuvuus</strong></td><td class="con">Lineaarinen &euro;&euro;</td><td colspan="2" style="text-align: center;"><span class="badge badge-green">Tasahinta &mdash; rajaton</span></td></tr>
+            <tr><td><strong>Offline</strong></td><td><span class="badge badge-red">Ei toimi</span></td><td><span class="badge badge-green">Toimii</span></td><td><span class="badge badge-green">Toimii</span></td></tr>
+            <tr><td><strong>Data-suvereniteetti</strong></td><td><span class="badge badge-red">Pilvi</span></td><td><span class="badge badge-green">Paikallinen</span></td><td><span class="badge badge-green">Paikallinen</span></td></tr>
+            <tr><td><strong>Räätälöinti</strong></td><td><span class="badge badge-red">Yleinen</span></td><td colspan="2" style="text-align: center;"><span class="badge badge-green">Tehdaskohtainen, autonominen</span></td></tr>
+            <tr><td><strong>Suomen kieli</strong></td><td><span class="badge badge-amber">Perus</span></td><td colspan="2" style="text-align: center;"><span class="badge badge-green">94 % / 3-kerroksinen putki</span></td></tr>
+        </tbody>
+    </table>
+    <p style="font-size: 0.82em; color: var(--text-secondary); margin-top: 8px;">
+        * Sähkö (Standard-taso). DGX B200 sähkö ~&euro;25 000/v, mutta jakautuu tuotantoympäristön muille järjestelmille.
+    </p>
+</div>
+
+<!-- ===== RECOMMENDATION ===== -->
+<div class="metric-highlight" style="margin-top: 40px;">
+    <h3>Demo todistaa &mdash; tuotanto toteuttaa</h3>
+    <div style="font-size: 1.1em; margin: 16px 0; line-height: 2;">
+        <strong>Demo (HP ZBook):</strong> Jo nyt 22&ndash;240&times; nopeampi kuin pilvi-AI<br>
+        <strong>Tuotanto (DGX B200):</strong> 100&ndash;1 200&times; nopeampi, ~300 000 faktaa/yö<br>
+        Sama ohjelmisto. Sama data. Eri laitteisto.
+    </div>
+    <div class="big-number">ROI: 3&ndash;4 kk</div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ===== CONTACT ===== -->
+<div class="contact-card">
+    <h2>Seuraava askel</h2>
+    <div class="live-badge">DEMO TOIMINNASSA</div>
+
+    <div class="stat-row">
+        <div class="stat-item">
+            <div class="num">23</div>
+            <div class="txt">agenttia</div>
+        </div>
+        <div class="stat-item">
+            <div class="num">312+</div>
+            <div class="txt">faktaa opittu</div>
+        </div>
+        <div class="stat-item">
+            <div class="num">15s</div>
+            <div class="txt">heartbeat-syke</div>
+        </div>
+        <div class="stat-item">
+            <div class="num">24/7</div>
+            <div class="txt">jatkuva oppiminen</div>
+        </div>
+    </div>
+
+    <div style="font-size: 1.1em; margin: 24px 0; line-height: 1.8;">
+        <strong>Nyt:</strong> Live-demo HP ZBookilla (15 min)<br>
+        <strong>Viikko 2&ndash;3:</strong> Pilotti &mdash; 3 konetta, 1 kuukausi<br>
+        <strong>Kuukausi 2:</strong> Laajennus koko tehtaalle (DGX B200)
+    </div>
+
+    <div style="margin-top: 30px; opacity: 0.8; font-size: 0.9em;">
+        <strong>Jani Korpi</strong> &middot; JKH Service Oy (Y-2828492-2)<br>
+        WaggleDance Swarm AI v0.2.0 &middot; Maaliskuu 2026
+    </div>
+</div>
+
+<div class="doc-footer">
+    <strong>WaggleDance Swarm AI</strong> &middot; Paikallinen &middot; Autonominen &middot; Teollisuusvalmis<br>
+    <em>&quot;Sama ohjelmisto, eri laitteisto &mdash; valitse tarpeesi mukaan.&quot;</em>
+</div>
+
+</body>
+</html>

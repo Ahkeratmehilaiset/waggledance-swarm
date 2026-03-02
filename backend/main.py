@@ -6,9 +6,9 @@ Works independently of HiveMind for dashboard development.
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routes.status import router as status_router
-from routes.heartbeat import router as heartbeat_router
-from routes.chat import router as chat_router
+from backend.routes.status import router as status_router
+from backend.routes.heartbeat import router as heartbeat_router
+from backend.routes.chat import router as chat_router
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("waggledance-backend")

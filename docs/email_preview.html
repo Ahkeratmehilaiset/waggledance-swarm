@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sähköpostin esikatselu</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', -apple-system, sans-serif;
+            background: #f0f2f5;
+            margin: 0;
+            padding: 30px;
+        }
+        .email-client {
+            max-width: 720px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .email-toolbar {
+            background: #1B2A4A;
+            color: white;
+            padding: 16px 24px;
+            font-size: 0.85em;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .email-toolbar .icon { font-size: 1.2em; }
+        .email-toolbar .app-name { font-weight: 700; letter-spacing: 0.05em; }
+        .email-header {
+            padding: 24px;
+            border-bottom: 1px solid #e5e8ed;
+        }
+        .email-subject {
+            font-size: 1.3em;
+            font-weight: 700;
+            color: #1B2A4A;
+            margin-bottom: 16px;
+        }
+        .email-meta {
+            font-size: 0.85em;
+            color: #6B7B8D;
+            line-height: 1.8;
+        }
+        .email-meta strong { color: #2C3E50; }
+        .email-body {
+            padding: 24px;
+            font-size: 0.95em;
+            line-height: 1.75;
+            color: #2C3E50;
+        }
+        .email-body p { margin: 0 0 14px; }
+        .email-body strong { color: #1B2A4A; }
+        .email-body .section-title {
+            font-weight: 700;
+            color: #1B2A4A;
+            margin-top: 20px;
+            margin-bottom: 8px;
+        }
+        .email-body ul {
+            margin: 6px 0 14px 20px;
+            padding: 0;
+        }
+        .email-body li { margin: 4px 0; }
+        .email-body .highlight-box {
+            background: #FFF4E0;
+            border-left: 4px solid #F5A623;
+            padding: 14px 18px;
+            border-radius: 0 8px 8px 0;
+            margin: 16px 0;
+            font-size: 0.93em;
+        }
+        .email-body .stats-row {
+            display: flex;
+            gap: 16px;
+            margin: 14px 0;
+            flex-wrap: wrap;
+        }
+        .email-body .stat-badge {
+            background: #E8F8F0;
+            color: #27AE60;
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.88em;
+            white-space: nowrap;
+        }
+        .email-body .steps {
+            background: #f7f8fa;
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin: 14px 0;
+        }
+        .email-body .steps div {
+            padding: 4px 0;
+        }
+        .email-body .steps strong { color: #F5A623; }
+        .email-attachments {
+            padding: 16px 24px;
+            border-top: 1px solid #e5e8ed;
+            background: #fafbfc;
+        }
+        .email-attachments .att-title {
+            font-size: 0.8em;
+            font-weight: 600;
+            color: #6B7B8D;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 10px;
+        }
+        .att-file {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: white;
+            border: 1px solid #e5e8ed;
+            border-radius: 8px;
+            padding: 8px 14px;
+            margin: 4px 8px 4px 0;
+            font-size: 0.85em;
+            color: #2C3E50;
+        }
+        .att-file .att-icon {
+            width: 28px;
+            height: 28px;
+            background: #E74C3C;
+            color: white;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7em;
+            font-weight: 700;
+        }
+        .att-file .att-size { color: #6B7B8D; font-size: 0.85em; }
+        .email-footer {
+            padding: 16px 24px;
+            border-top: 1px solid #e5e8ed;
+            font-size: 0.82em;
+            color: #6B7B8D;
+            text-align: center;
+        }
+        @media print {
+            body { background: white; padding: 0; }
+            .email-client { box-shadow: none; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="email-client">
+    <div class="email-toolbar">
+        <span class="icon">&#x2709;</span>
+        <span class="app-name">OUTLOOK</span>
+        <span style="flex:1;"></span>
+        <span style="opacity: 0.6; font-size: 0.85em;">Esikatselu</span>
+    </div>
+
+    <div class="email-header">
+        <div class="email-subject">Havainnollistus: paikallinen AI-järjestelmä &mdash; WaggleDance</div>
+        <div class="email-meta">
+            <strong>Lähettäjä:</strong> Jani Korpi<br>
+            <strong>Vastaanottaja:</strong> Ari Östman, Christian Lauren<br>
+            <strong>CC:</strong> Jarkko Lauraeus, Nico Remo, Olli Nurmiainen<br>
+            <strong>Liitteet:</strong> 2 tiedostoa (PDF)
+        </div>
+    </div>
+
+    <div class="email-body">
+        <p>Hei,</p>
+
+        <p>Olen vapaa-ajallani rakentanut havainnollistavan demon paikallisesta AI-järjestelmästä. Ajattelin näyttää teille, koska konsepti voisi olla kiinnostava myös teollisuusympäristössä.</p>
+
+        <p>Kyseessä on <strong>WaggleDance Swarm AI</strong> &mdash; paikallinen tekoäly, joka pyörii kokonaan yhdellä tietokoneella ilman pilvipalveluja tai internet-yhteyttä. Demo on käynnissä HP ZBook -kannettavallani.</p>
+
+        <div class="section-title">Mitä demo tekee:</div>
+        <div class="stats-row">
+            <span class="stat-badge">23 AI-agenttia</span>
+            <span class="stat-badge">3 100+ faktaa</span>
+            <span class="stat-badge">5&ndash;55 ms latenssi</span>
+            <span class="stat-badge">Oppii 24/7</span>
+        </div>
+
+        <div class="section-title">Miksi tämä on mielestäni kiinnostavaa:</div>
+
+        <p><strong>Täysin paikallinen</strong> &mdash; data ei poistu koneelta, ei pilvikuluja, ei lisenssejä.</p>
+
+        <p><strong>Huomattavasti nopeampi</strong> &mdash; vastausaika 5&ndash;55 ms, kun pilvi-AI tyypillisesti 1 200&ndash;4 000 ms.</p>
+
+        <p><strong>Skaalautuu</strong> &mdash; sama ohjelmisto toimii kannettavasta DGX B200 -palvelimeen asti. Tehokkaammalla laitteistolla laskennallisesti 100&ndash;1 200&times; nopeampi kuin pilvi-AI.</p>
+
+        <p><strong>Oppii itsenäisesti</strong> &mdash; noin 3 000 uutta faktaa per yö demo-koneella. DGX B200:lla jopa ~300 000 faktaa/yö.</p>
+
+        <div class="highlight-box">
+            Tämä on puhtaasti havainnollistava esimerkki siitä, mikä on mahdollista paikallisella tekoälyllä. Vapaa-aikani kuluu joka tapauksessa koodaamisessa ja kiinnostavien aiheiden tutkimisessa &mdash; tämä on yksi niistä projekteista.
+        </div>
+
+        <p>Liitteenä tarkemmat tiedot, jos kiinnostaa vilkaista.</p>
+
+        <p>
+            Ystävällisin terveisin,<br>
+            <strong>Jani</strong>
+        </p>
+    </div>
+
+    <div class="email-attachments">
+        <div class="att-title">Liitteet (2)</div>
+        <div class="att-file">
+            <div class="att-icon">PDF</div>
+            <div>
+                <div style="font-weight: 600;">waggledance_tuote_esite.pdf</div>
+                <div class="att-size">18 sivua &middot; ~1.2 MB</div>
+            </div>
+        </div>
+        <div class="att-file">
+            <div class="att-icon">PDF</div>
+            <div>
+                <div style="font-weight: 600;">waggledance_latenssivertailu.pdf</div>
+                <div class="att-size">12 sivua &middot; ~0.8 MB</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="email-footer">
+        Esikatselu &mdash; tarkista vastaanottajan osoite ja liitteet ennen lähetystä
+    </div>
+</div>
+
+</body>
+</html>

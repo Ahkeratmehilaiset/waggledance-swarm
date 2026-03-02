@@ -20,9 +20,44 @@ translation pipeline, consciousness layer, autonomous learning.
 
 ## 2. HARDWARE & GPU
 
+### Development / Demo: HP ZBook Mobile Workstation
 ```
-GPU: NVIDIA RTX A2000 8GB | CPU: multi-core | RAM: 128GB | OS: Windows 11
+CPU:  Intel Core i7-12850HX 16C/24T, up to 4.8 GHz
+RAM:  128 GB DDR5 4800 MHz (4×32 GB)
+GPU:  NVIDIA RTX A2000 8 GB GDDR6 (Laptop), 2560 CUDA, 288 GB/s, ~8 TFLOPS FP16
+SSD:  Samsung 2 TB NVMe
+OS:   Windows 11 Enterprise
+Power: ~150 W (adapter 230 W)
+Price: ~€3,000–4,000
+```
 
+### Reference / Enterprise: NVIDIA DGX B200
+```
+CPU:  2× Intel Xeon Platinum 8570 (56C/112T each = 112C total)
+RAM:  4,096 GB DDR5
+GPU:  8× NVIDIA B200, 1,536 GB HBM3e total, 64 TB/s bandwidth, 72,000 TFLOPS FP16
+      NVLink 5th gen 1.8 TB/s per GPU
+SSD:  ~30 TB NVMe RAID
+Power: 14,400 W (14.4 kW)
+Price: ~€475,000
+```
+
+### Latency Comparison (per workload)
+```
+WORKLOAD                        ZBOOK           DGX B200        SPEEDUP
+phi4-mini inference (1K tok)    800–1500 ms     5–15 ms         ~100×
+llama 3.2 1B (heartbeat)       400–800 ms      2–5 ms          ~150×
+nomic-embed-text (100 texts)   3–5 s           20–50 ms        ~100×
+ChromaDB search (3147 facts)   15–30 ms        5–10 ms         ~3× (CPU-bound)
+Opus-MT translation (single)   200–500 ms *    5–10 ms         ~50×
+NightEnricher full cycle        5–10 s/fact     50–100 ms/fact  ~100×
+50-agent Round Table            30–60 s         200–500 ms      ~100×
+
+* Opus-MT first call ~60 s cold start (model load), then 200–500 ms warm
+```
+
+### AI Models (VRAM budget)
+```
 MODEL               VRAM    ROLE
 phi4-mini           2.5G    Chat (English internally)
 llama3.2:1b         0.7G    ALL background (heartbeat, learning, Round Table)
@@ -462,10 +497,15 @@ PER WEEK: meta_report, code_suggestions, benchmark_score, gap_analysis
 ## APPENDIX A: GPU Budget
 
 ```
-Standard (current): 4.3G/8.0G GPU, ~3.5G RAM, ~1G disk
-100K facts: 4.3G GPU, ~4.5G RAM, ~2G disk
-1M facts: 4.3G GPU, ~8G RAM (consider FAISS), ~8G disk
-Professional (24GB): phi4:14b(9G)+qwen3:4b(2.8G)+embeds+opus = 15.7G, 15 agents
+ZBook (current dev):  4.3G/8.0G GPU, 128 GB RAM, 2 TB SSD, ~150 W, €3–4K
+  Standard tier: phi4-mini+llama1b+embeds+opus = 4.3G (54%)
+  100K facts:    4.3G GPU, ~4.5G RAM, ~2G disk
+  1M facts:      4.3G GPU, ~8G RAM (consider FAISS), ~8G disk
+
+Professional (24GB desktop): phi4:14b(9G)+qwen3:4b(2.8G)+embeds+opus = 15.7G, 15 agents
+
+DGX B200 (enterprise ref): 1536G HBM3e, 4096 GB RAM, 30 TB SSD, 14.4 kW, ~€475K
+  llama3.3:70b+vision+50 micro, 8-way tensor parallel, ~100× faster than ZBook
 ```
 
 ## APPENDIX B: Dependencies

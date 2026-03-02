@@ -4,13 +4,13 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Agents](https://img.shields.io/badge/agents-50%2B-purple)
-![Facts](https://img.shields.io/badge/facts-1%2C348%2B_and_growing-orange)
+![Agents](https://img.shields.io/badge/agents-75-purple)
+![Facts](https://img.shields.io/badge/facts-3%2C147%2B_and_growing-orange)
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
 
-> **The world's most autonomous local-first AI — 50 agents that learn, debate, and evolve on your hardware.**
+> **The world's most autonomous local-first AI — 75 agents that learn, debate, and evolve on your hardware.**
 > Self-learning. Self-healing. Self-improving. Zero cloud. Zero limits.
 > From an €8 ESP32 to a €400K DGX — same code, same agents, same intelligence.
 
@@ -18,7 +18,7 @@
 
 ## What is this?
 
-WaggleDance is the most ambitious local-first AI system ever built. 50+ specialized agents communicate through a HiveMind orchestrator, debate in Round Table consensus, and autonomously learn from everything — conversations, sensors, news feeds, web search, and each other. It gets measurably smarter every hour it runs.
+WaggleDance is the most ambitious local-first AI system ever built. 75 specialized agents communicate through a HiveMind orchestrator, debate in Round Table consensus, and autonomously learn from everything — conversations, sensors, news feeds, web search, and each other. It gets measurably smarter every hour it runs.
 
 Originally built for Finnish beekeeping (300 hives, 10,000 kg honey/year), it scales to smart homes, factories, and IoT edge devices. A 3.8B model with deep domain memory outperforms generic 400B cloud models — at 0.5ms latency and zero recurring cost.
 
@@ -31,17 +31,19 @@ Originally built for Finnish beekeeping (300 hives, 10,000 kg honey/year), it sc
 
 ## Key Features
 
-- 🧠 **50+ specialized agents** communicating through HiveMind orchestrator (5 trust levels: NOVICE → MASTER)
+- 🧠 **75 specialized agents** communicating through HiveMind orchestrator (5 trust levels: NOVICE → MASTER)
 - 🔄 **Adaptive AutoScale** — same code runs on €8 ESP32 to €400K DGX, auto-configures
 - ⚡ **SmartRouter evolution** — 3,000ms (day 1) → 55ms (week 1) → 18ms (month 1) → 0.5ms (HotCache)
 - 🇫🇮 **Bilingual Finnish + English** — native Finnish processing faster than any other local AI on small hardware
 - 📊 **Vector memory** — ChromaDB with bilingual index, never forgets (55ms retrieval)
 - 🔁 **6-layer autonomous learning** — bilingual indexing, gap enrichment, web learning, Claude distillation, meta-learning, code self-review
 - ⚡ **MicroModel evolution** — trains a local model on YOUR data; topics auto-promote when accuracy exceeds LLM
-- 🎯 **97.7% routing accuracy** across 50 agent specializations
+- 🎯 **97.7% routing accuracy** across 75 agent specializations (72 with weighted Finnish keywords)
 - 🛡️ **Round Table consensus** — up to 6 agents cross-validate every answer (1.8% hallucination)
 - 🔒 **Zero cloud dependency** — everything runs locally, your data stays yours
 - 📡 **4 deployment profiles** — GADGET / COTTAGE / HOME / FACTORY
+- 🎤 **Voice interface** — Whisper STT (Finnish) + Piper TTS, wake word "Hei WaggleDance"
+- 📐 **Elastic scaling** — auto-detects GPU/RAM/CPU, selects optimal tier (minimal → enterprise)
 - 🧪 **22/22 test suites GREEN** — 700+ assertions across pipeline, routing, corrections, and autonomy
 - 🛡️ **Production-hardened** — CircuitBreaker, graceful degradation, structured logging, TTL eviction
 - 📈 **ConvergenceDetector** — knows when learning plateaus, auto-generates weekly performance reports
@@ -63,7 +65,7 @@ WaggleDance automatically adapts to whatever hardware it runs on. Same codebase,
 │   │  ESP32   │  │   NUC    │  │ Mac Mini │  │   DGX    │       │
 │   │   €8     │  │  €650    │  │  €2,200  │  │ €400,000 │       │
 │   │  0.5W    │  │   28W    │  │   30W    │  │  4,500W  │       │
-│   │ 1 agent  │  │ 8 agents │  │25 agents │  │50 agents │       │
+│   │ 1 agent  │  │ 8 agents │  │25 agents │  │75 agents │       │
 │   │ TinyML   │  │qwen:0.6b │  │ phi4:14b │  │llama:70b │       │
 │   │ 45ms     │  │   12ms   │  │   3ms    │  │  0.08ms  │       │
 │   └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
@@ -96,18 +98,17 @@ BOOT → Detect Hardware
   └── Storage: NVMe / SSD / SD speed
   │
   ▼
-SELECT OPTIMAL PROFILE
+SELECT OPTIMAL TIER (ElasticScaler)
   │
-  ├── RAM < 4GB    → EDGE:     TinyML classifiers only
-  ├── RAM < 16GB   → LIGHT:    qwen3:0.6b (CPU quantized)
-  ├── RAM < 32GB   → STANDARD: phi4-mini:3.8b + embeddings
-  ├── RAM < 64GB   → PRO:      phi4:14b + llama3.3:8b + whisper
-  ├── RAM < 256GB  → HEAVY:    llama3.3:70b (CPU/GPU split)
-  └── RAM > 256GB  → BEAST:    70b tensor parallel + 50 micro-models
+  ├── VRAM < 2GB   → MINIMAL:       No LLM, V1 pattern match only
+  ├── VRAM 2-4GB   → LIGHT:         qwen3:0.6b + smollm2:135m, 2 agents
+  ├── VRAM 4-16GB  → STANDARD:      phi4-mini + llama3.2:1b, 6 agents
+  ├── VRAM 16-48GB → PROFESSIONAL:  phi4:14b + qwen3:4b, 15 agents + vision
+  └── VRAM 48GB+   → ENTERPRISE:    llama3.3:70b + llama3.1:8b, 75 agents
   │
   ▼
 AUTO-CONFIGURE
-  ├── Max concurrent agents    (2 → 50)
+  ├── Max concurrent agents    (2 → 75)
   ├── Round Table size         (skip → 6 agents)
   ├── Night learning batch     (10 → 500 facts/night)
   ├── MicroModel training      (off → continuous)
@@ -508,7 +509,7 @@ Suites include:
   test_pipeline.py          — 53 tests (translation, validation, end-to-end)
   test_phase10.py           — 73 tests (MicroModel V1/V2/V3, training)
   test_corrections.py       — 35 tests (correction memory, dedup)
-  test_routing_centroids.py — routing accuracy across 50 agents
+  test_routing_centroids.py — routing accuracy across 75 agents
   test_b3_circuit_breaker.py — CircuitBreaker self-heal
   test_c1_hotcache.py       — HotCache auto-fill
   test_d1_d2_d3_autonomy.py — ConvergenceDetector, weekly report
@@ -518,8 +519,8 @@ Suites include:
 ### What Happens on First Boot
 
 1. Hardware auto-detected (GPU, RAM, CPU)
-2. Optimal model tier selected (EDGE → LIGHT → STANDARD → PRO → BEAST)
-3. 50 agent knowledge bases loaded from YAML
+2. Optimal model tier selected (MINIMAL → LIGHT → STANDARD → PROFESSIONAL → ENTERPRISE)
+3. 75 agent knowledge bases loaded from YAML
 4. ChromaDB vector memory initialized
 5. Opus-MT translation models loaded (Finnish ↔ English)
 6. Background learning begins immediately
@@ -533,11 +534,11 @@ WaggleDance auto-detects your hardware and configures itself. No YAML editing ne
 
 ```
 waggledance-swarm/
-├── agents/              # 50+ YAML agent knowledge bases
+├── agents/              # 75 YAML agent knowledge bases
 │   ├── beekeeper/        #   Beekeeper (head agent)
 │   ├── disease_monitor/      #   Disease monitor
 │   ├── meteorologist/     #   Weather expert
-│   └── ... (47 more)
+│   └── ... (72 more)
 ├── knowledge/           # Domain knowledge bases
 ├── core/                # Core modules
 │   ├── fast_memory.py   #   Hot Cache + LRU + seasonal rules
@@ -596,17 +597,19 @@ waggledance-swarm/
 ## Current Status
 
 - ✅ **Phase 1:** Foundation — consciousness v2, dual embedding, smart router
-- ✅ **Phase 2:** Batch Pipeline — 94% benchmark, 1,348+ facts in ChromaDB
+- ✅ **Phase 2:** Batch Pipeline — 94% benchmark, 3,147+ facts in ChromaDB
 - ✅ **Phase 3:** Social Learning — Round Table, agent levels, night mode
 - ✅ **Phase 4:** Advanced Learning — bilingual index, hot cache, fact enrichment, corrections, MicroModel V1+V2
 - ✅ **Phase B:** Production Hardening — CircuitBreaker, eviction TTL, graceful degradation, error handling
 - ✅ **Phase C:** Cache & Pipeline — HotCache auto-fill, LRU cache, batch dedup, readiness gates, structured logging
 - ✅ **Phase D:** Autonomous Intelligence — ConvergenceDetector, weekly report, external source integration
+- ✅ **Phase 7:** Voice Interface — Whisper STT (Finnish) + Piper TTS, wake word activation, WebSocket streaming
+- ✅ **Phase 11:** Elastic Scaling — auto-detect GPU/RAM/CPU, 5-tier classification (minimal → enterprise)
 - 🧪 **Testing:** 22/22 suites GREEN (700+ assertions) — pipeline, routing, corrections, autonomy all validated
-- 📋 **Phase 5-8:** Sensors & External Data — code framework ready, hardware pending
+- 📋 **Phase 5-6:** Camera & Audio Sensors — code framework ready, hardware pending
+- 📋 **Phase 8:** External Data Feeds — weather, electricity, RSS integration specified
 - 📋 **Phase 9:** Autonomous Learning Layers 3-6 — code exists, disabled (offline-first by design)
 - 📋 **Phase 10:** MicroModel V3 LoRA — architecture ready, training pipeline pending
-- 📋 **Phase 11:** Elastic Hardware Scaling — FlexHW detection working, full auto-config pending
 
 ---
 
@@ -627,14 +630,14 @@ waggledance-swarm/
 | CircuitBreaker recovery | auto-heal after 3 failures |
 | Round Table consensus time | 12-45s (hardware dependent) |
 | Night learning rate | 50-200 facts/night |
-| ChromaDB facts | 1,348+ (growing autonomously) |
+| ChromaDB facts | 3,147+ (growing autonomously) |
 
 ---
 
 ## Credits
 
 ```
-99% — Claude OPUS 4.6 (Anthropic)  // architecture, code, 50+ agents
+99% — Claude OPUS 4.6 (Anthropic)  // architecture, code, 75 agents
  1% — Jani Korpi 🐝                // vision, direction, domain expertise, coffee
 ```
 

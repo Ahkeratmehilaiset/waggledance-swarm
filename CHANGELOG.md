@@ -1,5 +1,50 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.0.4 (2026-03-02) — 4-Area Improvement: Observability, Learning, Agents, New Features
+
+### Area 1: Observability Pipeline Fix
+- **Weekly report auto-trigger**: `_maybe_weekly_report()` runs every 50 heartbeats, no longer depends on night mode
+- **StructuredLogger**: verified 7 `log_chat()` call sites in `_do_chat()`, metrics accumulate correctly
+- **meta_reports.jsonl**: cleaned stale entries, fresh reports append correctly
+
+### Area 2: Autonomous Learning Restart
+- **ConvergenceDetector tuning**: threshold 0.20→0.10, patience 3→5, pause 1800s→900s
+- **AdaptiveTuner**: throttle_pause_seconds 600→300
+- **Category rotation**: 10 agent groups cycled during enrichment (bee, weather, garden, etc.)
+- **Seasonal boosts**: month-based 1.5x weight for relevant agents (March = spring inspection)
+- **Enrichment cycle logging**: each cycle logs to `learning_metrics.jsonl` via StructuredLogger
+
+### Area 3: Agent Enrichment + Routing
+- **12 thin agents expanded**: apartment_board, child_safety, commute_planner, compliance, delivery_tracker, forklift_fleet, indoor_garden, lab_analyst, noise_monitor, smart_home, waste_handler, pet_care — each 21→72-81 lines
+- **WEIGHTED_ROUTING expanded**: 14→72 agents with Finnish stem keywords
+- **MASTER_NEGATIVE_KEYWORDS**: +14 specialist terms for better delegation
+- **fishing_guide "verkko" fix**: demoted to secondary keyword, "kalaverkko" as primary (no more zigbee misrouting)
+
+### Area 4: New Features
+- **Phase 7 — Voice Interface** (integrations/):
+  - `whisper_stt.py`: Whisper-small STT, Finnish, wake word "Hei WaggleDance", VAD 1.5s
+  - `piper_tts.py`: Piper fi_FI-harri-medium TTS, WAV output
+  - `voice_interface.py`: full pipeline Mic→STT→Chat→TTS→Speaker, WebSocket streaming
+  - Graceful degradation: `voice: {enabled: false}` → system runs normally
+- **Phase 11 — Elastic Scaling** (core/elastic_scaler.py):
+  - Auto-detects GPU VRAM, RAM, CPU cores via nvidia-smi/wmic
+  - 5 tiers: minimal / light / standard / professional / enterprise
+  - Runtime scaling: VRAM >90% → unload model, queue >10 → spawn agent
+  - ZBook correctly detected as "standard" tier (8GB VRAM, 127GB RAM)
+
+### Prior Audit Fixes (included in this commit)
+- **9-fix agent audit**: test_pipeline.py 8 fail→0, test_phase10.py 3 fail→0
+- **Night learning 4 root causes fixed**: init time, guarded bypass, last-source protection, attr name
+- **waggle_backup.py**: ChromaDB no longer excluded from backups
+- **waggle_restore.py**: new environment validator (13 checks)
+
+### Test Results
+- **22/22 suites GREEN**, 700 assertions, 0 failures
+- **Health Score: 95/100**
+- 5 Finnish chat queries verified: correct routing, metrics growing
+
+---
+
 ## v0.0.3 (2026-02-22) — Audit Fix + Timeout-esto + Dashboard + OpsAgent + Learning
 
 ### FIX-14: Kuolemanspiraali-esto + Chat-prioriteetti + CPU-pakotus

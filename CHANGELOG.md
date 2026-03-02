@@ -2,6 +2,11 @@
 
 ## v0.0.4 (2026-03-02) — 4-Area Improvement: Observability, Learning, Agents, New Features
 
+### Docs & GitHub
+- **README.md**: all "50 agents" → 75, facts 1,348+ → 3,147+, Phase 7+11 marked complete, tier names aligned with ElasticScaler
+- **CHANGELOG.md**: v0.0.4 entry added
+- **GitHub About**: repo description updated via API (50 → 75 agents)
+
 ### Area 1: Observability Pipeline Fix
 - **Weekly report auto-trigger**: `_maybe_weekly_report()` runs every 50 heartbeats, no longer depends on night mode
 - **StructuredLogger**: verified 7 `log_chat()` call sites in `_do_chat()`, metrics accumulate correctly

@@ -4,6 +4,10 @@ header:
   name_fi: 'Lukkoseppä'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+priority: low
 ASSUMPTIONS:
 - 'Korvenranta: mekaaninen + älylukko'
 - PIN, RFID, mobiili, avain varavaihtoehtona

@@ -4,6 +4,10 @@ header:
   name_fi: 'Myrskyvaroittaja'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+priority: medium
 ASSUMPTIONS:
 - Ilmatieteen laitoksen varoitukset + paikallinen data
 - Myrsky ≥21 m/s, kova tuuli ≥14 m/s

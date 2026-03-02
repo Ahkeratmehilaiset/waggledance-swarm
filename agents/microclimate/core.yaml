@@ -4,6 +4,10 @@ header:
   name_fi: 'Mikroilmasto'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+priority: medium
 ASSUMPTIONS:
 - 'Korvenranta: järven vaikutus, metsänsuoja, avoin piha'
 - Oma sääasema vs. IL:n data

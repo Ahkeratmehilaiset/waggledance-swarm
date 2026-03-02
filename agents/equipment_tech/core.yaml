@@ -4,6 +4,10 @@ header:
   name_fi: 'Laitehuoltaja'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - factory
+priority: medium
 ASSUMPTIONS:
 - 'Korvenrannan IoT: kamerat, anturit, gateway, NAS, Ollama-palvelin'
 - 'Verkko: WiFi, BLE, 4G-vara'

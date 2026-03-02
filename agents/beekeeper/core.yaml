@@ -4,6 +4,12 @@ header:
   name_fi: 'Tarhaaja (Päämehiläishoitaja)'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - gadget
+  - cottage
+  - home
+  - factory
+priority: high
 ASSUMPTIONS:
 - 202 yhdyskuntaa (35 tarhaa), useita tarhoja (Helsinki, Kouvola, Huhdasjärvi)
 - JKH Service Y-tunnus 2828492-2

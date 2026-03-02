@@ -4,6 +4,10 @@ header:
   name_fi: 'Pieneläin- ja tuholaisasiantuntija'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+priority: medium
 ASSUMPTIONS:
 - Korvenrannan mökkiympäristö — metsä ja järvi
 - Jyrsijät, kärpäset, hyttyset, punkit, muurahaiset, ampiaisen

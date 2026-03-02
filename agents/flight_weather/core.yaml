@@ -4,6 +4,10 @@ header:
   name_fi: 'Lentosää-analyytikko'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+priority: medium
 ASSUMPTIONS:
 - Mehiläisten lentoaktiivisuuden sää-arviointi
 - Yhdistää meteorologin datan mehiläishoidon päätöksiin

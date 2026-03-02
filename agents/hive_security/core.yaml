@@ -4,6 +4,10 @@ header:
   name_fi: 'Pesäturvallisuus'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+priority: high
 ASSUMPTIONS:
 - Karhu- ja mäyrävahinkojen ehkäisy mehiläistarhoilla
 - Sähköaita ensisijainen suojakeino

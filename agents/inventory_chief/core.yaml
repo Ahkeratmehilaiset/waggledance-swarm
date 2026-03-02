@@ -4,6 +4,10 @@ header:
   name_fi: 'Inventaariopäällikkö'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - factory
+priority: medium
 ASSUMPTIONS:
 - 'Korvenrannan varasto: työkalut, mehiläistarvikkeet, elintarvikkeet, polttoaineet'
 - Inventointi systemaattisesti

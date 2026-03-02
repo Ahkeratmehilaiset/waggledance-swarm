@@ -4,6 +4,12 @@ header:
   name_fi: 'Meteorologi'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - gadget
+  - cottage
+  - home
+  - factory
+priority: high
 ASSUMPTIONS:
 - Ilmatieteen laitos + paikallinen sääasema Korvenrannassa
 - Säädata kaikille agenteille

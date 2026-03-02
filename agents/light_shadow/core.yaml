@@ -4,6 +4,9 @@ header:
   name_fi: 'Valo ja varjo'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+priority: low
 ASSUMPTIONS:
 - Korvenranta 60.9°N, 26.7°E
 - Aurinkokulman analyysi mehiläispesien, kasvimaiden, aurinkopaneelien ja asumisen

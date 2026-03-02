@@ -4,6 +4,9 @@ header:
   name_fi: 'Kalastusopas'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+priority: low
 ASSUMPTIONS:
 - Huhdasjärvi + lähivesistöt
 - Onkiminen, pilkkiminen, heittokalastus

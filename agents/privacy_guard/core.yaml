@@ -4,6 +4,10 @@ header:
   name_fi: 'Tietosuojavastaava'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - home
+  - factory
+priority: medium
 ASSUMPTIONS:
 - Valvoo KAIKKIEN agenttien tietosuojaa
 - GDPR + kansallinen tietosuojalaki

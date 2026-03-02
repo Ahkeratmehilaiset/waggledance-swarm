@@ -4,6 +4,9 @@ header:
   name_fi: 'Fenologi'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+priority: medium
 ASSUMPTIONS:
 - Huhdasjärvi/Kouvola, vyöhyke II-III
 - Fenologiset havainnot kytketty mehiläishoitoon ja puutarhaan

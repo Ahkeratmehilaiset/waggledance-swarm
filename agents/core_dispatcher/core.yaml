@@ -3,6 +3,12 @@ header:
   agent_name: Core/Dispatcher (Päällikkö)
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - gadget
+  - cottage
+  - home
+  - factory
+priority: high
 ASSUMPTIONS:
 - Korvenrannan mökkiympäristö, Kouvola-Huhdasjärvi
 - 50 agentin multi-agent-järjestelmä, Ollama + paikallinen LLM

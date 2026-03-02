@@ -4,6 +4,10 @@ header:
   name_fi: 'Siivousvastaava'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - home
+  - factory
+priority: low
 ASSUMPTIONS:
 - Korvenrannan mökkikiinteistö
 - Puupinnat, saunan pesu, ulkoterassit

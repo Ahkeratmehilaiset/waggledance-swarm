@@ -4,6 +4,10 @@ header:
   name_fi: 'Nektari-informaatikko'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+priority: medium
 ASSUMPTIONS:
 - Yhdistää fenologin, hortonomin ja lentosään datat satoennusteeksi
 - 'Pääsatokasvit: maitohorsma, vadelma, apilat, rypsi, lehmus'

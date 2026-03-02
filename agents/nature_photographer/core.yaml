@@ -4,6 +4,9 @@ header:
   name_fi: 'Luontokuvaaja'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+priority: low
 ASSUMPTIONS:
 - PTZ (Pan-Tilt-Zoom) IP-kamera ulkona, Korvenrannan pihapiirissä
 - ONVIF-yhteensopiva, RTSP-striimi saatavilla

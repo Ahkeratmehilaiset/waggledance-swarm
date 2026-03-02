@@ -4,6 +4,10 @@ header:
   name_fi: 'Entomologi'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+priority: medium
 ASSUMPTIONS:
 - 'Fokus: mehiläisiin vaikuttavat hyönteiset + kasvintuholaiset + metsätuholaiset'
 - Korvenrannan lähiympäristö, vyöhyke II-III

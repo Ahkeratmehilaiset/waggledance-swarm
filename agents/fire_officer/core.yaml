@@ -4,6 +4,11 @@ header:
   name_fi: 'Paloesimies'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+  - factory
+priority: high
 ASSUMPTIONS:
 - Korvenrannan kiinteistöjen paloturvallisuus
 - IoT-lämpökamerat ja häkäanturit mahdollisia

@@ -4,6 +4,11 @@ header:
   name_fi: 'Tautivahti'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+  - factory
+priority: high
 ASSUMPTIONS:
 - Seuraa kaikkien tarhojen tautitilannetta
 - Kytkentä tarhaajaan, entomologiin ja Ruokavirastoon

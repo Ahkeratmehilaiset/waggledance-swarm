@@ -138,13 +138,14 @@ class YAMLBridge:
     Lukee agents/*/core.yaml ja generoi runtime-konfiguraatiot.
     """
 
-    def __init__(self, agents_dir: str = "agents"):
+    def __init__(self, agents_dir: str = "agents", active_profile: str = None):
         self.agents_dir = Path(agents_dir)
         self._agents: dict = {}
         self._agents_en: dict = {}  # EN-käännös välimuistissa
         self._loaded = False
         self._translation_proxy = None
         self._language = "fi"  # fi tai en
+        self._active_profile = active_profile  # gadget|cottage|home|factory or None
 
     def _ensure_loaded(self):
         """Lataa kaikki YAML-agentit (lazy)."""
@@ -445,13 +446,19 @@ class YAMLBridge:
 
     def get_spawner_templates(self) -> dict:
         """
-        Generoi spawner-yhteensopivat templateit kaikille 50 agentille.
-        Palautetaan dict joka voidaan suoraan mergeta spawner.agent_templates:iin.
+        Generoi spawner-yhteensopivat templateit agenteille.
+        Jos active_profile on asetettu, palauttaa vain profiiliin kuuluvat agentit.
         """
         self._ensure_loaded()
         templates = {}
 
         for agent_id, agent in self._agents.items():
+            # Profile filtering: skip agents not in active profile
+            if self._active_profile:
+                agent_profiles = agent.get("profiles", [])
+                if agent_profiles and self._active_profile not in agent_profiles:
+                    continue
+
             header = agent.get("header", {})
             name = header.get("agent_name", agent_id)
 
@@ -470,9 +477,23 @@ class YAMLBridge:
                     "flight_weather", "hive_security"
                 ),
                 "yaml_source": True,
+                "profiles": agent.get("profiles", []),
+                "priority": agent.get("priority", "medium"),
             }
 
         return templates
+
+    def get_profile_stats(self) -> dict:
+        """Return agent counts per profile."""
+        self._ensure_loaded()
+        stats = {"gadget": 0, "cottage": 0, "home": 0, "factory": 0}
+        for agent in self._agents.values():
+            for p in agent.get("profiles", []):
+                if p in stats:
+                    stats[p] += 1
+        stats["active_profile"] = self._active_profile
+        stats["total_agents"] = len(self._agents)
+        return stats
 
     # ── Routing Rules ─────────────────────────────────────────
 

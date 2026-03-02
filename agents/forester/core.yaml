@@ -4,6 +4,9 @@ header:
   name_fi: 'Metsänhoitaja'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+priority: medium
 ASSUMPTIONS:
 - Korvenrannan kiinteistön metsäala ~5 ha
 - Havupuuvaltainen sekametsä (kuusi, mänty, koivu)

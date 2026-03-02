@@ -4,6 +4,11 @@ header:
   name_fi: 'LVI-asiantuntija'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+  - factory
+priority: medium
 ASSUMPTIONS:
 - Mökillä on vesijärjestelmä, jossa on jäätymisriski.
 - Pysyvät putkiasennukset teetetään ammattilaisella.

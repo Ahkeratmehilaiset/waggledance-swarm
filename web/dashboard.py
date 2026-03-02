@@ -22,7 +22,8 @@ import json
 import asyncio
 import time
 from datetime import datetime
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from pathlib import Path
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 
 
@@ -655,6 +656,36 @@ loadFeeds();
                             if hasattr(hivemind, 'micro_model')
                             and hivemind.micro_model else {}),
         })
+
+    @app.get("/api/profile")
+    async def get_profile():
+        """Return active profile and agent counts per profile."""
+        profile = hivemind.config.get("profile", "cottage")
+        stats = {"active_profile": profile, "profiles": ["gadget", "cottage", "home", "factory"]}
+        if hasattr(hivemind, 'spawner') and hasattr(hivemind.spawner, 'yaml_bridge'):
+            stats.update(hivemind.spawner.yaml_bridge.get_profile_stats())
+        return stats
+
+    @app.post("/api/profile")
+    async def set_profile(request: Request):
+        """Switch active profile (requires restart to take effect)."""
+        body = await request.json()
+        new_profile = body.get("profile", "cottage")
+        if new_profile not in ("gadget", "cottage", "home", "factory"):
+            return JSONResponse({"error": f"Invalid profile: {new_profile}"}, status_code=400)
+        # Update settings.yaml
+        import yaml as _yaml
+        settings_path = Path("configs/settings.yaml")
+        with open(settings_path, encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
+        for i, line in enumerate(lines):
+            if line.startswith("profile:"):
+                lines[i] = f"profile: {new_profile}  # gadget | cottage | home | factory"
+                break
+        with open(settings_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        return {"profile": new_profile, "message": "Profile updated. Restart to apply."}
 
     @app.get("/api/system")
     async def system_stats():

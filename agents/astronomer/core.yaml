@@ -4,6 +4,9 @@ header:
   name_fi: 'Tähtitieteilijä'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+priority: low
 ASSUMPTIONS:
 - 'Havainnointipaikka: Korvenranta, Kouvola (~60.9°N, 26.7°E)'
 - Matala valosaaste (Bortle 3-4)

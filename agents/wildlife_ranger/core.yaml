@@ -4,6 +4,9 @@ header:
   name_fi: 'Riistanvartija'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+priority: medium
 ASSUMPTIONS:
 - Korvenranta, Kouvola — riistanhoitoyhdistys Kouvolan alue
 - Hirvieläinten, karhujen ja pienpetojen seuranta

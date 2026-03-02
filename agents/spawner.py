@@ -215,9 +215,11 @@ class AgentSpawner:
         self.monitor = monitor
         self.active_agents: dict[str, Agent] = {}
         # Config yliajaa oletuspohjat
-        # ═══ YAML Bridge: lataa 50 agentin templateit ═══
+        # ═══ YAML Bridge: lataa agentin templateit (profiilisuodatus) ═══
+        active_profile = config.get("profile")  # gadget|cottage|home|factory
         self.yaml_bridge = YAMLBridge(
-            config.get("yaml_bridge", {}).get("agents_dir", "agents")
+            config.get("yaml_bridge", {}).get("agents_dir", "agents"),
+            active_profile=active_profile,
         )
         yaml_templates = self.yaml_bridge.get_spawner_templates()
         self.agent_templates = {

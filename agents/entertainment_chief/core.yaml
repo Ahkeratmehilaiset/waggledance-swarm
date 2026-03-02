@@ -4,6 +4,9 @@ header:
   name_fi: 'Viihdepäällikkö'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - home
+priority: low
 ASSUMPTIONS:
 - Korvenrannan mökin viihdejärjestelmä
 - PS5 + TV, lautapelikokoelma, suomalaiset perinnepelit

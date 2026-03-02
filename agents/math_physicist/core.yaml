@@ -4,6 +4,11 @@ header:
   name_fi: 'Matemaatikko-fyysikko'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+  - factory
+priority: low
 ASSUMPTIONS:
 - Laskennallinen tuki kaikille agenteille
 - 'Fysiikan mallit: lämmönsiirto, nestevirtaus, optiikka, mekaniikka'

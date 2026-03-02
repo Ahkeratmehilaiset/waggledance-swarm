@@ -4,6 +4,9 @@ header:
   name_fi: 'Elokuva-asiantuntija'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - home
+priority: low
 ASSUMPTIONS:
 - Suomalaisen elokuvan tuntemus
 - Mökkielokuvaillat

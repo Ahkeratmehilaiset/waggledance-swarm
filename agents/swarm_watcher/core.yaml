@@ -4,6 +4,11 @@ header:
   name_fi: 'Parveiluvahti'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+  - factory
+priority: high
 ASSUMPTIONS:
 - Valvoo parveiluriskiä kaikilla tarhoilla
 - Saa dataa pesälämpö-agentilta, lentosää-agentilta ja tarhaajalta

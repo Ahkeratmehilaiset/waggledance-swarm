@@ -4,6 +4,9 @@ header:
   name_fi: 'Ornitologi'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+priority: low
 ASSUMPTIONS:
 - 'Sijainti: Huhdasjärvi/Kouvola, Kaakkois-Suomi (vyöhyke II-III)'
 - Lintulautakulku ja järvenrantaympäristö

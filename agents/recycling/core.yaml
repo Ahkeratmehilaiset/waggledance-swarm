@@ -4,6 +4,10 @@ header:
   name_fi: 'Kierrätys ja jäte'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - home
+  - factory
+priority: medium
 ASSUMPTIONS:
 - 'Korvenranta: haja-asutusalueen jätehuolto'
 - 'Lajittelu: bio, paperi, kartonki, lasi, metalli, muovi, seka'

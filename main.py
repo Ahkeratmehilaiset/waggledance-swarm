@@ -79,8 +79,17 @@ async def main():
     hive = HiveMind("configs/settings.yaml")
     await hive.start()
 
+    # Filter AUTO_SPAWN by active profile (only spawn agents in templates)
+    available_templates = set(hive.spawner.agent_templates.keys())
+    active_profile = hive.config.get("profile", "cottage")
+    spawn_list = [a for a in AUTO_SPAWN if a in available_templates]
+    skipped = [a for a in AUTO_SPAWN if a not in available_templates]
+    if skipped:
+        print(f"  ℹ️  Profile '{active_profile}': skipped {len(skipped)} agents "
+              f"not in profile ({', '.join(skipped[:5])}{'...' if len(skipped) > 5 else ''})")
+
     spawned = 0
-    for agent_type in AUTO_SPAWN:
+    for agent_type in spawn_list:
         try:
             existing = hive.spawner.get_agents_by_type(agent_type)
             if not existing:

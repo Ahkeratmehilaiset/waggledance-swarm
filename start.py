@@ -13,7 +13,66 @@ import sys
 import os
 import time
 
+import yaml
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_PATH = os.path.join(ROOT, "configs", "settings.yaml")
+PROFILES = ["gadget", "cottage", "home", "factory"]
+
+
+def get_current_profile() -> str:
+    """Read current profile from settings.yaml."""
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        return cfg.get("profile", "cottage")
+    except Exception:
+        return "cottage"
+
+
+def set_profile(profile: str):
+    """Write profile to settings.yaml."""
+    with open(SETTINGS_PATH, encoding="utf-8") as f:
+        content = f.read()
+    # Replace existing profile line
+    lines = content.split("\n")
+    for i, line in enumerate(lines):
+        if line.startswith("profile:"):
+            lines[i] = f"profile: {profile}  # gadget | cottage | home | factory"
+            break
+    else:
+        lines.insert(0, f"profile: {profile}  # gadget | cottage | home | factory")
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
+def select_profile():
+    """Interactive profile selection."""
+    current = get_current_profile()
+    descs = {
+        "gadget": "ESP32/RPi Zero — 3-5 critical agents only",
+        "cottage": "Cottage environment — outdoor, forest, lake, fire",
+        "home": "Urban home — IoT, energy, traffic, smart home",
+        "factory": "Factory — production lines, quality, safety, maintenance",
+    }
+    print("\n  ╔══════════════════════════════════════════╗")
+    print("  ║   Agent Profile Selection                 ║")
+    print("  ╠══════════════════════════════════════════╣")
+    for i, p in enumerate(PROFILES, 1):
+        marker = " ◀" if p == current else ""
+        print(f"  ║  {i}. {p:<10} {descs[p]:<28}{marker} ║")
+    print("  ╚══════════════════════════════════════════╝")
+    print(f"\n  Current profile: {current}")
+    choice = input(f"  Select profile [1-4] (Enter = keep {current}): ").strip()
+    if choice in ("1", "2", "3", "4"):
+        new_profile = PROFILES[int(choice) - 1]
+        if new_profile != current:
+            set_profile(new_profile)
+            print(f"  ✅ Profile changed: {current} → {new_profile}")
+        else:
+            print(f"  Profile unchanged: {current}")
+        return new_profile
+    return current
 
 
 def check_ollama() -> bool:
@@ -95,6 +154,7 @@ def start_production():
 
 def interactive_menu():
     """Show interactive mode selection."""
+    current_profile = get_current_profile()
     print()
     print("  ╔══════════════════════════════════════╗")
     print("  ║   WaggleDance Launcher               ║")
@@ -108,14 +168,21 @@ def interactive_menu():
     print("  ║     Requires Ollama + 4 models       ║")
     print("  ║     Full HiveMind, real AI           ║")
     print("  ║     ChromaDB, agents, learning       ║")
+    print("  ║                                      ║")
+    print("  ║  3. Change PROFILE                   ║")
+    print(f"  ║     Current: {current_profile:<24}║")
     print("  ╚══════════════════════════════════════╝")
 
     ollama_status = "running" if check_ollama() else "NOT running"
     print(f"\n  Ollama: {ollama_status}")
+    print(f"  Profile: {current_profile}")
 
-    choice = input("\n  Select mode [1/2]: ").strip()
+    choice = input("\n  Select [1/2/3]: ").strip()
     if choice == "2":
         start_production()
+    elif choice == "3":
+        select_profile()
+        interactive_menu()  # Return to menu after profile change
     else:
         start_stub()
 
@@ -125,7 +192,13 @@ if __name__ == "__main__":
     parser.add_argument("--stub", action="store_true", help="Start in stub mode")
     parser.add_argument("--production", "--prod", action="store_true",
                         help="Start in production mode")
+    parser.add_argument("--profile", choices=PROFILES,
+                        help="Set active profile before starting")
     args = parser.parse_args()
+
+    if args.profile:
+        set_profile(args.profile)
+        print(f"  ✅ Profile set to: {args.profile}")
 
     if args.stub:
         start_stub()

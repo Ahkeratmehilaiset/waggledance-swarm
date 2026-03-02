@@ -4,6 +4,11 @@ header:
   name_fi: 'Sähköasentaja'
   version: 1.0.0
   last_updated: '2026-02-21'
+profiles:
+  - cottage
+  - home
+  - factory
+priority: medium
 ASSUMPTIONS:
 - 'Suomi: 230/400 V, 50 Hz -sähköverkko.'
 - Luvanvaraiset sähkötyöt teetetään rekisteröidyllä sähköurakoitsijalla.

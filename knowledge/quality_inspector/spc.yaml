@@ -1,0 +1,9 @@
+# Laadunvalvonta — Spc
+# Auto-generated for WaggleDance Swarm AI
+title: "Spc"
+agent: "Laadunvalvonta"
+facts:
+  - "X-bar/R-kortti: keskiarvon ja vaihteluvälin seuranta"
+  - "Cpk = min((USL-mean), (mean-LSL)) / (3*sigma)"
+  - "Western Electric -säännöt: hälytys poikkeavista kuvioista"
+  - "Control Limit vs Specification Limit: eri asia"

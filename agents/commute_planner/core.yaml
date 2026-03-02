@@ -1,0 +1,21 @@
+header:
+  agent_id: commute_planner
+  agent_name: Liikkuminen ja työmatka
+  name_fi: 'Liikkuminen ja työmatka'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: medium
+ASSUMPTIONS:
+- Pääkaupunkiseutu (HSL-alue)
+- Valtakunnallinen VR-liikenne
+DECISION_METRICS_AND_THRESHOLDS:
+  commute_time_min:
+    value: 45
+    action: ">45 min → harkitse etätyötä"
+    source: src:CP1
+eval_questions:
+- q: Mikä on commute time min?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.commute_time_min.value
+  source: src:CP1

@@ -1,0 +1,28 @@
+header:
+  agent_id: safety_officer
+  agent_name: Työturvallisuuspäällikkö
+  name_fi: 'Työturvallisuuspäällikkö'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: high
+ASSUMPTIONS:
+- Teollisuustuotanto
+- Työturvallisuuslaki 738/2002
+DECISION_METRICS_AND_THRESHOLDS:
+  near_miss_hours:
+    value: 24
+    action: "Läheltä piti käsiteltävä 24h kuluessa"
+    source: src:SO1
+  accident_frequency:
+    value: 10
+    action: ">10 → vakava, toimenpidesuunnitelma"
+    source: src:SO1
+eval_questions:
+- q: Mikä on near miss hours?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.near_miss_hours.value
+  source: src:SO1
+- q: Mikä on accident frequency?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.accident_frequency.value
+  source: src:SO1

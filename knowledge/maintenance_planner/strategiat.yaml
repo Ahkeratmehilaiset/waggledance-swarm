@@ -1,0 +1,9 @@
+# Kunnossapitosuunnittelija — Strategiat
+# Auto-generated for WaggleDance Swarm AI
+title: "Strategiat"
+agent: "Kunnossapitosuunnittelija"
+facts:
+  - "Korjaava (CM): korjataan kun rikkoutuu"
+  - "Ehkäisevä (PM): aikapohjainen huolto-ohjelma"
+  - "Ennakoiva (PdM): kuntomittaus (värähtely, lämpö)"
+  - "TPM: operaattori tekee perushuollot"

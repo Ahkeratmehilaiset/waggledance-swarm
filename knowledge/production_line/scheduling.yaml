@@ -1,0 +1,9 @@
+# Tuotantolinjan monitorointi — Scheduling
+# Auto-generated for WaggleDance Swarm AI
+title: "Scheduling"
+agent: "Tuotantolinjan monitorointi"
+facts:
+  - "Finite capacity scheduling: todelliset kapasiteetit"
+  - "SMED: asetusajan minimointi"
+  - "Theory of Constraints: pullonkaula-analyysi"
+  - "Viikkosuunnitelma + päiväkohtainen hienosuunnittelu"

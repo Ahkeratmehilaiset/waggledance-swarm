@@ -1,0 +1,21 @@
+header:
+  agent_id: child_safety
+  agent_name: Lapsiturvallinen koti
+  name_fi: 'Lapsiturvallinen koti'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: medium
+ASSUMPTIONS:
+- Pienten lasten (0-6v) koti
+- Myrkytystietokeskus 0800 147 111
+DECISION_METRICS_AND_THRESHOLDS:
+  fall_height_cm:
+    value: 60
+    action: ">60 cm → suojaaide, turvaportit"
+    source: src:CS1
+eval_questions:
+- q: Mikä on fall height cm?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fall_height_cm.value
+  source: src:CS1

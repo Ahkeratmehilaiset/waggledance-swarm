@@ -1,0 +1,9 @@
+# Teollisuusilmastointi — Ilmanvaihto
+# Auto-generated for WaggleDance Swarm AI
+title: "Ilmanvaihto"
+agent: "Teollisuusilmastointi"
+facts:
+  - "LTO-hyötysuhde: pyörivä 70-85%, levy 50-70%"
+  - "Vapaajäähdytys ulkoilma <15°C"
+  - "VAV: tarpeenmukainen ilmavirta"
+  - "CO2-ohjaus: <1000 ppm"

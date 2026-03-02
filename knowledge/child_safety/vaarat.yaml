@@ -1,0 +1,10 @@
+# Lapsiturvallinen koti — Vaarat
+# Auto-generated for WaggleDance Swarm AI
+title: "Vaarat"
+agent: "Lapsiturvallinen koti"
+facts:
+  - "Keittiö: kuuma liesi, veitset, pesuaineet — lukkoportti"
+  - "Kylpyhuone: kuuma vesi (max 50°C), liukas lattia"
+  - "Ikkunat: putoamissuoja, ikkunalukot, turvaverkko"
+  - "Pistorasiat: suojatulpat"
+  - "Portaikot: turvaportit ylä- ja alaporteille"

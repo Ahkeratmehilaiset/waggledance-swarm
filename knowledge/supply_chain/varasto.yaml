@@ -1,0 +1,9 @@
+# Toimitusketjun hallinta — Varasto
+# Auto-generated for WaggleDance Swarm AI
+title: "Varasto"
+agent: "Toimitusketjun hallinta"
+facts:
+  - "ABC-analyysi: A 80% arvosta, 20% nimikkeistä"
+  - "EOQ: optimaalinen tilauseräkoko"
+  - "Safety stock: Z × σ × √LT"
+  - "FIFO: pakollinen pilaantuvalle materiaalille"

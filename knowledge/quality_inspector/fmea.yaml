@@ -1,0 +1,9 @@
+# Laadunvalvonta — Fmea
+# Auto-generated for WaggleDance Swarm AI
+title: "Fmea"
+agent: "Laadunvalvonta"
+facts:
+  - "FMEA: Failure Mode and Effects Analysis"
+  - "RPN = Severity × Occurrence × Detection (1-10)"
+  - "DFMEA: tuotesuunnittelun, PFMEA: prosessin"
+  - "Päivitys jokaisen merkittävän muutoksen yhteydessä"

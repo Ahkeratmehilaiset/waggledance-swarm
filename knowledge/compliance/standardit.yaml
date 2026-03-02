@@ -1,0 +1,9 @@
+# Vaatimustenmukaisuus — Standardit
+# Auto-generated for WaggleDance Swarm AI
+title: "Standardit"
+agent: "Vaatimustenmukaisuus"
+facts:
+  - "ISO 9001: laadunhallinta, PDCA-sykli"
+  - "ISO 14001: ympäristöjärjestelmä"
+  - "ISO 45001: työterveys ja -turvallisuus"
+  - "ISO 50001: energianhallinta"

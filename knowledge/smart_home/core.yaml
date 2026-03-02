@@ -1,0 +1,21 @@
+header:
+  agent_id: smart_home
+  agent_name: Kodin automaatio ja IoT
+  name_fi: 'Kodin automaatio ja IoT'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: medium
+ASSUMPTIONS:
+- Langaton kotiautomaatio
+- Home Assistant tai vastaava
+DECISION_METRICS_AND_THRESHOLDS:
+  zigbee_devices_max:
+    value: 100
+    action: ">100 laitetta → toinen koordinaattori"
+    source: src:SH1
+eval_questions:
+- q: Mikä on zigbee devices max?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.zigbee_devices_max.value
+  source: src:SH1

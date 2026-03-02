@@ -1,0 +1,9 @@
+# Laboratorioanalyytikko — Puhdastila
+# Auto-generated for WaggleDance Swarm AI
+title: "Puhdastila"
+agent: "Laboratorioanalyytikko"
+facts:
+  - "ISO 14644-1: ISO 1 (puhtain) — ISO 9 (normaali)"
+  - "ISO 5: max 3520 partikkelia/m³ (≥0.5µm)"
+  - "Pukeutumisprotokolla: asu, maski, käsineet, kenkäsuojat"
+  - "Ylipaine: +15 Pa ympäristöön nähden"

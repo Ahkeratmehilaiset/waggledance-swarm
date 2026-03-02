@@ -1,0 +1,9 @@
+# Teollisuusilmastointi — Suodattimet
+# Auto-generated for WaggleDance Swarm AI
+title: "Suodattimet"
+agent: "Teollisuusilmastointi"
+facts:
+  - "Esisuodatin (G4/M5): vaihtoväli 3-6 kk"
+  - "Hienosuodatin (F7/F9): vaihtoväli 6-12 kk"
+  - "HEPA (H13/H14): vaihtoväli 2-5 vuotta"
+  - "Paine-eromittaus: tukkoisuuden seuranta"

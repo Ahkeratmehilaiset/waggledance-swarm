@@ -1,0 +1,8 @@
+# Kodin automaatio ja IoT — Laitteet
+# Auto-generated for WaggleDance Swarm AI
+title: "Laitteet"
+agent: "Kodin automaatio ja IoT"
+facts:
+  - "Shelly: WiFi-releet, dimmerit, REST-API"
+  - "Aqara: edullinen Zigbee-sensoriperhe"
+  - "Home Assistant Yellow: omistettu HA-laitteisto"

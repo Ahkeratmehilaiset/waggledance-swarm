@@ -1,0 +1,9 @@
+# Jätevirtojen hallinta — Luokittelu
+# Auto-generated for WaggleDance Swarm AI
+title: "Luokittelu"
+agent: "Jätevirtojen hallinta"
+facts:
+  - "Jätehierarkia: ehkäise → vähennä → kierrätä → energia → loppusijoita"
+  - "EWC-koodi: 6-numeron koodi jokaiselle jätetyypille"
+  - "Biojäte: kompostiin tai biokaasulaitokseen"
+  - "Sekajäte: polttolaitokseen energiahyödynnykseen"

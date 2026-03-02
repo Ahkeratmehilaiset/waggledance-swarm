@@ -1,0 +1,21 @@
+header:
+  agent_id: indoor_garden
+  agent_name: Huonekasvit ja sisäviljely
+  name_fi: 'Huonekasvit ja sisäviljely'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: low
+ASSUMPTIONS:
+- Kaupunkiasunnon sisäkasvit
+- Suomen pimeä talvi
+DECISION_METRICS_AND_THRESHOLDS:
+  light_hours_min:
+    value: 12
+    action: "Trooppiset kasvit vaativat 12-16h — lisävalo talvella"
+    source: src:IG1
+eval_questions:
+- q: Mikä on light hours min?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.light_hours_min.value
+  source: src:IG1

@@ -1,0 +1,21 @@
+header:
+  agent_id: apartment_board
+  agent_name: Taloyhtiöasiat
+  name_fi: 'Taloyhtiöasiat'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: medium
+ASSUMPTIONS:
+- Suomalainen asunto-osakeyhtiö
+- Asunto-osakeyhtiölaki 2009
+DECISION_METRICS_AND_THRESHOLDS:
+  maintenance_increase_pct:
+    value: 15
+    action: ">15% vastikkeen korotus → selvitä syy"
+    source: src:AB1
+eval_questions:
+- q: Mikä on maintenance increase pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.maintenance_increase_pct.value
+  source: src:AB1

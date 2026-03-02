@@ -1,0 +1,8 @@
+# Liikkuminen ja työmatka — Reitit
+# Auto-generated for WaggleDance Swarm AI
+title: "Reitit"
+agent: "Liikkuminen ja työmatka"
+facts:
+  - "P+R (Park and Ride): juna-asemien liityntäpaikat"
+  - "Sähköpotkulauta: Tier, Voi — ~0.25€/min"
+  - "Kimppakyyti: BlaBla Car Suomi"

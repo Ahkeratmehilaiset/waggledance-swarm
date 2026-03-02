@@ -1,0 +1,9 @@
+# Polttopuuhuolto — Kuivaus
+# Auto-generated for WaggleDance Swarm AI
+title: "Kuivaus"
+agent: "Polttopuuhuolto"
+facts:
+  - "Halko kuivuu kesässä: pilkonta keväällä → valmis syksyllä"
+  - "Optimaali halkopituus: 25-33 cm takalle, 40 cm leivinuuniin"
+  - "Varastoi irti maasta lavoilla, katto päälle, sivut auki"
+  - "Tuore puu: ~50% kosteutta. Kuiva: <20%."

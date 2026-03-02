@@ -65,6 +65,18 @@ AGENT_GLYPH_MAP = {
     "math_physicist": "📐",
     # Runtime-special (retained)
     "hacker": "⚙️", "oracle": "🔮", "hivemind": "🧠",
+    # Phase 3: Cottage agents
+    "well_water": "🚰", "septic_manager": "🪠", "firewood": "🪵",
+    # Phase 3: Home agents
+    "energy_advisor": "⚡", "smart_home": "🏠", "indoor_garden": "🌱",
+    "apartment_board": "🏢", "delivery_tracker": "📬", "commute_planner": "🚇",
+    "noise_monitor": "🔇", "child_safety": "👶", "pet_care": "🐾",
+    "budget_tracker": "💰",
+    # Phase 3: Factory agents
+    "production_line": "🏭", "quality_inspector": "🔍", "shift_manager": "⏰",
+    "safety_officer": "🦺", "maintenance_planner": "🔧", "supply_chain": "📦",
+    "energy_manager": "⚡", "waste_handler": "♻️", "lab_analyst": "🔬",
+    "compliance": "📋", "forklift_fleet": "🚜", "hvac_industrial": "🌬️",
 }
 
 # ── Avainsanaryhmät reititykseen ──────────────────────────────
@@ -129,6 +141,35 @@ ROUTING_KEYWORDS = {
     "math_physicist": ["calculate", "formula", "statistics", "physics", "mathematics"],
 
     "core_dispatcher": ["situation", "summary", "all", "status", "overview"],
+
+    # Phase 3: Cottage agents
+    "well_water": ["well", "water quality", "pH", "iron", "coliform", "filter", "kaivo"],
+    "septic_manager": ["septic", "wastewater", "holding tank", "sewage", "jätevesi"],
+    "firewood": ["firewood", "log", "splitting", "drying", "heating", "polttopuu", "halko"],
+    # Phase 3: Home agents
+    "energy_advisor": ["electricity price", "spot", "solar panel", "heat pump", "energy saving"],
+    "smart_home": ["zigbee", "matter", "home assistant", "shelly", "automation", "iot"],
+    "indoor_garden": ["houseplant", "grow light", "watering", "indoor", "huonekasvi"],
+    "apartment_board": ["condo", "maintenance charge", "pipe renovation", "taloyhtiö", "vastike"],
+    "delivery_tracker": ["package", "delivery", "tracking", "parcel", "customs", "posti"],
+    "commute_planner": ["commute", "hsl", "train", "cycling", "route", "traffic"],
+    "noise_monitor": ["noise", "decibel", "quiet hours", "insulation", "melu"],
+    "child_safety": ["child", "baby", "safety gate", "poison", "childproof"],
+    "pet_care": ["pet", "dog", "cat", "veterinarian", "vaccination", "lemmikki"],
+    "budget_tracker": ["budget", "expense", "savings", "tax", "benefit", "kela"],
+    # Phase 3: Factory agents
+    "production_line": ["oee", "cycle time", "bottleneck", "production", "lean"],
+    "quality_inspector": ["spc", "cpk", "fmea", "8d", "defect", "quality"],
+    "shift_manager": ["shift", "overtime", "schedule", "handover", "vuoro"],
+    "safety_officer": ["safety", "risk assessment", "ppe", "near miss", "turvallisuus"],
+    "maintenance_planner": ["maintenance", "mtbf", "spare part", "preventive", "kunnossapito"],
+    "supply_chain": ["supply", "inventory", "supplier", "procurement", "varasto"],
+    "energy_manager": ["power factor", "compressor", "compressed air", "peak load"],
+    "waste_handler": ["waste", "recycling", "hazardous", "ewc", "jäte"],
+    "lab_analyst": ["calibration", "measurement", "cleanroom", "gmp", "laboratorio"],
+    "compliance": ["iso", "audit", "certification", "standard", "auditointi"],
+    "forklift_fleet": ["forklift", "pallet", "warehouse", "loading", "trukki"],
+    "hvac_industrial": ["hvac", "hepa", "ventilation", "cleanroom", "ilmastointi"],
 }
 
 

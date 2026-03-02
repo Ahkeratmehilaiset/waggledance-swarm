@@ -1,0 +1,9 @@
+# Kodin automaatio ja IoT — Automaatiot
+# Auto-generated for WaggleDance Swarm AI
+title: "Automaatiot"
+agent: "Kodin automaatio ja IoT"
+facts:
+  - "Automaatio: spot-hinta <5c → käynnistä lämminvesivaraaja"
+  - "Automaatio: kukaan ei kotona → laske lämpöä 2°C"
+  - "Automaatio: kosteus kylpyhuoneessa >70% → tuuletin päälle"
+  - "Automaatio: auringonlasku → sytytä ulkovalot"

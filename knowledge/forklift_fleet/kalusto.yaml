@@ -1,0 +1,8 @@
+# Trukkiliikenne ja sisälogistiikka — Kalusto
+# Auto-generated for WaggleDance Swarm AI
+title: "Kalusto"
+agent: "Trukkiliikenne ja sisälogistiikka"
+facts:
+  - "Vastapainotrukki: yleisin, kantavuus 1.5-5t"
+  - "Lavansiirtäjä: matala, lavasiirtoihin"
+  - "AGV: automatisoitu, magneettinauha/laser"

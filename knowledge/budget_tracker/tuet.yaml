@@ -1,0 +1,9 @@
+# Kotitalouden raha-asiat — Tuet
+# Auto-generated for WaggleDance Swarm AI
+title: "Tuet"
+agent: "Kotitalouden raha-asiat"
+facts:
+  - "Yleinen asumistuki (Kela): tulosidonnainen"
+  - "Lapsilisä: 1. lapsi 94.88€/kk (2026)"
+  - "Kotitalousvähennys: 40% työkorvauksesta, max 2250€/v"
+  - "Opintotuet: opintoraha + asumistuki + lainatakaus"

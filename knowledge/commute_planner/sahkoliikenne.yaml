@@ -1,0 +1,8 @@
+# Liikkuminen ja työmatka — Sahkoliikenne
+# Auto-generated for WaggleDance Swarm AI
+title: "Sahkoliikenne"
+agent: "Liikkuminen ja työmatka"
+facts:
+  - "Sähköauton kotilataus: 3.6-11 kW"
+  - "Julkiset laturit: Virta, Recharge, K-Lataus"
+  - "Sähköpyörä: 250W max, 25 km/h avustusraja"

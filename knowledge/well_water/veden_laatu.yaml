@@ -1,0 +1,10 @@
+# Kaivoveden laadunvalvonta — Veden Laatu
+# Auto-generated for WaggleDance Swarm AI
+title: "Veden Laatu"
+agent: "Kaivoveden laadunvalvonta"
+facts:
+  - "Kaivovesi on Suomessa yleensä hapanta (pH 5.5-6.5) kallioporakaivoissa"
+  - "Rauta- ja mangaanipitoisuudet yleisiä Suomen kallioperässä"
+  - "E. coli -löydös vaatii välitöntä toimenpidettä"
+  - "Nitraatti >50 mg/l vaarallinen imeväisikäisille"
+  - "Fluoridi >1.5 mg/l vaikuttaa hampaisiin pitkäaikaisessa käytössä"

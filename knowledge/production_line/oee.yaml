@@ -1,0 +1,10 @@
+# Tuotantolinjan monitorointi — Oee
+# Auto-generated for WaggleDance Swarm AI
+title: "Oee"
+agent: "Tuotantolinjan monitorointi"
+facts:
+  - "OEE = Saatavuus × Suorituskyky × Laatu"
+  - "World Class OEE: 85%+ (90% × 95% × 99.9%)"
+  - "Saatavuushävikki: asetukset, viat, odotusajat"
+  - "Suorituskykyhävikki: hidastuminen, lyhyet pysähdykset"
+  - "Laatuhävikki: hylkäykset, uudelleenkäsittely"

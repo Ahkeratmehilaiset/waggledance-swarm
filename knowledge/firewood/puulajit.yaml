@@ -1,0 +1,10 @@
+# Polttopuuhuolto — Puulajit
+# Auto-generated for WaggleDance Swarm AI
+title: "Puulajit"
+agent: "Polttopuuhuolto"
+facts:
+  - "Koivu: 1300 kWh/m³ — suosituin polttopuu, kuivuu hyvin"
+  - "Mänty: 1100 kWh/m³ — hartsi aiheuttaa nokea, hyvä sytykkeeksi"
+  - "Kuusi: 1000 kWh/m³ — rätisee, nopea palaminen"
+  - "Leppä: 1000 kWh/m³ — vähän savua, sopii savustukseen"
+  - "Haapa: 900 kWh/m³ — polttaa nokea pois piipusta"

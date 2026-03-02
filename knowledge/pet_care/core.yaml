@@ -1,0 +1,22 @@
+header:
+  agent_id: pet_care
+  agent_name: Lemmikinhoito
+  name_fi: 'Lemmikinhoito'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+  - cottage
+priority: low
+ASSUMPTIONS:
+- Koira tai kissa lemmikinä
+- EU-lemmikkipassi matkustukseen
+DECISION_METRICS_AND_THRESHOLDS:
+  vaccination_interval_months:
+    value: 12
+    action: "Rabies + perustauteja → eläinlääkäri"
+    source: src:PC1
+eval_questions:
+- q: Mikä on vaccination interval months?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vaccination_interval_months.value
+  source: src:PC1

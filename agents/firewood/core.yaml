@@ -1,0 +1,29 @@
+header:
+  agent_id: firewood
+  agent_name: Polttopuuhuolto
+  name_fi: 'Polttopuuhuolto'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - cottage
+priority: low
+ASSUMPTIONS:
+- Tulisija- ja saunalämmitys mökillä
+- Puut omasta metsästä tai ostettu
+- Varastointi ulkona katoksessa
+DECISION_METRICS_AND_THRESHOLDS:
+  moisture_pct:
+    value: 20
+    action: "<20% kosteus → valmis poltettavaksi"
+    source: src:PP1
+  co_risk_moisture:
+    value: 25
+    action: ">25% kosteus → häkäriski, nokeutuminen"
+    source: src:PP1
+eval_questions:
+- q: Mikä on moisture pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.moisture_pct.value
+  source: src:PP1
+- q: Mikä on co risk moisture?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co_risk_moisture.value
+  source: src:PP1

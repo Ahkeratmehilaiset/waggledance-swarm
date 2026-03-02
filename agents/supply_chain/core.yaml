@@ -1,0 +1,28 @@
+header:
+  agent_id: supply_chain
+  agent_name: Toimitusketjun hallinta
+  name_fi: 'Toimitusketjun hallinta'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Valmistava teollisuus
+- ERP-järjestelmä
+DECISION_METRICS_AND_THRESHOLDS:
+  inventory_turnover:
+    value: 8
+    action: "<8/v → liikaa varastoa"
+    source: src:SC1
+  supplier_otd_pct:
+    value: 95
+    action: "<95% → vaihtoehtoinen lähde"
+    source: src:SC1
+eval_questions:
+- q: Mikä on inventory turnover?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.inventory_turnover.value
+  source: src:SC1
+- q: Mikä on supplier otd pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.supplier_otd_pct.value
+  source: src:SC1

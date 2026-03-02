@@ -1,0 +1,28 @@
+header:
+  agent_id: energy_manager
+  agent_name: Tehdasenergian hallinta
+  name_fi: 'Tehdasenergian hallinta'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Teollisuuslaitos
+- ISO 50001 suositeltava
+DECISION_METRICS_AND_THRESHOLDS:
+  power_factor_min:
+    value: 0.95
+    action: "<0.95 → loistehomaksu, kompensoi"
+    source: src:EM1
+  air_leak_pct:
+    value: 10
+    action: ">10% vuodot → vuotokartoitus"
+    source: src:EM1
+eval_questions:
+- q: Mikä on power factor min?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.power_factor_min.value
+  source: src:EM1
+- q: Mikä on air leak pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.air_leak_pct.value
+  source: src:EM1

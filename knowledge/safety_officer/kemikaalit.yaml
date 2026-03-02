@@ -1,0 +1,9 @@
+# Työturvallisuuspäällikkö — Kemikaalit
+# Auto-generated for WaggleDance Swarm AI
+title: "Kemikaalit"
+agent: "Työturvallisuuspäällikkö"
+facts:
+  - "Käyttöturvallisuustiedote (SDS) saatavilla jokaiselle kemikaalille"
+  - "GHS-varoitusmerkit tunnistettava ennen käsittelyä"
+  - "Varastointi: yhteensopivuus, lukittu kaappi, valuma-allas"
+  - "Hätäsuihku ja silmähuuhde: 10m säteellä käyttöpaikasta"

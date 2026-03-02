@@ -1,0 +1,9 @@
+# Sähkö- ja energiaoptimointi — Saasto Vinkit
+# Auto-generated for WaggleDance Swarm AI
+title: "Saasto Vinkit"
+agent: "Sähkö- ja energiaoptimointi"
+facts:
+  - "LED-valaistus: 80% säästö vs hehkulamppu"
+  - "Huonelämpötilan lasku 1°C → ~5% säästö lämmityskustannuksissa"
+  - "Pyykinpesu yöllä spot-sähköllä: 3-10 c/pesu säästö"
+  - "Standby-kulutus: tyypillinen koti 50-100W jatkuvasti → 400-800 kWh/v"

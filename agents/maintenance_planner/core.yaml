@@ -1,0 +1,28 @@
+header:
+  agent_id: maintenance_planner
+  agent_name: Kunnossapitosuunnittelija
+  name_fi: 'Kunnossapitosuunnittelija'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: high
+ASSUMPTIONS:
+- Tuotantokoneet
+- SAP PM tai vastaava CMMS
+DECISION_METRICS_AND_THRESHOLDS:
+  pm_compliance_pct:
+    value: 90
+    action: "<90% → kapasiteettipula"
+    source: src:MP1
+  mtbf_hours:
+    value: 500
+    action: "<500h kriittisellä koneella → juurisyy"
+    source: src:MP1
+eval_questions:
+- q: Mikä on pm compliance pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pm_compliance_pct.value
+  source: src:MP1
+- q: Mikä on mtbf hours?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mtbf_hours.value
+  source: src:MP1

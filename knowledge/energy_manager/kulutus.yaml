@@ -1,0 +1,9 @@
+# Tehdasenergian hallinta — Kulutus
+# Auto-generated for WaggleDance Swarm AI
+title: "Kulutus"
+agent: "Tehdasenergian hallinta"
+facts:
+  - "Huipputehon leikkaus: vuorottelu, aikataulutus → säästö"
+  - "Taajuusmuuttajat: 20-50% säästö ositehoilla"
+  - "LED-valaistus: 50-70% säästö, takaisinmaksu 1-3v"
+  - "Energiakatselmus: lakisääteinen >50000 MWh"

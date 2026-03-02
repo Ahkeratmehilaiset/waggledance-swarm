@@ -1,0 +1,9 @@
+# Paketit ja tilaukset — Palvelut
+# Auto-generated for WaggleDance Swarm AI
+title: "Palvelut"
+agent: "Paketit ja tilaukset"
+facts:
+  - "Posti: pakettiautomaatit, SmartPost, Posti.fi-seuranta"
+  - "Matkahuolto: bussipaketti, noutopiste"
+  - "DHL Express: nopea kansainvälinen, tulliselvitys mukana"
+  - "Budbee/Instabox: samapäivätoimitus isoihin kaupunkeihin"

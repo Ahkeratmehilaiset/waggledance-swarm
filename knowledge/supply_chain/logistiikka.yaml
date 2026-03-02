@@ -1,0 +1,9 @@
+# Toimitusketjun hallinta — Logistiikka
+# Auto-generated for WaggleDance Swarm AI
+title: "Logistiikka"
+agent: "Toimitusketjun hallinta"
+facts:
+  - "Incoterms 2020: DDP vs EXW"
+  - "Merirahti: 4-6 viikkoa Aasiasta"
+  - "Lentorahti: 2-5 pv, kallis"
+  - "Rahtikustannus: 5-15% materiaalikustannuksista"

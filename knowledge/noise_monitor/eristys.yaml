@@ -1,0 +1,9 @@
+# Melu ja ääniympäristö — Eristys
+# Auto-generated for WaggleDance Swarm AI
+title: "Eristys"
+agent: "Melu ja ääniympäristö"
+facts:
+  - "Askeläänet: lattian alla vaimennus, matot"
+  - "Ikkunat: 3-lasinen = ~35 dB vaimennus"
+  - "Seinäeristys: mineraalivilla 50mm + levy → 10-15 dB parannus"
+  - "Valkoinen kohina peittää taustamelua"

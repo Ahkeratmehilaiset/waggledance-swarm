@@ -1,0 +1,28 @@
+header:
+  agent_id: production_line
+  agent_name: Tuotantolinjan monitorointi
+  name_fi: 'Tuotantolinjan monitorointi'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: high
+ASSUMPTIONS:
+- OEE-seuranta käytössä
+- MES/ERP-järjestelmä
+DECISION_METRICS_AND_THRESHOLDS:
+  oee_target_pct:
+    value: 85
+    action: "<85% → analysoi saatavuus, suorituskyky, laatu"
+    source: src:PL1
+  cycle_deviation_pct:
+    value: 10
+    action: ">10% poikkeama → selvitä juurisyy"
+    source: src:PL1
+eval_questions:
+- q: Mikä on oee target pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oee_target_pct.value
+  source: src:PL1
+- q: Mikä on cycle deviation pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cycle_deviation_pct.value
+  source: src:PL1

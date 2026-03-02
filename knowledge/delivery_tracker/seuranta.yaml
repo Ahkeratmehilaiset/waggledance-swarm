@@ -1,0 +1,8 @@
+# Paketit ja tilaukset — Seuranta
+# Auto-generated for WaggleDance Swarm AI
+title: "Seuranta"
+agent: "Paketit ja tilaukset"
+facts:
+  - "OmaPosti-sovellus: kaikkien Postin lähetysten seuranta"
+  - "Paketti noudettava 7 vrk kuluessa automaatista"
+  - "Peruutusoikeus verkko-ostoksissa: 14 vrk (kuluttajansuojalaki)"

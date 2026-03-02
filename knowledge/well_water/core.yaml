@@ -1,0 +1,36 @@
+header:
+  agent_id: well_water
+  agent_name: Kaivoveden laadunvalvonta
+  name_fi: 'Kaivoveden laadunvalvonta'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - cottage
+priority: medium
+ASSUMPTIONS:
+- Mökkikiinteistön porakaivo tai rengaskaivo
+- Veden käyttö juoma- ja pesuvetenä
+- Näytteenotto 1-3 vuoden välein
+DECISION_METRICS_AND_THRESHOLDS:
+  ph_range:
+    value: '6.5-9.5'
+    action: "Alle 6.5 tai yli 9.5 → testaa uudelleen"
+    source: src:VL1
+  iron_mg_l:
+    value: 0.2
+    action: ">0.2 mg/l → rautasuodatin"
+    source: src:VL1
+  coliform_cfu_100ml:
+    value: 0
+    action: ">0 → UV-desinfiointi tai klooraus"
+    source: src:VL1
+eval_questions:
+- q: Mikä on ph range?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ph_range.value
+  source: src:VL1
+- q: Mikä on iron mg l?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.iron_mg_l.value
+  source: src:VL1
+- q: Mikä on coliform cfu 100ml?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.coliform_cfu_100ml.value
+  source: src:VL1

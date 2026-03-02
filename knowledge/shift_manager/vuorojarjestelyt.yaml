@@ -1,0 +1,9 @@
+# Vuoropäällikkö — Vuorojarjestelyt
+# Auto-generated for WaggleDance Swarm AI
+title: "Vuorojarjestelyt"
+agent: "Vuoropäällikkö"
+facts:
+  - "2-vuoro: aamu (06-14) + ilta (14-22)"
+  - "3-vuoro: aamu + ilta + yö (22-06)"
+  - "Ergonominen vuorokierto: aamu→ilta→yö (myötäpäivään)"
+  - "Yövuorolisä: TES-kohtainen, tyypillisesti 20-40%"

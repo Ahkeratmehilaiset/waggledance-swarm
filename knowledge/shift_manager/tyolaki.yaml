@@ -1,0 +1,9 @@
+# Vuoropäällikkö — Tyolaki
+# Auto-generated for WaggleDance Swarm AI
+title: "Tyolaki"
+agent: "Vuoropäällikkö"
+facts:
+  - "Säännöllinen työaika: max 8h/vrk, 40h/vko"
+  - "Ylityö: työnantajan aloite + työntekijän suostumus, 50%/100%"
+  - "Vuorokautinen lepoaika: 11h yhtäjaksoista"
+  - "Viikottainen vapaa: 35h yhtäjaksoinen"

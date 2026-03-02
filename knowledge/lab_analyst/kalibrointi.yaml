@@ -1,0 +1,8 @@
+# Laboratorioanalyytikko — Kalibrointi
+# Auto-generated for WaggleDance Swarm AI
+title: "Kalibrointi"
+agent: "Laboratorioanalyytikko"
+facts:
+  - "Jäljitettävyys: MIKES/VTT → tehdasstandardi → käyttömittari"
+  - "Kalibrointiväli: 6-12 kk riskinarvioinnin mukaan"
+  - "Drift-seuranta: edellisten kalibrointien vertailu"

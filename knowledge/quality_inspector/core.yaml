@@ -1,0 +1,28 @@
+header:
+  agent_id: quality_inspector
+  agent_name: Laadunvalvonta
+  name_fi: 'Laadunvalvonta'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: high
+ASSUMPTIONS:
+- ISO 9001 -sertifioitu tuotanto
+- SPC-valvontakortit käytössä
+DECISION_METRICS_AND_THRESHOLDS:
+  cpk_min:
+    value: 1.33
+    action: "<1.33 → prosessi ei kyvykäs"
+    source: src:QI1
+  defect_rate_ppm:
+    value: 1000
+    action: ">1000 ppm → 8D-raportti"
+    source: src:QI1
+eval_questions:
+- q: Mikä on cpk min?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cpk_min.value
+  source: src:QI1
+- q: Mikä on defect rate ppm?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.defect_rate_ppm.value
+  source: src:QI1

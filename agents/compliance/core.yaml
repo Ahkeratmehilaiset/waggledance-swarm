@@ -1,0 +1,21 @@
+header:
+  agent_id: compliance
+  agent_name: Vaatimustenmukaisuus
+  name_fi: 'Vaatimustenmukaisuus'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Sertifioitu toimintajärjestelmä
+- Sisäiset ja ulkoiset auditoinnit
+DECISION_METRICS_AND_THRESHOLDS:
+  audit_finding_days:
+    value: 30
+    action: "Major korjattava 30 vrk kuluessa"
+    source: src:CO1
+eval_questions:
+- q: Mikä on audit finding days?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.audit_finding_days.value
+  source: src:CO1

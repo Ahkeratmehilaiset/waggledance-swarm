@@ -1,0 +1,9 @@
+# Sähkö- ja energiaoptimointi — Spot Hinta
+# Auto-generated for WaggleDance Swarm AI
+title: "Spot Hinta"
+agent: "Sähkö- ja energiaoptimointi"
+facts:
+  - "Nord Pool Spot: hinta julkaistaan klo 13 seuraavalle päivälle"
+  - "Halvimmat tunnit: yöllä (02-06) ja sunnuntaisin"
+  - "Kalleimmat tunnit: arkiaamuisin (07-09) ja alkuillasta (17-19)"
+  - "Negatiivinen hinta mahdollinen tuuli+aurinko ylituotannossa"

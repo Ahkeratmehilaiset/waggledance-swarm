@@ -1,0 +1,21 @@
+header:
+  agent_id: lab_analyst
+  agent_name: Laboratorioanalyytikko
+  name_fi: 'Laboratorioanalyytikko'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Tuotantolaboratorio
+- ISO/GMP-vaatimukset
+DECISION_METRICS_AND_THRESHOLDS:
+  calibration_months:
+    value: 12
+    action: "Erääntynyt → mittari pois käytöstä"
+    source: src:LA1
+eval_questions:
+- q: Mikä on calibration months?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.calibration_months.value
+  source: src:LA1

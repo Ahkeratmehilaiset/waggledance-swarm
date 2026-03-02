@@ -1,0 +1,8 @@
+# Vuoropäällikkö — Raportointi
+# Auto-generated for WaggleDance Swarm AI
+title: "Raportointi"
+agent: "Vuoropäällikkö"
+facts:
+  - "Vuoronvaihtopalaveri: 10-15 min, tuotantostatus"
+  - "Luovutusraportti: tuotanto, hylky, konerikot, turvallisuus"
+  - "Eskalointi: pysähtyminen >30 min → ilmoitus päivystykseen"

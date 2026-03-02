@@ -1,0 +1,9 @@
+# Kotitalouden raha-asiat — Verotus
+# Auto-generated for WaggleDance Swarm AI
+title: "Verotus"
+agent: "Kotitalouden raha-asiat"
+facts:
+  - "Verokortti: OmaVero.fi"
+  - "Matkakustannusten vähennys: halvimman kulkuneuvon mukaan"
+  - "Työhuonevähennys: 900€ (kaavamainen)"
+  - "Kotitalousvähennys: siivous, remontti, hoiva — 40%"

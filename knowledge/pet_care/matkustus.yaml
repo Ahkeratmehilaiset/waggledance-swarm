@@ -1,0 +1,9 @@
+# Lemmikinhoito — Matkustus
+# Auto-generated for WaggleDance Swarm AI
+title: "Matkustus"
+agent: "Lemmikinhoito"
+facts:
+  - "EU-lemmikkipassi: vaatii rabies-rokotuksen"
+  - "Auto: turvavaljaat tai häkki, tauot 4h välein"
+  - "Mökille: tarkista punkit, kyy-ensiapusetti"
+  - "Koirahoitola: 25-50€/yö, varaa kesälle ajoissa"

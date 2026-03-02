@@ -1,0 +1,21 @@
+header:
+  agent_id: noise_monitor
+  agent_name: Melu ja ääniympäristö
+  name_fi: 'Melu ja ääniympäristö'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: low
+ASSUMPTIONS:
+- Kerrostaloasuminen
+- Taloyhtiön järjestyssäännöt
+DECISION_METRICS_AND_THRESHOLDS:
+  night_noise_db:
+    value: 30
+    action: ">30 dB yöaikaan → häiritsevä"
+    source: src:NM1
+eval_questions:
+- q: Mikä on night noise db?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.night_noise_db.value
+  source: src:NM1

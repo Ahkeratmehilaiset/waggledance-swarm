@@ -1,0 +1,9 @@
+# Työturvallisuuspäällikkö — Psa
+# Auto-generated for WaggleDance Swarm AI
+title: "Psa"
+agent: "Työturvallisuuspäällikkö"
+facts:
+  - "Suojalasit: aina koneistamossa, hionta, kemikaalit"
+  - "Kuulosuojaimet: >85 dB pakollinen"
+  - "Turvakengät: S3 (varvassuoja + naulaanastumissuoja)"
+  - "Hengityssuojain: FFP2/FFP3 pöly, A2 liuottimet"

@@ -1,0 +1,8 @@
+# Trukkiliikenne ja sisälogistiikka — Lataus
+# Auto-generated for WaggleDance Swarm AI
+title: "Lataus"
+agent: "Trukkiliikenne ja sisälogistiikka"
+facts:
+  - "Sähkötrukin akku: 8h lataus, 8h viilennys, 8h käyttö"
+  - "Litium-ion: nopealataus, ei muisti-ilmiötä"
+  - "Latausasema: tuuletettu, sammutusväline"

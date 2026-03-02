@@ -1,0 +1,9 @@
+# Työturvallisuuspäällikkö — Riskit
+# Auto-generated for WaggleDance Swarm AI
+title: "Riskit"
+agent: "Työturvallisuuspäällikkö"
+facts:
+  - "Riskimatriisi: Todennäköisyys × Vakavuus = Riski (1-25)"
+  - "Punainen >15: välitön toimenpide, työ keskeytetään"
+  - "Keltainen 8-15: toimenpide suunniteltava"
+  - "Riskiarviointi päivitettävä vuosittain + muutosten yhteydessä"

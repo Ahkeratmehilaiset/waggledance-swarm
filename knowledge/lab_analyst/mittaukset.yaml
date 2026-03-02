@@ -1,0 +1,8 @@
+# Laboratorioanalyytikko — Mittaukset
+# Auto-generated for WaggleDance Swarm AI
+title: "Mittaukset"
+agent: "Laboratorioanalyytikko"
+facts:
+  - "Mittausepävarmuus: ilmoitettava tulosten kanssa"
+  - "OOL: poikkeama speksistä → tutkinta, quarantine"
+  - "Trendianalyysi: havaitse muutokset ennen poikkeamaa"

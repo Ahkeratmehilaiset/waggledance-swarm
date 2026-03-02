@@ -1,0 +1,9 @@
+# Tehdasenergian hallinta — Kompressorit
+# Auto-generated for WaggleDance Swarm AI
+title: "Kompressorit"
+agent: "Tehdasenergian hallinta"
+facts:
+  - "Paineilma: ~10% sähkökulutuksesta tehtaalla"
+  - "Vuotokartoitus ultraäänellä: 20-30% vuotaa tyypillisesti"
+  - "Painetason lasku 1 bar → 7% säästö"
+  - "Lämmön talteenotto: 90% hukkalämmöstä hyödynnettävissä"

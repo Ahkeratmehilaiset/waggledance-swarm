@@ -1,0 +1,9 @@
+# Kodin automaatio ja IoT — Protokollat
+# Auto-generated for WaggleDance Swarm AI
+title: "Protokollat"
+agent: "Kodin automaatio ja IoT"
+facts:
+  - "Zigbee: mesh-verkko, pieni virrankulutus, vaatii koordinaattorin"
+  - "Matter: uusi standardi, Apple/Google/Amazon tuki"
+  - "WiFi: suora yhteys, kuormittaa verkkoa"
+  - "Thread: IPv6-pohjainen mesh, Matterin kuljetuskerros"

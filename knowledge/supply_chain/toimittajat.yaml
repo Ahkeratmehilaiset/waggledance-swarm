@@ -1,0 +1,8 @@
+# Toimitusketjun hallinta — Toimittajat
+# Auto-generated for WaggleDance Swarm AI
+title: "Toimittajat"
+agent: "Toimitusketjun hallinta"
+facts:
+  - "Toimittaja-auditointi vuosittain, ISO 9001"
+  - "Dual sourcing: vähintään 2 lähdettä kriittisille"
+  - "Scorecard: toimitusvarmuus, laatu, hinta, reagointi"

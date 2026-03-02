@@ -1,0 +1,8 @@
+# Tehdasenergian hallinta — Optimointi
+# Auto-generated for WaggleDance Swarm AI
+title: "Optimointi"
+agent: "Tehdasenergian hallinta"
+facts:
+  - "Moottorit: 60-70% sähkökulutuksesta, IE4-luokka"
+  - "Vapaajäähdytys talvella"
+  - "Hukkalämmön hyödyntäminen tilalämmitykseen"

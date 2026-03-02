@@ -1,0 +1,28 @@
+header:
+  agent_id: budget_tracker
+  agent_name: Kotitalouden raha-asiat
+  name_fi: 'Kotitalouden raha-asiat'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: medium
+ASSUMPTIONS:
+- Suomalainen kotitalous
+- Verohallinto / Kela
+DECISION_METRICS_AND_THRESHOLDS:
+  savings_rate_pct:
+    value: 10
+    action: "<10% → tarkista kulut, budjetoi"
+    source: src:BT1
+  rent_income_ratio_pct:
+    value: 33
+    action: ">33% asumiseen → asumistuki"
+    source: src:BT1
+eval_questions:
+- q: Mikä on savings rate pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.savings_rate_pct.value
+  source: src:BT1
+- q: Mikä on rent income ratio pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.rent_income_ratio_pct.value
+  source: src:BT1

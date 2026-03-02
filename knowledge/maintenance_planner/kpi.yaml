@@ -1,0 +1,9 @@
+# Kunnossapitosuunnittelija — Kpi
+# Auto-generated for WaggleDance Swarm AI
+title: "Kpi"
+agent: "Kunnossapitosuunnittelija"
+facts:
+  - "MTBF: Mean Time Between Failures"
+  - "MTTR: Mean Time To Repair"
+  - "PM-suoritusaste: toteutuneet / suunnitellut × 100%"
+  - "Tavoite: 80/20 suunniteltu/korjaava"

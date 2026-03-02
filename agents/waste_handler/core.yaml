@@ -1,0 +1,21 @@
+header:
+  agent_id: waste_handler
+  agent_name: Jätevirtojen hallinta
+  name_fi: 'Jätevirtojen hallinta'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Jätelaki 646/2011
+- Ympäristölupa
+DECISION_METRICS_AND_THRESHOLDS:
+  recycling_rate_pct:
+    value: 70
+    action: "<70% → tehosta lajittelua"
+    source: src:WH1
+eval_questions:
+- q: Mikä on recycling rate pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.recycling_rate_pct.value
+  source: src:WH1

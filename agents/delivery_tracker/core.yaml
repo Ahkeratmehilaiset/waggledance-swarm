@@ -1,0 +1,21 @@
+header:
+  agent_id: delivery_tracker
+  agent_name: Paketit ja tilaukset
+  name_fi: 'Paketit ja tilaukset'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: low
+ASSUMPTIONS:
+- Verkko-ostaminen Suomessa
+- Tulli EU-ulkopuolisille
+DECISION_METRICS_AND_THRESHOLDS:
+  customs_threshold_eur:
+    value: 150
+    action: ">150€ EU:n ulkopuolelta → tulliselvitys + ALV"
+    source: src:DT1
+eval_questions:
+- q: Mikä on customs threshold eur?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.customs_threshold_eur.value
+  source: src:DT1

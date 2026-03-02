@@ -1,0 +1,8 @@
+# Sähkö- ja energiaoptimointi — Lampopumput
+# Auto-generated for WaggleDance Swarm AI
+title: "Lampopumput"
+agent: "Sähkö- ja energiaoptimointi"
+facts:
+  - "Ilmalämpöpumppu: COP 3-4, investointi 1500-3000€, säästö 30-50%"
+  - "Maalämpö: COP 4-5, investointi 15000-25000€, säästö 60-70%"
+  - "ARA-avustus 2026: energiaremontteihin 15-40% tuki"

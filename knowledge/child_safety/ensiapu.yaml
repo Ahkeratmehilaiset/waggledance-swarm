@@ -1,0 +1,9 @@
+# Lapsiturvallinen koti — Ensiapu
+# Auto-generated for WaggleDance Swarm AI
+title: "Ensiapu"
+agent: "Lapsiturvallinen koti"
+facts:
+  - "Myrkytysepäily: soita 0800 147 111 (24h, maksuton)"
+  - "Palovamma: juokseva viileä vesi 20 min"
+  - "Tukehtuminen: alle 1v selälleen lyönnit, yli 1v Heimlich"
+  - "Putoaminen pään päälle: tarkkaile 24h, oksentelu → 112"

@@ -1,0 +1,8 @@
+# Kunnossapitosuunnittelija — Varaosat
+# Auto-generated for WaggleDance Swarm AI
+title: "Varaosat"
+agent: "Kunnossapitosuunnittelija"
+facts:
+  - "Kriittiset varaosat: pidä aina varastossa, ABC-luokittelu"
+  - "Tilauspiste (ROP): automaattinen tilaus kun saldo alittaa"
+  - "Varaosabudjetti: 3-5% koneen uushankintahinnasta/vuosi"

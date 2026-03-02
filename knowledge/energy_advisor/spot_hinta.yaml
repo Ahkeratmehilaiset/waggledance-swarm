@@ -1,9 +1,30 @@
-# Sähkö- ja energiaoptimointi — Spot Hinta
-# Auto-generated for WaggleDance Swarm AI
-title: "Spot Hinta"
-agent: "Sähkö- ja energiaoptimointi"
+title: Spot Hinta
+agent: Sähkö- ja energiaoptimointi
 facts:
-  - "Nord Pool Spot: hinta julkaistaan klo 13 seuraavalle päivälle"
-  - "Halvimmat tunnit: yöllä (02-06) ja sunnuntaisin"
-  - "Kalleimmat tunnit: arkiaamuisin (07-09) ja alkuillasta (17-19)"
-  - "Negatiivinen hinta mahdollinen tuuli+aurinko ylituotannossa"
+- 'Nord Pool Spot: hinta julkaistaan klo 13 seuraavalle päivälle'
+- 'Halvimmat tunnit: yöllä (02-06) ja sunnuntaisin'
+- 'Kalleimmat tunnit: arkiaamuisin (07-09) ja alkuillasta (17-19)'
+- Negatiivinen hinta mahdollinen tuuli+aurinko ylituotannossa
+SPOT_PRICE_STRATEGY:
+- rule: 'Halvin 3h jakso: pesukone, kuivausrumpu, tiskikone'
+  note: Tyypillisesti yö 00-06 tai päivä 12-15
+- rule: 'Kallein 3h jakso: vältä suuria kuormia'
+  note: Tyypillisesti aamu 07-10 tai ilta 17-20
+- rule: 'Negatiivinen hinta: lataa akku, lämmin vesi täyteen, lattialämmitys +1°C'
+  threshold: <0 c/kWh
+- rule: 'Kriisihinta: sammuta kaikki paitsi jääkaappi'
+  threshold: '>50 c/kWh'
+MONTHLY_AVERAGE_EUR_MWH:
+  Jan: 65
+  Feb: 55
+  Mar: 45
+  Apr: 35
+  May: 30
+  Jun: 25
+  Jul: 30
+  Aug: 35
+  Sep: 40
+  Oct: 50
+  Nov: 60
+  Dec: 70
+  note: Vuoden 2024 keskiarvot, vaihtelee suuresti

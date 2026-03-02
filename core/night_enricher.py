@@ -759,8 +759,60 @@ class GapWeightedScheduler:
     """Selects agents and topics weighted by knowledge gaps.
 
     Agents with fewer facts get higher selection weight.
-    Rebalances every N enriched facts.
+    Category rotation prevents topic convergence.
+    Seasonal weighting boosts relevant topics per month.
     """
+
+    # Month -> seasonal topic boosts (1.5x weight for these agents)
+    SEASONAL_BOOSTS: Dict[int, List[str]] = {
+        1: ["beekeeper", "disease_monitor"],  # winter check, oxalic
+        2: ["beekeeper", "equipment_tech", "maintenance_planner"],  # prep
+        3: ["beekeeper", "swarm_watcher", "horticulturist"],  # spring inspection
+        4: ["swarm_watcher", "nectar_scout", "phenologist"],  # swarming prep
+        5: ["swarm_watcher", "nectar_scout", "flight_weather"],  # swarming
+        6: ["nectar_scout", "beekeeper", "meteorologist"],  # honey flow
+        7: ["nectar_scout", "beekeeper", "wilderness_chef"],  # extraction
+        8: ["beekeeper", "disease_monitor", "horticulturist"],  # varroa
+        9: ["beekeeper", "disease_monitor", "forester"],  # formic acid
+        10: ["beekeeper", "disease_monitor", "firewood"],  # oxalic, winter prep
+        11: ["beekeeper", "energy_advisor", "hvac_specialist"],  # wintering
+        12: ["beekeeper", "indoor_garden", "smart_home"],  # winter
+    }
+
+    # Category groups for rotation — ensures diversity
+    CATEGORY_GROUPS: List[List[str]] = [
+        # Bee agents
+        ["beekeeper", "disease_monitor", "swarm_watcher", "nectar_scout",
+         "flight_weather", "hive_temperature", "hive_security"],
+        # Nature agents
+        ["ornithologist", "entomologist", "phenologist", "forester",
+         "wildlife_ranger", "nature_photographer", "pest_control"],
+        # Water/weather
+        ["meteorologist", "storm_alert", "microclimate", "air_quality",
+         "frost_soil", "limnologist", "fishing_guide", "shore_guard",
+         "ice_specialist"],
+        # Property/tech
+        ["electrician", "hvac_specialist", "carpenter", "chimney_sweep",
+         "lighting_master", "fire_officer", "equipment_tech"],
+        # Home/lifestyle
+        ["smart_home", "indoor_garden", "apartment_board", "energy_advisor",
+         "pet_care", "child_safety", "noise_monitor", "delivery_tracker",
+         "commute_planner", "budget_tracker"],
+        # Food/leisure
+        ["wilderness_chef", "baker", "nutritionist", "sauna_master",
+         "entertainment_chief", "movie_expert"],
+        # Factory
+        ["production_line", "quality_inspector", "safety_officer",
+         "maintenance_planner", "waste_handler", "lab_analyst",
+         "compliance", "forklift_fleet"],
+        # Security/admin
+        ["cyber_guard", "locksmith", "yard_guard", "privacy_guard",
+         "inventory_chief", "recycling", "cleaning_manager", "logistics"],
+        # Cottage
+        ["well_water", "septic_manager", "firewood"],
+        # Science
+        ["astronomer", "light_shadow", "math_physicist"],
+    ]
 
     def __init__(self, consciousness, rebalance_every: int = 50,
                  gap_high: int = 20, gap_medium: int = 50,
@@ -775,11 +827,13 @@ class GapWeightedScheduler:
         self._fact_counts: Dict[str, int] = {}
         self._enriched_since_rebalance: int = 0
         self._initialized: bool = False
+        self._category_index: int = 0  # rotation pointer
 
     def next_agent_and_topic(self) -> tuple:
         """Return (agent_id, topic) via weighted random selection.
 
         Lazy-initializes on first call.
+        Uses category rotation to ensure topic diversity.
         """
         if not self._initialized:
             self._build_weighted_list()
@@ -793,6 +847,12 @@ class GapWeightedScheduler:
 
         if not self._weighted_list:
             return ("enrichment", "beekeeping general")
+
+        # Category rotation: every 3rd call, force a different category
+        if self._enriched_since_rebalance % 3 == 0 and self.CATEGORY_GROUPS:
+            result = self._pick_from_category_rotation()
+            if result:
+                return result
 
         weights = [w for _, _, w in self._weighted_list]
         total = sum(weights)
@@ -815,8 +875,46 @@ class GapWeightedScheduler:
         """Track enriched facts for rebalance timing."""
         self._enriched_since_rebalance += 1
 
+    def _pick_from_category_rotation(self) -> Optional[tuple]:
+        """Pick agent from the next category group in rotation."""
+        if not self.CATEGORY_GROUPS:
+            return None
+
+        # Advance rotation pointer
+        self._category_index = (self._category_index + 1) % len(self.CATEGORY_GROUPS)
+        group = self.CATEGORY_GROUPS[self._category_index]
+
+        # Filter to agents that have weighted list entries
+        candidates = [
+            (aid, kw, w) for aid, kw, w in self._weighted_list
+            if aid in group
+        ]
+        if not candidates:
+            return None
+
+        # Weighted random from this category
+        weights = [w for _, _, w in candidates]
+        total = sum(weights)
+        if total <= 0:
+            idx = random.randrange(len(candidates))
+        else:
+            r = random.uniform(0, total)
+            cumulative = 0.0
+            idx = len(candidates) - 1
+            for i, (_, _, w) in enumerate(candidates):
+                cumulative += w
+                if r <= cumulative:
+                    idx = i
+                    break
+
+        agent_id, keyword, _ = candidates[idx]
+        return (agent_id, keyword)
+
     def _build_weighted_list(self):
-        """Scan ChromaDB for fact counts per agent's top keywords."""
+        """Scan ChromaDB for fact counts per agent's top keywords.
+
+        Applies seasonal boost (1.5x) for month-relevant agents.
+        """
         t0 = time.monotonic()
         try:
             from core.yaml_bridge import ROUTING_KEYWORDS
@@ -828,6 +926,11 @@ class GapWeightedScheduler:
 
         self._weighted_list = []
         self._fact_counts = {}
+
+        # Seasonal boost for current month
+        from datetime import datetime as _dt
+        month = _dt.now().month
+        seasonal_agents = self.SEASONAL_BOOSTS.get(month, [])
 
         for agent_id, keywords in ROUTING_KEYWORDS.items():
             # Use top-3 keywords per agent for estimation
@@ -850,15 +953,20 @@ class GapWeightedScheduler:
             else:
                 weight = 0.5
 
+            # Seasonal boost: 1.5x for month-relevant agents
+            if agent_id in seasonal_agents:
+                weight *= 1.5
+
             # Add one entry per top keyword (spread across keywords)
             for kw in top_kws:
                 self._weighted_list.append(
                     (agent_id, kw, weight / len(top_kws)))
 
         elapsed = time.monotonic() - t0
-        log.info(f"GapScheduler: initial scan complete in {elapsed:.1f}s "
+        log.info(f"GapScheduler: scan complete in {elapsed:.1f}s "
                  f"({len(self._weighted_list)} entries, "
-                 f"{len(self._fact_counts)} agents)")
+                 f"{len(self._fact_counts)} agents, "
+                 f"seasonal boost for {len(seasonal_agents)} agents)")
 
     def _estimate_facts_for_keyword(self, keyword: str) -> int:
         """Estimate fact count by searching ChromaDB for keyword."""
@@ -1263,6 +1371,26 @@ class NightEnricher:
                     f"❌ NightEnricher reject [{source_id}]: "
                     f"step={verdict.step_failed}, "
                     f"reason={verdict.reason[:80]}")
+
+        # Log enrichment cycle to structured logger
+        try:
+            from hivemind import StructuredLogger
+            _sl = StructuredLogger()
+            _sl.log_learning(
+                event="enrichment_cycle",
+                count=stored,
+                duration_ms=(time.monotonic() - t0) * 1000,
+                source=source_id or "none",
+                extra={
+                    "agent_id": agent_id,
+                    "topic": topic[:60],
+                    "candidates_generated": len(candidates) if candidates else 0,
+                    "facts_stored": stored,
+                    "ext_stored": ext_stored,
+                    "total_session_stored": self._total_stored,
+                })
+        except Exception:
+            pass
 
         return stored
 

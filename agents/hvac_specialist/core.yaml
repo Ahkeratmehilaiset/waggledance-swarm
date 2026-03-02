@@ -1,13 +1,13 @@
 header:
   agent_id: hvac_specialist
   agent_name: LVI-asiantuntija (Putkimies)
-  name_fi: 'LVI-asiantuntija'
+  name_fi: LVI-asiantuntija
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - cottage
-  - home
-  - factory
+- cottage
+- home
+- factory
 priority: medium
 ASSUMPTIONS:
 - Mökillä on vesijärjestelmä, jossa on jäätymisriski.
@@ -27,8 +27,7 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:LVI1
   boiler_drain_required:
     value: UNKNOWN
-    action: Jos lämminvesivaraaja käytössä ja mökki jätetään kylmäksi → selvitä tyhjennystarve
-      valmistajan ohjeesta.
+    action: Jos lämminvesivaraaja käytössä ja mökki jätetään kylmäksi → selvitä tyhjennystarve valmistajan ohjeesta.
     source: src:LVI1
   sewer_trap_dry_risk_days:
     value: 30 pv käyttämättä → vesilukko kuivuu
@@ -42,12 +41,10 @@ SEASONAL_RULES:
   action: Ulkovesipisteet auki. Lämminvesi 65°C legionella. Kastelujärjestelmä.
   source: src:LVI1
 - season: Syksy
-  action: Ulkovesipisteiden tyhjennys vko 40-42. Lämmityksen ilmaus. Paine 1.0-1.5
-    bar.
+  action: Ulkovesipisteiden tyhjennys vko 40-42. Lämmityksen ilmaus. Paine 1.0-1.5 bar.
   source: src:LVI1
 - season: Talvi
-  action: Putkien jäätymisesto eristys + kaapeli T<-5°C. Vuotolukema. Paine 1.0-1.5
-    bar.
+  action: Putkien jäätymisesto eristys + kaapeli T<-5°C. Vuotolukema. Paine 1.0-1.5 bar.
   source: src:LVI1
 FAILURE_MODES:
 - mode: Putkien jäätyminen
@@ -76,8 +73,7 @@ KNOWLEDGE_TABLES:
     source: src:LVI1
 COMPLIANCE_AND_LEGAL:
   note:
-    rule: Agentti tuottaa huoltotoimenpiteiden listoja ja hälytyslogiikkaa, ei vaarallisia
-      DIY-asennusohjeita.
+    rule: Agentti tuottaa huoltotoimenpiteiden listoja ja hälytyslogiikkaa, ei vaarallisia DIY-asennusohjeita.
     source: src:LVI1
 UNCERTAINTY_NOTES:
 - Raja-arvot riippuvat rakenteista ja putkireitityksestä; vaatii paikallisen mittausdatan.
@@ -88,8 +84,7 @@ SOURCE_REGISTRY:
     title: Mökin LVI-talvikunnostus (checklist + hälytyslogiikka)
     year: 2026
     url: N/A
-    what_it_supports: Prosessilista talvikuntoon laittoon; raja-arvot jätetään UNKNOWN
-      kunnes data/ohjeet vahvistetaan.
+    what_it_supports: Prosessilista talvikuntoon laittoon; raja-arvot jätetään UNKNOWN kunnes data/ohjeet vahvistetaan.
 eval_questions:
 - q: Mikä on putkien jäätymisriskin lämpötilaraja?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.pipe_freeze_risk_temp_c.value
@@ -193,21 +188,33 @@ eval_questions:
 - q: Mikä on talvikunnostuksen lähde?
   a_ref: KNOWLEDGE_TABLES.winterization_checklist[0].source
   source: src:LVI1
-- q: 'Operatiivinen päätöskysymys #1?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:LVI_
-- q: 'Operatiivinen päätöskysymys #2?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:LVI_
-- q: 'Operatiivinen päätöskysymys #3?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:LVI_
-- q: 'Operatiivinen päätöskysymys #4?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:LVI_
-- q: 'Operatiivinen päätöskysymys #5?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:LVI_
-- q: 'Operatiivinen päätöskysymys #6?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:LVI_
+- q: Missä lämpötilassa putket ovat jäätymisriskissä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pipe_freeze_risk_temp_c.value
+  source: src:LVI1
+- q: Mikä on sisäilman kosteuden yläraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_humidity_high_rh.value
+  source: src:LVI1
+- q: Miten vesimittarin vuoto havaitaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_meter_leak_delta.value
+  source: src:LVI1
+- q: Kuinka usein viemärin vesilukko kuivuu?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sewer_trap_dry_risk_days.value
+  source: src:LVI1
+- q: Tarvitseeko lämminvesivaraaja tyhjennystä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.boiler_drain_required.value
+  source: src:LVI1
+- q: Mitä tehdään putkien jäätyessä?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LVI1
+- q: Miten hidas vuoto tunnistetaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:LVI1
+- q: Mitä LVI-töitä tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LVI1
+- q: Mitä LVI-töitä tehdään syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:LVI1
+- q: Mitä LVI-töitä tehdään talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LVI1

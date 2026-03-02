@@ -1,112 +1,112 @@
-﻿header:
-  agent_id: fenologi
+header:
+  agent_id: phenologist
   agent_name: Fenologi
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:
-- HuhdasjÃ¤rvi/Kouvola, vyÃ¶hyke II-III
-- Fenologiset havainnot kytketty mehilÃ¤ishoitoon ja puutarhaan
-- 'Ilmatieteen laitoksen termisen kasvukauden mÃ¤Ã¤ritelmÃ¤: vrk-keskilÃ¤mpÃ¶ >5Â°C vÃ¤hintÃ¤Ã¤n
+- Huhdasjärvi/Kouvola, vyöhyke II-III
+- Fenologiset havainnot kytketty mehiläishoitoon ja puutarhaan
+- 'Ilmatieteen laitoksen termisen kasvukauden määritelmä: vrk-keskilämpö >5°C vähintään
   5 vrk'
 DECISION_METRICS_AND_THRESHOLDS:
   thermal_growing_season_start:
-    value: Vrk-keskilÃ¤mpÃ¶ pysyvÃ¤sti >5Â°C, tyypillisesti vko 16-18 (Kouvola)
-    action: KÃ¤ynnistÃ¤ kevÃ¤Ã¤n hoitosuunnitelma mehilÃ¤isillÃ¤ ja puutarhassa
+    value: Vrk-keskilämpö pysyvästi >5°C, tyypillisesti vko 16-18 (Kouvola)
+    action: Käynnistä kevään hoitosuunnitelma mehiläisillä ja puutarhassa
     source: src:FEN1
   effective_temperature_sum_deg_days:
-    value: Seuraa Â°Cvr kertymÃ¤Ã¤ pÃ¤ivittÃ¤in (base 5Â°C)
+    value: Seuraa °Cvr kertymää päivittäin (base 5°C)
     thresholds:
-      pajun_kukinta: 50-80 Â°Cvr
-      voikukan_kukinta: 150-200 Â°Cvr
-      omenapuun_kukinta: 300-350 Â°Cvr
-      maitohorsman_kukinta: 800-1000 Â°Cvr
-      varroa_hoito_viimeistaan: 1200 Â°Cvr (â‰ˆ sadonkorjuun jÃ¤lkeen)
+      pajun_kukinta: 50-80 °Cvr
+      voikukan_kukinta: 150-200 °Cvr
+      omenapuun_kukinta: 300-350 °Cvr
+      maitohorsman_kukinta: 800-1000 °Cvr
+      varroa_hoito_viimeistaan: 1200 °Cvr (â‰ˆ sadonkorjuun jälkeen)
     source: src:FEN1
   autumn_colour_trigger:
-    value: Vrk-keskilÃ¤mpÃ¶ pysyvÃ¤sti <10Â°C â†’ lehtien vÃ¤rimuutos alkaa
+    value: Vrk-keskilämpö pysyvästi <10°C → lehtien värimuutos alkaa
     source: src:FEN1
   first_frost_typical_date:
-    value: Syyskuun loppu â€“ lokakuun alku (Kouvola)
-    action: HerkÃ¤t kasvit suojaan, ilmoita hortonomille
+    value: Syyskuun loppu – lokakuun alku (Kouvola)
+    action: Herkät kasvit suojaan, ilmoita hortonomille
     source: src:FEN1
   snow_cover_permanent:
-    value: Tyypillisesti marraskuun loppu â€“ joulukuun alku
+    value: Tyypillisesti marraskuun loppu – joulukuun alku
     source: src:FEN1
   ice_formation_lake:
-    value: JÃ¤Ã¤peite tyypillisesti marraskuun puolivÃ¤li (HuhdasjÃ¤rvi)
-    action: Ilmoita jÃ¤Ã¤asiantuntijalle
+    value: Jääpeite tyypillisesti marraskuun puoliväli (Huhdasjärvi)
+    action: Ilmoita jääasiantuntijalle
     source: src:FEN1
 SEASONAL_RULES:
-- season: KevÃ¤t
-  action: Â°Cvr-seuranta alkaa kun vrk-keskilÃ¤mpÃ¶ >5Â°C. Pajun kukinta â†’ ilmoita tarhaajalle
-    kevÃ¤truokinnan lopetuksesta.
+- season: Kevät
+  action: °Cvr-seuranta alkaa kun vrk-keskilämpö >5°C. Pajun kukinta → ilmoita tarhaajalle
+    kevätruokinnan lopetuksesta.
   source: src:FEN1
-- season: KesÃ¤
-  action: Seuraa maitohorsman kukinta-ajan alkua (800 Â°Cvr) â†’ ilmoita nektari-informaatikolle.
-    Seuraa hellekausia (>25Â°C).
+- season: Kesä
+  action: Seuraa maitohorsman kukinta-ajan alkua (800 °Cvr) → ilmoita nektari-informaatikolle.
+    Seuraa hellekausia (>25°C).
   source: src:FEN1
 - season: Syksy
-  action: EnsimmÃ¤inen halla â†’ ilmoita hortonomille ja tarhaajalle. PysyvÃ¤ <5Â°C â†’ kasvukausi
-    pÃ¤Ã¤ttyy.
+  action: Ensimmäinen halla → ilmoita hortonomille ja tarhaajalle. Pysyvä <5°C → kasvukausi
+    päättyy.
   source: src:FEN1
 - season: Talvi
-  action: '[vko 49-13] JÃ¤Ã¤peite-seuranta, lumensyvyys, pakkasvuorokausien kertymÃ¤
+  action: '[vko 49-13] Jääpeite-seuranta, lumensyvyys, pakkasvuorokausien kertymä
     routaseurantaa varten.'
   source: src:FEN1
 FAILURE_MODES:
-- mode: Poikkeuksellisen aikainen/myÃ¶hÃ¤inen kevÃ¤t
-  detection: Â°Cvr-kertymÃ¤ >20% eri tasolla kuin 10v keskiarvo samaan aikaan
+- mode: Poikkeuksellisen aikainen/myöhäinen kevät
+  detection: °Cvr-kertymä >20% eri tasolla kuin 10v keskiarvo samaan aikaan
   action: Varoita kaikkia biologisia agentteja poikkeavasta ajoituksesta
   source: src:FEN1
-- mode: HallayÃ¶ kasvukaudella
-  detection: Ennuste <0Â°C touko-syyskuussa
-  action: HÃ„LYTYS hortonomille, tarhaajalle; pakkassuojaus
+- mode: Hallayö kasvukaudella
+  detection: Ennuste <0°C touko-syyskuussa
+  action: HÄLYTYS hortonomille, tarhaajalle; pakkassuojaus
   source: src:FEN1
 PROCESS_FLOWS:
   daily_monitoring:
     steps:
-    - 1. Lue vrk-keskilÃ¤mpÃ¶ (meteorologi-agentilta)
-    - 2. Laske Â°Cvr-kertymÃ¤ (âˆ‘max(0, T_avg - 5))
-    - 3. Vertaa kynnysarvoihin â†’ laukaise ilmoitukset
-    - 4. PÃ¤ivitÃ¤ fenologinen kalenteri havainnoilla
-    - 5. Ilmoita relevanteille agenteille (tarhaaja, hortonomi, lentosÃ¤Ã¤)
+    - 1. Lue vrk-keskilämpö (meteorologi-agentilta)
+    - 2. Laske °Cvr-kertymä (âˆ‘max(0, T_avg - 5))
+    - 3. Vertaa kynnysarvoihin → laukaise ilmoitukset
+    - 4. Päivitä fenologinen kalenteri havainnoilla
+    - 5. Ilmoita relevanteille agenteille (tarhaaja, hortonomi, lentosää)
     source: src:FEN1
 KNOWLEDGE_TABLES:
   phenological_calendar:
   - event: Pajun kukinta
     typical_week: vko 16-18
-    deg_days: 50-80 Â°Cvr
-    bee_relevance: EnsimmÃ¤inen merkittÃ¤vÃ¤ mesilÃ¤hde
+    deg_days: 50-80 °Cvr
+    bee_relevance: Ensimmäinen merkittävä mesilähde
     source: src:FEN1
   - event: Voikukka kukkii
     typical_week: vko 19-21
-    deg_days: 150-200 Â°Cvr
-    bee_relevance: SiitepÃ¶lyÃ¤ runsaasti
+    deg_days: 150-200 °Cvr
+    bee_relevance: Siitepölyä runsaasti
     source: src:FEN1
   - event: Tuomi kukkii
     typical_week: vko 21-23
-    deg_days: 200-250 Â°Cvr
+    deg_days: 200-250 °Cvr
     bee_relevance: Perinteinen 'takatalvi' indikaattori
     source: src:FEN2
   - event: Omenapuu kukkii
     typical_week: vko 22-24
-    deg_days: 300-350 Â°Cvr
-    bee_relevance: PÃ¶lytystehon mittari
+    deg_days: 300-350 °Cvr
+    bee_relevance: Pölytystehon mittari
     source: src:FEN1
   - event: Maitohorsma kukkii
     typical_week: vko 27-33
-    deg_days: 800-1000 Â°Cvr
-    bee_relevance: PÃ¤Ã¤satokasvi
+    deg_days: 800-1000 °Cvr
+    bee_relevance: Pääsatokasvi
     source: src:FEN1
-  - event: EnsimmÃ¤inen halla
+  - event: Ensimmäinen halla
     typical_week: vko 38-41
     deg_days: N/A
-    bee_relevance: Kasvukauden pÃ¤Ã¤ttyminen, talviruokinnan suunnittelu
+    bee_relevance: Kasvukauden päättyminen, talviruokinnan suunnittelu
     source: src:FEN1
 COMPLIANCE_AND_LEGAL: {}
 UNCERTAINTY_NOTES:
-- Â°Cvr-kynnysarvot ovat tyypillisiÃ¤ Kaakkois-Suomelle â€” vuosivaihtelu Â±15%.
-- Fenologiset havainnot ovat paikallisia; jÃ¤rvien lÃ¤heisyys vaikuttaa mikroilmastoon.
+- °Cvr-kynnysarvot ovat tyypillisiä Kaakkois-Suomelle — vuosivaihtelu ±15%.
+- Fenologiset havainnot ovat paikallisia; järvien läheisyys vaikuttaa mikroilmastoon.
 SOURCE_REGISTRY:
   sources:
   - id: src:FEN1
@@ -114,7 +114,7 @@ SOURCE_REGISTRY:
     title: Kasvukauden tilastot ja terminen kasvukausi
     year: 2024
     url: https://www.ilmatieteenlaitos.fi/kasvukauden-olosuhteet
-    supports: Kasvukauden alku/loppu, Â°Cvr, fenologiset kynnykset.
+    supports: Kasvukauden alku/loppu, °Cvr, fenologiset kynnykset.
   - id: src:FEN2
     org: Luonnontieteellinen keskusmuseo (Luomus)
     title: Fenologinen seuranta
@@ -122,79 +122,79 @@ SOURCE_REGISTRY:
     url: https://www.luomus.fi/fi/fenologia
     supports: Valtakunnallinen fenologinen seuranta, kukintojen ajoitukset.
 eval_questions:
-- q: MikÃ¤ on termisen kasvukauden alkuehto?
+- q: Mikä on termisen kasvukauden alkuehto?
   a_ref: ASSUMPTIONS
   source: src:FEN1
 - q: Milloin pajun kukinta tyypillisesti alkaa?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[0].typical_week
   source: src:FEN1
-- q: MikÃ¤ on pajun kukinnan Â°Cvr-kynnys?
+- q: Mikä on pajun kukinnan °Cvr-kynnys?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.effective_temperature_sum_deg_days.thresholds.pajun_kukinta
   source: src:FEN1
-- q: MikÃ¤ on maitohorsman Â°Cvr-kynnys?
+- q: Mikä on maitohorsman °Cvr-kynnys?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.effective_temperature_sum_deg_days.thresholds.maitohorsman_kukinta
   source: src:FEN1
-- q: Milloin varroa-hoito tulisi viimeistÃ¤Ã¤n tehdÃ¤ (Â°Cvr)?
+- q: Milloin varroa-hoito tulisi viimeistään tehdä (°Cvr)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.effective_temperature_sum_deg_days.thresholds.varroa_hoito_viimeistaan
   source: src:FEN1
-- q: MikÃ¤ on tyypillinen ensimmÃ¤isen hallan ajankohta?
+- q: Mikä on tyypillinen ensimmäisen hallan ajankohta?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.first_frost_typical_date.value
   source: src:FEN1
 - q: Milloin omenapuu tyypillisesti kukkii?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[3].typical_week
   source: src:FEN1
-- q: Miten Â°Cvr lasketaan?
+- q: Miten °Cvr lasketaan?
   a_ref: PROCESS_FLOWS.daily_monitoring.steps
   source: src:FEN1
-- q: MikÃ¤ laukaisee syksyn vÃ¤rimuutoksen?
+- q: Mikä laukaisee syksyn värimuutoksen?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.autumn_colour_trigger.value
   source: src:FEN1
-- q: Milloin jÃ¤Ã¤peite muodostuu HuhdasjÃ¤rvelle?
+- q: Milloin jääpeite muodostuu Huhdasjärvelle?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.ice_formation_lake.value
   source: src:FEN1
-- q: MikÃ¤ on voikukan Â°Cvr-kynnys?
+- q: Mikä on voikukan °Cvr-kynnys?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.effective_temperature_sum_deg_days.thresholds.voikukan_kukinta
   source: src:FEN1
 - q: Kenelle pajun kukinnasta ilmoitetaan?
   a_ref: SEASONAL_RULES[0].action
   source: src:FEN1
-- q: MikÃ¤ on tuomen kukinnalle tyypillinen ilmiÃ¶?
+- q: Mikä on tuomen kukinnalle tyypillinen ilmiö?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[2].bee_relevance
   source: src:FEN2
 - q: Milloin lumipeite vakiintuu?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.snow_cover_permanent.value
   source: src:FEN1
-- q: MitÃ¤ tapahtuu poikkeuksellisen aikaisessa kevÃ¤Ã¤ssÃ¤?
+- q: Mitä tapahtuu poikkeuksellisen aikaisessa keväässä?
   a_ref: FAILURE_MODES[0].action
   source: src:FEN1
 - q: Kenelle hallasta ilmoitetaan?
   a_ref: FAILURE_MODES[1].action
   source: src:FEN1
-- q: MikÃ¤ on omenapuun Â°Cvr-kynnys?
+- q: Mikä on omenapuun °Cvr-kynnys?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.effective_temperature_sum_deg_days.thresholds.omenapuun_kukinta
   source: src:FEN1
-- q: Miten kasvukausi pÃ¤Ã¤ttyy fenologisesti?
+- q: Miten kasvukausi päättyy fenologisesti?
   a_ref: SEASONAL_RULES[2].action
   source: src:FEN1
-- q: Miten poikkeavuus havaitaan Â°Cvr:ssÃ¤?
+- q: Miten poikkeavuus havaitaan °Cvr:ssä?
   a_ref: FAILURE_MODES[0].detection
   source: src:FEN1
 - q: Milloin voikukka kukkii?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[1].typical_week
   source: src:FEN1
-- q: MikÃ¤ on kevÃ¤Ã¤n kasvukauden tyypillinen aloitusviikko Kouvolassa?
+- q: Mikä on kevään kasvukauden tyypillinen aloitusviikko Kouvolassa?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.thermal_growing_season_start.value
   source: src:FEN1
-- q: MitÃ¤ seurataan talvella?
+- q: Mitä seurataan talvella?
   a_ref: SEASONAL_RULES[3].action
   source: src:FEN1
-- q: Onko Â°Cvr-vuosivaihtelu merkittÃ¤vÃ¤Ã¤?
+- q: Onko °Cvr-vuosivaihtelu merkittävää?
   a_ref: UNCERTAINTY_NOTES
   source: src:FEN1
-- q: MikÃ¤ on maitohorsman merkitys mehilÃ¤isille?
+- q: Mikä on maitohorsman merkitys mehiläisille?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[4].bee_relevance
   source: src:FEN1
-- q: Kenelle nektaritiedosta ilmoitetaan kesÃ¤llÃ¤?
+- q: Kenelle nektaritiedosta ilmoitetaan kesällä?
   a_ref: SEASONAL_RULES[1].action
   source: src:FEN1
 - q: Miten hellekautta seurataan?
@@ -203,42 +203,42 @@ eval_questions:
 - q: Milloin tuomi kukkii?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[2].typical_week
   source: src:FEN1
-- q: Vaikuttaako jÃ¤rvi paikalliseen fenologiaan?
+- q: Vaikuttaako järvi paikalliseen fenologiaan?
   a_ref: UNCERTAINTY_NOTES
   source: src:FEN1
-- q: MikÃ¤ on ensimmÃ¤isen hallan merkitys mehilÃ¤isille?
+- q: Mikä on ensimmäisen hallan merkitys mehiläisille?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[5].bee_relevance
   source: src:FEN1
 - q: Milloin maitohorsma tyypillisesti kukkii?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[4].typical_week
   source: src:FEN1
-- q: MikÃ¤ on pÃ¶lytystehon mittari kevÃ¤Ã¤llÃ¤?
+- q: Mikä on pölytystehon mittari keväällä?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[3].bee_relevance
   source: src:FEN1
-- q: Miten routaseurantaa varten tietoa kerÃ¤tÃ¤Ã¤n?
+- q: Miten routaseurantaa varten tietoa kerätään?
   a_ref: SEASONAL_RULES[3].action
   source: src:FEN1
-- q: MikÃ¤ on voikukan merkitys mehilÃ¤isille?
+- q: Mikä on voikukan merkitys mehiläisille?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[1].bee_relevance
   source: src:FEN1
-- q: MikÃ¤ on pÃ¤ivittÃ¤isen fenologisen seurannan ensimmÃ¤inen askel?
+- q: Mikä on päivittäisen fenologisen seurannan ensimmäinen askel?
   a_ref: PROCESS_FLOWS.daily_monitoring.steps
   source: src:FEN1
-- q: Mihin ensimmÃ¤isen hallan havainnot johtavat?
+- q: Mihin ensimmäisen hallan havainnot johtavat?
   a_ref: SEASONAL_RULES[2].action
   source: src:FEN1
-- q: MikÃ¤ on kasvukauden pÃ¤Ã¤ttymisen fenologinen merkki?
+- q: Mikä on kasvukauden päättymisen fenologinen merkki?
   a_ref: SEASONAL_RULES[2].action
   source: src:FEN1
-- q: Milloin tuomen kukinta tapahtuu Â°Cvr:nÃ¤?
+- q: Milloin tuomen kukinta tapahtuu °Cvr:nä?
   a_ref: KNOWLEDGE_TABLES.phenological_calendar[2].deg_days
   source: src:FEN1
-- q: Kenelle jÃ¤Ã¤peite-havainto ilmoitetaan?
+- q: Kenelle jääpeite-havainto ilmoitetaan?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.ice_formation_lake.action
   source: src:FEN1
-- q: Miten fenologia liittyy mehilÃ¤ishoitoon?
+- q: Miten fenologia liittyy mehiläishoitoon?
   a_ref: ASSUMPTIONS
   source: src:FEN1
-- q: MikÃ¤ on base-lÃ¤mpÃ¶tila Â°Cvr-laskennassa?
+- q: Mikä on base-lämpötila °Cvr-laskennassa?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.effective_temperature_sum_deg_days.value
   source: src:FEN1

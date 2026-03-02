@@ -1,12 +1,12 @@
 header:
   agent_id: baker
   agent_name: Leipuri
-  name_fi: 'Leipuri'
+  name_fi: Leipuri
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - cottage
-  - home
+- cottage
+- home
 priority: low
 ASSUMPTIONS:
 - 'Mökkileipominen: leivinuuni, puulämmitteinen'
@@ -38,16 +38,13 @@ SEASONAL_RULES:
   action: '[vko 14-22] Pääsiäisleipä (mämmi, pasha). Hapanjuuren elvytys talven jälkeen.'
   source: src:LE1
 - season: Kesä
-  action: '[vko 22-35] Kesäleivät (nuotioleipä, grillileipä). Taikinan nostatus nopeutuu
-    lämmössä.'
+  action: '[vko 22-35] Kesäleivät (nuotioleipä, grillileipä). Taikinan nostatus nopeutuu lämmössä.'
   source: src:LE1
 - season: Syksy
-  action: '[vko 36-48] Sadonkorjuuleipä. Joulupiparkakkujen valmistelu. Ruisjauhosadon
-    käyttöönotto.'
+  action: '[vko 36-48] Sadonkorjuuleipä. Joulupiparkakkujen valmistelu. Ruisjauhosadon käyttöönotto.'
   source: src:LE1
 - season: Talvi
-  action: '[vko 49-13] Joululeipiä: pipari, tortut, pulla. Leivinuunin hyödyntäminen
-    lämmitykseen.'
+  action: '[vko 49-13] Joululeipiä: pipari, tortut, pulla. Leivinuunin hyödyntäminen lämmitykseen.'
   source: src:LE1
 FAILURE_MODES:
 - mode: Hapanjuuri kuollut
@@ -102,8 +99,7 @@ KNOWLEDGE_TABLES:
     action: ''
   source: src:LEIP
 COMPLIANCE_AND_LEGAL:
-  myynti: 'Satunnaisesta kotileipomisesta myyntiin: omavalvontasuunnitelma Ruokavirastoon
-    jos säännöllistä [src:LE2]'
+  myynti: 'Satunnaisesta kotileipomisesta myyntiin: omavalvontasuunnitelma Ruokavirastoon jos säännöllistä [src:LE2]'
 UNCERTAINTY_NOTES:
 - Leivinuunin lämpötila vaihtelee — termometri hormiin/uuniin on välttämätön.
 - Hapanjuuren aktiivisuus riippuu ympäristöoloista — ei aina toistettavissa.
@@ -137,13 +133,13 @@ eval_questions:
 - q: Mikä on leivän sisälämpötila (°C)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.bread_core_temp_c
   source: src:LE1
-- q: 'Toimenpide: leivÃ¤n sisÃ¤lÃ¤mpÃ¶tila (Â°C)?'
+- q: 'Toimenpide: leivän sisälämpötila (°C)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.bread_core_temp_c.action
   source: src:LE1
 - q: Mikä on jauhojen säilyvyys (kk)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.flour_storage_months
   source: src:LE1
-- q: 'Toimenpide: jauhojen sÃ¤ilyvyys (kk)?'
+- q: 'Toimenpide: jauhojen säilyvyys (kk)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.flour_storage_months.action
   source: src:LE1
 - q: Mikä on leivinuunin lämmitysaika (h)?
@@ -182,63 +178,33 @@ eval_questions:
 - q: Oletukset?
   a_ref: ASSUMPTIONS
   source: src:LE1
-- q: 'Operatiivinen lisäkysymys #1?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #2?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #3?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #4?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #5?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #6?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #7?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #8?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #9?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #10?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #11?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #12?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #13?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #14?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #15?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #16?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #17?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #18?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #19?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
-- q: 'Operatiivinen lisäkysymys #20?'
-  a_ref: ASSUMPTIONS
-  source: src:LE1
+- q: Mikä on leivän sisälämpötilan kypsyysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bread_core_temp_c.value
+  source: src:LEI1
+- q: Kuinka kauan leivinuuni vaatii esilämmitystä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.leivinuuni_heat_hours.value
+  source: src:LEI1
+- q: Mikä on taikinan kosteusprosentin ihannetaso?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.dough_hydration_pct.value
+  source: src:LEI1
+- q: Kuinka pitkään jauhoja voi varastoida?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.flour_storage_months.value
+  source: src:LEI1
+- q: Miten hapanjuuren kuolema tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:LEI1
+- q: Mitä tehdään kun leipä jää raa'aksi sisältä?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LEI1
+- q: Mikä on uunin oikea lämpötila leivälle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oven_temp_bread_c.value
+  source: src:LEI1
+- q: Mitä leivontaa tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LEI1
+- q: Mitä leivontaa tehdään kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LEI1
+- q: Mikä on hapanjuuren aktiivisuuden mittari?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sourdough_activity.value
+  source: src:LEI1

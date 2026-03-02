@@ -15,7 +15,66 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 30
     action: ">30 dB yöaikaan → häiritsevä"
     source: src:NM1
+  asuinalue_paiva_db:
+    value: 55
+    action: "Asuinalueen päivämeluraja 55 dB(A) — ylitys vaatii meluntorjuntasuunnitelman"
+    source: src:NM2
+  teollisuus_paiva_db:
+    value: 70
+    action: "Teollisuusalueen meluraja 70 dB(A) päivällä, 60 dB(A) yöllä — mittaus kiinteistön rajalta"
+    source: src:NM3
+  hiljaisuusaika_alku:
+    value: "22:00"
+    action: "Hiljaisuusaika klo 22:00-07:00 — taloyhtiön järjestyssäännöt, sunnuntai koko päivä monissa yhtiöissä"
+    source: src:NM4
+  hiljaisuusaika_loppu:
+    value: "07:00"
+    action: "Hiljaisuusaika päättyy klo 07:00 — remonttityöt sallittu yleensä 08:00 alkaen"
+    source: src:NM5
+  suojaimet_raja_db:
+    value: 85
+    action: "Kuulonsuojaimet pakollisia >85 dB(A) — työnantajan velvollisuus (VNa 85/2006)"
+    source: src:NM6
+  mittaus_etaisyys_m:
+    value: 1.0
+    action: "Mittausetäisyys 1 m päästä kohteesta, 1.2-1.5 m korkeudelta — ISO 1996 standardin mukaan"
+    source: src:NM7
+  impulssimelu_max_db:
+    value: 140
+    action: "Impulssimelun huippuarvo max 140 dB(C) — välitön kuulovaurioriski, poistuttava alueelta"
+    source: src:NM8
+  tyomelu_8h_ka_db:
+    value: 80
+    action: "Työmelun 8h keskiarvo >80 dB(A) → kuulontarkastukset pakollisia, >85 dB(A) → suojaimet"
+    source: src:NM9
+  naapurimelu_valitus:
+    value: "taloyhtiö"
+    action: "Meluvalitus ensin taloyhtiön hallitukselle → isännöitsijä → ympäristöviranomainen viimeisenä"
+    source: src:NM10
+  rakennusmelu_raja_db:
+    value: 80
+    action: "Rakennustyömaiden melu max 80 dB(A) asuinrakennuksen ulkoseinällä — poikkeuslupa kunnalta"
+    source: src:NM11
+  musiikkimelu_sisalla_db:
+    value: 25
+    action: "Musiikin kuuluminen naapuriin >25 dB(A) → kohtuuton haitta — bassotaajuudet erityisongelmana"
+    source: src:NM12
 eval_questions:
 - q: Mikä on night noise db?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.night_noise_db.value
   source: src:NM1
+- q: Mikä on asuinalueen päivämeluraja desibeleinä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.asuinalue_paiva_db.value
+  source: src:NM2
+- q: Mihin aikaan hiljaisuusaika alkaa taloyhtiössä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hiljaisuusaika_alku.value
+  source: src:NM4
+- q: Milloin kuulonsuojaimet ovat pakollisia?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.suojaimet_raja_db.value
+  source: src:NM6
+- q: Mikä on impulssimelun suurin sallittu huippuarvo?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.impulssimelu_max_db.value
+  source: src:NM8
+- q: Kenelle meluvalitus tehdään ensimmäisenä kerrostalossa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.naapurimelu_valitus.value
+  source: src:NM10

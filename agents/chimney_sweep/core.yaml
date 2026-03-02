@@ -149,13 +149,13 @@ eval_questions:
 - q: Mikä on häkävaroitin?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.co_detector
   source: src:NU1
-- q: 'Toimenpide: hÃ¤kÃ¤varoitin?'
+- q: 'Toimenpide: häkävaroitin?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.co_detector.action
   source: src:NU1
 - q: Mikä on sammuttimen tarkistusväli (vuotta)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.extinguisher_check_years
   source: src:NU1
-- q: 'Toimenpide: sammuttimen tarkistusvÃ¤li?'
+- q: 'Toimenpide: sammuttimen tarkistusväli?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.extinguisher_check_years.action
   source: src:NU1
 - q: Kausiohje (Kevät)?

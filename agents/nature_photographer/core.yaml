@@ -259,7 +259,7 @@ eval_questions:
 - q: Mistä tallennuksen RTSP-striimi saadaan?
   a_ref: ASSUMPTIONS
   source: src:LK1
-- q: Miten elÃ¤intunnistusprosessi etenee?
+- q: Miten eläintunnistusprosessi etenee?
   a_ref: PROCESS_FLOWS.animal_detection.steps
   source: src:LK1
 - q: Mikä on peurahavainnon prioriteetti?

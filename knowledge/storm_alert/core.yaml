@@ -1,5 +1,5 @@
-﻿header:
-  agent_id: myrskyvaroittaja
+header:
+  agent_id: storm_alert
   agent_name: Myrskyvaroittaja
   version: 1.0.0
   last_updated: '2026-02-21'
@@ -9,70 +9,70 @@ ASSUMPTIONS:
 DECISION_METRICS_AND_THRESHOLDS:
   wind_warning_ms:
     value: 14
-    action: â‰¥14 â†’ varoitus ulkoagenteille
+    action: â‰¥14 → varoitus ulkoagenteille
     source: src:MY1
   wind_storm_ms:
     value: 21
-    action: 'â‰¥21 â†’ MYRSKY: suojaa irtaimet, vÃ¤ltÃ¤ metsÃ¤Ã¤'
+    action: 'â‰¥21 → MYRSKY: suojaa irtaimet, vältä metsää'
     source: src:MY1
   tree_fall_risk:
-    value: '>15 m/s + mÃ¤rkÃ¤ maa â†’ puiden kaatumisviskisuurin'
-    action: Ilmoita metsÃ¤nhoitajalle + timpurille
+    value: '>15 m/s + märkä maa → puiden kaatumisviskisuurin'
+    action: Ilmoita metsänhoitajalle + timpurille
     source: src:MY1
   lightning_km:
     value: 10
-    action: <10 km â†’ sisÃ¤lle, pois vedestÃ¤
+    action: <10 km → sisälle, pois vedestä
     source: src:MY1
   power_outage_prep:
-    value: Myrskyn ennuste â†’ tarkista lamput, akut, vesi
-    action: Ilmoita sÃ¤hkÃ¶asentajalle + laitehuoltajalle
+    value: Myrskyn ennuste → tarkista lamput, akut, vesi
+    action: Ilmoita sähköasentajalle + laitehuoltajalle
     source: src:MY1
 SEASONAL_RULES:
-- season: KevÃ¤t
-  action: '[vko 14-22] KevÃ¤Ã¤myrskyt harvinaisempia.'
+- season: Kevät
+  action: '[vko 14-22] Keväämyrskyt harvinaisempia.'
   source: src:MY1
-- season: KesÃ¤
-  action: '[vko 22-35] Ukkosmyrskyt, rajuilma, salama â†’ palovaara kuivana.'
+- season: Kesä
+  action: '[vko 22-35] Ukkosmyrskyt, rajuilma, salama → palovaara kuivana.'
   source: src:MY1
 - season: Syksy
   action: '[vko 36-48] Pahin myrskykausi (loka-joulu). Puiden kaatumisviiski.'
   source: src:MY1
 - season: Talvi
-  action: Talvimyrskyt. Lumimyrsky + pakkanen â†’ 0 nÃ¤kyvyys.
+  action: Talvimyrskyt. Lumimyrsky + pakkanen → 0 näkyvyys.
   source: src:MY1
 FAILURE_MODES:
 - mode: Rajuilma <30 min varoituksella
-  detection: YllÃ¤ttÃ¤vÃ¤ myrsky
-  action: 'HÃ¤tÃ¤toimet: ihmiset â†’ elÃ¤imet â†’ laitteet â†’ rakenteet'
+  detection: Yllättävä myrsky
+  action: 'Hätätoimet: ihmiset → eläimet → laitteet → rakenteet'
   source: src:MY1
-- mode: SÃ¤hkÃ¶katkos myrskyssÃ¤
-  detection: SÃ¤hkÃ¶ poikki >15 min
-  action: Aggregaatti (jos on), tarkista jÃ¤Ã¤kaapin T
+- mode: Sähkökatkos myrskyssä
+  detection: Sähkö poikki >15 min
+  action: Aggregaatti (jos on), tarkista jääkaapin T
   source: src:MY1
 PROCESS_FLOWS:
 - flow_id: FLOW_MYRS_01
-  trigger: wind_warning_ms ylittÃ¤Ã¤ kynnysarvon (14)
-  action: â‰¥14 â†’ varoitus ulkoagenteille
+  trigger: wind_warning_ms ylittää kynnysarvon (14)
+  action: â‰¥14 → varoitus ulkoagenteille
   output: Tilanneraportti
   source: src:MYRS
 - flow_id: FLOW_MYRS_02
-  trigger: 'Kausi vaihtuu: KevÃ¤t'
-  action: '[vko 14-22] KevÃ¤Ã¤myrskyt harvinaisempia.'
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Keväämyrskyt harvinaisempia.'
   output: Tarkistuslista
   source: src:MYRS
 - flow_id: FLOW_MYRS_03
   trigger: 'Havaittu: Rajuilma <30 min varoituksella'
-  action: 'HÃ¤tÃ¤toimet: ihmiset â†’ elÃ¤imet â†’ laitteet â†’ rakenteet'
+  action: 'Hätätoimet: ihmiset → eläimet → laitteet → rakenteet'
   output: Poikkeamaraportti
   source: src:MYRS
 - flow_id: FLOW_MYRS_04
-  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  trigger: Säännöllinen heartbeat
   action: 'myrskyvaroittaja: rutiiniarviointi'
   output: Status-raportti
   source: src:MYRS
 KNOWLEDGE_TABLES:
 - table_id: TBL_MYRS_01
-  title: Myrskyvaroittaja â€” Kynnysarvot
+  title: Myrskyvaroittaja — Kynnysarvot
   columns:
   - metric
   - value
@@ -80,19 +80,19 @@ KNOWLEDGE_TABLES:
   rows:
   - metric: wind_warning_ms
     value: '14'
-    action: â‰¥14 â†’ varoitus ulkoagenteille
+    action: â‰¥14 → varoitus ulkoagenteille
   - metric: wind_storm_ms
     value: '21'
-    action: 'â‰¥21 â†’ MYRSKY: suojaa irtaimet, vÃ¤ltÃ¤ metsÃ¤Ã¤'
+    action: 'â‰¥21 → MYRSKY: suojaa irtaimet, vältä metsää'
   - metric: tree_fall_risk
-    value: '>15 m/s + mÃ¤rkÃ¤ maa â†’ puiden kaatumisviskisuurin'
-    action: Ilmoita metsÃ¤nhoitajalle + timpurille
+    value: '>15 m/s + märkä maa → puiden kaatumisviskisuurin'
+    action: Ilmoita metsänhoitajalle + timpurille
   - metric: lightning_km
     value: '10'
-    action: <10 km â†’ sisÃ¤lle, pois vedestÃ¤
+    action: <10 km → sisälle, pois vedestä
   - metric: power_outage_prep
-    value: Myrskyn ennuste â†’ tarkista lamput, akut, vesi
-    action: Ilmoita sÃ¤hkÃ¶asentajalle + laitehuoltajalle
+    value: Myrskyn ennuste → tarkista lamput, akut, vesi
+    action: Ilmoita sähköasentajalle + laitehuoltajalle
   source: src:MYRS
 COMPLIANCE_AND_LEGAL: {}
 UNCERTAINTY_NOTES:
@@ -106,123 +106,123 @@ SOURCE_REGISTRY:
     url: https://www.ilmatieteenlaitos.fi/varoitukset
     supports: Myrsky, salama, varoitusrajat.
 eval_questions:
-- q: MikÃ¤ on tuulivaroitus (m/s)?
+- q: Mikä on tuulivaroitus (m/s)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.wind_warning_ms
   source: src:MY1
-- q: MitÃ¤ tehdÃ¤Ã¤n kun tuulivaroitus (m/s) ylittyy?
+- q: Mitä tehdään kun tuulivaroitus (m/s) ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.wind_warning_ms.action
   source: src:MY1
-- q: MikÃ¤ on myrskyvaroitus (m/s)?
+- q: Mikä on myrskyvaroitus (m/s)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.wind_storm_ms
   source: src:MY1
-- q: MitÃ¤ tehdÃ¤Ã¤n kun myrskyvaroitus (m/s) ylittyy?
+- q: Mitä tehdään kun myrskyvaroitus (m/s) ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.wind_storm_ms.action
   source: src:MY1
-- q: MikÃ¤ on puun kaatumisriski?
+- q: Mikä on puun kaatumisriski?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.tree_fall_risk
   source: src:MY1
-- q: MitÃ¤ tehdÃ¤Ã¤n kun puun kaatumisriski ylittyy?
+- q: Mitä tehdään kun puun kaatumisriski ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.tree_fall_risk.action
   source: src:MY1
-- q: MikÃ¤ on lightning km?
+- q: Mikä on lightning km?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.lightning_km
   source: src:MY1
-- q: MitÃ¤ tehdÃ¤Ã¤n kun lightning km ylittyy?
+- q: Mitä tehdään kun lightning km ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.lightning_km.action
   source: src:MY1
-- q: MikÃ¤ on sÃ¤hkÃ¶katkovalmius?
+- q: Mikä on sähkökatkovalmius?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.power_outage_prep
   source: src:MY1
-- q: MitÃ¤ tehdÃ¤Ã¤n kun sÃ¤hkÃ¶katkovalmius ylittyy?
+- q: Mitä tehdään kun sähkökatkovalmius ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.power_outage_prep.action
   source: src:MY1
-- q: MitÃ¤ kevÃ¤t huomioidaan?
+- q: Mitä kevät huomioidaan?
   a_ref: SEASONAL_RULES[0].action
   source: src:MY1
-- q: MitÃ¤ kesÃ¤ huomioidaan?
+- q: Mitä kesä huomioidaan?
   a_ref: SEASONAL_RULES[1].action
   source: src:MY1
-- q: MitÃ¤ syksy huomioidaan?
+- q: Mitä syksy huomioidaan?
   a_ref: SEASONAL_RULES[2].action
   source: src:MY1
-- q: MitÃ¤ talvi huomioidaan?
+- q: Mitä talvi huomioidaan?
   a_ref: SEASONAL_RULES[3].action
   source: src:MY1
 - q: Miten 'Rajuilma <30 min varoituksella' havaitaan?
   a_ref: FAILURE_MODES[0].detection
   source: src:MY1
-- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Rajuilma <30 min varoituksella'?
+- q: Mitä tehdään tilanteessa 'Rajuilma <30 min varoituksella'?
   a_ref: FAILURE_MODES[0].action
   source: src:MY1
-- q: Miten 'SÃ¤hkÃ¶katkos myrskyssÃ¤' havaitaan?
+- q: Miten 'Sähkökatkos myrskyssä' havaitaan?
   a_ref: FAILURE_MODES[1].detection
   source: src:MY1
-- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'SÃ¤hkÃ¶katkos myrskyssÃ¤'?
+- q: Mitä tehdään tilanteessa 'Sähkökatkos myrskyssä'?
   a_ref: FAILURE_MODES[1].action
   source: src:MY1
-- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+- q: Mitkä ovat merkittävimmät epävarmuudet?
   a_ref: UNCERTAINTY_NOTES
   source: src:MY1
-- q: MitkÃ¤ ovat agentin oletukset?
+- q: Mitkä ovat agentin oletukset?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#1)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#2)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#3)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#4)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#5)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#6)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#7)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#8)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#8)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#9)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#9)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#10)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#10)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#11)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#11)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#12)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#12)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#13)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#13)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#14)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#14)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#15)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#15)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#16)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#16)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#17)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#17)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#18)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#18)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#19)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#19)?
   a_ref: ASSUMPTIONS
   source: src:MY1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#20)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#20)?
   a_ref: ASSUMPTIONS
   source: src:MY1

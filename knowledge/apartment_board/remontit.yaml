@@ -1,8 +1,27 @@
-# Taloyhtiöasiat — Remontit
-# Auto-generated for WaggleDance Swarm AI
-title: "Remontit"
-agent: "Taloyhtiöasiat"
+title: Remontit
+agent: Taloyhtiöasiat
 facts:
-  - "Putkiremontti: 500-1200 €/m², kesto 2-4 kk/rappu, 50v jakso"
-  - "Julkisivuremontti: 200-600 €/m², 30-50v jakso"
-  - "Pitkän tähtäimen suunnitelma (PTS): 10v, pakollinen"
+- 'Putkiremontti: 500-1200 €/m², kesto 2-4 kk/rappu, 50v jakso'
+- 'Julkisivuremontti: 200-600 €/m², 30-50v jakso'
+- 'Pitkän tähtäimen suunnitelma (PTS): 10v, pakollinen'
+RENOVATION_COSTS_EUR_M2:
+  putkiremontti:
+    range: 600-1200
+    duration_months: 4-8
+    note: Suurin yksittäinen remontti
+  julkisivuremontti:
+    range: 200-500
+    duration_months: 3-6
+    note: Elementtisaumat, rappaus, maalaus
+  kattoremontti:
+    range: 80-200
+    duration_months: 1-3
+    note: Huopa/pelti, sadevesijärjestelmä
+  hissiremontti:
+    range: 100000-200000 €/hissi
+    duration_months: 2-4
+    note: Modernisaatio tai uusi hissi
+  ikkunaremontti:
+    range: 200-400
+    duration_months: 2-4
+    note: Tiivistys tai vaihto

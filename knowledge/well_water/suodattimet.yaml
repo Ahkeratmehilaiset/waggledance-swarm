@@ -1,9 +1,28 @@
-# Kaivoveden laadunvalvonta — Suodattimet
-# Auto-generated for WaggleDance Swarm AI
-title: "Suodattimet"
-agent: "Kaivoveden laadunvalvonta"
+title: Suodattimet
+agent: Kaivoveden laadunvalvonta
 facts:
-  - "UV-desinfiointi tuhoaa bakteerit ja virukset — ei vaadi kemikaaleja"
-  - "Aktiivihiilisuodatin poistaa hajua, makua, radonin ja orgaanisia yhdisteitä"
-  - "Rautasuodatin (mangaanidioksidi) hapettaa liukoisen raudan kiinteäksi"
-  - "Suodattimien huoltoväli tyypillisesti 6-12 kk"
+- UV-desinfiointi tuhoaa bakteerit ja virukset — ei vaadi kemikaaleja
+- Aktiivihiilisuodatin poistaa hajua, makua, radonin ja orgaanisia yhdisteitä
+- Rautasuodatin (mangaanidioksidi) hapettaa liukoisen raudan kiinteäksi
+- Suodattimien huoltoväli tyypillisesti 6-12 kk
+FILTER_TYPES:
+- type: Aktiivihiilisuodatin
+  removes: haju, maku, orgaaniset yhdisteet, radon
+  maintenance: Vaihto 1-2 v
+  cost_eur: 200-500
+- type: Rautasuodatin
+  removes: rauta, mangaani
+  maintenance: Huuhtelu viikoittain, massa 5-10 v
+  cost_eur: 800-2000
+- type: UV-desinfiointi
+  removes: bakteerit, virukset
+  maintenance: Lamppu 1 v, kvartsilasi puhdistus
+  cost_eur: 500-1000
+- type: Käänteisosmoosi (RO)
+  removes: lähes kaikki epäpuhtaudet
+  maintenance: Kalvo 2-3 v
+  cost_eur: 300-800
+- type: Kalkkineutralointi
+  removes: happamuus (nostaa pH)
+  maintenance: Massa 1-2 v
+  cost_eur: 500-1500

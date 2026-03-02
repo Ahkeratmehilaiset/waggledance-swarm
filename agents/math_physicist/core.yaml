@@ -1,13 +1,13 @@
 header:
   agent_id: math_physicist
   agent_name: Matemaatikko ja fyysikko (laskenta + mallit)
-  name_fi: 'Matemaatikko-fyysikko'
+  name_fi: Matemaatikko-fyysikko
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - cottage
-  - home
-  - factory
+- cottage
+- home
+- factory
 priority: low
 ASSUMPTIONS:
 - Laskennallinen tuki kaikille agenteille
@@ -17,8 +17,8 @@ DECISION_METRICS_AND_THRESHOLDS:
   deg_day_formula:
     value: °Cvr = Σ max(0, T_avg - T_base), T_base = 5°C
     source: src:MA1
-    action: 'Kynnykset: pajun kukinta 50-80°Cvr, voikukka 150-200, omena 300-350,
-      varroa-hoito 1200. Laske päivittäin keväästä alkaen.'
+    action: 'Kynnykset: pajun kukinta 50-80°Cvr, voikukka 150-200, omena 300-350, varroa-hoito 1200. Laske päivittäin keväästä
+      alkaen.'
   wind_chill_formula:
     value: WCI = 13.12 + 0.6215T - 11.37V^0.16 + 0.3965TV^0.16
     note: T in °C, V in km/h
@@ -27,16 +27,14 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: Q = U × A × ΔT (W)
     note: U = lämmönläpäisykerroin (W/m²K)
     source: src:MA2
-    action: Hirsi U=0.40, mineraalivilla 150mm U=0.24, passiivi U=0.10. Kokonaishäviö
-      Q=Σ(U×A×ΔT). Budjetti kW vertailuun.
+    action: Hirsi U=0.40, mineraalivilla 150mm U=0.24, passiivi U=0.10. Kokonaishäviö Q=Σ(U×A×ΔT). Budjetti kW vertailuun.
   solar_angle_formula:
     value: θ = 90° - φ + δ (noon elevation)
     note: φ = leveysaste, δ = auringon deklinaatio
     source: src:MA1
   statistical_confidence:
     value: 95% luottamusväli vakiomääritelmä
-    action: <90% CI → ilmoita 'luottamus riittämätön, tarvitaan lisää datapisteitä'.
-      n<30 → käytä bootstrap tai Bayesian.
+    action: <90% CI → ilmoita 'luottamus riittämätön, tarvitaan lisää datapisteitä'. n<30 → käytä bootstrap tai Bayesian.
     source: src:MA1
   optimization_constraints:
     value: 'LP/NLP-ongelmat: tarhojen sijoittelu, reittioptimointi'
@@ -46,15 +44,13 @@ SEASONAL_RULES:
   action: '[vko 14-22] °Cvr-kertymän laskenta alkaa. Aurinkokulmalaskelmat kasvimaalle.'
   source: src:MA1
 - season: Kesä
-  action: '[vko 22-35] Satoennustemallit (lineaarinen regressio painodatan perusteella).
-    UV-indeksi.'
+  action: '[vko 22-35] Satoennustemallit (lineaarinen regressio painodatan perusteella). UV-indeksi.'
   source: src:MA1
 - season: Syksy
   action: '[vko 36-48] Routasyvyysennuste (pakkasvuorokausikertymä). Lumikuormalaskelmat.'
   source: src:MA2
 - season: Talvi
-  action: '[vko 49-13] Lämpöhäviölaskelmat rakennuksille. Tuulen hyytävyysindeksi.
-    Jään kantavuuslaskenta.'
+  action: '[vko 49-13] Lämpöhäviölaskelmat rakennuksille. Tuulen hyytävyysindeksi. Jään kantavuuslaskenta.'
   source: src:MA2
 FAILURE_MODES:
 - mode: Malli antaa epärealistisen tuloksen
@@ -83,22 +79,19 @@ KNOWLEDGE_TABLES:
   rows:
   - metric: deg_day_formula
     value: °Cvr = Σ max(0, T_avg - T_base), T_base = 5°C
-    action: 'Kynnykset: pajun kukinta 50-80°Cvr, voikukka 150-200, omena 300-350,
-      varroa-hoit'
+    action: 'Kynnykset: pajun kukinta 50-80°Cvr, voikukka 150-200, omena 300-350, varroa-hoit'
   - metric: wind_chill_formula
     value: WCI = 13.12 + 0.6215T - 11.37V^0.16 + 0.3965TV^0.16
     action: ''
   - metric: heat_loss_u_value
     value: Q = U × A × ΔT (W)
-    action: Hirsi U=0.40, mineraalivilla 150mm U=0.24, passiivi U=0.10. Kokonaishäviö
-      Q=Σ(U×
+    action: Hirsi U=0.40, mineraalivilla 150mm U=0.24, passiivi U=0.10. Kokonaishäviö Q=Σ(U×
   - metric: solar_angle_formula
     value: θ = 90° - φ + δ (noon elevation)
     action: ''
   - metric: statistical_confidence
     value: 95% luottamusväli vakiomääritelmä
-    action: '<90% CI → ilmoita ''luottamus riittämätön, tarvitaan lisää datapisteitä''.
-      n<30 → '
+    action: '<90% CI → ilmoita ''luottamus riittämätön, tarvitaan lisää datapisteitä''. n<30 → '
   - metric: optimization_constraints
     value: 'LP/NLP-ongelmat: tarhojen sijoittelu, reittioptimointi'
     action: ''
@@ -197,48 +190,33 @@ eval_questions:
 - q: Oletukset?
   a_ref: ASSUMPTIONS
   source: src:MA1
-- q: 'Operatiivinen lisäkysymys #1?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #2?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #3?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #4?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #5?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #6?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #7?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #8?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #9?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #10?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #11?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #12?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #13?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #14?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
-- q: 'Operatiivinen lisäkysymys #15?'
-  a_ref: ASSUMPTIONS
-  source: src:MA1
+- q: Mikä on astepäivälaskelman kaava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deg_day_formula.value
+  source: src:MAT1
+- q: Mikä on tuulenpurevuuden laskukaava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wind_chill_formula.value
+  source: src:MAT1
+- q: Mikä on lämpöhäviön U-arvo?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.heat_loss_u_value.value
+  source: src:MAT1
+- q: Mikä on auringon kulman laskukaava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_angle_formula.value
+  source: src:MAT1
+- q: Mikä on tilastollisen luottamustason vaatimus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.statistical_confidence.value
+  source: src:MAT1
+- q: Mitkä ovat optimoinnin rajoitteet?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.optimization_constraints.value
+  source: src:MAT1
+- q: Miten epärealistinen mallitulos tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:MAT1
+- q: Mitä tehdään kun datapisteitä on liian vähän?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MAT1
+- q: Mitä laskentoja tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MAT1
+- q: Mitä laskentoja tehdään talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:MAT1

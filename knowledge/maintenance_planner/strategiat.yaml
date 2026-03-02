@@ -1,9 +1,26 @@
-# Kunnossapitosuunnittelija — Strategiat
-# Auto-generated for WaggleDance Swarm AI
-title: "Strategiat"
-agent: "Kunnossapitosuunnittelija"
+title: Strategiat
+agent: Kunnossapitosuunnittelija
 facts:
-  - "Korjaava (CM): korjataan kun rikkoutuu"
-  - "Ehkäisevä (PM): aikapohjainen huolto-ohjelma"
-  - "Ennakoiva (PdM): kuntomittaus (värähtely, lämpö)"
-  - "TPM: operaattori tekee perushuollot"
+- 'Korjaava (CM): korjataan kun rikkoutuu'
+- 'Ehkäisevä (PM): aikapohjainen huolto-ohjelma'
+- 'Ennakoiva (PdM): kuntomittaus (värähtely, lämpö)'
+- 'TPM: operaattori tekee perushuollot'
+MAINTENANCE_STRATEGIES:
+- strategy: Korjaava (CM)
+  when: Ajetaan rikkoutumiseen asti
+  suitable: Ei-kriittiset laitteet, vara-aste olemassa
+- strategy: Ehkäisevä (PM)
+  when: Aikaperusteiset huoltovälit
+  suitable: Tunnettu vikaantumismalli, helppo huoltaa
+- strategy: Ennakoiva (PdM)
+  when: 'Kuntoseuranta: värähtely, lämpö, öljy'
+  suitable: Kriittiset laitteet, korkea vikaantumiskustannus
+- strategy: TPM (Total Productive)
+  when: Käyttäjäkunnossapito + ammattihuolto
+  suitable: Tuotantoympäristö, OEE-tavoitteet
+KPI_TARGETS:
+  pm_compliance: '>90% ennakkohuoltotöistä tehty ajallaan'
+  mtbf_trend: Nouseva trendi = parantuva luotettavuus
+  mttr_target: Korjausaika <4h kriittisille laitteille
+  spare_parts_availability: '>95% kriittisten varaosien saatavuus'
+  maintenance_cost_ratio: <3% laitteen jälleenhankinta-arvosta/vuosi

@@ -55,7 +55,7 @@ def test_hotcache_lru_eviction():
     cache.put("q3", "a3", 0.9, source="test")
     assert cache.size == 3
 
-    # Add 4th → should evict q1
+    # Add 4th -> should evict q1
     cache.put("q4", "a4", 0.9, source="test")
     assert cache.size == 3
     print("  [PASS] HotCache LRU eviction works at max_size")

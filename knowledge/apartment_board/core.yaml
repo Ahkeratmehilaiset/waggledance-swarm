@@ -15,7 +15,58 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 15
     action: ">15% vastikkeen korotus → selvitä syy"
     source: src:AB1
+  yhtiokokous_kutsu_paivat:
+    value: 14
+    action: "Yhtiökokous kutsu vähintään 14 vrk ennen kokousta"
+    source: src:AB2
+  putkiremontti_eurm2:
+    value: 800
+    action: ">800 €/m² putkiremontti → kilpailuta vähintään 3 urakoitsijaa"
+    source: src:AB3
+  vesivuoto_reaktio_min:
+    value: 30
+    action: "Vesivuoto havaittu → sulkuventtiili kiinni ja isännöitsijälle ilmoitus <30 min"
+    source: src:AB4
+  autopaikka_vuokra_kk_eur:
+    value: 50
+    action: "Autopaikan vuokra taloyhtiössä tyypillisesti 30–80 €/kk, tarkista yhtiöjärjestys"
+    source: src:AB5
+  remontti_ilmoitus_paivat:
+    value: 30
+    action: "Osakkaan remontti-ilmoitus isännöitsijälle vähintään 30 vrk ennen aloitusta"
+    source: src:AB6
+  energiatodistus_voimassaolo_v:
+    value: 10
+    action: "Energiatodistus voimassa 10 vuotta, uusittava ennen vanhenemista"
+    source: src:AB7
+  pelastussuunnitelma_paivitys_v:
+    value: 3
+    action: "Pelastussuunnitelma päivitettävä vähintään 3 vuoden välein"
+    source: src:AB8
+  talousarvio_poikkeama_pct:
+    value: 10
+    action: ">10% talousarviopoikkeama → hallituksen käsiteltävä ja tiedotettava osakkaille"
+    source: src:AB9
+  hissi_tarkastus_kk:
+    value: 24
+    action: "Hissin määräaikaistarkastus 24 kk välein (turvallisuuslaki)"
+    source: src:AB10
 eval_questions:
 - q: Mikä on maintenance increase pct?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.maintenance_increase_pct.value
   source: src:AB1
+- q: Kuinka monta päivää ennen yhtiökokousta kutsu on lähetettävä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.yhtiokokous_kutsu_paivat.value
+  source: src:AB2
+- q: Mikä on putkiremontin kustannusraja euroa neliömetriltä, jonka ylittyessä tulee kilpailuttaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.putkiremontti_eurm2.value
+  source: src:AB3
+- q: Kuinka nopeasti vesivuotoon on reagoitava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vesivuoto_reaktio_min.value
+  source: src:AB4
+- q: Montako päivää ennen remonttia osakkaan on tehtävä remontti-ilmoitus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.remontti_ilmoitus_paivat.value
+  source: src:AB6
+- q: Kuinka monen vuoden välein pelastussuunnitelma on päivitettävä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pelastussuunnitelma_paivitys_v.value
+  source: src:AB8

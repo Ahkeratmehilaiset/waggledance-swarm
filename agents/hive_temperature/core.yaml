@@ -1,12 +1,12 @@
 header:
   agent_id: hive_temperature
   agent_name: Pesälämpö- ja kosteusmittaaja
-  name_fi: 'Pesälämpö'
+  name_fi: Pesälämpö
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - cottage
-  - home
+- cottage
+- home
 priority: high
 ASSUMPTIONS:
 - IoT-anturit pesässä (lämpö, kosteus, paino)
@@ -37,16 +37,13 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:PES1
 SEASONAL_RULES:
 - season: Kevät
-  action: '[vko 14-22] Sikiöpesän lämpötilan seuranta erityisen kriittistä. Painonnousu
-    osoittaa keräilyn alkua.'
+  action: '[vko 14-22] Sikiöpesän lämpötilan seuranta erityisen kriittistä. Painonnousu osoittaa keräilyn alkua.'
   source: src:PES1
 - season: Kesä
-  action: '[vko 22-35] Ylilämpenemisriski helteellä. Kosteus nousee linkoamisen aikoihin.
-    Painon nopea nousu = satohuippu.'
+  action: '[vko 22-35] Ylilämpenemisriski helteellä. Kosteus nousee linkoamisen aikoihin. Painon nopea nousu = satohuippu.'
   source: src:PES1
 - season: Syksy
-  action: '[vko 36-48] Painon stabiloituminen syysruokinnan jälkeen. Kosteus seurannassa
-    (homevaara märässä syksyssä).'
+  action: '[vko 36-48] Painon stabiloituminen syysruokinnan jälkeen. Kosteus seurannassa (homevaara märässä syksyssä).'
   source: src:PES1
 - season: Talvi
   action: Jatkuva painonseuranta (0.3 kg/vko normaali). Ydinlämpö >20°C. Kosteus 50-70%.
@@ -197,33 +194,33 @@ eval_questions:
 - q: Mikä on datan hälytysviive?
   a_ref: FAILURE_MODES[0].detection
   source: src:PES1
-- q: 'Operatiivinen päätöskysymys #1?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #2?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #3?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #4?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #5?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #6?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #7?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #8?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #9?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #10?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
+- q: Mikä on sikiöpesän ihannelämpötila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.brood_nest_temp_c.value
+  source: src:LAM1
+- q: Mikä on talvipallon ytimen lämpötila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.winter_cluster_core_c.value
+  source: src:LAM1
+- q: Mikä on pesän kosteuden yläraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hive_humidity_rh_pct.value
+  source: src:LAM1
+- q: Paljonko pesä saa menettää painoa viikossa talvella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weight_loss_winter_kg_per_week.value
+  source: src:LAM1
+- q: Mikä on äkillisen painonpudotuksen hälytysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sudden_weight_drop_kg.value
+  source: src:LAM1
+- q: Milloin kevään painonnousu alkaa normaalisti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spring_weight_increase_start.value
+  source: src:LAM1
+- q: Mitä tehdään kun anturi ei lähetä dataa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LAM1
+- q: Miten äkillinen lämpötilan putoaminen käsitellään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LAM1
+- q: Mitä lämpötilaseurantaa tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LAM1
+- q: Mitä lämpötilaseurantaa tehdään talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LAM1

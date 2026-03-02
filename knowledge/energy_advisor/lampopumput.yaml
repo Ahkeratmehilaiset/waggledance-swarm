@@ -1,8 +1,23 @@
-# Sähkö- ja energiaoptimointi — Lampopumput
-# Auto-generated for WaggleDance Swarm AI
-title: "Lampopumput"
-agent: "Sähkö- ja energiaoptimointi"
+title: Lampopumput
+agent: Sähkö- ja energiaoptimointi
 facts:
-  - "Ilmalämpöpumppu: COP 3-4, investointi 1500-3000€, säästö 30-50%"
-  - "Maalämpö: COP 4-5, investointi 15000-25000€, säästö 60-70%"
-  - "ARA-avustus 2026: energiaremontteihin 15-40% tuki"
+- 'Ilmalämpöpumppu: COP 3-4, investointi 1500-3000€, säästö 30-50%'
+- 'Maalämpö: COP 4-5, investointi 15000-25000€, säästö 60-70%'
+- 'ARA-avustus 2026: energiaremontteihin 15-40% tuki'
+HEAT_PUMP_TYPES:
+- type: ASHP (ilmalämpöpumppu)
+  cop: 2.5-4.0
+  cost_eur: 1500-3500
+  note: Helppo asentaa, ei toimi <-25°C tehokkaasti
+- type: GSHP (maalämpöpumppu)
+  cop: 3.5-5.0
+  cost_eur: 15000-25000
+  note: Vaatii porauksen tai keruuputkiston, paras hyötysuhde
+- type: EAHP (poistoilmalämpöpumppu)
+  cop: 2.0-3.0
+  cost_eur: 3000-6000
+  note: Soveltuu koneelliseen ilmanvaihtoon
+- type: AWHP (ilma-vesilämpöpumppu)
+  cop: 2.5-4.0
+  cost_eur: 8000-15000
+  note: Vesikiertoinen lämmitys, EI vaadi porausta

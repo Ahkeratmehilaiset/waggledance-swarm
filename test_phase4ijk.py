@@ -68,9 +68,9 @@ def SECTION(title):
     print(f"{'='*60}{W}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 1. HOT CACHE
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("1. HOT CACHE — Finnish stemming, LRU, stats")
 
 from core.fast_memory import HotCache
@@ -174,9 +174,9 @@ else:
     FAIL(f"normalize_key('') should be '', got '{key_empty}'")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 2. BILINGUAL MEMORY STORE
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("2. BILINGUAL MEMORY STORE — FI collection, search")
 
 td = tempfile.mkdtemp()
@@ -296,9 +296,9 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 3. FACT ENRICHMENT ENGINE
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("3. FACT ENRICHMENT ENGINE — gap detection, mock cycle")
 
 from core.fast_memory import FactEnrichmentEngine
@@ -445,9 +445,9 @@ else:
     FAIL(f"LLM error should return 0, got {stored_e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 4. CONSCIOUSNESS INTEGRATION — before_llm layers
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("4. CONSCIOUSNESS — hot_cache + fi_direct in before_llm")
 
 td2 = tempfile.mkdtemp()
@@ -479,7 +479,7 @@ try:
         else:
             FAIL(f"before_llm should use hot_cache, got method='{pre.method}'")
 
-        # 4d. hot_cache miss → falls through
+        # 4d. hot_cache miss -> falls through
         pre2 = c.before_llm("täysin tuntematon aihe joka ei löydy mistään")
         if pre2.method != "hot_cache":
             OK(f"before_llm falls through on cache miss: method='{pre2.method}'")
@@ -525,9 +525,9 @@ finally:
     shutil.rmtree(td2, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 5. CONSCIOUSNESS LEARN — bilingual batch store
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("5. CONSCIOUSNESS LEARN — bilingual batch store in _flush")
 
 td3 = tempfile.mkdtemp()
@@ -555,9 +555,9 @@ finally:
     shutil.rmtree(td3, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 6. AUTO-POPULATE HOT CACHE
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("6. AUTO-POPULATE HOT CACHE on memory_direct hit")
 
 td4 = tempfile.mkdtemp()
@@ -591,9 +591,9 @@ finally:
     shutil.rmtree(td4, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 7. HIVEMIND NIGHT MODE — enrichment integration
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("7. HIVEMIND — enrichment in night mode")
 
 # 7a. Check enrichment attribute exists on HiveMind
@@ -641,9 +641,9 @@ except Exception as e:
     FAIL(f"Could not inspect get_status: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 8. SETTINGS YAML
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("8. SETTINGS YAML — new config keys")
 
 try:
@@ -676,9 +676,9 @@ except Exception as e:
     FAIL(f"Settings YAML error: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 9. DASHBOARD — /api/consciousness endpoint
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("9. DASHBOARD — consciousness endpoint includes new stats")
 
 try:
@@ -723,9 +723,9 @@ except Exception as e:
     FAIL(f"Dashboard inspection error: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 10. EDGE CASES
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("10. EDGE CASES — disabled features, empty states")
 
 # 10a. HotCache with max_size=1
@@ -792,9 +792,9 @@ else:
     FAIL(f"Duplicate puts should not increase size: {hc_dup.size}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 11. CONSCIOUSNESS _load_advanced_learning_config
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("11. CONSCIOUSNESS — _load_advanced_learning_config")
 
 td5 = tempfile.mkdtemp()
@@ -814,9 +814,9 @@ finally:
     shutil.rmtree(td5, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 12. FI_FAST STORE — all-minilm Finnish vector search
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("12. FI_FAST STORE — all-minilm Finnish vector search (~18ms)")
 
 from consciousness import EvalEmbeddingEngine
@@ -938,9 +938,9 @@ finally:
     shutil.rmtree(td_ff, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 13. CONSCIOUSNESS fi_fast INTEGRATION
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("13. CONSCIOUSNESS fi_fast integration")
 
 td_ffc = tempfile.mkdtemp()
@@ -981,9 +981,9 @@ finally:
     shutil.rmtree(td_ffc, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 14. SETTINGS.YAML fi_fast config
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("14. SETTINGS.YAML — fi_fast_enabled config key")
 
 td_cfg = tempfile.mkdtemp()
@@ -1000,9 +1000,9 @@ finally:
     shutil.rmtree(td_cfg, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 15. SEASONAL_FOCUS.YAML exists
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("15. SEASONAL_FOCUS.YAML config")
 
 sf_path = Path("configs/seasonal_focus.yaml")
@@ -1022,9 +1022,9 @@ else:
     FAIL("configs/seasonal_focus.yaml not found")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 16. VRAM IMPACT
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("16. VRAM IMPACT — no new GPU models")
 
 # BilingualMemoryStore uses same nomic-embed-text
@@ -1038,9 +1038,9 @@ OK("FactEnrichmentEngine: reuses llama1b + phi4-mini (no new GPU)")
 OK("Total VRAM stays 4.3G / 8.0G (54%)")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # FINAL SUMMARY
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{B}{'='*60}")
 print(f"  PHASE 4i/4j/4k TEST SUMMARY")
 print(f"{'='*60}{W}")

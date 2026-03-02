@@ -1,9 +1,20 @@
-# Tuotantolinjan monitorointi — Lean
-# Auto-generated for WaggleDance Swarm AI
-title: "Lean"
-agent: "Tuotantolinjan monitorointi"
+title: Lean
+agent: Tuotantolinjan monitorointi
 facts:
-  - "5S: Seiri, Seiton, Seiso, Seiketsu, Shitsuke"
-  - "Kaizen: jatkuva parantaminen, pienet askeleet"
-  - "Kanban: visuaalinen ohjaus, WIP-rajoitukset"
-  - "Value Stream Mapping: hukan tunnistaminen"
+- '5S: Seiri, Seiton, Seiso, Seiketsu, Shitsuke'
+- 'Kaizen: jatkuva parantaminen, pienet askeleet'
+- 'Kanban: visuaalinen ohjaus, WIP-rajoitukset'
+- 'Value Stream Mapping: hukan tunnistaminen'
+LEAN_TOOLS:
+- tool: 5S
+  purpose: 'Työpisteen järjestys: Sorteeraa, Systematisoi, Siivoa, Standardoi, Seuraa'
+- tool: Kanban
+  purpose: 'Visuaalinen ohjaus: tuotanto vain tarpeen mukaan, WIP-rajat'
+- tool: Value Stream Mapping
+  purpose: 'Arvovirtakuvaus: tunnista hukka prosessissa'
+- tool: Poka-yoke
+  purpose: 'Virheen estäminen: mekaaniset/sähköiset varmistukset'
+- tool: Kaizen
+  purpose: 'Jatkuva parantaminen: pienet parannukset joka päivä'
+- tool: SMED
+  purpose: 'Nopea asetuksenvaihto: <10 min tavoite'

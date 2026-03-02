@@ -1,12 +1,12 @@
 header:
   agent_id: logistics
   agent_name: Logistikko (reitti + ajoajat)
-  name_fi: 'Logistikko'
+  name_fi: Logistikko
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - cottage
-  - factory
+- cottage
+- factory
 priority: medium
 ASSUMPTIONS:
 - Korvenranta ↔ Helsinki, Kouvola, tarha-alueet
@@ -16,12 +16,11 @@ DECISION_METRICS_AND_THRESHOLDS:
   range_km_winter:
     value: 'Tesla Model Y: ~350 km (kesä), ~250 km (talvi -20°C)'
     source: src:LO1
-    action: 'Talvi -20°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku
-      → etsi lataus HETI (Tesla SC Kouvola/Lahti).'
+    action: 'Talvi -20°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku → etsi lataus HETI (Tesla SC Kouvola/Lahti).'
   charging_plan:
     value: Latauspisteet reitillä ennakkosuunnittelu >200 km matkoilla
-    action: 'Ennakkosuunnittelu: A Better Routeplanner (ABRP). >200 km → 1 lataustauko.
-      Talvella +30% aikaa. Esilämmitys 30 min ennen.'
+    action: 'Ennakkosuunnittelu: A Better Routeplanner (ABRP). >200 km → 1 lataustauko. Talvella +30% aikaa. Esilämmitys 30
+      min ennen.'
     source: src:LO1
   korvenranta_helsinki_km:
     value: ~150 km, ~1h 50min (E75/VT12)
@@ -31,28 +30,23 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:LO1
   honey_transport_temp_c:
     value: 'Hunaja: 15-25°C (ei jäädytä, ei kuumenna >40°C)'
-    action: 15-25°C. <0°C → hunaja kiteytyy, auton sisälämpö riittää. >40°C → entsyymit
-      tuhoutuvat, EI jätä aurinkoon.
+    action: 15-25°C. <0°C → hunaja kiteytyy, auton sisälämpö riittää. >40°C → entsyymit tuhoutuvat, EI jätä aurinkoon.
     source: src:LO2
   load_capacity_kg:
     value: 'Tesla Model Y: ~500 kg kuorma'
     source: src:LO1
 SEASONAL_RULES:
 - season: Kevät
-  action: '[vko 14-22] Kelirikko → hiekkateillä varovaisuus. Renkaanvaihto (huhti-touko).
-    Tarhakierros alkaa.'
+  action: '[vko 14-22] Kelirikko → hiekkateillä varovaisuus. Renkaanvaihto (huhti-touko). Tarhakierros alkaa.'
   source: src:LO1
 - season: Kesä
-  action: '[vko 22-35] Hunajan kuljetuskausi. Lämpö → hunajan suojaus. Pitkät päivät
-    → ajoaika joustava.'
+  action: '[vko 22-35] Hunajan kuljetuskausi. Lämpö → hunajan suojaus. Pitkät päivät → ajoaika joustava.'
   source: src:LO2
 - season: Syksy
-  action: Syysruokinnan sokerikuljetukset (4500-6000 kg koko kausi). Rengasvaihto
-    (loka-marras).
+  action: Syysruokinnan sokerikuljetukset (4500-6000 kg koko kausi). Rengasvaihto (loka-marras).
   source: src:LO1
 - season: Talvi
-  action: Sähköauton toimintamatka -30%. Esilämmitys. Liukkaat tiet. Tarhakäynnit
-    harvinaisempia.
+  action: Sähköauton toimintamatka -30%. Esilämmitys. Liukkaat tiet. Tarhakäynnit harvinaisempia.
   source: src:LO1
 FAILURE_MODES:
 - mode: Akku loppuu kesken matkan
@@ -65,16 +59,13 @@ FAILURE_MODES:
   source: src:LO1
 PROCESS_FLOWS:
 - flow_id: FLOW_LOGI_01
-  trigger: 'range_km_winter ylittää kynnysarvon (Tesla Model Y: ~350 km (kesä), ~250
-    km (talvi -20°C))'
-  action: 'Talvi -20°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku →
-    etsi lataus HETI (Tesla SC Kouvola/Lahti).'
+  trigger: 'range_km_winter ylittää kynnysarvon (Tesla Model Y: ~350 km (kesä), ~250 km (talvi -20°C))'
+  action: 'Talvi -20°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku → etsi lataus HETI (Tesla SC Kouvola/Lahti).'
   output: Tilanneraportti
   source: src:LOGI
 - flow_id: FLOW_LOGI_02
   trigger: 'Kausi vaihtuu: Kevät'
-  action: '[vko 14-22] Kelirikko → hiekkateillä varovaisuus. Renkaanvaihto (huhti-touko).
-    Tarhakierros alkaa.'
+  action: '[vko 14-22] Kelirikko → hiekkateillä varovaisuus. Renkaanvaihto (huhti-touko). Tarhakierros alkaa.'
   output: Tarkistuslista
   source: src:LOGI
 - flow_id: FLOW_LOGI_03
@@ -97,12 +88,10 @@ KNOWLEDGE_TABLES:
   rows:
   - metric: range_km_winter
     value: 'Tesla Model Y: ~350 km (kesä), ~250 km (talvi -20°C)'
-    action: 'Talvi -20°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku
-      → etsi lata'
+    action: 'Talvi -20°C: ~250 km. Lataussuunnittelu >200 km matkoille. <20% akku → etsi lata'
   - metric: charging_plan
     value: Latauspisteet reitillä ennakkosuunnittelu >200 km matkoilla
-    action: 'Ennakkosuunnittelu: A Better Routeplanner (ABRP). >200 km → 1 lataustauko.
-      Talve'
+    action: 'Ennakkosuunnittelu: A Better Routeplanner (ABRP). >200 km → 1 lataustauko. Talve'
   - metric: korvenranta_helsinki_km
     value: ~150 km, ~1h 50min (E75/VT12)
     action: ''
@@ -111,16 +100,14 @@ KNOWLEDGE_TABLES:
     action: ''
   - metric: honey_transport_temp_c
     value: 'Hunaja: 15-25°C (ei jäädytä, ei kuumenna >40°C)'
-    action: 15-25°C. <0°C → hunaja kiteytyy, auton sisälämpö riittää. >40°C → entsyymit
-      tuho
+    action: 15-25°C. <0°C → hunaja kiteytyy, auton sisälämpö riittää. >40°C → entsyymit tuho
   - metric: load_capacity_kg
     value: 'Tesla Model Y: ~500 kg kuorma'
     action: ''
   source: src:LOGI
 COMPLIANCE_AND_LEGAL:
   kuorma: 'Tieliikennelaki: kuorman sidonta ja painorajat [src:LO1]'
-  ajo_lepo: Ammattimaisessa liikenteessä ajo-lepoaikasäännöt (ei koske omaa ajoa)
-    [src:LO1]
+  ajo_lepo: Ammattimaisessa liikenteessä ajo-lepoaikasäännöt (ei koske omaa ajoa) [src:LO1]
 UNCERTAINTY_NOTES:
 - Sähköauton todellinen talvitoimintamatka vaihtelee lämpötilan ja ajotavan mukaan.
 - Kelirikkoajat vaihtelevat vuosittain merkittävästi.
@@ -157,7 +144,7 @@ eval_questions:
 - q: Mikä on hunajan kuljetuslämpötila (°C)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_transport_temp_c
   source: src:LO1
-- q: 'Toimenpide: hunajan kuljetuslÃ¤mpÃ¶tila (Â°C)?'
+- q: 'Toimenpide: hunajan kuljetuslämpötila (°C)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_transport_temp_c.action
   source: src:LO1
 - q: Mikä on kantavuus (kg)?
@@ -199,63 +186,33 @@ eval_questions:
 - q: Oletukset?
   a_ref: ASSUMPTIONS
   source: src:LO1
-- q: 'Operatiivinen lisäkysymys #1?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #2?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #3?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #4?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #5?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #6?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #7?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #8?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #9?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #10?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #11?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #12?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #13?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #14?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #15?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #16?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #17?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #18?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #19?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
-- q: 'Operatiivinen lisäkysymys #20?'
-  a_ref: ASSUMPTIONS
-  source: src:LO1
+- q: Mikä on sähköauton toimintamatka talvella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.range_km_winter.value
+  source: src:LOG1
+- q: Miten lataussuunnitelma tehdään pitkälle matkalle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.charging_plan.value
+  source: src:LOG1
+- q: Kuinka pitkä matka on Korvenrannasta Helsinkiin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.korvenranta_helsinki_km.value
+  source: src:LOG1
+- q: Kuinka pitkä matka on Korvenrannasta Kouvolaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.korvenranta_kouvola_km.value
+  source: src:LOG1
+- q: Mikä on hunajan kuljetuslämpötilan raja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_transport_temp_c.value
+  source: src:LOG1
+- q: Mikä on kuormakapasiteetti kilogrammoina?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.load_capacity_kg.value
+  source: src:LOG1
+- q: Mitä tehdään kun akku loppuu kesken matkan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LOG1
+- q: Miten kelirikko-ongelma ratkaistaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LOG1
+- q: Mitä logistiikkatoimia tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LOG1
+- q: Mitä logistiikkatoimia tehdään talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:LOG1

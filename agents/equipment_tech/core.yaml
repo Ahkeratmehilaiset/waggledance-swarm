@@ -114,7 +114,7 @@ eval_questions:
 - q: Mikä on IoT-laitteen akkujännite (V)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.battery_voltage_iot_v
   source: src:LA1
-- q: 'Toimenpide: IoT-laitteen akkujÃ¤nnite (V)?'
+- q: 'Toimenpide: IoT-laitteen akkujännite (V)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.battery_voltage_iot_v.action
   source: src:LA1
 - q: Mikä on WiFi-signaalin voimakkuus (dBm)?
@@ -135,7 +135,7 @@ eval_questions:
 - q: Mikä on laiteohjelmiston päivitysväli (kk)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.firmware_update_months
   source: src:LA1
-- q: 'Toimenpide: laiteohjelmiston pÃ¤ivitysvÃ¤li (kk)?'
+- q: 'Toimenpide: laiteohjelmiston päivitysväli (kk)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.firmware_update_months.action
   source: src:LA1
 - q: Kausiohje (Kevät)?

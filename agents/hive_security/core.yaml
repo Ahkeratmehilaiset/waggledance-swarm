@@ -1,12 +1,12 @@
 header:
   agent_id: hive_security
   agent_name: Pesäturvallisuuspäällikkö (karhut ym.)
-  name_fi: 'Pesäturvallisuus'
+  name_fi: Pesäturvallisuus
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - cottage
-  - home
+- cottage
+- home
 priority: high
 ASSUMPTIONS:
 - Karhu- ja mäyrävahinkojen ehkäisy mehiläistarhoilla
@@ -35,26 +35,21 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:PETU1
 SEASONAL_RULES:
 - season: Kevät (huhti-touko)
-  action: '[vko 14-22] Sähköaidan pystytys/tarkistus ENNEN karhun heräämistä. Jännitemittaus.
-    Maadoituksen testaus.'
+  action: '[vko 14-22] Sähköaidan pystytys/tarkistus ENNEN karhun heräämistä. Jännitemittaus. Maadoituksen testaus.'
   source: src:PETU1
 - season: Kesä
-  action: Ruohon niitto aidan alla 2x/kk. Jännite 2x/kk. Riistanvartijalta karhu-info
-    seurantaan.
+  action: Ruohon niitto aidan alla 2x/kk. Jännite 2x/kk. Riistanvartijalta karhu-info seurantaan.
   source: src:PETU1
 - season: Syksy
-  action: '[vko 36-48] Aita pidetään päällä lokakuun loppuun. Pesäkohtaiset suojaukset
-    talvipesille (hiiri, tikka).'
+  action: '[vko 36-48] Aita pidetään päällä lokakuun loppuun. Pesäkohtaiset suojaukset talvipesille (hiiri, tikka).'
   source: src:PETU1
 - season: Talvi
-  action: '[vko 49-13] Aita voidaan poistaa lumitöiden ajaksi (karhu talviunessa).
-    Hiiriverkon tarkistus.'
+  action: '[vko 49-13] Aita voidaan poistaa lumitöiden ajaksi (karhu talviunessa). Hiiriverkon tarkistus.'
   source: src:PETU1
 FAILURE_MODES:
 - mode: Karhu murtautunut aitaan
   detection: Kaatuneet pylväät, tuhoutuneet pesät, karhun jäljet
-  action: 1. Dokumentoi (valokuva + päiväys), 2. Ilmoita poliisille ja riistanhoitoyhdistykselle,
-    3. Hae korvaus Maaseutuvirastosta
+  action: 1. Dokumentoi (valokuva + päiväys), 2. Ilmoita poliisille ja riistanhoitoyhdistykselle, 3. Hae korvaus Maaseutuvirastosta
   source: src:PETU2
 - mode: Aidan jännite liian matala
   detection: Mittari <3 kV
@@ -62,21 +57,18 @@ FAILURE_MODES:
   source: src:PETU1
 PROCESS_FLOWS:
 - flow_id: FLOW_PESA_01
-  trigger: electric_fence_voltage_kv ylittää kynnysarvon (4-7 kV (minimi 3 kV, alle
-    → ei estä karhua))
+  trigger: electric_fence_voltage_kv ylittää kynnysarvon (4-7 kV (minimi 3 kV, alle → ei estä karhua))
   action: Mittaa vähintään 2x/kk, ennen karhukautta (touko) viikoittain
   output: Tilanneraportti
   source: src:PESA
 - flow_id: FLOW_PESA_02
   trigger: 'Kausi vaihtuu: Kevät (huhti-touko)'
-  action: '[vko 14-22] Sähköaidan pystytys/tarkistus ENNEN karhun heräämistä. Jännitemittaus.
-    Maadoituksen test'
+  action: '[vko 14-22] Sähköaidan pystytys/tarkistus ENNEN karhun heräämistä. Jännitemittaus. Maadoituksen test'
   output: Tarkistuslista
   source: src:PESA
 - flow_id: FLOW_PESA_03
   trigger: 'Havaittu: Karhu murtautunut aitaan'
-  action: 1. Dokumentoi (valokuva + päiväys), 2. Ilmoita poliisille ja riistanhoitoyhdistykselle,
-    3. Hae korvaus Maaseutuvirastosta
+  action: 1. Dokumentoi (valokuva + päiväys), 2. Ilmoita poliisille ja riistanhoitoyhdistykselle, 3. Hae korvaus Maaseutuvirastosta
   output: Poikkeamaraportti
   source: src:PESA
 - flow_id: FLOW_PESA_04
@@ -107,8 +99,8 @@ KNOWLEDGE_TABLES:
     protection: Lennonsäätäjä pienennä 6mm
     source: src:PETU1
 COMPLIANCE_AND_LEGAL:
-  damage_compensation: Petoeläinten aiheuttamista mehiläisvahingoista voi hakea korvausta
-    Ruokavirastolta (vahingot ilmoitettava 7 pv sisällä) [src:PETU2]
+  damage_compensation: Petoeläinten aiheuttamista mehiläisvahingoista voi hakea korvausta Ruokavirastolta (vahingot ilmoitettava
+    7 pv sisällä) [src:PETU2]
   electric_fence: Sähköaitapaimenen tulee täyttää SFS-EN 60335-2-76 standardi [src:PETU1]
 UNCERTAINTY_NOTES:
 - Karhun käyttäytyminen on yksilöllistä — kokenut karhu voi oppia kiertämään aidan.
@@ -217,33 +209,33 @@ eval_questions:
 - q: Kuka tarkistaa aidan jännitteen?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.action
   source: src:PETU1
-- q: 'Operatiivinen päätöskysymys #1?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #2?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #3?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #4?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #5?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #6?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #7?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #8?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #9?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
-- q: 'Operatiivinen päätöskysymys #10?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PESA
+- q: Mikä on sähköaidan minimijännite?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electric_fence_voltage_kv.value
+  source: src:TUR1
+- q: Mikä on aidan maadoituksen vastusraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_ground_resistance_ohm.value
+  source: src:TUR1
+- q: Kuinka kaukaa karhu voi vahingoittaa tarhan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bear_damage_radius_km.value
+  source: src:TUR1
+- q: Mikä on aidan vähimmäiskorkeus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fence_height_cm.value
+  source: src:TUR1
+- q: Kuinka pitkäksi ruoho saa kasvaa aidan alla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.grass_under_fence_max_cm.value
+  source: src:TUR1
+- q: Mitä tehdään kun karhu on murtautunut aitaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:TUR1
+- q: Miten aidan jännite tarkistetaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:TUR1
+- q: Mitä turvallisuustoimia tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:TUR1
+- q: Mitä turvallisuustoimia tehdään syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TUR1
+- q: Mitä turvallisuustoimia tehdään talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:TUR1

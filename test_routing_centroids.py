@@ -47,28 +47,28 @@ print("\n=== Section 1: Cosine similarity ===")
 
 from backend.routes.chat import _cosine_sim
 
-# Identical vectors → 1.0
+# Identical vectors -> 1.0
 v1 = [1.0, 2.0, 3.0]
-check("identical vectors → 1.0", abs(_cosine_sim(v1, v1) - 1.0) < 1e-6)
+check("identical vectors -> 1.0", abs(_cosine_sim(v1, v1) - 1.0) < 1e-6)
 
-# Orthogonal vectors → 0.0
+# Orthogonal vectors -> 0.0
 v_a = [1.0, 0.0, 0.0]
 v_b = [0.0, 1.0, 0.0]
-check("orthogonal vectors → 0.0", abs(_cosine_sim(v_a, v_b)) < 1e-6)
+check("orthogonal vectors -> 0.0", abs(_cosine_sim(v_a, v_b)) < 1e-6)
 
-# Opposite vectors → -1.0
+# Opposite vectors -> -1.0
 v_neg = [-1.0, -2.0, -3.0]
-check("opposite vectors → -1.0", abs(_cosine_sim(v1, v_neg) - (-1.0)) < 1e-6)
+check("opposite vectors -> -1.0", abs(_cosine_sim(v1, v_neg) - (-1.0)) < 1e-6)
 
-# Zero vector → 0.0 (no division by zero)
+# Zero vector -> 0.0 (no division by zero)
 v_zero = [0.0, 0.0, 0.0]
-check("zero vector → 0.0", _cosine_sim(v1, v_zero) == 0.0)
-check("both zero → 0.0", _cosine_sim(v_zero, v_zero) == 0.0)
+check("zero vector -> 0.0", _cosine_sim(v1, v_zero) == 0.0)
+check("both zero -> 0.0", _cosine_sim(v_zero, v_zero) == 0.0)
 
-# Similar vectors → high similarity
+# Similar vectors -> high similarity
 v_sim = [1.1, 2.1, 3.1]
 sim = _cosine_sim(v1, v_sim)
-check("similar vectors → >0.99", sim > 0.99, f"got {sim:.4f}")
+check("similar vectors -> >0.99", sim > 0.99, f"got {sim:.4f}")
 
 
 # ===================================================================
@@ -142,7 +142,7 @@ check("mid score in (0, 1)", 0.0 < mid_score < 1.0, f"got {mid_score}")
 
 # With full confusion penalty
 full_penalty = 0.55 * 0.8 + 0.25 * 0.6 + 0.20 * (1.0 - 1.0)
-check("full confusion penalty → no negative",
+check("full confusion penalty -> no negative",
       full_penalty >= 0.0, f"got {full_penalty}")
 
 # Verify confusion penalty calculation: wrong_count * 0.33, capped at 1.0
@@ -190,7 +190,7 @@ else:
 
 # Completely unknown query should return None
 answer_none = _find_yaml_answer("xyzzy plugh nothing matches this")
-check("gibberish query → None", answer_none is None, f"got: {answer_none}")
+check("gibberish query -> None", answer_none is None, f"got: {answer_none}")
 
 
 # ===================================================================
@@ -249,21 +249,21 @@ print("\n=== Section 8: End-to-end routing ===")
 
 # Test known queries that should route to specific agents
 test_cases = [
-    ("mikä on varroa-kynnys?", "Beekeeper", "beekeeper"),
-    ("nosema-oireet?", "Disease_monitor", "disease_monitor"),
+    ("mikä on varroa-kynnys?", "Tarhaaja", "beekeeper"),
+    ("nosema-oireet?", "Tautivahti", "disease_monitor"),
     ("lentosää mehiläisille?", None, "flight_weather"),  # any answer from flight_weather
 ]
 
 for query, expected_prefix, agent_hint in test_cases:
     ans = _find_yaml_answer(query.lower())
     if ans:
-        check(f"route '{query[:30]}...' → gets answer", True)
+        check(f"route '{query[:30]}...' -> gets answer", True)
         if expected_prefix:
             check(f"  answer from [{expected_prefix}...]",
                   expected_prefix.lower() in ans.lower(),
                   f"got: {ans[:80]}")
     else:
-        check(f"route '{query[:30]}...' → answer found", False, "returned None")
+        check(f"route '{query[:30]}...' -> answer found", False, "returned None")
 
 
 # ===================================================================

@@ -15,7 +15,58 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 60
     action: ">60 cm → suojaaide, turvaportit"
     source: src:CS1
+  turvaportit_ika_v:
+    value: 2
+    action: "Turvaportit pakollisia portaissa kun lapsi 0–2 v, suositeltavia 3 v asti"
+    source: src:CS2
+  myrkytystietokeskus_puhelin:
+    value: "0800 147 111"
+    action: "Myrkytysepäily → soita heti Myrkytystietokeskukseen 0800 147 111 (24h)"
+    source: src:CS3
+  vesivahti_etaisyys_m:
+    value: 1.5
+    action: "Alle 5-vuotias veden äärellä → aikuinen <1.5 m etäisyydellä, käsivarren mitta"
+    source: src:CS4
+  uima_allas_aita_cm:
+    value: 120
+    action: "Uima-altaan ympärillä vähintään 120 cm korkea lukittava aita"
+    source: src:CS5
+  valvonta_yksinjattaminen_ika_v:
+    value: 10
+    action: "Alle 10-vuotiasta ei jätetä yksin kotiin pitkäksi aikaa (Suomen suositus)"
+    source: src:CS6
+  ensiapu_tarkistus_kk:
+    value: 6
+    action: "Kodin ensiapulaukku tarkistettava 6 kk välein, vanhenevat tuotteet uusittava"
+    source: src:CS7
+  lapsilukko_tyyppi:
+    value: "magneetti, liima, ruuvi"
+    action: "Lapsilukot kaikissa vaarallisissa kaapeissa: magneetti- tai liimalukko yleisin"
+    source: src:CS8
+  ulkoilu_pakkasraja_c:
+    value: -15
+    action: "Alle 3-vuotiaat: ei ulkoilua <-15°C, 3–6 v: max 30 min <-15°C"
+    source: src:CS9
+  helleraja_c:
+    value: 25
+    action: ">25°C helteellä lapsille riittävä juominen, varjo ja tauot ulkoleikeistä"
+    source: src:CS10
 eval_questions:
 - q: Mikä on fall height cm?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.fall_height_cm.value
   source: src:CS1
+- q: Minkä ikäiselle lapselle turvaportit ovat pakollisia portaissa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.turvaportit_ika_v.value
+  source: src:CS2
+- q: Mikä on Myrkytystietokeskuksen puhelinnumero?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.myrkytystietokeskus_puhelin.value
+  source: src:CS3
+- q: Kuinka lähellä aikuisen tulee olla kun pieni lapsi on veden äärellä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vesivahti_etaisyys_m.value
+  source: src:CS4
+- q: Kuinka usein kodin ensiapulaukku tulee tarkistaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ensiapu_tarkistus_kk.value
+  source: src:CS7
+- q: Mikä on pakkasraja alle 3-vuotiaiden ulkoilulle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ulkoilu_pakkasraja_c.value
+  source: src:CS9

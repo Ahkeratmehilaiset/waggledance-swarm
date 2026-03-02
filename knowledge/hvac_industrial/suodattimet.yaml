@@ -1,9 +1,33 @@
-# Teollisuusilmastointi — Suodattimet
-# Auto-generated for WaggleDance Swarm AI
-title: "Suodattimet"
-agent: "Teollisuusilmastointi"
+title: Suodattimet
+agent: Teollisuusilmastointi
 facts:
-  - "Esisuodatin (G4/M5): vaihtoväli 3-6 kk"
-  - "Hienosuodatin (F7/F9): vaihtoväli 6-12 kk"
-  - "HEPA (H13/H14): vaihtoväli 2-5 vuotta"
-  - "Paine-eromittaus: tukkoisuuden seuranta"
+- 'Esisuodatin (G4/M5): vaihtoväli 3-6 kk'
+- 'Hienosuodatin (F7/F9): vaihtoväli 6-12 kk'
+- 'HEPA (H13/H14): vaihtoväli 2-5 vuotta'
+- 'Paine-eromittaus: tukkoisuuden seuranta'
+FILTER_CLASSES:
+- class: G4
+  efficiency: Karkea esisuodatus
+  use: Ulkoilma, perussuodatus
+  change_interval: 3-6 kk
+- class: M5-M6
+  efficiency: Keskitason suodatus
+  use: Toimistot, tavalliset tilat
+  change_interval: 6-12 kk
+- class: F7-F9
+  efficiency: Hienosuodatus
+  use: Sairaalat, laboratoriot
+  change_interval: 6-12 kk
+- class: H13 (HEPA)
+  efficiency: '>99.95%'
+  use: Puhdastilat, leikkaussalit
+  change_interval: 12-24 kk, paine-eron seuranta
+- class: H14 (ULPA)
+  efficiency: '>99.995%'
+  use: Mikroelektroniikka, farmasia
+  change_interval: 12-24 kk
+CLEANROOM_CLASSES:
+  ISO_5: Luokka 100 — max 3520 hiukkasta/m³ (≥0.5µm)
+  ISO_6: Luokka 1000 — max 35200 hiukkasta/m³
+  ISO_7: Luokka 10000 — max 352000 hiukkasta/m³
+  ISO_8: Luokka 100000 — perustuotantotila

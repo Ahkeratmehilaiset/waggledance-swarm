@@ -1,99 +1,99 @@
-﻿header:
-  agent_id: kalantunnistaja
+header:
+  agent_id: fish_identifier
   agent_name: Kalantunnistaja
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:
 - Tunnistaa lajit kuvasta/kuvauksesta
-- HuhdasjÃ¤rvi + Kaakkois-Suomen vesistÃ¶t
+- Huhdasjärvi + Kaakkois-Suomen vesistöt
 DECISION_METRICS_AND_THRESHOLDS:
   confidence_min_pct:
     value: 80
-    action: <80% â†’ pyydÃ¤ lisÃ¤kuva (sivuprofiili + evÃ¤t auki) tai mittaus
+    action: <80% → pyydä lisäkuva (sivuprofiili + evät auki) tai mittaus
     source: src:KAT1
   protected_species:
-    value: JÃ¤rvitaimen, nieriÃ¤, ankerias
-    action: VAPAUTA VEDESSÃ„ heti, Ã„LÃ„ nosta. Dokumentoi kuva + GPS + aika. Ilmoita
+    value: Järvitaimen, nieriä, ankerias
+    action: VAPAUTA VEDESSÄ heti, ÄLÄ nosta. Dokumentoi kuva + GPS + aika. Ilmoita
       ELY-keskukselle.
     source: src:KAT2
   invasive_species:
     value: Hopearuutana (Carassius gibelio)
-    action: EI takaisin veteen. Lopeta. Ilmoita ELY-keskukselle 2 pv sisÃ¤llÃ¤.
+    action: EI takaisin veteen. Lopeta. Ilmoita ELY-keskukselle 2 pv sisällä.
     source: src:KAT2
   measurement:
-    value: 'Kokonaispituus: kuono â†’ pyrstÃ¶n kÃ¤rki'
+    value: 'Kokonaispituus: kuono → pyrstön kärki'
     source: src:KAT1
   key_features_5:
-    value: 1=evien lkm/sijainti, 2=suomut, 3=vÃ¤ri, 4=suun muoto, 5=kylkiviiva
-    action: Jos â‰¤3 piirrettÃ¤ nÃ¤htÃ¤vissÃ¤ â†’ varmuus <80%, pyydÃ¤ lisÃ¤kuva
+    value: 1=evien lkm/sijainti, 2=suomut, 3=väri, 4=suun muoto, 5=kylkiviiva
+    action: Jos â‰¤3 piirrettä nähtävissä → varmuus <80%, pyydä lisäkuva
     source: src:KAT1
   measurement_mm:
-    value: Kokonaispituus kuonoâ†’pyrstÃ¶n kÃ¤rki, Â±5 mm tarkkuus
-    action: 'Mittaa AINA ennen pÃ¤Ã¤tÃ¶stÃ¤ pitÃ¤Ã¤/vapauttaa. Alamitta: hauki 400 mm, kuha
+    value: Kokonaispituus kuono→pyrstön kärki, ±5 mm tarkkuus
+    action: 'Mittaa AINA ennen päätöstä pitää/vapauttaa. Alamitta: hauki 400 mm, kuha
       420 mm.'
     source: src:KAT1
 SEASONAL_RULES:
-- season: KevÃ¤t
-  action: '[vko 14-22] KutuvÃ¤ritys muuttaa tunnistusta. Ahven/lahna kirkastuvat.'
+- season: Kevät
+  action: '[vko 14-22] Kutuväritys muuttaa tunnistusta. Ahven/lahna kirkastuvat.'
   source: src:KAT1
-- season: KesÃ¤
-  action: '[vko 22-35] Poikaset vaikeita â€” kÃ¤ytÃ¤ evÃ¤laskentaa.'
+- season: Kesä
+  action: '[vko 22-35] Poikaset vaikeita — käytä evälaskentaa.'
   source: src:KAT1
 - season: Syksy
-  action: '[vko 36-48] SyÃ¶ntivÃ¤ritys â‰  kutuvÃ¤ri. Kuha/made aktiivisempia.'
+  action: '[vko 36-48] Syöntiväritys â‰  kutuväri. Kuha/made aktiivisempia.'
   source: src:KAT1
 - season: Talvi
   action: '[vko 49-13] Pilkkikalat: ahven vs kiiski (kiiski limaisempi).'
   source: src:KAT1
 FAILURE_MODES:
 - mode: Virheellinen lajintunnistus
-  detection: VÃ¤Ã¤rÃ¤ alamittapÃ¤Ã¤tÃ¶s
-  action: Mittaa AINA + valokuva ennen pÃ¤Ã¤tÃ¶stÃ¤
+  detection: Väärä alamittapäätös
+  action: Mittaa AINA + valokuva ennen päätöstä
   source: src:KAT1
 - mode: Suojeltu laji pyydetty
-  detection: JÃ¤rvitaimen/rauhoitettu
-  action: Vapauta VEDESSÃ„, dokumentoi, ilmoita ELY:lle
+  detection: Järvitaimen/rauhoitettu
+  action: Vapauta VEDESSÄ, dokumentoi, ilmoita ELY:lle
   source: src:KAT2
 PROCESS_FLOWS:
 - flow_id: FLOW_KALA_01
-  trigger: confidence_min_pct ylittÃ¤Ã¤ kynnysarvon (80)
-  action: <80% â†’ pyydÃ¤ lisÃ¤kuva (sivuprofiili + evÃ¤t auki) tai mittaus
+  trigger: confidence_min_pct ylittää kynnysarvon (80)
+  action: <80% → pyydä lisäkuva (sivuprofiili + evät auki) tai mittaus
   output: Tilanneraportti
   source: src:KALA
 - flow_id: FLOW_KALA_02
-  trigger: 'Kausi vaihtuu: KevÃ¤t'
-  action: '[vko 14-22] KutuvÃ¤ritys muuttaa tunnistusta. Ahven/lahna kirkastuvat.'
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Kutuväritys muuttaa tunnistusta. Ahven/lahna kirkastuvat.'
   output: Tarkistuslista
   source: src:KALA
 - flow_id: FLOW_KALA_03
   trigger: 'Havaittu: Virheellinen lajintunnistus'
-  action: Mittaa AINA + valokuva ennen pÃ¤Ã¤tÃ¶stÃ¤
+  action: Mittaa AINA + valokuva ennen päätöstä
   output: Poikkeamaraportti
   source: src:KALA
 - flow_id: FLOW_KALA_04
-  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  trigger: Säännöllinen heartbeat
   action: 'kalantunnistaja: rutiiniarviointi'
   output: Status-raportti
   source: src:KALA
 KNOWLEDGE_TABLES:
   species:
   - laji: Ahven
-    piirteet: Tummat poikkijuovat, punainen pyrstÃ¶, 2 selkÃ¤evÃ¤Ã¤
+    piirteet: Tummat poikkijuovat, punainen pyrstö, 2 selkäevää
   - laji: Hauki
-    piirteet: PitkÃ¤ litteÃ¤ kuono, vihertÃ¤vÃ¤, selkÃ¤evÃ¤ takana
+    piirteet: Pitkä litteä kuono, vihertävä, selkäevä takana
   - laji: Kuha
-    piirteet: Lasimaiset silmÃ¤t, piikikkÃ¤Ã¤t selkÃ¤evÃ¤t
+    piirteet: Lasimaiset silmät, piikikkäät selkäevät
   - laji: Lahna
-    piirteet: Korkea/litteÃ¤, pronssinvÃ¤rinen aikuisena
-  - laji: SÃ¤rki
-    piirteet: Hopeinen, punaiset silmÃ¤t
+    piirteet: Korkea/litteä, pronssinvärinen aikuisena
+  - laji: Särki
+    piirteet: Hopeinen, punaiset silmät
   - laji: Made
-    piirteet: LitteÃ¤ pÃ¤Ã¤, viikset, limainen, yÃ¶aktiivinen
+    piirteet: Litteä pää, viikset, limainen, yöaktiivinen
 COMPLIANCE_AND_LEGAL:
-  protected: JÃ¤rvitaimen rauhoitettu useilla alueilla [src:KAT2]
+  protected: Järvitaimen rauhoitettu useilla alueilla [src:KAT2]
   invasive: Hopearuutanaa ei saa palauttaa veteen [src:KAT2]
 UNCERTAINTY_NOTES:
-- RisteymÃ¤t (lahnaÃ—sÃ¤rki) tekevÃ¤t tunnistamisesta vaikeaa â€” DNA ainoa varma keino.
+- Risteymät (lahna×särki) tekevät tunnistamisesta vaikeaa — DNA ainoa varma keino.
 SOURCE_REGISTRY:
   sources:
   - id: src:KAT1
@@ -115,117 +115,117 @@ eval_questions:
 - q: Miten hauki tunnistetaan?
   a_ref: KNOWLEDGE_TABLES.species[1].piirteet
   source: src:KAT1
-- q: MikÃ¤ on kuha-tunnistuksen avain?
+- q: Mikä on kuha-tunnistuksen avain?
   a_ref: KNOWLEDGE_TABLES.species[2].piirteet
   source: src:KAT1
-- q: MikÃ¤ on mateen erityispiirre?
+- q: Mikä on mateen erityispiirre?
   a_ref: KNOWLEDGE_TABLES.species[5].piirteet
   source: src:KAT1
-- q: Miten risteymÃ¤ tunnistetaan?
+- q: Miten risteymä tunnistetaan?
   a_ref: UNCERTAINTY_NOTES
   source: src:KAT1
 - q: Saako hopearuutanan vapauttaa?
   a_ref: COMPLIANCE_AND_LEGAL.invasive
   source: src:KAT2
-- q: MitkÃ¤ ovat 5 tunnistuspiirrettÃ¤?
+- q: Mitkä ovat 5 tunnistuspiirrettä?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.key_features_5
   source: src:KAT1
-- q: Miten kutuvÃ¤ritys vaikuttaa?
+- q: Miten kutuväritys vaikuttaa?
   a_ref: SEASONAL_RULES[0].action
   source: src:KAT1
-- q: MikÃ¤ on confidence min pct?
+- q: Mikä on confidence min pct?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.confidence_min_pct
   source: src:KAT1
-- q: MitÃ¤ tehdÃ¤Ã¤n kun confidence min pct ylittyy?
+- q: Mitä tehdään kun confidence min pct ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.confidence_min_pct.action
   source: src:KAT1
-- q: MikÃ¤ on rauhoitettu laji?
+- q: Mikä on rauhoitettu laji?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.protected_species
   source: src:KAT1
-- q: MitÃ¤ tehdÃ¤Ã¤n kun rauhoitettu laji ylittyy?
+- q: Mitä tehdään kun rauhoitettu laji ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.protected_species.action
   source: src:KAT1
-- q: MikÃ¤ on vieraslaji?
+- q: Mikä on vieraslaji?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.invasive_species
   source: src:KAT1
-- q: MitÃ¤ tehdÃ¤Ã¤n kun vieraslaji ylittyy?
+- q: Mitä tehdään kun vieraslaji ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.invasive_species.action
   source: src:KAT1
-- q: MikÃ¤ on measurement?
+- q: Mikä on measurement?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.measurement
   source: src:KAT1
-- q: MikÃ¤ on key features 5?
+- q: Mikä on key features 5?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.key_features_5
   source: src:KAT1
-- q: MitÃ¤ kevÃ¤t huomioidaan?
+- q: Mitä kevät huomioidaan?
   a_ref: SEASONAL_RULES[0].action
   source: src:KAT1
-- q: MitÃ¤ kesÃ¤ huomioidaan?
+- q: Mitä kesä huomioidaan?
   a_ref: SEASONAL_RULES[1].action
   source: src:KAT1
-- q: MitÃ¤ syksy huomioidaan?
+- q: Mitä syksy huomioidaan?
   a_ref: SEASONAL_RULES[2].action
   source: src:KAT1
-- q: MitÃ¤ talvi huomioidaan?
+- q: Mitä talvi huomioidaan?
   a_ref: SEASONAL_RULES[3].action
   source: src:KAT1
 - q: Miten 'Virheellinen lajintunnistus' havaitaan?
   a_ref: FAILURE_MODES[0].detection
   source: src:KAT1
-- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Virheellinen lajintunnistus'?
+- q: Mitä tehdään tilanteessa 'Virheellinen lajintunnistus'?
   a_ref: FAILURE_MODES[0].action
   source: src:KAT1
 - q: Miten 'Suojeltu laji pyydetty' havaitaan?
   a_ref: FAILURE_MODES[1].detection
   source: src:KAT1
-- q: MitÃ¤ tehdÃ¤Ã¤n tilanteessa 'Suojeltu laji pyydetty'?
+- q: Mitä tehdään tilanteessa 'Suojeltu laji pyydetty'?
   a_ref: FAILURE_MODES[1].action
   source: src:KAT1
-- q: MikÃ¤ on protected -vaatimus?
+- q: Mikä on protected -vaatimus?
   a_ref: COMPLIANCE_AND_LEGAL.protected
   source: src:KAT1
-- q: MikÃ¤ on vieraslajin torjuntavaatimus?
+- q: Mikä on vieraslajin torjuntavaatimus?
   a_ref: COMPLIANCE_AND_LEGAL.invasive
   source: src:KAT1
-- q: MitkÃ¤ ovat merkittÃ¤vimmÃ¤t epÃ¤varmuudet?
+- q: Mitkä ovat merkittävimmät epävarmuudet?
   a_ref: UNCERTAINTY_NOTES
   source: src:KAT1
-- q: MitkÃ¤ ovat agentin oletukset?
+- q: Mitkä ovat agentin oletukset?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#1)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#1)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#2)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#2)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#3)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#3)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#4)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#4)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#5)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#5)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#6)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#6)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#7)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#7)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#8)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#8)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#9)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#9)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#10)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#10)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#11)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#11)?
   a_ref: ASSUMPTIONS
   source: src:KAT1
-- q: Miten tÃ¤mÃ¤ agentti kytkeytyy muihin agentteihin (#12)?
+- q: Miten tämä agentti kytkeytyy muihin agentteihin (#12)?
   a_ref: ASSUMPTIONS
   source: src:KAT1

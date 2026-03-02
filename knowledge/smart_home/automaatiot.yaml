@@ -1,9 +1,20 @@
-# Kodin automaatio ja IoT — Automaatiot
-# Auto-generated for WaggleDance Swarm AI
-title: "Automaatiot"
-agent: "Kodin automaatio ja IoT"
+title: Automaatiot
+agent: Kodin automaatio ja IoT
 facts:
-  - "Automaatio: spot-hinta <5c → käynnistä lämminvesivaraaja"
-  - "Automaatio: kukaan ei kotona → laske lämpöä 2°C"
-  - "Automaatio: kosteus kylpyhuoneessa >70% → tuuletin päälle"
-  - "Automaatio: auringonlasku → sytytä ulkovalot"
+- 'Automaatio: spot-hinta <5c → käynnistä lämminvesivaraaja'
+- 'Automaatio: kukaan ei kotona → laske lämpöä 2°C'
+- 'Automaatio: kosteus kylpyhuoneessa >70% → tuuletin päälle'
+- 'Automaatio: auringonlasku → sytytä ulkovalot'
+AUTOMATION_RECIPES:
+- name: Lähdön automatiikka
+  trigger: Viimeinen puhelin poistuu WiFistä
+  actions: Sammuta valot, laske lämpötila -2°C, lukitse ovet
+- name: Sähkön hintaoptimointi
+  trigger: spot-hinta > 20 c/kWh
+  actions: Siirrä lämminvesivaraajan lämmitys, pysäytä lattialämmitys
+- name: Aamun herääminen
+  trigger: Hälytys 30 min ennen
+  actions: Nosta lämpötila, avaa kaihtimet asteittain, kahvinkeitin päälle
+- name: Mökille saapuminen
+  trigger: 'GPS: 5km säteellä mökistä'
+  actions: Lämmitys päälle, vesivaraaja käyntiin, ulkovalot

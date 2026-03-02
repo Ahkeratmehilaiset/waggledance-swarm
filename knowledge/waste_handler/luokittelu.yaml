@@ -1,9 +1,28 @@
-# Jätevirtojen hallinta — Luokittelu
-# Auto-generated for WaggleDance Swarm AI
-title: "Luokittelu"
-agent: "Jätevirtojen hallinta"
+title: Luokittelu
+agent: Jätevirtojen hallinta
 facts:
-  - "Jätehierarkia: ehkäise → vähennä → kierrätä → energia → loppusijoita"
-  - "EWC-koodi: 6-numeron koodi jokaiselle jätetyypille"
-  - "Biojäte: kompostiin tai biokaasulaitokseen"
-  - "Sekajäte: polttolaitokseen energiahyödynnykseen"
+- 'Jätehierarkia: ehkäise → vähennä → kierrätä → energia → loppusijoita'
+- 'EWC-koodi: 6-numeron koodi jokaiselle jätetyypille'
+- 'Biojäte: kompostiin tai biokaasulaitokseen'
+- 'Sekajäte: polttolaitokseen energiahyödynnykseen'
+WASTE_CATEGORIES_FINLAND:
+- code: EWC 20
+  type: Yhdyskuntajäte
+  examples: Sekajäte, biojäte, paperi, metalli
+- code: EWC 15
+  type: Pakkausjäte
+  examples: Muovi, kartonki, lasi, puu
+- code: EWC 13
+  type: Öljyjäte
+  examples: Moottoriöljy, hydrauliikkaöljy, voitelujäte
+- code: EWC 16
+  type: Sähkö- ja elektroniikkaromu
+  examples: 'SER: kodinkoneet, lamput, akut'
+- code: EWC 17
+  type: Rakennusjäte
+  examples: Betoni, tiili, puu, eristeet
+HAZARDOUS_WASTE_RULES:
+  storage_max_months: 12
+  labeling: Varoitusmerkit + EWC-koodi + päivämäärä
+  transport: VAK-luvallinen kuljetus, siirtoasiakirja
+  register: Jätehuollon seurantajärjestelmä SIIRTO, ilmoitus vuosittain

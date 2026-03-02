@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+
 PASS = 0
 FAIL = 0
 
@@ -35,12 +36,12 @@ def check(condition, label, detail=""):
         fail(label, detail)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 1. SourceManager — register, get, metrics, availability
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_source_manager():
-    print("\n═══ 1. SourceManager ═══")
+    print("\n=== 1. SourceManager ===")
     from core.night_enricher import (
         SourceManager, SelfGenerateSource, WebScrapeSource,
         ChatHistorySource, RssFeedSource, ClaudeDistillSource,
@@ -86,12 +87,12 @@ def test_source_manager():
           "web_scrape stats shows unavailable")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 2. Source scoring simulation
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_source_scoring():
-    print("\n═══ 2. Source Scoring ═══")
+    print("\n=== 2. Source Scoring ===")
     from core.night_enricher import SourceMetrics
 
     m = SourceMetrics()
@@ -128,12 +129,12 @@ def test_source_scoring():
           "to_dict has expected keys")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 3. AdaptiveTuner benchmark phase
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_tuner_benchmark():
-    print("\n═══ 3. AdaptiveTuner Benchmark ═══")
+    print("\n=== 3. AdaptiveTuner Benchmark ===")
     from core.night_enricher import (
         AdaptiveTuner, SourceManager, SelfGenerateSource,
     )
@@ -167,12 +168,12 @@ def test_tuner_benchmark():
           "benchmark complete after 3+ outcomes + next_source call")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 4. AdaptiveTuner burst mode
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_tuner_burst():
-    print("\n═══ 4. AdaptiveTuner Burst Mode ═══")
+    print("\n=== 4. AdaptiveTuner Burst Mode ===")
     from core.night_enricher import (
         AdaptiveTuner, SourceManager, SelfGenerateSource,
     )
@@ -200,26 +201,31 @@ def test_tuner_burst():
               f"burst: alloc >= 0.80 (got {allocs['self_generate']:.2f})")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 5. AdaptiveTuner throttle
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_tuner_throttle():
-    print("\n═══ 5. AdaptiveTuner Throttle ═══")
+    print("\n=== 5. AdaptiveTuner Throttle ===")
     from core.night_enricher import (
-        AdaptiveTuner, SourceManager, SelfGenerateSource,
+        AdaptiveTuner, SourceManager, SelfGenerateSource, WebScrapeSource,
     )
 
     sm = SourceManager()
     src = SelfGenerateSource(MagicMock(), MagicMock())
     sm.register(src)
+    # Register a second available source so self_generate isn't "last source standing"
+    # (last source standing protection resets failures instead of pausing)
+    src2 = WebScrapeSource()
+    src2.is_available = lambda: True
+    sm.register(src2)
 
     tuner = AdaptiveTuner(
         sm, benchmark_count=1,
         throttle_pass_rate=0.15, throttle_window=5,
         throttle_pause_seconds=0.2)  # Short pause for test
 
-    # Feed 5 consecutive failures with pass_rate = 0 (< 0.15)
+    # Feed 6 consecutive failures with pass_rate = 0 (< 0.15)
     for _ in range(6):
         src.metrics.record_outcome(False, False, 1.0)
         tuner.record_result("self_generate", False, False)
@@ -234,12 +240,12 @@ def test_tuner_throttle():
     check(not src.metrics.is_paused, "source unpaused after timeout")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 6. QualityGate steps
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_quality_gate():
-    print("\n═══ 6. QualityGate Steps ═══")
+    print("\n=== 6. QualityGate Steps ===")
     from core.night_enricher import QualityGate, EnrichmentCandidate
 
     # Mock consciousness with embed + memory
@@ -279,7 +285,7 @@ def test_quality_gate():
     mock_llm.generate = AsyncMock(return_value=invalid_resp)
 
     verdict = asyncio.run(gate.check(candidate))
-    check(not verdict.passed, "INVALID response → rejected")
+    check(not verdict.passed, "INVALID response -> rejected")
     check(verdict.step_failed == "llm_validate",
           f"step_failed=llm_validate (got {verdict.step_failed})")
 
@@ -291,7 +297,7 @@ def test_quality_gate():
     mock_consciousness.memory.search.return_value = [near_dupe_match]
 
     verdict = asyncio.run(gate.check(candidate))
-    check(not verdict.passed, "near-duplicate (0.95) → rejected")
+    check(not verdict.passed, "near-duplicate (0.95) -> rejected")
     check(verdict.step_failed == "novelty",
           f"step_failed=novelty (got {verdict.step_failed})")
 
@@ -302,9 +308,9 @@ def test_quality_gate():
     mock_consciousness.memory.search.return_value = [gray_match]
 
     verdict = asyncio.run(gate.check(candidate))
-    check(verdict.passed, "gray zone (0.88) → passes")
+    check(verdict.passed, "gray zone (0.88) -> passes")
     check(not verdict.novel,
-          f"gray zone (0.88) → novel=False (got {verdict.novel})")
+          f"gray zone (0.88) -> novel=False (got {verdict.novel})")
 
     # Test contradiction detection
     mock_consciousness.memory.search.return_value = [mock_match]  # Reset
@@ -329,12 +335,12 @@ def test_quality_gate():
           f"llm_validate checked >= 4 (got {stats['llm_validate']['checked']})")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 7. GapWeightedScheduler — weighted selection
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_gap_scheduler():
-    print("\n═══ 7. GapWeightedScheduler ═══")
+    print("\n=== 7. GapWeightedScheduler ===")
     from core.night_enricher import GapWeightedScheduler
 
     mock_consciousness = MagicMock()
@@ -349,9 +355,9 @@ def test_gap_scheduler():
         # First few calls: return few matches (big gap)
         # Later calls: return many matches (no gap)
         if call_count[0] <= 6:
-            return [MagicMock(score=0.6)] * 5  # 5 facts → weight 3.0
+            return [MagicMock(score=0.6)] * 5  # 5 facts -> weight 3.0
         else:
-            return [MagicMock(score=0.6)] * 50  # 50+ facts → weight 0.5
+            return [MagicMock(score=0.6)] * 50  # 50+ facts -> weight 0.5
 
     mock_consciousness.memory.search = mock_search
 
@@ -385,12 +391,12 @@ def test_gap_scheduler():
               "gap_summary entries have level")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 8. GapWeightedScheduler rebalance
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_gap_rebalance():
-    print("\n═══ 8. GapScheduler Rebalance ═══")
+    print("\n=== 8. GapScheduler Rebalance ===")
     from core.night_enricher import GapWeightedScheduler
 
     mock_consciousness = MagicMock()
@@ -420,12 +426,12 @@ def test_gap_rebalance():
           "rebalance resets counter")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 9. SelfGenerateSource — candidates (mock LLM)
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_self_generate_source():
-    print("\n═══ 9. SelfGenerateSource ═══")
+    print("\n=== 9. SelfGenerateSource ===")
     from core.night_enricher import SelfGenerateSource
 
     mock_llm = MagicMock()
@@ -463,12 +469,12 @@ def test_self_generate_source():
     check(len(empty) == 0, "returns empty on LLM error")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 10. NightEnricher full cycle (mock integration)
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_night_enricher_cycle():
-    print("\n═══ 10. NightEnricher Full Cycle ═══")
+    print("\n=== 10. NightEnricher Full Cycle ===")
     from core.night_enricher import NightEnricher
 
     # Mock consciousness
@@ -538,12 +544,12 @@ def test_night_enricher_cycle():
               "metadata.validation=quality_gate")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 11. Morning report format
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_morning_report():
-    print("\n═══ 11. Morning Report ═══")
+    print("\n=== 11. Morning Report ===")
     from core.night_enricher import NightEnricher
 
     mock_consciousness = MagicMock()
@@ -602,12 +608,12 @@ def test_morning_report():
         fail("report JSON-serializable", str(e))
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 12. Config keys in settings.yaml
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def test_config_keys():
-    print("\n═══ 12. Config Keys ═══")
+    print("\n=== 12. Config Keys ===")
     import yaml
 
     path = Path("configs/settings.yaml")
@@ -642,9 +648,9 @@ def test_config_keys():
           "dedup_score_threshold=0.93")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # MAIN
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 if __name__ == "__main__":
     print("=" * 60)

@@ -151,7 +151,7 @@ eval_questions:
 - q: Mikä on datan säilytysaika (pv)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.data_retention_days
   source: src:PR1
-- q: 'Toimenpide: datan sÃ¤ilytysaika (pv)?'
+- q: 'Toimenpide: datan säilytysaika (pv)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.data_retention_days.action
   source: src:PR1
 - q: Mikä on audio recording?

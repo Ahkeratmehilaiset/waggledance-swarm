@@ -112,7 +112,7 @@ SOURCE_REGISTRY:
     url: https://www.darksky.org/
     supports: Valosaasteentorjunta.
 eval_questions:
-- q: Mikä on sisÃ¤tyÃ¶alueen valaistusvoimakkuus (lux)?
+- q: Mikä on sisätyöalueen valaistusvoimakkuus (lux)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.lux_indoor_work
   source: src:VA1
 - q: Mikä on ulkopolun valaistusvoimakkuus (lux)?
@@ -121,7 +121,7 @@ eval_questions:
 - q: Mikä on illan värilämpötila (K)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.color_temp_evening_k
   source: src:VA1
-- q: 'Toimenpide: illan vÃ¤rilÃ¤mpÃ¶tila (K)?'
+- q: 'Toimenpide: illan värilämpötila (K)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.color_temp_evening_k.action
   source: src:VA1
 - q: Mikä on liiketunnistuksen aikakatkaisu (min)?

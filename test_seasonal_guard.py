@@ -72,7 +72,7 @@ print("\n=== Section 2: Seasonal rule violations detected ===")
 # In January, "linkoa hunajaa nyt" should violate honey_extraction (valid Jun-Aug)
 guard_jan = SeasonalGuard(month=1)
 violations = guard_jan.check("linkoa hunajaa nyt")
-check("Jan: 'linkoa hunajaa' → violation", len(violations) > 0,
+check("Jan: 'linkoa hunajaa' -> violation", len(violations) > 0,
       f"got {len(violations)} violations")
 if violations:
     check("  rule = honey_extraction", violations[0].rule == "honey_extraction",
@@ -83,27 +83,27 @@ if violations:
 
 # In January, "parveilunesto" should violate swarming (valid May-Jul)
 violations = guard_jan.check("parveilunesto aika")
-check("Jan: 'parveilunesto' → violation", len(violations) > 0)
+check("Jan: 'parveilunesto' -> violation", len(violations) > 0)
 
 # In January, "oksaalihappo nyt" should NOT violate (valid Oct-Jan)
 violations = guard_jan.check("oksaalihappo nyt")
-check("Jan: 'oksaalihappo nyt' → no violation (in season)", len(violations) == 0,
+check("Jan: 'oksaalihappo nyt' -> no violation (in season)", len(violations) == 0,
       f"got {len(violations)} violations")
 
 # In July, "oksaalihappo nyt" SHOULD violate (not in Jul)
 guard_jul = SeasonalGuard(month=7)
 violations = guard_jul.check("tihkuta oksaalihappo nyt")
-check("Jul: 'oksaalihappo nyt' → violation", len(violations) > 0)
+check("Jul: 'oksaalihappo nyt' -> violation", len(violations) > 0)
 
 # In December, "avaa pesä nyt" should violate (winter no open)
 guard_dec = SeasonalGuard(month=12)
 violations = guard_dec.check("avaa pesä nyt")
-check("Dec: 'avaa pesä nyt' → violation", len(violations) > 0)
+check("Dec: 'avaa pesä nyt' -> violation", len(violations) > 0)
 
 # In June, "linkoa hunajaa nyt" should NOT violate (in season)
 guard_jun = SeasonalGuard(month=6)
 violations = guard_jun.check("linkoa hunajaa nyt")
-check("Jun: 'linkoa hunajaa' → no violation (in season)", len(violations) == 0,
+check("Jun: 'linkoa hunajaa' -> no violation (in season)", len(violations) == 0,
       f"got {len(violations)}")
 
 
@@ -116,12 +116,12 @@ print("\n=== Section 3: No false positives ===")
 for month in range(1, 13):
     g = SeasonalGuard(month=month)
     v = g.check("Mehiläiset ovat fasiinoivia hyönteisiä")
-    check(f"month {month:2d}: generic text → no violation", len(v) == 0,
+    check(f"month {month:2d}: generic text -> no violation", len(v) == 0,
           f"got {len(v)} violations")
 
 # Empty text
-check("empty text → no violation", len(guard.check("")) == 0)
-check("None-like → no violation", len(guard.check("   ")) == 0)
+check("empty text -> no violation", len(guard.check("")) == 0)
+check("None-like -> no violation", len(guard.check("   ")) == 0)
 
 
 # ===================================================================
@@ -133,7 +133,7 @@ guard_jan = SeasonalGuard(month=1)
 original = "Linkoa hunajaa nyt kun se on valmista."
 annotated = guard_jan.annotate_answer(original)
 check("annotated != original (has warning)", annotated != original)
-check("annotated contains warning emoji", "⚠️" in annotated)
+check("annotated contains warning emoji", "\u26a0" in annotated)
 check("annotated contains 'Kausihuomautus'", "Kausihuomautus" in annotated)
 check("original text preserved", original in annotated)
 
@@ -268,7 +268,7 @@ check("promoted_count property exists", hasattr(v1, 'promoted_count'))
 for i in range(49):
     v1.track_answer("mikä on varroa-kynnys?", "3 punkkia per 100 mehiläistä")
 
-check("49 tracks → not yet promoted",
+check("49 tracks -> not yet promoted",
       "varroa kynnys" not in str(v1._lookup.get(
           v1._normalize("mikä on varroa-kynnys?"), ("", 0))),
       "promoted too early")
@@ -277,7 +277,7 @@ check("49 tracks → not yet promoted",
 v1.track_answer("mikä on varroa-kynnys?", "3 punkkia per 100 mehiläistä")
 
 key = v1._normalize("mikä on varroa-kynnys?")
-check("50 tracks → promoted to lookup",
+check("50 tracks -> promoted to lookup",
       key in v1._lookup, f"key='{key}' not in lookup")
 
 if key in v1._lookup:

@@ -6,11 +6,11 @@ WaggleDance — Translation Pipeline Diagnostic v2.0
 Perusteellinen testi koko käännösputkelle:
 
   [1] Komponenttien lataus
-  [2] FI→EN käännös (Voikko + sanakirja) — 20 lausetta ääkkösillä
+  [2] FI->EN käännös (Voikko + sanakirja) — 20 lausetta ääkkösillä
   [3] EN Validator (domain-synonyymit) — 12 lausetta
-  [4] EN→FI dict (word boundary -bugi) — 15 lausetta
-  [5] EN→FI Opus-MT (kokonainen lause) — 8 lausetta
-  [6] Round-trip: FI→EN→malli→EN Validator→EN→FI — 10 lausetta
+  [4] EN->FI dict (word boundary -bugi) — 15 lausetta
+  [5] EN->FI Opus-MT (kokonainen lause) — 8 lausetta
+  [6] Round-trip: FI->EN->malli->EN Validator->EN->FI — 10 lausetta
   [7] Ääkkös-stressitesti: erikoismerkit läpi putken
   [8] Sanakirjan kattavuusanalyysi
   [9] YAML-sielun kielitunnistus
@@ -69,9 +69,9 @@ print(SEP)
 print("  🐝 WaggleDance Translation Pipeline Diagnostic v2.0")
 print(SEP)
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # [1] KOMPONENTTIEN LATAUS
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n[1] KOMPONENTTIEN LATAUS\n{SUBSEP}")
 
 proxy = None
@@ -84,8 +84,8 @@ try:
     v = proxy.voikko
     print(f"  ✅ Translation Proxy")
     print(f"     Voikko:       {'✅ OK' if v.available else '❌ EI'}")
-    print(f"     FI→EN dict:   {len(proxy.dict_fi_en)} termiä")
-    print(f"     EN→FI dict:   {len(proxy.dict_en_fi)} termiä")
+    print(f"     FI->EN dict:   {len(proxy.dict_fi_en)} termiä")
+    print(f"     EN->FI dict:   {len(proxy.dict_en_fi)} termiä")
     print(f"     Opus-MT:      {'✅ OK' if proxy.opus.available else '❌ EI (vain sanakirja)'}")
 except Exception as e:
     print(f"  ❌ Translation Proxy: {e}")
@@ -110,10 +110,10 @@ try:
 except Exception as e:
     print(f"  ❌ YAMLBridge: {e}")
 
-# ═══════════════════════════════════════════════════════════════
-# [2] FI→EN KÄÄNNÖS — 20 lausetta ääkkösillä
-# ═══════════════════════════════════════════════════════════════
-print(f"\n{SEP}\n[2] FI → EN KÄÄNNÖS (Voikko + sanakirja) — 20 lausetta\n{SUBSEP}")
+# ===============================================================
+# [2] FI->EN KÄÄNNÖS — 20 lausetta ääkkösillä
+# ===============================================================
+print(f"\n{SEP}\n[2] FI -> EN KÄÄNNÖS (Voikko + sanakirja) — 20 lausetta\n{SUBSEP}")
 
 fi_tests = [
     # Perus mehiläistieto
@@ -149,7 +149,7 @@ fi_fail = 0
 
 for fi_input, expected in fi_tests:
     if not proxy:
-        print("  ⏭️  SKIP — ei proxyä")
+        print("  ⏭  SKIP — ei proxyä")
         break
     t0 = time.perf_counter()
     r = proxy.fi_to_en(fi_input)
@@ -163,7 +163,7 @@ for fi_input, expected in fi_tests:
         tag = "✅"
     elif pct >= 30:
         fi_weak += 1
-        tag = "⚠️"
+        tag = "[!]"
     else:
         fi_fail += 1
         tag = "❌"
@@ -173,11 +173,11 @@ for fi_input, expected in fi_tests:
     print(f"     [{r.method}, {dt:.1f}ms, coverage={r.coverage:.0%}] "
           f"Avainsanat: {found}/{total} ({pct:.0f}%)")
 
-print(f"\n  📊 FI→EN: {fi_ok}✅ {fi_weak}⚠️ {fi_fail}❌ / {len(fi_tests)}")
+print(f"\n  📊 FI->EN: {fi_ok}✅ {fi_weak}[!] {fi_fail}❌ / {len(fi_tests)}")
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # [3] EN VALIDATOR — 12 lausetta
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{SEP}\n[3] EN VALIDATOR (domain-synonyymit) — 12 lausetta\n{SUBSEP}")
 
 en_val_tests = [
@@ -202,7 +202,7 @@ val_fail = 0
 
 for en_input, should_change, expected_kw in en_val_tests:
     if not validator:
-        print("  ⏭️  SKIP — ei validaattoria")
+        print("  ⏭  SKIP — ei validaattoria")
         break
     r = validator.validate(en_input)
 
@@ -229,10 +229,10 @@ for en_input, should_change, expected_kw in en_val_tests:
 
 print(f"\n  📊 EN Validator: {val_ok}✅ {val_fail}❌ / {len(en_val_tests)}")
 
-# ═══════════════════════════════════════════════════════════════
-# [4] EN→FI DICT — 15 lausetta (word boundary)
-# ═══════════════════════════════════════════════════════════════
-print(f"\n{SEP}\n[4] EN → FI KÄÄNNÖS (sanakirja + word boundary) — 15 lausetta\n{SUBSEP}")
+# ===============================================================
+# [4] EN->FI DICT — 15 lausetta (word boundary)
+# ===============================================================
+print(f"\n{SEP}\n[4] EN -> FI KÄÄNNÖS (sanakirja + word boundary) — 15 lausetta\n{SUBSEP}")
 
 en_fi_tests = [
     "Honeybees have 5 eyes: 2 compound eyes and 3 ocelli.",
@@ -257,7 +257,7 @@ enfi_fail = 0
 
 for en_input in en_fi_tests:
     if not proxy:
-        print("  ⏭️  SKIP")
+        print("  ⏭  SKIP")
         break
     r = proxy.en_to_fi(en_input)
     problems = check_garbage(r.text)
@@ -275,11 +275,11 @@ for en_input in en_fi_tests:
     print(f"     FI: {r.text}")
     print(f"     [{r.method}, {r.latency_ms:.1f}ms]{extra}")
 
-print(f"\n  📊 EN→FI: {enfi_ok}✅ {enfi_fail}❌ / {len(en_fi_tests)}")
+print(f"\n  📊 EN->FI: {enfi_ok}✅ {enfi_fail}❌ / {len(en_fi_tests)}")
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # [5] OPUS-MT FALLBACK — 8 lausetta
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{SEP}\n[5] OPUS-MT FALLBACK (kokonainen lause) — 8 lausetta\n{SUBSEP}")
 
 opus_tests = [
@@ -308,19 +308,19 @@ else:
   ❌ Opus-MT EI SAATAVILLA
 
   Tämä on KRIITTINEN puute:
-    → EN→FI käännös käyttää VAIN sanakirjaa (termi→termi)
-    → Kokonaisten lauseiden kielioppi hajoaa
-    → Sanakirja korvaa "treatment" → "hoito" mutta ei taivuta
-    → Tulos: "Mehiläinen hoito kynnys on 3 punkki per 100 mehiläinen"
+    -> EN->FI käännös käyttää VAIN sanakirjaa (termi->termi)
+    -> Kokonaisten lauseiden kielioppi hajoaa
+    -> Sanakirja korvaa "treatment" -> "hoito" mutta ei taivuta
+    -> Tulos: "Mehiläinen hoito kynnys on 3 punkki per 100 mehiläinen"
 
   Sanakirjakäännös toimii VAIN yksittäisille termeille,
   EI kokonaisille lauseille!
 """)
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # [6] ROUND-TRIP — 10 lausetta
-# ═══════════════════════════════════════════════════════════════
-print(f"\n{SEP}\n[6] ROUND-TRIP: FI → EN → malli(sim) → Validator → EN → FI\n{SUBSEP}")
+# ===============================================================
+print(f"\n{SEP}\n[6] ROUND-TRIP: FI -> EN -> malli(sim) -> Validator -> EN -> FI\n{SUBSEP}")
 
 roundtrip_tests = [
     ("Kuinka monta silmää on mehiläisellä?",
@@ -352,7 +352,7 @@ for fi_question, simulated_en in roundtrip_tests:
     if not proxy:
         break
 
-    # Vaihe A: FI→EN
+    # Vaihe A: FI->EN
     r1 = proxy.fi_to_en(fi_question)
 
     # Vaihe B: EN Validator
@@ -362,9 +362,9 @@ for fi_question, simulated_en in roundtrip_tests:
         vr = validator.validate(simulated_en)
         validated_en = vr.corrected
         if vr.was_corrected:
-            val_info = f" → Validator: {vr.correction_count} korjausta"
+            val_info = f" -> Validator: {vr.correction_count} korjausta"
 
-    # Vaihe C: EN→FI
+    # Vaihe C: EN->FI
     r3 = proxy.en_to_fi(validated_en)
 
     # Laatu
@@ -377,20 +377,20 @@ for fi_question, simulated_en in roundtrip_tests:
         quality = "✅ luettavissa"
 
     print(f"\n  Käyttäjä:  {fi_question}")
-    print(f"  → FI→EN:   {r1.text}")
+    print(f"  -> FI->EN:   {r1.text}")
     print(f"             [{r1.method}, {r1.latency_ms:.1f}ms, coverage={r1.coverage:.0%}]")
-    print(f"  → Malli:   {simulated_en}")
+    print(f"  -> Malli:   {simulated_en}")
     if val_info:
-        print(f"  → Valid:   {validated_en}{val_info}")
-    print(f"  → EN→FI:   {r3.text}")
+        print(f"  -> Valid:   {validated_en}{val_info}")
+    print(f"  -> EN->FI:   {r3.text}")
     print(f"             [{r3.method}, {r3.latency_ms:.1f}ms]")
-    print(f"  → Laatu:   {quality}")
+    print(f"  -> Laatu:   {quality}")
 
 print(f"\n  📊 Round-trip: {rt_ok}✅ {rt_fail}❌ / {len(roundtrip_tests)}")
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # [7] ÄÄKKÖS-STRESSITESTI
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{SEP}\n[7] ÄÄKKÖS-STRESSITESTI\n{SUBSEP}")
 
 aakkos_tests = [
@@ -418,9 +418,9 @@ for fi_input in aakkos_tests:
     if problems:
         print(f"     BUGI: {', '.join(problems)}")
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # [8] SANAKIRJAN KATTAVUUSANALYYSI
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{SEP}\n[8] SANAKIRJAN KATTAVUUSANALYYSI\n{SUBSEP}")
 
 if proxy:
@@ -428,8 +428,8 @@ if proxy:
     fi_en = proxy.dict_fi_en
     en_fi = proxy.dict_en_fi
 
-    print(f"\n  FI→EN sanakirja: {len(fi_en)} termiä")
-    print(f"  EN→FI sanakirja: {len(en_fi)} termiä")
+    print(f"\n  FI->EN sanakirja: {len(fi_en)} termiä")
+    print(f"  EN->FI sanakirja: {len(en_fi)} termiä")
 
     # Kriittiset termit jotka PITÄÄ löytyä
     critical_fi = [
@@ -450,7 +450,7 @@ if proxy:
         "winter cluster", "swarm", "queen cell",
     ]
 
-    print(f"\n  Kriittiset FI→EN termit:")
+    print(f"\n  Kriittiset FI->EN termit:")
     fi_found = 0
     fi_missing = []
     for term in critical_fi:
@@ -463,7 +463,7 @@ if proxy:
     if fi_missing:
         print(f"    Puuttuu: {', '.join(fi_missing)}")
 
-    print(f"\n  Kriittiset EN→FI termit:")
+    print(f"\n  Kriittiset EN->FI termit:")
     en_found = 0
     en_missing = []
     for term in critical_en:
@@ -476,16 +476,16 @@ if proxy:
     if en_missing:
         print(f"    Puuttuu: {', '.join(en_missing)}")
 
-    # Vaarallisen lyhyet termit EN→FI sanakirjassa (word boundary riski)
+    # Vaarallisen lyhyet termit EN->FI sanakirjassa (word boundary riski)
     short_terms = [(k, v) for k, v in en_fi.items() if len(k) <= 3]
     if short_terms:
-        print(f"\n  ⚠️  Lyhyet EN→FI termit ({len(short_terms)} kpl) — word boundary riski:")
+        print(f"\n  [!]  Lyhyet EN->FI termit ({len(short_terms)} kpl) — word boundary riski:")
         for k, v in sorted(short_terms, key=lambda x: len(x[0])):
-            print(f"    '{k}' → '{v}'")
+            print(f"    '{k}' -> '{v}'")
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # [9] YAML-SIELUN KIELITUNNISTUS
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{SEP}\n[9] YAML-SIELUN KIELITUNNISTUS\n{SUBSEP}")
 
 if yaml_bridge and hasattr(yaml_bridge, '_detect_yaml_language'):
@@ -508,7 +508,7 @@ if yaml_bridge and hasattr(yaml_bridge, '_detect_yaml_language'):
         lang = yaml_bridge._detect_yaml_language(data)
         header = data.get("header", {})
         name = header.get("agent_name", agent_id)
-        print(f"\n    {agent_id}: '{name}' → {lang}")
+        print(f"\n    {agent_id}: '{name}' -> {lang}")
 
     # Testa EN-käännös yhdellä agentilla (koko käännös voi jumittua GPU:lla)
     if proxy and hasattr(yaml_bridge, '_translate_deep'):
@@ -525,7 +525,7 @@ if yaml_bridge and hasattr(yaml_bridge, '_detect_yaml_language'):
                 translated_sample = fut.result(timeout=30)
             yaml_bridge._agents_en = {sample_id: translated_sample}
         except (FutTimeout, Exception) as e:
-            print(f"    ⚠️ EN-käännös timeout/virhe: {e}")
+            print(f"    [!] EN-käännös timeout/virhe: {e}")
             yaml_bridge._agents_en = {}
         if hasattr(yaml_bridge, '_agents_en') and yaml_bridge._agents_en:
             sample_id = list(yaml_bridge._agents_en.keys())[0]
@@ -537,7 +537,7 @@ if yaml_bridge and hasattr(yaml_bridge, '_detect_yaml_language'):
             header_fi = sample_fi.get("header", {})
             name_fi = header_fi.get("agent_name", "?")
 
-            print(f"    Esimerkki: '{name_fi}' → '{name_en}'")
+            print(f"    Esimerkki: '{name_fi}' -> '{name_en}'")
 
             # Vertaa system prompt FI vs EN
             yaml_bridge._language = "fi"
@@ -550,28 +550,28 @@ if yaml_bridge and hasattr(yaml_bridge, '_detect_yaml_language'):
         else:
             print("    ❌ EN-käännösvälimuisti tyhjä")
 else:
-    print("  ⏭️  YAMLBridge ei saatavilla tai ei EN-tukea")
+    print("  ⏭  YAMLBridge ei saatavilla tai ei EN-tukea")
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # [10] YHTEENVETO JA DIAGNOOSI
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{SEP}\n[10] YHTEENVETO JA DIAGNOOSI\n{SEP}")
 
 print(f"""
-  ┌─────────────────────────────────────────────────────────┐
+  ┌---------------------------------------------------------┐
   │ KOMPONENTIT                                             │
   │   Translation Proxy:  {'✅ OK' if proxy else '❌ PUUTTUU':40s}│
   │   Voikko:             {'✅ OK' if proxy and proxy.voikko.available else '❌ EI':40s}│
   │   EN Validator:       {'✅ OK' if validator else '❌ PUUTTUU':40s}│
   │   Opus-MT:            {'✅ OK' if opus_ok else '❌ EI':40s}│
   │   YAMLBridge EN:      {'✅ OK' if yaml_bridge and hasattr(yaml_bridge, 'set_translation_proxy') else '❌ EI':40s}│
-  ├─────────────────────────────────────────────────────────┤
+  ├---------------------------------------------------------┤
   │ TESTIT                                                  │
-  │   FI→EN:              {fi_ok:2d}✅ {fi_weak:2d}⚠️  {fi_fail:2d}❌  / {len(fi_tests):2d}              │
+  │   FI->EN:              {fi_ok:2d}✅ {fi_weak:2d}[!]  {fi_fail:2d}❌  / {len(fi_tests):2d}              │
   │   EN Validator:       {val_ok:2d}✅       {val_fail:2d}❌  / {len(en_val_tests):2d}              │
-  │   EN→FI boundary:    {enfi_ok:2d}✅       {enfi_fail:2d}❌  / {len(en_fi_tests):2d}              │
+  │   EN->FI boundary:    {enfi_ok:2d}✅       {enfi_fail:2d}❌  / {len(en_fi_tests):2d}              │
   │   Round-trip:         {rt_ok:2d}✅       {rt_fail:2d}❌  / {len(roundtrip_tests):2d}              │
-  └─────────────────────────────────────────────────────────┘
+  └---------------------------------------------------------┘
 """)
 
 # Diagnoosi
@@ -582,26 +582,26 @@ issues = []
 
 if proxy and not proxy.opus.available:
     issues.append(("KRIITTINEN", "Opus-MT puuttuu",
-        "EN→FI käyttää vain sanakirjaa → kokonaiset lauseet hajoavat.\n"
-        "    Sanakirja korvaa termejä (treatment→hoito) mutta ei taivuta\n"
+        "EN->FI käyttää vain sanakirjaa -> kokonaiset lauseet hajoavat.\n"
+        "    Sanakirja korvaa termejä (treatment->hoito) mutta ei taivuta\n"
         "    eikä rakenna lauseita. Tulos on lista sanoja, ei suomea.\n"
         "    FIX: pip install transformers sentencepiece\n"
-        "    TAI: anna mallin vastata suoraan suomeksi (poista EN→FI)"))
+        "    TAI: anna mallin vastata suoraan suomeksi (poista EN->FI)"))
 
 if enfi_fail > 0:
     issues.append(("VIRHE", f"Word boundary -bugi ({enfi_fail} FAIL)",
-        "'on'→'päällä' korvaa myös sanojen sisältä.\n"
-        "    FIX: varmista \\b word boundary regex EN→FI loopissa"))
+        "'on'->'päällä' korvaa myös sanojen sisältä.\n"
+        "    FIX: varmista \\b word boundary regex EN->FI loopissa"))
 
 if fi_fail > 5:
-    issues.append(("VAROITUS", f"FI→EN heikko ({fi_fail} FAIL)",
+    issues.append(("VAROITUS", f"FI->EN heikko ({fi_fail} FAIL)",
         "Voikko+sanakirja ei kata tarpeeksi termejä.\n"
         "    FIX: laajenna domain-sanakirjaa"))
 
 if not issues:
     print("\n  ✅ Putki toimii teknisesti!")
     if not opus_ok:
-        print("     (mutta EN→FI laatu on heikko ilman Opus-MT:tä)")
+        print("     (mutta EN->FI laatu on heikko ilman Opus-MT:tä)")
 else:
     for severity, title, detail in issues:
         print(f"\n  {'🔴' if severity == 'KRIITTINEN' else '🟡' if severity == 'VIRHE' else '🟠'} [{severity}] {title}")
@@ -609,27 +609,27 @@ else:
 
 print(f"""
   RATKAISUVAIHTOEHDOT:
-  {'─' * 56}
+  {'-' * 56}
   A) OPUS-MT (paras):
      pip install transformers sentencepiece
-     → Kokonaiset lauseet kääntyvät oikein
-     → ~300ms viive per vastaus
+     -> Kokonaiset lauseet kääntyvät oikein
+     -> ~300ms viive per vastaus
 
   B) MALLI VASTAA SUOMEKSI (nopein fix):
-     → Poista EN→FI käännös kokonaan
-     → Lisää system promptiin "Vastaa AINA suomeksi"
-     → phi4-mini osaa perustason suomea
-     → Ei käännösviivettä, ei käännösvirheitä
+     -> Poista EN->FI käännös kokonaan
+     -> Lisää system promptiin "Vastaa AINA suomeksi"
+     -> phi4-mini osaa perustason suomea
+     -> Ei käännösviivettä, ei käännösvirheitä
 
   C) ISOMPI MALLI (paras laatu):
-     → gemma3:4b tai qwen2.5:7b joka osaa suomea
-     → Ei tarvitse käännöstä ollenkaan
-     → Vaatii enemmän VRAM:ia
+     -> gemma3:4b tai qwen2.5:7b joka osaa suomea
+     -> Ei tarvitse käännöstä ollenkaan
+     -> Vaatii enemmän VRAM:ia
 
   D) HYBRIDI (suositeltu):
-     → EN sisäisesti (paras laatu LLM:ltä)
-     → Opus-MT EN→FI lopussa (oikea suomi ulos)
-     → Vaatii Opus-MT asennuksen
+     -> EN sisäisesti (paras laatu LLM:ltä)
+     -> Opus-MT EN->FI lopussa (oikea suomi ulos)
+     -> Vaatii Opus-MT asennuksen
 """)
 
 # Standard summary for backup parser

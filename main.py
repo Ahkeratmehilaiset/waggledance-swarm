@@ -60,6 +60,8 @@ from hivemind import HiveMind
 AUTO_SPAWN = [
     # Core business
     "beekeeper", "core_dispatcher", "flight_weather",
+    # Bee monitoring (high priority)
+    "disease_monitor", "swarm_watcher", "hive_temperature", "nectar_scout",
     # Environment
     "meteorologist", "horticulturist", "ornithologist",
     # Security

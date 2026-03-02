@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-WaggleDance Restore & Environment Validator v1.0
+WaggleDance Restore & Environment Validator v2.0
 =================================================
 Validates the environment and restores from a backup zip if needed.
+Supports 75-agent profile system (gadget/cottage/home/factory).
 
 Usage:
     python tools/waggle_restore.py              # Validate only (no restore)
@@ -285,6 +286,84 @@ def check_data_dirs(r: CheckResult):
     r.ok("Data directories", ", ".join(detail_parts) if detail_parts else "all OK")
 
 
+def check_profile_config(r: CheckResult):
+    """Check settings.yaml has a valid profile field."""
+    settings_path = PROJECT_ROOT / "configs" / "settings.yaml"
+    if not settings_path.exists():
+        r.fail("Profile config", "configs/settings.yaml not found")
+        return
+
+    try:
+        import yaml
+        cfg = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            r.fail("Profile config", "settings.yaml is not a valid YAML mapping")
+            return
+
+        profile = cfg.get("profile")
+        valid_profiles = {"gadget", "cottage", "home", "factory"}
+        if profile in valid_profiles:
+            r.ok("Profile config", f"active profile = {profile}")
+        elif profile is None:
+            r.warn("Profile config", "no 'profile' field — defaults to 'cottage'")
+        else:
+            r.warn("Profile config", f"unknown profile '{profile}' — expected: {', '.join(sorted(valid_profiles))}")
+    except Exception as e:
+        r.fail("Profile config", f"cannot parse settings.yaml: {e}")
+
+
+def check_agent_structure(r: CheckResult):
+    """Validate agents/ and knowledge/ directories are consistent."""
+    agents_dir = PROJECT_ROOT / "agents"
+    knowledge_dir = PROJECT_ROOT / "knowledge"
+
+    if not agents_dir.exists():
+        r.fail("Agent structure", "agents/ directory not found")
+        return
+
+    # Collect agents with core.yaml
+    agent_ids = set()
+    agents_missing_profiles = []
+    for sub in sorted(agents_dir.iterdir()):
+        if sub.is_dir() and (sub / "core.yaml").exists():
+            agent_ids.add(sub.name)
+            try:
+                import yaml
+                data = yaml.safe_load((sub / "core.yaml").read_text(encoding="utf-8", errors="replace"))
+                if isinstance(data, dict):
+                    if not data.get("profiles"):
+                        agents_missing_profiles.append(sub.name)
+            except Exception:
+                pass
+
+    if not agent_ids:
+        r.fail("Agent structure", "no agents found in agents/")
+        return
+
+    # Check knowledge/ mirror
+    knowledge_ids = set()
+    if knowledge_dir.exists():
+        for sub in knowledge_dir.iterdir():
+            if sub.is_dir():
+                knowledge_ids.add(sub.name)
+
+    agents_without_knowledge = agent_ids - knowledge_ids
+    knowledge_without_agents = knowledge_ids - agent_ids
+
+    detail_parts = [f"{len(agent_ids)} agents"]
+    if agents_missing_profiles:
+        detail_parts.append(f"{len(agents_missing_profiles)} missing profiles field")
+    if agents_without_knowledge:
+        detail_parts.append(f"{len(agents_without_knowledge)} without knowledge/")
+    if knowledge_without_agents:
+        detail_parts.append(f"{len(knowledge_without_agents)} orphan knowledge/ dirs")
+
+    if agents_missing_profiles or agents_without_knowledge or knowledge_without_agents:
+        r.warn("Agent structure", ", ".join(detail_parts))
+    else:
+        r.ok("Agent structure", f"{len(agent_ids)} agents, all with profiles + knowledge")
+
+
 def check_readiness_c4(r: CheckResult):
     """Run the C4 readiness test as a subprocess for an independent check."""
     test_path = PROJECT_ROOT / "tests" / "test_c4_readiness.py"
@@ -393,13 +472,13 @@ def run_all_tests(r: CheckResult):
 
 # ── Main ──────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v1.0")
+    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v2.0")
     parser.add_argument("--restore", metavar="ZIPFILE", help="Restore from backup zip file")
     parser.add_argument("--run-tests", action="store_true", help="Run all tests after validation")
     args = parser.parse_args()
 
     print(f"\n{B}{'='*55}")
-    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v1.0")
+    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v2.0")
     print(f"  Project: {PROJECT_ROOT}")
     print(f"{'='*55}{W}\n")
 
@@ -431,6 +510,8 @@ def main():
 
     print()
     check_data_dirs(r)
+    check_profile_config(r)
+    check_agent_structure(r)
     check_readiness_c4(r)
 
     # 3. Run all tests (if requested)

@@ -28,7 +28,7 @@ _CONFIGS_V1_PATH = Path(__file__).resolve().parent.parent / "configs" / "micro_v
 class PatternMatchEngine:
     """Regex + lookup table. Pre-computed Finnish answers for common questions."""
 
-    def __init__(self, data_dir="data/micromodel_v1"):
+    def __init__(self, data_dir="data/micromodel_v1", load_configs=True):
         self._data_dir = Path(data_dir)
         self._patterns = []  # list of (compiled_regex, answer_fi, confidence)
         self._lookup = {}    # normalized_question → (answer_fi, confidence)
@@ -36,9 +36,7 @@ class PatternMatchEngine:
         self._misses = 0
         self._answer_tracker: dict[str, dict] = {}  # normalized_q → {answer, count, total}
         self._load_patterns()
-        # Load promoted configs only for the default production directory
-        # (custom data_dir = testing or isolated use, skip global configs)
-        if str(data_dir) == "data/micromodel_v1":
+        if load_configs:
             self._load_configs_patterns()
 
     def _normalize(self, text: str) -> str:
@@ -757,11 +755,12 @@ class MicroModelOrchestrator:
 
     TRAINING_INTERVAL_CYCLES = 50  # Train every 50 night cycles
 
-    def __init__(self, consciousness, collector, data_dir="data"):
+    def __init__(self, consciousness, collector, data_dir="data", load_configs=True):
         self.consciousness = consciousness
         self.collector = collector
         _data = Path(data_dir)
-        self.v1 = PatternMatchEngine(data_dir=str(_data / "micromodel_v1"))
+        self.v1 = PatternMatchEngine(data_dir=str(_data / "micromodel_v1"),
+                                     load_configs=load_configs)
         self.v2 = ClassifierModel(consciousness,
                                   model_path=str(_data / "micromodel_v2.pt"))
         self.v3 = LoRAModel(data_dir=str(_data / "lora_adapters"))

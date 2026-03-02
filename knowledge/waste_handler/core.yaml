@@ -15,7 +15,66 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 70
     action: "<70% → tehosta lajittelua"
     source: src:WH1
+  vaarallinen_jate_vrk_max:
+    value: 365
+    action: "Vaarallisen jätteen välivarastointi max 365 vrk — pienet erät 180 vrk, kirjaa vastaanottopäivä"
+    source: src:WH2
+  EWC_koodi_dokumentointi:
+    value: "pakollinen"
+    action: "Jokaiselle jäte-erälle EWC-koodi (6-nro) — siirtoasiakirja pakollinen vaaralliselle jätteelle"
+    source: src:WH3
+  jateoljy_kerays_litraa:
+    value: 200
+    action: "Jäteöljyä kerätään max 200 l ennen toimitusta — säilytys tiiviissä astiassa, valumasuoja alle"
+    source: src:WH4
+  akkujen_kerays:
+    value: "erilliskeräys"
+    action: "Akut ja paristot erilliskeräykseen — litiumakut teipattava navat, tulipaloriski varastoinnissa"
+    source: src:WH5
+  paperinkerays_epapuhtaus_pct:
+    value: 5
+    action: "Paperinkeräyksen epäpuhtaus max 5% — muovi/ruokajäte pilaa erän, kuormantarkistus vastaanotossa"
+    source: src:WH6
+  biologinen_jate_kompostointi_C:
+    value: 55
+    action: "Kompostointi vähintään 55°C / 2 viikkoa — hygienisoi taudinaiheuttajat, käännä säännöllisesti"
+    source: src:WH7
+  jatehuoltosuunnitelma_kk:
+    value: 12
+    action: "Jätehuoltosuunnitelma päivitetään 12 kk välein — muutokset toiminnassa → välitön päivitys"
+    source: src:WH8
+  pakkausjate_ilmoitus_kg:
+    value: 1000
+    action: "Pakkausjätteen tuottajavastuuilmoitus >1000 kg/v — RINKI-rekisteröinti, vuosiraportointi Pirkanmaan ELY"
+    source: src:WH9
+  sekajate_kaatopaikka_pct:
+    value: 10
+    action: "Kaatopaikalle max 10% kokonaisjätteestä — orgaanisen jätteen kaatopaikkakielto voimassa"
+    source: src:WH10
+  jatteen_kuljetus_lupa:
+    value: "pakollinen"
+    action: "Jätteen ammattimaiseen kuljettamiseen tarvitaan jätehuoltorekisteröinti — ELY-keskuksen hyväksyntä"
+    source: src:WH11
+  sahko_elektroniikka_SER:
+    value: "tuottajavastuu"
+    action: "Sähkö- ja elektroniikkaromu (SER) tuottajan vastuulla — ilmainen palautus myymälään tai kierrätyspisteelle"
+    source: src:WH12
 eval_questions:
 - q: Mikä on recycling rate pct?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.recycling_rate_pct.value
   source: src:WH1
+- q: Kuinka kauan vaarallista jätettä saa välivarastoida?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vaarallinen_jate_vrk_max.value
+  source: src:WH2
+- q: Mikä on paperinkeräyksen suurin sallittu epäpuhtausprosentti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.paperinkerays_epapuhtaus_pct.value
+  source: src:WH6
+- q: Mikä lämpötila tarvitaan biojätteen kompostointiin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.biologinen_jate_kompostointi_C.value
+  source: src:WH7
+- q: Kuinka usein jätehuoltosuunnitelma päivitetään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.jatehuoltosuunnitelma_kk.value
+  source: src:WH8
+- q: Mikä on pakkausjätteen tuottajavastuun ilmoitusraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pakkausjate_ilmoitus_kg.value
+  source: src:WH9

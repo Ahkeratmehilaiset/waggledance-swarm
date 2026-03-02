@@ -793,6 +793,45 @@ DOMAIN_DICT_FI_EN = {
     "toimia": "to function",
     "rikkoutua": "to break",
     "vuotaa": "to leak",
+    # Anatomy / sensory
+    "silmä": "eye",
+    "silmää": "eye",
+    "silmät": "eyes",
+    # Pheromones / communication
+    "feromoni": "pheromone",
+    "feromoneja": "pheromones",
+    "eritä": "to secrete",
+    "erittää": "secretes",
+    "erittävät": "secrete",
+    # Disease variants
+    "toukkamätä": "foulbrood",
+    "ilmoitettava": "notifiable",
+    # Winter / seasonal behavior
+    "talvipallo": "winter cluster",
+    "muodostua": "to form",
+    "muodostuu": "forms",
+    "ylittää": "exceeds",
+    "ylittävät": "exceed",
+    "laskee": "drops",
+    "asteeseen": "degrees",
+    "astetta": "degrees",
+    # Nectar variants
+    "mettä": "nectar",
+    "mesi": "nectar",
+    # Compounds — inspection / management
+    "kevättarkastus": "spring inspection",
+    "parveiluntarkistus": "swarm check",
+    "minimipaino": "minimum weight",
+    # Numbers / quantity
+    "seitsemän": "seven",
+    "viisi": "five",
+    "monta": "many",
+    # Bee inflections (cases without Voikko)
+    "mehiläisellä": "bee",
+    "mehiläisellä": "bee",
+    # Warm / temperature
+    "lämpimillä": "warm",
+    "lämmin": "warm",
 }
 
 # Käänteinen sanakirja EN→FI

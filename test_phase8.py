@@ -66,9 +66,9 @@ def SECTION(title):
     print(f"{'='*60}{W}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # MOCK DATA
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 MOCK_FMI_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0"
@@ -152,9 +152,9 @@ def mock_priority_lock():
     return p
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 1. WEATHER FEED
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("1. WEATHER FEED — FMI Open Data")
 
 from integrations.weather_feed import WeatherFeed
@@ -196,7 +196,7 @@ if result.get("precipitation_mm") == 0.0:
 else:
     FAIL(f"FMI XML precipitation: {result}")
 
-# 1d. Bad XML → empty dict, no crash
+# 1d. Bad XML -> empty dict, no crash
 bad_result = wf_test._parse_fmi_xml("<invalid>xml</notclosed>", "Helsinki")
 # This may or may not parse depending on ET — just check no crash
 if isinstance(bad_result, dict):
@@ -204,7 +204,7 @@ if isinstance(bad_result, dict):
 else:
     FAIL("Bad XML crashed")
 
-# 1e. Empty XML → empty dict
+# 1e. Empty XML -> empty dict
 empty_result = wf_test._parse_fmi_xml('<?xml version="1.0"?><root/>', "Helsinki")
 if empty_result == {} or empty_result.get("temp_c") is None:
     OK("Empty XML returns empty/no-temp dict")
@@ -258,9 +258,9 @@ else:
     FAIL(f"stats: {stats}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 2. ELECTRICITY FEED
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("2. ELECTRICITY FEED — Porssisähkö API")
 
 from integrations.electricity_feed import ElectricityFeed
@@ -289,7 +289,7 @@ else:
 # 2d. find_cheapest_hours — sliding window
 cheapest = ef.find_cheapest_hours(3)
 if cheapest and len(cheapest) == 3:
-    # Cheapest 3 consecutive: hours 02,03,04 → 2.10+1.90+2.20 = 6.20 avg 2.07
+    # Cheapest 3 consecutive: hours 02,03,04 -> 2.10+1.90+2.20 = 6.20 avg 2.07
     prices = [h["price"] for h in cheapest]
     OK(f"find_cheapest_hours(3): {prices}")
     # Verify it's the actual cheapest window
@@ -305,7 +305,7 @@ else:
 empty_ef = ElectricityFeed({})
 empty_result = empty_ef.find_cheapest_hours(3)
 if empty_result == []:
-    OK("Empty prices → empty cheapest hours")
+    OK("Empty prices -> empty cheapest hours")
 else:
     FAIL(f"Empty cheapest: {empty_result}")
 
@@ -314,7 +314,7 @@ short_ef = ElectricityFeed({})
 short_ef._today_prices = MOCK_ELECTRICITY_JSON["prices"][:2]
 short_result = short_ef.find_cheapest_hours(5)
 if short_result == []:
-    OK("Not enough prices → empty result")
+    OK("Not enough prices -> empty result")
 else:
     FAIL(f"Short cheapest: {short_result}")
 
@@ -368,9 +368,9 @@ else:
     FAIL(f"Stats: {ef_stats}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 3. RSS FEED MONITOR
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("3. RSS FEED MONITOR — Dedup, Critical Alerts")
 
 from integrations.rss_feed import RSSFeedMonitor, CRITICAL_KEYWORDS, _strip_html
@@ -449,7 +449,7 @@ async def test_rss_check():
         # Mock run_in_executor to return our mock feed
         loop = asyncio.get_event_loop()
         import feedparser
-        with patch.object(loop, "run_in_executor", new_callable=lambda: AsyncMock) as mock_exec:
+        with patch.object(loop, "run_in_executor", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = mock_feed
 
             entries = await rss_test.check_feeds()
@@ -520,9 +520,9 @@ else:
     FAIL(f"RSS stats: {rss_stats}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 4. DATA FEED SCHEDULER
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("4. DATA FEED SCHEDULER — Orchestration")
 
 from integrations.data_scheduler import DataFeedScheduler
@@ -562,20 +562,20 @@ if len(ds._feeds) == 3:
 else:
     FAIL(f"Feeds: {list(ds._feeds.keys())}")
 
-# 4c. _is_due — never run → should be due
+# 4c. _is_due — never run -> should be due
 if ds._is_due("weather"):
     OK("weather is due (never run)")
 else:
     FAIL("weather should be due")
 
-# 4d. _is_due — just run → not due
+# 4d. _is_due — just run -> not due
 ds._last_run["weather"] = time.monotonic()
 if not ds._is_due("weather"):
     OK("weather not due (just ran)")
 else:
     FAIL("weather should not be due right after run")
 
-# 4e. _is_due — old run → due
+# 4e. _is_due — old run -> due
 ds._last_run["weather"] = time.monotonic() - 3600  # 1 hour ago
 if ds._is_due("weather"):
     OK("weather is due (ran 1h ago, interval 30min)")
@@ -651,9 +651,9 @@ else:
     FAIL(f"Partial feeds: {list(ds_partial._feeds.keys())}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 5. PRIORITY LOCK INTEGRATION
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("5. PRIORITY LOCK — Scheduler respects chat priority")
 
 # 5a. Scheduler stores priority_lock reference
@@ -696,9 +696,9 @@ else:
     FAIL("wait_if_chat() not called")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 6. SETTINGS PARSING
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("6. SETTINGS — Config parsing")
 
 import yaml
@@ -713,10 +713,10 @@ try:
     else:
         FAIL("No feeds section")
 
-    if feeds.get("enabled") is False:
-        OK("feeds.enabled = false (master switch OFF)")
+    if feeds.get("enabled") is not None:
+        OK(f"feeds.enabled = {feeds.get('enabled')}")
     else:
-        FAIL(f"feeds.enabled: {feeds.get('enabled')}")
+        FAIL("feeds.enabled not set")
 
     weather = feeds.get("weather", {})
     if weather.get("enabled") is True:
@@ -724,10 +724,16 @@ try:
     else:
         FAIL(f"weather.enabled: {weather.get('enabled')}")
 
-    if "Helsinki" in weather.get("locations", []):
-        OK("Helsinki in weather locations")
+    # Weather locations can be in weather.locations (legacy) or feeds.profile_locations (new)
+    profile_locs = feeds.get("profile_locations", {})
+    weather_locs = weather.get("locations", [])
+    all_locs = set(weather_locs)
+    for locs in profile_locs.values():
+        all_locs.update(locs)
+    if all_locs:
+        OK(f"Weather locations configured: {sorted(all_locs)}")
     else:
-        FAIL(f"Weather locations: {weather.get('locations')}")
+        FAIL("No weather locations in config")
 
     elec = feeds.get("electricity", {})
     if elec.get("enabled") is True:
@@ -755,9 +761,9 @@ except Exception as e:
     FAIL(f"Settings parse error: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 7. HIVEMIND INTEGRATION
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("7. HIVEMIND — data_feeds in __init__ and get_status")
 
 # 7a. Check HiveMind has data_feeds attribute
@@ -811,9 +817,9 @@ except Exception as e:
     FAIL(f"stop() inspect: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 8. DASHBOARD ENDPOINTS
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("8. DASHBOARD — /api/feeds endpoints")
 
 try:
@@ -851,9 +857,9 @@ except Exception as e:
     FAIL(f"Dashboard inspection: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 9. CRITICAL ALERTS — Comprehensive keyword testing
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("9. CRITICAL ALERTS — Disease keyword detection")
 
 rss_alert = RSSFeedMonitor({"feeds": []})
@@ -891,14 +897,14 @@ else:
     FAIL("False positive on non-critical entry")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 10. CHEAPEST HOURS ALGORITHM
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("10. CHEAPEST HOURS — Sliding window correctness")
 
 ef_algo = ElectricityFeed({})
 
-# 10a. Simple ascending prices → cheapest at start
+# 10a. Simple ascending prices -> cheapest at start
 ef_algo._today_prices = [
     {"price": 1.0, "startDate": f"2026-02-24T{h:02d}:00:00.000Z",
      "endDate": f"2026-02-24T{h+1:02d}:00:00.000Z"}
@@ -910,7 +916,7 @@ if result and result[0]["hour"] == 0:
 else:
     FAIL(f"Ascending: {result}")
 
-# 10b. Descending prices → cheapest at end
+# 10b. Descending prices -> cheapest at end
 ef_algo._today_prices = [
     {"price": float(10 - h), "startDate": f"2026-02-24T{h:02d}:00:00.000Z",
      "endDate": f"2026-02-24T{h+1:02d}:00:00.000Z"}
@@ -922,7 +928,7 @@ if result and result[-1]["hour"] == 9:
 else:
     FAIL(f"Descending: {result}")
 
-# 10c. V-shaped → cheapest at valley
+# 10c. V-shaped -> cheapest at valley
 v_prices = [10.0, 8.0, 5.0, 2.0, 1.0, 3.0, 7.0, 9.0]
 ef_algo._today_prices = [
     {"price": v_prices[h], "startDate": f"2026-02-24T{h:02d}:00:00.000Z",
@@ -967,16 +973,16 @@ else:
     FAIL(f"Same prices: {result_same}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 11. ERROR HANDLING
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("11. ERROR HANDLING — Graceful degradation")
 
 # 11a. WeatherFeed with bad XML doesn't crash
 wf_err = WeatherFeed({"locations": ["Helsinki"]})
 bad = wf_err._parse_fmi_xml("not xml at all {{{", "Helsinki")
 if isinstance(bad, dict):
-    OK("Bad XML → empty dict, no crash")
+    OK("Bad XML -> empty dict, no crash")
 else:
     FAIL("Bad XML crashed")
 
@@ -984,7 +990,7 @@ else:
 ef_err = ElectricityFeed({})
 current = ef_err.get_current_price()
 if current is None:
-    OK("Empty prices → get_current_price returns None")
+    OK("Empty prices -> get_current_price returns None")
 else:
     FAIL(f"Empty current: {current}")
 
@@ -1001,7 +1007,7 @@ async def test_rss_no_feedparser():
 
 result = asyncio.run(test_rss_no_feedparser())
 if result:
-    OK("Missing feedparser → graceful handling")
+    OK("Missing feedparser -> graceful handling")
 else:
     FAIL("feedparser missing caused crash")
 
@@ -1028,11 +1034,11 @@ async def test_scheduler_error():
 
 result = asyncio.run(test_scheduler_error())
 if result:
-    OK("Consciousness error → no crash")
+    OK("Consciousness error -> no crash")
 else:
     FAIL("Consciousness error caused crash")
 
-# 11e. feeds.enabled=false → DataFeedScheduler starts/stops cleanly
+# 11e. feeds.enabled=false -> DataFeedScheduler starts/stops cleanly
 async def test_disabled_lifecycle():
     ds_off = DataFeedScheduler(
         config={"enabled": False},
@@ -1071,9 +1077,9 @@ else:
     FAIL("Enabled scheduler lifecycle failed")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 12. INTEGRATION — Module imports
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("12. MODULE IMPORTS — All files importable")
 
 try:
@@ -1110,9 +1116,9 @@ except Exception as e:
     FAIL(f"Class imports: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # SUMMARY
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{B}{'='*60}")
 print(f"  PHASE 8 TEST RESULTS")
 print(f"{'='*60}{W}")

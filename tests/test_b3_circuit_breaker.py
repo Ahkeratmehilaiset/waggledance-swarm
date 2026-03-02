@@ -70,7 +70,7 @@ def test_half_open_success_closes():
     cb.record_failure()
     cb.record_failure()
     time.sleep(0.15)
-    cb.allow_request()  # → HALF_OPEN
+    cb.allow_request()  # -> HALF_OPEN
     cb.record_success()
     assert cb.state == "closed"
     assert cb.allow_request() is True
@@ -84,7 +84,7 @@ def test_half_open_failure_reopens():
     cb.record_failure()
     cb.record_failure()
     time.sleep(0.15)
-    cb.allow_request()  # → HALF_OPEN
+    cb.allow_request()  # -> HALF_OPEN
     cb.record_failure()
     assert cb.state == "open"
     assert cb._total_trips == 2

@@ -69,7 +69,7 @@ def test_lru_refresh_on_hit():
     # Access first entry (should move to end)
     ee._cache.move_to_end(keys[0])
 
-    # Add 4th → should evict keys[1] (now oldest)
+    # Add 4th -> should evict keys[1] (now oldest)
     key4 = hashlib.md5("text_3".encode()).hexdigest()
     ee._cache[key4] = [0.2] * 10
     while len(ee._cache) > ee._cache_max:

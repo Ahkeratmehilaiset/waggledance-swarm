@@ -1,6 +1,6 @@
-﻿header:
-  agent_id: tarhaaja
-  agent_name: Tarhaaja (PÃ¤Ã¤mehilÃ¤ishoitaja)
+header:
+  agent_id: beekeeper
+  agent_name: Tarhaaja (Päämehiläishoitaja)
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:
@@ -8,99 +8,99 @@ ASSUMPTIONS:
 - 'Evira tilatunnus: 18533284'
 - 202 yhdyskuntaa, 35 tarhapaikka (2024 talvehtineet)
 - 'Rodut: italMeh (italialainen) ja grnMeh (krainilainen/carnica)'
-- 'Alueet: Tuusula (36), Helsinki (20), Vantaa (16), Espoo (66), PolvijÃ¤rvi (3), Kouvola (61)'
+- 'Alueet: Tuusula (36), Helsinki (20), Vantaa (16), Espoo (66), Polvijärvi (3), Kouvola (61)'
 - 'Vuosituotanto: noin 10 000 kg hunajaa (vaihtelee vuosittain)'
 - 'Hoitomalli: Langstroth-kehykset'
-- 'TÃ¤ysi pesÃ¤rekisteri: agents/tarhaaja/apiaries.yaml'
+- 'Täysi pesärekisteri: agents/tarhaaja/apiaries.yaml'
 - 'Biologinen tietokanta: agents/tarhaaja/bee_biology.yaml'
 - 'Kasvikalenteri: agents/tarhaaja/flora_calendar.yaml'
 DECISION_METRICS_AND_THRESHOLDS:
   varroa_threshold_per_100:
     value: 3
-    action: '>3 punkkia/100 mehilÃ¤istÃ¤ â†’ kemiallinen hoito vÃ¤littÃ¶mÃ¤sti'
+    action: '>3 punkkia/100 mehiläistä → kemiallinen hoito välittömästi'
     source: src:TAR1
   colony_weight_spring_min_kg:
     value: 15
-    action: Alle 15 kg kevÃ¤Ã¤llÃ¤ â†’ hÃ¤tÃ¤ruokinta sokeriliuoksella (1:1)
+    action: Alle 15 kg keväällä → hätäruokinta sokeriliuoksella (1:1)
     source: src:TAR2
   winter_cluster_core_temp_c:
     value: 20
-    action: 'YdinlÃ¤mpÃ¶ <20Â°C â†’ KRIITTINEN: yhdyskunta heikkenee'
+    action: 'Ydinlämpö <20°C → KRIITTINEN: yhdyskunta heikkenee'
     source: src:TAR2
   brood_frame_count_spring_min:
     value: 3
-    action: Alle 3 sikiÃ¶kehystÃ¤ huhtikuussa â†’ pesÃ¤ heikko, yhdistÃ¤misharkinta
+    action: Alle 3 sikiökehystä huhtikuussa → pesä heikko, yhdistämisharkinta
     source: src:TAR2
   honey_moisture_max_pct:
     value: 18.0
-    action: Yli 18% â†’ ei linkota, anna kuivua kannessa
+    action: Yli 18% → ei linkota, anna kuivua kannessa
     source: src:TAR2
   swarming_risk_indicators:
-    value: Emokopat, pesÃ¤ ahdas, nuoret mehilÃ¤iset kaarella
-    action: Jaa pesÃ¤ tai poista emokopat 7pv vÃ¤lein
+    value: Emokopat, pesä ahdas, nuoret mehiläiset kaarella
+    action: Jaa pesä tai poista emokopat 7pv välein
     source: src:TAR2
   feeding_autumn_sugar_kg:
-    value: 15-20 kg sokeria / pesÃ¤ (vyÃ¶hyke II-III)
+    value: 15-20 kg sokeria / pesä (vyöhyke II-III)
     source: src:TAR2
   deg_day_threshold_feeding_start:
-    value: Alle 1000 Â°Cvr â†’ aloita syysruokinta viimeistÃ¤Ã¤n vko 34
+    value: Alle 1000 °Cvr → aloita syysruokinta viimeistään vko 34
     source: src:TAR2
   varroa_infestation_pct:
     value: 3
     unit: '%'
     source: src:TAR1
-    action: VÃ¤litÃ¶n kemiallinen torjunta (oksaalihappo/muurahaishappo)
-    measurement: Tomusokeritesti / Alkoholipesu (~300 mehilÃ¤istÃ¤)
+    action: Välitön kemiallinen torjunta (oksaalihappo/muurahaishappo)
+    measurement: Tomusokeritesti / Alkoholipesu (~300 mehiläistä)
     season: Elokuu kriittinen
   winter_food_kg:
     value: 15-25
     unit: kg
     source: src:TAR2
-    action: Alle 15 kg = kuolemanvaara kevÃ¤Ã¤llÃ¤. Optimi 20-25 kg.
+    action: Alle 15 kg = kuolemanvaara keväällä. Optimi 20-25 kg.
   brood_temp_c:
     value: 34.5-35.5
-    unit: Â°C
+    unit: °C
     source: src:TAR2
-    action: Alle 34.0Â°C = kalkkisikiÃ¶riski. Yli 36.0Â°C = ylikuumeneminen.
+    action: Alle 34.0°C = kalkkisikiöriski. Yli 36.0°C = ylikuumeneminen.
   flight_temp_c:
     value: 10-12 minimi, 15-25 optimi
     source: UNKNOWN
-    action: 'Yli 35-38Â°C: lennot pysÃ¤htyvÃ¤t, jÃ¤Ã¤hdytysvettÃ¤ tarvitaan.'
+    action: 'Yli 35-38°C: lennot pysähtyvät, jäähdytysvettä tarvitaan.'
 SEASONAL_RULES:
-- season: KevÃ¤t (maalis-toukokuu)
-  rule: 'TalvimehilÃ¤iset korvaantuvat kesÃ¤mehilÃ¤isillÃ¤. SikiÃ¶innin kÃ¤ynnistyminen. Seuraa ruokavarastoja (nÃ¤lkÃ¤kuolemat).
-    KevÃ¤tkasvit: pajut, vaahtera, voikukka.'
-- season: AlkukesÃ¤ (touko-kesÃ¤kuu)
-  rule: 'Parveiluvaara! Kuhnurihaudonnan leikkaus (varroan mekaaninen torjunta). Medikehysten lisÃ¤ys. Kasvit: omena, kirsikka.'
-- season: PÃ¤Ã¤sato (kesÃ¤-heinÃ¤kuu)
-  rule: Vadelma, horsma, rypsi, apila. Linkoukset. Seuraa sÃ¤Ã¤ennustetta (kosteus = mettÃ¤).
-- season: LoppukesÃ¤ (elo-syyskuu)
-  rule: 'KRIITTINEN: Varroa-tarkistus ja torjunta. TalvimehilÃ¤isten kasvu. Kuhnurisota. Kanervasato. Muurahaishappo.'
+- season: Kevät (maalis-toukokuu)
+  rule: 'Talvimehiläiset korvaantuvat kesämehiläisillä. Sikiöinnin käynnistyminen. Seuraa ruokavarastoja (nälkäkuolemat).
+    Kevätkasvit: pajut, vaahtera, voikukka.'
+- season: Alkukesä (touko-kesäkuu)
+  rule: 'Parveiluvaara! Kuhnurihaudonnan leikkaus (varroan mekaaninen torjunta). Medikehysten lisäys. Kasvit: omena, kirsikka.'
+- season: Pääsato (kesä-heinäkuu)
+  rule: Vadelma, horsma, rypsi, apila. Linkoukset. Seuraa sääennustetta (kosteus = mettä).
+- season: Loppukesä (elo-syyskuu)
+  rule: 'KRIITTINEN: Varroa-tarkistus ja torjunta. Talvimehiläisten kasvu. Kuhnurisota. Kanervasato. Muurahaishappo.'
 - season: Syksy (loka-marraskuu)
-  rule: OksaalihappokÃ¤sittely (sikiÃ¶tÃ¶n aika). Talviruuan tarkistus. Pesien eristys. Hiiriensuojaus.
+  rule: Oksaalihappokäsittely (sikiötön aika). Talviruuan tarkistus. Pesien eristys. Hiiriensuojaus.
 - season: Talvi (joulu-helmikuu)
-  rule: 'Ei avata pesiÃ¤. Seuraa painoja (vaa''at). Talvipallo 20Â°C ydin. Kuuntele: hiljainen humina = OK.'
+  rule: 'Ei avata pesiä. Seuraa painoja (vaa''at). Talvipallo 20°C ydin. Kuuntele: hiljainen humina = OK.'
 FAILURE_MODES:
 - failure: Orpoontuminen (kuningatar kuollut)
-  recovery: YhdistÃ¤ viereiseen pesÃ¤Ã¤n lehtipaperilla tai anna uusi emo/emokenno.
-- failure: AFB-epÃ¤ily (mÃ¤tÃ¤tauti)
-  recovery: HETI kunnanelÃ¤inlÃ¤Ã¤kÃ¤rille ilmoitus. Ã„LÃ„ siirrÃ¤ kehyksiÃ¤ pesien vÃ¤lillÃ¤. Valvottava elÃ¤intauti.
+  recovery: Yhdistä viereiseen pesään lehtipaperilla tai anna uusi emo/emokenno.
+- failure: AFB-epäily (mätätauti)
+  recovery: HETI kunnaneläinlääkärille ilmoitus. ÄLÄ siirrä kehyksiä pesien välillä. Valvottava eläintauti.
 - failure: Varroa-romahdus (DWV-oireet)
-  recovery: PikakÃ¤sittely oksaalihapolla. Seuraa talvimehilÃ¤isten kuntoa. Harkitse yhdistÃ¤mistÃ¤.
-- failure: NÃ¤lkÃ¤kuolema (kevÃ¤t)
-  recovery: 'HÃ¤tÃ¤ruokinta: sokerisiirappi 1:1 tai fondantti suoraan kehysten pÃ¤Ã¤lle.'
+  recovery: Pikakäsittely oksaalihapolla. Seuraa talvimehiläisten kuntoa. Harkitse yhdistämistä.
+- failure: Nälkäkuolema (kevät)
+  recovery: 'Hätäruokinta: sokerisiirappi 1:1 tai fondantti suoraan kehysten päälle.'
 PROCESS_FLOWS:
   annual_cycle:
     steps:
-    - 'Maalis: kevÃ¤ttarkastus (ruokavarastot, emo, sikiÃ¶)'
+    - 'Maalis: kevättarkastus (ruokavarastot, emo, sikiö)'
     - 'Huhti-touko: laajentaminen, korotukset, emontarkkailu'
-    - 'KesÃ¤-heinÃ¤: hunajalinkoaminen, parveilunhallinta'
+    - 'Kesä-heinä: hunajalinkoaminen, parveilunhallinta'
     - 'Elo: viimeinen lintaus, varroa-hoito, syysruokinta alkaa'
     - 'Syys: ruokinta valmis viim. syyskuun loppu, talvipakkaus'
-    - 'Loka-maalis: talvilevo, painonseuranta, ei avata pesiÃ¤'
+    - 'Loka-maalis: talvilevo, painonseuranta, ei avata pesiä'
 KNOWLEDGE_TABLES:
   apiaries:
-  - location: HuhdasjÃ¤rvi
+  - location: Huhdasjärvi
     hive_count: ~50
     zone: II-III
     main_flora: Maitohorsma, vadelma, apilat
@@ -108,9 +108,9 @@ KNOWLEDGE_TABLES:
   - location: Kouvolan alue
     hive_count: ~100
     zone: II
-    main_flora: Rypsi, vadelma, hedelmÃ¤puut
+    main_flora: Rypsi, vadelma, hedelmäpuut
     source: src:TAR2
-  - location: Helsinki/ItÃ¤keskus
+  - location: Helsinki/Itäkeskus
     hive_count: ~50
     zone: I
     main_flora: Puistokasvit, lehmukset, apilat
@@ -121,28 +121,28 @@ KNOWLEDGE_TABLES:
     main_flora: Vaihteleva
     source: src:TAR2
 COMPLIANCE_AND_LEGAL:
-  registration: ElÃ¤intenpitÃ¤jÃ¤ksi rekisterÃ¶ityminen Ruokavirastoon pakollinen [src:TAR1]
-  afb_notification: AFB on valvottava elÃ¤intauti â€” aina ilmoitus Ruokavirastolle [src:TAR1]
+  registration: Eläintenpitäjäksi rekisteröityminen Ruokavirastoon pakollinen [src:TAR1]
+  afb_notification: AFB on valvottava eläintauti — aina ilmoitus Ruokavirastolle [src:TAR1]
   honey_direct_sale: Suoramyynti kuluttajalle max 2500 kg/vuosi ilman huoneistoilmoitusta [src:TAR3]
   vat: Hunaja ALV 13.5% (elintarvike, 1.1.2026 alkaen) [src:TAR3]
 UNCERTAINTY_NOTES:
-- Varroa-kynnys 3/100 on yleisesti kÃ¤ytetty mutta ei absoluuttinen â€” hoidon ajoitus riippuu myÃ¶s vuodenajasta.
-- Talviruokinnan tarve vaihtelee pesÃ¤n vahvuuden ja syksyn satokauden mukaan.
+- Varroa-kynnys 3/100 on yleisesti käytetty mutta ei absoluuttinen — hoidon ajoitus riippuu myös vuodenajasta.
+- Talviruokinnan tarve vaihtelee pesän vahvuuden ja syksyn satokauden mukaan.
 SOURCE_REGISTRY:
   sources:
   - id: src:TAR1
     org: Ruokavirasto
-    title: MehilÃ¤isten taudit ja pito
+    title: Mehiläisten taudit ja pito
     year: 2025
     url: https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/
-    supports: AFB, varroa, rekisterÃ¶inti.
+    supports: AFB, varroa, rekisteröinti.
   - id: src:TAR2
-    org: Suomen MehilÃ¤ishoitajain Liitto
-    title: MehilÃ¤ishoitoa kÃ¤ytÃ¤nnÃ¶ssÃ¤
+    org: Suomen Mehiläishoitajain Liitto
+    title: Mehiläishoitoa käytännössä
     year: 2011
     url: null
     identifier: ISBN 978-952-92-9184-4
-    supports: PesÃ¤nhoitosykli, varroa, ruokinta, parveilunhallinta.
+    supports: Pesänhoitosykli, varroa, ruokinta, parveilunhallinta.
   - id: src:TAR3
     org: Verohallinto / Ruokavirasto
     title: ALV ja alkutuotanto
@@ -150,61 +150,61 @@ SOURCE_REGISTRY:
     url: https://www.vero.fi/
     supports: Hunajan ALV, suoramyyntiraja.
 eval_questions:
-- q: MikÃ¤ on varroa-hoitokynnys?
+- q: Mikä on varroa-hoitokynnys?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.varroa_threshold_per_100.value
   source: src:TAR1
-- q: MikÃ¤ on pesÃ¤n minimipaino kevÃ¤Ã¤llÃ¤?
+- q: Mikä on pesän minimipaino keväällä?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.colony_weight_spring_min_kg.value
   source: src:TAR2
-- q: MikÃ¤ on talvipallon ytimen kriittinen lÃ¤mpÃ¶tila?
+- q: Mikä on talvipallon ytimen kriittinen lämpötila?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.winter_cluster_core_temp_c.value
   source: src:TAR2
-- q: MikÃ¤ on hunajan kosteusylÃ¤raja linkoamiselle?
+- q: Mikä on hunajan kosteusyläraja linkoamiselle?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_moisture_max_pct.value
   source: src:TAR2
-- q: Kuinka paljon sokeria syysruokintaan per pesÃ¤?
+- q: Kuinka paljon sokeria syysruokintaan per pesä?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.feeding_autumn_sugar_kg.value
   source: src:TAR2
-- q: MitkÃ¤ ovat parveilun merkit?
+- q: Mitkä ovat parveilun merkit?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.swarming_risk_indicators.value
   source: src:TAR2
-- q: Milloin varroa-hoito tehdÃ¤Ã¤n?
+- q: Milloin varroa-hoito tehdään?
   a_ref: SEASONAL_RULES[2].action
   source: src:TAR2
-- q: MitÃ¤ tehdÃ¤Ã¤n AFB-epÃ¤ilyssÃ¤?
+- q: Mitä tehdään AFB-epäilyssä?
   a_ref: FAILURE_MODES[1].action
   source: src:TAR1
-- q: Milloin kevÃ¤ttarkastus tehdÃ¤Ã¤n?
+- q: Milloin kevättarkastus tehdään?
   a_ref: SEASONAL_RULES[0].action
   source: src:TAR2
-- q: MikÃ¤ on syysruokinnan viimeinen ajankohta?
+- q: Mikä on syysruokinnan viimeinen ajankohta?
   a_ref: SEASONAL_RULES[2].action
   source: src:TAR2
-- q: Miten talvella seurataan pesÃ¤Ã¤?
+- q: Miten talvella seurataan pesää?
   a_ref: SEASONAL_RULES[3].action
   source: src:TAR2
-- q: MikÃ¤ on painonpudotuksen hÃ¤lytysraja talvella?
+- q: Mikä on painonpudotuksen hälytysraja talvella?
   a_ref: SEASONAL_RULES[3].action
   source: src:TAR2
-- q: Paljonko pesillÃ¤ on HuhdasjÃ¤rvellÃ¤?
+- q: Paljonko pesillä on Huhdasjärvellä?
   a_ref: KNOWLEDGE_TABLES.apiaries[0].hive_count
   source: src:TAR2
-- q: MikÃ¤ on ALV hunajalle?
+- q: Mikä on ALV hunajalle?
   a_ref: COMPLIANCE_AND_LEGAL.vat
   source: src:TAR3
-- q: MikÃ¤ on suoramyynnin kiloraja?
+- q: Mikä on suoramyynnin kiloraja?
   a_ref: COMPLIANCE_AND_LEGAL.honey_direct_sale
   source: src:TAR3
-- q: Miten emoton pesÃ¤ tunnistetaan?
+- q: Miten emoton pesä tunnistetaan?
   a_ref: FAILURE_MODES[0].detection
   source: src:TAR2
-- q: MitÃ¤ tehdÃ¤Ã¤n emottomalle pesÃ¤lle?
+- q: Mitä tehdään emottomalle pesälle?
   a_ref: FAILURE_MODES[0].action
   source: src:TAR2
-- q: MikÃ¤ Â°Cvr-raja laukaisee ruokinnan?
+- q: Mikä °Cvr-raja laukaisee ruokinnan?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.deg_day_threshold_feeding_start.value
   source: src:TAR2
-- q: MikÃ¤ on sikiÃ¶kehysten minimiraja kevÃ¤Ã¤llÃ¤?
+- q: Mikä on sikiökehysten minimiraja keväällä?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.brood_frame_count_spring_min.value
   source: src:TAR2
 - q: Onko AFB ilmoitettava tauti?
@@ -213,60 +213,60 @@ eval_questions:
 - q: Miten talvikuolema dokumentoidaan?
   a_ref: FAILURE_MODES[2].action
   source: src:TAR2
-- q: MikÃ¤ on parveiluntarkistusvÃ¤li?
+- q: Mikä on parveiluntarkistusväli?
   a_ref: SEASONAL_RULES[1].action
   source: src:TAR2
-- q: Onko rekisterÃ¶ityminen pakollista?
+- q: Onko rekisteröityminen pakollista?
   a_ref: COMPLIANCE_AND_LEGAL.registration
   source: src:TAR1
-- q: Miten hÃ¤tÃ¤ruokinta tehdÃ¤Ã¤n kevÃ¤Ã¤llÃ¤?
+- q: Miten hätäruokinta tehdään keväällä?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.colony_weight_spring_min_kg.action
   source: src:TAR2
-- q: Milloin pesiÃ¤ ei saa avata?
+- q: Milloin pesiä ei saa avata?
   a_ref: SEASONAL_RULES[3].action
   source: src:TAR2
-- q: MitÃ¤ kehyksille tehdÃ¤Ã¤n talvikuoleman jÃ¤lkeen?
+- q: Mitä kehyksille tehdään talvikuoleman jälkeen?
   a_ref: FAILURE_MODES[2].action
   source: src:TAR2
 - q: Miten AFB tunnistetaan?
   a_ref: FAILURE_MODES[1].detection
   source: src:TAR1
-- q: MikÃ¤ on HelsingissÃ¤ pÃ¤Ã¤kasvilajisto?
+- q: Mikä on Helsingissä pääkasvilajisto?
   a_ref: KNOWLEDGE_TABLES.apiaries[2].main_flora
   source: src:TAR2
-- q: Paljonko pesiÃ¤ on yhteensÃ¤?
+- q: Paljonko pesiä on yhteensä?
   a_ref: ASSUMPTIONS
   source: src:TAR2
-- q: Miten heikko pesÃ¤ vahvistetaan?
+- q: Miten heikko pesä vahvistetaan?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.brood_frame_count_spring_min.action
   source: src:TAR2
-- q: MikÃ¤ on vuosituotannon arvio?
+- q: Mikä on vuosituotannon arvio?
   a_ref: ASSUMPTIONS
   source: src:TAR2
-- q: Milloin talvipakkaus tehdÃ¤Ã¤n?
+- q: Milloin talvipakkaus tehdään?
   a_ref: SEASONAL_RULES[2].action
   source: src:TAR2
 - q: Miten syysruokinta ajoitetaan?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.deg_day_threshold_feeding_start.value
   source: src:TAR2
-- q: MikÃ¤ on linkoamiskausi?
+- q: Mikä on linkoamiskausi?
   a_ref: PROCESS_FLOWS.annual_cycle.steps
   source: src:TAR2
-- q: Saako AFB-kehyksiÃ¤ siirtÃ¤Ã¤?
+- q: Saako AFB-kehyksiä siirtää?
   a_ref: FAILURE_MODES[1].action
   source: src:TAR1
-- q: Milloin emontarkkailu on kriittistÃ¤?
+- q: Milloin emontarkkailu on kriittistä?
   a_ref: PROCESS_FLOWS.annual_cycle.steps
   source: src:TAR2
-- q: MikÃ¤ on HuhdasjÃ¤rven pÃ¤Ã¤kasvilajisto?
+- q: Mikä on Huhdasjärven pääkasvilajisto?
   a_ref: KNOWLEDGE_TABLES.apiaries[0].main_flora
   source: src:TAR2
 - q: Onko varroa-kynnys absoluuttinen?
   a_ref: UNCERTAINTY_NOTES
   source: src:TAR1
-- q: MikÃ¤ on hoitomalli?
+- q: Mikä on hoitomalli?
   a_ref: ASSUMPTIONS
   source: src:TAR2
-- q: MikÃ¤ on HuhdasjÃ¤rven vyÃ¶hyke?
+- q: Mikä on Huhdasjärven vyöhyke?
   a_ref: KNOWLEDGE_TABLES.apiaries[0].zone
   source: src:TAR2

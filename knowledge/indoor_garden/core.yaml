@@ -15,7 +15,66 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 12
     action: "Trooppiset kasvit vaativat 12-16h — lisävalo talvella"
     source: src:IG1
+  kasvuvalo_paiva_h:
+    value: 14
+    action: "Kasvilamppujen optimi 14h/vrk — ajastin pakollinen, yli 18h stressaa kasvia"
+    source: src:IG2
+  kosteus_pct:
+    value: 50
+    action: "<40% → sumuta lehtiä tai lisää kosteuttaja, >70% → homeriski, tuuleta"
+    source: src:IG3
+  lannoitus_viikko:
+    value: 2
+    action: "Kasvukaudella lannoita 2 viikon välein, talvella 4-6 viikon välein tai ei lainkaan"
+    source: src:IG4
+  multa_vaihto_kk:
+    value: 18
+    action: "Vaihda multa 12-18 kk välein — juuret täyttävät ruukun, ravinteet loppuvat"
+    source: src:IG5
+  vesiviljely_pH:
+    value: 6.0
+    action: "Hydroponiikan optimi pH 5.5-6.5 — mittaa viikoittain, säädä pH-liuoksella"
+    source: src:IG6
+  siirto_istutus_merkit:
+    value: 3
+    action: "Istuta uudelleen kun: 1) juuret tulevat pohjasta, 2) kasvu pysähtyy, 3) vesi valuu läpi heti"
+    source: src:IG7
+  tuholaiset_tarkistus_vrk:
+    value: 7
+    action: "Tarkista lehdet viikon välein — kilpikirvat, vihannespunkit, sienisääsket yleisimpiä sisällä"
+    source: src:IG8
+  LED_teho_W_m2:
+    value: 30
+    action: "Kasvilamppujen teho 20-40 W/m² — liikaa polttaa lehtiä, liian vähän venyttää vartta"
+    source: src:IG9
+  kastelu_talvi_vrk:
+    value: 10
+    action: "Talvella kastelu 7-14 vrk välein — anna mullan kuivua pintakerroksesta ennen kastelua"
+    source: src:IG10
+  lampotila_yolla_C:
+    value: 16
+    action: "Yölämpötila 15-18°C — liian kylmä ikkuna vahingoittaa trooppisia, siirry kauemmas"
+    source: src:IG11
+  ilmanvaihto_kerta_h:
+    value: 1
+    action: "Tuuleta vähintään 1x/h — hiilidioksidin puute ja kosteus aiheuttavat ongelmia"
+    source: src:IG12
 eval_questions:
 - q: Mikä on light hours min?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.light_hours_min.value
   source: src:IG1
+- q: Kuinka monta tuntia päivässä kasvilamppujen tulisi palaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kasvuvalo_paiva_h.value
+  source: src:IG2
+- q: Mikä on sisäkasvien optimi ilmankosteus prosentteina?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kosteus_pct.value
+  source: src:IG3
+- q: Kuinka usein sisäkasveja lannoitetaan kasvukaudella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lannoitus_viikko.value
+  source: src:IG4
+- q: Mikä on vesiviljelyjärjestelmän optimi pH-arvo?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vesiviljely_pH.value
+  source: src:IG6
+- q: Paljonko kasvilampun tehoa tarvitaan neliömetriä kohden?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.LED_teho_W_m2.value
+  source: src:IG9

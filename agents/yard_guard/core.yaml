@@ -123,13 +123,13 @@ eval_questions:
 - q: Mikä on henkilöntunnistuksen luotettavuus?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.person_confidence
   source: src:PI1
-- q: 'Toimenpide: henkilÃ¶ntunnistuksen luotettavuus?'
+- q: 'Toimenpide: henkilöntunnistuksen luotettavuus?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.person_confidence.action
   source: src:PI1
 - q: Mikä on yöhälytyksen tunnit?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.night_alert_hours
   source: src:PI1
-- q: 'Toimenpide: yÃ¶hÃ¤lytyksen tunnit?'
+- q: 'Toimenpide: yöhälytyksen tunnit?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.night_alert_hours.action
   source: src:PI1
 - q: Mikä on whitelist?

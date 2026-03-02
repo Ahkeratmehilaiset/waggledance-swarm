@@ -15,7 +15,58 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 5
     action: "Trukkikortti uusittava 5v välein"
     source: src:FF1
+  katsastus_vali_kk:
+    value: 12
+    action: "Trukin määräaikaistarkastus 12 kk välein (työturvallisuuslaki)"
+    source: src:FF2
+  kuormanpaino_max_kg:
+    value: 2500
+    action: "Vakiotrukki max kuorma 2500 kg, tarkista tyyppikilvestä ennen nostoa"
+    source: src:FF3
+  akulataus_h:
+    value: 8
+    action: "Lyijyakkutrukin lataus ~8 h, älä katkaise kesken → akku vaurioituu"
+    source: src:FF4
+  trukkikortti_uusinta_v:
+    value: 5
+    action: "Trukinkuljettajan pätevyys uusittava 5 vuoden välein (kertauskoulutus)"
+    source: src:FF5
+  turvaetaisyys_m:
+    value: 3
+    action: "Jalankulkijoiden turvaetäisyys trukista vähintään 3 m"
+    source: src:FF6
+  hyllyston_kuormaraja_kg_m2:
+    value: 500
+    action: "Kuormalavahyllystön tasokuorma tyypillisesti max 500 kg/lava, tarkista hyllymerkinnöistä"
+    source: src:FF7
+  sisanopeus_kmh:
+    value: 10
+    action: "Trukin maksiminopeus sisätiloissa 10 km/h, risteyksissä 5 km/h"
+    source: src:FF8
+  huoltovali_kayttotunnit:
+    value: 500
+    action: "Trukin huoltoväli 500 käyttötuntia tai 3 kk, kumpi tulee ensin"
+    source: src:FF9
+  pakokaasu_mittaus_kk:
+    value: 6
+    action: "Dieseltrukin pakokaasumittaus 6 kk välein sisäkäytössä (työhygienia)"
+    source: src:FF10
 eval_questions:
 - q: Mikä on license renewal years?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.license_renewal_years.value
   source: src:FF1
+- q: Kuinka usein trukin määräaikaistarkastus on tehtävä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.katsastus_vali_kk.value
+  source: src:FF2
+- q: Mikä on vakiotrukin maksimikuormapaino kilogrammoina?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kuormanpaino_max_kg.value
+  source: src:FF3
+- q: Mikä on jalankulkijan turvaetäisyys trukista metreinä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.turvaetaisyys_m.value
+  source: src:FF6
+- q: Mikä on trukin maksiminopeus sisätiloissa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sisanopeus_kmh.value
+  source: src:FF8
+- q: Montako käyttötuntia on trukin huoltoväli?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.huoltovali_kayttotunnit.value
+  source: src:FF9

@@ -1,24 +1,24 @@
-﻿header:
-  agent_id: pihavahti
+header:
+  agent_id: yard_guard
   agent_name: Pihavahti (ihmishavainnot)
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:
 - PTZ-kamera + liiketunnistus
 - Korvenrannan pihapiiri
-- Kytketty lukkoseppÃ¤Ã¤n, privaattisuuteen, corehen
+- Kytketty lukkoseppään, privaattisuuteen, corehen
 DECISION_METRICS_AND_THRESHOLDS:
   person_confidence:
     value: 0.7
-    action: <0.7 â†’ logi, >0.7 â†’ hÃ¤lytys jos tuntematon
+    action: <0.7 → logi, >0.7 → hälytys jos tuntematon
     source: src:PI1
   night_alert_hours:
     value: 22:00-06:00
-    action: Ihmishavainto yÃ¶llÃ¤ â†’ P2 hÃ¤lytys
+    action: Ihmishavainto yöllä → P2 hälytys
     source: src:PI1
   whitelist:
-    value: Kasvo/mobiilit tunnistetut â†’ ei hÃ¤lytystÃ¤
-    action: Tuntematon â†’ kuva + ilmoitus
+    value: Kasvo/mobiilit tunnistetut → ei hälytystä
+    action: Tuntematon → kuva + ilmoitus
     source: src:PI1
   vehicle_detection:
     value: Tuntematon auto pihalla
@@ -26,54 +26,54 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:PI1
   loitering_min:
     value: 5
-    action: '>5 min paikallaan ilman syytÃ¤ â†’ hÃ¤lytys'
+    action: '>5 min paikallaan ilman syytä → hälytys'
     source: src:PI1
 SEASONAL_RULES:
-- season: KevÃ¤t
-  action: '[vko 14-22] PihatyÃ¶lÃ¤iset â†’ pÃ¤ivitÃ¤ whitelist.'
+- season: Kevät
+  action: '[vko 14-22] Pihatyöläiset → päivitä whitelist.'
   source: src:PI1
-- season: KesÃ¤
-  action: '[vko 22-35] MÃ¶kkikausi: enemmÃ¤n ihmisiÃ¤ â†’ herkkyystaso alas.'
+- season: Kesä
+  action: '[vko 22-35] Mökkikausi: enemmän ihmisiä → herkkyystaso alas.'
   source: src:PI1
 - season: Syksy
-  action: '[vko 36-48] Pimenee â†’ IR-tunnistuksen merkitys kasvaa.'
+  action: '[vko 36-48] Pimenee → IR-tunnistuksen merkitys kasvaa.'
   source: src:PI1
 - season: Talvi
-  action: '[vko 49-13] LumityÃ¶ntekijÃ¤t â†’ whitelist. JÃ¤ljet lumessa.'
+  action: '[vko 49-13] Lumityöntekijät → whitelist. Jäljet lumessa.'
   source: src:PI1
 FAILURE_MODES:
-- mode: Tuntematon yÃ¶llÃ¤
-  detection: Confidence >0.7, klo 22-06, ei whitelistissÃ¤
-  action: Tallenna, hÃ¤lytÃ¤, aktivoi valaistus
+- mode: Tuntematon yöllä
+  detection: Confidence >0.7, klo 22-06, ei whitelistissä
+  action: Tallenna, hälytä, aktivoi valaistus
   source: src:PI1
-- mode: VÃ¤Ã¤rÃ¤hÃ¤lytys (elÃ¤in/varjo)
-  detection: Toistuva hÃ¤lytys samasta pisteestÃ¤
+- mode: Väärähälytys (eläin/varjo)
+  detection: Toistuva hälytys samasta pisteestä
   action: Herkkyys, kasvillisuus, liiketunnistimen kulma
   source: src:PI1
 PROCESS_FLOWS:
 - flow_id: FLOW_PIHA_01
-  trigger: person_confidence ylittÃ¤Ã¤ kynnysarvon (0.7)
-  action: <0.7 â†’ logi, >0.7 â†’ hÃ¤lytys jos tuntematon
+  trigger: person_confidence ylittää kynnysarvon (0.7)
+  action: <0.7 → logi, >0.7 → hälytys jos tuntematon
   output: Tilanneraportti
   source: src:PIHA
 - flow_id: FLOW_PIHA_02
-  trigger: 'Kausi vaihtuu: KevÃ¤t'
-  action: '[vko 14-22] PihatyÃ¶lÃ¤iset â†’ pÃ¤ivitÃ¤ whitelist.'
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Pihatyöläiset → päivitä whitelist.'
   output: Tarkistuslista
   source: src:PIHA
 - flow_id: FLOW_PIHA_03
-  trigger: 'Havaittu: Tuntematon yÃ¶llÃ¤'
-  action: Tallenna, hÃ¤lytÃ¤, aktivoi valaistus
+  trigger: 'Havaittu: Tuntematon yöllä'
+  action: Tallenna, hälytä, aktivoi valaistus
   output: Poikkeamaraportti
   source: src:PIHA
 - flow_id: FLOW_PIHA_04
-  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  trigger: Säännöllinen heartbeat
   action: 'pihavahti: rutiiniarviointi'
   output: Status-raportti
   source: src:PIHA
 KNOWLEDGE_TABLES:
 - table_id: TBL_PIHA_01
-  title: Pihavahti (ihmishavainnot) â€” Kynnysarvot
+  title: Pihavahti (ihmishavainnot) — Kynnysarvot
   columns:
   - metric
   - value
@@ -81,25 +81,25 @@ KNOWLEDGE_TABLES:
   rows:
   - metric: person_confidence
     value: '0.7'
-    action: <0.7 â†’ logi, >0.7 â†’ hÃ¤lytys jos tuntematon
+    action: <0.7 → logi, >0.7 → hälytys jos tuntematon
   - metric: night_alert_hours
     value: 22:00-06:00
-    action: Ihmishavainto yÃ¶llÃ¤ â†’ P2 hÃ¤lytys
+    action: Ihmishavainto yöllä → P2 hälytys
   - metric: whitelist
-    value: Kasvo/mobiilit tunnistetut â†’ ei hÃ¤lytystÃ¤
-    action: Tuntematon â†’ kuva + ilmoitus
+    value: Kasvo/mobiilit tunnistetut → ei hälytystä
+    action: Tuntematon → kuva + ilmoitus
   - metric: vehicle_detection
     value: Tuntematon auto pihalla
     action: Rekisterikilpi (jos luettavissa), aika, tallenne
   - metric: loitering_min
     value: '5'
-    action: '>5 min paikallaan ilman syytÃ¤ â†’ hÃ¤lytys'
+    action: '>5 min paikallaan ilman syytä → hälytys'
   source: src:PIHA
 COMPLIANCE_AND_LEGAL:
-  kameravalvonta: EI naapurikiinteistÃ¶Ã¤. Tietosuojavaltuutetun ohje. [src:PI2]
+  kameravalvonta: EI naapurikiinteistöä. Tietosuojavaltuutetun ohje. [src:PI2]
   rekisteriseloste: 'GDPR: kameravalvonnan rekisteriseloste [src:PI2]'
 UNCERTAINTY_NOTES:
-- 'YÃ¶nÃ¤kÃ¶: ~60% tarkkuus vs 90% pÃ¤ivÃ¤llÃ¤.'
+- 'Yönäkö: ~60% tarkkuus vs 90% päivällä.'
 SOURCE_REGISTRY:
   sources:
   - id: src:PI1
@@ -115,40 +115,40 @@ SOURCE_REGISTRY:
     url: https://tietosuoja.fi/kameravalvonta
     supports: Yksityisyys.
 eval_questions:
-- q: MikÃ¤ on henkilÃ¶ntunnistuksen luotettavuus?
+- q: Mikä on henkilöntunnistuksen luotettavuus?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.person_confidence
   source: src:PI1
-- q: 'Toimenpide: henkilÃ¶ntunnistuksen luotettavuus?'
+- q: 'Toimenpide: henkilöntunnistuksen luotettavuus?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.person_confidence.action
   source: src:PI1
-- q: MikÃ¤ on yÃ¶hÃ¤lytyksen tunnit?
+- q: Mikä on yöhälytyksen tunnit?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.night_alert_hours
   source: src:PI1
-- q: 'Toimenpide: yÃ¶hÃ¤lytyksen tunnit?'
+- q: 'Toimenpide: yöhälytyksen tunnit?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.night_alert_hours.action
   source: src:PI1
-- q: MikÃ¤ on whitelist?
+- q: Mikä on whitelist?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.whitelist
   source: src:PI1
 - q: 'Toimenpide: whitelist?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.whitelist.action
   source: src:PI1
-- q: MikÃ¤ on ajoneuvontunnistus?
+- q: Mikä on ajoneuvontunnistus?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.vehicle_detection
   source: src:PI1
 - q: 'Toimenpide: ajoneuvontunnistus?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.vehicle_detection.action
   source: src:PI1
-- q: MikÃ¤ on loitering min?
+- q: Mikä on loitering min?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.loitering_min
   source: src:PI1
 - q: 'Toimenpide: loitering min?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.loitering_min.action
   source: src:PI1
-- q: Kausiohje (KevÃ¤t)?
+- q: Kausiohje (Kevät)?
   a_ref: SEASONAL_RULES[0].action
   source: src:PI1
-- q: Kausiohje (KesÃ¤)?
+- q: Kausiohje (Kesä)?
   a_ref: SEASONAL_RULES[1].action
   source: src:PI1
 - q: Kausiohje (Syksy)?
@@ -157,81 +157,81 @@ eval_questions:
 - q: Kausiohje (Talvi)?
   a_ref: SEASONAL_RULES[3].action
   source: src:PI1
-- q: 'Havainto: Tuntematon yÃ¶llÃ¤?'
+- q: 'Havainto: Tuntematon yöllä?'
   a_ref: FAILURE_MODES[0].detection
   source: src:PI1
-- q: 'Toiminta: Tuntematon yÃ¶llÃ¤?'
+- q: 'Toiminta: Tuntematon yöllä?'
   a_ref: FAILURE_MODES[0].action
   source: src:PI1
-- q: 'Havainto: VÃ¤Ã¤rÃ¤hÃ¤lytys (elÃ¤in/varjo)?'
+- q: 'Havainto: Väärähälytys (eläin/varjo)?'
   a_ref: FAILURE_MODES[1].detection
   source: src:PI1
-- q: 'Toiminta: VÃ¤Ã¤rÃ¤hÃ¤lytys (elÃ¤in/varjo)?'
+- q: 'Toiminta: Väärähälytys (eläin/varjo)?'
   a_ref: FAILURE_MODES[1].action
   source: src:PI1
-- q: 'SÃ¤Ã¤ntÃ¶: kameravalvonta?'
+- q: 'Sääntö: kameravalvonta?'
   a_ref: COMPLIANCE_AND_LEGAL.kameravalvonta
   source: src:PI1
-- q: 'SÃ¤Ã¤ntÃ¶: rekisteriseloste?'
+- q: 'Sääntö: rekisteriseloste?'
   a_ref: COMPLIANCE_AND_LEGAL.rekisteriseloste
   source: src:PI1
-- q: EpÃ¤varmuudet?
+- q: Epävarmuudet?
   a_ref: UNCERTAINTY_NOTES
   source: src:PI1
 - q: Oletukset?
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #1?'
+- q: 'Kytkentä muihin agentteihin #1?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #2?'
+- q: 'Kytkentä muihin agentteihin #2?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #3?'
+- q: 'Kytkentä muihin agentteihin #3?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #4?'
+- q: 'Kytkentä muihin agentteihin #4?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #5?'
+- q: 'Kytkentä muihin agentteihin #5?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #6?'
+- q: 'Kytkentä muihin agentteihin #6?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #7?'
+- q: 'Kytkentä muihin agentteihin #7?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #8?'
+- q: 'Kytkentä muihin agentteihin #8?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #9?'
+- q: 'Kytkentä muihin agentteihin #9?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #10?'
+- q: 'Kytkentä muihin agentteihin #10?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #11?'
+- q: 'Kytkentä muihin agentteihin #11?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #12?'
+- q: 'Kytkentä muihin agentteihin #12?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #13?'
+- q: 'Kytkentä muihin agentteihin #13?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #14?'
+- q: 'Kytkentä muihin agentteihin #14?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #15?'
+- q: 'Kytkentä muihin agentteihin #15?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #16?'
+- q: 'Kytkentä muihin agentteihin #16?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #17?'
+- q: 'Kytkentä muihin agentteihin #17?'
   a_ref: ASSUMPTIONS
   source: src:PI1
-- q: 'KytkentÃ¤ muihin agentteihin #18?'
+- q: 'Kytkentä muihin agentteihin #18?'
   a_ref: ASSUMPTIONS
   source: src:PI1

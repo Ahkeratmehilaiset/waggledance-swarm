@@ -1,8 +1,22 @@
-# Taloyhtiöasiat — Vastikkeet
-# Auto-generated for WaggleDance Swarm AI
-title: "Vastikkeet"
-agent: "Taloyhtiöasiat"
+title: Vastikkeet
+agent: Taloyhtiöasiat
 facts:
-  - "Hoitovastike: juoksevat kulut (sähkö, vesi, siivous)"
-  - "Rahoitusvastike: lainanlyhennys (esim. putkiremontti)"
-  - "Kotitalousvähennys taloyhtiön remonttien työ-osuudesta"
+- 'Hoitovastike: juoksevat kulut (sähkö, vesi, siivous)'
+- 'Rahoitusvastike: lainanlyhennys (esim. putkiremontti)'
+- Kotitalousvähennys taloyhtiön remonttien työ-osuudesta
+MAINTENANCE_CHARGE_COMPONENTS:
+- component: Hoitovastike
+  typical_eur_m2_month: 3-6
+  covers: Lämmitys, vesi, jätehuolto, vakuutus, hallinto
+- component: Rahoitusvastike
+  typical_eur_m2_month: 1-5
+  covers: Lainojen lyhennys + korot (perusparannukset)
+- component: Vesimaksu
+  typical_eur_person_month: 15-25
+  note: Henkilöperusteinen tai huoneistokohtainen mittaus
+- component: Autopaikka
+  typical_eur_month: 15-50
+  note: Ulko/sisä/lämmin paikka
+- component: Saunamaksu
+  typical_eur_turn: 2-5
+  note: Vuorokohtainen tai kuukausimaksu

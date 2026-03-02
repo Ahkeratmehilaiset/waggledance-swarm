@@ -141,7 +141,7 @@ eval_questions:
 - q: Mikä on käyttölämpötila-alue (°C)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.temp_range_c
   source: src:LU1
-- q: 'Toimenpide: kÃ¤yttÃ¶lÃ¤mpÃ¶tila-alue (Â°C)?'
+- q: 'Toimenpide: käyttölämpötila-alue (°C)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.temp_range_c.action
   source: src:LU1
 - q: Kausiohje (Kevät)?

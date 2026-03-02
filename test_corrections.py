@@ -60,7 +60,7 @@ def SECTION(title):
     print(f"{'='*60}{W}")
 
 
-# ─── 1. CORRECTIONS COLLECTION ───────────────────
+# --- 1. CORRECTIONS COLLECTION -------------------
 SECTION("1. CHROMADB CORRECTIONS COLLECTION")
 td = tempfile.mkdtemp()
 try:
@@ -85,7 +85,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 2. STORE_CORRECTION ─────────────────────────
+# --- 2. STORE_CORRECTION -------------------------
 SECTION("2. STORE_CORRECTION")
 td = tempfile.mkdtemp()
 try:
@@ -135,7 +135,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 3. CHECK_PREVIOUS_CORRECTIONS (distance < 0.3) ─
+# --- 3. CHECK_PREVIOUS_CORRECTIONS (distance < 0.3) -
 SECTION("3. CHECK_PREVIOUS_CORRECTIONS (distance < 0.3)")
 td = tempfile.mkdtemp()
 try:
@@ -195,7 +195,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 4. AGENT TRUST FLOOR 0.3 ────────────────────
+# --- 4. AGENT TRUST FLOOR 0.3 --------------------
 SECTION("4. AGENT TRUST FLOOR 0.3")
 td = tempfile.mkdtemp()
 try:
@@ -243,7 +243,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 5. FINNISH CORRECTION PHRASE DETECTION ───────
+# --- 5. FINNISH CORRECTION PHRASE DETECTION -------
 SECTION("5. FINNISH CORRECTION PHRASE DETECTION")
 try:
     import ast
@@ -285,7 +285,7 @@ except Exception as e:
     FAIL(f"Correction detection: {e}")
 
 
-# ─── 6. LOGGING WHEN CORRECTION USED ─────────────
+# --- 6. LOGGING WHEN CORRECTION USED -------------
 SECTION("6. LOGGING WHEN CORRECTION INJECTED")
 td = tempfile.mkdtemp()
 try:
@@ -329,7 +329,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 7. CORRECTIONS INJECTION INTO PROMPT ────────
+# --- 7. CORRECTIONS INJECTION INTO PROMPT --------
 SECTION("7. CORRECTIONS CONTEXT INJECTED INTO PROMPT")
 try:
     src = open("hivemind.py", encoding="utf-8").read()
@@ -354,7 +354,7 @@ except Exception as e:
     FAIL(f"Prompt injection: {e}")
 
 
-# ─── 8. GET_AGENT_ERROR_PATTERNS (Failure Twin) ──
+# --- 8. GET_AGENT_ERROR_PATTERNS (Failure Twin) --
 SECTION("8. FAILURE TWIN — AGENT-SPECIFIC ERROR PATTERNS")
 td = tempfile.mkdtemp()
 try:
@@ -379,7 +379,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 9. ERROR TYPE CLASSIFICATION ────────────────
+# --- 9. ERROR TYPE CLASSIFICATION ----------------
 SECTION("9. ERROR TYPE CLASSIFICATION IN STORE_CORRECTION")
 td = tempfile.mkdtemp()
 try:
@@ -433,7 +433,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 10. CORRECTIONS STATS IN CONSCIOUSNESS ──────
+# --- 10. CORRECTIONS STATS IN CONSCIOUSNESS ------
 SECTION("10. CORRECTIONS IN CONSCIOUSNESS STATS")
 td = tempfile.mkdtemp()
 try:
@@ -457,7 +457,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── SUMMARY ─────────────────────────────────────
+# --- SUMMARY -------------------------------------
 print(f"\n{B}{'='*60}")
 print(f"  CORRECTIONS MEMORY TEST SUMMARY")
 print(f"{'='*60}{W}")

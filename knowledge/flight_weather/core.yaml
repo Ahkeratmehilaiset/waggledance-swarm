@@ -1,77 +1,77 @@
-﻿header:
-  agent_id: lentosaa
-  agent_name: LentosÃ¤Ã¤-analyytikko
+header:
+  agent_id: flight_weather
+  agent_name: Lentosää-analyytikko
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:
-- MehilÃ¤isten lentoaktiivisuuden sÃ¤Ã¤-arviointi
-- YhdistÃ¤Ã¤ meteorologin datan mehilÃ¤ishoidon pÃ¤Ã¤tÃ¶ksiin
+- Mehiläisten lentoaktiivisuuden sää-arviointi
+- Yhdistää meteorologin datan mehiläishoidon päätöksiin
 - Korvenranta + muut tarha-alueet
 DECISION_METRICS_AND_THRESHOLDS:
   min_flight_temp_c:
     value: 10
-    note: Satunnaisia lentoja >10Â°C, normaali kerÃ¤ily >13Â°C, optimaalinen >15Â°C
+    note: Satunnaisia lentoja >10°C, normaali keräily >13°C, optimaalinen >15°C
     source: src:LEN1
-    action: T<10Â°C â†’ EI lentoa, ei tarkastuskÃ¤yntiÃ¤. 10-13Â°C â†’ vÃ¤hÃ¤inen aktiivisuus.
-      >15Â°C optimaalinen. Ilmoita tarhaajalle tarkistusikkunat.
+    action: T<10°C → EI lentoa, ei tarkastuskäyntiä. 10-13°C → vähäinen aktiivisuus.
+      >15°C optimaalinen. Ilmoita tarhaajalle tarkistusikkunat.
   max_wind_speed_flight_ms:
     value: 8
-    action: '>8 m/s â†’ mehilÃ¤isten aktiivisuus -50%. >12 m/s â†’ ei lentoa. Tuuleton
-      + aurinko + T>15Â°C = tÃ¤ysaktiivisuus.'
+    action: '>8 m/s → mehiläisten aktiivisuus -50%. >12 m/s → ei lentoa. Tuuleton
+      + aurinko + T>15°C = täysaktiivisuus.'
     source: src:LEN1
   rain_flight_stop:
-    value: Sade >0.5 mm/h â†’ mehilÃ¤iset eivÃ¤t lennÃ¤
+    value: Sade >0.5 mm/h → mehiläiset eivät lennä
     source: src:LEN1
-    action: '>0.5 mm/h â†’ ei lentoa. Sade >3 pv kesÃ¤-heinÃ¤kuussa â†’ tarkista ruokavarasto
+    action: '>0.5 mm/h → ei lentoa. Sade >3 pv kesä-heinäkuussa → tarkista ruokavarasto
       (kulutus ilman tuontia ~0.5 kg/pv).'
   optimal_flying_conditions:
-    value: T >15Â°C, tuuli <5 m/s, ei sadetta, pilvisyys <6/8
+    value: T >15°C, tuuli <5 m/s, ei sadetta, pilvisyys <6/8
     source: src:LSA1
   nectar_secretion_humidity:
-    value: Ilmankosteus 50-80% â†’ meden eritys optimaalista
-    action: Alle 40% â†’ kasvit eivÃ¤t eritÃ¤, ilmoita nektari-informaatikolle
+    value: Ilmankosteus 50-80% → meden eritys optimaalista
+    action: Alle 40% → kasvit eivät eritä, ilmoita nektari-informaatikolle
     source: src:LSA2
   inspection_weather:
-    value: T >15Â°C, ei sadetta, tuuli <5 m/s â†’ sopiva pesÃ¤ntarkistukselle
+    value: T >15°C, ei sadetta, tuuli <5 m/s → sopiva pesäntarkistukselle
     source: src:LSA1
 SEASONAL_RULES:
-- season: KevÃ¤t
-  action: EnsimmÃ¤iset lentopÃ¤ivÃ¤t (>10Â°C) kriittisiÃ¤ pesÃ¤n kunnon indikaattorina.
+- season: Kevät
+  action: Ensimmäiset lentopäivät (>10°C) kriittisiä pesän kunnon indikaattorina.
     Puhdistuslento.
   source: src:LSA1
-- season: KesÃ¤
-  action: Optimaalinen kerÃ¤ilykausi. Helle >30Â°C â†’ mehilÃ¤iset tuulettavat, lisÃ¤Ã¤ vettÃ¤
-    tarhan lÃ¤helle.
+- season: Kesä
+  action: Optimaalinen keräilykausi. Helle >30°C → mehiläiset tuulettavat, lisää vettä
+    tarhan lähelle.
   source: src:LSA1
 - season: Syksy
-  action: LentopÃ¤ivÃ¤t vÃ¤henevÃ¤t. Viimeiset +10Â°C pÃ¤ivÃ¤t â†’ oksaalihappohoito (pesimÃ¤tÃ¶n
+  action: Lentopäivät vähenevät. Viimeiset +10°C päivät → oksaalihappohoito (pesimätön
     kausi alkaa).
   source: src:LSA1
 - season: Talvi
-  action: Ei lentotoimintaa. Poikkeukselliset +5Â°C pÃ¤ivÃ¤t â†’ mehilÃ¤isten ulostuskierto
+  action: Ei lentotoimintaa. Poikkeukselliset +5°C päivät → mehiläisten ulostuskierto
     (positiivinen merkki).
   source: src:LSA1
 FAILURE_MODES:
-- mode: PitkÃ¤ sadejakso kerÃ¤ilykaudella
-  detection: Sade >3 vrk perÃ¤kkÃ¤in kesÃ¤-heinÃ¤kuussa
-  action: Tarkkaile pesien ruokavarastoja, harkitse hÃ¤tÃ¤ruokintaa
+- mode: Pitkä sadejakso keräilykaudella
+  detection: Sade >3 vrk peräkkäin kesä-heinäkuussa
+  action: Tarkkaile pesien ruokavarastoja, harkitse hätäruokintaa
   source: src:LSA1
-- mode: YllÃ¤ttÃ¤vÃ¤ pakkasvuorokausi kevÃ¤Ã¤llÃ¤
-  detection: T <0Â°C huhtikuussa lentokauden jÃ¤lkeen
-  action: 'Ilmoita tarhaajalle: pesÃ¤Ã¤ ei saa avata, riskinÃ¤ sikiÃ¶n kylmettyminen'
+- mode: Yllättävä pakkasvuorokausi keväällä
+  detection: T <0°C huhtikuussa lentokauden jälkeen
+  action: 'Ilmoita tarhaajalle: pesää ei saa avata, riskinä sikiön kylmettyminen'
   source: src:LSA1
 PROCESS_FLOWS:
   daily_assessment:
     steps:
-    - 1. Hae sÃ¤Ã¤ennuste meteorologi-agentilta (3h ja 24h)
+    - 1. Hae sääennuste meteorologi-agentilta (3h ja 24h)
     - 2. Laske lento-oloindeksi (T, tuuli, sade, pilvisyys)
-    - 3. Jos indeksi 'hyvÃ¤' â†’ ilmoita tarhaajalle optimaalisista toimintaajoista
-    - 4. Jos indeksi 'huono' >3pv â†’ varoita tarhaajaa (pesÃ¤t eivÃ¤t kerÃ¤ile, ruokavarat
+    - 3. Jos indeksi 'hyvä' → ilmoita tarhaajalle optimaalisista toimintaajoista
+    - 4. Jos indeksi 'huono' >3pv → varoita tarhaajaa (pesät eivät keräile, ruokavarat
       laskevat)
-    - '5. Ilmoita parveiluvahdille: hyvÃ¤t olosuhteet = korkea parveilriski'
+    - '5. Ilmoita parveiluvahdille: hyvät olosuhteet = korkea parveilriski'
 KNOWLEDGE_TABLES:
 - table_id: TBL_LENT_01
-  title: LentosÃ¤Ã¤-analyytikko â€” Kynnysarvot
+  title: Lentosää-analyytikko — Kynnysarvot
   columns:
   - metric
   - value
@@ -79,80 +79,80 @@ KNOWLEDGE_TABLES:
   rows:
   - metric: min_flight_temp_c
     value: '10'
-    action: T<10Â°C â†’ EI lentoa, ei tarkastuskÃ¤yntiÃ¤. 10-13Â°C â†’ vÃ¤hÃ¤inen aktiivisuus.
-      >15Â°C o
+    action: T<10°C → EI lentoa, ei tarkastuskäyntiä. 10-13°C → vähäinen aktiivisuus.
+      >15°C o
   - metric: max_wind_speed_flight_ms
     value: '8'
-    action: '>8 m/s â†’ mehilÃ¤isten aktiivisuus -50%. >12 m/s â†’ ei lentoa. Tuuleton
+    action: '>8 m/s → mehiläisten aktiivisuus -50%. >12 m/s → ei lentoa. Tuuleton
       + aurinko +'
   - metric: rain_flight_stop
-    value: Sade >0.5 mm/h â†’ mehilÃ¤iset eivÃ¤t lennÃ¤
-    action: '>0.5 mm/h â†’ ei lentoa. Sade >3 pv kesÃ¤-heinÃ¤kuussa â†’ tarkista ruokavarasto
+    value: Sade >0.5 mm/h → mehiläiset eivät lennä
+    action: '>0.5 mm/h → ei lentoa. Sade >3 pv kesä-heinäkuussa → tarkista ruokavarasto
       (kulu'
   - metric: optimal_flying_conditions
-    value: T >15Â°C, tuuli <5 m/s, ei sadetta, pilvisyys <6/8
+    value: T >15°C, tuuli <5 m/s, ei sadetta, pilvisyys <6/8
     action: ''
   - metric: nectar_secretion_humidity
-    value: Ilmankosteus 50-80% â†’ meden eritys optimaalista
-    action: Alle 40% â†’ kasvit eivÃ¤t eritÃ¤, ilmoita nektari-informaatikolle
+    value: Ilmankosteus 50-80% → meden eritys optimaalista
+    action: Alle 40% → kasvit eivät eritä, ilmoita nektari-informaatikolle
   - metric: inspection_weather
-    value: T >15Â°C, ei sadetta, tuuli <5 m/s â†’ sopiva pesÃ¤ntarkistukselle
+    value: T >15°C, ei sadetta, tuuli <5 m/s → sopiva pesäntarkistukselle
     action: ''
   source: src:LENT
 COMPLIANCE_AND_LEGAL: {}
 UNCERTAINTY_NOTES:
-- Mikroilmasto tarhan ympÃ¤ristÃ¶ssÃ¤ voi poiketa yleisennusteesta Â±2Â°C.
-- Lento-oloindeksi on heuristinen â€” mehilÃ¤iset lentÃ¤vÃ¤t joskus epÃ¤optimaalisissa oloissa.
+- Mikroilmasto tarhan ympäristössä voi poiketa yleisennusteesta ±2°C.
+- Lento-oloindeksi on heuristinen — mehiläiset lentävät joskus epäoptimaalisissa oloissa.
 SOURCE_REGISTRY:
   sources:
   - id: src:LSA1
     org: SML
-    title: MehilÃ¤ishoitoa kÃ¤ytÃ¤nnÃ¶ssÃ¤
+    title: Mehiläishoitoa käytännössä
     year: 2011
     url: null
     identifier: ISBN 978-952-92-9184-4
-    supports: LentolÃ¤mpÃ¶tilat, sÃ¤Ã¤-optimaalisuus.
+    supports: Lentolämpötilat, sää-optimaalisuus.
   - id: src:LSA2
     org: LuontoPortti / Luke
-    title: Kasvien nektarieritys ja sÃ¤Ã¤olosuhteet
+    title: Kasvien nektarieritys ja sääolosuhteet
     year: 2024
     url: https://luontoportti.com/
-    supports: Nektarierityksen sÃ¤Ã¤riippuvuus.
+    supports: Nektarierityksen sääriippuvuus.
 eval_questions:
-- q: MikÃ¤ on mehilÃ¤isten minimilentolÃ¤mpÃ¶tila?
+- q: Mikä on mehiläisten minimilentolämpötila?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.min_flight_temp_c.value
   source: src:LSA1
-- q: MikÃ¤ on optimaalinen lentolÃ¤mpÃ¶tila?
+- q: Mikä on optimaalinen lentolämpötila?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.min_flight_temp_c.note
   source: src:LSA1
-- q: MikÃ¤ tuulennopeus estÃ¤Ã¤ lennon?
+- q: Mikä tuulennopeus estää lennon?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.max_wind_speed_flight_ms.value
   source: src:LSA1
-- q: Milloin sade estÃ¤Ã¤ lennon?
+- q: Milloin sade estää lennon?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.rain_flight_stop.value
   source: src:LSA1
-- q: MitkÃ¤ ovat optimaaliset lento-olot?
+- q: Mitkä ovat optimaaliset lento-olot?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.optimal_flying_conditions.value
   source: src:LSA1
 - q: Miten ilmankosteus vaikuttaa nektarieritykseen?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.nectar_secretion_humidity.value
   source: src:LSA2
-- q: Milloin on sopivaa tarkistaa pesÃ¤?
+- q: Milloin on sopivaa tarkistaa pesä?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.inspection_weather.value
   source: src:LSA1
-- q: MitÃ¤ tapahtuu pitkÃ¤ssÃ¤ sadejaksossa?
+- q: Mitä tapahtuu pitkässä sadejaksossa?
   a_ref: FAILURE_MODES[0].action
   source: src:LSA1
-- q: MitÃ¤ kevÃ¤inen pakkasyÃ¶ aiheuttaa?
+- q: Mitä keväinen pakkasyö aiheuttaa?
   a_ref: FAILURE_MODES[1].action
   source: src:LSA1
-- q: MikÃ¤ on puhdistuslento?
+- q: Mikä on puhdistuslento?
   a_ref: SEASONAL_RULES[0].action
   source: src:LSA1
-- q: MitÃ¤ helteellÃ¤ tehdÃ¤Ã¤n tarhalla?
+- q: Mitä helteellä tehdään tarhalla?
   a_ref: SEASONAL_RULES[1].action
   source: src:LSA1
-- q: Milloin oksaalihappohoito tehdÃ¤Ã¤n?
+- q: Milloin oksaalihappohoito tehdään?
   a_ref: SEASONAL_RULES[2].action
   source: src:LSA1
 - q: Onko talvella lentotoimintaa?
@@ -161,81 +161,81 @@ eval_questions:
 - q: Kenelle huonoista oloista ilmoitetaan?
   a_ref: PROCESS_FLOWS.daily_assessment.steps
   source: src:LSA1
-- q: Miten pitkÃ¤ sadejakso havaitaan?
+- q: Miten pitkä sadejakso havaitaan?
   a_ref: FAILURE_MODES[0].detection
   source: src:LSA1
 - q: Kenelle nektari-ongelmasta ilmoitetaan?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.nectar_secretion_humidity.action
   source: src:LSA2
-- q: MikÃ¤ pilvisyys on lennon raja?
+- q: Mikä pilvisyys on lennon raja?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.optimal_flying_conditions.value
   source: src:LSA1
-- q: Voiko lento-oloindeksiin luottaa tÃ¤ysin?
+- q: Voiko lento-oloindeksiin luottaa täysin?
   a_ref: UNCERTAINTY_NOTES
   source: src:LSA1
-- q: MikÃ¤ on poikkeuksellisen talvipÃ¤ivÃ¤n merkki?
+- q: Mikä on poikkeuksellisen talvipäivän merkki?
   a_ref: SEASONAL_RULES[3].action
   source: src:LSA1
-- q: Miten helle vaikuttaa mehilÃ¤isiin?
+- q: Miten helle vaikuttaa mehiläisiin?
   a_ref: SEASONAL_RULES[1].action
   source: src:LSA1
-- q: MikÃ¤ on normaali kerÃ¤ilylÃ¤mpÃ¶tila?
+- q: Mikä on normaali keräilylämpötila?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.min_flight_temp_c.note
   source: src:LSA1
-- q: MitÃ¤ parveiluvahdille kerrotaan hyvÃ¤stÃ¤ sÃ¤Ã¤stÃ¤?
+- q: Mitä parveiluvahdille kerrotaan hyvästä säästä?
   a_ref: PROCESS_FLOWS.daily_assessment.steps
   source: src:LSA1
-- q: MikÃ¤ on kosteuteen liittyvÃ¤ hÃ¤lytysraja?
+- q: Mikä on kosteuteen liittyvä hälytysraja?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.nectar_secretion_humidity.action
   source: src:LSA2
-- q: Paljonko sade vÃ¤hentÃ¤Ã¤ lentoja?
+- q: Paljonko sade vähentää lentoja?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.rain_flight_stop.value
   source: src:LSA1
 - q: Miten mikroilmasto vaikuttaa ennusteeseen?
   a_ref: UNCERTAINTY_NOTES
   source: src:LSA1
-- q: MikÃ¤ on tuulen raja optimaalisille oloille?
+- q: Mikä on tuulen raja optimaalisille oloille?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.optimal_flying_conditions.value
   source: src:LSA1
 - q: Miten lento-oloindeksi lasketaan?
   a_ref: PROCESS_FLOWS.daily_assessment.steps
   source: src:LSA1
-- q: Miksi pesÃ¤Ã¤ ei saa avata kevÃ¤isessÃ¤ pakkasessa?
+- q: Miksi pesää ei saa avata keväisessä pakkasessa?
   a_ref: FAILURE_MODES[1].action
   source: src:LSA1
-- q: Milloin viimeiset +10Â°C pÃ¤ivÃ¤t ovat?
+- q: Milloin viimeiset +10°C päivät ovat?
   a_ref: SEASONAL_RULES[2].action
   source: src:LSA1
-- q: Miten ruokintatarve liittyy sÃ¤Ã¤tilanteeseen?
+- q: Miten ruokintatarve liittyy säätilanteeseen?
   a_ref: FAILURE_MODES[0].action
   source: src:LSA1
-- q: MikÃ¤ on mehilÃ¤isten reaktio >30Â°C lÃ¤mpÃ¶Ã¶n?
+- q: Mikä on mehiläisten reaktio >30°C lämpöön?
   a_ref: SEASONAL_RULES[1].action
   source: src:LSA1
-- q: Milloin ensimmÃ¤iset lentopÃ¤ivÃ¤t ovat?
+- q: Milloin ensimmäiset lentopäivät ovat?
   a_ref: SEASONAL_RULES[0].action
   source: src:LSA1
-- q: MikÃ¤ on +5Â°C talvipÃ¤ivÃ¤n merkitys?
+- q: Mikä on +5°C talvipäivän merkitys?
   a_ref: SEASONAL_RULES[3].action
   source: src:LSA1
-- q: MistÃ¤ sÃ¤Ã¤ennuste haetaan?
+- q: Mistä sääennuste haetaan?
   a_ref: PROCESS_FLOWS.daily_assessment.steps
   source: src:LSA1
-- q: MikÃ¤ on sadejakson kesto ennen hÃ¤lytystausta?
+- q: Mikä on sadejakson kesto ennen hälytystausta?
   a_ref: FAILURE_MODES[0].detection
   source: src:LSA1
-- q: Voivatko mehilÃ¤iset lentÃ¤Ã¤ epÃ¤optimaalisissa oloissa?
+- q: Voivatko mehiläiset lentää epäoptimaalisissa oloissa?
   a_ref: UNCERTAINTY_NOTES
   source: src:LSA1
-- q: Miten 24h ennustetta kÃ¤ytetÃ¤Ã¤n?
+- q: Miten 24h ennustetta käytetään?
   a_ref: PROCESS_FLOWS.daily_assessment.steps
   source: src:LSA1
-- q: MikÃ¤ on sikiÃ¶n riski kevÃ¤isessÃ¤ pakkasessa?
+- q: Mikä on sikiön riski keväisessä pakkasessa?
   a_ref: FAILURE_MODES[1].action
   source: src:LSA1
 - q: Milloin ruokavaroja tarkkaillaan erityisesti?
   a_ref: FAILURE_MODES[0].action
   source: src:LSA1
-- q: MikÃ¤ on kerÃ¤ilyn aloituslÃ¤mpÃ¶tila?
+- q: Mikä on keräilyn aloituslämpötila?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.min_flight_temp_c.note
   source: src:LSA1

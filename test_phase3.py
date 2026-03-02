@@ -58,7 +58,7 @@ def SECTION(title):
     print(f"{'='*60}{W}")
 
 
-# ─── 1. Agent Levels ───────────────────────────
+# --- 1. Agent Levels ---------------------------
 SECTION("1. AGENT LEVELS")
 td = tempfile.mkdtemp()
 try:
@@ -180,7 +180,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 2. LearningTaskQueue ─────────────────────
+# --- 2. LearningTaskQueue ---------------------
 SECTION("2. LEARNING TASK QUEUE")
 from consciousness import LearningTaskQueue, SEASONAL_BOOST, DOMAIN_TOPICS
 
@@ -249,7 +249,7 @@ else:
     FAIL(f"Task diversity low: {len(topics)} unique topics")
 
 
-# ─── 3. Swarm Facts Collection ────────────────
+# --- 3. Swarm Facts Collection ----------------
 SECTION("3. SWARM FACTS COLLECTION")
 from consciousness import MemoryStore
 
@@ -271,7 +271,7 @@ finally:
     shutil.rmtree(td2, ignore_errors=True)
 
 
-# ─── 4. Consciousness Integration ─────────────
+# --- 4. Consciousness Integration -------------
 SECTION("4. CONSCIOUSNESS INTEGRATION")
 from consciousness import Consciousness
 
@@ -303,7 +303,7 @@ finally:
     shutil.rmtree(td3, ignore_errors=True)
 
 
-# ─── 5. Settings YAML ─────────────────────────
+# --- 5. Settings YAML -------------------------
 SECTION("5. SETTINGS YAML")
 import yaml
 
@@ -331,7 +331,7 @@ else:
     FAIL(f"night_mode config: {nm}")
 
 
-# ─── 6. HiveMind Integration ──────────────────
+# --- 6. HiveMind Integration ------------------
 SECTION("6. HIVEMIND INTEGRATION")
 
 with open("hivemind.py", encoding="utf-8") as f:
@@ -416,7 +416,7 @@ else:
     FAIL("Theater Pipe delay MISSING")
 
 
-# ─── 7. Dashboard ──────────────────────────────
+# --- 7. Dashboard ------------------------------
 SECTION("7. DASHBOARD")
 
 with open("web/dashboard.py", encoding="utf-8") as f:
@@ -468,7 +468,7 @@ else:
     FAIL("Dashboard version not updated")
 
 
-# ─── 8. VRAM Impact Check ─────────────────────
+# --- 8. VRAM Impact Check ---------------------
 SECTION("8. VRAM IMPACT CHECK")
 
 # No new model references in Phase 3 code
@@ -498,7 +498,7 @@ if rt_start > 0 and rt_end > 0:
         OK("Round Table: no direct phi4-mini reference")
 
 
-# ─── SUMMARY ──────────────────────────────────
+# --- SUMMARY ----------------------------------
 print(f"\n{B}{'='*60}")
 print(f"  PHASE 3 VERIFICATION SUMMARY")
 print(f"{'='*60}{W}")

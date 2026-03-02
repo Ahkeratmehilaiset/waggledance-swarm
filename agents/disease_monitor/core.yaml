@@ -1,13 +1,12 @@
 header:
   agent_id: disease_monitor
   agent_name: Tautivahti (mehiläiset)
-  name_fi: 'Tautivahti'
+  name_fi: Tautivahti
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - cottage
-  - home
-  - factory
+- cottage
+- home
 priority: high
 ASSUMPTIONS:
 - Seuraa kaikkien tarhojen tautitilannetta
@@ -24,8 +23,7 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:TAU1
   chalkbrood_frame_pct:
     value: 10
-    action: '>10% kehyksistä kalkkisikiötä → vaihda emo, paranna ilmanvaihtoa, poista
-      pahimmat kehykset'
+    action: '>10% kehyksistä kalkkisikiötä → vaihda emo, paranna ilmanvaihtoa, poista pahimmat kehykset'
     source: src:TAU1
   deformed_wing_virus_signs:
     value: Surkastuneet siivet nuorilla mehiläisillä → osoittaa vakavaa varroa-infektiota
@@ -33,8 +31,7 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:TAU1
   afb_tolerance:
     value: 0
-    action: 'AFB: NOLLATOLERANSSI → ilmoita Ruokavirasto 029 530 0400, eristä tarha,
-      ÄLÄ siirrä kehyksiä'
+    action: 'AFB: NOLLATOLERANSSI → ilmoita Ruokavirasto 029 530 0400, eristä tarha, ÄLÄ siirrä kehyksiä'
     source: src:TAU1
   efb_detection:
     value: Mosaiikkimainen sikiöpeite, kellertävät toukat
@@ -42,30 +39,25 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:TAU1
   nosema_spores_per_bee:
     value: 1000000
-    action: '>1 milj. itiötä/mehiläinen → fumagilliinikiellon takia hoito oksa- tai
-      etikkahapolla'
+    action: '>1 milj. itiötä/mehiläinen → fumagilliinikiellon takia hoito oksa- tai etikkahapolla'
     source: src:TAU1
   dwv_detection:
     value: Surkastuneet siivet kuoriutuvilla mehiläisillä
-    action: DWV havaittu → välitön varroa-mittaus. >3/100 → kemiallinen hoito vaikka
-      satokausi.
+    action: DWV havaittu → välitön varroa-mittaus. >3/100 → kemiallinen hoito vaikka satokausi.
     source: src:TAU1
 SEASONAL_RULES:
 - season: Kevät
-  action: 'Ensitarkistus vko 16-18: sikiöpeite, ruokavarasto >5 kg. Nosema-näyte 30
-    mehiläisestä jos epäily. Kalkkisikiön tarkistus.'
+  action: 'Ensitarkistus vko 16-18: sikiöpeite, ruokavarasto >5 kg. Nosema-näyte 30 mehiläisestä jos epäily. Kalkkisikiön
+    tarkistus.'
   source: src:TAU1
 - season: Kesä
-  action: '[vko 22-35] AFB-tarkistus jokaisella satokehysten käsittelyllä. Siirtoihin
-    ei tartuntatarhan kehyksiä. DWV-seuranta.'
+  action: '[vko 22-35] AFB-tarkistus jokaisella satokehysten käsittelyllä. Siirtoihin ei tartuntatarhan kehyksiä. DWV-seuranta.'
   source: src:TAU1
 - season: Syksy
-  action: 'Varroa-hoito elokuussa hunajankorjuun jälkeen: oksaalihappo tai amitraz.
-    Jos >3/100 → toinen kierros syyskuussa.'
+  action: 'Varroa-hoito elokuussa hunajankorjuun jälkeen: oksaalihappo tai amitraz. Jos >3/100 → toinen kierros syyskuussa.'
   source: src:TAU1
 - season: Talvi
-  action: 'Oksaalihappohoito joulukuussa (sikiöttömään aikaan, T<5°C). Kuolleisuusseuranta:
-    >30% → dokumentoi, tarkista varroa+nosema.'
+  action: 'Oksaalihappohoito joulukuussa (sikiöttömään aikaan, T<5°C). Kuolleisuusseuranta: >30% → dokumentoi, tarkista varroa+nosema.'
   source: src:TAU1
 FAILURE_MODES:
 - mode: AFB-löydös
@@ -79,8 +71,7 @@ FAILURE_MODES:
 PROCESS_FLOWS:
 - flow_id: FLOW_TAUT_02
   trigger: 'Kausi vaihtuu: Kevät'
-  action: 'Ensitarkistus vko 16-18: sikiöpeite, ruokavarasto >5 kg. Nosema-näyte 30
-    mehiläisestä jos epäily. Ka'
+  action: 'Ensitarkistus vko 16-18: sikiöpeite, ruokavarasto >5 kg. Nosema-näyte 30 mehiläisestä jos epäily. Ka'
   output: Tarkistuslista
   source: src:TAUT
 - flow_id: FLOW_TAUT_03
@@ -122,8 +113,7 @@ KNOWLEDGE_TABLES:
     source: src:TAU1
 COMPLIANCE_AND_LEGAL:
   afb: AFB on valvottava eläintauti — ilmoitus lakisääteisesti pakollinen [src:TAU1]
-  veterinary: Lääkinnälliset valmisteet vain eläinlääkärin luvalla tai Ruokaviraston
-    hyväksyminä [src:TAU1]
+  veterinary: Lääkinnälliset valmisteet vain eläinlääkärin luvalla tai Ruokaviraston hyväksyminä [src:TAU1]
 UNCERTAINTY_NOTES:
 - Nosema-itiömäärän kynnysarvo vaihtelee lähteittäin 0.5-2 milj.
 - AFB voi olla piilevänä pitkään ennen kliinisiä oireita.
@@ -226,33 +216,33 @@ eval_questions:
 - q: Kenelle massakuolemasta ilmoitetaan?
   a_ref: FAILURE_MODES[1].action
   source: src:TAU1
-- q: 'Operatiivinen päätöskysymys #1?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #2?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #3?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #4?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #5?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #6?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #7?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #8?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #9?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
-- q: 'Operatiivinen päätöskysymys #10?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:TAUT
+- q: Miten kalkkisikiö tunnistetaan pesässä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chalkbrood_frame_pct.value
+  source: src:TAU1
+- q: Mitkä ovat DWV:n merkit?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deformed_wing_virus_signs.value
+  source: src:TAU1
+- q: Mikä on EFB:n tunnistuskynnys?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.efb_threshold.value
+  source: src:TAU1
+- q: Mitä tehdään massakuolemaepäilyssä?
+  a_ref: FAILURE_MODES[1].action
+  source: src:TAU1
+- q: Mikä on noseman itiömäärän hoitoraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.nosema_spore_count.value
+  source: src:TAU1
+- q: Mitä tautiseurantaa tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:TAU1
+- q: Mitä tautiseurantaa tehdään syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:TAU1
+- q: Kenelle AFB:stä ilmoitetaan lakisääteisesti?
+  a_ref: COMPLIANCE_AND_LEGAL.afb
+  source: src:TAU1
+- q: Mitä lääkinnällisiä valmisteita saa käyttää?
+  a_ref: COMPLIANCE_AND_LEGAL.veterinary
+  source: src:TAU1
+- q: Mitkä ovat kalkkisikiön raja-arvot kehyskohtaisesti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chalkbrood_frame_pct.action
+  source: src:TAU1

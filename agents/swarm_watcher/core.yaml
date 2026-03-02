@@ -1,13 +1,12 @@
 header:
   agent_id: swarm_watcher
   agent_name: Parveiluvahti
-  name_fi: 'Parveiluvahti'
+  name_fi: Parveiluvahti
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - cottage
-  - home
-  - factory
+- cottage
+- home
 priority: high
 ASSUMPTIONS:
 - Valvoo parveiluriskiä kaikilla tarhoilla
@@ -182,33 +181,33 @@ eval_questions:
 - q: Miten emoton pesä yhdistetään?
   a_ref: FAILURE_MODES[1].action
   source: src:PAR1
-- q: 'Operatiivinen päätöskysymys #1?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #2?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #3?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #4?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #5?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #6?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #7?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #8?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #9?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
-- q: 'Operatiivinen päätöskysymys #10?'
-  a_ref: DECISION_METRICS_AND_THRESHOLDS
-  source: src:PARV
+- q: Milloin parveilukausi on Suomessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.swarm_season.value
+  source: src:PAR1
+- q: Kuinka usein pesä tarkistetaan parveiluaikana?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.inspection_interval_days.value
+  source: src:PAR1
+- q: Montako emokoppaa laukaisee toimenpiteen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.queen_cell_count_trigger.value
+  source: src:PAR1
+- q: Miten yhdyskunnan ahtaus tunnistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.colony_overcrowding_indicator.value
+  source: src:PAR1
+- q: Millaisella säällä parveilriski on korkein?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weather_swarm_risk.value
+  source: src:PAR1
+- q: Mitkä ovat merkit jo tapahtuneesta parveilusta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.post_swarm_signs.value
+  source: src:PAR1
+- q: Mitä tehdään kun parvi on lähtenyt?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PAR1
+- q: Miten emoton pesä hoidetaan parveilun jälkeen?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PAR1
+- q: Mitä tehdään keväällä parveiluehkäisyyn?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PAR1
+- q: Mikä on huippukauden toimintaohje?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PAR1

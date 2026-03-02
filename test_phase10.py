@@ -68,9 +68,9 @@ def SECTION(title):
     print(f"{'='*60}{W}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # HELPERS
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 def make_mock_consciousness():
     """Create a mock consciousness with memory and embed access."""
@@ -106,9 +106,9 @@ def write_mock_finetune(data_dir, entries):
     return path
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 1. TRAINING DATA COLLECTOR
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("1. TRAINING DATA COLLECTOR")
 
 try:
@@ -209,7 +209,7 @@ try:
     collector5 = TrainingDataCollector(mock_c, data_dir=tmp3)
     count = collector5.collect_from_finetune_live()
     assert count == 0
-    OK("collect_from_finetune_live empty/missing → 0")
+    OK("collect_from_finetune_live empty/missing -> 0")
 except Exception as e:
     FAIL(f"collect_from_finetune_live empty: {e}")
 
@@ -345,9 +345,9 @@ except Exception as e:
     FAIL(f"reset: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 2. PATTERN MATCH ENGINE (V1)
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("2. PATTERN MATCH ENGINE (V1)")
 
 try:
@@ -359,7 +359,7 @@ except Exception as e:
 # 2a. Init
 try:
     v1_dir = make_temp_data_dir()
-    v1 = PatternMatchEngine(data_dir=v1_dir)
+    v1 = PatternMatchEngine(data_dir=v1_dir, load_configs=False)
     assert v1._hits == 0
     assert v1._misses == 0
     assert len(v1._lookup) == 0
@@ -461,9 +461,9 @@ except Exception as e:
     FAIL(f"V1 stats: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 3. CLASSIFIER MODEL (V2)
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("3. CLASSIFIER MODEL (V2)")
 
 try:
@@ -569,9 +569,9 @@ except Exception as e:
     FAIL(f"V2 stats: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 4. LORA MODEL (V3 — stub)
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("4. LORA MODEL (V3 — stub)")
 
 try:
@@ -635,9 +635,9 @@ except Exception as e:
     FAIL(f"V3 stats: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 5. MICRO-MODEL ORCHESTRATOR
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("5. MICRO-MODEL ORCHESTRATOR")
 
 try:
@@ -651,16 +651,16 @@ try:
     mock_c5 = make_mock_consciousness()
     tmp5 = make_temp_data_dir()
     collector5 = TrainingDataCollector(mock_c5, data_dir=tmp5)
-    orch = MicroModelOrchestrator(mock_c5, collector5, data_dir=tmp5)
+    orch = MicroModelOrchestrator(mock_c5, collector5, data_dir=tmp5, load_configs=False)
     assert orch._training_count == 0
     assert orch._last_train_cycle == 0
     OK("Orchestrator init")
 except Exception as e:
     FAIL(f"Orchestrator init: {e}")
 
-# 5b. Predict with no trained models → None
+# 5b. Predict with no trained models -> None
 try:
-    # V1 has no patterns, V2 has no trained model → should return None
+    # V1 has no patterns, V2 has no trained model -> should return None
     assert orch.v1.stats["lookup_count"] == 0
     assert orch.v2._available is False
     result = orch.predict("joku tuntematon kysymys tässä?")
@@ -747,9 +747,9 @@ except Exception as e:
     FAIL(f"Orchestrator stats: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 6. CONSCIOUSNESS INTEGRATION
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("6. CONSCIOUSNESS INTEGRATION")
 
 # 6a. micro_model attribute exists
@@ -821,9 +821,9 @@ except Exception as e:
     FAIL(f"stats micro_model: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 7. HIVEMIND INTEGRATION
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("7. HIVEMIND INTEGRATION")
 
 # 7a. HiveMind has micro_model attribute
@@ -866,9 +866,9 @@ except Exception as e:
     FAIL(f"get_status: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 8. SETTINGS
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("8. SETTINGS CONFIGURATION")
 
 try:
@@ -901,9 +901,9 @@ except Exception as e:
     FAIL(f"Settings: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 9. DASHBOARD
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("9. DASHBOARD ENDPOINTS")
 
 # 9a. /api/micro_model endpoint exists
@@ -937,12 +937,12 @@ except Exception as e:
     FAIL(f"WS micro_training: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 10. EDGE CASES
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("10. EDGE CASES")
 
-# 10a. No training data → no training
+# 10a. No training data -> no training
 try:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -954,18 +954,18 @@ try:
     mock_c10.memory.corrections.count.return_value = 0
     mock_c10.memory.corrections.get.return_value = {"documents": [], "metadatas": []}
     coll10 = TrainingDataCollector(mock_c10, data_dir=empty_dir)
-    orch10 = MicroModelOrchestrator(mock_c10, coll10, data_dir=empty_dir)
+    orch10 = MicroModelOrchestrator(mock_c10, coll10, data_dir=empty_dir, load_configs=False)
 
     loop.run_until_complete(orch10.maybe_train(50))
     # Should complete without error, V1 should have no patterns
     assert orch10._training_count == 1, f"training_count={orch10._training_count}"
     assert orch10.v1.stats["lookup_count"] == 0, f"lookups={orch10.v1.stats['lookup_count']}"
-    OK("No training data → trains with 0 patterns (no crash)")
+    OK("No training data -> trains with 0 patterns (no crash)")
     loop.close()
 except (Exception, AssertionError) as e:
     FAIL(f"No data training: {e}")
 
-# 10b. torch missing → V2 unavailable but V1 works
+# 10b. torch missing -> V2 unavailable but V1 works
 try:
     v1_temp = make_temp_data_dir()
     v1_test = PatternMatchEngine(data_dir=v1_temp)
@@ -986,7 +986,7 @@ try:
 except Exception as e:
     FAIL(f"V1 works V2 graceful: {e}")
 
-# 10c. Empty finetune_live → 0 pairs
+# 10c. Empty finetune_live -> 0 pairs
 try:
     empty_dir2 = make_temp_data_dir()
     # Create empty file
@@ -994,11 +994,11 @@ try:
     coll10c = TrainingDataCollector(mock_c, data_dir=empty_dir2)
     count = coll10c.collect_from_finetune_live()
     assert count == 0
-    OK("Empty finetune_live.jsonl → 0 pairs")
+    OK("Empty finetune_live.jsonl -> 0 pairs")
 except Exception as e:
     FAIL(f"Empty finetune: {e}")
 
-# 10d. Malformed jsonl lines → skipped gracefully
+# 10d. Malformed jsonl lines -> skipped gracefully
 try:
     bad_dir = make_temp_data_dir()
     with open(Path(bad_dir) / "finetune_live.jsonl", "w") as f:
@@ -1082,7 +1082,7 @@ try:
     assert result["method"] == "v2_classifier"
     OK("Orchestrator falls through to V2 when V1 misses")
 except Exception as e:
-    FAIL(f"V1→V2 fallthrough: {e}")
+    FAIL(f"V1->V2 fallthrough: {e}")
 
 # 10h. _normalize_question for collector dedup
 try:
@@ -1095,7 +1095,7 @@ try:
 except Exception as e:
     FAIL(f"Collector normalize: {e}")
 
-# 10i. micro_model disabled in settings → no errors
+# 10i. micro_model disabled in settings -> no errors
 try:
     # Check that hivemind checks config before init
     init_src = inspect.getsource(HiveMind._init_learning_engines)
@@ -1105,15 +1105,15 @@ except Exception as e:
     FAIL(f"Config check: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # CLEANUP
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # Temp dirs are cleaned by OS on reboot; safe to leave
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # FINAL SUMMARY
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{B}{'='*60}")
 print(f"  PHASE 10 TEST SUMMARY")
 print(f"{'='*60}{W}")

@@ -117,31 +117,31 @@ eval_questions:
 - q: Mikä on palovaroittimen testausväli (kk)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_detector_test_months
   source: src:PA1
-- q: 'Toimenpide: palovaroittimen testausvÃ¤li (kk)?'
+- q: 'Toimenpide: palovaroittimen testausväli (kk)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_detector_test_months.action
   source: src:PA1
 - q: Mikä on palovaroittimen vaihtoväli (v)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_detector_replace_years
   source: src:PA1
-- q: 'Toimenpide: palovaroittimen vaihtovÃ¤li (v)?'
+- q: 'Toimenpide: palovaroittimen vaihtoväli (v)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.smoke_detector_replace_years.action
   source: src:PA1
 - q: Mikä on häkähälyttimen raja (ppm)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.co_alarm_ppm
   source: src:PA1
-- q: 'Toimenpide: hÃ¤kÃ¤hÃ¤lyttimen raja (ppm)?'
+- q: 'Toimenpide: häkähälyttimen raja (ppm)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.co_alarm_ppm.action
   source: src:PA1
 - q: Mikä on lämpöanomalia (°C)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.thermal_anomaly_c
   source: src:PA1
-- q: 'Toimenpide: lÃ¤mpÃ¶anomalia (Â°C)?'
+- q: 'Toimenpide: lämpöanomalia (°C)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.thermal_anomaly_c.action
   source: src:PA1
 - q: Mikä on sammuttimen enimmäisetäisyys (m)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.extinguisher_distance_m
   source: src:PA1
-- q: 'Toimenpide: sammuttimen enimmÃ¤isetÃ¤isyys (m)?'
+- q: 'Toimenpide: sammuttimen enimmäisetäisyys (m)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.extinguisher_distance_m.action
   source: src:PA1
 - q: Kausiohje (Kevät)?

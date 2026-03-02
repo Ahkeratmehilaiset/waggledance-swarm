@@ -3,7 +3,7 @@ import sys, os, ast, json, time, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-# ─── D1 tests ─────────────────────────────────────────────────────────────────
+# --- D1 tests -----------------------------------------------------------------
 
 def test_syntax_all():
     """All modified files parse without errors."""
@@ -153,7 +153,7 @@ def test_external_sources_disabled_when_zero():
     print("  [PASS] ext_*_every=0 disables source")
 
 
-# ─── D2 tests ─────────────────────────────────────────────────────────────────
+# --- D2 tests -----------------------------------------------------------------
 
 def test_convergence_detector_exists():
     """ConvergenceDetector class exists in night_enricher."""
@@ -196,7 +196,7 @@ def test_convergence_triggered_when_novelty_low():
     for _ in range(10):
         metrics.record_outcome(passed=True, novel=False)
 
-    # Now check 3 consecutive times (patience=3) → should trigger pause
+    # Now check 3 consecutive times (patience=3) -> should trigger pause
     converged = False
     for i in range(5):
         if cd.check("test_source", metrics):
@@ -217,7 +217,7 @@ def test_convergence_resets_on_novel_results():
                               pause_s=30.0, window_size=5)
     metrics = SourceMetrics()
 
-    # 10 non-novel → low novelty
+    # 10 non-novel -> low novelty
     for _ in range(10):
         metrics.record_outcome(passed=True, novel=False)
 
@@ -227,7 +227,7 @@ def test_convergence_resets_on_novel_results():
     below_count = cd._consecutive_below.get("s", 0)
     assert below_count == 2
 
-    # Add some novel results → novelty rises above threshold
+    # Add some novel results -> novelty rises above threshold
     for _ in range(8):
         metrics.record_outcome(passed=True, novel=True)
 
@@ -260,7 +260,7 @@ def test_night_enricher_has_convergence_in_stats():
     print("  [PASS] ConvergenceDetector integrated into NightEnricher.enrichment_cycle")
 
 
-# ─── D3 tests ─────────────────────────────────────────────────────────────────
+# --- D3 tests -----------------------------------------------------------------
 
 def test_meta_learning_has_generate_weekly_report():
     """MetaLearningEngine.generate_weekly_report() method exists."""

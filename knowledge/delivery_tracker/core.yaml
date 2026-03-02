@@ -15,7 +15,58 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 150
     action: ">150€ EU:n ulkopuolelta → tulliselvitys + ALV"
     source: src:DT1
+  posti_toimitus_paivat:
+    value: 2
+    action: "Postin 1.lk kirje 1–2 arkipäivää, 2.lk 2–4 arkipäivää kotimaa"
+    source: src:DT2
+  matkahuolto_nouto_paivat:
+    value: 7
+    action: "Matkahuollon paketti noudettava 7 vrk kuluessa saapumisilmoituksesta"
+    source: src:DT3
+  tulli_eu_selvitys_paivat:
+    value: 1
+    action: "EU-sisäkauppa: ei tulliselvitystä, vapaa liikkuvuus"
+    source: src:DT4
+  tulli_ulko_selvitys_paivat:
+    value: 5
+    action: "EU:n ulkopuolinen lähetys → tulliselvitys 1–5 arkipäivää"
+    source: src:DT5
+  reklamaatio_paivat:
+    value: 14
+    action: "Verkkokaupan palautusoikeus 14 vrk (kuluttajansuojalaki), reklamaatio kohtuullisessa ajassa"
+    source: src:DT6
+  vakuutus_kynnys_eur:
+    value: 100
+    action: ">100 € arvoinen lähetys → suositellaan lähetysvakuutusta"
+    source: src:DT7
+  lampoherkka_raja_c:
+    value: "2-8"
+    action: "Lämpöherkkä tuote (lääkkeet, elintarvikkeet) → kuljetuslämpötila 2–8°C, seurantalaite mukaan"
+    source: src:DT8
+  seuranta_paivitys_h:
+    value: 4
+    action: "Lähetyksen seurantatiedot päivittyvät tyypillisesti 2–4 h välein"
+    source: src:DT9
+  palautus_ikkuna_paivat:
+    value: 14
+    action: "Verkkokaupan palautus 14 vrk tavaran vastaanottamisesta (EU-direktiivi)"
+    source: src:DT10
 eval_questions:
 - q: Mikä on customs threshold eur?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.customs_threshold_eur.value
   source: src:DT1
+- q: Kuinka monta arkipäivää Postin 1.lk kirjeen toimitus kestää?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.posti_toimitus_paivat.value
+  source: src:DT2
+- q: Kuinka monta päivää aikaa on noutaa Matkahuollon paketti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.matkahuolto_nouto_paivat.value
+  source: src:DT3
+- q: Mikä on verkkokaupan palautusoikeuden kesto päivinä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.reklamaatio_paivat.value
+  source: src:DT6
+- q: Mikä on suositeltava lähetysvakuutuksen arvoraja euroissa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vakuutus_kynnys_eur.value
+  source: src:DT7
+- q: Kuinka usein lähetyksen seurantatiedot päivittyvät?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.seuranta_paivitys_h.value
+  source: src:DT9

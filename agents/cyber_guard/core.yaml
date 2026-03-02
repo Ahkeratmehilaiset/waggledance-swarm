@@ -127,7 +127,7 @@ eval_questions:
 - q: Mikä on haavoittuvuustarkistuksen väli (pv)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.cve_check_days
   source: src:KY1
-- q: 'Toimenpide: haavoittuvuustarkistuksen vÃ¤li (pv)?'
+- q: 'Toimenpide: haavoittuvuustarkistuksen väli (pv)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.cve_check_days.action
   source: src:KY1
 - q: Mikä on unknown device?

@@ -1,6 +1,6 @@
-﻿# Apis mellifera â€” Perustietokanta (Suomi)
+# Apis mellifera — Perustietokanta (Suomi)
 # Operatiivinen hakuteos ammattilaisille
-# LÃ¤hteet: Ruokavirasto, Luke, EFSA, SML, Seeley, Winston, Somerville
+# Lähteet: Ruokavirasto, Luke, EFSA, SML, Seeley, Winston, Somerville
 
 anatomia:
   silmat:
@@ -11,37 +11,37 @@ anatomia:
       tyolainen: "4000-5000"
       kuningatar: "3000-4000"
       kuhnuri: "7000-8000+"
-    ocellit_tehtava: "Mittaavat valon intensiteettiÃ¤ ja polarisaatiota. Ohjaavat vuorokausirytmiÃ¤ ja suunnistusta."
-    nakoalue_nm: "300 (UV) â€“ 650 (keltainen/oranssi)"
-    punainen: "Ei nÃ¤e punaista, nÃ¤kee UV-valon (mesiviitat)"
+    ocellit_tehtava: "Mittaavat valon intensiteettiä ja polarisaatiota. Ohjaavat vuorokausirytmiä ja suunnistusta."
+    nakoalue_nm: "300 (UV) – 650 (keltainen/oranssi)"
+    punainen: "Ei näe punaista, näkee UV-valon (mesiviitat)"
     valkyntatajuus_hz: 300
     ihmisen_valkynta_hz: 50
   hajuaisti:
-    hajureseptorigeenejÃ¤: 170
-    vertailu: "IhmisellÃ¤ ~400, koiralla ~800+. MehilÃ¤inen erottaa satoja yhdisteitÃ¤ hiukkastasolla."
+    hajureseptorigeenejä: 170
+    vertailu: "Ihmisellä ~400, koiralla ~800+. Mehiläinen erottaa satoja yhdisteitä hiukkastasolla."
   siivet:
     maara: 4
     etusiivet: 2
     takasiivet: 2
-    hamuli_koukut: "16-23 mikroskooppista koukkua takasiivessÃ¤"
-    lentolihakset: "EpÃ¤suorat (pitkittÃ¤is- ja pystylihakset keskiruumiissa). EivÃ¤t kiinnity siipiin."
+    hamuli_koukut: "16-23 mikroskooppista koukkua takasiivessä"
+    lentolihakset: "Epäsuorat (pitkittäis- ja pystylihakset keskiruumiissa). Eivät kiinnity siipiin."
 
 fysiologia:
   verenkierto:
-    tyyppi: "Avoin verenkiertojÃ¤rjestelmÃ¤"
-    sydÃ¤n: "PitkÃ¤ putkimainen selkÃ¤putki (dorsal vessel)"
+    tyyppi: "Avoin verenkiertojärjestelmä"
+    sydän: "Pitkä putkimainen selkäputki (dorsal vessel)"
     kammiot: 5
     syke_lepo: 60
     syke_lento: "250-300+"
   hengitys:
     spiraakkelit: "10 paria (2 keskiruumiissa, 8 takaruumiissa)"
     keuhkot: false
-    mekanismi: "Happi trakeaalijÃ¤rjestelmÃ¤Ã¤n ja ilmapusseihin suoraan kudoksille. Takaruumiin pumppaus."
+    mekanismi: "Happi trakeaalijärjestelmään ja ilmapusseihin suoraan kudoksille. Takaruumiin pumppaus."
   termoregulaatio:
-    yksilo: "VaihtolÃ¤mpÃ¶inen"
-    yhdyskunta: "TasalÃ¤mpÃ¶inen superorganismi"
-    lammontuotto: "Lentolihakset irrotetaan siivistÃ¤, vÃ¤risytys (shivering thermogenesis), > 40Â°C"
-    jaahdytys: "Vesi levitetÃ¤Ã¤n kennoihin, haihdutetaan siipiÃ¤ leyhyttelemÃ¤llÃ¤ (evaporatiivinen)"
+    yksilo: "Vaihtolämpöinen"
+    yhdyskunta: "Tasalämpöinen superorganismi"
+    lammontuotto: "Lentolihakset irrotetaan siivistä, värisytys (shivering thermogenesis), > 40°C"
+    jaahdytys: "Vesi levitetään kennoihin, haihdutetaan siipiä leyhyttelemällä (evaporatiivinen)"
 
 kehitys_vrk:
   kuningatar: {muna: 3, toukka: 5.5, kotelo: 7.5, yhteensa: 16}
@@ -55,104 +55,104 @@ kesa_vs_talvimehilainen:
   talvimehilainen_diutinus:
     kuoriutuminen: "Elo-syyskuu"
     elinika: "6-8 kuukautta"
-    fysiologia: "SyÃ¶ massiivisesti siitepÃ¶lyÃ¤, kasvattaa rasvakudoksen, varastoi vitellogeniinia"
-    huom: "Ei kasvata sikiÃ¶itÃ¤ syksyllÃ¤ = sÃ¤Ã¤stÃ¤Ã¤ elinvoiman kevÃ¤Ã¤seen"
+    fysiologia: "Syö massiivisesti siitepölyä, kasvattaa rasvakudoksen, varastoi vitellogeniinia"
+    huom: "Ei kasvata sikiöitä syksyllä = säästää elinvoiman kevääseen"
 
 talvehtiminen:
   talvipallo:
-    muodostumislampo_c: "10-14 (ulkolÃ¤mpÃ¶tila laskiessa)"
+    muodostumislampo_c: "10-14 (ulkolämpötila laskiessa)"
     ydinlampo_sikioton_c: 20
     ydinlampo_sikiointi_c: 34.5
     ulkokuori_minimi_c: 8
-    koomaraja: "Ulkokuori < 8Â°C"
+    koomaraja: "Ulkokuori < 8°C"
   ravintokulutus:
     keskitalvi_kg_kk: 1
     kevat_sikiointi_kg_kk: "3-5"
     kokonaistalvikulutus_suomi_kg: "15-20"
   kuolleisuus:
     normaali_talvitappio_pct: "10-15"
-    suurimmat_syyt: ["Varroan aiheuttamat virukset (syksyllÃ¤)", "NÃ¤lkÃ¤ (kevÃ¤Ã¤llÃ¤)"]
+    suurimmat_syyt: ["Varroan aiheuttamat virukset (syksyllä)", "Nälkä (keväällä)"]
 
 hierarkia:
   kuningatar:
     feromoni: "QMP (Queen Mandibular Pheromone)"
     vaikutukset:
-      - "EstÃ¤Ã¤ tyÃ¶lÃ¤isten munasarjojen kehittymisen"
-      - "EstÃ¤Ã¤ uusien emokennojen rakentamisen (parveilueste)"
+      - "Estää työläisten munasarjojen kehittymisen"
+      - "Estää uusien emokennojen rakentamisen (parveilueste)"
       - "Houkuttelee kuhnureita parittelulennolla"
-      - "PitÃ¤Ã¤ yhdyskunnan koossa (sosiaalinen liima)"
+      - "Pitää yhdyskunnan koossa (sosiaalinen liima)"
   tyolaiset_ikapolyetismi:
-    pv_1_3: "Kennonpuhdistaja (yllÃ¤pitÃ¤Ã¤ hygieniaa)"
-    pv_4_12: "HoitajamehilÃ¤inen (ruokahaararauhaset; toukkien ruokinta emomaidolla ja siitepÃ¶lyllÃ¤)"
-    pv_13_18: "Rakentaja (vaharauhaset; kennoja, siitepÃ¶lyn pakkaus, meden vastaanotto)"
-    pv_19_21: "VartijamehilÃ¤inen (lentoaukko, hÃ¤lytysferomoni)"
-    pv_22_plus: "KenttÃ¤mehilÃ¤inen (mesi, siitepÃ¶ly, vesi, propolis)"
+    pv_1_3: "Kennonpuhdistaja (ylläpitää hygieniaa)"
+    pv_4_12: "Hoitajamehiläinen (ruokahaararauhaset; toukkien ruokinta emomaidolla ja siitepölyllä)"
+    pv_13_18: "Rakentaja (vaharauhaset; kennoja, siitepölyn pakkaus, meden vastaanotto)"
+    pv_19_21: "Vartijamehiläinen (lentoaukko, hälytysferomoni)"
+    pv_22_plus: "Kenttämehiläinen (mesi, siitepöly, vesi, propolis)"
   kuhnurit:
-    synty: "HedelmÃ¶ittymÃ¤ttÃ¶mistÃ¤ munista (haploidi)"
+    synty: "Hedelmöittymättömistä munista (haploidi)"
     tehtava: "Paritella vieraiden kuningattarien kanssa DCA:lla"
-    kuhnurisota: "Elo-syyskuu: tyÃ¶lÃ¤iset lopettavat ruokkimisen, repivÃ¤t/kantavat ulos"
+    kuhnurisota: "Elo-syyskuu: työläiset lopettavat ruokkimisen, repivät/kantavat ulos"
   parveilu:
-    tiedustelijat: "Scouts etsivÃ¤t pesÃ¤koloja"
+    tiedustelijat: "Scouts etsivät pesäkoloja"
     keikutustanssi: "Waggle dance kertoo sijainnin ja laadun"
-    paatoksenteko: "Quorum sensing: tarpeeksi moni tanssii saman kohteen puolesta â†’ parvi siirtyy"
+    paatoksenteko: "Quorum sensing: tarpeeksi moni tanssii saman kohteen puolesta → parvi siirtyy"
 
 taudit_suomi:
   AFB:
-    nimi: "Amerikkalainen toukkamÃ¤tÃ¤"
+    nimi: "Amerikkalainen toukkamätä"
     aiheuttaja: "Paenibacillus larvae"
-    kohde: "Toukka peitetyssÃ¤ kennossa"
-    oireet: ["Kansi tummuu, kuopalle, reikiintyy", "Ruskea liimamainen massa", "MÃ¤tÃ¤ haju"]
-    diagnostiikka: "Ropy test: tikulla vetÃ¤essÃ¤ massa venyy rihmaksi"
-    lakivelvoite: "Valvottava elÃ¤intauti. Ilmoitus kunnanelÃ¤inlÃ¤Ã¤kÃ¤rille. Poltto. Kaluston desinfiointi."
+    kohde: "Toukka peitetyssä kennossa"
+    oireet: ["Kansi tummuu, kuopalle, reikiintyy", "Ruskea liimamainen massa", "Mätä haju"]
+    diagnostiikka: "Ropy test: tikulla vetäessä massa venyy rihmaksi"
+    lakivelvoite: "Valvottava eläintauti. Ilmoitus kunnaneläinlääkärille. Poltto. Kaluston desinfiointi."
   EFB:
-    nimi: "Eurooppalainen toukkamÃ¤tÃ¤"
+    nimi: "Eurooppalainen toukkamätä"
     aiheuttaja: "Melissococcus plutonius"
     kohde: "Toukka avoimessa kennossa"
-    oireet: ["Toukka kiertyy luonnottomasti", "KellertÃ¤vÃ¤, sulaa pohjalle", "Hapan haju"]
-    erot_AFB: "Ennen peittÃ¤mistÃ¤, ei venyvÃ¤Ã¤ massaa. Hoito: emonvaihto + puhdas kalusto."
+    oireet: ["Toukka kiertyy luonnottomasti", "Kellertävä, sulaa pohjalle", "Hapan haju"]
+    erot_AFB: "Ennen peittämistä, ei venyvää massaa. Hoito: emonvaihto + puhdas kalusto."
     lakivelvoite: "Ilmoitettava ja kartoitettava"
   varroa:
     nimi: "Varroa destructor"
-    status: "Suurin yksittÃ¤inen uhka Suomen mehilÃ¤istaloudelle"
-    elinkierto: "Naaras menee kennoon ennen peittÃ¤mistÃ¤ (suosii kuhnurikennoja). Imee rasvakudosta. LisÃ¤Ã¤ntyy suljetussa kennossa."
-    kriittinen_raja: "> 3% elokuussa â†’ vÃ¤litÃ¶n kemiallinen torjunta"
-    diagnostiikka: ["Pohjapahvin seuranta", "Tomusokeritesti / Alkoholipesu (~300 mehilÃ¤istÃ¤)"]
+    status: "Suurin yksittäinen uhka Suomen mehiläistaloudelle"
+    elinkierto: "Naaras menee kennoon ennen peittämistä (suosii kuhnurikennoja). Imee rasvakudosta. Lisääntyy suljetussa kennossa."
+    kriittinen_raja: "> 3% elokuussa → välitön kemiallinen torjunta"
+    diagnostiikka: ["Pohjapahvin seuranta", "Tomusokeritesti / Alkoholipesu (~300 mehiläistä)"]
     torjunta:
-      mekaaninen: "Kuhnurihaudonnan leikkaus alkukesÃ¤stÃ¤"
-      kemiallinen: ["Oksaalihappo (loka-marraskuu, sikiÃ¶ttÃ¶mÃ¤Ã¤n aikaan)", "Muurahaishappo (loppukesÃ¤)", "Tymolivalmisteet"]
+      mekaaninen: "Kuhnurihaudonnan leikkaus alkukesästä"
+      kemiallinen: ["Oksaalihappo (loka-marraskuu, sikiöttömään aikaan)", "Muurahaishappo (loppukesä)", "Tymolivalmisteet"]
   nosema:
-    apis: "KevÃ¤tripulointi (ruskeat tahrat pesÃ¤n etuseinÃ¤ssÃ¤)"
-    ceranae: "Salakavala oireeton nÃ¤Ã¤ntyminen. Yhdyskunta kutistuu."
+    apis: "Kevätripulointi (ruskeat tahrat pesän etuseinässä)"
+    ceranae: "Salakavala oireeton nääntyminen. Yhdyskunta kutistuu."
   virukset:
-    DWV: "Deformed Wing Virus: TÃ¶pÃ¶siipisyys. Merkki pitkÃ¤lle edenneestÃ¤ varroasta."
-    CBPV: "Chronic Bee Paralysis Virus: TÃ¤rinÃ¤, karvattomuus, lentokyvyttÃ¶myys."
+    DWV: "Deformed Wing Virus: Töpösiipisyys. Merkki pitkälle edenneestä varroasta."
+    CBPV: "Chronic Bee Paralysis Virus: Tärinä, karvattomuus, lentokyvyttömyys."
 
 rodut:
   italMeh:
     nimi: "Italialainen (Apis mellifera ligustica)"
     vari: "Keltainen"
-    ominaisuudet: "Isot pesÃ¤t, hyvÃ¤ sadonkerÃ¤Ã¤jÃ¤"
-    talvenkestÃ¤vyys: "Kuluttaa paljon talviruokaa"
+    ominaisuudet: "Isot pesät, hyvä sadonkerääjä"
+    talvenkestävyys: "Kuluttaa paljon talviruokaa"
     aggressiivisuus: "Lauhkea"
     parveiluvietti: "Matala"
   grnMeh:
     nimi: "Krainilainen (Apis mellifera carnica)"
     vari: "Tumma/harmaa"
-    ominaisuudet: "Nopea kevÃ¤tkehitys. Talvehtii pienellÃ¤ ruualla."
-    talvenkestÃ¤vyys: "Erinomainen"
+    ominaisuudet: "Nopea kevätkehitys. Talvehtii pienellä ruualla."
+    talvenkestävyys: "Erinomainen"
     aggressiivisuus: "Lauhkea"
     parveiluvietti: "Korkea"
   buckfast:
     nimi: "Buckfast (Hybridi)"
     ominaisuudet: "Brother Adamin jalostama risteytys"
-    talvenkestÃ¤vyys: "HyvÃ¤, linjakohtainen"
-    aggressiivisuus: "ErittÃ¤in lauhkea"
+    talvenkestävyys: "Hyvä, linjakohtainen"
+    aggressiivisuus: "Erittäin lauhkea"
     parveiluvietti: "Matala"
   mellifera:
-    nimi: "Pohjolan mehilÃ¤inen (Apis mellifera mellifera)"
+    nimi: "Pohjolan mehiläinen (Apis mellifera mellifera)"
     vari: "Musta"
-    ominaisuudet: "AlkuperÃ¤inen. Pienet yhdyskunnat, sÃ¤Ã¤steliÃ¤s."
-    talvenkestÃ¤vyys: "TÃ¤ydellinen"
+    ominaisuudet: "Alkuperäinen. Pienet yhdyskunnat, säästeliäs."
+    talvenkestävyys: "Täydellinen"
     aggressiivisuus: "Herkempi puolustamaan"
     huom: "Suojeltu kanta Suomessa"
 
@@ -168,7 +168,7 @@ ekologia:
   meden_eritys:
     yolampo_min_c: 10
     paivalampo_min_c: 15
-    maapera: "RiittÃ¤vÃ¤n kostea"
+    maapera: "Riittävän kostea"
 
 kriittiset_kynnysarvot:
   lentolampo_c: {alaraja: "10-12", optimi: "15-25", ylaraja: "35-38"}
@@ -176,9 +176,9 @@ kriittiset_kynnysarvot:
   talvipallon_ydin_c: {alaraja: 14, optimi: 20, ylaraja: 35}
   kosteus_talvi_pct: {optimi: "40-60", ylaraja: "80 (kondensoituminen)"}
   talviruoka_kg: {alaraja: "15 (kuolemanvaara)", optimi: "20-25", ylaraja: "25+"}
-  varroa_elokuu_pct: {optimi: 0, ylaraja: "3 (vÃ¤litÃ¶n torjunta)"}
+  varroa_elokuu_pct: {optimi: 0, ylaraja: "3 (välitön torjunta)"}
 
 lahteet:
   viranomaiset: ["Ruokavirasto", "Luke", "EFSA"]
-  ammattijarjestot: ["SML (Suomen MehilÃ¤ishoitajain Liitto)"]
-  kirjallisuus: ["MehilÃ¤ishoitoa kÃ¤ytÃ¤nnÃ¶ssÃ¤ (SML)", "Honey Bee Democracy (Seeley)", "The Biology of the Honey Bee (Winston)", "Fat Bees - Skinny Bees (Somerville)"]
+  ammattijarjestot: ["SML (Suomen Mehiläishoitajain Liitto)"]
+  kirjallisuus: ["Mehiläishoitoa käytännössä (SML)", "Honey Bee Democracy (Seeley)", "The Biology of the Honey Bee (Winston)", "Fat Bees - Skinny Bees (Somerville)"]

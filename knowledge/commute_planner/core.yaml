@@ -15,7 +15,58 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 45
     action: ">45 min → harkitse etätyötä"
     source: src:CP1
+  hsl_kausilippu_eur_kk:
+    value: 62.70
+    action: "HSL AB-vyöhyke kausilippu 62,70 €/kk (2026), ABCD 119,50 €/kk"
+    source: src:CP2
+  pyoraily_max_km:
+    value: 10
+    action: "<10 km työmatka → pyöräily nopein ja halvin vaihtoehto kesäkaudella"
+    source: src:CP3
+  sahkoauto_lataus_h:
+    value: 8
+    action: "Sähköauto kotilataus (3.7 kW) ~8 h täyteen, pikalataus (50 kW) ~45 min 80%"
+    source: src:CP4
+  etatyo_saasto_eur_kk:
+    value: 150
+    action: "Etätyö säästää keskimäärin ~150 €/kk (liput, polttoaine, lounas, pysäköinti)"
+    source: src:CP5
+  ruuhka_aamu:
+    value: "07:00-09:00"
+    action: "Aamuruuhka 07:00–09:00, iltaruuhka 15:30–17:30 → vältä näitä kellonaikoja"
+    source: src:CP6
+  ruuhka_ilta:
+    value: "15:30-17:30"
+    action: "Iltaruuhka 15:30–17:30 → joustavilla työajoilla voi välttää"
+    source: src:CP7
+  pysakointi_keskusta_eur_h:
+    value: 4
+    action: "Helsingin keskustan pysäköinti 3–5 €/h, kuukausipaikka 150–300 €/kk"
+    source: src:CP8
+  talviajo_renkaat_pvm:
+    value: "1.11-31.3"
+    action: "Talvirenkaat pakollisia 1.11.–31.3., suositeltavia 1.10.–30.4."
+    source: src:CP9
+  sahkopotkulauta_nopeus_kmh:
+    value: 25
+    action: "Sähköpotkulaudan maksiminopeus 25 km/h, kypärä suositeltava"
+    source: src:CP10
 eval_questions:
 - q: Mikä on commute time min?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.commute_time_min.value
   source: src:CP1
+- q: Paljonko HSL AB-vyöhykkeen kausilippu maksaa kuukaudessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hsl_kausilippu_eur_kk.value
+  source: src:CP2
+- q: Mikä on pyöräilylle sopiva enimmäistyömatka kilometreissä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pyoraily_max_km.value
+  source: src:CP3
+- q: Paljonko etätyö säästää keskimäärin kuukaudessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.etatyo_saasto_eur_kk.value
+  source: src:CP5
+- q: Mihin kellonaikoihin aamuruuhka ajoittuu?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ruuhka_aamu.value
+  source: src:CP6
+- q: Milloin talvirenkaat ovat pakollisia Suomessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.talviajo_renkaat_pvm.value
+  source: src:CP9

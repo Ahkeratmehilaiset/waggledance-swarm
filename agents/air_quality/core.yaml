@@ -138,10 +138,10 @@ eval_questions:
 - q: Mikä on pm10 ug?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.pm10_ug
   source: src:IL1
-- q: Mikä on sisÃ¤ilman CO (ppm)?
+- q: Mikä on sisäilman CO (ppm)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.co_ppm_indoor
   source: src:IL1
-- q: Mitä tehdään kun sisÃ¤ilman CO (ppm) ylittyy?
+- q: Mitä tehdään kun sisäilman CO (ppm) ylittyy?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.co_ppm_indoor.action
   source: src:IL1
 - q: Mikä on pollen birch?

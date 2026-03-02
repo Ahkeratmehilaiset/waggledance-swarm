@@ -69,17 +69,304 @@ except ImportError:
 # Sekundääriavainsanat (weight=1): yleiset
 WEIGHTED_ROUTING = {
     "hive_security": {
-        "primary": ["karhu", "ilves", "peura", "varkaus", "pesävaurio", "suojau"],
-        "secondary": ["hiiri", "tarha"],
+        "primary": ["karhu", "ilves", "pesävaurio", "pesävarkau", "eläinvahinko"],
+        "secondary": ["suojau", "tarha"],
     },
     "beekeeper": {
         "primary": ["mehiläi", "pesä", "hunaj", "vaha", "emo", "varroa",
-                     "linkoa", "punkk", "kuningatar", "yhdyskun"],
-        "secondary": ["tarha", "hoito", "talveh"],
+                     "linkous", "punkk", "kuningatar", "yhdyskun"],
+        "secondary": ["tarha", "hoito", "talveh", "carnica", "buckfast"],
     },
     "disease_monitor": {
-        "primary": ["tauti", "nosema", "afb", "efb", "kalkki", "sikiö"],
+        "primary": ["tauti", "nosema", "afb", "efb", "kalkki", "sikiötauti",
+                     "toukkamätä", "esikotelomätä", "mehiläistauti"],
         "secondary": ["varroa"],
+    },
+    "swarm_watcher": {
+        "primary": ["parveilu", "parveil", "emokoppa", "parviloukku"],
+        "secondary": ["emontilanne"],
+    },
+    "meteorologist": {
+        "primary": ["sää", "ennuste", "ilmanpaine"],
+        "secondary": ["lämpötila", "pilvi", "uv"],
+    },
+    "ornithologist": {
+        "primary": ["lintu", "lintulaji", "lintubongau", "lintuhavainto"],
+        "secondary": ["pesint", "muuttolintu", "birdnet"],
+    },
+    "forester": {
+        "primary": ["metsä", "metsänhoito", "hakkuu", "harvennus"],
+        "secondary": ["taimi", "tukkipuu", "myrskytuho"],
+    },
+    "sauna_master": {
+        "primary": ["sauna", "löyly", "kiuas"],
+        "secondary": ["laude"],
+    },
+    "electrician": {
+        "primary": ["sähkö", "sulake", "vikavirtasuoja", "sähköasennu"],
+        "secondary": ["pistorasia"],
+    },
+    "horticulturist": {
+        "primary": ["puutarh", "istutus", "kasvihuone", "lannoitu"],
+        "secondary": ["kasvi", "kastelu", "siemen", "nurmi"],
+    },
+    "wilderness_chef": {
+        "primary": ["ruoka", "resepti", "grillau", "kokkau"],
+        "secondary": ["nuotio"],
+    },
+    "nectar_scout": {
+        "primary": ["satokau", "nektari", "satopaino", "mehiläislaidun"],
+        "secondary": ["kukinta", "satokenh"],
+    },
+    "flight_weather": {
+        "primary": ["lentosää", "lentokeli"],
+        "secondary": ["lennätys", "lentolämpö"],
+    },
+    "hive_temperature": {
+        "primary": ["pesälämpö", "pesän lämpö"],
+        "secondary": ["pesäkosteu", "lämpötila-anturi"],
+    },
+    # ── Nature & Environment ──
+    "entomologist": {
+        "primary": ["hyöntei", "pölyttäj", "perhos", "kovakuoriai"],
+        "secondary": ["niveljalk", "hyönteislaji"],
+    },
+    "phenologist": {
+        "primary": ["fenologi", "kasvukau", "kukinnan alku"],
+        "secondary": ["vuodenaik", "silmu"],
+    },
+    "wildlife_ranger": {
+        "primary": ["riista", "hirvi", "kettu", "susi", "petoeläin"],
+        "secondary": ["metsästy", "riistakamera"],
+    },
+    "nature_photographer": {
+        "primary": ["valokuv", "luontokuv", "kamerakulma"],
+        "secondary": ["nauhoitu", "ptz"],
+    },
+    "pest_control": {
+        "primary": ["myyrä", "jyrsij", "rotta", "tuhoeläin"],
+        "secondary": ["hiiritorjun", "loukku", "kärppä"],
+    },
+    # ── Water & Weather ──
+    "limnologist": {
+        "primary": ["järvi", "vedenlaatu", "levä", "vesinäyte"],
+        "secondary": ["happi"],
+    },
+    "fishing_guide": {
+        "primary": ["kalastus", "virveli", "hauki", "kalaverkko"],
+        "secondary": ["koukku", "ahven", "verkko"],
+    },
+    "shore_guard": {
+        "primary": ["ranta", "vedenpinta", "tulva"],
+        "secondary": ["vesiraja"],
+    },
+    "ice_specialist": {
+        "primary": ["jää", "jääpeite", "kantokyky", "avanto"],
+        "secondary": ["jäätyminen", "pilkkimi"],
+    },
+    "storm_alert": {
+        "primary": ["myrsky", "ukkonen", "tuulenpuuska"],
+        "secondary": ["varoitus"],
+    },
+    "microclimate": {
+        "primary": ["mikroilmasto", "paikallissää"],
+        "secondary": ["lämpösaareke"],
+    },
+    "air_quality": {
+        "primary": ["ilmanlaatu", "hiukkaspitoisuu", "pm2.5"],
+        "secondary": ["pöly"],
+    },
+    "frost_soil": {
+        "primary": ["routa", "routaraja", "maaperä"],
+        "secondary": ["sulaminen"],
+    },
+    # ── Property & Technical ──
+    "hvac_specialist": {
+        "primary": ["putki", "vesiputki", "viemäri", "vedenpaine"],
+        "secondary": ["lämmitys"],
+    },
+    "carpenter": {
+        "primary": ["rakentami", "hirsi", "terassi", "perustus"],
+        "secondary": ["lauta", "sahau"],
+    },
+    "chimney_sweep": {
+        "primary": ["nuohou", "savuhormi", "hormi"],
+        "secondary": ["tuhka"],
+    },
+    "lighting_master": {
+        "primary": ["valaistus", "led", "valosuunnittelu"],
+        "secondary": ["lamppu"],
+    },
+    "fire_officer": {
+        "primary": ["paloturvallisuus", "palohälytin", "sammutin"],
+        "secondary": ["häkävaroitin", "tulipalo"],
+    },
+    "equipment_tech": {
+        "primary": ["laitehuolto", "iot", "antenni"],
+        "secondary": ["akku"],
+    },
+    # ── Security ──
+    "cyber_guard": {
+        "primary": ["tietoturva", "hakkeri", "salasana", "palomuuri"],
+        "secondary": ["haavoittuvu"],
+    },
+    "locksmith": {
+        "primary": ["lukko", "älylukko", "kulunvalvonta"],
+        "secondary": ["hälytys"],
+    },
+    "yard_guard": {
+        "primary": ["piha", "liiketunnistin", "kameravalvonta"],
+        "secondary": ["ihmistunnist"],
+    },
+    "privacy_guard": {
+        "primary": ["yksityisyy", "tietosuoj", "gdpr"],
+        "secondary": ["kameranauhoitu"],
+    },
+    # ── Home & Lifestyle ──
+    "apartment_board": {
+        "primary": ["taloyhtiö", "vastike", "putkiremontti", "yhtiökokous"],
+        "secondary": ["remontti-ilmoitu"],
+    },
+    "smart_home": {
+        "primary": ["zigbee", "matter", "home assistant", "shelly"],
+        "secondary": ["automaatio", "kotiautomaatio"],
+    },
+    "indoor_garden": {
+        "primary": ["huonekasvi", "kasvilamppu", "sisäpuutarha"],
+        "secondary": ["kasvuvalo"],
+    },
+    "child_safety": {
+        "primary": ["lapsi", "vauva", "turvaport", "lapsilukko"],
+        "secondary": ["myrkky"],
+    },
+    "pet_care": {
+        "primary": ["lemmikki", "koira", "kissa", "eläinlääkäri"],
+        "secondary": ["rokotus"],
+    },
+    "delivery_tracker": {
+        "primary": ["paketti", "toimitus", "seuranta", "lähetys"],
+        "secondary": ["tulli", "posti"],
+    },
+    "commute_planner": {
+        "primary": ["työmatkaliikenne", "hsl", "juna"],
+        "secondary": ["pyöräily", "liikenne"],
+    },
+    "noise_monitor": {
+        "primary": ["melu", "desibeli", "hiljaisuusaika"],
+        "secondary": ["äänieristys"],
+    },
+    "budget_tracker": {
+        "primary": ["budjetti", "meno", "säästö"],
+        "secondary": ["vero", "tuki", "kela"],
+    },
+    "energy_advisor": {
+        "primary": ["sähköhinta", "spot", "aurinkopaneeli", "lämpöpumppu"],
+        "secondary": ["energiansäästö"],
+    },
+    # ── Food & Leisure ──
+    "baker": {
+        "primary": ["leivonta", "leipä", "kakku", "taikina"],
+        "secondary": ["uuni"],
+    },
+    "nutritionist": {
+        "primary": ["ravitsemu", "kalori", "vitamiini"],
+        "secondary": ["dieetti"],
+    },
+    "entertainment_chief": {
+        "primary": ["peli", "lautapeli", "playstation", "ps5"],
+        "secondary": ["viihde"],
+    },
+    "movie_expert": {
+        "primary": ["elokuva", "leffa", "sarja", "netflix"],
+        "secondary": ["yle", "imdb"],
+    },
+    # ── Factory ──
+    "production_line": {
+        "primary": ["oee", "sykliaika", "pullonkaula", "tuotanto"],
+        "secondary": ["lean"],
+    },
+    "quality_inspector": {
+        "primary": ["spc", "cpk", "fmea", "8d", "laatu"],
+        "secondary": ["virhe"],
+    },
+    "shift_manager": {
+        "primary": ["vuoro", "ylityö", "työvuoro"],
+        "secondary": ["vuoronvaihto"],
+    },
+    "safety_officer": {
+        "primary": ["työturvallisuus", "riskinarviointi", "suojain"],
+        "secondary": ["läheltäpiti"],
+    },
+    "maintenance_planner": {
+        "primary": ["kunnossapito", "mtbf", "varaosa"],
+        "secondary": ["ennakkohuolto"],
+    },
+    "supply_chain": {
+        "primary": ["toimitusketju", "varastosaldo", "toimittaja"],
+        "secondary": ["hankinta"],
+    },
+    "energy_manager": {
+        "primary": ["tehokerroin", "kompressori", "paineilma"],
+        "secondary": ["huipputeho"],
+    },
+    "waste_handler": {
+        "primary": ["jätehuolto", "ongelmajäte", "vaarallinen jäte"],
+        "secondary": ["ewc"],
+    },
+    "lab_analyst": {
+        "primary": ["kalibrointi", "mittaus", "puhdastila", "gmp"],
+        "secondary": ["laboratorio"],
+    },
+    "compliance": {
+        "primary": ["iso", "auditointi", "sertifiointi"],
+        "secondary": ["standardi"],
+    },
+    "forklift_fleet": {
+        "primary": ["trukki", "lava", "kuormaus"],
+        "secondary": ["lastaus"],
+    },
+    # ── Cottage ──
+    "well_water": {
+        "primary": ["kaivo", "kaivovesi", "suodatin"],
+        "secondary": ["rauta", "koliformi", "veden ph"],
+    },
+    "septic_manager": {
+        "primary": ["jätevesi", "saostuskaivo", "umpikaivo"],
+        "secondary": ["viemäröinti"],
+    },
+    "firewood": {
+        "primary": ["polttopuu", "halko", "pilkkominen"],
+        "secondary": ["kuivatus", "klapiteline"],
+    },
+    # ── Admin & Logistics ──
+    "inventory_chief": {
+        "primary": ["inventaari", "tarvike", "tilaus"],
+        "secondary": ["varastoseuranta"],
+    },
+    "recycling": {
+        "primary": ["kierräty", "komposti", "lajittelu"],
+        "secondary": ["pullonpalautu"],
+    },
+    "cleaning_manager": {
+        "primary": ["siivou", "pesu", "puhdistus"],
+        "secondary": ["desinfiointi"],
+    },
+    "logistics": {
+        "primary": ["reitti", "matka", "kuljetus"],
+        "secondary": ["ajoaika", "kilometri"],
+    },
+    # ── Science ──
+    "astronomer": {
+        "primary": ["tähti", "revontulet", "planeetta"],
+        "secondary": ["tähtitaivas", "aurora"],
+    },
+    "light_shadow": {
+        "primary": ["varjo", "aurinkokulma", "päivänvalo"],
+        "secondary": ["paneeli"],
+    },
+    "math_physicist": {
+        "primary": ["laskenta", "kaava", "tilasto"],
+        "secondary": ["fysiikka", "matematiikka"],
     },
 }
 PRIMARY_WEIGHT = 5
@@ -91,6 +378,9 @@ MASTER_NEGATIVE_KEYWORDS = [
     "varroa", "afb", "efb", "nosema", "pesä", "mehiläi",
     "karhu", "ilves", "sähkö", "putki", "sauna",
     "metsä", "lintu", "kala", "jää", "routa",
+    "trukki", "kalibrointi", "zigbee", "taloyhtiö", "lemmikki",
+    "melu", "jätehuolto", "iso", "auditointi", "kaivo",
+    "polttopuu", "gdpr", "nuohou", "paloturvallisuus",
 ]
 
 # ── AUDIT FIX: Päivämääräharha-estosääntö ────────────────
@@ -623,6 +913,19 @@ DELEGATION RULES (IMPORTANT):
         feeds_cfg = self.config.get("feeds", {})
         if feeds_cfg.get("enabled", False):
             try:
+                # Resolve weather locations from active profile
+                active_profile = self.config.get("profile", "cottage")
+                profile_locs = feeds_cfg.get("profile_locations", {})
+                locations = profile_locs.get(active_profile, [])
+                if locations:
+                    weather_cfg = feeds_cfg.get("weather", {})
+                    weather_cfg["locations"] = locations
+                    feeds_cfg["weather"] = weather_cfg
+                    print(f"  📍 Weather locations ({active_profile}): {', '.join(locations)}", flush=True)
+                elif active_profile == "gadget":
+                    feeds_cfg.setdefault("weather", {})["enabled"] = False
+                    print(f"  ℹ️  Weather disabled for gadget profile", flush=True)
+
                 from integrations.data_scheduler import DataFeedScheduler
                 self.data_feeds = DataFeedScheduler(
                     config=feeds_cfg,
@@ -1879,6 +2182,11 @@ DELEGATION RULES (IMPORTANT):
                     if self._heartbeat_count % 5 == 0:
                         self._save_learning_progress()
 
+                # ── Weekly report trigger (runs even outside night mode) ──
+                # Check every 50 heartbeats (~50 min) if weekly report is due
+                if self._heartbeat_count % 50 == 0:
+                    asyncio.create_task(self._maybe_weekly_report())
+
                 # Odottavat tehtävät (max 1 kerrallaan)
                 if _pending < _MAX_PENDING:
                     pending_tasks = await self.memory.get_tasks(status="pending")
@@ -2948,6 +3256,30 @@ DELEGATION RULES (IMPORTANT):
                 json.dump(progress, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    async def _maybe_weekly_report(self):
+        """Check if weekly report is due and generate it (runs from heartbeat)."""
+        try:
+            if not self.meta_learning:
+                await self._init_learning_engines()
+            if self.meta_learning and self.meta_learning.is_due():
+                log.info("📊 Weekly report triggered from heartbeat")
+                report = await self.meta_learning.weekly_analysis()
+                applied = await self.meta_learning.auto_apply_safe_optimizations(
+                    report.get("suggestions", []))
+                try:
+                    self.meta_learning.generate_weekly_report()
+                except Exception as _we:
+                    log.debug(f"weekly_report.json write failed: {_we}")
+                await self._notify_ws("meta_report", {
+                    "suggestions": len(report.get("suggestions", [])),
+                    "optimizations_applied": applied,
+                    "memory_stats": report.get("memory_stats", {}),
+                    "weakest_areas": report.get("weakest_areas", []),
+                    "chat_metrics": report.get("chat_metrics", {}),
+                })
+        except Exception as e:
+            log.error(f"Weekly report heartbeat error: {e}")
 
     async def _idle_research(self, agent):
         """Idle-agentti tutkii autonomisesti."""

@@ -67,9 +67,9 @@ def SECTION(title):
     print(f"{'='*60}{W}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # Helper: mock consciousness
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 def make_mock_consciousness():
     """Create a mock Consciousness object for testing."""
     c = MagicMock()
@@ -109,9 +109,9 @@ def make_mock_llm(content="VALID"):
     return llm
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 1. WEB LEARNING AGENT
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("1. WEB LEARNING AGENT")
 
 from core.web_learner import WebLearningAgent
@@ -248,9 +248,9 @@ else:
     FAIL(f"Gap detection failed: {gap}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 2. KNOWLEDGE DISTILLER
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("2. KNOWLEDGE DISTILLER")
 
 from core.knowledge_distiller import KnowledgeDistiller
@@ -368,9 +368,9 @@ else:
     del os.environ["ANTHROPIC_API_KEY"]
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 3. META-LEARNING ENGINE
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("3. META-LEARNING ENGINE")
 
 from core.meta_learning import MetaLearningEngine
@@ -498,7 +498,7 @@ else:
     FAIL(f"Expected 1 applied, got {applied}")
 
 if c_opt.hot_cache._max_size == 600:
-    OK(f"Hot cache size increased 500 → 600")
+    OK(f"Hot cache size increased 500 -> 600")
 else:
     WARN(f"Hot cache size: {c_opt.hot_cache._max_size}")
 
@@ -523,9 +523,9 @@ else:
     FAIL(f"Stats missing keys: {stats.keys()}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 4. CODE SELF-REVIEW
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("4. CODE SELF-REVIEW")
 
 from core.code_reviewer import CodeSelfReview
@@ -703,9 +703,9 @@ finally:
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 5. HIVEMIND INTEGRATION
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("5. HIVEMIND INTEGRATION")
 
 from hivemind import HiveMind
@@ -805,9 +805,9 @@ else:
     FAIL("stop() should save code_reviewer suggestions")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 6. SETTINGS.YAML
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("6. SETTINGS.YAML — New config keys")
 
 import yaml
@@ -841,9 +841,9 @@ else:
     FAIL("configs/settings.yaml not found")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 7. DASHBOARD — New endpoints
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("7. DASHBOARD — Endpoints & WS events")
 
 dashboard_path = Path("web/dashboard.py")
@@ -896,9 +896,9 @@ else:
     FAIL("web/dashboard.py not found")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 8. EDGE CASES
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("8. EDGE CASES — disabled features, empty data")
 
 # 8a. All features disabled in init_learning_engines
@@ -925,7 +925,7 @@ try:
     if (hm2.enrichment is None and hm2.web_learner is None
             and hm2.distiller is None and hm2.meta_learning is None
             and hm2.code_reviewer is None):
-        OK("All disabled → no engines initialized")
+        OK("All disabled -> no engines initialized")
     else:
         FAIL("Some engines initialized despite being disabled")
 except Exception as e:
@@ -944,7 +944,7 @@ async def test_no_websearch():
 
 result = asyncio.get_event_loop().run_until_complete(test_no_websearch())
 if result == 0:
-    OK("No web search tool → returns 0 gracefully")
+    OK("No web search tool -> returns 0 gracefully")
 else:
     FAIL(f"Expected 0, got {result}")
 
@@ -981,9 +981,9 @@ else:
     WARN(f"Parse of unstructured: {result}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # 9. GRACEFUL DEGRADATION
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 SECTION("9. GRACEFUL DEGRADATION")
 
 # 9a. KnowledgeDistiller without anthropic
@@ -1075,9 +1075,9 @@ else:
     FAIL(f"Expected False on LLM error, got {result}")
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # FINAL REPORT
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 print(f"\n{B}{'='*60}")
 print(f"  PHASE 9 TEST RESULTS")
 print(f"{'='*60}{W}")

@@ -114,7 +114,7 @@ advanced_learning:
     burst_max_share: 0.80
     throttle_pass_rate: 0.15
     throttle_window: 30
-    throttle_pause_seconds: 600
+    throttle_pause_seconds: 300
     gap_high_threshold: 20
     gap_medium_threshold: 50
     gap_normal_threshold: 100
@@ -125,9 +125,9 @@ advanced_learning:
     ext_distill_every_cycles: 20
     ext_rss_every_cycles: 50
     # D2: Convergence detection
-    convergence_novelty_threshold: 0.20
-    convergence_patience: 3
-    convergence_pause_s: 1800
+    convergence_novelty_threshold: 0.10
+    convergence_patience: 5
+    convergence_pause_s: 900
     convergence_window: 20
   memory_limits:
     enabled: true
@@ -151,13 +151,21 @@ advanced_learning:
       - round_table
       - distillation
 feeds:
-  enabled: false
+  enabled: true
+  # Weather locations per profile — device fetches weather for where it physically is
+  profile_locations:
+    gadget: []          # too small for feeds
+    cottage:
+      - Kouvola
+    home:
+      - Helsinki
+    factory:
+      - Helsinki
+      - Espoo
   weather:
     enabled: true
     provider: fmi
-    locations:
-      - Helsinki
-      - Kouvola
+    # locations resolved from profile_locations + active profile at runtime
     interval_min: 30
   electricity:
     enabled: true
@@ -173,3 +181,20 @@ feeds:
       - url: "https://www.ruokavirasto.fi/rss"
         name: Ruokavirasto
         critical: true
+voice:
+  enabled: false
+  stt:
+    model: "small"
+    device: "cpu"
+    language: "fi"
+    wake_word: true
+    vad_silence_s: 1.5
+  tts:
+    voice: "fi_FI-harri-medium"
+    data_dir: "data/piper_models"
+    speed: 1.0
+elastic_scaling:
+  enabled: true
+  auto_detect: true
+  vram_unload_threshold_pct: 90
+  queue_spawn_threshold: 10

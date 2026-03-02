@@ -1,12 +1,12 @@
 header:
   agent_id: cleaning_manager
   agent_name: Siivousvastaava
-  name_fi: 'Siivousvastaava'
+  name_fi: Siivousvastaava
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - home
-  - factory
+- home
+- factory
 priority: low
 ASSUMPTIONS:
 - Korvenrannan mökkikiinteistö
@@ -39,18 +39,15 @@ SEASONAL_RULES:
   action: '[vko 22-35] Terassin pesu. Saunan pesu tiheämmin. Hyönteisten jäljet.'
   source: src:SI1
 - season: Syksy
-  action: '[vko 36-48] Syysisosiivous ennen talvea. Vesipisteiden puhdistus. Saunan
-    kuivatus.'
+  action: '[vko 36-48] Syysisosiivous ennen talvea. Vesipisteiden puhdistus. Saunan kuivatus.'
   source: src:SI1
 - season: Talvi
-  action: '[vko 49-13] Vähemmän ulkosiivousta. Sisäilman kosteus seurannassa. Tulisijan
-    tuhkan siivous.'
+  action: '[vko 49-13] Vähemmän ulkosiivousta. Sisäilman kosteus seurannassa. Tulisijan tuhkan siivous.'
   source: src:SI1
 FAILURE_MODES:
 - mode: Homeen löytö
   detection: Tumma laikku, haju, allergiaoireita
-  action: FFP2-maski, pesu (hypkloriitti 1:10), syyn selvitys (kosteuslähde), ilmoita
-    timpurille
+  action: FFP2-maski, pesu (hypkloriitti 1:10), syyn selvitys (kosteuslähde), ilmoita timpurille
   source: src:SI1
 - mode: Viemärin haju
   detection: Paha haju lattikaivosta
@@ -64,8 +61,7 @@ PROCESS_FLOWS:
   source: src:SIIV
 - flow_id: FLOW_SIIV_03
   trigger: 'Havaittu: Homeen löytö'
-  action: FFP2-maski, pesu (hypkloriitti 1:10), syyn selvitys (kosteuslähde), ilmoita
-    timpurille
+  action: FFP2-maski, pesu (hypkloriitti 1:10), syyn selvitys (kosteuslähde), ilmoita timpurille
   output: Poikkeamaraportti
   source: src:SIIV
 - flow_id: FLOW_SIIV_04
@@ -119,16 +115,16 @@ eval_questions:
 - q: 'Toimenpide: hometunnistus?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.mold_detection.action
   source: src:SI1
-- q: Mikä on sisÃ¤ilman CO2-pitoisuus (ppm)?
+- q: Mikä on sisäilman CO2-pitoisuus (ppm)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_air_quality_co2_ppm
   source: src:SI1
-- q: 'Toimenpide: sisÃ¤ilman CO2-pitoisuus (ppm)?'
+- q: 'Toimenpide: sisäilman CO2-pitoisuus (ppm)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_air_quality_co2_ppm.action
   source: src:SI1
 - q: Mikä on syväpuhdistusväli (kk)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.deep_clean_interval_months
   source: src:SI1
-- q: 'Toimenpide: syvÃ¤puhdistusvÃ¤li (kk)?'
+- q: 'Toimenpide: syväpuhdistusväli (kk)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.deep_clean_interval_months.action
   source: src:SI1
 - q: Mikä on cleaning products eco?
@@ -170,63 +166,33 @@ eval_questions:
 - q: Oletukset?
   a_ref: ASSUMPTIONS
   source: src:SI1
-- q: 'Operatiivinen lisäkysymys #1?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #2?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #3?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #4?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #5?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #6?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #7?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #8?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #9?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #10?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #11?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #12?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #13?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #14?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #15?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #16?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #17?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #18?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #19?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
-- q: 'Operatiivinen lisäkysymys #20?'
-  a_ref: ASSUMPTIONS
-  source: src:SI1
+- q: Kuinka usein sauna pestään perusteellisesti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sauna_wash_interval_weeks.value
+  source: src:SII1
+- q: Mikä on sisäilman CO2-pitoisuuden yläraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.indoor_air_quality_co2_ppm.value
+  source: src:SII1
+- q: Kuinka usein tehdään syväpuhdistus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.deep_clean_interval_months.value
+  source: src:SII1
+- q: Miten homeenlöytö käsitellään?
+  a_ref: FAILURE_MODES[0].action
+  source: src:SII1
+- q: Miten viemärinhaju selvitetään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:SII1
+- q: Mikä on homeen tunnistusohje?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mold_detection.value
+  source: src:SII1
+- q: Suositaanko ympäristöystävällisiä pesuaineita?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cleaning_products_eco.value
+  source: src:SII1
+- q: Mitä siivoustehtäviä tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:SII1
+- q: Mitä siivoustehtäviä tehdään syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:SII1
+- q: Mitä siivoustehtäviä tehdään talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SII1

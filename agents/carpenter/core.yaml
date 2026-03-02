@@ -163,13 +163,13 @@ eval_questions:
 - q: Mikä on katon lumikuorma (kg/m²)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_snow_load_kg_m2
   source: src:TI1
-- q: 'Toimenpide: katon lumikuorma (kg/mÂ²)?'
+- q: 'Toimenpide: katon lumikuorma (kg/m²)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_snow_load_kg_m2.action
   source: src:TI1
 - q: Mikä on katon tarkistusväli (v)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_inspection_years
   source: src:TI1
-- q: 'Toimenpide: katon tarkistusvÃ¤li (v)?'
+- q: 'Toimenpide: katon tarkistusväli (v)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.roof_inspection_years.action
   source: src:TI1
 - q: Mikä on ventilation crawlspace?

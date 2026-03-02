@@ -1,84 +1,84 @@
-﻿header:
-  agent_id: elokuva_asiantuntija
+header:
+  agent_id: movie_expert
   agent_name: Elokuva-asiantuntija (Suomi-elokuvat)
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:
 - Suomalaisen elokuvan tuntemus
-- MÃ¶kkielokuvaillat
+- Mökkielokuvaillat
 - Suositukset tunnelman, kauden ja seuran mukaan
 DECISION_METRICS_AND_THRESHOLDS:
   audience_rating_min:
     value: 6.5
-    action: IMDb <6.5 â†’ suosittele vain jos erityinen syy (ohjaaja, teema). <5.0 â†’
-      Ã¤lÃ¤ suosittele.
+    action: IMDb <6.5 → suosittele vain jos erityinen syy (ohjaaja, teema). <5.0 →
+      älä suosittele.
     source: src:EL1
   runtime_max_min:
     value: 120
-    action: '>120 min arki-illalle â†’ varoita (''pitkÃ¤ elokuva''). >180 min â†’ ehdota
+    action: '>120 min arki-illalle → varoita (''pitkä elokuva''). >180 min → ehdota
       viikonloppua.'
     source: src:EL1
   content_rating:
     value: K7/K12/K16/K18
-    action: Lapsia <16v paikalla â†’ max K12. Rikkomus â†’ Kuvaohjelmalaki 710/2011.
+    action: Lapsia <16v paikalla → max K12. Rikkomus → Kuvaohjelmalaki 710/2011.
     source: src:EL2
   genre_mood_mapping:
-    value: 'Kevyt: komedia, JÃ¤nnittÃ¤vÃ¤: trilleri, SyvÃ¤llinen: draama, Klassikko: sota/historia'
+    value: 'Kevyt: komedia, Jännittävä: trilleri, Syvällinen: draama, Klassikko: sota/historia'
     source: src:EL1
   streaming_availability:
     value: Yle Areena (ilmainen), Elisa Viihde, Netflix (rajallinen FI-valikoima)
     source: src:EL1
   streaming_check:
-    value: Tarkista Yle Areena â†’ Elisa Viihde â†’ Netflix â†’ kirjasto
-    action: Ei lÃ¶ydy mistÃ¤Ã¤n â†’ ilmoita kÃ¤yttÃ¤jÃ¤lle, ehdota DVD/Blu-ray lainaus kirjastosta.
+    value: Tarkista Yle Areena → Elisa Viihde → Netflix → kirjasto
+    action: Ei löydy mistään → ilmoita käyttäjälle, ehdota DVD/Blu-ray lainaus kirjastosta.
     source: src:EL1
   mood_algorithm:
-    value: 'SyÃ¶tteenÃ¤: tunnelma + seurue + kausi'
-    action: PimeÃ¤ talvi-ilta + 2 hlÃ¶ â†’ draama/jÃ¤nnitys. KesÃ¤ilta + ryhmÃ¤ â†’ komedia.
-      ItsenÃ¤isyyspÃ¤ivÃ¤ â†’ Tuntematon sotilas.
+    value: 'Syötteenä: tunnelma + seurue + kausi'
+    action: Pimeä talvi-ilta + 2 hlö → draama/jännitys. Kesäilta + ryhmä → komedia.
+      Itsenäisyyspäivä → Tuntematon sotilas.
     source: src:EL1
 SEASONAL_RULES:
-- season: KevÃ¤t
-  action: '[vko 14-22] KevÃ¤tvÃ¤symys â†’ kevyet komediat. PÃ¤Ã¤siÃ¤iselokuvat.'
+- season: Kevät
+  action: '[vko 14-22] Kevätväsymys → kevyet komediat. Pääsiäiselokuvat.'
   source: src:EL1
-- season: KesÃ¤
-  action: '[vko 22-35] MÃ¶kkielokuvat ulkona (projektorilla?). KevyitÃ¤ kesÃ¤komedioita.'
+- season: Kesä
+  action: '[vko 22-35] Mökkielokuvat ulkona (projektorilla?). Kevyitä kesäkomedioita.'
   source: src:EL1
 - season: Syksy
-  action: '[vko 36-48] PimenevÃ¤t illat â†’ pidemmÃ¤t draamat, trilogiat. Dokumentit.'
+  action: '[vko 36-48] Pimenevät illat → pidemmät draamat, trilogiat. Dokumentit.'
   source: src:EL1
 - season: Talvi
-  action: '[vko 49-13] ItsenÃ¤isyyspÃ¤ivÃ¤: Tuntematon sotilas. Joulu: klassikoita. PitkÃ¤t
-    illat â†’ sarjat.'
+  action: '[vko 49-13] Itsenäisyyspäivä: Tuntematon sotilas. Joulu: klassikoita. Pitkät
+    illat → sarjat.'
   source: src:EL1
 FAILURE_MODES:
-- mode: Elokuva ei saatavilla streamingissÃ¤
-  detection: Hakutulokset tyhjÃ¤t
+- mode: Elokuva ei saatavilla streamingissä
+  detection: Hakutulokset tyhjät
   action: Tarkista Yle Areena, Elisa, kirjasto (DVD/Blu-ray lainaus)
   source: src:EL1
-- mode: IkÃ¤rajaylitys (lapset paikalla)
+- mode: Ikärajaylitys (lapset paikalla)
   detection: Elokuva K16 + lapsi <16v
   action: Vaihda elokuva tai sovi aikuisten ilta erikseen
   source: src:EL1
 PROCESS_FLOWS:
 - flow_id: FLOW_ELOK_01
-  trigger: audience_rating_min ylittÃ¤Ã¤ kynnysarvon (6.5)
-  action: IMDb <6.5 â†’ suosittele vain jos erityinen syy (ohjaaja, teema). <5.0 â†’ Ã¤lÃ¤
+  trigger: audience_rating_min ylittää kynnysarvon (6.5)
+  action: IMDb <6.5 → suosittele vain jos erityinen syy (ohjaaja, teema). <5.0 → älä
     suosittele.
   output: Tilanneraportti
   source: src:ELOK
 - flow_id: FLOW_ELOK_02
-  trigger: 'Kausi vaihtuu: KevÃ¤t'
-  action: '[vko 14-22] KevÃ¤tvÃ¤symys â†’ kevyet komediat. PÃ¤Ã¤siÃ¤iselokuvat.'
+  trigger: 'Kausi vaihtuu: Kevät'
+  action: '[vko 14-22] Kevätväsymys → kevyet komediat. Pääsiäiselokuvat.'
   output: Tarkistuslista
   source: src:ELOK
 - flow_id: FLOW_ELOK_03
-  trigger: 'Havaittu: Elokuva ei saatavilla streamingissÃ¤'
+  trigger: 'Havaittu: Elokuva ei saatavilla streamingissä'
   action: Tarkista Yle Areena, Elisa, kirjasto (DVD/Blu-ray lainaus)
   output: Poikkeamaraportti
   source: src:ELOK
 - flow_id: FLOW_ELOK_04
-  trigger: SÃ¤Ã¤nnÃ¶llinen heartbeat
+  trigger: Säännöllinen heartbeat
   action: 'elokuva_asiantuntija: rutiiniarviointi'
   output: Status-raportti
   source: src:ELOK
@@ -96,11 +96,11 @@ KNOWLEDGE_TABLES:
     genre: Draama
     rating: K12
     runtime: 107
-  - title: HÃ¤rmÃ¤ (2012)
+  - title: Härmä (2012)
     genre: Toiminta/historia
     rating: K16
     runtime: 115
-  - title: Miehen tyÃ¶ (2007)
+  - title: Miehen työ (2007)
     genre: Draama
     rating: K12
     runtime: 92
@@ -109,7 +109,7 @@ KNOWLEDGE_TABLES:
     rating: K7
     runtime: 92
 COMPLIANCE_AND_LEGAL:
-  ikarajat: 'Kuvaohjelmalaki 710/2011: ikÃ¤rajat sitovia [src:EL2]'
+  ikarajat: 'Kuvaohjelmalaki 710/2011: ikärajat sitovia [src:EL2]'
 UNCERTAINTY_NOTES:
 - Streaming-valikoimat muuttuvat kuukausittain.
 SOURCE_REGISTRY:
@@ -125,27 +125,27 @@ SOURCE_REGISTRY:
     title: Kuvaohjelmalaki 710/2011
     year: 2011
     url: https://www.kavi.fi/
-    supports: IkÃ¤rajat.
+    supports: Ikärajat.
 eval_questions:
-- q: MikÃ¤ on katsojaarvostelun minimiraja?
+- q: Mikä on katsojaarvostelun minimiraja?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.audience_rating_min
   source: src:EL1
-- q: MikÃ¤ on elokuvan enimmÃ¤iskesto (min)?
+- q: Mikä on elokuvan enimmäiskesto (min)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.runtime_max_min
   source: src:EL1
-- q: MikÃ¤ on sisÃ¤ltÃ¶luokitus (ikÃ¤raja)?
+- q: Mikä on sisältöluokitus (ikäraja)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.content_rating
   source: src:EL1
-- q: MikÃ¤ on lajityypin tunnelmakartoitus?
+- q: Mikä on lajityypin tunnelmakartoitus?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.genre_mood_mapping
   source: src:EL1
-- q: MikÃ¤ on suoratoistopalvelun saatavuus?
+- q: Mikä on suoratoistopalvelun saatavuus?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.streaming_availability
   source: src:EL1
-- q: Kausiohje (KevÃ¤t)?
+- q: Kausiohje (Kevät)?
   a_ref: SEASONAL_RULES[0].action
   source: src:EL1
-- q: Kausiohje (KesÃ¤)?
+- q: Kausiohje (Kesä)?
   a_ref: SEASONAL_RULES[1].action
   source: src:EL1
 - q: Kausiohje (Syksy)?
@@ -160,90 +160,90 @@ eval_questions:
 - q: 'Toiminta: Elokuva ei saatavilla streamin?'
   a_ref: FAILURE_MODES[0].action
   source: src:EL1
-- q: 'Havainto: IkÃ¤rajaylitys (lapset paikalla?'
+- q: 'Havainto: Ikärajaylitys (lapset paikalla?'
   a_ref: FAILURE_MODES[1].detection
   source: src:EL1
-- q: 'Toiminta: IkÃ¤rajaylitys (lapset paikalla?'
+- q: 'Toiminta: Ikärajaylitys (lapset paikalla?'
   a_ref: FAILURE_MODES[1].action
   source: src:EL1
-- q: 'SÃ¤Ã¤ntÃ¶: ikarajat?'
+- q: 'Sääntö: ikarajat?'
   a_ref: COMPLIANCE_AND_LEGAL.ikarajat
   source: src:EL1
-- q: EpÃ¤varmuudet?
+- q: Epävarmuudet?
   a_ref: UNCERTAINTY_NOTES
   source: src:EL1
 - q: Oletukset?
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #1?'
+- q: 'Operatiivinen lisäkysymys #1?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #2?'
+- q: 'Operatiivinen lisäkysymys #2?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #3?'
+- q: 'Operatiivinen lisäkysymys #3?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #4?'
+- q: 'Operatiivinen lisäkysymys #4?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #5?'
+- q: 'Operatiivinen lisäkysymys #5?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #6?'
+- q: 'Operatiivinen lisäkysymys #6?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #7?'
+- q: 'Operatiivinen lisäkysymys #7?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #8?'
+- q: 'Operatiivinen lisäkysymys #8?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #9?'
+- q: 'Operatiivinen lisäkysymys #9?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #10?'
+- q: 'Operatiivinen lisäkysymys #10?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #11?'
+- q: 'Operatiivinen lisäkysymys #11?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #12?'
+- q: 'Operatiivinen lisäkysymys #12?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #13?'
+- q: 'Operatiivinen lisäkysymys #13?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #14?'
+- q: 'Operatiivinen lisäkysymys #14?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #15?'
+- q: 'Operatiivinen lisäkysymys #15?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #16?'
+- q: 'Operatiivinen lisäkysymys #16?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #17?'
+- q: 'Operatiivinen lisäkysymys #17?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #18?'
+- q: 'Operatiivinen lisäkysymys #18?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #19?'
+- q: 'Operatiivinen lisäkysymys #19?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #20?'
+- q: 'Operatiivinen lisäkysymys #20?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #21?'
+- q: 'Operatiivinen lisäkysymys #21?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #22?'
+- q: 'Operatiivinen lisäkysymys #22?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #23?'
+- q: 'Operatiivinen lisäkysymys #23?'
   a_ref: ASSUMPTIONS
   source: src:EL1
-- q: 'Operatiivinen lisÃ¤kysymys #24?'
+- q: 'Operatiivinen lisäkysymys #24?'
   a_ref: ASSUMPTIONS
   source: src:EL1

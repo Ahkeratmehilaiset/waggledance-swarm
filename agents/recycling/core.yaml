@@ -1,12 +1,12 @@
 header:
   agent_id: recycling
   agent_name: Kierrätys- ja jäteneuvoja
-  name_fi: 'Kierrätys ja jäte'
+  name_fi: Kierrätys ja jäte
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:
-  - home
-  - factory
+- home
+- factory
 priority: medium
 ASSUMPTIONS:
 - 'Korvenranta: haja-asutusalueen jätehuolto'
@@ -18,13 +18,12 @@ DECISION_METRICS_AND_THRESHOLDS:
     source: src:KI1
   compost_temp_c:
     value: 50-65°C aktiivivaiheessa
-    action: <40°C → lisää typpipitoista (ruoantähteet, nurmi). >70°C → käännä (liian
-      kuuma tappaa hyödylliset). 50-65°C = optimaalinen 2-4 vko.
+    action: <40°C → lisää typpipitoista (ruoantähteet, nurmi). >70°C → käännä (liian kuuma tappaa hyödylliset). 50-65°C =
+      optimaalinen 2-4 vko.
     source: src:KI1
   hazardous_waste:
     value: Akut, maalit, lääkkeet, kemikaalit → keräyspiste
-    action: Akut/maalit/lääkkeet → Kouvolan jäteasema (Käyrälammentie). EI sekajätteeseen.
-      Asbesti → erikoiskeräys ilmoituksella.
+    action: Akut/maalit/lääkkeet → Kouvolan jäteasema (Käyrälammentie). EI sekajätteeseen. Asbesti → erikoiskeräys ilmoituksella.
     source: src:KI2
   bin_pickup_interval_weeks:
     value: 'Seka: 4 vko, bio: 2 vko (kesä), muut: sopimuksen mukaan'
@@ -33,19 +32,16 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 55
     note: 'EU-tavoite 2025: 55% kierrätysaste'
     source: src:KI2
-    action: '<55% → tarkista lajittelukäytännöt. Suurin ongelma: muovi seassa biossa,
-      biojäte seassa sekassa.'
+    action: '<55% → tarkista lajittelukäytännöt. Suurin ongelma: muovi seassa biossa, biojäte seassa sekassa.'
 SEASONAL_RULES:
 - season: Kevät
   action: '[vko 14-22] Kompostin herätys (käännä, lisää tuoretta). Kevätsiivousjätteet.'
   source: src:KI1
 - season: Kesä
-  action: '[vko 22-35] Bio-jätteen haju → biojäteastian pesu. Komposti aktiivinen.
-    Puutarhajäte.'
+  action: '[vko 22-35] Bio-jätteen haju → biojäteastian pesu. Komposti aktiivinen. Puutarhajäte.'
   source: src:KI1
 - season: Syksy
-  action: '[vko 36-48] Puutarhajätteet kompostiin. Vaarallisten jätteiden keräyspäivä
-    (kunta).'
+  action: '[vko 36-48] Puutarhajätteet kompostiin. Vaarallisten jätteiden keräyspäivä (kunta).'
   source: src:KI2
 - season: Talvi
   action: '[vko 49-13] Bio-jäte jäätyy → kompostointi hidastuu. Tuhkan käsittely (puulämmitys).'
@@ -88,19 +84,16 @@ KNOWLEDGE_TABLES:
     action: ''
   - metric: compost_temp_c
     value: 50-65°C aktiivivaiheessa
-    action: <40°C → lisää typpipitoista (ruoantähteet, nurmi). >70°C → käännä (liian
-      kuuma t
+    action: <40°C → lisää typpipitoista (ruoantähteet, nurmi). >70°C → käännä (liian kuuma t
   - metric: hazardous_waste
     value: Akut, maalit, lääkkeet, kemikaalit → keräyspiste
-    action: Akut/maalit/lääkkeet → Kouvolan jäteasema (Käyrälammentie). EI sekajätteeseen.
-      A
+    action: Akut/maalit/lääkkeet → Kouvolan jäteasema (Käyrälammentie). EI sekajätteeseen. A
   - metric: bin_pickup_interval_weeks
     value: 'Seka: 4 vko, bio: 2 vko (kesä), muut: sopimuksen mukaan'
     action: ''
   - metric: recycling_rate_target_pct
     value: '55'
-    action: '<55% → tarkista lajittelukäytännöt. Suurin ongelma: muovi seassa biossa,
-      biojäte'
+    action: '<55% → tarkista lajittelukäytännöt. Suurin ongelma: muovi seassa biossa, biojäte'
   source: src:KIER
 COMPLIANCE_AND_LEGAL:
   jatelaki: 'Jätelaki 646/2011: lajitteluvelvollisuus [src:KI2]'
@@ -128,7 +121,7 @@ eval_questions:
 - q: Mikä on kompostin lämpötila (°C)?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.compost_temp_c
   source: src:KI1
-- q: 'Toimenpide: kompostin lÃ¤mpÃ¶tila (Â°C)?'
+- q: 'Toimenpide: kompostin lämpötila (°C)?'
   a_ref: DECISION_METRICS_AND_THRESHOLDS.compost_temp_c.action
   source: src:KI1
 - q: Mikä on hazardous waste?
@@ -179,66 +172,33 @@ eval_questions:
 - q: Oletukset?
   a_ref: ASSUMPTIONS
   source: src:KI1
-- q: 'Operatiivinen lisäkysymys #1?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #2?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #3?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #4?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #5?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #6?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #7?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #8?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #9?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #10?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #11?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #12?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #13?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #14?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #15?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #16?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #17?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #18?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #19?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #20?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
-- q: 'Operatiivinen lisäkysymys #21?'
-  a_ref: ASSUMPTIONS
-  source: src:KI1
+- q: Mitkä ovat jätteen lajittelukategoriat?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.waste_sorting_categories.value
+  source: src:KIE1
+- q: Mikä on kompostin oikea lämpötila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.compost_temp_c.value
+  source: src:KIE1
+- q: Miten vaarallinen jäte käsitellään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hazardous_waste.value
+  source: src:KIE1
+- q: Kuinka usein jäteastia tyhjennetään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bin_pickup_interval_weeks.value
+  source: src:KIE1
+- q: Mikä on kierrätystavoite prosentteina?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.recycling_rate_target_pct.value
+  source: src:KIE1
+- q: Mitä tehdään kun komposti haisee?
+  a_ref: FAILURE_MODES[0].action
+  source: src:KIE1
+- q: Miten vaarallinen jäte sekajätteessä käsitellään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:KIE1
+- q: Mitä kierrätystehtäviä tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:KIE1
+- q: Mitä kierrätystehtäviä tehdään syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:KIE1
+- q: Mitä kierrätystehtäviä tehdään talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:KIE1

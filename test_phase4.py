@@ -69,7 +69,7 @@ def SECTION(title):
     print(f"{'='*60}{W}")
 
 
-# ─── 1. ChromaDB Collections ──────────────────────
+# --- 1. ChromaDB Collections ----------------------
 SECTION("1. CHROMADB COLLECTIONS (corrections, episodes)")
 td = tempfile.mkdtemp()
 try:
@@ -107,7 +107,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 2. Contrastive Learning ──────────────────────
+# --- 2. Contrastive Learning ----------------------
 SECTION("2. CONTRASTIVE LEARNING")
 td = tempfile.mkdtemp()
 try:
@@ -174,7 +174,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 3. Active Learning ──────────────────────────
+# --- 3. Active Learning --------------------------
 SECTION("3. ACTIVE LEARNING")
 td = tempfile.mkdtemp()
 try:
@@ -269,7 +269,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 4. Embedding Augmentation ──────────────────
+# --- 4. Embedding Augmentation ------------------
 SECTION("4. EMBEDDING AUGMENTATION")
 td = tempfile.mkdtemp()
 try:
@@ -333,7 +333,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 5. Multi-hop RAG ────────────────────────────
+# --- 5. Multi-hop RAG ----------------------------
 SECTION("5. MULTI-HOP RAG")
 td = tempfile.mkdtemp()
 try:
@@ -401,7 +401,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 6. Episodic Memory ─────────────────────────
+# --- 6. Episodic Memory -------------------------
 SECTION("6. EPISODIC MEMORY")
 td = tempfile.mkdtemp()
 try:
@@ -490,7 +490,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 7. Seasonal Scoring Boost ──────────────────
+# --- 7. Seasonal Scoring Boost ------------------
 SECTION("7. SEASONAL SCORING BOOST")
 td = tempfile.mkdtemp()
 try:
@@ -556,7 +556,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── 8. Distillation Prep ───────────────────────
+# --- 8. Distillation Prep -----------------------
 SECTION("8. DISTILLATION PREP (tools/distill_from_opus.py)")
 try:
     # Add tools/ to path for import (no __init__.py in tools/)
@@ -608,7 +608,7 @@ except Exception as e:
     FAIL(f"Distillation Prep: {e}")
 
 
-# ─── 9. HiveMind Integration ────────────────────
+# --- 9. HiveMind Integration --------------------
 SECTION("9. HIVEMIND INTEGRATION")
 try:
     src = open("hivemind.py", encoding="utf-8").read()
@@ -703,7 +703,7 @@ except Exception as e:
     FAIL(f"HiveMind integration: {e}")
 
 
-# ─── 10. Dashboard ───────────────────────────────
+# --- 10. Dashboard -------------------------------
 SECTION("10. DASHBOARD")
 try:
     src = open("web/dashboard.py", encoding="utf-8").read()
@@ -767,7 +767,7 @@ except Exception as e:
     FAIL(f"Dashboard: {e}")
 
 
-# ─── 11. Settings YAML ──────────────────────────
+# --- 11. Settings YAML --------------------------
 SECTION("11. SETTINGS YAML")
 try:
     import yaml
@@ -803,7 +803,7 @@ except Exception as e:
     FAIL(f"Settings YAML: {e}")
 
 
-# ─── 12. VRAM Impact ────────────────────────────
+# --- 12. VRAM Impact ----------------------------
 SECTION("12. VRAM IMPACT CHECK")
 try:
     # Phase 4 should NOT introduce new GPU models
@@ -837,7 +837,7 @@ except Exception as e:
     FAIL(f"VRAM check: {e}")
 
 
-# ─── 13. Consciousness Stats Property ───────────
+# --- 13. Consciousness Stats Property -----------
 SECTION("13. CONSCIOUSNESS STATS")
 td = tempfile.mkdtemp()
 try:
@@ -862,7 +862,7 @@ finally:
     shutil.rmtree(td, ignore_errors=True)
 
 
-# ─── SUMMARY ────────────────────────────────────
+# --- SUMMARY ------------------------------------
 print(f"\n{B}{'='*60}")
 print(f"  PHASE 4 TEST SUMMARY")
 print(f"{'='*60}{W}")

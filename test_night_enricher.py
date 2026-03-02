@@ -263,7 +263,7 @@ def test_quality_gate():
     candidate = EnrichmentCandidate(
         text="Varroa mites are a major pest in beekeeping",
         source_id="self_generate",
-        agent_id="tarhaaja",
+        agent_id="beekeeper",
         gap_topic="varroa",
     )
 
@@ -313,7 +313,7 @@ def test_quality_gate():
 
     neg_candidate = EnrichmentCandidate(
         text="Varroa mites are harmful to bees",
-        source_id="self_generate", agent_id="tautivahti",
+        source_id="self_generate", agent_id="disease_monitor",
         gap_topic="varroa")
 
     verdict = asyncio.run(gate.check(neg_candidate))
@@ -443,13 +443,13 @@ def test_self_generate_source():
     check(src.source_id == "self_generate", "source_id correct")
 
     candidates = asyncio.run(
-        src.generate_candidates("varroa", "tautivahti", 3))
+        src.generate_candidates("varroa", "disease_monitor", 3))
     check(len(candidates) == 3,
           f"generates 3 candidates (got {len(candidates)})")
     if candidates:
         check(candidates[0].source_id == "self_generate",
               "candidate has correct source_id")
-        check(candidates[0].agent_id == "tautivahti",
+        check(candidates[0].agent_id == "disease_monitor",
               "candidate has correct agent_id")
         check(candidates[0].gap_topic == "varroa",
               "candidate has correct gap_topic")

@@ -7,7 +7,7 @@ Each question has verified factual answers, difficulty grading, and keyword scor
 
 Usage:
   python benchmark_v3.py                     # Full run
-  python benchmark_v3.py --agent tarhaaja    # Single agent
+  python benchmark_v3.py --agent beekeeper    # Single agent
   python benchmark_v3.py --difficulty hard   # Only hard+expert
   python benchmark_v3.py --dry-run           # Print questions without running
   python benchmark_v3.py --model phi4-mini   # Override model
@@ -27,10 +27,10 @@ DEFAULT_MODEL = "phi4-mini"
 
 # Agent persona system prompts for richer, more specific responses
 AGENT_PERSONAS = {
-    "tarhaaja": "You are an expert beekeeper (tarhaaja) with decades of experience in Finnish conditions. Always include specific numbers, thresholds, and practical recommendations. Mention relevant kg amounts, day counts, temperatures, and percentages.",
-    "tautivahti": "You are a bee disease specialist (tautivahti). Always include specific disease names, treatment protocols, thresholds, and diagnostic criteria. Be precise about chemicals, dosages, and timing.",
-    "meteorologi": "You are a meteorologist specializing in weather impacts on beekeeping. Include specific temperatures, wind speeds, precipitation amounts, and seasonal timing.",
-    "hortonomi": "You are a horticulturist (hortonomi) specializing in bee-relevant plants and nectar flows. Include specific plant species, bloom times, and nectar yields.",
+    "beekeeper": "You are an expert beekeeper (beekeeper) with decades of experience in Finnish conditions. Always include specific numbers, thresholds, and practical recommendations. Mention relevant kg amounts, day counts, temperatures, and percentages.",
+    "disease_monitor": "You are a bee disease specialist (disease_monitor). Always include specific disease names, treatment protocols, thresholds, and diagnostic criteria. Be precise about chemicals, dosages, and timing.",
+    "meteorologist": "You are a meteorologist specializing in weather impacts on beekeeping. Include specific temperatures, wind speeds, precipitation amounts, and seasonal timing.",
+    "horticulturist": "You are a horticulturist (horticulturist) specializing in bee-relevant plants and nectar flows. Include specific plant species, bloom times, and nectar yields.",
     "tutkija": "You are a bee researcher (tutkija). Include scientific names, research findings, and evidence-based recommendations.",
     "ekonomisti": "You are an agricultural economist. Include specific costs, yields, ROI calculations, and market data.",
     "rakentaja": "You are a construction and building specialist. Include specific materials, measurements, building codes, and safety standards.",
@@ -102,12 +102,12 @@ def strip_thinking(text):
 # ══════════════════════════════════════════════════════════════════
 
 AGENT_TESTS = {
-    "tarhaaja": [
+    "beekeeper": [
         {
             "q": "You open a hive in late May and see 6 frames of capped brood, 2 frames of honey, and the queen is laying well. Is this colony ready for a honey super?",
             "expected_keywords": ["super", "strong|ready|yes", "frames|frame", "brood", "add|place|put", "space|swarm|room"],
             "correct_answer": "Yes. A colony with 6+ frames of brood and active laying in late May is strong enough for a honey super. Adding space prevents swarming impulse.",
-            "agent": "tarhaaja",
+            "agent": "beekeeper",
             "difficulty": "easy",
             "category": "colony_management",
         },
@@ -115,7 +115,7 @@ AGENT_TESTS = {
             "q": "During a July inspection you find 5 open queen cells on the bottom of frames. The existing queen is still present. What is happening and what should you do?",
             "expected_keywords": ["swarm", "queen cell|queen cup", "split|divide|replac", "prevent|manage|control", "remove|destroy|cut", "nuc|nucleus"],
             "correct_answer": "The colony is preparing to swarm. Options: remove queen cells (temporary), make a split/nuc with the old queen, or do an artificial swarm. Simply destroying cells delays swarming by ~7 days but doesn't solve the urge.",
-            "agent": "tarhaaja",
+            "agent": "beekeeper",
             "difficulty": "medium",
             "category": "colony_management",
         },
@@ -123,7 +123,7 @@ AGENT_TESTS = {
             "q": "How many days does it take for a worker bee to develop from egg to emergence?",
             "expected_keywords": ["21", "day", "egg", "larva|larval", "pupa|pupal|capped"],
             "correct_answer": "21 days total: 3 days egg, 6 days larva, 12 days pupa.",
-            "agent": "tarhaaja",
+            "agent": "beekeeper",
             "difficulty": "easy",
             "category": "bee_biology",
         },
@@ -131,7 +131,7 @@ AGENT_TESTS = {
             "q": "A colony has 18 kg of honey stores in late September in central Finland. Is this enough for winter?",
             "expected_keywords": ["15|20", "kg|kilogram", "enough|sufficient|adequate|within|range", "winter", "stores|reserve|food|honey", "feed|margin|supplement|top"],
             "correct_answer": "18 kg is within the recommended 15-20 kg range for Finnish zones II-III. The colony should survive winter, though topping up to 20 kg provides a safety margin.",
-            "agent": "tarhaaja",
+            "agent": "beekeeper",
             "difficulty": "medium",
             "category": "seasonal_management",
         },
@@ -139,7 +139,7 @@ AGENT_TESTS = {
             "q": "What is the minimum flight temperature for honeybees?",
             "expected_keywords": ["10|12", "degree|celsius|C", "temperature|temp", "flight|fly|forag"],
             "correct_answer": "Honeybees require a minimum of 10-12 degrees Celsius for flight. Below this, they remain clustered in the hive.",
-            "agent": "tarhaaja",
+            "agent": "beekeeper",
             "difficulty": "easy",
             "category": "bee_biology",
         },
@@ -147,7 +147,7 @@ AGENT_TESTS = {
             "q": "You extract honey and the refractometer reads 19.5% moisture. Can you jar this honey?",
             "expected_keywords": ["18|18%", "moisture|water content", "high|exceed|above|over", "no|not|cannot|shouldn't", "ferment|spoil|degrade", "dry|dehumidif|reduce|lower|blend"],
             "correct_answer": "No. Maximum moisture for extraction/jarring is 18%. At 19.5% the honey will likely ferment. Use a honey dehumidifier or blend with drier honey to bring moisture below 18%.",
-            "agent": "tarhaaja",
+            "agent": "beekeeper",
             "difficulty": "medium",
             "category": "honey_harvest",
         },
@@ -155,7 +155,7 @@ AGENT_TESTS = {
             "q": "How long does a queen bee develop from egg to emergence, and how does this compare to workers and drones?",
             "expected_keywords": ["16", "21", "24", "queen", "worker", "drone", "day|development"],
             "correct_answer": "Queen: 16 days, Worker: 21 days, Drone: 24 days. Queens develop fastest due to royal jelly diet and larger cell.",
-            "agent": "tarhaaja",
+            "agent": "beekeeper",
             "difficulty": "hard",
             "category": "bee_biology",
         },
@@ -163,18 +163,18 @@ AGENT_TESTS = {
             "q": "A Finnish beekeeper with 10 hives wants to estimate their season's yield. What is a reasonable expectation and what factors affect it most?",
             "expected_keywords": ["30|50|300|500", "kg|kilogram", "hive|colony", "weather|climate|season", "nectar|bloom|flower", "flow|yield|harvest", "location|area|region"],
             "correct_answer": "Finnish average is 30-50 kg per hive per year. Key factors: local nectar flow timing, weather during bloom, colony strength, and proximity to flowering sources. 10 hives could yield 300-500 kg in a good season.",
-            "agent": "tarhaaja",
+            "agent": "beekeeper",
             "difficulty": "hard",
             "category": "honey_harvest",
         },
     ],
 
-    "tautivahti": [
+    "disease_monitor": [
         {
             "q": "You see sunken, perforated cappings on brood frames and detect a sour smell. When you poke a dead larva with a matchstick, it stretches into a ropy string over 2 cm long. What disease is this?",
             "expected_keywords": ["foulbrood", "AFB", "american", "ropy", "paenibacillus", "burn|destroy|incinerat"],
             "correct_answer": "American Foulbrood (AFB), caused by Paenibacillus larvae. The ropy test (>2.5 cm string) is diagnostic. AFB is a notifiable disease; infected equipment must typically be burned.",
-            "agent": "tautivahti",
+            "agent": "disease_monitor",
             "difficulty": "easy",
             "category": "disease_diagnosis",
         },
@@ -182,7 +182,7 @@ AGENT_TESTS = {
             "q": "What is the varroa treatment threshold in August, and how do you measure it?",
             "expected_keywords": ["3", "mite", "100", "bee", "wash|roll|sample", "alcohol|sugar|ether", "threshold"],
             "correct_answer": "Treatment threshold is 3 mites per 100 bees via alcohol wash (or 1% infestation). Natural mite fall on a sticky board can also indicate: >10 mites/day in summer means treat. August treatment is critical before winter bees are raised.",
-            "agent": "tautivahti",
+            "agent": "disease_monitor",
             "difficulty": "easy",
             "category": "varroa_management",
         },
@@ -190,7 +190,7 @@ AGENT_TESTS = {
             "q": "When and how should oxalic acid be applied for varroa treatment in Finland?",
             "expected_keywords": ["broodless|low activity|less active", "winter", "sublim|vaporiz", "trickle|drip|drizzle|solution", "oxalic", "december|november|late autumn|evening"],
             "correct_answer": "Apply during the broodless period (late November-December in Finland). Methods: sublimation (vaporization) or trickle (3.2% solution drizzled over cluster). Effective even below 5 degrees C if cluster is accessible. Treats only phoretic mites, so broodless timing is key.",
-            "agent": "tautivahti",
+            "agent": "disease_monitor",
             "difficulty": "medium",
             "category": "varroa_management",
         },
@@ -198,7 +198,7 @@ AGENT_TESTS = {
             "q": "You notice scattered brood pattern, some larvae are twisted in cells and turning yellow-brown. There's no ropy test and no smell. What could this be?",
             "expected_keywords": ["european", "foulbrood", "EFB", "melissococcus|plutonius", "scattered|patchy|irregular|twisted", "brood|larvae"],
             "correct_answer": "Likely European Foulbrood (EFB) caused by Melissococcus plutonius. Key differences from AFB: no ropy test, larvae die before capping (twisted/displaced), yellowish color, sour but not foul smell. Often resolves with requeening and strong nectar flow.",
-            "agent": "tautivahti",
+            "agent": "disease_monitor",
             "difficulty": "medium",
             "category": "disease_diagnosis",
         },
@@ -206,7 +206,7 @@ AGENT_TESTS = {
             "q": "A colony shows white flecks on bee bodies, some bees have deformed wings, and you see mites on drone pupae. What is your treatment plan?",
             "expected_keywords": ["varroa", "deformed", "wing", "treat", "formic|organic", "oxalic", "strip|apivar|amitraz", "thymol"],
             "correct_answer": "Heavy varroa infestation with Deformed Wing Virus (DWV). Immediate treatment needed: formic acid (MAQS/FormicPro) during brood season, or amitraz strips (Apivar). Follow up with oxalic acid in broodless period. The colony may be weakened and need combining if population drops severely.",
-            "agent": "tautivahti",
+            "agent": "disease_monitor",
             "difficulty": "hard",
             "category": "varroa_management",
         },
@@ -214,7 +214,7 @@ AGENT_TESTS = {
             "q": "You see chalk-white mummified larvae at the hive entrance and scattered on the bottom board. What is the condition and how serious is it?",
             "expected_keywords": ["chalkbrood|chalk", "ascosphaera|fungus|fung", "mummif", "ventilat", "requeen|replace queen|hygienic", "stress|weak|damp|moisture"],
             "correct_answer": "Chalkbrood, caused by the fungus Ascosphaera apis. Mummified larvae (white to dark grey) are ejected by house bees. Usually a stress-related condition. Treatment: improve ventilation, reduce moisture, requeen with hygienic stock. Rarely fatal but weakens colony.",
-            "agent": "tautivahti",
+            "agent": "disease_monitor",
             "difficulty": "medium",
             "category": "disease_diagnosis",
         },
@@ -222,7 +222,7 @@ AGENT_TESTS = {
             "q": "What is the correct brood nest temperature range, and what happens if it deviates significantly?",
             "expected_keywords": ["34|35", "36|temperature", "brood", "development", "defect|abnormal|problem"],
             "correct_answer": "Brood nest temperature is 34.5-35.5 degrees C (plus/minus 0.5). Below 34 C: slow development, increased susceptibility. Above 36 C: developmental defects, larval death. Bees regulate via fanning (cooling) and clustering (heating).",
-            "agent": "tautivahti",
+            "agent": "disease_monitor",
             "difficulty": "hard",
             "category": "colony_health",
         },
@@ -230,18 +230,18 @@ AGENT_TESTS = {
             "q": "A beekeeper reports that bees are crawling on the ground, unable to fly, with bloated abdomens and dysentery stains on frames. It's early March. Diagnosis?",
             "expected_keywords": ["nosema", "dysentery", "apis", "ceranae|apis", "winter", "crawl|crawling|unable to fly", "confine"],
             "correct_answer": "Likely Nosema infection (N. apis or N. ceranae), exacerbated by long winter confinement. Symptoms: dysentery (fecal staining), crawling bees, bloated abdomens, inability to fly. Treatment: ensure cleansing flights when possible, feed syrup with Fumidil-B (where legal), requeen.",
-            "agent": "tautivahti",
+            "agent": "disease_monitor",
             "difficulty": "expert",
             "category": "disease_diagnosis",
         },
     ],
 
-    "meteorologi": [
+    "meteorologist": [
         {
             "q": "It's mid-June in Finland, forecast shows 5 consecutive days above 20 degrees C and sunny. What does this mean for beekeeping?",
             "expected_keywords": ["nectar", "flow", "forage|food|resource", "honey", "super", "strong|active|peak", "bloom|flower|blossom"],
             "correct_answer": "Excellent conditions for a strong nectar flow. Warm sustained temperatures promote flower blooming and nectar secretion. Beekeepers should ensure hives have enough supers for honey storage and check for swarming.",
-            "agent": "meteorologi",
+            "agent": "meteorologist",
             "difficulty": "easy",
             "category": "weather_beekeeping",
         },
@@ -249,7 +249,7 @@ AGENT_TESTS = {
             "q": "A cold snap is forecast: 3 nights below -5 degrees C in early April. Bees have started flying. What risks does this pose?",
             "expected_keywords": ["brood", "chill|cold|frost", "cluster", "stores|reserve|food|supply", "starvation|starv|hunger|consum", "protect|shelter|insulate|relocat|indoor"],
             "correct_answer": "Risk of brood chilling if cluster contracts and exposes brood. Increased stores consumption. Bees cannot forage. Ensure sufficient feed (emergency fondant). Do not open hives. Colonies may lose early brood, delaying spring buildup by 1-2 weeks.",
-            "agent": "meteorologi",
+            "agent": "meteorologist",
             "difficulty": "medium",
             "category": "weather_beekeeping",
         },
@@ -257,7 +257,7 @@ AGENT_TESTS = {
             "q": "Heavy rain is forecast for 10 consecutive days in July during peak linden bloom. Impact on honey production?",
             "expected_keywords": ["reduce|decreas|diminish", "nectar|honey", "wash", "forage|activity|pollination", "loss|lost|lower|decline|cessation", "harvest", "delay"],
             "correct_answer": "Significant negative impact. Rain washes nectar from flowers, prevents bee foraging flights, and can cause starvation in strong colonies consuming stores. Linden bloom window is short (2-3 weeks); 10 days of rain could mean losing 50-70% of the linden crop.",
-            "agent": "meteorologi",
+            "agent": "meteorologist",
             "difficulty": "hard",
             "category": "weather_beekeeping",
         },
@@ -265,7 +265,7 @@ AGENT_TESTS = {
             "q": "Wind forecast shows sustained 15 m/s winds with gusts to 22 m/s for a rural property. What precautions are needed?",
             "expected_keywords": ["secure", "damage|topple|dislodge|collaps|harm", "tree", "power", "outage|blackout|cut", "loose|debris|fallen|blow|fall", "gust"],
             "correct_answer": "Secure loose objects, check roof and fence integrity, ensure backup power for critical systems. Trees may drop branches. Gusts over 20 m/s can cause structural damage. Keep vehicles sheltered. Power outages likely in rural areas.",
-            "agent": "meteorologi",
+            "agent": "meteorologist",
             "difficulty": "medium",
             "category": "weather_property",
         },
@@ -273,7 +273,7 @@ AGENT_TESTS = {
             "q": "Temperature forecast: -25 degrees C for the next 5 days. A remote cottage has been unoccupied for 2 weeks. Priority concerns?",
             "expected_keywords": ["pipe", "freez|frost", "burst|crack|rupture|break|damage", "heat|warm", "water|ice", "insulate|protect|shelter", "drain"],
             "correct_answer": "Top priority: water pipes freezing and bursting. At -25 C, even insulated pipes are at risk without heating. If no remote heating control, pipes should have been drained. Check that backup heating is running. Frozen pipes can cause massive water damage when thawing.",
-            "agent": "meteorologi",
+            "agent": "meteorologist",
             "difficulty": "hard",
             "category": "weather_property",
         },
@@ -281,7 +281,7 @@ AGENT_TESTS = {
             "q": "Late August, nighttime temperatures dropping to 5 degrees C, daytime 15 C. How does this affect the bee colony's winter preparation?",
             "expected_keywords": ["winter", "bee", "brood", "reduce|decreas|slow", "cluster", "preparation|prepar|ready|transition", "feed|store|forag"],
             "correct_answer": "Colony transitions to winter mode: queen reduces laying, workers shift to long-lived winter bees (vitellogenin-rich). Foraging drops. This is the critical window for varroa treatment and supplemental feeding. Ensure 15-20 kg stores before sustained cold arrives.",
-            "agent": "meteorologi",
+            "agent": "meteorologist",
             "difficulty": "medium",
             "category": "weather_beekeeping",
         },
@@ -567,7 +567,7 @@ CROSS_AGENT_TESTS = [
     {
         "q": "A beekeeper reports dead bees near the hives and brown residue on the landing board. The weather was hot (32 C) yesterday and a neighboring farm sprayed crops. What domains should investigate?",
         "expected_keywords": ["pesticide", "poison|poisoning|toxic", "spray", "sample", "dead", "report", "authorit", "weather"],
-        "correct_answer": "Multi-domain issue: 1) tautivahti: collect dead bee samples, check for pesticide poisoning symptoms (tongue extended, twitching). 2) meteorologi: hot weather + spraying = bees actively foraging during spray. 3) tutkija: send samples for pesticide residue analysis. 4) tarhaaja: close hive entrances temporarily if spraying continues. Report to authorities as potential poisoning incident.",
+        "correct_answer": "Multi-domain issue: 1) disease_monitor: collect dead bee samples, check for pesticide poisoning symptoms (tongue extended, twitching). 2) meteorologist: hot weather + spraying = bees actively foraging during spray. 3) tutkija: send samples for pesticide residue analysis. 4) beekeeper: close hive entrances temporarily if spraying continues. Report to authorities as potential poisoning incident.",
         "agent": "cross_agent",
         "difficulty": "hard",
         "category": "incident_response",
@@ -701,7 +701,7 @@ def run_agent_benchmark(tests, model, agent_name=None):
     print(f"  {'-'*82}")
 
     for i, test in enumerate(tests, 1):
-        agent_key = test.get("agent", "tarhaaja")
+        agent_key = test.get("agent", "beekeeper")
         system_prompt = AGENT_PERSONAS.get(agent_key, "")
         prompt = f"Answer concisely and factually in English. Include specific numbers, thresholds, and measurements where relevant.\n\n{test['q']}"
         resp = ollama_generate(model, prompt, system=system_prompt, num_predict=500)
@@ -865,7 +865,7 @@ def print_dry_run(agent_filter=None, difficulty_filter=None):
 def main():
     parser = argparse.ArgumentParser(description="WaggleDance Benchmark v3 -Agent Persona Testing")
     parser.add_argument("--agent", type=str, default=None,
-                        help="Run tests for a single agent (e.g., tarhaaja, tautivahti, cross_agent, hallucination_trap)")
+                        help="Run tests for a single agent (e.g., beekeeper, disease_monitor, cross_agent, hallucination_trap)")
     parser.add_argument("--difficulty", type=str, default=None, choices=["easy", "medium", "hard", "expert"],
                         help="Minimum difficulty level (includes this level and above)")
     parser.add_argument("--dry-run", action="store_true",

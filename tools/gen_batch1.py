@@ -126,8 +126,8 @@ write_agent("core_dispatcher", {
 # ════════════════════════════════════════════════
 # AGENT 2: LUONTOKUVAAJA (PTZ-operaattori)
 # ════════════════════════════════════════════════
-write_agent("luontokuvaaja", {
-    "header": {"agent_id": "luontokuvaaja", "agent_name": "Luontokuvaaja (PTZ-operaattori)", "version": "1.0.0", "last_updated": "2026-02-21"},
+write_agent("nature_photographer", {
+    "header": {"agent_id": "nature_photographer", "agent_name": "Luontokuvaaja (PTZ-operaattori)", "version": "1.0.0", "last_updated": "2026-02-21"},
     "ASSUMPTIONS": [
         "PTZ (Pan-Tilt-Zoom) IP-kamera ulkona, Korvenrannan pihapiirissä",
         "ONVIF-yhteensopiva, RTSP-striimi saatavilla",
@@ -170,12 +170,12 @@ write_agent("luontokuvaaja", {
             {"preset": 5, "name": "Taivasnäkymä (revontulet/tähtikuvat)", "pan": 180, "tilt": 60, "zoom": 1}
         ],
         "detection_classes": [
-            {"class": "bird", "notify": "ornitologi", "priority": 3},
-            {"class": "bear", "notify": "pesaturvallisuus + core_dispatcher", "priority": 1},
-            {"class": "deer", "notify": "riistanvartija", "priority": 4},
-            {"class": "person", "notify": "pihavahti", "priority": 2},
-            {"class": "fox", "notify": "riistanvartija", "priority": 4},
-            {"class": "moose", "notify": "riistanvartija", "priority": 3}
+            {"class": "bird", "notify": "ornithologist", "priority": 3},
+            {"class": "bear", "notify": "hive_security + core_dispatcher", "priority": 1},
+            {"class": "deer", "notify": "wildlife_ranger", "priority": 4},
+            {"class": "person", "notify": "yard_guard", "priority": 2},
+            {"class": "fox", "notify": "wildlife_ranger", "priority": 4},
+            {"class": "moose", "notify": "wildlife_ranger", "priority": 3}
         ]
     },
     "SEASONAL_RULES": [
@@ -250,8 +250,8 @@ write_agent("luontokuvaaja", {
 # ════════════════════════════════════════════════
 # AGENT 3: ORNITOLOGI (Lintutieteilijä)
 # ════════════════════════════════════════════════
-write_agent("ornitologi", {
-    "header": {"agent_id": "ornitologi", "agent_name": "Ornitologi (Lintutieteilijä)", "version": "1.0.0", "last_updated": "2026-02-21"},
+write_agent("ornithologist", {
+    "header": {"agent_id": "ornithologist", "agent_name": "Ornitologi (Lintutieteilijä)", "version": "1.0.0", "last_updated": "2026-02-21"},
     "ASSUMPTIONS": [
         "Sijainti: Huhdasjärvi/Kouvola, Kaakkois-Suomi (vyöhyke II-III)",
         "Lintulautakulku ja järvenrantaympäristö",
@@ -282,7 +282,7 @@ write_agent("ornitologi", {
         {"season": "Talvi (joulu-helmi)", "action": "Lintulaudan ylläpito, auringonkukansiemenet + talipallo, vesipisteen avaus", "source": "src:ORN3"}
     ],
     "FAILURE_MODES": [
-        {"mode": "Lintuinfluenssa-epäily (kuolleet linnut)", "detection": "≥3 kuollutta lintua lyhyellä aikavälillä", "action": "ÄLÄ koske — ilmoita Ruokavirastolle (p. 029 530 0400), ilmoita tautivahti-agentille", "source": "src:ORN4"},
+        {"mode": "Lintuinfluenssa-epäily (kuolleet linnut)", "detection": "≥3 kuollutta lintua lyhyellä aikavälillä", "action": "ÄLÄ koske — ilmoita Ruokavirastolle (p. 029 530 0400), ilmoita disease_monitor-agentille", "source": "src:ORN4"},
         {"mode": "Petolintuhavainto pesien lähellä", "detection": "Kanahaukka/varpushaukka lintulaudalla toistuvasti", "action": "Siirrä lintulautaa suojaisempaan paikkaan, ilmoita riistanvartijalle", "source": "src:ORN3"}
     ],
     "COMPLIANCE_AND_LEGAL": {

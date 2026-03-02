@@ -11,8 +11,8 @@ def w(d, core, sources):
     print(f"  ✅ {d}: {len(core.get('eval_questions',[]))} q")
 
 # ═══ 7: FENOLOGI ═══
-w("fenologi",{
-    "header":{"agent_id":"fenologi","agent_name":"Fenologi","version":"1.0.0","last_updated":"2026-02-21"},
+w("phenologist",{
+    "header":{"agent_id":"phenologist","agent_name":"Fenologi","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Huhdasjärvi/Kouvola, vyöhyke II-III","Fenologiset havainnot kytketty mehiläishoitoon ja puutarhaan","Ilmatieteen laitoksen termisen kasvukauden määritelmä: vrk-keskilämpö >5°C vähintään 5 vrk"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "thermal_growing_season_start":{"value":"Vrk-keskilämpö pysyvästi >5°C, tyypillisesti vko 16-18 (Kouvola)","action":"Käynnistä kevään hoitosuunnitelma mehiläisillä ja puutarhassa","source":"src:FEN1"},
@@ -33,7 +33,7 @@ w("fenologi",{
         ]
     },
     "PROCESS_FLOWS":{
-        "daily_monitoring":{"steps":["1. Lue vrk-keskilämpö (meteorologi-agentilta)","2. Laske °Cvr-kertymä (∑max(0, T_avg - 5))","3. Vertaa kynnysarvoihin → laukaise ilmoitukset","4. Päivitä fenologinen kalenteri havainnoilla","5. Ilmoita relevanteille agenteille (tarhaaja, hortonomi, lentosää)"],"source":"src:FEN1"}
+        "daily_monitoring":{"steps":["1. Lue vrk-keskilämpö (meteorologist-agentilta)","2. Laske °Cvr-kertymä (∑max(0, T_avg - 5))","3. Vertaa kynnysarvoihin → laukaise ilmoitukset","4. Päivitä fenologinen kalenteri havainnoilla","5. Ilmoita relevanteille agenteille (beekeeper, horticulturist, lentosää)"],"source":"src:FEN1"}
     },
     "SEASONAL_RULES":[
         {"season":"Kevät","action":"°Cvr-seuranta alkaa kun vrk-keskilämpö >5°C. Pajun kukinta → ilmoita tarhaajalle kevätruokinnan lopetuksesta.","source":"src:FEN1"},
@@ -95,8 +95,8 @@ w("fenologi",{
 ]})
 
 # ═══ 8: PIENELÄIN- JA TUHOLAISASIANTUNTIJA ═══
-w("pienelain_tuholais",{
-    "header":{"agent_id":"pienelain_tuholais","agent_name":"Pieneläin- ja tuholaisasiantuntija","version":"1.0.0","last_updated":"2026-02-21"},
+w("pest_control",{
+    "header":{"agent_id":"pest_control","agent_name":"Pieneläin- ja tuholaisasiantuntija","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Korvenrannan mökkiympäristö — metsä ja järvi","Jyrsijät, kärpäset, hyttyset, punkit, muurahaiset, ampiaisen","Torjunta ensisijaisesti mekaanisin ja biologisin keinoin"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "mouse_activity_threshold":{"value":"Jätöksiä >10 kpl / m² tai purusahanjauhoa rakenteissa","action":"Aseta loukkuja, tarkista rakenteiden tiiveys, ilmoita timpurille","source":"src:PIE1"},
@@ -179,9 +179,9 @@ w("pienelain_tuholais",{
 ]})
 
 # ═══ 9: ENTOMOLOGI (Hyönteistutkija) ═══
-w("entomologi",{
-    "header":{"agent_id":"entomologi","agent_name":"Entomologi (Hyönteistutkija)","version":"1.0.0","last_updated":"2026-02-21"},
-    "ASSUMPTIONS":["Fokus: mehiläisiin vaikuttavat hyönteiset + kasvintuholaiset + metsätuholaiset","Korvenrannan lähiympäristö, vyöhyke II-III","Kytkentä tarhaaja-, metsänhoitaja- ja hortonomi-agentteihin"],
+w("entomologist",{
+    "header":{"agent_id":"entomologist","agent_name":"Entomologi (Hyönteistutkija)","version":"1.0.0","last_updated":"2026-02-21"},
+    "ASSUMPTIONS":["Fokus: mehiläisiin vaikuttavat hyönteiset + kasvintuholaiset + metsätuholaiset","Korvenrannan lähiympäristö, vyöhyke II-III","Kytkentä beekeeper-, metsänhoitaja- ja horticulturist-agentteihin"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "varroa_mite_threshold_per_100_bees":{"value":3,"action":">3 punkkia / 100 mehiläistä → välitön kemiallinen hoito","source":"src:ENT1"},
         "bark_beetle_trap_threshold":{"value":"Feromonipyydyksessä >500 kirjanpainajaa / 2 viikkoa → hakkuuhälytys","source":"src:ENT2"},
@@ -205,7 +205,7 @@ w("entomologi",{
         {"season":"Talvi","action":"Kehysvarastojen seuranta (vahakoi, hiiret). Varroahoitotuloksen arviointi keväällä.","source":"src:ENT1"}
     ],
     "FAILURE_MODES":[
-        {"mode":"Varroa-hoito epäonnistunut","detection":"Pudotusmäärä edelleen >3/100 hoidon jälkeen","action":"Toinen hoitokierros eri valmisteella. Ilmoita tautivahti-agentille.","source":"src:ENT1"},
+        {"mode":"Varroa-hoito epäonnistunut","detection":"Pudotusmäärä edelleen >3/100 hoidon jälkeen","action":"Toinen hoitokierros eri valmisteella. Ilmoita disease_monitor-agentille.","source":"src:ENT1"},
         {"mode":"Kirjanpainajaepidemia","detection":">500 yksilöä pyydyksessä tai useita kuivuvia kuusia","action":"Välitön puunkaato. Ilmoita metsänhoitajalle. Kaarnan poltto.","source":"src:ENT2"}
     ],
     "COMPLIANCE_AND_LEGAL":{
@@ -263,8 +263,8 @@ w("entomologi",{
 ]})
 
 # ═══ 10: TÄHTITIETEILIJÄ ═══
-w("tahtitieteilija",{
-    "header":{"agent_id":"tahtitieteilija","agent_name":"Tähtitieteilijä","version":"1.0.0","last_updated":"2026-02-21"},
+w("astronomer",{
+    "header":{"agent_id":"astronomer","agent_name":"Tähtitieteilijä","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Havainnointipaikka: Korvenranta, Kouvola (~60.9°N, 26.7°E)","Matala valosaaste (Bortle 3-4)","PTZ-kamera preset 5 (taivasnäkymä) tai erillinen tähtitieteellinen kamera"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "aurora_kp_threshold":{"value":3,"action":"Kp ≥3 → revontulet mahdollisia Huhdasjärvellä, Kp ≥5 → näkyvät todennäköisesti","source":"src:TAH1"},
@@ -292,7 +292,7 @@ w("tahtitieteilija",{
     ],
     "FAILURE_MODES":[
         {"mode":"Optiikka huurussa","detection":"Tähtikuvat sumeita, kastepiste lähellä","action":"Lämmityspanta linssille, tai kuivauspussi kameran viereen","source":"src:TAH2"},
-        {"mode":"Valosaastepiikki","detection":"Tausta-kirkkaus nousee odottamattomasti","action":"Tarkista suunta (vältä Kouvolan suuntaa), ilmoita valaistusmestari-agentille","source":"src:TAH2"}
+        {"mode":"Valosaastepiikki","detection":"Tausta-kirkkaus nousee odottamattomasti","action":"Tarkista suunta (vältä Kouvolan suuntaa), ilmoita lighting_master-agentille","source":"src:TAH2"}
     ],
     "COMPLIANCE_AND_LEGAL":{},
     "UNCERTAINTY_NOTES":["Revontuliennusteet ovat luotettavia vain 1-2h ennakolta.","Meteorimäärien ZHR on ideaaliolosuhdeluku — todellinen havaittava määrä 30-50% tästä."],

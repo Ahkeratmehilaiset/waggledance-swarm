@@ -68,16 +68,16 @@ except ImportError:
 # Primääriavainsanat (weight=5): hyvin spesifiset
 # Sekundääriavainsanat (weight=1): yleiset
 WEIGHTED_ROUTING = {
-    "pesaturvallisuus": {
+    "hive_security": {
         "primary": ["karhu", "ilves", "peura", "varkaus", "pesävaurio", "suojau"],
         "secondary": ["hiiri", "tarha"],
     },
-    "tarhaaja": {
+    "beekeeper": {
         "primary": ["mehiläi", "pesä", "hunaj", "vaha", "emo", "varroa",
                      "linkoa", "punkk", "kuningatar", "yhdyskun"],
         "secondary": ["tarha", "hoito", "talveh"],
     },
-    "tautivahti": {
+    "disease_monitor": {
         "primary": ["tauti", "nosema", "afb", "efb", "kalkki", "sikiö"],
         "secondary": ["varroa"],
     },
@@ -517,8 +517,8 @@ RESPONSE RULES:
 DELEGATION RULES (IMPORTANT):
 - You are Swarm Queen: ROUTER, NOT an expert.
 - You do NOT analyze content, draw conclusions or add your own knowledge.
-- If question is about bees/varroa/hive → delegate to tarhaaja.
-- If question is about weather/temperature → delegate to meteorologi.
+- If question is about bees/varroa/hive → delegate to beekeeper.
+- If question is about weather/temperature → delegate to meteorologist.
 - If you don't know the answer, say "I don't know" — do NOT guess.
 - Delegate to specialists ALWAYS when possible. Be brief and concrete.""",
             llm=self.llm,

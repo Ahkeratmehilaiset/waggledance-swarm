@@ -52,32 +52,32 @@ AGENT_ROLES = {
 # Oletusmappaus: agenttityyppi → rooli
 DEFAULT_ROLE_MAP = {
     # Scouts — nopeat tiedonhakijat
-    "meteorologi": "scout", "lentosaa": "scout", "ilmanlaatu": "scout",
-    "mikroilmasto": "scout", "fenologi": "scout", "rantavahti": "scout",
-    "pihavahti": "scout", "logistikko": "scout", "valo_varjo": "scout",
-    "myrskyvaroittaja": "scout", "jaaasiantuntija": "scout",
-    "inventaariopaallikko": "scout", "siivousvastaava": "scout",
-    "luontokuvaaja": "scout",
+    "meteorologist": "scout", "flight_weather": "scout", "air_quality": "scout",
+    "microclimate": "scout", "phenologist": "scout", "shore_guard": "scout",
+    "yard_guard": "scout", "logistics": "scout", "light_shadow": "scout",
+    "storm_alert": "scout", "ice_specialist": "scout",
+    "inventory_chief": "scout", "cleaning_manager": "scout",
+    "nature_photographer": "scout",
     # Workers — syvätyöntekijät
-    "tarhaaja": "worker", "hortonomi": "worker", "metsanhoitaja": "worker",
-    "sahkoasentaja": "worker", "lvi_asiantuntija": "worker",
-    "timpuri": "worker", "nuohooja": "worker", "erakokki": "worker",
-    "leipuri": "worker", "saunamajuri": "worker",
-    "pesalampo": "worker", "nektari_informaatikko": "worker",
-    "tautivahti": "worker", "parveiluvahti": "worker",
-    "kalastusopas": "worker", "limnologi": "worker",
-    "kybervahti": "worker", "lukkoseppa": "worker",
+    "beekeeper": "worker", "horticulturist": "worker", "forester": "worker",
+    "electrician": "worker", "hvac_specialist": "worker",
+    "carpenter": "worker", "chimney_sweep": "worker", "wilderness_chef": "worker",
+    "baker": "worker", "sauna_master": "worker",
+    "hive_temperature": "worker", "nectar_scout": "worker",
+    "disease_monitor": "worker", "swarm_watcher": "worker",
+    "fishing_guide": "worker", "limnologist": "worker",
+    "cyber_guard": "worker", "locksmith": "worker",
     "hacker": "worker", "oracle": "worker",
     # Judges — laadunvalvonta
-    "core_dispatcher": "judge", "pesaturvallisuus": "judge",
-    "paloesimies": "judge", "privaattisuus": "judge",
-    "riistanvartija": "judge", "ornitologi": "judge",
-    "entomologi": "judge", "kierratys_jate": "judge",
-    "matemaatikko_fyysikko": "judge", "tahtitieteilija": "judge",
-    "ravintoterapeutti": "judge", "kalantunnistaja": "judge",
-    "routa_maapera": "judge", "valaistusmestari": "judge",
-    "laitehuoltaja": "judge", "pienelain_tuholais": "judge",
-    "viihdepaallikko": "judge", "elokuva_asiantuntija": "judge",
+    "core_dispatcher": "judge", "hive_security": "judge",
+    "fire_officer": "judge", "privacy_guard": "judge",
+    "wildlife_ranger": "judge", "ornithologist": "judge",
+    "entomologist": "judge", "recycling": "judge",
+    "math_physicist": "judge", "astronomer": "judge",
+    "nutritionist": "judge", "fish_identifier": "judge",
+    "frost_soil": "judge", "lighting_master": "judge",
+    "equipment_tech": "judge", "pest_control": "judge",
+    "entertainment_chief": "judge", "movie_expert": "judge",
 }
 
 
@@ -161,7 +161,7 @@ class SwarmScheduler:
 
         Args:
             agent_id: Agentin uniikki ID
-            agent_type: Agenttityyppi (esim. "tarhaaja")
+            agent_type: Agenttityyppi (esim. "beekeeper")
             skills: Agentin kyvyt (YAML DECISION_METRICS keys)
             tags: Routing-avainsanat (YAML:sta tai ROUTING_KEYWORDS:sta)
         """

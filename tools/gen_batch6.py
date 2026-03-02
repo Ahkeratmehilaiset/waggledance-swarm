@@ -34,8 +34,8 @@ def ma(d, name, data, srcs):
     w(d, core, {"sources":srcs})
 
 agents = [
-  ("timpuri","Timpuri (rakenteet)",{
-    "ASSUMPTIONS":["Korvenrannan puurakenteiset rakennukset","Perustukset, runko, katto, pinnat","Kytketty routa-, LVI-, sähkö-, nuohooja-agentteihin"],
+  ("carpenter","Timpuri (rakenteet)",{
+    "ASSUMPTIONS":["Korvenrannan puurakenteiset rakennukset","Perustukset, runko, katto, pinnat","Kytketty routa-, LVI-, sähkö-, chimney_sweep-agentteihin"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "wood_moisture_pct":{"value":"Terveen puun kosteus 8-15%","action":">20% → homevaara, >25% → lahovaara → kuivaus HETI","source":"src:TI1"},
         "foundation_crack_mm":{"value":"<0.3 mm normaali kutistumishalkeama","action":">1 mm tai laajeneva → rakennesuunnittelija","source":"src:TI1"},
@@ -57,8 +57,8 @@ agents = [
     ]
   },[{"id":"src:TI1","org":"RIL/RT","title":"Puurakenteiden ohjeistot","year":2024,"url":"https://www.ril.fi/","supports":"Puun kosteus, tuuletus, kunnossapito."},{"id":"src:TI2","org":"RIL","title":"RIL 201-1-2017 Rakenteiden kuormat","year":2017,"url":"https://www.ril.fi/","supports":"Lumikuormat."},{"id":"src:TI3","org":"Oikeusministeriö","title":"Rakentamislaki 751/2023","year":2023,"url":"https://finlex.fi/fi/laki/ajantasa/2023/20230751","supports":"Kunnossapito."}]),
 
-  ("nuohooja","Nuohooja / Paloturva-asiantuntija",{
-    "ASSUMPTIONS":["Korvenranta: puulämmitys (takka, leivinuuni, puukiuas)","Nuohous lakisääteinen","Kytketty paloesimies-, ilmanlaatu-, timpuri-agentteihin"],
+  ("chimney_sweep","Nuohooja / Paloturva-asiantuntija",{
+    "ASSUMPTIONS":["Korvenranta: puulämmitys (takka, leivinuuni, puukiuas)","Nuohous lakisääteinen","Kytketty fire_officer-, air_quality-, carpenter-agentteihin"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "chimney_sweep_interval":{"value":"Päälämmityslähde: 1x/v, vapaa-ajan: 3v välein","source":"src:NU1"},
         "creosote_mm":{"value":"<3 mm OK","action":">3 mm → nuohous pian, >6 mm → VÄLITÖN (palovaara)","source":"src:NU1"},
@@ -73,7 +73,7 @@ agents = [
     "_x":[{"q":"Kuinka usein nuohotaan päälämmityslähde?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.chimney_sweep_interval.value","source":"src:NU1"},{"q":"Mikä kreosoottikerros on vaarallinen?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.creosote_mm.action","source":"src:NU1"},{"q":"Mitä tehdään nokipalossa?","a_ref":"FAILURE_MODES[0].action","source":"src:NU2"},{"q":"Saako nokipaloa sammuttaa vedellä?","a_ref":"FAILURE_MODES[0].action","source":"src:NU2"},{"q":"Mikä on normaalin vedon arvo?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.chimney_draft_pa.value","source":"src:NU1"},]
   },[{"id":"src:NU1","org":"Nuohousalan Keskusliitto","title":"Nuohousohje","year":2024,"url":"https://www.nuohoojat.fi/","supports":"Nuohousvälit, kreosootti."},{"id":"src:NU2","org":"Pelastuslaitos","title":"Paloturvallisuus","year":2025,"url":"https://www.pelastustoimi.fi/","supports":"Palovaroittimet, häkä."}]),
 
-  ("valaistusmestari","Valaistusmestari",{
+  ("lighting_master","Valaistusmestari",{
     "ASSUMPTIONS":["Korvenrannan sisä- ja ulkovalaistus","LED pääosin","Valohaaste luonnolle huomioitava"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "lux_indoor_work":{"value":"300-500 lux työtila","source":"src:VA1"},
@@ -88,7 +88,7 @@ agents = [
     "UNCERTAINTY_NOTES":["LED-käyttöikä vaihtelee valmistajittain merkittävästi."]
   },[{"id":"src:VA1","org":"Suomen Valoteknillinen Seura","title":"Valaistussuositukset","year":2024,"url":"https://www.valosto.com/","supports":"Lux, värilämpötila."},{"id":"src:VA2","org":"IDA/Ursa","title":"Valosaaste","year":2025,"url":"https://www.darksky.org/","supports":"Valosaasteentorjunta."}]),
 
-  ("paloesimies","Paloesimies (häkä, palovaroittimet, lämpöanomaliat)",{
+  ("fire_officer","Paloesimies (häkä, palovaroittimet, lämpöanomaliat)",{
     "ASSUMPTIONS":["Korvenrannan kiinteistöjen paloturvallisuus","IoT-lämpökamerat ja häkäanturit mahdollisia"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "smoke_detector_test_months":{"value":1,"action":"Testaa kuukausittain painikkeesta","source":"src:PA1"},
@@ -103,7 +103,7 @@ agents = [
     "UNCERTAINTY_NOTES":["IoT-lämpökameroiden tarkkuus ±2°C — ei korvaa ammattilaisen arviota."]
   },[{"id":"src:PA1","org":"Pelastuslaitos","title":"Paloturvallisuus","year":2025,"url":"https://www.pelastustoimi.fi/","supports":"Palovaroittimet, häkä, sammuttimet."}]),
 
-  ("laitehuoltaja","Laitehuoltaja (IoT, akut, verkot)",{
+  ("equipment_tech","Laitehuoltaja (IoT, akut, verkot)",{
     "ASSUMPTIONS":["Korvenrannan IoT: kamerat, anturit, gateway, NAS, Ollama-palvelin","Verkko: WiFi, BLE, 4G-vara"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "battery_voltage_iot_v":{"value":"Tyypillisesti 3.0-3.6V (lithium)","action":"<3.0V → vaihda/lataa, <2.8V → laite sammuu","source":"src:LA1"},
@@ -118,7 +118,7 @@ agents = [
     "UNCERTAINTY_NOTES":["Lithium-akkujen kylmänkestävyys vaihtelee merkittävästi."]
   },[{"id":"src:LA1","org":"Laitevalmistajat","title":"IoT-laitehuolto","year":2025,"url":None,"supports":"Akku, WiFi, NAS, firmware."}]),
 
-  ("kybervahti","Kybervahti (tietoturva)",{
+  ("cyber_guard","Kybervahti (tietoturva)",{
     "ASSUMPTIONS":["Kotiverkko + IoT","Ollama paikallisesti","VPN etäyhteydellä"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "failed_login_max":{"value":5,"action":">5 epäonnistunutta / 10min → IP-esto 1h","source":"src:KY1"},
@@ -133,7 +133,7 @@ agents = [
     "UNCERTAINTY_NOTES":["IoT-laitteiden tietoturva usein heikko — oletussalasanat."]
   },[{"id":"src:KY1","org":"Kyberturvallisuuskeskus","title":"Kyberturvallisuus kotona","year":2025,"url":"https://www.kyberturvallisuuskeskus.fi/","supports":"Kotiverkko, IoT."},{"id":"src:KY2","org":"Tietosuojavaltuutettu","title":"GDPR","year":2025,"url":"https://tietosuoja.fi/","supports":"Henkilötiedot."}]),
 
-  ("lukkoseppa","Lukkoseppä (älylukot)",{
+  ("locksmith","Lukkoseppä (älylukot)",{
     "ASSUMPTIONS":["Korvenranta: mekaaninen + älylukko","PIN, RFID, mobiili, avain varavaihtoehtona"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "battery_pct":{"value":"<20% → vaihda","action":"Varavirta USB-C","source":"src:LU1"},
@@ -148,7 +148,7 @@ agents = [
     "UNCERTAINTY_NOTES":["Älylukon kyberturvallisuus riippuu valmistajasta."]
   },[{"id":"src:LU1","org":"Lukkoliikkeet","title":"Älylukot","year":2025,"url":None,"supports":"Huolto, jäätyminen."},{"id":"src:LU2","org":"Finanssiala ry","title":"Murtosuojaus","year":2025,"url":"https://www.finanssiala.fi/","supports":"Vakuutusvaatimukset."}]),
 
-  ("pihavahti","Pihavahti (ihmishavainnot)",{
+  ("yard_guard","Pihavahti (ihmishavainnot)",{
     "ASSUMPTIONS":["PTZ-kamera + liiketunnistus","Korvenrannan pihapiiri","Kytketty lukkoseppään, privaattisuuteen, corehen"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "person_confidence":{"value":0.7,"action":"<0.7 → logi, >0.7 → hälytys jos tuntematon","source":"src:PI1"},
@@ -163,7 +163,7 @@ agents = [
     "UNCERTAINTY_NOTES":["Yönäkö: ~60% tarkkuus vs 90% päivällä."]
   },[{"id":"src:PI1","org":"Turva-ala","title":"Kotiturvallisuus","year":2025,"url":None,"supports":"Kamera, ihmistunnistus."},{"id":"src:PI2","org":"Tietosuojavaltuutettu","title":"Kameravalvonta GDPR","year":2025,"url":"https://tietosuoja.fi/kameravalvonta","supports":"Yksityisyys."}]),
 
-  ("privaattisuus","Privaattisuuden suojelija",{
+  ("privacy_guard","Privaattisuuden suojelija",{
     "ASSUMPTIONS":["Valvoo KAIKKIEN agenttien tietosuojaa","GDPR + kansallinen tietosuojalaki","Kamera-, ääni-, sijaintidata"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "camera_coverage":{"value":"EI naapuria eikä yleistä tietä tunnistettavasti","action":"Suuntaus 2x/v + asennuksen jälkeen","source":"src:PR1"},

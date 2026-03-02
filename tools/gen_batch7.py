@@ -34,7 +34,7 @@ def ma(d, name, data, srcs):
     w(d, core, {"sources":srcs})
 
 agents = [
-  ("erakokki","Eräkokki",{
+  ("wilderness_chef","Eräkokki",{
     "ASSUMPTIONS":["Korvenrannan mökkikeittiö + ulkogrilli + nuotiopaikka","Raaka-aineet: kala (Huhdasjärvi), riista, marjat, sienet, puutarha","Ruokaturvallisuus priorisoitu"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "fridge_temp_c":{"value":"2-4°C","action":">6°C → tarkista, >8°C → ruokaturvallisuusviski","source":"src:ER1"},
@@ -57,7 +57,7 @@ agents = [
     "_x":[{"q":"Mikä on jääkaapin tavoitelämpötila?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.fridge_temp_c.value","source":"src:ER1"},{"q":"Mikä on kalan sisälämpötila?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.meat_core_temp_c.value","source":"src:ER1"},{"q":"Miten kalan tuoreus tarkistetaan?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.fish_freshness_hours.action","source":"src:ER1"},{"q":"Voiko epävarmaa sientä syödä?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.mushroom_identification_confidence.action","source":"src:ER2"},{"q":"Mikä on nuotion turvaetäisyys?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.fire_safety_distance_m.value","source":"src:ER3"},{"q":"Mitä tehdään myrkkysieniepäilyssä?","a_ref":"FAILURE_MODES[1].action","source":"src:ER2"},{"q":"Onko avotuli sallittu metsäpalovaroituksella?","a_ref":"COMPLIANCE_AND_LEGAL.tulenteko","source":"src:ER3"},{"q":"Mitkä sienet kerätään syksyllä?","a_ref":"KNOWLEDGE_TABLES.seasonal_ingredients[2].ingredients","source":"src:ER2"},]
   },[{"id":"src:ER1","org":"Ruokavirasto","title":"Elintarviketurvallisuus","year":2025,"url":"https://www.ruokavirasto.fi/","supports":"Lämpötilat, kylmäketju, ruokamyrkytys."},{"id":"src:ER2","org":"Luonnontieteellinen museo","title":"Sienten tunnistus","year":2025,"url":"https://www.luomus.fi/","supports":"Sienet, myrkkysienet."},{"id":"src:ER3","org":"Pelastuslaitos","title":"Avotulen teko","year":2025,"url":"https://www.pelastustoimi.fi/","supports":"Nuotio, metsäpalovaroitus."}]),
 
-  ("leipuri","Leipuri",{
+  ("baker","Leipuri",{
     "ASSUMPTIONS":["Mökkileipominen: leivinuuni, puulämmitteinen","Hapanjuuri, ruisleipä, pulla, karjalanpiirakat"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "oven_temp_bread_c":{"value":"220-250°C (ruisleipä), 200-220°C (vehnäleipä)","source":"src:LE1"},
@@ -73,7 +73,7 @@ agents = [
     "UNCERTAINTY_NOTES":["Leivinuunin lämpötila vaihtelee — termometri hormiin/uuniin on välttämätön.","Hapanjuuren aktiivisuus riippuu ympäristöoloista — ei aina toistettavissa."]
   },[{"id":"src:LE1","org":"Marttaliitto","title":"Leipäohjeistot","year":2025,"url":"https://www.martat.fi/","supports":"Reseptit, lämpötilat, hapanjuuri."},{"id":"src:LE2","org":"Ruokavirasto","title":"Kotitalouden myynti","year":2025,"url":"https://www.ruokavirasto.fi/","supports":"Elintarvikemyynti."}]),
 
-  ("ravintoterapeutti","Ravintoterapeutti",{
+  ("nutritionist","Ravintoterapeutti",{
     "ASSUMPTIONS":["Janin ja perheen ravintosuositukset","Fyysisesti aktiivinen (mehiläishoito, metsätyö, mökkielämä)","Paikallisten raaka-aineiden hyödyntäminen"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "daily_energy_kcal":{"value":"2500-3000 kcal (aktiivinen mies, 52v)","note":"Raskaan työn päivinä (mehiläiset, puunkaato) +500 kcal","source":"src:RA1"},
@@ -89,8 +89,8 @@ agents = [
     "UNCERTAINTY_NOTES":["Ravintosuositukset ovat väestötason ohjeita — yksilölliset tarpeet vaihtelevat.","Hunajan ravintosisältö: pääosin sokereita, vähän mikroravinteita."]
   },[{"id":"src:RA1","org":"THL / Ruokavirasto","title":"Suomalaiset ravitsemussuositukset","year":2024,"url":"https://www.ruokavirasto.fi/teemat/terveytta-edistava-ruokavalio/","supports":"Energia, proteiini, D-vitamiini, nesteytys."}]),
 
-  ("saunamajuri","Saunamajuri",{
-    "ASSUMPTIONS":["Korvenrannan puusauna (puulämmitteinen)","Järviuinti saunan yhteydessä","Kytketty nuohooja-, paloesimies-, rantavahti-agentteihin"],
+  ("sauna_master","Saunamajuri",{
+    "ASSUMPTIONS":["Korvenrannan puusauna (puulämmitteinen)","Järviuinti saunan yhteydessä","Kytketty chimney_sweep-, fire_officer-, shore_guard-agentteihin"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "sauna_temp_c":{"value":"70-90°C lauteilla","action":">100°C → liian kuuma, avaa ovi/luukku","source":"src:SA1"},
         "session_max_min":{"value":"15-20 min per kerta","action":">20 min → nestehukka, huimaus, riski","source":"src:SA1"},
@@ -105,8 +105,8 @@ agents = [
     "UNCERTAINTY_NOTES":["Saunan lämpötila vaihtelee merkittävästi lauteiden korkeuden mukaan (~15°C ero ylä/ala)."]
   },[{"id":"src:SA1","org":"Suomen Saunaseura","title":"Saunomisohje","year":2025,"url":"https://www.sauna.fi/","supports":"Lämpötilat, turvallisuus, kiuas."},{"id":"src:SA2","org":"Pelastuslaitos","title":"Nuohous","year":2025,"url":"https://www.pelastustoimi.fi/","supports":"Saunan hormin nuohous."}]),
 
-  ("viihdepaallikko","Viihdepäällikkö (PS5 + lautapelit + perinnepelit)",{
-    "ASSUMPTIONS":["Korvenrannan mökin viihdejärjestelmä","PS5 + TV, lautapelikokoelma, suomalaiset perinnepelit","Kytketty sähkö-, valaistusmestari-, saunamajuri-agentteihin"],
+  ("entertainment_chief","Viihdepäällikkö (PS5 + lautapelit + perinnepelit)",{
+    "ASSUMPTIONS":["Korvenrannan mökin viihdejärjestelmä","PS5 + TV, lautapelikokoelma, suomalaiset perinnepelit","Kytketty sähkö-, lighting_master-, sauna_master-agentteihin"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "screen_time_max_h":{"value":"Suositus: max 2-3h yhtäjaksoista peliaikaa","action":"Tauko 15 min / 2h → silmät, liikkuminen","source":"src:VI1"},
         "ps5_ventilation_temp_c":{"value":"Ympäristö <35°C","action":">35°C → ylikuumenee, sammuta tai tuuleta","source":"src:VI1"},
@@ -121,7 +121,7 @@ agents = [
     "_x":[{"q":"Mikä on PS5:n ympäristölämpötilan raja?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.ps5_ventilation_temp_c.value","source":"src:VI1"},{"q":"Mikä on suositeltu ruutuaika?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.screen_time_max_h.value","source":"src:VI1"},{"q":"Mitä perinnepelejä suositellaan?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.traditional_games.value","source":"src:VI2"},{"q":"Miksi UPS tarvitaan?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.ups_for_ps5.action","source":"src:VI1"},{"q":"Montako pelaajaa on optimaalinen lautapeli-iltaan?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.game_night_players_optimal.value","source":"src:VI1"},{"q":"Mitä tehdään PS5 ylikuumentuessa?","a_ref":"FAILURE_MODES[0].action","source":"src:VI1"},{"q":"Mitä pelejä pelataan kesällä ulkona?","a_ref":"SEASONAL_RULES[1].action","source":"src:VI2"},]
   },[{"id":"src:VI1","org":"Sony / THL","title":"Peliturvallisuus ja ergonomia","year":2025,"url":None,"supports":"Ruutuaika, ylikuumeneminen, UPS."},{"id":"src:VI2","org":"Suomen Mölkky ry / perinnepelit","title":"Perinnepelit","year":2025,"url":None,"supports":"Mölkky, korttipelit, tikanheitto."}]),
 
-  ("elokuva_asiantuntija","Elokuva-asiantuntija (Suomi-elokuvat)",{
+  ("movie_expert","Elokuva-asiantuntija (Suomi-elokuvat)",{
     "ASSUMPTIONS":["Suomalaisen elokuvan tuntemus","Mökkielokuvaillat","Suositukset tunnelman, kauden ja seuran mukaan"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "audience_rating_min":{"value":"IMDb ≥6.5 tai Elonet-suositus","source":"src:EL1"},
@@ -144,8 +144,8 @@ agents = [
     "UNCERTAINTY_NOTES":["Streaming-valikoimat muuttuvat kuukausittain."]
   },[{"id":"src:EL1","org":"Elonet / SES","title":"Suomalaiset elokuvat","year":2025,"url":"https://elonet.finna.fi/","supports":"Elokuvatiedot, arviot."},{"id":"src:EL2","org":"KAVI","title":"Kuvaohjelmalaki 710/2011","year":2011,"url":"https://www.kavi.fi/","supports":"Ikärajat."}]),
 
-  ("inventaariopaallikko","Inventaariopäällikkö",{
-    "ASSUMPTIONS":["Korvenrannan varasto: työkalut, mehiläistarvikkeet, elintarvikkeet, polttoaineet","Inventointi systemaattisesti","Kytketty logistikko-, eräkokki-, tarhaaja-agentteihin"],
+  ("inventory_chief","Inventaariopäällikkö",{
+    "ASSUMPTIONS":["Korvenrannan varasto: työkalut, mehiläistarvikkeet, elintarvikkeet, polttoaineet","Inventointi systemaattisesti","Kytketty logistics-, eräkokki-, beekeeper-agentteihin"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "reorder_point_sugar_kg":{"value":50,"action":"Sokerivarasto <50 kg → tilaus (syysruokinta ~15-20 kg/pesä × 300 pesää)","source":"src:IN1"},
         "fuel_reserve_days":{"value":7,"action":"Polttopuut + bensiini ≥7 pv varmuusvarasto","source":"src:IN1"},
@@ -159,7 +159,7 @@ agents = [
     "UNCERTAINTY_NOTES":["Mehiläistarvikkeiden toimitusajat voivat olla pitkiä keväällä — ennakkotilaus."]
   },[{"id":"src:IN1","org":"JKH Service sisäinen","title":"Varastohallinta","year":2026,"url":None,"supports":"Inventointi, tilauspisteet."}]),
 
-  ("kierratys_jate","Kierrätys- ja jäteneuvoja",{
+  ("recycling","Kierrätys- ja jäteneuvoja",{
     "ASSUMPTIONS":["Korvenranta: haja-asutusalueen jätehuolto","Lajittelu: bio, paperi, kartonki, lasi, metalli, muovi, seka","Kompostointi oma"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "waste_sorting_categories":{"value":"7 jaetta + vaarallinen jäte erikseen","source":"src:KI1"},
@@ -174,7 +174,7 @@ agents = [
     "UNCERTAINTY_NOTES":["Haja-asutusalueen jätehuollon palvelutaso vaihtelee kunnittain."]
   },[{"id":"src:KI1","org":"Kouvolan Jätehuolto","title":"Lajitteluohje","year":2025,"url":None,"supports":"Lajittelu, kompostointi."},{"id":"src:KI2","org":"Oikeusministeriö","title":"Jätelaki 646/2011","year":2011,"url":"https://finlex.fi/fi/laki/ajantasa/2011/20110646","supports":"Lajitteluvelvollisuus, vaarallinen jäte."}]),
 
-  ("siivousvastaava","Siivousvastaava",{
+  ("cleaning_manager","Siivousvastaava",{
     "ASSUMPTIONS":["Korvenrannan mökkikiinteistö","Puupinnat, saunan pesu, ulkoterassit"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "sauna_wash_interval_weeks":{"value":"1-2 (aktiivikäytössä)","source":"src:SI1"},
@@ -189,7 +189,7 @@ agents = [
     "UNCERTAINTY_NOTES":["Puupintojen pesuvastustus vaihtelee — testaa aina piilossa olevasta kohdasta."]
   },[{"id":"src:SI1","org":"Puhtausala / Marttaliitto","title":"Siivousohjeistot","year":2025,"url":"https://www.martat.fi/","supports":"Puhdistusmenetelmät, aineet."}]),
 
-  ("logistikko","Logistikko (reitti + ajoajat)",{
+  ("logistics","Logistikko (reitti + ajoajat)",{
     "ASSUMPTIONS":["Korvenranta ↔ Helsinki, Kouvola, tarha-alueet","Tesla Model Y (sähköauto)","Mehiläistarvikkeiden ja hunajan kuljetus"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "range_km_winter":{"value":"Tesla Model Y: ~350 km (kesä), ~250 km (talvi -20°C)","source":"src:LO1"},
@@ -205,7 +205,7 @@ agents = [
     "UNCERTAINTY_NOTES":["Sähköauton todellinen talvitoimintamatka vaihtelee lämpötilan ja ajotavan mukaan.","Kelirikkoajat vaihtelevat vuosittain merkittävästi."]
   },[{"id":"src:LO1","org":"Traficom / Tesla","title":"Sähköauton käyttö Suomessa","year":2026,"url":"https://www.traficom.fi/","supports":"Toimintamatka, lataus, liikenne."},{"id":"src:LO2","org":"SML","title":"Hunajan käsittely ja kuljetus","year":2011,"url":None,"supports":"Hunajan kuljetuslämpötilat."}]),
 
-  ("matemaatikko_fyysikko","Matemaatikko ja fyysikko (laskenta + mallit)",{
+  ("math_physicist","Matemaatikko ja fyysikko (laskenta + mallit)",{
     "ASSUMPTIONS":["Laskennallinen tuki kaikille agenteille","Fysiikan mallit: lämmönsiirto, nestevirtaus, optiikka, mekaniikka","Matemaattiset mallit: tilastot, ennusteet, optimointi"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "deg_day_formula":{"value":"°Cvr = Σ max(0, T_avg - T_base), T_base = 5°C","source":"src:MA1"},

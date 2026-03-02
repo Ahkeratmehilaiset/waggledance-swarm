@@ -534,9 +534,9 @@ WaggleDance auto-detects your hardware and configures itself. No YAML editing ne
 ```
 waggledance-swarm/
 ├── agents/              # 50+ YAML agent knowledge bases
-│   ├── tarhaaja/        #   Beekeeper (head agent)
-│   ├── tautivahti/      #   Disease monitor
-│   ├── meteorologi/     #   Weather expert
+│   ├── beekeeper/        #   Beekeeper (head agent)
+│   ├── disease_monitor/      #   Disease monitor
+│   ├── meteorologist/     #   Weather expert
 │   └── ... (47 more)
 ├── knowledge/           # Domain knowledge bases
 ├── core/                # Core modules

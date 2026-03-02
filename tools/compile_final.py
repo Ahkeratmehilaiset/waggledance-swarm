@@ -12,19 +12,19 @@ OUT.mkdir(exist_ok=True)
 
 # Canonical order matching the spec
 AGENT_ORDER = [
-    "core_dispatcher","luontokuvaaja","ornitologi","riistanvartija",
-    "hortonomi","metsanhoitaja","fenologi","pienelain_tuholais",
-    "entomologi","tahtitieteilija","valo_varjo","tarhaaja",
-    "lentosaa","parveiluvahti","pesalampo","nektari_informaatikko",
-    "tautivahti","pesaturvallisuus","limnologi","kalastusopas",
-    "kalantunnistaja","rantavahti","jaaasiantuntija","meteorologi",
-    "myrskyvaroittaja","mikroilmasto","ilmanlaatu","routa_maapera",
-    "sahkoasentaja","lvi_asiantuntija","timpuri","nuohooja",
-    "valaistusmestari","paloesimies","laitehuoltaja","kybervahti",
-    "lukkoseppa","pihavahti","privaattisuus","erakokki",
-    "leipuri","ravintoterapeutti","saunamajuri","viihdepaallikko",
-    "elokuva_asiantuntija","inventaariopaallikko","kierratys_jate",
-    "siivousvastaava","logistikko","matemaatikko_fyysikko"
+    "core_dispatcher","nature_photographer","ornithologist","wildlife_ranger",
+    "horticulturist","forester","phenologist","pest_control",
+    "entomologist","astronomer","light_shadow","beekeeper",
+    "flight_weather","swarm_watcher","hive_temperature","nectar_scout",
+    "disease_monitor","hive_security","limnologist","fishing_guide",
+    "fish_identifier","shore_guard","ice_specialist","meteorologist",
+    "storm_alert","microclimate","air_quality","frost_soil",
+    "electrician","hvac_specialist","carpenter","chimney_sweep",
+    "lighting_master","fire_officer","equipment_tech","cyber_guard",
+    "locksmith","yard_guard","privacy_guard","wilderness_chef",
+    "baker","nutritionist","sauna_master","entertainment_chief",
+    "movie_expert","inventory_chief","recycling",
+    "cleaning_manager","logistics","math_physicist"
 ]
 
 DISPLAY_NAMES = [

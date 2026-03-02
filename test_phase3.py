@@ -86,7 +86,7 @@ try:
 
     # 50 correct -> L2 APPRENTICE promotion
     for i in range(55):
-        mgr.record_response("promo_agent", "tarhaaja", was_correct=True)
+        mgr.record_response("promo_agent", "beekeeper", was_correct=True)
     s = mgr.get_stats("promo_agent")
     if s["level"] == 2 and s["level_name"] == "APPRENTICE":
         OK(f"50+ correct -> L2 APPRENTICE (trust={s['trust_score']:.2f})")
@@ -148,7 +148,7 @@ try:
 
     # User correction penalty
     before_trust = mgr.get_stats("promo_agent")["trust_score"]
-    mgr.record_response("promo_agent", "tarhaaja",
+    mgr.record_response("promo_agent", "beekeeper",
                         was_correct=False, was_corrected=True)
     after_trust = mgr.get_stats("promo_agent")["trust_score"]
     if after_trust < before_trust:
@@ -191,7 +191,7 @@ else:
     FAIL(f"SEASONAL_BOOST: {len(SEASONAL_BOOST)} months")
 
 # Domain topics for key agent types
-expected_types = {"tarhaaja", "tautivahti", "meteorologi", "hortonomi", "business"}
+expected_types = {"beekeeper", "disease_monitor", "meteorologist", "horticulturist", "business"}
 if expected_types.issubset(set(DOMAIN_TOPICS.keys())):
     OK(f"DOMAIN_TOPICS: {len(DOMAIN_TOPICS)} agent types")
 else:
@@ -223,14 +223,14 @@ else:
     FAIL(f"Seasonal task: {task}")
 
 # Random exploration task
-task = ltq._random_task("tarhaaja")
+task = ltq._random_task("beekeeper")
 if task and task["type"] == "exploration":
-    OK(f"Random task (tarhaaja): {task['topic']}")
+    OK(f"Random task (beekeeper): {task['topic']}")
 else:
     FAIL(f"Random task: {task}")
 
 # next_task returns something
-task = ltq.next_task(agent_type="tarhaaja")
+task = ltq.next_task(agent_type="beekeeper")
 if task and task.get("type"):
     OK(f"next_task: type={task['type']}, topic={task.get('topic', '')[:40]}")
 else:
@@ -240,7 +240,7 @@ else:
 ltq2 = LearningTaskQueue(FakeCon())
 topics = set()
 for _ in range(10):
-    t = ltq2.next_task(agent_type="tarhaaja")
+    t = ltq2.next_task(agent_type="beekeeper")
     if t:
         topics.add(t.get("topic", ""))
 if len(topics) >= 3:

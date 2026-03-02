@@ -378,8 +378,8 @@ from core.meta_learning import MetaLearningEngine
 c = make_mock_consciousness()
 agent_levels = MagicMock()
 agent_levels.get_all_stats.return_value = {
-    "tarhaaja": {"total_responses": 100, "hallucination_count": 2, "level": 3},
-    "tautivahti": {"total_responses": 50, "hallucination_count": 10, "level": 2},
+    "beekeeper": {"total_responses": 100, "hallucination_count": 2, "level": 3},
+    "disease_monitor": {"total_responses": 50, "hallucination_count": 10, "level": 2},
 }
 enrichment = MagicMock()
 enrichment.stats = {"generated": 50, "validated": 40, "rejected": 10, "success_rate": 0.8}
@@ -406,18 +406,18 @@ else:
 
 # 3c. Analyze hallucinations
 hall = ml._analyze_hallucinations()
-if "per_agent" in hall and "tarhaaja" in hall["per_agent"]:
+if "per_agent" in hall and "beekeeper" in hall["per_agent"]:
     OK(f"_analyze_hallucinations: {len(hall['per_agent'])} agents")
 else:
     FAIL(f"_analyze_hallucinations: {hall}")
 
-# Check tautivahti has high rate
-if "tautivahti" in hall.get("per_agent", {}):
-    rate = hall["per_agent"]["tautivahti"]["rate"]
+# Check disease_monitor has high rate
+if "disease_monitor" in hall.get("per_agent", {}):
+    rate = hall["per_agent"]["disease_monitor"]["rate"]
     if rate == 0.2:
-        OK(f"tautivahti hallucination rate=0.2 (10/50)")
+        OK(f"disease_monitor hallucination rate=0.2 (10/50)")
     else:
-        WARN(f"tautivahti rate={rate}")
+        WARN(f"disease_monitor rate={rate}")
 
 # 3d. Analyze learning efficiency
 eff = ml._analyze_learning_efficiency()
@@ -428,17 +428,17 @@ else:
 
 # 3e. Find weakest areas
 weak = ml._find_weakest_areas()
-# tautivahti has 20% halluc rate, should be flagged
-flagged = [w for w in weak if w.get("agent_id") == "tautivahti"]
+# disease_monitor has 20% halluc rate, should be flagged
+flagged = [w for w in weak if w.get("agent_id") == "disease_monitor"]
 if flagged:
-    OK("tautivahti flagged as weak (20% hallucination)")
+    OK("disease_monitor flagged as weak (20% hallucination)")
 else:
-    WARN("tautivahti not flagged (threshold may differ)")
+    WARN("disease_monitor not flagged (threshold may differ)")
 
 # 3f. Generate suggestions
 report = {
     "memory_stats": {"hot_cache": {"size": 490, "max_size": 500, "hit_rate": 0.12}},
-    "weakest_areas": [{"type": "high_hallucination_agent", "agent_id": "tautivahti", "rate": 0.2}],
+    "weakest_areas": [{"type": "high_hallucination_agent", "agent_id": "disease_monitor", "rate": 0.2}],
     "learning_efficiency": {},
 }
 suggestions = ml._generate_suggestions(report)

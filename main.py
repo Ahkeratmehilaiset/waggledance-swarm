@@ -58,19 +58,19 @@ else:
 from hivemind import HiveMind
 
 AUTO_SPAWN = [
-    # Ydinbisnes
-    "tarhaaja", "core_dispatcher", "lentosaa",
-    # Ympäristö
-    "meteorologi", "hortonomi", "ornitologi",
-    # Turvallisuus
-    "pesaturvallisuus", "kybervahti", "pihavahti",
-    # Kiinteistö
-    "sahkoasentaja", "nuohooja", "luontokuvaaja",
-    # Metsä & riista
-    "metsanhoitaja", "riistanvartija",
-    # Arki
-    "erakokki", "saunamajuri",
-    # Erikois
+    # Core business
+    "beekeeper", "core_dispatcher", "flight_weather",
+    # Environment
+    "meteorologist", "horticulturist", "ornithologist",
+    # Security
+    "hive_security", "cyber_guard", "yard_guard",
+    # Property
+    "electrician", "chimney_sweep", "nature_photographer",
+    # Forest & wildlife
+    "forester", "wildlife_ranger",
+    # Daily life
+    "wilderness_chef", "sauna_master",
+    # Special
     "oracle", "hacker",
 ]
 

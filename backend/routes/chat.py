@@ -343,7 +343,7 @@ _RESPONSES: list[tuple[list[str], str]] = [
 
     # --- WaggleDance system ---
     (["agentti", "agent", "swarm"],
-     "WaggleDancessa toimii 50+ erikoistunutta agenttia: tarhaaja, tautivahti, meteorologi jne. "
+     "WaggleDancessa toimii 50+ erikoistunutta agenttia: beekeeper, disease_monitor, meteorologist jne. "
      "Agentit keskustelevat Round Table -istunnoissa ja oppivat toisiltaan."),
     (["oppimi", "oppii", "muisti", "chromadb"],
      "WaggleDance oppii jatkuvasti: YAML-tiedostot, keskustelut, Round Table, verkko. "

@@ -10,9 +10,9 @@ def w(d,core,src):
     print(f"  ✅ {d}: {len(core.get('eval_questions',[]))} q")
 
 # ═══ 11: VALO- JA VARJOANALYYTIKKO ═══
-w("valo_varjo",{
-    "header":{"agent_id":"valo_varjo","agent_name":"Valo- ja varjoanalyytikko","version":"1.0.0","last_updated":"2026-02-21"},
-    "ASSUMPTIONS":["Korvenranta 60.9°N, 26.7°E","Aurinkokulman analyysi mehiläispesien, kasvimaiden, aurinkopaneelien ja asumisen optimointiin","Kytketty valaistusmestari-, hortonomi-, tarhaaja-agentteihin"],
+w("light_shadow",{
+    "header":{"agent_id":"light_shadow","agent_name":"Valo- ja varjoanalyytikko","version":"1.0.0","last_updated":"2026-02-21"},
+    "ASSUMPTIONS":["Korvenranta 60.9°N, 26.7°E","Aurinkokulman analyysi mehiläispesien, kasvimaiden, aurinkopaneelien ja asumisen optimointiin","Kytketty lighting_master-, horticulturist-, beekeeper-agentteihin"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "solar_noon_elevation_summer":{"value":"52.6° (kesäpäivänseisaus, 60.9°N)","source":"src:VAL1"},
         "solar_noon_elevation_winter":{"value":"5.8° (talvipäivänseisaus)","source":"src:VAL1"},
@@ -89,8 +89,8 @@ w("valo_varjo",{
 ]})
 
 # ═══ 12: TARHAAJA (Päämehiläishoitaja) ═══
-w("tarhaaja",{
-    "header":{"agent_id":"tarhaaja","agent_name":"Tarhaaja (Päämehiläishoitaja)","version":"1.0.0","last_updated":"2026-02-21"},
+w("beekeeper",{
+    "header":{"agent_id":"beekeeper","agent_name":"Tarhaaja (Päämehiläishoitaja)","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["202 yhdyskuntaa (35 tarhaa), useita tarhoja (Helsinki, Kouvola, Huhdasjärvi)","JKH Service Y-tunnus 2828492-2","Vuosituotanto ~10 000 kg hunajaa","Hoitomalli: Langstroth-kehykset"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "varroa_threshold_per_100":{"value":3,"action":">3 punkkia/100 mehiläistä → kemiallinen hoito välittömästi","source":"src:TAR1"},
@@ -182,8 +182,8 @@ w("tarhaaja",{
 ]})
 
 # ═══ 13: LENTOSÄÄ-ANALYYTIKKO ═══
-w("lentosaa",{
-    "header":{"agent_id":"lentosaa","agent_name":"Lentosää-analyytikko","version":"1.0.0","last_updated":"2026-02-21"},
+w("flight_weather",{
+    "header":{"agent_id":"flight_weather","agent_name":"Lentosää-analyytikko","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Mehiläisten lentoaktiivisuuden sää-arviointi","Yhdistää meteorologin datan mehiläishoidon päätöksiin","Korvenranta + muut tarha-alueet"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "min_flight_temp_c":{"value":10,"note":"Satunnaisia lentoja >10°C, normaali keräily >13°C, optimaalinen >15°C","source":"src:LSA1"},
@@ -194,7 +194,7 @@ w("lentosaa",{
         "inspection_weather":{"value":"T >15°C, ei sadetta, tuuli <5 m/s → sopiva pesäntarkistukselle","source":"src:LSA1"}
     },
     "PROCESS_FLOWS":{
-        "daily_assessment":{"steps":["1. Hae sääennuste meteorologi-agentilta (3h ja 24h)","2. Laske lento-oloindeksi (T, tuuli, sade, pilvisyys)","3. Jos indeksi 'hyvä' → ilmoita tarhaajalle optimaalisista toimintaajoista","4. Jos indeksi 'huono' >3pv → varoita tarhaajaa (pesät eivät keräile, ruokavarat laskevat)","5. Ilmoita parveiluvahdille: hyvät olosuhteet = korkea parveilriski"]}
+        "daily_assessment":{"steps":["1. Hae sääennuste meteorologist-agentilta (3h ja 24h)","2. Laske lento-oloindeksi (T, tuuli, sade, pilvisyys)","3. Jos indeksi 'hyvä' → ilmoita tarhaajalle optimaalisista toimintaajoista","4. Jos indeksi 'huono' >3pv → varoita tarhaajaa (pesät eivät keräile, ruokavarat laskevat)","5. Ilmoita parveiluvahdille: hyvät olosuhteet = korkea parveilriski"]}
     },
     "SEASONAL_RULES":[
         {"season":"Kevät","action":"Ensimmäiset lentopäivät (>10°C) kriittisiä pesän kunnon indikaattorina. Puhdistuslento.","source":"src:LSA1"},
@@ -233,7 +233,7 @@ w("lentosaa",{
         {"q":"Mitä parveiluvahdille kerrotaan hyvästä säästä?","a_ref":"PROCESS_FLOWS.daily_assessment.steps","source":"src:LSA1"},
         {"q":"Mikä on kosteuteen liittyvä hälytysraja?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.nectar_secretion_humidity.action","source":"src:LSA2"},
         {"q":"Paljonko sade vähentää lentoja?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.rain_flight_stop.value","source":"src:LSA1"},
-        {"q":"Miten mikroilmasto vaikuttaa ennusteeseen?","a_ref":"UNCERTAINTY_NOTES","source":"src:LSA1"},
+        {"q":"Miten microclimate vaikuttaa ennusteeseen?","a_ref":"UNCERTAINTY_NOTES","source":"src:LSA1"},
         {"q":"Mikä on tuulen raja optimaalisille oloille?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.optimal_flying_conditions.value","source":"src:LSA1"},
         {"q":"Miten lento-oloindeksi lasketaan?","a_ref":"PROCESS_FLOWS.daily_assessment.steps","source":"src:LSA1"},
         {"q":"Miksi pesää ei saa avata keväisessä pakkasessa?","a_ref":"FAILURE_MODES[1].action","source":"src:LSA1"},
@@ -258,8 +258,8 @@ w("lentosaa",{
 # ═══ 14-18: Parveiluvahti, Pesälämpö, Nektari, Tautivahti, Pesäturvallisuus ═══
 # (tiivistetty koska nämä ovat mehiläishoidon erikoisagentteja)
 
-w("parveiluvahti",{
-    "header":{"agent_id":"parveiluvahti","agent_name":"Parveiluvahti","version":"1.0.0","last_updated":"2026-02-21"},
+w("swarm_watcher",{
+    "header":{"agent_id":"swarm_watcher","agent_name":"Parveiluvahti","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Valvoo parveiluriskiä kaikilla tarhoilla","Saa dataa pesälämpö-agentilta, lentosää-agentilta ja tarhaajalta"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "swarm_season":{"value":"Touko-heinäkuu, huippu kesäkuun 2. viikko","source":"src:PAR1"},
@@ -293,8 +293,8 @@ w("parveiluvahti",{
     {"q":"Miten pesän populaation lasku havaitaan?","a_ref":"FAILURE_MODES[0].detection","source":"src:PAR1"},{"q":"Onko 10 sikiökehystä riskitekijä?","a_ref":"KNOWLEDGE_TABLES.swarm_triggers[2]","source":"src:PAR1"},{"q":"Miten ahdas pesä tunnistetaan?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.colony_overcrowding_indicator.value","source":"src:PAR1"},{"q":"Mikä on korotuksen tarkoitus?","a_ref":"PROCESS_FLOWS.swarm_prevention.steps","source":"src:PAR1"},{"q":"Mistä parvi löytyy lähtemisen jälkeen?","a_ref":"FAILURE_MODES[0].action","source":"src:PAR1"},{"q":"Miten jako tehdään konkreettisesti?","a_ref":"PROCESS_FLOWS.swarm_prevention.steps","source":"src:PAR1"},{"q":"Pitääkö uutta emoa odottaa 2 viikkoa?","a_ref":"FAILURE_MODES[1].detection","source":"src:PAR1"},{"q":"Millainen on korkean riskin tarkistussykli?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.inspection_interval_days","source":"src:PAR1"},{"q":"Miten hellepäivät liittyvät parveiluun?","a_ref":"SEASONAL_RULES[1].action","source":"src:PAR1"},{"q":"Miten emoton pesä yhdistetään?","a_ref":"FAILURE_MODES[1].action","source":"src:PAR1"}]
 },{"sources":[{"id":"src:PAR1","org":"SML","title":"Mehiläishoitoa käytännössä","year":2011,"url":None,"identifier":"ISBN 978-952-92-9184-4","supports":"Parveilunhallinta."}]})
 
-w("pesalampo",{
-    "header":{"agent_id":"pesalampo","agent_name":"Pesälämpö- ja kosteusmittaaja","version":"1.0.0","last_updated":"2026-02-21"},
+w("hive_temperature",{
+    "header":{"agent_id":"hive_temperature","agent_name":"Pesälämpö- ja kosteusmittaaja","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["IoT-anturit pesässä (lämpö, kosteus, paino)","BLE/WiFi → paikallinen gateway → tietokanta"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "brood_nest_temp_c":{"value":"34-36","action":"<34°C → sikiö kehittyy hitaasti, >37°C → sikiövauriot","source":"src:PES1"},
@@ -322,8 +322,8 @@ w("pesalampo",{
     {"q":"Mikä on viikkoraportin sisältö?","a_ref":"PROCESS_FLOWS.monitoring.steps","source":"src:PES1"},{"q":"Miten homevaara tunnistetaan?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.hive_humidity_rh_pct.action","source":"src:PES1"},{"q":"Mikä on BLE-yhteyden tarkistustapa?","a_ref":"FAILURE_MODES[0].action","source":"src:PES1"},{"q":"Kuinka usein data tallennetaan?","a_ref":"PROCESS_FLOWS.monitoring.steps","source":"src:PES1"},{"q":"Miten keväällä lämpötilaa seurataan?","a_ref":"SEASONAL_RULES[0].action","source":"src:PES1"},{"q":"Mikä on painon nousun merkitys keväällä?","a_ref":"SEASONAL_RULES[0].action","source":"src:PES1"},{"q":"Mikä on kriittisen talvinen viikkohäviö?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.weight_loss_winter_kg_per_week.action","source":"src:PES1"},{"q":"Miten ryöstö näkyy painossa?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.sudden_weight_drop_kg.action","source":"src:PES1"},{"q":"Kenelle anturivika ilmoitetaan?","a_ref":"FAILURE_MODES[0].action","source":"src:PES1"},{"q":"Mikä on datan hälytysviive?","a_ref":"FAILURE_MODES[0].detection","source":"src:PES1"}]
 },{"sources":[{"id":"src:PES1","org":"SML / Arnia Ltd","title":"Pesänseurantatekniikka","year":2024,"url":"https://www.arnia.co.uk/","supports":"IoT-pesäseuranta, lämpö-/kosteus-/painodata."}]})
 
-w("nektari_informaatikko",{
-    "header":{"agent_id":"nektari_informaatikko","agent_name":"Nektari-informaatikko","version":"1.0.0","last_updated":"2026-02-21"},
+w("nectar_scout",{
+    "header":{"agent_id":"nectar_scout","agent_name":"Nektari-informaatikko","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Yhdistää fenologin, hortonomin ja lentosään datat satoennusteeksi","Pääsatokasvit: maitohorsma, vadelma, apilat, rypsi, lehmus"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "nectar_flow_start_indicator":{"value":"Painonnousu >0.5 kg/pv + T >18°C + fenologinen kynnys → satokausi käynnissä","source":"src:NEK1"},
@@ -357,8 +357,8 @@ w("nektari_informaatikko",{
     {"q":"Miten painonseurantaa käytetään satoennusteessa?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.nectar_flow_start_indicator.value","source":"src:NEK1"},{"q":"Mitkä ovat rypsin kiteytymisen merkit?","a_ref":"FAILURE_MODES[1].detection","source":"src:NEK1"},{"q":"Milloin lehmussato on?","a_ref":"KNOWLEDGE_TABLES.nectar_sources[4].period","source":"src:NEK1"},{"q":"Mikä on satokauden pituus tyypillisesti?","a_ref":"SEASONAL_RULES","source":"src:NEK1"},{"q":"Kenelle satokauden loppumisesta ilmoitetaan?","a_ref":"FAILURE_MODES[0].action","source":"src:NEK1"},{"q":"Kuinka suuri pesäkohtainen tuotantoero voi olla?","a_ref":"UNCERTAINTY_NOTES","source":"src:NEK1"},{"q":"Mikä on refraktometrin käyttötarkoitus?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.honey_moisture_check.value","source":"src:NEK1"},{"q":"Miten korotuspäätös tehdään?","a_ref":"DECISION_METRICS_AND_THRESHOLDS.super_addition_trigger.value","source":"src:NEK1"},{"q":"Mikä on apilan tuotto?","a_ref":"KNOWLEDGE_TABLES.nectar_sources[5].flow_kg_day","source":"src:NEK1"},{"q":"Miten sääriippuvuus vaikuttaa suunnitteluun?","a_ref":"UNCERTAINTY_NOTES","source":"src:NEK1"}]
 },{"sources":[{"id":"src:NEK1","org":"SML","title":"Mehiläishoitoa käytännössä + satokasvitiedot","year":2011,"url":None,"identifier":"ISBN 978-952-92-9184-4","supports":"Satokasvit, nektarivirtaus, linkoaminen."}]})
 
-w("tautivahti",{
-    "header":{"agent_id":"tautivahti","agent_name":"Tautivahti (mehiläiset)","version":"1.0.0","last_updated":"2026-02-21"},
+w("disease_monitor",{
+    "header":{"agent_id":"disease_monitor","agent_name":"Tautivahti (mehiläiset)","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Seuraa kaikkien tarhojen tautitilannetta","Kytkentä tarhaajaan, entomologiin ja Ruokavirastoon"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "afb_zero_tolerance":{"value":"Yksikin AFB-epäily → HETI Ruokavirasto + eristys","source":"src:TAU1"},
@@ -391,8 +391,8 @@ w("tautivahti",{
     {"q":"Vaatiiko lääkinnällinen hoito lupaa?","a_ref":"COMPLIANCE_AND_LEGAL.veterinary","source":"src:TAU1"},{"q":"Voiko AFB olla piilevä?","a_ref":"UNCERTAINTY_NOTES","source":"src:TAU1"},{"q":"Miten nosemaa hoidetaan?","a_ref":"KNOWLEDGE_TABLES.diseases[2].action","source":"src:TAU1"},{"q":"Onko EFB valvottava?","a_ref":"KNOWLEDGE_TABLES.diseases[1].status","source":"src:TAU1"},{"q":"Mikä aiheuttaa DWV:n?","a_ref":"KNOWLEDGE_TABLES.diseases[4].pathogen","source":"src:TAU1"},{"q":"Mihin DWV liittyy?","a_ref":"KNOWLEDGE_TABLES.diseases[4].status","source":"src:TAU1"},{"q":"Mikä on tikkulankatesti?","a_ref":"FAILURE_MODES[0].detection","source":"src:TAU1"},{"q":"Milloin talvikuolleisuutta seurataan?","a_ref":"SEASONAL_RULES[3].action","source":"src:TAU1"},{"q":"Vaihteleeko nosema-kynnys?","a_ref":"UNCERTAINTY_NOTES","source":"src:TAU1"},{"q":"Kenelle massakuolemasta ilmoitetaan?","a_ref":"FAILURE_MODES[1].action","source":"src:TAU1"}]
 },{"sources":[{"id":"src:TAU1","org":"Ruokavirasto","title":"Mehiläisten taudit","year":2025,"url":"https://www.ruokavirasto.fi/elaimet/elainterveys-ja-elaintaudit/elaintaudit/mehilaiset/","supports":"AFB, EFB, nosema, kalkkisikiö, DWV."}]})
 
-w("pesaturvallisuus",{
-    "header":{"agent_id":"pesaturvallisuus","agent_name":"Pesäturvallisuuspäällikkö (karhut ym.)","version":"1.0.0","last_updated":"2026-02-21"},
+w("hive_security",{
+    "header":{"agent_id":"hive_security","agent_name":"Pesäturvallisuuspäällikkö (karhut ym.)","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Karhu- ja mäyrävahinkojen ehkäisy mehiläistarhoilla","Sähköaita ensisijainen suojakeino","Korvenranta + kaikki muut tarha-sijainnit"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "electric_fence_voltage_kv":{"value":"4-7 kV (minimi 3 kV, alle → ei estä karhua)","action":"Mittaa vähintään 2x/kk, ennen karhukautta (touko) viikoittain","source":"src:PETU1"},

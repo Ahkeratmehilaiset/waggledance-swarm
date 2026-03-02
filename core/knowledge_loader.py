@@ -46,7 +46,7 @@ class KnowledgeLoader:
     def get_knowledge(self, agent_type: str, max_chars: int = 2000) -> str:
         """
         BACKWARD-COMPAT wrapper.
-        Vanha koodi kutsuu: loader.get_knowledge("tarhaaja")
+        Vanha koodi kutsuu: loader.get_knowledge("beekeeper")
         → delegoi get_knowledge_summary():iin.
         """
         return self.get_knowledge_summary(agent_type)[:max_chars]

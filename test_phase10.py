@@ -187,7 +187,7 @@ try:
             {"role": "system", "content": "System prompt"},
             {"role": "user", "content": "Miten hoidetaan varroaa?"},
             {"role": "assistant", "content": "Varroa-hoito tehdään oksaalihapolla tai muurahaishapolla syksyllä. Käsittely ajoitetaan sikiöttömään aikaan."}
-        ], "agent": "tautivahti", "timestamp": "2026-02-20T10:00:00"},
+        ], "agent": "disease_monitor", "timestamp": "2026-02-20T10:00:00"},
         {"messages": [
             {"role": "system", "content": "System"},
             {"role": "user", "content": "Lyhyt?"},

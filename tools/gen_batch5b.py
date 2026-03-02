@@ -27,10 +27,10 @@ def write_agent(agent_dir: str, core: dict, sources: dict) -> None:
 def main() -> None:
     # Agent 29: Sähköasentaja
     write_agent(
-        "sahkoasentaja",
+        "electrician",
         {
             "header": {
-                "agent_id": "sahkoasentaja",
+                "agent_id": "electrician",
                 "agent_name": "Sähköasentaja",
                 "version": "1.0.0",
                 "last_updated": "2026-02-21",
@@ -207,10 +207,10 @@ def main() -> None:
 
     # Agent 30: LVI-asiantuntija
     write_agent(
-        "lvi_asiantuntija",
+        "hvac_specialist",
         {
             "header": {
-                "agent_id": "lvi_asiantuntija",
+                "agent_id": "hvac_specialist",
                 "agent_name": "LVI-asiantuntija (Putkimies)",
                 "version": "1.0.0",
                 "last_updated": "2026-02-21",

@@ -30,40 +30,40 @@ from typing import Optional
 # Ryhmitelty kategorioittain
 
 AGENT_GLYPH_MAP = {
-    # Ydin
+    # Core
     "core_dispatcher": "🧠",
-    # Luonto & ympäristö
-    "ornitologi": "🦅", "entomologi": "🪲", "fenologi": "🌸",
-    "hortonomi": "🌿", "metsanhoitaja": "🌲", "riistanvartija": "🦌",
-    "luontokuvaaja": "📸", "pienelain_tuholais": "🐭",
-    # Mehiläiset
-    "tarhaaja": "🐝", "lentosaa": "🌤️", "parveiluvahti": "🔔",
-    "pesalampo": "🌡️", "nektari_informaatikko": "🍯",
-    "tautivahti": "🦠", "pesaturvallisuus": "🐻",
-    # Vesi & sää
-    "limnologi": "🏊", "kalastusopas": "🎣", "kalantunnistaja": "🐟",
-    "rantavahti": "🏖️", "jaaasiantuntija": "🧊",
-    "meteorologi": "⛅", "myrskyvaroittaja": "⛈️",
-    "mikroilmasto": "🌡️", "ilmanlaatu": "💨",
-    "routa_maapera": "🪨",
-    # Kiinteistö & tekniikka
-    "sahkoasentaja": "⚡", "lvi_asiantuntija": "🔧",
-    "timpuri": "🪵", "nuohooja": "🔥", "valaistusmestari": "💡",
-    "paloesimies": "🚒", "laitehuoltaja": "🔩",
-    # Turvallisuus
-    "kybervahti": "🛡️", "lukkoseppa": "🔐",
-    "pihavahti": "👁️", "privaattisuus": "🕶️",
-    # Ruoka & vapaa-aika
-    "erakokki": "🍳", "leipuri": "🍞", "ravintoterapeutti": "🥗",
-    "saunamajuri": "♨️", "viihdepaallikko": "🎮",
-    "elokuva_asiantuntija": "🎬",
-    # Hallinto & logistiikka
-    "inventaariopaallikko": "📦", "kierratys_jate": "♻️",
-    "siivousvastaava": "🧹", "logistikko": "🚛",
-    # Tiede
-    "tahtitieteilija": "🔭", "valo_varjo": "☀️",
-    "matemaatikko_fyysikko": "📐",
-    # Runtime-erikoiset (säilytetään)
+    # Nature & environment
+    "ornithologist": "🦅", "entomologist": "🪲", "phenologist": "🌸",
+    "horticulturist": "🌿", "forester": "🌲", "wildlife_ranger": "🦌",
+    "nature_photographer": "📸", "pest_control": "🐭",
+    # Bees
+    "beekeeper": "🐝", "flight_weather": "🌤️", "swarm_watcher": "🔔",
+    "hive_temperature": "🌡️", "nectar_scout": "🍯",
+    "disease_monitor": "🦠", "hive_security": "🐻",
+    # Water & weather
+    "limnologist": "🏊", "fishing_guide": "🎣", "fish_identifier": "🐟",
+    "shore_guard": "🏖️", "ice_specialist": "🧊",
+    "meteorologist": "⛅", "storm_alert": "⛈️",
+    "microclimate": "🌡️", "air_quality": "💨",
+    "frost_soil": "🪨",
+    # Property & technical
+    "electrician": "⚡", "hvac_specialist": "🔧",
+    "carpenter": "🪵", "chimney_sweep": "🔥", "lighting_master": "💡",
+    "fire_officer": "🚒", "equipment_tech": "🔩",
+    # Security
+    "cyber_guard": "🛡️", "locksmith": "🔐",
+    "yard_guard": "👁️", "privacy_guard": "🕶️",
+    # Food & leisure
+    "wilderness_chef": "🍳", "baker": "🍞", "nutritionist": "🥗",
+    "sauna_master": "♨️", "entertainment_chief": "🎮",
+    "movie_expert": "🎬",
+    # Administration & logistics
+    "inventory_chief": "📦", "recycling": "♻️",
+    "cleaning_manager": "🧹", "logistics": "🚛",
+    # Science
+    "astronomer": "🔭", "light_shadow": "☀️",
+    "math_physicist": "📐",
+    # Runtime-special (retained)
     "hacker": "⚙️", "oracle": "🔮", "hivemind": "🧠",
 }
 
@@ -71,64 +71,64 @@ AGENT_GLYPH_MAP = {
 # Kukin agentti → lista suomenkielisistä avainsanoista
 
 ROUTING_KEYWORDS = {
-        "tarhaaja": ["mehiläi", "pesä", "hunaja", "vaha", "emo", "parvi", "tarha", "hoito", "talveh", "varroa", "linkoa", "punkk", "linko", "hunaj", "kuningatar", "silm", "siipi", "kammi", "sydän", "toukk", "sikiö", "propolis", "siitepöly", "ruokin", "nektar", "pölyt", "apila", "kehä", "pesiä", "yhdyskun", "kannu", "rotu", "carnica", "buckfast"],
-    "lentosaa": ["lentosää", "lämpötila", "tuuli", "sade", "lennätys", "sääennuste"],
-    "parveiluvahti": ["parveil", "kuningatar", "emottom"],
-    "pesalampo": ["pesälämpö", "kosteus", "lämpötila pesä", "anturi"],
-    "nektari_informaatikko": ["satokausi", "nektar", "kukinta", "paino", "linkous"],
-    "tautivahti": ["tauti", "nosema", "varroa", "afb", "efb", "kalkki", "sikiö"],
-    "pesaturvallisuus": ["karhu", "hiiri", "varkaus", "pesävaurio", "suojau", "peura", "ilves"],
+    "beekeeper": ["bee", "hive", "honey", "wax", "queen", "swarm", "apiary", "care", "winter", "varroa", "extract", "mite", "honey", "brood", "comb", "cell", "heart", "larva", "brood", "propolis", "pollen", "feeding", "nectar", "dust", "clover", "frame", "hives", "colony", "genetics", "carnica", "buckfast"],
+    "flight_weather": ["flight weather", "temperature", "wind", "rain", "flying", "forecast"],
+    "swarm_watcher": ["swarm", "queen", "queenless"],
+    "hive_temperature": ["hive temperature", "humidity", "hive temp", "sensor"],
+    "nectar_scout": ["harvest season", "nectar", "bloom", "weight", "extraction"],
+    "disease_monitor": ["disease", "nosema", "varroa", "afb", "efb", "chalk", "brood"],
+    "hive_security": ["bear", "mouse", "theft", "hive damage", "protect", "deer", "lynx"],
 
-    "ornitologi": ["lintu", "pesintä", "muutto", "laji", "bongaus", "muuttolintu", "pesimä", "birdnet"],
-    "entomologi": ["hyönteis", "pölyttäj", "tuholai", "kuoriai", "perhos"],
-    "fenologi": ["fenolog", "kukinta", "lehti", "kasvukausi", "vuodenaik"],
-        "hortonomi": ["puutarha", "kasvi", "istutus", "lannoitu", "leikkaus", "kasvihuone", "kastel", "lupiini", "vieraslaji", "nurmikko", "kukk", "kukkii", "vadelma", "omena", "apila", "kasvukausi", "siemen"],
-    "metsanhoitaja": ["metsä", "harvennus", "taimi", "hakkuu", "puu", "puusto", "myrsky", "tuulituho", "tykky", "oksa"],
-    "riistanvartija": ["riista", "hirvi", "peura", "kettu", "metsästy", "susi", "petovaroitus"],
-    "luontokuvaaja": ["kamera", "valokuvau", "ptz", "kuvakulma", "videointi", "frigate", "tallenne"],
-    "pienelain_tuholais": ["myyrä", "hiiri", "rotta", "kärppä", "tuholais"],
+    "ornithologist": ["bird", "nesting", "migration", "species", "birdwatching", "migratory bird", "nest", "birdnet"],
+    "entomologist": ["insect", "pollinator", "pest", "beetle", "butterfly"],
+    "phenologist": ["phenol", "bloom", "leaf", "growing season", "season"],
+    "horticulturist": ["garden", "plant", "planting", "fertiliz", "cutting", "greenhouse", "water", "lupine", "alien species", "lawn", "flower", "blooming", "raspberry", "apple", "clover", "growing season", "seed"],
+    "forester": ["forest", "thinning", "seedling", "logging", "tree", "timber", "storm", "wind damage", "beetle", "branch"],
+    "wildlife_ranger": ["wildlife", "moose", "deer", "fox", "hunting", "wolf", "predator alert"],
+    "nature_photographer": ["camera", "photograph", "ptz", "camera angle", "recording", "frigate", "recording"],
+    "pest_control": ["vole", "mouse", "rat", "weasel", "pest"],
 
-    "limnologi": ["järvi", "veden laatu", "happi", "levä", "vesinäyte"],
-    "kalastusopas": ["kalastus", "onkimi", "viehekalastus", "verkko", "hauki", "ahven"],
-    "kalantunnistaja": ["kalatunnistus", "kalalaji", "alamitt"],
-    "rantavahti": ["ranta", "veden korkeus", "tulva", "vesiraja"],
-    "jaaasiantuntija": ["jää", "jääpeite", "kantavuus", "avanto", "jäätyminen", "kanta", "pilkki"],
-    "meteorologi": ["sää", "ennuste", "lämpötila", "pilvi", "ilmanpaine", "uv"],
-    "myrskyvaroittaja": ["myrsky", "ukkon", "varoitus", "tuulenpuuska"],
-    "mikroilmasto": ["mikroilmasto", "paikallinen sää", "lämpösaareke"],
-    "ilmanlaatu": ["ilmanlaatu", "hiukkaspitoisuus", "pöly", "pm2.5"],
-    "routa_maapera": ["routa", "maaperä", "routaraja", "sulami"],
+    "limnologist": ["lake", "water quality", "oxygen", "algae", "water sample"],
+    "fishing_guide": ["fishing", "hook", "lure fishing", "net", "pike", "perch"],
+    "fish_identifier": ["fish identification", "fish species", "size limit"],
+    "shore_guard": ["shore", "water level", "flood", "water line"],
+    "ice_specialist": ["ice", "ice cover", "bearing capacity", "ice hole", "freezing", "bearing", "ice fishing"],
+    "meteorologist": ["weather", "forecast", "temperature", "cloud", "air pressure", "uv"],
+    "storm_alert": ["storm", "thunder", "warning", "wind gust"],
+    "microclimate": ["microclimate", "local weather", "heat island"],
+    "air_quality": ["air quality", "particle content", "dust", "pm2.5"],
+    "frost_soil": ["frost", "soil", "frost line", "thaw"],
 
-    "sahkoasentaja": ["sähkö", "sulake", "pistorasia", "rcd", "sähköasennus"],
-    "lvi_asiantuntija": ["putki", "vesijohto", "viemäri", "lämmitys", "vesipaine"],
-    "timpuri": ["rakenn", "lauta", "hirsi", "sahaus", "terassi", "perustus"],
-    "nuohooja": ["nuohous", "savuhormi", "piippu", "tuhka"],
-    "valaistusmestari": ["valaistus", "lamppu", "led", "valosuunnittelu"],
-    "paloesimies": ["paloturva", "palovaroitin", "häkä", "sammutus", "tulipalo"],
-    "laitehuoltaja": ["laitehuolto", "iot", "akku", "verkko", "antenni"],
+    "electrician": ["electric", "fuse", "outlet", "rcd", "electrical installation"],
+    "hvac_specialist": ["pipe", "water pipe", "sewer", "heating", "water pressure"],
+    "carpenter": ["build", "board", "log", "sawing", "terrace", "foundation"],
+    "chimney_sweep": ["chimney sweep", "smoke duct", "chimney", "ash"],
+    "lighting_master": ["lighting", "lamp", "led", "lighting design"],
+    "fire_officer": ["fire safety", "smoke alarm", "carbon monoxide", "extinguish", "fire"],
+    "equipment_tech": ["equipment maintenance", "iot", "battery", "network", "antenna"],
 
-    "kybervahti": ["tietoturva", "hakkeri", "salasana", "palomuuri", "haavoittuv"],
-    "lukkoseppa": ["lukko", "älylukko", "hälytys", "kulunvalvonta"],
-    "pihavahti": ["piha", "liiketunnistin", "kameravartiointi", "ihmishavainto"],
-    "privaattisuus": ["privaattisuus", "yksityisyys", "gdpr", "kameratallenne"],
+    "cyber_guard": ["cyber security", "hacker", "password", "firewall", "vulnerab"],
+    "locksmith": ["lock", "smart lock", "alarm", "access control"],
+    "yard_guard": ["yard", "motion sensor", "camera monitoring", "human detection"],
+    "privacy_guard": ["privacy", "confidentiality", "gdpr", "camera recording"],
 
-    "erakokki": ["ruoka", "resepti", "grillaus", "nuotio", "ruuanlaitto"],
-    "leipuri": ["leivonta", "leipä", "kakku", "taikina", "uuni"],
-    "ravintoterapeutti": ["ravinto", "kaloreim", "vitamiini", "ruokavalio"],
-    "saunamajuri": ["sauna", "löyly", "kiuas", "lauteeet"],
-    "viihdepaallikko": ["peli", "lautapeli", "playstation", "ps5", "viihde"],
-    "elokuva_asiantuntija": ["elokuva", "leffa", "sarja", "netflix", "yle", "imdb"],
+    "wilderness_chef": ["food", "recipe", "grilling", "campfire", "cooking"],
+    "baker": ["baking", "bread", "cake", "dough", "oven"],
+    "nutritionist": ["nutrition", "calories", "vitamin", "diet"],
+    "sauna_master": ["sauna", "steam", "stove", "bench"],
+    "entertainment_chief": ["game", "board game", "playstation", "ps5", "entertainment"],
+    "movie_expert": ["movie", "film", "series", "netflix", "yle", "imdb"],
 
-    "inventaariopaallikko": ["varasto", "inventaario", "tarvike", "tilaus"],
-    "kierratys_jate": ["kierrätys", "jäte", "kompost", "lajittelu"],
-    "siivousvastaava": ["siivous", "puhdistus", "pesu", "desinfiointi"],
-    "logistikko": ["reitti", "matka", "kuljetus", "ajoaik", "kilomet"],
+    "inventory_chief": ["warehouse", "inventory", "supply", "order"],
+    "recycling": ["recycling", "waste", "compost", "sorting"],
+    "cleaning_manager": ["cleaning", "cleaning", "washing", "disinfection"],
+    "logistics": ["route", "trip", "transport", "driving time", "kilometer"],
 
-    "tahtitieteilija": ["tähti", "revontuli", "planeetta", "tähtitaivas", "revontul", "aurora"],
-    "valo_varjo": ["varjo", "auringon kulma", "valoisa aika", "paneeli"],
-    "matemaatikko_fyysikko": ["laske", "kaava", "tilasto", "fysiikka", "matematiikka"],
+    "astronomer": ["star", "aurora borealis", "planet", "starry sky", "aurora", "aurora"],
+    "light_shadow": ["shadow", "sun angle", "daylight", "panel"],
+    "math_physicist": ["calculate", "formula", "statistics", "physics", "mathematics"],
 
-    "core_dispatcher": ["tilanne", "yhteenveto", "kaikki", "status", "yleiskatsaus"],
+    "core_dispatcher": ["situation", "summary", "all", "status", "overview"],
 }
 
 
@@ -466,8 +466,8 @@ class YAMLBridge:
                 "system_prompt": self.build_system_prompt(agent_id),
                 "skills": skills[:8],  # Max 8 skills
                 "auto_spawn": agent_id in (
-                    "tarhaaja", "core_dispatcher", "meteorologi",
-                    "lentosaa", "pesaturvallisuus"
+                    "beekeeper", "core_dispatcher", "meteorologist",
+                    "flight_weather", "hive_security"
                 ),
                 "yaml_source": True,
             }

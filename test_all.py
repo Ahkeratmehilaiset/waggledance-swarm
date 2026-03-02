@@ -142,13 +142,13 @@ def test_yaml_bridge():
         # Testaa reititys
         routing = bridge.get_routing_rules()
         test_routes = {
-            "mehiläispesien varroa": "tarhaaja",
-            "sähkösulakkeet": "sahkoasentaja",
-            "karhuhavainto": "pesaturvallisuus",
-            "revontulet näkyvissä": "tahtitieteilija",
-            "jää kantava": "jaaasiantuntija",
-            "lintuhavainto": "ornitologi",
-            "sauna lämpiää": "saunamajuri",
+            "mehiläispesien varroa": "beekeeper",
+            "sähkösulakkeet": "electrician",
+            "karhuhavainto": "hive_security",
+            "revontulet näkyvissä": "astronomer",
+            "jää kantava": "ice_specialist",
+            "lintuhavainto": "ornithologist",
+            "sauna lämpiää": "sauna_master",
         }
 
         route_pass = 0
@@ -180,7 +180,7 @@ def test_yaml_bridge():
             WARN(f"Glyyfit: {len(glyphs)}/50+")
 
         # Testaa knowledge summary
-        summary = bridge.get_knowledge_summary("tarhaaja")
+        summary = bridge.get_knowledge_summary("beekeeper")
         if "varroa" in summary.lower() or "mehiläi" in summary.lower():
             OK(f"Knowledge summary: sisältää relevanttia dataa")
         else:
@@ -288,14 +288,14 @@ async def test_memory():
         # Tallenna muisti
         mid = await mem.store_memory(
             content="Varroa-taso pesässä 5: 4 punkkia/100 mehiläistä → hoito tarvitaan",
-            agent_id="test_tarhaaja",
+            agent_id="test_beekeeper",
             memory_type="observation",
             importance=0.9
         )
         OK(f"Muisti tallennettu: {mid}")
 
         # Hae muisti
-        results = await mem.recall("varroa", limit=5, agent_id="test_tarhaaja")
+        results = await mem.recall("varroa", limit=5, agent_id="test_beekeeper")
         if results:
             OK(f"Muisti haettu: {len(results)} tulosta")
         else:
@@ -318,7 +318,7 @@ async def test_memory():
             WARN("Timeline tyhjä")
 
         # Tehtävät
-        tid = await mem.add_task("Tarkista pesä 5", assigned_agent="test_tarhaaja", priority=9)
+        tid = await mem.add_task("Tarkista pesä 5", assigned_agent="test_beekeeper", priority=9)
         tasks = await mem.get_tasks(status="pending")
         if tasks:
             OK(f"Tehtävät: {len(tasks)} pending")
@@ -434,7 +434,7 @@ async def test_whisper():
 
         # Encode hieroglyph
         try:
-            glyph = wp.encode_hieroglyph("tarhaaja", "meteorologi", "sääennuste", "ping")
+            glyph = wp.encode_hieroglyph("beekeeper", "meteorologist", "sääennuste", "ping")
             OK(f"Hieroglyfi: {glyph}")
         except Exception as e:
             WARN(f"Hieroglyfi: {e}")
@@ -477,7 +477,7 @@ def test_knowledge():
             WARN("Knowledge kansioita ei löytynyt")
 
         # Lataa yhden agentin tieto
-        for agent_type in ["tarhaaja", "meteorologi", "sahkoasentaja"]:
+        for agent_type in ["beekeeper", "meteorologist", "electrician"]:
             docs = kl.get_knowledge(agent_type)
             if docs:
                 OK(f"{agent_type}: {len(docs)} docs, {sum(len(d) for d in docs)} chars")
@@ -485,7 +485,7 @@ def test_knowledge():
                 WARN(f"{agent_type}: ei dokumentteja")
 
         # Testaa summary
-        summary = kl.get_knowledge_summary("tarhaaja")
+        summary = kl.get_knowledge_summary("beekeeper")
         if summary and len(summary) > 50:
             OK(f"Summary: {len(summary)} chars")
         else:
@@ -531,12 +531,12 @@ async def test_dashboard():
 
         # Chat — reititystesti
         route_tests = [
-            ("mehiläispesien varroa-tilanne?", "tarhaaja", ["varroa", "punkk", "hoito", "mehiläi"]),
-            ("onko ukkosta tulossa?", "meteorologi", ["sää", "ukkos", "ennust", "tuuli"]),
-            ("karhuhavainto pohjoispesillä!", "pesaturvallisuus", ["karhu", "suoja", "turva"]),
-            ("kuinka paljon hunajaa saatiin?", "tarhaaja", ["hunaj", "linko", "sato", "kilo"]),
-            ("onko jää kantava?", "jaaasiantuntija", ["jää", "kanta", "paksu"]),
-            ("mitä lintuja näkyy?", "ornitologi", ["lint", "laji", "havai"]),
+            ("mehiläispesien varroa-tilanne?", "beekeeper", ["varroa", "punkk", "hoito", "mehiläi"]),
+            ("onko ukkosta tulossa?", "meteorologist", ["sää", "ukkos", "ennust", "tuuli"]),
+            ("karhuhavainto pohjoispesillä!", "hive_security", ["karhu", "suoja", "turva"]),
+            ("kuinka paljon hunajaa saatiin?", "beekeeper", ["hunaj", "linko", "sato", "kilo"]),
+            ("onko jää kantava?", "ice_specialist", ["jää", "kanta", "paksu"]),
+            ("mitä lintuja näkyy?", "ornithologist", ["lint", "laji", "havai"]),
         ]
 
         for msg, expected_type, expected_words in route_tests:
@@ -601,12 +601,12 @@ async def test_inter_agent():
 
         # Luo kaksi agenttia
         agent_a = Agent(
-            name="TestTarhaaja", agent_type="tarhaaja",
+            name="TestTarhaaja", agent_type="beekeeper",
             system_prompt="Olet mehiläishoitaja. Vastaa lyhyesti suomeksi.",
             llm=llm, memory=mem
         )
         agent_b = Agent(
-            name="TestMeteorologi", agent_type="meteorologi",
+            name="TestMeteorologi", agent_type="meteorologist",
             system_prompt="Olet meteorologi. Vastaa lyhyesti suomeksi.",
             llm=llm, memory=mem
         )

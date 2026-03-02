@@ -11,12 +11,12 @@ def w(d, core, sources):
     print(f"  ✅ {d}: {len(core.get('eval_questions',[]))} q")
 
 # ═══ 4: RIISTANVARTIJA ═══
-w("riistanvartija", {
-    "header":{"agent_id":"riistanvartija","agent_name":"Riistanvartija","version":"1.0.0","last_updated":"2026-02-21"},
+w("wildlife_ranger", {
+    "header":{"agent_id":"wildlife_ranger","agent_name":"Riistanvartija","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Korvenranta, Kouvola — riistanhoitoyhdistys Kouvolan alue","Hirvieläinten, karhujen ja pienpetojen seuranta","Ei aktiivista metsästystä agentin toimesta — seuranta ja hälytys"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "bear_proximity_alert_m":{"value":200,"action":"Karhu <200m pihapiiriin → HÄLYTYS: pesäturvallisuuspäällikkö + core_dispatcher (P1)","source":"src:RII1"},
-        "moose_collision_risk":{"value":"Hirvi tien lähellä pimeällä → ilmoita logistikko-agentille","source":"src:RII2"},
+        "moose_collision_risk":{"value":"Hirvi tien lähellä pimeällä → ilmoita logistics-agentille","source":"src:RII2"},
         "wolf_territory_check":{"value":"Susi-ilmoitus <5 km säteellä → seuranta-mode","source":"src:RII1"},
         "hunting_season_dates":{"value":"Hirvi: 10.10–31.12 (jahtilupa-alue), Karhu: 20.8–31.10 (kiintiö), Jänis: 1.9–28.2","source":"src:RII3"},
         "game_camera_battery_v":{"value":6.0,"action":"Alle 6V → vaihda akku, ilmoita laitehuoltajalle","source":"src:RII1"}
@@ -96,8 +96,8 @@ w("riistanvartija", {
 ]})
 
 # ═══ 5: HORTONOMI (Kasvitieteilijä) ═══
-w("hortonomi", {
-    "header":{"agent_id":"hortonomi","agent_name":"Hortonomi (Kasvitieteilijä)","version":"1.0.0","last_updated":"2026-02-21"},
+w("horticulturist", {
+    "header":{"agent_id":"horticulturist","agent_name":"Hortonomi (Kasvitieteilijä)","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Korvenrannan pihapiiri ja metsäalue, vyöhyke II-III","Puutarha-, hyöty- ja luonnonkasvit","Mehiläislaidun huomioitava kasvivalinnoissa"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "soil_ph_target":{"value":"6.0-6.5 (puutarha), 4.5-5.5 (mustikka/puolukka)","source":"src:HOR1"},
@@ -184,8 +184,8 @@ w("hortonomi", {
 ]})
 
 # ═══ 6: METSÄNHOITAJA ═══
-w("metsanhoitaja", {
-    "header":{"agent_id":"metsanhoitaja","agent_name":"Metsänhoitaja","version":"1.0.0","last_updated":"2026-02-21"},
+w("forester", {
+    "header":{"agent_id":"forester","agent_name":"Metsänhoitaja","version":"1.0.0","last_updated":"2026-02-21"},
     "ASSUMPTIONS":["Korvenrannan kiinteistön metsäala ~5 ha","Havupuuvaltainen sekametsä (kuusi, mänty, koivu)","Tavoite: kestävä metsänhoito, mehiläislaidun huomiointi"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "harvesting_volume_m3_ha":{"value":"50-80 (harvennushakkuu), 150-250 (päätehakkuu)","source":"src:MET1"},

@@ -2023,19 +2023,19 @@ SEASONAL_BOOST = {
 
 # Domain topics by agent type for random exploration
 DOMAIN_TOPICS = {
-    "tarhaaja": [
+    "beekeeper": [
         "varroa treatments", "queen rearing", "swarm prevention",
         "honey harvest", "winter preparation", "spring inspection",
     ],
-    "tautivahti": [
+    "disease_monitor": [
         "AFB detection", "EFB symptoms", "nosema prevention",
         "chalkbrood treatment", "disease reporting",
     ],
-    "meteorologi": [
+    "meteorologist": [
         "weather forecast impact", "temperature thresholds",
         "rain prediction", "frost warning",
     ],
-    "hortonomi": [
+    "horticulturist": [
         "nectar plants", "pollen sources", "bloom calendar",
         "landscape planning", "wildflower meadows",
     ],
@@ -2158,7 +2158,7 @@ class LearningTaskQueue:
 
     def _random_task(self, agent_type: str = None) -> Optional[dict]:
         """Random domain topic for agent's specialty."""
-        topics = DOMAIN_TOPICS.get(agent_type, DOMAIN_TOPICS.get("tarhaaja", []))
+        topics = DOMAIN_TOPICS.get(agent_type, DOMAIN_TOPICS.get("beekeeper", []))
         if not topics:
             return None
         topic = random.choice(topics)
@@ -2218,16 +2218,16 @@ if __name__ == "__main__":
     # ── Oppiminen ──
     print("\n[2] OPPIMINEN (kaksikielinen, EN-embedding)")
     facts = [
-        ("Varroa-hoitokynnys on 3 punkkia per 100 mehiläistä elokuussa", "tarhaaja", 0.9),
-        ("Oksaalihappohoito tehdään lokakuussa sikiöttömänä aikana", "tarhaaja", 0.85),
-        ("Syysruokinta: 15-20 kg sokerisiirappia per yhdyskunta", "tarhaaja", 0.9),
-        ("Kuningattarella on 5 silmää: 2 verkkosilmää ja 3 pistesilmää", "tarhaaja", 0.95),
+        ("Varroa-hoitokynnys on 3 punkkia per 100 mehiläistä elokuussa", "beekeeper", 0.9),
+        ("Oksaalihappohoito tehdään lokakuussa sikiöttömänä aikana", "beekeeper", 0.85),
+        ("Syysruokinta: 15-20 kg sokerisiirappia per yhdyskunta", "beekeeper", 0.9),
+        ("Kuningattarella on 5 silmää: 2 verkkosilmää ja 3 pistesilmää", "beekeeper", 0.95),
         ("JKH Service: 202 yhdyskuntaa, 35 tarhaa", "business", 0.95),
         ("Raspberry Pi 5 sopii sensori-nodeksi", "tech", 0.7),
-        ("Kevättarkastus kun lämpötila ylittää 10°C", "tarhaaja", 0.85),
-        ("Hunajan kosteus max 18%", "tarhaaja", 0.9),
-        ("Maitohorsma kukkii heinä-elokuussa", "hortonomi", 0.85),
-        ("Vadelma on Suomen suosituin lajihunajan lähde", "hortonomi", 0.9),
+        ("Kevättarkastus kun lämpötila ylittää 10°C", "beekeeper", 0.85),
+        ("Hunajan kosteus max 18%", "beekeeper", 0.9),
+        ("Maitohorsma kukkii heinä-elokuussa", "horticulturist", 0.85),
+        ("Vadelma on Suomen suosituin lajihunajan lähde", "horticulturist", 0.9),
     ]
     for text, agent, conf in facts:
         stored = c.learn(text, agent_id=agent, confidence=conf, validated=True,

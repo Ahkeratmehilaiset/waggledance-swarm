@@ -386,7 +386,7 @@ DOMAIN_DICT_FI_EN = {
 
     # Hoitotoimenpiteet
     "mehiläishoitaja": "beekeeper",
-    "tarhaaja": "beekeeper",
+    "beekeeper": "beekeeper",
     "mehiläistarhaus": "beekeeping",
     "tarkastus": "inspection",
     "pesätarkastus": "hive inspection",

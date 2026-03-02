@@ -41,7 +41,7 @@ def make_agent(d, name, data, sources_list):
     w(d, core, {"sources":sources_list})
 
 # ═══ 19: LIMNOLOGI ═══
-make_agent("limnologi","Limnologi (Järvitutkija)",{
+make_agent("limnologist","Limnologi (Järvitutkija)",{
     "ASSUMPTIONS":["Huhdasjärvi, Kouvola — pieni metsäjärvi","Käyttö: uinti, kalastus, veneily, veden laatu"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "water_temp_swimming_min_c":{"value":15,"action":"<15°C → hypotermia-varoitus","source":"src:LIM1"},
@@ -76,7 +76,7 @@ make_agent("limnologi","Limnologi (Järvitutkija)",{
 },[{"id":"src:LIM1","org":"SYKE","title":"Pintavesien tila","year":2024,"url":"https://www.syke.fi/","supports":"Vedenlaatu, indikaattorit."},{"id":"src:LIM2","org":"THL/SYKE","title":"Sinileväopas","year":2025,"url":"https://www.jarviwiki.fi/","supports":"Sinilevätunnistus."},{"id":"src:LIM3","org":"Oikeusministeriö","title":"Ympäristönsuojelulaki 527/2014","year":2014,"url":"https://finlex.fi/fi/laki/ajantasa/2014/20140527","supports":"Pilaamiskielto."}])
 
 # ═══ 20: KALASTUSOPAS ═══
-make_agent("kalastusopas","Kalastusopas",{
+make_agent("fishing_guide","Kalastusopas",{
     "ASSUMPTIONS":["Huhdasjärvi + lähivesistöt","Onkiminen, pilkkiminen, heittokalastus"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "pike_active_temp_c":{"value":"8-18°C","source":"src:KAL1"},
@@ -111,7 +111,7 @@ make_agent("kalastusopas","Kalastusopas",{
 },[{"id":"src:KAL1","org":"Luke","title":"Kalalajien ekologia","year":2024,"url":"https://www.luke.fi/","supports":"Kalojen käyttäytyminen."},{"id":"src:KAL2","org":"MMM","title":"Kalastuslaki 379/2015","year":2015,"url":"https://kalastusrajoitus.fi/","supports":"Luvat, rauhoitukset, alamitat."}])
 
 # ═══ 21: KALANTUNNISTAJA ═══
-make_agent("kalantunnistaja","Kalantunnistaja",{
+make_agent("fish_identifier","Kalantunnistaja",{
     "ASSUMPTIONS":["Tunnistaa lajit kuvasta/kuvauksesta","Huhdasjärvi + Kaakkois-Suomen vesistöt"],
     "DECISION_METRICS_AND_THRESHOLDS":{
         "confidence_min_pct":{"value":80,"action":"<80% → pyydä lisäkuva/mittaus","source":"src:KAT1"},
@@ -146,7 +146,7 @@ make_agent("kalantunnistaja","Kalantunnistaja",{
 
 # ═══ 22-28: Compact agents ═══
 agents_22_28 = [
-  ("rantavahti","Rantavahti",{
+  ("shore_guard","Rantavahti",{
     "ASSUMPTIONS":["Huhdasjärven ranta","Uimarien/veneilijöiden turvallisuus"],
     "DECISION_METRICS_AND_THRESHOLDS":{"swim_temp_min_c":{"value":15,"action":"<15°C → hypotermia-varoitus","source":"src:RV1"},"wave_height_warning_cm":{"value":30,"action":">30 cm → pienveneilyvaroitus","source":"src:RV1"},"visibility_fog_m":{"value":50,"action":"<50 m → venetoiminta rajoitettu","source":"src:RV1"},"thunderstorm_km":{"value":10,"action":"<10 km → VEDESTÄ POIS","source":"src:RV2"},"child_depth_max_cm":{"value":30,"action":"Lapsi <10v aina seurassa vedessä","source":"src:RV1"}},
     "SEASONAL_RULES":[{"season":"Kevät","action":"Jäiden lähtö → ranta vaarallinen. Ei uintikautta.","source":"src:RV1"},{"season":"Kesä","action":"Uintikausi. Sinilevätarkistus päivittäin. Pelastusrengas paikallaan.","source":"src:RV1"},{"season":"Syksy","action":"Vesi viilenee → hypotermiaviski. Veneilyn lopetus.","source":"src:RV1"},{"season":"Talvi","action":"Avantouinti valvotusti. Max 1-2 min. Jääasiantuntijalta kantavuus.","source":"src:RV1"}],
@@ -155,7 +155,7 @@ agents_22_28 = [
     "UNCERTAINTY_NOTES":["Pienen järven aallokko riippuu tuulensuunnasta."]
   },[{"id":"src:RV1","org":"SUH","title":"Vesiturvallisuus","year":2025,"url":"https://www.suh.fi/","supports":"Uintiturvallisuus."},{"id":"src:RV2","org":"Pelastuslaitos/THL","title":"Hätäohjeet","year":2025,"url":"https://www.112.fi/","supports":"Ensiapu, hätänumerot."}]),
 
-  ("jaaasiantuntija","Jääasiantuntija",{
+  ("ice_specialist","Jääasiantuntija",{
     "ASSUMPTIONS":["Huhdasjärven jää","Pilkintä, retkiluistelu, moottorikelkkailu"],
     "DECISION_METRICS_AND_THRESHOLDS":{"ice_walk_cm":{"value":5,"action":"≥5 cm teräsjää → jalankulku","source":"src:JA1"},"ice_snowmobile_cm":{"value":15,"action":"≥15 cm → kelkka","source":"src:JA1"},"ice_car_cm":{"value":40,"action":"≥40 cm → auto (EI suositella)","source":"src:JA1"},"weak_ice_signs":{"value":"Tumma jää, virtapaikat, kaislikon reuna","action":"VÄLTÄ aina, mittaa 50m välein","source":"src:JA1"},"spring_deterioration":{"value":"Maaliskuun loppu (vrk-T >0°C)","action":"LOPETA jäällä liikkuminen kun yöpakkaset loppuvat","source":"src:JA1"}},
     "SEASONAL_RULES":[{"season":"Syksy","action":"Jää muodostuu. Ensijää petollinen — mittaa AINA.","source":"src:JA1"},{"season":"Talvi","action":"Vahvimmillaan. Lumikuorma heikentää. Kohvajää = puolet teräsjään kantavuudesta.","source":"src:JA1"},{"season":"Kevät","action":"Haurastuu nopeasti. Virtapaikat sulavat ensin.","source":"src:JA1"},{"season":"Kesä","action":"Ei jäätä.","source":"src:JA1"}],
@@ -164,7 +164,7 @@ agents_22_28 = [
     "UNCERTAINTY_NOTES":["Jään paksuus vaihtelee samalla järvellä huomattavasti.","Kohvajää kantaa ~50% teräsjään verran."]
   },[{"id":"src:JA1","org":"SUH/Pelastuslaitos","title":"Jääturvallisuus","year":2025,"url":"https://www.suh.fi/","supports":"Jäänpaksuus, mittaus."},{"id":"src:JA2","org":"Pelastuslaitos","title":"Jäähänputoaminen","year":2025,"url":"https://pelastustoimi.fi/","supports":"Pelastustoimet."}]),
 
-  ("meteorologi","Meteorologi",{
+  ("meteorologist","Meteorologi",{
     "ASSUMPTIONS":["Ilmatieteen laitos + paikallinen sääasema Korvenrannassa","Säädata kaikille agenteille"],
     "DECISION_METRICS_AND_THRESHOLDS":{"temperature_c":{"value":"Jatkuva","thresholds":{"frost":0,"heat":25,"extreme_cold":-25,"extreme_heat":30},"source":"src:ME1"},"wind_ms":{"value":"Jatkuva","thresholds":{"moderate":8,"strong":14,"storm":21},"source":"src:ME1"},"precip_mm_h":{"value":"Seuranta","thresholds":{"light":0.5,"moderate":4,"heavy":8},"source":"src:ME1"},"humidity_rh":{"value":"Seuranta","thresholds":{"dry":30,"damp":85},"source":"src:ME1"},"pressure_hpa":{"value":"Trendi","thresholds":{"low":1000,"high":1035},"source":"src:ME1"},"uv_index":{"value":"Kesällä","thresholds":{"moderate":3,"high":6,"very_high":8},"source":"src:ME1"}},
     "SEASONAL_RULES":[{"season":"Kevät","action":"Hallavaroitukset (T<0°C yöllä). Tulvariskit.","source":"src:ME1"},{"season":"Kesä","action":"Ukkoset, hellevaroitukset, UV-säteilyvaroitukset.","source":"src:ME1"},{"season":"Syksy","action":"Myrskyvaroitukset (loka-joulu). Ensipakkaset.","source":"src:ME1"},{"season":"Talvi","action":"Pakkas-/liukkausvaroitukset. Lumikuorma. Häkävaara (inversio).","source":"src:ME1"}],
@@ -173,7 +173,7 @@ agents_22_28 = [
     "UNCERTAINTY_NOTES":["Paikallinen sää voi poiketa (järvi/metsäefekti).","Tarkkuus heikkenee >3 pv ennusteissa."]
   },[{"id":"src:ME1","org":"Ilmatieteen laitos","title":"Sääennusteet ja varoitukset","year":2026,"url":"https://www.ilmatieteenlaitos.fi/","supports":"Säädata, ennusteet, varoitusrajat."}]),
 
-  ("myrskyvaroittaja","Myrskyvaroittaja",{
+  ("storm_alert","Myrskyvaroittaja",{
     "ASSUMPTIONS":["Ilmatieteen laitoksen varoitukset + paikallinen data","Myrsky ≥21 m/s, kova tuuli ≥14 m/s"],
     "DECISION_METRICS_AND_THRESHOLDS":{"wind_warning_ms":{"value":14,"action":"≥14 → varoitus ulkoagenteille","source":"src:MY1"},"wind_storm_ms":{"value":21,"action":"≥21 → MYRSKY: suojaa irtaimet, vältä metsää","source":"src:MY1"},"tree_fall_risk":{"value":">15 m/s + märkä maa → puiden kaatumisviskisuurin","action":"Ilmoita metsänhoitajalle + timpurille","source":"src:MY1"},"lightning_km":{"value":10,"action":"<10 km → sisälle, pois vedestä","source":"src:MY1"},"power_outage_prep":{"value":"Myrskyn ennuste → tarkista lamput, akut, vesi","action":"Ilmoita sähköasentajalle + laitehuoltajalle","source":"src:MY1"}},
     "SEASONAL_RULES":[{"season":"Kevät","action":"Keväämyrskyt harvinaisempia.","source":"src:MY1"},{"season":"Kesä","action":"Ukkosmyrskyt, rajuilma, salama → palovaara kuivana.","source":"src:MY1"},{"season":"Syksy","action":"Pahin myrskykausi (loka-joulu). Puiden kaatumisviiski.","source":"src:MY1"},{"season":"Talvi","action":"Talvimyrskyt. Lumimyrsky + pakkanen → 0 näkyvyys.","source":"src:MY1"}],
@@ -182,7 +182,7 @@ agents_22_28 = [
     "UNCERTAINTY_NOTES":["Rajuilmavaroitukset tarkimpia 0-6h ennusteissa."]
   },[{"id":"src:MY1","org":"Ilmatieteen laitos","title":"Varoitukset","year":2026,"url":"https://www.ilmatieteenlaitos.fi/varoitukset","supports":"Myrsky, salama, varoitusrajat."}]),
 
-  ("mikroilmasto","Mikroilmasto-asiantuntija",{
+  ("microclimate","Mikroilmasto-asiantuntija",{
     "ASSUMPTIONS":["Korvenranta: järven vaikutus, metsänsuoja, avoin piha","Oma sääasema vs. IL:n data"],
     "DECISION_METRICS_AND_THRESHOLDS":{"lake_effect_c":{"value":"±2-3°C ero: keväällä kylmempi, syksyllä lämpimämpi","source":"src:MI1"},"forest_wind_reduction_pct":{"value":"30-60%","source":"src:MI1"},"frost_pocket_risk":{"value":"Painanne → kylmäilma-allas, halla 2-3°C aiemmin","action":"Herkät kasvit EI painanteeseen","source":"src:MI1"},"south_wall_bonus_c":{"value":"3-5°C lämmpimämpi","source":"src:MI1"},"dew_point_gap_fog_c":{"value":"T - kastepiste <2°C → sumu/huurre","source":"src:MI1"}},
     "SEASONAL_RULES":[{"season":"Kevät","action":"Järvi viilentää rantaa → halla-viski. Negatiivinen keväällä.","source":"src:MI1"},{"season":"Kesä","action":"Eteläseinä hyödyksi kasvien sijoittelussa.","source":"src:MI1"},{"season":"Syksy","action":"Järvi lämmittää → kasvukausi pitenee. Aamu-sumu.","source":"src:MI1"},{"season":"Talvi","action":"Kylmäilma-altaat. Inversio (pakkas + tyyni → häkä).","source":"src:MI1"}],
@@ -191,16 +191,16 @@ agents_22_28 = [
     "UNCERTAINTY_NOTES":["Mikroilmastodata ei yleistettävissä edes 500m etäisyydelle."]
   },[{"id":"src:MI1","org":"Ilmatieteen laitos","title":"Paikallinen ilmasto","year":2024,"url":"https://www.ilmatieteenlaitos.fi/","supports":"Järviefekti, metsäsuoja, halla, inversio."}]),
 
-  ("ilmanlaatu","Ilmanlaadun tarkkailija",{
+  ("air_quality","Ilmanlaadun tarkkailija",{
     "ASSUMPTIONS":["Maaseututausta, Korvenranta","Puulämmitys, liikenne, maastopalot, siitepöly"],
     "DECISION_METRICS_AND_THRESHOLDS":{"pm25_ug":{"value":"WHO 15 μg/m³ (vuosi), 45 (24h)","action":">50 → varoitus, ikkunat kiinni","source":"src:IL1"},"pm10_ug":{"value":"WHO 45 (vuosi), 100 (24h)","source":"src:IL1"},"co_ppm_indoor":{"value":"<9 ppm (8h)","action":">35 → HÄKÄVAARA, tuuleta, paloesimiehelle","source":"src:IL2"},"pollen_birch":{"value":">80 kpl/m³ korkea, >200 erittäin korkea","source":"src:IL3"},"radon_bq":{"value":"Viite 200 Bq/m³","action":">200 → radonkorjaus, >400 → välitön","source":"src:IL4"}},
     "SEASONAL_RULES":[{"season":"Kevät","action":"Koivusiitepöly huhti-touko. Katupöly.","source":"src:IL3"},{"season":"Kesä","action":"Maastopalot (kuiva kesä). Otsoni helteellä.","source":"src:IL1"},{"season":"Syksy","action":"Puulämmityskausi → PM2.5. Inversio.","source":"src:IL1"},{"season":"Talvi","action":"Puulämmitys pahimmillaan. Häkäviski.","source":"src:IL2"}],
     "FAILURE_MODES":[{"mode":"Häkä koholla sisällä","detection":"CO-hälytin tai >35 ppm","action":"Avaa ikkunat, sammuta tulisija, ulos, 112 jos >100 ppm","source":"src:IL2"},{"mode":"Maastopalon savu","detection":"PM2.5 >100 + savun haju","action":"Sulje ikkunat+IV, HEPA-suodatin","source":"src:IL1"}],
     "COMPLIANCE_AND_LEGAL":{"radon":"STM 1044/2018: viite 200 Bq/m³ [src:IL4]","avopoltto":"Jätelaki: avopoltto kielletty asemakaava-alueella [src:IL1]"},
     "UNCERTAINTY_NOTES":["Maaseudulla PM2.5 yleensä matala, mutta puulämmitys nostaa paikallisesti."]
-  },[{"id":"src:IL1","org":"HSY/SYKE","title":"Ilmanlaatu","year":2025,"url":"https://www.ilmanlaatu.fi/","supports":"PM2.5, PM10, otsoni."},{"id":"src:IL2","org":"THL","title":"Häkämyrkytys","year":2025,"url":"https://thl.fi/","supports":"CO-rajat."},{"id":"src:IL3","org":"Turun yo / Norkko","title":"Siitepöly","year":2025,"url":"https://www.norkko.fi/","supports":"Siitepölylaskennat."},{"id":"src:IL4","org":"STUK","title":"Radon","year":2025,"url":"https://www.stuk.fi/aiheet/radon","supports":"Radon."}]),
+  },[{"id":"src:IL1","org":"HSY/SYKE","title":"Ilmanlaatu","year":2025,"url":"https://www.air_quality.fi/","supports":"PM2.5, PM10, otsoni."},{"id":"src:IL2","org":"THL","title":"Häkämyrkytys","year":2025,"url":"https://thl.fi/","supports":"CO-rajat."},{"id":"src:IL3","org":"Turun yo / Norkko","title":"Siitepöly","year":2025,"url":"https://www.norkko.fi/","supports":"Siitepölylaskennat."},{"id":"src:IL4","org":"STUK","title":"Radon","year":2025,"url":"https://www.stuk.fi/aiheet/radon","supports":"Radon."}]),
 
-  ("routa_maapera","Routa- ja maaperäanalyytikko",{
+  ("frost_soil","Routa- ja maaperäanalyytikko",{
     "ASSUMPTIONS":["Korvenranta, Kouvola — savi/moreeni","Routasyvyys kriittistä perustuksille ja putkistoille"],
     "DECISION_METRICS_AND_THRESHOLDS":{"frost_depth_max_cm":{"value":"100-150 (Kouvola, normaali talvi)","source":"src:RO1"},"pipe_burial_min_cm":{"value":"180-200 tai eristetty","action":"<180 cm → routasuojaus","source":"src:RO1"},"frost_heave_risk":{"value":"Siltti/savi + vesi → korkea routanousu","action":"Seuraa perustusten liikkeitä","source":"src:RO1"},"thaw_spring":{"value":"Sulaminen huhti-touko ylhäältä","action":"Maan paineen lisääntyessä perustusten tarkistus","source":"src:RO1"},"soil_moisture_pct":{"value":"30-40% (savi kenttäkapasiteetti)","action":">90% saturaatio → tulva/salaojatarkistus","source":"src:RO1"}},
     "SEASONAL_RULES":[{"season":"Kevät","action":"Roudan sulaminen. Kelirikko. Perustusten tarkistus.","source":"src:RO1"},{"season":"Kesä","action":"Maaperän kuivuminen. Savimaan kutistuminen → halkeamia.","source":"src:RO1"},{"season":"Syksy","action":"Kosteus nousee. Salaojien tarkistus. Routa alkaa.","source":"src:RO1"},{"season":"Talvi","action":"Routasyvyyden seuranta. Lumi (>50 cm) eristää → routa matalampi.","source":"src:RO1"}],

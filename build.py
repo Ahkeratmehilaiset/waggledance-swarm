@@ -64,9 +64,9 @@ def main():
 
     steps = [
         # 1-7: Generoi agentit
-        ("Batch 1: Agentit 1-3 (core, luontokuvaaja, ornitologi)", [py, "tools/gen_batch1.py"]),
-        ("Batch 2: Agentit 4-6 (riista, hortonomi, metsä)", [py, "tools/gen_batch2.py"]),
-        ("Batch 3: Agentit 7-10 (fenologi, tuholais, entomologi, tähtitiede)", [py, "tools/gen_batch3.py"]),
+        ("Batch 1: Agentit 1-3 (core, nature_photographer, ornithologist)", [py, "tools/gen_batch1.py"]),
+        ("Batch 2: Agentit 4-6 (riista, horticulturist, metsä)", [py, "tools/gen_batch2.py"]),
+        ("Batch 3: Agentit 7-10 (phenologist, tuholais, entomologist, tähtitiede)", [py, "tools/gen_batch3.py"]),
         ("Batch 4: Agentit 11-18 (mehiläis-spesialistit)", [py, "tools/gen_batch4.py"]),
         ("Batch 5: Agentit 19-28 (vesi, sää, maaperä)", [py, "tools/gen_batch5.py"]),
         ("Batch 5b: Agentit 29-30 (sähkö, LVI) — korjatut", [py, "tools/gen_batch5b.py"]),

@@ -175,16 +175,22 @@ This is a deliberate architectural decision, not a limitation. WaggleDance is bu
   • Voikko bundled — mor.vfst + autocorr.vfst included, auto-download fallback
   • Night Shift Automation — tools/night_shift.py, watchdog, morning report
   • Fact counter persistence — survives restarts, never resets
-  • Health Score 100/100 — all 22 test suites GREEN
+  • Health Score 100/100 — all 23 test suites GREEN
+
+▸ V0.0.6: PHASE 5 — SMART HOME SENSORS
+  • MQTT Hub — paho-mqtt, dedup, exponential reconnect
+  • Frigate NVR — camera events, severity alerts (bear=CRITICAL)
+  • Home Assistant — REST poll, significance filter, Finnish state
+  • Alert Dispatcher — Telegram + Webhook, rate limiting
 
 ▸ TESTING
-  22/22 test suites GREEN (700+ assertions)
-  Pipeline, routing, corrections, autonomy — all validated
+  23/23 test suites GREEN (700+ assertions)
+  Pipeline, routing, corrections, autonomy, smart home — all validated
 
 ▸ CODEBASE
   75 agents • 90+ Python modules • 45,000+ lines of code
   97.7% routing accuracy (1,207/1,235 tested)
-  22 test suites • 10 seasonal rules • 34 domain terms
+  23 test suites • 10 seasonal rules • 34 domain terms
 
 ▸ JUST LET IT RUN
 Install. Connect. Walk away.
@@ -460,16 +466,22 @@ Tämä on tietoinen arkkitehtuurivalinta, ei rajoitus. WaggleDance on rakennettu
   • Voikko mukana — mor.vfst + autocorr.vfst, autolataus
   • Yövuoroautomaatio — tools/night_shift.py, vartija, aamoraportti
   • Faktalaskuri pysyy — ei nollaudu uudelleenkäynnistyksessä
-  • Terveyspistemäärä 100/100 — kaikki 22 testisarjaa VIHREÄNÄ
+  • Terveyspistemäärä 100/100 — kaikki 23 testisarjaa VIHREÄNÄ
+
+▸ V0.0.6: VAIHE 5 — KODIN SENSORIT
+  • MQTT Hub — paho-mqtt, dedup, eksponentiaalinen uudelleenyhdistys
+  • Frigate NVR — kameratapahtumat, vakavuushälytykset (karhu=KRIITTINEN)
+  • Home Assistant — REST-pollaus, merkittävyyssuodatin, suomenkielinen tila
+  • Hälytysten välittäjä — Telegram + Webhook, nopeusrajoitus
 
 ▸ TESTAUS
-  22/22 testisarjaa VIHREÄNÄ (700+ väittämää)
-  Putki, reititys, korjaukset, autonomia — kaikki validoitu
+  23/23 testisarjaa VIHREÄNÄ (700+ väittämää)
+  Putki, reititys, korjaukset, autonomia, kodin sensorit — kaikki validoitu
 
 ▸ KOODIKANTA
   75 agenttia • 90+ Python-moduulia • 45 000+ koodiriviä
   97.7% reitityksen tarkkuus (1 207/1 235 testattu)
-  22 testisarjaa • 10 kausivahtisääntöä • 34 erikoistermiä
+  23 testisarjaa • 10 kausivahtisääntöä • 34 erikoistermiä
 
 ▸ ANNA SEN VAIN OLLA
 Asenna. Yhdistä. Kävele pois.
@@ -677,7 +689,7 @@ useEffect(()=>{const seq=[
 [53000,()=>{setItems(p=>[...p,"✓ HotCache + LRU (0.5ms cached responses)"]);setPr(35)}],
 [55000,()=>{setItems(p=>[...p,"✓ ConvergenceDetector (knows when learning plateaus)"]);setPr(55)}],
 [57000,()=>{setItems(p=>[...p,"✓ Structured Logging + Weekly Report"]);setPr(75)}],
-[59000,()=>{setItems(p=>[...p,"✓ 22/22 test suites GREEN (700+ assertions)"]);setPr(100)}],
+[59000,()=>{setItems(p=>[...p,"✓ 23/23 test suites GREEN (700+ assertions)"]);setPr(100)}],
 [62000,()=>{setStep(5);setMain("LANGUAGE-NATIVE AI");setSub("deep morphological integration — not just translation");setItems(["Opus-MT neural translation (any language pair)","Voikko-level morphological analysis","Domain-specific terminology engine","Native-language vector index (skip translation)"]);setPr(0)}],
 [70000,()=>{setStep(6);setMain("INFINITE SCALING");setSub("same code — any hardware");setItems(["ESP32 — €8 — edge intelligence","Raspberry Pi — €80 — full agent","Intel NUC — €650 — home brain","Mac Pro — €2,200 — professional","NVIDIA DGX — €400,000 — enterprise"])}],
 [78000,()=>{setStep(7);setMain("JUST LET IT RUN");setSub("");setItems(["1 week → knows your patterns","1 month → anticipates your needs","6 months → domain expert","1 year → understands your world"])}],
@@ -947,7 +959,7 @@ export default function App(){
   const _microGen = api.status.micro_model?.generation ? `GEN ${api.status.micro_model.generation}` : "—";
   const _agentsReal = api.backendAvailable && api.status.agents_total > 0 ? api.status.agents_total : "—";
   const _errRate = api.status.total_requests > 0 ? ((1 - api.status.total_errors / api.status.total_requests) * 100).toFixed(1) + "%" : "—";
-  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"22/22",c:"#22C55E"},{k:"Speed",v:"3s→18ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"—",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col}];
+  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"23/23",c:"#22C55E"},{k:"Speed",v:"3s→18ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"—",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col}];
   return(
     <div style={{background:"#000",color:"#fff",minHeight:"100vh",fontFamily:"'Inter',system-ui,sans-serif",overflow:"hidden"}}>
       <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.15}}@keyframes breathe{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.1);opacity:1}}@keyframes explodeIn{0%{transform:scale(0);opacity:0}60%{transform:scale(1.15);opacity:1}100%{transform:scale(1);opacity:1}}*{box-sizing:border-box;margin:0;padding:0}button{font-family:inherit}::-webkit-scrollbar{display:none}*{scrollbar-width:none}input::placeholder{color:rgba(255,255,255,.28)}`}</style>

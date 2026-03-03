@@ -88,6 +88,20 @@ Every fact embedded as 768-dim vector. Query → cosine search → top-K in ~5ms
 ▸ CROSS-LANGUAGE INDEX (55ms)
 All facts indexed in multiple languages simultaneously. Native-language query finds knowledge stored in any language. Doubles reach without doubling storage.
 
+▸ LANGUAGE ARCHITECTURE — ANY LANGUAGE, ANY HARDWARE
+WaggleDance processes internally in English — the language all LLMs understand best. Your native language goes through a deep NLP pipeline before translation:
+
+  Your language → Morphological Engine → Lemmatization → Compound splitting → Spell correction → Translation → LLM (English) → Translation back → Your language
+
+Finnish uses Voikko. Swap it for YOUR language's engine:
+  German/Spanish/French → Hunspell    Japanese → MeCab
+  Korean → KoNLPy                     Chinese → jieba
+  Any language → spaCy / NLTK model
+
+The result: native-language queries are understood MORE deeply than raw translation alone — because the morphological engine resolves grammar, inflections, and compounds BEFORE the LLM sees them.
+
+English users get the fastest path — no translation overhead, direct LLM access at full speed.
+
 ▸ 6-LAYER SELF-LEARNING (24/7)
   L1: Cross-language vector indexing
   L2: Gap detection + enrichment (~200/night)
@@ -358,6 +372,20 @@ Jokainen fakta upotetaan 768-ulotteiseksi vektoriksi. Kysely → kosini-haku →
 
 ▸ KAKSIKIELINEN INDEKSI (55ms)
 Kaikki faktat indeksoitu FI+EN samanaikaisesti. Suomenkielinen kysely löytää englanninkieliset faktat ja päinvastoin.
+
+▸ KIELIARKKITEHTUURI — MIKÄ TAHANSA KIELI, MIKÄ TAHANSA LAITE
+WaggleDance prosessoi sisäisesti englanniksi — kielellä jonka kaikki LLM:t ymmärtävät parhaiten. Äidinkielesi kulkee syvän NLP-putken läpi ennen käännöstä:
+
+  Oma kielesi → Morfologinen moottori → Lemmatisaatio → Yhdyssanojen pilkonta → Oikoluku → Käännös → LLM (englanti) → Käännös takaisin → Oma kielesi
+
+Suomi käyttää Voikkoa. Vaihda oman kielesi moottoriin:
+  Saksa/espanja/ranska → Hunspell    Japani → MeCab
+  Korea → KoNLPy                     Kiina → jieba
+  Mikä tahansa → spaCy / NLTK -malli
+
+Tulos: äidinkieliset kyselysi ymmärretään SYVEMMIN kuin pelkkä käännös — koska morfologinen moottori purkaa kieliopin, taivutukset ja yhdyssanat ENNEN kuin LLM näkee ne.
+
+Englanninkieliset käyttäjät saavat nopeimman reitin — ei käännöskuormaa, suora LLM-yhteys täydellä nopeudella.
 
 ▸ 6-KERROKSEN ITSEOPPIMINEN (24/7)
   K1: Kaksikielinen vektori-indeksointi

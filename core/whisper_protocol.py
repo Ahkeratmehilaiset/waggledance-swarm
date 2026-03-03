@@ -1,4 +1,4 @@
-# WaggleDance Swarm AI • v0.0.5 • Built: 2026-02-22 14:37 EET
+# WaggleDance Swarm AI • v0.0.6 • Built: 2026-02-22 14:37 EET
 # Jani Korpi (Ahkerat Mehiläiset)
 """
 WaggleDance Swarm AI Whisper Protocol v2

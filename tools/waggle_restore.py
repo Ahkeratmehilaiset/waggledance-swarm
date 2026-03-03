@@ -217,16 +217,53 @@ def check_chromadb(r: CheckResult):
 
 
 def check_voikko(r: CheckResult):
-    """Check Voikko Finnish morphology library."""
+    """Check Voikko Finnish morphology library, DLL, and dictionary."""
     try:
-        import libvoikko  # noqa: F401
-        r.ok("Voikko (Finnish normalizer)", "libvoikko available")
+        import libvoikko
     except ImportError:
         r.warn(
             "Voikko (Finnish normalizer)",
             "libvoikko not installed — normalizer will use fallback. "
             "Install from: https://voikko.puimula.org/",
         )
+        return
+
+    # Check dictionary + DLL by actually initializing Voikko
+    voikko_path = PROJECT_ROOT / "voikko"
+    mor_path = voikko_path / "5" / "mor-standard"
+
+    if not mor_path.exists():
+        r.warn("Voikko (Finnish normalizer)",
+               f"Dictionary dir missing: {mor_path}")
+        return
+
+    vfst_files = list(mor_path.glob("*.vfst"))
+    if not vfst_files:
+        r.warn("Voikko (Finnish normalizer)",
+               "Dictionary incomplete — missing .vfst files. "
+               "Run: python core/auto_install.py")
+        return
+
+    # DLL check
+    dll_path = voikko_path / "libvoikko-1.dll"
+    if sys.platform == "win32" and not dll_path.exists():
+        r.warn("Voikko (Finnish normalizer)",
+               "libvoikko-1.dll missing from voikko/ dir")
+        return
+
+    try:
+        libvoikko.Voikko.setLibrarySearchPath(str(voikko_path))
+        v = libvoikko.Voikko("fi", path=str(voikko_path))
+        result = v.analyze("mehiläinen")
+        v.terminate()
+        if result:
+            r.ok("Voikko (Finnish normalizer)",
+                 f"libvoikko + DLL + dictionary OK ({len(vfst_files)} .vfst)")
+        else:
+            r.warn("Voikko (Finnish normalizer)",
+                   "Initialized but analyze() returned empty")
+    except Exception as e:
+        r.warn("Voikko (Finnish normalizer)", f"Init failed: {e}")
 
 
 def check_translation_models(r: CheckResult):

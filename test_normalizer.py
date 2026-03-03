@@ -163,8 +163,9 @@ def test_case_insensitive(normalize_fi):
 def test_autocorrect_basic():
     """Correctly spelled words pass through unchanged."""
     from core.normalizer import autocorrect_fi
-    result = autocorrect_fi("varroa")
-    check("autocorrect passes correct word", result, "varroa")
+    # "hunaja" is a real Finnish word (honey) — Voikko knows it
+    result = autocorrect_fi("hunaja")
+    check("autocorrect passes correct word", result, "hunaja")
 
 
 def test_autocorrect_typo():

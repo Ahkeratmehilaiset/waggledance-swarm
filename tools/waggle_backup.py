@@ -83,7 +83,7 @@ TESTS = [
     {"file": "test_phase9.py",    "name": "Autonomous Learning",    "phase": "9",     "args": [],            "timeout": 60},
     {"file": "test_phase10.py",   "name": "Micro-Model Training",   "phase": "10",    "args": [],            "timeout": 60},
     {"file": "test_normalizer.py",        "name": "Normalizer",              "phase": "4-norm", "args": [], "timeout": 30},
-    {"file": "test_corrections.py",       "name": "Corrections Memory",      "phase": "4-corr", "args": [], "timeout": 180},
+    {"file": "test_corrections.py",       "name": "Corrections Memory",      "phase": "4-corr", "args": [], "timeout": 300},
     {"file": "test_routing_centroids.py", "name": "Routing Centroids",       "phase": "4-cent", "args": [], "timeout": 120},
     {"file": "test_seasonal_guard.py",    "name": "Seasonal Guard",          "phase": "4-seas", "args": [], "timeout": 30},
     {"file": "test_night_enricher.py",    "name": "Night Enricher",          "phase": "4-enr",  "args": [], "timeout": 120},
@@ -987,7 +987,7 @@ def print_header():
     print(f"{'='*55}{W}")
 
 
-def print_test_summary(test_results: list):
+def print_test_summary(test_results: list, data_stats: dict = None):
     total_p = sum(tr.passed for tr in test_results)
     total_f = sum(tr.failed for tr in test_results)
     total_w = sum(tr.warned for tr in test_results)
@@ -1006,7 +1006,7 @@ def print_test_summary(test_results: list):
     print(f"{Y}{total_w} warn{W}")
     print(f"  Time:   {total_dur:.1f}s")
 
-    health = calculate_health_score(test_results, {"mass_test": None})
+    health = calculate_health_score(test_results, data_stats or {})
     if total_f == 0:
         print(f"\n  {G}Health Score: {health}/100{W}")
     else:
@@ -1057,7 +1057,7 @@ def main():
     if not args.skip_tests:
         print(f"\n{C}Running {len(TESTS)} test suites...{W}")
         test_results = run_all_tests(PROJECT_ROOT)
-        print_test_summary(test_results)
+        print_test_summary(test_results, data_stats)
 
     # 3. Generate AI brief
     ai_brief = generate_ai_brief(

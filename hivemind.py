@@ -532,7 +532,7 @@ class HiveMind:
         self._last_user_chat_time = time.monotonic()  # prime at init so night mode can activate without chat
         self._night_mode_active = False
         self._night_mode_start = 0.0
-        self._night_mode_facts_learned = 0
+        self._night_mode_facts_learned = self._load_persisted_facts_count()
 
         # ── Phase 4: Advanced Learning ────────────────────
         self._last_chat_message = ""       # for correction detection
@@ -2062,8 +2062,8 @@ DELEGATION RULES (IMPORTANT):
                     if not self._night_mode_active:
                         self._night_mode_active = True
                         self._night_mode_start = time.monotonic()
-                        self._night_mode_facts_learned = 0
-                        log.info("🌙 Night mode ON (user idle)")
+                        log.info(f"🌙 Night mode ON (user idle), cumulative facts: "
+                                 f"{self._night_mode_facts_learned}")
                     interval = self._get_night_mode_interval()
                 else:
                     # ADAPTIIVINEN intervalli (throttle säätää koneen mukaan)
@@ -3243,11 +3243,28 @@ DELEGATION RULES (IMPORTANT):
             except Exception as e:
                 log.error(f"Micro-model training error: {e}")
 
+    def _load_persisted_facts_count(self) -> int:
+        """Load persisted night mode facts counter from learning_progress.json."""
+        try:
+            progress_path = Path("data/learning_progress.json")
+            if progress_path.exists():
+                data = json.loads(progress_path.read_text(encoding="utf-8"))
+                count = data.get("night_mode_facts_learned", 0)
+                if isinstance(count, int) and count > 0:
+                    log.info(f"Loaded persisted facts counter: {count}")
+                    return count
+        except Exception:
+            pass
+        return 0
+
     def _save_learning_progress(self):
         """Save night mode learning progress to file."""
         try:
+            ne_total = (self.night_enricher._total_stored
+                        if getattr(self, 'night_enricher', None) else 0)
             progress = {
                 "night_mode_facts_learned": self._night_mode_facts_learned,
+                "enricher_session_stored": ne_total,
                 "last_save": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "night_mode_active": self._night_mode_active,
             }

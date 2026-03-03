@@ -1,5 +1,47 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.0.5 (2026-03-03) — 5 Fixes: Health Score, Voikko, Counters, Night Shift
+
+### Fix 1: Health Score 95→100
+- **Root cause:** `waggle_backup.py:print_test_summary()` hardcoded `mass_test: None` → always -5
+- **Fix:** Pass real `data_stats` to health score calculation
+- **Result:** Health Score now correctly reflects actual test + routing data
+
+### Fix 2: Voikko Runtime + Portability
+- **Root cause:** `voikko/5/mor-standard/` had only `index.txt` — missing `mor.vfst` (3.9MB) + `libvoikko-1.dll` (1.2MB)
+- **Downloaded** complete Voikko dictionary (VFST format) + bundled DLL in `voikko/`
+- **Finnish lemmatization working:** `pesässä → pesä`, `mehiläispesässä → mehiläinen pesä`
+- **`waggle_restore.py`**: now validates DLL + .vfst files + actual `Voikko("fi")` init
+- **`core/auto_install.py`**: auto-downloads dictionary if .vfst files missing
+- **Portability:** voikko/ dir (dict + DLL) travels with git repo and backup zip
+
+### Fix 3: Phase 8 External Data Feeds — verified
+- Already fully wired in `hivemind.py:920-941` (DataFeedScheduler)
+- No code changes needed — weather, electricity, RSS all configured
+
+### Fix 4: Fact Counter Persistence
+- **Root cause:** `_night_mode_facts_learned` reset to 0 on every startup AND on night mode activation
+- **Fix:** Load persisted counter from `learning_progress.json` at startup
+- **Fix:** Removed counter reset on night mode re-activation
+- **Added** `enricher_session_stored` to progress JSON for transparency
+
+### Fix 5: Night Shift Automation
+- **New:** `tools/night_shift.py` — standalone headless night monitor
+- Starts WaggleDance as subprocess, health check every 5 min
+- Watchdog: 3 consecutive failures → restart (max 5 restarts)
+- Hallucination alert: >5% → logged as error
+- Writes morning report at shutdown: `data/night_shift_report_YYYYMMDD.md`
+- Windows Task Scheduler compatible
+- `--report-only` mode for generating reports from existing data
+
+### Test Results
+- **22/22 suites GREEN**, 700 assertions, 0 failures
+- **Health Score: 100/100**
+- **Voikko:** libvoikko + DLL + dictionary OK (2 .vfst)
+- **Restore:** 13/13 OK
+
+---
+
 ## v0.0.4 (2026-03-02) — 4-Area Improvement: Observability, Learning, Agents, New Features
 
 ### Docs & GitHub

@@ -60,13 +60,17 @@ def _pip_install(pip_name: str, quiet: bool = True) -> bool:
 
 
 def _check_voikko_dict() -> None:
-    """If libvoikko importable, check that dict folder exists."""
+    """If libvoikko importable, check that dict folder exists with real data."""
     if not _can_import("libvoikko"):
         return
+
+    project_voikko = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "voikko")
+
     # Search paths mirroring core/normalizer.py _init_voikko()
     search = [
         os.environ.get("VOIKKO_DICTIONARY_PATH"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "voikko"),
+        project_voikko,
     ]
     if sys.platform == "win32":
         search += [r"U:\project\voikko", r"C:\voikko"]
@@ -74,16 +78,38 @@ def _check_voikko_dict() -> None:
         search += ["/usr/lib/voikko", "/usr/share/voikko"]
 
     for p in search:
-        if p and os.path.isdir(p) and os.path.isdir(os.path.join(p, "5")):
-            return  # dict found
+        if not p or not os.path.isdir(p):
+            continue
+        mor_dir = os.path.join(p, "5", "mor-standard")
+        if os.path.isdir(mor_dir):
+            vfst_files = [f for f in os.listdir(mor_dir) if f.endswith(".vfst")]
+            if vfst_files:
+                return  # dict found with real data
 
-    _safe_print("  ⚠️  Voikko dictionary not found.")
-    _safe_print("      Download from https://www.puimula.org/htp/testing/voikko-snapshot-v5/ ")
-    if sys.platform == "win32":
-        _safe_print("      Extract to U:\\project\\voikko\\5\\ or C:\\voikko\\5\\")
-    else:
-        _safe_print("      Or: apt-get install voikko-fi")
-    _safe_print("      Finnish lemmatization will use fallback.")
+    # Dictionary incomplete or missing — try auto-download
+    _safe_print("  Voikko dictionary not found or incomplete.")
+    _safe_print("      Attempting auto-download...")
+    try:
+        import urllib.request
+        import zipfile
+        import tempfile
+        url = "https://www.puimula.org/htp/testing/voikko-snapshot-v5/dict.zip"
+        os.makedirs(project_voikko, exist_ok=True)
+        tmp_zip = os.path.join(tempfile.gettempdir(), "voikko_dict.zip")
+        urllib.request.urlretrieve(url, tmp_zip)
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            zf.extractall(project_voikko)
+        os.unlink(tmp_zip)
+        _safe_print("      Voikko dictionary downloaded and installed.")
+    except Exception as e:
+        _safe_print(f"      Auto-download failed: {e}")
+        _safe_print("      Download manually from: "
+                     "https://www.puimula.org/htp/testing/voikko-snapshot-v5/")
+        if sys.platform == "win32":
+            _safe_print(f"      Extract to: {project_voikko}")
+        else:
+            _safe_print("      Or: apt-get install voikko-fi")
+        _safe_print("      Finnish lemmatization will use fallback.")
 
 
 def _check_vcruntime() -> None:

@@ -1,5 +1,29 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.0.5c (2026-03-03) — Language Architecture + Compelling Product Text
+
+### Language Architecture (App.jsx EN + FI)
+- New LANGUAGE ARCHITECTURE section in tech arch info (both languages)
+- Explains morphological NLP pipeline: Your Language → Engine → Lemmatization → Compound Splitting → Translation → LLM
+- Language engine swap table: Voikko (FI), Hunspell (DE/ES/FR), MeCab (JA), KoNLPy (KO), jieba (ZH), spaCy (any)
+- English = fastest path (no translation overhead, direct LLM access)
+
+### README.md — Rewritten for AI Scene
+- Hero tagline: "Works in any language. English natively. Non-English through deep morphological NLP."
+- Added MicroModel self-training pitch: "trains its own models from your data"
+- New section: **Language Architecture** — full table of 7 language engines
+- Key Features: bilingual → language-agnostic, added Night Shift automation
+- Health Score 100/100 in header
+
+### GitHub About + Topics
+- Description: "75 self-learning agents that debate, evolve, and train their own models -- on any hardware, in any language. 3000ms to 0.3ms. Zero cloud."
+- Topics (14): +swarm-intelligence, +nlp, +morphological-analysis, +language-agnostic, +smart-home, +digital-twin
+
+### GitHub PAT
+- Stored in `.env` (git-ignored), configured in git credential manager
+
+---
+
 ## v0.0.5b (2026-03-03) — UI + Docs: Bilingual update, Phase 8 active, v0.0.5 highlights
 
 ### Dashboard UI (App.jsx — EN + FI)

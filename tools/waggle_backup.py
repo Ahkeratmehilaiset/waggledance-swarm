@@ -98,7 +98,9 @@ TESTS = [
     {"file": "tests/test_c4_readiness.py",        "name": "Readiness Check",         "phase": "C4", "args": [], "timeout": 60},
     {"file": "tests/test_c5_structured_logging.py","name": "Structured Logging",     "phase": "C5", "args": [], "timeout": 60},
     # Phase D — Autonomy
-    {"file": "tests/test_d1_d2_d3_autonomy.py",  "name": "Autonomy (D1–D3)",        "phase": "D1-D3","args": [], "timeout": 60},
+    {"file": "tests/test_d1_d2_d3_autonomy.py",  "name": "Autonomy (D1-D3)",        "phase": "D1-D3","args": [], "timeout": 60},
+    # Phase 5 — Smart Home Sensors
+    {"file": "tests/test_smart_home.py",          "name": "Smart Home Sensors",       "phase": "5",    "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

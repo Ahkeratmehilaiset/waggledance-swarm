@@ -140,6 +140,8 @@ advanced_learning:
       electricity_optimization: 6
       camera_event: 168    # 7 days
       audio_event: 168
+      home_state: 1
+      sensor_reading: 1
       news: 720            # 30 days
       self_enrichment: 2160  # 90 days
       web_learning: 2160
@@ -181,6 +183,50 @@ feeds:
       - url: "https://www.ruokavirasto.fi/rss"
         name: Ruokavirasto
         critical: true
+mqtt:
+  enabled: false
+  host: "192.168.1.100"
+  port: 1883
+  username: ""
+  password: ""
+  client_id: "waggledance"
+home_assistant:
+  enabled: false
+  url: "http://homeassistant.local:8123"
+  token: ""
+  poll_interval_s: 60
+  auto_discover: true
+frigate:
+  enabled: false
+  mqtt_topic_prefix: "frigate"
+  cameras: []
+  min_score: 0.6
+  dedup_window_s: 60
+  severity_rules:
+    critical:
+      - bear
+      - wolf
+    high:
+      - person_night
+    medium:
+      - dog
+      - cat
+    info:
+      - person
+      - car
+      - bird
+alerts:
+  enabled: false
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+  webhook:
+    enabled: false
+    url: ""
+    headers: {}
+  rate_limit:
+    max_per_minute: 5
 voice:
   enabled: false
   stt:

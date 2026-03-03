@@ -561,6 +561,9 @@ class HiveMind:
         self.data_feeds = None
         self.rss_monitor = None  # D1: lazy init in _night_learning_cycle
 
+        # ── Phase 5: Smart Home Sensors ────────────────
+        self.sensor_hub = None
+
         # ── C5: Structured logging ─────────────────────
         self.metrics = StructuredLogger()
 
@@ -940,6 +943,33 @@ DELEGATION RULES (IMPORTANT):
         else:
             print("  ℹ️  Data Feeds DISABLED (feeds.enabled: false)", flush=True)
 
+        # ── Phase 5: Smart Home Sensors ──────────────────────────
+        try:
+            from integrations.sensor_hub import SensorHub
+            sensor_cfg = {
+                "mqtt": self.config.get("mqtt", {}),
+                "home_assistant": self.config.get("home_assistant", {}),
+                "frigate": self.config.get("frigate", {}),
+                "alerts": self.config.get("alerts", {}),
+            }
+            any_enabled = any(
+                sensor_cfg[k].get("enabled", False)
+                for k in ("mqtt", "home_assistant", "frigate", "alerts")
+            )
+            if any_enabled:
+                self.sensor_hub = SensorHub(
+                    config=sensor_cfg,
+                    consciousness=self.consciousness,
+                    loop=asyncio.get_event_loop(),
+                )
+                await self.sensor_hub.start()
+                print("  ✅ SensorHub (smart home)", flush=True)
+            else:
+                print("  ℹ️  SensorHub DISABLED (no sensors enabled)", flush=True)
+        except Exception as e:
+            print(f"  ⚠️  SensorHub: {e}", flush=True)
+            self.sensor_hub = None
+
         # ── Improvement 5: Cache Warming at startup ───────────
         try:
             self._warm_caches()
@@ -998,6 +1028,10 @@ DELEGATION RULES (IMPORTANT):
                 self.code_reviewer._save_suggestions()
             except Exception:
                 pass
+
+        # Phase 5: Stop sensor hub
+        if hasattr(self, 'sensor_hub') and self.sensor_hub:
+            await self.sensor_hub.stop()
 
         # Phase 8: Stop data feeds
         if hasattr(self, 'data_feeds') and self.data_feeds:
@@ -1921,6 +1955,9 @@ DELEGATION RULES (IMPORTANT):
             "data_feeds": (self.data_feeds.get_status()
                            if hasattr(self, 'data_feeds')
                            and self.data_feeds else {}),
+            "sensor_hub": (self.sensor_hub.get_status()
+                           if hasattr(self, 'sensor_hub')
+                           and self.sensor_hub else {}),
             "micro_model": (self.micro_model.stats
                             if hasattr(self, 'micro_model')
                             and self.micro_model else {}),

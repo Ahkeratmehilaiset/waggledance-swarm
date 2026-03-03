@@ -758,6 +758,43 @@ loadFeeds();
         stored = await hivemind.data_feeds.force_update(feed_name)
         return JSONResponse({"feed": feed_name, "facts_stored": stored})
 
+    @app.get("/api/sensors")
+    async def sensors_status():
+        """Phase 5: Smart home sensor hub status."""
+        if not hasattr(hivemind, 'sensor_hub') or not hivemind.sensor_hub:
+            return JSONResponse({"available": False, "status": {}})
+        return JSONResponse({
+            "available": True,
+            "status": hivemind.sensor_hub.get_status(),
+        })
+
+    @app.get("/api/sensors/home")
+    async def sensors_home():
+        """Phase 5: Home Assistant entity states."""
+        if (not hasattr(hivemind, 'sensor_hub')
+                or not hivemind.sensor_hub
+                or not hivemind.sensor_hub.home_assistant):
+            return JSONResponse({"available": False, "entities": {}})
+        ha = hivemind.sensor_hub.home_assistant
+        return JSONResponse({
+            "available": ha.enabled,
+            "entities": ha.get_entities(),
+            "context": ha.get_home_context(),
+        })
+
+    @app.get("/api/sensors/camera/events")
+    async def sensors_camera_events():
+        """Phase 5: Recent Frigate camera events."""
+        if (not hasattr(hivemind, 'sensor_hub')
+                or not hivemind.sensor_hub
+                or not hivemind.sensor_hub.frigate):
+            return JSONResponse({"available": False, "events": []})
+        frigate = hivemind.sensor_hub.frigate
+        return JSONResponse({
+            "available": frigate.enabled,
+            "events": frigate.get_recent_events(limit=20),
+        })
+
     @app.get("/api/meta_report")
     async def meta_report():
         """Phase 9: Latest meta-learning weekly report."""

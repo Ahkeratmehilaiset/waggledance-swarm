@@ -1,5 +1,35 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.0.5d (2026-03-03) — Codebase Audit: Critical Fixes
+
+### Critical: Hardcoded Paths (backend/routes/status.py)
+- `"U:/project"` → dynamic `Path(__file__)` relative paths
+- ChromaDB client now uses correct project root
+- `agents_active` now dynamically counts agent directories (was hardcoded 6)
+
+### Critical: Voikko Search Paths (3 files)
+- `core/normalizer.py`, `translation_proxy.py`, `core/auto_install.py`
+- `r"U:\project\voikko"` → `r"U:\project2\voikko"` (correct project root)
+
+### Medium: Outdated Facts/Agent Counts (chat.py — 11 locations)
+- `"1,348+"` → `"3,147+"` facts (EN fallbacks, system responses)
+- `"1 348+"` → `"3 147+"` facts (FI system responses)
+- `"50 agents"` / `"50 agenttia"` → `"75"` everywhere
+- Docstring: "50 agents" → "75 agents"
+
+### Medium: Agent Count Comments
+- `backend/routes/heartbeat.py`: "50-agent" → "75-agent" (docstring + comment)
+- `core/swarm_scheduler.py`: "50 agentin" → "75 agentin" (docstring)
+
+### Medium: CORS Configuration (backend/main.py)
+- Hardcoded `localhost:5173` → env variable `CORS_ORIGINS` (default: 5173+3000)
+
+### Low: Version Strings (6 core modules)
+- `token_economy.py`, `live_monitor.py`, `adaptive_throttle.py`, `yaml_bridge.py`,
+  `whisper_protocol.py`, `llm_provider.py` — all `v0.0.1` → `v0.0.5`
+
+---
+
 ## v0.0.5c (2026-03-03) — Language Architecture + Compelling Product Text
 
 ### Language Architecture (App.jsx EN + FI)

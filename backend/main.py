@@ -4,6 +4,7 @@ Serves /api/status, /api/hardware, /api/heartbeat, /api/chat
 Works independently of HiveMind for dashboard development.
 """
 import logging
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.routes.status import router as status_router
@@ -15,9 +16,13 @@ log = logging.getLogger("waggledance-backend")
 
 app = FastAPI(title="WaggleDance Dashboard API")
 
+_cors_origins = os.environ.get(
+    "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[o.strip() for o in _cors_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

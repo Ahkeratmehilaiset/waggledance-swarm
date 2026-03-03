@@ -4,8 +4,8 @@ WaggleDance Swarm AI — Swarm Scheduler v0.0.2
 Jani Korpi (Ahkerat Mehiläiset)
 Claude 4.6 • v0.0.2 • Built: 2026-02-22 18:00 EET
 
-Ratkaisee 50 agentin "swarm" -ongelmat:
-  1. Kandidaattisuodatus (Top-K) — ei kaikki 50 biddaa
+Ratkaisee 75 agentin "swarm" -ongelmat:
+  1. Kandidaattisuodatus (Top-K) — ei kaikki 75 biddaa
   2. Cold start -kalibrointi — jokainen saa alkutehtäviä
   3. Pheromone-alustus — ei nollasta
   4. Exploration-kiintiö — harvinaiset agentit pääsevät hommiin

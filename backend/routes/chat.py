@@ -2,7 +2,7 @@
 
 Layer 0: Date/time/system queries (both languages)
 Layer 1: Hand-crafted keyword responses (47 entries, Finnish morphology-aware)
-Layer 2: Auto-loaded YAML eval_questions (~3600 Q&A pairs from 50 agents)
+Layer 2: Auto-loaded YAML eval_questions (~3600 Q&A pairs from 75 agents)
 Layer 3: Fallback messages
 """
 import json
@@ -106,12 +106,12 @@ def _detect_language(text_lower: str) -> str:
 _FALLBACK_EN = [
     "I don't have a specific answer for that yet. In stub mode, I answer from pre-loaded knowledge. "
     "Try asking about specific domain topics! 🐝",
-    "Hmm, that's outside my current knowledge base. I'm running in stub mode with 1,348+ facts. "
+    "Hmm, that's outside my current knowledge base. I'm running in stub mode with 3,147+ facts. "
     "Start the full HiveMind (python main.py) for LLM-powered answers.",
     "I'm WaggleDance — a multi-agent AI system. In stub mode, my answers come from YAML knowledge. "
     "Try specific questions, or start the full system for deeper answers.",
     "Good question! I don't have that in my current knowledge base. "
-    "The full HiveMind with 50 agents and ChromaDB would give you a better answer.",
+    "The full HiveMind with 75 agents and ChromaDB would give you a better answer.",
 ]
 
 # ---------------------------------------------------------------------------
@@ -975,22 +975,22 @@ def _handle_system_en(msg_lower: str) -> str | None:
                 "2. Vector memory (ChromaDB) — semantic search across all knowledge\n"
                 "3. LLM reasoning — phi4-mini for complex questions\n"
                 "4. Round Table — multiple agents debate for consensus\n\n"
-                "Background: 50 agents learn 24/7 from YAML, web, and conversations. "
+                "Background: 75 agents learn 24/7 from YAML, web, and conversations. "
                 "All local, all private.")
 
     # What can you do
     if any(kw in msg_lower for kw in ("what can you do", "your capabilities",
                                        "what do you know", "help me")):
-        return ("I can help with domain-specific knowledge powered by 50 specialized agents. "
+        return ("I can help with domain-specific knowledge powered by 75 specialized agents. "
                 "Each agent has deep expertise in its field.\n\n"
                 "Try asking about specific topics — the system routes to the best agent automatically. "
                 "I also know the date, time, and system status. "
-                "In stub mode, answers come from pre-loaded knowledge (1,348+ facts).")
+                "In stub mode, answers come from pre-loaded knowledge (3,147+ facts).")
 
     # Agents
     if any(kw in msg_lower for kw in ("how many agents", "list agents", "what agents",
                                        "agent system")):
-        return ("WaggleDance runs 50 specialized agents. Each has YAML-defined knowledge, "
+        return ("WaggleDance runs 75 specialized agents. Each has YAML-defined knowledge, "
                 "routing keywords, and eval questions. Agents earn levels 1-5 based on performance. "
                 "Round Table sessions let 6 agents debate topics for cross-validated wisdom.")
 
@@ -1009,8 +1009,8 @@ def _handle_system_en(msg_lower: str) -> str | None:
     # Status
     if any(kw in msg_lower for kw in ("status", "system status", "health")):
         return ("System status: ONLINE (stub mode)\n"
-                "• 50 agents configured\n"
-                "• 1,348+ facts in vector memory\n"
+                "• 75 agents configured\n"
+                "• 3,147+ facts in vector memory\n"
                 "• Routing accuracy: 97.7%\n"
                 "• Dashboard: http://localhost:5173")
 
@@ -1021,14 +1021,14 @@ def _handle_system_fi(msg_lower: str) -> str | None:
     """Handle Finnish system/meta questions."""
     if any(kw in msg_lower for kw in ("montako agentti", "kuinka monta agentti",
                                        "agenttien määrä", "mitä agentteja")):
-        return ("WaggleDancessa toimii 50 erikoistunutta agenttia. Jokaisella on YAML-määritelty "
+        return ("WaggleDancessa toimii 75 erikoistunutta agenttia. Jokaisella on YAML-määritelty "
                 "tietopohja, reititysavainsanat ja arviointikysymykset. Agentit ansaitsevat tasoja 1-5 "
                 "suorituksen perusteella. Round Table -istunnoissa 6 agenttia keskustelee aiheista.")
 
     if any(kw in msg_lower for kw in ("tila", "status", "järjestelmän tila")):
         return ("Järjestelmän tila: ONLINE (stub-tila)\n"
-                "• 50 agenttia konfiguroitu\n"
-                "• 1 348+ faktaa vektorimuistissa\n"
+                "• 75 agenttia konfiguroitu\n"
+                "• 3 147+ faktaa vektorimuistissa\n"
                 "• Reititystarkkuus: 97,7 %\n"
                 "• Dashboard: http://localhost:5173")
 

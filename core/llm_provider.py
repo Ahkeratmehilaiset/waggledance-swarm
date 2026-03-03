@@ -1,8 +1,8 @@
 """
-WaggleDance Swarm AI — LLM Provider v0.0.1
+WaggleDance Swarm AI — LLM Provider v0.0.5
 ============================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v0.0.1 • Built: 2026-02-22 14:37 EET
+Claude 4.6 • v0.0.5 • Built: 2026-02-22 14:37 EET
 
 Ollama HTTP API -yhteys parannetulla virhekäsittelyllä.
 KORJAUS K8: Tyhjät virheilmoitukset → logitetaan poikkeuksen tyyppi + viesti.

@@ -73,7 +73,7 @@ def _check_voikko_dict() -> None:
         project_voikko,
     ]
     if sys.platform == "win32":
-        search += [r"U:\project\voikko", r"C:\voikko"]
+        search += [r"U:\project2\voikko", r"C:\voikko"]
     else:
         search += ["/usr/lib/voikko", "/usr/share/voikko"]
 

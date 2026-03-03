@@ -1,4 +1,4 @@
-# WaggleDance Swarm AI • v0.0.1 • Built: 2026-02-22 14:37 EET
+# WaggleDance Swarm AI • v0.0.5 • Built: 2026-02-22 14:37 EET
 # Jani Korpi (Ahkerat Mehiläiset)
 """
 WaggleDance Swarm AI Token Economy — Agentit ansaitsevat ja käyttävät tokeneita

@@ -1,6 +1,9 @@
 """GET /api/status and GET /api/hardware — system metrics."""
 import subprocess
+from pathlib import Path
 from fastapi import APIRouter
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 router = APIRouter()
 
@@ -52,13 +55,25 @@ def _gpu_name():
     return "N/A"
 
 
+def _count_agents():
+    """Count agent directories that have a core.yaml."""
+    try:
+        agents_dir = _PROJECT_ROOT / "agents"
+        if agents_dir.is_dir():
+            return sum(1 for d in agents_dir.iterdir()
+                       if d.is_dir() and (d / "core.yaml").exists())
+    except Exception:
+        pass
+    return 0
+
+
 def _chromadb_count():
     """Try to get ChromaDB fact count, fallback to placeholder."""
     try:
         import sys
-        sys.path.insert(0, "U:/project")
+        sys.path.insert(0, str(_PROJECT_ROOT))
         import chromadb
-        client = chromadb.PersistentClient(path="U:/project/data/chroma_db")
+        client = chromadb.PersistentClient(path=str(_PROJECT_ROOT / "data" / "chroma_db"))
         col = client.get_collection("bee_knowledge")
         return col.count()
     except Exception:
@@ -84,7 +99,7 @@ async def status():
         "cpu": round(cpu),
         "gpu": gpu,
         "vram": vram,
-        "agents_active": 6,
+        "agents_active": _count_agents(),
         "is_thinking": False,
     }
 

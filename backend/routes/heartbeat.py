@@ -1,4 +1,4 @@
-"""GET /api/heartbeat — simulated 50-agent activity feed."""
+"""GET /api/heartbeat — simulated 75-agent activity feed."""
 import time
 import random
 from fastapi import APIRouter
@@ -10,7 +10,7 @@ _heartbeat_log: list[dict] = []
 _MAX_LOG = 50
 _last_gen_time = 0.0
 
-# ── 50 agents with their specialties and message templates ──
+# ── 75 agents with their specialties and message templates ──
 _AGENTS = [
     # ── Cottage / Beekeeping agents ──
     {"agent": "Tarhaaja", "type": "status", "msgs": [

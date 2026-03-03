@@ -74,7 +74,7 @@ def _init_voikko():
     search_paths = [
         os.environ.get("VOIKKO_DICTIONARY_PATH"),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "voikko"),
-        r"U:\project\voikko",
+        r"U:\project2\voikko",
         r"C:\voikko",
         "/usr/lib/voikko",
         "/usr/share/voikko",

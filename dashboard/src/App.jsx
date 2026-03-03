@@ -17,7 +17,7 @@ const L = {
     features: "FEATURES & INTEGRATION",
     placeholder: "Ask WaggleDance something...",
     hwSpec: "HARDWARE SPEC", hwDesc: "specs + calculated performance",
-    agents: "50 CUSTOM AGENTS", agentsDesc: "YAML config guide",
+    agents: "75 CUSTOM AGENTS", agentsDesc: "YAML config guide",
     techArch: "TECHNICAL ARCHITECTURE", techArchDesc: "how WaggleDance intelligence works",
     disclaimer: "DISCLAIMER & CREDITS", disclaimerDesc: "liability, credits, origin",
     bottomL: "LOCAL-FIRST • ZERO CLOUD • YOUR DATA",
@@ -57,7 +57,7 @@ const L = {
         { title: "4. CAMERAS", desc: "Wildlife + security", guide: "RPi 5 + Coral TPU (~€110):\nfrigate:\n  enabled: true\n  cameras:\n    yard: {description: 'Hive area'}\n\nDetects: bears, moose, foxes,\npeople, vehicles. Day and night.\nTelegram alert + snapshot in <2s." },
         { title: "5. SPOT PRICE", desc: "Sauna + extraction timing", guide: "Electricity spot price — automatic:\nelectricity:\n  enabled: true\n\nFinds cheapest hours for:\n• Sauna heating\n• Honey extraction\n• Water heater\n• Any scheduled load\n\nSaves 15-30% on electricity." },
         { title: "6. NEWS FEEDS", desc: "Disease alerts + bee news", guide: "Critical RSS feeds:\nrss:\n  feeds:\n    - url: ruokavirasto.fi/rss\n      critical: true\n    - url: mehilaishoitajat.fi/feed\n\nFoulbrood outbreak alerts\ntrigger IMMEDIATE notification.\nAll articles indexed for learning." },
-        { title: "HOW IT LEARNS", desc: "Becomes your bee expert", guide: "Day 1: 1,348 base facts loaded.\nWeek 1: Learns your hive patterns.\nMonth 1: Predicts swarms + flows.\nMonth 6: Deeper than any textbook.\n\nNight learning: reads research,\ncross-validates, grows 24/7.\nYour AI beekeeper never sleeps." },
+        { title: "HOW IT LEARNS", desc: "Becomes your bee expert", guide: "Day 1: 3,147+ base facts loaded.\nWeek 1: Learns your hive patterns.\nMonth 1: Predicts swarms + flows.\nMonth 6: Deeper than any textbook.\n\nNight learning: reads research,\ncross-validates, grows 24/7.\nYour AI beekeeper never sleeps." },
         { title: "ACOUSTIC ANALYSIS", desc: "Listen to your bees", guide: "ESP32 + INMP441 mic at entrance:\n\nDetects:\n• Queen piping (swarming soon)\n• Stress buzz (disturbance)\n• Queenless howl\n• Normal healthy hum\n\nAlerts before a human could\npossibly hear the difference." },
       ],
       factory: [
@@ -147,12 +147,28 @@ This is a deliberate architectural decision, not a limitation. WaggleDance is bu
   • Weekly Report — auto-generated performance analysis
   • External source integration — RSS, weather, electricity
 
+▸ PHASE 7: VOICE INTERFACE (INTEGRATED)
+  • Whisper STT — Finnish speech-to-text, local
+  • Piper TTS — fi_FI-harri-medium, local synthesis
+  • Wake word "Hei WaggleDance", VAD silence detection
+
+▸ PHASE 8: EXTERNAL DATA FEEDS (ACTIVE)
+  • Weather — FMI Open Data, 30 min intervals
+  • Electricity — spot price, cheapest window scheduling
+  • RSS — disease alerts (foulbrood → CRITICAL), beekeeping news
+
+▸ V0.0.5: PORTABILITY & RELIABILITY
+  • Voikko bundled — mor.vfst + autocorr.vfst included, auto-download fallback
+  • Night Shift Automation — tools/night_shift.py, watchdog, morning report
+  • Fact counter persistence — survives restarts, never resets
+  • Health Score 100/100 — all 22 test suites GREEN
+
 ▸ TESTING
   22/22 test suites GREEN (700+ assertions)
   Pipeline, routing, corrections, autonomy — all validated
 
 ▸ CODEBASE
-  50 agents • 90+ Python modules • 45,000+ lines of code
+  75 agents • 90+ Python modules • 45,000+ lines of code
   97.7% routing accuracy (1,207/1,235 tested)
   22 test suites • 10 seasonal rules • 34 domain terms
 
@@ -272,7 +288,7 @@ Install. Connect. Walk away.
     features: "OMINAISUUDET & INTEGRAATIOT",
     placeholder: "Kysy WaggleDancelta jotain...",
     hwSpec: "LAITTEISTO", hwDesc: "tekniset tiedot + laskettu suorituskyky",
-    agents: "50 MUKAUTETTUA AGENTTIA", agentsDesc: "YAML-konfiguraatio-opas",
+    agents: "75 MUKAUTETTUA AGENTTIA", agentsDesc: "YAML-konfiguraatio-opas",
     techArch: "TEKNINEN ARKKITEHTUURI", techArchDesc: "miten WaggleDancen älykkyys muodostuu",
     disclaimer: "VASTUUVAPAUS & TEKIJÄT", disclaimerDesc: "vastuu, tekijät, alkuperä",
     bottomL: "PAIKALLINEN • EI PILVEÄ • SINUN DATASI",
@@ -312,7 +328,7 @@ Install. Connect. Walk away.
         { title: "4. KAMERAT", desc: "Villieläimet + turvallisuus", guide: "RPi 5 + Coral TPU (~110€):\nfrigate:\n  enabled: true\n  cameras:\n    piha: {description: 'Tarhanaapuri'}\n\nTunnistaa: karhut, hirvet, ketut,\nihmiset, ajoneuvot. Päivällä ja yöllä.\nTelegram-hälytys + kuva <2s." },
         { title: "5. PÖRSSISÄHKÖ", desc: "Saunan + linkouden ajoitus", guide: "Pörssisähkö — automaattinen:\nelectricity:\n  enabled: true\n\nEtsii halvimmat tunnit:\n• Saunan lämmitys\n• Hunajan linkous\n• Lämminvesivaraaja\n• Mikä tahansa ajoitettu kuorma\n\nSäästää 15-30% sähköstä." },
         { title: "6. UUTISSYÖTTEET", desc: "Tautihälytykset + mehiläisuutiset", guide: "Kriittiset RSS-syötteet:\nrss:\n  feeds:\n    - url: ruokavirasto.fi/rss\n      critical: true\n    - url: mehilaishoitajat.fi/feed\n\nEsikotelomätäpurkaukset\nlaukaisevat VÄLITTÖMÄN ilmoituksen.\nKaikki artikkelit indeksoitu oppimista varten." },
-        { title: "MITEN SE OPPII", desc: "Mehiläisasiantuntijasi", guide: "Päivä 1: 1 348 perustietoa ladattu.\nViikko 1: Oppii pesäkuviosi.\nKuukausi 1: Ennustaa parveilu + sato.\nKuukausi 6: Syvempi kuin mikään oppikirja.\n\nYöoppiminen: lukee tutkimuksia,\nristiinvalidoi, kasvaa 24/7.\nAI-mehiläishoitajasi ei nuku koskaan." },
+        { title: "MITEN SE OPPII", desc: "Mehiläisasiantuntijasi", guide: "Päivä 1: 3 147+ perustietoa ladattu.\nViikko 1: Oppii pesäkuviosi.\nKuukausi 1: Ennustaa parveilu + sato.\nKuukausi 6: Syvempi kuin mikään oppikirja.\n\nYöoppiminen: lukee tutkimuksia,\nristiinvalidoi, kasvaa 24/7.\nAI-mehiläishoitajasi ei nuku koskaan." },
         { title: "AKUSTIIKKA-ANALYYSI", desc: "Kuuntele mehiläisiäsi", guide: "ESP32 + INMP441-mikrofoni sisäänkäyntiin:\n\nTunnistaa:\n• Emon toitotus (parveilu tulossa)\n• Stressisuraus (häiriö)\n• Emoton valitus\n• Normaali terve surina\n\nHälyttää ennen kuin ihminen\nvoisi mitenkään kuulla eroa." },
       ],
       factory: [
@@ -402,12 +418,28 @@ Tämä on tietoinen arkkitehtuurivalinta, ei rajoitus. WaggleDance on rakennettu
   • Viikkoraportti — automaattinen suorituskykyanalyysi
   • Ulkoiset lähteet — RSS, sää, sähkön hinta
 
+▸ VAIHE 7: PUHELIITTYMÄ (INTEGROITU)
+  • Whisper STT — suomenkielinen puhe→teksti, paikallinen
+  • Piper TTS — fi_FI-harri-medium, paikallinen synteesi
+  • Herätyskäsky "Hei WaggleDance", VAD-hiljaisuustunnistus
+
+▸ VAIHE 8: ULKOISET TIETOVIRRAT (AKTIIVINEN)
+  • Sää — IL avoin data, 30 min välein
+  • Pörssisähkö — spot-hinta, halvin tunti-ikkuna
+  • RSS — tautihälytykset (esikotelomätä → KRIITTINEN)
+
+▸ V0.0.5: SIIRRETTÄVYYS & LUOTETTAVUUS
+  • Voikko mukana — mor.vfst + autocorr.vfst, autolataus
+  • Yövuoroautomaatio — tools/night_shift.py, vartija, aamoraportti
+  • Faktalaskuri pysyy — ei nollaudu uudelleenkäynnistyksessä
+  • Terveyspistemäärä 100/100 — kaikki 22 testisarjaa VIHREÄNÄ
+
 ▸ TESTAUS
   22/22 testisarjaa VIHREÄNÄ (700+ väittämää)
   Putki, reititys, korjaukset, autonomia — kaikki validoitu
 
 ▸ KOODIKANTA
-  50 agenttia • 90+ Python-moduulia • 45 000+ koodiriviä
+  75 agenttia • 90+ Python-moduulia • 45 000+ koodiriviä
   97.7% reitityksen tarkkuus (1 207/1 235 testattu)
   22 testisarjaa • 10 kausivahtisääntöä • 34 erikoistermiä
 

@@ -604,10 +604,11 @@ waggledance-swarm/
 - ✅ **Phase C:** Cache & Pipeline — HotCache auto-fill, LRU cache, batch dedup, readiness gates, structured logging
 - ✅ **Phase D:** Autonomous Intelligence — ConvergenceDetector, weekly report, external source integration
 - ✅ **Phase 7:** Voice Interface — Whisper STT (Finnish) + Piper TTS, wake word activation, WebSocket streaming
+- ✅ **Phase 8:** External Data Feeds — weather (FMI), electricity spot price, RSS disease alerts, wired in hivemind.py
 - ✅ **Phase 11:** Elastic Scaling — auto-detect GPU/RAM/CPU, 5-tier classification (minimal → enterprise)
+- ✅ **v0.0.5:** Night Shift Automation, Voikko portability (bundled dictionary), fact counter persistence, Health Score 100/100
 - 🧪 **Testing:** 22/22 suites GREEN (700+ assertions) — pipeline, routing, corrections, autonomy all validated
 - 📋 **Phase 5-6:** Camera & Audio Sensors — code framework ready, hardware pending
-- 📋 **Phase 8:** External Data Feeds — weather, electricity, RSS integration specified
 - 📋 **Phase 9:** Autonomous Learning Layers 3-6 — code exists, disabled (offline-first by design)
 - 📋 **Phase 10:** MicroModel V3 LoRA — architecture ready, training pipeline pending
 
@@ -629,7 +630,7 @@ waggledance-swarm/
 | Hallucination rate | 1.8% |
 | CircuitBreaker recovery | auto-heal after 3 failures |
 | Round Table consensus time | 12-45s (hardware dependent) |
-| Night learning rate | 50-200 facts/night |
+| Night learning rate | 50-200 facts/night (Night Shift automation) |
 | ChromaDB facts | 3,147+ (growing autonomously) |
 
 ---

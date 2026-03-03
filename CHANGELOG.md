@@ -1,5 +1,21 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.0.5b (2026-03-03) — UI + Docs: Bilingual update, Phase 8 active, v0.0.5 highlights
+
+### Dashboard UI (App.jsx — EN + FI)
+- Agent count: "50 CUSTOM AGENTS" / "50 MUKAUTETTUA AGENTTIA" → **75**
+- Cottage guide: "Day 1: 1,348 base facts" → **3,147+** (both languages)
+- Codebase stats: 50 agents → **75** in tech arch section
+- Tech arch info added: Phase 7 (voice), Phase 8 (feeds active), v0.0.5 section
+  - Voikko bundled, Night Shift automation, fact persistence, Health Score 100/100
+
+### README.md
+- Phase 8: 📋 specified → **✅ active** (DataFeedScheduler wired in hivemind.py:920-941)
+- v0.0.5 milestone added to Current Status list
+- Performance table: night learning note added
+
+---
+
 ## v0.0.5 (2026-03-03) — 5 Fixes: Health Score, Voikko, Counters, Night Shift
 
 ### Fix 1: Health Score 95→100

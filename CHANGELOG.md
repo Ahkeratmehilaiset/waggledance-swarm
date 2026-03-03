@@ -22,6 +22,11 @@
 - Registered as suite #23 in `waggle_backup.py`
 - Full suite: 23/23 GREEN, Health Score 100/100
 
+### Dashboard (App.jsx)
+- EN: added v0.0.6 Phase 5 Smart Home Sensors section (MQTT Hub, Frigate NVR, Home Assistant, Alert Dispatcher)
+- FI: added v0.0.6 Vaihe 5 Kodin Sensorit section
+- Test suite count 22 -> 23 in tech arch (EN+FI), boot animation, status bar
+
 ### GitHub
 - Added topic: `smart-home`
 

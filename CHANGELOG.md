@@ -1,5 +1,32 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.0.6 (2026-03-04) — Phase 5: Smart Home Sensor Integration
+
+### New: Sensor Hub (5 new modules, ~1200 lines)
+- `integrations/mqtt_hub.py` — MQTTHub: paho-mqtt client, background thread with asyncio bridge, MD5 dedup (configurable window), exponential reconnect backoff (1s...60s)
+- `integrations/alert_dispatcher.py` — AlertDispatcher: async queue + consumer loop, Telegram (HTML + emoji) + Webhook (3x retry), sliding window rate limiting (default 5/min/source)
+- `integrations/home_assistant.py` — HomeAssistantBridge: REST API poll, auto entity discovery by domain, significance filter (numeric >1.0, binary any, brightness >20%), Finnish state formatting ("Olohuoneen valo: paalla (80%)")
+- `integrations/frigate_mqtt.py` — FrigateIntegration: Frigate NVR event parsing, severity classification (bear/wolf=CRITICAL, person night=HIGH, dog/cat=MEDIUM, person/car day=INFO), Finnish label translations, 60s dedup per label+camera
+- `integrations/sensor_hub.py` — SensorHub orchestrator: init order Alert->MQTT->Frigate->HA, aggregated status, Finnish sensor context for agents, WebSocket broadcast
+
+### Wiring
+- `hivemind.py`: SensorHub init in `start()`, stop in `stop()`, status in `get_status()`
+- `web/dashboard.py`: 3 new API endpoints — `GET /api/sensors`, `GET /api/sensors/home`, `GET /api/sensors/camera/events`
+- `configs/settings.yaml`: +mqtt, home_assistant, frigate, alerts sections (all disabled by default); +home_state/sensor_reading TTL rules
+
+### Dependencies
+- `requirements.txt`: `paho-mqtt>=2.0.0` (was commented out)
+
+### Tests
+- `tests/test_smart_home.py` — 30 tests across 7 groups (syntax, MQTT, HA, Frigate, alerts, SensorHub, integration)
+- Registered as suite #23 in `waggle_backup.py`
+- Full suite: 23/23 GREEN, Health Score 100/100
+
+### GitHub
+- Added topic: `smart-home`
+
+---
+
 ## v0.0.5d (2026-03-03) — Codebase Audit: Critical Fixes
 
 ### Critical: Hardcoded Paths (backend/routes/status.py)

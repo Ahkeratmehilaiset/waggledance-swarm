@@ -26,7 +26,7 @@ WaggleDance is the most ambitious local-first AI system ever built. 75 specializ
 Originally built for Finnish beekeeping (300 hives, 10,000 kg honey/year), the architecture is language-agnostic and domain-agnostic. It scales to smart homes, factories, and IoT edge devices. A 3.8B model with deep domain memory outperforms generic 400B cloud models — at 0.5ms latency and zero recurring cost.
 
 **Response time evolution:** 3,000ms (day 1) → 55ms (week 1) → 18ms (month 1) → 0.5ms (HotCache).
-**22/22 test suites GREEN. Health Score 100/100.** Production-hardened with CircuitBreaker, night shift automation, and structured logging.
+**30/30 test suites GREEN. Health Score 100/100.** Production-hardened with CircuitBreaker, night shift automation, and structured logging.
 
 **No subscription. No API keys. No data leaving your network. Ever.**
 
@@ -47,7 +47,7 @@ Originally built for Finnish beekeeping (300 hives, 10,000 kg honey/year), the a
 - 📡 **4 deployment profiles** — GADGET / COTTAGE / HOME / FACTORY
 - 🎤 **Voice interface** — Whisper STT (Finnish) + Piper TTS, wake word "Hei WaggleDance"
 - 📐 **Elastic scaling** — auto-detects GPU/RAM/CPU, selects optimal tier (minimal → enterprise)
-- 🧪 **22/22 test suites GREEN** — 700+ assertions across pipeline, routing, corrections, and autonomy
+- 🧪 **30/30 test suites GREEN** — 700+ assertions across pipeline, routing, corrections, autonomy, smart home, and core modules
 - 🛡️ **Production-hardened** — CircuitBreaker, graceful degradation, structured logging, TTL eviction
 - 📈 **ConvergenceDetector** — knows when learning plateaus, auto-generates weekly performance reports
 - 🌙 **Night Shift automation** — headless overnight operation, watchdog health checks, morning report
@@ -368,7 +368,7 @@ User (Finnish / English) → FastAPI (port 8000)
       ├── FI/EN language toggle
       ├── Stub/Production mode badge
       ├── LearnToFly intro sequence (Phase 4 + B/C/D showcase)
-      ├── Awareness bar (Circuit, Tests 22/22, Speed 3s→18ms)
+      ├── Awareness bar (Circuit, Tests 30/30, Speed 3s→18ms)
       └── 4 domain tabs: GADGET / COTTAGE / HOME / FACTORY
 ```
 
@@ -533,7 +533,7 @@ npm run dev
 python tools/waggle_backup.py --tests-only
 ```
 
-This runs all 22 test suites and generates a health report. Expected: **22/22 suites GREEN, 700+ assertions, 0 failures.**
+This runs all 30 test suites and generates a health report. Expected: **30/30 suites GREEN, 700+ assertions, 0 failures.**
 
 ```
 Suites include:
@@ -588,7 +588,7 @@ waggledance-swarm/
 │       ├── App.jsx      #   Dashboard (3D brain, 4 domains, bilingual)
 │       └── hooks/
 │           └── useApi.js #   API polling + Stub/Prod detection
-├── tests/               # 22 test suites (700+ assertions)
+├── tests/               # 30 test suites (700+ assertions)
 │   ├── test_pipeline.py       # 53 tests — translation + validation
 │   ├── test_phase10.py        # 73 tests — MicroModel training
 │   ├── test_corrections.py    # 35 tests — correction memory
@@ -639,7 +639,7 @@ waggledance-swarm/
 - ✅ **Phase 11:** Elastic Scaling — auto-detect GPU/RAM/CPU, 5-tier classification (minimal → enterprise)
 - ✅ **Phase 5:** Smart Home Sensors — MQTT hub, Frigate NVR (severity alerts), Home Assistant (REST poll), Telegram + Webhook alerts
 - ✅ **v0.0.5:** Night Shift Automation, Voikko portability (bundled dictionary), fact counter persistence, Health Score 100/100
-- 🧪 **Testing:** 23/23 suites GREEN (700+ assertions) — pipeline, routing, corrections, autonomy, smart home all validated
+- 🧪 **Testing:** 30/30 suites GREEN (700+ assertions) — pipeline, routing, corrections, autonomy, smart home, core modules all validated
 - 📋 **Phase 6:** Audio Sensors — bee audio analysis, BirdNET, hardware pending
 - 📋 **Phase 9:** Autonomous Learning Layers 3-6 — code exists, disabled (offline-first by design)
 - 📋 **Phase 10:** MicroModel V3 LoRA — architecture ready, training pipeline pending
@@ -650,7 +650,7 @@ waggledance-swarm/
 
 | Metric | Value |
 |--------|-------|
-| **Test suites** | **22/22 GREEN** (700+ assertions) |
+| **Test suites** | **30/30 GREEN** (700+ assertions) |
 | Agent routing accuracy | 97.7% (1,235 test questions) |
 | SmartRouter evolution | 3,000ms → 55ms → 18ms → 0.5ms |
 | Hot Cache response | 0.5ms |

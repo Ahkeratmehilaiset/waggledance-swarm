@@ -22,6 +22,27 @@
 - Registered as suite #23 in `waggle_backup.py`
 - Full suite: 23/23 GREEN, Health Score 100/100
 
+### Knowledge Expansion
+- 21 thin agent `core.yaml` files expanded from 21-29 lines to 148-207 lines each:
+  apartment_board, child_safety, commute_planner, compliance, delivery_tracker,
+  forklift_fleet, indoor_garden, lab_analyst, noise_monitor, pet_care, smart_home,
+  waste_handler, budget_tracker, energy_manager, hvac_industrial, maintenance_planner,
+  production_line, quality_inspector, safety_officer, shift_manager, supply_chain
+  Each: 5-8 DECISION_METRICS, 4 SEASONAL_RULES, 3 FAILURE_MODES, PROCESS_FLOWS,
+  SOURCE_REGISTRY, 15-25 eval_questions (all Finnish)
+- 28 thin `knowledge/*.yaml` files expanded from 4-5 facts to 18-20 facts each
+  with Finnish thresholds, legal references, and procedures
+
+### Core Module Test Suites (suites 24-30)
+- `tests/test_core_token_economy.py` — 13 tests (TokenEconomy, ORACLE_PRICES, leaderboard)
+- `tests/test_core_llm_provider.py` — 15 tests (LLMResponse, CircuitBreaker, JSON parsing)
+- `tests/test_core_normalizer.py` — 14 tests (FinnishNormalizer, lemmatize, Levenshtein)
+- `tests/test_core_yaml_bridge.py` — 14 tests (YAMLBridge, ROUTING_KEYWORDS, AGENT_GLYPH_MAP)
+- `tests/test_core_fast_memory.py` — 17 tests (HotCache put/get/LRU, stats, clear)
+- `tests/test_core_ops_agent.py` — 12 tests (ModelProfile, OpsDecision, thresholds)
+- `tests/test_core_learning_engine.py` — 18 tests (QualityScore, AgentPerformance, leaderboard)
+- Full suite: **30/30 GREEN, 700 ok, 0 fail, Health Score 100/100**
+
 ### Dashboard (App.jsx)
 - EN: added v0.0.6 Phase 5 Smart Home Sensors section (MQTT Hub, Frigate NVR, Home Assistant, Alert Dispatcher)
 - FI: added v0.0.6 Vaihe 5 Kodin Sensorit section

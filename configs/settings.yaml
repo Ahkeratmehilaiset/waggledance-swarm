@@ -239,6 +239,19 @@ voice:
     voice: "fi_FI-harri-medium"
     data_dir: "data/piper_models"
     speed: 1.0
+audio:
+  enabled: false
+  bee_audio:
+    baseline_days: 7
+    stress_threshold_hz_shift: 30
+    swarming_amplitude_threshold: 0.7
+  bird_monitor:
+    enabled: false
+    model: "BirdNET-Lite"
+  mqtt_topics:
+    spectrum: "waggledance/audio/+/spectrum"
+    event: "waggledance/audio/+/event"
+    status: "waggledance/audio/+/status"
 elastic_scaling:
   enabled: true
   auto_detect: true

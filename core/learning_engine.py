@@ -261,7 +261,6 @@ class LearningEngine:
         self.running = True
         self._task = asyncio.create_task(self._learning_loop())
         logger.info("LearningEngine käynnistetty")
-        print("  ✅ LearningEngine (oppimissilmukka) käynnissä")
 
     async def stop(self):
         self.running = False
@@ -568,8 +567,7 @@ class LearningEngine:
                 f"[LEARN] Prompt-koe aloitettu: {perf.agent_id} "
                 f"(avg={perf.avg_recent:.1f}, trend={perf.trend:+.1f})"
             )
-            print(f"  [LEARN] 🧬 Prompt-koe: {perf.agent_type} "
-                  f"(laatu {perf.avg_recent:.1f}/10)")
+            logger.info(f"[LEARN] Prompt-koe: {perf.agent_type} (laatu {perf.avg_recent:.1f}/10)")
 
     async def _generate_evolved_prompt(self, perf: AgentPerformance,
                                         current_prompt: str,
@@ -656,8 +654,7 @@ class LearningEngine:
                 f"[LEARN] ✅ Evolved prompt VOITTI: {exp.agent_id} "
                 f"({avg_orig:.1f} → {avg_evolved:.1f})"
             )
-            print(f"  [LEARN] ✅ Prompt parantunut: {exp.agent_id} "
-                  f"({avg_orig:.1f} → {avg_evolved:.1f})")
+            logger.info(f"[LEARN] Prompt parantunut: {exp.agent_id} ({avg_orig:.1f} → {avg_evolved:.1f})")
         else:
             exp.winner = "original"
             exp.decided = True

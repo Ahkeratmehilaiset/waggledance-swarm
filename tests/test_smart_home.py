@@ -480,6 +480,42 @@ def test_settings_yaml_has_sensor_sections():
 
 # ── Runner ──────────────────────────────────────────────────────────────
 
+# ── 8. Phase 6: AudioMonitor integration ───────────────────────────────
+
+def test_audio_monitor_init_disabled():
+    from integrations.audio_monitor import AudioMonitor
+    am = AudioMonitor({"enabled": False})
+    assert not am._enabled, "AudioMonitor should be disabled"
+    assert not am._started, "AudioMonitor should not be started"
+    print("  [PASS] AudioMonitor init disabled")
+
+
+def test_audio_monitor_status_keys():
+    from integrations.audio_monitor import AudioMonitor
+    am = AudioMonitor({"enabled": False})
+    status = am.get_status()
+    for key in ["enabled", "started", "total_events", "total_spectrums",
+                "bee_analyzer", "bird_monitor"]:
+        assert key in status, f"Missing status key: {key}"
+    print("  [PASS] AudioMonitor get_status() keys")
+
+
+def test_audio_monitor_recent_events_empty():
+    from integrations.audio_monitor import AudioMonitor
+    am = AudioMonitor({"enabled": False})
+    events = am.get_recent_events()
+    assert events == [], f"Expected empty list, got {events}"
+    print("  [PASS] AudioMonitor get_recent_events() initially empty")
+
+
+def test_sensor_hub_has_audio_monitor():
+    from integrations.sensor_hub import SensorHub
+    hub = SensorHub(config={})
+    assert hasattr(hub, "audio_monitor"), "SensorHub missing audio_monitor attribute"
+    assert hub.audio_monitor is None, "audio_monitor should be None initially"
+    print("  [PASS] SensorHub.audio_monitor attribute present")
+
+
 ALL_TESTS = [
     # Syntax
     test_syntax_mqtt_hub,
@@ -518,6 +554,11 @@ ALL_TESTS = [
     test_sensor_event_dataclass,
     # Integration
     test_settings_yaml_has_sensor_sections,
+    # Phase 6: AudioMonitor
+    test_audio_monitor_init_disabled,
+    test_audio_monitor_status_keys,
+    test_audio_monitor_recent_events_empty,
+    test_sensor_hub_has_audio_monitor,
 ]
 
 

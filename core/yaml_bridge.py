@@ -20,10 +20,13 @@ Käyttö:
     glyphs = bridge.get_agent_glyphs()
 """
 
+import logging
 import yaml
 import os
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger("yaml_bridge")
 
 
 # ── Agentti → emoji-glyyfikartta ─────────────────────────────
@@ -259,7 +262,7 @@ class YAMLBridge:
         if self._loaded:
             return
         if not self.agents_dir.exists():
-            print(f"⚠️  Agentit-hakemistoa ei löydy: {self.agents_dir}")
+            log.warning(f"Agentit-hakemistoa ei löydy: {self.agents_dir}")
             self._loaded = True
             return
 
@@ -281,10 +284,10 @@ class YAMLBridge:
                         # Korjaa mahdollinen double-encoding kaikissa string-arvoissa
                         self._agents[d] = self._fix_encoding_deep(raw)
                 except Exception as e:
-                    print(f"⚠️  Virhe ladattaessa {d}: {e}")
+                    log.warning(f"Virhe ladattaessa {d}: {e}")
 
         self._loaded = True
-        print(f"📚 YAMLBridge: {len(self._agents)} agenttia ladattu (lang={self._language})")
+        log.info(f"YAMLBridge: {len(self._agents)} agenttia ladattu (lang={self._language})")
 
     def set_translation_proxy(self, proxy, language: str = "en"):
         """
@@ -312,9 +315,9 @@ class YAMLBridge:
                     translated += 1
             elapsed = (time.monotonic() - t0) * 1000
             if skipped > 0:
-                print(f"  🌐 YAMLBridge: {translated} käännetty EN, {skipped} jo EN ({elapsed:.0f}ms)")
+                log.info(f"YAMLBridge: {translated} käännetty EN, {skipped} jo EN ({elapsed:.0f}ms)")
             else:
-                print(f"  🌐 YAMLBridge: {translated} agenttia käännetty EN ({elapsed:.0f}ms)")
+                log.info(f"YAMLBridge: {translated} agenttia käännetty EN ({elapsed:.0f}ms)")
 
     @staticmethod
     def _detect_yaml_language(agent_data: dict) -> str:

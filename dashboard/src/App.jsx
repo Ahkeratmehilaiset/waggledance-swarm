@@ -175,7 +175,7 @@ This is a deliberate architectural decision, not a limitation. WaggleDance is bu
   • Voikko bundled — mor.vfst + autocorr.vfst included, auto-download fallback
   • Night Shift Automation — tools/night_shift.py, watchdog, morning report
   • Fact counter persistence — survives restarts, never resets
-  • Health Score 100/100 — all 30 test suites GREEN
+  • Health Score 100/100 — all 35 test suites GREEN
 
 ▸ V0.0.6: PHASE 5 — SMART HOME SENSORS
   • MQTT Hub — paho-mqtt, dedup, exponential reconnect
@@ -187,13 +187,13 @@ This is a deliberate architectural decision, not a limitation. WaggleDance is bu
   • 7 new core module test suites (103 tests)
 
 ▸ TESTING
-  30/30 test suites GREEN (700+ assertions)
+  35/35 test suites GREEN (700+ assertions)
   Pipeline, routing, corrections, autonomy, smart home, core modules — all validated
 
 ▸ CODEBASE
   75 agents • 90+ Python modules • 45,000+ lines of code
   97.7% routing accuracy (1,207/1,235 tested)
-  30 test suites • 10 seasonal rules • 34 domain terms
+  35 test suites • 10 seasonal rules • 34 domain terms
 
 ▸ JUST LET IT RUN
 Install. Connect. Walk away.
@@ -469,7 +469,7 @@ Tämä on tietoinen arkkitehtuurivalinta, ei rajoitus. WaggleDance on rakennettu
   • Voikko mukana — mor.vfst + autocorr.vfst, autolataus
   • Yövuoroautomaatio — tools/night_shift.py, vartija, aamoraportti
   • Faktalaskuri pysyy — ei nollaudu uudelleenkäynnistyksessä
-  • Terveyspistemäärä 100/100 — kaikki 30 testisarjaa VIHREÄNÄ
+  • Terveyspistemäärä 100/100 — kaikki 35 testisarjaa VIHREÄNÄ
 
 ▸ V0.0.6: VAIHE 5 — KODIN SENSORIT
   • MQTT Hub — paho-mqtt, dedup, eksponentiaalinen uudelleenyhdistys
@@ -481,13 +481,13 @@ Tämä on tietoinen arkkitehtuurivalinta, ei rajoitus. WaggleDance on rakennettu
   • 7 uutta ydinmoduulien testisarjaa (103 testiä)
 
 ▸ TESTAUS
-  30/30 testisarjaa VIHREÄNÄ (700+ väittämää)
+  35/35 testisarjaa VIHREÄNÄ (700+ väittämää)
   Putki, reititys, korjaukset, autonomia, kodin sensorit, ydinmoduulit — kaikki validoitu
 
 ▸ KOODIKANTA
   75 agenttia • 90+ Python-moduulia • 45 000+ koodiriviä
   97.7% reitityksen tarkkuus (1 207/1 235 testattu)
-  30 testisarjaa • 10 kausivahtisääntöä • 34 erikoistermiä
+  35 testisarjaa • 10 kausivahtisääntöä • 34 erikoistermiä
 
 ▸ ANNA SEN VAIN OLLA
 Asenna. Yhdistä. Kävele pois.
@@ -695,7 +695,7 @@ useEffect(()=>{const seq=[
 [53000,()=>{setItems(p=>[...p,"✓ HotCache + LRU (0.5ms cached responses)"]);setPr(35)}],
 [55000,()=>{setItems(p=>[...p,"✓ ConvergenceDetector (knows when learning plateaus)"]);setPr(55)}],
 [57000,()=>{setItems(p=>[...p,"✓ Structured Logging + Weekly Report"]);setPr(75)}],
-[59000,()=>{setItems(p=>[...p,"✓ 30/30 test suites GREEN (700+ assertions)"]);setPr(100)}],
+[59000,()=>{setItems(p=>[...p,"✓ 35/35 test suites GREEN (700+ assertions)"]);setPr(100)}],
 [62000,()=>{setStep(5);setMain("LANGUAGE-NATIVE AI");setSub("deep morphological integration — not just translation");setItems(["Opus-MT neural translation (any language pair)","Voikko-level morphological analysis","Domain-specific terminology engine","Native-language vector index (skip translation)"]);setPr(0)}],
 [70000,()=>{setStep(6);setMain("INFINITE SCALING");setSub("same code — any hardware");setItems(["ESP32 — €8 — edge intelligence","Raspberry Pi — €80 — full agent","Intel NUC — €650 — home brain","Mac Pro — €2,200 — professional","NVIDIA DGX — €400,000 — enterprise"])}],
 [78000,()=>{setStep(7);setMain("JUST LET IT RUN");setSub("");setItems(["1 week → knows your patterns","1 month → anticipates your needs","6 months → domain expert","1 year → understands your world"])}],
@@ -970,7 +970,11 @@ export default function App(){
   const _haOn = _ss.home_assistant?.connected;
   const _frigOn = _ss.frigate?.connected;
   const _alertCnt = _ss.alerts?.sent_total || 0;
-  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"30/30",c:"#22C55E"},{k:"Speed",v:"3s\u219218ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"\u2014",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col},{k:"MQTT",v:_mqttOn?"ON":"OFF",c:_mqttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"HA",v:_haOn?"ON":"OFF",c:_haOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Cam",v:_frigOn?"ON":"OFF",c:_frigOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Alerts",v:`${_alertCnt}`,c:_alertCnt>0?"#F59E0B":"rgba(255,255,255,.20)"}];
+  const _sttOn = api.voiceStatus?.stt_available;
+  const _ttsOn = api.voiceStatus?.tts_available;
+  const _audioOn = api.audioStatus?.available && api.audioStatus?.status?.started;
+  const _tier = api.status?.elastic_scaler?.tier || null;
+  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"35/35",c:"#22C55E"},{k:"Speed",v:"3s\u219218ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"\u2014",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col},{k:"Tier",v:_tier?_tier.toUpperCase():"—",c:_tier?"#A78BFA":"rgba(255,255,255,.20)"},{k:"MQTT",v:_mqttOn?"ON":"OFF",c:_mqttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"HA",v:_haOn?"ON":"OFF",c:_haOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Cam",v:_frigOn?"ON":"OFF",c:_frigOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Alerts",v:`${_alertCnt}`,c:_alertCnt>0?"#F59E0B":"rgba(255,255,255,.20)"},{k:"Audio",v:_audioOn?"ON":"OFF",c:_audioOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"STT",v:_sttOn?"ON":"OFF",c:_sttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"TTS",v:_ttsOn?"ON":"OFF",c:_ttsOn?"#22C55E":"rgba(255,255,255,.20)"}];
   return(
     <div style={{background:"#000",color:"#fff",minHeight:"100vh",fontFamily:"'Inter',system-ui,sans-serif",overflow:"hidden"}}>
       <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.15}}@keyframes breathe{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.1);opacity:1}}@keyframes explodeIn{0%{transform:scale(0);opacity:0}60%{transform:scale(1.15);opacity:1}100%{transform:scale(1);opacity:1}}*{box-sizing:border-box;margin:0;padding:0}button{font-family:inherit}::-webkit-scrollbar{display:none}*{scrollbar-width:none}input::placeholder{color:rgba(255,255,255,.28)}`}</style>

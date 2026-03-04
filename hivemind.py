@@ -36,6 +36,7 @@ from core.adaptive_throttle import AdaptiveThrottle
 from core.ops_agent import OpsAgent
 from core.learning_engine import LearningEngine
 from core.swarm_scheduler import SwarmScheduler
+from core.elastic_scaler import ElasticScaler
 
 from agents.base_agent import Agent
 from agents.spawner import AgentSpawner
@@ -564,6 +565,12 @@ class HiveMind:
         # ── Phase 5: Smart Home Sensors ────────────────
         self.sensor_hub = None
 
+        # ── Phase 7: Voice Interface ──────────────────
+        self.voice_interface = None
+
+        # ── Phase 11: Elastic Scaler ──────────────────
+        self.elastic_scaler = None
+
         # ── C5: Structured logging ─────────────────────
         self.metrics = StructuredLogger()
 
@@ -970,6 +977,37 @@ DELEGATION RULES (IMPORTANT):
             print(f"  ⚠️  SensorHub: {e}", flush=True)
             self.sensor_hub = None
 
+        # ── Phase 7: Voice Interface ─────────────────────────
+        try:
+            voice_cfg = self.config.get("voice", {})
+            if voice_cfg.get("enabled", False):
+                from integrations.voice_interface import VoiceInterface
+                self.voice_interface = VoiceInterface(self.config)
+
+                async def _voice_chat(msg: str) -> str:
+                    r = await self._do_chat(msg, source="voice")
+                    return r if isinstance(r, str) else str(r)
+
+                await self.voice_interface.initialize(
+                    chat_fn=_voice_chat,
+                    ws_callback=self._broadcast if hasattr(self, '_broadcast') else None,
+                )
+                print("  ✅ VoiceInterface (STT+TTS)", flush=True)
+            else:
+                print("  ℹ️  VoiceInterface DISABLED (voice.enabled: false)", flush=True)
+        except Exception as e:
+            print(f"  ⚠️  VoiceInterface: {e}", flush=True)
+            self.voice_interface = None
+
+        # ── Phase 11: ElasticScaler ────────────────────────────
+        try:
+            self.elastic_scaler = ElasticScaler()
+            tier = self.elastic_scaler.detect()
+            print(f"  ✅ ElasticScaler: {tier.tier} tier (VRAM={tier.hardware.gpu_vram_gb:.1f}GB)", flush=True)
+        except Exception as e:
+            print(f"  ⚠️  ElasticScaler: {e}", flush=True)
+            self.elastic_scaler = None
+
         # ── Improvement 5: Cache Warming at startup ───────────
         try:
             self._warm_caches()
@@ -1028,6 +1066,10 @@ DELEGATION RULES (IMPORTANT):
                 self.code_reviewer._save_suggestions()
             except Exception:
                 pass
+
+        # Phase 7: Clear voice interface
+        if hasattr(self, 'voice_interface') and self.voice_interface:
+            self.voice_interface = None
 
         # Phase 5: Stop sensor hub
         if hasattr(self, 'sensor_hub') and self.sensor_hub:
@@ -1958,9 +2000,15 @@ DELEGATION RULES (IMPORTANT):
             "sensor_hub": (self.sensor_hub.get_status()
                            if hasattr(self, 'sensor_hub')
                            and self.sensor_hub else {}),
+            "voice_interface": (self.voice_interface.status()
+                                if hasattr(self, 'voice_interface')
+                                and self.voice_interface else {}),
             "micro_model": (self.micro_model.stats
                             if hasattr(self, 'micro_model')
                             and self.micro_model else {}),
+            "elastic_scaler": (self.elastic_scaler.summary()
+                               if hasattr(self, 'elastic_scaler')
+                               and self.elastic_scaler else {}),
         }
 
 
@@ -1970,9 +2018,9 @@ DELEGATION RULES (IMPORTANT):
         """Aseta kielitila: 'auto', 'fi', 'en'."""
         if mode in ("auto", "fi", "en"):
             self.language_mode = mode
-            print(f"🌐 Kielitila: {mode}")
+            log.info(f"Kielitila: {mode}")
         else:
-            print(f"⚠️  Tuntematon kielitila: {mode}")
+            log.warning(f"Tuntematon kielitila: {mode}")
 
     def get_language_status(self) -> dict:
         """Palauta käännösjärjestelmän tila."""
@@ -2086,8 +2134,8 @@ DELEGATION RULES (IMPORTANT):
                         if self.throttle else 60)
         _hb_idle_n = (self.throttle.state.idle_every_n_heartbeat
                       if self.throttle else 5)
-        print(f"\n  💓 Heartbeat loop käynnistyy: interval={_hb_interval:.0f}s, "
-              f"idle_every={_hb_idle_n}, max_pending={_MAX_PENDING}", flush=True)
+        log.info(f"Heartbeat loop käynnistyy: interval={_hb_interval:.0f}s, "
+                 f"idle_every={_hb_idle_n}, max_pending={_MAX_PENDING}")
 
         # ── Ensimmäinen tick heti (1s viive riittää) ──────────
         _first_tick = True
@@ -2126,7 +2174,7 @@ DELEGATION RULES (IMPORTANT):
 
                 # ── CHAT-PRIORITEETTI: skip jos chat käynnissä ────
                 if self.priority.should_skip:
-                    print(f"  💓 HB #{self._heartbeat_count}: skip (chat active)", flush=True)
+                    log.debug(f"HB #{self._heartbeat_count}: skip (chat active)")
                     await self._notify_ws("heartbeat", {
                         "time": datetime.now().isoformat(),
                         "count": self._heartbeat_count,
@@ -2136,7 +2184,7 @@ DELEGATION RULES (IMPORTANT):
 
                 # ── TIMEOUT-GATE: skip koko kierros jos liikaa jonossa ──
                 if _pending >= _MAX_PENDING:
-                    print(f"  💓 HB #{self._heartbeat_count}: skip ({_pending} pending)", flush=True)
+                    log.debug(f"HB #{self._heartbeat_count}: skip ({_pending} pending)")
                     await self._notify_ws("heartbeat", {
                         "time": datetime.now().isoformat(),
                         "count": self._heartbeat_count,
@@ -2269,12 +2317,10 @@ DELEGATION RULES (IMPORTANT):
 
                 # ── Console print: mitä tapahtui tällä kierroksella ──
                 if _actions:
-                    print(f"  💓 HB #{self._heartbeat_count}: {', '.join(_actions)} "
-                          f"(pending={_pending})", flush=True)
+                    log.debug(f"HB #{self._heartbeat_count}: {', '.join(_actions)} (pending={_pending})")
                 else:
-                    print(f"  💓 HB #{self._heartbeat_count}: idle "
-                          f"(next action at #{self._heartbeat_count + (_idle_n - self._heartbeat_count % _idle_n)})",
-                          flush=True)
+                    log.debug(f"HB #{self._heartbeat_count}: idle "
+                              f"(next action at #{self._heartbeat_count + (_idle_n - self._heartbeat_count % _idle_n)})")
 
                 await self._notify_ws("heartbeat", {
                     "time": datetime.now().isoformat(),
@@ -2286,7 +2332,7 @@ DELEGATION RULES (IMPORTANT):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"⚠️  Heartbeat-virhe: {e}")
+                log.error(f"Heartbeat-virhe: {e}")
 
     async def _agent_proactive_think(self, agent):
         """Agentti ajattelee + lukee muiden oivallukset."""
@@ -2358,13 +2404,11 @@ DELEGATION RULES (IMPORTANT):
                 self._report_llm_result(_elapsed, True, _hb.model)
                 insight = _resp.content if _resp and not _resp.error else ""
                 if insight:
-                    print(f"    🧠 {agent.name} ({_elapsed:.0f}ms): {insight[:80]}",
-                          flush=True)
+                    log.debug(f"{agent.name} ({_elapsed:.0f}ms): {insight[:80]}")
             except Exception as exc:
                 _elapsed = (time.monotonic() - _t0) * 1000
                 self._report_llm_result(30000, False, _hb.model)
-                print(f"    ❌ {agent.name} LLM error ({_elapsed:.0f}ms): {exc}",
-                      flush=True)
+                log.warning(f"{agent.name} LLM error ({_elapsed:.0f}ms): {exc}")
                 insight = ""
 
             # KORJAUS K10: validoi ennen tallennusta
@@ -2389,7 +2433,7 @@ DELEGATION RULES (IMPORTANT):
                 await self._log_finetune(agent, prompt, insight)
 
         except Exception as e:
-            print(f"⚠️  Ajattelu epäonnistui ({agent.name}): {e}")
+            log.warning(f"Ajattelu epäonnistui ({agent.name}): {e}")
 
     async def _share_insight(self, from_agent, insight: str):
         """Jaa insight relevanteille agenteille (max 2 vastaanottajaa)."""
@@ -2420,7 +2464,7 @@ DELEGATION RULES (IMPORTANT):
                     "insight_share"
                 )
         except Exception as e:
-            print(f"  ⚠️  Share epäonnistui: {e}")
+            log.warning(f"Share epäonnistui: {e}")
 
     async def _log_finetune(self, agent, prompt: str, response: str):
         """Tallenna Q/A-pari finetuning-dataan + lähetä arviointijonoon."""
@@ -2491,7 +2535,7 @@ DELEGATION RULES (IMPORTANT):
                 )
                 await self._notify_ws("queen_synthesis", {"synthesis": synthesis})
         except Exception as e:
-            print(f"⚠️  Synteesi epäonnistui: {e}")
+            log.warning(f"Synteesi epäonnistui: {e}")
 
     # ── Phase 3: Round Table ─────────────────────────────
 
@@ -3435,7 +3479,7 @@ DELEGATION RULES (IMPORTANT):
                 for _a, _o in _originals.values():
                     self._restore_prompt(_a, _o)
         except Exception as e:
-            print(f"⚠️  Whisper epäonnistui: {e}")
+            log.warning(f"Whisper epäonnistui: {e}")
 
     async def _oracle_consultation_cycle(self):
         try:
@@ -3452,7 +3496,7 @@ DELEGATION RULES (IMPORTANT):
                     "message": f"🔮 {count} kysymystä odottaa!"
                 })
         except Exception as e:
-            print(f"⚠️  Oracle-konsultaatio epäonnistui: {e}")
+            log.warning(f"Oracle-konsultaatio epäonnistui: {e}")
 
     async def _oracle_research_cycle(self):
         try:
@@ -3469,7 +3513,7 @@ DELEGATION RULES (IMPORTANT):
                     "message": f"🔍 Oracle tutki {count} aihetta!"
                 })
         except Exception as e:
-            print(f"⚠️  Oracle-tutkimus epäonnistui: {e}")
+            log.warning(f"Oracle-tutkimus epäonnistui: {e}")
 
     async def _agent_reflect(self, agent):
         """Agentti arvioi omaa toimintaansa."""

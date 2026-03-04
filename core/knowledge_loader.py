@@ -18,8 +18,11 @@ Aiemmat korjaukset (v0.0.1):
 
 import os
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger("knowledge_loader")
 
 
 class KnowledgeLoader:
@@ -149,7 +152,7 @@ class KnowledgeLoader:
             else:
                 return None
         except Exception as e:
-            print(f"  ⚠️  Virhe luettaessa {file_path.name}: {e}")
+            log.warning(f"Virhe luettaessa {file_path.name}: {e}")
             return None
 
     def _read_pdf(self, file_path: Path) -> Optional[str]:
@@ -167,7 +170,7 @@ class KnowledgeLoader:
             doc.close()
             return "\n\n".join(text_parts) if text_parts else None
         except Exception as e:
-            print(f"  ⚠️  PDF-virhe ({file_path.name}): {e}")
+            log.warning(f"PDF-virhe ({file_path.name}): {e}")
             return None
 
     def _read_yaml(self, file_path: Path) -> Optional[str]:

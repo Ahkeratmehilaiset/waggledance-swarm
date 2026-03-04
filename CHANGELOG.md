@@ -1,6 +1,69 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## v0.0.6 (2026-03-04) — Phase 5: Smart Home Sensor Integration
+## v0.0.8 (2026-03-04) — Codebase Hardening & Phase 11 Wiring
+
+### New: Phase 11 — ElasticScaler Wired
+- `hivemind.py`: ElasticScaler imported, init in `__init__`, `detect()` called in `start()`, `summary()` in `get_status()`
+- `dashboard/src/App.jsx`: Tier indicator in status bar (reads `elastic_scaler.tier` from backend)
+
+### New: Test Suites (#33–#35)
+- `tests/test_elastic_scaler.py` — 15 tests: HardwareProfile, TierConfig, TIERS dict, detect(), summary(), ZBook tier classification
+- `tests/test_training_collector.py` — 15 tests: init defaults, constants, collect_training_pair (accept/reject), export_for_v1/v2, save_pairs, reset
+- `tests/test_swarm_routing.py` — 12 tests: register_agent, idempotent, tags, skills, select_candidates, record_task_result, AgentScore defaults
+- `tests/test_smart_home.py`: +4 AudioMonitor functions (B3)
+
+### Code Quality: print() → log.* cleanup
+- `core/adaptive_throttle.py`: 14 print() → logger.* (benchmark, scale_up/down)
+- `core/yaml_bridge.py`: 5 print() → log.* + `import logging` added
+- `core/learning_engine.py`: 3 print() → logger.* (startup, prompt evolution)
+- `core/ops_agent.py`: 2 print() → logger.* (startup, _log_decision)
+- `core/knowledge_loader.py`: 2 print() → log.* + `import logging` added
+- `hivemind.py`: 12 runtime print() → log.* (heartbeat skip/status, think/oracle/whisper errors, set_language)
+
+### Dashboard
+- `dashboard/src/App.jsx`: test count 30→35 across all changelog/stats text
+
+---
+
+## v0.0.7 (2026-03-04) — Phase 6: Audio Sensors
+
+### New: Audio Sensor Integration (3 new modules, ~600 lines)
+- `integrations/bee_audio.py` — BeeAudioAnalyzer: FFT spectrum analysis, 7-day rolling baseline per hive, stress detection (>30 Hz shift), swarming (broad 200-600 Hz), queen piping (400-500 Hz peak), Finnish status descriptions
+- `integrations/bird_monitor.py` — BirdMonitor: BirdNET-Lite stub with graceful degradation, predator species detection (bear/wolf/eagle/hawk), Finnish species translations, recent detections buffer
+- `integrations/audio_monitor.py` — AudioMonitor orchestrator: MQTT spectrum/event/status subscriptions, routes to BeeAudioAnalyzer + BirdMonitor, ChromaDB storage (category=audio_event), AlertDispatcher integration for bee stress/swarming alerts
+
+### Wiring
+- `integrations/sensor_hub.py`: AudioMonitor added as component (init after MQTT, before Frigate), stop/status/context wired
+- `web/dashboard.py`: 2 new endpoints — `GET /api/sensors/audio`, `GET /api/sensors/audio/bee`
+- `configs/settings.yaml`: +audio section (bee_audio, bird_monitor, mqtt_topics — all disabled by default)
+- `backend/routes/audio.py` — stub endpoints for dashboard dev (mock bee status + events)
+- `backend/main.py`: audio router wired
+- `dashboard/src/hooks/useApi.js`: `audioStatus` polling added
+- `dashboard/src/App.jsx`: Audio awareness indicator in status bar
+
+### Tests
+- `tests/test_phase6_audio.py` — 25 tests across 7 groups (syntax, BeeAudioAnalyzer, BirdMonitor, AudioMonitor, integration, backend stub, dashboard)
+- Registered as suite #32 in `waggle_backup.py`
+
+---
+
+## v0.0.6 (2026-03-04) — Phase 5 + 7: Smart Home Sensors & Voice Interface
+
+### New: Voice Interface (Phase 7, 3 existing + 4 new files)
+- `integrations/whisper_stt.py` — WhisperSTT: Whisper-small on CPU, Finnish, wake word "hei waggledance", VAD 1.5s
+- `integrations/piper_tts.py` — PiperTTS: fi_FI-harri-medium voice, WAV output, async synthesis
+- `integrations/voice_interface.py` — VoiceInterface orchestrator: audio+text pipelines, graceful degradation
+- `hivemind.py`: VoiceInterface init in `start()`, clear in `stop()`, status in `get_status()`
+- `web/dashboard.py`: 3 new API endpoints — `GET /api/voice/status`, `POST /api/voice/text`, `POST /api/voice/audio`
+- `backend/routes/voice.py` — stub endpoints for dashboard dev (mock STT/TTS responses)
+- `dashboard/src/hooks/useApi.js`: `voiceStatus` polling added
+- `dashboard/src/App.jsx`: STT/TTS awareness indicators in status bar
+- `tests/test_phase7_voice.py` — 20 tests across 6 groups (syntax, STT, TTS, VoiceInterface, dataclasses, integration)
+- Registered as suite #31 in `waggle_backup.py`
+
+---
+
+### Phase 5: Smart Home Sensor Integration
 
 ### New: Sensor Hub (5 new modules, ~1200 lines)
 - `integrations/mqtt_hub.py` — MQTTHub: paho-mqtt client, background thread with asyncio bridge, MD5 dedup (configurable window), exponential reconnect backoff (1s...60s)

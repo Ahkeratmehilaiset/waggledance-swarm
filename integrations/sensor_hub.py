@@ -60,6 +60,7 @@ class SensorHub:
         self.mqtt_hub = None
         self.frigate = None
         self.home_assistant = None
+        self.audio_monitor = None
 
         self._started = False
         self._start_time: Optional[float] = None
@@ -101,7 +102,26 @@ class SensorHub:
             log.warning(f"  MQTTHub init failed: {e}")
             self.mqtt_hub = None
 
-        # 3. Frigate (needs MQTT + AlertDispatcher)
+        # 3. Audio Monitor (needs MQTT + AlertDispatcher)
+        try:
+            from integrations.audio_monitor import AudioMonitor
+            audio_cfg = self.config.get("audio", {})
+            self.audio_monitor = AudioMonitor(
+                config=audio_cfg,
+                mqtt_hub=self.mqtt_hub,
+                consciousness=self.consciousness,
+                alert_dispatcher=self.alert_dispatcher,
+            )
+            await self.audio_monitor.start()
+            if self.audio_monitor._enabled:
+                log.info("  AudioMonitor: OK")
+            else:
+                log.info("  AudioMonitor: disabled")
+        except Exception as e:
+            log.warning(f"  AudioMonitor init failed: {e}")
+            self.audio_monitor = None
+
+        # 4. Frigate (needs MQTT + AlertDispatcher)
         try:
             from integrations.frigate_mqtt import FrigateIntegration
             frigate_cfg = self.config.get("frigate", {})
@@ -120,7 +140,7 @@ class SensorHub:
             log.warning(f"  Frigate init failed: {e}")
             self.frigate = None
 
-        # 4. Home Assistant (independent)
+        # 5. Home Assistant (independent)
         try:
             from integrations.home_assistant import HomeAssistantBridge
             ha_cfg = self.config.get("home_assistant", {})
@@ -149,6 +169,12 @@ class SensorHub:
                 await self.home_assistant.stop()
             except Exception as e:
                 log.warning(f"HA stop error: {e}")
+
+        if self.audio_monitor:
+            try:
+                await self.audio_monitor.stop()
+            except Exception as e:
+                log.warning(f"AudioMonitor stop error: {e}")
 
         if self.frigate:
             try:
@@ -180,6 +206,16 @@ class SensorHub:
             ha_ctx = self.home_assistant.get_home_context()
             if ha_ctx:
                 parts.append(ha_ctx)
+
+        # Bee audio context
+        if self.audio_monitor and self.audio_monitor._enabled:
+            bee = self.audio_monitor._bee_analyzer
+            if bee:
+                for hive_id, result in bee._hive_status.items():
+                    if result.anomaly:
+                        parts.append(
+                            f"Pesä {hive_id}: {result.description_fi}"
+                        )
 
         # Recent camera events
         if self.frigate and self.frigate.enabled:
@@ -232,6 +268,10 @@ class SensorHub:
             "frigate": (
                 self.frigate.get_status()
                 if self.frigate else {"enabled": False}
+            ),
+            "audio_monitor": (
+                self.audio_monitor.get_status()
+                if self.audio_monitor else {"enabled": False}
             ),
             "alerts": (
                 self.alert_dispatcher.get_status()

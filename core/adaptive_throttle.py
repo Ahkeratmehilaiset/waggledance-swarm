@@ -67,7 +67,6 @@ class AdaptiveThrottle:
         Palauttaa koneen luokan: fast / medium / slow / very_slow
         """
         logger.info("⏱️  Benchmarkataan Ollama...")
-        print("  ⏱️  Benchmarkataan Ollama...")
 
         latencies = []
         for i in range(3):
@@ -80,9 +79,9 @@ class AdaptiveThrottle:
                 )
                 elapsed_ms = (time.monotonic() - start) * 1000
                 latencies.append(elapsed_ms)
-                print(f"     Testi {i+1}/3: {elapsed_ms:.0f} ms")
+                logger.debug(f"Testi {i+1}/3: {elapsed_ms:.0f} ms")
             except Exception as e:
-                print(f"     Testi {i+1}/3: VIRHE ({e})")
+                logger.warning(f"Testi {i+1}/3: VIRHE ({e})")
                 latencies.append(30000)  # 30s = erittäin hidas
 
         avg = sum(latencies) / len(latencies) if latencies else 10000
@@ -138,14 +137,11 @@ class AdaptiveThrottle:
         )
         self._semaphore = asyncio.Semaphore(self.state.max_concurrent)
 
-        print(f"""
-  ╔═══════════════════════════════════════════╗
-  ║  Koneluokka: {machine_class.upper():>10}                   ║
-  ║  Keskiviive: {avg:>8.0f} ms                   ║
-  ║  Heartbeat:  {self.state.heartbeat_interval:>8.0f} s                    ║
-  ║  Max samaan aikaan: {self.state.max_concurrent:>3}                     ║
-  ║  Idle tutkimus: joka {self.state.idle_every_n_heartbeat}. HB, {self.state.idle_batch_size} agenttia  ║
-  ╚═══════════════════════════════════════════╝""")
+        logger.info(
+            f"Benchmark box: koneluokka={machine_class.upper()}, "
+            f"viive={avg:.0f}ms, HB={self.state.heartbeat_interval}s, "
+            f"concurrent={self.state.max_concurrent}"
+        )
 
         logger.info(
             f"Benchmark: {machine_class} ({avg:.0f}ms) → "
@@ -161,7 +157,6 @@ class AdaptiveThrottle:
         Tests different batch sizes and finds optimal per-item throughput.
         Stores results in self.state.optimal_embed_batch / optimal_translate_batch.
         """
-        print("  ⏱️  Batch benchmark alkaa...")
         logger.info("Batch benchmark starting...")
 
         # ── Embed batch benchmark ──
@@ -178,16 +173,16 @@ class AdaptiveThrottle:
                     elapsed_ms = (time.monotonic() - t0) * 1000
                     per_item = elapsed_ms / batch_size
                     success = sum(1 for r in results if r is not None)
-                    print(f"     Embed batch={batch_size}: {elapsed_ms:.0f}ms "
-                          f"({per_item:.1f}ms/item, {success}/{batch_size} ok)")
+                    logger.debug(f"Embed batch={batch_size}: {elapsed_ms:.0f}ms "
+                                 f"({per_item:.1f}ms/item, {success}/{batch_size} ok)")
                     if per_item < best_per_item and success == batch_size:
                         best_per_item = per_item
                         best_batch = batch_size
                 except Exception as e:
-                    print(f"     Embed batch={batch_size}: ERROR ({e})")
+                    logger.warning(f"Embed batch={batch_size}: ERROR ({e})")
 
             self.state.optimal_embed_batch = best_batch
-            print(f"     → Optimal embed batch: {best_batch}")
+            logger.info(f"Optimal embed batch: {best_batch}")
 
         # ── Translate batch benchmark ──
         # DISABLED: Opus-MT loading during startup causes crashes
@@ -211,23 +206,16 @@ class AdaptiveThrottle:
                     elapsed_ms = (time.monotonic() - t0) * 1000
                     per_item = elapsed_ms / batch_size
                     success = sum(1 for r in results if r is not None)
-                    print(f"     Translate batch={batch_size}: {elapsed_ms:.0f}ms "
-                          f"({per_item:.1f}ms/item, {success}/{batch_size} ok)")
+                    logger.debug(f"Translate batch={batch_size}: {elapsed_ms:.0f}ms "
+                                 f"({per_item:.1f}ms/item, {success}/{batch_size} ok)")
                     if per_item < best_per_item and success == batch_size:
                         best_per_item = per_item
                         best_batch = batch_size
                 except Exception as e:
-                    print(f"     Translate batch={batch_size}: ERROR ({e})")
+                    logger.warning(f"Translate batch={batch_size}: ERROR ({e})")
 
             self.state.optimal_translate_batch = best_batch
-            print(f"     → Optimal translate batch: {best_batch}")
-
-        print(f"""
-  ╔═══════════════════════════════════════════╗
-  ║  Batch Benchmark tulokset:                ║
-  ║  Embed batch:     {self.state.optimal_embed_batch:>3}                     ║
-  ║  Translate batch: {self.state.optimal_translate_batch:>3}                     ║
-  ╚═══════════════════════════════════════════╝""")
+            logger.info(f"Optimal translate batch: {best_batch}")
 
         logger.info(
             f"Batch benchmark: embed={self.state.optimal_embed_batch}, "
@@ -300,7 +288,6 @@ class AdaptiveThrottle:
                f"HB: {old_hb:.0f}→{self.state.heartbeat_interval:.0f}s, "
                f"concurrent: {self.state.max_concurrent}")
         logger.warning(msg)
-        print(f"  {msg}")  # Näkyy konsolissa
 
     def _scale_up(self, reason: str):
         """Nopeuta aggressiivisesti — idle GPU on haaskattua oppimisaikaa."""
@@ -316,7 +303,6 @@ class AdaptiveThrottle:
                f"HB: {old_hb:.0f}→{self.state.heartbeat_interval:.0f}s, "
                f"concurrent: {self.state.max_concurrent}")
         logger.info(msg)
-        print(f"  {msg}")
 
     async def acquire(self):
         """Odota vuoroa ennen LLM-pyyntöä. Käytä: async with throttle:"""

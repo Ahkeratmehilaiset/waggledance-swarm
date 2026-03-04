@@ -11,6 +11,8 @@ from backend.routes.status import router as status_router
 from backend.routes.heartbeat import router as heartbeat_router
 from backend.routes.chat import router as chat_router
 from backend.routes.sensors import router as sensors_router
+from backend.routes.voice import router as voice_router
+from backend.routes.audio import router as audio_router
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("waggledance-backend")
@@ -33,6 +35,8 @@ app.include_router(status_router)
 app.include_router(heartbeat_router)
 app.include_router(chat_router)
 app.include_router(sensors_router)
+app.include_router(voice_router)
+app.include_router(audio_router)
 
 
 @app.on_event("startup")

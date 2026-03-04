@@ -217,7 +217,6 @@ class OpsAgent:
         self.running = True
         self._task = asyncio.create_task(self._monitor_loop())
         logger.info("OpsAgent käynnistetty")
-        print("  ✅ OpsAgent (järjestelmävalvonta) käynnissä")
 
     async def stop(self):
         self.running = False
@@ -631,7 +630,6 @@ class OpsAgent:
 
     def _log_decision(self, decision: OpsDecision, msg: str):
         logger.info(msg)
-        print(f"  [OPS] {msg}")
 
     # ─────────────────────────────────────────────────────────
     # 4. Laadun arviointi (harvinainen LLM-kutsu)

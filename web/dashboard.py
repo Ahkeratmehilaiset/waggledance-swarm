@@ -795,6 +795,105 @@ loadFeeds();
             "events": frigate.get_recent_events(limit=20),
         })
 
+    # ── Phase 6: Audio Sensors ──────────────────────────────
+
+    @app.get("/api/sensors/audio")
+    async def sensors_audio():
+        """Phase 6: Audio monitor status + recent events."""
+        if (not hasattr(hivemind, 'sensor_hub')
+                or not hivemind.sensor_hub
+                or not hivemind.sensor_hub.audio_monitor):
+            return JSONResponse({"available": False, "events": []})
+        audio = hivemind.sensor_hub.audio_monitor
+        return JSONResponse({
+            "available": audio._enabled,
+            "status": audio.get_status(),
+            "events": audio.get_recent_events(limit=20),
+        })
+
+    @app.get("/api/sensors/audio/bee")
+    async def sensors_audio_bee():
+        """Phase 6: Bee health status per hive."""
+        if (not hasattr(hivemind, 'sensor_hub')
+                or not hivemind.sensor_hub
+                or not hivemind.sensor_hub.audio_monitor):
+            return JSONResponse({"available": False, "hives": {}})
+        audio = hivemind.sensor_hub.audio_monitor
+        bee = audio._bee_analyzer
+        if not bee:
+            return JSONResponse({"available": False, "hives": {}})
+        hives = {
+            hive_id: bee.get_hive_status(hive_id)
+            for hive_id in bee._hive_status
+        }
+        return JSONResponse({
+            "available": True,
+            "hives": hives,
+            "stats": bee.stats,
+        })
+
+    # ── Phase 7: Voice Interface ─────────────────────────────
+
+    @app.get("/api/voice/status")
+    async def voice_status():
+        """Phase 7: Voice interface component readiness."""
+        if (not hasattr(hivemind, 'voice_interface')
+                or not hivemind.voice_interface):
+            return JSONResponse({"available": False, "enabled": False,
+                                 "stt_available": False, "tts_available": False})
+        return JSONResponse(hivemind.voice_interface.status())
+
+    @app.post("/api/voice/text")
+    async def voice_text(request: Request):
+        """Phase 7: Text input with optional TTS audio response."""
+        if (not hasattr(hivemind, 'voice_interface')
+                or not hivemind.voice_interface):
+            return JSONResponse({"error": "Voice interface not available"},
+                                status_code=503)
+        body = await request.json()
+        text = body.get("text", "").strip()
+        if not text:
+            return JSONResponse({"error": "Empty text"}, status_code=400)
+        import base64
+        result = await hivemind.voice_interface.process_text(text)
+        audio_b64 = (base64.b64encode(result.audio_bytes).decode("ascii")
+                     if result.audio_bytes else "")
+        return JSONResponse({
+            "input_text": result.input_text,
+            "output_text": result.output_text,
+            "audio_base64": audio_b64,
+            "latency_ms": round(result.total_latency_ms, 1),
+        })
+
+    @app.post("/api/voice/audio")
+    async def voice_audio(request: Request):
+        """Phase 7: Audio input (base64) -> STT -> chat -> TTS."""
+        if (not hasattr(hivemind, 'voice_interface')
+                or not hivemind.voice_interface):
+            return JSONResponse({"error": "Voice interface not available"},
+                                status_code=503)
+        import base64
+        body = await request.json()
+        audio_b64 = body.get("audio_base64", "")
+        if not audio_b64:
+            return JSONResponse({"error": "No audio data"}, status_code=400)
+        audio_bytes = base64.b64decode(audio_b64)
+        sample_rate = body.get("sample_rate", 16000)
+        result = await hivemind.voice_interface.process_audio(
+            audio_bytes, sample_rate)
+        resp_audio = (base64.b64encode(result.audio_bytes).decode("ascii")
+                      if result.audio_bytes else "")
+        return JSONResponse({
+            "input_text": result.input_text,
+            "output_text": result.output_text,
+            "audio_base64": resp_audio,
+            "stt_latency_ms": round(result.stt_latency_ms, 1),
+            "chat_latency_ms": round(result.chat_latency_ms, 1),
+            "tts_latency_ms": round(result.tts_latency_ms, 1),
+            "total_latency_ms": round(result.total_latency_ms, 1),
+            "wake_word_detected": result.wake_word_detected,
+        })
+
     @app.get("/api/meta_report")
     async def meta_report():
         """Phase 9: Latest meta-learning weekly report."""

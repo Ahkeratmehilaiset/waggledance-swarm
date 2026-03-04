@@ -109,6 +109,16 @@ TESTS = [
     {"file": "tests/test_core_fast_memory.py",    "name": "Fast Memory (HotCache)",   "phase": "core", "args": [], "timeout": 30},
     {"file": "tests/test_core_ops_agent.py",      "name": "OpsAgent",                 "phase": "core", "args": [], "timeout": 30},
     {"file": "tests/test_core_learning_engine.py","name": "Learning Engine",          "phase": "core", "args": [], "timeout": 30},
+    # Phase 6 — Audio Sensors
+    {"file": "tests/test_phase6_audio.py",       "name": "Audio Sensors",            "phase": "6",    "args": [], "timeout": 60},
+    # Phase 10 — Training Data Collector
+    {"file": "tests/test_training_collector.py", "name": "Training Collector",       "phase": "10",   "args": [], "timeout": 30},
+    # Swarm Routing
+    {"file": "tests/test_swarm_routing.py",      "name": "Swarm Routing",            "phase": "core", "args": [], "timeout": 30},
+    # Phase 11 — Elastic Scaler
+    {"file": "tests/test_elastic_scaler.py",     "name": "Elastic Scaler",           "phase": "11",   "args": [], "timeout": 30},
+    # Phase 7 — Voice Interface
+    {"file": "tests/test_phase7_voice.py",       "name": "Voice Interface",          "phase": "7",    "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

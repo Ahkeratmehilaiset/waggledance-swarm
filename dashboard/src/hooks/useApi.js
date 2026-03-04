@@ -11,6 +11,8 @@ export function useApi() {
   const [heartbeats, setHeartbeats] = useState([]);
   const [hardware, setHardware] = useState({ cpu: 0, gpu: 0, vram: 0 });
   const [sensors, setSensors] = useState({ available: false, status: {} });
+  const [voiceStatus, setVoiceStatus] = useState({ available: false, stt_available: false, tts_available: false });
+  const [audioStatus, setAudioStatus] = useState({ available: false, status: {} });
 
   const failCount = useRef(0);
   const lastRetry = useRef(0);
@@ -34,11 +36,13 @@ export function useApi() {
       lastRetry.current = now;
     }
 
-    const [statusData, hbData, hwData, sensorData] = await Promise.all([
+    const [statusData, hbData, hwData, sensorData, voiceData, audioData] = await Promise.all([
       fetchJson("/api/status"),
       fetchJson("/api/heartbeat"),
       fetchJson("/api/hardware"),
       fetchJson("/api/sensors"),
+      fetchJson("/api/voice/status"),
+      fetchJson("/api/sensors/audio"),
     ]);
 
     if (statusData) {
@@ -97,6 +101,16 @@ export function useApi() {
       setSensors(sensorData);
     }
 
+    // Voice interface status
+    if (voiceData) {
+      setVoiceStatus(voiceData);
+    }
+
+    // Audio monitor status
+    if (audioData) {
+      setAudioStatus(audioData);
+    }
+
     // Hardware stats
     if (hwData) {
       setHardware({
@@ -145,6 +159,8 @@ export function useApi() {
     heartbeats,
     hardware,
     sensors,
+    voiceStatus,
+    audioStatus,
     sendChat,
   };
 }

@@ -1,6 +1,6 @@
 """
 WaggleDance Dashboard — Standalone FastAPI Backend Stub
-Serves /api/status, /api/hardware, /api/heartbeat, /api/chat
+Serves /api/status, /api/hardware, /api/heartbeat, /api/chat, /api/sensors
 Works independently of HiveMind for dashboard development.
 """
 import logging
@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.routes.status import router as status_router
 from backend.routes.heartbeat import router as heartbeat_router
 from backend.routes.chat import router as chat_router
+from backend.routes.sensors import router as sensors_router
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("waggledance-backend")
@@ -31,6 +32,7 @@ app.add_middleware(
 app.include_router(status_router)
 app.include_router(heartbeat_router)
 app.include_router(chat_router)
+app.include_router(sensors_router)
 
 
 @app.on_event("startup")

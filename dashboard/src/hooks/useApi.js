@@ -10,6 +10,7 @@ export function useApi() {
   const [status, setStatus] = useState({ facts: 0, cpu: 0, gpu: 0, vram: 0, agents_active: 0, is_thinking: false });
   const [heartbeats, setHeartbeats] = useState([]);
   const [hardware, setHardware] = useState({ cpu: 0, gpu: 0, vram: 0 });
+  const [sensors, setSensors] = useState({ available: false, status: {} });
 
   const failCount = useRef(0);
   const lastRetry = useRef(0);
@@ -33,10 +34,11 @@ export function useApi() {
       lastRetry.current = now;
     }
 
-    const [statusData, hbData, hwData] = await Promise.all([
+    const [statusData, hbData, hwData, sensorData] = await Promise.all([
       fetchJson("/api/status"),
       fetchJson("/api/heartbeat"),
       fetchJson("/api/hardware"),
+      fetchJson("/api/sensors"),
     ]);
 
     if (statusData) {
@@ -90,6 +92,11 @@ export function useApi() {
       setHeartbeats(converted.slice(0, 6));
     }
 
+    // Sensor hub status
+    if (sensorData) {
+      setSensors(sensorData);
+    }
+
     // Hardware stats
     if (hwData) {
       setHardware({
@@ -137,6 +144,7 @@ export function useApi() {
     status,
     heartbeats,
     hardware,
+    sensors,
     sendChat,
   };
 }

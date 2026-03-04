@@ -8,21 +8,193 @@ profiles:
   - factory
 priority: medium
 ASSUMPTIONS:
-- Teollisuuslaitos
-- Prosessin vaatima ympäristönhallinta
+- Teollisuuslaitos, prosessin vaatima ympäristönhallinta
+- JKH Servicen hunajankäsittelytila: hygienialuokka elintarviketuotanto
+- Suomen rakentamismääräyskokoelma D2 ohjaa ilmanvaihtoa
+- RTK tai vastaava huolto-organisaatio käytettävissä
+- Mökin Huhdasjärvellä koneellinen ilmanvaihto tai painovoimainen
 DECISION_METRICS_AND_THRESHOLDS:
   temp_deviation_c:
     value: 2
-    action: ">2°C poikkeama → hälytys"
+    action: ">2°C poikkeama asetuspisteestä → automaattinen hälytys, tarkista venttiili
+      ja säätölaite"
     source: src:HI1
   humidity_rh:
     value: '40-60'
-    action: "<40% staattinen sähkö, >60% korroosio"
+    action: "<40% → staattinen sähkö, kuivuminen; >60% → korroosio, mikrobikasvun
+      riski. Säädä kosteudensäädintä."
     source: src:HI1
+  co2_ppm_workplace:
+    value: 1000
+    action: ">1000 ppm CO2 työtilassa → lisää tuloilmaa välittömästi, tarkista
+      ilmanvaihtokoneen toiminta"
+    source: src:HI2
+  filter_pressure_drop_pa:
+    value: 150
+    action: ">150 Pa paine-ero suodattimessa → vaihda suodatin, kirjaa vaihtoajankohta"
+    source: src:HI1
+  air_changes_per_hour:
+    value: 6
+    action: "<6 ilmanvaihtokertaa/h elintarviketilassa → ei täytä hygieniavaatimuksia,
+      korjaa välittömästi"
+    source: src:HI2
+  noise_level_db:
+    value: 65
+    action: ">65 dB(A) HVAC-melusta työtilassa → äänenvaimennin tai laitesijoittelun
+      muutos"
+    source: src:HI3
+  cleanroom_particle_count:
+    value: 100000
+    action: ">100 000 hiukkasta/m³ (>0,5 µm) → suodatinvaurio tai tiivistevuoto,
+      pysäytä tuotanto"
+    source: src:HI1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Talvikauden jälkeinen HVAC-tarkastus: suodattimet, hihnat, kostuttimet,
+    lämmityspatterit. Jäähdytyskoneen käynnistyshuolto ennen kesää. Elintarviketilassa
+    puhdistus ja desinfiointi ennen hunajankäsittelykautta."
+  source: src:HI1
+- season: Kesä
+  action: "Jäähdytysteho elintarviketilassa kriittinen (+18°C max linkoussalissa).
+    Seuraa suodattimet tiheämmin pölyisenä kautena. Mökin ilmanvaihto: tuuletus
+    yöllä, verhot päivällä — passiiviilmastointi riittää usein."
+  source: src:HI2
+- season: Syksy
+  action: "Lämmityskauden avaus: tarkista lämmityspatterit ja -venttiilit. Ulkoilman
+    kosteuden nousu — seuraa kondensaation muodostumista kylmillä pinnoilla. Hunajatilan
+    lämpötilasäätö talvikuntoon (+15°C riittää varastoinnille)."
+  source: src:HI1
+- season: Talvi
+  action: "Kylmäsiltojen tarkistus, erityisesti ulkoseinien lähellä olevat laitteistot.
+    Tuloilman lämmitys: pakkasella alle -20°C varmista esilämmityspatteri toimii.
+    Mökin kosteusongelmien seuranta (kondensoituminen ikkunoissa → iv tehostettava)."
+  source: src:HI1
+FAILURE_MODES:
+- mode: HVAC-koneen pysähtyminen elintarviketilassa
+  detection: "Lämpötila nousee yli +25°C linkoussalissa, hälytys rakennusautomaatiosta
+    tai käsimittauksessa"
+  action: "Pysäytä hunajankäsittely lämpötilan noustessa yli raja-arvon. Avaa ikkunat
+    väliaikaisesti. Kutsu huolto välittömästi — elintarviketurvallisuus edellyttää
+    lämpötilakirjanpitoa."
+  source: src:HI2
+- mode: Homeen tai mikrobien kasvu ilmanvaihtojärjestelmässä
+  detection: "Tunkkainen haju tuloilmassa, henkilöstö ilmoittaa oireista, suodattimessa
+    näkyvää homekasvua"
+  action: "Pysäytä järjestelmä. Tilaa mikrobiologinen näytteenotto. Desinfioi kanavisto
+    ammattilaisen toimesta. Vaihda suodattimet ja kostutinpatruunat."
+  source: src:HI3
+- mode: Suuri kosteuspiikin aiheuttama kondensaatio
+  detection: "Kondensaatiovesiä lattialla tai laitteistoilla, suhteellinen kosteus
+    yli 75% pitkäaikaisesti"
+  action: "Tarkista kostutussäätimen asetukset. Lisää tuloilman esilämmitystä.
+    Tarkista höyrynsulun eheys. Raportoi kiinteistönhoitajalle."
+  source: src:HI1
+PROCESS_FLOWS:
+  huoltosykli:
+    steps:
+    - 'Tammi: talvitarkastus, kylmäsillat, esilämmityspatterit'
+    - 'Maalis: kevään käynnistyshuolto, suodattimet, hihnat'
+    - 'Huhti: jäähdytyskoneen vuosihuolto, kylmäaine'
+    - 'Touko: elintarviketilan desinfiointi ennen linkouskautta'
+    - 'Kesä: kuukausittainen suodatintarkistus, paine-eroseuranta'
+    - 'Elo: puolivuosittainen paine-ero ja ilmamäärämittaus'
+    - 'Syys: lämmityspatterit, venttiilien testaus'
+    - 'Loka: talviasetukset, kostutuksen tarkistus'
+    - 'Marras: koko järjestelmän vuositarkastus, kirjanpito'
+COMPLIANCE_AND_LEGAL:
+  rakentamismaarays: "Suomen RakMK D2:2012 — asuintilojen ilmanvaihto 0,5 l/s·m².
+    Teollisuustilat: prosessin mukainen mitoitus [src:HI1]"
+  elintarviketila: "Elintarvikelaki 297/2021: elintarvikehuoneiston ilmanvaihto
+    riittävä estämään saastuminen. Omavalvontasuunnitelmassa kirjattava [src:HI2]"
+  sisailmasto: "Sosiaali- ja terveysministeriön asetus 545/2015: toimistotyön
+    lämpötila 21–25°C, teollisuudessa prosessikohtainen [src:HI3]"
+UNCERTAINTY_NOTES:
+- "Elintarviketilan tarkka lämpötila- ja kosteusvaatimus riippuu käsiteltävästä tuotteesta."
+- "Puhdastilastandardit (ISO 14644) eivät koske tavanomaista hunajankäsittelyä."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:HI1
+    org: Ympäristöministeriö / Suomi
+    title: Rakentamismääräyskokoelma D2 — Rakennusten sisäilmasto ja ilmanvaihto
+    year: 2012
+    url: https://www.ymparisto.fi/fi-FI/Rakentaminen/Rakentamismaaraykset
+    supports: Lämpötila, kosteus, ilmanvaihtokertoimet, suodattimet.
+  - id: src:HI2
+    org: Ruokavirasto
+    title: Elintarvikehuoneiston vaatimukset ja omavalvonta
+    year: 2024
+    url: https://www.ruokavirasto.fi/elintarvikkeet/elintarvikeala/elintarvikehuoneisto/
+    supports: Ilmanvaihto elintarviketilassa, CO2, hygieniavaatimukset.
+  - id: src:HI3
+    org: Sosiaali- ja terveysministeriö / Työterveyslaitos
+    title: Sisäilmaluokitus ja teollisuuden työympäristövaatimukset
+    year: 2023
+    url: https://www.ttl.fi/toimialat/rakentaminen-ja-kiinteistoala/sisailma
+    supports: Melu, sisäilmaluokitus, terveysvaatimukset.
 eval_questions:
-- q: Mikä on temp deviation c?
+- q: Mikä on suurin sallittu lämpötilapoikkeama asetuspisteestä?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.temp_deviation_c.value
   source: src:HI1
-- q: Mikä on humidity rh?
+- q: Mikä on tavoitekosteus teollisuustilassa?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.humidity_rh.value
+  source: src:HI1
+- q: Milloin CO2-pitoisuus on liian korkea työtilassa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co2_ppm_workplace.value
+  source: src:HI2
+- q: Milloin suodatin pitää vaihtaa paine-eron perusteella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.filter_pressure_drop_pa.value
+  source: src:HI1
+- q: Mikä on elintarviketilan vähimmäisilmanvaihtomäärä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.air_changes_per_hour.value
+  source: src:HI2
+- q: Milloin HVAC-melu on liian suuri?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.noise_level_db.value
+  source: src:HI3
+- q: Mitä tehdään keväällä HVAC-huollossa?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:HI1
+- q: Mikä on elintarviketilan kriittinen lämpötila kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:HI2
+- q: Mitä syksyllä tarkistetaan HVAC:ssa?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:HI1
+- q: Miten kylmäsillat tarkistetaan talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:HI1
+- q: Mitä tehdään kun HVAC pysähtyy elintarviketilassa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:HI2
+- q: Miten homekasvu ilmanvaihtojärjestelmässä tunnistetaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:HI3
+- q: Mitä tehdään kosteuspiikin aiheuttamalle kondensaatiolle?
+  a_ref: FAILURE_MODES[2].action
+  source: src:HI1
+- q: Mitä elintarvikelaki vaatii ilmanvaihdolta?
+  a_ref: COMPLIANCE_AND_LEGAL.elintarviketila
+  source: src:HI2
+- q: Mikä on toimistotyön suositeltu lämpötilaväli?
+  a_ref: COMPLIANCE_AND_LEGAL.sisailmasto
+  source: src:HI3
+- q: Milloin tuloilmaa pitää lisätä CO2-tason takia?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co2_ppm_workplace.action
+  source: src:HI2
+- q: Miten home poistetaan kanavistosta?
+  a_ref: FAILURE_MODES[1].action
+  source: src:HI3
+- q: Milloin hunajankäsittely pitää keskeyttää lämpötilan takia?
+  a_ref: FAILURE_MODES[0].action
+  source: src:HI2
+- q: Miten mökin ilmanvaihto hoidetaan kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:HI1
+- q: Mikä on pienhiukkasmäärän raja puhdastilassa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cleanroom_particle_count.value
+  source: src:HI1
+- q: Mitä D2-rakentamismääräys sanoo ilmanvaihdosta?
+  a_ref: COMPLIANCE_AND_LEGAL.rakentamismaarays
+  source: src:HI1
+- q: Miten korkea kosteus aiheuttaa ongelmia?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.humidity_rh.action
   source: src:HI1

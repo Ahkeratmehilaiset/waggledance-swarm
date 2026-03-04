@@ -9,14 +9,147 @@ profiles:
   - cottage
 priority: low
 ASSUMPTIONS:
-- Koira tai kissa lemmikinä
-- EU-lemmikkipassi matkustukseen
+- Koira tai kissa lemmikinä Jani Korpin perheessä
+- EU-lemmikkipassi matkustukseen (Suomi–EU)
+- Mökkiympäristö — erämaa, hirvet, kärpäset, punkit
+- Eläinlääkäripalvelut Helsingissä ja Kouvolassa
 DECISION_METRICS_AND_THRESHOLDS:
   vaccination_interval_months:
     value: 12
-    action: "Rabies + perustauteja → eläinlääkäri"
+    action: "Vuosittainen tehosterokotus (rabies, perustaudit) → varaa aika eläinlääkärille ajoissa"
     source: src:PC1
+  tick_check_after_outdoor_hours:
+    value: 4
+    action: "Metsässä tai puistossa >4h → tarkista koira/kissa punkeista — Suomessa borrelioosin ja TBE-riski"
+    source: src:PC2
+  dog_heat_temp_max_c:
+    value: 25
+    action: ">25°C → lyhennä lenkkejä, ei asfalttilenkkiä aamuauringolla — tassujen palovamma riski"
+    source: src:PC1
+  flea_check_weeks:
+    value: 4
+    action: "Tarkista kirpputorjunta 4 viikon välein kasvukaudella (touko–lokakuu erityisesti)"
+    source: src:PC2
+  puppy_vet_weeks:
+    value: 8
+    action: "Pentuvaihe: eläinlääkärikäynti 8 vkon iässä (ensimmäinen rokotus), sitten 12 vkoa, sitten vuosittain"
+    source: src:PC1
+  cat_indoor_outdoor_risk:
+    value: "Ulkokissa: 3× korkeampi tapaturmariski — pitäminen sisällä pidentää elinikää"
+    action: "Ulkokissalle rakennettava turvallinen aitaus tai koulutettava leinalle (tassuvaljas)"
+    source: src:PC1
+  dog_weight_obese_pct:
+    value: 20
+    action: ">20% ylipaino koiralla → konsultoi eläinlääkäriä, vähennä ruokamäärää 20%, lisää liikuntaa"
+    source: src:PC1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: punkkikausi alkaa (Suomessa maaliskuusta) — aloita punkkisuoja välittömästi. Tarkista rokotukset (rabies, kennelyskhö, parvovirus). Koiran karvan vaihto — harjaa säännöllisesti. Eläinlääkärin vuositarkastus ajoissa."
+  source: src:PC2
+- season: Kesä
+  action: "Kesäkuu–elokuu: kuumuus vaara koirille (erityisesti lyhytkuonoiset rodut, bulldogit). ÄLÄ jätä lemmikkiä autoon lämpimänä päivänä — hengenvaara 30 min sisällä. Vesilasku kaiken aikaa. Mökillä: valvo uimista, hirvet, metsäkoirat."
+  source: src:PC1
+- season: Syksy
+  action: "Syyskuu–marraskuu: punkkikausi jatkuu syyskuulle — jatka suoja. Tarkista raajojen ja korvien välit metsälenkillä. Pimeys: heijastin/vilkkuvalo koiran kaulukseen. Koiran karvaturkki paksuuntuu — vähennä ruokamäärää talvea varten."
+  source: src:PC2
+- season: Talvi
+  action: "Joulukuu–helmikuu: tassunhoito (suolauksen vaikutus — pese tassut lenkin jälkeen). Lyhennä lenkkejä pakkasella (alle -15°C pienille koirille). Kissa: ei yöllistä ulkoilua pakkasella. Talvikukkaro pienille koirille."
+  source: src:PC1
+FAILURE_MODES:
+- mode: Koira saanut auringonpistoksen tai lämpöhalvauksen
+  detection: "Koira haukkoo nopeasti, syljettää, horjuu, oksentaa, kehon lämpötila >40°C"
+  action: "1. Siirry välittömästi varjoon tai viileään. 2. Kastele koira viileällä (ei jäisellä) vedellä — niska, jalat, vatsa. 3. Soita eläinlääkäriin heti (päivystys). 4. ÄLÄ anna juoda suuria määriä kerralla. 5. Kuljeta eläinlääkäriin jäähdyttäen matkalla."
+  source: src:PC1
+- mode: Punkin purema ja tartuntariski
+  detection: "Löydetty punkki lemmikistä, kiinnittynyt iholle, pää uponnut"
+  action: "1. Poista punkki välittömästi punkinpoistajalla — pyörittäminen kielletty, suora veto. 2. Desinfioi kohta. 3. Kirjaa päivämäärä ja sijainti kehossa. 4. Seuraa 30 vrk oireita (ontuminen, kuume, väsymys → borrelioosiepäily). 5. Eläinlääkäriin jos oireita."
+  source: src:PC2
+- mode: Lemmikki syönyt myrkyllistä ainetta
+  detection: "Koira/kissa oksentaa, kuolaa, kouristelee, on sekava tai löytyy avattu myrkyllinen kasvi/aine"
+  action: "1. Tunnista aine (kasvi, kemikaali, lääke). 2. Soita eläinlääkärin päivystykseen HETI. 3. Myrkytystietokeskus 0800 147 111 neuvoo myös eläimistä. 4. ÄLÄ okseta ilman neuvoa. 5. Kuljeta eläinlääkäriin välittömästi pakkauksen kanssa."
+  source: src:PC1
+PROCESS_FLOWS:
+  annual_pet_care:
+    steps:
+    - 'Tammikuu: rokotuskortin tarkistus, seuraavan vuoden eläinlääkäriajat varattava'
+    - 'Kevät (maalis): aloita punkkisuoja (pipetti tai panta), vuositarkastus eläinlääkärillä'
+    - 'Ennen matkaa: tarkista EU-lemmikkipassi, rabies-rokotus voimassa, chippirekisteri'
+    - 'Kesä: lämpöhalvauksen ehkäisy, mökillä punkkitarkistus päivittäin'
+    - 'Syksy: punkkisuoja syyskuun loppuun, karvanvaihdon hallinta'
+    - 'Talvi: tassunhoito, vaatetus pienille koirille, ravintoarvojen tarkistus'
+COMPLIANCE_AND_LEGAL:
+  lemmikin_rekisterointi: "Koiran rekisteröinti chipillä ja Koirarekisteriin pakollinen (Eläinsuojelulaki) [src:PC1]"
+  eu_lemmikkipassi: "EU-lemmikkipassi pakollinen matkustukseen EU-maiden välillä — rabies-rokotus 21 vrk ennen matkaa [src:PC3]"
+  eläinsuojelulaki: "Eläinsuojelulaki 247/1996 — lemmikille tarjottava riittävä ravinto, vesi, liikunta ja hoito [src:PC1]"
+UNCERTAINTY_NOTES:
+- "Punkkisuojavalmisteiden teho vaihtelee — konsultoi eläinlääkäriä oikean tuotteen valinnassa."
+- "Borrelioosirokote koiralle saatavilla (Nobivac Lyme) — harkitse mökkikoirien kohdalla."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PC1
+    org: Suomen Eläinlääkäriliitto / SEY
+    title: Koiran ja kissan hoito-oppaat
+    year: 2024
+    url: https://www.sell.fi/
+    supports: Rokotukset, tarkastukset, lämpöhalvaus, myrkytys, rekisteröinti.
+  - id: src:PC2
+    org: THL / Ruokavirasto
+    title: Punkkitaudit ja lemmikkiturvallisuus
+    year: 2024
+    url: https://thl.fi/fi/web/infektiotaudit-ja-rokotukset/taudit-ja-torjunta/taudit-ja-patogeenitietoa/vektoritaudit/puutiaisaivokuume-tbe-ja-borrelioosia-aiheuttavat-punkit
+    supports: Punkkisuoja, borrelioosiepäily, TBE, punkin poisto.
+  - id: src:PC3
+    org: Ruokavirasto / EU-lemmikkipassi
+    title: Lemmikkieläinten matkustusohje
+    year: 2025
+    url: https://www.ruokavirasto.fi/elaimet/tuonti-ja-vienti/lemmikkielaimet/
+    supports: EU-lemmikkipassi, rabies-rokotus, chippirekisteri, matkustus.
 eval_questions:
-- q: Mikä on vaccination interval months?
+- q: Kuinka usein rokotustehosteet annetaan?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.vaccination_interval_months.value
   source: src:PC1
+- q: Milloin koira pitää tarkistaa punkeista ulkoilun jälkeen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.tick_check_after_outdoor_hours.action
+  source: src:PC2
+- q: Milloin lämpö on vaarallista koiralle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.dog_heat_temp_max_c.action
+  source: src:PC1
+- q: Kuinka usein kirpputorjunta tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.flea_check_weeks.action
+  source: src:PC2
+- q: Milloin pennun ensimmäinen eläinlääkärikäynti on?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.puppy_vet_weeks.value
+  source: src:PC1
+- q: Milloin koiralla on ylipaino?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.dog_weight_obese_pct.action
+  source: src:PC1
+- q: Milloin punkkisuoja aloitetaan keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PC2
+- q: Miten kuumuus vaikuttaa koiraan kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PC1
+- q: Mitä tassunhoito tarkoittaa talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PC1
+- q: Miten lämpöhalvauksen koira hoidetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PC1
+- q: Miten punkki poistetaan koirasta?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PC2
+- q: Mitä tehdään jos lemmikki on syönyt myrkyllistä?
+  a_ref: FAILURE_MODES[2].action
+  source: src:PC1
+- q: Mitä EU-lemmikkipassi vaatii?
+  a_ref: COMPLIANCE_AND_LEGAL.eu_lemmikkipassi
+  source: src:PC3
+- q: Onko koiran rekisteröinti pakollista?
+  a_ref: COMPLIANCE_AND_LEGAL.lemmikin_rekisterointi
+  source: src:PC1
+- q: Mikä on vuosittainen lemmikinhoidon sykli?
+  a_ref: PROCESS_FLOWS.annual_pet_care.steps
+  source: src:PC1
+- q: Kannattaako mökillä käyvälle koiralle ottaa borrelioosirokote?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:PC2

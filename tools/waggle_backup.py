@@ -101,6 +101,14 @@ TESTS = [
     {"file": "tests/test_d1_d2_d3_autonomy.py",  "name": "Autonomy (D1-D3)",        "phase": "D1-D3","args": [], "timeout": 60},
     # Phase 5 — Smart Home Sensors
     {"file": "tests/test_smart_home.py",          "name": "Smart Home Sensors",       "phase": "5",    "args": [], "timeout": 60},
+    # Core module unit tests
+    {"file": "tests/test_core_token_economy.py",  "name": "Token Economy",            "phase": "core", "args": [], "timeout": 30},
+    {"file": "tests/test_core_llm_provider.py",   "name": "LLM Provider",             "phase": "core", "args": [], "timeout": 30},
+    {"file": "tests/test_core_normalizer.py",     "name": "Finnish Normalizer",       "phase": "core", "args": [], "timeout": 30},
+    {"file": "tests/test_core_yaml_bridge.py",    "name": "YAML Bridge",              "phase": "core", "args": [], "timeout": 60},
+    {"file": "tests/test_core_fast_memory.py",    "name": "Fast Memory (HotCache)",   "phase": "core", "args": [], "timeout": 30},
+    {"file": "tests/test_core_ops_agent.py",      "name": "OpsAgent",                 "phase": "core", "args": [], "timeout": 30},
+    {"file": "tests/test_core_learning_engine.py","name": "Learning Engine",          "phase": "core", "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

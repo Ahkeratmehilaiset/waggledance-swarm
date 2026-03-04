@@ -1,9 +1,23 @@
-# Kunnossapitosuunnittelija — Kpi
-# Auto-generated for WaggleDance Swarm AI
-title: "Kpi"
+# Kunnossapitosuunnittelija — KPI
+# WaggleDance Swarm AI
+title: "Huolto-KPI ja kunnossapidon mittarit"
 agent: "Kunnossapitosuunnittelija"
 facts:
-  - "MTBF: Mean Time Between Failures"
-  - "MTTR: Mean Time To Repair"
-  - "PM-suoritusaste: toteutuneet / suunnitellut × 100%"
-  - "Tavoite: 80/20 suunniteltu/korjaava"
+  - "MTBF (Mean Time Between Failures): vikojen välinen keskimääräinen aika, tavoite kasvaa jatkuvasti"
+  - "MTTR (Mean Time To Repair): korjausaika vian havaitsemisesta käynnistykseen, tavoite <4 h kriittisille koneille"
+  - "MTTF (Mean Time To Failure): käyttöikä ensimmäiseen vikaan, käytetään ei-korjattaville laitteille"
+  - "PM-suoritusaste: toteutuneet huollot / suunnitellut huollot × 100%, tavoite ≥95%"
+  - "80/20-sääntö kunnossapidossa: 80% suunniteltu (ennakkohuolto) + 20% korjaava — reaktiivinen ei saa dominoida"
+  - "OEE (Overall Equipment Effectiveness): käytettävyys × suorituskyky × laatu — maailmanluokan taso ≥85%"
+  - "TEEP (Total Effective Equipment Performance): OEE × hyödynnetty kapasiteetti — täysi potentiaali"
+  - "Huoltokustannus % käyttöomaisuudesta: tavoite 2–5% vuodessa, yli 8% viestii ylihuollosta tai vanhasta kalustosta"
+  - "Backlog (töiden rästimäärä): avoimet työmääräimet viikkoina mitattuna, tavoite <3–4 viikkoa"
+  - "Hätäkorjausten osuus: alle 15% kaikista töistä — korkea osuus merkki ennakoivien toimien puutteesta"
+  - "Varastokustannus: varaston arvo / vuosittainen kulutus, tavoite 3–6 kk kiertoaika"
+  - "Kustannus korjaavalle vs. ennakoivalle: yleensä korjaava 3–5× kalliimpi kuin suunniteltu huolto"
+  - "Luotettavuuskasvu (reliability growth): MTBF-trendianalyysi, Crow-AMSAA-malli ennustaa tulevan kehityksen"
+  - "Energiatehokkuus koneella: kWh/tuotantoyksikkö, trendi paljastaa laitteen huononemisen ennen vikaa"
+  - "Laitteen käytettävyys (availability): A = MTBF / (MTBF + MTTR), kriittinen laite tavoite ≥98%"
+  - "Huolto-ohjelman noudattaminen (compliance): aikataulussa tehtyjen huoltojen %, hyväksyttävä ±5% aikataulusta"
+  - "Turvallisuuspoikkeamat huollossa: tavoite 0 tapaturmaa, kaikki läheltä-piti -tilanteet kirjattava"
+  - "Kunnossapitohenkilöstön tuottavuus: aktiivinen työaika / läsnäoloaika, tavoite 70–80% (ei 100% realistista)"

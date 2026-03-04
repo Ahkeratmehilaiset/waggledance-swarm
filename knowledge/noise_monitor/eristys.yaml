@@ -1,9 +1,23 @@
-# Melu ja ääniympäristö — Eristys
-# Auto-generated for WaggleDance Swarm AI
-title: "Eristys"
+# Melu ja ääniympäristö — Ääneneristys
+# WaggleDance Swarm AI
+title: "Ääneneristys"
 agent: "Melu ja ääniympäristö"
 facts:
-  - "Askeläänet: lattian alla vaimennus, matot"
-  - "Ikkunat: 3-lasinen = ~35 dB vaimennus"
-  - "Seinäeristys: mineraalivilla 50mm + levy → 10-15 dB parannus"
-  - "Valkoinen kohina peittää taustamelua"
+  - "Askeläänet (LnT,w): Suomen rakentamismääräykset D2: toimistoissa ja asunnoissa max 53 dB(A) askeläänitaso"
+  - "Askeläänen vaimennus: lattian alla kelluvaksi rakenne (mineraalivilla tai EPS), lisäksi pehmeitä mattoja pintaan"
+  - "Ääneneristys asuinrakennuksessa: väliseinän R'w ≥ 55 dB (ympäristöministeriön asetus 796/2017)"
+  - "3-lasinen ikkuna (Rw 35–45 dB): vähentää liikennemelua n. 35–45 dB, paras kerrostalon ikkunavalinta"
+  - "Ikkunan vaihdon hyöty: 2-lasinen → 3-lasinen parannus 5–15 dB, säästää myös lämmitysenergiaa"
+  - "Seinäeristys mineraalivilla 50 mm + gipsilevy: ääneneristys paranee 10–15 dB riippuen seinärakenteesta"
+  - "Valkoinen kohina: kattaa taustamelun 40–60 Hz alueella, sovellukset (Rain Rain, myNoise), toimii toimistoihin"
+  - "Desibeliasteikko (logaritminen): 10 dB lisäys = 10× ääniteho, mutta 2× koettu äänenvoimakkuus"
+  - "Kuulosuojelu: yli 85 dB(A) jatkuva ympäristö → kuulosuojaimet pakollisia (työturvallisuuslaki)"
+  - "Meluhaitat asumisessa: yli 55 dB(A) ulkona päiväaikaan = haittaraja (WHO), yli 45 dB(A) yöllä häiritsee unta"
+  - "Ilmaääneneristys (Rw): laboratorioarvo, R'w kentällä 5–10 dB heikompi kuin laboratorio (sivureitit)"
+  - "Akustiset absorptiomateriaalit: pehmusteet, verhot, kokolattiamatot absorboivat kaikuja, eivät eristä naapurilta"
+  - "Sisäinen melulähde: konehuone, putket, ilmanvaihto — tärinäneriste ja jousitus vähentävät rakenteissa kulkevaa ääntä"
+  - "Melupiste kerrostalon naapuriin: kiinteistön hallitukselle kirjallinen ilmoitus, toistuvana → poliisi/AVI"
+  - "Rakennusaikainen melu: kuntien melumääräykset, porailu ja rakentaminen sallittu tyypillisesti 7–21, lauantaisin 8–18"
+  - "Ääneneristyksen mittaaminen: SFS-EN ISO 16283-1 kenttämittaus, mittaustulos R'w arvona raporttiin"
+  - "Musiikki ja ääni asunnossa: Suomessa ei laissa määriteltyä raja-arvoa, mutta kohtuullinen käytös velvoittaa (JäteL)"
+  - "Korvakuulokkeet vs. avonatilakaiuttimet: kuulokkeet estävät ulkoisen melun häirinnän ja naapurihäiriön samanaikaisesti"

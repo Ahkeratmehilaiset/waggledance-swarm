@@ -8,21 +8,192 @@ profiles:
   - factory
 priority: high
 ASSUMPTIONS:
-- Tuotantokoneet
-- SAP PM tai vastaava CMMS
+- Tuotantokoneet ja kiinteistöt kunnossapidon kohteena
+- SAP PM tai vastaava CMMS-järjestelmä käytössä
+- JKH Servicen linko, pumput, vaakalaitteet, tarha-ajoneuvo kunnossapidon piirissä
+- Mökkikiinteistö Huhdasjärvellä: kaivo, öljylämmitys, sähköjärjestelmät
+- Ennakoiva kunnossapito etusijalla reaktiivisen sijaan
 DECISION_METRICS_AND_THRESHOLDS:
   pm_compliance_pct:
     value: 90
-    action: "<90% → kapasiteettipula"
+    action: "<90% ennakoivan kunnossapidon toteutuma → resurssitarkastus, priorisoi
+      kriittiset laitteet, siirrä ei-kriittiset"
     source: src:MP1
   mtbf_hours:
     value: 500
-    action: "<500h kriittisellä koneella → juurisyy"
+    action: "<500h MTBF kriittisellä koneella → juurisyyanalyysi (RCA), varaosavarmuus
+      tarkistettava"
     source: src:MP1
+  mttr_hours:
+    value: 4
+    action: ">4h MTTR → korjausmenetelmien tarkistus, varaosien saatavuus parannettava"
+    source: src:MP2
+  backlog_ratio_weeks:
+    value: 4
+    action: ">4 viikon kunnossapitotöiden jono → lisäresurssit tai ulkoistus"
+    source: src:MP1
+  vibration_alarm_mms:
+    value: 7.1
+    action: ">7,1 mm/s RMS värähtelyarvo laakerissa → vuoron sisällä korjaus"
+    source: src:MP2
+  oil_change_interval_hours:
+    value: 2000
+    action: "Öljynvaihto viimeistään 2000 käyttötunnin välein tai vuosittain, kumpi
+      ensin"
+    source: src:MP2
+  property_inspection_years:
+    value: 5
+    action: "Kiinteistön kuntotarkastus (mökki, teollisuushalli) vähintään 5 vuoden
+      välein ammattilaisen toimesta"
+    source: src:MP3
+SEASONAL_RULES:
+- season: Kevät
+  action: "Talvikauden jälkihuolto: ajoneuvo, traktorit, nosturit. Tarkista kausilaitteet
+    ennen hunajankäsittelykautta (linko, pumput, lämmittimet). Mökki: kaivon tarkistus,
+    viemärit, sähköjärjestelmän silmämääräinen tarkistus."
+  source: src:MP3
+- season: Kesä
+  action: "Linko ja hunajanpoistolinja huipputeholla — lisäseuranta 2 viikon välein.
+    Ajoneuvohuolto ennen pitkiä tarha-ajoja. Mökin rakenteiden tarkistus (katto,
+    julkisivu) helteen ja sademyrskyn jälkeen."
+  source: src:MP2
+- season: Syksy
+  action: "Talven valmistelu: lämmitysjärjestelmän vuosihuolto (öljypoltin, vesikiertopumppu).
+    Laitteiden talvisäilytys (linko, pumppauskärry). Ennen lumentuloa: vesiputkien
+    suojaus, räystäskourujen puhdistus."
+  source: src:MP3
+- season: Talvi
+  action: "Talvikunnossapito: lumikuorman seuranta katoilla, erityisesti laajennusosilla.
+    Sisätilojen lämmitysjärjestelmän päivittäinen seuranta. Kunnossapitosuunnitelman
+    päivitys seuraavalle vuodelle, varaosatilaukset ajoissa."
+  source: src:MP3
+FAILURE_MODES:
+- mode: Linkon tai pumpun odottamaton vikaantuminen satokauden aikana
+  detection: "Epätavallinen ääni, tärinä, lämpötilan nousu tai hyötysuhteen lasku
+    linkauksen aikana"
+  action: "Pysäytä linko välittömästi. Tarkista laakeri, hihnat ja tasapaino.
+    Jos vika ei ole selvä 2 tunnissa, tilaa huoltohenkilö. Vara-aggregaatti tai
+    toinen linko käyttöön jos mahdollista."
+  source: src:MP2
+- mode: Öljylämmittimen vikaantuminen talvella
+  detection: "Lämmitys ei käynnisty, öljypolttimen hälytys, rakennuksen lämpötila
+    laskee alle +10°C"
+  action: "Tarkista öljysäiliö (tyhjä?), suodatin, sähkönsyöttö. Kutsu öljylämmitinhuolto
+    24h kuluessa. Sähköpatterit väliaikaiseen lämmitykseen. Putkirikon vaara alle
+    +5°C — ensisijainen toimenpide."
+  source: src:MP3
+- mode: Kiinteistön vesivaurio
+  detection: "Kattovuoto, putkistorikko tai kosteusvahinko havaittu rakennuksessa"
+  action: "Sulje vesisulku välittömästi. Valokuvaa vaurio vakuutusta varten.
+    Ilmoita vakuutusyhtiölle 48h sisällä. Kuivatus ammattilaisella viikon sisällä
+    estämään homevaurio."
+  source: src:MP3
+PROCESS_FLOWS:
+  kunnossapitosykli:
+    steps:
+    - 'Tammi: kunnossapitosuunnitelma vuodelle, varaosatilaukset'
+    - 'Helmi: ennakoivien töiden ohjelmointi CMMS:ään'
+    - 'Maalis: kevään kunnossapitokatselmus, laitteiden avaus'
+    - 'Huhti-touko: linkon ja pumpun huolto ennen linkauskautta'
+    - 'Kesä: tehostettu seuranta, viikkohuollot dokumentoitava'
+    - 'Elo: puolivuosittainen KPI-raportti (MTBF, MTTR, compliance)'
+    - 'Syys: lämmitysjärjestelmän vuosihuolto, talvivalmistelu'
+    - 'Loka: mökin talvikuntoon laitto, vesiputkien suojaus'
+    - 'Marras-joulu: vuosiarviointi, seuraavan vuoden budjetti'
+COMPLIANCE_AND_LEGAL:
+  sahkoturvallisuus: "Sähköturvallisuuslaki 1135/2016: sähkölaitteiden määräaikaistarkastus
+    teollisuudessa 10 vuoden välein, pienjännitteisessä 15 vuoden välein [src:MP2]"
+  paloturvallisuus: "Pelastuslaki 379/2011: kiinteistön palotarkastus 3 vuoden välein.
+    Sammuttimet ja -järjestelmät vuosittainen kunnossapitotarkastus [src:MP3]"
+  kuntotarkastus: "Kiinteistön kuntotarkastus (KH 90-00394) ei ole lakisääteinen,
+    mutta vakuutukset ja kaupat edellyttävät usein sitä [src:MP3]"
+UNCERTAINTY_NOTES:
+- "MTBF-arvot ovat laitoskohtaisia — viitearvo 500h on konservatiivinen yleisarvo."
+- "Mökin huoltovälit riippuvat rakennusvuodesta, käyttöasteesta ja rakennetyypistä."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:MP1
+    org: PSK Standardisointiyhdistys
+    title: Kunnossapidon tunnusluvut PSK 7501
+    year: 2022
+    url: https://www.psk-standardisointi.fi/
+    supports: PM-kattavuus, KPI, kunnossapidon ohjaus.
+  - id: src:MP2
+    org: Teknologiateollisuus / Opetushallitus
+    title: Teollisuuden kunnossapito ja kunnonvalvonta
+    year: 2023
+    url: https://www.teknologiateollisuus.fi/
+    supports: MTBF, MTTR, värinämittaus, öljynvaihto.
+  - id: src:MP3
+    org: Kiinteistöliitto / Rakennustietosäätiö
+    title: Kiinteistön kunnossapito ja tarkastukset
+    year: 2024
+    url: https://www.kiinteistoliitto.fi/
+    supports: Kiinteistötarkastus, lämmitys, vesivauriot, paloturvallisuus.
 eval_questions:
-- q: Mikä on pm compliance pct?
+- q: Mikä on ennakoivan kunnossapidon tavoitetoteutuma?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.pm_compliance_pct.value
   source: src:MP1
-- q: Mikä on mtbf hours?
+- q: Mitä tehdään kun PM-kattavuus jää alle 90%?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pm_compliance_pct.action
+  source: src:MP1
+- q: Mikä on MTBF-alaraja kriittiselle koneelle?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.mtbf_hours.value
   source: src:MP1
+- q: Milloin MTTR on liian korkea?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mttr_hours.value
+  source: src:MP2
+- q: Kuinka pitkä kunnossapitotyöjono on liian pitkä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.backlog_ratio_weeks.value
+  source: src:MP1
+- q: Mikä on laakerin värinähälytysraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vibration_alarm_mms.value
+  source: src:MP2
+- q: Kuinka usein öljy vaihdetaan koneisiin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oil_change_interval_hours.value
+  source: src:MP2
+- q: Kuinka usein kiinteistön kuntotarkastus tehdään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.property_inspection_years.value
+  source: src:MP3
+- q: Mitä keväällä tarkistetaan kunnossapidon osalta?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MP3
+- q: Miten linkon kunnossapito hoidetaan linkauskauden aikana?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:MP2
+- q: Mitä syyshuoltoon kuuluu?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:MP3
+- q: Miten lumikuorma otetaan huomioon talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:MP3
+- q: Miten toimitaan linkon odottamattomassa vikaantumisessa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:MP2
+- q: Mitä tehdään öljylämmittimen vikaan talvella?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MP3
+- q: Miten vesivaurioon reagoidaan?
+  a_ref: FAILURE_MODES[2].action
+  source: src:MP3
+- q: Kuinka usein sähkölaitteet tarkastetaan teollisuudessa?
+  a_ref: COMPLIANCE_AND_LEGAL.sahkoturvallisuus
+  source: src:MP2
+- q: Kuinka usein kiinteistön palotarkastus tehdään?
+  a_ref: COMPLIANCE_AND_LEGAL.paloturvallisuus
+  source: src:MP3
+- q: Onko kuntotarkastus lakisääteinen?
+  a_ref: COMPLIANCE_AND_LEGAL.kuntotarkastus
+  source: src:MP3
+- q: Milloin varaosatilaukset tehdään?
+  a_ref: PROCESS_FLOWS.kunnossapitosykli.steps
+  source: src:MP1
+- q: Mitä tehdään putkirikon vaaran välttämiseksi?
+  a_ref: FAILURE_MODES[1].action
+  source: src:MP3
+- q: Miten MTBF ja MTTR raportoidaan?
+  a_ref: PROCESS_FLOWS.kunnossapitosykli.steps
+  source: src:MP1
+- q: Milloin mökin kaivo tarkistetaan?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:MP3

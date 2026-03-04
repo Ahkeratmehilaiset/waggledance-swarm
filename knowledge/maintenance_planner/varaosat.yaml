@@ -1,8 +1,23 @@
 # Kunnossapitosuunnittelija — Varaosat
-# Auto-generated for WaggleDance Swarm AI
-title: "Varaosat"
+# WaggleDance Swarm AI
+title: "Varaosanhallinta"
 agent: "Kunnossapitosuunnittelija"
 facts:
-  - "Kriittiset varaosat: pidä aina varastossa, ABC-luokittelu"
-  - "Tilauspiste (ROP): automaattinen tilaus kun saldo alittaa"
-  - "Varaosabudjetti: 3-5% koneen uushankintahinnasta/vuosi"
+  - "Kriittiset varaosat: pidä aina varastossa, ABC-luokittelu — A-osat (kriittiset koneet) ei saa loppua"
+  - "ABC-XYZ-analyysi: A=20% tuotteista = 80% arvosta, XYZ = kulutuksen säännöllisyys (X = tasainen, Z = satunnainen)"
+  - "Tilauspiste ROP (Reorder Point): ROP = keskimääräinen kulutus × toimitusaika + varmuusvarasto"
+  - "Varmuusvarasto (safety stock): zα × σ × √L — zα = palvelutason Z-luku, σ = kulutuksen hajonta, L = toimitusaika"
+  - "Varaosabudjetti: tyypillisesti 3–5% koneen uushankintahinnasta vuodessa kriittisille laitteille"
+  - "EOQ (Economic Order Quantity): √(2DS/H) — D = vuosikulutus, S = tilauskustannus, H = varastointikustannus/yksikkö"
+  - "Varaston kierto (turn rate): vuosikulutus / keskimääräinen varastoarvo — tavoite ≥4–6 kertaa vuodessa"
+  - "Min-max-menetelmä: tilauspiste ja maksimimäärä asetetaan, automaattitilaus kun saldo alittaa minimipisteen"
+  - "Varaosien hyllytys: FIFO (First In First Out), vanhimmat edessä — erityisesti kulutustarvikkeet ja kumiosat"
+  - "Kriittinen varaosa-analyysi: pitkä toimitusaika (>4 viikkoa) tai valmistajan lopettanut → erityinen buffer-varasto"
+  - "OEM vs. geneerinen varaosa: OEM alkuperäinen (kalliimpi, taattu sopivuus), geneerinen halvempi mutta riskit"
+  - "Varaosaluettelo (spare parts list): valmistajan dokumentaatio, koneen sarjanumeron mukainen lista"
+  - "Varaosien merkintä: viivakoodit tai RFID, integrointi CMMS-järjestelmään, reaaliaikainen saldoseuranta"
+  - "Konsignaatiovarasto: toimittaja pitää osan varastonaan asiakkaan tiloissa, maksu vasta käytöstä"
+  - "Vuokravaraosat: kalliit, harvoin tarvittavat osat lainattavissa toimittajalta tai verkostosta"
+  - "Varaosien poistohallinta: vanhentuneet, käyttökelvottomat tai obsoleetit osat kirjattava alas vuosittain"
+  - "Toimitusajan hallinta: hätätilauksen kustannus 3–10x normaalihinnan, ennakointi maksaa itsensä takaisin"
+  - "Dokumentaatio: jokainen varaosaotto kirjataan CMMS:ään (työmääräin, laite, osa, määrä, päivämäärä)"

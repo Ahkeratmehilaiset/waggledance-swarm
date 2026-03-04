@@ -8,21 +8,187 @@ profiles:
   - factory
 priority: medium
 ASSUMPTIONS:
-- Teollisuuslaitos
-- ISO 50001 suositeltava
+- Teollisuuslaitos, ISO 50001 energianhallintajärjestelmä suositeltava
+- JKH Servicen hunajankäsittelytila ja tarhat kuluttavat sähköä (linko, lämmitys, pumput)
+- Sähkön spot-hinta vaihtelee tunneittain Nordpool-pörssissä
+- Mökin Huhdasjärvellä lämmitys öljy/sähkö/puu — energiakustannus relevantti
+- Aurinkopaneelien hankinta harkinnassa (tiedetään asiayhteys)
 DECISION_METRICS_AND_THRESHOLDS:
   power_factor_min:
     value: 0.95
-    action: "<0.95 → loistehomaksu, kompensoi"
+    action: "<0.95 → loistehomaksu kasvaa; asenna kondensaattoriparisto tai taajuusmuuttaja"
     source: src:EM1
   air_leak_pct:
     value: 10
-    action: ">10% vuodot → vuotokartoitus"
+    action: ">10% paineilmavuotoja → vuotokartoitus ultraäänilaitteella, korjaa välittömästi"
     source: src:EM1
+  spot_price_alert_eur_mwh:
+    value: 150
+    action: ">150 €/MWh → siirrä ei-kriittiset kuormat (lämminvesivaraaja, linkous) halvempaan
+      tuntiin"
+    source: src:EM2
+  energy_intensity_kwh_kg:
+    value: 0.8
+    action: ">0.8 kWh/kg tuotetta → prosessin energiatehokkuustarkastus, vertaa benchmarkiin"
+    source: src:EM1
+  hvac_setpoint_deviation_c:
+    value: 2
+    action: ">2°C poikkeama HVAC-asetuspisteestä → huoltotilaus, tarkista suodattimet"
+    source: src:EM1
+  monthly_kwh_budget:
+    value: 5000
+    action: ">5000 kWh/kk teollisuustilassa → kustannusseuranta, selvitä hukkakäyttö yöaikaan"
+    source: src:EM1
+  solar_roi_years:
+    value: 10
+    action: ">10 vuoden takaisinmaksuaika aurinkovoimalle → uudelleenarviointi tai odota
+      halvempia paneeleja"
+    source: src:EM3
+SEASONAL_RULES:
+- season: Kevät
+  action: "Lämmityskauden päättyessä vaihda HVAC kesätilaan. Tarkista lämpöpumpun
+    kylmäaine ja suorituskyky. Sähkösopimuksen tarkistus — spot-sopimus vs. kiinteä
+    hinta kesäksi. Aurinkovoimatuoton kasvu alkaa — optimoi omakäyttö."
+  source: src:EM3
+- season: Kesä
+  action: "Linkous ja hunajankäsittely kuormittavat sähköverkkoa — ajoita halvimmille
+    spot-tunneille. Mökillä aurinkopaneelit tuottavat eniten — seuraa nettotuottoa.
+    Viilennystarpeen hallinta: älä jäähdytä alle tarpeen (asetuspiste +2°C riittää)."
+  source: src:EM2
+- season: Syksy
+  action: "Lämmityskausi alkaa — ennusta sähkökustannus lämmityskaudelle. Öljy- tai
+    pellettilämmittimen vuosihuolto. Lisäeristys tarkistettava mökin energiatehokkuuden
+    parantamiseksi. Spot-sopimuksen edut talvella — seuraa hintapiikkejä."
+  source: src:EM2
+- season: Talvi
+  action: "Hintapiikkien vaara (joulukuu–helmikuu). Aktivoi kuormanhallinta: siirrä
+    kaikki siirrettävissä olevat kuormat yölle tai viikonloppuihin. Mökin lämpötila
+    min. +5°C putkirikon ehkäisemiseksi. Energiakatsaus: verkkoon palautettu vs.
+    ostettu sähkö."
+  source: src:EM2
+FAILURE_MODES:
+- mode: Sähkökatkos tuotannon aikana
+  detection: "UPS-hälytys, tuotantolaitteet pysähtyvät, generaattori ei käynnisty
+    automaattisesti"
+  action: "Aktivoi varavoima (aggregaatti). Tallenna tuotantotiedot manuaalisesti.
+    Ilmoita verkonhaltijalle. Tarkista jälkikäteen UPS-akut ja generaattorin automaattikäynnistys."
+  source: src:EM1
+- mode: Energiakustannusten odottamaton kasvu
+  detection: "Kuukausilaskussa yli 30% ylitys budjetista ilman selkeää syytä"
+  action: "Analysoi tuntitason kulutusdata. Tarkista yöaikainen standby-kulutus.
+    Selvitä, onko laite jäänyt päälle (linko, kompressori, lämmitysvastuslangat)."
+  source: src:EM1
+- mode: Paineilmajärjestelmän suuri vuoto
+  detection: "Kompressori käy jatkuvasti ilman kuormaa, paine ei pysy asetuspisteessä"
+  action: "Sulje linjat osasto kerrallaan vuotopaikan paikantamiseksi. Ultraäänikartoitus
+    seuraavana arkipäivänä. Vuoto yli 10% = välitön korjaus."
+  source: src:EM1
+PROCESS_FLOWS:
+  energianhallintasykli:
+    steps:
+    - 'Tammi: edellisen vuoden energiakatsaus, benchmark teollisuuteen'
+    - 'Helmi: kuormanhallinnan päivitys spot-hintojen perusteella'
+    - 'Maalis-huhti: HVAC kesätila, lämpöpumpun huolto'
+    - 'Touko: aurinkopaneelien tuotantokauden seuranta alkaa'
+    - 'Kesä-heinä: linkauksen ajoitus halvimmille spot-tunneille'
+    - 'Elo: energiatehokkuuskatsaus puolivuosittain'
+    - 'Syys: lämmityskauden valmistelu, öljyvarasto/puu täyteen'
+    - 'Loka-marras: talven hintapiikkistrategia, kuormanhallinta'
+    - 'Joulu: vuosiraportti, seuraavan vuoden energiabudjetti'
+COMPLIANCE_AND_LEGAL:
+  iso50001: "ISO 50001:2018 — energianhallintajärjestelmä suositeltava yli 250 hlön
+    yrityksille; pienemmille vapaaehtoinen mutta tukee energiaverotuksen palautuksia [src:EM1]"
+  sahkovero: "Teollisuuden alennettu sähköveroluokka II: 0,0063 €/kWh (2026).
+    Edellyttää, että sähkö käytetään teollisuusprosessissa [src:EM1]"
+  aurinkopaneelit: "Alle 50 kVA verkkoliitynnässä ei vaadi erillistä lupaa. Ylijäämäsähkön
+    myynti: ALV 25,5% myyjälle ellei alle 15 000 € raja ylity [src:EM3]"
+UNCERTAINTY_NOTES:
+- "Spot-hintaennusteet ovat suuntaa antavia — todelliset huippuhinnat voivat poiketa merkittävästi."
+- "Aurinkopaneelien takaisinmaksuaika riippuu asennuskulmasta, sijainnista ja sähkön hinnasta."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:EM1
+    org: Motiva Oy / Työ- ja elinkeinoministeriö
+    title: Teollisuuden energiatehokkuus ja ISO 50001
+    year: 2025
+    url: https://www.motiva.fi/ratkaisut/energianhallinta
+    supports: Tehokerroin, paineilma, energiaintensiteetti, sähköverot.
+  - id: src:EM2
+    org: Fingrid / Nordpool
+    title: Sähkön spot-hinnoittelu ja kuormanhallinta
+    year: 2025
+    url: https://www.fingrid.fi/sahkomarkkinat/
+    supports: Spot-hinta, hintapiikki, kuormanhallinta.
+  - id: src:EM3
+    org: Energiavirasto / Motiva
+    title: Aurinkosähkö kotitalouksille ja pienyrityksille
+    year: 2025
+    url: https://www.energiavirasto.fi/aurinkosahko
+    supports: Aurinkopaneelit, ROI, verkkoliityntä, ylijäämäsähkö.
 eval_questions:
-- q: Mikä on power factor min?
+- q: Mikä on tehokertoimen alaraja?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.power_factor_min.value
   source: src:EM1
-- q: Mikä on air leak pct?
+- q: Mitä tehdään kun tehokerroin alittaa 0,95?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.power_factor_min.action
+  source: src:EM1
+- q: Kuinka suuri paineilmavuoto laukaisee toimenpiteen?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.air_leak_pct.value
   source: src:EM1
+- q: Milloin sähkön spot-hinta laukaisee kuormansiirron?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spot_price_alert_eur_mwh.value
+  source: src:EM2
+- q: Mikä on energiaintensiteetin tavoitearvo?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.energy_intensity_kwh_kg.value
+  source: src:EM1
+- q: Milloin kuukausittainen sähkönkulutus on liian suuri?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.monthly_kwh_budget.action
+  source: src:EM1
+- q: Milloin aurinkopaneelien takaisinmaksuaika on liian pitkä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.solar_roi_years.action
+  source: src:EM3
+- q: Mitä energianhallinnassa tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:EM3
+- q: Miten hunajankäsittelyn sähkönkäyttö optimoidaan kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:EM2
+- q: Mitä syksyllä tehdään energiakustannusten hallitsemiseksi?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:EM2
+- q: Miten talven hintapiikkeihin varaudutaan?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:EM2
+- q: Miten toimitaan sähkökatkoksen sattuessa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:EM1
+- q: Miten selvitetään odottamaton energiakustannusten kasvu?
+  a_ref: FAILURE_MODES[1].action
+  source: src:EM1
+- q: Miten paineilmavuoto paikannetaan?
+  a_ref: FAILURE_MODES[2].action
+  source: src:EM1
+- q: Mitä teollisuuden sähköveroluokka II tarkoittaa?
+  a_ref: COMPLIANCE_AND_LEGAL.sahkovero
+  source: src:EM1
+- q: Tarvitaanko lupa aurinkopaneelien asentamiseen?
+  a_ref: COMPLIANCE_AND_LEGAL.aurinkopaneelit
+  source: src:EM3
+- q: Mitä ISO 50001 edellyttää?
+  a_ref: COMPLIANCE_AND_LEGAL.iso50001
+  source: src:EM1
+- q: Milloin linkauksen sähköä kannattaa optimoida?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:EM2
+- q: Miten mökin lämpötila pidetään turvallisena talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:EM2
+- q: Mikä on HVAC-asetuspisteen sallittu poikkeama?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hvac_setpoint_deviation_c.action
+  source: src:EM1
+- q: Miten kompressorin jatkuva käynti tunnistetaan ongelmaksi?
+  a_ref: FAILURE_MODES[2].detection
+  source: src:EM1
+- q: Milloin aurinkosähkön myynti on ALV-velvollista?
+  a_ref: COMPLIANCE_AND_LEGAL.aurinkopaneelit
+  source: src:EM3

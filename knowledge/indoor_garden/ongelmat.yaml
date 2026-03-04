@@ -1,8 +1,23 @@
 # Huonekasvit ja sisäviljely — Ongelmat
-# Auto-generated for WaggleDance Swarm AI
-title: "Ongelmat"
+# WaggleDance Swarm AI
+title: "Kasviongelmat ja tuholaiset"
 agent: "Huonekasvit ja sisäviljely"
 facts:
-  - "Kellastuvat lehdet: ylikastelu, ravinnepuute tai liian vähän valoa"
-  - "Tuholaiset: viherkärpäset (keltaliima-ansa), kilpitäi (saippualiuos)"
-  - "Home juurissa: liian tiivis multa + ylikastelu"
+  - "Kellastuvat lehdet: ylikastelu (tummuus + pehmeä lehtitunne), ravinnepuute (kloroosiKuvio), liian vähän valoa tai ikääntyminen"
+  - "Ruskeat lehden kärjet: liian kuiva ilma (kostuta säännöllisesti tai laita kosteushöyrystin), suolan kertymä mullassa"
+  - "Lehtien putoaminen: äkillinen lämpötilanmuutos, vetoisuus, ylikastelu tai kuivuus — tarkista juuret"
+  - "Home juurissa (juurilaho Pythium/Phytophthora): liian tiivis multa + ylikastelu, paranna salaojitus, vaihda multa"
+  - "Viherkärpäset (Sciaridae): keltaliima-ansa pyydystää aikuiset, kuivaa multa pinttien välillä, Bacillus thuringiensis -torjunta"
+  - "Kilpitäi (Coccidae): sudenkorennon tai saippuavesipyyhinkirjoitus, 70% isopropanoli vanupuikolla yksittäisiin täihin"
+  - "Punkkitoukat (Tetranychus): lehden alapinta hopeoituu, suihkuta vesisumulla, lisää kosteutta, Neoseiulus cucumeris -petopunkki"
+  - "Jauhokärpänen (Trialeurodes): keltaliima-ansa, Beauveria bassiana -bioinsektisidi, lehtien alapuolen huuhtelu"
+  - "Harmaahome (Botrytis cinerea): poista saastuneet osat, paranna ilmanvaihto, vähennä kastelua, älä jätä kuolleita lehtiä"
+  - "Härmä (Erysiphales): valkoinen jauhemainen pinta, suihkuta 1:9 maitoliuos tai natriumbikarbonaattiratkaisu"
+  - "Lehtitäit (Aphididae): saippualiuos (5 ml astianpesuaine/l), vahva vesipaine, kampanjoi säännöllisesti viikon ajan"
+  - "Ylikastelu oireet: keltaiset, pehmeät lehdet, multa märkä, juuret mustuneet tai limaiset — anna kuivua 2–3 viikkoa"
+  - "Alikastelu oireet: kuivat, kurkun lehdet, multapaakku kutistuu reunoilta, kasvien roikkuminen"
+  - "Ravinnepuutteet: typpipuute (koko lehti keltainen), rautapuute (nuoret lehdet keltaisia, suonet vihreät)"
+  - "Valolamppu etäisyys: LED kasvivalo 10–40 cm kasvista tehosta riippuen, auringonvalo >1000 klux, sisävalot 20–100 klux"
+  - "Kasvimullan pH: happama 5.5–6.5 sopii useimmille huonekasveille, happipisteet/kalkkikivi pH:n säätöön"
+  - "Istutusastian koko: juuripaakun halkaisija + 5–10 cm → oikea ruukku, liian iso ruukku aiheuttaa ylikasteluriskin"
+  - "Kasvivalojen spektri: sininen (400–500 nm) lehtikasvuun, punainen (600–700 nm) kukintaan ja hedelmiin"

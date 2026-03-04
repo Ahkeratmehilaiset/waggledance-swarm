@@ -8,14 +8,167 @@ profiles:
   - home
 priority: medium
 ASSUMPTIONS:
-- Suomalainen asunto-osakeyhtiö
-- Asunto-osakeyhtiölaki 2009
+- Suomalainen asunto-osakeyhtiö (AOYL 2009)
+- Jani Korpin omistama asunto Helsingissä
+- JKH Service Y-tunnus 2828492-2 voi olla osakkaan roolissa
+- Taloyhtiöllä hallitus, isännöitsijä ja tilintarkastaja
 DECISION_METRICS_AND_THRESHOLDS:
   maintenance_increase_pct:
     value: 15
-    action: ">15% vastikkeen korotus → selvitä syy"
+    action: ">15% vastikkeen korotus yhteen vuoteen → vaadi kirjallinen selvitys hallitukselta ja isännöitsijältä"
     source: src:AB1
+  renovation_loan_share_eur:
+    value: 20000
+    action: ">20 000 € lainaosuus → selvitä maksusuunnitelma tai harkitse lainaosuuden maksaminen pois kerralla"
+    source: src:AB1
+  board_response_days:
+    value: 14
+    action: "Kirjallinen reklamaatio → hallituksella 14 vrk vastausaika ennen jatkotoimia"
+    source: src:AB1
+  water_damage_report_hours:
+    value: 24
+    action: "Vesivaurio → ilmoitus isännöitsijälle 24 tunnin kuluessa, muuten omavastuuriski kasvaa"
+    source: src:AB2
+  agm_notice_days:
+    value: 14
+    action: "Yhtiökokous kutsuttava vähintään 14 vrk etukäteen (AOYL 6:20)"
+    source: src:AB1
+  capital_expenditure_limit_pct:
+    value: 5
+    action: ">5% talonyhtiön budjetista yksittäinen hankinta → vaatii yhtiökokouksen hyväksynnän"
+    source: src:AB1
+  noise_complaint_response_days:
+    value: 7
+    action: "Meluhäiriöilmoitus → taloyhtiöllä 7 vrk reagointiaika ennen jatkotoimia (järjestyssäännöt)"
+    source: src:AB3
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maaliskuu–toukokuu: tarkista talven jälkeiset vauriot (katto, putket, julkisivu). Kevätyhtiökokous on pidettävä kuuden kuukauden kuluessa tilikauden päättymisestä. Tarkista tilinpäätös ja vastikebudjetti."
+  source: src:AB1
+- season: Kesä
+  action: "Kesäkuu–elokuu: rakennusremonttien paras aika. Seuraa mahdollisia putkiremontti- tai julkisivukorjausilmoituksia. Tarkista parvekkeiden kunto ennen suvea."
+  source: src:AB1
+- season: Syksy
+  action: "Syyskuu–marraskuu: lämmitysjärjestelmän käynnistys, tarkista lämpöpatterit ja termostaatit. Budjettikokous usein syksyllä — seuraa vastike-ehdotuksia."
+  source: src:AB1
+- season: Talvi
+  action: "Joulukuu–helmikuu: tarkista ikkunoiden tiivisteet, pattereiden toiminta. Lumen ja jään poisto katolta on taloyhtiön vastuulla — ilmoita havaituista vaaroista välittömästi."
+  source: src:AB2
+FAILURE_MODES:
+- mode: Vesivaurio asunnossa
+  detection: "Kosteusjäljet katossa tai seinissä, valuva vesi, turpoava parketti"
+  action: "1. Sulje vesisulku. 2. Ilmoita isännöitsijälle kirjallisesti 24h kuluessa. 3. Ota valokuvat. 4. Pyydä kosteuskartoitus. Älä tee omatoimisia korjauksia ennen katselmoinnista."
+  source: src:AB2
+- mode: Hallitus ei reagoi reklamaatioon
+  detection: "Kirjallinen valitus jäänyt ilman vastausta yli 14 vrk"
+  action: "Lähetä muistutus kirjallisesti. Jos ei vastausta 7 vrk kuluessa, ota yhteys Suomen Kiinteistöliiton neuvontaan tai kuluttajaneuvontaan. Äärimmäisenä keinona yhtiökokouksen koollekutsuminen 1/10 osakkaista."
+  source: src:AB1
+- mode: Yllättävä suuri remontti-ilmoitus
+  detection: "Isännöitsijäntodistuksessa ei mainintaa, yllättävä hankesuunnitelma saapuu"
+  action: "Vaadi hankesuunnitelma, kustannusarvio ja rahoitussuunnitelma kirjallisena. Tarkista onko yhtiökokouspäätös tehty asianmukaisesti. Konsultoi tarvittaessa kiinteistöjuridiikan asiantuntijaa."
+  source: src:AB1
+PROCESS_FLOWS:
+  annual_cycle:
+    steps:
+    - 'Tammi–helmikuu: kerää koko vuoden vastike- ja hoitokulutiedot, tarkista tilinpäätös'
+    - 'Maalis–huhti: kevätyhtiökokous (6kk tilikauden päättymisestä), tilinpäätöksen vahvistus'
+    - 'Huhti–kesä: remontti-ilmoitusten seuranta, parveketarkastus, piha-alueet kuntoon'
+    - 'Heinä–elo: kesäremontit käynnissä, valvo toteutusta ja aikataulua'
+    - 'Syys: budjettikokous, vastikepäätökset seuraavalle vuodelle'
+    - 'Loka–marras: lämmitysjärjestelmä, ikkunat, talvivalmistelut'
+    - 'Joulu: tarkista taloyhtiön toimintakertomus ja seuraavan vuoden suunnitelmat'
+COMPLIANCE_AND_LEGAL:
+  aoyl: "Asunto-osakeyhtiölaki (AOYL 2009/1599) — osakkaan oikeudet ja velvollisuudet [src:AB1]"
+  isannoitsijantodistus: "Isännöitsijäntodistus pakollinen asuntokaupassa — tarkista aina lainaosuudet, remonttisuunnitelmat ja vastiketasot [src:AB1]"
+  hallituksen_vastuu: "Hallituksen jäsenet vastaavat huolimattomuudesta — dokumentoi kaikki reklamaatiot kirjallisesti [src:AB1]"
+  remontit: "Osakkaan muutostyöt: ilmoitusvelvollisuus hallitukselle ennen töiden aloittamista. Kosteuseristystyöt vaativat kirjallisen luvan [src:AB2]"
+UNCERTAINTY_NOTES:
+- "Vastikkeen korotuskynnys 15% on suuntaa-antava — laissa ei ole tarkkaa prosenttirajaa, mutta merkittävä korotus vaatii aina perustelut."
+- "Remonttivastuun jako (yhtiö vs. osakas) vaihtelee taloyhtiökohtaisten järjestysmääräysten mukaan."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:AB1
+    org: Oikeusministeriö / Kiinteistöliitto
+    title: Asunto-osakeyhtiölaki ja -opas
+    year: 2024
+    url: https://www.kiinteistoliitto.fi/
+    supports: AOYL, yhtiökokous, hallitus, vastike, remontit.
+  - id: src:AB2
+    org: Finanssiala ry
+    title: Vesivahingot ja korvattavuus
+    year: 2024
+    url: https://www.finanssiala.fi/
+    supports: Vesivaurio, ilmoitusvelvollisuus, korvausmenettely.
+  - id: src:AB3
+    org: Kuluttajaneuvonta / ARA
+    title: Taloyhtiön järjestyssäännöt ja asumisohjeet
+    year: 2023
+    url: https://www.ara.fi/
+    supports: Järjestyssäännöt, meluhäiriöt, asumisriidat.
 eval_questions:
-- q: Mikä on maintenance increase pct?
+- q: Mikä on vastikkeen korotuksen selvityskynnys prosentteina?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.maintenance_increase_pct.value
+  source: src:AB1
+- q: Milloin osakas voi vaatia kirjallisen selvityksen hallitukselta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.maintenance_increase_pct.action
+  source: src:AB1
+- q: Mikä on lainaosuusraja joka kannattaa harkita maksaa pois?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.renovation_loan_share_eur.value
+  source: src:AB1
+- q: Kauanko hallituksella on aikaa vastata kirjalliseen reklamaatioon?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.board_response_days.value
+  source: src:AB1
+- q: Kuinka pian vesivauriosta on ilmoitettava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.water_damage_report_hours.value
+  source: src:AB2
+- q: Mikä on yhtiökokouksen kutsuminäika vähimmäisvaatimus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.agm_notice_days.value
+  source: src:AB1
+- q: Milloin yksittäinen hankinta vaatii yhtiökokouksen hyväksynnän?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.capital_expenditure_limit_pct.action
+  source: src:AB1
+- q: Kauanko taloyhtiöllä on aikaa reagoida meluhäiriöilmoitukseen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.noise_complaint_response_days.value
+  source: src:AB3
+- q: Mitä tehdään keväällä taloyhtiöasioissa?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:AB1
+- q: Milloin kevätyhtiökokous on pidettävä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:AB1
+- q: Mitä remontteja kannattaa tehdä kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:AB1
+- q: Mitä talvella pitää tarkistaa taloyhtiössä?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:AB2
+- q: Miten toimitaan vesivauriotilanteessa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:AB2
+- q: Miten tunnistaa vesivaurio asunnossa?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:AB2
+- q: Mitä tehdään jos hallitus ei reagoi valitukseen?
+  a_ref: FAILURE_MODES[1].action
+  source: src:AB1
+- q: Miten käsitellä yllättävä suuri remontti-ilmoitus?
+  a_ref: FAILURE_MODES[2].action
+  source: src:AB1
+- q: Mikä on AOYL:n merkitys osakkaalle?
+  a_ref: COMPLIANCE_AND_LEGAL.aoyl
+  source: src:AB1
+- q: Mitä isännöitsijäntodistuksesta pitää tarkistaa?
+  a_ref: COMPLIANCE_AND_LEGAL.isannoitsijantodistus
+  source: src:AB1
+- q: Tarvitseeko osakkaan ilmoittaa remonteista hallitukselle?
+  a_ref: COMPLIANCE_AND_LEGAL.remontit
+  source: src:AB2
+- q: Mikä on vuosittaisen syklin tärkeimmät askeleet?
+  a_ref: PROCESS_FLOWS.annual_cycle.steps
+  source: src:AB1
+- q: Milloin budjettikokous yleensä pidetään?
+  a_ref: PROCESS_FLOWS.annual_cycle.steps
+  source: src:AB1
+- q: Onko vastikkeen korotukselle tarkkaa prosenttirajaa laissa?
+  a_ref: UNCERTAINTY_NOTES
   source: src:AB1

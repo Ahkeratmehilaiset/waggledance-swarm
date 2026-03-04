@@ -8,14 +8,158 @@ profiles:
   - factory
 priority: medium
 ASSUMPTIONS:
-- Sertifioitu toimintajärjestelmä
-- Sisäiset ja ulkoiset auditoinnit
+- JKH Service Y-tunnus 2828492-2, mehiläistuotanto ja -palvelut
+- Sertifioitu toimintajärjestelmä (ISO tai FSSC-tasoinen tavoite)
+- Sisäiset ja ulkoiset auditoinnit — Ruokavirasto, GDPR-viranomainen
+- Elintarvikehuoneisto tai alkutuotantoyritys (hunajaa myydään)
 DECISION_METRICS_AND_THRESHOLDS:
   audit_finding_days:
     value: 30
-    action: "Major korjattava 30 vrk kuluessa"
+    action: "Kriittinen (major) poikkeama → korjattava dokumentoitusti 30 vrk kuluessa tai toiminta voi keskeytyä"
     source: src:CO1
+  gdpr_breach_report_hours:
+    value: 72
+    action: "Henkilötietojen tietoturvaloukkaus → ilmoitettava tietosuojavaltuutetulle 72 tunnin kuluessa (GDPR Art.33)"
+    source: src:CO2
+  food_safety_temp_c:
+    value: 7
+    action: "Elintarvikkeiden kylmäsäilytys max +7°C (hunaja poikkeus: huoneenlämpö OK) — tarkkaile viileäketjua"
+    source: src:CO3
+  occupational_safety_incident_report_hours:
+    value: 24
+    action: "Työtapaturma → ilmoitus Tapaturmavakuutuskeskukselle 24h kuluessa, vakavat välittömästi poliisi"
+    source: src:CO4
+  fire_safety_inspection_years:
+    value: 3
+    action: "Paloturvallisuustarkastus vähintään 3v välein (kohteen riskiluokka vaikuttaa) — pelastuslain mukainen"
+    source: src:CO4
+  permit_renewal_months:
+    value: 3
+    action: "Lupien uusintahakemus jätettävä 3 kk ennen voimassaolon päättymistä"
+    source: src:CO1
+  documentation_retention_years:
+    value: 10
+    action: "Kirjanpito ja elintarvikedokumentit säilytettävä vähintään 10 vuotta (KPL 2:10)"
+    source: src:CO1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: päivitä riskiarviot ja toimintasuunnitelmat ennen tuotantokauden alkua. Tarkista elintarvikehuoneiston luvat, hygieniapassit ja varoaineet. Valmistaudu Ruokaviraston mahdolliseen tarkastukseen."
+  source: src:CO3
+- season: Kesä
+  action: "Kesäkuu–elokuu: aktiivinen tuotantokausi — varmista laadunhallintadokumentointi ajan tasalla. Hunajan kosteusmittaukset kirjattava. GDPR: asiakastietorekisterin päivitys (uudet myyntikontaktit)."
+  source: src:CO2
+- season: Syksy
+  action: "Syyskuu–marraskuu: sisäinen auditointi ennen kalenterivuoden loppua. Tarkista kaikki sertifikaatit ja luvat — uusi ajoissa. Laadi toimintakertomus ja riskiyhteenveto."
+  source: src:CO1
+- season: Talvi
+  action: "Joulukuu–helmikuu: dokumenttien arkistointi, kirjanpidon sulkeminen (KPL). Koulutussuunnitelmat seuraavalle vuodelle. Päivitä omavalvontasuunnitelma."
+  source: src:CO1
+FAILURE_MODES:
+- mode: Elintarviketarkastuksessa löydetty puute
+  detection: "Ruokaviraston tarkastaja kirjaa poikkeaman — hygienia, dokumentointi, tilat"
+  action: "1. Kirjaa poikkeama omavalvontajärjestelmään. 2. Tee korjaussuunnitelma ja aikataulu (major: 30 vrk). 3. Ilmoita kirjallisesti Ruokavirastolle korjaustoimet. 4. Seuraa toteutumista sisäisesti. 5. Pyydä seurantatarkastus kun korjattu."
+  source: src:CO3
+- mode: GDPR-rikkomus tai tietovuoto
+  detection: "Asiakastietoja paljastunut, hakkerointiyritys, kadonnut laite jolla henkilötietoja"
+  action: "1. Rajaa vuoto välittömästi (vaihda salasanat, sulje pääsy). 2. Dokumentoi mitä tietoja, keistä, milloin. 3. Ilmoita tietosuojavaltuutetulle 72h kuluessa (tietosuoja.fi). 4. Ilmoita asianomaisille henkilöille. 5. Tee korjaava suunnitelma."
+  source: src:CO2
+- mode: Työtapaturma tai läheltä piti -tilanne
+  detection: "Työntekijä loukkaantuu, vaarallinen tilanne havaitaan (kaatuva hylly, mehiläisanafylaksia)"
+  action: "1. Ensihoito ensin (112 tarvittaessa). 2. Suojaa paikka. 3. Ilmoita Tapaturmavakuutuskeskukselle 24h (vakava: poliisi). 4. Tee kirjallinen tapaturmaselvitys. 5. Korjaa vaaratekijä ennen jatkamista."
+  source: src:CO4
+PROCESS_FLOWS:
+  compliance_cycle:
+    steps:
+    - 'Tammikuu: dokumenttien arkistointi, koulutussuunnitelmat, lupa-aikataulu'
+    - 'Q1: sisäinen auditointi, riskiarvio päivitys, omavalvontasuunnitelma'
+    - 'Ennen tuotantokautta: hygieniapassit voimassa, tilat tarkistettu, laitteet kalibroitu'
+    - 'Tuotantokausi: laadunhallintamerkinnät jokaisesta erästä, kirjaa poikkeamat'
+    - 'Q3: ulkoinen auditointi valmistelu, dokumentit järjestykseen'
+    - 'Syksy: sisäinen katselmus, sertifikaattien uusintahakemukset'
+    - 'Vuosi: toimintakertomus, vuosiraportti viranomaisille, koulutustodistukset'
+COMPLIANCE_AND_LEGAL:
+  elintarvikelaki: "Elintarvikelaki 297/2021 — omavalvontavelvollisuus kaikille elintarvikealan toimijoille [src:CO3]"
+  gdpr: "GDPR (EU 2016/679) — rekisteriseloste, tietosuojaseloste, käsittelyperustat dokumentoitava [src:CO2]"
+  tyoturvallisuuslaki: "Työturvallisuuslaki 738/2002 — työnantajan vastuu tapaturmien ehkäisyssä [src:CO4]"
+  kirjanpitolaki: "KPL 2:10 — kirjanpitoaineisto 10 vuotta, tositteet 6 vuotta [src:CO1]"
+UNCERTAINTY_NOTES:
+- "ISO-sertifioinnin tarve riippuu asiakasvaatimuksista — ei pakollinen alkutuottajalle."
+- "GDPR-tulkinnat tarkentuvat jatkuvasti — seuraa tietosuojavaltuutetun ohjeistuksia."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:CO1
+    org: Oikeusministeriö / KPL
+    title: Kirjanpitolaki ja yritysdokumentointi
+    year: 2024
+    url: https://www.finlex.fi/fi/laki/ajantasa/1997/19971336
+    supports: Kirjanpito, arkistointi, luvat, auditoinnit.
+  - id: src:CO2
+    org: Tietosuojavaltuutettu (TSV)
+    title: GDPR-ohjeet yrityksille
+    year: 2025
+    url: https://tietosuoja.fi/
+    supports: GDPR, tietovuoto, rekisteri, ilmoitusvelvollisuus.
+  - id: src:CO3
+    org: Ruokavirasto
+    title: Elintarviketurvallisuus ja omavalvonta
+    year: 2025
+    url: https://www.ruokavirasto.fi/yritykset/elintarvikeala/
+    supports: Elintarvikelaki, omavalvonta, tarkastukset, hygienia.
+  - id: src:CO4
+    org: Työsuojeluhallinto
+    title: Työturvallisuus ja tapaturmat
+    year: 2024
+    url: https://www.tyosuojelu.fi/
+    supports: Työtapaturmat, ilmoitusvelvollisuus, paloturvallisuus.
 eval_questions:
-- q: Mikä on audit finding days?
+- q: Kauanko kriittinen poikkeama pitää korjata?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.audit_finding_days.value
+  source: src:CO1
+- q: Milloin GDPR-tietovuodosta on ilmoitettava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.gdpr_breach_report_hours.value
+  source: src:CO2
+- q: Mikä on elintarvikkeiden kylmäsäilytyslämpötila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.food_safety_temp_c.value
+  source: src:CO3
+- q: Milloin työtapaturmasta on ilmoitettava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.occupational_safety_incident_report_hours.value
+  source: src:CO4
+- q: Kuinka usein paloturvallisuustarkastus tehdään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fire_safety_inspection_years.value
+  source: src:CO4
+- q: Milloin lupien uusintahakemus on jätettävä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.permit_renewal_months.action
+  source: src:CO1
+- q: Kuinka kauan kirjanpito pitää säilyttää?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.documentation_retention_years.value
+  source: src:CO1
+- q: Mitä tehdään keväällä vaatimustenmukaisuuden osalta?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:CO3
+- q: Mitä GDPR-asioita hoidetaan kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:CO2
+- q: Milloin sisäinen auditointi tehdään?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:CO1
+- q: Miten elintarviketarkastuksen poikkeamaan reagoidaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:CO3
+- q: Miten GDPR-rikkomuksessa toimitaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:CO2
+- q: Mitä tehdään työtapaturman jälkeen?
+  a_ref: FAILURE_MODES[2].action
+  source: src:CO4
+- q: Mikä on elintarvikelain omavalvontavelvollisuus?
+  a_ref: COMPLIANCE_AND_LEGAL.elintarvikelaki
+  source: src:CO3
+- q: Mitä GDPR vaatii yritykseltä?
+  a_ref: COMPLIANCE_AND_LEGAL.gdpr
+  source: src:CO2
+- q: Onko ISO-sertifiointi pakollinen alkutuottajalle?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:CO1
+- q: Mikä on vuosittainen vaatimustenmukaisuuden sykli?
+  a_ref: PROCESS_FLOWS.compliance_cycle.steps
   source: src:CO1

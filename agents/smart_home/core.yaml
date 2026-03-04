@@ -8,14 +8,150 @@ profiles:
   - home
 priority: medium
 ASSUMPTIONS:
-- Langaton kotiautomaatio
-- Home Assistant tai vastaava
+- Home Assistant -pohjainen kotiautomaatio Helsingissä (ja mahdollisesti mökillä)
+- Langaton: Zigbee, Z-Wave, WiFi (2.4GHz + 5GHz)
+- WaggleDance-järjestelmä integroitu (MQTT, WebSocket)
+- Sähköyhtiö Caruna/Helen — pörssisähkö mahdollinen
 DECISION_METRICS_AND_THRESHOLDS:
   zigbee_devices_max:
     value: 100
-    action: ">100 laitetta → toinen koordinaattori"
+    action: ">100 Zigbee-laitetta → lisää toinen koordinaattori tai harkitse verkon jakamista"
     source: src:SH1
+  wifi_device_count_max:
+    value: 50
+    action: ">50 WiFi-laitetta samassa verkossa → perusta erillinen IoT-verkko (VLAN) tietoturvan ja suorituskyvyn vuoksi"
+    source: src:SH1
+  battery_check_months:
+    value: 6
+    action: "Langattomien anturien akut: tarkista 6 kk välein — CR2032 kestää 1-3v käytöstä riippuen"
+    source: src:SH2
+  electricity_spot_price_max_eur_per_kwh:
+    value: 0.20
+    action: ">0.20 €/kWh pörssisähkö → siirrä kulutushuippu (pesukone, astianpesukone, varaajalämmitys) halvempaan aikaikkunaan"
+    source: src:SH3
+  ha_backup_interval_days:
+    value: 7
+    action: "Home Assistant: varmuuskopiointi 7 vrk välein (automaattinen HA-Backup tai Samba-jako)"
+    source: src:SH1
+  motion_sensor_timeout_min:
+    value: 5
+    action: "Liikeanturin aikakatkaisuviive 5 min → tasapaino mukavuuden ja energiansäästön välillä (WC: 2 min, olohuone: 10 min)"
+    source: src:SH2
+  temperature_setpoint_away_c:
+    value: 17
+    action: "Poissaolo-tila: laske lämpötila 17°C:een → ~20% lämpöenergian säästö ilman jäätymisriskiä"
+    source: src:SH3
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: tarkista aurinkosuojasäädöt (kaihtimet/verhot) automaatiossa — aurinko nousee matalalta, häikäisyongelma. Päivitä Home Assistant ja kaikki integraatiot ennen kesää. Testaa hälytinjärjestelmät (savut, CO)."
+  source: src:SH2
+- season: Kesä
+  action: "Kesäkuu–elokuu: aktivoi kesätila (valojen aikataulu siirtyy myöhemmäksi). Loma-poissaolotila: lämpötila 22°C (ei ylikuumene), kaihtimet kiinni päivällä. Pörssisähkö: optimoi kulutus (pesukone yöllä). Mökillä: etähallinta HA:n kautta."
+  source: src:SH3
+- season: Syksy
+  action: "Syyskuu–marraskuu: aktivoi lämmitysprofiilit (lämmitys aikataulut), vaihda kesäaika-säädöt. Tarkista oviantureiden ja ikkunaanturien toiminta ennen talvea. Ulkovalaistuksen aikataulut aikaistuvat."
+  source: src:SH2
+- season: Talvi
+  action: "Joulukuu–helmikuu: yölämpötilan lasku ennen nukkumaanmenoa (2°C pudotus 23-06, säästää ~10%). Kuristuksenesto: varmista putkilämmityksen anturit toimivat. Jouluvalaistuksen ajastimet. Pörssisähkö: öisin halvimmillaan — hyödynnä."
+  source: src:SH3
+FAILURE_MODES:
+- mode: Home Assistant -palvelin ei vastaa
+  detection: "Selain tai mobiilisovellus ei yhdistä, automaatiot eivät toimi, laitteet offline"
+  action: "1. Tarkista palvelimen virta ja verkkoyhteys. 2. SSH:lla sisään (pi@homeassistant.local) — tarkista systemctl status home-assistant. 3. Käynnistä uudelleen: sudo systemctl restart home-assistant. 4. Jos ei korjaannu: tarkista lokitiedostot (/config/home-assistant.log). 5. Varmuuskopiosta palautus viimeisenä vaihtoehtona."
+  source: src:SH1
+- mode: Zigbee-verkko hajoaa tai laitteet offline
+  detection: "Useat laitteet yhtä aikaa offline, koordinaattori toimii mutta laitteet eivät"
+  action: "1. Tarkista Zigbee-koordinaattorin USB-yhteys (irroita ja laita takaisin). 2. ZHA tai Zigbee2MQTT: tarkista mesh-verkko kartta (heikot signaalit). 3. Lisää Zigbee-reitterilaitteet (pistorasiaadaptterit toimivat reitteinä). 4. Päivitä koordinaattorin firmware tarvittaessa. 5. Vältä WiFi-kanavia 1,6,11 — ne häiritsevät Zigbee:tä."
+  source: src:SH1
+- mode: Automaatio ei toimi odotetusti
+  detection: "Automaatio laukeaa väärään aikaan, ei laukea lainkaan, tai tekee väärän toiminnon"
+  action: "1. Tarkista HA:n lokit (Settings → System → Logs). 2. Testaa automaatio manuaalisesti Developer Tools → Template. 3. Tarkista entityjen tilat ja attribuutit. 4. Tarkista aikavyöhyke (HA olettaa UTC, säädä timezone: Europe/Helsinki). 5. Yksinkertaista automaatio vaihe kerrallaan."
+  source: src:SH2
+PROCESS_FLOWS:
+  smart_home_maintenance:
+    steps:
+    - 'Viikoittain: tarkista HA:n virheloki, offline-laitteet, varmuuskopio'
+    - 'Kuukausittain: päivitä HA core + lisäosat (HACS), testaa hälyttimet'
+    - 'Puolivuosittain: akut (anturit), palovaroittimet (testipainike), kalibroi lämpöanturit'
+    - 'Vuosittain: tietoturvatarkistus (salasanat, VPN, sertifikaatit), laitekunta'
+    - 'Sesonginvaihto: vaihda automatiikkprofiilit (kesä/talvi), aikataulu-päivitys'
+    - 'Ennen lomaa: aktivoi poissaolotila, tarkista etähallinta toimii'
+COMPLIANCE_AND_LEGAL:
+  tietoturva: "IoT-laitteet tulee eristää pääverkosta (IoT-VLAN) — suojaa henkilödata (GDPR) [src:SH1]"
+  sahko_sopimus: "Pörssisähkösopimus mahdollinen kotiautomaatiolle — optimointi sallittua kuluttajan valinnan mukaan [src:SH3]"
+  palohälyttimet: "Lain mukainen: palovaroitin jokaiseen kerrokseen — HA-integrointi lisää turvallisuutta muttei korvaa lailliset varoittimet [src:SH2]"
+UNCERTAINTY_NOTES:
+- "Zigbee-protokollan versiot (1.2 vs 3.0) voivat aiheuttaa yhteensopivuusongelmia — tarkista aina laitteiden yhteensopivuus Zigbee2MQTT-tukilistatsta."
+- "Pörssisähkön hinnanvaihtelu on arvaamatonta — optimointilogiikka kannattaa testata ennen käyttöönottoa."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:SH1
+    org: Home Assistant Community / Nabu Casa
+    title: Home Assistant dokumentaatio ja best practices
+    year: 2026
+    url: https://www.home-assistant.io/docs/
+    supports: Zigbee, VLAN, varmuuskopiointi, integraatiot, verkko.
+  - id: src:SH2
+    org: Tukes / Pelastustoimi
+    title: Kodin sähköturvallisuus ja palohälyttimet
+    year: 2024
+    url: https://tukes.fi/tuotteet-ja-palvelut/sahko
+    supports: Palovaroittimet, sähköturvallisuus, anturit, akut.
+  - id: src:SH3
+    org: Energiavirasto / Helen / Caruna
+    title: Pörssisähkö ja kulutuksen optimointi
+    year: 2026
+    url: https://www.energiavirasto.fi/
+    supports: Pörssisähkö, kulutuksen siirto, lämmitysoptimointi, energiansäästö.
 eval_questions:
-- q: Mikä on zigbee devices max?
+- q: Paljonko Zigbee-laitteita voi olla samassa verkossa?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.zigbee_devices_max.value
   source: src:SH1
+- q: Milloin IoT-laitteet kannattaa siirtää erilliseen verkkoon?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wifi_device_count_max.action
+  source: src:SH1
+- q: Kuinka usein langattomien laitteiden akut tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.battery_check_months.value
+  source: src:SH2
+- q: Milloin pörssisähköhintaan kannattaa reagoida automaatiolla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.electricity_spot_price_max_eur_per_kwh.action
+  source: src:SH3
+- q: Kuinka usein Home Assistant varmuuskopioidaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ha_backup_interval_days.value
+  source: src:SH1
+- q: Mikä on suositeltu liikeanturin aikakatkaisuaika?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.motion_sensor_timeout_min.action
+  source: src:SH2
+- q: Mihin lämpötilaan lasketaan poissaoloaikana?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.temperature_setpoint_away_c.value
+  source: src:SH3
+- q: Mitä automaatiomuutoksia tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:SH2
+- q: Miten kesä-loma-poissaolotila konfiguroidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:SH3
+- q: Mitä talven automaatiomuutokset sisältävät?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SH3
+- q: Miten toimitaan kun Home Assistant ei vastaa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:SH1
+- q: Miten Zigbee-verkon hajoaminen ratkaistaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:SH1
+- q: Miten debugataan automaatio joka ei toimi?
+  a_ref: FAILURE_MODES[2].action
+  source: src:SH2
+- q: Miksi IoT-laitteet pitää eristää omaan verkkoon?
+  a_ref: COMPLIANCE_AND_LEGAL.tietoturva
+  source: src:SH1
+- q: Mitä Home Assistantin ylläpitorutiini sisältää?
+  a_ref: PROCESS_FLOWS.smart_home_maintenance.steps
+  source: src:SH1
+- q: Voiko Zigbee-laitteet olla yhteensopimattomia keskenään?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:SH1
+- q: Onko pörssisähköoptimointi turvallista automaatiossa?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:SH3

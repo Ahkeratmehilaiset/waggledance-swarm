@@ -1,9 +1,23 @@
 # Vaatimustenmukaisuus — Dokumentointi
-# Auto-generated for WaggleDance Swarm AI
+# WaggleDance Swarm AI
 title: "Dokumentointi"
 agent: "Vaatimustenmukaisuus"
 facts:
-  - "Dokumentoitu tieto: menettely + tallennettu näyttö"
-  - "Versioiden hallinta: hyväksymisprosessi"
-  - "Tallennusaika: tuotekohtainen + 5-10 vuotta"
-  - "Sähköinen DMS: hakua ja versionhallintaa"
+  - "Dokumentoitu tieto (ISO 9001): menettely (ohjeet) + tallennettu näyttö (täytetyt lomakkeet) — molemmat vaaditaan"
+  - "Versioiden hallinta: dokumentilla aina versionumero, päivämäärä, tekijä, hyväksyjä ja muutoshistoria"
+  - "Hyväksymisprosessi: laaditaan → tarkistetaan → hyväksytään → julkaistaan — ei käyttöön ennen hyväksyntää"
+  - "Tallennusaika: lääketeollisuus vähintään 10–15 v tai tuotteen elinkaaren ajan, yleinen teollisuus 5–10 v"
+  - "Sähköinen DMS (Document Management System): SharePoint, Confluence, QMS-järjestelmä — haku, versiointi, jakelu"
+  - "Paperiton toimisto: sähköiset allekirjoitukset (Visma Sign, DocuSign), sertifioitu sähköinen arkistointi"
+  - "GDPR-dokumentointi: käsittelyrekisteri (RoPA) pakollinen yli 250 hengen yrityksille tai riskinalaisten tietojen käsittelyssä"
+  - "SOP (Standard Operating Procedure): työtason ohje, max 2 sivua, kuvalliset ohjeet, päivitettävä muutosten yhteydessä"
+  - "Kriittisten dokumenttien varmuuskopiointi: pilvitallennusta + paikallinen varmuuskopio, RPO < 24 h"
+  - "Asiakirjan elinkaari: luonti → käyttö → arkistointi → tuhoaminen — kaikki vaiheet dokumentoitava"
+  - "Muutosten hallinta (change control): muutosehdotus → riskiarviointi → hyväksyntä → toteutus → sulkeminen"
+  - "Dokumenttien jakelulista: varmista että oikea versio käytössä kaikilla — vanhentunut versio poistettava käytöstä"
+  - "Merkinnät ja nimikirjaimet: GMP-ympäristössä käsinkirjoitetut merkinnät allekirjoitettava, ei peitettävä korjausnesteellä"
+  - "ISO 9001 kohta 7.5: organisaation on ylläpidettävä ja säilytettävä dokumentoitua tietoa riittävästi"
+  - "Ulkoiset asiakirjat: lainsäädäntö, standardit, asiakasvaatimukset — tunnistettava, hallittava ja päivitettävä"
+  - "Mallit ja lomakkeet: valmiit pohjat vähentävät virheitä, versionhallinta myös lomakkeille"
+  - "Dokumentoinnin auditointipolku (audit trail): kuka teki, mitä, milloin — tietojärjestelmässä automaattinen lokitus"
+  - "Säilytysmuoto: sähköinen PDF/A arkistointiin (ISO 19005), ei .docx pitkäaikaisarkistointiin"

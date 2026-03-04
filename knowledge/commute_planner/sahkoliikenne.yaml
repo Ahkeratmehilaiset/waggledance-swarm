@@ -1,8 +1,24 @@
-# Liikkuminen ja työmatka — Sahkoliikenne
-# Auto-generated for WaggleDance Swarm AI
-title: "Sahkoliikenne"
+# Liikkuminen ja työmatka — Sähköiset kulkuvälineet
+# WaggleDance Swarm AI
+title: "Sähköiset kulkuvälineet"
 agent: "Liikkuminen ja työmatka"
 facts:
-  - "Sähköauton kotilataus: 3.6-11 kW"
-  - "Julkiset laturit: Virta, Recharge, K-Lataus"
-  - "Sähköpyörä: 250W max, 25 km/h avustusraja"
+  - "Sähköauton kotilataus: 1-vaiheen 16A pistorasia 3.6 kW (täyslataus 10–20 h), 3-vaiheen 11 kW wallbox 4–8 h"
+  - "Wallbox-asennuksen hinta: 500–1500€ sisältäen asennuksen, kotitalousvähennys 40% vähennyskelpoisesta osasta"
+  - "Julkiset pikalaturit (DC): Virta, Recharge, K-Lataus, ABC, Neste — teho 50–350 kW, 10–80% 20–45 min"
+  - "Virta-laturit: AC 22 kW tai DC 50–150 kW, hinta n. 0.25–0.45 €/kWh, rekisteröityminen sovelluksella"
+  - "ABRP (A Better Route Planner): optimoi latausvälit pitkillä matkoilla sähköautolle"
+  - "Sähköauto hyötyy spot-sähkösopimuksesta: lataa yöllä 0.03–0.08 €/kWh, säästö vs. päivälataus merkittävä"
+  - "Sähköauton työsuhde-etu: 170€/kk (2026) puhdasajoneuvon verotusarvo, edullisempi kuin polttomoottoriauton etu"
+  - "Sähköpyörä (s-pyörä): EU-asetus 250W moottori, avustus päättyy 25 km/h nopeudessa, ei ajokorttia vaadita"
+  - "Sähköpyörän akku: 400–700 Wh, toimintamatka 50–150 km avustuksella, latausaika 3–6 h"
+  - "Tavarasähköpyörä (cargo e-bike): kantavuus 100–200 kg, korvaa auton lyhyillä kauppamatkoilla"
+  - "Sähköpotkulauta (oma): max 25 km/h, 250W, jalkakäytävä tai pyöräkaista, kypärä suositeltava"
+  - "Yhteiskäyttöauto (24Rent, GreenMobility, Kuura): 5–15 €/h tai 50–90 €/vrk, ei omistuskustannuksia"
+  - "Sähköinen kaupunkibussi: HSL:n busseista yli 50% sähköisiä 2026, hiljaisempi ja päästöttömämpi"
+  - "Sähköskootteri (L1e/L3e): <45 km/h = AM-ajokortti, >45 km/h = A1/A-ajokortti, rekisteröintivelvollisuus"
+  - "Latauspisteiden kartta: PlugShare, ChargeMap tai suoraan operaattorin sovelluksesta reaaliaikaisesti"
+  - "Talvivaikutus sähköautoihin: akuston kapasiteetti laskee −20°C:ssa jopa 40%, lataus hitaampaa pakkasella"
+  - "V2G (Vehicle-to-Grid): sähköauto palauttaa energiaa verkkoon edullisina aikoina — Suomessa pilottivaihe 2026"
+  - "CHAdeMO vs. CCS2 vs. Type2: uudet eurooppalaiset autot käyttävät CCS2 (DC) ja Type2 (AC) -standardeja"
+  - "Sähköauton huoltokustannukset ~40% pienemmät kuin polttomoottoriautolla (ei öljynvaihtoja, vähemmän jarruhuoltoa)"

@@ -8,21 +8,185 @@ profiles:
   - home
 priority: medium
 ASSUMPTIONS:
-- Suomalainen kotitalous
-- Verohallinto / Kela
+- Suomalainen kotitalous, Verohallinto / Kela säännöt
+- JKH Service Y-tunnus 2828492-2, mehiläistaloutta harjoittava yrittäjä
+- Asuntolaina tai vuokra-asuminen Helsingissä mahdollinen
+- Mökkikiinteistö Huhdasjärvellä (kakkosasunto/vapaa-ajan asunto)
+- Verovuosi kalenterivuosi, ennakkoverot yritystoiminnasta
 DECISION_METRICS_AND_THRESHOLDS:
   savings_rate_pct:
     value: 10
-    action: "<10% → tarkista kulut, budjetoi"
+    action: "<10% säästöaste → tarkista kulut, budjetoi uudelleen, vähennä harkinnanvaraisia menoja"
     source: src:BT1
   rent_income_ratio_pct:
     value: 33
-    action: ">33% asumiseen → asumistuki"
+    action: ">33% tuloista asumiseen → selvitä Kelan asumistuki tai harkitse asumismuodon muutosta"
     source: src:BT1
+  emergency_fund_months:
+    value: 3
+    action: "<3 kuukauden käyttökulut hätävarannossa → pysäytä muut säästöt, täydennä ensin"
+    source: src:BT2
+  debt_to_income_pct:
+    value: 40
+    action: ">40% velka-tulosuhde → lyhennysohjelman tarkistus, ei uusia luottoja"
+    source: src:BT2
+  kotitalousvahennys_eur:
+    value: 2250
+    action: "Kotitalousvähennys max 2250 €/henkilö/vuosi — kirjaa kaikki työlaskut (remontti, siivous)"
+    source: src:BT3
+  yrittajan_eotp_pct:
+    value: 20
+    action: "<20% YEL-maksu tai eläkesäästöt tuloista → eläketurva vajaa, harkitse lisäsäästöjä"
+    source: src:BT3
+  food_budget_pct:
+    value: 15
+    action: ">15% tuloista ruokaan → tarkista ostotottumukset, hyödynnä oma hunaja ja luomu"
+    source: src:BT1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Veroilmoituksen tarkistus (huhtikuu). Kotitalousvähennykset ja yrityskulut
+    kohdistetaan oikein. Mökki- ja tarhauskauden kuluennuste laaditaan. Yrittäjän
+    ennakkoverot tarkistetaan kevään tulosennusteen perusteella."
+  source: src:BT3
+- season: Kesä
+  action: "Hunajasadon myyntitulot kirjataan sitä mukaa kuin linkous etenee. ALV-ilmoitukset
+    ajallaan. Mökkilomailu: kirjaa mökin käyttökulut (energia, huolto) erillään.
+    Kesätyöntekijä tai aputyövoima: palkanlaskenta ja sivukulut huomioitava."
+  source: src:BT3
+- season: Syksy
+  action: "Budjetti seuraavalle vuodelle laaditaan syyskuussa. Yrityksen verot
+    ennakoidaan. Mökki talvikuntoon — huoltokulut budjettiin. Mahdolliset investoinnit
+    (uudet pesät, laitteet) ajoitetaan verotuksen optimoimiseksi."
+  source: src:BT3
+- season: Talvi
+  action: "Tilinpäätös ja veroilmoituksen esivalmistelu. Kaikki kuitit ja tositteet
+    koottuna. Henkilökohtainen budjetti tarkistetaan — talvi tuo lämmityskulut.
+    YEL-maksun tarkistus tammikuussa."
+  source: src:BT3
+FAILURE_MODES:
+- mode: Ylivelkaantuminen tai maksuvaikeudet
+  detection: "Laskuja jää maksamatta, velka-tulosuhde yli 40%, uusilla luotoilla maksetaan
+    vanhoja"
+  action: "Ota yhteyttä Takuu-Säätiöön tai talous- ja velkaneuvontaan (laki 813/2017).
+    Karsi kulut heti minimiin. Neuvottele maksuohjelma velkojien kanssa."
+  source: src:BT2
+- mode: ALV- tai veroilmoituksen laiminlyönti
+  detection: "OmaVero-palvelussa huomautus, myöhästymissakko tai verottajan kirje"
+  action: "Korjaa ja palauta ilmoitus välittömästi. Maksa myöhästymismaksu. Kirjaa
+    muistutus seuraavien jaksojen deadlineista kalenteriin."
+  source: src:BT3
+- mode: Hätärahaston tyhjeneminen
+  detection: "Hätävararahasto alle 1 kuukauden kuluja — äkillinen sairaus, koneen
+    hajoaminen tai sadon menetys"
+  action: "Väliaikaisesti pidätä kaikki sijoitukset. Nosta tilille 3 kk:n kuluja
+    vastaava summa ennen muita sijoituksia. Harkitse yrittäjän tuloturvavakuutusta."
+  source: src:BT2
+PROCESS_FLOWS:
+  vuosikalenteri:
+    steps:
+    - 'Tammi: YEL-maksujen tarkistus, edellisen vuoden kulukatsaus'
+    - 'Helmi: tilinpäätösaineiston kokoaminen kirjanpitäjälle'
+    - 'Maalis: veroilmoituksen esitarkistus, kotitalousvähennykset'
+    - 'Huhti: veroilmoituksen viimeinen jättöpäivä (sähköinen)'
+    - 'Touko-kesä: hunajamyynnin tulot, ALV-ilmoitukset'
+    - 'Elo: budjettiennuste syys-talvikaudelle'
+    - 'Syys: ensi vuoden budjetin laadinta'
+    - 'Loka-marras: investointipäätökset verovuoden loppuun'
+    - 'Joulu: tilinpäätösajan suunnittelu, hätärahaston tarkistus'
+COMPLIANCE_AND_LEGAL:
+  kotitalousvahennys: "Kotitalousvähennys 40% työn osuudesta, max 2250 €/hlö/v.
+    Koskee remontti-, siivous- ja hoivapalveluja [src:BT3]"
+  alv_hunaja: "Hunajan ALV 13,5% (elintarvike) 1.1.2026 alkaen. Yritys ALV-velvollinen
+    yli 15 000 € liikevaihdosta [src:BT3]"
+  yel: "Yrittäjäeläke YEL pakollinen kun vuosityötulo yli 9 010 € (2026).
+    Maksu 24,1% tai 25,6% iästä riippuen [src:BT3]"
+UNCERTAINTY_NOTES:
+- "ALV-rajat ja kotitalousvähennyksen enimmäismäärät voivat muuttua budjettilakien yhteydessä."
+- "Mökin verotuskohtelu (oma käyttö vs. vuokratulo) vaihtelee käyttötarkoituksen mukaan."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:BT1
+    org: Kuluttajaliitto / Finanssivalvonta
+    title: Kotitalouden budjetointi ja säästäminen
+    year: 2025
+    url: https://www.finanssivalvonta.fi/finanssiasiakas/
+    supports: Säästöaste, asumiskulut, budjetti.
+  - id: src:BT2
+    org: Takuu-Säätiö / Oikeusministeriö
+    title: Velkaantuminen ja talous- ja velkaneuvonta
+    year: 2025
+    url: https://www.takuusaatio.fi/
+    supports: Velka-tulosuhde, hätärahasto, maksuvaikeudet.
+  - id: src:BT3
+    org: Verohallinto
+    title: Yrittäjän verotus ja kotitalousvähennys
+    year: 2026
+    url: https://www.vero.fi/
+    supports: Kotitalousvähennys, ALV, YEL, ennakkoverot.
 eval_questions:
-- q: Mikä on savings rate pct?
+- q: Mikä on suositeltava säästöaste?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.savings_rate_pct.value
   source: src:BT1
-- q: Mikä on rent income ratio pct?
+- q: Mitä tehdään kun säästöaste jää alle 10%?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.savings_rate_pct.action
+  source: src:BT1
+- q: Mikä on asumiskulujen tulosuhteen yläraja?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.rent_income_ratio_pct.value
   source: src:BT1
+- q: Paljonko hätävarannossa tulee olla vähintään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.emergency_fund_months.value
+  source: src:BT2
+- q: Milloin velka-tulosuhde on liian korkea?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.debt_to_income_pct.value
+  source: src:BT2
+- q: Mikä on kotitalousvähennyksen enimmäismäärä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kotitalousvahennys_eur.value
+  source: src:BT3
+- q: Kuinka suuri osa tuloista tulisi mennä YEL-maksuihin tai eläkesäästöihin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.yrittajan_eotp_pct.value
+  source: src:BT3
+- q: Milloin ruokabudjetti on liian suuri?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.food_budget_pct.action
+  source: src:BT1
+- q: Mitä tehdään keväällä talousasioissa?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:BT3
+- q: Miten hunajamyynnin tulot kirjataan kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:BT3
+- q: Milloin seuraavan vuoden budjetti laaditaan?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:BT3
+- q: Mitä talvella tehdään talousasioissa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:BT3
+- q: Mitä tehdään ylivelkaantumisessa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:BT2
+- q: Miten toimitaan ALV-ilmoituksen myöhästyessä?
+  a_ref: FAILURE_MODES[1].action
+  source: src:BT3
+- q: Mitä tehdään hätärahaston tyhjentyessä?
+  a_ref: FAILURE_MODES[2].action
+  source: src:BT2
+- q: Mikä on kotitalousvähennyksen laskentaperuste?
+  a_ref: COMPLIANCE_AND_LEGAL.kotitalousvahennys
+  source: src:BT3
+- q: Mikä on hunajan ALV-kanta?
+  a_ref: COMPLIANCE_AND_LEGAL.alv_hunaja
+  source: src:BT3
+- q: Milloin yrittäjän YEL-maksu on pakollinen?
+  a_ref: COMPLIANCE_AND_LEGAL.yel
+  source: src:BT3
+- q: Milloin veroilmoitus jätetään sähköisesti?
+  a_ref: PROCESS_FLOWS.vuosikalenteri.steps
+  source: src:BT3
+- q: Mistä saa apua maksuvaikeuksiin?
+  a_ref: FAILURE_MODES[0].action
+  source: src:BT2
+- q: Miten mökkilomailu kirjataan budjettiin?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:BT3
+- q: Mikä on YEL-maksun prosentti yrittäjälle?
+  a_ref: COMPLIANCE_AND_LEGAL.yel
+  source: src:BT3

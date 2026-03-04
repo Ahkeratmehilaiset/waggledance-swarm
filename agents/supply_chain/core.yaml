@@ -8,21 +8,200 @@ profiles:
   - factory
 priority: medium
 ASSUMPTIONS:
-- Valmistava teollisuus
-- ERP-järjestelmä
+- Valmistava teollisuus, ERP-järjestelmä hankinta- ja varastonhallintaan
+- JKH Service: mehiläistarvikkeet (kehykset, vahat, sokeri, lääkkeet, purkit) hankittava
+- Kausiluonteinen kysyntä — kevät- ja kesätilaukset kriittisiä, toimitusajat tärkeitä
+- Suomalaisia toimittajia (Mehiläishoitajien liitto, Biolan, Abelo) ja kansainvälisiä
+- Logistiikka: Matkahuolto, PostiPaketti, oma noutokyyti tarvittaessa
 DECISION_METRICS_AND_THRESHOLDS:
   inventory_turnover:
     value: 8
-    action: "<8/v → liikaa varastoa"
+    action: "<8 kierrosta/vuosi → liikaa varastoa, sitoo pääomaa. Tarkista tilausrytmi,
+      vähennä erämääriä tai myy ylijäämä"
     source: src:SC1
   supplier_otd_pct:
     value: 95
-    action: "<95% → vaihtoehtoinen lähde"
+    action: "<95% toimitusvarmuus toimittajalta → vaihtoehtoinen lähde kartoitettava,
+      lisää puskurivarasto kriittisille nimikkeille"
     source: src:SC1
+  safety_stock_days:
+    value: 14
+    action: "<14 pv varmuusvarasto kriittisillä nimikkeillä (sokeri, purkit, mehiläislääkkeet)
+      → tilaa välittömästi"
+    source: src:SC2
+  lead_time_days_critical:
+    value: 7
+    action: ">7 vrk toimitusaika kriittiselle nimikkeelle kauden huipulla → aktivoi
+      varatoimittaja tai noudettava itse"
+    source: src:SC2
+  procurement_cost_pct_revenue:
+    value: 40
+    action: ">40% hankintakustannukset liikevaihdosta → toimittajaneuvottelu,
+      kilpailutus tai vaihtoehtoisten materiaalien harkinta"
+    source: src:SC1
+  stockout_events_year:
+    value: 3
+    action: ">3 varastokatkostapahtumaa/vuosi → varmuusvarasto ja tilauspistelaskelma
+      uudistettava"
+    source: src:SC1
+  damaged_goods_pct:
+    value: 2
+    action: ">2% vaurioituneita toimituksia → reklamaatio toimittajalle, pakkausstandardin
+      tarkistaminen"
+    source: src:SC2
+SEASONAL_RULES:
+- season: Kevät
+  action: "Kaikki linkauskauden tarvikkeet (purkit, kannet, suodatinkangas, sokeri
+    syysruokintaan) tilattava viimeistään maaliskuun lopussa. Mehiläislääkkeet
+    (oksaalihappo, Bayvarol/ApiVar) tilaus ennen varroahoitokautta. Tarkista
+    toimittajien kausivarannot — suosittujen tuotteiden toimitusvaikeudet keväällä."
+  source: src:SC2
+- season: Kesä
+  action: "Huipputuotantoaika: purkit ja kannet voivat loppua nopeasti. Seuraa
+    varastosaldoja päivittäin linkauskauden aikana. Sokerivarasto syysruokintaan
+    hankittava kesä-heinäkuussa (halvempi kuin myöhemmin). Nopeat toimitukset
+    prioriteetti — Matkahuolto tai nouto."
+  source: src:SC2
+- season: Syksy
+  action: "Syysruokintasokeri jo varastossa — varmista riittävyys (15–20 kg/pesä,
+    202 pesää = max 4040 kg). Seuraavan kevään tarvikkeiden esikartoitus. Varastojen
+    inventaario: hävikki, vanhentuneet lääkkeet, tyhjät purkit laskettava."
+  source: src:SC2
+- season: Talvi
+  action: "Tilaa kehykset ja vahat hyvissä ajoin — talvella toimittajat ottavat
+    tilauksia tulevalle kaudelle. Kilpailutus: pyydä tarjoukset kauden tärkeimmistä
+    nimikkeistä (sokeri, purkit, lääkkeet). ERP-tietojen päivitys ja toimittajien
+    arviointi vuositasolla."
+  source: src:SC1
+FAILURE_MODES:
+- mode: Kriittinen varastokatkos linkauskauden aikana (purkit tai kannet loppu)
+  detection: "Varastosaldo nollassa tai alle 2 päivän tarpeessa, toimittajalla ei
+    ole heti saatavilla"
+  action: "Tarkista muut toimittajat (Mehiläistarvike Oy, Ruohonjuuri, kansainvälinen
+    tukku). Noutokuljetus jos saatavilla lähialueella. Siirrä linkousta 1–2 päivää
+    jos mitään muuta ei löydy."
+  source: src:SC2
+- mode: Toimittajan toimitusvaikeus tai konkurssi
+  detection: "Toimittaja ilmoittaa pitkittyneestä toimitusajasta yli 14 pv, tai
+    ei vastaa tilauksiin"
+  action: "Aktivoi varatoimittajan lista välittömästi. Ilmoita sisäisille sidosryhmille
+    viiveestä. Harkitse ostoa kaupasta (hätätilanne). Dokumentoi toimittajan
+    luotettavuus arvioinnissa."
+  source: src:SC1
+- mode: Vaurioitunut tai virheellinen toimitus (esim. rikkinäiset purkit)
+  detection: "Saapuvan tavaran tarkastuksessa löytyy vaurioita, vääriä tuotteita
+    tai puutteellinen määrä"
+  action: "Kuvaa vauriot välittömästi. Reklamaatio toimittajalle 48h kuluessa.
+    Pyydä korvaustoimitus tai hyvitys. Älä käytä vaurioituneita pakkauksia
+    elintarvikkeisiin."
+  source: src:SC2
+PROCESS_FLOWS:
+  hankintasykli:
+    steps:
+    - 'Tammi: toimittajien vuosiarviointi, kilpailutuksen suunnittelu'
+    - 'Helmi: tarjouspyynnöt kauden tärkeimmille nimikkeille'
+    - 'Maalis: tilaukset kauden tarvikkeille (purkit, suodattimet, sokeri)'
+    - 'Huhti: mehiläislääkkeiden tilaus, kehykset ja vahat'
+    - 'Touko-elo: päivittäinen saldoseuranta, lisätilaukset tarvittaessa'
+    - 'Elo: sokerivarasto syysruokintaan varmistettu'
+    - 'Syys: kauden inventaario, hävikkilaskelma'
+    - 'Loka: seuraavan kauden esikartoitus, budjettiennuste'
+    - 'Marras-joulu: ERP-päivitys, toimittaja-arviot'
+COMPLIANCE_AND_LEGAL:
+  lahiruoka: "Suoramyynnissä kotimaisuuden merkintä pakollinen elintarvikelaissa.
+    Hunajan alkuperämaa merkittävä etikettiin [src:SC3]"
+  kemikaalit: "Mehiläislääkkeet (oksaalihappo, amitraasipohjaiset) vaativat
+    reseptin tai eläinlääkärin luvan. Säilytysolosuhteet: viileä, kuiva [src:SC3]"
+  alv_hankinta: "Tarvikkeiden ALV 25,5% (yleinen kanta), sokeri 13,5% (elintarvike).
+    ALV-palautus yritysostoista — kuitti ja Y-tunnus tositteille [src:SC1]"
+UNCERTAINTY_NOTES:
+- "Kausiluonteinen kysyntä vaikeuttaa toimitusvarmuuden arviointia — varmuusvarasto
+  on paras suoja."
+- "Mehiläislääkkeiden saatavuus voi vaihdella — eläinlääkärin kanssa etukäteen sopiminen suositeltavaa."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:SC1
+    org: Logistiikan Maailma / Suomen Osto- ja Logistiikkayhdistys LOGY
+    title: Toimitusketjun hallinta ja varastonohjaustunnusluvut
+    year: 2024
+    url: https://www.logy.fi/
+    supports: Varastonkierto, toimitusvarmuus, hankintakustannus, varastokatkos.
+  - id: src:SC2
+    org: Mehiläistarvike Oy / Suomen Mehiläishoitajain Liitto
+    title: Mehiläishoitotarvikkeet ja toimitusajat Suomessa
+    year: 2025
+    url: https://www.mehilaistarvike.fi/
+    supports: Purkit, kehykset, sokeri, mehiläislääkkeet, toimitusajat.
+  - id: src:SC3
+    org: Ruokavirasto / Verohallinto
+    title: Elintarvikelain merkintävaatimukset ja ALV tarvikkeissa
+    year: 2024
+    url: https://www.ruokavirasto.fi/elintarvikkeet/
+    supports: Alkuperämerkintä, lähiruoka, kemikaalit, ALV.
 eval_questions:
-- q: Mikä on inventory turnover?
+- q: Mikä on tavoiteltu varastonkiertonopeus?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.inventory_turnover.value
   source: src:SC1
-- q: Mikä on supplier otd pct?
+- q: Mitä tehdään kun varastonkierto jää alle 8?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.inventory_turnover.action
+  source: src:SC1
+- q: Mikä on toimittajan toimitusvarmuuden alaraja?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.supplier_otd_pct.value
+  source: src:SC1
+- q: Kuinka monta päivää varmuusvarastoa kriittisille nimikkeille tarvitaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.safety_stock_days.value
+  source: src:SC2
+- q: Milloin kriittisen nimikkeen toimitusaika on liian pitkä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lead_time_days_critical.value
+  source: src:SC2
+- q: Mikä on hankintakustannuksen yläraja suhteessa liikevaihtoon?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.procurement_cost_pct_revenue.value
+  source: src:SC1
+- q: Milloin varastokatkosten määrä on liian suuri?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.stockout_events_year.action
+  source: src:SC1
+- q: Mikä on sallittu vaurioituneita toimituksia prosenttina?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.damaged_goods_pct.value
+  source: src:SC2
+- q: Mitä keväällä tilataan hankinnassa?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:SC2
+- q: Miten varastoja seurataan kesällä linkauskauden aikana?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:SC2
+- q: Kuinka paljon sokeria tarvitaan syysruokintaan 202 pesälle?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:SC2
+- q: Mitä talvella tehdään hankinnassa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SC1
+- q: Mitä tehdään kriittisessä varastokatoksessa linkauskauden aikana?
+  a_ref: FAILURE_MODES[0].action
+  source: src:SC2
+- q: Miten toimitaan toimittajan konkurssin tai toimitusongelman sattuessa?
+  a_ref: FAILURE_MODES[1].action
+  source: src:SC1
+- q: Miten vaurioitunut toimitus reklamoidaan?
+  a_ref: FAILURE_MODES[2].action
+  source: src:SC2
+- q: Onko hunajan alkuperämaan merkintä pakollista?
+  a_ref: COMPLIANCE_AND_LEGAL.lahiruoka
+  source: src:SC3
+- q: Miten mehiläislääkkeet hankitaan ja varastoidaan?
+  a_ref: COMPLIANCE_AND_LEGAL.kemikaalit
+  source: src:SC3
+- q: Mikä on tarvikkeiden ALV-kanta?
+  a_ref: COMPLIANCE_AND_LEGAL.alv_hankinta
+  source: src:SC1
+- q: Miten toimittajan vaurioitunut toimitus tunnistetaan?
+  a_ref: FAILURE_MODES[2].detection
+  source: src:SC2
+- q: Milloin tarjouspyynnöt lähetetään toimittajille?
+  a_ref: PROCESS_FLOWS.hankintasykli.steps
+  source: src:SC1
+- q: Miten toimittajan luotettavuus arvioidaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:SC1
+- q: Milloin varastokatkosten tilauspisteet uudistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.stockout_events_year.action
   source: src:SC1

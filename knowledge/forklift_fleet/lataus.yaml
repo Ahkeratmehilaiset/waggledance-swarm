@@ -1,8 +1,23 @@
 # Trukkiliikenne ja sisälogistiikka — Lataus
-# Auto-generated for WaggleDance Swarm AI
-title: "Lataus"
+# WaggleDance Swarm AI
+title: "Trukin akkujen lataus"
 agent: "Trukkiliikenne ja sisälogistiikka"
 facts:
-  - "Sähkötrukin akku: 8h lataus, 8h viilennys, 8h käyttö"
-  - "Litium-ion: nopealataus, ei muisti-ilmiötä"
-  - "Latausasema: tuuletettu, sammutusväline"
+  - "Sähkötrukin lyijyakku: 8 h lataus — 8 h jäähdytys — 8 h käyttö, muuta sykliä ei suositella"
+  - "Litium-ioniakku trukissa: nopealataus (opportunity charging) mahdollista, ei muisti-ilmiötä, elinikä 3000–5000 sykliä"
+  - "Lyijyakun elinikä: 1000–1500 sykliä, 5–7 vuotta, laatu heikkenee alle 80% kapasiteetissa"
+  - "Akun varausaste (SOC): lyijyakku ei saa laskea alle 20% ennen latausta — syvä purkaus lyhentää elinikää merkittävästi"
+  - "Latausasema: eristetty, hyvin tuuletettu tila (vetykaasu), sammutusväline käden ulottuvilla (CO2 tai jauhesammutin)"
+  - "Latausvirtakaapelin tarkistus: kuluneet tai vaurioituneet kaapelit vaihdettava välittömästi — tulipalovaara"
+  - "Veden lisäys lyijyakkuun: lisää tislattua vettä latauksen jälkeen kun akku on täynnä, ei ennen latausta"
+  - "Akun lämpötila latauksen aikana: max 45°C, jos ylittyy keskeytä lataus ja anna jäähtyä"
+  - "Akkuhuone turvallisuusmääräykset: ATEX-luokitus vyöhyke 2 vetykaasun takia, kipinättömät laitteet"
+  - "Akun vaihto-ohjelma (battery swap): useita akkuja kiertoon, nopea vaihto minimoi seisokin — yleinen 3-vuorotyössä"
+  - "Älylaturi (smart charger): mukautuu akun tilaan, CANBUS-kommunikaatio, estää yli- ja alatäyttölatauksen"
+  - "Latausenergia: 1000 Ah akku tarvitsee n. 110–120% nimelliskapasiteetista latausenergiaa (häviöt 10–20%)"
+  - "Akun kapasiteetti: tarkistetaan vuosittain akuntestauslaitteella, alle 80% jäännöskapasiteetti → vaihtosuositus"
+  - "Akkujen kierrätys: lyijyakut palautettava kierrätykseen (SER-asetus), kierrätysaste Suomessa >98%"
+  - "Latausaikataulu: yövuoron jälkeen lataus päivälle valmiiksi, ajoita sähköllisesti halvimpiin tunteihin (spot-ohjaus)"
+  - "Vetykaasun pitoisuuden raja: alle 25% LEL (alempi syttymisraja, 4% vol.) huonetilassa — hälytys ja tuuletus"
+  - "Akuston korvausarvo: lyijyakku 2–4 €/Ah, 500 Ah akku = 1000–2000€, litiumakku 2–3-kertainen hinta"
+  - "Latauksen dokumentointi: kirjaa latausjaksot, akkujen ID, kapasiteettimittaukset — seuraa elinkaarta"

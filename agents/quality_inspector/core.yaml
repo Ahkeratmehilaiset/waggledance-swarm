@@ -8,21 +8,190 @@ profiles:
   - factory
 priority: high
 ASSUMPTIONS:
-- ISO 9001 -sertifioitu tuotanto
-- SPC-valvontakortit käytössä
+- ISO 9001 -sertifioitu tuotanto, SPC-valvontakortit käytössä
+- JKH Service tuottaa hunajaa suoramyyntiin ja tukkuun — elintarvikelaatu ensisijainen
+- Ruokaviraston vaatimukset hunajalle (kosteus, HMF, diastaasiaktiivisuus)
+- Mökkituotteet (oma käyttö) matalampi valvontastandardi kuin myyntituotteet
+- Omavalvontasuunnitelma pakollinen elintarvikehuoneistolle
 DECISION_METRICS_AND_THRESHOLDS:
   cpk_min:
     value: 1.33
-    action: "<1.33 → prosessi ei kyvykäs"
+    action: "<1.33 Cpk → prosessi ei kyvykäs, SPC-analyysi, kaikkia eriejä pidätettävä
+      kunnes korjattu"
     source: src:QI1
   defect_rate_ppm:
     value: 1000
-    action: ">1000 ppm → 8D-raportti"
+    action: ">1000 ppm → 8D-raportti, juurisyy 72h, asiakaspalautus mahdollinen"
     source: src:QI1
+  honey_moisture_max_pct:
+    value: 18.0
+    action: ">18% kosteus → älä linkoa, jätä kennot kypsymään. Jo linkotussa: tarkkaile
+      fermentoitumista (kuplia, hapan haju). Hylkää jos fermentoitunut."
+    source: src:QI2
+  hmf_max_mg_kg:
+    value: 40
+    action: ">40 mg/kg HMF (hydroksimetylifurfuraali) → hunaja ylikuumennettu tai
+      liian vanha. Ei saa myydä EU:ssa."
+    source: src:QI2
+  diastase_activity_dn:
+    value: 8
+    action: "<8 DN diastaasiaktiivisuus → hunaja kuumennettu tai vanhentunut, ei
+      täytä EU-standardia"
+    source: src:QI2
+  label_compliance_pct:
+    value: 100
+    action: "<100% etiketin oikeellisuus → tuoteerä pidätettävä, etiketti korjattava
+      ennen myyntiä"
+    source: src:QI3
+  customer_complaint_rate_ppm:
+    value: 500
+    action: ">500 ppm asiakasreklamaatioita → prosessitarkistus ja asiakastyytyväisyyskysely"
+    source: src:QI1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Ensimmäinen raaka-aine (kevätmesi, rypsihunajas) — kosteusmittaus välttämätön
+    ennen linkoa. Laadunvarmistuslaitteiden (refraktometri, HMF-testivälineet)
+    kalibrointi ennen kauden alkua. Omavalvontasuunnitelman päivitys."
+  source: src:QI2
+- season: Kesä
+  action: "Huipputuotantoaika: jokainen erä kosteusmitattu (refraktometrillä) ennen
+    linkoa. Korkea lämpötila nopeuttaa HMF:n muodostumista — älä varastoi raakahunajaa
+    yli 25°C. Eräkohtainen kirjanpito. Näytteenotto myyntierille."
+  source: src:QI2
+- season: Syksy
+  action: "Viimeisten erien laadunvarmistus ennen varastointia. Varastolämpötila
+    max +20°C, mieluiten +15°C. Näytteet laboratorioon HMF ja diastaasianalyysiä
+    varten ennen tukkumyyntiä. Etiketit tarkistettava sadon mukaan."
+  source: src:QI3
+- season: Talvi
+  action: "Varastoinnin seuranta: kristalloituminen normaalia — EI heikennä laatua.
+    Tarkista etteivät varastot kostu (kondensaatio). Asiakasreklamaatioiden yhteenveto,
+    korjaavat toimenpiteet seuraavalle kaudelle. ISO 9001 sisäinen auditointi."
+  source: src:QI1
+FAILURE_MODES:
+- mode: Fermentoitunut hunaja-erä
+  detection: "Kuplia säiliössä tai purkissa, hapan tai alkoholinen haju, kosteus
+    yli 18% mittattuna"
+  action: "Erota erä välittömästi muusta varastosta. ÄLÄ myy elintarvikkeena.
+    Fermentoitunut hunaja voidaan käyttää mehiläisten talviruokintaan (ei myyntiin).
+    Dokumentoi erä, selvitä kosteusmittauksen pettäminen."
+  source: src:QI2
+- mode: HMF-ylitys tuotteessa
+  detection: "Laboratoriotulos yli 40 mg/kg tai hunaja on kuumettu yli 40°C pitkäaikaisesti"
+  action: "Erä pidätetään. Ei myyntikelpoinen EU:ssa. Ilmoita asiakkaille jos jo
+    toimitettu. Selvitä lämpötilakirjanpidosta ylikuumenemisen syy."
+  source: src:QI2
+- mode: Vierasaine tai saastuminen tuotteessa
+  detection: "Näytteessä mikrobeja (homeita, hiivoja yli raja-arvojen), antibioottijäämiä
+    tai kasvinsuojeluainejäämiä"
+  action: "Pysäytä koko erä. Ilmoita Ruokavirastolle (elintarvikelaki 54§).
+    Tarvittaessa vapaaehtoinen takaisinveto. Selvitä saastumislähde."
+  source: src:QI3
+PROCESS_FLOWS:
+  laadunvarmistussykli:
+    steps:
+    - 'Ennen linkoa: kosteusmitataan refraktometrillä (alle 18%)'
+    - 'Linkauksen aikana: visuaalinen tarkastus (väri, puhtaus)'
+    - 'Suodatuksen jälkeen: eränumero kirjataan, paino punnitaan'
+    - 'Varastoinnin alussa: lämpötila ja kosteusseuranta'
+    - 'Ennen myyntiä: etikettitarkistus, pakkauksen eheys'
+    - 'Tukkumyyntierät: laboratorionäyte HMF ja diastaasianalyysiin'
+    - 'Asiakasreklamaatio: 8D-raportti viikon sisällä'
+    - 'Vuosittain: ISO 9001 sisäinen auditointi, korjaavat toimenpiteet'
+COMPLIANCE_AND_LEGAL:
+  hunaja_eu: "Neuvoston direktiivi 2001/110/EY (hunaja): kosteus max 20%, HMF max
+    40 mg/kg, diastaasiaktiivisuus min 8 DN [src:QI2]"
+  elintarvikelaki: "Elintarvikelaki 297/2021: omavalvontasuunnitelma pakollinen,
+    eräkohtainen jäljitettävyys 2 vuotta taaksepäin [src:QI3]"
+  iso9001: "ISO 9001:2015 — laadunhallintajärjestelmä; sisäinen auditointi vähintään
+    kerran vuodessa [src:QI1]"
+UNCERTAINTY_NOTES:
+- "HMF-testi vaatii laboratorioanalyysin — kenttäpikatestit ovat viitteellisiä."
+- "Kristalloituminen ei ole virhe — se on merkki aidosta hunajasta."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:QI1
+    org: Suomen Standardisoimisliitto SFS
+    title: ISO 9001:2015 Laadunhallintajärjestelmät
+    year: 2015
+    url: https://www.sfs.fi/julkaisut_ja_palvelut/tuotteet_valokeilassa/iso_9001_2015/
+    supports: Cpk, PPM, 8D-raportti, sisäinen auditointi.
+  - id: src:QI2
+    org: Ruokavirasto / Euroopan komissio
+    title: Hunajan laatu ja EU-direktiivi 2001/110/EY
+    year: 2024
+    url: https://www.ruokavirasto.fi/elintarvikkeet/elintarvikealan-toimijat/hunaja/
+    supports: Kosteus, HMF, diastaasiaktiivisuus, fermentoituminen.
+  - id: src:QI3
+    org: Ruokavirasto
+    title: Elintarvikelaki 297/2021 ja omavalvonta
+    year: 2024
+    url: https://www.ruokavirasto.fi/elintarvikkeet/elintarvikeala/omavalvonta/
+    supports: Etiketointi, jäljitettävyys, vierasaineet, takaisinveto.
 eval_questions:
-- q: Mikä on cpk min?
+- q: Mikä on prosessikyvykkyyden vähimmäisarvo?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.cpk_min.value
   source: src:QI1
-- q: Mikä on defect rate ppm?
-  a_ref: DECISION_METRICS_AND_THRESHOLDS.defect_rate_ppm.value
+- q: Mitä tehdään kun Cpk jää alle 1,33?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cpk_min.action
+  source: src:QI1
+- q: Mikä on hunajan maksimikosteusraja linkoukselle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_moisture_max_pct.value
+  source: src:QI2
+- q: Mikä on HMF:n enimmäisarvo myyntihunajassa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hmf_max_mg_kg.value
+  source: src:QI2
+- q: Mikä on diastaasiaktiivisuuden alaraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.diastase_activity_dn.value
+  source: src:QI2
+- q: Mikä on PPM-virherajan ylityksen toimenpide?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.defect_rate_ppm.action
+  source: src:QI1
+- q: Mitä tarkoittaa 100% etikettinoudattaminen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.label_compliance_pct.action
+  source: src:QI3
+- q: Milloin asiakasreklamaatioaste on hälyttävä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.customer_complaint_rate_ppm.value
+  source: src:QI1
+- q: Mitä laadunvarmistuksessa tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:QI2
+- q: Miten kosteuden vaikutus hunajaan hallitaan kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:QI2
+- q: Mitä laboratoriokokeita tehdään ennen tukkumyyntiä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:QI3
+- q: Miten talvella seurataan varastoitua hunajaa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:QI1
+- q: Miten fermentoitunut hunaja-erä tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:QI2
+- q: Mitä fermentoituneelle hunajalle tehdään?
+  a_ref: FAILURE_MODES[0].action
+  source: src:QI2
+- q: Mitä tehdään HMF-ylityksessä?
+  a_ref: FAILURE_MODES[1].action
+  source: src:QI2
+- q: Miten vierasainesaastumiseen reagoidaan?
+  a_ref: FAILURE_MODES[2].action
+  source: src:QI3
+- q: Mitä EU-direktiivi vaatii hunajan kosteudelta?
+  a_ref: COMPLIANCE_AND_LEGAL.hunaja_eu
+  source: src:QI2
+- q: Kuinka kauan jäljitettävyystietoja tulee säilyttää?
+  a_ref: COMPLIANCE_AND_LEGAL.elintarvikelaki
+  source: src:QI3
+- q: Onko ISO 9001 -auditointi pakollinen?
+  a_ref: COMPLIANCE_AND_LEGAL.iso9001
+  source: src:QI1
+- q: Onko kristalloitunut hunaja virheellistä?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:QI2
+- q: Milloin kosteus mitataan ennen linkoa?
+  a_ref: PROCESS_FLOWS.laadunvarmistussykli.steps
+  source: src:QI2
+- q: Mikä on 8D-raportin deadline?
+  a_ref: PROCESS_FLOWS.laadunvarmistussykli.steps
   source: src:QI1

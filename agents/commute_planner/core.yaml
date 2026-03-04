@@ -8,14 +8,149 @@ profiles:
   - home
 priority: medium
 ASSUMPTIONS:
-- Pääkaupunkiseutu (HSL-alue)
-- Valtakunnallinen VR-liikenne
+- Pääkaupunkiseutu (HSL-alue), Helsinki–Kouvola-väli (VR)
+- JKH Service — työ vaihtelee toimiston, tehtaan ja tarhojen välillä
+- Etätyömahdollisuus olemassa (IT-pohjainen työ)
+- Auto käytössä (pitkä matka Kouvola/Huhdasjärvi)
 DECISION_METRICS_AND_THRESHOLDS:
   commute_time_min:
     value: 45
-    action: ">45 min → harkitse etätyötä"
+    action: ">45 min yhdensuuntainen matka → harkitse etätyöpäivää tai aikataulun muutosta"
     source: src:CP1
+  hsl_monthly_cost_eur:
+    value: 102
+    action: "HSL kausilippu Helsinki vyöhyke AB 2026 ~102 €/kk — vertaa auto- ja polkupyöräkustannuksiin"
+    source: src:CP1
+  train_helsinki_kouvola_min:
+    value: 90
+    action: "Helsinki–Kouvola junalla ~90 min (IC/Pendolino) — auto ~120 min — valitse juna pidemmälle matkalle"
+    source: src:CP2
+  fuel_cost_per_km_eur:
+    value: 0.15
+    action: ">0.15 €/km ajokulut → vertaa joukkoliikenteeseen, verovähennysoikeus 0.30 €/km"
+    source: src:CP3
+  remote_work_days_per_week:
+    value: 2
+    action: "2 etätyöpäivää/vko vähentää merkittävästi matkakuluja ja aikaa — sovi työnantajan kanssa"
+    source: src:CP1
+  bike_commute_distance_km:
+    value: 15
+    action: "Alle 15 km → pyöräily varteenotettava vaihtoehto (sähköpyörä laajentaa 25 km:iin)"
+    source: src:CP1
+  parking_cost_helsinki_eur:
+    value: 4
+    action: "Helsingin keskusta parkki ~4 €/h tai kuukausikortti 150-250 €/kk — joukkoliikenne kannattavampaa"
+    source: src:CP1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: pyöräilykausi alkaa (maanantai-lämpötila >5°C vakiona). Tarkista pyörän kunto, renkaat ja valot. HSL:n liityntäpyöräilyasemat käyttöön. Keli vaihteleva — varaa sadevaatetus."
+  source: src:CP1
+- season: Kesä
+  action: "Kesäkuu–elokuu: vilkkain pyöräilyaika, HSL-autot vähemmän ruuhkaisia. Kesätyöajat voivat lyhentää ruuhkahuippuja. Juna Kouvolaan hyvä vaihtoehto kuumina päivinä. Varmista jäähdytetty vaihtoehto."
+  source: src:CP2
+- season: Syksy
+  action: "Syyskuu–marraskuu: pyöräily jatkuu syyskuun loppuun, varaudu liukkaaseen keliin. HSL-ruuhkat palaavat syyskauden myötä. Valitse varhaisempi juna tai myöhäisempi — väistä ruuhkahuiput."
+  source: src:CP1
+- season: Talvi
+  action: "Joulukuu–helmikuu: talvirenkailla auto tai bussi/juna ensisijainen. Varaudu viiveisiin (lumi, jää). HSL-yöbussit saatavilla. Juna luotettavin pitkillä matkoilla lumisateella."
+  source: src:CP2
+FAILURE_MODES:
+- mode: Juna myöhässä tai peruttu
+  detection: "VR-sovellus tai asemakuulutus ilmoittaa viiveestä tai peruutuksesta"
+  action: "1. Tarkista VR-sovelluksesta seuraava yhteys. 2. Hae korvausliikenne (linja-auto) tai vaihtoehtoinen juna. 3. Yli 60 min viive → VR hyvittää osan lipun hinnasta (asiakaspalvelu tai sovellus). 4. Ilmoita työnantajalle."
+  source: src:CP2
+- mode: HSL-sovellus tai lippu ei toimi
+  detection: "Maksu hylätty, sovellus kaatuu, NFC ei lue"
+  action: "1. Osta kertamatkaliput automaatilta tai puhelimella (HSL-sovellus uudelleen). 2. Ota kuitti talleksi. 3. Ota yhteys HSL asiakaspalveluun jos jatkuva ongelma. 4. Pidä aina varakortti tai käteistä mukana."
+  source: src:CP1
+- mode: Auto hajonnut työmatkalla
+  detection: "Auto ei käynnisty, rengasrikko, moottorivaroitusvalo"
+  action: "1. Siirrä auto turvalliseen paikkaan (varoituskolmio). 2. Soita tiepalveluun (esim. Autoliitto 0200 8080). 3. Järjestä vaihtoehtoinen liikenne (HSL, taksi, VR). 4. Ilmoita työnantajalle. 5. Tarkista vakuutusturva (automaattinen hinaus?)"
+  source: src:CP3
+PROCESS_FLOWS:
+  commute_optimization:
+    steps:
+    - 'Arvioi viikoittain: onko etätyöpäivät optimaalisesti sijoitettu (ruuhkahuiput)?'
+    - 'Kuukausittain: tarkista HSL-kauden voimassaolo, lataa saldo ajoissa'
+    - 'Kevät: aseta pyöräilykauden tavoitteet, tarkista pyörä'
+    - 'Syys: suunnittele talviliikkuminen, varaa talvirenkaat autoon'
+    - 'Vuosittain: laske matkakuluvähennys verotusta varten (0.30 €/km, max 7000 €/v omavastuuosuuden jälkeen)'
+COMPLIANCE_AND_LEGAL:
+  matkakuluvahennys: "Verovähennys työmatkasta 0.30 €/km omalla autolla, max 7000 €/v (omavastuu 750 €). Joukkoliikenteen tositteet vähennyskelpoisia. [src:CP3]"
+  liikkumistuki: "Työnantaja voi maksaa verotonta liikkumistukea 25 €/kk pyöräilyyn (2024 alkaen). [src:CP3]"
+  vuosipassi: "HSL:n vuosilippu kannattaa laskea vs. kausilippu — useimmiten halvempi yli 11 kuukauden käytöllä [src:CP1]"
+UNCERTAINTY_NOTES:
+- "HSL-lippujen hinnat muuttuvat vuosittain — tarkista ajantasaiset hinnat hsl.fi:stä."
+- "VR-aikataulut vaihtelevat sesonkien mukaan — tarkista aina ennen matkaa."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:CP1
+    org: HSL (Helsingin seudun liikenne)
+    title: Lipputuotteet ja reittiohjeet
+    year: 2026
+    url: https://www.hsl.fi/
+    supports: HSL-alueen joukkoliikenne, kausilippu, pyöräily, liityntäliikenne.
+  - id: src:CP2
+    org: VR Group
+    title: Aikataulut ja matkustaminen
+    year: 2026
+    url: https://www.vr.fi/
+    supports: Helsinki–Kouvola-reitti, junaviiveet, korvausliikenne.
+  - id: src:CP3
+    org: Verohallinto
+    title: Työmatkakuluvähennys
+    year: 2026
+    url: https://www.vero.fi/henkiloasiakkaat/vahennykset/tyomatkat/
+    supports: Matkakuluvähennys, liikkumistuki, ajokulut.
 eval_questions:
-- q: Mikä on commute time min?
-  a_ref: DECISION_METRICS_AND_THRESHOLDS.commute_time_min.value
+- q: Milloin kannattaa harkita etätyöpäivää matkan perusteella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.commute_time_min.action
+  source: src:CP1
+- q: Paljonko HSL:n kausilippu maksaa Helsingissä 2026?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hsl_monthly_cost_eur.value
+  source: src:CP1
+- q: Kuinka kauan Helsinki–Kouvola-väli kestää junalla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.train_helsinki_kouvola_min.value
+  source: src:CP2
+- q: Mikä on ajokulun verovähennysperuste per kilometri?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fuel_cost_per_km_eur.action
+  source: src:CP3
+- q: Montako etätyöpäivää viikossa kannattaa tavoitella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.remote_work_days_per_week.value
+  source: src:CP1
+- q: Milloin pyöräily on kannattava vaihtoehto työmatkalle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bike_commute_distance_km.action
+  source: src:CP1
+- q: Paljonko Helsingin keskustan pysäköinti maksaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.parking_cost_helsinki_eur.action
+  source: src:CP1
+- q: Milloin pyöräilykausi alkaa Helsingissä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:CP1
+- q: Miten talvella kannattaa liikkua?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:CP2
+- q: Miten toimitaan jos juna on myöhässä yli 60 minuuttia?
+  a_ref: FAILURE_MODES[0].action
+  source: src:CP2
+- q: Mitä tehdään jos HSL-lippu ei toimi?
+  a_ref: FAILURE_MODES[1].action
+  source: src:CP1
+- q: Mitä tehdään jos auto hajoaa työmatkalla?
+  a_ref: FAILURE_MODES[2].action
+  source: src:CP3
+- q: Mikä on työmatkavähennyksen maksimimäärä?
+  a_ref: COMPLIANCE_AND_LEGAL.matkakuluvahennys
+  source: src:CP3
+- q: Mitä on työnantajan liikkumistuki?
+  a_ref: COMPLIANCE_AND_LEGAL.liikkumistuki
+  source: src:CP3
+- q: Milloin vuosilippu kannattaa enemmän kuin kausilippu?
+  a_ref: COMPLIANCE_AND_LEGAL.vuosipassi
+  source: src:CP1
+- q: Miten liikkuminen optimoidaan vuosittain?
+  a_ref: PROCESS_FLOWS.commute_optimization.steps
+  source: src:CP1
+- q: Muuttuvatko HSL-hinnat vuosittain?
+  a_ref: UNCERTAINTY_NOTES
   source: src:CP1

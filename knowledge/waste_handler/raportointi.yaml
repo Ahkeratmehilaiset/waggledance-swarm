@@ -1,8 +1,23 @@
 # Jätevirtojen hallinta — Raportointi
-# Auto-generated for WaggleDance Swarm AI
-title: "Raportointi"
+# WaggleDance Swarm AI
+title: "Jäteraportit ja kirjanpito"
 agent: "Jätevirtojen hallinta"
 facts:
-  - "YLVA-järjestelmä: vuosiraportti ELY-keskukselle"
-  - "Siirtoasiakirja: vaarallisen jätteen kuljetuksessa aina mukana"
-  - "Jätekirjanpito: laji, määrä, käsittelytapa, vastaanottaja"
+  - "YLVA-järjestelmä (Syke): vaarallisen jätteen vuosiraportti ELY-keskukselle, deadline 31.3. edellisvuodelta"
+  - "Siirtoasiakirja: vaarallisen jätteen kuljetuksessa aina mukana (jätelaki 646/2011, 29§), sähköinen tai paperinen"
+  - "Jätekirjanpito: laji, määrä (kg tai m³), käsittelytapa, vastaanottaja — säilytettävä 3 vuotta"
+  - "EWC-koodi (European Waste Catalogue): 6-numeroinen jäteluokituskoodi, pakollinen kaikille jätteille raportoinnissa"
+  - "Vaarallinen jäte (ongelmajäte): merkintä L-koodilla tai HP-ominaisuuksilla (esim. HP3 = syttyvä, HP14 = ympäristölle vaarallinen)"
+  - "Sähköinen siirtoasiakirja: Jäterekisteri.fi-palvelu tai yritysten omat järjestelmät — paperinen hyväksytty edelleen 2026"
+  - "Jäterekisteri (Valvira/Syke): kaikki yli 10 000 t/v jätemäärät tai vaarallinen jäte → rekisteröitymisvelvollisuus"
+  - "Jätteen hierarkia (JäteL 8§): ehkäisy > uudelleenkäyttö > kierrätys > hyödyntäminen energiana > loppukäsittely"
+  - "Hyötykäyttöaste-raportointi: EU:n tavoite 70% yhdyskuntajätteistä kierrätykseen 2030, Suomi n. 47% (2024)"
+  - "Lajittelupiste (green point): kiinteistön lajitteluasema, raportointi jäteyhtiölle (Remeo, Lassila & Tikanoja, Stena)"
+  - "Hukkaruokaraportointi (Oiva-tarkastukset): elintarviketuotantolaitos raportoi ruokahävikin vuosittain Ruokavirastolle"
+  - "Pakkausjäteraportti (RINKI): pakkauksien tuottajavastuuyhteisö, raportointi yli 1 milj. € liikevaihdon yrityksille"
+  - "Rakennusjäteraportti: purkutyössä >10 t jätettä → erillinen jäteraporttivelvollisuus ympäristöluvassa tai ilmoituksessa"
+  - "CO2-jalanjälki jäteraportoinnissa: jätteen käsittelyn päästökerroin (t CO2e/t jätettä) toimialakohtainen"
+  - "Auditointi jätehuollosta: jätteen vastaanottajan lupa tarkistettava vuosittain — lain mukainen käsittely vaadittava"
+  - "Jätehuoltomääräykset kunnittain: kunnan omat lajittelumääräykset voivat olla tiukempia kuin valtakunnalliset"
+  - "Ympäristölupaan perustuvat raportit: vuosiraportti aluehallintovirastolle (AVI) vuosittain tammikuun loppuun mennessä"
+  - "Jätemaksujen perusteet: jätteen laji, määrä, vaarallisuus — laita-takaisinottojärjestelmät (SER, akut, renkaat) maksuttomia"

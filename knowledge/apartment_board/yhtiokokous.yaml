@@ -1,9 +1,24 @@
-# Taloyhtiöasiat — Yhtiokokous
-# Auto-generated for WaggleDance Swarm AI
-title: "Yhtiokokous"
+# Taloyhtiöasiat — Yhtiökokous
+# WaggleDance Swarm AI
+title: "Yhtiökokous"
 agent: "Taloyhtiöasiat"
 facts:
-  - "Varsinainen yhtiökokous 6 kk kuluessa tilikauden päättymisestä"
-  - "Äänioikeus osakkeiden mukaan"
-  - "Ylimääräinen yhtiökokous: 1/10 osakkeenomistajista voi vaatia"
-  - "Etäosallistuminen mahdollista jos yhtiöjärjestyksessä sallittu"
+  - "Varsinainen yhtiökokous: pidettävä 6 kuukauden kuluessa tilikauden päättymisestä (AsOyL 6:3)"
+  - "Kokouskutsu: toimitettava kirjallisesti aikaisintaan 2 kuukautta ja viimeistään 2 viikkoa ennen kokousta"
+  - "Äänioikeus: yksi ääni per huoneisto tai osakkeiden lukumäärän mukaan (yhtiöjärjestys ratkaisee)"
+  - "Ylimääräinen yhtiökokous: hallitus kutsuu koolle, tai 1/10 osakkeenomistajista voi vaatia kirjallisesti"
+  - "Etäosallistuminen: mahdollinen jos yhtiöjärjestyksessä sallittu tai hallitus niin päättää — kirjattava pöytäkirjaan"
+  - "Pöytäkirja: laadittava 3 viikon kuluessa kokouksesta, osakkailla oikeus tutustua siihen"
+  - "Päätöksenteko: enemmistöpäätös (>50% äänistä) normaaliasioissa, 2/3 määräenemmistö remonttiasioissa"
+  - "Yhtiöjärjestyksen muutos: 2/3 määräenemmistö, rekisteröitävä Patentti- ja rekisterihallitukseen"
+  - "Tilinpäätöksen hyväksyminen: hallituksen on esitettävä tilinpäätös tilintarkastettuna kokoukselle"
+  - "Vastiketason päätös: yhtiökokous vahvistaa hoitovastikkeen ja mahdolliset perusparannusvastikkeet"
+  - "Talousarvio: hallitus valmistelee, yhtiökokous hyväksyy vuodeksi kerrallaan"
+  - "Hallituksen valinta: yhtiökokous valitsee hallituksen, toimikausi 1–2 vuotta (yhtiöjärjestyksen mukaan)"
+  - "Isännöitsijän valinta: hallitus valitsee isännöitsijän, isännöitsijä voi olla henkilö tai yhtiö"
+  - "Tilintarkastajan tai toiminnantarkastajan valinta: pakollinen, tarkastaa tilinpäätöksen oikeellisuuden"
+  - "Remonttihankkeen päätös: iso remontti (putki, julkisivu) vaatii 2/3 enemmistön ja toteutussuunnitelman"
+  - "Osakkeenomistajan kyselyoikeus: oikeus saada lisätietoja kokouksen esityslistalla olevista asioista"
+  - "Moiteaika: yhtiökokouksen päätöstä voidaan moittia käräjäoikeudessa 3 kuukauden kuluessa"
+  - "Kokousasiakirjat: esityslista, tilinpäätös, tilintarkastuskertomus toimitettava osakkeenomistajille etukäteen"
+  - "Kokouksen avaus ja puheenjohtajan valinta: hallituksen puheenjohtaja avaa kokouksen, sitten valitaan kokouspuheenjohtaja"

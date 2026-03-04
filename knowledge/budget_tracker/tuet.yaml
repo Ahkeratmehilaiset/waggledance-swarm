@@ -1,9 +1,24 @@
-# Kotitalouden raha-asiat — Tuet
-# Auto-generated for WaggleDance Swarm AI
-title: "Tuet"
+# Kotitalouden raha-asiat — Tuet ja avustukset
+# WaggleDance Swarm AI
+title: "Tuet ja avustukset"
 agent: "Kotitalouden raha-asiat"
 facts:
-  - "Yleinen asumistuki (Kela): tulosidonnainen"
-  - "Lapsilisä: 1. lapsi 94.88€/kk (2026)"
-  - "Kotitalousvähennys: 40% työkorvauksesta, max 2250€/v"
-  - "Opintotuet: opintoraha + asumistuki + lainatakaus"
+  - "Yleinen asumistuki (Kela): tulosidonnainen, pari voi saada tukea, hakemus Kela.fi tai Kela-sovelluksella"
+  - "Lapsilisä: 1. lapsi 94.88 €/kk, 2. lapsi 104.84 €/kk, 3. lapsi 133.79 €/kk, 4. lapsi 153.24 €/kk (2026)"
+  - "Kotitalousvähennys: 40% työn osuudesta, max 2250 €/henkilö/vuosi — siivous, remontit, kotihoidon tuki"
+  - "Opintotukiraha: max 268.23 €/kk (itsenäisesti asuva), maksetaan 9 kuukautta/lukuvuosi (2026)"
+  - "Opintolainan valtiontakaus: 650 €/kk amk/yliopisto, 300 €/kk toinen aste — hae samalla kun opintorahakin"
+  - "Kelan sairaspäiväraha: 70% tuloista ensimmäisiltä 100 päivältä, omavastuuaika 9 arkipäivää"
+  - "Toimeentulotuki: viimesijainen tuki, perusosa 2026: yksinasuva 563.97 €/kk, hakeminen Kelasta tai kunnasta"
+  - "Vammaistuki: alle 16-vuotiaan vammaistuki 97–396 €/kk Kelalta vammaisuuden asteesta riippuen"
+  - "Lastenhoidon tuki (kotihoidon tuki): 344.84 €/kk yhdestä alle 3-vuotiaasta lapsesta (Kela, 2026)"
+  - "Yksityisen hoidon tuki: päiväkodissa yksityinen hoito, Kela maksaa suoraan hoitopaikalle, 189.44 €/kk (2026)"
+  - "Eläkkeensaajan asumistuki: oma tukimuoto eläkeläisille, tulo- ja varallisuussidonnainen, hae Kelasta"
+  - "Takuueläke: pienin eläke Suomessa 978.02 €/kk (2026), varmistaa vähimmäiseläkkeen"
+  - "Energiatuki kotitalouksille: sähkövähennys max 600 €/vuosi sähkölaskuista 2023–2025 (erillinen hätämekanismi)"
+  - "Kotitalousvähennys remontissa: tilaajan oman työn osuus ei vähennyskelpoinen, vain ulkopuolinen työ"
+  - "Omaishoitajan tuki: kunnalta, vähintään 425.61 €/kk (2026), lisäksi vapaat 2 vrk/kk"
+  - "ARA-korjausavustus: vanhoille tai vammaisille kotitalousomistajille, 40% hyväksyttävistä korjauskustannuksista"
+  - "Opiskelijan asumislisä (opintotuki): max 210 €/kk, asuntolan tai vuokra-asunnon kulut — haetaan Kelasta"
+  - "Työllistymissuunnitelma ja aktivointituki: TE-toimiston kautta, kotoutumistuki maahanmuuttajille 1329 €/kk (2026)"
+  - "Äitiys-, isyys- ja vanhempainraha: 10 kuukautta yhteensä, korvausprosentti 70–90% tuloista (2026 reformi)"

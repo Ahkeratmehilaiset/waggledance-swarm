@@ -1,5 +1,35 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.0 (2026-03-04) — Dashboard Analytics + Runtime API + Agent Visualization
+
+### New: Backend Analytics API (4 endpoints)
+- `backend/routes/analytics.py`: `/api/analytics/trends` (7-day halluc/cache/RT trend), `/api/analytics/routes` (route breakdown), `/api/analytics/models` (model usage %), `/api/analytics/facts` (fact growth timeline)
+- Reads `data/learning_metrics.jsonl` and `data/morning_reports.jsonl` for real data
+
+### New: Round Table Transcript API (2 endpoints)
+- `backend/routes/round_table.py`: `/api/round-table/recent` (latest discussions with agent dialogue), `/api/round-table/stats` (aggregate stats, most active agents)
+- Finnish beekeeping-themed demo discussions (varroa treatment, spring inspection, energy optimization)
+
+### New: Agent Levels API (2 endpoints)
+- `backend/routes/agents.py`: `/api/agents/levels` (all 75 agents with level/trust/halluc), `/api/agents/leaderboard` (top by trust, queries, reliability)
+- Level distribution: NOVICE→MASTER with simulated trust scores from agents/ directory
+
+### New: Runtime Settings API (2 endpoints)
+- `backend/routes/settings.py`: `GET /api/settings` (feature toggles from settings.yaml), `POST /api/settings/toggle` (toggle feeds/sensors/voice/audio on/off)
+- 13 toggleable features with safe key validation
+
+### Dashboard: 3 new panels in right column
+- **AnalyticsPanel**: 7-day trend bar chart (response time), halluc/cache/RT live stats
+- **RoundTablePanel**: latest discussion transcript, agent dialogue with consensus highlight
+- **AgentGridPanel**: 75-agent colored grid (M/E/J/A/N) with level distribution summary
+- `dashboard/src/hooks/useApi.js`: polls 4 new endpoints (analytics, round-table, agents, settings)
+- `dashboard/src/App.jsx`: 3 new components + Tests indicator 35→36
+
+### Backend wiring
+- `backend/main.py`: 4 new routers wired (analytics, round_table, agents, settings)
+
+---
+
 ## v0.0.9 (2026-03-04) — Phase 8: Data Feeds + Knowledge Enrichment + Backend Improvements
 
 ### New: Phase 8 — External Data Feeds test suite

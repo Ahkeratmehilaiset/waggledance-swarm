@@ -769,6 +769,59 @@ function Overlay({item,color,hw,onClose,t}){const calc=hw?.calc;
   </div></div>);
 }
 
+// ═══ ANALYTICS MINI-PANEL ═══
+function AnalyticsPanel({data,color}){
+  if(!data||!data.days||data.days.length===0)return null;
+  const maxRT=Math.max(...data.rt_trend,1);
+  return(<div style={{marginTop:14,padding:"8px 0",borderTop:`1px solid ${color}15`}}>
+    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>LEARNING ANALYTICS</div>
+    <div style={{fontSize:8,color:"rgba(255,255,255,.25)",marginBottom:6}}>7-DAY TREND — {data.total_queries||0} queries</div>
+    <div style={{display:"flex",gap:3,alignItems:"flex-end",height:40,marginBottom:6}}>
+      {data.rt_trend.map((v,i)=>(<div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+        <div style={{width:"100%",background:`${color}30`,borderRadius:2,height:Math.max(2,v/maxRT*32)}}/>
+        <span style={{fontSize:6,color:"rgba(255,255,255,.20)"}}>{data.days[i]?.slice(5)}</span>
+      </div>))}
+    </div>
+    <div style={{display:"flex",gap:8,fontSize:8}}>
+      <span style={{color:"#22C55E"}}>Halluc: {((data.halluc_trend[data.halluc_trend.length-1]||0)*100).toFixed(1)}%</span>
+      <span style={{color:"#22D3EE"}}>Cache: {((data.cache_trend[data.cache_trend.length-1]||0)*100).toFixed(0)}%</span>
+      <span style={{color:color}}>RT: {data.rt_trend[data.rt_trend.length-1]||0}ms</span>
+    </div>
+  </div>);
+}
+
+// ═══ ROUND TABLE MINI-PANEL ═══
+function RoundTablePanel({data,color}){
+  if(!data||!data.discussions||data.discussions.length===0)return null;
+  const latest=data.discussions[0];
+  return(<div style={{marginTop:14,padding:"8px 0",borderTop:`1px solid ${color}15`}}>
+    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>ROUND TABLE — LATEST</div>
+    <div style={{fontSize:10,color:"rgba(255,255,255,.55)",fontWeight:600,marginBottom:4}}>{latest.topic}</div>
+    <div style={{fontSize:8,color:"rgba(255,255,255,.25)",marginBottom:6}}>{latest.agent_count} agents — {(latest.agreement*100).toFixed(0)}% agreement</div>
+    {latest.discussion.slice(-3).map((d,i)=>(<div key={i} style={{padding:"3px 0",borderLeft:`2px solid ${d.agent==="Kuningatar"?color:"rgba(255,255,255,.08)"}`,paddingLeft:6,marginBottom:3}}>
+      <span style={{fontSize:7.5,color:d.agent==="Kuningatar"?color:"rgba(255,255,255,.35)",fontWeight:600,letterSpacing:1}}>{d.agent}</span>
+      <div style={{fontSize:9,color:"rgba(255,255,255,.40)",lineHeight:1.5}}>{d.msg}</div>
+    </div>))}
+    <div style={{fontSize:9,color:color,fontWeight:600,marginTop:4,padding:"4px 6px",background:`${color}08`,borderRadius:3}}>{latest.consensus}</div>
+  </div>);
+}
+
+// ═══ AGENT GRID MINI-PANEL ═══
+function AgentGridPanel({data,color}){
+  if(!data||!data.agents)return null;
+  const LC={5:"#22C55E",4:"#A78BFA",3:"#22D3EE",2:"#F59E0B",1:"#6B7280"};
+  const LN={5:"M",4:"E",3:"J",2:"A",1:"N"};
+  return(<div style={{marginTop:14,padding:"8px 0",borderTop:`1px solid ${color}15`}}>
+    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>AGENT LEVELS — {data.total} agents</div>
+    <div style={{display:"flex",gap:4,marginBottom:8,fontSize:8}}>
+      {Object.entries(data.level_distribution||{}).map(([name,cnt])=>(<span key={name} style={{color:LC[{MASTER:5,EXPERT:4,JOURNEYMAN:3,APPRENTICE:2,NOVICE:1}[name]||1]}}>{name.slice(0,3)}: {cnt}</span>))}
+    </div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:2}}>
+      {data.agents.slice(0,75).map((a,i)=>(<div key={i} title={`${a.agent_id} L${a.level} T:${a.trust_score}`} style={{width:10,height:10,borderRadius:2,background:LC[a.level]||"#333",opacity:0.7,fontSize:5,display:"flex",alignItems:"center",justifyContent:"center",color:"#000",fontWeight:800}}>{LN[a.level]}</div>))}
+    </div>
+  </div>);
+}
+
 function FeatureList({feats,color,label,onOpen,t}){return(<div><div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:10}}>{label}</div>{[{key:"hw",icon:"💻",title:t.hwSpec,d:t.hwDesc},{key:"agents",icon:"🤖",title:t.agents,d:t.agentsDesc}].map(s=>(<div key={s.key} onClick={()=>onOpen(s.key)} style={{cursor:"pointer",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,.025)"}}><div style={{fontSize:12,color:color+"90",fontWeight:600,letterSpacing:2}}>{s.icon} {s.title}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{s.d}</div></div>))}{feats.map((f,i)=>(<div key={i} onClick={()=>onOpen(f)} style={{cursor:"pointer",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,.02)",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:11,color:"rgba(255,255,255,.55)",fontWeight:600,letterSpacing:1.5}}>{f.title}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{f.desc}</div></div><span style={{fontSize:10,color:color+"45"}}>→</span></div>))}<div onClick={()=>onOpen("info")} style={{cursor:"pointer",padding:"7px 0",marginTop:4,borderTop:`1px solid ${color}10`}}><div style={{fontSize:12,color:color+"90",fontWeight:600,letterSpacing:2}}>🧠 {t.techArch}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{t.techArchDesc}</div></div><div onClick={()=>onOpen("disclaimer")} style={{cursor:"pointer",padding:"7px 0",borderTop:"1px solid rgba(255,255,255,.03)"}}><div style={{fontSize:12,color:"rgba(255,255,255,.40)",fontWeight:600,letterSpacing:2}}>⚠️ {t.disclaimer}</div><div style={{fontSize:9,color:"rgba(255,255,255,.25)"}}>{t.disclaimerDesc}</div></div></div>)}
 
 export default function App(){
@@ -974,7 +1027,7 @@ export default function App(){
   const _ttsOn = api.voiceStatus?.tts_available;
   const _audioOn = api.audioStatus?.available && api.audioStatus?.status?.started;
   const _tier = api.status?.elastic_scaler?.tier || null;
-  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"35/35",c:"#22C55E"},{k:"Speed",v:"3s\u219218ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"\u2014",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col},{k:"Tier",v:_tier?_tier.toUpperCase():"—",c:_tier?"#A78BFA":"rgba(255,255,255,.20)"},{k:"MQTT",v:_mqttOn?"ON":"OFF",c:_mqttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"HA",v:_haOn?"ON":"OFF",c:_haOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Cam",v:_frigOn?"ON":"OFF",c:_frigOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Alerts",v:`${_alertCnt}`,c:_alertCnt>0?"#F59E0B":"rgba(255,255,255,.20)"},{k:"Audio",v:_audioOn?"ON":"OFF",c:_audioOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"STT",v:_sttOn?"ON":"OFF",c:_sttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"TTS",v:_ttsOn?"ON":"OFF",c:_ttsOn?"#22C55E":"rgba(255,255,255,.20)"}];
+  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"36/36",c:"#22C55E"},{k:"Speed",v:"3s\u219218ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"\u2014",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col},{k:"Tier",v:_tier?_tier.toUpperCase():"—",c:_tier?"#A78BFA":"rgba(255,255,255,.20)"},{k:"MQTT",v:_mqttOn?"ON":"OFF",c:_mqttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"HA",v:_haOn?"ON":"OFF",c:_haOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Cam",v:_frigOn?"ON":"OFF",c:_frigOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Alerts",v:`${_alertCnt}`,c:_alertCnt>0?"#F59E0B":"rgba(255,255,255,.20)"},{k:"Audio",v:_audioOn?"ON":"OFF",c:_audioOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"STT",v:_sttOn?"ON":"OFF",c:_sttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"TTS",v:_ttsOn?"ON":"OFF",c:_ttsOn?"#22C55E":"rgba(255,255,255,.20)"}];
   return(
     <div style={{background:"#000",color:"#fff",minHeight:"100vh",fontFamily:"'Inter',system-ui,sans-serif",overflow:"hidden"}}>
       <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.15}}@keyframes breathe{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.1);opacity:1}}@keyframes explodeIn{0%{transform:scale(0);opacity:0}60%{transform:scale(1.15);opacity:1}100%{transform:scale(1);opacity:1}}*{box-sizing:border-box;margin:0;padding:0}button{font-family:inherit}::-webkit-scrollbar{display:none}*{scrollbar-width:none}input::placeholder{color:rgba(255,255,255,.28)}`}</style>
@@ -1013,7 +1066,7 @@ export default function App(){
               <div style={{textAlign:"center",marginTop:-8}}><div style={{fontSize:34,fontWeight:200,color:"rgba(255,255,255,.65)",letterSpacing:6}}>{D_IC[dom]} {t.domains[dom].label}</div><div style={{fontSize:14,color:"rgba(255,255,255,.30)",letterSpacing:3,marginTop:5}}>{t.domains[dom].tag}</div></div>
               <div style={{marginTop:10,display:"flex",flexWrap:"wrap",justifyContent:"center",gap:"4px 14px",maxWidth:440}}>{aw.map((a,i)=>(<div key={i} style={{fontSize:9.5,color:"rgba(255,255,255,.30)",letterSpacing:1}}>{a.k}: <span style={{color:a.c,fontWeight:600,fontFamily:"monospace"}}>{a.v}</span></div>))}</div>
             </div>
-            <div style={{padding:"12px 14px",overflowY:"auto",maxHeight:"calc(100vh - 52px)"}}><FeatureList feats={t.feats[dom]} color={col} label={t.features} onOpen={setOverlay} t={t}/></div>
+            <div style={{padding:"12px 14px",overflowY:"auto",maxHeight:"calc(100vh - 52px)"}}><FeatureList feats={t.feats[dom]} color={col} label={t.features} onOpen={setOverlay} t={t}/><AnalyticsPanel data={api.analytics} color={col}/><RoundTablePanel data={api.roundTable} color={col}/><AgentGridPanel data={api.agentLevels} color={col}/></div>
           </div>
           <div style={{position:"fixed",bottom:0,left:0,right:0,padding:"3px 22px",background:"rgba(0,0,0,.93)",borderTop:"1px solid rgba(255,255,255,.025)",display:"flex",justifyContent:"space-between",fontSize:6,color:"rgba(255,255,255,.15)",letterSpacing:3}}><span>{t.bottomL}</span><span>{t.bottomC}</span><span>{fc.toLocaleString()} FACTS</span></div>
         </div>

@@ -1,5 +1,5 @@
 # WAGGLEDANCE SWARM AI -- PROJECT BRIEF
-# Auto-generated: 2026-03-04 13:09
+# Auto-generated: 2026-03-04 22:44
 # Health Score: 100/100
 
 ## Hardware
@@ -10,54 +10,54 @@
 - Ollama models: all-minilm:latest, deepseek-r1:1.5b, qwen3:1.7b, qwen3:0.6b, nomic-embed-text:latest, phi4-mini-reasoning:latest, phi4-mini:latest, smollm2:1.7b, llama3.2:3b, llama3.2:1b
 
 ## Codebase Stats
-- Files: 530 (135 .py, 286 .yaml, 3 .jsx/.tsx)
-- Total lines: 191,249
+- Files: 534 (139 .py, 286 .yaml, 3 .jsx/.tsx)
+- Total lines: 200,036
 - Agents: 75
 - Profile breakdown: gadget=3, cottage=46, home=41, factory=28
 - Active profile: cottage
 
 ## Component Test Results
-Test run: 2026-03-04 13:09 | Duration: 1045.6s
+Test run: 2026-03-04 22:44 | Duration: 1044.5s
 
 | Phase | Test | Pass | Fail | Warn | Status | Time |
 |-------|------|------|------|------|--------|------|
-| 1-2 | General Diagnostics | 67 | 0 | 2 | PASS | 8.4s |
-| 2 | Translation Pipeline | 50 | 0 | 7 | PASS | 7.9s |
-| 3 | Social Learning | 70 | 0 | 0 | PASS | 32.4s |
-| 4 | Advanced Learning | 102 | 0 | 1 | PASS | 477.2s |
-| 4ijk | Bilingual/Cache/Enrich | 84 | 0 | 1 | PASS | 236.1s |
-| 8 | External Data Feeds | 104 | 0 | 1 | PASS | 1.0s |
-| 9 | Autonomous Learning | 115 | 0 | 0 | PASS | 15.6s |
-| 10 | Micro-Model Training | 73 | 0 | 1 | PASS | 3.5s |
+| 1-2 | General Diagnostics | 67 | 0 | 2 | PASS | 30.2s |
+| 2 | Translation Pipeline | 50 | 0 | 7 | PASS | 9.8s |
+| 3 | Social Learning | 70 | 0 | 0 | PASS | 40.9s |
+| 4 | Advanced Learning | 102 | 0 | 1 | PASS | 471.5s |
+| 4ijk | Bilingual/Cache/Enrich | 84 | 0 | 1 | PASS | 232.2s |
+| 8 | External Data Feeds | 104 | 0 | 1 | PASS | 1.2s |
+| 9 | Autonomous Learning | 115 | 0 | 0 | PASS | 14.9s |
+| 10 | Micro-Model Training | 73 | 0 | 1 | PASS | 3.2s |
 | 4-norm | Normalizer | 0 | 0 | 0 | PASS | 0.1s |
-| 4-corr | Corrections Memory | 35 | 0 | 0 | PASS | 208.9s |
-| 4-cent | Routing Centroids | 0 | 0 | 0 | PASS | 22.1s |
-| 4-seas | Seasonal Guard | 0 | 0 | 0 | PASS | 12.4s |
-| 4-enr | Night Enricher | 0 | 0 | 0 | PASS | 1.0s |
-| B2 | Memory Eviction | 0 | 0 | 0 | PASS | 0.2s |
+| 4-corr | Corrections Memory | 35 | 0 | 0 | PASS | 197.4s |
+| 4-cent | Routing Centroids | 0 | 0 | 0 | PASS | 22.5s |
+| 4-seas | Seasonal Guard | 0 | 0 | 0 | PASS | 12.3s |
+| 4-enr | Night Enricher | 0 | 0 | 0 | PASS | 0.8s |
+| B2 | Memory Eviction | 0 | 0 | 0 | PASS | 0.1s |
 | B3 | Circuit Breaker | 0 | 0 | 0 | PASS | 1.0s |
-| B4 | Error Handling | 0 | 0 | 0 | PASS | 0.2s |
+| B4 | Error Handling | 0 | 0 | 0 | PASS | 0.1s |
 | C1 | HotCache Auto-fill | 0 | 0 | 0 | PASS | 0.2s |
 | C2 | LRU Cache | 0 | 0 | 0 | PASS | 0.1s |
 | C3 | Batch Pipeline | 0 | 0 | 0 | PASS | 0.1s |
 | C4 | Readiness Check | 0 | 0 | 0 | PASS | 0.1s |
-| C5 | Structured Logging | 0 | 0 | 0 | PASS | 0.4s |
+| C5 | Structured Logging | 0 | 0 | 0 | PASS | 0.3s |
 | D1-D3 | Autonomy (D1-D3) | 0 | 0 | 0 | PASS | 0.4s |
 | 5 | Smart Home Sensors | 0 | 0 | 0 | PASS | 0.2s |
 | core | Token Economy | 0 | 0 | 0 | PASS | 0.1s |
-| core | LLM Provider | 0 | 0 | 0 | PASS | 0.3s |
+| core | LLM Provider | 0 | 0 | 0 | PASS | 0.2s |
 | core | Finnish Normalizer | 0 | 0 | 0 | PASS | 0.1s |
-| core | YAML Bridge | 0 | 0 | 0 | PASS | 1.0s |
+| core | YAML Bridge | 0 | 0 | 0 | PASS | 0.7s |
 | core | Fast Memory (HotCache) | 0 | 0 | 0 | PASS | 0.1s |
 | core | OpsAgent | 0 | 0 | 0 | PASS | 0.1s |
 | core | Learning Engine | 0 | 0 | 0 | PASS | 0.1s |
-| 6 | Audio Sensors | 0 | 0 | 0 | PASS | 0.2s |
+| 6 | Audio Sensors | 0 | 0 | 0 | PASS | 0.1s |
 | 10 | Training Collector | 0 | 0 | 0 | PASS | 1.1s |
 | core | Swarm Routing | 0 | 0 | 0 | PASS | 0.1s |
-| 11 | Elastic Scaler | 0 | 0 | 0 | PASS | 1.2s |
+| 11 | Elastic Scaler | 0 | 0 | 0 | PASS | 1.1s |
 | 7 | Voice Interface | 0 | 0 | 0 | PASS | 0.2s |
-| 8 | Data Feeds | 0 | 0 | 0 | PASS | 11.5s |
-| **Total** | **36 suites** | **700** | **0** | **13** | **36/36** | **1045.6s** |
+| 8 | Data Feeds | 0 | 0 | 0 | PASS | 0.9s |
+| **Total** | **36 suites** | **700** | **0** | **13** | **36/36** | **1044.5s** |
 
 ## Routing Performance
 - Accuracy: 97.7% (1235 eval_questions)
@@ -79,12 +79,12 @@ System is healthy.
 - Specialty Centroids: 9 routing entries
 - Seasonal Guard: 10 rules loaded
 - MicroModel V1: 2 promoted patterns
-- NightEnricher: last session 1921min, 1812 stored / 12465 checked, pass rate 14%
+- NightEnricher: last session 2402min, 2305 stored / 15643 checked, pass rate 15%
 
 ## Structured Logging (C5) & Autonomy (D1–D3)
-- Metrics log: 4793 entries in learning_metrics.jsonl
+- Metrics log: 6065 entries in learning_metrics.jsonl
 - Weekly report: 0 queries, 
-- ChromaDB size: 35.1 MB (included in backup)
+- ChromaDB size: 42.8 MB (included in backup)
 
 ## Current Phase Status
 - Phase 1: COMPLETE (consciousness v2, dual embed, smart router)
@@ -98,4 +98,4 @@ System is healthy.
 - Phase 5-11: SPECIFIED (Camera, Audio, Voice, Weather, Auto-learning, MicroModel, Scaling)
 
 ---
-*Generated by waggle_backup.py v5.0 | 2026-03-04 13:09*
+*Generated by waggle_backup.py v5.0 | 2026-03-04 22:44*

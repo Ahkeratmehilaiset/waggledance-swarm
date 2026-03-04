@@ -13,6 +13,10 @@ export function useApi() {
   const [sensors, setSensors] = useState({ available: false, status: {} });
   const [voiceStatus, setVoiceStatus] = useState({ available: false, stt_available: false, tts_available: false });
   const [audioStatus, setAudioStatus] = useState({ available: false, status: {} });
+  const [analytics, setAnalytics] = useState(null);
+  const [roundTable, setRoundTable] = useState(null);
+  const [agentLevels, setAgentLevels] = useState(null);
+  const [settings, setSettings] = useState(null);
 
   const failCount = useRef(0);
   const lastRetry = useRef(0);
@@ -36,13 +40,17 @@ export function useApi() {
       lastRetry.current = now;
     }
 
-    const [statusData, hbData, hwData, sensorData, voiceData, audioData] = await Promise.all([
+    const [statusData, hbData, hwData, sensorData, voiceData, audioData, analyticsData, rtData, agentsData, settingsData] = await Promise.all([
       fetchJson("/api/status"),
       fetchJson("/api/heartbeat"),
       fetchJson("/api/hardware"),
       fetchJson("/api/sensors"),
       fetchJson("/api/voice/status"),
       fetchJson("/api/sensors/audio"),
+      fetchJson("/api/analytics/trends"),
+      fetchJson("/api/round-table/recent"),
+      fetchJson("/api/agents/levels"),
+      fetchJson("/api/settings"),
     ]);
 
     if (statusData) {
@@ -111,6 +119,12 @@ export function useApi() {
       setAudioStatus(audioData);
     }
 
+    // Analytics, Round Table, Agent Levels, Settings
+    if (analyticsData) setAnalytics(analyticsData);
+    if (rtData) setRoundTable(rtData);
+    if (agentsData) setAgentLevels(agentsData);
+    if (settingsData) setSettings(settingsData);
+
     // Hardware stats
     if (hwData) {
       setHardware({
@@ -161,6 +175,10 @@ export function useApi() {
     sensors,
     voiceStatus,
     audioStatus,
+    analytics,
+    roundTable,
+    agentLevels,
+    settings,
     sendChat,
   };
 }

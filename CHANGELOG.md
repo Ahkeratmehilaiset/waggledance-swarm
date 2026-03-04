@@ -1,48 +1,47 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## v0.0.8 (2026-03-04) — Codebase Hardening & Phase 11 Wiring
+## v0.0.8 (2026-03-04) — Phase 6+7+11: Audio, Voice, Elastic Scaling
 
-### New: Phase 11 — ElasticScaler Wired
-- `hivemind.py`: ElasticScaler imported, init in `__init__`, `detect()` called in `start()`, `summary()` in `get_status()`
-- `dashboard/src/App.jsx`: Tier indicator in status bar (reads `elastic_scaler.tier` from backend)
-
-### New: Test Suites (#33–#35)
-- `tests/test_elastic_scaler.py` — 15 tests: HardwareProfile, TierConfig, TIERS dict, detect(), summary(), ZBook tier classification
-- `tests/test_training_collector.py` — 15 tests: init defaults, constants, collect_training_pair (accept/reject), export_for_v1/v2, save_pairs, reset
-- `tests/test_swarm_routing.py` — 12 tests: register_agent, idempotent, tags, skills, select_candidates, record_task_result, AgentScore defaults
-- `tests/test_smart_home.py`: +4 AudioMonitor functions (B3)
-
-### Code Quality: print() → log.* cleanup
-- `core/adaptive_throttle.py`: 14 print() → logger.* (benchmark, scale_up/down)
-- `core/yaml_bridge.py`: 5 print() → log.* + `import logging` added
-- `core/learning_engine.py`: 3 print() → logger.* (startup, prompt evolution)
-- `core/ops_agent.py`: 2 print() → logger.* (startup, _log_decision)
-- `core/knowledge_loader.py`: 2 print() → log.* + `import logging` added
-- `hivemind.py`: 12 runtime print() → log.* (heartbeat skip/status, think/oracle/whisper errors, set_language)
-
-### Dashboard
-- `dashboard/src/App.jsx`: test count 30→35 across all changelog/stats text
-
----
-
-## v0.0.7 (2026-03-04) — Phase 6: Audio Sensors
-
-### New: Audio Sensor Integration (3 new modules, ~600 lines)
+### New: Phase 6 — Audio Sensors (3 new modules, ~650 lines)
 - `integrations/bee_audio.py` — BeeAudioAnalyzer: FFT spectrum analysis, 7-day rolling baseline per hive, stress detection (>30 Hz shift), swarming (broad 200-600 Hz), queen piping (400-500 Hz peak), Finnish status descriptions
-- `integrations/bird_monitor.py` — BirdMonitor: BirdNET-Lite stub with graceful degradation, predator species detection (bear/wolf/eagle/hawk), Finnish species translations, recent detections buffer
-- `integrations/audio_monitor.py` — AudioMonitor orchestrator: MQTT spectrum/event/status subscriptions, routes to BeeAudioAnalyzer + BirdMonitor, ChromaDB storage (category=audio_event), AlertDispatcher integration for bee stress/swarming alerts
-
-### Wiring
-- `integrations/sensor_hub.py`: AudioMonitor added as component (init after MQTT, before Frigate), stop/status/context wired
-- `web/dashboard.py`: 2 new endpoints — `GET /api/sensors/audio`, `GET /api/sensors/audio/bee`
-- `configs/settings.yaml`: +audio section (bee_audio, bird_monitor, mqtt_topics — all disabled by default)
-- `backend/routes/audio.py` — stub endpoints for dashboard dev (mock bee status + events)
-- `backend/main.py`: audio router wired
-- `dashboard/src/hooks/useApi.js`: `audioStatus` polling added
+- `integrations/bird_monitor.py` — BirdMonitor: BirdNET-Lite stub with graceful degradation, predator detection (bear/wolf/eagle/hawk/owl/fox), Finnish species name mapping
+- `integrations/audio_monitor.py` — AudioMonitor orchestrator: MQTT spectrum/event/status subscriptions, BeeAudioAnalyzer + BirdMonitor routing, ChromaDB (category=audio_event), AlertDispatcher for bee stress/swarming
+- `integrations/sensor_hub.py`: AudioMonitor wired (init after MQTT, before Frigate), stop/status/context
+- `web/dashboard.py`: `GET /api/sensors/audio`, `GET /api/sensors/audio/bee`
+- `backend/routes/audio.py` — stub endpoints with Finnish demo data
+- `configs/settings.yaml`: audio section (bee_audio, bird_monitor, mqtt_topics — all disabled by default)
+- `dashboard/src/hooks/useApi.js`: `audioStatus` polling
 - `dashboard/src/App.jsx`: Audio awareness indicator in status bar
 
-### Tests
-- `tests/test_phase6_audio.py` — 25 tests across 7 groups (syntax, BeeAudioAnalyzer, BirdMonitor, AudioMonitor, integration, backend stub, dashboard)
+### New: Phase 7 — Voice Interface (3 new modules, ~550 lines)
+- `integrations/whisper_stt.py` — WhisperSTT: Whisper-small on CPU, Finnish, wake word "hei waggledance", VAD 1.5s silence
+- `integrations/piper_tts.py` — PiperTTS: fi_FI-harri-medium voice, WAV output, async synthesis
+- `integrations/voice_interface.py` — VoiceInterface orchestrator: audio + text pipelines, graceful degradation without model
+- `hivemind.py`: VoiceInterface wired (init/stop/status), follows SensorHub pattern
+- `web/dashboard.py`: `GET /api/voice/status`, `POST /api/voice/text`, `POST /api/voice/audio`
+- `backend/routes/voice.py` — stub endpoints for dashboard dev
+- `dashboard/src/hooks/useApi.js`: `voiceStatus` polling
+- `dashboard/src/App.jsx`: STT/TTS awareness indicators in status bar
+
+### New: Phase 11 — ElasticScaler Wired
+- `hivemind.py`: ElasticScaler imported, `detect()` called in `start()`, `summary()` in `get_status()`
+- `dashboard/src/App.jsx`: Tier indicator in status bar (reads `elastic_scaler.tier` from API)
+
+### New: Test Suites — 35/35 GREEN (700+ assertions)
+- `tests/test_phase6_audio.py` — 25 tests: syntax, BeeAudioAnalyzer, BirdMonitor, AudioMonitor, integration, backend stub, dashboard
+- `tests/test_phase7_voice.py` — 22 tests: WhisperSTT, PiperTTS, VoiceInterface, sensor_hub wiring, settings.yaml, dashboard
+- `tests/test_elastic_scaler.py` — 15 tests: HardwareProfile, TierConfig, TIERS, detect(), summary(), ZBook tier classification
+- `tests/test_training_collector.py` — 15 tests: collect_training_pair (accept/reject/dedup), export_for_v1/v2, save_pairs, reset
+- `tests/test_swarm_routing.py` — 12 tests: register_agent, tags/skills, select_candidates, record_task_result, AgentScore defaults
+- `tests/test_smart_home.py`: +4 AudioMonitor integration functions (34/34 total)
+
+### Code Quality: print() → log.* (38 calls across 6 files)
+- `core/adaptive_throttle.py`: 14 → logger.* (benchmark progress, scale_up/down box prints)
+- `core/yaml_bridge.py`: 5 → log.* + `import logging` added
+- `core/learning_engine.py`: 3 → logger.* (startup duplicate, prompt evolution)
+- `core/ops_agent.py`: 2 → logger.* (startup duplicate, _log_decision)
+- `core/knowledge_loader.py`: 2 → log.* + `import logging` added
+- `hivemind.py`: 12 runtime → log.* (heartbeat skip/status, think/oracle/whisper errors, set_language)
 - Registered as suite #32 in `waggle_backup.py`
 
 ---

@@ -767,7 +767,7 @@ class GapWeightedScheduler:
     SEASONAL_BOOSTS: Dict[int, List[str]] = {
         1: ["beekeeper", "disease_monitor"],  # winter check, oxalic
         2: ["beekeeper", "equipment_tech", "maintenance_planner"],  # prep
-        3: ["beekeeper", "swarm_watcher", "horticulturist"],  # spring inspection
+        3: ["beekeeper", "disease_monitor", "swarm_watcher", "horticulturist", "equipment_tech", "maintenance_planner"],  # kevättarkastus — tärkein kuukausi
         4: ["swarm_watcher", "nectar_scout", "phenologist"],  # swarming prep
         5: ["swarm_watcher", "nectar_scout", "flight_weather"],  # swarming
         6: ["nectar_scout", "beekeeper", "meteorologist"],  # honey flow

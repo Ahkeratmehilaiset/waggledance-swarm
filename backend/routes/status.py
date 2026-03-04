@@ -1,5 +1,7 @@
 """GET /api/status and GET /api/hardware — system metrics."""
+import json
 import subprocess
+from collections import deque
 from pathlib import Path
 from fastapi import APIRouter
 
@@ -67,6 +69,49 @@ def _count_agents():
     return 0
 
 
+def _read_metrics():
+    """Read learning_metrics.jsonl → compute summary stats."""
+    metrics_path = _PROJECT_ROOT / "data" / "learning_metrics.jsonl"
+    if not metrics_path.exists():
+        return {}
+    try:
+        rows = deque(maxlen=500)
+        with open(metrics_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        if not rows:
+            return {}
+        chat_rows = [r for r in rows if r.get("event") == "chat"]
+        total = len(chat_rows)
+        if total == 0:
+            return {}
+        cache_hits = sum(1 for r in chat_rows if r.get("cache_hit"))
+        avg_ms = round(sum(r.get("response_time_ms", 0) for r in chat_rows) / total)
+        halluc = round(sum(1 for r in chat_rows if r.get("was_hallucination")) / total, 3)
+        return {
+            "total_queries": total,
+            "cache_hit_rate": round(cache_hits / total, 3),
+            "avg_response_ms": avg_ms,
+            "hallucination_rate": halluc,
+        }
+    except Exception:
+        return {}
+
+
+def _read_weekly_report():
+    """Read data/weekly_report.json if present."""
+    report_path = _PROJECT_ROOT / "data" / "weekly_report.json"
+    if not report_path.exists():
+        return {}
+    try:
+        with open(report_path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def _chromadb_count():
     """Try to get ChromaDB fact count, fallback to placeholder."""
     try:
@@ -92,15 +137,19 @@ async def status():
     gpu = _gpu_util()
     vram = _vram_used_gb()
     facts = _chromadb_count()
+    metrics = _read_metrics()
+    weekly = _read_weekly_report()
 
     return {
-        "mode": "stub",
+        "mode": "production",
         "facts": facts,
         "cpu": round(cpu),
         "gpu": gpu,
         "vram": vram,
         "agents_active": _count_agents(),
         "is_thinking": False,
+        **metrics,
+        "weekly_report": weekly or None,
     }
 
 

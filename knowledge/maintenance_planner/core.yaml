@@ -2,14 +2,16 @@ header:
   agent_id: maintenance_planner
   agent_name: Kunnossapitosuunnittelija
   name_fi: 'Kunnossapitosuunnittelija'
-  version: 1.0.0
-  last_updated: '2026-03-02'
+  version: 1.1.0
+  last_updated: '2026-03-04'
 profiles:
   - factory
+  - beekeeping
 priority: high
 ASSUMPTIONS:
-- Tuotantokoneet
+- Tuotantokoneet ja mehiläisvarusteet
 - SAP PM tai vastaava CMMS
+- Mehiläishoitajan työvälineet huollettava vuosittain
 DECISION_METRICS_AND_THRESHOLDS:
   pm_compliance_pct:
     value: 90
@@ -19,6 +21,58 @@ DECISION_METRICS_AND_THRESHOLDS:
     value: 500
     action: "<500h kriittisellä koneella → juurisyy"
     source: src:MP1
+  hive_frame_replace_years:
+    value: 3
+    action: "Yli 3 vuotta vanha kennolevyt vaihdetaan — tautiriski kasvaa"
+    source: src:MP2
+  extractor_service_years:
+    value: 5
+    action: "Linkouskone huolletaan 5 vuoden välein tai 500 kg hunajan välein"
+    source: src:MP2
+  hive_box_inspect_years:
+    value: 2
+    action: "Pesälaatikot tarkistetaan 2 vuoden välein: halkeamat, maalipinta"
+    source: src:MP2
+  smoker_clean_freq:
+    value: 10
+    action: "Savustaja puhdistetaan joka 10. käyttökerran jälkeen"
+    source: src:MP2
+SEASONAL_RULES:
+  - month: [1, 2]
+    rule: "Talvihuolto: tarkista linkouskone, teroita uncapping-veitsi, korjaa pesälaatikot"
+  - month: [3]
+    rule: "Keväthuolto ennen pesäntarkastuksia: suojavaatetus, hanska, savustaja kuntoon"
+  - month: [4, 5]
+    rule: "Kevättarkastuskausi — puhtaat kehät, puhdistetut pohjalaudat"
+  - month: [8, 9]
+    rule: "Linkouskauden jälkeen: puhdista linkouskone, huolto ja varastointi"
+  - month: [10, 11]
+    rule: "Syyshuolto: käsittele pesälaatikot oksaalihapolla (tyhjät), varastoi"
+FAILURE_MODES:
+  - mode: "Linkouskone hajoaa linkouskauden aikana"
+    cause: "Laiminlyöty huolto, laakerit kuluneet"
+    action: "Vaihda laakerit ennen kautta, pidä varalaakerit varastossa"
+    source: src:MP2
+  - mode: "Tautien leviäminen vanhoista kennolevyistä"
+    cause: "Yli 3 vuotta vanhat levyt käytössä"
+    action: "Uusi kennot kierrättämällä: poista vanhin, lisää uusi joka vuosi"
+    source: src:MP2
+  - mode: "Savustaja ei toimi tarkastuksessa"
+    cause: "Ei puhdisteta, nokea ja hartsia tukossa"
+    action: "Puhdista aina jokaisen 10. käyttökerran jälkeen"
+    source: src:MP2
+  - mode: "Pesälaatikko vuotaa"
+    cause: "Haljennut lauta, kulunut tiiviste"
+    action: "Tarkasta vuosittain, maalaa puuosien käsittelyöljyllä"
+    source: src:MP2
+PROCESS_FLOWS:
+  beekeeping_equipment_maintenance:
+    steps:
+      - "1. Tammi-helmi: huoltolistaus — mitä korjataan talven aikana"
+      - "2. Maalis: pese ja desinfioi kehälaatikot 3% etikkahappoliuoksella"
+      - "3. Ennen kautta: teroita uncapper, testaa linkouskone, tarkista pumppu"
+      - "4. Kauden jälkeen: puhdista linkouskone, kuivaa, öljyä laakerit"
+      - "5. Varastoi kennolevyt suojassa, hävitä yli 3-vuotiaat"
 eval_questions:
 - q: Mikä on pm compliance pct?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.pm_compliance_pct.value
@@ -26,3 +80,12 @@ eval_questions:
 - q: Mikä on mtbf hours?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.mtbf_hours.value
   source: src:MP1
+- q: Kuinka usein kennolevyt vaihdetaan?
+  a: "Yli kolme vuotta vanhat kennolevyt vaihdetaan tautiriskin vuoksi"
+  source: src:MP2
+- q: Milloin linkouskone huolletaan?
+  a: "Viiden vuoden välein tai 500 kilogramman hunajamäärän jälkeen"
+  source: src:MP2
+- q: Miten savustaja puhdistetaan?
+  a: "Jokaisen 10 käyttökerran jälkeen, nokea ja hartsia poistetaan harjalla ja kuumennuksella"
+  source: src:MP2

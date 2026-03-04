@@ -1,5 +1,33 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.0.9 (2026-03-04) — Phase 8: Data Feeds + Knowledge Enrichment + Backend Improvements
+
+### New: Phase 8 — External Data Feeds test suite
+- `tests/test_phase8_feeds.py` — 26 tests (6 groups): syntax, WeatherFeed, ElectricityFeed, RSSFeedMonitor, DataFeedScheduler, settings.yaml integration
+- Registered as suite #36 in `waggle_backup.py`
+
+### Backend: status.py real data
+- `backend/routes/status.py`: reads `data/learning_metrics.jsonl` → cache_hit_rate, avg_response_ms, total_queries, hallucination_rate
+- Reads `data/weekly_report.json` if present
+- Changed `"mode": "stub"` → `"mode": "production"`
+
+### New: backend/routes/code_review.py
+- `GET /api/code-review` — code self-review status + recent suggestions count
+- `GET /api/code-review/suggestions` — full suggestions list from `data/code_suggestions.jsonl`
+- Wired to `backend/main.py`
+
+### Knowledge Enrichment: 5 thin agents expanded
+- `knowledge/quality_inspector/core.yaml`: +honey water content (18%), HMF limit (40 mg/kg), diastase, pollen count, failure modes, process flow
+- `knowledge/supply_chain/core.yaml`: +beekeeping supply chain (honey packaging, jar stock weeks, wax recovery), seasonal ordering rules
+- `knowledge/firewood/core.yaml`: +drying times (birch 18mo, spruce 12mo), bee hive heating threshold, seasonal pest protection for hives
+- `knowledge/energy_manager/core.yaml`: +spot-price thresholds (cheap <5 snt/kWh), linkouskone consumption (0.5 kWh/h), winter heating optimization
+- `knowledge/maintenance_planner/core.yaml`: +hive frame replacement (3y), extractor service (5y/500kg), smoker cleaning (10 uses), seasonal maintenance calendar
+
+### NightEnricher: March boost strengthened
+- Month 3 SEASONAL_BOOSTS expanded: `["beekeeper", "disease_monitor", "swarm_watcher", "horticulturist", "equipment_tech", "maintenance_planner"]` (6 agents for critical spring inspection month)
+
+---
+
 ## v0.0.8 (2026-03-04) — Phase 6+7+11: Audio, Voice, Elastic Scaling
 
 ### New: Phase 6 — Audio Sensors (3 new modules, ~650 lines)

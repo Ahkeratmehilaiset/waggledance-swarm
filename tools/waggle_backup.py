@@ -119,6 +119,8 @@ TESTS = [
     {"file": "tests/test_elastic_scaler.py",     "name": "Elastic Scaler",           "phase": "11",   "args": [], "timeout": 30},
     # Phase 7 — Voice Interface
     {"file": "tests/test_phase7_voice.py",       "name": "Voice Interface",          "phase": "7",    "args": [], "timeout": 60},
+    # Phase 8 — External Data Feeds
+    {"file": "tests/test_phase8_feeds.py",       "name": "Data Feeds",               "phase": "8",    "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

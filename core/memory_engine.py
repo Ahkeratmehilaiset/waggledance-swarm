@@ -2370,7 +2370,7 @@ if __name__ == "__main__":
     # ── Batch Translation ──
     print("\n[9] BATCH TRANSLATION")
     try:
-        from translation_proxy import TranslationProxy
+        from core.translation_proxy import TranslationProxy
         tp = TranslationProxy()
         if tp.opus.available:
             test_fi = [

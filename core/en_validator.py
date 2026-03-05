@@ -14,7 +14,7 @@ Kaksi tasoa:
   Taso 2: WordNet (laajempi, vaatii nltk + wordnet data)
 
 Käyttö:
-  from en_validator import ENValidator
+  from core.en_validator import ENValidator
   v = ENValidator()
   result = v.validate("Use acid bath remedy for bee sickness")
   # → "Use formic acid treatment for bee disease"

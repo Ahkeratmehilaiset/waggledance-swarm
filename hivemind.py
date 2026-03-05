@@ -49,7 +49,7 @@ from memory.shared_memory import SharedMemory
 
 # ═══ Translation Proxy — Voikko + sanakirja FI↔EN ═══
 try:
-    from translation_proxy import TranslationProxy, detect_language, is_finnish
+    from core.translation_proxy import TranslationProxy, detect_language, is_finnish
     _TRANSLATION_AVAILABLE = True
 except ImportError:
     _TRANSLATION_AVAILABLE = False
@@ -59,7 +59,7 @@ except ImportError:
 log = logging.getLogger("hivemind")
 
 try:
-    from en_validator import ENValidator
+    from core.en_validator import ENValidator
     _EN_VALIDATOR_AVAILABLE = True
 except ImportError:
     _EN_VALIDATOR_AVAILABLE = False

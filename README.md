@@ -56,7 +56,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 - **Finnish beekeeping focus** — adapting to other domains requires new YAML agent definitions
 - **Autonomous learning layers 3-6** — code structure exists but not production-tested
 - **MicroModel V3 (LoRA)** — architecture defined, training pipeline not yet implemented
-- **No CI/CD pipeline yet** — tests run locally via `tools/waggle_backup.py` (GitHub Actions planned)
+- **CI runs basic test suite** — full 36-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
@@ -303,7 +303,7 @@ Expected: **36/36 suites GREEN, 700+ assertions, 0 failures.**
 waggledance-swarm/
 ├── agents/              # 75 YAML agent knowledge bases
 ├── knowledge/           # Domain knowledge bases
-├── core/                # Core modules (memory, models, scheduling)
+├── core/                # Core modules (memory_engine, translation_proxy, models, scheduling)
 ├── integrations/        # External systems (MQTT, Frigate, HA, audio, voice, feeds)
 ├── backend/             # Standalone stub backend (no Ollama needed)
 │   └── routes/          #   12 API route modules
@@ -312,9 +312,7 @@ waggledance-swarm/
 ├── tools/               # Backup, restore, benchmarks, scanners
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Documentation and images
-├── core/                # Core modules (includes memory_engine.py)
 ├── hivemind.py          # HiveMind orchestrator
-├── translation_proxy.py # Opus-MT FI↔EN translation
 ├── main.py              # Production entry point
 ├── start.py             # Launcher (--stub / --production)
 ├── Dockerfile           # Python 3.13 + Voikko

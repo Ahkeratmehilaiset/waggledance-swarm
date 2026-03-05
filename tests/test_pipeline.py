@@ -82,7 +82,7 @@ validator = None
 yaml_bridge = None
 
 try:
-    from translation_proxy import TranslationProxy
+    from core.translation_proxy import TranslationProxy
     proxy = TranslationProxy()
     v = proxy.voikko
     print(f"  ✅ Translation Proxy")
@@ -94,7 +94,7 @@ except Exception as e:
     print(f"  ❌ Translation Proxy: {e}")
 
 try:
-    from en_validator import ENValidator
+    from core.en_validator import ENValidator
     domain = set(proxy.dict_en_fi.keys()) if proxy else set()
     validator = ENValidator(domain_terms=domain)
     wn = validator.wordnet.available if hasattr(validator, 'wordnet') else False

@@ -10,7 +10,7 @@ Kolmikerroksinen arkkitehtuuri:
   Kerros 3: Opus-MT fallback tuntemattomille       (~300ms)
 
 Käyttö:
-  from translation_proxy import TranslationProxy
+  from core.translation_proxy import TranslationProxy
   proxy = TranslationProxy()
   en_query = proxy.fi_to_en("Miten käsittelen varroa-punkkia muurahaishapolla?")
   fi_answer = proxy.en_to_fi("Use formic acid at 15-25°C for 2 weeks.")
@@ -1547,7 +1547,7 @@ class TranslatedChat:
     HiveMind.chat() -wrapper joka kääntää automaattisesti.
 
     Käyttö WaggleDancessa:
-        from translation_proxy import TranslatedChat
+        from core.translation_proxy import TranslatedChat
         tchat = TranslatedChat(hivemind, proxy)
         response = await tchat.chat("Miten käsittelen varroa-punkkia?")
         # → Suomenkielinen vastaus, mutta malli sai EN-kyselyn

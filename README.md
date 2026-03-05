@@ -166,7 +166,7 @@ User (Finnish / English) → FastAPI (port 8000)
   │   ├── Seasonal Guard (rejects out-of-season claims)
   │   └── CircuitBreaker (auto-disable failing subsystems, self-heal)
   │
-  ├── Memory Engine (consciousness.py)
+  ├── Memory Engine (core/memory_engine.py)
   │   ├── Hot Cache (top queries in RAM, auto-fill)
   │   ├── LRU Cache (smart eviction, memory-bounded)
   │   ├── Bilingual Index (FI+EN vectors in ChromaDB)
@@ -312,7 +312,7 @@ waggledance-swarm/
 ├── tools/               # Backup, restore, benchmarks, scanners
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Documentation and images
-├── consciousness.py     # Memory + learning engine
+├── core/                # Core modules (includes memory_engine.py)
 ├── hivemind.py          # HiveMind orchestrator
 ├── translation_proxy.py # Opus-MT FI↔EN translation
 ├── main.py              # Production entry point

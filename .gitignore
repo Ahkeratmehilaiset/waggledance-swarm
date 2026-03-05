@@ -236,6 +236,7 @@ output/
 
 # Test output
 test_output.txt
+WAGGLEDANCE_AI_BRIEF.md
 
 # Node modules & dashboard build
 dashboard/node_modules/

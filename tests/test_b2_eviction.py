@@ -31,7 +31,7 @@ def make_mock_memory(count=100, items=None):
 
 def test_eviction_disabled():
     """Disabled eviction does nothing."""
-    from consciousness import MemoryEviction
+    from core.memory_engine import MemoryEviction
     mem = make_mock_memory(300000)
     ev = MemoryEviction(mem, {"enabled": False})
     assert ev.run_eviction() == 0
@@ -40,7 +40,7 @@ def test_eviction_disabled():
 
 def test_eviction_below_limit():
     """No eviction when below max_facts."""
-    from consciousness import MemoryEviction
+    from core.memory_engine import MemoryEviction
     mem = make_mock_memory()
     # count property
     mem.count = 1000
@@ -53,7 +53,7 @@ def test_eviction_below_limit():
 
 def test_ttl_eviction():
     """TTL eviction removes expired items."""
-    from consciousness import MemoryEviction
+    from core.memory_engine import MemoryEviction
 
     # Create items with old timestamps
     old_ts = (datetime.utcnow() - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -83,7 +83,7 @@ def test_ttl_eviction():
 
 def test_ttl_protects_user_sources():
     """Protected sources are not TTL-evicted."""
-    from consciousness import MemoryEviction
+    from core.memory_engine import MemoryEviction
 
     old_ts = (datetime.utcnow() - timedelta(hours=9999)).strftime("%Y-%m-%dT%H:%M:%S")
     items = {
@@ -108,7 +108,7 @@ def test_ttl_protects_user_sources():
 
 def test_count_overflow_eviction():
     """Count overflow evicts lowest-confidence items."""
-    from consciousness import MemoryEviction
+    from core.memory_engine import MemoryEviction
 
     # 105 items, max 100 -> need to evict ~5
     items = {
@@ -145,7 +145,7 @@ def test_count_overflow_eviction():
 
 def test_on_flush_periodic():
     """on_flush only runs eviction every N flushes."""
-    from consciousness import MemoryEviction
+    from core.memory_engine import MemoryEviction
     mem = make_mock_memory(100)
 
     ev = MemoryEviction(mem, {
@@ -167,7 +167,7 @@ def test_on_flush_periodic():
 
 def test_stats():
     """Stats property returns correct info."""
-    from consciousness import MemoryEviction
+    from core.memory_engine import MemoryEviction
     mem = make_mock_memory()
     mem.count = 5000
 

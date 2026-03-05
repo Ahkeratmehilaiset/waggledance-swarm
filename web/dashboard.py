@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response, JSONResponse
 def _get_seasonal_focus():
     """Get current month's seasonal keywords from consciousness module."""
     try:
-        from consciousness import SEASONAL_BOOST
+        from core.memory_engine import SEASONAL_BOOST
         return SEASONAL_BOOST.get(datetime.now().month, [])
     except ImportError:
         return []

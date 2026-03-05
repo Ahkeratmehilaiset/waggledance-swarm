@@ -754,7 +754,7 @@ SECTION("6. CONSCIOUSNESS INTEGRATION")
 
 # 6a. micro_model attribute exists
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
     # Check __init__ sets micro_model
     import inspect
     src = inspect.getsource(Consciousness.__init__)
@@ -775,7 +775,7 @@ except Exception as e:
 
 # 6c. before_llm routes through micro_model
 try:
-    from consciousness import Consciousness, PreFilterResult
+    from core.memory_engine import Consciousness, PreFilterResult
 
     # Create a minimal consciousness mock that simulates the routing
     # We'll check that micro_model.predict is called before hot_cache

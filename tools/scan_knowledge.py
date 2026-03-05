@@ -289,7 +289,7 @@ if __name__ == "__main__":
     elif dry_run:
         scan_all(dry_run=True)
     else:
-        from consciousness import Consciousness
+        from core.memory_engine import Consciousness
         c = Consciousness(db_path="data/chroma_db")
         count = scan_all(c)
         print(f"\nTotal facts in memory: {c.memory.count}")

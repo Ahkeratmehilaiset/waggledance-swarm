@@ -182,7 +182,7 @@ finally:
 
 # --- 2. LearningTaskQueue ---------------------
 SECTION("2. LEARNING TASK QUEUE")
-from consciousness import LearningTaskQueue, SEASONAL_BOOST, DOMAIN_TOPICS
+from core.memory_engine import LearningTaskQueue, SEASONAL_BOOST, DOMAIN_TOPICS
 
 # All 12 months have seasonal keywords
 if len(SEASONAL_BOOST) == 12:
@@ -251,7 +251,7 @@ else:
 
 # --- 3. Swarm Facts Collection ----------------
 SECTION("3. SWARM FACTS COLLECTION")
-from consciousness import MemoryStore
+from core.memory_engine import MemoryStore
 
 td2 = tempfile.mkdtemp()
 try:
@@ -273,7 +273,7 @@ finally:
 
 # --- 4. Consciousness Integration -------------
 SECTION("4. CONSCIOUSNESS INTEGRATION")
-from consciousness import Consciousness
+from core.memory_engine import Consciousness
 
 td3 = tempfile.mkdtemp()
 try:

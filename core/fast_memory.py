@@ -208,7 +208,7 @@ class BilingualMemoryStore:
                   min_score: float = 0.3,
                   seasonal_boost=None) -> list:
         """Search FI collection directly — skip translation."""
-        from consciousness import MemoryMatch
+        from core.memory_engine import MemoryMatch
         if self.fi_collection.count() == 0:
             return []
         fi_vec = self.embed.embed_query(query_fi)
@@ -425,7 +425,7 @@ class FiFastStore:
                min_score: float = 0.3,
                seasonal_boost=None) -> list:
         """Search fi_fast collection with all-minilm. ~18ms, no translation."""
-        from consciousness import MemoryMatch
+        from core.memory_engine import MemoryMatch
         if self.fi_fast.count() == 0:
             return []
         q_vec = self.eval_embed.embed(query_fi)
@@ -794,7 +794,7 @@ class FactEnrichmentEngine:
     def _gap_from_seasonal(self) -> Optional[dict]:
         """Current month's seasonal topics."""
         try:
-            from consciousness import SEASONAL_BOOST
+            from core.memory_engine import SEASONAL_BOOST
         except ImportError:
             return None
         month = datetime.now().month

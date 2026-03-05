@@ -866,7 +866,7 @@ DELEGATION RULES (IMPORTANT):
         # ── Tietoisuuskerros v2 ──
         print("  ⏳ Consciousness alustetaan...", flush=True)
         try:
-            from consciousness import Consciousness
+            from core.memory_engine import Consciousness
             _CONSCIOUSNESS_OK = True
         except ImportError:
             _CONSCIOUSNESS_OK = False
@@ -2053,7 +2053,7 @@ DELEGATION RULES (IMPORTANT):
 
         # Seasonal boost keywords for current month
         try:
-            from consciousness import SEASONAL_BOOST
+            from core.memory_engine import SEASONAL_BOOST
             month = datetime.now().month
             seasonal_kws = SEASONAL_BOOST.get(month, [])
             if isinstance(seasonal_kws, str):

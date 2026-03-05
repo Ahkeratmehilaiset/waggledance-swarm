@@ -18,13 +18,13 @@ def test_hotcache_put_calls_in_hivemind():
 
 def test_hotcache_put_calls_in_consciousness():
     """before_llm fast paths should populate HotCache."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 
     put_calls = src.count("hot_cache.put(")
     assert put_calls >= 3, f"Expected >= 3 hot_cache.put calls, found {put_calls}"
-    print(f"  [PASS] {put_calls} hot_cache.put calls in consciousness.py")
+    print(f"  [PASS] {put_calls} hot_cache.put calls in memory_engine.py")
 
 
 def test_populate_method_exists():
@@ -85,7 +85,7 @@ def test_hotcache_stats():
 
 def test_syntax():
     """All modified files parse correctly."""
-    for fname in ["hivemind.py", "consciousness.py"]:
+    for fname in ["hivemind.py", os.path.join("core", "memory_engine.py")]:
         path = os.path.join(os.path.dirname(__file__), "..", fname)
         with open(path, "r", encoding="utf-8") as f:
             ast.parse(f.read())

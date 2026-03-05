@@ -64,7 +64,7 @@ def SECTION(title):
 SECTION("1. CHROMADB CORRECTIONS COLLECTION")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import MemoryStore
+    from core.memory_engine import MemoryStore
     ms = MemoryStore(path=td)
 
     if hasattr(ms, 'corrections'):
@@ -89,7 +89,7 @@ finally:
 SECTION("2. STORE_CORRECTION")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
     c = Consciousness(db_path=td)
 
     # Method exists
@@ -139,7 +139,7 @@ finally:
 SECTION("3. CHECK_PREVIOUS_CORRECTIONS (distance < 0.3)")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
     c = Consciousness(db_path=td)
 
     # Method exists
@@ -289,7 +289,7 @@ except Exception as e:
 SECTION("6. LOGGING WHEN CORRECTION INJECTED")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
     import inspect
 
     c = Consciousness(db_path=td)
@@ -358,7 +358,7 @@ except Exception as e:
 SECTION("8. FAILURE TWIN — AGENT-SPECIFIC ERROR PATTERNS")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
     c = Consciousness(db_path=td)
 
     if hasattr(c, 'get_agent_error_patterns') and callable(c.get_agent_error_patterns):
@@ -383,7 +383,7 @@ finally:
 SECTION("9. ERROR TYPE CLASSIFICATION IN STORE_CORRECTION")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
     c = Consciousness(db_path=td)
 
     if c.embed.available:
@@ -437,7 +437,7 @@ finally:
 SECTION("10. CORRECTIONS IN CONSCIOUSNESS STATS")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
     c = Consciousness(db_path=td)
 
     stats = c.stats

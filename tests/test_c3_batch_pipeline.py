@@ -4,16 +4,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def test_syntax():
-    """consciousness.py parses without errors."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    """memory_engine.py parses without errors."""
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         ast.parse(f.read())
-    print("  [PASS] consciousness.py syntax valid")
+    print("  [PASS] memory_engine.py syntax valid")
 
 
 def test_batch_dedup_in_source():
     """_flush_learn_queue uses batch dedup (one query, not N)."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 
@@ -35,7 +35,7 @@ def test_batch_dedup_in_source():
 
 def test_dedup_flag_pattern():
     """Dedup uses is_dup flag array pattern."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 
@@ -51,7 +51,7 @@ def test_dedup_flag_pattern():
 
 def test_batch_translation_path():
     """Batch translation path exists for Finnish texts."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 
@@ -66,7 +66,7 @@ def test_batch_translation_path():
 
 def test_batch_embed_call():
     """Batch embed is called once (not per-item)."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 
@@ -83,7 +83,7 @@ def test_batch_embed_call():
 
 def test_eviction_hook():
     """Eviction check is called at end of flush."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 

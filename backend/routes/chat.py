@@ -735,7 +735,7 @@ def _init_embed_engine():
         project_root = str(Path(__file__).resolve().parent.parent.parent)
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
-        from consciousness import EmbeddingEngine
+        from core.memory_engine import EmbeddingEngine
         _EMBED_ENGINE = EmbeddingEngine()
         if not _EMBED_ENGINE.available:
             log.warning("EmbeddingEngine not available (Ollama/nomic-embed unreachable)")

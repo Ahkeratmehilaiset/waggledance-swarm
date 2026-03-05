@@ -48,7 +48,7 @@ except Exception as e:
 import sys
 sys.path.insert(0, '/u/project2')
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
     c = Consciousness(db_path='data/chroma_db')
     print(c.memory.count)
 except Exception as e:

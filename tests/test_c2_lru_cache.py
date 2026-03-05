@@ -6,7 +6,7 @@ from collections import OrderedDict
 
 def test_embedding_engine_cache_is_ordered_dict():
     """EmbeddingEngine uses OrderedDict for LRU."""
-    from consciousness import EmbeddingEngine
+    from core.memory_engine import EmbeddingEngine
     ee = EmbeddingEngine(cache_size=100)
     assert isinstance(ee._cache, OrderedDict)
     print("  [PASS] EmbeddingEngine._cache is OrderedDict")
@@ -14,7 +14,7 @@ def test_embedding_engine_cache_is_ordered_dict():
 
 def test_eval_engine_cache_is_ordered_dict():
     """EvalEmbeddingEngine uses OrderedDict for LRU."""
-    from consciousness import EvalEmbeddingEngine
+    from core.memory_engine import EvalEmbeddingEngine
     ee = EvalEmbeddingEngine(cache_size=100)
     assert isinstance(ee._cache, OrderedDict)
     print("  [PASS] EvalEmbeddingEngine._cache is OrderedDict")
@@ -22,7 +22,7 @@ def test_eval_engine_cache_is_ordered_dict():
 
 def test_default_cache_size_500():
     """Default cache size is 500 (not 10000/5000)."""
-    from consciousness import EmbeddingEngine, EvalEmbeddingEngine
+    from core.memory_engine import EmbeddingEngine, EvalEmbeddingEngine
     ee = EmbeddingEngine()
     assert ee._cache_max == 500, f"Expected 500, got {ee._cache_max}"
     ev = EvalEmbeddingEngine()
@@ -32,7 +32,7 @@ def test_default_cache_size_500():
 
 def test_lru_eviction_in_cached_embed():
     """_cached_embed evicts LRU when full."""
-    from consciousness import EmbeddingEngine
+    from core.memory_engine import EmbeddingEngine
     ee = EmbeddingEngine(cache_size=3)
 
     # Manually populate cache (bypass _raw_embed)
@@ -57,7 +57,7 @@ def test_lru_eviction_in_cached_embed():
 
 def test_lru_refresh_on_hit():
     """Cache hit moves entry to end (most recently used)."""
-    from consciousness import EmbeddingEngine
+    from core.memory_engine import EmbeddingEngine
     ee = EmbeddingEngine(cache_size=3)
 
     keys = []
@@ -82,7 +82,7 @@ def test_lru_refresh_on_hit():
 
 def test_memory_bounded():
     """Cache size never exceeds max after many inserts."""
-    from consciousness import EmbeddingEngine
+    from core.memory_engine import EmbeddingEngine
     ee = EmbeddingEngine(cache_size=10)
 
     for i in range(100):
@@ -97,7 +97,7 @@ def test_memory_bounded():
 
 def test_source_code_no_unbounded_check():
     """Source code uses LRU eviction, not 'if len < max' guard."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 

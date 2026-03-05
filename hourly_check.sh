@@ -39,7 +39,7 @@ except Exception as e:
   python -c "
 import sys
 sys.path.insert(0, 'U:/project2')
-from consciousness import Consciousness
+from core.memory_engine import Consciousness
 c = Consciousness(db_path='data/chroma_db')
 print(f'ChromaDB direct: {c.memory.count} facts')
 " >> "$LOG" 2>&1

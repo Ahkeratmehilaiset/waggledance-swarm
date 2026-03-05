@@ -73,7 +73,7 @@ def SECTION(title):
 SECTION("1. CHROMADB COLLECTIONS (corrections, episodes)")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import MemoryStore
+    from core.memory_engine import MemoryStore
     ms = MemoryStore(path=td)
 
     # Check corrections collection exists
@@ -111,7 +111,7 @@ finally:
 SECTION("2. CONTRASTIVE LEARNING")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
 
     c = Consciousness(db_path=td)
 
@@ -178,7 +178,7 @@ finally:
 SECTION("3. ACTIVE LEARNING")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
 
     c = Consciousness(db_path=td)
 
@@ -273,7 +273,7 @@ finally:
 SECTION("4. EMBEDDING AUGMENTATION")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
 
     c = Consciousness(db_path=td)
 
@@ -337,7 +337,7 @@ finally:
 SECTION("5. MULTI-HOP RAG")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
 
     c = Consciousness(db_path=td)
 
@@ -353,7 +353,7 @@ try:
         FAIL("_extract_entities() missing")
 
     # Test _extract_entities
-    from consciousness import MemoryMatch
+    from core.memory_engine import MemoryMatch
     test_matches = [
         MemoryMatch(text="Varroa destructor is a parasitic mite",
                     score=0.8, text_en="Varroa destructor is a parasitic mite"),
@@ -405,7 +405,7 @@ finally:
 SECTION("6. EPISODIC MEMORY")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
 
     c = Consciousness(db_path=td)
 
@@ -494,7 +494,7 @@ finally:
 SECTION("7. SEASONAL SCORING BOOST")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness, MemoryStore, SEASONAL_BOOST
+    from core.memory_engine import Consciousness, MemoryStore, SEASONAL_BOOST
 
     # SEASONAL_BOOST has entries for all 12 months
     if len(SEASONAL_BOOST) == 12:
@@ -544,7 +544,7 @@ try:
         WARN("Embedding not available — skipping seasonal boost live test")
 
     # Verify seasonal boost is integrated in before_llm
-    src = open("consciousness.py", encoding="utf-8").read()
+    src = open(os.path.join("core", "memory_engine.py"), encoding="utf-8").read()
     if "seasonal_boost" in src and "SEASONAL_BOOST.get" in src:
         OK("before_llm() uses SEASONAL_BOOST in search calls")
     else:
@@ -807,7 +807,7 @@ except Exception as e:
 SECTION("12. VRAM IMPACT CHECK")
 try:
     # Phase 4 should NOT introduce new GPU models
-    src_c = open("consciousness.py", encoding="utf-8").read()
+    src_c = open(os.path.join("core", "memory_engine.py"), encoding="utf-8").read()
     src_h = open("hivemind.py", encoding="utf-8").read()
 
     # Check no new model names added
@@ -841,7 +841,7 @@ except Exception as e:
 SECTION("13. CONSCIOUSNESS STATS")
 td = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness
+    from core.memory_engine import Consciousness
 
     c = Consciousness(db_path=td)
     stats = c.stats

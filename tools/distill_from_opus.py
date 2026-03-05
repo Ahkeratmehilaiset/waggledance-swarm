@@ -170,7 +170,7 @@ def import_expert_answers(answers_file=None, consciousness=None):
 
     if consciousness is None:
         try:
-            from consciousness import Consciousness
+            from core.memory_engine import Consciousness
             consciousness = Consciousness(db_path="data/chroma_db")
         except Exception as e:
             print(f"Could not init Consciousness: {e}")

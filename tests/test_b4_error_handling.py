@@ -13,12 +13,12 @@ def test_hivemind_syntax():
 
 
 def test_consciousness_syntax():
-    """consciousness.py parses without errors."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    """memory_engine.py parses without errors."""
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         source = f.read()
     ast.parse(source)
-    print("  [PASS] consciousness.py syntax valid")
+    print("  [PASS] memory_engine.py syntax valid")
 
 
 def test_llm_provider_syntax():
@@ -123,17 +123,17 @@ def test_hall_variable_init():
 
 def test_circuit_breaker_in_embedding():
     """Embedding engines have circuit breakers."""
-    from consciousness import EmbeddingEngine, EvalEmbeddingEngine
+    from core.memory_engine import EmbeddingEngine, EvalEmbeddingEngine
     ee = EmbeddingEngine.__init__.__code__
     # Check that CircuitBreaker is used (by checking the source)
-    with open(os.path.join(os.path.dirname(__file__), "..", "consciousness.py"),
+    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 
     assert "self.breaker = CircuitBreaker" in src
     count = src.count("self.breaker = CircuitBreaker")
     assert count >= 2, f"Expected 2+ CircuitBreaker instances, found {count}"
-    print(f"  [PASS] {count} CircuitBreaker instances in consciousness.py")
+    print(f"  [PASS] {count} CircuitBreaker instances in memory_engine.py")
 
 
 if __name__ == "__main__":

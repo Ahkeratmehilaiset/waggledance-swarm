@@ -181,7 +181,7 @@ SECTION("2. BILINGUAL MEMORY STORE — FI collection, search")
 
 td = tempfile.mkdtemp()
 try:
-    from consciousness import MemoryStore, EmbeddingEngine, MemoryMatch
+    from core.memory_engine import MemoryStore, EmbeddingEngine, MemoryMatch
 
     ms = MemoryStore(path=td)
     embed = EmbeddingEngine()
@@ -452,7 +452,7 @@ SECTION("4. CONSCIOUSNESS — hot_cache + fi_direct in before_llm")
 
 td2 = tempfile.mkdtemp()
 try:
-    from consciousness import Consciousness, PreFilterResult
+    from core.memory_engine import Consciousness, PreFilterResult
 
     c = Consciousness(db_path=td2)
 
@@ -819,7 +819,7 @@ finally:
 # ===============================================================
 SECTION("12. FI_FAST STORE — all-minilm Finnish vector search (~18ms)")
 
-from consciousness import EvalEmbeddingEngine
+from core.memory_engine import EvalEmbeddingEngine
 
 td_ff = tempfile.mkdtemp()
 try:

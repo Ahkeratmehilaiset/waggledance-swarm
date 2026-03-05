@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def test_initial_state():
     """Circuit breaker starts CLOSED (allowing requests)."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("test", failure_threshold=3)
     assert cb.state == "closed"
     assert cb.allow_request() is True
@@ -14,7 +14,7 @@ def test_initial_state():
 
 def test_stays_closed_on_success():
     """Successes keep breaker closed."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("test", failure_threshold=3)
     cb.record_success()
     cb.record_success()
@@ -25,7 +25,7 @@ def test_stays_closed_on_success():
 
 def test_opens_after_threshold():
     """Breaker opens after N failures."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("test", failure_threshold=3, window_s=60)
     cb.record_failure()
     cb.record_failure()
@@ -38,7 +38,7 @@ def test_opens_after_threshold():
 
 def test_blocks_when_open():
     """Open breaker blocks requests."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("test", failure_threshold=2, recovery_s=60)
     cb.record_failure()
     cb.record_failure()
@@ -51,7 +51,7 @@ def test_blocks_when_open():
 
 def test_half_open_after_recovery():
     """After recovery time, breaker goes HALF_OPEN."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("test", failure_threshold=2, recovery_s=0.1)
     cb.record_failure()
     cb.record_failure()
@@ -65,7 +65,7 @@ def test_half_open_after_recovery():
 
 def test_half_open_success_closes():
     """Success in HALF_OPEN closes the breaker."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("test", failure_threshold=2, recovery_s=0.1)
     cb.record_failure()
     cb.record_failure()
@@ -79,7 +79,7 @@ def test_half_open_success_closes():
 
 def test_half_open_failure_reopens():
     """Failure in HALF_OPEN reopens the breaker."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("test", failure_threshold=2, recovery_s=0.1)
     cb.record_failure()
     cb.record_failure()
@@ -93,7 +93,7 @@ def test_half_open_failure_reopens():
 
 def test_stats():
     """Stats returns correct data."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("embed_test", failure_threshold=2)
     cb.record_failure()
     cb.record_failure()
@@ -129,7 +129,7 @@ def test_llm_circuit_breaker():
 
 def test_window_expiry():
     """Failures outside the time window are ignored."""
-    from consciousness import CircuitBreaker
+    from core.memory_engine import CircuitBreaker
     cb = CircuitBreaker("test", failure_threshold=3, window_s=0.1)
     cb.record_failure()
     cb.record_failure()

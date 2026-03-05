@@ -560,7 +560,7 @@ finally:
 SECTION("8. DISTILLATION PREP (tools/distill_from_opus.py)")
 try:
     # Add tools/ to path for import (no __init__.py in tools/)
-    sys.path.insert(0, str(Path(__file__).parent / "tools"))
+    sys.path.insert(0, str(Path(__file__).parent.parent / "tools"))
     from distill_from_opus import (
         collect_failed_queries, format_prompts, import_expert_answers
     )

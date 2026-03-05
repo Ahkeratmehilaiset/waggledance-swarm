@@ -121,6 +121,8 @@ TESTS = [
     {"file": "tests/test_phase7_voice.py",       "name": "Voice Interface",          "phase": "7",    "args": [], "timeout": 60},
     # Phase 8 — External Data Feeds
     {"file": "tests/test_phase8_feeds.py",       "name": "Data Feeds",               "phase": "8",    "args": [], "timeout": 60},
+    # Layer 1 — MAGMA Memory Architecture
+    {"file": "tests/test_memory_proxy.py",      "name": "Memory Proxy",             "phase": "L1",   "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

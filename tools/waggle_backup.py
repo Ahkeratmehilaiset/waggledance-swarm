@@ -129,6 +129,10 @@ TESTS = [
     {"file": "tests/test_layer4_cross_agent.py", "name": "Layer 4 Cross-Agent",  "phase": "L4",   "args": [], "timeout": 60},
     # Layer 5 — Trust & Reputation Engine
     {"file": "tests/test_layer5_trust.py",        "name": "Layer 5 Trust Engine", "phase": "L5",   "args": [], "timeout": 60},
+    # Cognitive Graph
+    {"file": "tests/test_cognitive_graph.py",     "name": "Cognitive Graph",      "phase": "CG",   "args": [], "timeout": 60},
+    # Overlay System Expansion
+    {"file": "tests/test_overlay_system.py",      "name": "Overlay System",       "phase": "OV",   "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

@@ -446,5 +446,69 @@ class TestLayer1Regression(unittest.TestCase):
         self.assertEqual(len(results), 1)
 
 
+# ── Causal replay (CognitiveGraph) ──────────────────────────────
+
+class TestCausalReplay(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp_db.close()
+        self.tmp_jsonl = tempfile.mktemp(suffix=".jsonl")
+        self.tmp_graph = tempfile.mktemp(suffix=".json")
+        from core.audit_log import AuditLog
+        from core.replay_store import ReplayStore
+        from core.replay_engine import ReplayEngine
+        from core.cognitive_graph import CognitiveGraph
+        self.audit = AuditLog(db_path=self.tmp_db.name)
+        self.replay_store = ReplayStore(path=self.tmp_jsonl)
+        self.adapter = StubAdapter()
+        self.graph = CognitiveGraph(self.tmp_graph)
+        self.engine = ReplayEngine(self.adapter, self.audit,
+                                   replay_store=self.replay_store,
+                                   cognitive_graph=self.graph)
+
+    def tearDown(self):
+        self.audit.close()
+        os.unlink(self.tmp_db.name)
+        for p in (self.tmp_jsonl, self.tmp_graph):
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_preview_causal_no_graph(self):
+        from core.replay_engine import ReplayEngine
+        engine = ReplayEngine(self.adapter, self.audit)
+        result = engine.preview_causal("x")
+        self.assertIn("error", result)
+
+    def test_preview_causal_with_deps(self):
+        self.graph.add_edge("d1", "d2", link_type="causal")
+        self.graph.add_edge("d2", "d3", link_type="derived_from")
+        result = self.engine.preview_causal("d1")
+        self.assertEqual(result["would_replay"], 2)
+        dep_ids = [d["id"] for d in result["dependents"]]
+        self.assertIn("d2", dep_ids)
+        self.assertIn("d3", dep_ids)
+
+    def test_replay_causal_dry_run(self):
+        # Set up graph: d1 -> d2
+        self.graph.add_edge("d1", "d2", link_type="causal")
+        # Record audit entry for d2
+        self.audit.record("store", "d2", agent_id="a1", details="downstream fact")
+        result = self.engine.replay_causal("d1", proxy=None, dry_run=True)
+        self.assertEqual(result["replayed"], 1)
+        self.assertEqual(result["results"][0]["status"], "would_replay")
+
+    def test_replay_causal_no_audit(self):
+        self.graph.add_edge("d1", "d2", link_type="causal")
+        result = self.engine.replay_causal("d1", proxy=None, dry_run=True)
+        self.assertEqual(result["results"][0]["status"], "no_audit_entry")
+
+    def test_replay_causal_no_graph(self):
+        from core.replay_engine import ReplayEngine
+        engine = ReplayEngine(self.adapter, self.audit)
+        result = engine.replay_causal("x", proxy=None, dry_run=True)
+        self.assertIn("error", result)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -44,3 +44,26 @@ def register_magma_routes(app, hivemind):
         if not reg:
             return {"overlays": {}}
         return {"overlays": reg.list_all()}
+
+    @app.get("/api/magma/branches")
+    async def magma_branches():
+        bm = getattr(hivemind, '_branch_manager', None)
+        if not bm:
+            return {"branches": {}}
+        return {"branches": bm.list_all()}
+
+    @app.post("/api/magma/branches/{name}/activate")
+    async def magma_branch_activate(name: str):
+        bm = getattr(hivemind, '_branch_manager', None)
+        if not bm:
+            return {"ok": False, "error": "BranchManager not wired"}
+        ok = bm.activate(name)
+        return {"ok": ok, "active": name if ok else None}
+
+    @app.post("/api/magma/branches/deactivate")
+    async def magma_branch_deactivate():
+        bm = getattr(hivemind, '_branch_manager', None)
+        if not bm:
+            return {"ok": False}
+        prev = bm.deactivate()
+        return {"ok": True, "previous": prev}

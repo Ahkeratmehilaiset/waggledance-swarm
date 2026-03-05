@@ -1115,4 +1115,11 @@ loadFeeds();
     except Exception:
         pass
 
+    # MAGMA: Cognitive Graph routes
+    try:
+        from backend.routes.graph import register_graph_routes
+        register_graph_routes(app, hivemind)
+    except Exception:
+        pass
+
     return app

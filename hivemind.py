@@ -919,6 +919,8 @@ DELEGATION RULES (IMPORTANT):
                         self.consciousness, _oreg,
                         self._channel_registry, self._provenance)
                     self._channel_registry.auto_create_role_channels()
+                    from core.memory_overlay import BranchManager
+                    self._branch_manager = BranchManager()
                     print("  ✅ MAGMA Layer 4 wired", flush=True)
                 except Exception as e:
                     print(f"  ⚠️  MAGMA Layer 4: {e}", flush=True)
@@ -933,6 +935,15 @@ DELEGATION RULES (IMPORTANT):
                     print("  ✅ MAGMA Layer 5 wired", flush=True)
                 except Exception as e:
                     print(f"  ⚠️  MAGMA Layer 5: {e}", flush=True)
+
+                # MAGMA: Cognitive Graph
+                try:
+                    from core.cognitive_graph import CognitiveGraph
+                    self._cognitive_graph = CognitiveGraph("data/cognitive_graph.json")
+                    self.consciousness.wire_graph(self._cognitive_graph)
+                    print("  ✅ MAGMA Cognitive Graph wired", flush=True)
+                except Exception as e:
+                    print(f"  ⚠️  MAGMA Cognitive Graph: {e}", flush=True)
 
                 # Phase 3: Init task queue
                 self.consciousness.init_task_queue()
@@ -2058,6 +2069,8 @@ DELEGATION RULES (IMPORTANT):
                 "trust_wired": getattr(self, '_trust_engine', None) is not None,
                 "trust_ranking": (self._trust_engine.get_ranking()[:5]
                                   if getattr(self, '_trust_engine', None) else []),
+                "cognitive_graph": (self._cognitive_graph.stats()
+                                    if getattr(self, '_cognitive_graph', None) else {}),
             },
         }
 

@@ -1,0 +1,187 @@
+"""
+MAGMA: Cognitive Graph — NetworkX-based knowledge graph layer.
+Tracks causal, derived_from, input_to, and semantic edges between facts.
+Persisted as JSON for portability.
+"""
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import networkx as nx
+
+log = logging.getLogger("waggledance.cognitive_graph")
+
+# Valid edge types
+EDGE_TYPES = ("causal", "derived_from", "input_to", "semantic")
+
+
+class CognitiveGraph:
+    """Directed knowledge graph with typed edges and JSON persistence."""
+
+    def __init__(self, persist_path: str = "data/cognitive_graph.json"):
+        self.persist_path = persist_path
+        self.graph = nx.DiGraph()
+        self._load()
+
+    # ── Persistence ──────────────────────────────────────────
+
+    def _load(self):
+        p = Path(self.persist_path)
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                self.graph = nx.node_link_graph(data, edges="links")
+                log.info(f"CognitiveGraph loaded: {self.graph.number_of_nodes()} nodes, "
+                         f"{self.graph.number_of_edges()} edges")
+            except Exception as e:
+                log.warning(f"CognitiveGraph load failed, starting fresh: {e}")
+                self.graph = nx.DiGraph()
+        else:
+            log.info("CognitiveGraph: no persistence file, starting fresh")
+
+    def save(self):
+        p = Path(self.persist_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = nx.node_link_data(self.graph, edges="links")
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    # ── Node operations ──────────────────────────────────────
+
+    def add_node(self, node_id: str, **attrs):
+        """Add or update a node with metadata."""
+        if "timestamp" not in attrs:
+            attrs["timestamp"] = time.time()
+        self.graph.add_node(node_id, **attrs)
+
+    def remove_node(self, node_id: str) -> bool:
+        if node_id in self.graph:
+            self.graph.remove_node(node_id)
+            return True
+        return False
+
+    def get_node(self, node_id: str) -> Optional[dict]:
+        if node_id not in self.graph:
+            return None
+        return {"id": node_id, **dict(self.graph.nodes[node_id])}
+
+    def has_node(self, node_id: str) -> bool:
+        return node_id in self.graph
+
+    # ── Edge operations ──────────────────────────────────────
+
+    def add_edge(self, source: str, target: str, link_type: str = "semantic",
+                 **attrs):
+        """Add a typed directed edge. Auto-creates nodes if missing."""
+        if link_type not in EDGE_TYPES:
+            raise ValueError(f"Invalid link_type '{link_type}', must be one of {EDGE_TYPES}")
+        if not self.has_node(source):
+            self.add_node(source)
+        if not self.has_node(target):
+            self.add_node(target)
+        attrs["link_type"] = link_type
+        attrs["timestamp"] = time.time()
+        self.graph.add_edge(source, target, **attrs)
+
+    def remove_edge(self, source: str, target: str) -> bool:
+        if self.graph.has_edge(source, target):
+            self.graph.remove_edge(source, target)
+            return True
+        return False
+
+    def get_edges(self, node_id: str) -> List[dict]:
+        """Get all edges (in + out) for a node."""
+        edges = []
+        if node_id not in self.graph:
+            return edges
+        for _, target, data in self.graph.out_edges(node_id, data=True):
+            edges.append({"source": node_id, "target": target, **data})
+        for source, _, data in self.graph.in_edges(node_id, data=True):
+            edges.append({"source": source, "target": node_id, **data})
+        return edges
+
+    # ── Query operations ─────────────────────────────────────
+
+    def neighbors(self, node_id: str, link_type: Optional[str] = None,
+                  direction: str = "both") -> List[str]:
+        """Get neighbor node IDs, optionally filtered by edge type."""
+        if node_id not in self.graph:
+            return []
+        result = set()
+        if direction in ("out", "both"):
+            for _, target, data in self.graph.out_edges(node_id, data=True):
+                if link_type is None or data.get("link_type") == link_type:
+                    result.add(target)
+        if direction in ("in", "both"):
+            for source, _, data in self.graph.in_edges(node_id, data=True):
+                if link_type is None or data.get("link_type") == link_type:
+                    result.add(source)
+        return list(result)
+
+    def find_dependents(self, node_id: str, max_depth: int = 5) -> List[Tuple[str, int]]:
+        """
+        BFS traversal following causal/derived_from edges downstream.
+        Returns [(node_id, depth), ...] sorted by depth.
+        """
+        if node_id not in self.graph:
+            return []
+        dependents = []
+        visited = {node_id}
+        queue = [(node_id, 0)]
+
+        while queue:
+            current, depth = queue.pop(0)
+            if depth > max_depth:
+                continue
+            for _, target, data in self.graph.out_edges(current, data=True):
+                if target in visited:
+                    continue
+                if data.get("link_type") in ("causal", "derived_from"):
+                    visited.add(target)
+                    dependents.append((target, depth + 1))
+                    queue.append((target, depth + 1))
+
+        return sorted(dependents, key=lambda x: x[1])
+
+    def find_ancestors(self, node_id: str, max_depth: int = 5) -> List[Tuple[str, int]]:
+        """BFS traversal following causal/derived_from edges upstream (predecessors)."""
+        if node_id not in self.graph:
+            return []
+        ancestors = []
+        visited = {node_id}
+        queue = [(node_id, 0)]
+
+        while queue:
+            current, depth = queue.pop(0)
+            if depth > max_depth:
+                continue
+            for source, _, data in self.graph.in_edges(current, data=True):
+                if source in visited:
+                    continue
+                if data.get("link_type") in ("causal", "derived_from", "input_to"):
+                    visited.add(source)
+                    ancestors.append((source, depth + 1))
+                    queue.append((source, depth + 1))
+
+        return sorted(ancestors, key=lambda x: x[1])
+
+    def shortest_path(self, source: str, target: str) -> Optional[List[str]]:
+        """Shortest path between two nodes, or None if unreachable."""
+        try:
+            return nx.shortest_path(self.graph, source, target)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
+    def stats(self) -> dict:
+        """Summary statistics."""
+        edge_types: Dict[str, int] = {}
+        for _, _, data in self.graph.edges(data=True):
+            lt = data.get("link_type", "unknown")
+            edge_types[lt] = edge_types.get(lt, 0) + 1
+        return {
+            "nodes": self.graph.number_of_nodes(),
+            "edges": self.graph.number_of_edges(),
+            "edge_types": edge_types,
+        }

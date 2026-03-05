@@ -13,10 +13,11 @@ log = logging.getLogger("waggledance.replay_engine")
 class ReplayEngine:
     """Replays audited memory operations selectively."""
 
-    def __init__(self, adapter, audit, replay_store=None):
+    def __init__(self, adapter, audit, replay_store=None, cognitive_graph=None):
         self.adapter = adapter
         self.audit = audit
         self.replay_store = replay_store
+        self._graph = cognitive_graph
 
     # ── Manifest ──────────────────────────────────────────────────
 
@@ -116,6 +117,88 @@ class ReplayEngine:
             for h, group in hash_groups.items()
             if len(group) > 1
         ]
+
+    # ── Causal replay (requires CognitiveGraph) ─────────────────
+
+    def preview_causal(self, node_id: str, max_depth: int = 5) -> dict:
+        """Show what would be re-evaluated if this node changes."""
+        graph = self._graph
+        if not graph:
+            return {"error": "No cognitive graph wired", "dependents": []}
+        dependents = graph.find_dependents(node_id, max_depth=max_depth)
+        dep_details = []
+        for dep_id, depth in dependents:
+            node = graph.get_node(dep_id)
+            dep_details.append({
+                "id": dep_id,
+                "depth": depth,
+                "agent_id": node.get("agent_id", "") if node else "",
+                "source_type": node.get("source_type", "") if node else "",
+            })
+        return {
+            "changed_node": node_id,
+            "would_replay": len(dependents),
+            "dependents": dep_details,
+        }
+
+    def replay_causal(self, node_id: str, *, proxy,
+                      dry_run: bool = True,
+                      max_depth: int = 5) -> dict:
+        """
+        Replay all downstream nodes that causally depend on node_id.
+        Uses cognitive graph edges (causal, derived_from) to find dependents.
+        Each dependent is re-written via the proxy if its audit text can be recovered.
+        """
+        graph = self._graph
+        if not graph:
+            return {"error": "No cognitive graph wired", "replayed": 0, "results": []}
+
+        dependents = graph.find_dependents(node_id, max_depth=max_depth)
+        results = []
+
+        for dep_id, depth in dependents:
+            # Find audit entries for this dependent
+            entries = self.audit.query_by_doc(dep_id)
+            if not entries:
+                results.append({"doc_id": dep_id, "depth": depth,
+                                "status": "no_audit_entry"})
+                continue
+
+            # Use the most recent store entry
+            store_entries = [e for e in entries if e.get("action") in ("store", "new")]
+            if not store_entries:
+                results.append({"doc_id": dep_id, "depth": depth,
+                                "status": "no_store_entry"})
+                continue
+
+            entry = store_entries[-1]
+            text = self._recover_text(entry)
+            if text is None:
+                results.append({"doc_id": dep_id, "depth": depth,
+                                "status": "no_text"})
+                continue
+
+            if dry_run:
+                results.append({"doc_id": dep_id, "depth": depth,
+                                "status": "would_replay", "text_len": len(text)})
+            else:
+                try:
+                    proxy.write(
+                        dep_id, text, [0.0] * 8,
+                        mode="new",
+                        collection=entry.get("collection", "waggle_memory"),
+                    )
+                    results.append({"doc_id": dep_id, "depth": depth,
+                                    "status": "replayed"})
+                except Exception as e:
+                    results.append({"doc_id": dep_id, "depth": depth,
+                                    "status": "error", "error": str(e)})
+
+        return {
+            "trigger": node_id,
+            "replayed": len([r for r in results if r["status"] in ("replayed", "would_replay")]),
+            "results": results,
+        }
 
     # ── Internal replay logic ─────────────────────────────────────
 

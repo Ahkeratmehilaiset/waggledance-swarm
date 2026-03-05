@@ -1082,6 +1082,11 @@ class Consciousness:
         self._replay_store = replay_store
         log.info("MAGMA: audit wired to consciousness")
 
+    def wire_graph(self, cognitive_graph):
+        """MAGMA: Wire cognitive graph into learning pipeline."""
+        self._cognitive_graph = cognitive_graph
+        log.info("MAGMA: cognitive graph wired to consciousness")
+
     def set_translation_proxy(self, proxy):
         self.opus.set_proxy(proxy)
 
@@ -1792,6 +1797,17 @@ class Consciousness:
             _rs = getattr(self, '_replay_store', None)
             if _rs:
                 _rs.store(obs_id, combined, _hash, meta)
+
+        # MAGMA: cognitive graph node + edge
+        _cg = getattr(self, '_cognitive_graph', None)
+        if _cg:
+            try:
+                _cg.add_node(obs_id, agent_id=agent_id, source_type=source_type)
+                _src_doc = (metadata or {}).get("enrichment_source")
+                if _src_doc:
+                    _cg.add_edge(_src_doc, obs_id, link_type="derived_from")
+            except Exception:
+                pass
 
         # Phase 4i: store in bilingual FI collection
         if self.bilingual:

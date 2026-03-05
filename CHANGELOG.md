@@ -1,5 +1,37 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.2 (2026-03-05) — Cognitive Graph, Overlay Expansion, Causal Replay
+
+### New: Cognitive Graph (NetworkX)
+- `core/cognitive_graph.py` — NetworkX DiGraph with typed edges (causal, derived_from, input_to, semantic), JSON persistence, BFS traversal for dependents/ancestors, shortest path queries
+- `backend/routes/graph.py` — 3 API endpoints: `/api/graph/node/{id}`, `/api/graph/path/{a}/{b}`, `/api/graph/stats`
+- `core/memory_engine.py`: `wire_graph()` method + automatic node/edge creation in `_learn_single()` (derived_from edges for enrichment-sourced facts)
+- `hivemind.py`: CognitiveGraph wired after Layer 5, stats in `get_status()`
+- `tests/test_cognitive_graph.py` — 23 tests (suite #42)
+
+### New: Overlay System Expansion (A/B testing, Mood Presets)
+- `core/memory_overlay.py` expanded (+130 lines): `OverlayBranch` (named replacement sets, apply to search results), `BranchManager` (activate/deactivate, A/B compare, create_from_agent_data), `MoodPreset` (cautious, verified_only, concise transforms)
+- `backend/routes/magma.py` — 3 new endpoints: `/api/magma/branches`, `/api/magma/branches/{name}/activate`, `/api/magma/branches/deactivate`
+- `hivemind.py`: BranchManager instantiated in Layer 4 wiring
+- `tests/test_overlay_system.py` — 25 tests (suite #43)
+- Existing MemoryOverlay + OverlayRegistry unchanged — expansion is fully additive
+
+### Enhanced: Causal Replay (CognitiveGraph-powered)
+- `core/replay_engine.py` (+70 lines): `preview_causal(node_id)` shows downstream dependency chain, `replay_causal(node_id, proxy, dry_run)` re-evaluates all causally dependent nodes
+- Uses CognitiveGraph `find_dependents()` to walk causal/derived_from edges
+- Optional — works without graph (time/session replay unaffected), causal methods guarded by `self._graph`
+- `tests/test_replay_engine.py` — +5 causal tests (27→32 total)
+
+### Resolved blueprint gaps
+- **Cognitive Graph (NetworkX)** — was listed as "Missing" in guide v1.1, now implemented
+- **Full Overlay System** — was "Simplified" (agent-filtered views only), now includes branch/mood/A-B testing
+- **Causal Selective Replay** — was "Different design" (time-based only), now supports graph-based causal traversal
+
+### Test summary
+- 43/43 suites GREEN, 700 tests, Health Score 100/100
+
+---
+
 ## v0.1.1 (2026-03-05) — MAGMA Layers 4-5: Cross-Agent Memory + Trust Engine
 
 ### New: MAGMA Layer 4 — Cross-Agent Memory Sharing

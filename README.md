@@ -26,7 +26,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 
 **Response time improves over use:** ~3,000ms (cold, full LLM path) → ~55ms (bilingual ChromaDB) → ~0.5ms (Hot Cache hit for previously seen queries).
 
-36/36 test suites pass (700+ assertions, measured locally). No subscription, no API keys required.
+43/43 test suites pass (700+ assertions across 43 suites, measured locally). No subscription, no API keys required.
 
 ---
 
@@ -43,6 +43,10 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 - **Audio sensors** — ESP32 bee audio analysis (stress/swarming/queen piping detection), BirdNET integration
 - **Voice interface** — Whisper STT (Finnish) + Piper TTS, wake word activation
 - **External data feeds** — FMI weather, electricity spot prices, RSS disease alerts
+- **MAGMA memory architecture** — append-only audit log, selective replay, write proxy, agent rollback, overlay branches, A/B testing, mood presets
+- **Cognitive Graph** — NetworkX-based knowledge graph with causal/semantic edges, dependency traversal, causal replay
+- **Trust & Reputation** — 6-signal agent trust scoring (hallucination, validation, consensus, correction, fact production, freshness)
+- **Cross-agent memory** — agent channels, provenance tracking, consensus records, filtered overlay views
 - **Production hardening** — CircuitBreaker, graceful degradation, structured logging, TTL eviction
 - **Night mode** — autonomous learning when idle (fact enrichment, Round Table debates, MicroModel retraining)
 - **Stub / Production mode** — develop dashboard without Ollama (`python start.py --stub`)
@@ -54,9 +58,9 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 
 - **Single developer project** — not yet validated by external users
 - **Finnish beekeeping focus** — adapting to other domains requires new YAML agent definitions
-- **Autonomous learning layers 3-6** — code structure exists but not production-tested
+- **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
 - **MicroModel V3 (LoRA)** — architecture defined, training pipeline not yet implemented
-- **CI runs basic test suite** — full 36-suite validation still requires local `tools/waggle_backup.py`
+- **CI runs basic test suite** — full 43-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
@@ -293,7 +297,7 @@ python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **36/36 suites GREEN, 700+ assertions, 0 failures.**
+Expected: **43/43 suites GREEN, 700+ assertions, 0 failures.**
 
 ---
 
@@ -306,9 +310,9 @@ waggledance-swarm/
 ├── core/                # Core modules (memory_engine, translation_proxy, models, scheduling)
 ├── integrations/        # External systems (MQTT, Frigate, HA, audio, voice, feeds)
 ├── backend/             # Standalone stub backend (no Ollama needed)
-│   └── routes/          #   12 API route modules
+│   └── routes/          #   15 API route modules
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 36 test suites (700+ assertions)
+├── tests/               # 43 test suites (700+ assertions)
 ├── tools/               # Backup, restore, benchmarks, scanners
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Documentation and images
@@ -333,6 +337,11 @@ waggledance-swarm/
 - ✅ **Phase 8:** External Data Feeds — FMI weather, electricity spot price, RSS disease alerts
 - ✅ **Phase B/C/D:** Production Hardening — CircuitBreaker, caching, structured logging, convergence detection
 - ✅ **Phase 11:** Elastic Scaling — auto-detect GPU/RAM/CPU, 5-tier classification
+- ✅ **MAGMA L1-L3:** Memory Architecture — audit log, replay store, write proxy, overlay networks, agent rollback
+- ✅ **MAGMA L4:** Cross-Agent Memory — agent channels, provenance tracking, consensus records
+- ✅ **MAGMA L5:** Trust & Reputation — 6-signal trust scoring, domain experts, temporal decay
+- ✅ **Cognitive Graph:** NetworkX knowledge graph — causal/semantic edges, dependency traversal, causal replay
+- ✅ **Overlay Expansion:** Branchable memory — A/B testing, mood presets, agent contribution transforms
 - 🔲 **Phase 9:** Autonomous Learning Layers 3-6 — code exists, disabled (offline-first by design)
 - 🔲 **Phase 10:** MicroModel V3 LoRA — architecture defined, training pipeline pending
 
@@ -344,7 +353,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 36/36 GREEN | 700+ assertions, measured locally |
+| Test suites | 43/43 GREEN | 700+ assertions, measured locally |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -383,6 +392,17 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | `/api/agents/levels` | GET | All 75 agents with levels/trust |
 | `/api/settings` | GET | Feature toggles |
 | `/api/settings/toggle` | POST | Toggle a feature on/off |
+
+### MAGMA Memory Architecture
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/magma/stats` | GET | Audit log + replay store status |
+| `/api/magma/audit` | GET | Last 24h audit entries |
+| `/api/magma/branches` | GET | Overlay branches and status |
+| `/api/trust/ranking` | GET | All agents ranked by reputation |
+| `/api/trust/agent/{id}` | GET | Full reputation breakdown |
+| `/api/cross/channels` | GET | Agent communication channels |
+| `/api/graph/stats` | GET | Cognitive graph node/edge counts |
 
 ---
 

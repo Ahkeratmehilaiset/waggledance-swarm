@@ -8,6 +8,9 @@ NOTE: Test INPUT strings use proper Finnish chars (a-umlaut, o-umlaut).
 """
 import time
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 PASS = 0
 FAIL = 0

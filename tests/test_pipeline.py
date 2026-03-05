@@ -19,6 +19,9 @@ Perusteellinen testi koko käännösputkelle:
 import time
 import sys
 import os
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Windows cp1252 fix — force UTF-8 output
 if sys.platform == "win32":

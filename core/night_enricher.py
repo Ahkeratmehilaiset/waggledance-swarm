@@ -1300,6 +1300,22 @@ class NightEnricher:
         log.info(f"NightEnricher: source={source_id}, agent={agent_id}, "
                  f"topic={topic[:60]}")
 
+        # Layer 4: inject cross-source context hints
+        _cs = getattr(self, '_cross_search', None)
+        if _cs:
+            try:
+                _embed = getattr(self, '_consciousness', None)
+                if _embed and hasattr(_embed, 'embed'):
+                    _qe = _embed.embed.embed_document(topic[:200])
+                    if _qe:
+                        _hints = _cs.search_by_role(_qe, "scouts", top_k=2)
+                        if _hints:
+                            _hint_text = "; ".join(
+                                h.get("text", "")[:100] for h in _hints[:2])
+                            topic = f"{topic} [context: {_hint_text}]"
+            except Exception as _e:
+                log.debug(f"Cross-source hint: {_e}")
+
         t0 = time.monotonic()
         try:
             candidates = await source.generate_candidates(
@@ -1360,6 +1376,13 @@ class NightEnricher:
                     self._per_agent_stored[agent_id] = (
                         self._per_agent_stored.get(agent_id, 0) + 1)
                     self.gap_scheduler.record_enrichment()
+                    # Layer 5: Record fact production trust signal
+                    _te = getattr(self, '_trust_engine', None)
+                    if _te:
+                        try:
+                            _te.record_signal(agent_id, "fact_production", 1.0)
+                        except Exception:
+                            pass
                     log.info(
                         f"✨ NightEnricher [{source_id}]: "
                         f"'{candidate.text[:60]}' "

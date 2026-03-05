@@ -1773,6 +1773,7 @@ class Consciousness:
             "confidence": confidence, "validated": validated,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "text_fi": text_fi, "text_en": text_en,
+            "_provenance_id": obs_id,
         }
         if metadata:
             meta.update(metadata)

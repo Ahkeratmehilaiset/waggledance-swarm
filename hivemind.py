@@ -903,6 +903,37 @@ DELEGATION RULES (IMPORTANT):
                 except Exception as e:
                     print(f"  ⚠️  MAGMA audit: {e}", flush=True)
 
+                # MAGMA Layer 4: Cross-agent memory sharing
+                try:
+                    from core.agent_channels import ChannelRegistry
+                    from core.provenance import ProvenanceTracker
+                    from core.cross_agent_search import CrossAgentSearch
+                    from core.memory_overlay import OverlayRegistry
+                    self._channel_registry = ChannelRegistry()
+                    self._provenance = ProvenanceTracker(self._audit_log)
+                    _oreg = getattr(self, '_overlay_registry', None)
+                    if not _oreg:
+                        _oreg = OverlayRegistry(self.consciousness.memory)
+                        self._overlay_registry = _oreg
+                    self._cross_search = CrossAgentSearch(
+                        self.consciousness, _oreg,
+                        self._channel_registry, self._provenance)
+                    self._channel_registry.auto_create_role_channels()
+                    print("  ✅ MAGMA Layer 4 wired", flush=True)
+                except Exception as e:
+                    print(f"  ⚠️  MAGMA Layer 4: {e}", flush=True)
+
+                # MAGMA Layer 5: Trust & Reputation Engine
+                try:
+                    from core.trust_engine import TrustEngine
+                    _al = getattr(self, 'agent_levels', None)
+                    _prov = getattr(self, '_provenance', None)
+                    self._trust_engine = TrustEngine(
+                        self._audit_log, provenance=_prov, agent_levels=_al)
+                    print("  ✅ MAGMA Layer 5 wired", flush=True)
+                except Exception as e:
+                    print(f"  ⚠️  MAGMA Layer 5: {e}", flush=True)
+
                 # Phase 3: Init task queue
                 self.consciousness.init_task_queue()
 
@@ -2024,6 +2055,9 @@ DELEGATION RULES (IMPORTANT):
                 "audit_wired": getattr(self, '_audit_log', None) is not None,
                 "audit_entries": self._audit_log.count() if getattr(self, '_audit_log', None) else 0,
                 "replay_wired": getattr(self, '_replay_store', None) is not None,
+                "trust_wired": getattr(self, '_trust_engine', None) is not None,
+                "trust_ranking": (self._trust_engine.get_ranking()[:5]
+                                  if getattr(self, '_trust_engine', None) else []),
             },
         }
 
@@ -2691,6 +2725,35 @@ DELEGATION RULES (IMPORTANT):
                         source_type="round_table",
                         confidence=0.85, validated=True,
                         metadata={"topic": topic[:200]})
+
+                # Layer 4: Record consensus provenance + broadcast
+                _prov = getattr(self, '_provenance', None)
+                _chreg = getattr(self, '_channel_registry', None)
+                if _prov:
+                    try:
+                        _rt_agents = [d.get("agent_id", "") for d in discussion]
+                        _prov.record_consensus(
+                            f"round_table_{int(time.time())}",
+                            _rt_agents, synthesis[:500])
+                    except Exception as _e:
+                        log.debug(f"Provenance consensus: {_e}")
+                if _chreg:
+                    try:
+                        _chreg.broadcast("judges", "round_table",
+                                         f"[Synthesis] {synthesis[:300]}")
+                    except Exception:
+                        pass
+
+                # Layer 5: Record consensus participation trust signal
+                _te = getattr(self, '_trust_engine', None)
+                if _te:
+                    for _d in discussion:
+                        _aid = _d.get("agent_id", "")
+                        if _aid:
+                            try:
+                                _te.record_signal(_aid, "consensus_participation", 1.0)
+                            except Exception:
+                                pass
 
                 await self._theater_stream_round_table(topic, discussion, synthesis)
                 log.info(f"🏛️ Round Table done: {len(discussion)} agents, topic: {topic[:60]}")

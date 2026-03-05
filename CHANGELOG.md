@@ -1,5 +1,31 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.1 (2026-03-05) — MAGMA Layers 4-5: Cross-Agent Memory + Trust Engine
+
+### New: MAGMA Layer 4 — Cross-Agent Memory Sharing
+- `core/agent_channels.py` — AgentChannel + ChannelRegistry (role/domain channels, in-memory history cap 200)
+- `core/provenance.py` — ProvenanceTracker: validations + consensus tables in audit_log.db
+- `core/cross_agent_search.py` — CrossAgentSearch: role/channel/provenance-filtered queries
+- `backend/routes/cross_agent.py` — 5 API endpoints for channels, provenance, contributions, consensus
+- `hivemind.py`: Layer 4 wired after MAGMA audit, auto_create_role_channels(), Round Table consensus feedback
+- `core/night_enricher.py`: cross-source context hints before generate_candidates()
+- `core/memory_engine.py`: `_provenance_id` added to meta dict in _learn_single()
+- `tests/test_layer4_cross_agent.py` — 28 tests (suite #40)
+
+### New: MAGMA Layer 5 — Trust & Reputation Engine
+- `core/trust_engine.py` — TrustSignal, AgentReputation, TrustEngine: 6-dimensional trust scoring (hallucination_rate, validation_ratio, consensus_participation, correction_rate, fact_production, temporal_freshness)
+- `core/agent_levels.py` — added `get_stats_for_trust()` public API for TrustEngine integration
+- `backend/routes/trust.py` — 4 API endpoints: `/api/trust/ranking`, `/agent/{id}`, `/domain/{d}`, `/signals/{id}`
+- `hivemind.py`: TrustEngine wired after Layer 4, consensus participation signals in Round Table, trust summary (top 5) in `get_status()`
+- `core/night_enricher.py`: `fact_production` signal recorded on validated fact storage
+- `web/dashboard.py`: trust routes mounted
+- `tests/test_layer5_trust.py` — 27 tests (suite #41)
+
+### Test summary
+- 41/41 suites GREEN, 700 tests, Health Score 100/100
+
+---
+
 ## v0.1.0 (2026-03-04) — Dashboard Analytics + Runtime API + Agent Visualization
 
 ### New: Backend Analytics API (4 endpoints)

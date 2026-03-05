@@ -125,6 +125,10 @@ TESTS = [
     {"file": "tests/test_memory_proxy.py",      "name": "Memory Proxy",             "phase": "L1",   "args": [], "timeout": 60},
     {"file": "tests/test_replay_engine.py",    "name": "Replay Engine",            "phase": "L2",   "args": [], "timeout": 60},
     {"file": "tests/test_layer3_wiring.py",   "name": "Layer 3 Wiring",           "phase": "L3",   "args": [], "timeout": 60},
+    # Layer 4 — Cross-Agent Memory Sharing
+    {"file": "tests/test_layer4_cross_agent.py", "name": "Layer 4 Cross-Agent",  "phase": "L4",   "args": [], "timeout": 60},
+    # Layer 5 — Trust & Reputation Engine
+    {"file": "tests/test_layer5_trust.py",        "name": "Layer 5 Trust Engine", "phase": "L5",   "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

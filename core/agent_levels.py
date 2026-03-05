@@ -315,6 +315,19 @@ class AgentLevelManager:
     def get_stats(self, agent_id: str) -> dict:
         return self._load_stats(agent_id).to_dict()
 
+    def get_stats_for_trust(self, agent_id: str) -> Optional[dict]:
+        """Public API for TrustEngine — returns trust-relevant stats."""
+        stats = self._load_stats(agent_id)
+        hr = stats.hallucination_rate()
+        cr = stats.user_corrections / max(1, stats.total_responses)
+        return {
+            "hallucination_rate": hr,
+            "correction_rate": cr,
+            "total_responses": stats.total_responses,
+            "trust_score": stats.trust_score,
+            "specialties": list(stats.specialties),
+        }
+
     def get_all_stats(self) -> Dict[str, dict]:
         """Get stats for all tracked agents."""
         result = {}

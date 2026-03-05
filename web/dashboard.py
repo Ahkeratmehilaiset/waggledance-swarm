@@ -1101,4 +1101,18 @@ loadFeeds();
     except Exception:
         pass
 
+    # MAGMA Layer 4: Cross-agent routes
+    try:
+        from backend.routes.cross_agent import register_cross_agent_routes
+        register_cross_agent_routes(app, hivemind)
+    except Exception:
+        pass
+
+    # MAGMA Layer 5: Trust & Reputation routes
+    try:
+        from backend.routes.trust import register_trust_routes
+        register_trust_routes(app, hivemind)
+    except Exception:
+        pass
+
     return app

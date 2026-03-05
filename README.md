@@ -1,6 +1,6 @@
 # WaggleDance SWARM AI
 
-![Tests](https://img.shields.io/badge/tests-36%2F36_suites_GREEN-brightgreen)
+[![Tests](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/tests.yml/badge.svg)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)

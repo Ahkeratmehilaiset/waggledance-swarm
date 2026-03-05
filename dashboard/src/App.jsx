@@ -174,26 +174,38 @@ This is a deliberate architectural decision, not a limitation. WaggleDance is bu
 ▸ V0.0.5: PORTABILITY & RELIABILITY
   • Voikko bundled — mor.vfst + autocorr.vfst included, auto-download fallback
   • Night Shift Automation — tools/night_shift.py, watchdog, morning report
-  • Fact counter persistence — survives restarts, never resets
-  • Health Score 100/100 — all 35 test suites GREEN
+  • Health Score 100/100 — all 36 test suites GREEN
 
 ▸ V0.0.6: PHASE 5 — SMART HOME SENSORS
   • MQTT Hub — paho-mqtt, dedup, exponential reconnect
   • Frigate NVR — camera events, severity alerts (bear=CRITICAL)
   • Home Assistant — REST poll, significance filter, Finnish state
   • Alert Dispatcher — Telegram + Webhook, rate limiting
-  • 21 agent knowledge bases expanded (148-207 lines each)
-  • 28 knowledge YAML files enriched (18-20 facts each)
-  • 7 new core module test suites (103 tests)
+
+▸ V0.0.8: PHASE 6+7+11 — AUDIO, VOICE, ELASTIC SCALING
+  • BeeAudioAnalyzer — FFT spectrum, stress/swarming/queen piping detection
+  • BirdMonitor — BirdNET stub, predator alerts, graceful degradation
+  • Whisper STT (Finnish) + Piper TTS (fi_FI-harri-medium), wake word
+  • ElasticScaler — auto-detect HW, classify tier (ESP32→DGX)
+
+▸ V0.0.9: PHASE 8 — EXTERNAL DATA FEEDS
+  • Weather (FMI) + Electricity (porssisahko.net) + RSS disease alerts
+  • 5 knowledge bases enriched (quality, supply chain, energy, maintenance)
+
+▸ V0.1.0: DASHBOARD ANALYTICS + RUNTIME API
+  • Analytics API — 7-day trends, route breakdown, model usage, fact growth
+  • Round Table Transcript — consensus debates, agent dialogue
+  • Agent Level Grid — 75 agents NOVICE→MASTER visualization
+  • Runtime Settings — toggle 13 features on/off via API
 
 ▸ TESTING
-  35/35 test suites GREEN (700+ assertions)
-  Pipeline, routing, corrections, autonomy, smart home, core modules — all validated
+  36/36 test suites GREEN (700+ assertions)
+  Pipeline, routing, corrections, autonomy, smart home, audio, voice, feeds — all validated
 
 ▸ CODEBASE
-  75 agents • 90+ Python modules • 45,000+ lines of code
+  75 agents • 140+ Python modules • 200,000+ lines of code
   97.7% routing accuracy (1,207/1,235 tested)
-  35 test suites • 10 seasonal rules • 34 domain terms
+  36 test suites • 10 seasonal rules • 34 domain terms
 
 ▸ JUST LET IT RUN
 Install. Connect. Walk away.
@@ -468,26 +480,38 @@ Tämä on tietoinen arkkitehtuurivalinta, ei rajoitus. WaggleDance on rakennettu
 ▸ V0.0.5: SIIRRETTÄVYYS & LUOTETTAVUUS
   • Voikko mukana — mor.vfst + autocorr.vfst, autolataus
   • Yövuoroautomaatio — tools/night_shift.py, vartija, aamoraportti
-  • Faktalaskuri pysyy — ei nollaudu uudelleenkäynnistyksessä
-  • Terveyspistemäärä 100/100 — kaikki 35 testisarjaa VIHREÄNÄ
+  • Terveyspistemäärä 100/100 — kaikki 36 testisarjaa VIHREÄNÄ
 
 ▸ V0.0.6: VAIHE 5 — KODIN SENSORIT
   • MQTT Hub — paho-mqtt, dedup, eksponentiaalinen uudelleenyhdistys
   • Frigate NVR — kameratapahtumat, vakavuushälytykset (karhu=KRIITTINEN)
   • Home Assistant — REST-pollaus, merkittävyyssuodatin, suomenkielinen tila
   • Hälytysten välittäjä — Telegram + Webhook, nopeusrajoitus
-  • 21 agenttien tietopankkia laajennettu (148-207 riviä)
-  • 28 tietämys-YAML:ia rikastettu (18-20 faktaa/tiedosto)
-  • 7 uutta ydinmoduulien testisarjaa (103 testiä)
+
+▸ V0.0.8: VAIHE 6+7+11 — ÄÄNI, PUHE, ELASTINEN SKAALAUS
+  • BeeAudioAnalyzer — FFT-spektri, stressi/parveilu/emon piipitys
+  • BirdMonitor — BirdNET-stub, petoeläinhälytykset, vikasietoinen
+  • Whisper STT (suomi) + Piper TTS (fi_FI-harri-medium), herätyssana
+  • ElasticScaler — tunnistaa laitteiston, valitsee tason (ESP32→DGX)
+
+▸ V0.0.9: VAIHE 8 — ULKOISET TIETOVIRRAT
+  • Sää (IL) + Pörssisähkö + RSS tautihälytykset
+  • 5 tietokantaa rikastettu (laatu, toimitusketju, energia, huolto)
+
+▸ V0.1.0: HALLINTAPANEELIN ANALYTIIKKA + AJONAIKAINEN API
+  • Analytiikka-API — 7 pv trendit, reittien jakauma, mallien käyttö, faktojen kasvu
+  • Pyöreä Pöytä -transkriptit — konsensuskeskustelut, agenttien dialogi
+  • Agenttitasojen ruudukko — 75 agenttia NOVIISI→MESTARI visualisoitu
+  • Ajonaikaiset asetukset — 13 ominaisuuden päälle/pois kytkentä API:lla
 
 ▸ TESTAUS
-  35/35 testisarjaa VIHREÄNÄ (700+ väittämää)
-  Putki, reititys, korjaukset, autonomia, kodin sensorit, ydinmoduulit — kaikki validoitu
+  36/36 testisarjaa VIHREÄNÄ (700+ väittämää)
+  Putki, reititys, korjaukset, autonomia, kodin sensorit, ääni, puhe, tietovirrat — kaikki validoitu
 
 ▸ KOODIKANTA
-  75 agenttia • 90+ Python-moduulia • 45 000+ koodiriviä
+  75 agenttia • 140+ Python-moduulia • 200 000+ koodiriviä
   97.7% reitityksen tarkkuus (1 207/1 235 testattu)
-  35 testisarjaa • 10 kausivahtisääntöä • 34 erikoistermiä
+  36 testisarjaa • 10 kausivahtisääntöä • 34 erikoistermiä
 
 ▸ ANNA SEN VAIN OLLA
 Asenna. Yhdistä. Kävele pois.
@@ -695,7 +719,7 @@ useEffect(()=>{const seq=[
 [53000,()=>{setItems(p=>[...p,"✓ HotCache + LRU (0.5ms cached responses)"]);setPr(35)}],
 [55000,()=>{setItems(p=>[...p,"✓ ConvergenceDetector (knows when learning plateaus)"]);setPr(55)}],
 [57000,()=>{setItems(p=>[...p,"✓ Structured Logging + Weekly Report"]);setPr(75)}],
-[59000,()=>{setItems(p=>[...p,"✓ 35/35 test suites GREEN (700+ assertions)"]);setPr(100)}],
+[59000,()=>{setItems(p=>[...p,"✓ 36/36 test suites GREEN (700+ assertions)"]);setPr(100)}],
 [62000,()=>{setStep(5);setMain("LANGUAGE-NATIVE AI");setSub("deep morphological integration — not just translation");setItems(["Opus-MT neural translation (any language pair)","Voikko-level morphological analysis","Domain-specific terminology engine","Native-language vector index (skip translation)"]);setPr(0)}],
 [70000,()=>{setStep(6);setMain("INFINITE SCALING");setSub("same code — any hardware");setItems(["ESP32 — €8 — edge intelligence","Raspberry Pi — €80 — full agent","Intel NUC — €650 — home brain","Mac Pro — €2,200 — professional","NVIDIA DGX — €400,000 — enterprise"])}],
 [78000,()=>{setStep(7);setMain("JUST LET IT RUN");setSub("");setItems(["1 week → knows your patterns","1 month → anticipates your needs","6 months → domain expert","1 year → understands your world"])}],
@@ -770,12 +794,13 @@ function Overlay({item,color,hw,onClose,t}){const calc=hw?.calc;
 }
 
 // ═══ ANALYTICS MINI-PANEL ═══
-function AnalyticsPanel({data,color}){
+function AnalyticsPanel({data,color,lang}){
   if(!data||!data.days||data.days.length===0)return null;
   const maxRT=Math.max(...data.rt_trend,1);
+  const fi=lang==="fi";
   return(<div style={{marginTop:14,padding:"8px 0",borderTop:`1px solid ${color}15`}}>
-    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>LEARNING ANALYTICS</div>
-    <div style={{fontSize:8,color:"rgba(255,255,255,.25)",marginBottom:6}}>7-DAY TREND — {data.total_queries||0} queries</div>
+    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>{fi?"OPPIMISANALYTIIKKA":"LEARNING ANALYTICS"}</div>
+    <div style={{fontSize:8,color:"rgba(255,255,255,.25)",marginBottom:6}}>{fi?"7 PV TRENDI":"7-DAY TREND"} — {data.total_queries||0} {fi?"kyselyä":"queries"}</div>
     <div style={{display:"flex",gap:3,alignItems:"flex-end",height:40,marginBottom:6}}>
       {data.rt_trend.map((v,i)=>(<div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
         <div style={{width:"100%",background:`${color}30`,borderRadius:2,height:Math.max(2,v/maxRT*32)}}/>
@@ -791,13 +816,14 @@ function AnalyticsPanel({data,color}){
 }
 
 // ═══ ROUND TABLE MINI-PANEL ═══
-function RoundTablePanel({data,color}){
+function RoundTablePanel({data,color,lang}){
   if(!data||!data.discussions||data.discussions.length===0)return null;
   const latest=data.discussions[0];
+  const fi=lang==="fi";
   return(<div style={{marginTop:14,padding:"8px 0",borderTop:`1px solid ${color}15`}}>
-    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>ROUND TABLE — LATEST</div>
+    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>{fi?"PYÖREÄ PÖYTÄ — VIIMEISIN":"ROUND TABLE — LATEST"}</div>
     <div style={{fontSize:10,color:"rgba(255,255,255,.55)",fontWeight:600,marginBottom:4}}>{latest.topic}</div>
-    <div style={{fontSize:8,color:"rgba(255,255,255,.25)",marginBottom:6}}>{latest.agent_count} agents — {(latest.agreement*100).toFixed(0)}% agreement</div>
+    <div style={{fontSize:8,color:"rgba(255,255,255,.25)",marginBottom:6}}>{latest.agent_count} {fi?"agenttia":"agents"} — {(latest.agreement*100).toFixed(0)}% {fi?"konsensus":"agreement"}</div>
     {latest.discussion.slice(-3).map((d,i)=>(<div key={i} style={{padding:"3px 0",borderLeft:`2px solid ${d.agent==="Kuningatar"?color:"rgba(255,255,255,.08)"}`,paddingLeft:6,marginBottom:3}}>
       <span style={{fontSize:7.5,color:d.agent==="Kuningatar"?color:"rgba(255,255,255,.35)",fontWeight:600,letterSpacing:1}}>{d.agent}</span>
       <div style={{fontSize:9,color:"rgba(255,255,255,.40)",lineHeight:1.5}}>{d.msg}</div>
@@ -807,12 +833,13 @@ function RoundTablePanel({data,color}){
 }
 
 // ═══ AGENT GRID MINI-PANEL ═══
-function AgentGridPanel({data,color}){
+function AgentGridPanel({data,color,lang}){
   if(!data||!data.agents)return null;
   const LC={5:"#22C55E",4:"#A78BFA",3:"#22D3EE",2:"#F59E0B",1:"#6B7280"};
   const LN={5:"M",4:"E",3:"J",2:"A",1:"N"};
+  const fi=lang==="fi";
   return(<div style={{marginTop:14,padding:"8px 0",borderTop:`1px solid ${color}15`}}>
-    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>AGENT LEVELS — {data.total} agents</div>
+    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>{fi?"AGENTTITASOT":"AGENT LEVELS"} — {data.total} {fi?"agenttia":"agents"}</div>
     <div style={{display:"flex",gap:4,marginBottom:8,fontSize:8}}>
       {Object.entries(data.level_distribution||{}).map(([name,cnt])=>(<span key={name} style={{color:LC[{MASTER:5,EXPERT:4,JOURNEYMAN:3,APPRENTICE:2,NOVICE:1}[name]||1]}}>{name.slice(0,3)}: {cnt}</span>))}
     </div>
@@ -1066,7 +1093,7 @@ export default function App(){
               <div style={{textAlign:"center",marginTop:-8}}><div style={{fontSize:34,fontWeight:200,color:"rgba(255,255,255,.65)",letterSpacing:6}}>{D_IC[dom]} {t.domains[dom].label}</div><div style={{fontSize:14,color:"rgba(255,255,255,.30)",letterSpacing:3,marginTop:5}}>{t.domains[dom].tag}</div></div>
               <div style={{marginTop:10,display:"flex",flexWrap:"wrap",justifyContent:"center",gap:"4px 14px",maxWidth:440}}>{aw.map((a,i)=>(<div key={i} style={{fontSize:9.5,color:"rgba(255,255,255,.30)",letterSpacing:1}}>{a.k}: <span style={{color:a.c,fontWeight:600,fontFamily:"monospace"}}>{a.v}</span></div>))}</div>
             </div>
-            <div style={{padding:"12px 14px",overflowY:"auto",maxHeight:"calc(100vh - 52px)"}}><FeatureList feats={t.feats[dom]} color={col} label={t.features} onOpen={setOverlay} t={t}/><AnalyticsPanel data={api.analytics} color={col}/><RoundTablePanel data={api.roundTable} color={col}/><AgentGridPanel data={api.agentLevels} color={col}/></div>
+            <div style={{padding:"12px 14px",overflowY:"auto",maxHeight:"calc(100vh - 52px)"}}><FeatureList feats={t.feats[dom]} color={col} label={t.features} onOpen={setOverlay} t={t}/><AnalyticsPanel data={api.analytics} color={col} lang={lang}/><RoundTablePanel data={api.roundTable} color={col} lang={lang}/><AgentGridPanel data={api.agentLevels} color={col} lang={lang}/></div>
           </div>
           <div style={{position:"fixed",bottom:0,left:0,right:0,padding:"3px 22px",background:"rgba(0,0,0,.93)",borderTop:"1px solid rgba(255,255,255,.025)",display:"flex",justifyContent:"space-between",fontSize:6,color:"rgba(255,255,255,.15)",letterSpacing:3}}><span>{t.bottomL}</span><span>{t.bottomC}</span><span>{fc.toLocaleString()} FACTS</span></div>
         </div>

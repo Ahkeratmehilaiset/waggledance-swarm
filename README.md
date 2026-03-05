@@ -1,6 +1,6 @@
 # WaggleDance SWARM AI
 
-![Tests](https://img.shields.io/badge/tests-22%2F22_suites_GREEN-brightgreen)
+![Tests](https://img.shields.io/badge/tests-36%2F36_suites_GREEN-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
@@ -26,7 +26,7 @@ WaggleDance is the most ambitious local-first AI system ever built. 75 specializ
 Originally built for Finnish beekeeping (300 hives, 10,000 kg honey/year), the architecture is language-agnostic and domain-agnostic. It scales to smart homes, factories, and IoT edge devices. A 3.8B model with deep domain memory outperforms generic 400B cloud models — at 0.5ms latency and zero recurring cost.
 
 **Response time evolution:** 3,000ms (day 1) → 55ms (week 1) → 18ms (month 1) → 0.5ms (HotCache).
-**30/30 test suites GREEN. Health Score 100/100.** Production-hardened with CircuitBreaker, night shift automation, and structured logging.
+**36/36 test suites GREEN. Health Score 100/100.** Production-hardened with CircuitBreaker, night shift automation, and structured logging.
 
 **No subscription. No API keys. No data leaving your network. Ever.**
 
@@ -47,7 +47,10 @@ Originally built for Finnish beekeeping (300 hives, 10,000 kg honey/year), the a
 - 📡 **4 deployment profiles** — GADGET / COTTAGE / HOME / FACTORY
 - 🎤 **Voice interface** — Whisper STT (Finnish) + Piper TTS, wake word "Hei WaggleDance"
 - 📐 **Elastic scaling** — auto-detects GPU/RAM/CPU, selects optimal tier (minimal → enterprise)
-- 🧪 **30/30 test suites GREEN** — 700+ assertions across pipeline, routing, corrections, autonomy, smart home, and core modules
+- 📹 **Smart home sensors** — MQTT hub, Frigate NVR cameras, Home Assistant bridge, Telegram/webhook alerts
+- 🔊 **Audio sensors** — ESP32 bee audio analysis (stress/swarming/queen piping), BirdNET bird detection
+- 🌤️ **External data feeds** — FMI weather, electricity spot prices, RSS disease alerts
+- 🧪 **36/36 test suites GREEN** — 700+ assertions across pipeline, routing, corrections, autonomy, smart home, audio, voice, feeds, and core modules
 - 🛡️ **Production-hardened** — CircuitBreaker, graceful degradation, structured logging, TTL eviction
 - 📈 **ConvergenceDetector** — knows when learning plateaus, auto-generates weekly performance reports
 - 🌙 **Night Shift automation** — headless overnight operation, watchdog health checks, morning report
@@ -339,6 +342,23 @@ User (Finnish / English) → FastAPI (port 8000)
   │   ├── Eviction TTL (stale facts auto-expire)
   │   └── Batch Dedup Pipeline (no duplicate facts stored)
   │
+  ├── Smart Home Sensors (Phase 5/6)
+  │   ├── MQTT Hub (paho-mqtt, reconnect, dedup)
+  │   ├── Frigate NVR (YOLO + Coral, severity alerts)
+  │   ├── Home Assistant Bridge (REST poll, 2000+ integrations)
+  │   ├── Audio Monitor (ESP32 bee audio + BirdNET)
+  │   └── Alert Dispatcher (Telegram + webhook, rate limiting)
+  │
+  ├── Voice Interface (Phase 7)
+  │   ├── Whisper STT (Finnish, CPU, wake word "Hei WaggleDance")
+  │   ├── Piper TTS (fi_FI-harri-medium voice)
+  │   └── WebSocket streaming (real-time audio pipeline)
+  │
+  ├── External Data Feeds (Phase 8)
+  │   ├── FMI Weather (temp, humidity, wind, forecast)
+  │   ├── Electricity Spot Price (porssisahko.net, cheapest 3h)
+  │   └── RSS Disease Alerts (toukkamata, esikotelomata → CRITICAL)
+  │
   ├── Production Hardening (Phase B/C/D)
   │   ├── CircuitBreaker — auto-disable, self-heal after 3 failures
   │   ├── Readiness Gates — subsystems report health before serving
@@ -351,6 +371,11 @@ User (Finnish / English) → FastAPI (port 8000)
   │   ├── Opus-MT fi↔en (on-device, zero cloud)
   │   ├── Auto-skip when input is English
   │   └── Force-translate for chat (quality guarantee)
+  │
+  ├── Elastic Scaling (Phase 11)
+  │   ├── Auto-detect GPU/VRAM/RAM/CPU at startup
+  │   ├── 5-tier classification (MINIMAL → ENTERPRISE)
+  │   └── Runtime VRAM monitoring + dynamic agent scaling
   │
   ├── 6-Layer Autonomous Learning (idle > 30 min → Night Mode)
   │   ├── L1: Bilingual vector indexing           ✅ working
@@ -365,10 +390,12 @@ User (Finnish / English) → FastAPI (port 8000)
       ├── Real-time agent heartbeat feed (Theater Pipe)
       ├── CPU / GPU / VRAM gauges (live from hardware)
       ├── Interactive chat (FI/EN auto-detect)
-      ├── FI/EN language toggle
+      ├── FI/EN language toggle (full bilingual UI)
       ├── Stub/Production mode badge
-      ├── LearnToFly intro sequence (Phase 4 + B/C/D showcase)
-      ├── Awareness bar (Circuit, Tests 30/30, Speed 3s→18ms)
+      ├── Analytics panel (7-day trends, route breakdown)
+      ├── Round Table transcript panel (agent dialogue)
+      ├── Agent grid (75 agents, level distribution)
+      ├── Awareness bar (Circuit, Tests 36/36, Speed, Tier, Sensors)
       └── 4 domain tabs: GADGET / COTTAGE / HOME / FACTORY
 ```
 
@@ -533,18 +560,23 @@ npm run dev
 python tools/waggle_backup.py --tests-only
 ```
 
-This runs all 30 test suites and generates a health report. Expected: **30/30 suites GREEN, 700+ assertions, 0 failures.**
+This runs all 36 test suites and generates a health report. Expected: **36/36 suites GREEN, 700+ assertions, 0 failures.**
 
 ```
 Suites include:
-  test_pipeline.py          — 53 tests (translation, validation, end-to-end)
-  test_phase10.py           — 73 tests (MicroModel V1/V2/V3, training)
-  test_corrections.py       — 35 tests (correction memory, dedup)
-  test_routing_centroids.py — routing accuracy across 75 agents
-  test_b3_circuit_breaker.py — CircuitBreaker self-heal
-  test_c1_hotcache.py       — HotCache auto-fill
-  test_d1_d2_d3_autonomy.py — ConvergenceDetector, weekly report
-  ... and 15 more suites
+  test_pipeline.py             — 53 tests (translation, validation, end-to-end)
+  test_phase10.py              — 73 tests (MicroModel V1/V2/V3, training)
+  test_corrections.py          — 35 tests (correction memory, dedup)
+  test_routing_centroids.py    — routing accuracy across 75 agents
+  test_smart_home.py           — 34 tests (MQTT, Frigate, Home Assistant, alerts)
+  test_phase6_audio.py         — 26 tests (bee audio, BirdNET, AudioMonitor)
+  test_phase7_voice.py         — 22 tests (Whisper STT, Piper TTS, VoiceInterface)
+  test_phase8_feeds.py         — 26 tests (weather, electricity, RSS feeds)
+  test_elastic_scaler.py       — 15 tests (HW detection, tier classification)
+  test_b3_circuit_breaker.py   — CircuitBreaker self-heal
+  test_c1_hotcache.py          — HotCache auto-fill
+  test_d1_d2_d3_autonomy.py    — ConvergenceDetector, weekly report
+  ... and 24 more suites
 ```
 
 ### What Happens on First Boot
@@ -575,39 +607,70 @@ waggledance-swarm/
 │   ├── fast_memory.py   #   Hot Cache + LRU + seasonal rules
 │   ├── micro_model.py   #   V1/V2/V3 micro-models
 │   ├── meta_learning.py #   Self-optimization engine
+│   ├── elastic_scaler.py#   Hardware auto-detect + tier selection
 │   ├── en_validator.py  #   English output validation
 │   └── yaml_bridge.py   #   YAML agent data loader
+├── integrations/        # External system integrations
+│   ├── sensor_hub.py    #   Sensor orchestrator (MQTT→Frigate→HA→Audio)
+│   ├── mqtt_hub.py      #   MQTT client (paho-mqtt, dedup, reconnect)
+│   ├── frigate_mqtt.py  #   Frigate NVR camera events
+│   ├── home_assistant.py#   Home Assistant REST bridge
+│   ├── alert_dispatcher.py # Telegram + webhook alerts
+│   ├── audio_monitor.py #   ESP32 audio orchestrator
+│   ├── bee_audio.py     #   Bee audio analyzer (stress/swarming/queen)
+│   ├── bird_monitor.py  #   BirdNET bird detection
+│   ├── voice_interface.py#  Voice pipeline orchestrator
+│   ├── whisper_stt.py   #   Whisper STT (Finnish)
+│   ├── piper_tts.py     #   Piper TTS (Finnish)
+│   ├── weather_feed.py  #   FMI weather data
+│   ├── electricity_feed.py # Electricity spot prices
+│   ├── rss_feed.py      #   RSS disease alerts
+│   └── data_scheduler.py#   Background feed scheduler
 ├── backend/             # Standalone stub backend (no Ollama needed)
-│   ├── main.py          #   FastAPI app with CORS, static files
+│   ├── main.py          #   FastAPI app with CORS
 │   └── routes/
+│       ├── status.py    #   System status + metrics from learning_metrics.jsonl
 │       ├── chat.py      #   Chat endpoint + language detection
-│       ├── status.py    #   System status + hardware info
-│       └── heartbeat.py #   Agent activity feed
+│       ├── heartbeat.py #   Agent activity feed
+│       ├── hardware.py  #   Live GPU/CPU/VRAM stats
+│       ├── sensors.py   #   Sensor hub status
+│       ├── audio.py     #   Audio sensor events
+│       ├── voice.py     #   Voice interface status
+│       ├── analytics.py #   7-day trends, route/model breakdown, fact growth
+│       ├── round_table.py#  Round Table transcripts + stats
+│       ├── agents.py    #   Agent levels + leaderboard
+│       ├── settings.py  #   Feature toggles (read/write settings.yaml)
+│       └── code_review.py#  Code review suggestions
 ├── dashboard/           # Vite + React UI (port 5173)
 │   └── src/
-│       ├── App.jsx      #   Dashboard (3D brain, 4 domains, bilingual)
+│       ├── App.jsx      #   Dashboard (3D brain, 4 domains, bilingual EN/FI)
 │       └── hooks/
-│           └── useApi.js #   API polling + Stub/Prod detection
-├── tests/               # 30 test suites (700+ assertions)
-│   ├── test_pipeline.py       # 53 tests — translation + validation
-│   ├── test_phase10.py        # 73 tests — MicroModel training
-│   ├── test_corrections.py    # 35 tests — correction memory
-│   ├── test_b3_circuit_breaker.py  # CircuitBreaker self-heal
-│   ├── test_c1_hotcache.py         # HotCache auto-fill
-│   ├── test_d1_d2_d3_autonomy.py   # Convergence + weekly report
-│   └── ... (16 more suites)
+│           └── useApi.js #   API polling (14 endpoints) + Stub/Prod detection
+├── tests/               # 36 test suites (700+ assertions)
+│   ├── test_pipeline.py          # 53 tests — translation + validation
+│   ├── test_phase10.py           # 73 tests — MicroModel training
+│   ├── test_corrections.py       # 35 tests — correction memory
+│   ├── test_smart_home.py        # 34 tests — MQTT, Frigate, HA, alerts
+│   ├── test_phase6_audio.py      # 26 tests — bee audio, BirdNET
+│   ├── test_phase7_voice.py      # 22 tests — Whisper STT, Piper TTS
+│   ├── test_phase8_feeds.py      # 26 tests — weather, electricity, RSS
+│   ├── test_elastic_scaler.py    # 15 tests — HW detection, tier classify
+│   ├── test_b3_circuit_breaker.py# CircuitBreaker self-heal
+│   ├── test_c1_hotcache.py       # HotCache auto-fill
+│   ├── test_d1_d2_d3_autonomy.py # Convergence + weekly report
+│   └── ... (25 more suites)
 ├── tools/
-│   ├── waggle_backup.py #   Backup/restore + test runner
-│   ├── waggle_restore.py#   Point-in-time restore
+│   ├── waggle_backup.py #   Backup/restore + test runner (36 suites)
+│   ├── waggle_restore.py#   Environment validator + restore
 │   └── scan_knowledge.py#   YAML bulk scanner
 ├── configs/
-│   └── settings.yaml    #   System configuration
+│   └── settings.yaml    #   System configuration (sensors, voice, feeds, scaling)
 ├── consciousness.py     # Memory + learning engine
-├── hivemind.py          # HiveMind orchestrator
+├── hivemind.py          # HiveMind orchestrator (~2800 lines)
 ├── translation_proxy.py # Opus-MT FI↔EN translation
 ├── start.py             # Launcher (--stub / --production / interactive)
 ├── main.py              # Production entry point
-├── Dockerfile           # Container build
+├── Dockerfile           # Container build (Python 3.13 + Voikko)
 └── docker-compose.yml   # Ollama + WaggleDance stack
 ```
 
@@ -631,16 +694,19 @@ waggledance-swarm/
 - ✅ **Phase 2:** Batch Pipeline — 94% benchmark, 3,147+ facts in ChromaDB
 - ✅ **Phase 3:** Social Learning — Round Table, agent levels, night mode
 - ✅ **Phase 4:** Advanced Learning — bilingual index, hot cache, fact enrichment, corrections, MicroModel V1+V2
+- ✅ **Phase 5:** Smart Home Sensors — MQTT hub, Frigate NVR (severity alerts), Home Assistant (REST poll), Telegram + Webhook alerts
+- ✅ **Phase 6:** Audio Sensors — bee audio analysis (stress/swarming/queen piping), BirdNET bird detection, ESP32 MQTT
+- ✅ **Phase 7:** Voice Interface — Whisper STT (Finnish) + Piper TTS, wake word activation, WebSocket streaming
+- ✅ **Phase 8:** External Data Feeds — FMI weather, electricity spot price, RSS disease alerts, DataFeedScheduler
 - ✅ **Phase B:** Production Hardening — CircuitBreaker, eviction TTL, graceful degradation, error handling
 - ✅ **Phase C:** Cache & Pipeline — HotCache auto-fill, LRU cache, batch dedup, readiness gates, structured logging
 - ✅ **Phase D:** Autonomous Intelligence — ConvergenceDetector, weekly report, external source integration
-- ✅ **Phase 7:** Voice Interface — Whisper STT (Finnish) + Piper TTS, wake word activation, WebSocket streaming
-- ✅ **Phase 8:** External Data Feeds — weather (FMI), electricity spot price, RSS disease alerts, wired in hivemind.py
 - ✅ **Phase 11:** Elastic Scaling — auto-detect GPU/RAM/CPU, 5-tier classification (minimal → enterprise)
-- ✅ **Phase 5:** Smart Home Sensors — MQTT hub, Frigate NVR (severity alerts), Home Assistant (REST poll), Telegram + Webhook alerts
-- ✅ **v0.0.5:** Night Shift Automation, Voikko portability (bundled dictionary), fact counter persistence, Health Score 100/100
-- 🧪 **Testing:** 30/30 suites GREEN (700+ assertions) — pipeline, routing, corrections, autonomy, smart home, core modules all validated
-- 📋 **Phase 6:** Audio Sensors — bee audio analysis, BirdNET, hardware pending
+- ✅ **v0.0.5:** Night Shift Automation, Voikko portability, Health Score 100/100
+- ✅ **v0.0.8:** Core module tests, print→logging migration, pipeline fixes
+- ✅ **v0.0.9:** Phase 8 test suite, backend real data, knowledge enrichment
+- ✅ **v0.1.0:** Dashboard analytics, Round Table transcripts, agent grid, runtime settings API
+- 🧪 **Testing:** 36/36 suites GREEN (700+ assertions) — pipeline, routing, corrections, autonomy, smart home, audio, voice, feeds, scaling, and core modules all validated
 - 📋 **Phase 9:** Autonomous Learning Layers 3-6 — code exists, disabled (offline-first by design)
 - 📋 **Phase 10:** MicroModel V3 LoRA — architecture ready, training pipeline pending
 
@@ -650,7 +716,7 @@ waggledance-swarm/
 
 | Metric | Value |
 |--------|-------|
-| **Test suites** | **30/30 GREEN** (700+ assertions) |
+| **Test suites** | **36/36 GREEN** (700+ assertions) |
 | Agent routing accuracy | 97.7% (1,235 test questions) |
 | SmartRouter evolution | 3,000ms → 55ms → 18ms → 0.5ms |
 | Hot Cache response | 0.5ms |
@@ -664,6 +730,48 @@ waggledance-swarm/
 | Round Table consensus time | 12-45s (hardware dependent) |
 | Night learning rate | 50-200 facts/night (Night Shift automation) |
 | ChromaDB facts | 3,147+ (growing autonomously) |
+| Backend API endpoints | 22 (status, chat, sensors, analytics, agents, settings) |
+| Dashboard panels | 12 (brain, chat, heartbeat, gauges, analytics, agents, RT) |
+
+---
+
+## API Reference
+
+### Core
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/status` | GET | System status, uptime, agent count, metrics |
+| `/api/chat` | POST | Chat with HiveMind (auto FI/EN) |
+| `/api/heartbeat` | GET | Agent activity feed |
+| `/api/hardware` | GET | Live CPU/GPU/VRAM stats |
+
+### Sensors & Voice
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/sensors` | GET | Sensor hub overview |
+| `/api/sensors/home` | GET | Home Assistant entities |
+| `/api/sensors/camera/events` | GET | Frigate camera events |
+| `/api/sensors/audio` | GET | Audio monitor status + events |
+| `/api/sensors/audio/bee` | GET | Bee health per hive |
+| `/api/voice/status` | GET | Voice interface status (STT/TTS) |
+| `/api/voice/text` | POST | Text-to-speech |
+| `/api/voice/audio` | POST | Audio-to-text (speech recognition) |
+
+### Analytics & Intelligence
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/analytics/trends` | GET | 7-day performance trends |
+| `/api/analytics/routes` | GET | Route breakdown (cache/memory/LLM) |
+| `/api/analytics/models` | GET | Model usage distribution |
+| `/api/analytics/facts` | GET | Fact growth timeline |
+| `/api/round-table/recent` | GET | Latest Round Table transcripts |
+| `/api/round-table/stats` | GET | Aggregate discussion stats |
+| `/api/agents/levels` | GET | All 75 agents with levels/trust |
+| `/api/agents/leaderboard` | GET | Top agents by performance |
+| `/api/settings` | GET | Feature toggles |
+| `/api/settings/toggle` | POST | Toggle a feature on/off |
+| `/api/code-review` | GET | Code review status |
+| `/api/code-review/suggestions` | GET | Code review suggestions |
 
 ---
 

@@ -124,6 +124,7 @@ TESTS = [
     # Layer 1 — MAGMA Memory Architecture
     {"file": "tests/test_memory_proxy.py",      "name": "Memory Proxy",             "phase": "L1",   "args": [], "timeout": 60},
     {"file": "tests/test_replay_engine.py",    "name": "Replay Engine",            "phase": "L2",   "args": [], "timeout": 60},
+    {"file": "tests/test_layer3_wiring.py",   "name": "Layer 3 Wiring",           "phase": "L3",   "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

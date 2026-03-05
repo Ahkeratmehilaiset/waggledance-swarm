@@ -1094,4 +1094,11 @@ loadFeeds();
         except WebSocketDisconnect:
             hivemind.unregister_ws_callback(ws_callback)
 
+    # MAGMA Layer 3 routes
+    try:
+        from backend.routes.magma import register_magma_routes
+        register_magma_routes(app, hivemind)
+    except Exception:
+        pass
+
     return app

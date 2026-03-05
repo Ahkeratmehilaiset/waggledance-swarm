@@ -1076,6 +1076,12 @@ class Consciousness:
         # but LearningTaskQueue is defined below — use lazy init in init_task_queue())
         self.task_queue = None
 
+    def wire_audit(self, audit_log, replay_store=None):
+        """MAGMA Layer 3: Wire audit trail into learning pipeline."""
+        self._audit_log = audit_log
+        self._replay_store = replay_store
+        log.info("MAGMA: audit wired to consciousness")
+
     def set_translation_proxy(self, proxy):
         self.opus.set_proxy(proxy)
 
@@ -1773,6 +1779,19 @@ class Consciousness:
 
         self.memory.store(obs_id, combined, embedding, meta)
 
+        # MAGMA: audit + replay
+        _al = getattr(self, '_audit_log', None)
+        if _al:
+            import hashlib as _hl
+            _hash = _hl.sha256(combined.encode()).hexdigest()[:16]
+            _al.record(
+                "store", obs_id, agent_id=agent_id,
+                content_hash=_hash, details=combined,
+            )
+            _rs = getattr(self, '_replay_store', None)
+            if _rs:
+                _rs.store(obs_id, combined, _hash, meta)
+
         # Phase 4i: store in bilingual FI collection
         if self.bilingual:
             self.bilingual.store_bilingual(
@@ -1897,6 +1916,23 @@ class Consciousness:
         if ids_to_store:
             self.memory.store_batch(ids_to_store, docs_to_store,
                                     embs_to_store, metas_to_store)
+
+            # MAGMA: batch audit + replay
+            _al = getattr(self, '_audit_log', None)
+            if _al:
+                import hashlib as _hl
+                _rs = getattr(self, '_replay_store', None)
+                for _i, _oid in enumerate(ids_to_store):
+                    _doc = docs_to_store[_i]
+                    _hash = _hl.sha256(_doc.encode()).hexdigest()[:16]
+                    _m = metas_to_store[_i]
+                    _al.record(
+                        "store", _oid,
+                        agent_id=_m.get("agent_id", "system"),
+                        content_hash=_hash, details=_doc,
+                    )
+                    if _rs:
+                        _rs.store(_oid, _doc, _hash, _m)
 
             # Phase 4i: batch store in FI collection
             if self.bilingual:

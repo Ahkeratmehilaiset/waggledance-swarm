@@ -892,6 +892,17 @@ DELEGATION RULES (IMPORTANT):
                 except Exception as e:
                     print(f"  ⚠️  Batch benchmark: {e}", flush=True)
 
+                # MAGMA Layer 3: Wire audit trail
+                try:
+                    from core.audit_log import AuditLog
+                    from core.replay_store import ReplayStore
+                    self._audit_log = AuditLog("data/audit_log.db")
+                    self._replay_store = ReplayStore("data/replay_store.jsonl")
+                    self.consciousness.wire_audit(self._audit_log, self._replay_store)
+                    print("  ✅ MAGMA audit wired", flush=True)
+                except Exception as e:
+                    print(f"  ⚠️  MAGMA audit: {e}", flush=True)
+
                 # Phase 3: Init task queue
                 self.consciousness.init_task_queue()
 
@@ -2009,6 +2020,11 @@ DELEGATION RULES (IMPORTANT):
             "elastic_scaler": (self.elastic_scaler.summary()
                                if hasattr(self, 'elastic_scaler')
                                and self.elastic_scaler else {}),
+            "magma": {
+                "audit_wired": getattr(self, '_audit_log', None) is not None,
+                "audit_entries": self._audit_log.count() if getattr(self, '_audit_log', None) else 0,
+                "replay_wired": getattr(self, '_replay_store', None) is not None,
+            },
         }
 
 

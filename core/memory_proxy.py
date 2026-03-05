@@ -41,13 +41,15 @@ class MemoryWriteProxy:
                  role: str = "worker",
                  agent_id: str = "",
                  session_id: str = "",
-                 spawn_chain: str = ""):
+                 spawn_chain: str = "",
+                 replay_store=None):
         self.adapter = adapter
         self.audit = audit
         self.role = Role(role)
         self.agent_id = agent_id
         self.session_id = session_id
         self.spawn_chain = spawn_chain
+        self.replay_store = replay_store
 
     def _check_permission(self, mode: WriteMode):
         allowed = _ROLE_PERMISSIONS.get(self.role, set())
@@ -111,7 +113,12 @@ class MemoryWriteProxy:
             wm.value, doc_id, collection=collection, layer=layer,
             agent_id=self.agent_id, session_id=self.session_id,
             spawn_chain=self.spawn_chain, content_hash=content_hash,
+            details=text,
         )
+
+        if self.replay_store is not None:
+            self.replay_store.store(doc_id, text, content_hash, meta)
+
         return doc_id
 
     def read(self, doc_id: str, collection: str = "waggle_memory") -> Optional[dict]:

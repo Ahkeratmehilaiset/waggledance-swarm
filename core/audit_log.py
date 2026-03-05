@@ -44,6 +44,7 @@ class AuditLog:
             CREATE INDEX IF NOT EXISTS idx_audit_session  ON audit(session_id);
             CREATE INDEX IF NOT EXISTS idx_audit_ts       ON audit(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_doc      ON audit(doc_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_hash     ON audit(content_hash);
         """)
         self._conn.commit()
 
@@ -90,6 +91,27 @@ class AuditLog:
         rows = self._conn.execute(
             "SELECT * FROM audit WHERE agent_id=? OR spawn_chain LIKE ? ORDER BY timestamp",
             (root_agent_id, f"%{root_agent_id}%")
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def query_by_time_range(self, start_ts: float, end_ts: float, *,
+                            agent_id: Optional[str] = None,
+                            layer: Optional[str] = None) -> List[dict]:
+        sql = "SELECT * FROM audit WHERE timestamp >= ? AND timestamp <= ?"
+        params: list = [start_ts, end_ts]
+        if agent_id is not None:
+            sql += " AND agent_id = ?"
+            params.append(agent_id)
+        if layer is not None:
+            sql += " AND layer = ?"
+            params.append(layer)
+        sql += " ORDER BY timestamp"
+        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def query_by_hash(self, content_hash: str) -> List[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM audit WHERE content_hash=? ORDER BY timestamp",
+            (content_hash,)
         ).fetchall()
         return [dict(r) for r in rows]
 

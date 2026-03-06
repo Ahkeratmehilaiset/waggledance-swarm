@@ -88,9 +88,11 @@ class AuditLog:
         return [dict(r) for r in rows]
 
     def query_spawn_tree(self, root_agent_id: str) -> List[dict]:
+        # Escape LIKE wildcards in user input
+        escaped = root_agent_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         rows = self._conn.execute(
-            "SELECT * FROM audit WHERE agent_id=? OR spawn_chain LIKE ? ORDER BY timestamp",
-            (root_agent_id, f"%{root_agent_id}%")
+            "SELECT * FROM audit WHERE agent_id=? OR spawn_chain LIKE ? ESCAPE '\\' ORDER BY timestamp",
+            (root_agent_id, f"%{escaped}%")
         ).fetchall()
         return [dict(r) for r in rows]
 

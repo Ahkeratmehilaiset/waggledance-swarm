@@ -1,6 +1,7 @@
 """MAGMA Cognitive Graph API endpoints."""
 
 import logging
+from fastapi import Path
 
 log = logging.getLogger("waggledance.routes.graph")
 
@@ -9,7 +10,7 @@ def register_graph_routes(app, hivemind):
     """Register cognitive graph endpoints on the FastAPI app."""
 
     @app.get("/api/graph/node/{node_id}")
-    async def graph_node(node_id: str):
+    async def graph_node(node_id: str = Path(max_length=256)):
         cg = getattr(hivemind, '_cognitive_graph', None)
         if not cg:
             return {"node": None, "edges": []}
@@ -18,7 +19,7 @@ def register_graph_routes(app, hivemind):
         return {"node": node, "edges": edges}
 
     @app.get("/api/graph/path/{source}/{target}")
-    async def graph_path(source: str, target: str):
+    async def graph_path(source: str = Path(max_length=256), target: str = Path(max_length=256)):
         cg = getattr(hivemind, '_cognitive_graph', None)
         if not cg:
             return {"path": None}

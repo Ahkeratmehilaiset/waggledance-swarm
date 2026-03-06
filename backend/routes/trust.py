@@ -1,6 +1,7 @@
 """MAGMA Layer 5 API endpoints for trust & reputation."""
 
 import logging
+from fastapi import Path as PathParam
 
 log = logging.getLogger("waggledance.routes.trust")
 
@@ -16,7 +17,7 @@ def register_trust_routes(app, hivemind):
         return {"ranking": te.get_ranking()}
 
     @app.get("/api/trust/agent/{agent_id}")
-    async def trust_agent(agent_id: str):
+    async def trust_agent(agent_id: str = PathParam(max_length=128)):
         te = getattr(hivemind, '_trust_engine', None)
         if not te:
             return {"reputation": {}}
@@ -24,14 +25,14 @@ def register_trust_routes(app, hivemind):
         return {"reputation": rep.to_dict()}
 
     @app.get("/api/trust/domain/{domain}")
-    async def trust_domain(domain: str):
+    async def trust_domain(domain: str = PathParam(max_length=128)):
         te = getattr(hivemind, '_trust_engine', None)
         if not te:
             return {"experts": []}
         return {"experts": te.get_domain_experts(domain)}
 
     @app.get("/api/trust/signals/{agent_id}")
-    async def trust_signals(agent_id: str):
+    async def trust_signals(agent_id: str = PathParam(max_length=128)):
         te = getattr(hivemind, '_trust_engine', None)
         if not te:
             return {"signals": []}

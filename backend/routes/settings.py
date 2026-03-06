@@ -1,4 +1,6 @@
 """GET/POST /api/settings — Runtime configuration."""
+import os
+import tempfile
 import yaml
 from pathlib import Path
 from typing import Optional
@@ -82,7 +84,19 @@ async def toggle_setting(body: SettingsToggleRequest):
     cfg = _load_settings()
     _set_nested(cfg, key, value)
 
-    with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    # Atomic write to prevent corruption
+    fd, tmp = tempfile.mkstemp(dir=str(_SETTINGS_FILE.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, str(_SETTINGS_FILE))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
     return {"ok": True, "key": key, "value": value}

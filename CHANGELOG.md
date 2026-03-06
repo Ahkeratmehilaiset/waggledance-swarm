@@ -1,5 +1,19 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.6 (2026-03-06) — Remaining Hardening (M-SQL, M-Path, M-Atomic)
+
+### SQL LIKE wildcard escaping
+- `core/audit_log.py`: `query_spawn_tree()` now escapes `%` and `_` in agent IDs before LIKE pattern
+
+### Path parameter length limits
+- `backend/routes/graph.py`: node_id, source, target max 256 chars
+- `backend/routes/trust.py`: agent_id, domain max 128 chars
+
+### Settings atomic writes
+- `backend/routes/settings.py`: Settings toggle now uses temp file + `os.replace()` to prevent YAML corruption
+
+---
+
 ## v0.1.5 (2026-03-06) — Security Hardening (H1–H4)
 
 ### H1: Input size limits

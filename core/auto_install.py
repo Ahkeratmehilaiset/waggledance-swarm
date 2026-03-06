@@ -96,7 +96,9 @@ def _check_voikko_dict() -> None:
         url = "https://www.puimula.org/htp/testing/voikko-snapshot-v5/dict.zip"
         os.makedirs(project_voikko, exist_ok=True)
         tmp_zip = os.path.join(tempfile.gettempdir(), "voikko_dict.zip")
-        urllib.request.urlretrieve(url, tmp_zip)
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            with open(tmp_zip, "wb") as out:
+                out.write(resp.read())
         with zipfile.ZipFile(tmp_zip, "r") as zf:
             zf.extractall(project_voikko)
         os.unlink(tmp_zip)

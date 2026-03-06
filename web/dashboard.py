@@ -687,6 +687,15 @@ loadFeeds();
             f.write("\n".join(lines))
         return {"profile": new_profile, "message": "Profile updated. Restart to apply."}
 
+    @app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
+    @app.get("/ready")
+    async def readiness():
+        status = hive.get_status() if hive else {}
+        return {"status": "ready", "running": status.get("running", False)}
+
     @app.get("/api/system")
     async def system_stats():
         """CPU/GPU/Memory dynaamisesti headeriin."""

@@ -1097,7 +1097,7 @@ DELEGATION RULES (IMPORTANT):
         return task
 
     async def stop(self):
-        print("🔴 Sammutetaan WaggleDance...")
+        log.info("Sammutetaan WaggleDance...")
         self.running = False
 
         if self.heartbeat_task:
@@ -1125,9 +1125,9 @@ DELEGATION RULES (IMPORTANT):
             try:
                 flushed = self.consciousness.flush()
                 if flushed:
-                    print(f"  ✅ Consciousness flush: {flushed} facts stored")
+                    log.info(f"Consciousness flush: {flushed} facts stored")
             except Exception as e:
-                print(f"  ⚠️  Consciousness flush: {e}")
+                log.warning(f"Consciousness flush: {e}")
 
         # Phase 9: Save code review suggestions
         if hasattr(self, 'code_reviewer') and self.code_reviewer:
@@ -1157,8 +1157,8 @@ DELEGATION RULES (IMPORTANT):
 
         if self.translation_proxy:
             self.translation_proxy.close()
-            print("  ✅ Translation Proxy suljettu")
-        print("  WaggleDance sammutettu.")
+            log.info("Translation Proxy suljettu")
+        log.info("WaggleDance sammutettu.")
 
     # ══════════════════════════════════════════════════════════
     # FIX-4: Auto-register hook — kutsutaan kun agentti luodaan

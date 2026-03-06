@@ -1,7 +1,9 @@
 """GET/POST /api/settings — Runtime configuration."""
 import yaml
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -63,17 +65,19 @@ async def get_settings():
     }
 
 
+class SettingsToggleRequest(BaseModel):
+    key: str
+    value: bool
+
+
 @router.post("/api/settings/toggle")
-async def toggle_setting(body: dict):
+async def toggle_setting(body: SettingsToggleRequest):
     """Toggle a feature on/off. Body: {"key": "feeds.enabled", "value": true}"""
-    key = body.get("key", "")
-    value = body.get("value")
+    key = body.key
+    value = body.value
 
     if key not in _TOGGLEABLE:
         return {"error": f"Key '{key}' is not toggleable", "allowed": sorted(_TOGGLEABLE)}
-
-    if not isinstance(value, bool):
-        return {"error": "value must be a boolean"}
 
     cfg = _load_settings()
     _set_nested(cfg, key, value)

@@ -49,6 +49,18 @@ app.include_router(agents_router)
 app.include_router(settings_router)
 
 
+@app.get("/health")
+async def health():
+    """Liveness probe."""
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def readiness():
+    """Readiness probe — checks backend is serving."""
+    return {"status": "ready", "backend": "online"}
+
+
 @app.on_event("startup")
 async def startup():
     log.info("WaggleDance backend stub starting...")

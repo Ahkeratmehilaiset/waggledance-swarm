@@ -1,5 +1,25 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.4 (2026-03-06) — Low Priority Hardening (L1–L4)
+
+### L1: Health & readiness endpoints
+- `backend/main.py`: `GET /health` (liveness) + `GET /ready` (readiness) probes
+- `web/dashboard.py`: Same endpoints for production dashboard (includes HiveMind running state)
+
+### L2: Settings toggle input validation
+- `backend/routes/settings.py`: `SettingsToggleRequest(BaseModel)` Pydantic model replaces raw dict
+
+### L3: urllib download timeout
+- `core/auto_install.py`: Voikko dictionary download now uses `urlopen(timeout=60)` instead of `urlretrieve`
+
+### L4: Shutdown logging cleanup
+- `hivemind.py`: `stop()` method print() → log.info/log.warning (4 calls)
+
+### Test summary
+- 43/43 suites, 676 ok, 0 failures (1 timeout: seasonal_guard Ollama cold start, passes standalone 78/78)
+
+---
+
 ## v0.1.3 (2026-03-06) — Medium Priority Hardening (M1–M7)
 
 ### M1: Atomic writes for cognitive_graph.json

@@ -1,5 +1,35 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.3 (2026-03-06) — Medium Priority Hardening (M1–M7)
+
+### M1: Atomic writes for cognitive_graph.json
+- `core/cognitive_graph.py`: temp file + `os.replace()` + fsync prevents corruption on crash
+
+### M2: ReplayStore corruption resilience
+- `core/replay_store.py`: try/except per JSONL line in `_iter_all()`, skip and log bad records
+
+### M3: Embedding fallback chain
+- `core/memory_engine.py`: primary model (nomic-embed-text) → fallback (all-minilm) on failure or circuit open
+
+### M4: Settings validation (Pydantic)
+- NEW `core/settings_validator.py`: Pydantic models for settings.yaml, fail-fast on invalid config
+- `hivemind.py`: `_load_config()` calls `validate_settings()` before returning
+
+### M5: Graceful shutdown
+- `hivemind.py`: `_track_task()` helper + `_background_tasks` set, all fire-and-forget tasks tracked and cancelled in `stop()`
+
+### M6: Shared state locks
+- `core/memory_engine.py`: `threading.Lock` for `_learn_queue` append/flush and counter mutations
+
+### M7: Secrets out of config
+- `integrations/alert_dispatcher.py`, `integrations/home_assistant.py`, `hivemind.py`: env var fallback for all secrets (`WAGGLEDANCE_TELEGRAM_BOT_TOKEN`, `WAGGLEDANCE_HA_TOKEN`, `WAGGLEDANCE_DISTILLATION_API_KEY`)
+- NEW `.env.example` with all secret env var descriptions
+
+### Test summary
+- 43/43 suites GREEN, 700 tests, 0 failures, Health Score 100/100
+
+---
+
 ## v0.1.2 (2026-03-05) — Cognitive Graph, Overlay Expansion, Causal Replay
 
 ### New: Cognitive Graph (NetworkX)

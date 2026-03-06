@@ -156,6 +156,8 @@ class EmbeddingEngine:
     PREFIX_DOCUMENT = "search_document: "
     PREFIX_QUERY = "search_query: "
 
+    FALLBACK_MODELS = ["nomic-embed-text", "all-minilm"]
+
     def __init__(self, model="nomic-embed-text",
                  base_url="http://localhost:11434",
                  cache_size=500):
@@ -171,6 +173,12 @@ class EmbeddingEngine:
         self._cache_max = cache_size
         self.cache_hits = 0
         self.cache_misses = 0
+        self._fallback_model = None
+        # Set fallback: pick first FALLBACK_MODELS entry that isn't primary
+        for fb in self.FALLBACK_MODELS:
+            if fb != self.model:
+                self._fallback_model = fb
+                break
 
     @property
     def available(self) -> bool:
@@ -202,32 +210,46 @@ class EmbeddingEngine:
         log.info(f"Embedding warmup: {ms:.0f}ms")
         return ms
 
-    def _raw_embed(self, text: str) -> Optional[List[float]]:
-        if not self.available:
-            return None
-        if not self.breaker.allow_request():
-            return None
+    def _call_ollama_embed(self, text: str, model: str) -> Optional[List[float]]:
+        """Single Ollama embed call for a given model."""
         try:
             import requests
             t0 = time.perf_counter()
             r = requests.post(
                 f"{self.base_url}/api/embed",
-                json={"model": self.model, "input": text},
+                json={"model": model, "input": text},
                 timeout=30
             )
             ms = (time.perf_counter() - t0) * 1000
             self._latency_sum += ms
             self._latency_count += 1
             if r.status_code == 200:
-                self.breaker.record_success()
                 return r.json()["embeddings"][0]
-            log.error(f"Embed HTTP {r.status_code}")
-            self.breaker.record_failure()
+            log.error(f"Embed HTTP {r.status_code} for {model}")
             return None
         except Exception as e:
-            log.error(f"Embed error: {e}")
-            self.breaker.record_failure()
+            log.error(f"Embed error ({model}): {e}")
             return None
+
+    def _raw_embed(self, text: str) -> Optional[List[float]]:
+        if not self.available:
+            return None
+        if not self.breaker.allow_request():
+            # Circuit open on primary — try fallback directly
+            if self._fallback_model:
+                log.info(f"Embed fallback: {self.model} circuit open, trying {self._fallback_model}")
+                return self._call_ollama_embed(text, self._fallback_model)
+            return None
+        result = self._call_ollama_embed(text, self.model)
+        if result is not None:
+            self.breaker.record_success()
+            return result
+        self.breaker.record_failure()
+        # Primary failed — try fallback
+        if self._fallback_model:
+            log.info(f"Embed fallback: {self.model} failed, trying {self._fallback_model}")
+            return self._call_ollama_embed(text, self._fallback_model)
+        return None
 
     def _cached_embed(self, text: str) -> Optional[List[float]]:
         key = hashlib.md5(text.encode()).hexdigest()
@@ -1009,6 +1031,10 @@ class Consciousness:
         self._learn_queue: List[tuple] = []
         self._flush_threshold = 10
 
+        # M6: Lock for shared state (learn queue, counters)
+        import threading as _threading
+        self._state_lock = _threading.Lock()
+
         if self.embed.available:
             self.embed.warmup()
 
@@ -1738,16 +1764,18 @@ class Consciousness:
             return self._learn_single(text, agent_id, source_type,
                                       confidence, validated, metadata)
 
-        # Queue for batch flush
-        self._learn_queue.append((text, {
-            "agent_id": agent_id,
-            "source_type": source_type,
-            "confidence": confidence,
-            "validated": validated,
-            **(metadata or {}),
-        }))
+        # Queue for batch flush (M6: thread-safe)
+        with self._state_lock:
+            self._learn_queue.append((text, {
+                "agent_id": agent_id,
+                "source_type": source_type,
+                "confidence": confidence,
+                "validated": validated,
+                **(metadata or {}),
+            }))
+            should_flush = len(self._learn_queue) >= self._flush_threshold
 
-        if len(self._learn_queue) >= self._flush_threshold:
+        if should_flush:
             self._flush_learn_queue()
 
         return True
@@ -1826,9 +1854,10 @@ class Consciousness:
         if not self._learn_queue:
             return 0
 
-        # Copy and clear queue atomically
-        queue = self._learn_queue[:]
-        self._learn_queue.clear()
+        # Copy and clear queue atomically (M6: thread-safe)
+        with self._state_lock:
+            queue = self._learn_queue[:]
+            self._learn_queue.clear()
 
         texts = [item[0] for item in queue]
         metas = [item[1] for item in queue]

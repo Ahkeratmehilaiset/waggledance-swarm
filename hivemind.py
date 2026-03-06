@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 import yaml
 from contextlib import contextmanager
@@ -520,6 +521,7 @@ class HiveMind:
         self._swarm_enabled = swarm_cfg.get("enabled", False)
 
         self.running = False
+        self._background_tasks: set = set()  # M5: track all fire-and-forget tasks
         self._heartbeat_count = 0
         self.translation_proxy = None
         self.en_validator = None
@@ -578,7 +580,14 @@ class HiveMind:
         path = Path(self.config_path)
         if path.exists():
             with open(path, encoding="utf-8") as f:
-                return yaml.safe_load(f)
+                raw = yaml.safe_load(f)
+            try:
+                from core.settings_validator import validate_settings
+                validate_settings(raw)
+            except Exception as e:
+                log.error(f"Settings validation failed: {e}")
+                raise
+            return raw
         return {}
 
     def _get_date_prefix(self) -> str:
@@ -1080,6 +1089,13 @@ DELEGATION RULES (IMPORTANT):
 
         return self
 
+    def _track_task(self, coro) -> asyncio.Task:
+        """Create and track a background task for graceful shutdown."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     async def stop(self):
         print("🔴 Sammutetaan WaggleDance...")
         self.running = False
@@ -1131,6 +1147,13 @@ DELEGATION RULES (IMPORTANT):
         # Phase 8: Stop data feeds
         if hasattr(self, 'data_feeds') and self.data_feeds:
             await self.data_feeds.stop()
+
+        # M5: Cancel all tracked background tasks
+        if self._background_tasks:
+            for task in list(self._background_tasks):
+                task.cancel()
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
 
         if self.translation_proxy:
             self.translation_proxy.close()
@@ -2266,13 +2289,13 @@ DELEGATION RULES (IMPORTANT):
                     if agents:
                         agent = agents[self._heartbeat_count % len(agents)]
                         _actions.append(f"think:{agent.name}")
-                        asyncio.create_task(
+                        self._track_task(
                             _guarded(self._agent_proactive_think, agent))
 
                 # Queen syntetisoi: joka 2*idle_n HB
                 if self._heartbeat_count % max(2 * _idle_n, 2) == 0 and self.master_agent:
                     _actions.append("queen")
-                    asyncio.create_task(
+                    self._track_task(
                         _guarded(self._master_generate_insight))
 
                 # Whisper: joka 3*idle_n HB
@@ -2280,7 +2303,7 @@ DELEGATION RULES (IMPORTANT):
                     agents = list(self.spawner.active_agents.values())
                     if len(agents) >= 2:
                         _actions.append("whisper")
-                        asyncio.create_task(
+                        self._track_task(
                             _guarded(self._whisper_cycle, agents))
 
                 # Reflect: joka 4*idle_n HB
@@ -2289,19 +2312,19 @@ DELEGATION RULES (IMPORTANT):
                     if agents:
                         agent = agents[self._heartbeat_count // max(4 * _idle_n, 4) % len(agents)]
                         _actions.append(f"reflect:{agent.name}")
-                        asyncio.create_task(
+                        self._track_task(
                             _guarded(self._agent_reflect, agent))
 
                 # Oracle: joka 4*idle_n HB
                 if self._heartbeat_count % max(4 * _idle_n, 4) == 0 and self.spawner:
                     _actions.append("oracle")
-                    asyncio.create_task(
+                    self._track_task(
                         _guarded(self._oracle_consultation_cycle))
 
                 # Oracle tutkii: joka 6*idle_n HB
                 if self._heartbeat_count % max(6 * _idle_n, 6) == 0 and self.spawner:
                     _actions.append("oracle_research")
-                    asyncio.create_task(
+                    self._track_task(
                         _guarded(self._oracle_research_cycle))
 
                 # Phase 3: Round Table (every 20th heartbeat)
@@ -2313,10 +2336,10 @@ DELEGATION RULES (IMPORTANT):
                     _rt_version = self.config.get("round_table", {}).get("version", 1)
                     _actions.append(f"round_table_v{_rt_version}")
                     if _rt_version >= 2:
-                        asyncio.create_task(
+                        self._track_task(
                             _guarded(self._round_table_v2))
                     else:
-                        asyncio.create_task(
+                        self._track_task(
                             _guarded(self._round_table))
 
                 # Phase 3: Night mode learning (every other cycle)
@@ -2325,7 +2348,7 @@ DELEGATION RULES (IMPORTANT):
                 if (self._night_mode_active
                         and self._heartbeat_count % 2 == 0):
                     _actions.append("night_learn")
-                    asyncio.create_task(self._night_learning_cycle())
+                    self._track_task(self._night_learning_cycle())
                     # Save progress every 5th heartbeat (was 20)
                     if self._heartbeat_count % 5 == 0:
                         self._save_learning_progress()
@@ -2333,7 +2356,7 @@ DELEGATION RULES (IMPORTANT):
                 # ── Weekly report trigger (runs even outside night mode) ──
                 # Check every 50 heartbeats (~50 min) if weekly report is due
                 if self._heartbeat_count % 50 == 0:
-                    asyncio.create_task(self._maybe_weekly_report())
+                    self._track_task(self._maybe_weekly_report())
 
                 # Odottavat tehtävät (max 1 kerrallaan)
                 if _pending < _MAX_PENDING:
@@ -2344,7 +2367,7 @@ DELEGATION RULES (IMPORTANT):
                             agent = self.spawner.get_agent(agent_id)
                             if agent and agent.status == "idle":
                                 _actions.append(f"task:{agent_id}")
-                                asyncio.create_task(
+                                self._track_task(
                                     _guarded(agent.execute_task, task))
 
                 # idle_research: batch agentteja kerrallaan (ei rajoitettu 1:een)
@@ -2361,7 +2384,7 @@ DELEGATION RULES (IMPORTANT):
                     batch = self.throttle.state.idle_batch_size
                     for agent in idle_agents[:batch]:
                         _actions.append(f"idle:{agent.name}")
-                        asyncio.create_task(
+                        self._track_task(
                             _guarded(self._idle_research, agent))
 
                 # Priority invite: alisuoriutuvat (max 1, harvemmin)
@@ -2375,7 +2398,7 @@ DELEGATION RULES (IMPORTANT):
                         agent_obj = self.spawner.get_agent(aid)
                         if agent_obj and agent_obj.status == "idle":
                             _actions.append(f"invite:{aid}")
-                            asyncio.create_task(
+                            self._track_task(
                                 _guarded(self._idle_research, agent_obj))
 
                 # ── Console print: mitä tapahtui tällä kierroksella ──
@@ -3162,7 +3185,7 @@ DELEGATION RULES (IMPORTANT):
                 from core.knowledge_distiller import KnowledgeDistiller
                 self.distiller = KnowledgeDistiller(
                     self.consciousness,
-                    api_key=al_cfg.get("distillation_api_key", ""),
+                    api_key=os.environ.get("WAGGLEDANCE_DISTILLATION_API_KEY", "") or al_cfg.get("distillation_api_key", ""),
                     model=al_cfg.get("distillation_model",
                                      "claude-haiku-4-5-20251001"),
                     weekly_budget_eur=al_cfg.get(

@@ -36,10 +36,14 @@ class ReplayStore:
         if not self.path.exists():
             return
         with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
+            for lineno, line in enumerate(f, 1):
                 line = line.strip()
-                if line:
+                if not line:
+                    continue
+                try:
                     yield json.loads(line)
+                except json.JSONDecodeError as e:
+                    log.warning(f"ReplayStore: skipping corrupt line {lineno}: {e}")
 
     def get_by_hash(self, content_hash: str) -> Optional[dict]:
         result = None

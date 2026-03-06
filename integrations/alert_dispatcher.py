@@ -56,11 +56,12 @@ class AlertDispatcher:
     def __init__(self, config: dict):
         self.enabled = config.get("enabled", False)
 
-        # Telegram config
+        # Telegram config (M7: prefer env vars for secrets)
+        import os
         tg_cfg = config.get("telegram", {})
         self.telegram_enabled = tg_cfg.get("enabled", False)
-        self.telegram_bot_token = tg_cfg.get("bot_token", "")
-        self.telegram_chat_id = tg_cfg.get("chat_id", "")
+        self.telegram_bot_token = os.environ.get("WAGGLEDANCE_TELEGRAM_BOT_TOKEN", "") or tg_cfg.get("bot_token", "")
+        self.telegram_chat_id = os.environ.get("WAGGLEDANCE_TELEGRAM_CHAT_ID", "") or tg_cfg.get("chat_id", "")
 
         # Webhook config
         wh_cfg = config.get("webhook", {})

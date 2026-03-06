@@ -87,7 +87,8 @@ class HomeAssistantBridge:
     def __init__(self, config: dict, consciousness=None):
         self.enabled = config.get("enabled", False)
         self.url = config.get("url", "http://homeassistant.local:8123").rstrip("/")
-        self.token = config.get("token", "")
+        import os
+        self.token = os.environ.get("WAGGLEDANCE_HA_TOKEN", "") or config.get("token", "")
         self.poll_interval_s = config.get("poll_interval_s", 60)
         self.auto_discover = config.get("auto_discover", True)
 

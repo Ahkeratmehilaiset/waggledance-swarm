@@ -6,6 +6,8 @@ Persisted as JSON for portability.
 
 import json
 import logging
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -46,7 +48,21 @@ class CognitiveGraph:
         p = Path(self.persist_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         data = nx.node_link_data(self.graph, edges="links")
-        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        content = json.dumps(data, ensure_ascii=False)
+        # Atomic write: temp file + os.replace to prevent corruption
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(p))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     # ── Node operations ──────────────────────────────────────
 

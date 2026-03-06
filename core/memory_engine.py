@@ -173,12 +173,9 @@ class EmbeddingEngine:
         self._cache_max = cache_size
         self.cache_hits = 0
         self.cache_misses = 0
+        # M3: Fallback is same model retry (different-dimension models
+        # would break ChromaDB collections fixed to primary's dimension)
         self._fallback_model = None
-        # Set fallback: pick first FALLBACK_MODELS entry that isn't primary
-        for fb in self.FALLBACK_MODELS:
-            if fb != self.model:
-                self._fallback_model = fb
-                break
 
     @property
     def available(self) -> bool:

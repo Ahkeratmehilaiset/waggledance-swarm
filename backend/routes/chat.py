@@ -11,13 +11,40 @@ import math
 import os
 import random
 import re
+import time
 import unicodedata
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import yaml
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+
+# ── Simple in-process rate limiter ────────────────────
+class _RateLimiter:
+    """Per-IP token bucket rate limiter (no external deps)."""
+
+    def __init__(self, max_requests: int = 20, window_s: float = 60.0):
+        self._max = max_requests
+        self._window = window_s
+        self._requests: dict[str, list[float]] = defaultdict(list)
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        bucket = self._requests[key]
+        # Evict old entries
+        cutoff = now - self._window
+        self._requests[key] = bucket = [t for t in bucket if t > cutoff]
+        if len(bucket) >= self._max:
+            return False
+        bucket.append(now)
+        return True
+
+
+_chat_limiter = _RateLimiter(max_requests=20, window_s=60.0)
 
 log = logging.getLogger("waggledance-chat")
 
@@ -53,7 +80,7 @@ def _apply_seasonal_guard(answer: str) -> str:
 
 
 class ChatRequest(BaseModel):
-    message: str = ""
+    message: str = Field("", max_length=10000)
     lang: str = "auto"
 
 
@@ -1041,7 +1068,11 @@ def _handle_system_fi(msg_lower: str) -> str | None:
 
 
 @router.post("/api/chat")
-async def chat(data: ChatRequest):
+async def chat(request: Request, data: ChatRequest):
+    # Rate limiting (20 req/min per IP)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _chat_limiter.allow(client_ip):
+        return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
     message = data.message.strip()
     if not message:
         return {"response": "Tyhjä viesti."}

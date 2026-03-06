@@ -1,6 +1,7 @@
 """GET /api/voice/status, POST /api/voice/text, POST /api/voice/audio — stub data."""
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 
@@ -18,11 +19,18 @@ async def voice_status():
     }
 
 
+class VoiceTextRequest(BaseModel):
+    text: str = Field("", max_length=5000)
+
+
+class VoiceAudioRequest(BaseModel):
+    audio_base64: str = Field("", max_length=10_000_000)  # ~7.5MB decoded
+
+
 @router.post("/api/voice/text")
-async def voice_text(request: Request):
+async def voice_text(body: VoiceTextRequest):
     """Voice text pipeline — stub returns mock Finnish response."""
-    body = await request.json()
-    text = body.get("text", "").strip()
+    text = body.text.strip()
     if not text:
         return JSONResponse({"error": "Empty text"}, status_code=400)
     return {
@@ -34,10 +42,9 @@ async def voice_text(request: Request):
 
 
 @router.post("/api/voice/audio")
-async def voice_audio(request: Request):
+async def voice_audio(body: VoiceAudioRequest):
     """Voice audio pipeline — stub returns mock transcription + response."""
-    body = await request.json()
-    audio_b64 = body.get("audio_base64", "")
+    audio_b64 = body.audio_base64
     if not audio_b64:
         return JSONResponse({"error": "No audio data"}, status_code=400)
     return {

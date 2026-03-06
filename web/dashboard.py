@@ -20,9 +20,12 @@ v0.0.3:
 """
 import json
 import asyncio
+import logging
 import time
 from datetime import datetime
 from pathlib import Path
+
+log = logging.getLogger("waggledance.dashboard")
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 
@@ -563,7 +566,8 @@ loadFeeds();
             response = await hivemind.chat(msg, language=lang)
             return {"response": response}
         except Exception as e:
-            return {"error": str(e)}
+            log.error("API error: %s", e)
+            return {"error": "Internal error"}
 
     @app.post("/api/language")
     async def set_language(data: dict):
@@ -588,14 +592,16 @@ loadFeeds();
                 record_confusion(q, wrong, correct)
             return {"status": "ok"}
         except Exception as e:
-            return {"error": str(e)}
+            log.error("API error: %s", e)
+            return {"error": "Internal error"}
 
     @app.get("/api/status")
     async def status():
         try:
             return await hivemind.get_status()
         except Exception as e:
-            return {"error": str(e)}
+            log.error("API error: %s", e)
+            return {"error": "Internal error"}
 
     @app.get("/api/agent_levels")
     async def agent_levels():

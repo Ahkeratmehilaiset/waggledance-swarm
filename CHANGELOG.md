@@ -1,5 +1,31 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.5 (2026-03-06) — Security Hardening (H1–H4)
+
+### H1: Input size limits
+- `backend/routes/chat.py`: `ChatRequest.message` max 10,000 chars (Pydantic `Field(max_length=)`)
+- `backend/routes/voice.py`: `VoiceTextRequest.text` max 5,000, `VoiceAudioRequest.audio_base64` max 10MB
+
+### H2: Rate limiting on chat endpoint
+- `backend/routes/chat.py`: In-process per-IP token bucket rate limiter (20 req/min)
+- Lightweight, no external dependencies
+
+### H3: CORS tightening
+- `backend/main.py`: `allow_methods` restricted to `["GET", "POST"]`, `allow_headers` to `["Content-Type"]`, `allow_credentials=False`
+
+### H4: Generic error responses
+- `web/dashboard.py`: All `return {"error": str(e)}` replaced with `log.error()` + generic `{"error": "Internal error"}`
+- Stack traces no longer leaked to clients
+
+### M3 fix: Embedding fallback dimension safety
+- Disabled cross-model fallback (768d nomic → 384d all-minilm would corrupt ChromaDB collections)
+- Fallback infrastructure retained for future same-dimension models
+
+### Test summary
+- 42/43 suites, 590 ok, 0 failures (1 timeout: phase4 Ollama cold start, passes standalone)
+
+---
+
 ## v0.1.4 (2026-03-06) — Low Priority Hardening (L1–L4)
 
 ### L1: Health & readiness endpoints

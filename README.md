@@ -258,9 +258,11 @@ Pull required models (one-time, ~3GB total):
 ```bash
 docker compose exec ollama ollama pull phi4-mini
 docker compose exec ollama ollama pull llama3.2:1b
-docker compose exec ollama ollama pull nomic-embed-text
+docker compose exec ollama ollama pull nomic-embed-text   # CRITICAL — must be running
 docker compose exec ollama ollama pull all-minilm
 ```
+
+> **Critical dependency:** `nomic-embed-text` is required for all memory operations (search, learn, dedup). WaggleDance will **refuse to start** if this model is not available. Ensure Ollama is running and the model is pulled before starting WaggleDance. The system monitors nomic health every 10 heartbeats and sends a WebSocket alert if it goes down.
 
 Open **http://localhost:8000**.
 
@@ -271,7 +273,9 @@ Open **http://localhost:8000**.
 ```bash
 # 1. Install Ollama (https://ollama.ai)
 # 2. Pull models
-ollama pull phi4-mini && ollama pull llama3.2:1b && ollama pull nomic-embed-text && ollama pull all-minilm
+ollama pull phi4-mini && ollama pull llama3.2:1b
+ollama pull nomic-embed-text   # CRITICAL — required for all memory operations
+ollama pull all-minilm
 
 # 3. Clone and install
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git

@@ -891,6 +891,14 @@ DELEGATION RULES (IMPORTANT):
                       f'embed={self.consciousness.embed.available}, '
                       f'eval_embed={self.consciousness.eval_embed.available})', flush=True)
 
+                # CRITICAL: nomic-embed-text must be available
+                if not self.consciousness.embed.available:
+                    raise RuntimeError(
+                        "CRITICAL: nomic-embed-text not available! "
+                        "Ensure Ollama is running and model is pulled: "
+                        "ollama pull nomic-embed-text"
+                    )
+
                 # PHASE2: Batch benchmark
                 try:
                     await self.throttle.benchmark_batch(
@@ -2085,6 +2093,20 @@ DELEGATION RULES (IMPORTANT):
             "elastic_scaler": (self.elastic_scaler.summary()
                                if hasattr(self, 'elastic_scaler')
                                and self.elastic_scaler else {}),
+            "embedding": {
+                "model": (self.consciousness.embed.model
+                          if hasattr(self, 'consciousness') and self.consciousness else "N/A"),
+                "available": (self.consciousness.embed.available
+                              if hasattr(self, 'consciousness') and self.consciousness else False),
+                "cache_hits": (self.consciousness.embed.cache_hits
+                               if hasattr(self, 'consciousness') and self.consciousness else 0),
+                "cache_misses": (self.consciousness.embed.cache_misses
+                                 if hasattr(self, 'consciousness') and self.consciousness else 0),
+                "alert": ("nomic-embed-text DOWN" if (
+                    hasattr(self, 'consciousness') and self.consciousness
+                    and not self.consciousness.embed.available
+                ) else None),
+            },
             "magma": {
                 "audit_wired": getattr(self, '_audit_log', None) is not None,
                 "audit_entries": self._audit_log.count() if getattr(self, '_audit_log', None) else 0,
@@ -2257,6 +2279,27 @@ DELEGATION RULES (IMPORTANT):
                 # Puhdista kuormituslaskurit
                 if self.scheduler:
                     self.scheduler.cleanup_load_counters()
+
+                # ── Nomic embed health check (every 10th HB) ─────
+                if (self._heartbeat_count % 10 == 0
+                        and hasattr(self, 'consciousness') and self.consciousness):
+                    embed = self.consciousness.embed
+                    was_available = embed._available
+                    embed._check_available()
+                    if not embed._available and was_available:
+                        log.error("nomic-embed-text WENT DOWN — search/learning degraded")
+                        await self._notify_ws("alert", {
+                            "type": "embed_down",
+                            "message": "nomic-embed-text not responding",
+                            "severity": "critical",
+                        })
+                    elif embed._available and not was_available:
+                        log.info("nomic-embed-text recovered")
+                        await self._notify_ws("alert", {
+                            "type": "embed_recovered",
+                            "message": "nomic-embed-text back online",
+                            "severity": "info",
+                        })
 
                 # ── CHAT-PRIORITEETTI: skip jos chat käynnissä ────
                 if self.priority.should_skip:

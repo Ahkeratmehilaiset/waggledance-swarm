@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-0.1.7-orange)
+![Version](https://img.shields.io/badge/version-0.2.0-green)
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 

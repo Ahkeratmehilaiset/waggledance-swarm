@@ -1,5 +1,31 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.2.0 (2026-03-07) — Release: All Phases Complete
+
+Production-ready release. All planned phases implemented and tested (44/45 suites, 699 tests).
+
+### Phases completed in v0.1.3–v0.2.0:
+- **Phases 1–4:** Consciousness engine, batch pipeline, Round Table consensus, advanced learning
+- **Phase 5:** Smart home sensors (MQTT, Frigate NVR, Home Assistant, alert dispatcher)
+- **Phase 6:** Audio sensors (BeeAudioAnalyzer, BirdMonitor, AudioMonitor)
+- **Phase 7:** Voice interface (Whisper STT, Piper TTS, VoiceInterface)
+- **Phase B–C:** Pipeline wiring, priority lock, circuit breaker, HotCache, structured logging
+- **Phase D1–D3:** External sources, convergence detection, weekly report
+- **Phase 11:** ElasticScaler (hardware auto-detection, tier classification)
+- **MAGMA L1–L5:** Audit log, replay engine, overlays, cross-agent search, trust engine
+- **Cognitive Graph:** NetworkX-based knowledge graph with causal replay
+- **Hardening:** Atomic writes, input validation, rate limiting, CORS, graceful shutdown
+- **Phase 9:** Documentation overhaul (6 docs, README rewrite, Docker healthcheck)
+- **Agent YAML Tests:** 380 validation tests across 75 agents
+- **Disk Guard:** Write-path protection with dashboard indicator
+- **Schema Migration:** Versioned SQLite migrations with CLI tool
+- **API Authentication:** Bearer token middleware with auto-key generation
+- **LoRA Tooling:** Training data collector + Unsloth/PEFT training scripts
+
+### Test results: 44/45 suites, 699 ok, 14 warn, 1 known flake (seasonal_guard timing)
+
+---
+
 ## v0.1.9 (2026-03-07) — Schema Migration, API Auth, LoRA Training
 
 ### Phase 6: Schema Migration

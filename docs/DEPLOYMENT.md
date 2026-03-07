@@ -150,7 +150,7 @@ python tools/waggle_backup.py --tests-only
 python tools/waggle_restore.py
 ```
 
-Expected: **43/43 suites GREEN, 700+ assertions, 0 failures.**
+Expected: **45/45 suites GREEN, 700+ assertions, 0 failures.**
 
 ---
 

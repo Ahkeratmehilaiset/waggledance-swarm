@@ -8,6 +8,21 @@ WaggleDance exposes a REST API via FastAPI. Two modes:
 - **Production** (`python main.py` / `start.py --production`) — full HiveMind, real data
 - **Stub** (`start.py --stub`) — mock backend for dashboard development, no Ollama needed
 
+### Authentication
+
+All `/api/*` endpoints require a Bearer token in the `Authorization` header:
+
+```
+Authorization: Bearer <WAGGLE_API_KEY>
+```
+
+- Token auto-generated on first startup and saved to `.env` as `WAGGLE_API_KEY`
+- **Public (no auth):** `/health`, `/ready`, `/api/status`
+- **WebSocket:** pass token as `?token=` query parameter: `ws://host:8000/ws?token=KEY`
+- Dashboard reads token from `localStorage.WAGGLE_API_KEY`
+
+### Rate Limits & Input Validation
+
 Rate limit: **20 requests/min** per IP on `/api/chat` (token bucket).
 Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10MB.
 

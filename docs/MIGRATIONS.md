@@ -77,7 +77,7 @@ Validates environment (13 checks):
 python tools/waggle_backup.py --tests-only
 ```
 
-Runs all 43 test suites without creating a backup.
+Runs all 45 test suites without creating a backup.
 
 ## Schema Versioning
 

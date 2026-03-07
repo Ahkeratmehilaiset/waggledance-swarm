@@ -111,7 +111,7 @@ English users get the fastest path — no translation overhead, direct LLM acces
   L6: Code self-review
 
 ▸ ROUND TABLE CONSENSUS
-Up to 50 agents debate. Queen synthesizes. Hallucination: 1.8%.
+Up to 6 agents debate per query. Queen synthesizes consensus. Hallucination detection: contrastive + keyword.
 
 ▸ SMARTROUTER EVOLUTION
   Day 1: 3,000ms (full LLM) → Week 1: 55ms (memory) → Month 1: 18ms (native index) → Month 3: 0.5ms (HotCache)
@@ -174,7 +174,7 @@ This is a deliberate architectural decision, not a limitation. WaggleDance is bu
 ▸ V0.0.5: PORTABILITY & RELIABILITY
   • Voikko bundled — mor.vfst + autocorr.vfst included, auto-download fallback
   • Night Shift Automation — tools/night_shift.py, watchdog, morning report
-  • Health Score 100/100 — all 36 test suites GREEN
+  • Health Score 100/100 — all 45 test suites GREEN
 
 ▸ V0.0.6: PHASE 5 — SMART HOME SENSORS
   • MQTT Hub — paho-mqtt, dedup, exponential reconnect
@@ -198,14 +198,36 @@ This is a deliberate architectural decision, not a limitation. WaggleDance is bu
   • Agent Level Grid — 75 agents NOVICE→MASTER visualization
   • Runtime Settings — toggle 13 features on/off via API
 
+▸ MAGMA MEMORY ARCHITECTURE (5 LAYERS)
+  L1: AuditLog — append-only write log, ChromaDB adapter, agent rollback
+  L2: ReplayStore — JSONL event replay, deduplication, causal replay
+  L3: Overlays — branch management, A/B testing, mood presets
+  L4: Cross-agent search, provenance tracking, consensus records
+  L5: TrustEngine — 6-signal reputation scoring, temporal decay
+
+▸ COGNITIVE GRAPH
+  NetworkX knowledge graph with typed edges. JSON persistence. Causal replay of downstream effects.
+
+▸ API AUTHENTICATION
+  Bearer token middleware. Auto-generated WAGGLE_API_KEY on first startup.
+  All /api/* routes authenticated. /health, /ready, /api/status exempt.
+
+▸ DISK GUARD
+  Write-path protection on ChromaDB, AuditLog, ReplayStore, CognitiveGraph.
+  Warn <500MB. Refuse <100MB. Dashboard indicator.
+
+▸ SCHEMA MIGRATION
+  Versioned SQLite migrations. CLI: python tools/migrate_db.py --check / --migrate.
+
 ▸ TESTING
-  36/36 test suites GREEN (700+ assertions)
-  Pipeline, routing, corrections, autonomy, smart home, audio, voice, feeds — all validated
+  45/45 test suites GREEN (700+ assertions)
+  Pipeline, routing, corrections, autonomy, smart home, audio, voice, feeds,
+  MAGMA layers, cognitive graph, overlays, trust engine, schema migration — all validated
 
 ▸ CODEBASE
-  75 agents • 140+ Python modules • 200,000+ lines of code
+  75 agents • 580 files • 266,000+ lines of code
   97.7% routing accuracy (1,207/1,235 tested)
-  36 test suites • 10 seasonal rules • 34 domain terms
+  45 test suites • 10 seasonal rules • 34 domain terms
 
 ▸ JUST LET IT RUN
 Install. Connect. Walk away.
@@ -705,8 +727,8 @@ function Boot({onDone}){const[s,setS]=useState(0);const[t,setT]=useState("");con
 function LearnToFly({onDone}){const[step,setStep]=useState(0);const[main,setMain]=useState("");const[sub,setSub]=useState("");const[items,setItems]=useState([]);const[pr,setPr]=useState(0);
 useEffect(()=>{const seq=[
 [800,()=>{setStep(1);setMain("WAGGLEDANCE AI");setSub("AUTONOMOUS LOCAL-FIRST INTELLIGENCE")}],
-[7000,()=>{setStep(2);setMain("50 AUTONOMOUS AGENTS");setSub("self-organizing • self-learning • self-healing")}],
-[14000,()=>{setStep(2);setMain("41,432 LINES OF CODE");setSub("86 modules • zero cloud dependencies")}],
+[7000,()=>{setStep(2);setMain("75 AUTONOMOUS AGENTS");setSub("self-organizing • self-learning • self-healing")}],
+[14000,()=>{setStep(2);setMain("266,000+ LINES OF CODE");setSub("580 files • zero cloud dependencies")}],
 [21000,()=>{setStep(2);setMain("97.7% ROUTING ACCURACY");setSub("1,207 of 1,235 queries — perfect agent selection")}],
 [28000,()=>{setStep(3);setMain("3-TIER RESPONSE");setSub("");setItems(["HotCache — 0.5ms (pre-computed answers)","Native-language index — 18ms (skip translation)","Full pipeline — 55ms (bilingual reasoning)"])}],
 [36000,()=>{setStep(4);setMain("PHASE 4: ONLINE");setSub("");setItems(["✓ Morphological Normalizer (Voikko)"]);setPr(15)}],
@@ -719,13 +741,13 @@ useEffect(()=>{const seq=[
 [53000,()=>{setItems(p=>[...p,"✓ HotCache + LRU (0.5ms cached responses)"]);setPr(35)}],
 [55000,()=>{setItems(p=>[...p,"✓ ConvergenceDetector (knows when learning plateaus)"]);setPr(55)}],
 [57000,()=>{setItems(p=>[...p,"✓ Structured Logging + Weekly Report"]);setPr(75)}],
-[59000,()=>{setItems(p=>[...p,"✓ 36/36 test suites GREEN (700+ assertions)"]);setPr(100)}],
+[59000,()=>{setItems(p=>[...p,"✓ 45/45 test suites GREEN (700+ assertions)"]);setPr(100)}],
 [62000,()=>{setStep(5);setMain("LANGUAGE-NATIVE AI");setSub("deep morphological integration — not just translation");setItems(["Opus-MT neural translation (any language pair)","Voikko-level morphological analysis","Domain-specific terminology engine","Native-language vector index (skip translation)"]);setPr(0)}],
 [70000,()=>{setStep(6);setMain("INFINITE SCALING");setSub("same code — any hardware");setItems(["ESP32 — €8 — edge intelligence","Raspberry Pi — €80 — full agent","Intel NUC — €650 — home brain","Mac Pro — €2,200 — professional","NVIDIA DGX — €400,000 — enterprise"])}],
 [78000,()=>{setStep(7);setMain("JUST LET IT RUN");setSub("");setItems(["1 week → knows your patterns","1 month → anticipates your needs","6 months → domain expert","1 year → understands your world"])}],
 [86000,()=>{setStep(8);setMain("CONSCIOUSNESS");setSub("initializing...");setItems([])}],
 [89000,()=>setSub("loading memories...")],
-[92000,()=>setSub("spawning 50 agents...")],
+[92000,()=>setSub("spawning 75 agents...")],
 [96000,()=>{setStep(9);setMain("READY TO FLY");setSub("")}],
 [102000,()=>onDone()]
 ];const ids=seq.map(([d,fn])=>setTimeout(fn,d));return()=>ids.forEach(clearTimeout)},[onDone]);
@@ -1060,7 +1082,7 @@ export default function App(){
   const _diskFree = api.status?.disk_space?.free_gb >= 0 ? `${api.status.disk_space.free_gb}G` : "—";
   const _diskColor = _diskStatus==="critical"?"#EF4444":_diskStatus==="warning"?"#F59E0B":"#22C55E";
   const _lastUpdate = api.backendAvailable ? new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "—";
-  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"44/44",c:"#22C55E"},{k:"Speed",v:"3s\u219218ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"\u2014",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col},{k:"Tier",v:_tier?_tier.toUpperCase():"—",c:_tier?"#A78BFA":"rgba(255,255,255,.20)"},{k:"Disk",v:_diskFree,c:_diskColor},{k:"MQTT",v:_mqttOn?"ON":"OFF",c:_mqttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"HA",v:_haOn?"ON":"OFF",c:_haOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Cam",v:_frigOn?"ON":"OFF",c:_frigOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Alerts",v:`${_alertCnt}`,c:_alertCnt>0?"#F59E0B":"rgba(255,255,255,.20)"},{k:"Audio",v:_audioOn?"ON":"OFF",c:_audioOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"STT",v:_sttOn?"ON":"OFF",c:_sttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"TTS",v:_ttsOn?"ON":"OFF",c:_ttsOn?"#22C55E":"rgba(255,255,255,.20)"}];
+  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"45/45",c:"#22C55E"},{k:"Speed",v:"3s\u219218ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"\u2014",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col},{k:"Tier",v:_tier?_tier.toUpperCase():"—",c:_tier?"#A78BFA":"rgba(255,255,255,.20)"},{k:"Disk",v:_diskFree,c:_diskColor},{k:"MQTT",v:_mqttOn?"ON":"OFF",c:_mqttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"HA",v:_haOn?"ON":"OFF",c:_haOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Cam",v:_frigOn?"ON":"OFF",c:_frigOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Alerts",v:`${_alertCnt}`,c:_alertCnt>0?"#F59E0B":"rgba(255,255,255,.20)"},{k:"Audio",v:_audioOn?"ON":"OFF",c:_audioOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"STT",v:_sttOn?"ON":"OFF",c:_sttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"TTS",v:_ttsOn?"ON":"OFF",c:_ttsOn?"#22C55E":"rgba(255,255,255,.20)"}];
   return(
     <div style={{background:"#000",color:"#fff",minHeight:"100vh",fontFamily:"'Inter',system-ui,sans-serif",overflow:"hidden"}}>
       <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.15}}@keyframes breathe{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.1);opacity:1}}@keyframes explodeIn{0%{transform:scale(0);opacity:0}60%{transform:scale(1.15);opacity:1}100%{transform:scale(1);opacity:1}}*{box-sizing:border-box;margin:0;padding:0}button{font-family:inherit}::-webkit-scrollbar{display:none}*{scrollbar-width:none}input::placeholder{color:rgba(255,255,255,.28)}`}</style>

@@ -27,7 +27,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 
 **Response time improves over use:** ~3,000ms (cold, full LLM path) → ~55ms (bilingual ChromaDB) → ~0.5ms (Hot Cache hit for previously seen queries).
 
-43/43 test suites pass (700+ assertions across 43 suites, measured locally). No subscription, no API keys required.
+45/45 test suites pass (700+ assertions across 45 suites, measured locally). No subscription, no API keys required.
 
 ---
 
@@ -59,7 +59,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 
 - **Single developer project** — not yet validated by external users
 - **Finnish beekeeping focus** — adapting to other domains requires new YAML agent definitions
-- **No authentication** — localhost-only by design; add a reverse proxy for network exposure
+- **Bearer token authentication** — auto-generated `WAGGLE_API_KEY` on first startup; `/health` and `/api/status` are public
 - **No TLS** — use nginx/Caddy if exposing beyond localhost
 - **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
@@ -76,7 +76,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/ARCHITECTURE.md) | System overview, components, data flow |
-| [API Reference](docs/API.md) | All ~45 REST endpoints + WebSocket protocol |
+| [API Reference](docs/API.md) | All ~70 REST endpoints + WebSocket protocol |
 | [Deployment](docs/DEPLOYMENT.md) | Docker, native install, profiles, hardware requirements |
 | [Security](docs/SECURITY.md) | Threat model, mitigations, secrets management |
 | [Data & Migrations](docs/MIGRATIONS.md) | Database schemas, backup/restore, data layout |
@@ -331,7 +331,7 @@ python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **43/43 suites GREEN, 700+ assertions, 0 failures.**
+Expected: **45/45 suites GREEN, 700+ assertions, 0 failures.**
 
 ---
 
@@ -370,7 +370,7 @@ waggledance-swarm/
 
 See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 
-- **Localhost-only** — no authentication by design (single-user)
+- **Localhost-only** — Bearer token auth for API, single-user design
 - **No TLS** — use a reverse proxy for network exposure
 - **Rate limiting** — 20 req/min on `/api/chat`
 - **Input validation** — Pydantic models, size limits on all inputs
@@ -408,7 +408,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 43/43 GREEN | 700+ assertions, measured locally |
+| Test suites | 45/45 GREEN | 700+ assertions, measured locally |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -422,7 +422,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 ## API Reference
 
-See [docs/API.md](docs/API.md) for complete endpoint documentation (~45 endpoints).
+See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoints).
 
 ### Core
 | Endpoint | Method | Description |
@@ -478,7 +478,7 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~45 endpoint
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all 43 suites pass
+4. Ensure all 45 suites pass
 5. Submit a pull request
 
 ### Development Setup

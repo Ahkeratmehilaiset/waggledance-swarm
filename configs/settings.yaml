@@ -94,7 +94,9 @@ advanced_learning:
   code_review_enabled: true
   micro_model_enabled: true
   micro_model_v2_enabled: true
-  micro_model_v3_enabled: false
+  micro_model_v3_enabled: true
+  micro_model_v3_path: models/micromodel_v3/lora_adapter
+  micro_model_v3_base: HuggingFaceTB/SmolLM2-135M-Instruct
   micro_model_training_interval: 50
   micro_model_min_pairs: 100
   enrichment_temporal_check: true

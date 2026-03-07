@@ -237,6 +237,7 @@ output/
 # Test output
 test_output.txt
 WAGGLEDANCE_AI_BRIEF.md
+mass_test_results_*.json
 
 # Node modules & dashboard build
 dashboard/node_modules/
@@ -249,6 +250,10 @@ logs/
 *.pt
 *.onnx
 micro_models/
+models/
+
+# Unsloth compiled cache (auto-generated)
+unsloth_compiled_cache/
 
 # IDE
 .vscode/

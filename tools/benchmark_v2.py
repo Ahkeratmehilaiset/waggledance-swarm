@@ -353,7 +353,7 @@ def test_embeddings():
                 data = r.json()
                 if "embeddings" in data and data["embeddings"]:
                     print(f"       dim={len(data['embeddings'][0])}")
-            except:
+            except Exception:
                 pass
         else:
             print(f"    ❌ {alt} — not installed")
@@ -571,7 +571,7 @@ def main():
         resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         models = [m["name"] for m in resp.json().get("models", [])]
         print(f"  ✅ Ollama running. Models: {len(models)}")
-    except:
+    except Exception:
         print(f"  ❌ Ollama not running!")
         sys.exit(1)
 
@@ -596,7 +596,7 @@ def main():
             json.dump({"timestamp": datetime.now().isoformat(), "results": str(results)}, f,
                       indent=2, ensure_ascii=False)
         print(f"\n  💾 Saved to {outfile}")
-    except:
+    except (OSError, ValueError):
         pass
 
     print(f"\n{'='*70}")

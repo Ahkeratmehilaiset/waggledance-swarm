@@ -246,7 +246,7 @@ class LLMProvider:
             if start >= 0 and end > start:
                 try:
                     return json.loads(text[start:end])
-                except:
+                except (json.JSONDecodeError, ValueError):
                     pass
             return {"error": "JSON parse failed", "raw": response.content}
 
@@ -859,7 +859,7 @@ setInterval(loadStatus, 15000);
         async def ws_callback(data):
             try:
                 await websocket.send_json(data)
-            except: pass
+            except Exception: pass
 
         hivemind.register_ws_callback(ws_callback)
         if hivemind.monitor:

@@ -2483,5 +2483,5 @@ if __name__ == "__main__":
     import shutil
     try:
         shutil.rmtree("data/test_consciousness_v2")
-    except:
+    except (OSError, PermissionError):
         pass

@@ -334,7 +334,7 @@ async def test_memory():
         # Siivoa testitietokanta
         try:
             os.remove(test_db)
-        except:
+        except (OSError, PermissionError):
             pass
 
     except Exception as e:
@@ -396,7 +396,7 @@ async def test_tokens():
         await mem.close()
         try:
             os.remove(test_db)
-        except:
+        except (OSError, PermissionError):
             pass
 
     except Exception as e:
@@ -450,7 +450,7 @@ async def test_whisper():
         await mem.close()
         try:
             os.remove(test_db)
-        except:
+        except (OSError, PermissionError):
             pass
 
     except Exception as e:
@@ -653,7 +653,7 @@ async def test_inter_agent():
         await mem.close()
         try:
             os.remove(test_db)
-        except:
+        except (OSError, PermissionError):
             pass
 
     except Exception as e:

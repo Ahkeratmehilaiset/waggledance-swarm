@@ -16,6 +16,14 @@ Usage:
     python tools/train_micromodel_v3.py --check                  # Check dependencies only
 """
 
+# Import unsloth early ONLY if --no-unsloth is not passed
+import sys as _sys
+if "--no-unsloth" not in _sys.argv:
+    try:
+        import unsloth  # Must import before transformers/peft/trl for optimizations
+    except ImportError:
+        pass
+
 import argparse
 import json
 import logging
@@ -105,6 +113,7 @@ def load_training_data(input_path: Path, max_samples: int = 5000) -> list:
 def train_with_unsloth(data: list, base_model: str, output_dir: Path,
                         epochs: int, lr: float, batch_size: int):
     """Train using Unsloth (2x faster LoRA)."""
+    import torch
     from unsloth import FastLanguageModel
     from trl import SFTTrainer
     from transformers import TrainingArguments
@@ -114,9 +123,11 @@ def train_with_unsloth(data: list, base_model: str, output_dir: Path,
     log.info(f"Base model: {base_model}")
     log.info(f"Samples: {len(data)}, Epochs: {epochs}, LR: {lr}")
 
+    max_seq = 256  # Keep short to fit in 8GB VRAM
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=base_model,
-        max_seq_length=2048,
+        max_seq_length=max_seq,
         load_in_4bit=True,
     )
 
@@ -142,26 +153,45 @@ def train_with_unsloth(data: list, base_model: str, output_dir: Path,
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Clamp batch size for 8GB VRAM
+    effective_bs = min(batch_size, 2)
+    grad_accum = max(4, 16 // max(effective_bs, 1))
+    log.info(f"Effective batch: {effective_bs} x {grad_accum} grad_accum = {effective_bs * grad_accum}")
+
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
         dataset_text_field="text",
-        max_seq_length=2048,
+        max_seq_length=max_seq,
         args=TrainingArguments(
-            per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=4,
+            per_device_train_batch_size=effective_bs,
+            gradient_accumulation_steps=grad_accum,
             warmup_steps=5,
             num_train_epochs=epochs,
             learning_rate=lr,
-            fp16=True,
+            fp16=not torch.cuda.is_bf16_supported(),
+            bf16=torch.cuda.is_bf16_supported(),
             logging_steps=10,
             output_dir=str(output_dir / "checkpoints"),
             save_strategy="epoch",
         ),
     )
 
+    import torch
+    if torch.cuda.is_available():
+        log.info(f"VRAM allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
     trainer.train()
+
+    # Report final loss
+    if trainer.state.log_history:
+        final_loss = [h["loss"] for h in trainer.state.log_history if "loss" in h]
+        if final_loss:
+            log.info(f"\nFinal training loss: {final_loss[-1]:.4f}")
+
+    if torch.cuda.is_available():
+        log.info(f"Peak VRAM: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
 
     # Save LoRA adapters
     model.save_pretrained(str(output_dir / "lora_adapter"))
@@ -191,10 +221,26 @@ def train_with_peft(data: list, base_model: str, output_dir: Path,
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Use 4-bit quantization on GPU to fit in 8GB VRAM
+    quant_kwargs = {}
+    if device == "cuda":
+        try:
+            from transformers import BitsAndBytesConfig
+            quant_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+            )
+            log.info("Using 4-bit quantization (NF4)")
+        except ImportError:
+            quant_kwargs["torch_dtype"] = torch.float16
+            log.info("bitsandbytes not available, using fp16")
+
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         device_map="auto" if device == "cuda" else None,
+        **quant_kwargs,
     )
 
     lora_config = LoraConfig(
@@ -233,14 +279,15 @@ def train_with_peft(data: list, base_model: str, output_dir: Path,
         tokenizer=tokenizer,
         train_dataset=dataset,
         dataset_text_field="text",
-        max_seq_length=2048,
+        max_seq_length=256,
         args=TrainingArguments(
-            per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=4,
+            per_device_train_batch_size=min(batch_size, 2),
+            gradient_accumulation_steps=max(4, 16 // max(batch_size, 1)),
             warmup_steps=5,
             num_train_epochs=epochs,
             learning_rate=lr,
             fp16=(device == "cuda"),
+            bf16=False,
             logging_steps=10,
             output_dir=str(output_dir / "checkpoints"),
             save_strategy="epoch",
@@ -275,6 +322,8 @@ def main():
                         help="Batch size (default: 2)")
     parser.add_argument("--max-samples", type=int, default=5000,
                         help="Max training samples (default: 5000)")
+    parser.add_argument("--no-unsloth", action="store_true",
+                        help="Force PEFT backend (skip Unsloth)")
     args = parser.parse_args()
 
     log.info("=== WaggleDance MicroModel V3 LoRA Trainer ===\n")
@@ -313,7 +362,7 @@ def main():
 
     # Train with best available backend
     try:
-        if deps["unsloth"]:
+        if deps["unsloth"] and not args.no_unsloth:
             train_with_unsloth(data, args.base_model, output_dir,
                                args.epochs, args.lr, args.batch_size)
         elif deps["peft"]:

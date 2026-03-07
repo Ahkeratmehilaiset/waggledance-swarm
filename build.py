@@ -22,7 +22,7 @@ from pathlib import Path
 # Värit Windowsissa
 try:
     os.system("")  # Enable ANSI on Windows
-except:
+except Exception:
     pass
 
 GREEN = "\033[92m"

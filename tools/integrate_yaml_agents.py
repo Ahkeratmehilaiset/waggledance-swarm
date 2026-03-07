@@ -194,7 +194,7 @@ _OLD_AGENT_GLYPHS = {''', "50 Agent Glyphs", bak)
             for s in data.get("SEASONAL_RULES", []):
                 parts.append(f"- {s.get('season','')}: {s.get('action','')}")
             return "\\n".join(parts)
-        except: return None
+        except Exception: return None
 
     def _file_hash(self''', "YAML reader", bak)
     patch_file(kl, '            elif suffix == ".json":',

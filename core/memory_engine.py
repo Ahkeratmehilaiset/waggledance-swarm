@@ -581,6 +581,11 @@ class MemoryStore:
             log.warning("ChromaDB store blocked by circuit breaker")
             return
         try:
+            from core.disk_guard import check_disk_space
+            check_disk_space(".", label="ChromaDB store")
+        except (ImportError, OSError):
+            pass  # DiskSpaceError propagates; ImportError/OSError ignored
+        try:
             self.collection.upsert(
                 ids=[obs_id], embeddings=[embedding],
                 documents=[text], metadatas=[metadata or {}]

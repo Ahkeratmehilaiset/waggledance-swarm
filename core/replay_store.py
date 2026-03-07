@@ -22,6 +22,11 @@ class ReplayStore:
 
     def store(self, doc_id: str, text: str, content_hash: str,
               metadata: Optional[dict] = None) -> None:
+        try:
+            from core.disk_guard import check_disk_space
+            check_disk_space(str(self.path.parent), label="ReplayStore")
+        except (ImportError, OSError):
+            pass
         entry = {
             "ts": time.time(),
             "doc_id": doc_id,

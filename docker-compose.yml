@@ -30,11 +30,17 @@ services:
       - ./agents:/app/agents
       - ./configs:/app/configs
       - chroma_data:/app/data/chroma_db
+    env_file: .env
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - PYTHONUTF8=1
     depends_on:
       - ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
 volumes:

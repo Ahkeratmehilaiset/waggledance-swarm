@@ -26,4 +26,6 @@ ENV OLLAMA_HOST=http://host.docker.internal:11434
 ENV PYTHONUTF8=1
 ENV PYTHONUNBUFFERED=1
 
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://localhost:8000/health || exit 1
+
 CMD ["python", "main.py"]

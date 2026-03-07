@@ -57,6 +57,11 @@ class AuditLog:
                content_hash: str = "",
                metadata: str = "{}",
                details: str = "") -> int:
+        try:
+            from core.disk_guard import check_disk_space
+            check_disk_space(str(Path(self.db_path).parent), label="AuditLog")
+        except (ImportError, OSError):
+            pass
         cur = self._conn.execute(
             "INSERT INTO audit (timestamp, action, doc_id, collection, layer, "
             "agent_id, session_id, spawn_chain, content_hash, metadata, details) "

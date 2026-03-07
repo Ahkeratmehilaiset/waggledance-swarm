@@ -1,5 +1,58 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.8 (2026-03-07) — Phases 1-5 Completion: Tests, Disk Guard, Dashboard, Refactor
+
+### Phase 3: Agent YAML Validation (NEW)
+- `tests/test_agent_yaml_validation.py` — 380 tests: core.yaml exists, parseable, header.agent_id matches dir, valid profiles, non-empty IDs, unique IDs, UTF-8, no case-insensitive duplicates
+- Registered as suite #44 in `waggle_backup.py`
+
+### Phase 4: Disk Space Monitoring (NEW)
+- `core/disk_guard.py` — `check_disk_space()` (warn <500MB, refuse <100MB), `get_disk_status()` for API
+- Guards added to: `memory_engine.py` (store), `audit_log.py` (record), `replay_store.py` (store), `cognitive_graph.py` (save), `waggle_backup.py` (before zip creation)
+- `hivemind.py`: `disk_space` field added to `get_status()` response
+- `dashboard/src/App.jsx`: Disk space indicator in status bar (free GB, color-coded)
+
+### Phase 2 Gaps: Dashboard Improvements
+- Nomic-embed-text alert banner: red fixed banner when nomic unavailable (bilingual FI/EN)
+- Last-updated timestamp in bottom bar (bilingual)
+- Test suite count updated: 36/36 → 44/44
+
+### Phase 1 Gap: Backup Restore Test
+- `waggle_restore.py`: `--test-restore ZIPFILE` flag — extracts to temp dir, validates key files/dirs/agents/settings, cleans up (non-destructive)
+
+### Phase 5: hivemind.py Refactoring
+- `core/hive_routing.py` (407 lines) — extracted WEIGHTED_ROUTING (72 agents), PRIMARY_WEIGHT, SECONDARY_WEIGHT, MASTER_NEGATIVE_KEYWORDS, DATE_HALLUCINATION_RULE, AGENT_EN_PROMPTS
+- `core/hive_support.py` (107 lines) — extracted PriorityLock, StructuredLogger
+- hivemind.py: 3,728 → 3,321 lines (-407 lines, -11%)
+
+---
+
+## v0.1.7 (2026-03-07) — Phase 9: Documentation Overhaul
+
+### New documentation (6 guides)
+- `docs/ARCHITECTURE.md` — system overview, ASCII diagrams, component descriptions, data flow, storage layout
+- `docs/API.md` — complete endpoint reference (~45 endpoints), request/response examples, WebSocket protocol
+- `docs/DEPLOYMENT.md` — Docker Compose, native install (Win/Linux/Mac), 4 profiles, hardware tiers, env vars
+- `docs/SECURITY.md` — threat model (localhost-only), CORS, rate limiting, input validation, secrets management
+- `docs/MIGRATIONS.md` — SQLite schemas, ChromaDB collections, backup/restore, data directory layout
+- `docs/SENSORS.md` — MQTT, Frigate NVR, Home Assistant, bee audio, BirdNET, voice interface, alerts
+
+### README.md rewrite
+- Version bump to v0.1.7
+- Added Security section with threat model summary
+- Added Contributing section with dev setup
+- Added Documentation table linking all new guides
+- Complete API reference (health/ready, voice POST, audio/bee, WebSocket)
+- Updated Limitations (added: no auth, no TLS, single-node)
+- Updated Project Structure (core/ and docs/ details)
+- Updated Current Status (Phase 9 added)
+
+### Docker improvements
+- `Dockerfile`: added `HEALTHCHECK` (curl /health every 30s)
+- `docker-compose.yml`: added `healthcheck` + `env_file: .env` to waggledance service
+
+---
+
 ## v0.1.6 (2026-03-06) — Remaining Hardening (M-SQL, M-Path, M-Atomic)
 
 ### SQL LIKE wildcard escaping

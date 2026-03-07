@@ -507,10 +507,96 @@ def run_all_tests(r: CheckResult):
         r.fail("All tests", str(e))
 
 
+# ── Test Restore (non-destructive) ────────────────────────────────
+
+def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
+    """
+    Test restore by extracting to a temp directory, then validating
+    key files exist and are readable. Does NOT modify the real project.
+    """
+    import tempfile
+
+    if not zip_path.exists():
+        r.fail("Test restore", f"Zip file not found: {zip_path}")
+        return False
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"\n{C}Test restore: {zip_path.name} ({size_mb:.1f} MB){W}")
+
+    tmpdir = tempfile.mkdtemp(prefix="waggledance_test_restore_")
+    try:
+        # Extract to temp
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            file_count = len(zf.namelist())
+            zf.extractall(tmpdir)
+        r.ok("Extract", f"{file_count} files extracted to temp dir")
+
+        tmp = Path(tmpdir)
+
+        # Check key directories
+        for d in ["agents", "configs", "core"]:
+            if (tmp / d).is_dir():
+                r.ok(f"Dir {d}/", "present")
+            else:
+                r.warn(f"Dir {d}/", "missing from backup")
+
+        # Check key files
+        for f in ["hivemind.py", "main.py", "requirements.txt"]:
+            if (tmp / f).is_file():
+                r.ok(f"File {f}", "present")
+            else:
+                r.warn(f"File {f}", "missing from backup")
+
+        # Check agents
+        agents_dir = tmp / "agents"
+        if agents_dir.is_dir():
+            agent_count = sum(1 for d in agents_dir.iterdir()
+                              if d.is_dir() and d.name != "__pycache__")
+            if agent_count >= 70:
+                r.ok("Agents", f"{agent_count} agent directories")
+            else:
+                r.warn("Agents", f"Only {agent_count} agents (expected 75)")
+        else:
+            r.warn("Agents", "agents/ dir missing from backup")
+
+        # Check configs/settings.yaml is valid YAML
+        settings = tmp / "configs" / "settings.yaml"
+        if settings.is_file():
+            try:
+                import yaml
+                data = yaml.safe_load(settings.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    r.ok("settings.yaml", "valid YAML, parsed OK")
+                else:
+                    r.warn("settings.yaml", "parsed but not a dict")
+            except Exception as e:
+                r.fail("settings.yaml", f"YAML parse error: {e}")
+        else:
+            r.warn("settings.yaml", "not in backup")
+
+        # Check data dir
+        data_dir = tmp / "data"
+        if data_dir.is_dir():
+            data_files = list(data_dir.glob("*"))
+            r.ok("data/", f"{len(data_files)} files")
+        else:
+            r.warn("data/", "not in backup")
+
+        print(f"  {G}Test restore complete — temp dir cleaned up.{W}")
+        return True
+
+    except Exception as e:
+        r.fail("Test restore", f"Error: {e}")
+        return False
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 # ── Main ──────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v2.0")
     parser.add_argument("--restore", metavar="ZIPFILE", help="Restore from backup zip file")
+    parser.add_argument("--test-restore", metavar="ZIPFILE", help="Test restore to temp dir (non-destructive)")
     parser.add_argument("--run-tests", action="store_true", help="Run all tests after validation")
     args = parser.parse_args()
 
@@ -520,6 +606,17 @@ def main():
     print(f"{'='*55}{W}\n")
 
     r = CheckResult()
+
+    # 0. Test restore to temp dir (non-destructive)
+    if args.test_restore:
+        zip_path = Path(args.test_restore).resolve()
+        ok = test_restore_to_temp(zip_path, r)
+        ok_c, warn_c, fail_c = r.summary()
+        print(f"\n{B}{'='*55}")
+        print(f"  TEST RESTORE SUMMARY")
+        print(f"{'='*55}{W}")
+        print(f"  {G}OK{W}:   {ok_c}  {Y}WARN{W}: {warn_c}  {R}FAIL{W}: {fail_c}")
+        sys.exit(0 if fail_c == 0 else 1)
 
     # 1. Restore from zip (if requested)
     if args.restore:

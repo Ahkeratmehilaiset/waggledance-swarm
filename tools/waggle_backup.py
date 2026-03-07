@@ -133,6 +133,8 @@ TESTS = [
     {"file": "tests/test_cognitive_graph.py",     "name": "Cognitive Graph",      "phase": "CG",   "args": [], "timeout": 60},
     # Overlay System Expansion
     {"file": "tests/test_overlay_system.py",      "name": "Overlay System",       "phase": "OV",   "args": [], "timeout": 60},
+    # Agent YAML Validation
+    {"file": "tests/test_agent_yaml_validation.py", "name": "Agent YAML Validation", "phase": "YAML", "args": [], "timeout": 60},
 ]
 
 # Backup exclusions
@@ -861,6 +863,17 @@ def do_backup(
 ) -> Path:
     """Create timestamped zip backup."""
     backup_dir.mkdir(parents=True, exist_ok=True)
+
+    # Disk space check before backup
+    try:
+        sys.path.insert(0, str(project_root))
+        from core.disk_guard import check_disk_space
+        check_disk_space(str(backup_dir), label="Backup")
+    except Exception as e:
+        if "critically low" in str(e).lower() or "REFUSED" in str(e):
+            print(f"\n{R}BACKUP ABORTED: {e}{X}")
+            return None
+        # Non-critical errors (ImportError etc.) → continue
 
     zip_name = f"waggle_{timestamp}.zip"
     zip_path = backup_dir / zip_name

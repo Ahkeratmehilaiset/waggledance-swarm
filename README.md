@@ -4,6 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
+![Version](https://img.shields.io/badge/version-0.1.7-orange)
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
@@ -58,12 +59,28 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 
 - **Single developer project** — not yet validated by external users
 - **Finnish beekeeping focus** — adapting to other domains requires new YAML agent definitions
+- **No authentication** — localhost-only by design; add a reverse proxy for network exposure
+- **No TLS** — use nginx/Caddy if exposing beyond localhost
+- **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
 - **MicroModel V3 (LoRA)** — architecture defined, training pipeline not yet implemented
 - **CI runs basic test suite** — full 43-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/ARCHITECTURE.md) | System overview, components, data flow |
+| [API Reference](docs/API.md) | All ~45 REST endpoints + WebSocket protocol |
+| [Deployment](docs/DEPLOYMENT.md) | Docker, native install, profiles, hardware requirements |
+| [Security](docs/SECURITY.md) | Threat model, mitigations, secrets management |
+| [Data & Migrations](docs/MIGRATIONS.md) | Database schemas, backup/restore, data layout |
+| [Sensors & Integrations](docs/SENSORS.md) | MQTT, Frigate, HA, audio, voice, alerts |
 
 ---
 
@@ -113,11 +130,11 @@ WaggleDance gets smarter over time by recording every Q&A interaction as a train
 ```
 
 **What's implemented:**
-- ✅ V1 Pattern Match — regex + lookup table, ~0.01ms
-- ✅ V2 Neural Classifier — PyTorch 768→256→128→N, ~1ms, trains on collected pairs
-- ✅ Topic auto-promotion — 200+ pairs + <3% error → promoted
-- ✅ Training collector — records every Q&A with source and confidence
-- 🔲 V3 LoRA nano-LLM — architecture defined, training pipeline not yet implemented
+- V1 Pattern Match — regex + lookup table, ~0.01ms
+- V2 Neural Classifier — PyTorch 768→256→128→N, ~1ms, trains on collected pairs
+- Topic auto-promotion — 200+ pairs + <3% error → promoted
+- Training collector — records every Q&A with source and confidence
+- V3 LoRA nano-LLM — architecture defined, training pipeline not yet implemented
 
 ### Round Table — Agent Consensus
 
@@ -152,6 +169,8 @@ When idle for 30+ minutes, the system shifts to aggressive learning:
 
 ## Architecture
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full system diagrams.
+
 ```
 User (Finnish / English) → FastAPI (port 8000)
   │
@@ -178,6 +197,14 @@ User (Finnish / English) → FastAPI (port 8000)
   │   ├── Corrections Memory (prevents repeat mistakes)
   │   ├── Hallucination Detection (contrastive + keyword)
   │   └── Eviction TTL (stale facts auto-expire)
+  │
+  ├── MAGMA Memory Architecture (core/)
+  │   ├── L1: Audit Log + Write Proxy + Agent Rollback
+  │   ├── L2: Replay Store + Replay Engine (time/session/causal)
+  │   ├── L3: Overlay Networks + API endpoints
+  │   ├── L4: Agent Channels + Provenance + Cross-Agent Search
+  │   ├── L5: Trust Engine (6-signal reputation)
+  │   └── Cognitive Graph (NetworkX, causal edges)
   │
   ├── Sensors & Integrations
   │   ├── MQTT Hub (paho-mqtt, reconnect, dedup)
@@ -245,11 +272,14 @@ Server rack / DGX. Predictive maintenance, monitoring, shift handover. *(Theoret
 
 ## Installation
 
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed instructions.
+
 ### Option A: Docker (recommended)
 
 ```bash
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
+cp .env.example .env    # Edit with your secrets
 docker compose up -d
 ```
 
@@ -312,42 +342,63 @@ waggledance-swarm/
 ├── agents/              # 75 YAML agent knowledge bases
 ├── knowledge/           # Domain knowledge bases
 ├── core/                # Core modules (memory_engine, translation_proxy, models, scheduling)
+│   ├── memory_engine.py #   Memory, search, embedding, caching
+│   ├── cognitive_graph.py#  NetworkX knowledge graph
+│   ├── trust_engine.py  #   6-signal agent reputation
+│   ├── night_enricher.py#   Night learning + convergence
+│   └── elastic_scaler.py#   Hardware detection + tier selection
 ├── integrations/        # External systems (MQTT, Frigate, HA, audio, voice, feeds)
 ├── backend/             # Standalone stub backend (no Ollama needed)
-│   └── routes/          #   15 API route modules
+│   └── routes/          #   16 API route modules
+├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
 ├── tests/               # 43 test suites (700+ assertions)
-├── tools/               # Backup, restore, benchmarks, scanners
+├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
-├── docs/                # Documentation and images
-├── hivemind.py          # HiveMind orchestrator
+├── docs/                # Architecture, API, deployment, security, sensors
+├── data/                # Runtime data (ChromaDB, SQLite, JSONL, JSON)
+├── hivemind.py          # HiveMind orchestrator (~2800 lines)
 ├── main.py              # Production entry point
 ├── start.py             # Launcher (--stub / --production)
-├── Dockerfile           # Python 3.13 + Voikko
+├── Dockerfile           # Python 3.13 + Voikko + healthcheck
 └── docker-compose.yml   # Ollama + WaggleDance stack
 ```
 
 ---
 
+## Security
+
+See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
+
+- **Localhost-only** — no authentication by design (single-user)
+- **No TLS** — use a reverse proxy for network exposure
+- **Rate limiting** — 20 req/min on `/api/chat`
+- **Input validation** — Pydantic models, size limits on all inputs
+- **CORS** — restricted to GET/POST, configurable origins
+- **Generic errors** — stack traces never leaked to clients
+- **Secrets in .env** — git-ignored, never committed
+
+---
+
 ## Current Status
 
-- ✅ **Phase 1:** Foundation — memory engine, dual embedding, smart router
-- ✅ **Phase 2:** Batch Pipeline — batch embedding/translation, 3,147+ facts in ChromaDB
-- ✅ **Phase 3:** Social Learning — Round Table, agent levels, night mode
-- ✅ **Phase 4:** Advanced Learning — bilingual index, hot cache, fact enrichment, corrections, MicroModel V1+V2
-- ✅ **Phase 5:** Smart Home Sensors — MQTT hub, Frigate NVR, Home Assistant, Telegram alerts
-- ✅ **Phase 6:** Audio Sensors — bee audio analysis, BirdNET bird detection, ESP32 MQTT
-- ✅ **Phase 7:** Voice Interface — Whisper STT (Finnish) + Piper TTS, wake word
-- ✅ **Phase 8:** External Data Feeds — FMI weather, electricity spot price, RSS disease alerts
-- ✅ **Phase B/C/D:** Production Hardening — CircuitBreaker, caching, structured logging, convergence detection
-- ✅ **Phase 11:** Elastic Scaling — auto-detect GPU/RAM/CPU, 5-tier classification
-- ✅ **MAGMA L1-L3:** Memory Architecture — audit log, replay store, write proxy, overlay networks, agent rollback
-- ✅ **MAGMA L4:** Cross-Agent Memory — agent channels, provenance tracking, consensus records
-- ✅ **MAGMA L5:** Trust & Reputation — 6-signal trust scoring, domain experts, temporal decay
-- ✅ **Cognitive Graph:** NetworkX knowledge graph — causal/semantic edges, dependency traversal, causal replay
-- ✅ **Overlay Expansion:** Branchable memory — A/B testing, mood presets, agent contribution transforms
-- 🔲 **Phase 9:** Autonomous Learning Layers 3-6 — code exists, disabled (offline-first by design)
-- 🔲 **Phase 10:** MicroModel V3 LoRA — architecture defined, training pipeline pending
+- **Phase 1:** Foundation — memory engine, dual embedding, smart router
+- **Phase 2:** Batch Pipeline — batch embedding/translation, 3,147+ facts in ChromaDB
+- **Phase 3:** Social Learning — Round Table, agent levels, night mode
+- **Phase 4:** Advanced Learning — bilingual index, hot cache, fact enrichment, corrections, MicroModel V1+V2
+- **Phase 5:** Smart Home Sensors — MQTT hub, Frigate NVR, Home Assistant, Telegram alerts
+- **Phase 6:** Audio Sensors — bee audio analysis, BirdNET bird detection, ESP32 MQTT
+- **Phase 7:** Voice Interface — Whisper STT (Finnish) + Piper TTS, wake word
+- **Phase 8:** External Data Feeds — FMI weather, electricity spot price, RSS disease alerts
+- **Phase 9:** Documentation Overhaul — architecture, API, deployment, security guides
+- **Phase B/C/D:** Production Hardening — CircuitBreaker, caching, structured logging, convergence detection
+- **Phase 11:** Elastic Scaling — auto-detect GPU/RAM/CPU, 5-tier classification
+- **MAGMA L1-L3:** Memory Architecture — audit log, replay store, write proxy, overlay networks, agent rollback
+- **MAGMA L4:** Cross-Agent Memory — agent channels, provenance tracking, consensus records
+- **MAGMA L5:** Trust & Reputation — 6-signal trust scoring, domain experts, temporal decay
+- **Cognitive Graph:** NetworkX knowledge graph — causal/semantic edges, dependency traversal, causal replay
+- **Overlay Expansion:** Branchable memory — A/B testing, mood presets, agent contribution transforms
+- Pending: MicroModel V3 LoRA (architecture defined, training pipeline pending)
 
 ---
 
@@ -371,9 +422,13 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 ## API Reference
 
+See [docs/API.md](docs/API.md) for complete endpoint documentation (~45 endpoints).
+
 ### Core
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/health` | GET | Liveness probe |
+| `/ready` | GET | Readiness probe |
 | `/api/status` | GET | System status, uptime, metrics |
 | `/api/chat` | POST | Chat with HiveMind (auto FI/EN) |
 | `/api/heartbeat` | GET | Agent activity feed |
@@ -386,7 +441,10 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | `/api/sensors/home` | GET | Home Assistant entities |
 | `/api/sensors/camera/events` | GET | Frigate camera events |
 | `/api/sensors/audio` | GET | Audio monitor status + events |
+| `/api/sensors/audio/bee` | GET | Bee audio analysis |
 | `/api/voice/status` | GET | Voice interface status |
+| `/api/voice/text` | POST | Send text for TTS |
+| `/api/voice/audio` | POST | Send audio for STT |
 
 ### Analytics & Configuration
 | Endpoint | Method | Description |
@@ -407,6 +465,33 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | `/api/trust/agent/{id}` | GET | Full reputation breakdown |
 | `/api/cross/channels` | GET | Agent communication channels |
 | `/api/graph/stats` | GET | Cognitive graph node/edge counts |
+
+### WebSocket
+| Endpoint | Description |
+|----------|-------------|
+| `ws://localhost:8000/ws` | Real-time event stream (heartbeat, chat, alerts) |
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Run tests: `python tools/waggle_backup.py --tests-only`
+4. Ensure all 43 suites pass
+5. Submit a pull request
+
+### Development Setup
+
+```bash
+python start.py --stub    # Dashboard dev without Ollama
+cd dashboard && npm run dev  # React dev server (hot reload)
+```
+
+### Code Style
+- Python: standard library conventions, type hints where useful
+- Finnish UI output, English internal processing
+- All new features must include test suite
 
 ---
 

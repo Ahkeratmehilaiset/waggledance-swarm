@@ -47,6 +47,11 @@ class CognitiveGraph:
     def save(self):
         p = Path(self.persist_path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from core.disk_guard import check_disk_space
+            check_disk_space(str(p.parent), label="CognitiveGraph")
+        except (ImportError, OSError):
+            pass
         data = nx.node_link_data(self.graph, edges="links")
         content = json.dumps(data, ensure_ascii=False)
         # Atomic write: temp file + os.replace to prevent corruption

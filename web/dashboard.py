@@ -55,6 +55,11 @@ def create_app(hivemind):
 
     app.add_middleware(UTF8Middleware)
 
+    # ── Auth middleware (Bearer token) ────────────────────
+    from backend.auth import get_or_create_api_key, BearerAuthMiddleware
+    _api_key = get_or_create_api_key()
+    app.add_middleware(BearerAuthMiddleware, api_key=_api_key)
+
     chat_model = hivemind.llm.model if hivemind.llm else "?"
     hb_model = (hivemind.llm_heartbeat.model
                 if hivemind.llm_heartbeat else chat_model)

@@ -24,6 +24,12 @@ log = logging.getLogger("waggledance-backend")
 
 app = FastAPI(title="WaggleDance Dashboard API")
 
+# ── Auth middleware (Bearer token) ────────────────────────
+from backend.auth import get_or_create_api_key, BearerAuthMiddleware
+
+_api_key = get_or_create_api_key()
+app.add_middleware(BearerAuthMiddleware, api_key=_api_key)
+
 _cors_origins = os.environ.get(
     "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
 ).split(",")
@@ -33,7 +39,7 @@ app.add_middleware(
     allow_origins=[o.strip() for o in _cors_origins],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 app.include_router(status_router)

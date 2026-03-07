@@ -135,6 +135,8 @@ TESTS = [
     {"file": "tests/test_overlay_system.py",      "name": "Overlay System",       "phase": "OV",   "args": [], "timeout": 60},
     # Agent YAML Validation
     {"file": "tests/test_agent_yaml_validation.py", "name": "Agent YAML Validation", "phase": "YAML", "args": [], "timeout": 60},
+    # Phase 6-8: Migration, Auth, Training
+    {"file": "tests/test_migrate_db.py", "name": "Migration + Auth + Training", "phase": "P6-8", "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

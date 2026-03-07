@@ -22,15 +22,30 @@ export function useApi() {
   const lastRetry = useRef(0);
   const pollingStarted = useRef(false);
 
+  const getAuthHeaders = useCallback(() => {
+    const token = localStorage.getItem("WAGGLE_API_KEY") || "";
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    return headers;
+  }, []);
+
   const fetchJson = useCallback(async (url) => {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: getAuthHeaders() });
+      if (res.status === 401) {
+        // Token missing or invalid — prompt once
+        if (!localStorage.getItem("_waggle_auth_warned")) {
+          localStorage.setItem("_waggle_auth_warned", "1");
+          console.warn("WaggleDance: API returned 401. Set localStorage WAGGLE_API_KEY.");
+        }
+        return null;
+      }
       if (!res.ok) return null;
       return await res.json();
     } catch {
       return null;
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   // Poll backend APIs
   const poll = useCallback(async () => {
@@ -153,7 +168,7 @@ export function useApi() {
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ message, lang }),
       });
       if (res.ok) {

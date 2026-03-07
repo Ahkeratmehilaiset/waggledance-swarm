@@ -13,7 +13,7 @@ WaggleDance is designed as a **localhost-only, single-user** system. It is NOT d
 
 | Decision | Rationale |
 |----------|-----------|
-| **No authentication** | Single-user, localhost-only. Adding auth would add complexity without benefit for the target use case. |
+| **Bearer token auth** | Auto-generated on first startup, saved to `.env` as `WAGGLE_API_KEY`. All `/api/*` routes require it except `/api/status` and `/health`. |
 | **No TLS** | Localhost traffic only. Use a reverse proxy (nginx, Caddy) if exposing to network. |
 | **No multi-tenant isolation** | All agents share one memory space by design (collaborative learning). |
 
@@ -32,9 +32,16 @@ WaggleDance is designed as a **localhost-only, single-user** system. It is NOT d
 - `/api/chat`: 20 requests/min per IP (in-process token bucket)
 - No external dependencies required
 
+### API Authentication (H5)
+- Bearer token required for all `/api/*` endpoints
+- Exempt: `/health`, `/ready`, `/api/status` (public health/status)
+- Token auto-generated on first startup if `WAGGLE_API_KEY` not set
+- WebSocket auth: pass token as `?token=` query parameter
+- Dashboard reads token from `localStorage.WAGGLE_API_KEY`
+
 ### CORS (H3)
 - Methods restricted to `GET` and `POST`
-- Headers restricted to `Content-Type`
+- Headers restricted to `Content-Type` and `Authorization`
 - Credentials disabled
 - Origins configurable via `CORS_ORIGINS` env var
 
@@ -74,6 +81,7 @@ WAGGLEDANCE_TELEGRAM_BOT_TOKEN=  # Telegram alerts
 WAGGLEDANCE_TELEGRAM_CHAT_ID=    # Telegram chat
 WAGGLEDANCE_HA_TOKEN=            # Home Assistant
 WAGGLEDANCE_DISTILLATION_API_KEY= # Distillation (disabled)
+WAGGLE_API_KEY=              # API auth (auto-generated)
 ```
 
 Secrets are read via `os.environ.get()` with env var fallback in all integration modules.

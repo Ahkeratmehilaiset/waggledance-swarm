@@ -79,9 +79,40 @@ python tools/waggle_backup.py --tests-only
 
 Runs all 43 test suites without creating a backup.
 
+## Schema Versioning
+
+Every SQLite database has a `schema_version` table tracking its current version:
+
+```sql
+CREATE TABLE schema_version (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    version     INTEGER NOT NULL DEFAULT 1,
+    updated_at  REAL    NOT NULL
+);
+```
+
+### Current Schema Versions
+
+| Database | Latest Version | Changes in V2 |
+|----------|---------------|----------------|
+| audit_log.db | v2 | `content_preview` column on audit table |
+| waggle_dance.db | v2 | Performance indexes on memories, events, messages, tasks |
+
+### Migration Tool
+
+```bash
+# Check current versions
+python tools/migrate_db.py --check
+
+# Apply pending migrations
+python tools/migrate_db.py --migrate
+```
+
+Migrations are idempotent — safe to run multiple times. The tool auto-detects
+legacy databases (no schema_version table) as v1 and bootstraps from there.
+
 ## Migration Notes
 
-- **No schema migration tool** — SQLite tables are auto-created if missing
 - **ChromaDB** — collections are auto-created; embedding dimension must match model
 - **cognitive_graph.json** — auto-created empty if missing; uses atomic writes to prevent corruption
 - **JSONL files** — append-only; corrupted lines are skipped and logged (ReplayStore resilience)

@@ -1,5 +1,32 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## v0.1.9 (2026-03-07) — Schema Migration, API Auth, LoRA Training
+
+### Phase 6: Schema Migration
+- `tools/migrate_db.py` — schema version tracking for all SQLite DBs
+- `schema_version` table with version + updated_at
+- Migrations: audit_log.db v1→v2 (content_preview column), waggle_dance.db v1→v2 (performance indexes)
+- CLI: `--check` reports versions, `--migrate` applies pending
+- Updated `docs/MIGRATIONS.md` with schema versioning docs
+
+### Phase 7: API Authentication
+- `backend/auth.py` — BearerAuthMiddleware + auto-key generation
+- Bearer token required for all `/api/*` routes
+- Exempt: `/health`, `/ready`, `/api/status`
+- WebSocket auth via `?token=` query param
+- Auto-generates `WAGGLE_API_KEY` on first startup, saves to `.env`
+- Dashboard sends token from `localStorage.WAGGLE_API_KEY`
+- Updated `docs/SECURITY.md`, `.env.example`
+
+### Phase 8: MicroModel V3 LoRA Tooling
+- `tools/collect_training_data.py` — CLI to extract Q&A pairs from finetune_live.jsonl + curated
+- `tools/train_micromodel_v3.py` — LoRA training with Unsloth or PEFT fallback
+- Supports TinyLlama, Phi-3.5, smollm2 base models
+- `--check` flag to verify dependencies without training
+
+### Tests
+- `tests/test_migrate_db.py` — 20+ tests: migration, auth, training tools (suite #45)
+
 ## v0.1.8 (2026-03-07) — Phases 1-5 Completion: Tests, Disk Guard, Dashboard, Refactor
 
 ### Phase 3: Agent YAML Validation (NEW)

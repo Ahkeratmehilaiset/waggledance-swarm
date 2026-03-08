@@ -1145,13 +1145,12 @@ class NightEnricher:
         if ne_cfg.get("chat_history_enabled", False):
             self.source_manager.register(ChatHistorySource())
         else:
-            # Register anyway for stats visibility
-            self.source_manager.register(ChatHistorySource())
+            log.info("ChatHistorySource disabled by config")
 
         if ne_cfg.get("rss_feed_enabled", False):
             self.source_manager.register(RssFeedSource())
         else:
-            self.source_manager.register(RssFeedSource())
+            log.info("RssFeedSource disabled by config")
 
         # Adaptive tuner
         self.tuner = AdaptiveTuner(

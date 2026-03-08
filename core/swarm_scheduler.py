@@ -23,7 +23,7 @@ v0.0.2 MUUTOKSET:
 
 import random
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
@@ -132,7 +132,7 @@ class SwarmScheduler:
     def __init__(self, config: dict = None):
         config = config or {}
         self._scores: dict[str, AgentScore] = {}
-        self._task_history: list[dict] = []
+        self._task_history: deque = deque(maxlen=10000)
 
         # Asetukset
         self.top_k = config.get("top_k", 8)

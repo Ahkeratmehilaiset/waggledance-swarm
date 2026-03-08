@@ -6,6 +6,7 @@ even if ChromaDB data is lost.
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Dict, Iterator, Optional
@@ -15,6 +16,8 @@ log = logging.getLogger("waggledance.replay_store")
 
 class ReplayStore:
     """Append-only JSONL store for document text recovery."""
+
+    MAX_REPLAY_SIZE_MB = 50
 
     def __init__(self, path: str = "data/replay_store.jsonl"):
         self.path = Path(path)
@@ -34,8 +37,22 @@ class ReplayStore:
             "content_hash": content_hash,
             "metadata": metadata or {},
         }
+        self._maybe_rotate()
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def _maybe_rotate(self):
+        """Rotate JSONL when file exceeds size threshold."""
+        try:
+            if self.path.exists() and os.path.getsize(self.path) > self.MAX_REPLAY_SIZE_MB * 1024 * 1024:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                half = len(lines) // 2
+                with open(self.path, "w", encoding="utf-8") as f:
+                    f.writelines(lines[half:])
+                log.info("ReplayStore rotated: %d → %d entries", len(lines), len(lines) - half)
+        except Exception as e:
+            log.warning("ReplayStore rotation failed: %s", e)
 
     def _iter_all(self) -> Iterator[dict]:
         if not self.path.exists():

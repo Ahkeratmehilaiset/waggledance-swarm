@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-WaggleDance Backup & Test Tool v5.0
+WaggleDance Backup & Test Tool v6.0
 =====================================
 Runs full component tests, generates AI report, creates backup.
 Supports 75-agent profile system (gadget/cottage/home/factory).
+Supports incremental backups (only changed files since last backup).
 
 Usage:
     python tools/waggle_backup.py              # Full: tests + report + backup
     python tools/waggle_backup.py --skip-tests # Report + backup (no tests)
     python tools/waggle_backup.py --tests-only # Tests + report only (no zip)
+    python tools/waggle_backup.py --incremental # Incremental backup (changed files only)
+    python tools/waggle_backup.py --incremental --skip-tests  # Fast incremental
 """
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import platform
@@ -146,6 +150,7 @@ EXCLUDE_DIRS = {
     ".claude", ".venv", "venv", "chromadb_data", "chroma",
     "logs", ".mypy_cache", ".pytest_cache",
     ".ruff_cache", "test_consciousness_v2",
+    "unsloth_compiled_cache",
 }
 
 EXCLUDE_EXTENSIONS = {".pyc", ".pyo", ".pyd", ".pt", ".onnx", ".egg-info"}
@@ -153,6 +158,12 @@ EXCLUDE_EXTENSIONS = {".pyc", ".pyo", ".pyd", ".pt", ".onnx", ".egg-info"}
 EXCLUDE_PATTERNS = [
     "*_backup_*.py", "fix_*.py", "patch_*.py", "hotfix_*.py", "*_mega_patch.py",
 ]
+
+# Files excluded for security or irrelevance
+EXCLUDE_FILES = {".env"}
+
+# Root-level log files (large, not useful in restore)
+EXCLUDE_ROOT_EXTENSIONS = {".log"}
 
 
 # ── Data Classes ─────────────────────────────────────────────────
@@ -843,6 +854,14 @@ def should_include(path: Path, project_root: Path) -> bool:
         if part in EXCLUDE_DIRS:
             return False
 
+    # Check excluded specific filenames (e.g. .env with secrets)
+    if path.name in EXCLUDE_FILES:
+        return False
+
+    # Check root-level log files (large, not useful in restore)
+    if len(rel.parts) == 1 and path.suffix.lower() in EXCLUDE_ROOT_EXTENSIONS:
+        return False
+
     # Check extensions
     if path.suffix.lower() in EXCLUDE_EXTENSIONS:
         return False
@@ -856,14 +875,89 @@ def should_include(path: Path, project_root: Path) -> bool:
     return True
 
 
+def checkpoint_sqlite_databases(project_root: Path):
+    """Checkpoint all SQLite WAL files before backup to ensure consistency."""
+    import sqlite3
+    data_dir = project_root / "data"
+    if not data_dir.exists():
+        return
+    checkpointed = []
+    for db_file in data_dir.glob("*.db"):
+        try:
+            conn = sqlite3.connect(str(db_file), timeout=5)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.close()
+            checkpointed.append(db_file.name)
+        except Exception:
+            pass  # DB may be locked by running process — skip gracefully
+    if checkpointed:
+        print(f"  {G}WAL checkpoint:{W} {', '.join(checkpointed)}")
+
+
+MANIFEST_FILE = "backup_manifest.json"
+
+
+def _file_hash(path: Path) -> str:
+    """Fast hash: for files >1MB use size+mtime, else SHA-256."""
+    st = path.stat()
+    if st.st_size > 1_048_576:
+        return f"fast:{st.st_size}:{st.st_mtime_ns}"
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_manifest(backup_dir: Path) -> dict:
+    """Load the previous backup manifest (file→hash mapping).
+
+    Checks backup_dir first, then falls back to EXTRA_BACKUP_LOCATIONS
+    (C:/D: persistent drives) — needed after RAM drive (U:) power loss.
+    """
+    # Try local first
+    p = backup_dir / MANIFEST_FILE
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # Fallback to persistent drives (U: is RAM, manifest lost on reboot)
+    for loc in EXTRA_BACKUP_LOCATIONS:
+        fp = loc / MANIFEST_FILE
+        if fp.exists():
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                # Restore to RAM drive for this session
+                try:
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    p.write_text(fp.read_text(encoding="utf-8"), encoding="utf-8")
+                    print(f"  {G}Manifest recovered from {loc}{W}")
+                except Exception:
+                    pass
+                return data
+            except Exception:
+                pass
+    return {}
+
+
+def save_manifest(backup_dir: Path, manifest: dict):
+    """Save the current backup manifest atomically."""
+    p = backup_dir / MANIFEST_FILE
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(manifest, indent=1, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)
+
+
 def do_backup(
     project_root: Path,
     backup_dir: Path,
     test_results: list,
     ai_brief: str,
     timestamp: str,
+    incremental: bool = False,
 ) -> Path:
-    """Create timestamped zip backup."""
+    """Create timestamped zip backup. If incremental=True, only changed files."""
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     # Disk space check before backup
@@ -873,13 +967,22 @@ def do_backup(
         check_disk_space(str(backup_dir), label="Backup")
     except Exception as e:
         if "critically low" in str(e).lower() or "REFUSED" in str(e):
-            print(f"\n{R}BACKUP ABORTED: {e}{X}")
+            print(f"\n{R}BACKUP ABORTED: {e}{W}")
             return None
         # Non-critical errors (ImportError etc.) → continue
 
-    zip_name = f"waggle_{timestamp}.zip"
+    # Checkpoint SQLite WAL files for consistent backup
+    checkpoint_sqlite_databases(project_root)
+
+    # Load previous manifest for incremental comparison
+    old_manifest = load_manifest(backup_dir) if incremental else {}
+    new_manifest = {}
+
+    prefix = "waggle_incr_" if incremental else "waggle_"
+    zip_name = f"{prefix}{timestamp}.zip"
     zip_path = backup_dir / zip_name
     file_count = 0
+    skipped = 0
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in sorted(project_root.rglob("*")):
@@ -887,9 +990,15 @@ def do_backup(
                 continue
             if not should_include(p, project_root):
                 continue
-            rel = p.relative_to(project_root)
+            rel = str(p.relative_to(project_root))
             try:
-                zf.write(p, str(rel))
+                h = _file_hash(p)
+                new_manifest[rel] = h
+                # Incremental: skip unchanged files
+                if incremental and old_manifest.get(rel) == h:
+                    skipped += 1
+                    continue
+                zf.write(p, rel)
                 file_count += 1
             except (PermissionError, OSError):
                 pass
@@ -908,6 +1017,12 @@ def do_backup(
                 test_output.append(strip_ansi(tr.raw_output))
                 test_output.append("")
             zf.writestr("test_output.txt", "\n".join(test_output))
+
+    # Save updated manifest (always — so next incremental knows the baseline)
+    save_manifest(backup_dir, new_manifest)
+
+    if incremental:
+        print(f"  {G}Incremental:{W} {file_count} changed, {skipped} unchanged (skipped)")
 
     return zip_path, file_count
 
@@ -999,7 +1114,8 @@ def rotate_backups(backup_dir: Path, keep: int = MAX_BACKUPS):
 
 
 def copy_to_extra_locations(zip_path: Path, meta_path: Path):
-    """Copy backup to extra locations (C:, CORSAIR D:, etc.)."""
+    """Copy backup + manifest to persistent locations (C:, D:) and rotate."""
+    manifest_src = BACKUP_DIR / MANIFEST_FILE
     for loc in EXTRA_BACKUP_LOCATIONS:
         drive = loc.parts[0] if loc.parts else ""
         drive_path = Path(drive + "/") if drive else loc
@@ -1010,7 +1126,16 @@ def copy_to_extra_locations(zip_path: Path, meta_path: Path):
             shutil.copy2(zip_path, loc / zip_path.name)
             if meta_path and meta_path.exists():
                 shutil.copy2(meta_path, loc / meta_path.name)
-            print(f"  {G}Copied to {loc}{W}")
+            # Copy manifest to persistent drive (U: is RAM — survives only here)
+            if manifest_src.exists():
+                shutil.copy2(manifest_src, loc / MANIFEST_FILE)
+            # Copy restore.bat to persistent drive so it survives RAM loss
+            restore_bat = PROJECT_ROOT / "restore.bat"
+            if restore_bat.exists():
+                shutil.copy2(restore_bat, loc / "restore.bat")
+            # Rotate old backups on persistent drives too
+            rotate_backups(loc)
+            print(f"  {G}Copied to {loc} (rotated to {MAX_BACKUPS}){W}")
         except (PermissionError, OSError) as e:
             print(f"  {Y}Copy to {loc} failed: {e}{W}")
 
@@ -1075,9 +1200,10 @@ def print_final_summary(zip_path, file_count, brief_path, elapsed):
 
 # ── Main ─────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="WaggleDance Backup & Test Tool v5.0")
+    parser = argparse.ArgumentParser(description="WaggleDance Backup & Test Tool v6.0")
     parser.add_argument("--skip-tests", action="store_true", help="Skip test execution")
     parser.add_argument("--tests-only", action="store_true", help="Run tests + report only, no zip")
+    parser.add_argument("--incremental", action="store_true", help="Incremental backup (only changed files)")
     args = parser.parse_args()
 
     start_time = time.time()
@@ -1126,6 +1252,7 @@ def main():
 
         zip_path, file_count = do_backup(
             PROJECT_ROOT, BACKUP_DIR, test_results, ai_brief, timestamp,
+            incremental=args.incremental,
         )
 
         create_meta_json(

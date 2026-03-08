@@ -1,5 +1,56 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [0.7.0] — 2026-03-08
+
+### Added
+- Active profile switching — GADGET/COTTAGE/HOME/FACTORY tabs now change agent behavior in real-time
+- Model status dashboard — real-time VRAM usage, loaded models, role mapping via /api/models
+- Persistent chat history — SQLite storage, conversations survive page refresh
+- User feedback system — thumbs up/down on AI responses, feeds into corrections memory
+- GitHub Actions CI — automated test runner on every push
+- Test runner wrapper (tests/run_all.py) for standalone test execution
+- pyproject.toml with proper metadata
+- CORS middleware for React dev server compatibility
+- Body size limit on /api/chat (100KB)
+- docs/DASHBOARD_IMPROVEMENTS.md — improvement plan and investigation
+
+### Fixed
+- /ready endpoint NameError (hive → hivemind)
+- /api/history route conflict (specific routes before parameterized)
+- Dashboard auth headers missing on /api/language and /api/hardware calls
+- Voice chat TypeError — _do_chat now accepts source parameter
+- Weekly report crash — _init_learning_engines sync/async mismatch
+- Audio MQTT handlers — sync handlers registered as async callbacks
+- Bee alert dispatch — raw dict replaced with proper Alert dataclass
+- Causal replay embedding dimension mismatch (8-dim → 768-dim)
+- Race condition: per-request state moved from instance vars to locals in _do_chat
+- Race condition: _enriched_prompt now yields copy, original agent untouched
+- Race condition: TrustEngine gets own SQLite connection instead of sharing AuditLog's
+- Race condition: semaphore scaling without replacing active semaphore
+- Resource leak: _whisper_task now cancelled on stop()
+- Resource leak: VoiceInterface properly stopped before disposal
+- Shutdown order: background tasks cancelled before database close
+- Unbounded growth: _task_history capped with deque(maxlen=10000)
+- Unbounded growth: replay JSONL rotation at 50MB
+- Unbounded growth: RSS _seen_ids capped at 50,000 entries
+- Synchronous nvidia-smi replaced with async subprocess
+- WebSocket monitor callback now properly awaits send_json
+- Polling interval reduced from 2s to 5s (360→72 req/min)
+- Stub/production URL mismatch for agent levels endpoint
+- NightEnricher config flags now actually control feature activation
+- networkx added to requirements.txt
+- chromadb version constraint tightened (>=1.0.0)
+- Python version requirement corrected (>=3.13)
+- Version number synchronized across main.py and pyproject.toml (0.7.0)
+- Duplicate regex key removed from confusion_memory.json
+
+### Changed
+- consciousness.py renamed to core/memory_engine.py (done in earlier session)
+- Internal docs moved to docs/internal/
+- Test files organized into tests/ directory
+- README rewritten — removed superlatives, added limitations, added measurement context
+- Static test badge replaced with live GitHub Actions badge
+
 ## v0.2.0 (2026-03-07) — Release: All Phases Complete
 
 Production-ready release. All planned phases implemented and tested (45/45 suites, 700 tests).

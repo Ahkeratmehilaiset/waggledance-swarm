@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const POLL_INTERVAL = 2000;
+const POLL_INTERVAL = 5000;
 const RETRY_INTERVAL = 30000;
 const MAX_FAILURES = 3;
 

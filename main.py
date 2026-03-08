@@ -3,9 +3,9 @@
 WaggleDance Swarm AI — Local HiveNode Runtime (On-Prem)
 ========================================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v0.0.3 • Built: 2026-02-22
+Claude 4.6 • v0.7.0 • Built: 2026-02-22
 
-v0.0.3: OpsAgent + UTF-8 fix + audit fixes.
+v0.7.0: 7 major phases complete — agents, pipeline, learning, sensors, voice, MAGMA, hardening.
 """
 import asyncio
 import sys

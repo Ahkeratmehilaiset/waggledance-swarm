@@ -55,6 +55,20 @@ def create_app(hivemind):
 
     app.add_middleware(UTF8Middleware)
 
+    # ── CORS middleware ────────────────────────────────────
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173", "http://localhost:3000",
+            "http://localhost:8000", "http://127.0.0.1:5173",
+            "http://127.0.0.1:8000",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     # ── Auth middleware (Bearer token) ────────────────────
     from backend.auth import get_or_create_api_key, BearerAuthMiddleware
     _api_key = get_or_create_api_key()
@@ -567,7 +581,11 @@ loadFeeds();
         )
 
     @app.post("/api/chat")
-    async def chat(data: dict):
+    async def chat(request: Request):
+        body = await request.body()
+        if len(body) > 100_000:  # 100KB limit
+            return JSONResponse({"error": "Message too large"}, status_code=413)
+        data = json.loads(body)
         msg = data.get("message", "")
         lang = data.get("lang", "auto")
         if not msg:
@@ -604,6 +622,12 @@ loadFeeds();
         convs = _chat_history.get_conversations(limit, offset, profile)
         return {"conversations": convs}
 
+    @app.get("/api/history/recent/messages")
+    async def chat_history_recent():
+        """Get most recent messages across all conversations."""
+        msgs = _chat_history.get_recent_messages(limit=50)
+        return {"messages": msgs}
+
     @app.get("/api/history/{conversation_id}")
     async def chat_history_detail(conversation_id: int):
         """Get full conversation with messages."""
@@ -611,12 +635,6 @@ loadFeeds();
         if not conv:
             return JSONResponse({"error": "Not found"}, status_code=404)
         return conv
-
-    @app.get("/api/history/recent/messages")
-    async def chat_history_recent():
-        """Get most recent messages across all conversations."""
-        msgs = _chat_history.get_recent_messages(limit=50)
-        return {"messages": msgs}
 
     @app.post("/api/feedback")
     async def submit_feedback(data: dict):
@@ -677,6 +695,7 @@ loadFeeds();
             return {"error": "Internal error"}
 
     @app.get("/api/agent_levels")
+    @app.get("/api/agents/levels")
     async def agent_levels():
         """Phase 3: Agent level stats."""
         if hivemind.agent_levels:
@@ -881,7 +900,7 @@ loadFeeds();
 
     @app.get("/ready")
     async def readiness():
-        status = hive.get_status() if hive else {}
+        status = await hivemind.get_status() if hivemind else {}
         return {"status": "ready", "running": status.get("running", False)}
 
     @app.get("/api/system")
@@ -895,14 +914,17 @@ loadFeeds();
         except ImportError:
             pass
         try:
-            import subprocess
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=utilization.gpu",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2
+            import asyncio as _aio
+            proc = await _aio.create_subprocess_exec(
+                "nvidia-smi", "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+                stdout=_aio.subprocess.PIPE,
+                stderr=_aio.subprocess.PIPE,
             )
-            if result.returncode == 0:
-                vals = [int(x.strip()) for x in result.stdout.strip().split('\n') if x.strip()]
+            stdout, _ = await _aio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode == 0:
+                result_text = stdout.decode()
+                vals = [int(x.strip()) for x in result_text.strip().split('\n') if x.strip()]
                 if vals:
                     stats["gpu_percent"] = vals[0]
         except (FileNotFoundError, Exception):
@@ -1280,9 +1302,12 @@ loadFeeds();
                 pass
         hivemind.register_ws_callback(ws_callback)
         if hivemind.monitor:
-            hivemind.monitor.register_callback(
-                lambda e: websocket.send_json(e)
-            )
+            async def monitor_ws_callback(e):
+                try:
+                    await websocket.send_json(e)
+                except Exception:
+                    pass
+            hivemind.monitor.register_callback(monitor_ws_callback)
         if hivemind.ops_agent:
             hivemind.ops_agent.register_decision_callback(ws_callback)
         try:

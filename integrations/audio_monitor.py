@@ -229,14 +229,19 @@ class AudioMonitor:
         if self._alert_dispatcher and result.status in ("swarming", "queen_piping"):
             severity = "critical" if result.status == "swarming" else "high"
             try:
-                alert_data = {
-                    "source": "bee_audio",
-                    "severity": severity,
-                    "title": f"Mehiläishälytys: {result.description_fi}",
-                    "message": text,
-                    "hive_id": result.hive_id,
-                }
-                self._alert_dispatcher.send_alert(alert_data)
+                from integrations.alert_dispatcher import Alert
+                alert = Alert(
+                    severity=severity,
+                    title=f"Mehiläishälytys: {result.description_fi}",
+                    message=text,
+                    source="bee_audio",
+                    metadata={"hive_id": result.hive_id},
+                )
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._alert_dispatcher.send_alert(alert))
+                except RuntimeError:
+                    log.debug("No event loop for alert dispatch")
             except Exception as e:
                 log.warning("Alert send failed: %s", e)
 
@@ -244,14 +249,19 @@ class AudioMonitor:
         """Handle predator detection — alert."""
         if self._alert_dispatcher:
             try:
-                alert_data = {
-                    "source": "bird_monitor",
-                    "severity": "high",
-                    "title": f"Petoeläin havaittu: {detection.species_fi}",
-                    "message": f"{detection.species_fi} ({detection.species}) "
-                               f"tunnistettu (luottamus {detection.confidence:.0%})",
-                }
-                self._alert_dispatcher.send_alert(alert_data)
+                from integrations.alert_dispatcher import Alert
+                alert = Alert(
+                    severity="high",
+                    title=f"Petoeläin havaittu: {detection.species_fi}",
+                    message=f"{detection.species_fi} ({detection.species}) "
+                            f"tunnistettu (luottamus {detection.confidence:.0%})",
+                    source="bird_monitor",
+                )
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._alert_dispatcher.send_alert(alert))
+                except RuntimeError:
+                    log.debug("No event loop for alert dispatch")
             except Exception as e:
                 log.warning("Predator alert failed: %s", e)
 

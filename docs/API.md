@@ -228,6 +228,33 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 
 ---
 
+## Dashboard Features
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/models` | GET | Ollama model status — loaded models, VRAM usage, role mapping |
+| `GET /api/history` | GET | Conversation history list |
+| `GET /api/history/recent/messages` | GET | Recent chat messages across all conversations |
+| `GET /api/history/{conversation_id}` | GET | Full conversation by ID |
+| `POST /api/feedback` | POST | User feedback on AI response (thumbs up/down) |
+
+```json
+// GET /api/models
+{
+  "models": [
+    {"name": "phi4-mini:latest", "role": "chat", "vram_mb": 2400, "loaded": true}
+  ],
+  "total_vram_used_mb": 4200,
+  "total_vram_available_mb": 8192
+}
+
+// POST /api/feedback
+// Request
+{"message_id": "msg_abc123", "rating": "up", "comment": "Good answer"}
+```
+
+---
+
 ## Profiles
 
 | Endpoint | Method | Description |

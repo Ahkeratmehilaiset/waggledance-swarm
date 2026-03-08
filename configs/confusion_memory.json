@@ -25,10 +25,7 @@
     "Tarhaaja (Päämehiläishoitaja)": 2,
     "Tautivahti (mehiläiset)": 1
   },
-  "12345|aihe|erikoin|erikoinen|kysymys|testi": {
-    "TestiAgentti": 19
-  },
   "12345|aihe|erikoinen|kysymys|testi": {
-    "TestiAgentti": 48
+    "TestiAgentti": 58
   }
 }

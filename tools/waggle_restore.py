@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-WaggleDance Restore & Environment Validator v2.0
+WaggleDance Restore & Environment Validator v3.0
 =================================================
 Validates the environment and restores from a backup zip if needed.
-Supports 75-agent profile system (gadget/cottage/home/factory).
+Supports restore to any target directory via --target flag.
 
 Usage:
-    python tools/waggle_restore.py              # Validate only (no restore)
-    python tools/waggle_restore.py --restore ZIPFILE  # Restore from zip + validate
-    python tools/waggle_restore.py --run-tests  # Validate + run all tests
-    python tools/waggle_restore.py --restore ZIPFILE --run-tests
+    python tools/waggle_restore.py                          # Validate only
+    python tools/waggle_restore.py --restore ZIPFILE        # Restore to project dir
+    python tools/waggle_restore.py --restore ZIPFILE --target /path/to/dir
+    python tools/waggle_restore.py --test-restore ZIPFILE   # Non-destructive test
+    python tools/waggle_restore.py --run-tests              # Validate + tests
 
 Exit code: 0 = all OK, 1 = warnings/failures
 """
@@ -19,6 +20,7 @@ import json
 import os
 import platform
 import shutil
+import sqlite3
 import subprocess
 import sys
 import zipfile
@@ -106,7 +108,6 @@ def check_pip_dependencies(r: CheckResult):
         return
 
     missing = []
-    outdated = []
 
     # Parse requirements.txt for package names (ignore comments, optional)
     reqs = []
@@ -166,13 +167,11 @@ def check_ollama(r: CheckResult):
 def check_ollama_models(r: CheckResult, installed_models: list):
     """Check that all required models are installed."""
     installed_names = {m.split(":")[0] if ":" in m else m for m in installed_models}
-    # Also include full names
     installed_names.update(installed_models)
 
     missing = []
     for model in REQUIRED_MODELS:
         base = model.split(":")[0]
-        # Check both "phi4-mini" and "phi4-mini:latest" style
         found = any(
             m == model or m.startswith(model + ":") or m.startswith(base + ":")
             for m in installed_models
@@ -216,6 +215,25 @@ def check_chromadb(r: CheckResult):
         r.warn("ChromaDB data", "data/chroma_db/ not found — empty system (no knowledge)")
 
 
+def check_sqlite_integrity(r: CheckResult):
+    """Check SQLite databases are intact (not corrupt)."""
+    data_dir = PROJECT_ROOT / "data"
+    if not data_dir.exists():
+        return
+    for db_file in sorted(data_dir.glob("*.db")):
+        try:
+            conn = sqlite3.connect(str(db_file), timeout=5)
+            result = conn.execute("PRAGMA integrity_check").fetchone()
+            conn.close()
+            if result and result[0] == "ok":
+                size_mb = db_file.stat().st_size / (1024 * 1024)
+                r.ok(f"SQLite {db_file.name}", f"integrity OK ({size_mb:.1f} MB)")
+            else:
+                r.fail(f"SQLite {db_file.name}", f"integrity check: {result}")
+        except Exception as e:
+            r.warn(f"SQLite {db_file.name}", f"cannot open: {e}")
+
+
 def check_voikko(r: CheckResult):
     """Check Voikko Finnish morphology library, DLL, and dictionary."""
     try:
@@ -228,7 +246,6 @@ def check_voikko(r: CheckResult):
         )
         return
 
-    # Check dictionary + DLL by actually initializing Voikko
     voikko_path = PROJECT_ROOT / "voikko"
     mor_path = voikko_path / "5" / "mor-standard"
 
@@ -275,7 +292,6 @@ def check_translation_models(r: CheckResult):
         r.fail("transformers", "not installed — run: pip install transformers")
         return
 
-    # Check model cache (HuggingFace default location)
     hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
     opus_fi_en = any(
         "Helsinki-NLP--opus-mt-fi-en" in str(p) or "opus-mt-fi-en" in str(p)
@@ -323,6 +339,43 @@ def check_data_dirs(r: CheckResult):
     r.ok("Data directories", ", ".join(detail_parts) if detail_parts else "all OK")
 
 
+def check_models_dir(r: CheckResult):
+    """Check LoRA model adapter exists if enabled in config."""
+    settings_path = PROJECT_ROOT / "configs" / "settings.yaml"
+    if not settings_path.exists():
+        return
+    try:
+        import yaml
+        cfg = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            return
+        v3_enabled = cfg.get("advanced_learning", {}).get("micro_model_v3_enabled", False)
+        v3_path = cfg.get("advanced_learning", {}).get("micro_model_v3_path", "")
+        if v3_enabled and v3_path:
+            adapter_dir = PROJECT_ROOT / v3_path
+            config_file = adapter_dir / "adapter_config.json"
+            if config_file.exists():
+                r.ok("LoRA adapter", f"{v3_path} present")
+            elif adapter_dir.exists():
+                r.warn("LoRA adapter", f"{v3_path} exists but missing adapter_config.json")
+            else:
+                r.warn("LoRA adapter", f"{v3_path} not found — micro_model_v3 will not load")
+    except Exception:
+        pass
+
+
+def check_env_file(r: CheckResult):
+    """Check .env exists (needed for API key, but NOT backed up for security)."""
+    env_path = PROJECT_ROOT / ".env"
+    env_example = PROJECT_ROOT / ".env.example"
+    if env_path.exists():
+        r.ok(".env file", "present")
+    elif env_example.exists():
+        r.warn(".env file", "missing — copy .env.example to .env and fill in values")
+    else:
+        r.warn(".env file", "missing — WAGGLE_API_KEY will be auto-generated on first start")
+
+
 def check_profile_config(r: CheckResult):
     """Check settings.yaml has a valid profile field."""
     settings_path = PROJECT_ROOT / "configs" / "settings.yaml"
@@ -358,7 +411,6 @@ def check_agent_structure(r: CheckResult):
         r.fail("Agent structure", "agents/ directory not found")
         return
 
-    # Collect agents with core.yaml
     agent_ids = set()
     agents_missing_profiles = []
     for sub in sorted(agents_dir.iterdir()):
@@ -377,7 +429,6 @@ def check_agent_structure(r: CheckResult):
         r.fail("Agent structure", "no agents found in agents/")
         return
 
-    # Check knowledge/ mirror
     knowledge_ids = set()
     if knowledge_dir.exists():
         for sub in knowledge_dir.iterdir():
@@ -416,7 +467,6 @@ def check_readiness_c4(r: CheckResult):
             env={**os.environ, "PYTHONUTF8": "1"},
         )
         output = result.stdout + result.stderr
-        # Check for FAIL: pattern
         import re
         fail_m = re.search(r"FAIL:\s*(\d+)", output)
         pass_m = re.search(r"PASS:\s*(\d+)", output)
@@ -437,14 +487,15 @@ def check_readiness_c4(r: CheckResult):
 
 
 # ── Restore from backup ───────────────────────────────────────────
-def restore_from_zip(zip_path: Path, r: CheckResult):
-    """Restore project files from a backup zip."""
+def restore_from_zip(zip_path: Path, target_dir: Path, r: CheckResult):
+    """Restore project files from a backup zip to target directory."""
     if not zip_path.exists():
         r.fail("Backup zip", f"File not found: {zip_path}")
         return False
 
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     print(f"\n{C}Restoring from: {zip_path.name} ({size_mb:.1f} MB){W}")
+    print(f"  Target: {target_dir}")
 
     # Read companion meta if available
     meta_path = zip_path.with_name(zip_path.stem + "_meta.json")
@@ -459,16 +510,26 @@ def restore_from_zip(zip_path: Path, r: CheckResult):
 
     # Confirm (non-interactive skips if stdout is not a tty)
     if sys.stdout.isatty():
-        confirm = input(f"  Restore to {PROJECT_ROOT}? This overwrites existing files. [y/N] ")
+        confirm = input(f"  Restore to {target_dir}? This overwrites existing files. [y/N] ")
         if confirm.strip().lower() != "y":
             print("  Restore cancelled.")
             return False
 
     try:
+        target_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path, "r") as zf:
             file_count = len(zf.namelist())
-            zf.extractall(str(PROJECT_ROOT))
-        r.ok("Restore", f"{file_count} files extracted to {PROJECT_ROOT}")
+            zf.extractall(str(target_dir))
+        r.ok("Restore", f"{file_count} files extracted to {target_dir}")
+
+        # Create .env reminder
+        env_file = target_dir / ".env"
+        env_example = target_dir / ".env.example"
+        if not env_file.exists() and env_example.exists():
+            print(f"\n  {Y}NOTE:{W} .env was not backed up (security).")
+            print(f"  Copy .env.example to .env and fill in your values:")
+            print(f"    cp {env_example} {env_file}")
+
         return True
     except zipfile.BadZipFile:
         r.fail("Restore", "zip file is corrupted")
@@ -534,14 +595,15 @@ def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
         tmp = Path(tmpdir)
 
         # Check key directories
-        for d in ["agents", "configs", "core"]:
+        for d in ["agents", "configs", "core", "data", "integrations",
+                   "backend", "web", "tests", "tools", "voikko"]:
             if (tmp / d).is_dir():
                 r.ok(f"Dir {d}/", "present")
             else:
                 r.warn(f"Dir {d}/", "missing from backup")
 
         # Check key files
-        for f in ["hivemind.py", "main.py", "requirements.txt"]:
+        for f in ["hivemind.py", "main.py", "start.py", "requirements.txt"]:
             if (tmp / f).is_file():
                 r.ok(f"File {f}", "present")
             else:
@@ -556,8 +618,6 @@ def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
                 r.ok("Agents", f"{agent_count} agent directories")
             else:
                 r.warn("Agents", f"Only {agent_count} agents (expected 75)")
-        else:
-            r.warn("Agents", "agents/ dir missing from backup")
 
         # Check configs/settings.yaml is valid YAML
         settings = tmp / "configs" / "settings.yaml"
@@ -571,16 +631,59 @@ def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
                     r.warn("settings.yaml", "parsed but not a dict")
             except Exception as e:
                 r.fail("settings.yaml", f"YAML parse error: {e}")
-        else:
-            r.warn("settings.yaml", "not in backup")
 
-        # Check data dir
+        # Check data dir contents
         data_dir = tmp / "data"
         if data_dir.is_dir():
             data_files = list(data_dir.glob("*"))
-            r.ok("data/", f"{len(data_files)} files")
+            r.ok("data/", f"{len(data_files)} files/dirs")
+
+            # Check ChromaDB
+            chroma_dir = data_dir / "chroma_db"
+            if chroma_dir.is_dir():
+                chroma_files = list(chroma_dir.rglob("*"))
+                r.ok("data/chroma_db/", f"{len(chroma_files)} files")
+            else:
+                r.warn("data/chroma_db/", "missing — no knowledge base")
+
+            # Check SQLite databases
+            for db_name in ["waggle_dance.db", "audit_log.db", "chat_history.db"]:
+                db_path = data_dir / db_name
+                if db_path.is_file():
+                    try:
+                        conn = sqlite3.connect(str(db_path), timeout=5)
+                        result = conn.execute("PRAGMA integrity_check").fetchone()
+                        conn.close()
+                        if result and result[0] == "ok":
+                            size_mb = db_path.stat().st_size / (1024 * 1024)
+                            r.ok(f"SQLite {db_name}", f"integrity OK ({size_mb:.1f} MB)")
+                        else:
+                            r.fail(f"SQLite {db_name}", f"integrity check: {result}")
+                    except Exception as e:
+                        r.warn(f"SQLite {db_name}", f"cannot verify: {e}")
+                else:
+                    r.warn(f"SQLite {db_name}", "not in backup")
+
+        # Check models
+        models_dir = tmp / "models"
+        if models_dir.is_dir():
+            r.ok("models/", "present")
         else:
-            r.warn("data/", "not in backup")
+            r.warn("models/", "missing from backup")
+
+        # Check voikko
+        voikko_dir = tmp / "voikko"
+        if voikko_dir.is_dir():
+            dll = voikko_dir / "libvoikko-1.dll"
+            r.ok("voikko/", f"present (DLL: {'yes' if dll.exists() else 'no'})")
+        else:
+            r.warn("voikko/", "missing from backup")
+
+        # Confirm .env is NOT in backup (security)
+        if (tmp / ".env").exists():
+            r.warn(".env in backup", "secrets file found in backup — consider removing")
+        else:
+            r.ok(".env excluded", "secrets file correctly excluded from backup")
 
         print(f"  {G}Test restore complete — temp dir cleaned up.{W}")
         return True
@@ -594,14 +697,21 @@ def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
 
 # ── Main ──────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v2.0")
+    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v3.0")
     parser.add_argument("--restore", metavar="ZIPFILE", help="Restore from backup zip file")
+    parser.add_argument("--target", metavar="DIR", help="Target directory for restore (default: project root)")
     parser.add_argument("--test-restore", metavar="ZIPFILE", help="Test restore to temp dir (non-destructive)")
     parser.add_argument("--run-tests", action="store_true", help="Run all tests after validation")
     args = parser.parse_args()
 
+    # If --target is given, update PROJECT_ROOT for all checks
+    global PROJECT_ROOT, REQUIREMENTS_FILE
+    if args.target:
+        PROJECT_ROOT = Path(args.target).resolve()
+        REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
+
     print(f"\n{B}{'='*55}")
-    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v2.0")
+    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v3.0")
     print(f"  Project: {PROJECT_ROOT}")
     print(f"{'='*55}{W}\n")
 
@@ -621,7 +731,8 @@ def main():
     # 1. Restore from zip (if requested)
     if args.restore:
         zip_path = Path(args.restore).resolve()
-        restored = restore_from_zip(zip_path, r)
+        target = Path(args.target).resolve() if args.target else PROJECT_ROOT
+        restored = restore_from_zip(zip_path, target, r)
         if not restored:
             print(f"\n{R}Restore failed — aborting.{W}")
             sys.exit(1)
@@ -639,11 +750,14 @@ def main():
 
     print()
     check_chromadb(r)
+    check_sqlite_integrity(r)
     check_voikko(r)
     check_translation_models(r)
 
     print()
     check_data_dirs(r)
+    check_models_dir(r)
+    check_env_file(r)
     check_profile_config(r)
     check_agent_structure(r)
     check_readiness_c4(r)

@@ -1,22 +1,24 @@
 # WAGGLEDANCE SWARM AI — MASTER SPECIFICATION (CONDENSED)
-# v0.2.0 | Developer: Jani Korpi / JKH Service (Y-2828492-2)
+# v0.7.0 | Developer: Jani Korpi / JKH Service (Y-2828492-2)
 
 ## 1. PROJECT OVERVIEW
 
-Local-first multi-agent AI for Finnish beekeeping. 50+ agents, HiveMind orchestrator,
-translation pipeline, consciousness layer, autonomous learning.
+Local-first multi-agent AI for Finnish beekeeping. 75 agents, HiveMind orchestrator,
+translation pipeline, memory engine, autonomous learning.
 
 **Developer:** Jani Korpi, ~300 colonies (Helsinki + Kouvola), ~10,000 kg honey/year.
 **Key constraint:** User output = Finnish. Internal LLM = English. Translation = Opus-MT.
 
-**Status (2026-03-01):**
-- Phase 1-2: COMPLETE (consciousness v2, batch pipeline, 94% benchmark, 3147 facts)
-- Phase 3: COMPLETE (Round Table, agent levels, night mode)
-- Phase 4: COMPLETE (bilingual index, hot cache, enrichment, corrections, centroids, seasonal guard)
-- Phase B: COMPLETE (pipeline wiring, priority lock, circuit breaker, error handling)
-- Phase C: COMPLETE (HotCache auto-fill, LRU cache, batch pipeline, readiness check, structured logging)
-- Phase D: COMPLETE (external source activation, convergence detection, meta-learning weekly report)
-- Phase 5-11: SPECIFIED (sensors, voice, feeds, autonomous learning, scaling)
+**Status (2026-03-08):**
+- Phase 1-4: COMPLETE (memory engine v2, batch pipeline, Round Table, advanced learning)
+- Phase 5-8: COMPLETE (smart home sensors, audio sensors, voice interface, data feeds)
+- Phase B-D: COMPLETE (pipeline wiring, caching, observability, external learning)
+- Phase 11: COMPLETE (elastic scaling, hardware auto-detection)
+- MAGMA L1-L5: COMPLETE (audit, replay, overlays, cross-agent, trust engine)
+- Cognitive Graph + Overlay Expansion: COMPLETE
+- Hardening (M/L/H/S): COMPLETE (31 critical bug fixes in v0.7.0)
+- Phase 9: COMPLETE (documentation overhaul)
+- Test suite: 45 suites, 700+ tests, 0 failures
 
 ## 2. HARDWARE & GPU
 
@@ -107,8 +109,8 @@ User (Finnish) → HiveMind
 
 | File | Lines | Status | Notes |
 |------|-------|--------|-------|
-| hivemind.py | ~2700 | EXTEND | chat(), heartbeat, Round Table, PriorityLock, WebSocket |
-| consciousness.py | ~2000 | v2 EXTEND | MathSolver, ChromaDB, dual embed, hallucination |
+| hivemind.py | ~3300 | EXTEND | chat(), heartbeat, Round Table, PriorityLock, WebSocket |
+| core/memory_engine.py | ~2000 | v2 EXTEND | MathSolver, ChromaDB, dual embed, hallucination |
 | translation_proxy.py | ~1600 | ADD batch | fi_to_en/en_to_fi, Voikko+Opus-MT. CRITICAL: use .text |
 | core/fast_memory.py | ~1000 | WIRE UP | HotCache, BilingualMemoryStore, FiFastStore |
 | core/night_enricher.py | ~1200 | WORKING | QualityGate, GapScheduler, AdaptiveTuner |
@@ -211,7 +213,7 @@ async def _round_table(self, topic, agent_count=6):
 
 ## 10. PHASE B: Pipeline Wiring & Reliability (COMPLETE)
 
-**Files:** hivemind.py, consciousness.py
+**Files:** hivemind.py, core/memory_engine.py
 
 ### B1: Pipeline Wiring
 - system_prompt injection for all agents (knowledge context + date metadata)
@@ -222,7 +224,7 @@ async def _round_table(self, topic, agent_count=6):
 - Protected sources never evicted: user_teaching, user_correction, yaml_scan, round_table
 - Eviction check every N flushes, batch size configurable
 
-### B3: Circuit Breaker (consciousness.py)
+### B3: Circuit Breaker (core/memory_engine.py)
 ```python
 class CircuitBreaker:
     # States: CLOSED → OPEN → HALF_OPEN
@@ -240,7 +242,7 @@ class CircuitBreaker:
 
 ## 11. PHASE C: Cache & Observability (COMPLETE)
 
-**Files:** hivemind.py, consciousness.py, core/meta_learning.py
+**Files:** hivemind.py, core/memory_engine.py, core/meta_learning.py
 
 ### C1: HotCache Auto-fill
 - Auto-populates from ALL successful chat paths (memory_fast, delegate, neg_kw, master)
@@ -463,14 +465,14 @@ agent_levels, recent_corrections, seasonal_focus, learning_trend, top_queries}
 
 ```
 U:/project2/
-├── main.py, hivemind.py, consciousness.py, translation_proxy.py
+├── main.py, hivemind.py, translation_proxy.py
 ├── core/  (agent_levels, fast_memory, micro_model, night_enricher, swarm_scheduler,
 │          learning_engine, meta_learning, ops_agent, adaptive_throttle, llm_provider,
 │          normalizer, seasonal_guard, training_collector, web_learner,
 │          knowledge_distiller, code_reviewer, yaml_bridge, knowledge_loader)
 ├── integrations/  (weather_feed, electricity_feed, rss_feed, data_scheduler)
-├── agents/  (50 dirs with core.yaml + sources.yaml, base_agent.py, spawner.py)
-├── knowledge/  (50 dirs mirroring agents/)
+├── agents/  (75 dirs with core.yaml + sources.yaml, base_agent.py, spawner.py)
+├── knowledge/  (75 dirs mirroring agents/)
 ├── web/dashboard.py + static/
 ├── dashboard/  (React 18 + Vite showcase UI, port 5173)
 ├── backend/main.py + routes/  (standalone FastAPI stub, 1348 YAML facts)

@@ -23,6 +23,7 @@ Aiemmat korjaukset (v0.0.1):
 """
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -221,28 +222,26 @@ class HiveMind:
                          knowledge_max_chars=2000):
         """
         Context manager joka:
-        1. Tallentaa agentin ALKUPERÄISEN system_promptin
+        1. Luo agentista kopion (alkuperäinen ei muutu)
         2. Injektoi päivämäärän (valinnainen)
         3. Injektoi tietopankin (valinnainen)
-        4. Palauttaa AINA alkuperäisen riippumatta virheistä
+        4. Yield kopio — alkuperäinen pysyy koskemattomana
 
         Käyttö:
-            with self._enriched_prompt(agent):
-                response = await agent.think(message, context)
+            with self._enriched_prompt(agent) as enriched:
+                response = await enriched.think(message, context)
         """
-        original_prompt = agent.system_prompt
-        try:
-            if inject_date:
-                agent.system_prompt = self._get_date_prefix() + agent.system_prompt
-            if inject_knowledge and self.knowledge_loader:
-                agent_type = getattr(agent, 'agent_type', getattr(agent, 'type', ''))
-                if agent_type:
-                    kb = self.knowledge_loader.get_knowledge_summary(agent_type)
-                    if kb:
-                        agent.system_prompt = agent.system_prompt + "\n" + kb[:knowledge_max_chars]
-            yield agent
-        finally:
-            agent.system_prompt = original_prompt
+        enriched = copy.copy(agent)
+        enriched.system_prompt = agent.system_prompt  # own copy of string
+        if inject_date:
+            enriched.system_prompt = self._get_date_prefix() + enriched.system_prompt
+        if inject_knowledge and self.knowledge_loader:
+            agent_type = getattr(agent, 'agent_type', getattr(agent, 'type', ''))
+            if agent_type:
+                kb = self.knowledge_loader.get_knowledge_summary(agent_type)
+                if kb:
+                    enriched.system_prompt = enriched.system_prompt + "\n" + kb[:knowledge_max_chars]
+        yield enriched
 
     async def _readiness_check(self):
         """C4: Validate critical services at startup."""
@@ -719,6 +718,13 @@ DELEGATION RULES (IMPORTANT):
             except asyncio.CancelledError:
                 pass
 
+        if hasattr(self, '_whisper_task') and self._whisper_task:
+            self._whisper_task.cancel()
+            try:
+                await self._whisper_task
+            except asyncio.CancelledError:
+                pass
+
         if self.ops_agent:
             await self.ops_agent.stop()
 
@@ -728,9 +734,28 @@ DELEGATION RULES (IMPORTANT):
         if self.spawner:
             await self.spawner.kill_all()
 
-        if self.memory:
-            await self.memory.log_event("hivemind", "stopped", "WaggleDance sammutettu")
-            await self.memory.close()
+        # Phase 7: Stop voice interface
+        if hasattr(self, 'voice_interface') and self.voice_interface:
+            try:
+                await self.voice_interface.stop()
+            except Exception:
+                pass
+            self.voice_interface = None
+
+        # Phase 5: Stop sensor hub
+        if hasattr(self, 'sensor_hub') and self.sensor_hub:
+            await self.sensor_hub.stop()
+
+        # Phase 8: Stop data feeds
+        if hasattr(self, 'data_feeds') and self.data_feeds:
+            await self.data_feeds.stop()
+
+        # M5: Cancel all tracked background tasks (BEFORE closing DB)
+        if self._background_tasks:
+            for task in list(self._background_tasks):
+                task.cancel()
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
 
         # PHASE2: Flush remaining learn queue items before shutdown
         if hasattr(self, 'consciousness') and self.consciousness:
@@ -748,24 +773,10 @@ DELEGATION RULES (IMPORTANT):
             except Exception:
                 pass
 
-        # Phase 7: Clear voice interface
-        if hasattr(self, 'voice_interface') and self.voice_interface:
-            self.voice_interface = None
-
-        # Phase 5: Stop sensor hub
-        if hasattr(self, 'sensor_hub') and self.sensor_hub:
-            await self.sensor_hub.stop()
-
-        # Phase 8: Stop data feeds
-        if hasattr(self, 'data_feeds') and self.data_feeds:
-            await self.data_feeds.stop()
-
-        # M5: Cancel all tracked background tasks
-        if self._background_tasks:
-            for task in list(self._background_tasks):
-                task.cancel()
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
-            self._background_tasks.clear()
+        # Close DB connections AFTER all tasks are done
+        if self.memory:
+            await self.memory.log_event("hivemind", "stopped", "WaggleDance sammutettu")
+            await self.memory.close()
 
         if self.translation_proxy:
             self.translation_proxy.close()
@@ -846,17 +857,17 @@ DELEGATION RULES (IMPORTANT):
         finally:
             await self.priority.chat_exits()
 
-    async def _do_chat(self, message: str, language: str = "auto") -> str:
+    async def _do_chat(self, message: str, language: str = "auto", source: str = "chat") -> str:
         """Varsinainen chat-logiikka. Tukee FI↔EN käännöstä: auto/fi/en."""
         _chat_t0 = time.perf_counter()
         _original_message = message
-        self._translation_used = False
-        self._fi_en_result = None
-        self._detected_lang = language
+        _translation_used = False
+        _fi_en_result = None
+        _detected_lang = language
 
         # ═══ Kielentunnistus ═══
         if language == "auto":
-            self._detected_lang = detect_language(message) if _TRANSLATION_AVAILABLE else "fi"
+            _detected_lang = detect_language(message) if _TRANSLATION_AVAILABLE else "fi"
 
         # ═══ Phase 4: Detect user correction ("ei", "väärin", correction text) ═══
         _CORRECTION_WORDS = {"ei", "väärin", "wrong", "väärä", "virhe",
@@ -899,7 +910,7 @@ DELEGATION RULES (IMPORTANT):
                     query=_original_message, method="correction",
                     agent_id=self._last_chat_agent_id or "user",
                     response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
-                    route="correction", language=self._detected_lang)
+                    route="correction", language=_detected_lang)
                 return response
 
         # ═══ Phase 4: Detect user teaching (after active_learning response) ═══
@@ -922,7 +933,7 @@ DELEGATION RULES (IMPORTANT):
                 query=_original_message, method="user_teaching",
                 agent_id="user", confidence=0.9,
                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
-                route="user_teaching", language=self._detected_lang)
+                route="user_teaching", language=_detected_lang)
             return response
 
         # ═══ Direct datetime answers (no LLM needed) ═══
@@ -954,12 +965,12 @@ DELEGATION RULES (IMPORTANT):
                 query=_original_message, method="datetime_direct",
                 agent_id="system", confidence=1.0,
                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
-                route="datetime_direct", language=self._detected_lang)
+                route="datetime_direct", language=_detected_lang)
             if self.monitor:
                 await self.monitor.system(f"🕐 Aikakysely: {response}")
             await self._notify_ws("chat_response", {
                 "message": message, "response": response,
-                "language": self._detected_lang, "method": "datetime_direct"
+                "language": _detected_lang, "method": "datetime_direct"
             })
             return response
 
@@ -977,7 +988,7 @@ DELEGATION RULES (IMPORTANT):
                         f"🧠 {_pre.method}: {_pre.answer[:80]}")
                 await self._notify_ws("chat_response", {
                     "message": message, "response": _pre.answer,
-                    "language": self._detected_lang,
+                    "language": _detected_lang,
                     "method": _pre.method
                 })
                 # Phase 4: track for correction detection + episode
@@ -995,12 +1006,12 @@ DELEGATION RULES (IMPORTANT):
                     agent_id="consciousness", confidence=_pre.confidence,
                     response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                     cache_hit=(_pre.method in ("hot_cache", "math")),
-                    route=_pre.method, language=self._detected_lang)
+                    route=_pre.method, language=_detected_lang)
                 return _pre.answer
 
             # Tier 2: memory_fast → llama1b formats answer with context
             if _pre and _pre.method == "memory_fast" and _pre.context and self.llm_heartbeat:
-                _ans_lang = "Finnish" if self._detected_lang == "fi" else "English"
+                _ans_lang = "Finnish" if _detected_lang == "fi" else "English"
                 _fast_prompt = f"{_pre.context}\n\nQuestion: {message}\nAnswer concisely in {_ans_lang}:"
                 try:
                     async with self.throttle:
@@ -1013,13 +1024,14 @@ DELEGATION RULES (IMPORTANT):
                                 f"🧠 SmartRouter: llama1b + context ({_pre.confidence:.0%})")
                         await self._notify_ws("chat_response", {
                             "message": message, "response": response,
-                            "language": self._detected_lang,
+                            "language": _detected_lang,
                             "method": "smart_router_fast"
                         })
                         # C1: auto-populate HotCache
                         self._populate_hot_cache(
                             _original_message, response,
-                            score=_pre.confidence, source="memory_fast")
+                            score=_pre.confidence, source="memory_fast",
+                            detected_lang=_detected_lang)
                         # Phase 4: track for correction detection + episode
                         self._last_chat_message = message
                         self._last_chat_response = response
@@ -1036,23 +1048,23 @@ DELEGATION RULES (IMPORTANT):
                             confidence=_pre.confidence,
                             response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                             route="smart_router_fast",
-                            language=self._detected_lang)
+                            language=_detected_lang)
                         return response
                 except Exception:
                     pass  # Fall through to normal routing
 
         # ═══ FI→EN käännös (~2ms) ═══
-        if self._detected_lang == "fi" and self.translation_proxy:
+        if _detected_lang == "fi" and self.translation_proxy:
             try:
-                self._fi_en_result = self.translation_proxy.fi_to_en(message, force_opus=True)
-                if self._fi_en_result.coverage >= 0.5 and self._fi_en_result.method != "passthrough":
-                    self._translation_used = True
-                    _en_message = self._fi_en_result.text
+                _fi_en_result = self.translation_proxy.fi_to_en(message, force_opus=True)
+                if _fi_en_result.coverage >= 0.5 and _fi_en_result.method != "passthrough":
+                    _translation_used = True
+                    _en_message = _fi_en_result.text
                     if self.monitor:
                         await self.monitor.system(
-                            f"🔄 FI→EN ({self._fi_en_result.method}, "
-                            f"{self._fi_en_result.latency_ms:.1f}ms, "
-                            f"{self._fi_en_result.coverage:.0%}): {_en_message[:80]}")
+                            f"🔄 FI→EN ({_fi_en_result.method}, "
+                            f"{_fi_en_result.latency_ms:.1f}ms, "
+                            f"{_fi_en_result.coverage:.0%}): {_en_message[:80]}")
                 else:
                     _en_message = message
             except Exception as e:
@@ -1062,8 +1074,8 @@ DELEGATION RULES (IMPORTANT):
             _en_message = message
 
         # Viesti agentille
-        self._routed_message = _en_message if (self._translation_used or self._detected_lang == "en") else message
-        self._use_en_prompts = self._translation_used or self._detected_lang == "en"
+        _routed_message = _en_message if (_translation_used or _detected_lang == "en") else message
+        _use_en_prompts = _translation_used or _detected_lang == "en"
 
         await self.memory.store_memory(
             content=f"Käyttäjä sanoi: {message}",
@@ -1097,12 +1109,15 @@ DELEGATION RULES (IMPORTANT):
 
         if delegate_to and best_score > 0:
             response = await self._delegate_to_agent(
-                delegate_to, self._routed_message, context, msg_lower
+                delegate_to, _routed_message, context, msg_lower,
+                translation_used=_translation_used, detected_lang=_detected_lang,
+                use_en_prompts=_use_en_prompts, fi_en_result=_fi_en_result
             )
             # C1: auto-populate HotCache
             self._populate_hot_cache(
                 _original_message, response,
-                score=0.75, source=f"agent_{delegate_to}")
+                score=0.75, source=f"agent_{delegate_to}",
+                detected_lang=_detected_lang)
             # Phase 4: track for correction detection + episode
             self._last_chat_message = message
             self._last_chat_response = response
@@ -1118,8 +1133,8 @@ DELEGATION RULES (IMPORTANT):
                 agent_id=delegate_to,
                 confidence=_pre.confidence if _pre else 0.0,
                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
-                route="agent_delegate", language=self._detected_lang,
-                translated=self._translation_used)
+                route="agent_delegate", language=_detected_lang,
+                translated=_translation_used)
             return response
         else:
             # AUDIT FIX: Negatiiviset avainsanat → pakota delegointi
@@ -1132,12 +1147,15 @@ DELEGATION RULES (IMPORTANT):
                             neg_kw in kw for kw in keywords
                         ):
                             response = await self._delegate_to_agent(
-                                agent_type, message, context, msg_lower
+                                agent_type, message, context, msg_lower,
+                                translation_used=_translation_used, detected_lang=_detected_lang,
+                                use_en_prompts=_use_en_prompts, fi_en_result=_fi_en_result
                             )
                             # C1: auto-populate HotCache
                             self._populate_hot_cache(
                                 _original_message, response,
-                                score=0.75, source=f"agent_{agent_type}")
+                                score=0.75, source=f"agent_{agent_type}",
+                                detected_lang=_detected_lang)
                             # Phase 4: track
                             self._last_chat_message = message
                             self._last_chat_response = response
@@ -1154,20 +1172,20 @@ DELEGATION RULES (IMPORTANT):
                                 confidence=_pre.confidence if _pre else 0.0,
                                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                                 route="agent_delegate",
-                                language=self._detected_lang,
-                                translated=self._translation_used)
+                                language=_detected_lang,
+                                translated=_translation_used)
                             return response
                     break  # Ei löytynyt → anna masterille
 
             # Fallback: Master (Swarm Queen)
             _orig_master_sys = None
-            if self._use_en_prompts and "hivemind" in AGENT_EN_PROMPTS:
+            if _use_en_prompts and "hivemind" in AGENT_EN_PROMPTS:
                 _orig_master_sys = self.master_agent.system_prompt
                 from datetime import datetime as _dt
                 # Tietoisuus: muistikonteksti
                 _consciousness_context = ""
                 if self.consciousness:
-                    _ctx_q = _en_message if self._translation_used else message
+                    _ctx_q = _en_message if _translation_used else message
                     _consciousness_context = self.consciousness.get_context(_ctx_q)
                     if _consciousness_context:
                         _consciousness_context = "\n" + _consciousness_context
@@ -1179,20 +1197,20 @@ DELEGATION RULES (IMPORTANT):
                             + _corrections_ctx)
                 self.master_agent.system_prompt = f"Date: {_dt.now():%Y-%m-%d %H:%M}. " + AGENT_EN_PROMPTS["hivemind"] + _consciousness_context
             try:
-                with self._enriched_prompt(self.master_agent, knowledge_max_chars=2000):
-                    response = await self.master_agent.think(self._routed_message, context)
+                with self._enriched_prompt(self.master_agent, knowledge_max_chars=2000) as _enriched_master:
+                    response = await _enriched_master.think(_routed_message, context)
             except Exception as e:
                 log.error(f"Master agent think failed: {type(e).__name__}: {e}")
                 response = "Anteeksi, en pystynyt vastaamaan juuri nyt. Yrita hetken kuluttua uudelleen."
             finally:
                 if _orig_master_sys is not None:
                     self.master_agent.system_prompt = _orig_master_sys
-            if self.en_validator and self._use_en_prompts:
+            if self.en_validator and _use_en_prompts:
                 _val = self.en_validator.validate(response)
                 if _val.was_corrected:
                     response = _val.corrected
 
-            if self._translation_used and self.translation_proxy:
+            if _translation_used and self.translation_proxy:
                 try:
                     _en_fi = self.translation_proxy.en_to_fi(response, force_opus=True)
                     if _en_fi.method != "passthrough":
@@ -1216,10 +1234,11 @@ DELEGATION RULES (IMPORTANT):
             # C1: auto-populate HotCache
             self._populate_hot_cache(
                 _original_message, response,
-                score=_quality, source="master")
+                score=_quality, source="master",
+                detected_lang=_detected_lang)
             await self._notify_ws("chat_response", {
                 "message": message, "response": response,
-                "language": self._detected_lang, "translated": self._translation_used
+                "language": _detected_lang, "translated": _translation_used
             })
             # Phase 4: track for correction detection + episode
             self._last_chat_message = message
@@ -1238,8 +1257,8 @@ DELEGATION RULES (IMPORTANT):
                 confidence=_quality,
                 was_hallucination=bool(_hall and _hall.is_suspicious),
                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
-                route="llm_master", language=self._detected_lang,
-                translated=self._translation_used)
+                route="llm_master", language=_detected_lang,
+                translated=_translation_used)
             return response
 
     def _swarm_route(self, msg_lower: str, routing_rules: dict) -> tuple:
@@ -1319,7 +1338,11 @@ DELEGATION RULES (IMPORTANT):
         return delegate_to, best_score
 
     async def _delegate_to_agent(self, delegate_to: str, message: str,
-                                  context: str, msg_lower: str) -> str:
+                                  context: str, msg_lower: str, *,
+                                  translation_used: bool = False,
+                                  detected_lang: str = "fi",
+                                  use_en_prompts: bool = False,
+                                  fi_en_result=None) -> str:
         """Delegoi viesti valitulle agentille. FIX-1: prompt-restore korjattu."""
         agents = self.spawner.get_agents_by_type(delegate_to)
         if not agents:
@@ -1340,7 +1363,7 @@ DELEGATION RULES (IMPORTANT):
 
         # ═══ EN-prompt jos käännös aktiivinen ═══
         _orig_agent_sys = None
-        if getattr(self, '_use_en_prompts', False):
+        if use_en_prompts:
             _atype = getattr(agent, 'agent_type', getattr(agent, 'type', ''))
             if _atype in AGENT_EN_PROMPTS:
                 _orig_agent_sys = agent.system_prompt
@@ -1350,21 +1373,21 @@ DELEGATION RULES (IMPORTANT):
         # FIX-1: Yksi context manager hoitaa kaiken injektoinnin ja palautuksen
         with self._enriched_prompt(agent, inject_date=True,
                                     inject_knowledge=True,
-                                    knowledge_max_chars=2000):
+                                    knowledge_max_chars=2000) as _enriched_agent:
             # Phase 4: Failure Twin — inject agent-specific error warnings
             if hasattr(self, 'consciousness') and self.consciousness:
                 _ft_warning = self.consciousness.get_agent_error_patterns(
                     agent_id=getattr(agent, 'id', ''),
                     query=message)
                 if _ft_warning:
-                    agent.system_prompt = agent.system_prompt + "\n\n" + _ft_warning
+                    _enriched_agent.system_prompt = _enriched_agent.system_prompt + "\n\n" + _ft_warning
 
             try:
                 # Merkitse task alkaneeksi schedulerille
                 if self.scheduler:
                     self.scheduler.record_task_start(agent.id)
                 async with self.throttle:
-                    response = await agent.think(message, context)
+                    response = await _enriched_agent.think(message, context)
             except Exception as e:
                 response = f"[Virhe: {e}]"
             finally:
@@ -1414,7 +1437,7 @@ DELEGATION RULES (IMPORTANT):
             agent.system_prompt = _orig_agent_sys
 
         # ═══ EN Validator: standardisoi terminologia ═══
-        if self.en_validator and getattr(self, '_use_en_prompts', False):
+        if self.en_validator and use_en_prompts:
             _val = self.en_validator.validate(response)
             if _val.was_corrected:
                 if self.monitor:
@@ -1425,11 +1448,11 @@ DELEGATION RULES (IMPORTANT):
                 response = _val.corrected
 
         # ═══ EN→FI käännös ═══
-        if getattr(self, '_translation_used', False) and self.translation_proxy:
+        if translation_used and self.translation_proxy:
             _en_fi = self.translation_proxy.en_to_fi(response, force_opus=True)
             if _en_fi.method != "passthrough":
                 if self.monitor:
-                    _src_ms = getattr(self._fi_en_result, 'latency_ms', 0) if self._fi_en_result else 0
+                    _src_ms = getattr(fi_en_result, 'latency_ms', 0) if fi_en_result else 0
                     await self.monitor.system(
                         f"🔄 EN→FI ({_en_fi.method}, {_en_fi.latency_ms:.1f}ms, "
                         f"total: {_src_ms + _en_fi.latency_ms:.1f}ms)")
@@ -1437,8 +1460,8 @@ DELEGATION RULES (IMPORTANT):
 
         await self._notify_ws("delegated", {
             "agent": agent.name, "type": delegate_to, "response": response,
-            "language": getattr(self, '_detected_lang', 'fi'),
-            "translated": getattr(self, '_translation_used', False)
+            "language": detected_lang,
+            "translated": translation_used
         })
         return f"[{agent.name}] {response}"
 
@@ -1457,13 +1480,14 @@ DELEGATION RULES (IMPORTANT):
         return True
 
     def _populate_hot_cache(self, query: str, response: str,
-                             score: float = 0.75, source: str = "chat"):
+                             score: float = 0.75, source: str = "chat",
+                             detected_lang: str = "fi"):
         """C1: Auto-populate HotCache with successful Finnish answers."""
         if not (self.consciousness and self.consciousness.hot_cache):
             return
         if not self._is_valid_response(response):
             return
-        if self._detected_lang != "fi":
+        if detected_lang != "fi":
             return
         if score < 0.6:
             return
@@ -2180,9 +2204,9 @@ DELEGATION RULES (IMPORTANT):
                     # FIX-1: context manager hoitaa injektoinnin + palautuksen
                     with self._enriched_prompt(agent, inject_date=True,
                                                 inject_knowledge=True,
-                                                knowledge_max_chars=1500):
+                                                knowledge_max_chars=1500) as _ea:
                         _resp = await _hb.generate(
-                            prompt, system=agent.system_prompt,
+                            prompt, system=_ea.system_prompt,
                             max_tokens=200
                         )
                 _elapsed = (time.monotonic() - _t0) * 1000
@@ -2386,9 +2410,9 @@ DELEGATION RULES (IMPORTANT):
                     async with self.throttle:
                         with self._enriched_prompt(agent, inject_date=True,
                                                     inject_knowledge=True,
-                                                    knowledge_max_chars=800):
+                                                    knowledge_max_chars=800) as _ea:
                             _resp = await _hb.generate(
-                                _prompt, system=agent.system_prompt,
+                                _prompt, system=_ea.system_prompt,
                                 max_tokens=150)
                     response = _resp.content if _resp and not _resp.error else ""
                 except Exception:
@@ -2655,9 +2679,9 @@ DELEGATION RULES (IMPORTANT):
                     async with self.throttle:
                         with self._enriched_prompt(agent, inject_date=True,
                                                     inject_knowledge=True,
-                                                    knowledge_max_chars=800):
+                                                    knowledge_max_chars=800) as _ea:
                             _resp = await _hb.generate(
-                                _prompt, system=agent.system_prompt,
+                                _prompt, system=_ea.system_prompt,
                                 max_tokens=150)
                     response = _resp.content if _resp and not _resp.error else ""
                 except Exception:
@@ -2704,9 +2728,9 @@ DELEGATION RULES (IMPORTANT):
                     async with self.throttle:
                         with self._enriched_prompt(agent, inject_date=True,
                                                     inject_knowledge=True,
-                                                    knowledge_max_chars=800):
+                                                    knowledge_max_chars=800) as _ea:
                             _resp = await _hb.generate(
-                                _prompt, system=agent.system_prompt,
+                                _prompt, system=_ea.system_prompt,
                                 max_tokens=150)
                     response = _resp.content if _resp and not _resp.error else ""
                 except Exception:
@@ -3175,7 +3199,8 @@ DELEGATION RULES (IMPORTANT):
         """Check if weekly report is due and generate it (runs from heartbeat)."""
         try:
             if not self.meta_learning:
-                await self._init_learning_engines()
+                _al_cfg = self.config.get("advanced_learning", {})
+                self._init_learning_engines(_al_cfg)
             if self.meta_learning and self.meta_learning.is_due():
                 log.info("📊 Weekly report triggered from heartbeat")
                 report = await self.meta_learning.weekly_analysis()
@@ -3237,9 +3262,9 @@ DELEGATION RULES (IMPORTANT):
                 async with self.throttle:
                     # FIX-1: context manager päivämääräinjektiolle
                     with self._enriched_prompt(agent, inject_date=True,
-                                                inject_knowledge=False):
+                                                inject_knowledge=False) as _ea:
                         resp = await _hb.generate(
-                            prompt, system=agent.system_prompt, max_tokens=150
+                            prompt, system=_ea.system_prompt, max_tokens=150
                         )
                 _elapsed = (time.monotonic() - _t0) * 1000
                 self._report_llm_result(_elapsed, True, _hb.model)

@@ -9,6 +9,7 @@ Storage: SQLite table `trust_signals` in audit_log.db (same DB as provenance).
 """
 
 import logging
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -110,7 +111,9 @@ class TrustEngine:
         self._audit = audit_log
         self._provenance = provenance
         self._agent_levels = agent_levels
-        self._conn = audit_log._conn
+        self._conn = sqlite3.connect(audit_log.db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._create_table()
         self._cache: Dict[str, AgentReputation] = {}
 

@@ -39,7 +39,7 @@ def test_populate_method_exists():
     method_body = src[method_start:method_start + 500]
     assert "hot_cache" in method_body
     assert "_is_valid_response" in method_body
-    assert "_detected_lang" in method_body
+    assert "detected_lang" in method_body
     assert "score < 0.6" in method_body
     print("  [PASS] _populate_hot_cache has all guards")
 

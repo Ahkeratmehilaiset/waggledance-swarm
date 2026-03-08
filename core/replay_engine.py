@@ -184,7 +184,7 @@ class ReplayEngine:
             else:
                 try:
                     proxy.write(
-                        dep_id, text, [0.0] * 8,
+                        dep_id, text, [0.0] * 768,
                         mode="new",
                         collection=entry.get("collection", "waggle_memory"),
                     )
@@ -232,7 +232,7 @@ class ReplayEngine:
                     corrects = entry.get("doc_id", "").split("__corr_")[0] if "__corr_" in entry.get("doc_id", "") else None
 
                 proxy.write(
-                    entry["doc_id"], text, [0.0] * 8,
+                    entry["doc_id"], text, [0.0] * 768,
                     mode=action,
                     collection=entry.get("collection", "waggle_memory"),
                     corrects=corrects,

@@ -27,7 +27,7 @@
                    │
 ┌──────────────────▼───────────────────────────────────────────────┐
 │                    HIVEMIND ORCHESTRATOR                          │
-│                    (hivemind.py, ~2800 lines)                     │
+│                    (hivemind.py, ~3300 lines)                     │
 │                                                                   │
 │  ┌─────────────┐ ┌──────────────┐ ┌────────────────┐            │
 │  │ 75 Agents   │ │ Round Table  │ │ Night Mode     │            │
@@ -185,7 +185,7 @@ Monitors learning novelty. Pauses sources that plateau (threshold 0.10, patience
 
 | File | Lines | Role |
 |------|-------|------|
-| `hivemind.py` | ~2800 | Main orchestrator |
+| `hivemind.py` | ~3300 | Main orchestrator |
 | `core/memory_engine.py` | ~1500 | Memory, search, embedding |
 | `core/night_enricher.py` | ~600 | Night learning + convergence |
 | `core/meta_learning.py` | ~400 | Weekly report generation |

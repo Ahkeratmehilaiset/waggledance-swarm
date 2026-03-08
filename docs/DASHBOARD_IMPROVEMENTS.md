@@ -73,27 +73,17 @@ GAP 4: No profile-specific routing weights
 
 ## Section 2: Missing Features — Priority Order
 
-### Priority 1: Profile switching changes agent behavior (L)
+### Priority 1: Profile switching changes agent behavior (L) — IMPLEMENTED (v0.7.0)
 
-**Complexity**: Large
-**Files to change**:
-- `configs/settings.yaml` — add profile-specific sections for models, round_table, routing
-- `hivemind.py` — read profile-specific config at init
-- `dashboard/src/App.jsx` — wire domain tabs to `POST /api/profile`
-- `dashboard/src/hooks/useApi.js` — poll `GET /api/profile` for active profile
-- `web/dashboard.py` — already has endpoints, may need restart-free switching
+**Status**: Implemented. Dashboard domain tabs wired to `POST /api/profile`, Round Table respects active profile agent count.
 
-**Dependencies**: None (backend API already exists)
+**Files changed**: `dashboard/src/App.jsx`, `dashboard/src/hooks/useApi.js`, `web/dashboard.py`, `hivemind.py`
 
-### Priority 2: Model status display (M)
+### Priority 2: Model status display (M) — IMPLEMENTED (v0.7.0)
 
-**Complexity**: Medium
-**Files to change**:
-- `web/dashboard.py` — new endpoint `GET /api/models` querying Ollama API
-- `dashboard/src/App.jsx` — new panel showing loaded models, VRAM per model
-- `dashboard/src/hooks/useApi.js` — poll model status
+**Status**: Implemented. `GET /api/models` queries Ollama API for loaded models, VRAM usage, role mapping. Dashboard shows ModelStatus panel with real-time utilization.
 
-**Dependencies**: Ollama REST API (`GET http://localhost:11434/api/ps` for loaded models)
+**Files changed**: `web/dashboard.py`, `backend/routes/models.py`, `dashboard/src/App.jsx`, `dashboard/src/hooks/useApi.js`
 
 ### Priority 3: Language toggle FI/EN (DONE)
 
@@ -102,16 +92,11 @@ GAP 4: No profile-specific routing weights
 - Backend sync via `POST /api/language`
 - Full bilingual UI with `L.en` / `L.fi` text objects
 
-### Priority 4: Chat history and feedback (M)
+### Priority 4: Chat history and feedback (M) — IMPLEMENTED (v0.7.0)
 
-**Complexity**: Medium
-**Files to change**:
-- `web/dashboard.py` — new endpoints for history retrieval and feedback
-- `hivemind.py` or new `core/chat_history.py` — SQLite storage for conversations
-- `dashboard/src/App.jsx` — persist chat to localStorage, add feedback buttons
-- `dashboard/src/hooks/useApi.js` — history fetch, feedback submit
+**Status**: Implemented. `core/chat_history.py` provides SQLite storage. Endpoints: `GET /api/history`, `GET /api/history/recent/messages`, `GET /api/history/{id}`, `POST /api/feedback`. Dashboard persists conversations across page refresh, thumbs up/down on every AI response feeds into corrections memory.
 
-**Dependencies**: New SQLite table or extension to `waggle_dance.db`
+**Files changed**: `core/chat_history.py` (new), `web/dashboard.py`, `dashboard/src/App.jsx`, `dashboard/src/hooks/useApi.js`
 
 ---
 

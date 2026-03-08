@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-0.2.1-green)
+![Version](https://img.shields.io/badge/version-0.7.0-green)
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
@@ -27,7 +27,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 
 **Response time improves over use:** ~3,000ms (cold, full LLM path) → ~55ms (bilingual ChromaDB) → ~0.5ms (Hot Cache hit for previously seen queries).
 
-42/42 test suites pass (2211+ assertions across 42 suites, measured locally; 4 skipped without Ollama). No subscription, no API keys required.
+45/45 test suites pass (700+ tests across 45 suites, measured locally; 4 skipped without Ollama). No subscription, no API keys required.
 
 ---
 
@@ -68,7 +68,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 - **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
 - **MicroModel V3 (LoRA)** — architecture defined, training pipeline not yet implemented
-- **CI runs basic test suite** — full 46-suite validation still requires local `tools/waggle_backup.py`
+- **CI runs basic test suite** — full 45-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
@@ -343,7 +343,7 @@ python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **42/42 suites GREEN, 2211+ assertions, 0 failures** (4 suites skipped without Ollama).
+Expected: **45/45 suites GREEN, 700+ tests, 0 failures** (4 suites skipped without Ollama).
 
 ---
 
@@ -367,7 +367,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 46 test suites (2211+ assertions)
+├── tests/               # 45 test suites (700+ tests)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -375,7 +375,7 @@ waggledance-swarm/
 │   └── workflows/
 │       └── tests.yml    #   CI test runner
 ├── data/                # Runtime data (ChromaDB, SQLite, JSONL, JSON — not in git)
-├── hivemind.py          # HiveMind orchestrator (~2800 lines)
+├── hivemind.py          # HiveMind orchestrator (~3300 lines)
 ├── main.py              # Production entry point
 ├── start.py             # Launcher (--stub / --production)
 ├── Dockerfile           # Python 3.13 + Voikko + healthcheck
@@ -420,7 +420,8 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Model status display** — Ollama integration, VRAM monitoring
 - **Chat history persistence** — SQLite storage, conversation replay
 - **User feedback** — thumbs up/down, corrections memory integration
-- **GitHub Actions CI** — automated test runner (42/42 GREEN)
+- **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
+- **GitHub Actions CI** — automated test runner (45/45 GREEN)
 - Pending: MicroModel V3 LoRA (architecture defined, training pipeline pending)
 
 ---
@@ -431,7 +432,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 42/42 GREEN | 2211+ assertions, 4 skipped without Ollama |
+| Test suites | 45/45 GREEN | 700+ tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -442,7 +443,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | 42/42 GREEN, 2211+ assertions |
+| CI pipeline | GitHub Actions | 45/45 GREEN, 700+ tests |
 
 ---
 
@@ -513,7 +514,7 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all 42 suites pass
+4. Ensure all 45 suites pass
 5. Submit a pull request
 
 ### Development Setup

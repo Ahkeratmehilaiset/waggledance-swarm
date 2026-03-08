@@ -279,11 +279,13 @@ class AdaptiveThrottle:
         """Hidasta kaikkea."""
         self._last_adjust = time.monotonic()  # Cooldown
         old_hb = self.state.heartbeat_interval
+        old_concurrent = self.state.max_concurrent
         self.state.heartbeat_interval = min(self.state.heartbeat_interval * 1.5, 300)
         self.state.max_concurrent = max(self.state.max_concurrent - 1, 1)
         self.state.idle_every_n_heartbeat = min(self.state.idle_every_n_heartbeat + 3, 30)
         self.state.idle_batch_size = max(self.state.idle_batch_size - 1, 1)
-        self._semaphore = asyncio.Semaphore(self.state.max_concurrent)
+        # Track target limit; don't replace semaphore while waiters exist
+        self._target_concurrent = self.state.max_concurrent
         msg = (f"⬇️  Throttle DOWN: {reason} | "
                f"HB: {old_hb:.0f}→{self.state.heartbeat_interval:.0f}s, "
                f"concurrent: {self.state.max_concurrent}")
@@ -293,12 +295,17 @@ class AdaptiveThrottle:
         """Nopeuta aggressiivisesti — idle GPU on haaskattua oppimisaikaa."""
         self._last_adjust = time.monotonic()
         old_hb = self.state.heartbeat_interval
+        old_concurrent = self.state.max_concurrent
         # Aggressiivinen: 0.6x interval (oli 0.85x), minimi 8s
         self.state.heartbeat_interval = max(self.state.heartbeat_interval * 0.6, 8)
         self.state.max_concurrent = min(self.state.max_concurrent + 1, 8)
         self.state.idle_every_n_heartbeat = max(self.state.idle_every_n_heartbeat - 1, 1)
         self.state.idle_batch_size = min(self.state.idle_batch_size + 1, 5)
-        self._semaphore = asyncio.Semaphore(self.state.max_concurrent)
+        # Release extra permits to increase capacity without replacing semaphore
+        new_permits = self.state.max_concurrent - old_concurrent
+        for _ in range(new_permits):
+            self._semaphore.release()
+        self._target_concurrent = self.state.max_concurrent
         msg = (f"⬆️  Throttle UP: {reason} | "
                f"HB: {old_hb:.0f}→{self.state.heartbeat_interval:.0f}s, "
                f"concurrent: {self.state.max_concurrent}")

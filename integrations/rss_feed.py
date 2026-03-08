@@ -78,6 +78,10 @@ class RSSFeedMonitor:
                     continue
 
                 self._seen_ids.add(entry_id)
+                if len(self._seen_ids) > 50000:
+                    # Evict oldest half (set is unordered, but good enough)
+                    as_list = list(self._seen_ids)
+                    self._seen_ids = set(as_list[len(as_list) // 2:])
                 self._total_processed += 1
 
                 new_entries.append({

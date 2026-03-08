@@ -64,6 +64,10 @@ def create_app(hivemind):
     hb_model = (hivemind.llm_heartbeat.model
                 if hivemind.llm_heartbeat else chat_model)
 
+    # ── Chat history storage ────────────────────────────
+    from core.chat_history import ChatHistory
+    _chat_history = ChatHistory()
+
     @app.get("/")
     async def index():
         swarm_badge = ("ENABLED" if hivemind._swarm_enabled
@@ -568,11 +572,74 @@ loadFeeds();
         if not msg:
             return {"error": "Tyhjä viesti"}
         try:
+            profile = hivemind.config.get("profile", "cottage")
+            conv_id = _chat_history.get_or_create_conversation(profile)
+            _chat_history.add_message(conv_id, "user", msg, language=lang)
+            t0 = time.time()
             response = await hivemind.chat(msg, language=lang)
-            return {"response": response}
+            elapsed_ms = int((time.time() - t0) * 1000)
+            # Extract agent name from response prefix like "[Beekeeper] ..."
+            agent_name = None
+            if response and response.startswith("["):
+                bracket_end = response.find("]")
+                if bracket_end > 0:
+                    agent_name = response[1:bracket_end]
+            msg_id = _chat_history.add_message(
+                conv_id, "assistant", response,
+                agent_name=agent_name, language=lang,
+                response_time_ms=elapsed_ms)
+            return {"response": response, "message_id": msg_id,
+                    "conversation_id": conv_id}
         except Exception as e:
             log.error("API error: %s", e)
             return {"error": "Internal error"}
+
+    @app.get("/api/history")
+    async def chat_history_list(request: Request):
+        """List recent conversations."""
+        limit = int(request.query_params.get("limit", "20"))
+        offset = int(request.query_params.get("offset", "0"))
+        profile = request.query_params.get("profile", None)
+        convs = _chat_history.get_conversations(limit, offset, profile)
+        return {"conversations": convs}
+
+    @app.get("/api/history/{conversation_id}")
+    async def chat_history_detail(conversation_id: int):
+        """Get full conversation with messages."""
+        conv = _chat_history.get_conversation(conversation_id)
+        if not conv:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        return conv
+
+    @app.get("/api/history/recent/messages")
+    async def chat_history_recent():
+        """Get most recent messages across all conversations."""
+        msgs = _chat_history.get_recent_messages(limit=50)
+        return {"messages": msgs}
+
+    @app.post("/api/feedback")
+    async def submit_feedback(data: dict):
+        """Submit feedback (thumbs up/down) for a message."""
+        message_id = data.get("message_id")
+        rating = data.get("rating")  # 1=down, 2=up
+        correction = data.get("correction")
+        if not message_id or rating not in (1, 2):
+            return JSONResponse({"error": "Invalid feedback"}, status_code=400)
+        fb_id = _chat_history.add_feedback(message_id, rating, correction)
+        # If thumbs-down with correction, feed into confusion memory
+        if rating == 1 and correction:
+            try:
+                from backend.routes.chat import record_confusion
+                # Get the original message to find wrong agent
+                conv = _chat_history.get_recent_messages(limit=100)
+                for m in conv:
+                    if m.get("id") == message_id and m.get("agent_name"):
+                        record_confusion(
+                            correction, m["agent_name"], correction)
+                        break
+            except Exception:
+                pass
+        return {"status": "recorded", "feedback_id": fb_id}
 
     @app.post("/api/language")
     async def set_language(data: dict):
@@ -697,6 +764,110 @@ loadFeeds();
         with open(settings_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         return {"profile": new_profile, "message": "Profile updated. Restart to apply."}
+
+    # ── Model Status endpoint ──────────────────────────────
+    @app.get("/api/models")
+    async def models_status():
+        """Ollama model status: loaded models, roles, VRAM usage."""
+        import urllib.request
+        import urllib.error
+
+        # Role mapping from settings
+        role_map = {
+            chat_model: "chat",
+            hb_model: "background_learning",
+        }
+        # Add embedding model
+        embed_model = "nomic-embed-text"
+        eval_model = "all-minilm"
+        role_map[embed_model] = "embedding"
+        role_map[eval_model] = "evaluation"
+
+        result = {"models": [], "vram_total_mb": 0, "vram_used_mb": 0,
+                  "vram_percent": 0.0, "ollama_available": False}
+
+        # Query Ollama for loaded models (ps) and all models (tags)
+        loaded_models = {}
+        all_models = {}
+        try:
+            # Loaded models
+            req = urllib.request.Request("http://localhost:11434/api/ps")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                ps_data = json.loads(resp.read().decode("utf-8"))
+            result["ollama_available"] = True
+            for m in ps_data.get("models", []):
+                name = m.get("name", "").split(":")[0]
+                loaded_models[name] = {
+                    "size_bytes": m.get("size", 0),
+                    "vram_mb": round(m.get("size_vram", m.get("size", 0)) / (1024 * 1024)),
+                }
+
+            # All available models
+            req2 = urllib.request.Request("http://localhost:11434/api/tags")
+            with urllib.request.urlopen(req2, timeout=3) as resp:
+                tags_data = json.loads(resp.read().decode("utf-8"))
+            for m in tags_data.get("models", []):
+                name = m.get("name", "").split(":")[0]
+                all_models[name] = {
+                    "size_gb": round(m.get("size", 0) / (1024**3), 1),
+                }
+        except Exception:
+            pass
+
+        # Build model list — combine role_map with loaded/available info
+        total_vram = 0
+        seen = set()
+        for model_name, role in role_map.items():
+            base = model_name.split(":")[0]
+            if base in seen:
+                continue
+            seen.add(base)
+            is_loaded = base in loaded_models
+            vram = loaded_models.get(base, {}).get("vram_mb", 0) if is_loaded else 0
+            size_gb = all_models.get(base, {}).get("size_gb", 0.0)
+            if not size_gb and is_loaded:
+                size_gb = round(loaded_models[base]["size_bytes"] / (1024**3), 1)
+            total_vram += vram
+            result["models"].append({
+                "name": model_name,
+                "role": role,
+                "loaded": is_loaded,
+                "size_gb": size_gb,
+                "vram_mb": vram,
+            })
+
+        # Add any other loaded models not in role_map
+        for base, info in loaded_models.items():
+            if base not in seen:
+                seen.add(base)
+                total_vram += info["vram_mb"]
+                result["models"].append({
+                    "name": base,
+                    "role": "other",
+                    "loaded": True,
+                    "size_gb": all_models.get(base, {}).get("size_gb",
+                               round(info["size_bytes"] / (1024**3), 1)),
+                    "vram_mb": info["vram_mb"],
+                })
+
+        result["vram_used_mb"] = total_vram
+
+        # Get total VRAM from nvidia-smi
+        try:
+            import subprocess as _sp
+            _nv = _sp.run(
+                ["nvidia-smi", "--query-gpu=memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2)
+            if _nv.returncode == 0:
+                result["vram_total_mb"] = int(_nv.stdout.strip())
+                if result["vram_total_mb"] > 0:
+                    result["vram_percent"] = round(
+                        total_vram / result["vram_total_mb"] * 100, 1)
+        except Exception:
+            pass
+
+        return result
 
     @app.get("/health")
     async def health():

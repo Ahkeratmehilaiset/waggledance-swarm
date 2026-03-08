@@ -1,6 +1,6 @@
 header:
   agent_id: child_safety
-  agent_name:  Child Safety Advisor
+  agent_name:  Child Safety Advisor
   name_fi: 'Lapsiturvallinen koti'
   version: 1.0.0
   last_updated: '2026-03-02'

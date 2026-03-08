@@ -1,6 +1,6 @@
 header:
   agent_id: maintenance_planner
-  agent_name:  Maintenance Planner
+  agent_name:  Maintenance Planner
   name_fi: 'Kunnossapitosuunnittelija'
   version: 1.0.0
   last_updated: '2026-03-02'

@@ -1,6 +1,6 @@
 header:
   agent_id: commute_planner
-  agent_name:  Commute Planner
+  agent_name:  Commute Planner
   name_fi: 'Liikkuminen ja työmatka'
   version: 1.0.0
   last_updated: '2026-03-02'

@@ -1,6 +1,6 @@
 header:
   agent_id: logistics
-  agent_name:  Logistics (Routes & Timing)
+  agent_name:  Logistics (Routes & Timing)
   name_fi: Logistikko
   version: 1.0.0
   last_updated: '2026-02-21'

@@ -1,6 +1,6 @@
 header:
   agent_id: yard_guard
-  agent_name:  Yard Guard (Human Detection)
+  agent_name:  Yard Guard (Human Detection)
   name_fi: 'Pihavahti'
   version: 1.0.0
   last_updated: '2026-02-21'

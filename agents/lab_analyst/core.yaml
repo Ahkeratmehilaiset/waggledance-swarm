@@ -1,6 +1,6 @@
 header:
   agent_id: lab_analyst
-  agent_name:  Lab Analyst
+  agent_name:  Lab Analyst
   name_fi: 'Laboratorioanalyytikko'
   version: 1.0.0
   last_updated: '2026-03-02'

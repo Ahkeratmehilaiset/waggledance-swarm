@@ -1,6 +1,6 @@
 header:
   agent_id: lighting_master
-  agent_name:  Lighting Master
+  agent_name:  Lighting Master
   name_fi: 'Valaistusmestari'
   version: 1.0.0
   last_updated: '2026-02-21'

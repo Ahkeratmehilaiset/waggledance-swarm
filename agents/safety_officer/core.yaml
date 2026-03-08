@@ -1,6 +1,6 @@
 header:
   agent_id: safety_officer
-  agent_name:  Safety Officer
+  agent_name:  Safety Officer
   name_fi: 'Työturvallisuuspäällikkö'
   version: 1.0.0
   last_updated: '2026-03-02'

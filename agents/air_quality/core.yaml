@@ -1,6 +1,6 @@
 header:
   agent_id: air_quality
-  agent_name:  Air Quality Monitor
+  agent_name:  Air Quality Monitor
   name_fi: 'Ilmanlaatu'
   version: 1.0.0
   last_updated: '2026-02-21'

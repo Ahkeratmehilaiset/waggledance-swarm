@@ -1484,8 +1484,12 @@ DELEGATION RULES (IMPORTANT):
         """Korjaa double-encoded UTF-8: PÃ¤Ã¤ → Pää."""
         if not s:
             return s
+        # Only attempt fix if text contains mojibake indicators (Ã character)
+        if '\xc3' not in s:
+            return s
         try:
-            return s.encode("latin-1").decode("utf-8")
+            fixed = s.encode("latin-1").decode("utf-8")
+            return fixed
         except (UnicodeDecodeError, UnicodeEncodeError):
             return s
 

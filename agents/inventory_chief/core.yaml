@@ -1,6 +1,6 @@
 header:
   agent_id: inventory_chief
-  agent_name:  Inventory Chief
+  agent_name:  Inventory Chief
   name_fi: Inventaariopäällikkö
   version: 1.0.0
   last_updated: '2026-02-21'

@@ -1,6 +1,6 @@
 header:
   agent_id: core_dispatcher
-  agent_name:  Core Dispatcher (Chief)
+  agent_name:  Core Dispatcher (Chief)
   version: 1.0.0
   last_updated: '2026-02-21'
 profiles:

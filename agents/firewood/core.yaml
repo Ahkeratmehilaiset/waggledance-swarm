@@ -1,6 +1,6 @@
 header:
   agent_id: firewood
-  agent_name:  Firewood Supply
+  agent_name:  Firewood Supply
   name_fi: 'Polttopuuhuolto'
   version: 1.0.0
   last_updated: '2026-03-02'

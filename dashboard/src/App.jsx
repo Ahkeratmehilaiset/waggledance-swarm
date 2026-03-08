@@ -871,6 +871,47 @@ function AgentGridPanel({data,color,lang}){
   </div>);
 }
 
+// ═══ MODEL STATUS PANEL ═══
+function ModelStatusPanel({data,color,lang}){
+  if(!data)return null;
+  const fi=lang==="fi";
+  const models=data.models||[];
+  if(models.length===0&&!data.ollama_available)return(
+    <div style={{marginTop:14,padding:"8px 0",borderTop:`1px solid ${color}15`}}>
+      <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>{fi?"MALLIT":"MODELS"}</div>
+      <div style={{fontSize:9,color:"#F59E0B"}}>Ollama {fi?"ei saatavilla":"not available"}</div>
+    </div>
+  );
+  const ROLE_COL={"chat":"#22C55E","background_learning":"#A78BFA","embedding":"#22D3EE","evaluation":"#F59E0B","other":"#6B7280"};
+  const ROLE_LABEL={"chat":fi?"Chat":"Chat","background_learning":fi?"Tausta":"Background","embedding":"Embed","evaluation":"Eval","other":fi?"Muu":"Other"};
+  const vramPct=data.vram_total_mb>0?Math.round(data.vram_used_mb/data.vram_total_mb*100):0;
+  return(
+    <div style={{marginTop:14,padding:"8px 0",borderTop:`1px solid ${color}15`}}>
+      <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:8}}>{fi?"MALLIT":"MODELS"}</div>
+      {/* VRAM bar */}
+      {data.vram_total_mb>0&&<div style={{marginBottom:8}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:7.5,color:"rgba(255,255,255,.35)",marginBottom:3}}>
+          <span>VRAM</span><span>{Math.round(data.vram_used_mb)} / {data.vram_total_mb} MB ({vramPct}%)</span>
+        </div>
+        <div style={{height:6,background:"rgba(255,255,255,.05)",borderRadius:3,overflow:"hidden"}}>
+          <div style={{height:"100%",width:`${vramPct}%`,background:`linear-gradient(90deg,${color},${color}80)`,borderRadius:3,transition:"width 1s"}}/>
+        </div>
+      </div>}
+      {/* Model cards */}
+      {models.map((m,i)=>{const rc=ROLE_COL[m.role]||"#6B7280";return(
+        <div key={i} style={{padding:"4px 0",borderBottom:"1px solid rgba(255,255,255,.02)",display:"flex",alignItems:"center",gap:6}}>
+          <span style={{width:5,height:5,borderRadius:"50%",background:m.loaded?"#22C55E":"rgba(255,255,255,.15)",flexShrink:0}}/>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:10,color:"rgba(255,255,255,.55)",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name}</div>
+            <div style={{fontSize:7.5,color:"rgba(255,255,255,.25)"}}>{ROLE_LABEL[m.role]||m.role} — {m.size_gb}GB{m.vram_mb>0?` — ${m.vram_mb}MB VRAM`:""}</div>
+          </div>
+          <span style={{fontSize:7,color:rc,fontWeight:600,letterSpacing:1,flexShrink:0}}>{(ROLE_LABEL[m.role]||m.role).toUpperCase()}</span>
+        </div>
+      )})}
+    </div>
+  );
+}
+
 function FeatureList({feats,color,label,onOpen,t}){return(<div><div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:10}}>{label}</div>{[{key:"hw",icon:"💻",title:t.hwSpec,d:t.hwDesc},{key:"agents",icon:"🤖",title:t.agents,d:t.agentsDesc}].map(s=>(<div key={s.key} onClick={()=>onOpen(s.key)} style={{cursor:"pointer",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,.025)"}}><div style={{fontSize:12,color:color+"90",fontWeight:600,letterSpacing:2}}>{s.icon} {s.title}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{s.d}</div></div>))}{feats.map((f,i)=>(<div key={i} onClick={()=>onOpen(f)} style={{cursor:"pointer",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,.02)",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:11,color:"rgba(255,255,255,.55)",fontWeight:600,letterSpacing:1.5}}>{f.title}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{f.desc}</div></div><span style={{fontSize:10,color:color+"45"}}>→</span></div>))}<div onClick={()=>onOpen("info")} style={{cursor:"pointer",padding:"7px 0",marginTop:4,borderTop:`1px solid ${color}10`}}><div style={{fontSize:12,color:color+"90",fontWeight:600,letterSpacing:2}}>🧠 {t.techArch}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{t.techArchDesc}</div></div><div onClick={()=>onOpen("disclaimer")} style={{cursor:"pointer",padding:"7px 0",borderTop:"1px solid rgba(255,255,255,.03)"}}><div style={{fontSize:12,color:"rgba(255,255,255,.40)",fontWeight:600,letterSpacing:2}}>⚠️ {t.disclaimer}</div><div style={{fontSize:9,color:"rgba(255,255,255,.25)"}}>{t.disclaimerDesc}</div></div></div>)}
 
 export default function App(){
@@ -948,10 +989,22 @@ export default function App(){
     }
   }, [on]);
 
+  // Sync profile from backend on first load
+  useEffect(() => {
+    if (api.profile?.active_profile) {
+      const p = api.profile.active_profile;
+      if (["gadget","cottage","home","factory"].includes(p) && p !== dom) {
+        setDom(p);
+      }
+    }
+  }, [api.profile?.active_profile]);
+
   // Tab switch: restart demo every time a tab is clicked
   const sw=(id)=>{
     setDom(id);
     setOverlay(null);
+    // Persist profile to backend
+    api.switchProfile(id);
     // Always restart demo on tab click — use setTick to force re-render even if dom unchanged
     demoIndexRef.current[id] = 0;
     demoEndShownRef.current[id] = false;
@@ -1056,11 +1109,35 @@ export default function App(){
     const iv=setInterval(()=>{
     const pool=t.hb[dom];setThink(true);setTimeout(()=>setThink(false),2500);setTimeout(()=>{setHb(p=>[pool[Math.floor(Math.random()*pool.length)],...p.slice(0,5)]);setLr(28+Math.floor(Math.random()*22))},1200)},6000);return()=>clearInterval(iv)},[on,dom,lang,api.backendAvailable,isDemoActive]);
 
+  // ═══ LOAD CHAT HISTORY ON MOUNT ═══
+  const historyLoaded = useRef(false);
+  useEffect(() => {
+    if (!on || historyLoaded.current) return;
+    historyLoaded.current = true;
+    api.loadHistory().then(msgs => {
+      if (msgs.length > 0) {
+        const restored = msgs.map(m => ({
+          role: m.role === "user" ? "user" : "ai",
+          text: m.content,
+          message_id: m.id || null,
+          feedback: m.feedback_rating || null,
+        }));
+        setChatMsgs(restored);
+      }
+    });
+  }, [on]);
+
   // ═══ CHAT — uses API with mock fallback ═══
   const handleChat=async()=>{if(!chatIn.trim())return;const msg=chatIn.trim();setChatIn("");setChatMsgs(p=>[...p,{role:"user",text:msg}]);setThink(true);
-    const response = await api.sendChat(msg, lang);
+    const result = await api.sendChat(msg, lang);
     setThink(false);
-    setChatMsgs(p=>[...p,{role:"ai",text:response}]);
+    setChatMsgs(p=>[...p,{role:"ai",text:result.text,message_id:result.message_id,feedback:null}]);
+  };
+
+  const handleFeedback=(msgIndex,rating)=>{
+    setChatMsgs(p=>p.map((m,i)=>i===msgIndex?{...m,feedback:rating}:m));
+    const msg=chatMsgs[msgIndex];
+    if(msg&&msg.message_id)api.sendFeedback(msg.message_id,rating);
   };
 
   const _hRate = api.status.total_queries > 0 ? ((api.status.hallucinations_caught / api.status.total_queries) * 100).toFixed(1) + "%" : "0%";
@@ -1114,7 +1191,7 @@ export default function App(){
           </div>
           <div style={{display:"grid",gridTemplateColumns:"30vw 1fr 24vw",minHeight:"calc(100vh - 52px)"}}>
             <div style={{display:"flex",flexDirection:"column",borderRight:"1px solid rgba(255,255,255,.03)",maxHeight:"calc(100vh - 52px)"}}>
-              <div style={{flex:1,padding:"12px 16px",overflowY:"auto"}}><HBFeed msgs={hb} color={col} label={t.heartbeat}/>{chatMsgs.length>0&&<div style={{marginTop:10,borderTop:"1px solid rgba(255,255,255,.04)",paddingTop:8}}>{chatMsgs.map((m,i)=>(<div key={i} style={{padding:"5px 0",animation:"fadeUp .4s"}}><div style={{fontSize:7.5,color:m.role==="user"?"#22D3EE":col,fontWeight:600,letterSpacing:2,marginBottom:2}}>{m.role==="user"?"YOU":"WAGGLEDANCE"}</div><div style={{fontSize:10,color:m.role==="user"?"rgba(255,255,255,.60)":"rgba(255,255,255,.45)",lineHeight:1.7,paddingLeft:8,fontWeight:300}}>{m.text}</div></div>))}</div>}</div>
+              <div style={{flex:1,padding:"12px 16px",overflowY:"auto"}}><HBFeed msgs={hb} color={col} label={t.heartbeat}/>{chatMsgs.length>0&&<div style={{marginTop:10,borderTop:"1px solid rgba(255,255,255,.04)",paddingTop:8}}>{chatMsgs.map((m,i)=>(<div key={i} style={{padding:"5px 0",animation:"fadeUp .4s"}}><div style={{fontSize:7.5,color:m.role==="user"?"#22D3EE":col,fontWeight:600,letterSpacing:2,marginBottom:2}}>{m.role==="user"?"YOU":"WAGGLEDANCE"}</div><div style={{fontSize:10,color:m.role==="user"?"rgba(255,255,255,.60)":"rgba(255,255,255,.45)",lineHeight:1.7,paddingLeft:8,fontWeight:300}}>{m.text}</div>{m.role==="ai"&&<div style={{paddingLeft:8,marginTop:2,display:"flex",gap:6}}><button onClick={()=>handleFeedback(i,2)} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,color:m.feedback===2?"#22C55E":"rgba(255,255,255,.15)",padding:0}} title="Good">&#x1F44D;</button><button onClick={()=>handleFeedback(i,1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:10,color:m.feedback===1?"#EF4444":"rgba(255,255,255,.15)",padding:0}} title="Bad">&#x1F44E;</button></div>}</div>))}</div>}</div>
               <div style={{padding:"8px 16px",borderTop:"1px solid rgba(255,255,255,.04)"}}><div style={{display:"flex",gap:6}}><input value={chatIn} onChange={e=>setChatIn(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleChat()} placeholder={t.placeholder} style={{flex:1,background:"rgba(255,255,255,.02)",border:`1px solid ${col}15`,borderRadius:5,padding:"7px 10px",color:"#fff",fontSize:9.5,outline:"none",fontFamily:"'Inter',system-ui"}}/><button onClick={handleChat} style={{background:col+"15",border:`1px solid ${col}25`,borderRadius:5,padding:"7px 12px",cursor:"pointer",color:col,fontSize:7.5,letterSpacing:2,fontWeight:600}}>{t.send}</button></div></div>
             </div>
             <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",borderRight:"1px solid rgba(255,255,255,.03)",position:"relative"}}>
@@ -1123,7 +1200,7 @@ export default function App(){
               <div style={{textAlign:"center",marginTop:-8}}><div style={{fontSize:34,fontWeight:200,color:"rgba(255,255,255,.65)",letterSpacing:6}}>{D_IC[dom]} {t.domains[dom].label}</div><div style={{fontSize:14,color:"rgba(255,255,255,.30)",letterSpacing:3,marginTop:5}}>{t.domains[dom].tag}</div></div>
               <div style={{marginTop:10,display:"flex",flexWrap:"wrap",justifyContent:"center",gap:"4px 14px",maxWidth:440}}>{aw.map((a,i)=>(<div key={i} style={{fontSize:9.5,color:"rgba(255,255,255,.30)",letterSpacing:1}}>{a.k}: <span style={{color:a.c,fontWeight:600,fontFamily:"monospace"}}>{a.v}</span></div>))}</div>
             </div>
-            <div style={{padding:"12px 14px",overflowY:"auto",maxHeight:"calc(100vh - 52px)"}}><FeatureList feats={t.feats[dom]} color={col} label={t.features} onOpen={setOverlay} t={t}/><AnalyticsPanel data={api.analytics} color={col} lang={lang}/><RoundTablePanel data={api.roundTable} color={col} lang={lang}/><AgentGridPanel data={api.agentLevels} color={col} lang={lang}/></div>
+            <div style={{padding:"12px 14px",overflowY:"auto",maxHeight:"calc(100vh - 52px)"}}><FeatureList feats={t.feats[dom]} color={col} label={t.features} onOpen={setOverlay} t={t}/><ModelStatusPanel data={api.models} color={col} lang={lang}/><AnalyticsPanel data={api.analytics} color={col} lang={lang}/><RoundTablePanel data={api.roundTable} color={col} lang={lang}/><AgentGridPanel data={api.agentLevels} color={col} lang={lang}/></div>
           </div>
           <div style={{position:"fixed",bottom:0,left:0,right:0,padding:"3px 22px",background:"rgba(0,0,0,.93)",borderTop:"1px solid rgba(255,255,255,.025)",display:"flex",justifyContent:"space-between",fontSize:6,color:"rgba(255,255,255,.15)",letterSpacing:3}}><span>{t.bottomL}</span><span>{t.bottomC}</span><span>{fc.toLocaleString()} FACTS</span><span>{lang==="fi"?"P\u00e4ivitetty":"Updated"}: {_lastUpdate}</span></div>
         </div>

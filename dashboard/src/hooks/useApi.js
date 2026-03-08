@@ -17,6 +17,8 @@ export function useApi() {
   const [roundTable, setRoundTable] = useState(null);
   const [agentLevels, setAgentLevels] = useState(null);
   const [settings, setSettings] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [models, setModels] = useState(null);
 
   const failCount = useRef(0);
   const lastRetry = useRef(0);
@@ -55,7 +57,7 @@ export function useApi() {
       lastRetry.current = now;
     }
 
-    const [statusData, hbData, hwData, sensorData, voiceData, audioData, analyticsData, rtData, agentsData, settingsData] = await Promise.all([
+    const [statusData, hbData, hwData, sensorData, voiceData, audioData, analyticsData, rtData, agentsData, settingsData, profileData, modelsData] = await Promise.all([
       fetchJson("/api/status"),
       fetchJson("/api/heartbeat"),
       fetchJson("/api/hardware"),
@@ -66,6 +68,8 @@ export function useApi() {
       fetchJson("/api/round-table/recent"),
       fetchJson("/api/agents/levels"),
       fetchJson("/api/settings"),
+      fetchJson("/api/profile"),
+      fetchJson("/api/models"),
     ]);
 
     if (statusData) {
@@ -139,6 +143,8 @@ export function useApi() {
     if (rtData) setRoundTable(rtData);
     if (agentsData) setAgentLevels(agentsData);
     if (settingsData) setSettings(settingsData);
+    if (profileData) setProfile(profileData);
+    if (modelsData) setModels(modelsData);
 
     // Hardware stats
     if (hwData) {
@@ -163,6 +169,16 @@ export function useApi() {
     return () => clearInterval(interval);
   }, [poll]);
 
+  const switchProfile = useCallback(async (profileName) => {
+    try {
+      await fetch("/api/profile", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ profile: profileName }),
+      });
+    } catch { /* ignore */ }
+  }, [getAuthHeaders]);
+
   const sendChat = useCallback(async (message, lang = "auto") => {
     if (!message.trim()) return null;
     try {
@@ -173,13 +189,40 @@ export function useApi() {
       });
       if (res.ok) {
         const data = await res.json();
-        return data.response || data.error || "...";
+        return {
+          text: data.response || data.error || "...",
+          message_id: data.message_id || null,
+          conversation_id: data.conversation_id || null,
+        };
       }
     } catch {
       // fallback
     }
-    return "HiveMind not active yet...";
-  }, []);
+    return { text: "HiveMind not active yet...", message_id: null };
+  }, [getAuthHeaders]);
+
+  const sendFeedback = useCallback(async (messageId, rating, correction = null) => {
+    try {
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ message_id: messageId, rating, correction }),
+      });
+    } catch { /* ignore */ }
+  }, [getAuthHeaders]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await fetch("/api/history/recent/messages", {
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.messages || [];
+      }
+    } catch { /* ignore */ }
+    return [];
+  }, [getAuthHeaders]);
 
   return {
     backendAvailable,
@@ -195,5 +238,10 @@ export function useApi() {
     agentLevels,
     settings,
     sendChat,
+    sendFeedback,
+    loadHistory,
+    switchProfile,
+    profile,
+    models,
   };
 }

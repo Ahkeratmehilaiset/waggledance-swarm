@@ -78,6 +78,7 @@ def create_app(hivemind):
         html = f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
+<script>localStorage.setItem("WAGGLE_API_KEY","{_api_key}")</script>
 <title>WaggleDance Swarm AI (on-prem)</title>
 <style>
   *{{box-sizing:border-box}}
@@ -868,6 +869,11 @@ loadFeeds();
             pass
 
         return result
+
+    @app.get("/api/auth/token")
+    async def auth_token():
+        """Return the API key for localhost dashboard auto-login."""
+        return {"token": _api_key}
 
     @app.get("/health")
     async def health():

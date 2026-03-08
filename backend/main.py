@@ -57,6 +57,12 @@ app.include_router(settings_router)
 app.include_router(models_router)
 
 
+@app.get("/api/auth/token")
+async def auth_token():
+    """Return API key for localhost dashboard auto-login."""
+    return {"token": _api_key}
+
+
 @app.get("/health")
 async def health():
     """Liveness probe."""

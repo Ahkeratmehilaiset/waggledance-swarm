@@ -24,8 +24,24 @@ export function useApi() {
   const lastRetry = useRef(0);
   const pollingStarted = useRef(false);
 
+  const tokenRef = useRef(localStorage.getItem("WAGGLE_API_KEY") || "");
+
+  // Auto-fetch API key if not in localStorage
+  useEffect(() => {
+    if (tokenRef.current) return;
+    fetch("/api/auth/token")
+      .then(r => r.json())
+      .then(d => {
+        if (d.token) {
+          tokenRef.current = d.token;
+          localStorage.setItem("WAGGLE_API_KEY", d.token);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const getAuthHeaders = useCallback(() => {
-    const token = localStorage.getItem("WAGGLE_API_KEY") || "";
+    const token = tokenRef.current || localStorage.getItem("WAGGLE_API_KEY") || "";
     const headers = { "Content-Type": "application/json" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     return headers;

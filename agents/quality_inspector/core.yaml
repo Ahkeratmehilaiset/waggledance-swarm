@@ -1,6 +1,6 @@
 header:
   agent_id: quality_inspector
-   Quality Inspector
+  agent_name:  Quality Inspector
   name_fi: 'Laadunvalvonta'
   version: 1.0.0
   last_updated: '2026-03-02'

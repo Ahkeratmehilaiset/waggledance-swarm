@@ -1,6 +1,6 @@
 header:
   agent_id: storm_alert
-   Storm Alert
+  agent_name:  Storm Alert
   name_fi: 'Myrskyvaroittaja'
   version: 1.0.0
   last_updated: '2026-02-21'

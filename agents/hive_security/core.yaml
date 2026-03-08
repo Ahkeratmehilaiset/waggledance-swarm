@@ -1,6 +1,6 @@
 header:
   agent_id: hive_security
-   Hive Security Chief (Bears etc.)
+  agent_name:  Hive Security Chief (Bears etc.)
   name_fi: Pesäturvallisuus
   version: 1.0.0
   last_updated: '2026-02-21'

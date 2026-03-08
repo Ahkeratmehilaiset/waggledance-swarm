@@ -1,6 +1,6 @@
 header:
   agent_id: shift_manager
-   Shift Manager
+  agent_name:  Shift Manager
   name_fi: 'Vuoropäällikkö'
   version: 1.0.0
   last_updated: '2026-03-02'

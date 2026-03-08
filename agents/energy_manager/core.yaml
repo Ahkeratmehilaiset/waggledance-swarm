@@ -1,6 +1,6 @@
 header:
   agent_id: energy_manager
-   Factory Energy Manager
+  agent_name:  Factory Energy Manager
   name_fi: 'Tehdasenergian hallinta'
   version: 1.0.0
   last_updated: '2026-03-02'

@@ -1,6 +1,6 @@
 header:
   agent_id: fishing_guide
-   Fishing Guide
+  agent_name:  Fishing Guide
   name_fi: 'Kalastusopas'
   version: 1.0.0
   last_updated: '2026-02-21'

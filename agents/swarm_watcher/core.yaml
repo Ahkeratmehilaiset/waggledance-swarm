@@ -1,6 +1,6 @@
 header:
   agent_id: swarm_watcher
-   Swarm Watcher
+  agent_name:  Swarm Watcher
   name_fi: Parveiluvahti
   version: 1.0.0
   last_updated: '2026-02-21'

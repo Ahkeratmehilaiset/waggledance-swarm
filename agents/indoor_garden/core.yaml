@@ -1,6 +1,6 @@
 header:
   agent_id: indoor_garden
-   Indoor Garden & Houseplants
+  agent_name:  Indoor Garden & Houseplants
   name_fi: 'Huonekasvit ja sisäviljely'
   version: 1.0.0
   last_updated: '2026-03-02'

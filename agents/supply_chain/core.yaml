@@ -1,6 +1,6 @@
 header:
   agent_id: supply_chain
-   Supply Chain Manager
+  agent_name:  Supply Chain Manager
   name_fi: 'Toimitusketjun hallinta'
   version: 1.0.0
   last_updated: '2026-03-02'

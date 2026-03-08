@@ -1,6 +1,6 @@
 header:
   agent_id: forklift_fleet
-   Forklift Fleet & Internal Logistics
+  agent_name:  Forklift Fleet & Internal Logistics
   name_fi: 'Trukkiliikenne ja sisälogistiikka'
   version: 1.0.0
   last_updated: '2026-03-02'

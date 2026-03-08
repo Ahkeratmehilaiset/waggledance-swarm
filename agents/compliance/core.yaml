@@ -1,6 +1,6 @@
 header:
   agent_id: compliance
-   Compliance Officer
+  agent_name:  Compliance Officer
   name_fi: 'Vaatimustenmukaisuus'
   version: 1.0.0
   last_updated: '2026-03-02'

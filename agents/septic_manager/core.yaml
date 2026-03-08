@@ -1,6 +1,6 @@
 header:
   agent_id: septic_manager
-   Septic System Manager
+  agent_name:  Septic System Manager
   name_fi: 'Jätevesijärjestelmä'
   version: 1.0.0
   last_updated: '2026-03-02'

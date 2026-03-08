@@ -1,6 +1,6 @@
 header:
   agent_id: production_line
-   Production Line Monitor
+  agent_name:  Production Line Monitor
   name_fi: 'Tuotantolinjan monitorointi'
   version: 1.0.0
   last_updated: '2026-03-02'

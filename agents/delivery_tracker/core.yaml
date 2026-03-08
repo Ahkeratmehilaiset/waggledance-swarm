@@ -1,6 +1,6 @@
 header:
   agent_id: delivery_tracker
-   Delivery Tracker
+  agent_name:  Delivery Tracker
   name_fi: 'Paketit ja tilaukset'
   version: 1.0.0
   last_updated: '2026-03-02'

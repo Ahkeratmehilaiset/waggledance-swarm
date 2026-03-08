@@ -1,6 +1,6 @@
 header:
   agent_id: sauna_master
-   Sauna Master
+  agent_name:  Sauna Master
   name_fi: Saunamajuri
   version: 1.0.0
   last_updated: '2026-02-21'

@@ -1,6 +1,6 @@
 header:
   agent_id: pest_control
-   Pest Control Specialist
+  agent_name:  Pest Control Specialist
   name_fi: 'Pieneläin- ja tuholaisasiantuntija'
   version: 1.0.0
   last_updated: '2026-02-21'

@@ -1,6 +1,6 @@
 header:
   agent_id: fire_officer
-   Fire Officer (CO, Smoke Alarms, Heat)
+  agent_name:  Fire Officer (CO, Smoke Alarms, Heat)
   name_fi: 'Paloesimies'
   version: 1.0.0
   last_updated: '2026-02-21'

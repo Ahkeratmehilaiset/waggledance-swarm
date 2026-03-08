@@ -1,6 +1,6 @@
 header:
   agent_id: wildlife_ranger
-   Wildlife Ranger
+  agent_name:  Wildlife Ranger
   name_fi: 'Riistanvartija'
   version: 1.0.0
   last_updated: '2026-02-21'

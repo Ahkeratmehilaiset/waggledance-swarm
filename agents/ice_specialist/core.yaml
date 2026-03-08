@@ -1,6 +1,6 @@
 header:
   agent_id: ice_specialist
-   Ice Specialist
+  agent_name:  Ice Specialist
   name_fi: 'Jää-asiantuntija'
   version: 1.0.0
   last_updated: '2026-02-21'

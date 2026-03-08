@@ -1,6 +1,6 @@
 header:
   agent_id: equipment_tech
-   Equipment Tech (IoT, Batteries, Networks)
+  agent_name:  Equipment Tech (IoT, Batteries, Networks)
   name_fi: 'Laitehuoltaja'
   version: 1.0.0
   last_updated: '2026-02-21'

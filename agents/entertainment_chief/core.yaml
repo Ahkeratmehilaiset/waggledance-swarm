@@ -1,6 +1,6 @@
 header:
   agent_id: entertainment_chief
-   Entertainment Chief (PS5 + Board Games)
+  agent_name:  Entertainment Chief (PS5 + Board Games)
   name_fi: Viihdepäällikkö
   version: 1.0.0
   last_updated: '2026-02-21'

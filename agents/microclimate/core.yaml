@@ -1,6 +1,6 @@
 header:
   agent_id: microclimate
-   Microclimate Specialist
+  agent_name:  Microclimate Specialist
   name_fi: 'Mikroilmasto'
   version: 1.0.0
   last_updated: '2026-02-21'

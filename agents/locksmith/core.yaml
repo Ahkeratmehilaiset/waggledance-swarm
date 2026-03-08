@@ -1,6 +1,6 @@
 header:
   agent_id: locksmith
-   Locksmith (Smart Locks)
+  agent_name:  Locksmith (Smart Locks)
   name_fi: 'Lukkoseppä'
   version: 1.0.0
   last_updated: '2026-02-21'

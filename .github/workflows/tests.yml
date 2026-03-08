@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
     - uses: actions/checkout@v4
@@ -30,7 +30,4 @@ jobs:
 
     - name: Run tests
       run: |
-        python tools/waggle_backup.py --tests-only
-      env:
-        PYTHONIOENCODING: utf-8
-        PYTHONUTF8: 1
+        python tests/run_all.py --skip-ollama

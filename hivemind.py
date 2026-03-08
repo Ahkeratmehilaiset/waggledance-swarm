@@ -2337,6 +2337,7 @@ DELEGATION RULES (IMPORTANT):
         agents = list(self.spawner.active_agents.values())
         if len(agents) < min_agents:
             return
+        agent_count = min(agent_count, len(agents))
 
         try:
             # Phase 1: Generate topic if not given
@@ -2605,6 +2606,7 @@ DELEGATION RULES (IMPORTANT):
         agents = list(self.spawner.active_agents.values())
         if len(agents) < min_agents:
             return
+        agent_count = min(agent_count, len(agents))
 
         try:
             # Generate topic if not given

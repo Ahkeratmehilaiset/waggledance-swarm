@@ -184,9 +184,10 @@ class HiveMind:
         return {}
 
     def _get_date_prefix(self) -> str:
-        """Dynamic date + season + hallucination prevention."""
+        """Dynamic date + season + location + hallucination prevention."""
         now = datetime.now()
-        date_str = now.strftime("%Y-%m-%d %H:%M")
+        _weekdays = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+        date_str = f"{_weekdays[now.weekday()]} {now.strftime('%Y-%m-%d %H:%M')}"
         month = now.month
         if 3 <= month <= 5:
             season = "spring"
@@ -196,7 +197,17 @@ class HiveMind:
             season = "autumn"
         else:
             season = "winter"
-        return (f"Today is {date_str}. Season: {season}. "
+        # Location from settings
+        _profile = self.config.get("profile", "cottage")
+        _locations = self.config.get("feeds", {}).get("profile_locations", {}).get(_profile, [])
+        _loc_str = f" Location: {', '.join(_locations)}, Finland." if _locations else ""
+        # Rich seasonal context from SeasonalGuard
+        try:
+            from core.seasonal_guard import get_seasonal_guard
+            _seasonal = " " + get_seasonal_guard().queen_context()
+        except Exception:
+            _seasonal = ""
+        return (f"Today is {date_str}. Season: {season}.{_loc_str}{_seasonal} "
                 f"{DATE_HALLUCINATION_RULE}")
 
     # ── FIX-1: Prompt enrichment context manager ─────────────

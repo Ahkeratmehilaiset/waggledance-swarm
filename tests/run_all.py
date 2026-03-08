@@ -127,11 +127,15 @@ def main():
         try:
             proc = subprocess.run(
                 [sys.executable, str(test_file)],
-                capture_output=True, text=True, timeout=600,
+                capture_output=True, timeout=600,
                 cwd=str(tests_dir.parent),
-                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+                     "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
             )
-            output = proc.stdout + proc.stderr
+            # Decode with errors='replace' to handle Windows encoding issues
+            proc_stdout = proc.stdout.decode("utf-8", errors="replace") if isinstance(proc.stdout, bytes) else proc.stdout
+            proc_stderr = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, bytes) else proc.stderr
+            output = proc_stdout + proc_stderr
             elapsed = time.time() - t0
             p, f, w = parse_results(output)
 

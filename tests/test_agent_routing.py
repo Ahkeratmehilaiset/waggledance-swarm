@@ -7,6 +7,14 @@ Each agent gets ~4-6 test questions (FI + EN pairs) = ~100 questions per languag
 Run: python -m pytest tests/test_agent_routing.py -v
 """
 
+import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import pytest
 from core.hive_routing import WEIGHTED_ROUTING, PRIMARY_WEIGHT, SECONDARY_WEIGHT
 

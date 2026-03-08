@@ -77,7 +77,8 @@ AUTO_SPAWN = [
 ]
 
 
-async def main():
+async def main() -> None:
+    """Initialize HiveMind, spawn agents, populate caches, and start the web server."""
     hive = HiveMind("configs/settings.yaml")
     await hive.start()
 

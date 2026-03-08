@@ -928,12 +928,13 @@ DELEGATION RULES (IMPORTANT):
         # ═══ Direct datetime answers (no LLM needed) ═══
         _dt_now = datetime.now()
         _msg_l = message.lower()
-        _TIME_WORDS = {"kello", "aika", "time", "clock", "kellonaika", "paljonko kello",
-                       "what time", "current time", "mikä kello"}
-        _DATE_WORDS = {"päivä", "päivämäärä", "date", "today", "tänään", "mikä päivä",
-                       "what day", "what date", "viikonpäivä", "weekday"}
-        _is_time_q = any(w in _msg_l for w in _TIME_WORDS)
-        _is_date_q = any(w in _msg_l for w in _DATE_WORDS)
+        # Phrases that unambiguously ask for current time/date
+        _TIME_PHRASES = {"paljonko kello", "mikä kello", "kellonaika", "what time",
+                         "current time", "monako kello", "paljon kello", "kerro kello"}
+        _DATE_PHRASES = {"mikä päivä", "monesko päivä", "päivämäärä", "what date",
+                         "what day", "mikä tänään", "tänään on"}
+        _is_time_q = any(w in _msg_l for w in _TIME_PHRASES)
+        _is_date_q = any(w in _msg_l for w in _DATE_PHRASES)
         if _is_time_q or _is_date_q:
             _weekdays_fi = ["maanantai", "tiistai", "keskiviikko", "torstai",
                            "perjantai", "lauantai", "sunnuntai"]

@@ -44,3 +44,4 @@ paho-mqtt>=2.0.0               # Phase 5: MQTT for smart home sensors
 
 # === OPTIONAL: PDF parsing ===
 # PyMuPDF>=1.23.0              # fitz — PDF knowledge import
+pytest>=7.0

@@ -150,6 +150,10 @@ def main():
                 total_fail += f if f > 0 else 1
                 total_warn += w
                 print(f"[{i:2d}/{len(test_files)}] {name:45s} FAIL ({p} pass, {f} fail) [{elapsed:.1f}s]")
+                # Show last 10 lines of output for debugging
+                tail = output.strip().split("\n")[-10:]
+                for line in tail:
+                    print(f"        | {line}")
 
             results.append((name, status, p, f, w))
 

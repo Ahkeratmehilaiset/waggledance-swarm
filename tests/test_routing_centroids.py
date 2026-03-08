@@ -249,8 +249,8 @@ print("\n=== Section 8: End-to-end routing ===")
 
 # Test known queries that should route to specific agents
 test_cases = [
-    ("mikä on varroa-kynnys?", "Tarhaaja", "beekeeper"),
-    ("nosema-oireet?", "Tautivahti", "disease_monitor"),
+    ("mikä on varroa-kynnys?", "Beekeeper", "beekeeper"),
+    ("nosema-oireet?", "Disease Monitor", "disease_monitor"),
     ("lentosää mehiläisille?", None, "flight_weather"),  # any answer from flight_weather
 ]
 

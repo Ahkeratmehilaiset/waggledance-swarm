@@ -462,8 +462,8 @@ for lvl in range(1, 6):
         FAIL(f"CSS class .lvl-{lvl} MISSING")
 
 # Version updated
-if "v0.1.0" in dsrc:
-    OK("Dashboard version updated to v0.1.0")
+if "v0.2.1" in dsrc:
+    OK("Dashboard version updated to v0.2.1")
 else:
     FAIL("Dashboard version not updated")
 

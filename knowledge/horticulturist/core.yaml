@@ -1,6 +1,6 @@
 header:
   agent_id: horticulturist
-  agent_name: Hortonomi (Kasvitieteilijä)
+  agent_name: Horticulturist
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

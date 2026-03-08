@@ -1,6 +1,6 @@
 header:
   agent_id: ornithologist
-  agent_name: Ornitologi (Lintutieteilijä)
+  agent_name: Ornithologist
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

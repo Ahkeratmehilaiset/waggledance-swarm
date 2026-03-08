@@ -1,6 +1,6 @@
 header:
   agent_id: fire_officer
-  agent_name: Paloesimies (häkä, palovaroittimet, lämpöanomaliat)
+  agent_name: Fire Officer (CO, Smoke Alarms, Heat)
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

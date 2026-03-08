@@ -1,6 +1,6 @@
 header:
   agent_id: movie_expert
-  agent_name: Elokuva-asiantuntija (Suomi-elokuvat)
+  agent_name: Movie Expert (Finnish Cinema)
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

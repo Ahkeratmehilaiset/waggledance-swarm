@@ -1,6 +1,6 @@
 header:
   agent_id: locksmith
-  agent_name: Lukkoseppä (älylukot)
+  agent_name: Locksmith (Smart Locks)
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

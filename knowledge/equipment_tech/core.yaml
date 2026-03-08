@@ -1,6 +1,6 @@
 header:
   agent_id: equipment_tech
-  agent_name: Laitehuoltaja (IoT, akut, verkot)
+  agent_name: Equipment Tech (IoT, Batteries, Networks)
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

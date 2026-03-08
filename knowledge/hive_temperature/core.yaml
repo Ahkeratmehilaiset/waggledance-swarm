@@ -1,6 +1,6 @@
 header:
   agent_id: hive_temperature
-  agent_name: Pesälämpö- ja kosteusmittaaja
+  agent_name: Hive Temperature & Humidity Monitor
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

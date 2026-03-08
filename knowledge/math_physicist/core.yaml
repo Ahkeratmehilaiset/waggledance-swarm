@@ -1,6 +1,6 @@
 header:
   agent_id: math_physicist
-  agent_name: Matemaatikko ja fyysikko (laskenta + mallit)
+  agent_name: Mathematician & Physicist
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

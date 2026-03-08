@@ -1,6 +1,6 @@
 header:
   agent_id: budget_tracker
-  agent_name: Kotitalouden raha-asiat
+  agent_name: Household Budget Tracker
   name_fi: 'Kotitalouden raha-asiat'
   version: 1.0.0
   last_updated: '2026-03-02'

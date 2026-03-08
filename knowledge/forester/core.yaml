@@ -1,6 +1,6 @@
 header:
   agent_id: forester
-  agent_name: Metsänhoitaja
+  agent_name: Forester
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

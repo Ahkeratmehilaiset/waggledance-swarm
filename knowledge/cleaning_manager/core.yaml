@@ -1,6 +1,6 @@
 header:
   agent_id: cleaning_manager
-  agent_name: Siivousvastaava
+  agent_name: Cleaning Manager
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

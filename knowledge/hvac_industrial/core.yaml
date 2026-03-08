@@ -1,6 +1,6 @@
 header:
   agent_id: hvac_industrial
-  agent_name: Teollisuusilmastointi
+  agent_name: Industrial HVAC
   name_fi: 'Teollisuusilmastointi'
   version: 1.0.0
   last_updated: '2026-03-02'

@@ -1,6 +1,6 @@
 header:
   agent_id: swarm_watcher
-  agent_name: Parveiluvahti
+  agent_name: Swarm Watcher
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

@@ -1,6 +1,6 @@
 header:
   agent_id: lighting_master
-  agent_name: Valaistusmestari
+  agent_name: Lighting Master
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

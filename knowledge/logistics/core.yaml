@@ -1,6 +1,6 @@
 header:
   agent_id: logistics
-  agent_name: Logistikko (reitti + ajoajat)
+  agent_name: Logistics (Routes & Timing)
   version: 1.0.0
   last_updated: '2026-02-21'
 ASSUMPTIONS:

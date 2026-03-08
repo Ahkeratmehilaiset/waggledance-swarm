@@ -1,6 +1,6 @@
 header:
   agent_id: waste_handler
-  agent_name: Jätevirtojen hallinta
+  agent_name: Waste Stream Manager
   name_fi: 'Jätevirtojen hallinta'
   version: 1.0.0
   last_updated: '2026-03-02'

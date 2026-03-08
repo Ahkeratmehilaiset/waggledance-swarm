@@ -927,8 +927,8 @@ DELEGATION RULES (IMPORTANT):
             _weekdays_fi = ["maanantai", "tiistai", "keskiviikko", "torstai",
                            "perjantai", "lauantai", "sunnuntai"]
             _weekday_fi = _weekdays_fi[_dt_now.weekday()]
-            _time_str = _dt_now.strftime("%H:%M:%S")
-            _date_str = _dt_now.strftime("%Y-%m-%d")
+            _time_str = _dt_now.strftime("%H.%M")  # Finnish format: 14.30
+            _date_str = f"{_dt_now.day}.{_dt_now.month}.{_dt_now.year}"  # Finnish: 8.3.2026
             if _is_time_q and _is_date_q:
                 response = f"Tänään on {_weekday_fi} {_date_str}, kello on {_time_str}."
             elif _is_time_q:

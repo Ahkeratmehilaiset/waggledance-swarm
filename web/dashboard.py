@@ -1,10 +1,10 @@
 """
-WaggleDance Swarm AI — Dashboard v0.1.0
+WaggleDance Swarm AI — Dashboard v0.2.1
 =========================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v0.1.0 • Built: 2026-02-24
+Claude 4.6 • v0.2.1 • Built: 2026-02-24
 
-v0.1.0 (Phase 3):
+v0.2.1 (Phase 3):
   - Round Table card (streaming discussion + synthesis)
   - Agent Level badges (L1-L5) in agent grid
   - Night mode moon indicator in topbar
@@ -150,7 +150,7 @@ def create_app(hivemind):
   </div>
   <div class="topbar-center">
     <h1>🐝 <span class="t-main">WaggleDance Swarm AI</span> <span class="t-sub">(on-prem)</span></h1>
-    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v0.1.0 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
+    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v0.2.1 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
   </div>
   <div class="topbar-right">
     <div class="mbadge">
@@ -288,7 +288,7 @@ ws.onmessage=e=>{{
   if(tp==='enrichment'){{
     const cf=document.getElementById('corrections-feed');
     const div=document.createElement('div');
-    div.innerHTML=`<span style="color:#f0b429">✨</span> Enrichment: ${{d.facts_stored||0}} facts (${{d.total_enriched||0}} total)`;
+    div.innerHTML=`<span style="color:#f0b429">✨</span> Enrichment: ${{d.facts_stored||0}} facts (${{d.total_enriched||d.total_web||d.total_distilled||0}} total)`;
     cf.prepend(div);
     if(cf.children.length>20)cf.lastChild.remove();
   }}

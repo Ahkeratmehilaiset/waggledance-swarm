@@ -33,23 +33,31 @@ def get_or_create_api_key(env_path: str = ".env") -> str:
     if key:
         return key
 
+    # Try reading from .env file
+    env_file = Path(env_path)
+    try:
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                if line.startswith("WAGGLE_API_KEY="):
+                    key = line.split("=", 1)[1].strip()
+                    if key:
+                        os.environ["WAGGLE_API_KEY"] = key
+                        log.info("Loaded API key from .env file")
+                        return key
+    except Exception as e:
+        log.warning(f"Could not read .env: {e}")
+
     # Generate new key
     key = secrets.token_urlsafe(32)
 
     # Persist to .env
-    env_file = Path(env_path)
     try:
-        existing = ""
-        if env_file.exists():
-            existing = env_file.read_text(encoding="utf-8")
-
+        existing = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
         if "WAGGLE_API_KEY" not in existing:
             separator = "\n" if existing and not existing.endswith("\n") else ""
             with open(env_file, "a", encoding="utf-8") as f:
                 f.write(f"{separator}\n# API authentication (auto-generated)\nWAGGLE_API_KEY={key}\n")
             log.info(f"Generated new API key, saved to {env_file}")
-        else:
-            log.info("WAGGLE_API_KEY found in .env but not in environment")
     except Exception as e:
         log.warning(f"Could not persist API key to {env_file}: {e}")
 

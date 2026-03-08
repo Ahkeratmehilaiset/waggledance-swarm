@@ -68,17 +68,17 @@ def test_translation_error_paths():
 
 
 def test_master_think_error_path():
-    """Master agent think() should have error handling."""
+    """Agent think() calls should have error handling."""
     with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
               "r", encoding="utf-8") as f:
         src = f.read()
 
-    # Find master_agent.think in the fallback section
-    think_idx = src.index("self.master_agent.think(self._routed_message, context)")
+    # Find delegated agent think in _delegate_to_agent — has try/except
+    think_idx = src.index("_enriched_agent.think(message, context)")
     after_think = src[think_idx:think_idx+400]
-    assert "except Exception" in after_think, "master think should have except"
-    assert "Anteeksi" in after_think, "Error message should be Finnish"
-    print("  [PASS] master think has error fallback")
+    assert "except Exception" in after_think, "agent think should have except"
+    assert "Virhe" in after_think, "Error message should be Finnish"
+    print("  [PASS] agent think has error fallback")
 
 
 def test_pre_none_safety():

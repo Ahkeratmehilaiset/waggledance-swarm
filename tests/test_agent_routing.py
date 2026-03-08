@@ -423,3 +423,7 @@ class TestRoutingQuality:
         agent, score = route_message(msg)
         assert agent == expected_agent
         assert score >= PRIMARY_WEIGHT * 2, f"Score {score} too low for strong signal"
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))

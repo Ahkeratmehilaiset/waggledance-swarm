@@ -27,7 +27,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 
 **Response time improves over use:** ~3,000ms (cold, full LLM path) → ~55ms (bilingual ChromaDB) → ~0.5ms (Hot Cache hit for previously seen queries).
 
-46/46 test suites pass (700+ assertions across 46 suites, measured locally). No subscription, no API keys required.
+42/42 test suites pass (2211+ assertions across 42 suites, measured locally; 4 skipped without Ollama). No subscription, no API keys required.
 
 ---
 
@@ -50,6 +50,10 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 - **Cross-agent memory** — agent channels, provenance tracking, consensus records, filtered overlay views
 - **Production hardening** — CircuitBreaker, graceful degradation, structured logging, TTL eviction
 - **Night mode** — autonomous learning when idle (fact enrichment, Round Table debates, MicroModel retraining)
+- **Persistent chat history** — conversations stored in SQLite, survive page refresh
+- **User feedback system** — thumbs up/down on every AI response, feeds into corrections memory
+- **Model status dashboard** — real-time VRAM usage, loaded models, role mapping, utilization
+- **Active profile switching** — GADGET/COTTAGE/HOME/FACTORY tabs change agent behavior in real-time
 - **Stub / Production mode** — develop dashboard without Ollama (`python start.py --stub`)
 - **4 deployment profiles** — GADGET / COTTAGE / HOME / FACTORY
 
@@ -231,7 +235,10 @@ User (Finnish / English) → FastAPI (port 8000)
       ├── CPU / GPU / VRAM gauges
       ├── Interactive chat (FI/EN)
       ├── Analytics, Round Table, Agent Grid panels
-      └── 4 domain tabs: GADGET / COTTAGE / HOME / FACTORY
+      ├── Profile switching (GADGET/COTTAGE/HOME/FACTORY — changes active agents)
+      ├── Model status panel (VRAM usage, loaded models, utilization)
+      ├── Persistent chat history (SQLite, survives refresh)
+      └── Feedback system (thumbs up/down on AI responses)
 ```
 
 ---
@@ -256,17 +263,22 @@ VRAM 48GB+   → ENTERPRISE:    llama3.3:70b + llama3.1:8b, 75 agents
 
 ## Deployment Profiles
 
-### GADGET — Edge Intelligence
+### GADGET — Edge Intelligence (3 agents)
 ESP32, Raspberry Pi, wearables. TinyML classifiers, sensor fusion. *(Theoretical — not tested on hardware.)*
 
-### COTTAGE — Off-Grid Intelligence
+### COTTAGE — Off-Grid Intelligence (46 agents)
 Purpose-built for Finnish beekeeping. Hive monitoring, varroa detection, weather integration, acoustic analysis.
 
-### HOME — Smart Living
+### HOME — Smart Living (43 agents)
 Mac Mini, NUC, any decent PC. Home Assistant integration, voice control, energy optimization.
 
-### FACTORY — Industrial Scale
+### FACTORY — Industrial Scale (28 agents)
 Server rack / DGX. Predictive maintenance, monitoring, shift handover. *(Theoretical — not tested on hardware.)*
+
+Switching profiles:
+- Changes which agents are active
+- Adjusts Round Table size to available agents
+- Persists across server restarts (stored in settings.yaml)
 
 ---
 
@@ -331,7 +343,7 @@ python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **46/46 suites GREEN, 700+ assertions, 0 failures.**
+Expected: **42/42 suites GREEN, 2211+ assertions, 0 failures** (4 suites skipped without Ollama).
 
 ---
 
@@ -343,20 +355,26 @@ waggledance-swarm/
 ├── knowledge/           # Domain knowledge bases
 ├── core/                # Core modules (memory_engine, translation_proxy, models, scheduling)
 │   ├── memory_engine.py #   Memory, search, embedding, caching
+│   ├── chat_history.py  #   SQLite chat storage + feedback
 │   ├── cognitive_graph.py#  NetworkX knowledge graph
 │   ├── trust_engine.py  #   6-signal agent reputation
 │   ├── night_enricher.py#   Night learning + convergence
 │   └── elastic_scaler.py#   Hardware detection + tier selection
 ├── integrations/        # External systems (MQTT, Frigate, HA, audio, voice, feeds)
 ├── backend/             # Standalone stub backend (no Ollama needed)
-│   └── routes/          #   16 API route modules
+│   └── routes/
+│       ├── models.py    #   Ollama model status endpoint
+│       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 46 test suites (700+ assertions)
+├── tests/               # 46 test suites (2211+ assertions)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
-├── data/                # Runtime data (ChromaDB, SQLite, JSONL, JSON)
+├── .github/
+│   └── workflows/
+│       └── tests.yml    #   CI test runner
+├── data/                # Runtime data (ChromaDB, SQLite, JSONL, JSON — not in git)
 ├── hivemind.py          # HiveMind orchestrator (~2800 lines)
 ├── main.py              # Production entry point
 ├── start.py             # Launcher (--stub / --production)
@@ -398,6 +416,11 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **MAGMA L5:** Trust & Reputation — 6-signal trust scoring, domain experts, temporal decay
 - **Cognitive Graph:** NetworkX knowledge graph — causal/semantic edges, dependency traversal, causal replay
 - **Overlay Expansion:** Branchable memory — A/B testing, mood presets, agent contribution transforms
+- **Profile switching** — frontend tabs wired to backend, agent filtering active
+- **Model status display** — Ollama integration, VRAM monitoring
+- **Chat history persistence** — SQLite storage, conversation replay
+- **User feedback** — thumbs up/down, corrections memory integration
+- **GitHub Actions CI** — automated test runner (42/42 GREEN)
 - Pending: MicroModel V3 LoRA (architecture defined, training pipeline pending)
 
 ---
@@ -408,7 +431,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 46/46 GREEN | 700+ assertions, measured locally |
+| Test suites | 42/42 GREEN | 2211+ assertions, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -417,6 +440,9 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | MicroModel V2 (classifier) | ~1ms | PyTorch 250K params on CPU |
 | Hallucination rate | ~1.8% | Contrastive + keyword detection on internal test set |
 | Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
+| Chat history storage | SQLite (local) | Persistent across page refresh |
+| Feedback → corrections | Automatic | Thumbs down triggers correction memory |
+| CI pipeline | GitHub Actions | 42/42 GREEN, 2211+ assertions |
 
 ---
 
@@ -455,6 +481,15 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 | `/api/settings` | GET | Feature toggles |
 | `/api/settings/toggle` | POST | Toggle a feature on/off |
 
+### Dashboard Features
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/models` | GET | Ollama model status, VRAM, roles |
+| `/api/history` | GET | Conversation history |
+| `/api/history/recent/messages` | GET | Recent chat messages |
+| `/api/feedback` | POST | User feedback collection (thumbs up/down) |
+| `/api/profile` | GET/POST | Get or switch deployment profile |
+
 ### MAGMA Memory Architecture
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -478,7 +513,7 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all 46 suites pass
+4. Ensure all 42 suites pass
 5. Submit a pull request
 
 ### Development Setup

@@ -1471,7 +1471,6 @@ DELEGATION RULES (IMPORTANT):
         except Exception:
             pass
 
-    @staticmethod
     def _get_disk_status(self) -> dict:
         """Get disk space status for get_status() response."""
         try:

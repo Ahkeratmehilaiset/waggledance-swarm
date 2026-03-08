@@ -1,6 +1,6 @@
 header:
   agent_id: flight_weather
-  agent_name: Lentosää-analyytikko
+   Flight Weather Analyst
   name_fi: 'Lentosää-analyytikko'
   version: 1.0.0
   last_updated: '2026-02-21'

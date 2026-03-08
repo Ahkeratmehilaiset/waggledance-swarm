@@ -1,6 +1,6 @@
 header:
   agent_id: fish_identifier
-  agent_name: Kalantunnistaja
+   Fish Identifier
   name_fi: 'Kalantunnistaja'
   version: 1.0.0
   last_updated: '2026-02-21'

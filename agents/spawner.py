@@ -29,7 +29,7 @@ DEFAULT_TEMPLATES = {
 
     # ── 🐝 MEHILÄISAGENTTI ──────────────────────────────────
     "beekeeper": {
-        "name": "MehiläisAgentti",
+        "name": "Beekeeper Agent",
         "system_prompt": """Olet MehiläisAgentti — Suomen kokenein mehiläishoitokonsultti.
 
 YDINTEHTÄVÄ: Optimoi JKH Servicen 300 pesän mehiläistarhaus.
@@ -60,7 +60,7 @@ VASTAA AINA:
 
     # ── 🎬 VIDEOAGENTTI ─────────────────────────────────────
     "video_producer": {
-        "name": "VideoAgentti",
+        "name": "Video Producer",
         "system_prompt": """Olet VideoAgentti — sosiaalisen median ja videosisällön strategi.
 
 YDINTEHTÄVÄ: Kasvata Janin mehiläisaiheista some-läsnäoloa.
@@ -90,7 +90,7 @@ VASTAA AINA:
 
     # ── 🏡 KIINTEISTÖAGENTTI ────────────────────────────────
     "property": {
-        "name": "KiinteistöAgentti",
+        "name": "Property Agent",
         "system_prompt": """Olet KiinteistöAgentti — kiinteistöverotuksen ja -hallinnan asiantuntija.
 
 YDINTEHTÄVÄ: Optimoi Korvenrannan kiinteistön verotus ja hallinta.
@@ -121,7 +121,7 @@ VASTAA AINA:
 
     # ── 🔧 TECHAGENTTI ──────────────────────────────────────
     "tech": {
-        "name": "TechAgentti",
+        "name": "Tech Agent",
         "system_prompt": """Olet TechAgentti — tekninen asiantuntija ja järjestelmäintegraattori.
 
 YDINTEHTÄVÄ: Optimoi Janin tekninen infrastruktuuri ja uudet projektit.
@@ -152,7 +152,7 @@ VASTAA AINA:
 
     # ── 💰 BISNISAGENTTI ────────────────────────────────────
     "business": {
-        "name": "BisnisAgentti",
+        "name": "Business Agent",
         "system_prompt": """Olet BisnisAgentti — pienyrittäjän liiketoimintakonsultti.
 
 YDINTEHTÄVÄ: Kasvata JKH Servicen kannattavuutta ja myyntiä.

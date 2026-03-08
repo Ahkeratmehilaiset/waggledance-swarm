@@ -1,6 +1,6 @@
 header:
   agent_id: electrician
-  agent_name: Sähköasentaja
+   Electrician
   name_fi: Sähköasentaja
   version: 1.0.0
   last_updated: '2026-02-21'

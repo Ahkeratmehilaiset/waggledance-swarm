@@ -1,6 +1,6 @@
 header:
   agent_id: privacy_guard
-  agent_name: Privaattisuuden suojelija
+   Privacy Guard
   name_fi: 'Tietosuojavastaava'
   version: 1.0.0
   last_updated: '2026-02-21'

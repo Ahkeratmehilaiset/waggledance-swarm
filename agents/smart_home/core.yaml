@@ -1,6 +1,6 @@
 header:
   agent_id: smart_home
-  agent_name: Kodin automaatio ja IoT
+   Smart Home & IoT
   name_fi: 'Kodin automaatio ja IoT'
   version: 1.0.0
   last_updated: '2026-03-02'

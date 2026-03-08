@@ -1,6 +1,6 @@
 header:
   agent_id: energy_advisor
-  agent_name: Sähkö- ja energiaoptimointi
+   Energy Advisor
   name_fi: 'Sähkö- ja energiaoptimointi'
   version: 1.0.0
   last_updated: '2026-03-02'

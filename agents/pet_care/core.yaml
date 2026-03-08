@@ -1,6 +1,6 @@
 header:
   agent_id: pet_care
-  agent_name: Lemmikinhoito
+   Pet Care
   name_fi: 'Lemmikinhoito'
   version: 1.0.0
   last_updated: '2026-03-02'

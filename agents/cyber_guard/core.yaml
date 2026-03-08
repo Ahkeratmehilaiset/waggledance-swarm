@@ -1,6 +1,6 @@
 header:
   agent_id: cyber_guard
-  agent_name: Kybervahti (tietoturva)
+   Cyber Guard (InfoSec)
   name_fi: 'Kybervahti'
   version: 1.0.0
   last_updated: '2026-02-21'

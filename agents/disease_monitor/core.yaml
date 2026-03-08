@@ -1,6 +1,6 @@
 header:
   agent_id: disease_monitor
-  agent_name: Tautivahti (mehiläiset)
+   Disease Monitor (Bees)
   name_fi: Tautivahti
   version: 1.0.0
   last_updated: '2026-02-21'

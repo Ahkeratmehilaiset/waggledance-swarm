@@ -1,6 +1,6 @@
 header:
   agent_id: apartment_board
-  agent_name: Taloyhtiöasiat
+   Apartment Board Advisor
   name_fi: 'Taloyhtiöasiat'
   version: 1.0.0
   last_updated: '2026-03-02'

@@ -1,6 +1,6 @@
 header:
   agent_id: nature_photographer
-  agent_name: Luontokuvaaja (PTZ-operaattori)
+   Nature Photographer (PTZ Operator)
   name_fi: 'Luontokuvaaja'
   version: 1.0.0
   last_updated: '2026-02-21'

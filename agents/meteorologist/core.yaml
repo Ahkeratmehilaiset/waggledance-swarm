@@ -1,6 +1,6 @@
 header:
   agent_id: meteorologist
-  agent_name: Meteorologi
+   Meteorologist
   name_fi: 'Meteorologi'
   version: 1.0.0
   last_updated: '2026-02-21'

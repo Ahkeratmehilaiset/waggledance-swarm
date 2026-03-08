@@ -1,6 +1,6 @@
 header:
   agent_id: well_water
-  agent_name: Kaivoveden laadunvalvonta
+   Well Water Quality Monitor
   name_fi: 'Kaivoveden laadunvalvonta'
   version: 1.0.0
   last_updated: '2026-03-02'

@@ -914,6 +914,43 @@ DELEGATION RULES (IMPORTANT):
                 route="user_teaching", language=self._detected_lang)
             return response
 
+        # ═══ Direct datetime answers (no LLM needed) ═══
+        _dt_now = datetime.now()
+        _msg_l = message.lower()
+        _TIME_WORDS = {"kello", "aika", "time", "clock", "kellonaika", "paljonko kello",
+                       "what time", "current time", "mikä kello"}
+        _DATE_WORDS = {"päivä", "päivämäärä", "date", "today", "tänään", "mikä päivä",
+                       "what day", "what date", "viikonpäivä", "weekday"}
+        _is_time_q = any(w in _msg_l for w in _TIME_WORDS)
+        _is_date_q = any(w in _msg_l for w in _DATE_WORDS)
+        if _is_time_q or _is_date_q:
+            _weekdays_fi = ["maanantai", "tiistai", "keskiviikko", "torstai",
+                           "perjantai", "lauantai", "sunnuntai"]
+            _weekday_fi = _weekdays_fi[_dt_now.weekday()]
+            _time_str = _dt_now.strftime("%H:%M:%S")
+            _date_str = _dt_now.strftime("%Y-%m-%d")
+            if _is_time_q and _is_date_q:
+                response = f"Tänään on {_weekday_fi} {_date_str}, kello on {_time_str}."
+            elif _is_time_q:
+                response = f"Kello on {_time_str}."
+            else:
+                response = f"Tänään on {_weekday_fi} {_date_str}."
+            self._last_chat_message = message
+            self._last_chat_response = response
+            self._last_chat_method = "datetime_direct"
+            self.metrics.log_chat(
+                query=_original_message, method="datetime_direct",
+                agent_id="system", confidence=1.0,
+                response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                route="datetime_direct", language=self._detected_lang)
+            if self.monitor:
+                await self.monitor.system(f"🕐 Aikakysely: {response}")
+            await self._notify_ws("chat_response", {
+                "message": message, "response": response,
+                "language": self._detected_lang, "method": "datetime_direct"
+            })
+            return response
+
         # ═══ PHASE1 TASK4: Smart Router — confidence-based model selection ═══
         _pre = None
         if self.consciousness:

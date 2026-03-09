@@ -27,7 +27,7 @@
                    │
 ┌──────────────────▼───────────────────────────────────────────────┐
 │                    HIVEMIND ORCHESTRATOR                          │
-│                    (hivemind.py, ~3300 lines)                     │
+│                    (hivemind.py ~1382 + 4 controllers)            │
 │                                                                   │
 │  ┌─────────────┐ ┌──────────────┐ ┌────────────────┐            │
 │  │ 75 Agents   │ │ Round Table  │ │ Night Mode     │            │
@@ -77,9 +77,14 @@
 
 ## Core Components
 
-### HiveMind Orchestrator (`hivemind.py`)
+### HiveMind Orchestrator (`hivemind.py` + 4 controllers)
 
-The central coordinator. Manages agent lifecycle, routes queries, runs background tasks (heartbeat, night learning, Round Table debates), and wires all subsystems together.
+The central coordinator (~1382 lines), with major subsystems extracted into dedicated controllers:
+
+- `core/chat_handler.py` (716 lines) — chat routing, swarm routing, multi-agent collaboration
+- `core/night_mode_controller.py` (455 lines) — night learning, convergence, weekly report
+- `core/round_table_controller.py` (476 lines) — Round Table debates, agent selection, streaming
+- `core/heartbeat_controller.py` (662 lines) — heartbeat loop, proactive thinking, idle research
 
 Key responsibilities:
 - Agent spawn/despawn and trust level management
@@ -185,7 +190,11 @@ Monitors learning novelty. Pauses sources that plateau (threshold 0.10, patience
 
 | File | Lines | Role |
 |------|-------|------|
-| `hivemind.py` | ~3300 | Main orchestrator |
+| `hivemind.py` | ~1382 | Main orchestrator (delegates to 4 controllers) |
+| `core/chat_handler.py` | ~716 | Chat routing, swarm routing, collaboration |
+| `core/night_mode_controller.py` | ~455 | Night learning cycle, convergence |
+| `core/round_table_controller.py` | ~476 | Round Table debates, agent selection |
+| `core/heartbeat_controller.py` | ~662 | Heartbeat loop, proactive thinking |
 | `core/memory_engine.py` | ~1500 | Memory, search, embedding |
 | `core/night_enricher.py` | ~600 | Night learning + convergence |
 | `core/meta_learning.py` | ~400 | Weekly report generation |

@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-0.8.0-green)
+![Version](https://img.shields.io/badge/version-0.9.0-green)
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
@@ -67,7 +67,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 - **No TLS** — use nginx/Caddy if exposing beyond localhost
 - **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
-- **MicroModel V3 (LoRA)** — architecture defined, training pipeline not yet implemented
+- **MicroModel V3 (LoRA)** — Phi-3.5-mini pipeline validated (2.92GB VRAM), full training deferred
 - **CI runs basic test suite** — full 45-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
@@ -138,7 +138,7 @@ WaggleDance gets smarter over time by recording every Q&A interaction as a train
 - V2 Neural Classifier — PyTorch 768→256→128→N, ~1ms, trains on collected pairs
 - Topic auto-promotion — 200+ pairs + <3% error → promoted
 - Training collector — records every Q&A with source and confidence
-- V3 LoRA nano-LLM — architecture defined, training pipeline not yet implemented
+- V3 LoRA nano-LLM — Phi-3.5-mini pipeline validated (4-bit NF4, 2.92GB VRAM), full training deferred
 
 ### Round Table — Agent Consensus
 
@@ -375,7 +375,7 @@ waggledance-swarm/
 │   └── workflows/
 │       └── tests.yml    #   CI test runner
 ├── data/                # Runtime data (ChromaDB, SQLite, JSONL, JSON — not in git)
-├── hivemind.py          # HiveMind orchestrator (~3300 lines)
+├── hivemind.py          # HiveMind orchestrator (~1382 lines + 4 controllers)
 ├── main.py              # Production entry point
 ├── start.py             # Launcher (--stub / --production)
 ├── Dockerfile           # Python 3.13 + Voikko + healthcheck
@@ -422,8 +422,8 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **User feedback** — thumbs up/down, corrections memory integration
 - **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
 - **Security + stability fixes (v0.8.0)** — 12 fixes: async safety, SQL injection prevention, SQLite write locks, WS callback leak, deprecated API cleanup, metrics rotation
+- **Major refactor (v0.9.0)** — hivemind.py 3321→1382 lines, 4 controller modules extracted, 12 Sonnet review fixes, Phi-3.5-mini LoRA pipeline validated
 - **GitHub Actions CI** — automated test runner (45/45 GREEN)
-- Pending: MicroModel V3 LoRA (architecture defined, training pipeline pending)
 
 ---
 

@@ -1,5 +1,42 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [0.9.0] — 2026-03-09
+
+### Major Refactor
+- **hivemind.py refactored:** 3321 → 1382 lines (58% reduction)
+- **4 new controller modules extracted:**
+  - `core/chat_handler.py` (716 lines) — chat routing, swarm routing, multi-agent collaboration
+  - `core/night_mode_controller.py` (455 lines) — night learning cycle, learning engines, weekly report
+  - `core/round_table_controller.py` (476 lines) — Round Table debates, agent selection, theater streaming
+  - `core/heartbeat_controller.py` (662 lines) — heartbeat loop, proactive thinking, idle research, whisper cycle
+
+### Added
+- **Phi-3.5-mini LoRA pipeline** — 4-bit NF4 quantization, CPU offloading, 2.92GB VRAM validated
+  - Auto-detection of LoRA target modules (fused qkv_proj vs separate q/v)
+  - Paged AdamW 8-bit optimizer, gradient checkpointing
+  - `--load-test` flag for VRAM validation before training
+- Training report JSON output (`models/micromodel_v3_phi35/training_report_v3.json`)
+
+### Fixed (Sonnet Review — 12 fixes)
+- **C2:** `_write_lock` moved from class-level to instance-level in AuditLog and TrustEngine
+- **C3:** `/api/voice/audio` — added 10MB body size limit
+- **H2:** `recall()` LIKE wildcard escaping in SharedMemory (SQL injection prevention)
+- **H3:** `/api/profile` — atomic settings.yaml write via `os.replace()`
+- **H4:** `/api/chat` — JSON parse errors return 400 instead of 500
+- **H5:** MAGMA route errors logged instead of silently swallowed
+- **H6:** `/api/history` query param validation with 400 on bad input
+- **L1:** Duplicate import removed in spawner.py
+- **L6:** confusion_memory.json uses `os.replace()` for atomic writes
+- **M2:** `_notify_ws` iterates snapshot copy of callbacks
+- **M6:** BFS in CognitiveGraph uses `deque` instead of `list.pop(0)`
+- **M7:** nvidia-smi uses `asyncio.create_subprocess_exec()` instead of blocking `subprocess.run()`
+
+### Changed
+- `datetime.utcnow()` deprecation fixes across codebase
+- Agent field added to `/api/chat` response
+- TrustEngine wiring fixes
+- NightEnricher wiring fixes
+
 ## [0.8.0] — 2026-03-09
 
 ### Fixed (Critical)

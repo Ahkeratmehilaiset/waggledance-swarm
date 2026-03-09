@@ -647,9 +647,7 @@ def _load_confusion_memory() -> dict[str, dict]:
             tmp_path = _CONFUSION_MEMORY_PATH.with_suffix(".tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(migrated, f, ensure_ascii=False, indent=2)
-            if _CONFUSION_MEMORY_PATH.exists():
-                _CONFUSION_MEMORY_PATH.unlink()
-            tmp_path.rename(_CONFUSION_MEMORY_PATH)
+            os.replace(tmp_path, _CONFUSION_MEMORY_PATH)
             log.info("Migrated confusion memory to %s (%d entries)", _CONFUSION_MEMORY_PATH, len(migrated))
         except OSError as e:
             log.warning("Failed to save migrated confusion memory: %s", e)
@@ -697,10 +695,7 @@ def record_confusion(question: str, wrong_agent: str, correct_agent: str) -> Non
         tmp_path = _CONFUSION_MEMORY_PATH.with_suffix(".tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(_CONFUSION_MEMORY, f, ensure_ascii=False, indent=2)
-        # On Windows, need to remove target first if it exists
-        if _CONFUSION_MEMORY_PATH.exists():
-            _CONFUSION_MEMORY_PATH.unlink()
-        tmp_path.rename(_CONFUSION_MEMORY_PATH)
+        os.replace(tmp_path, _CONFUSION_MEMORY_PATH)
     except OSError as e:
         log.warning("Failed to save confusion memory: %s", e)
 

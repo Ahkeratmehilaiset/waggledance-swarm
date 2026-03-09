@@ -608,11 +608,12 @@ try:
 except Exception as e:
     FAIL(f"Could not inspect HiveMind: {e}")
 
-# 7b. Check _night_learning_cycle has enrichment logic
+# 7b. Check _night_learning_cycle has enrichment logic (now in NightModeController)
 try:
-    src_night = inspect.getsource(HiveMind._night_learning_cycle)
+    from core.night_mode_controller import NightModeController
+    src_night = inspect.getsource(NightModeController._night_learning_cycle)
     # Phase 9: FactEnrichmentEngine import moved to _init_learning_engines
-    src_init_le = inspect.getsource(HiveMind._init_learning_engines)
+    src_init_le = inspect.getsource(NightModeController._init_learning_engines)
     if "enrichment" in src_night and "FactEnrichmentEngine" in (src_night + src_init_le):
         OK("_night_learning_cycle includes enrichment logic")
     else:

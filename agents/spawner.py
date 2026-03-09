@@ -13,7 +13,6 @@ from pathlib import Path
 
 from agents.base_agent import Agent
 from core.yaml_bridge import YAMLBridge
-from core.yaml_bridge import YAMLBridge
 from agents.hacker_agent import HackerAgent
 from agents.oracle_agent import OracleAgent
 from core.llm_provider import LLMProvider

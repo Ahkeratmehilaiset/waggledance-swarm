@@ -739,9 +739,10 @@ if hasattr(HiveMind, '_night_learning_cycle'):
 else:
     FAIL("HiveMind._night_learning_cycle missing")
 
-# 5d. Check night cycle source uses mod 5
+# 5d. Check night cycle source uses mod 5 (now in NightModeController)
 import inspect
-src = inspect.getsource(HiveMind._night_learning_cycle)
+from core.night_mode_controller import NightModeController
+src = inspect.getsource(NightModeController._night_learning_cycle)
 if "% 5" in src:
     OK("Night cycle uses % 5 rotation")
 else:
@@ -767,8 +768,8 @@ if "code_reviewer" in src and "is_due" in src:
 else:
     FAIL("Night cycle should check code_reviewer.is_due()")
 
-# 5e. Check _init_learning_engines source
-src_init = inspect.getsource(HiveMind._init_learning_engines)
+# 5e. Check _init_learning_engines source (now in NightModeController)
+src_init = inspect.getsource(NightModeController._init_learning_engines)
 if "WebLearningAgent" in src_init:
     OK("_init_learning_engines imports WebLearningAgent")
 else:
@@ -903,6 +904,8 @@ SECTION("8. EDGE CASES — disabled features, empty data")
 
 # 8a. All features disabled in init_learning_engines
 hm2 = HiveMind.__new__(HiveMind)
+from core.night_mode_controller import NightModeController as _NMC
+hm2._night_mode = _NMC(hm2)
 hm2.enrichment = None
 hm2.web_learner = None
 hm2.distiller = None

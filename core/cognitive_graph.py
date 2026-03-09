@@ -9,6 +9,7 @@ import logging
 import os
 import tempfile
 import time
+from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -150,10 +151,10 @@ class CognitiveGraph:
             return []
         dependents = []
         visited = {node_id}
-        queue = [(node_id, 0)]
+        queue = deque([(node_id, 0)])
 
         while queue:
-            current, depth = queue.pop(0)
+            current, depth = queue.popleft()
             if depth > max_depth:
                 continue
             for _, target, data in self.graph.out_edges(current, data=True):
@@ -172,10 +173,10 @@ class CognitiveGraph:
             return []
         ancestors = []
         visited = {node_id}
-        queue = [(node_id, 0)]
+        queue = deque([(node_id, 0)])
 
         while queue:
-            current, depth = queue.pop(0)
+            current, depth = queue.popleft()
             if depth > max_depth:
                 continue
             for source, _, data in self.graph.in_edges(current, data=True):

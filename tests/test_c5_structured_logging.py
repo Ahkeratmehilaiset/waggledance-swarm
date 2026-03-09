@@ -1,6 +1,8 @@
 """C5: Test structured JSON logging — learning_metrics.jsonl."""
 import sys, os, json, ast, tempfile, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+from _hive_source import read_hive_source
 
 
 def test_syntax():
@@ -116,27 +118,20 @@ def test_multiple_lines_appended():
 
 
 def test_log_chat_in_source_at_return_points():
-    """log_chat calls exist at all _do_chat return points."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
-
-    # Find _do_chat method
-    start = src.index("async def _do_chat(self, message")
-    end = src.index("def _swarm_route(self,", start)
-    body = src[start:end]
+    """log_chat calls exist at all chat handler return points."""
+    src = read_hive_source()
 
     # Timer at start
-    assert "_chat_t0 = time.perf_counter()" in body, \
-        "Timer should be set at _do_chat start"
+    assert "_chat_t0 = time.perf_counter()" in src, \
+        "Timer should be set at chat handler start"
 
     # Count return points with metrics logging
-    metrics_log_count = body.count("self.metrics.log_chat(")
+    metrics_log_count = src.count("metrics.log_chat(")
     assert metrics_log_count >= 5, \
         f"Expected >= 5 log_chat calls (one per return path), found {metrics_log_count}"
 
     # Each log_chat should include response_time_ms calculation
-    perf_calc_count = body.count("time.perf_counter() - _chat_t0")
+    perf_calc_count = src.count("perf_counter() - _chat_t0")
     assert perf_calc_count >= 5, \
         f"Expected >= 5 response_time calculations, found {perf_calc_count}"
 

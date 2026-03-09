@@ -1,13 +1,13 @@
 """C1: Test HotCache auto-population from all chat paths."""
 import sys, os, ast
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+from _hive_source import read_hive_source
 
 
 def test_hotcache_put_calls_in_hivemind():
     """All chat response paths should populate HotCache."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    src = read_hive_source()
 
     # Count _populate_hot_cache calls
     calls = src.count("_populate_hot_cache")
@@ -29,9 +29,7 @@ def test_hotcache_put_calls_in_consciousness():
 
 def test_populate_method_exists():
     """_populate_hot_cache method exists on HiveMind."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    src = read_hive_source()
 
     assert "def _populate_hot_cache(self, query" in src
     # Verify it checks: consciousness, hot_cache, valid response, fi lang, min score

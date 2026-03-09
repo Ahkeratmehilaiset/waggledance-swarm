@@ -24,6 +24,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _hive_source import read_hive_source
 os.chdir(str(PROJECT_ROOT))
 
 passed = 0
@@ -233,7 +235,7 @@ check("_apply_seasonal_guard called on Layer 1 responses",
 # ===================================================================
 print("\n=== Section 9: HiveMind Round Table integration ===")
 
-hm_src = Path("hivemind.py").read_text(encoding="utf-8")
+hm_src = read_hive_source()
 check("seasonal_guard imported in Round Table Queen synthesis",
       "seasonal_guard" in hm_src and "queen_context" in hm_src)
 check("Queen gets seasonal context in synthesis prompt",

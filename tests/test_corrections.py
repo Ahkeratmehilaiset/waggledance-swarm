@@ -19,6 +19,8 @@ import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
+from _hive_source import read_hive_source
 
 # Windows UTF-8
 if sys.platform == "win32":
@@ -251,7 +253,7 @@ finally:
 SECTION("5. FINNISH CORRECTION PHRASE DETECTION")
 try:
     import ast
-    src = open("hivemind.py", encoding="utf-8").read()
+    src = read_hive_source()
 
     # Word patterns
     for word in ["v\u00e4\u00e4r\u00e4", "virhe", "tarkoitin"]:
@@ -336,7 +338,7 @@ finally:
 # --- 7. CORRECTIONS INJECTION INTO PROMPT --------
 SECTION("7. CORRECTIONS CONTEXT INJECTED INTO PROMPT")
 try:
-    src = open("hivemind.py", encoding="utf-8").read()
+    src = read_hive_source()
 
     if "check_previous_corrections" in src:
         OK("check_previous_corrections() called in routing")

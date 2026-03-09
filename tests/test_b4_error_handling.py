@@ -1,6 +1,8 @@
 """B4: Test chat() path error handling — verify graceful degradation."""
 import sys, os, ast
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+from _hive_source import read_hive_source
 
 
 def test_hivemind_syntax():
@@ -33,9 +35,7 @@ def test_llm_provider_syntax():
 def test_before_llm_error_path():
     """before_llm failure should not crash _do_chat."""
     # Verify the try/except wrapping exists in source
-    with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    src = read_hive_source()
 
     # before_llm is wrapped in try/except
     assert "self.consciousness.before_llm(message)" in src
@@ -50,9 +50,7 @@ def test_before_llm_error_path():
 
 def test_translation_error_paths():
     """Translation calls should be wrapped in try/except."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    src = read_hive_source()
 
     # fi_to_en wrapped
     fi_en_idx = src.index("fi_to_en(message, force_opus=True)")
@@ -69,9 +67,7 @@ def test_translation_error_paths():
 
 def test_master_think_error_path():
     """Agent think() calls should have error handling."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    src = read_hive_source()
 
     # Find delegated agent think in _delegate_to_agent — has try/except
     think_idx = src.index("_enriched_agent.think(message, context)")
@@ -83,9 +79,7 @@ def test_master_think_error_path():
 
 def test_pre_none_safety():
     """_pre references are safe when _pre is None."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    src = read_hive_source()
 
     # All _pre.method references should be guarded
     lines = src.split("\n")
@@ -111,9 +105,7 @@ def test_pre_none_safety():
 
 def test_hall_variable_init():
     """_hall is initialized before use."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "hivemind.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    src = read_hive_source()
 
     # _hall should be initialized to None before the try block
     assert "_hall = None" in src

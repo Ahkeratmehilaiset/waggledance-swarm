@@ -22,6 +22,8 @@ import ast
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
+from _hive_source import read_hive_source
 
 # Windows UTF-8
 if sys.platform == "win32":
@@ -338,6 +340,7 @@ with open("hivemind.py", encoding="utf-8") as f:
     hm_src = f.read()
 with open("hivemind.py", encoding="utf-8") as f:
     hm_tree = ast.parse(f.read())
+all_src = read_hive_source()
 
 func_names = [node.name for node in ast.walk(hm_tree)
               if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
@@ -367,25 +370,25 @@ for var in phase3_vars:
         FAIL(f"Variable self.{var} MISSING")
 
 # Round Table in heartbeat loop
-if "_guarded(self._round_table)" in hm_src:
+if "_guarded(self._round_table)" in all_src:
     OK("Round Table integrated in heartbeat loop")
 else:
     FAIL("Round Table NOT in heartbeat loop")
 
 # Night Mode in heartbeat loop
-if "_night_mode_active" in hm_src and "_night_learning_cycle" in hm_src:
+if "_night_mode_active" in all_src and "_night_learning_cycle" in all_src:
     OK("Night Mode integrated in heartbeat loop")
 else:
     FAIL("Night Mode NOT in heartbeat loop")
 
 # Agent levels recording in _delegate_to_agent
-if "agent_levels.record_response" in hm_src:
+if "agent_levels.record_response" in all_src:
     OK("Agent level recording in _delegate_to_agent + _round_table")
 else:
     FAIL("Agent level recording MISSING")
 
 # Guided tasks in _agent_proactive_think
-if "guided_task" in hm_src and "task_queue.next_task" in hm_src:
+if "guided_task" in all_src and "task_queue.next_task" in all_src:
     OK("Guided tasks in _agent_proactive_think")
 else:
     FAIL("Guided tasks NOT in _agent_proactive_think")
@@ -404,13 +407,13 @@ else:
     FAIL("chat() NOT recording _last_user_chat_time")
 
 # PriorityLock still respected in Round Table
-if "priority.wait_if_chat" in hm_src:
+if "priority.wait_if_chat" in all_src:
     OK("PriorityLock (wait_if_chat) used in Round Table")
 else:
     FAIL("PriorityLock NOT used in Round Table")
 
 # Theater Pipe uses 300ms delay
-if "asyncio.sleep(0.3)" in hm_src:
+if "asyncio.sleep(0.3)" in all_src:
     OK("Theater Pipe: 300ms streaming delay")
 else:
     FAIL("Theater Pipe delay MISSING")
@@ -479,17 +482,17 @@ for model in new_models:
     pass
 
 # Phase 3 only uses llm_heartbeat (llama3.2:1b)
-if "self.llm_heartbeat" in hm_src:
+if "self.llm_heartbeat" in all_src:
     OK("Phase 3 uses llm_heartbeat (llama3.2:1b) for all background work")
 else:
     FAIL("llm_heartbeat not found")
 
 # Round Table does NOT use self.llm (phi4-mini)
 # Check _round_table method body for self.llm calls
-rt_start = hm_src.find("async def _round_table")
-rt_end = hm_src.find("def _select_round_table_agents")
+rt_start = all_src.find("async def _round_table")
+rt_end = all_src.find("def _select_round_table_agents")
 if rt_start > 0 and rt_end > 0:
-    rt_body = hm_src[rt_start:rt_end]
+    rt_body = all_src[rt_start:rt_end]
     if "self.llm_heartbeat" in rt_body and "self.llm." not in rt_body:
         OK("Round Table uses llm_heartbeat only (no phi4-mini)")
     elif "self.llm." in rt_body:

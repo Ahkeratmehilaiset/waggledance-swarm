@@ -33,11 +33,11 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("train_v3")
 
-DEFAULT_BASE_MODEL = "unsloth/tinyllama-1.1b-chat"
+DEFAULT_BASE_MODEL = "microsoft/Phi-3.5-mini-instruct"
 FALLBACK_MODELS = [
     "unsloth/Phi-3.5-mini-instruct",
+    "HuggingFaceTB/SmolLM2-135M-Instruct",
     "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    "microsoft/phi-2",
 ]
 
 
@@ -221,7 +221,7 @@ def train_with_peft(data: list, base_model: str, output_dir: Path,
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Use 4-bit quantization on GPU to fit in 8GB VRAM
+    # Use 4-bit quantization + CPU offloading to fit in 8GB VRAM
     quant_kwargs = {}
     if device == "cuda":
         try:
@@ -230,23 +230,37 @@ def train_with_peft(data: list, base_model: str, output_dir: Path,
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
             )
-            log.info("Using 4-bit quantization (NF4)")
+            log.info("Using 4-bit quantization (NF4 + double quant)")
         except ImportError:
             quant_kwargs["torch_dtype"] = torch.float16
             log.info("bitsandbytes not available, using fp16")
+
+    # CPU offloading: keep most on GPU, overflow to CPU
+    max_memory = {0: "6GiB", "cpu": "40GiB"} if device == "cuda" else None
 
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         device_map="auto" if device == "cuda" else None,
+        max_memory=max_memory,
         **quant_kwargs,
     )
+
+    # Auto-detect target modules from model architecture
+    # Phi-3.5 uses fused qkv_proj; most others use separate q/k/v_proj
+    model_modules = {n.split(".")[-1] for n, _ in model.named_modules()}
+    if "qkv_proj" in model_modules:
+        target = ["qkv_proj", "o_proj", "gate_up_proj", "down_proj"]
+    else:
+        target = ["q_proj", "v_proj"]
+    log.info(f"LoRA target modules: {target}")
 
     lora_config = LoraConfig(
         r=16,
         lora_alpha=32,
-        target_modules=["q_proj", "v_proj"],
+        target_modules=target,
         lora_dropout=0.05,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
@@ -254,6 +268,12 @@ def train_with_peft(data: list, base_model: str, output_dir: Path,
 
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
+
+    # Enable gradient checkpointing to reduce VRAM usage
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+    model.gradient_checkpointing_enable()
+    log.info("Gradient checkpointing enabled")
 
     # Format data
     def format_chat(example):
@@ -288,18 +308,49 @@ def train_with_peft(data: list, base_model: str, output_dir: Path,
             learning_rate=lr,
             fp16=(device == "cuda"),
             bf16=False,
+            optim="paged_adamw_8bit" if device == "cuda" else "adamw_torch",
+            gradient_checkpointing=True,
             logging_steps=10,
             output_dir=str(output_dir / "checkpoints"),
             save_strategy="epoch",
         ),
     )
 
+    if torch.cuda.is_available():
+        log.info(f"VRAM before training: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
     trainer.train()
+
+    # Report metrics
+    if trainer.state.log_history:
+        final_loss = [h["loss"] for h in trainer.state.log_history if "loss" in h]
+        if final_loss:
+            log.info(f"\nFinal training loss: {final_loss[-1]:.4f}")
+    if torch.cuda.is_available():
+        log.info(f"Peak VRAM: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
 
     # Save LoRA adapters
     model.save_pretrained(str(output_dir / "lora_adapter"))
     tokenizer.save_pretrained(str(output_dir / "lora_adapter"))
     log.info(f"\nLoRA adapter saved to {output_dir / 'lora_adapter'}")
+
+    # Save training report
+    report = {
+        "base_model": base_model,
+        "samples": len(data),
+        "epochs": epochs,
+        "learning_rate": lr,
+        "final_loss": final_loss[-1] if final_loss else None,
+        "peak_vram_gb": (torch.cuda.max_memory_allocated() / 1024**3
+                         if torch.cuda.is_available() else 0),
+        "backend": "peft",
+    }
+    import time as _time
+    report["timestamp"] = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    report_path = output_dir / "training_report_v3.json"
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    log.info(f"Report saved to {report_path}")
 
 
 def main():
@@ -324,6 +375,8 @@ def main():
                         help="Max training samples (default: 5000)")
     parser.add_argument("--no-unsloth", action="store_true",
                         help="Force PEFT backend (skip Unsloth)")
+    parser.add_argument("--load-test", action="store_true",
+                        help="Load model + tokenizer only (verify VRAM fit)")
     args = parser.parse_args()
 
     log.info("=== WaggleDance MicroModel V3 LoRA Trainer ===\n")
@@ -349,6 +402,37 @@ def main():
         log.error("\nNeither PEFT nor Unsloth installed.")
         log.info("Install: pip install peft>=0.11.0 trl datasets accelerate")
         sys.exit(1)
+
+    # Load-test mode: verify model fits in VRAM
+    if args.load_test:
+        log.info(f"\n=== Load Test: {args.base_model} ===")
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+            tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+            model = AutoModelForCausalLM.from_pretrained(
+                args.base_model,
+                quantization_config=BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                ),
+                device_map="auto",
+                max_memory={0: "6GiB", "cpu": "40GiB"},
+            )
+            vram = torch.cuda.memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+            log.info(f"✓ Model loaded — VRAM: {vram:.2f} GB")
+            log.info(f"  Params: {sum(p.numel() for p in model.parameters()):,}")
+            log.info(f"  Vocab: {len(tokenizer):,}")
+            del model, tokenizer
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            log.info("✓ Load test PASSED")
+        except Exception as e:
+            log.error(f"✗ Load test FAILED: {e}")
+            sys.exit(1)
+        return
 
     # Load data
     data = load_training_data(Path(args.input), args.max_samples)

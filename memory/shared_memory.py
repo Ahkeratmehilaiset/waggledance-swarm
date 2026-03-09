@@ -112,17 +112,18 @@ class SharedMemory:
 
     async def recall(self, query, limit=10, agent_id=None):
         """Yksinkertainen tekstihaku muistista."""
+        safe_q = query[:50].replace("%", "\\%").replace("_", "\\_")
         if agent_id:
             cursor = await self._db.execute(
                 """SELECT * FROM memories WHERE agent_id = ?
-                   AND content LIKE ? ORDER BY importance DESC, created_at DESC LIMIT ?""",
-                (agent_id, f"%{query[:50]}%", limit)
+                   AND content LIKE ? ESCAPE '\\' ORDER BY importance DESC, created_at DESC LIMIT ?""",
+                (agent_id, f"%{safe_q}%", limit)
             )
         else:
             cursor = await self._db.execute(
-                """SELECT * FROM memories WHERE content LIKE ?
+                """SELECT * FROM memories WHERE content LIKE ? ESCAPE '\\'
                    ORDER BY importance DESC, created_at DESC LIMIT ?""",
-                (f"%{query[:50]}%", limit)
+                (f"%{safe_q}%", limit)
             )
         return [dict(r) for r in await cursor.fetchall()]
 

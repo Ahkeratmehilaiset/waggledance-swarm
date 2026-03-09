@@ -108,9 +108,8 @@ class AgentReputation:
 class TrustEngine:
     """Multi-signal trust and reputation scoring engine."""
 
-    _write_lock = threading.Lock()
-
     def __init__(self, audit_log, provenance=None, agent_levels=None):
+        self._write_lock = threading.Lock()
         self._audit = audit_log
         self._provenance = provenance
         self._agent_levels = agent_levels

@@ -28,6 +28,8 @@ import ast
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
+from _hive_source import read_hive_source
 
 # Windows UTF-8
 if sys.platform == "win32":
@@ -624,8 +626,9 @@ except Exception as e:
 # --- 9. HiveMind Integration --------------------
 SECTION("9. HIVEMIND INTEGRATION")
 try:
-    src = open("hivemind.py", encoding="utf-8").read()
-    tree = ast.parse(src)
+    hm_src = open("hivemind.py", encoding="utf-8").read()
+    tree = ast.parse(hm_src)
+    src = read_hive_source()
 
     # Phase 4 instance variables in __init__
     init_src = ""
@@ -635,7 +638,7 @@ try:
                 if isinstance(cls_node, ast.ClassDef) and cls_node.name == "HiveMind":
                     for item in cls_node.body:
                         if isinstance(item, ast.FunctionDef) and item.name == "__init__":
-                            init_src = ast.get_source_segment(src, item)
+                            init_src = ast.get_source_segment(hm_src, item)
                             break
 
     phase4_vars = ["_last_chat_message", "_last_chat_response",

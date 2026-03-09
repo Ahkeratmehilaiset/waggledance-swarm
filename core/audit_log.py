@@ -17,9 +17,8 @@ log = logging.getLogger("waggledance.audit")
 class AuditLog:
     """Immutable audit log — append only, no update/delete."""
 
-    _write_lock = threading.Lock()
-
     def __init__(self, db_path: str = "data/audit_log.db"):
+        self._write_lock = threading.Lock()
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
         self._conn = sqlite3.connect(db_path, check_same_thread=False)

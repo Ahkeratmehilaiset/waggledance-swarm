@@ -585,7 +585,10 @@ loadFeeds();
         body = await request.body()
         if len(body) > 100_000:  # 100KB limit
             return JSONResponse({"error": "Message too large"}, status_code=413)
-        data = json.loads(body)
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
         msg = data.get("message", "")
         lang = data.get("lang", "auto")
         if not msg:
@@ -616,8 +619,11 @@ loadFeeds();
     @app.get("/api/history")
     async def chat_history_list(request: Request):
         """List recent conversations."""
-        limit = int(request.query_params.get("limit", "20"))
-        offset = int(request.query_params.get("offset", "0"))
+        try:
+            limit = int(request.query_params.get("limit", "20"))
+            offset = int(request.query_params.get("offset", "0"))
+        except ValueError:
+            return JSONResponse({"error": "limit and offset must be integers"}, status_code=400)
         profile = request.query_params.get("profile", None)
         convs = _chat_history.get_conversations(limit, offset, profile)
         return {"conversations": convs}
@@ -781,8 +787,15 @@ loadFeeds();
             if line.startswith("profile:"):
                 lines[i] = f"profile: {new_profile}  # gadget | cottage | home | factory"
                 break
-        with open(settings_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        import tempfile, os
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(Path(settings_path).parent))
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            os.replace(tmp_path, str(settings_path))
+        except Exception:
+            os.unlink(tmp_path)
+            raise
         return {"profile": new_profile, "message": "Profile updated. Restart to apply."}
 
     # ── Model Status endpoint ──────────────────────────────
@@ -1095,12 +1108,15 @@ loadFeeds();
             return JSONResponse({"error": "Voice interface not available"},
                                 status_code=503)
         import base64
-        body = await request.json()
-        audio_b64 = body.get("audio_base64", "")
+        body = await request.body()
+        if len(body) > 10_000_000:  # 10 MB limit for audio
+            return JSONResponse({"error": "Audio too large"}, status_code=413)
+        data = json.loads(body)
+        audio_b64 = data.get("audio_base64", "")
         if not audio_b64:
             return JSONResponse({"error": "No audio data"}, status_code=400)
         audio_bytes = base64.b64decode(audio_b64)
-        sample_rate = body.get("sample_rate", 16000)
+        sample_rate = data.get("sample_rate", 16000)
         result = await hivemind.voice_interface.process_audio(
             audio_bytes, sample_rate)
         resp_audio = (base64.b64encode(result.audio_bytes).decode("ascii")
@@ -1261,15 +1277,16 @@ loadFeeds();
         except Exception:
             pass
         try:
-            import subprocess
-            nv = subprocess.run(
-                ["nvidia-smi",
-                 "--query-gpu=utilization.gpu,memory.used,memory.total,name",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2
+            proc = await asyncio.create_subprocess_exec(
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,memory.used,memory.total,name",
+                "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            if nv.returncode == 0:
-                parts = [x.strip() for x in nv.stdout.strip().split(", ")]
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2)
+            if proc.returncode == 0:
+                parts = [x.strip() for x in stdout.decode().strip().split(", ")]
                 if len(parts) >= 4:
                     _raw_gpu = int(parts[0])
                     _gpu_samples.append(_raw_gpu)
@@ -1328,28 +1345,28 @@ loadFeeds();
     try:
         from backend.routes.magma import register_magma_routes
         register_magma_routes(app, hivemind)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"MAGMA route not loaded: {e}")
 
     # MAGMA Layer 4: Cross-agent routes
     try:
         from backend.routes.cross_agent import register_cross_agent_routes
         register_cross_agent_routes(app, hivemind)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"MAGMA route not loaded: {e}")
 
     # MAGMA Layer 5: Trust & Reputation routes
     try:
         from backend.routes.trust import register_trust_routes
         register_trust_routes(app, hivemind)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"MAGMA route not loaded: {e}")
 
     # MAGMA: Cognitive Graph routes
     try:
         from backend.routes.graph import register_graph_routes
         register_graph_routes(app, hivemind)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"MAGMA route not loaded: {e}")
 
     return app

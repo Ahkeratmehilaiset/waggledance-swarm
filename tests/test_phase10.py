@@ -836,9 +836,10 @@ try:
 except Exception as e:
     FAIL(f"HiveMind attrs: {e}")
 
-# 7b. _init_learning_engines has micro_model init
+# 7b. _init_learning_engines has micro_model init (now in NightModeController)
 try:
-    init_src = inspect.getsource(HiveMind._init_learning_engines)
+    from core.night_mode_controller import NightModeController
+    init_src = inspect.getsource(NightModeController._init_learning_engines)
     assert "micro_model" in init_src
     assert "MicroModelOrchestrator" in init_src
     assert "TrainingDataCollector" in init_src
@@ -847,9 +848,10 @@ try:
 except Exception as e:
     FAIL(f"_init_learning_engines: {e}")
 
-# 7c. _night_learning_cycle has training check
+# 7c. _night_learning_cycle has training check (now in NightModeController)
 try:
-    night_src = inspect.getsource(HiveMind._night_learning_cycle)
+    from core.night_mode_controller import NightModeController
+    night_src = inspect.getsource(NightModeController._night_learning_cycle)
     assert "micro_model" in night_src
     assert "maybe_train" in night_src
     assert "micro_training" in night_src
@@ -929,9 +931,10 @@ except Exception as e:
 
 # 9c. WS event handler pattern
 try:
-    # Check hivemind sends micro_training WS event
+    # Check hivemind (or its extracted NightModeController) sends micro_training WS event
     hm_full = Path("hivemind.py").read_text(encoding="utf-8")
-    assert '"micro_training"' in hm_full
+    nmc_full = Path("core/night_mode_controller.py").read_text(encoding="utf-8")
+    assert '"micro_training"' in hm_full or '"micro_training"' in nmc_full
     OK("WS micro_training event exists")
 except Exception as e:
     FAIL(f"WS micro_training: {e}")
@@ -1097,8 +1100,9 @@ except Exception as e:
 
 # 10i. micro_model disabled in settings -> no errors
 try:
-    # Check that hivemind checks config before init
-    init_src = inspect.getsource(HiveMind._init_learning_engines)
+    # Check that hivemind checks config before init (now in NightModeController)
+    from core.night_mode_controller import NightModeController
+    init_src = inspect.getsource(NightModeController._init_learning_engines)
     assert 'micro_model_enabled' in init_src
     OK("_init_learning_engines checks micro_model_enabled config")
 except Exception as e:

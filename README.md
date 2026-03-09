@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-0.7.0-green)
+![Version](https://img.shields.io/badge/version-0.8.0-green)
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
@@ -421,6 +421,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Chat history persistence** — SQLite storage, conversation replay
 - **User feedback** — thumbs up/down, corrections memory integration
 - **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
+- **Security + stability fixes (v0.8.0)** — 12 fixes: async safety, SQL injection prevention, SQLite write locks, WS callback leak, deprecated API cleanup, metrics rotation
 - **GitHub Actions CI** — automated test runner (45/45 GREEN)
 - Pending: MicroModel V3 LoRA (architecture defined, training pipeline pending)
 

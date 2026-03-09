@@ -1,5 +1,28 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [0.8.0] — 2026-03-09
+
+### Fixed (Critical)
+- **FIX-1:** Blocking `requests.get` in async `_readiness_check` — wrapped with `asyncio.to_thread()`
+- **FIX-2:** `/api/auth/token` endpoint restricted to localhost only (127.0.0.1, ::1)
+- **FIX-3:** SQLite concurrent write corruption — added `threading.Lock` to AuditLog and TrustEngine
+- **FIX-4:** Replaced deprecated `asyncio.get_event_loop()` with `get_running_loop()` in 6 modules
+- **FIX-5:** SQL injection in `SharedMemory.update_task` — added column name whitelist
+
+### Fixed (High Priority)
+- **FIX-6:** WebSocket callbacks never unregistered — added unregister on disconnect + 50-entry cap
+- **FIX-7:** `_whisper_cycle` race condition — uses enriched copies instead of direct prompt mutation
+- **FIX-8:** Double `KnowledgeLoader` instantiation at startup — deduplicated to single instance
+- **FIX-9:** Non-atomic writes to `learning_progress.json` — uses temp file + `os.replace()`
+- **FIX-10:** Bare `except Exception: pass` replaced with logged warnings in production code
+- **FIX-11:** Whisper cycle now respects PriorityLock for chat contention
+- **FIX-12:** `learning_metrics.jsonl` unbounded growth — added rotation (10MB limit, 30-day retention)
+
+### Changed
+- LiveMonitor and OpsAgent now have `unregister_callback` / `unregister_decision_callback` methods
+- StructuredLogger rotates metrics file when exceeding 10MB
+- All `asyncio.get_event_loop()` calls updated to `get_running_loop()` (Python 3.12+ compatible)
+
 ## [0.7.0] — 2026-03-08
 
 ### Added

@@ -1334,6 +1334,17 @@ DELEGATION RULES (IMPORTANT):
 
     def _load_persisted_facts_count(self) -> int:
         """Delegated to NightModeController."""
+        # Fixed during autonomous session 2026-03-09 — safe fallback before controller init
+        if not hasattr(self, '_night_mode'):
+            try:
+                import json
+                p = Path("data/learning_progress.json")
+                if p.exists():
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    return data.get("facts_learned", 0)
+            except Exception:
+                pass
+            return 0
         return self._night_mode._load_persisted_facts_count()
 
     def _save_learning_progress(self):

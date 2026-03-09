@@ -11,7 +11,7 @@ import asyncio
 import hashlib
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -67,7 +67,7 @@ class StructuredLogger:
                  translated: bool = False, extra: dict = None):
         """Append one JSON line per chat response."""
         record = {
-            "ts": datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "query_hash": hashlib.md5(query.encode("utf-8", errors="replace")).hexdigest()[:12],
             "method": method,
             "agent_id": agent_id,
@@ -92,7 +92,7 @@ class StructuredLogger:
                      source: str = "", extra: dict = None):
         """Append one JSON line for learning/background events."""
         record = {
-            "ts": datetime.utcnow().isoformat() + "Z",
+            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "event": event,
             "count": count,
             "duration_ms": round(duration_ms, 1),

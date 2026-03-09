@@ -574,6 +574,10 @@ DELEGATION RULES (IMPORTANT):
                     _al_cfg = self.config.get("agent_levels", {})
                     if _al_cfg.get("enabled", True):
                         self.agent_levels = AgentLevelManager(db_path='data/chroma_db')
+                        # Fixed during autonomous session 2026-03-08 — wire agent_levels into TrustEngine
+                        _te = getattr(self, '_trust_engine', None)
+                        if _te and not _te._agent_levels:
+                            _te._agent_levels = self.agent_levels
                         print(f"  ✅ Agent Levels (Phase 3)", flush=True)
                 except Exception as e:
                     print(f"  ⚠️  Agent Levels: {e}", flush=True)
@@ -2873,6 +2877,10 @@ DELEGATION RULES (IMPORTANT):
                 self.night_enricher = NightEnricher(
                     self.consciousness, self.llm_heartbeat,
                     self.llm, self.config)
+                # Fixed during autonomous session 2026-03-08 — wire TrustEngine to NightEnricher
+                _te = getattr(self, '_trust_engine', None)
+                if _te:
+                    self.night_enricher._trust_engine = _te
                 log.info("🌙 NightEnricher initialized")
             except Exception as e:
                 log.warning(f"NightEnricher init failed: {e}")

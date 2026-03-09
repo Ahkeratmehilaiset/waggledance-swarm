@@ -191,10 +191,20 @@ class TrustEngine:
         agents = self._conn.execute(
             "SELECT DISTINCT agent_id FROM trust_signals"
         ).fetchall()
+        # Fixed during autonomous session 2026-03-08 — bootstrap from audit log
+        if not agents:
+            try:
+                agents = self._conn.execute(
+                    "SELECT DISTINCT agent_id FROM audit "
+                    "WHERE agent_id IS NOT NULL AND agent_id != ''"
+                ).fetchall()
+            except Exception:
+                pass
         result = {}
         for (aid,) in agents:
             rep = self.compute_reputation(aid)
-            result[aid] = round(rep.composite_score, 4)
+            if rep.composite_score > 0:
+                result[aid] = round(rep.composite_score, 4)
         return result
 
     def get_ranking(self) -> List[dict]:

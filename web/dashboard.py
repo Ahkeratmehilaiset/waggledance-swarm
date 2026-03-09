@@ -608,7 +608,7 @@ loadFeeds();
                 agent_name=agent_name, language=lang,
                 response_time_ms=elapsed_ms)
             return {"response": response, "message_id": msg_id,
-                    "conversation_id": conv_id}
+                    "conversation_id": conv_id, "agent": agent_name}
         except Exception as e:
             log.error("API error: %s", e)
             return {"error": "Internal error"}

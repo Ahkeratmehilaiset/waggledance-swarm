@@ -20,7 +20,7 @@ import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1435,7 +1435,7 @@ class NightEnricher:
         gap_top10 = dict(list(full_gap.items())[:10])
 
         report = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "session_duration_min": round(elapsed_min, 1),
             "total_checked": self._total_checked,
             "total_stored": self._total_stored,

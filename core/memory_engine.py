@@ -25,7 +25,7 @@ import logging
 import random
 import re
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List
 from dataclasses import dataclass, field
@@ -733,7 +733,7 @@ class MemoryEviction:
 
     def _evict_ttl_expired(self) -> int:
         """Remove facts whose source_type has a TTL and timestamp is expired."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         evicted = 0
 
         for source_type, ttl_hours in self.ttl_rules.items():

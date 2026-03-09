@@ -53,7 +53,7 @@ class RSSFeedMonitor:
             return []
 
         new_entries = []
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         for feed_cfg in self.feeds:
             url = feed_cfg.get("url", "")

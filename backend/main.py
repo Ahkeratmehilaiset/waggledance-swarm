@@ -5,8 +5,9 @@ Works independently of HiveMind for dashboard development.
 """
 import logging
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from backend.routes.status import router as status_router
 from backend.routes.heartbeat import router as heartbeat_router
 from backend.routes.chat import router as chat_router
@@ -58,8 +59,11 @@ app.include_router(models_router)
 
 
 @app.get("/api/auth/token")
-async def auth_token():
-    """Return API key for localhost dashboard auto-login."""
+async def auth_token(request: Request):
+    """Return API key — localhost only."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1"):
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
     return {"token": _api_key}
 
 

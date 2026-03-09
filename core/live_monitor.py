@@ -117,7 +117,12 @@ class LiveMonitor:
         ))
 
     def register_callback(self, callback):
+        if len(self._callbacks) >= 50:
+            self._callbacks = self._callbacks[-25:]
         self._callbacks.append(callback)
+
+    def unregister_callback(self, callback):
+        self._callbacks = [cb for cb in self._callbacks if cb != callback]
 
     def get_history(self, limit: int = 50) -> list[dict]:
         return [e.to_dict() for e in self.events[-limit:]]

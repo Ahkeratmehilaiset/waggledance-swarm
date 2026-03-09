@@ -71,7 +71,7 @@ class PiperTTS:
             log.info(f"Loading Piper voice: {self._voice}")
             t0 = time.monotonic()
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._engine = await loop.run_in_executor(
                 None, PiperVoice.load, str(model_path), str(config_path))
 
@@ -102,7 +102,7 @@ class PiperTTS:
 
         t0 = time.monotonic()
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             audio_bytes = await loop.run_in_executor(
                 None, self._synthesize_sync, text)
 

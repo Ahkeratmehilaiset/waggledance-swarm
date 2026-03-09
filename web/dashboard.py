@@ -890,8 +890,11 @@ loadFeeds();
         return result
 
     @app.get("/api/auth/token")
-    async def auth_token():
-        """Return the API key for localhost dashboard auto-login."""
+    async def auth_token(request: Request):
+        """Return API key — localhost only."""
+        client_host = request.client.host if request.client else ""
+        if client_host not in ("127.0.0.1", "::1"):
+            return JSONResponse({"error": "Forbidden"}, status_code=403)
         return {"token": _api_key}
 
     @app.get("/health")
@@ -1301,6 +1304,7 @@ loadFeeds();
             except Exception:
                 pass
         hivemind.register_ws_callback(ws_callback)
+        monitor_ws_callback = None
         if hivemind.monitor:
             async def monitor_ws_callback(e):
                 try:
@@ -1315,6 +1319,10 @@ loadFeeds();
                 await websocket.receive_text()
         except WebSocketDisconnect:
             hivemind.unregister_ws_callback(ws_callback)
+            if monitor_ws_callback and hivemind.monitor:
+                hivemind.monitor.unregister_callback(monitor_ws_callback)
+            if hivemind.ops_agent:
+                hivemind.ops_agent.unregister_decision_callback(ws_callback)
 
     # MAGMA Layer 3 routes
     try:

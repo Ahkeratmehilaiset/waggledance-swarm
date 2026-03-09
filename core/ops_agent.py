@@ -250,7 +250,12 @@ class OpsAgent:
 
     def register_decision_callback(self, callback):
         """Dashboard/WS kuuntelija päätöksille."""
+        if len(self._decision_callbacks) >= 50:
+            self._decision_callbacks = self._decision_callbacks[-25:]
         self._decision_callbacks.append(callback)
+
+    def unregister_decision_callback(self, callback):
+        self._decision_callbacks = [cb for cb in self._decision_callbacks if cb != callback]
 
     # ─────────────────────────────────────────────────────────
     # Pääsykli

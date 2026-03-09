@@ -6,6 +6,7 @@ Layer 1 of MAGMA memory architecture.
 import hashlib
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -15,6 +16,8 @@ log = logging.getLogger("waggledance.audit")
 
 class AuditLog:
     """Immutable audit log — append only, no update/delete."""
+
+    _write_lock = threading.Lock()
 
     def __init__(self, db_path: str = "data/audit_log.db"):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -62,15 +65,16 @@ class AuditLog:
             check_disk_space(str(Path(self.db_path).parent), label="AuditLog")
         except (ImportError, OSError):
             pass
-        cur = self._conn.execute(
-            "INSERT INTO audit (timestamp, action, doc_id, collection, layer, "
-            "agent_id, session_id, spawn_chain, content_hash, metadata, details) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (time.time(), action, doc_id, collection, layer,
-             agent_id, session_id, spawn_chain, content_hash, metadata, details)
-        )
-        self._conn.commit()
-        return cur.lastrowid
+        with self._write_lock:
+            cur = self._conn.execute(
+                "INSERT INTO audit (timestamp, action, doc_id, collection, layer, "
+                "agent_id, session_id, spawn_chain, content_hash, metadata, details) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (time.time(), action, doc_id, collection, layer,
+                 agent_id, session_id, spawn_chain, content_hash, metadata, details)
+            )
+            self._conn.commit()
+            return cur.lastrowid
 
     def query_by_agent(self, agent_id: str, session_id: Optional[str] = None) -> List[dict]:
         if session_id:

@@ -46,7 +46,7 @@ class WebSearchTool:
 
         try:
             # Aja synkroninen haku threadpoolissa
-            results = await asyncio.get_event_loop().run_in_executor(
+            results = await asyncio.get_running_loop().run_in_executor(
                 None, self._sync_search, query, max_results, region
             )
 
@@ -85,7 +85,7 @@ class WebSearchTool:
             return []
 
         try:
-            results = await asyncio.get_event_loop().run_in_executor(
+            results = await asyncio.get_running_loop().run_in_executor(
                 None, self._sync_news_search, query, max_results, region
             )
             return results

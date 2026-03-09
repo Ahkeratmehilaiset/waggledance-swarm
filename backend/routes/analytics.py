@@ -1,8 +1,11 @@
 """GET /api/analytics/* — learning metrics visualization data."""
 import json
+import logging
 from collections import Counter, defaultdict
 from pathlib import Path
 from fastapi import APIRouter
+
+log = logging.getLogger("waggledance.analytics")
 
 router = APIRouter()
 
@@ -24,7 +27,8 @@ def _load_metrics(max_lines: int = 6000) -> list[dict]:
                 if line:
                     rows.append(json.loads(line))
         return rows[-max_lines:]
-    except Exception:
+    except Exception as e:
+        log.warning("Failed to load metrics: %s", e)
         return []
 
 
@@ -115,8 +119,8 @@ async def analytics_facts():
             if lines:
                 last = json.loads(lines[-1])
                 categories = last.get("per_agent", {})
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to read morning reports: %s", e)
 
     return {
         "days": days,

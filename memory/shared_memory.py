@@ -10,6 +10,12 @@ from datetime import datetime
 from typing import Optional
 
 
+ALLOWED_TASK_COLUMNS = frozenset({
+    "status", "result", "error", "updated_at", "title", "description",
+    "assigned_agent", "project_id", "priority", "started_at", "completed_at",
+})
+
+
 class SharedMemory:
     """Async SQLite-pohjainen jaettu muisti."""
 
@@ -207,6 +213,8 @@ class SharedMemory:
 
     async def update_task(self, task_id, **kwargs):
         for key, value in kwargs.items():
+            if key not in ALLOWED_TASK_COLUMNS:
+                raise ValueError(f"Column '{key}' not allowed in task update")
             await self._db.execute(
                 f"UPDATE tasks SET {key} = ? WHERE id = ?", (value, task_id)
             )

@@ -213,7 +213,7 @@ class MQTTHub:
         loop = self._loop
         if loop is None:
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
             except RuntimeError:
                 log.warning("No asyncio loop for MQTT dispatch")
                 return

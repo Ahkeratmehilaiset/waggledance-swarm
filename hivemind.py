@@ -251,7 +251,8 @@ class HiveMind:
         # 1. Ollama API
         try:
             import requests
-            r = requests.get("http://localhost:11434/api/version", timeout=5)
+            r = await asyncio.to_thread(
+                requests.get, "http://localhost:11434/api/version", timeout=5)
             if r.status_code == 200:
                 ver = r.json().get("version", "?")
                 print(f"  [OK] Ollama API v{ver}", flush=True)
@@ -267,7 +268,8 @@ class HiveMind:
         }
         try:
             import requests
-            r = requests.get("http://localhost:11434/api/tags", timeout=5)
+            r = await asyncio.to_thread(
+                requests.get, "http://localhost:11434/api/tags", timeout=5)
             if r.status_code == 200:
                 installed = {m["name"].split(":")[0]
                              for m in r.json().get("models", [])}
@@ -367,7 +369,7 @@ class HiveMind:
         knowledge_map = self.knowledge.list_all_knowledge()
         total_files = sum(len(files) for files in knowledge_map.values())
         print(f"  ✅ Knowledge Loader ({total_files} dokumenttia)", flush=True)
-        self.knowledge_loader = KnowledgeLoader()
+        self.knowledge_loader = self.knowledge  # single instance, was double
 
         # ── Swarm Scheduler ──────────────────────────────────
         swarm_config = self.config.get("swarm", {})
@@ -644,7 +646,7 @@ DELEGATION RULES (IMPORTANT):
                 self.sensor_hub = SensorHub(
                     config=sensor_cfg,
                     consciousness=self.consciousness,
-                    loop=asyncio.get_event_loop(),
+                    loop=asyncio.get_running_loop(),
                 )
                 await self.sensor_hub.start()
                 print("  ✅ SensorHub (smart home)", flush=True)
@@ -2835,15 +2837,11 @@ DELEGATION RULES (IMPORTANT):
             # Send via WebSocket
             import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self._notify_ws(
-                        "morning_report", report))
-                else:
-                    loop.run_until_complete(self._notify_ws(
-                        "morning_report", report))
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._notify_ws(
+                    "morning_report", report))
             except RuntimeError:
-                pass  # No event loop — skip WS notification
+                pass  # No running event loop — skip WS notification
 
             # Append to morning reports log
             import json
@@ -3198,8 +3196,10 @@ DELEGATION RULES (IMPORTANT):
                 "night_mode_active": self._night_mode_active,
             }
             Path("data").mkdir(exist_ok=True)
-            with open("data/learning_progress.json", "w", encoding="utf-8") as f:
+            tmp_path = "data/learning_progress.json.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(progress, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, "data/learning_progress.json")
         except Exception:
             pass
 
@@ -3314,19 +3314,25 @@ DELEGATION RULES (IMPORTANT):
             agent.status = "idle"
 
     async def _whisper_cycle(self, agents):
+        """Whisper cycle using enriched copies — no mutation of originals."""
         try:
-            _originals = {}
+            await self.priority.wait_if_chat()
+            import copy
             agent_list = (agents if isinstance(agents, list)
                           else list(agents.values()))
+            # Create enriched copies (same logic as _enriched_prompt context manager)
+            enriched_list = []
             for _a in agent_list:
-                _o = self._inject_knowledge(_a, max_chars=800)
-                if _o is not None:
-                    _originals[id(_a)] = (_a, _o)
-            try:
-                await self.whisper.auto_whisper_cycle(agent_list, self.llm)
-            finally:
-                for _a, _o in _originals.values():
-                    self._restore_prompt(_a, _o)
+                enriched = copy.copy(_a)
+                enriched.system_prompt = _a.system_prompt
+                if self.knowledge_loader:
+                    agent_type = getattr(_a, 'agent_type', getattr(_a, 'type', ''))
+                    if agent_type:
+                        kb = self.knowledge_loader.get_knowledge_summary(agent_type)
+                        if kb:
+                            enriched.system_prompt += "\n" + kb[:800]
+                enriched_list.append(enriched)
+            await self.whisper.auto_whisper_cycle(enriched_list, self.llm)
         except Exception as e:
             log.warning(f"Whisper epäonnistui: {e}")
 
@@ -3396,6 +3402,8 @@ DELEGATION RULES (IMPORTANT):
     # ── WebSocket ───────────────────────────────────────────
 
     def register_ws_callback(self, callback):
+        if len(self._ws_callbacks) >= 50:
+            self._ws_callbacks = self._ws_callbacks[-25:]
         self._ws_callbacks.append(callback)
 
     def unregister_ws_callback(self, callback):

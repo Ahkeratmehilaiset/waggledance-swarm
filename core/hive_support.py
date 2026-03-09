@@ -10,9 +10,16 @@ Contains:
 import asyncio
 import hashlib
 import json
+import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger("waggledance.support")
+
+_MAX_METRICS_SIZE_MB = 10
+_MAX_ROTATED_AGE_DAYS = 30
 
 
 class PriorityLock:
@@ -59,6 +66,31 @@ class StructuredLogger:
     def __init__(self, path: str = "data/learning_metrics.jsonl"):
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._check_count = 0
+
+    def _maybe_rotate(self):
+        """Rotate if file exceeds size limit; clean old rotated files."""
+        self._check_count += 1
+        if self._check_count % 100 != 0:
+            return
+        try:
+            if not self._path.exists():
+                return
+            size_mb = self._path.stat().st_size / (1024 * 1024)
+            if size_mb > _MAX_METRICS_SIZE_MB:
+                stamp = datetime.now().strftime("%Y%m%d")
+                rotated = self._path.parent / f"learning_metrics_{stamp}.jsonl"
+                os.replace(str(self._path), str(rotated))
+                log.info("Rotated learning_metrics.jsonl (%.1f MB) → %s",
+                         size_mb, rotated.name)
+            # Clean old rotated files
+            cutoff = time.time() - _MAX_ROTATED_AGE_DAYS * 86400
+            for f in self._path.parent.glob("learning_metrics_*.jsonl"):
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    log.info("Deleted old rotated metrics: %s", f.name)
+        except Exception as e:
+            log.warning("Metrics rotation failed: %s", e)
 
     def log_chat(self, *, query: str, method: str, agent_id: str = "",
                  response_time_ms: float = 0.0, confidence: float = 0.0,
@@ -82,11 +114,12 @@ class StructuredLogger:
         }
         if extra:
             record.update(extra)
+        self._maybe_rotate()
         try:
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except Exception:
-            pass  # Never crash chat for logging
+        except Exception as e:
+            log.warning("Failed to write chat metric: %s", e)
 
     def log_learning(self, *, event: str, count: int = 0, duration_ms: float = 0.0,
                      source: str = "", extra: dict = None):
@@ -100,8 +133,9 @@ class StructuredLogger:
         }
         if extra:
             record.update(extra)
+        self._maybe_rotate()
         try:
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to write learning metric: %s", e)

@@ -117,7 +117,7 @@ class WhisperSTT:
                 np.float32) / 32768.0
 
             # Run transcription in thread pool (CPU-bound)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None, self._transcribe_sync, audio_np)
 

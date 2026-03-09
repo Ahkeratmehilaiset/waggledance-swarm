@@ -10,6 +10,7 @@ Storage: SQLite table `trust_signals` in audit_log.db (same DB as provenance).
 
 import logging
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -107,6 +108,8 @@ class AgentReputation:
 class TrustEngine:
     """Multi-signal trust and reputation scoring engine."""
 
+    _write_lock = threading.Lock()
+
     def __init__(self, audit_log, provenance=None, agent_levels=None):
         self._audit = audit_log
         self._provenance = provenance
@@ -118,28 +121,30 @@ class TrustEngine:
         self._cache: Dict[str, AgentReputation] = {}
 
     def _create_table(self):
-        self._conn.executescript("""
-            CREATE TABLE IF NOT EXISTS trust_signals (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id    TEXT    NOT NULL,
-                signal_name TEXT    NOT NULL,
-                value       REAL   NOT NULL,
-                timestamp   REAL   NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_trust_agent ON trust_signals(agent_id);
-            CREATE INDEX IF NOT EXISTS idx_trust_name ON trust_signals(signal_name);
-        """)
-        self._conn.commit()
+        with self._write_lock:
+            self._conn.executescript("""
+                CREATE TABLE IF NOT EXISTS trust_signals (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id    TEXT    NOT NULL,
+                    signal_name TEXT    NOT NULL,
+                    value       REAL   NOT NULL,
+                    timestamp   REAL   NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_trust_agent ON trust_signals(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_trust_name ON trust_signals(signal_name);
+            """)
+            self._conn.commit()
 
     def record_signal(self, agent_id: str, signal_name: str, value: float):
         """Append a trust signal to SQLite."""
         ts = time.time()
-        self._conn.execute(
-            "INSERT INTO trust_signals (agent_id, signal_name, value, timestamp) "
-            "VALUES (?, ?, ?, ?)",
-            (agent_id, signal_name, value, ts)
-        )
-        self._conn.commit()
+        with self._write_lock:
+            self._conn.execute(
+                "INSERT INTO trust_signals (agent_id, signal_name, value, timestamp) "
+                "VALUES (?, ?, ?, ?)",
+                (agent_id, signal_name, value, ts)
+            )
+            self._conn.commit()
         # Update cache
         if agent_id in self._cache:
             self._cache[agent_id].add_signal(

@@ -33,8 +33,19 @@ def test_populate_method_exists():
 
     assert "def _populate_hot_cache(self, query" in src
     # Verify it checks: consciousness, hot_cache, valid response, fi lang, min score
-    method_start = src.index("def _populate_hot_cache")
-    method_body = src[method_start:method_start + 500]
+    # Find the real implementation (skip delegate stubs that just forward)
+    method_body = None
+    search_from = 0
+    while True:
+        pos = src.find("def _populate_hot_cache", search_from)
+        if pos == -1:
+            break
+        candidate = src[pos:pos + 800]
+        if "hot_cache.put(" in candidate:
+            method_body = candidate
+            break
+        search_from = pos + 1
+    assert method_body is not None, "_populate_hot_cache implementation not found"
     assert "hot_cache" in method_body
     assert "_is_valid_response" in method_body
     assert "detected_lang" in method_body

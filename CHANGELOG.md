@@ -1,5 +1,28 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [0.9.1] — 2026-03-10
+
+### Week 11 Sprint — Data Quality & Learning Pipeline
+
+#### Fixed
+- **BUG-6:** V1 PatternMatchEngine trained with 7912 curated Q/A pairs (was 0 patterns + 1 test junk entry)
+  - 2294 lookups, 2293 regex patterns from `finetune_curated.jsonl`
+- **Hash-dedup:** QualityGate now has Step 0 MD5 hash-based dedup before LLM call (saves ~30% LLM calls on duplicates)
+- **Boilerplate:** System prompt boilerplate ("OLETUKSET JA KONTEKSTI") stripped from 2700 curated entries
+- **model_used:** All 8 `log_chat()` calls in `chat_handler.py` now include `model_used` field
+- **Rejection reasons:** Auto-generated rejection categories (very_low_quality/below_average/not_curated_quality)
+
+#### Improved
+- **QUALITY_EVAL_PROMPT:** Added score examples (3/10, 5/10, 7/10, 8.5/10) to encourage full 1-10 scale usage
+- **Composite scoring:** LLM score (60%) + length bonus + domain specificity bonus for non-binary quality distribution
+
+#### Added
+- **RSS feeds activated:** `rss_feed_enabled: true`, 8 feeds configured (SML, Ruokavirasto, FMI, BeeHealth, HA-blog, etc.)
+- `tools/train_v1_now.py` — one-off V1 training script
+- `tools/clean_curated.py` — one-off curated data cleanup
+- `configs/boilerplate_blacklist.txt` — boilerplate pattern list
+- 5 new test suites (26 tests): V1 Training, Dedup Gate, Metrics Fields, Quality Scoring, RSS Activation
+
 ## [0.9.0] — 2026-03-09
 
 ### Major Refactor

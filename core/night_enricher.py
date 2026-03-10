@@ -388,7 +388,7 @@ class SourceManager:
 # ═══════════════════════════════════════════════════════════════
 
 class QualityGate:
-    """4-step validation: LLM validate → seasonal guard → contradiction → novelty.
+    """5-step validation: hash-dedup -> LLM validate -> seasonal guard -> contradiction -> novelty.
 
     Short-circuits on first failure.
     """
@@ -400,7 +400,9 @@ class QualityGate:
         self.llm_validate = llm_validate
         self.novelty_threshold = novelty_threshold
         self.dedup_threshold = dedup_threshold
+        self._seen_hashes: set = set()
         self._step_stats: Dict[str, Dict[str, int]] = {
+            "hash_dedup": {"checked": 0, "rejected": 0},
             "llm_validate": {"checked": 0, "rejected": 0},
             "seasonal_guard": {"checked": 0, "rejected": 0},
             "contradiction": {"checked": 0, "rejected": 0},
@@ -409,8 +411,20 @@ class QualityGate:
 
     async def check(self, candidate: EnrichmentCandidate,
                     throttle=None) -> QualityVerdict:
-        """Run all 4 steps. Short-circuits on failure."""
+        """Run all 5 steps. Short-circuits on failure."""
         text = candidate.text
+
+        # Step 0: Hash-based exact dedup (before LLM call)
+        import hashlib
+        self._step_stats["hash_dedup"]["checked"] += 1
+        text_hash = hashlib.md5(text.lower().strip().encode()).hexdigest()
+        if text_hash in self._seen_hashes:
+            self._step_stats["hash_dedup"]["rejected"] += 1
+            return QualityVerdict(
+                passed=False, novel=False,
+                reason="Hash duplicate",
+                step_failed="hash_dedup")
+        self._seen_hashes.add(text_hash)
 
         # Step 1: Dual LLM validate (phi4-mini VALID/INVALID)
         self._step_stats["llm_validate"]["checked"] += 1

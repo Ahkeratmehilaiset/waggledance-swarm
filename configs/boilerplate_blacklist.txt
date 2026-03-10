@@ -1,0 +1,4 @@
+# Lines that indicate boilerplate content in training data.
+# If a system prompt message contains any of these, strip the system message.
+OLETUKSET JA KONTEKSTI
+ASSUMPTIONS AND CONTEXT

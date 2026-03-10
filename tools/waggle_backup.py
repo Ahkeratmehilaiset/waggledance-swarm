@@ -141,6 +141,12 @@ TESTS = [
     {"file": "tests/test_agent_yaml_validation.py", "name": "Agent YAML Validation", "phase": "YAML", "args": [], "timeout": 60},
     # Phase 6-8: Migration, Auth, Training
     {"file": "tests/test_migrate_db.py", "name": "Migration + Auth + Training", "phase": "P6-8", "args": [], "timeout": 60},
+    # Week 11 Sprint tests
+    {"file": "tests/test_v1_training.py",    "name": "V1 Training",          "phase": "W11", "args": [], "timeout": 60},
+    {"file": "tests/test_dedup_gate.py",     "name": "Dedup Gate",           "phase": "W11", "args": [], "timeout": 60},
+    {"file": "tests/test_metrics_fields.py", "name": "Metrics Fields",       "phase": "W11", "args": [], "timeout": 60},
+    {"file": "tests/test_quality_scoring.py","name": "Quality Scoring",      "phase": "W11", "args": [], "timeout": 60},
+    {"file": "tests/test_rss_activation.py", "name": "RSS Activation",       "phase": "W11", "args": [], "timeout": 60},
 ]
 
 # Backup exclusions

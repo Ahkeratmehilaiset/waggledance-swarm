@@ -280,13 +280,16 @@ def test_quality_gate():
     check(verdict.passed, "valid candidate passes QualityGate")
     check(verdict.novel, f"novel when score=0.5 < 0.85 (novel={verdict.novel})")
 
-    # Test LLM INVALID rejection
+    # Test LLM INVALID rejection (use unique text to avoid hash_dedup)
     invalid_resp = MagicMock()
     invalid_resp.error = False
     invalid_resp.content = "INVALID"
     mock_llm.generate = AsyncMock(return_value=invalid_resp)
 
-    verdict = asyncio.run(gate.check(candidate))
+    invalid_candidate = EnrichmentCandidate(
+        text="LLM invalid test statement about beekeeping",
+        source_id="self_generate", agent_id="beekeeper", gap_topic="varroa")
+    verdict = asyncio.run(gate.check(invalid_candidate))
     check(not verdict.passed, "INVALID response -> rejected")
     check(verdict.step_failed == "llm_validate",
           f"step_failed=llm_validate (got {verdict.step_failed})")
@@ -298,7 +301,10 @@ def test_quality_gate():
     near_dupe_match.text = "Some very similar fact"
     mock_consciousness.memory.search.return_value = [near_dupe_match]
 
-    verdict = asyncio.run(gate.check(candidate))
+    near_dupe_candidate = EnrichmentCandidate(
+        text="Near duplicate test statement about varroa mites",
+        source_id="self_generate", agent_id="beekeeper", gap_topic="varroa")
+    verdict = asyncio.run(gate.check(near_dupe_candidate))
     check(not verdict.passed, "near-duplicate (0.95) -> rejected")
     check(verdict.step_failed == "novelty",
           f"step_failed=novelty (got {verdict.step_failed})")
@@ -309,7 +315,10 @@ def test_quality_gate():
     gray_match.text = "Somewhat similar fact"
     mock_consciousness.memory.search.return_value = [gray_match]
 
-    verdict = asyncio.run(gate.check(candidate))
+    gray_candidate = EnrichmentCandidate(
+        text="Gray zone test about bee colony health monitoring",
+        source_id="self_generate", agent_id="beekeeper", gap_topic="varroa")
+    verdict = asyncio.run(gate.check(gray_candidate))
     check(verdict.passed, "gray zone (0.88) -> passes")
     check(not verdict.novel,
           f"gray zone (0.88) -> novel=False (got {verdict.novel})")
@@ -333,6 +342,7 @@ def test_quality_gate():
     # Stats check
     stats = gate.stats
     check("llm_validate" in stats, "stats has llm_validate")
+    check("hash_dedup" in stats, "stats has hash_dedup")
     check(stats["llm_validate"]["checked"] >= 4,
           f"llm_validate checked >= 4 (got {stats['llm_validate']['checked']})")
 

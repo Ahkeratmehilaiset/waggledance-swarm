@@ -92,6 +92,7 @@ class ChatHandler:
                 self.metrics.log_chat(
                     query=_original_message, method="correction",
                     agent_id=self._last_chat_agent_id or "user",
+                    model_used="none",
                     response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                     route="correction", language=_detected_lang)
                 return response
@@ -114,7 +115,7 @@ class ChatHandler:
             self._last_chat_method = ""
             self.metrics.log_chat(
                 query=_original_message, method="user_teaching",
-                agent_id="user", confidence=0.9,
+                agent_id="user", model_used="none", confidence=0.9,
                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                 route="user_teaching", language=_detected_lang)
             return response
@@ -146,7 +147,7 @@ class ChatHandler:
             self._last_chat_method = "datetime_direct"
             self.metrics.log_chat(
                 query=_original_message, method="datetime_direct",
-                agent_id="system", confidence=1.0,
+                agent_id="system", model_used="none", confidence=1.0,
                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                 route="datetime_direct", language=_detected_lang)
             if self.monitor:
@@ -186,7 +187,8 @@ class ChatHandler:
                         quality=_pre.confidence)
                 self.metrics.log_chat(
                     query=_original_message, method=_pre.method,
-                    agent_id="consciousness", confidence=_pre.confidence,
+                    agent_id="consciousness", model_used="none",
+                    confidence=_pre.confidence,
                     response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                     cache_hit=(_pre.method in ("hot_cache", "math")),
                     route=_pre.method, language=_detected_lang)
@@ -314,6 +316,7 @@ class ChatHandler:
             self.metrics.log_chat(
                 query=_original_message, method="delegate",
                 agent_id=delegate_to,
+                model_used=getattr(self.llm, 'model', 'unknown'),
                 confidence=_pre.confidence if _pre else 0.0,
                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                 route="agent_delegate", language=_detected_lang,
@@ -352,6 +355,7 @@ class ChatHandler:
                             self.metrics.log_chat(
                                 query=_original_message, method="neg_kw_delegate",
                                 agent_id=agent_type,
+                                model_used=getattr(self.llm, 'model', 'unknown'),
                                 confidence=_pre.confidence if _pre else 0.0,
                                 response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
                                 route="agent_delegate",

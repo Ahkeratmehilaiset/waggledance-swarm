@@ -148,13 +148,21 @@ KRITEERIT:
 - Hyödyllisyys: Onko käytännön apua? (0-2 pistettä)
 - Selkeys: Onko helppolukuinen? (0-2 pistettä)
 
+ESIMERKKEJÄ:
+- 3/10: Vastaus on epäolennainen, ei liity kysymykseen, tai sisältää virheitä
+- 5/10: Vastaus on osittain oikein mutta puutteellinen tai epätarkka
+- 7/10: Hyvä vastaus, oikeat faktat, mutta voisi olla kattavampi
+- 8.5/10: Erinomainen, tarkka, käytännöllinen ja selkeä vastaus
+
+Käytä KOKO asteikkoa 1-10. Älä anna aina 8 tai 10 — arvioi rehellisesti.
+
 AGENTIN TYYPPI: {agent_type}
 KYSYMYS/TEHTÄVÄ: {prompt}
 VASTAUS: {response}
 
 Vastaa TASAN tässä muodossa:
 PISTEET: X/10
-PERUSTELU: (1 lause)"""
+PERUSTELU: (1 lause miksi juuri tämä pistemäärä)"""
 
 # Prompt-evoluution ohje
 PROMPT_EVOLVE_PROMPT = """Olet AI-järjestelmän optimoija. Agentin "{agent_type}" system prompt
@@ -349,6 +357,8 @@ class LearningEngine:
             try:
                 score = await self._evaluate_one(item)
                 if score:
+                    # Apply composite scoring adjustments
+                    score.score = self._composite_score(score, item)
                     await self._process_score(score, item)
                     evaluated += 1
             except Exception as e:
@@ -413,6 +423,41 @@ class LearningEngine:
                 return val
         return None
 
+    def _composite_score(self, score: QualityScore, item: dict) -> float:
+        """Composite scoring: LLM score (60%) + length bonus + specificity.
+
+        Produces a non-binary distribution instead of relying solely on LLM.
+        """
+        llm_score = score.score
+        response = item.get("response", "")
+
+        # Length bonus: reward answers of reasonable length (50-300 chars)
+        resp_len = len(response.strip())
+        if resp_len < 20:
+            length_bonus = -1.0
+        elif resp_len < 50:
+            length_bonus = 0.0
+        elif resp_len <= 300:
+            length_bonus = 0.5
+        else:
+            length_bonus = 0.2  # Slightly shorter bonus for very long
+
+        # Specificity: reward answers with numbers, Finnish terms, etc.
+        specificity_bonus = 0.0
+        import re
+        if re.search(r'\d+', response):
+            specificity_bonus += 0.3  # Contains numbers
+        bee_terms = ["mehiläi", "pesä", "hunaj", "varroa", "kuningat",
+                     "kehä", "poikk", "tarha"]
+        if any(t in response.lower() for t in bee_terms):
+            specificity_bonus += 0.3  # Domain-specific terms
+
+        # Weighted composite: LLM 60%, adjustments 40%
+        composite = (llm_score * 0.6
+                     + (llm_score + length_bonus + specificity_bonus) * 0.4)
+
+        return max(1.0, min(10.0, composite))
+
     async def _process_score(self, score: QualityScore, item: dict):
         """Käsittele arvioitu vastaus: päivitä kaikki järjestelmät."""
 
@@ -474,9 +519,16 @@ class LearningEngine:
                 )
 
         # ── D) Finetune-datan kuratointi ──────────────
+        # Strip system prompt boilerplate before saving to curated data
+        _sys_content = item.get("system_prompt", "")
+        _boilerplate_markers = ["OLETUKSET JA KONTEKSTI", "ASSUMPTIONS AND CONTEXT"]
+        for _marker in _boilerplate_markers:
+            if _marker in _sys_content:
+                _sys_content = ""
+                break
+
         finetune_entry = {
             "messages": [
-                {"role": "system", "content": item.get("system_prompt", "")},
                 {"role": "user", "content": item["prompt"]},
                 {"role": "assistant", "content": item["response"]},
             ],
@@ -485,11 +537,29 @@ class LearningEngine:
             "reasoning": score.reasoning,
             "timestamp": datetime.now().isoformat(),
         }
+        # Only include system message if it's not boilerplate
+        if _sys_content.strip():
+            finetune_entry["messages"].insert(
+                0, {"role": "system", "content": _sys_content})
+
+        # Auto-generate reasoning if empty
+        if not score.reasoning:
+            if score.score < 3.0:
+                score.reasoning = "very_low_quality"
+            elif score.score < 5.0:
+                score.reasoning = "below_average"
+            elif score.score < self.min_score_for_finetune:
+                score.reasoning = "not_curated_quality"
+            else:
+                score.reasoning = "auto_accepted"
+            finetune_entry["reasoning"] = score.reasoning
 
         if score.score >= self.min_score_for_finetune:
             self._append_jsonl(self._curated_path, finetune_entry)
             self.stats["total_curated"] += 1
         else:
+            # Add rejection reason to rejected entries
+            finetune_entry["rejection_reason"] = score.reasoning
             self._append_jsonl(self._rejected_path, finetune_entry)
             self.stats["total_rejected"] += 1
 

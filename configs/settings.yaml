@@ -109,7 +109,7 @@ advanced_learning:
   night_enricher:
     enabled: true
     chat_history_enabled: false
-    rss_feed_enabled: false
+    rss_feed_enabled: true
     benchmark_count: 5
     rebalance_every: 50
     burst_threshold: 0.80
@@ -185,6 +185,18 @@ feeds:
       - url: "https://www.ruokavirasto.fi/rss"
         name: Ruokavirasto
         critical: true
+      - url: "https://www.ilmatieteenlaitos.fi/rss/saa"
+        name: FMI-saa
+        critical: false
+      - url: "https://bee-health.extension.org/feed/"
+        name: BeeHealth
+        critical: false
+      - url: "https://www.honeybeeworld.com/feed/"
+        name: HoneybeeWorld
+        critical: false
+      - url: "https://blog.home-assistant.io/atom.xml"
+        name: HA-blog
+        critical: false
 mqtt:
   enabled: false
   host: "192.168.1.100"

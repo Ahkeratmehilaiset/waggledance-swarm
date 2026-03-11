@@ -1,5 +1,43 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [0.9.2] — 2026-03-11
+
+### Production Hardening & Live Optimization
+
+#### Fixed
+- **V1 API wiring:** `self.micro_model = v1` in `_warm_caches()` — API now exposes V1 stats (was always 0)
+- **Agent rotation bias:** GapWeightedScheduler `max()` → sum for fact counts, category rotation 33%→50%
+- **Seasonal boost:** Conditional on knowledge gap + reduced 1.5x→1.3x (prevents beekeeper domination)
+- **6 production bugs:** Silent exceptions, WebSocket callback leak, throttle miscalibration, queue cap
+- **CogGraph RT edges:** `_fact_id` NameError before assignment
+- **Round Table API:** Dashboard-compatible fields (agreement, discussion)
+- **TrustEngine API:** `_cache` not `_scores` for agents_tracked; stats from SQLite
+- **Unicode chat bug:** cp1252 encoding crash on Windows console
+- **Novelty collapse:** Night learning convergence detector reset fix
+- **Agent field:** Chat API + metrics `model_used` in enrichment logs
+- **QualityGate:** Silent novelty check exception now logged
+- **AgentGridPanel:** Data format + finetune rotation + periodic checks scheduling
+- **Rejection category:** `not_curated` → `not_curated_quality`
+- **Test alignment:** idle 30→15min, novelty 0.85→0.80, `_run_periodic_checks` refactor
+
+#### Improved
+- **Domain-aware night learning:** Agents generate content in their own domain
+- **Night learning params:** Batch 3→8, benchmark 5→2, idle 30→15min, novelty 0.85→0.80
+- **Composite scoring:** Anti-ceiling bias (10.0→9.2), 50/50 weights, generic penalty
+- **MicroModel V1 fallback:** `memory_engine.py` uses `_v1_engine` in prefilter route
+- **Batch embedding:** GapWeightedScheduler embed scan performance
+- **LLM validation prompt:** Less strict ("When unsure, prefer VALID")
+- **Self-generate candidates:** 3→5 per cycle, rotating prompt templates
+
+#### Added
+- **MAGMA deep wiring:** Cross-agent search, provenance tracker, boilerplate filter
+- **CognitiveGraph enrichment:** Round Table edges + MAGMA stats API
+- **Anti-repetition API:** Production endpoints for enrichment stats
+- `tools/live_monitor.py` — continuous monitoring (5-min intervals, JSONL output)
+
+#### Test Results
+- **50/50 suites, 698 ok, 0 fail, 15 warn, Health 100/100**
+
 ## [0.9.1] — 2026-03-10
 
 ### Week 11 Sprint — Data Quality & Learning Pipeline

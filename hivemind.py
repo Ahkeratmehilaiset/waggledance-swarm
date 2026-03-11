@@ -1,8 +1,8 @@
 """
-WaggleDance Swarm AI — Swarm Queen v0.9.1
+WaggleDance Swarm AI — Swarm Queen v0.9.2
 ===========================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v0.9.1 • Built: 2026-03-10
+Claude 4.6 • v0.9.2 • Built: 2026-03-11
 
 Keskusagentti joka orkesteroi kaikkea.
 

@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-0.9.1-green)
+![Version](https://img.shields.io/badge/version-0.9.2-green)
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
@@ -27,7 +27,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 
 **Response time improves over use:** ~3,000ms (cold, full LLM path) → ~55ms (bilingual ChromaDB) → ~0.5ms (Hot Cache hit for previously seen queries).
 
-45/45 test suites pass (700+ tests across 45 suites, measured locally; 4 skipped without Ollama). No subscription, no API keys required.
+50/50 test suites pass (698 tests across 50 suites, measured locally; 4 skipped without Ollama). No subscription, no API keys required.
 
 ---
 
@@ -68,7 +68,7 @@ WaggleDance is a local-first AI system where 75 specialized agents communicate t
 - **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
 - **MicroModel V3 (LoRA)** — Phi-3.5-mini pipeline validated (2.92GB VRAM), full training deferred
-- **CI runs basic test suite** — full 45-suite validation still requires local `tools/waggle_backup.py`
+- **CI runs basic test suite** — full 50-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
@@ -343,7 +343,7 @@ python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **45/45 suites GREEN, 700+ tests, 0 failures** (4 suites skipped without Ollama).
+Expected: **50/50 suites GREEN, 698 tests, 0 failures** (4 suites skipped without Ollama).
 
 ---
 
@@ -367,7 +367,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 45 test suites (700+ tests)
+├── tests/               # 50 test suites (698 tests)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -444,7 +444,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | 45/45 GREEN, 700+ tests |
+| CI pipeline | GitHub Actions | 50/50 GREEN, 698 tests |
 
 ---
 
@@ -515,7 +515,7 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all 45 suites pass
+4. Ensure all 50 suites pass
 5. Submit a pull request
 
 ### Development Setup

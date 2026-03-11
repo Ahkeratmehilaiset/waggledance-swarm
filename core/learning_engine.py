@@ -244,6 +244,7 @@ class LearningEngine:
         self._experiments: Dict[str, PromptExperiment] = {}
         self._quality_history: deque = deque(maxlen=200)
         self._cycle_count = 0
+        self._seen_hashes: set = set()  # Dedup: content hashes of curated responses
 
         # ── Tiedostopolut ─────────────────────────────
         self._curated_path = Path("data/finetune_curated.jsonl")
@@ -348,9 +349,9 @@ class LearningEngine:
     # ═══════════════════════════════════════════════════════════
 
     async def _evaluate_queue(self):
-        """Arvioi max 3 vastausta per sykli (ei kuormita Ollamaa)."""
+        """Arvioi max 8 vastausta per sykli (optimoitu GPU-käytölle)."""
         evaluated = 0
-        max_per_cycle = 3
+        max_per_cycle = 8
 
         while self._eval_queue and evaluated < max_per_cycle:
             item = self._eval_queue.popleft()
@@ -424,23 +425,32 @@ class LearningEngine:
         return None
 
     def _composite_score(self, score: QualityScore, item: dict) -> float:
-        """Composite scoring: LLM score (60%) + length bonus + specificity.
+        """Composite scoring: LLM score (60%) + length + specificity + uniqueness.
 
         Produces a non-binary distribution instead of relying solely on LLM.
+        Includes anti-ceiling bias: penalizes suspiciously perfect 10/10 scores
+        from small models that tend to give binary 8 or 10.
         """
         llm_score = score.score
         response = item.get("response", "")
 
+        # Anti-ceiling bias: LLM models like llama3.2:1b give 10/10 too freely
+        # Discount perfect scores slightly to spread the distribution
+        if llm_score >= 10.0:
+            llm_score = 9.2  # Cap raw 10 to 9.2 — still high, but not ceiling
+
         # Length bonus: reward answers of reasonable length (50-300 chars)
         resp_len = len(response.strip())
         if resp_len < 20:
-            length_bonus = -1.0
+            length_bonus = -1.5
         elif resp_len < 50:
-            length_bonus = 0.0
+            length_bonus = -0.3
         elif resp_len <= 300:
             length_bonus = 0.5
+        elif resp_len <= 600:
+            length_bonus = 0.3
         else:
-            length_bonus = 0.2  # Slightly shorter bonus for very long
+            length_bonus = 0.1  # Very long answers often ramble
 
         # Specificity: reward answers with numbers, Finnish terms, etc.
         specificity_bonus = 0.0
@@ -448,15 +458,23 @@ class LearningEngine:
         if re.search(r'\d+', response):
             specificity_bonus += 0.3  # Contains numbers
         bee_terms = ["mehiläi", "pesä", "hunaj", "varroa", "kuningat",
-                     "kehä", "poikk", "tarha"]
-        if any(t in response.lower() for t in bee_terms):
-            specificity_bonus += 0.3  # Domain-specific terms
+                     "kehä", "poikk", "tarha", "siitepöly", "nektar",
+                     "rakenn", "talveh", "pölyt"]
+        matches = sum(1 for t in bee_terms if t in response.lower())
+        specificity_bonus += min(matches * 0.2, 0.6)  # Cap at 0.6
 
-        # Weighted composite: LLM 60%, adjustments 40%
-        composite = (llm_score * 0.6
-                     + (llm_score + length_bonus + specificity_bonus) * 0.4)
+        # Uniqueness: penalize very generic answers
+        generic_markers = ["yleisesti", "yleensä", "tietysti", "luonnollisesti",
+                          "generally", "typically", "of course", "obviously"]
+        generic_count = sum(1 for g in generic_markers if g in response.lower())
+        uniqueness_penalty = min(generic_count * -0.3, 0.0)
 
-        return max(1.0, min(10.0, composite))
+        # Weighted composite: LLM 50%, adjustments 50%
+        composite = (llm_score * 0.50
+                     + (llm_score + length_bonus + specificity_bonus
+                        + uniqueness_penalty) * 0.50)
+
+        return max(1.0, min(10.0, round(composite, 1)))
 
     async def _process_score(self, score: QualityScore, item: dict):
         """Käsittele arvioitu vastaus: päivitä kaikki järjestelmät."""
@@ -533,6 +551,7 @@ class LearningEngine:
                 {"role": "assistant", "content": item["response"]},
             ],
             "agent_type": score.agent_type,
+            "score": score.score,
             "quality_score": score.score,
             "reasoning": score.reasoning,
             "timestamp": datetime.now().isoformat(),
@@ -542,21 +561,43 @@ class LearningEngine:
             finetune_entry["messages"].insert(
                 0, {"role": "system", "content": _sys_content})
 
-        # Auto-generate reasoning if empty
+        # Auto-generate reasoning if empty — include content signals
         if not score.reasoning:
+            _resp = item.get("response", "")
+            _resp_len = len(_resp.strip())
             if score.score < 3.0:
-                score.reasoning = "very_low_quality"
+                score.reasoning = f"very_low_quality (len={_resp_len})"
             elif score.score < 5.0:
-                score.reasoning = "below_average"
+                score.reasoning = f"below_average (score={score.score:.1f}, len={_resp_len})"
             elif score.score < self.min_score_for_finetune:
-                score.reasoning = "not_curated_quality"
+                score.reasoning = f"not_curated (score={score.score:.1f})"
+            elif _resp_len < 30:
+                score.reasoning = f"short_response (len={_resp_len})"
+            elif "ASSUMPTIONS AND CONTEXT" in _resp or "OLETUKSET JA KONTEKSTI" in _resp:
+                score.reasoning = "boilerplate_content"
             else:
-                score.reasoning = "auto_accepted"
+                score.reasoning = f"auto_accepted (score={score.score:.1f}, len={_resp_len})"
             finetune_entry["reasoning"] = score.reasoning
 
         if score.score >= self.min_score_for_finetune:
-            self._append_jsonl(self._curated_path, finetune_entry)
-            self.stats["total_curated"] += 1
+            # Dedup: hash the response content, reject exact/near duplicates
+            import hashlib as _hl
+            _resp_text = item.get("response", "").strip()[:200]
+            _content_hash = _hl.md5(_resp_text.encode("utf-8", errors="replace")).hexdigest()[:12]
+            if _content_hash in self._seen_hashes:
+                finetune_entry["rejection_reason"] = "duplicate_content"
+                finetune_entry["reasoning"] = "duplicate_content"
+                self._append_jsonl(self._rejected_path, finetune_entry)
+                self.stats["total_rejected"] += 1
+                logger.debug(f"Dedup rejected: {_resp_text[:60]}...")
+            else:
+                self._seen_hashes.add(_content_hash)
+                # Cap dedup set to prevent memory growth
+                if len(self._seen_hashes) > 50000:
+                    # Keep last ~40k by clearing and re-adding recent
+                    self._seen_hashes.clear()
+                self._append_jsonl(self._curated_path, finetune_entry)
+                self.stats["total_curated"] += 1
         else:
             # Add rejection reason to rejected entries
             finetune_entry["rejection_reason"] = score.reasoning

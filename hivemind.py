@@ -575,6 +575,21 @@ DELEGATION RULES (IMPORTANT):
                 except Exception as e:
                     print(f"  ⚠️  MAGMA Cognitive Graph: {e}", flush=True)
 
+                # MAGMA Layer 2: ReplayEngine + AgentRollback
+                try:
+                    from core.replay_engine import ReplayEngine
+                    from core.agent_rollback import AgentRollback
+                    from core.chromadb_adapter import ChromaDBAdapter
+                    _adapter = ChromaDBAdapter(self.consciousness.memory)
+                    self._replay_engine = ReplayEngine(
+                        _adapter, self._audit_log,
+                        replay_store=getattr(self, '_replay_store', None),
+                        cognitive_graph=getattr(self, '_cognitive_graph', None))
+                    self._agent_rollback = AgentRollback(_adapter, self._audit_log)
+                    print("  ✅ MAGMA ReplayEngine + AgentRollback wired", flush=True)
+                except Exception as e:
+                    print(f"  ⚠️  MAGMA Replay/Rollback: {e}", flush=True)
+
                 # Phase 3: Init task queue
                 self.consciousness.init_task_queue()
 
@@ -779,6 +794,15 @@ DELEGATION RULES (IMPORTANT):
                     log.info(f"Consciousness flush: {flushed} facts stored")
             except Exception as e:
                 log.warning(f"Consciousness flush: {e}")
+
+        # MAGMA: Save CognitiveGraph to disk before shutdown
+        _cg = getattr(self, '_cognitive_graph', None)
+        if _cg:
+            try:
+                _cg.save()
+                log.info(f"CognitiveGraph saved: {_cg.stats()}")
+            except Exception as e:
+                log.warning(f"CognitiveGraph save failed: {e}")
 
         # Phase 9: Save code review suggestions
         if hasattr(self, 'code_reviewer') and self.code_reviewer:
@@ -1250,17 +1274,24 @@ DELEGATION RULES (IMPORTANT):
                 cache.put(q, a, score=0.90, source="cache_warming")
                 hot_cache_count += 1
 
-        # 2. Micro-Model V1 warming
+        # 2. Micro-Model V1 warming — load persisted patterns directly
         v1_count = 0
-        if (hasattr(self, 'consciousness') and self.consciousness
-                and self.consciousness.micro_model
-                and hasattr(self.consciousness.micro_model, 'v1')):
-            v1 = self.consciousness.micro_model.v1
-            v1_pairs = [{"pattern": q, "answer": a, "confidence": 0.92}
-                        for q, a, _aid in usable]
-            if v1_pairs:
-                v1.train(v1_pairs)
-                v1_count = v1.stats.get("lookup_count", 0)
+        try:
+            from core.micro_model import PatternMatchEngine
+            v1 = PatternMatchEngine(load_configs=True)
+            v1_count = len(v1._lookup)
+            # If V1 has no patterns yet but we have curated data, train now
+            if v1_count == 0 and usable:
+                v1_pairs = [{"pattern": q, "answer": a, "confidence": 0.92}
+                            for q, a, _aid in usable]
+                if v1_pairs:
+                    v1.train(v1_pairs)
+                    v1_count = len(v1._lookup)
+            # Store V1 on consciousness for predict() routing
+            if hasattr(self, 'consciousness') and self.consciousness:
+                self.consciousness._v1_engine = v1
+        except Exception as e:
+            log.warning(f"V1 startup warm: {e}")
 
         if hot_cache_count > 0 or v1_count > 0:
             print(f"  ✅ Cache warming: hot_cache={hot_cache_count}, "

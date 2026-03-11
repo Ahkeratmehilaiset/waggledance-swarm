@@ -226,6 +226,26 @@ class HeartbeatController:
                 if self._heartbeat_count % 50 == 0:
                     self._track_task(self._maybe_weekly_report())
 
+                # ── MAGMA: CognitiveGraph periodic save (every 50 HBs) ──
+                if self._heartbeat_count % 50 == 0:
+                    _cg = getattr(self, '_cognitive_graph', None)
+                    if _cg:
+                        try:
+                            _cg.save()
+                            _s = _cg.stats()
+                            log.info(f"CognitiveGraph saved: {_s['nodes']} nodes, {_s['edges']} edges")
+                        except Exception as e:
+                            log.warning(f"CognitiveGraph periodic save failed: {e}")
+
+                # ── MAGMA: TrustEngine decay inactive agents (every 100 HBs) ──
+                if self._heartbeat_count % 100 == 0:
+                    _te = getattr(self, '_trust_engine', None)
+                    if _te:
+                        try:
+                            _te.decay_inactive()
+                        except Exception as e:
+                            log.warning(f"TrustEngine decay failed: {e}")
+
                 # Odottavat tehtävät (max 1 kerrallaan)
                 if _pending < _MAX_PENDING:
                     pending_tasks = await self.memory.get_tasks(status="pending")

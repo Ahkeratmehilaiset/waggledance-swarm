@@ -67,3 +67,38 @@ def register_magma_routes(app, hivemind):
             return {"ok": False}
         prev = bm.deactivate()
         return {"ok": True, "previous": prev}
+
+    # ── ReplayEngine endpoints ──────────────────────────────
+
+    @app.get("/api/magma/replay/manifest")
+    async def magma_replay_manifest(agent_id: str = None):
+        re = getattr(hivemind, '_replay_engine', None)
+        if not re:
+            return {"error": "ReplayEngine not wired"}
+        return re.get_manifest(agent_id=agent_id)
+
+    @app.get("/api/magma/replay/deduplicate")
+    async def magma_replay_dedup():
+        re = getattr(hivemind, '_replay_engine', None)
+        if not re:
+            return {"error": "ReplayEngine not wired"}
+        groups = re.deduplicate()
+        return {"duplicate_groups": len(groups),
+                "groups": groups[:20]}
+
+    # ── AgentRollback endpoints ─────────────────────────────
+
+    @app.get("/api/magma/rollback/preview/{agent_id}")
+    async def magma_rollback_preview(agent_id: str):
+        ar = getattr(hivemind, '_agent_rollback', None)
+        if not ar:
+            return {"error": "AgentRollback not wired"}
+        return ar.preview(agent_id)
+
+    @app.post("/api/magma/rollback/{agent_id}")
+    async def magma_rollback_execute(agent_id: str):
+        ar = getattr(hivemind, '_agent_rollback', None)
+        if not ar:
+            return {"error": "AgentRollback not wired"}
+        result = ar.rollback(agent_id)
+        return {"ok": True, "result": result}

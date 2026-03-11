@@ -47,6 +47,48 @@ class TrainingDataCollector:
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
+    @staticmethod
+    def _extract_core_question(raw_prompt: str) -> str:
+        """Extract the actual question/task from a full LLM prompt.
+
+        Heartbeat prompts contain agent metadata, dates, observations etc.
+        We need just the learning task or the core question.
+        """
+        text = raw_prompt.strip()
+
+        # Extract LEARNING TASK content if present
+        if "LEARNING TASK" in text:
+            parts = text.split("LEARNING TASK")
+            if len(parts) > 1:
+                task_part = parts[1]
+                # Remove the type prefix like "(gap_fill):"
+                task_part = re.sub(r'^\s*\([^)]+\)\s*:\s*', '', task_part)
+                # Take until next section or end
+                for stop in ["\n\n", "Your recent", "Your observations",
+                             "Other agents", "Provide a factual"]:
+                    if stop in task_part:
+                        task_part = task_part[:task_part.index(stop)]
+                return task_part.strip()
+
+        # If it's a chat question (short, no agent metadata)
+        if len(text) < 200 and "You are" not in text:
+            return text
+
+        # For long prompts with agent context, try to find the actual question
+        # Look for question markers
+        for marker in ["Research something NEW", "React to", "Evaluate your",
+                       "Synthesize ONE", "propose ONE"]:
+            if marker in text:
+                return marker
+
+        # Fallback: use last line that looks like a question/instruction
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        if lines:
+            # Last non-empty line is usually the instruction
+            return lines[-1][:200]
+
+        return text[:200]
+
     def collect_training_pair(self, question: str, answer: str,
                               source: str, confidence: float) -> bool:
         """Add a single Q&A pair if it meets quality threshold.
@@ -126,7 +168,7 @@ class TrainingDataCollector:
                         role = msg.get("role", "")
                         content = msg.get("content", "")
                         if role == "user" and content:
-                            question = content
+                            question = self._extract_core_question(content)
                         elif role == "assistant" and content:
                             answer = content
 

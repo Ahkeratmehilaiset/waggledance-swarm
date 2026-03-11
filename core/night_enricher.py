@@ -112,6 +112,11 @@ class SourceMetrics:
     def pause(self, seconds: float):
         self._pause_until = time.monotonic() + seconds
 
+    def reset_novelty_window(self):
+        """Clear rolling novelty window (call after convergence unpause)."""
+        self._novelty_results.clear()
+        self._pass_results.clear()
+
     @property
     def consecutive_failures(self) -> int:
         return self._consecutive_failures
@@ -166,10 +171,49 @@ class EnrichmentSource(ABC):
 class SelfGenerateSource(EnrichmentSource):
     """Generate facts via llama1b. Reuses pattern from FactEnrichmentEngine."""
 
-    def __init__(self, llm_fast, llm_validate):
+    # Prompt templates rotated to produce varied output
+    _PROMPT_TEMPLATES = [
+        "Generate {count} specific facts about '{topic}' for Finnish "
+        "beekeeping. Include numbers, temperatures, or dates. "
+        "Each fact on its own line. English only.{avoid}",
+
+        "List {count} lesser-known details about '{topic}' that a Finnish "
+        "beekeeper should know. Focus on {angle}. "
+        "One fact per line, English only.{avoid}",
+
+        "What are {count} practical tips about '{topic}' for Nordic "
+        "beekeeping (latitude 60-70°N)? Include specific measurements "
+        "or techniques. One per line, English.{avoid}",
+
+        "Give {count} facts about '{topic}' focusing on common mistakes "
+        "or misconceptions in beekeeping. Be specific and factual. "
+        "One per line, English.{avoid}",
+
+        "Describe {count} research findings or scientific facts about "
+        "'{topic}' relevant to Apis mellifera in cold climates. "
+        "Include species names or studies. One per line, English.{avoid}",
+    ]
+
+    # Sub-topic angles for drilling deeper into broad topics
+    _TOPIC_ANGLES = [
+        "seasonal timing and calendar",
+        "equipment and tools needed",
+        "common problems and solutions",
+        "scientific research and measurements",
+        "Finnish/Nordic-specific conditions",
+        "cost-effectiveness and economics",
+        "safety and health considerations",
+        "historical practices vs modern methods",
+        "environmental and ecological impact",
+        "beginner vs advanced techniques",
+    ]
+
+    def __init__(self, llm_fast, llm_validate, consciousness=None):
         super().__init__()
         self.llm_fast = llm_fast
         self.llm_validate = llm_validate
+        self._consciousness = consciousness
+        self._prompt_idx = 0
 
     @property
     def source_id(self) -> str:
@@ -178,15 +222,38 @@ class SelfGenerateSource(EnrichmentSource):
     def is_available(self) -> bool:
         return self.llm_fast is not None and self.llm_validate is not None
 
+    def _sample_existing_facts(self, topic: str, n: int = 3) -> str:
+        """Sample existing facts for a topic to avoid regenerating them."""
+        if not self._consciousness:
+            return ""
+        try:
+            results = self._consciousness.memory.similarity_search(
+                topic, k=n)
+            if results:
+                snippets = [r.page_content[:80] for r in results[:n]]
+                return (
+                    "\nAvoid repeating these known facts:\n- "
+                    + "\n- ".join(snippets))
+        except Exception:
+            pass
+        return ""
+
     async def generate_candidates(self, topic: str, agent_id: str,
                                   count: int = 3,
                                   throttle=None) -> List[EnrichmentCandidate]:
-        gen_prompt = (
-            f"Generate {count} specific, verifiable facts about '{topic}' "
-            f"relevant to Finnish beekeeping (Apis mellifera). "
-            f"Include concrete details: numbers, dates, temperatures, "
-            f"species names, or practical techniques. "
-            f"Each fact on its own line. English only.")
+        # Rotate through prompt templates
+        tmpl = self._PROMPT_TEMPLATES[
+            self._prompt_idx % len(self._PROMPT_TEMPLATES)]
+        self._prompt_idx += 1
+
+        # Pick a random angle for sub-topic drilling
+        angle = random.choice(self._TOPIC_ANGLES)
+
+        # Sample existing facts to avoid repetition
+        avoid = self._sample_existing_facts(topic)
+
+        gen_prompt = tmpl.format(
+            count=count, topic=topic, angle=angle, avoid=avoid)
         try:
             if throttle:
                 async with throttle:
@@ -1120,6 +1187,16 @@ class ConvergenceDetector:
         if metrics.is_paused:
             return False  # Already paused (by AdaptiveTuner or previous convergence)
 
+        # Detect unpause transition: reset novelty window so old data
+        # doesn't immediately re-trigger convergence with new prompts
+        if (source_id in self._converged_at
+                and not metrics._novelty_results):
+            # Just unpaused and window was reset — give it a fresh start
+            del self._converged_at[source_id]
+            self._consecutive_below[source_id] = 0
+            log.info(f"ConvergenceDetector: '{source_id}' unpaused, "
+                     f"fresh novelty window")
+
         # Need enough data before deciding
         if metrics._total_checked < self.window_size:
             return False
@@ -1145,8 +1222,10 @@ class ConvergenceDetector:
                         f"is last source, skipping pause")
                     return False
 
-            # Convergence confirmed — pause the source
+            # Convergence confirmed — pause the source and reset window
+            # so after unpause, fresh data determines next convergence
             metrics.pause(self.pause_s)
+            metrics.reset_novelty_window()
             self._consecutive_below[source_id] = 0
             self._converged_at[source_id] = time.monotonic()
             self._total_convergences += 1
@@ -1209,7 +1288,8 @@ class NightEnricher:
         self.source_manager = SourceManager()
 
         # Register sources
-        self._self_gen = SelfGenerateSource(llm_fast, llm_validate)
+        self._self_gen = SelfGenerateSource(llm_fast, llm_validate,
+                                                consciousness=consciousness)
         self.source_manager.register(self._self_gen)
 
         web_budget = config.get("advanced_learning", {}).get(

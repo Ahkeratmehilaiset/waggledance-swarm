@@ -586,8 +586,13 @@ loadFeeds();
         if len(body) > 100_000:  # 100KB limit
             return JSONResponse({"error": "Message too large"}, status_code=413)
         try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
+            # Try UTF-8 first, fall back to latin-1 (Windows CP1252 superset)
+            try:
+                text = body.decode("utf-8")
+            except UnicodeDecodeError:
+                text = body.decode("latin-1")
+            data = json.loads(text)
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
         msg = data.get("message", "")
         lang = data.get("lang", "auto")
@@ -616,8 +621,8 @@ loadFeeds();
             return {"response": response, "message_id": msg_id,
                     "conversation_id": conv_id, "agent": agent_name}
         except Exception as e:
-            log.error("API error: %s", e)
-            return {"error": "Internal error"}
+            log.error("API chat error: %s", e, exc_info=True)
+            return JSONResponse({"error": "Internal error"}, status_code=500)
 
     @app.get("/api/history")
     async def chat_history_list(request: Request):

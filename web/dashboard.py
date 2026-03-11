@@ -600,9 +600,12 @@ loadFeeds();
             t0 = time.time()
             response = await hivemind.chat(msg, language=lang)
             elapsed_ms = int((time.time() - t0) * 1000)
-            # Extract agent name from response prefix like "[Beekeeper] ..."
+            # Get agent name from ChatHandler (reliable) or parse from response (fallback)
             agent_name = None
-            if response and response.startswith("["):
+            _ch = getattr(hivemind, '_chat_handler', None)
+            if _ch:
+                agent_name = getattr(_ch, '_last_chat_agent_id', None)
+            if not agent_name and response and response.startswith("["):
                 bracket_end = response.find("]")
                 if bracket_end > 0:
                     agent_name = response[1:bracket_end]

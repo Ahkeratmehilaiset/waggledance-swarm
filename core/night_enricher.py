@@ -182,9 +182,11 @@ class SelfGenerateSource(EnrichmentSource):
                                   count: int = 3,
                                   throttle=None) -> List[EnrichmentCandidate]:
         gen_prompt = (
-            f"Generate {count} factual statements about '{topic}' "
-            f"for Finnish beekeeping. Be specific and practical. "
-            f"One statement per line. English only.")
+            f"Generate {count} specific, verifiable facts about '{topic}' "
+            f"relevant to Finnish beekeeping (Apis mellifera). "
+            f"Include concrete details: numbers, dates, temperatures, "
+            f"species names, or practical techniques. "
+            f"Each fact on its own line. English only.")
         try:
             if throttle:
                 async with throttle:
@@ -320,19 +322,80 @@ class ChatHistorySource(EnrichmentSource):
 
 
 class RssFeedSource(EnrichmentSource):
-    """Stub: extract facts from RSS feed entries. Not yet implemented."""
+    """Fetch facts from RSS feeds via feedparser, route through QualityGate."""
+
+    def __init__(self, feeds: Optional[List[dict]] = None):
+        super().__init__()
+        self._feeds = feeds or []
+        self._seen_ids: set = set()
+        self._feedparser_ok: Optional[bool] = None
 
     @property
     def source_id(self) -> str:
         return "rss_feed"
 
     def is_available(self) -> bool:
-        return False  # Stub
+        if self._feedparser_ok is None:
+            try:
+                import feedparser  # noqa: F401
+                self._feedparser_ok = bool(self._feeds)
+            except ImportError:
+                self._feedparser_ok = False
+        return self._feedparser_ok
 
     async def generate_candidates(self, topic: str, agent_id: str,
                                   count: int = 3,
                                   throttle=None) -> List[EnrichmentCandidate]:
-        return []  # Stub
+        if not self.is_available():
+            return []
+        import feedparser
+        import asyncio
+        import re
+
+        loop = asyncio.get_running_loop()
+        candidates = []
+
+        for feed_cfg in self._feeds:
+            if len(candidates) >= count:
+                break
+            url = feed_cfg.get("url", "")
+            name = feed_cfg.get("name", url)
+            if not url:
+                continue
+            try:
+                parsed = await loop.run_in_executor(None, feedparser.parse, url)
+            except Exception as e:
+                log.warning(f"RssFeedSource: parse failed {name}: {e}")
+                continue
+            if not parsed or not hasattr(parsed, "entries"):
+                continue
+            for entry in parsed.entries[:5]:
+                eid = getattr(entry, "id", None) or getattr(entry, "link", "")
+                if not eid or eid in self._seen_ids:
+                    continue
+                self._seen_ids.add(eid)
+                title = getattr(entry, "title", "")
+                summary = getattr(entry, "summary", "")[:300]
+                # Strip HTML
+                summary = re.sub(r"<[^>]+>", "", summary).strip()
+                if not title:
+                    continue
+                text = f"News ({name}): {title}"
+                if summary:
+                    text += f" - {summary[:150]}"
+                candidates.append(EnrichmentCandidate(
+                    text=text,
+                    source_id=self.source_id,
+                    agent_id=agent_id,
+                    gap_topic=topic,
+                ))
+                if len(candidates) >= count:
+                    break
+
+        if candidates:
+            log.info(f"RssFeedSource: {len(candidates)} candidates "
+                     f"from {len(self._feeds)} feeds")
+        return candidates
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -430,9 +493,12 @@ class QualityGate:
         self._step_stats["llm_validate"]["checked"] += 1
         try:
             val_prompt = (
-                f"Fact-check this beekeeping statement:\n\"{text}\"\n\n"
-                f"Reply ONLY 'VALID' or 'INVALID'. "
-                f"VALID = factually correct for Finnish beekeeping.")
+                f"Is this statement useful for a Finnish beekeeper?\n"
+                f"\"{text}\"\n\n"
+                f"Reply ONLY 'VALID' or 'INVALID'.\n"
+                f"VALID = correct, practical, or educational.\n"
+                f"INVALID = factually wrong, nonsensical, or harmful.\n"
+                f"When unsure, prefer VALID.")
             if throttle:
                 async with throttle:
                     val_resp = await self.llm_validate.generate(
@@ -1162,7 +1228,8 @@ class NightEnricher:
             log.info("ChatHistorySource disabled by config")
 
         if ne_cfg.get("rss_feed_enabled", False):
-            self.source_manager.register(RssFeedSource())
+            rss_feeds = config.get("feeds", {}).get("rss", {}).get("feeds", [])
+            self.source_manager.register(RssFeedSource(feeds=rss_feeds))
         else:
             log.info("RssFeedSource disabled by config")
 
@@ -1332,7 +1399,7 @@ class NightEnricher:
         t0 = time.monotonic()
         try:
             candidates = await source.generate_candidates(
-                topic, agent_id, 3, throttle)
+                topic, agent_id, 5, throttle)
         except Exception as e:
             log.error(f"NightEnricher source '{source_id}' error: {e}")
             return 0
@@ -1410,8 +1477,9 @@ class NightEnricher:
 
         # Log enrichment cycle to structured logger
         try:
-            from hivemind import StructuredLogger
+            from core.hive_support import StructuredLogger
             _sl = StructuredLogger()
+            _model = getattr(self.llm, 'model', 'unknown') if self.llm else 'unknown'
             _sl.log_learning(
                 event="enrichment_cycle",
                 count=stored,
@@ -1419,6 +1487,7 @@ class NightEnricher:
                 source=source_id or "none",
                 extra={
                     "agent_id": agent_id,
+                    "model_used": _model,
                     "topic": topic[:60],
                     "candidates_generated": len(candidates) if candidates else 0,
                     "facts_stored": stored,

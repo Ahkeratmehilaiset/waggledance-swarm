@@ -26,7 +26,7 @@ def register_magma_routes(app, hivemind):
             result["cognitive_graph"] = cg.stats()
         if te:
             result["trust_engine"] = {
-                "agents_tracked": len(te._scores) if hasattr(te, '_scores') else 0,
+                "agents_tracked": len(te._cache) if hasattr(te, '_cache') else 0,
             }
         return result
 

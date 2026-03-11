@@ -172,27 +172,59 @@ class SelfGenerateSource(EnrichmentSource):
     """Generate facts via llama1b. Reuses pattern from FactEnrichmentEngine."""
 
     # Prompt templates rotated to produce varied output
+    # {domain} is filled per agent type (beekeeping, cottage life, etc.)
     _PROMPT_TEMPLATES = [
-        "Generate {count} specific facts about '{topic}' for Finnish "
-        "beekeeping. Include numbers, temperatures, or dates. "
+        "Generate {count} specific facts about '{topic}' for {domain}. "
+        "Include numbers, temperatures, or dates. "
         "Each fact on its own line. English only.{avoid}",
 
-        "List {count} lesser-known details about '{topic}' that a Finnish "
-        "beekeeper should know. Focus on {angle}. "
+        "List {count} lesser-known details about '{topic}' relevant to "
+        "{domain}. Focus on {angle}. "
         "One fact per line, English only.{avoid}",
 
-        "What are {count} practical tips about '{topic}' for Nordic "
-        "beekeeping (latitude 60-70°N)? Include specific measurements "
-        "or techniques. One per line, English.{avoid}",
+        "What are {count} practical tips about '{topic}' for {domain}? "
+        "Include specific measurements or techniques. "
+        "One per line, English.{avoid}",
 
         "Give {count} facts about '{topic}' focusing on common mistakes "
-        "or misconceptions in beekeeping. Be specific and factual. "
+        "or misconceptions in {domain}. Be specific and factual. "
         "One per line, English.{avoid}",
 
         "Describe {count} research findings or scientific facts about "
-        "'{topic}' relevant to Apis mellifera in cold climates. "
+        "'{topic}' relevant to {domain}. "
         "Include species names or studies. One per line, English.{avoid}",
     ]
+
+    # Agent type -> domain context for prompt generation
+    _AGENT_DOMAINS = {
+        # Core bee agents
+        "beekeeper": "Finnish beekeeping (Apis mellifera, latitude 60-65°N)",
+        "disease_monitor": "bee disease management in Nordic conditions",
+        "swarm_watcher": "honeybee swarm behavior and prevention",
+        "nectar_scout": "nectar flows and forage plants in Finland",
+        "flight_weather": "weather conditions affecting bee flight in Finland",
+        "hive_temperature": "beehive temperature and humidity management",
+        "hive_security": "protecting beehives from bears and pests in Finland",
+        # Nature agents
+        "ornithologist": "bird species and ecology in Finnish countryside",
+        "phenologist": "phenological events and seasonal indicators in Finland",
+        "forester": "Finnish forestry and woodland management",
+        "wildlife_ranger": "wildlife management in Finnish rural areas",
+        "nature_photographer": "nature photography in Finnish landscapes",
+        "entomologist": "insect ecology in Finnish ecosystems",
+        "pest_control": "pest management in Finnish gardens and agriculture",
+        # Weather/water
+        "meteorologist": "weather patterns and microclimate in southern Finland",
+        "horticulturist": "Finnish gardening and plant cultivation (zones 1a-5b)",
+        # Property/tech
+        "electrician": "rural electrical systems in Finnish cottages",
+        "chimney_sweep": "chimney and fireplace maintenance in Finnish homes",
+        "sauna_master": "Finnish sauna culture and maintenance",
+        "carpenter": "woodworking and building in Finnish conditions",
+        # Cottage life
+        "wilderness_chef": "Finnish wild food, foraging, and outdoor cooking",
+        "firewood": "firewood harvesting and storage in Finland",
+    }
 
     # Sub-topic angles for drilling deeper into broad topics
     _TOPIC_ANGLES = [
@@ -249,11 +281,16 @@ class SelfGenerateSource(EnrichmentSource):
         # Pick a random angle for sub-topic drilling
         angle = random.choice(self._TOPIC_ANGLES)
 
+        # Domain context based on agent type
+        domain = self._AGENT_DOMAINS.get(
+            agent_id, "Finnish rural and cottage life")
+
         # Sample existing facts to avoid repetition
         avoid = self._sample_existing_facts(topic)
 
         gen_prompt = tmpl.format(
-            count=count, topic=topic, angle=angle, avoid=avoid)
+            count=count, topic=topic, angle=angle,
+            domain=domain, avoid=avoid)
         try:
             if throttle:
                 async with throttle:
@@ -559,8 +596,12 @@ class QualityGate:
         # Step 1: Dual LLM validate (phi4-mini VALID/INVALID)
         self._step_stats["llm_validate"]["checked"] += 1
         try:
+            # Domain-aware validation: use agent's topic context
+            _domain = SelfGenerateSource._AGENT_DOMAINS.get(
+                candidate.agent_id, "Finnish rural life")
             val_prompt = (
-                f"Is this statement useful for a Finnish beekeeper?\n"
+                f"Is this statement factually correct and useful "
+                f"for {_domain}?\n"
                 f"\"{text}\"\n\n"
                 f"Reply ONLY 'VALID' or 'INVALID'.\n"
                 f"VALID = correct, practical, or educational.\n"

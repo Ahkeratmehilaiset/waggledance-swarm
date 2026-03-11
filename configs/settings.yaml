@@ -67,7 +67,7 @@ round_table:
   version: 2
 night_mode:
   enabled: true
-  idle_threshold_min: 30
+  idle_threshold_min: 15
   max_hours: 8
   interval_s: 10
 advanced_learning:
@@ -110,22 +110,22 @@ advanced_learning:
     enabled: true
     chat_history_enabled: false
     rss_feed_enabled: true
-    benchmark_count: 5
+    benchmark_count: 2
     rebalance_every: 50
     burst_threshold: 0.80
     burst_max_share: 0.80
-    throttle_pass_rate: 0.15
+    throttle_pass_rate: 0.08
     throttle_window: 30
     throttle_pause_seconds: 300
     gap_high_threshold: 20
     gap_medium_threshold: 50
     gap_normal_threshold: 100
-    novelty_score_threshold: 0.85
+    novelty_score_threshold: 0.80
     dedup_score_threshold: 0.93
     # D1: External source cycle frequencies (0 = disabled)
     ext_web_every_cycles: 10
     ext_distill_every_cycles: 20
-    ext_rss_every_cycles: 50
+    ext_rss_every_cycles: 10
     # D2: Convergence detection
     convergence_novelty_threshold: 0.10
     convergence_patience: 5

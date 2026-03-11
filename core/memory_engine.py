@@ -1513,8 +1513,10 @@ class Consciousness:
         self._total_queries += 1
 
         # Phase 10: Layer -1 — Micro-Model (0.01-1ms)
-        if hasattr(self, 'micro_model') and self.micro_model:
-            mm_result = self.micro_model.predict(message)
+        # Try full orchestrator first, then fallback to standalone V1 engine
+        _mm = self.micro_model or getattr(self, '_v1_engine', None)
+        if _mm:
+            mm_result = _mm.predict(message)
             if mm_result and mm_result.get("confidence", 0) > 0.85:
                 self._prefilter_hits += 1
                 log.info(f"🤖 MicroModel {mm_result.get('method', 'v1')} "

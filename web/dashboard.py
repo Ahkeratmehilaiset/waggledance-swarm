@@ -736,10 +736,20 @@ loadFeeds();
     @app.get("/api/agent_levels")
     @app.get("/api/agents/levels")
     async def agent_levels():
-        """Phase 3: Agent level stats."""
-        if hivemind.agent_levels:
-            return {"levels": hivemind.agent_levels.get_all_stats()}
-        return {"levels": {}}
+        """Phase 3: Agent level stats for dashboard AgentGridPanel."""
+        if not hivemind.agent_levels:
+            return {"levels": {}, "agents": [], "total": 0,
+                    "level_distribution": {}}
+        stats = hivemind.agent_levels.get_all_stats()
+        agents = list(stats.values())
+        from collections import Counter
+        dist = Counter(a.get("level_name", "NOVICE") for a in agents)
+        return {
+            "levels": stats,
+            "agents": agents,
+            "total": len(agents),
+            "level_distribution": dict(dist),
+        }
 
     @app.get("/api/consciousness")
     async def consciousness_stats():

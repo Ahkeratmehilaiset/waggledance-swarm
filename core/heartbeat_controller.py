@@ -195,10 +195,12 @@ class HeartbeatController:
                     self._track_task(
                         _guarded(self._oracle_research_cycle))
 
-                # Phase 3: Round Table (every 20th heartbeat)
+                # Phase 3: Round Table (every 20th heartbeat, offset by 1
+                # to avoid slot competition with reflect/oracle at HB 20/40/60)
                 _rt_every = self.config.get("round_table", {}).get(
                     "every_n_heartbeat", 20)
-                if (self._heartbeat_count % _rt_every == 0
+                if (self._heartbeat_count > 1
+                        and (self._heartbeat_count - 1) % _rt_every == 0
                         and self.spawner
                         and self.config.get("round_table", {}).get("enabled", True)):
                     _rt_version = self.config.get("round_table", {}).get("version", 1)
@@ -456,6 +458,17 @@ class HeartbeatController:
             }
             finetune_path = Path("data/finetune_live.jsonl")
             finetune_path.parent.mkdir(exist_ok=True)
+            # Rotate if >50MB to prevent unbounded growth
+            try:
+                if (finetune_path.exists()
+                        and finetune_path.stat().st_size > 50 * 1024 * 1024):
+                    rotated = finetune_path.parent / (
+                        f"finetune_live_{datetime.now():%Y%m%d}.jsonl")
+                    import os
+                    os.replace(str(finetune_path), str(rotated))
+                    log.info("Rotated finetune_live.jsonl → %s", rotated.name)
+            except Exception:
+                pass
             with open(finetune_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 

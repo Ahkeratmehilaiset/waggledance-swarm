@@ -262,6 +262,11 @@ class NightModeController:
                         "source": "night_enricher",
                     })
                     self._save_learning_progress()
+
+                # Run meta-learning and code review checks (every cycle)
+                # These were previously only in the legacy path below
+                await self._run_periodic_checks()
+
                 return
             except Exception as e:
                 log.error(f"NightEnricher cycle error: {e}")
@@ -348,13 +353,20 @@ class NightModeController:
         except Exception as e:
             log.error(f"Night learning error: {e}")
 
-        # ── Layer 5: Weekly meta-learning check ──
+        # Run periodic checks (meta-learning, code review, micro-model)
+        await self._run_periodic_checks()
+
+    async def _run_periodic_checks(self):
+        """Run meta-learning, code review, and micro-model checks.
+
+        Called from both NightEnricher path and legacy fallback path.
+        """
+        # Layer 5: Weekly meta-learning
         if self.meta_learning and self.meta_learning.is_due():
             try:
                 report = await self.meta_learning.weekly_analysis()
                 applied = await self.meta_learning.auto_apply_safe_optimizations(
                     report.get("suggestions", []))
-                # D3: Also generate standalone weekly_report.json
                 try:
                     self.meta_learning.generate_weekly_report()
                 except Exception as _we:
@@ -369,7 +381,7 @@ class NightModeController:
             except Exception as e:
                 log.error(f"Meta-learning error: {e}")
 
-        # ── Layer 6: Monthly code review check ──
+        # Layer 6: Monthly code review
         if self.code_reviewer and self.code_reviewer.is_due():
             try:
                 suggestions = await self.code_reviewer.monthly_code_review(
@@ -383,7 +395,7 @@ class NightModeController:
             except Exception as e:
                 log.error(f"Code review error: {e}")
 
-        # ── Phase 10: Micro-model training check (every 50 cycles) ──
+        # Phase 10: Micro-model training
         if (self.micro_model
                 and self.micro_model.is_training_due(
                     self._night_mode_facts_learned)):

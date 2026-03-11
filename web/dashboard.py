@@ -1400,4 +1400,74 @@ loadFeeds();
     except Exception as e:
         log.warning(f"MAGMA route not loaded: {e}")
 
+    # Analytics routes (file-based, no hivemind dependency)
+    try:
+        from backend.routes.analytics import router as analytics_router
+        app.include_router(analytics_router)
+    except Exception as e:
+        log.warning(f"Analytics routes not loaded: {e}")
+
+    # Settings routes (reads configs/settings.yaml)
+    try:
+        from backend.routes.settings import router as settings_router
+        app.include_router(settings_router)
+    except Exception as e:
+        log.warning(f"Settings routes not loaded: {e}")
+
+    # Round Table recent discussions (production: from audit log)
+    try:
+        _register_round_table_routes(app, hivemind)
+    except Exception as e:
+        log.warning(f"Round Table routes not loaded: {e}")
+
     return app
+
+
+def _register_round_table_routes(app, hivemind):
+    """Register production Round Table endpoints using audit + consensus tables."""
+
+    @app.get("/api/round-table/recent")
+    async def round_table_recent(limit: int = 5):
+        al = getattr(hivemind, '_audit_log', None)
+        if not al:
+            return {"count": 0, "discussions": []}
+        try:
+            import time as _t
+            now = _t.time()
+            # Query audit log for round_table entries (last 7 days)
+            entries = al.query_by_time_range(
+                now - 7 * 86400, now, agent_id="round_table")
+            # Also read consensus table for richer data (match by timestamp)
+            consensus_list = []
+            try:
+                rows = al._conn.execute(
+                    "SELECT * FROM consensus ORDER BY timestamp DESC "
+                    "LIMIT ?", (limit * 3,)).fetchall()
+                consensus_list = [dict(r) for r in rows]
+            except Exception:
+                pass
+
+            discussions = []
+            for e in entries[-limit:]:
+                ts = e.get("timestamp", 0)
+                # Find nearest consensus entry (within 120s)
+                cons = {}
+                for c in consensus_list:
+                    if abs(c.get("timestamp", 0) - ts) < 120:
+                        cons = c
+                        break
+                agents_str = cons.get("participating_agents", "")
+                agents = [a.split("_")[0] for a in agents_str.split(",")
+                          ] if agents_str else []
+                discussions.append({
+                    "id": e.get("doc_id", ""),
+                    "topic": e.get("details", "")[:120],
+                    "consensus": cons.get("synthesis_text",
+                                          e.get("details", ""))[:400],
+                    "agents": agents,
+                    "agent_count": len(agents),
+                    "timestamp": ts,
+                })
+            return {"count": len(discussions), "discussions": discussions}
+        except Exception:
+            return {"count": 0, "discussions": []}

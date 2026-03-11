@@ -259,10 +259,13 @@ class SelfGenerateSource(EnrichmentSource):
         if not self._consciousness:
             return ""
         try:
-            results = self._consciousness.memory.similarity_search(
-                topic, k=n)
+            q_vec = self._consciousness.embed.embed_query(topic)
+            if not q_vec:
+                return ""
+            results = self._consciousness.memory.search(
+                q_vec, top_k=n, min_score=0.4)
             if results:
-                snippets = [r.page_content[:80] for r in results[:n]]
+                snippets = [r.text[:80] for r in results[:n]]
                 return (
                     "\nAvoid repeating these known facts:\n- "
                     + "\n- ".join(snippets))
@@ -1323,6 +1326,7 @@ class NightEnricher:
 
     def __init__(self, consciousness, llm_fast, llm_validate, config: dict):
         self.consciousness = consciousness
+        self.llm = llm_fast
         ne_cfg = config.get("advanced_learning", {}).get("night_enricher", {})
 
         # Quality gate

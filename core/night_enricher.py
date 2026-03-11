@@ -753,8 +753,8 @@ class QualityGate:
                 vec, top_k=1, min_score=0.0)
             if matches:
                 return matches[0].score
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"QualityGate novelty check error: {e}")
         return 0.0
 
     @property

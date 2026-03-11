@@ -1029,9 +1029,10 @@ class Consciousness:
         self._prefilter_hits = 0
         self._total_queries = 0
 
-        # Learn queue for batch flush
+        # Learn queue for batch flush (capped to prevent unbounded growth)
         self._learn_queue: List[tuple] = []
         self._flush_threshold = 10
+        self._learn_queue_maxlen = 1000
 
         # M6: Lock for shared state (learn queue, counters)
         import threading as _threading
@@ -1768,8 +1769,12 @@ class Consciousness:
             return self._learn_single(text, agent_id, source_type,
                                       confidence, validated, metadata)
 
-        # Queue for batch flush (M6: thread-safe)
+        # Queue for batch flush (M6: thread-safe, capped)
         with self._state_lock:
+            if len(self._learn_queue) >= self._learn_queue_maxlen:
+                log.warning("learn_queue full (%d), dropping oldest entry",
+                            self._learn_queue_maxlen)
+                self._learn_queue.pop(0)
             self._learn_queue.append((text, {
                 "agent_id": agent_id,
                 "source_type": source_type,

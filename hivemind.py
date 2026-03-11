@@ -1291,6 +1291,8 @@ DELEGATION RULES (IMPORTANT):
             # Store V1 on consciousness for predict() routing
             if hasattr(self, 'consciousness') and self.consciousness:
                 self.consciousness._v1_engine = v1
+            # Also wire to hivemind for API exposure
+            self.micro_model = v1
         except Exception as e:
             log.warning(f"V1 startup warm: {e}")
 
@@ -1411,7 +1413,7 @@ DELEGATION RULES (IMPORTANT):
 
     def register_ws_callback(self, callback):
         if len(self._ws_callbacks) >= 50:
-            self._ws_callbacks = self._ws_callbacks[-25:]
+            self._ws_callbacks = self._ws_callbacks[-24:]  # trim to 24, append → 25
         self._ws_callbacks.append(callback)
 
     def unregister_ws_callback(self, callback):

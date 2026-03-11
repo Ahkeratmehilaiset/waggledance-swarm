@@ -77,8 +77,8 @@ class ChatHandler:
                             agent_type="unknown",
                             was_correct=False, was_hallucination=False,
                             was_corrected=True)
-                    except Exception:
-                        pass
+                    except Exception as _lvl_err:
+                        log.debug("agent_levels correction record failed: %s", _lvl_err)
                 if self.monitor:
                     await self.monitor.system("📝 Korjaus tallennettu — opin virheestä!")
                 await self._notify_ws("correction_stored", {
@@ -235,8 +235,8 @@ class ChatHandler:
                             route="smart_router_fast",
                             language=_detected_lang)
                         return response
-                except Exception:
-                    pass  # Fall through to normal routing
+                except Exception as _fast_err:
+                    log.warning("memory_fast route failed: %s", _fast_err)
 
         # ═══ FI→EN käännös (~2ms) ═══
         if _detected_lang == "fi" and self.translation_proxy:
@@ -629,8 +629,8 @@ class ChatHandler:
                         agent_type=agent.agent_type,
                         was_correct=True,
                         was_hallucination=False)
-                except Exception:
-                    pass
+                except Exception as _lvl_err:
+                    log.debug("agent_levels record failed: %s", _lvl_err)
         else:
             if self.scheduler:
                 self.scheduler.record_task_result(

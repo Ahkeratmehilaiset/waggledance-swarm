@@ -383,7 +383,7 @@ class HeartbeatController:
                     log.debug(f"{agent.name} ({_elapsed:.0f}ms): {insight[:80]}")
             except Exception as exc:
                 _elapsed = (time.monotonic() - _t0) * 1000
-                self._report_llm_result(30000, False, _hb.model)
+                self._report_llm_result(_elapsed, False, _hb.model)
                 log.warning(f"{agent.name} LLM error ({_elapsed:.0f}ms): {exc}")
                 insight = ""
 
@@ -575,8 +575,10 @@ class HeartbeatController:
                 insight = (resp.content
                            if resp and not resp.error and resp.content
                            else None)
-            except Exception:
-                self._report_llm_result(30000, False, _hb.model)
+            except Exception as _err:
+                _elapsed = (time.monotonic() - _t0) * 1000
+                self._report_llm_result(_elapsed, False, _hb.model)
+                log.warning("Oracle LLM error (%.0fms): %s", _elapsed, _err)
                 insight = None
 
             # KORJAUS K10: validoi + KORJAUS: duplikaatti-reward poistettu

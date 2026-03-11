@@ -465,6 +465,9 @@ class RoundTableController:
                         confidence=0.85, validated=True,
                         metadata={"topic": topic[:200], "version": 2})
 
+                # Layer 4: fact_id for MAGMA subsystems
+                _fact_id = f"round_table_{int(time.time())}"
+
                 # MAGMA: CognitiveGraph edges for Round Table
                 _cg = getattr(self, '_cognitive_graph', None)
                 if _cg:
@@ -488,7 +491,6 @@ class RoundTableController:
                 # Layer 4: Record consensus provenance + agent validations
                 _prov = getattr(self, '_provenance', None)
                 _chreg = getattr(self, '_channel_registry', None)
-                _fact_id = f"round_table_{int(time.time())}"
                 if _prov:
                     try:
                         _rt_agents = [d.get("agent_id", "") for d in all_discussion]

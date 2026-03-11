@@ -951,6 +951,11 @@ class GapWeightedScheduler:
     Seasonal weighting boosts relevant topics per month.
     """
 
+    # Meta/system agents excluded from enrichment — no domain expertise
+    EXCLUDED_AGENTS = frozenset({
+        "core_dispatcher",  # routing meta-agent
+    })
+
     # Month -> seasonal topic boosts (1.5x weight for these agents)
     SEASONAL_BOOSTS: Dict[int, List[str]] = {
         1: ["beekeeper", "disease_monitor"],  # winter check, oxalic
@@ -1121,6 +1126,8 @@ class GapWeightedScheduler:
         seasonal_agents = self.SEASONAL_BOOSTS.get(month, [])
 
         for agent_id, keywords in ROUTING_KEYWORDS.items():
+            if agent_id in self.EXCLUDED_AGENTS:
+                continue
             # Use top-3 keywords per agent for estimation
             top_kws = keywords[:3] if len(keywords) >= 3 else keywords
             agent_fact_count = 0

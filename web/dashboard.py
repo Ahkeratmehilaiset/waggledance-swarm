@@ -39,6 +39,31 @@ def _get_seasonal_focus():
         return []
 
 
+def _get_enrichment_stats_from(hm):
+    """Get NightEnricher stats from hivemind if available."""
+    try:
+        ne = getattr(hm, 'night_enricher', None)
+        if not ne:
+            return {}
+        sm = getattr(ne, 'source_manager', None)
+        conv = getattr(ne, 'convergence', None)
+        return {
+            "total_checked": getattr(ne, '_total_checked', 0),
+            "total_stored": getattr(ne, '_total_stored', 0),
+            "per_agent_stored": dict(getattr(ne, '_per_agent_stored', {})),
+            "sources": {
+                sid: sm.get_metrics(sid).to_dict()
+                for sid in (sm.source_ids if sm else [])
+                if sm.get_metrics(sid)
+            } if sm else {},
+            "convergence": {
+                "total_convergences": conv._total_convergences if conv else 0,
+            },
+        }
+    except Exception:
+        return {}
+
+
 def create_app(hivemind):
     app = FastAPI(title="WaggleDance Swarm AI Dashboard")
 
@@ -749,9 +774,7 @@ loadFeeds();
             "fi_fast": (c.fi_fast.stats
                         if hasattr(c, 'fi_fast') and c.fi_fast
                         else {}),
-            "enrichment": (hivemind.enrichment.stats
-                           if hasattr(hivemind, 'enrichment')
-                           and hivemind.enrichment else {}),
+            "enrichment": _get_enrichment_stats_from(hivemind),
             "web_learner": (hivemind.web_learner.stats
                             if hasattr(hivemind, 'web_learner')
                             and hivemind.web_learner else {}),

@@ -25,8 +25,19 @@ def register_magma_routes(app, hivemind):
         if cg:
             result["cognitive_graph"] = cg.stats()
         if te:
+            try:
+                agent_count = te._conn.execute(
+                    "SELECT COUNT(DISTINCT agent_id) FROM trust_signals"
+                ).fetchone()[0]
+                signal_count = te._conn.execute(
+                    "SELECT COUNT(*) FROM trust_signals"
+                ).fetchone()[0]
+            except Exception:
+                agent_count = 0
+                signal_count = 0
             result["trust_engine"] = {
-                "agents_tracked": len(te._cache) if hasattr(te, '_cache') else 0,
+                "agents_tracked": agent_count,
+                "total_signals": signal_count,
             }
         return result
 

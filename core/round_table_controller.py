@@ -465,6 +465,53 @@ class RoundTableController:
                         confidence=0.85, validated=True,
                         metadata={"topic": topic[:200], "version": 2})
 
+                # Layer 4: Record consensus provenance + agent validations
+                _prov = getattr(self, '_provenance', None)
+                _chreg = getattr(self, '_channel_registry', None)
+                _fact_id = f"round_table_{int(time.time())}"
+                if _prov:
+                    try:
+                        _rt_agents = [d.get("agent_id", "") for d in all_discussion]
+                        _prov.record_consensus(_fact_id, _rt_agents, synthesis[:500])
+                        # Record individual validations from informed phase
+                        for _d in informed_responses:
+                            _aid = _d.get("agent_id", "")
+                            _text = _d.get("response", "").lower()
+                            if not _aid:
+                                continue
+                            # Heuristic: detect agree/disagree from response
+                            if any(w in _text for w in ["disagree", "incorrect",
+                                                        "however", "but actually"]):
+                                _verdict = "disagree"
+                            elif any(w in _text for w in ["agree", "correct",
+                                                          "exactly", "indeed"]):
+                                _verdict = "agree"
+                            else:
+                                _verdict = "neutral"
+                            try:
+                                _prov.record_validation(_fact_id, _aid, _verdict)
+                            except Exception:
+                                pass
+                    except Exception as _e:
+                        log.debug(f"Provenance v2: {_e}")
+                if _chreg:
+                    try:
+                        _chreg.broadcast("judges", "round_table",
+                                         f"[v2 Synthesis] {synthesis[:300]}")
+                    except Exception:
+                        pass
+
+                # Layer 5: Record trust signals per participant
+                _te = getattr(self, '_trust_engine', None)
+                if _te:
+                    for _d in all_discussion:
+                        _aid = _d.get("agent_id", "")
+                        if _aid:
+                            try:
+                                _te.record_signal(_aid, "consensus_participation", 1.0)
+                            except Exception:
+                                pass
+
                 await self._theater_stream_round_table(
                     topic, all_discussion, synthesis)
                 log.info(f"🏛️ Round Table v2 done: "

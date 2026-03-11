@@ -579,7 +579,34 @@ class LearningEngine:
                 score.reasoning = f"auto_accepted (score={score.score:.1f}, len={_resp_len})"
             finetune_entry["reasoning"] = score.reasoning
 
-        if score.score >= self.min_score_for_finetune:
+        # ── Pre-curation content filter: reject boilerplate/low-value ──
+        _resp_raw = item.get("response", "")
+        _boilerplate_reject = False
+        _BOILERPLATE_PATTERNS = [
+            "ASSUMPTIONS AND CONTEXT", "OLETUKSET JA KONTEKSTI",
+            "DECISION METRICS AND THRESHOLDS", "PÄÄTÖSMITTARIT",
+            "Tietopankki", "## ASSUMPTIONS",
+        ]
+        for _bp in _BOILERPLATE_PATTERNS:
+            if _bp in _resp_raw:
+                _boilerplate_reject = True
+                break
+        # Also reject very short or question-mark-heavy responses
+        if not _boilerplate_reject:
+            if len(_resp_raw.strip()) < 20:
+                _boilerplate_reject = True
+            elif _resp_raw.count("?") > 5:
+                _boilerplate_reject = True
+            elif _resp_raw.strip().startswith("Vastaus: **?**"):
+                _boilerplate_reject = True
+
+        if _boilerplate_reject and score.score >= self.min_score_for_finetune:
+            finetune_entry["rejection_reason"] = "boilerplate_content"
+            finetune_entry["reasoning"] = "boilerplate_content"
+            self._append_jsonl(self._rejected_path, finetune_entry)
+            self.stats["total_rejected"] += 1
+            logger.debug(f"Boilerplate rejected: {_resp_raw[:60]}...")
+        elif score.score >= self.min_score_for_finetune:
             # Dedup: hash the response content, reject exact/near duplicates
             import hashlib as _hl
             _resp_text = item.get("response", "").strip()[:200]

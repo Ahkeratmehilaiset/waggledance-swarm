@@ -569,6 +569,24 @@ class ChatHandler:
                 if _ft_warning:
                     _enriched_agent.system_prompt = _enriched_agent.system_prompt + "\n\n" + _ft_warning
 
+            # MAGMA: Enrich with cross-agent provenance if available
+            _xs = getattr(self, '_cross_search', None)
+            if _xs and hasattr(self, 'consciousness') and self.consciousness:
+                try:
+                    _emb = self.consciousness.embed.embed_query(message)
+                    if _emb:
+                        _cross_results = _xs.search_with_provenance(
+                            _emb, top_k=3)
+                        if _cross_results:
+                            _cross_ctx = "\n".join(
+                                f"- [{r.get('agent_id', '?')}] {r.get('text', '')[:120]}"
+                                for r in _cross_results[:3])
+                            _enriched_agent.system_prompt = (
+                                _enriched_agent.system_prompt
+                                + "\n\nOTHER AGENTS' KNOWLEDGE:\n" + _cross_ctx)
+                except Exception:
+                    pass
+
             try:
                 # Merkitse task alkaneeksi schedulerille
                 if self.scheduler:

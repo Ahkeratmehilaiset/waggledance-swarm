@@ -1087,6 +1087,7 @@ DELEGATION RULES (IMPORTANT):
             "status": "running" if self.running else "stopped",
             "uptime": (str(datetime.now() - self.started_at)
                        if self.started_at else "0"),
+            "heartbeat_count": self._heartbeat_count,
             "agents": {
                 "total": len(agents),
                 "active": sum(1 for a in agents if a["status"] != "idle"),

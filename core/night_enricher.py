@@ -1109,6 +1109,7 @@ class GapWeightedScheduler:
     def _build_weighted_list(self):
         """Scan ChromaDB for fact counts per agent's top keywords.
 
+        Uses batch embedding for efficiency (1 batch call vs N individual).
         Applies seasonal boost (1.5x) for month-relevant agents.
         """
         t0 = time.monotonic()
@@ -1128,17 +1129,48 @@ class GapWeightedScheduler:
         month = _dt.now().month
         seasonal_agents = self.SEASONAL_BOOSTS.get(month, [])
 
+        # Collect all keywords for batch embedding
+        agent_kw_map = []  # [(agent_id, [keywords])]
+        all_keywords = []
+        kw_indices = []  # (agent_idx, kw_offset)
+
         for agent_id, keywords in ROUTING_KEYWORDS.items():
             if agent_id in self.EXCLUDED_AGENTS:
                 continue
-            # Use top-3 keywords per agent for estimation
             top_kws = keywords[:3] if len(keywords) >= 3 else keywords
-            agent_fact_count = 0
-
+            agent_kw_map.append((agent_id, top_kws))
             for kw in top_kws:
-                count = self._estimate_facts_for_keyword(kw)
-                agent_fact_count = max(agent_fact_count, count)
+                kw_indices.append((len(agent_kw_map) - 1, kw))
+                all_keywords.append(kw)
 
+        # Batch embed all keywords at once (1 call instead of N)
+        all_vecs = []
+        if (self.consciousness
+                and hasattr(self.consciousness, 'embed')
+                and all_keywords):
+            try:
+                all_vecs = self.consciousness.embed.embed_batch(
+                    all_keywords, mode="query")
+            except Exception:
+                all_vecs = [None] * len(all_keywords)
+        else:
+            all_vecs = [None] * len(all_keywords)
+
+        # Search ChromaDB with each vector (top_k=5 for count estimate)
+        vec_idx = 0
+        for agent_idx, (agent_id, top_kws) in enumerate(agent_kw_map):
+            agent_fact_count = 0
+            for kw in top_kws:
+                vec = all_vecs[vec_idx] if vec_idx < len(all_vecs) else None
+                vec_idx += 1
+                if vec is None:
+                    continue
+                try:
+                    matches = self.consciousness.memory.search(
+                        vec, top_k=5, min_score=0.5)
+                    agent_fact_count = max(agent_fact_count, len(matches))
+                except Exception:
+                    pass
             self._fact_counts[agent_id] = agent_fact_count
 
             # Weight: fewer facts = higher weight

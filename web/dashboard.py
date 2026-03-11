@@ -1459,13 +1459,27 @@ def _register_round_table_routes(app, hivemind):
                 agents_str = cons.get("participating_agents", "")
                 agents = [a.split("_")[0] for a in agents_str.split(",")
                           ] if agents_str else []
+                synthesis = cons.get("synthesis_text",
+                                     e.get("details", ""))
+                # Build discussion entries for dashboard compatibility
+                discussion = []
+                if agents:
+                    # Show last agent as Kuningatar (Queen) with synthesis
+                    for a in agents[:-1]:
+                        discussion.append({
+                            "agent": a.replace("_", " ").title(),
+                            "msg": ""})
+                    discussion.append({
+                        "agent": "Kuningatar",
+                        "msg": synthesis[:200]})
                 discussions.append({
                     "id": e.get("doc_id", ""),
                     "topic": e.get("details", "")[:120],
-                    "consensus": cons.get("synthesis_text",
-                                          e.get("details", ""))[:400],
+                    "consensus": synthesis[:400],
+                    "agreement": 1.0 if cons else 0.9,
                     "agents": agents,
                     "agent_count": len(agents),
+                    "discussion": discussion,
                     "timestamp": ts,
                 })
             return {"count": len(discussions), "discussions": discussions}

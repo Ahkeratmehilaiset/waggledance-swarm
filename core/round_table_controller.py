@@ -465,6 +465,26 @@ class RoundTableController:
                         confidence=0.85, validated=True,
                         metadata={"topic": topic[:200], "version": 2})
 
+                # MAGMA: CognitiveGraph edges for Round Table
+                _cg = getattr(self, '_cognitive_graph', None)
+                if _cg:
+                    try:
+                        _cg.add_node(_fact_id, agent_id="round_table",
+                                     source_type="round_table", topic=topic[:200])
+                        # input_to edges: each participant's response → synthesis
+                        for _d in all_discussion:
+                            _aid = _d.get("agent_id", "")
+                            if _aid:
+                                _cg.add_edge(_aid, _fact_id, link_type="input_to")
+                        # semantic edges between blind phase participants
+                        _blind_ids = [d.get("agent_id", "") for d in blind_responses if d.get("agent_id")]
+                        for i in range(len(_blind_ids)):
+                            for j in range(i + 1, len(_blind_ids)):
+                                _cg.add_edge(_blind_ids[i], _blind_ids[j],
+                                             link_type="semantic", topic=topic[:100])
+                    except Exception as _e:
+                        log.debug(f"CogGraph RT edges: {_e}")
+
                 # Layer 4: Record consensus provenance + agent validations
                 _prov = getattr(self, '_provenance', None)
                 _chreg = getattr(self, '_channel_registry', None)

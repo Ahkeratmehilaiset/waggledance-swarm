@@ -14,12 +14,21 @@ def register_magma_routes(app, hivemind):
         al = getattr(hivemind, '_audit_log', None)
         rs = getattr(hivemind, '_replay_store', None)
         reg = getattr(hivemind, '_overlay_registry', None)
-        return {
+        cg = getattr(hivemind, '_cognitive_graph', None)
+        te = getattr(hivemind, '_trust_engine', None)
+        result = {
             "audit_wired": al is not None,
             "audit_entries": al.count() if al else 0,
             "replay_wired": rs is not None,
             "overlays": len(reg._overlays) if reg else 0,
         }
+        if cg:
+            result["cognitive_graph"] = cg.stats()
+        if te:
+            result["trust_engine"] = {
+                "agents_tracked": len(te._scores) if hasattr(te, '_scores') else 0,
+            }
+        return result
 
     @app.get("/api/magma/audit")
     async def magma_audit():

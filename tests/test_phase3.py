@@ -325,7 +325,7 @@ else:
     FAIL(f"round_table config: {rt}")
 
 nm = cfg.get("night_mode", {})
-if (nm.get("enabled") and nm.get("idle_threshold_min") == 30
+if (nm.get("enabled") and nm.get("idle_threshold_min") == 15
         and nm.get("max_hours") == 8 and nm.get("interval_s") == 10):
     OK(f"night_mode: enabled, idle>{nm['idle_threshold_min']}min, "
        f"max {nm['max_hours']}h, interval {nm['interval_s']}s")

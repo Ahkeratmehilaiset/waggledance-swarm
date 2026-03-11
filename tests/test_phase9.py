@@ -758,13 +758,15 @@ if "distillation_cycle" in src:
 else:
     FAIL("Night cycle should reference distillation_cycle")
 
-if "meta_learning" in src and "is_due" in src:
-    OK("Night cycle checks meta_learning.is_due()")
+# meta_learning/code_reviewer checks moved to _run_periodic_checks()
+periodic_src = inspect.getsource(NightModeController._run_periodic_checks)
+if "meta_learning" in periodic_src and "is_due" in periodic_src:
+    OK("Periodic checks meta_learning.is_due()")
 else:
     FAIL("Night cycle should check meta_learning.is_due()")
 
-if "code_reviewer" in src and "is_due" in src:
-    OK("Night cycle checks code_reviewer.is_due()")
+if "code_reviewer" in periodic_src and "is_due" in periodic_src:
+    OK("Periodic checks code_reviewer.is_due()")
 else:
     FAIL("Night cycle should check code_reviewer.is_due()")
 

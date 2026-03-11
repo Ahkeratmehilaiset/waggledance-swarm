@@ -851,11 +851,12 @@ except Exception as e:
 # 7c. _night_learning_cycle has training check (now in NightModeController)
 try:
     from core.night_mode_controller import NightModeController
-    night_src = inspect.getsource(NightModeController._night_learning_cycle)
-    assert "micro_model" in night_src
-    assert "maybe_train" in night_src
-    assert "micro_training" in night_src
-    OK("_night_learning_cycle has micro-model training")
+    # Training checks moved to _run_periodic_checks()
+    periodic_src = inspect.getsource(NightModeController._run_periodic_checks)
+    assert "micro_model" in periodic_src
+    assert "maybe_train" in periodic_src
+    assert "micro_training" in periodic_src
+    OK("_run_periodic_checks has micro-model training")
 except Exception as e:
     FAIL(f"_night_learning_cycle: {e}")
 

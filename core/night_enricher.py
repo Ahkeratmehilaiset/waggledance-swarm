@@ -1044,8 +1044,8 @@ class GapWeightedScheduler:
         if not self._weighted_list:
             return ("enrichment", "beekeeping general")
 
-        # Category rotation: every 3rd call, force a different category
-        if self._enriched_since_rebalance % 3 == 0 and self.CATEGORY_GROUPS:
+        # Category rotation: every 2nd call, force a different category
+        if self._enriched_since_rebalance % 2 == 0 and self.CATEGORY_GROUPS:
             result = self._pick_from_category_rotation()
             if result:
                 return result
@@ -1168,7 +1168,7 @@ class GapWeightedScheduler:
                 try:
                     matches = self.consciousness.memory.search(
                         vec, top_k=5, min_score=0.5)
-                    agent_fact_count = max(agent_fact_count, len(matches))
+                    agent_fact_count += len(matches)
                 except Exception:
                     pass
             self._fact_counts[agent_id] = agent_fact_count
@@ -1183,9 +1183,9 @@ class GapWeightedScheduler:
             else:
                 weight = 0.5
 
-            # Seasonal boost: 1.5x for month-relevant agents
-            if agent_id in seasonal_agents:
-                weight *= 1.5
+            # Seasonal boost: only for agents with knowledge gaps
+            if agent_id in seasonal_agents and agent_fact_count < self.gap_medium:
+                weight *= 1.3
 
             # Add one entry per top keyword (spread across keywords)
             for kw in top_kws:

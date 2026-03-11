@@ -654,8 +654,8 @@ def test_config_keys():
     # Value sanity checks
     check(ne.get("enabled") is True, "enabled=true")
     check(ne.get("burst_threshold") == 0.80, "burst_threshold=0.80")
-    check(ne.get("novelty_score_threshold") == 0.85,
-          "novelty_score_threshold=0.85")
+    check(ne.get("novelty_score_threshold") == 0.80,
+          "novelty_score_threshold=0.80")
     check(ne.get("dedup_score_threshold") == 0.93,
           "dedup_score_threshold=0.93")
 

@@ -570,7 +570,7 @@ class LearningEngine:
             elif score.score < 5.0:
                 score.reasoning = f"below_average (score={score.score:.1f}, len={_resp_len})"
             elif score.score < self.min_score_for_finetune:
-                score.reasoning = f"not_curated (score={score.score:.1f})"
+                score.reasoning = f"not_curated_quality (score={score.score:.1f})"
             elif _resp_len < 30:
                 score.reasoning = f"short_response (len={_resp_len})"
             elif "ASSUMPTIONS AND CONTEXT" in _resp or "OLETUKSET JA KONTEKSTI" in _resp:

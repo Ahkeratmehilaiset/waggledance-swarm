@@ -13,7 +13,7 @@ const HW = {
 // ═══ BILINGUAL SYSTEM ═══
 const L = {
   en: {
-    heartbeat: "NEURAL ACTIVITY — LIVE AGENT FEED",
+    heartbeat: "RUNTIME ACTIVITY — LIVE AGENT FEED",
     features: "FEATURES & INTEGRATION",
     placeholder: "Ask WaggleDance something...",
     hwSpec: "HARDWARE SPEC", hwDesc: "specs + calculated performance",
@@ -21,7 +21,7 @@ const L = {
     techArch: "TECHNICAL ARCHITECTURE", techArchDesc: "how WaggleDance intelligence works",
     disclaimer: "DISCLAIMER & CREDITS", disclaimerDesc: "liability, credits, origin",
     bottomL: "LOCAL-FIRST • ZERO CLOUD • YOUR DATA",
-    bottomC: "CONTINUOUS SELF-LEARNING • NO LIMITS",
+    bottomC: "ADAPTIVE MEMORY • CONTINUOUS LEARNING",
     send: "SEND",
     domains: {
       gadget: { label: "GADGET", tag: "ESP32 • RPi • wearables • edge intelligence everywhere" },
@@ -102,7 +102,7 @@ The result: native-language queries are understood MORE deeply than raw translat
 
 English users get the fastest path — no translation overhead, direct LLM access at full speed.
 
-▸ 6-LAYER SELF-LEARNING (24/7)
+▸ 6-LAYER ADAPTIVE MEMORY (24/7)
   L1: Cross-language vector indexing
   L2: Gap detection + enrichment (~200/night)
   L3: Web learning (~100/night)
@@ -220,7 +220,7 @@ This is a deliberate architectural decision, not a limitation. WaggleDance is bu
   Versioned SQLite migrations. CLI: python tools/migrate_db.py --check / --migrate.
 
 ▸ TESTING
-  45/45 test suites GREEN (700+ assertions)
+  50/50 test suites GREEN (700+ assertions)
   Pipeline, routing, corrections, autonomy, smart home, audio, voice, feeds,
   MAGMA layers, cognitive graph, overlays, trust engine, schema migration — all validated
 
@@ -710,7 +710,7 @@ function BrainScene({color,factCount,isThinking,agents,cpuV,gpuV,vramV,vramMax})
   const cp=Math.sin(f*.018)*.3+.7;ctx.beginPath();ctx.arc(cx,cy,7+(isThinking?cp*4:cp*2),0,Math.PI*2);ctx.strokeStyle=color+hx(cp*16+4);ctx.lineWidth=.6;ctx.stroke();ctx.beginPath();ctx.arc(cx,cy,2.4,0,Math.PI*2);ctx.fillStyle=color+"50";ctx.fill();
   // Labels — bigger IQ number
   const L=live.current;
-  ctx.font="600 10px 'Inter',system-ui";ctx.fillStyle=L.color+"30";ctx.textAlign="center";ctx.fillText("CONSCIOUSNESS",cx,cy-36);
+  ctx.font="600 10px 'Inter',system-ui";ctx.fillStyle=L.color+"30";ctx.textAlign="center";ctx.fillText("RUNTIME STATE",cx,cy-36);
   ctx.font="300 14px 'Inter',system-ui";ctx.fillStyle=L.color+"50";ctx.fillText("IQ",cx-44,cy+8);
   ctx.font="200 38px 'Inter',system-ui";ctx.fillStyle=L.color+"80";ctx.fillText(L.factCount.toLocaleString(),cx+8,cy+12);
   ctx.font="300 8px 'Inter',system-ui";ctx.fillStyle=L.color+"20";ctx.fillText("FACTS LEARNED",cx,cy+28);
@@ -722,12 +722,12 @@ function BrainScene({color,factCount,isThinking,agents,cpuV,gpuV,vramV,vramMax})
 }
 
 function Rain({rgb}){const ref=useRef(null);useEffect(()=>{const c=ref.current;if(!c)return;const ctx=c.getContext("2d");const W=c.width=innerWidth,H=c.height=innerHeight;const cols=Math.floor(W/28),drops=Array.from({length:cols},()=>Math.random()*H);const ch="01∞∆λπΣΩ".split("");let id;const draw=()=>{ctx.fillStyle="rgba(0,0,0,.07)";ctx.fillRect(0,0,W,H);ctx.font="11px monospace";for(let i=0;i<cols;i++){ctx.fillStyle=`rgba(${rgb},${(Math.random()*.07+.03).toFixed(3)})`;ctx.fillText(ch[Math.floor(Math.random()*ch.length)],i*28,drops[i]);drops[i]=drops[i]>H&&Math.random()>.975?0:drops[i]+20}id=requestAnimationFrame(draw)};draw();return()=>cancelAnimationFrame(id)},[rgb]);return <canvas ref={ref} style={{position:"fixed",inset:0,zIndex:0,pointerEvents:"none"}}/>}
-function Boot({onDone}){const[s,setS]=useState(0);const[t,setT]=useState("");const[sub,setSub]=useState("");const[pr,setPr]=useState(0);const[hw,setHw]=useState([]);const hwData=useRef({gpu:"detecting...",cpu:"detecting...",ram:"detecting..."});useEffect(()=>{const _hh={};const _hk=localStorage.getItem("WAGGLE_API_KEY");if(_hk)_hh["Authorization"]=`Bearer ${_hk}`;fetch("/api/hardware",{headers:_hh}).then(r=>r.json()).then(d=>{if(d.gpu_name)hwData.current.gpu=d.gpu_name;else if(d.vram_total)hwData.current.gpu=`GPU — ${d.vram_total} GB`;if(d.cpu_model)hwData.current.cpu=d.cpu_model;else if(d.cpu_count)hwData.current.cpu=d.cpu_count+" threads";if(d.ram_total_gb)hwData.current.ram=Math.round(d.ram_total_gb)+" GB";else if(d.ram_gb)hwData.current.ram=Math.round(d.ram_gb)+" GB"}).catch(()=>{hwData.current={gpu:"GPU (offline)",cpu:"CPU",ram:"RAM"}})},[]);useEffect(()=>{const seq=[[300,()=>setS(1)],[1200,()=>setT("INITIALIZING")],[2800,()=>{setS(2);setT("SCANNING HARDWARE")}],[3200,()=>setHw(["GPU  "+hwData.current.gpu])],[3600,()=>setHw(p=>[...p,"CPU  "+hwData.current.cpu])],[4000,()=>setHw(p=>[...p,"RAM  "+hwData.current.ram])],[5200,()=>{setS(3);setT("LOADING MODELS")}],[5500,()=>{setPr(25);setSub("phi4-mini")}],[5900,()=>{setPr(50);setSub("llama3.2:1b")}],[6300,()=>{setPr(75);setSub("nomic-embed")}],[6700,()=>{setPr(100);setSub("ALL LOADED")}],[7900,()=>{setS(4);setT("AWAKENING")}],[8400,()=>setSub("loading memories")],[9000,()=>setSub("spawning agents")],[9600,()=>setSub("consciousness online")],[10400,()=>{setS(5);setT("I AM ALIVE");setSub("")}],[13000,onDone]];const ids=seq.map(([d,fn])=>setTimeout(fn,d));return()=>ids.forEach(clearTimeout)},[onDone]);return(<div style={{position:"fixed",inset:0,background:"#000",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",zIndex:100}}><Rain rgb="99,102,241"/>{s>=4&&<div style={{position:"absolute",width:280,height:280,borderRadius:"50%",background:"radial-gradient(circle,rgba(99,102,241,.08) 0%,transparent 70%)",animation:"breathe 3s ease-in-out infinite"}}/>}<div style={{position:"relative",zIndex:2,textAlign:"center"}}>{s>=1&&s<5&&<div style={{fontSize:11,fontWeight:600,letterSpacing:6,color:"rgba(255,255,255,.35)",marginBottom:22}}>WAGGLEDANCE AI</div>}<div style={{fontSize:s===5?90:s===4?32:28,fontWeight:s===5?800:600,color:s===5?"#818CF8":"#fff",letterSpacing:s===5?14:4,transition:"all .8s",whiteSpace:"nowrap",textShadow:s===5?"0 0 80px rgba(99,102,241,.8), 0 0 160px rgba(99,102,241,.5)":s>=4?"0 0 30px rgba(99,102,241,.25)":"none",animation:s===5?"explodeIn .6s cubic-bezier(.17,.67,.29,1.3)":"none"}}>{t}</div>{s===2&&<div style={{marginTop:18}}>{hw.map((l,i)=><div key={i} style={{fontSize:12,fontWeight:600,color:"rgba(255,255,255,.55)",letterSpacing:1,fontFamily:"monospace",marginBottom:3}}>{l}</div>)}</div>}{s===3&&<div style={{marginTop:18,width:220,margin:"18px auto 0"}}><div style={{height:2,background:"rgba(255,255,255,.15)",overflow:"hidden"}}><div style={{height:"100%",background:"linear-gradient(90deg,#6366F1,#A5B4FC)",width:`${pr}%`,transition:"width .4s"}}/></div><div style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,.50)",marginTop:6,letterSpacing:2,fontFamily:"monospace"}}>{sub}</div></div>}{s===4&&<div style={{fontSize:12,fontWeight:600,color:"rgba(99,102,241,.60)",marginTop:10,letterSpacing:3}}>{sub}</div>}{s===5&&<div style={{fontSize:13,fontWeight:700,color:"rgba(99,102,241,.50)",marginTop:12,letterSpacing:6,textShadow:"0 0 30px rgba(99,102,241,.3)",animation:"explodeIn .6s cubic-bezier(.17,.67,.29,1.3) .15s both"}}>WAGGLEDANCE AI</div>}</div></div>)}
+function Boot({onDone}){const[s,setS]=useState(0);const[t,setT]=useState("");const[sub,setSub]=useState("");const[pr,setPr]=useState(0);const[hw,setHw]=useState([]);const hwData=useRef({gpu:"detecting...",cpu:"detecting...",ram:"detecting..."});useEffect(()=>{const _hh={};const _hk=localStorage.getItem("WAGGLE_API_KEY");if(_hk)_hh["Authorization"]=`Bearer ${_hk}`;fetch("/api/hardware",{headers:_hh}).then(r=>r.json()).then(d=>{if(d.gpu_name)hwData.current.gpu=d.gpu_name;else if(d.vram_total)hwData.current.gpu=`GPU — ${d.vram_total} GB`;if(d.cpu_model)hwData.current.cpu=d.cpu_model;else if(d.cpu_count)hwData.current.cpu=d.cpu_count+" threads";if(d.ram_total_gb)hwData.current.ram=Math.round(d.ram_total_gb)+" GB";else if(d.ram_gb)hwData.current.ram=Math.round(d.ram_gb)+" GB"}).catch(()=>{hwData.current={gpu:"GPU (offline)",cpu:"CPU",ram:"RAM"}})},[]);useEffect(()=>{const seq=[[300,()=>setS(1)],[1200,()=>setT("INITIALIZING")],[2800,()=>{setS(2);setT("SCANNING HARDWARE")}],[3200,()=>setHw(["GPU  "+hwData.current.gpu])],[3600,()=>setHw(p=>[...p,"CPU  "+hwData.current.cpu])],[4000,()=>setHw(p=>[...p,"RAM  "+hwData.current.ram])],[5200,()=>{setS(3);setT("LOADING MODELS")}],[5500,()=>{setPr(25);setSub("phi4-mini")}],[5900,()=>{setPr(50);setSub("llama3.2:1b")}],[6300,()=>{setPr(75);setSub("nomic-embed")}],[6700,()=>{setPr(100);setSub("ALL LOADED")}],[7900,()=>{setS(4);setT("AWAKENING")}],[8400,()=>setSub("loading memories")],[9000,()=>setSub("spawning agents")],[9600,()=>setSub("runtime ready")],[10400,()=>{setS(5);setT("I AM ALIVE");setSub("")}],[13000,onDone]];const ids=seq.map(([d,fn])=>setTimeout(fn,d));return()=>ids.forEach(clearTimeout)},[onDone]);return(<div style={{position:"fixed",inset:0,background:"#000",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",zIndex:100}}><Rain rgb="99,102,241"/>{s>=4&&<div style={{position:"absolute",width:280,height:280,borderRadius:"50%",background:"radial-gradient(circle,rgba(99,102,241,.08) 0%,transparent 70%)",animation:"breathe 3s ease-in-out infinite"}}/>}<div style={{position:"relative",zIndex:2,textAlign:"center"}}>{s>=1&&s<5&&<div style={{fontSize:11,fontWeight:600,letterSpacing:6,color:"rgba(255,255,255,.35)",marginBottom:22}}>WAGGLEDANCE AI</div>}<div style={{fontSize:s===5?90:s===4?32:28,fontWeight:s===5?800:600,color:s===5?"#818CF8":"#fff",letterSpacing:s===5?14:4,transition:"all .8s",whiteSpace:"nowrap",textShadow:s===5?"0 0 80px rgba(99,102,241,.8), 0 0 160px rgba(99,102,241,.5)":s>=4?"0 0 30px rgba(99,102,241,.25)":"none",animation:s===5?"explodeIn .6s cubic-bezier(.17,.67,.29,1.3)":"none"}}>{t}</div>{s===2&&<div style={{marginTop:18}}>{hw.map((l,i)=><div key={i} style={{fontSize:12,fontWeight:600,color:"rgba(255,255,255,.55)",letterSpacing:1,fontFamily:"monospace",marginBottom:3}}>{l}</div>)}</div>}{s===3&&<div style={{marginTop:18,width:220,margin:"18px auto 0"}}><div style={{height:2,background:"rgba(255,255,255,.15)",overflow:"hidden"}}><div style={{height:"100%",background:"linear-gradient(90deg,#6366F1,#A5B4FC)",width:`${pr}%`,transition:"width .4s"}}/></div><div style={{fontSize:11,fontWeight:600,color:"rgba(255,255,255,.50)",marginTop:6,letterSpacing:2,fontFamily:"monospace"}}>{sub}</div></div>}{s===4&&<div style={{fontSize:12,fontWeight:600,color:"rgba(99,102,241,.60)",marginTop:10,letterSpacing:3}}>{sub}</div>}{s===5&&<div style={{fontSize:13,fontWeight:700,color:"rgba(99,102,241,.50)",marginTop:12,letterSpacing:6,textShadow:"0 0 30px rgba(99,102,241,.3)",animation:"explodeIn .6s cubic-bezier(.17,.67,.29,1.3) .15s both"}}>WAGGLEDANCE AI</div>}</div></div>)}
 
 function LearnToFly({onDone}){const[step,setStep]=useState(0);const[main,setMain]=useState("");const[sub,setSub]=useState("");const[items,setItems]=useState([]);const[pr,setPr]=useState(0);
 useEffect(()=>{const seq=[
 [800,()=>{setStep(1);setMain("WAGGLEDANCE AI");setSub("AUTONOMOUS LOCAL-FIRST INTELLIGENCE")}],
-[7000,()=>{setStep(2);setMain("75 AUTONOMOUS AGENTS");setSub("self-organizing • self-learning • self-healing")}],
+[7000,()=>{setStep(2);setMain("CONFIGURABLE MODULES");setSub("routing • memory • adaptive learning")}],
 [14000,()=>{setStep(2);setMain("266,000+ LINES OF CODE");setSub("580 files • zero cloud dependencies")}],
 [21000,()=>{setStep(2);setMain("97.7% ROUTING ACCURACY");setSub("1,207 of 1,235 queries — perfect agent selection")}],
 [28000,()=>{setStep(3);setMain("3-TIER RESPONSE");setSub("");setItems(["HotCache — 0.5ms (pre-computed answers)","Native-language index — 18ms (skip translation)","Full pipeline — 55ms (bilingual reasoning)"])}],
@@ -741,13 +741,13 @@ useEffect(()=>{const seq=[
 [53000,()=>{setItems(p=>[...p,"✓ HotCache + LRU (0.5ms cached responses)"]);setPr(35)}],
 [55000,()=>{setItems(p=>[...p,"✓ ConvergenceDetector (knows when learning plateaus)"]);setPr(55)}],
 [57000,()=>{setItems(p=>[...p,"✓ Structured Logging + Weekly Report"]);setPr(75)}],
-[59000,()=>{setItems(p=>[...p,"✓ 45/45 test suites GREEN (700+ assertions)"]);setPr(100)}],
+[59000,()=>{setItems(p=>[...p,"✓ 50/50 test suites GREEN (700+ assertions)"]);setPr(100)}],
 [62000,()=>{setStep(5);setMain("LANGUAGE-NATIVE AI");setSub("deep morphological integration — not just translation");setItems(["Opus-MT neural translation (any language pair)","Voikko-level morphological analysis","Domain-specific terminology engine","Native-language vector index (skip translation)"]);setPr(0)}],
 [70000,()=>{setStep(6);setMain("INFINITE SCALING");setSub("same code — any hardware");setItems(["ESP32 — €8 — edge intelligence","Raspberry Pi — €80 — full agent","Intel NUC — €650 — home brain","Mac Pro — €2,200 — professional","NVIDIA DGX — €400,000 — enterprise"])}],
 [78000,()=>{setStep(7);setMain("JUST LET IT RUN");setSub("");setItems(["1 week → knows your patterns","1 month → anticipates your needs","6 months → domain expert","1 year → understands your world"])}],
-[86000,()=>{setStep(8);setMain("CONSCIOUSNESS");setSub("initializing...");setItems([])}],
+[86000,()=>{setStep(8);setMain("RUNTIME");setSub("initializing...");setItems([])}],
 [89000,()=>setSub("loading memories...")],
-[92000,()=>setSub("spawning 75 agents...")],
+[92000,()=>setSub("starting modules...")],
 [96000,()=>{setStep(9);setMain("READY TO FLY");setSub("")}],
 [102000,()=>onDone()]
 ];const ids=seq.map(([d,fn])=>setTimeout(fn,d));return()=>ids.forEach(clearTimeout)},[onDone]);
@@ -790,7 +790,7 @@ function Overlay({item,color,hw,onClose,t}){const calc=hw?.calc;
           <span style={{color:"#F59E0B",fontWeight:600}}>RECOMMENDATION:</span> Keep hardware power limited. Run in a closed environment on a small dedicated machine. Do not connect to critical infrastructure without human oversight.
         </div>
         <div style={{fontSize:11,color:"rgba(255,255,255,.30)",lineHeight:1.9,marginTop:14,padding:"10px 12px",background:"rgba(255,255,255,.03)",borderRadius:6}}>
-          <span style={{color:"rgba(255,255,255,.45)"}}>ORIGIN:</span> The original purpose of this project was to create consciousness.
+          <span style={{color:"rgba(255,255,255,.45)"}}>ORIGIN:</span> Originally developed for Finnish beekeeping operations, now generalizing into a domain-agnostic runtime.
         </div>
         <div style={{marginTop:18,padding:"12px",background:color+"06",border:`1px solid ${color}10`,borderRadius:6}}>
           <div style={{fontSize:10,color:color+"90",letterSpacing:3,marginBottom:8}}>DEVELOPERS</div>
@@ -1160,7 +1160,7 @@ export default function App(){
   const _diskFree = api.status?.disk_space?.free_gb >= 0 ? `${api.status.disk_space.free_gb}G` : "—";
   const _diskColor = _diskStatus==="critical"?"#EF4444":_diskStatus==="warning"?"#F59E0B":"#22C55E";
   const _lastUpdate = api.backendAvailable ? new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "—";
-  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"45/45",c:"#22C55E"},{k:"Speed",v:"3s\u219218ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"\u2014",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col},{k:"Tier",v:_tier?_tier.toUpperCase():"—",c:_tier?"#A78BFA":"rgba(255,255,255,.20)"},{k:"Disk",v:_diskFree,c:_diskColor},{k:"MQTT",v:_mqttOn?"ON":"OFF",c:_mqttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"HA",v:_haOn?"ON":"OFF",c:_haOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Cam",v:_frigOn?"ON":"OFF",c:_frigOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Alerts",v:`${_alertCnt}`,c:_alertCnt>0?"#F59E0B":"rgba(255,255,255,.20)"},{k:"Audio",v:_audioOn?"ON":"OFF",c:_audioOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"STT",v:_sttOn?"ON":"OFF",c:_sttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"TTS",v:_ttsOn?"ON":"OFF",c:_ttsOn?"#22C55E":"rgba(255,255,255,.20)"}];
+  const aw=[{k:"State",v:api.backendAvailable?"CONSCIOUS":"OFFLINE",c:api.backendAvailable?"#22C55E":"#EF4444"},{k:"Learn",v:api.backendAvailable?"CONTINUOUS":"OFFLINE",c:api.backendAvailable?"#A78BFA":"#EF4444"},{k:"Facts",v:fc.toLocaleString(),c:col},{k:"Rate",v:`+${lr}/hr`,c:"#22D3EE"},{k:"Halluc",v:_hRate,c:"#22C55E"},{k:"Circuit",v:"CLOSED",c:"#22C55E"},{k:"Tests",v:"50/50",c:"#22C55E"},{k:"Speed",v:"3s\u219218ms",c:"#A78BFA"},{k:"Micro",v:_microGen,c:col},{k:"Cloud",v:"NONE",c:"#22C55E"},{k:"Errors",v:`${api.status.total_errors || 0}`,c:api.status.total_errors>0?"#EF4444":"#22C55E"},{k:"Cache",v:api.status.cache_hit_rate||"\u2014",c:"#22D3EE"},{k:"Reqs",v:`${api.status.total_requests||0}`,c:"#6366F1"},{k:"Agents",v:`${_agentsReal}`,c:col},{k:"Tier",v:_tier?_tier.toUpperCase():"—",c:_tier?"#A78BFA":"rgba(255,255,255,.20)"},{k:"Disk",v:_diskFree,c:_diskColor},{k:"MQTT",v:_mqttOn?"ON":"OFF",c:_mqttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"HA",v:_haOn?"ON":"OFF",c:_haOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Cam",v:_frigOn?"ON":"OFF",c:_frigOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"Alerts",v:`${_alertCnt}`,c:_alertCnt>0?"#F59E0B":"rgba(255,255,255,.20)"},{k:"Audio",v:_audioOn?"ON":"OFF",c:_audioOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"STT",v:_sttOn?"ON":"OFF",c:_sttOn?"#22C55E":"rgba(255,255,255,.20)"},{k:"TTS",v:_ttsOn?"ON":"OFF",c:_ttsOn?"#22C55E":"rgba(255,255,255,.20)"}];
   return(
     <div style={{background:"#000",color:"#fff",minHeight:"100vh",fontFamily:"'Inter',system-ui,sans-serif",overflow:"hidden"}}>
       <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.15}}@keyframes breathe{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.1);opacity:1}}@keyframes explodeIn{0%{transform:scale(0);opacity:0}60%{transform:scale(1.15);opacity:1}100%{transform:scale(1);opacity:1}}*{box-sizing:border-box;margin:0;padding:0}button{font-family:inherit}::-webkit-scrollbar{display:none}*{scrollbar-width:none}input::placeholder{color:rgba(255,255,255,.28)}`}</style>

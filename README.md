@@ -1,4 +1,4 @@
-# WaggleDance SWARM AI
+# WaggleDance AI
 
 [![Tests](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/tests.yml/badge.svg)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
@@ -6,28 +6,26 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
 ![Version](https://img.shields.io/badge/version-0.9.2-green)
 
+**A local-first AI runtime that routes each task to the right reasoning layer — retrieval, rules, statistics, model-based inference, or LLM reasoning.**
+
+WaggleDance is built for real-world environments where answers should be grounded in local data, structured rules, explicit models, and auditable decision paths. It runs entirely on your own hardware and can combine documents, sensors, time-series data, and domain memory without relying on cloud APIs.
+
+Instead of treating every task as a chatbot problem, WaggleDance selects the best available method for the job: memory for recall, rules for constraints, statistics for pattern detection, model-based inference for calculable systems, and LLMs for language, ambiguity, and explanation.
+
+The system was originally developed in a demanding real-world field environment and is being generalized into a broader runtime for sensor-rich, domain-specific applications.
+
+## Deployment Profiles
+
+| Profile | Environment | Example use cases |
+|---------|-------------|-------------------|
+| **GADGET** | IoT, edge | Battery life, signal quality, sensor calibration |
+| **COTTAGE** | Off-grid property | Heating cost, frost protection, seasonal tasks |
+| **HOME** | Smart home | Energy optimization, safety alerts, comfort |
+| **FACTORY** | Industrial | OEE analysis, SPC monitoring, predictive maintenance |
+
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-A local-first multi-agent AI system with 75 specialized agents, Finnish NLP via Voikko,
-and autonomous learning. Designed for domain-specific knowledge (originally beekeeping,
-adaptable to other domains). Runs entirely on your hardware — no cloud, no API keys,
-no data leaves your network.
-
----
-
-## What is this?
-
-WaggleDance is a local-first AI system where 75 specialized agents communicate through a HiveMind orchestrator, debate in Round Table consensus, and learn from conversations, sensors, and domain data. It uses small LLMs (phi4-mini, llama3.2:1b) enhanced by a growing vector memory (ChromaDB) and a Finnish NLP pipeline (Voikko + Opus-MT).
-
-**Key ideas:**
-- **Multi-agent consensus** — up to 6 agents cross-validate each answer via Round Table, reducing hallucination
-- **MicroModel auto-promotion** — topics that accumulate enough validated Q&A pairs graduate from LLM to a local classifier, reducing response time from seconds to sub-millisecond
-- **Finnish NLP pipeline** — Voikko morphological analysis handles Finnish compound words and 14 noun cases before translation, enabling accurate domain reasoning in Finnish
-- **Domain-agnostic architecture** — originally built for Finnish beekeeping (300 hives, 10,000 kg honey/year), but the agent/knowledge YAML structure can be adapted to other domains
-
-**Response time improves over use:** ~3,000ms (cold, full LLM path) → ~55ms (bilingual ChromaDB) → ~0.5ms (Hot Cache hit for previously seen queries).
-
-50/50 test suites pass (698 tests across 50 suites, measured locally; 4 skipped without Ollama). No subscription, no API keys required.
+50/50 test suites pass (700 tests across 50 suites, measured locally). No subscription, no API keys required.
 
 ---
 
@@ -423,7 +421,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
 - **Security + stability fixes (v0.8.0)** — 12 fixes: async safety, SQL injection prevention, SQLite write locks, WS callback leak, deprecated API cleanup, metrics rotation
 - **Major refactor (v0.9.0)** — hivemind.py 3321→1382 lines, 4 controller modules extracted, 12 Sonnet review fixes, Phi-3.5-mini LoRA pipeline validated
-- **GitHub Actions CI** — automated test runner (45/45 GREEN)
+- **GitHub Actions CI** — automated test runner (50/50 GREEN)
 
 ---
 
@@ -433,7 +431,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 45/45 GREEN | 700+ tests, 4 skipped without Ollama |
+| Test suites | 50/50 GREEN | 700+ tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |

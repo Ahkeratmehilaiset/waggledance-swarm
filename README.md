@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-1.0.0-green)
+![Version](https://img.shields.io/badge/version-1.15.0-green)
 
 **A local-first AI runtime that routes each task to the right reasoning layer — retrieval, rules, statistics, model-based inference, or LLM reasoning.**
 
@@ -25,7 +25,7 @@ The system was originally developed in a demanding real-world field environment 
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-55/55 test suites pass (700 tests across 55 suites, measured locally). No subscription, no API keys required.
+72/72 test suites pass (927+ tests across 72 suites, measured locally). No subscription, no API keys required.
 
 ---
 
@@ -341,7 +341,7 @@ python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **55/55 suites GREEN, 698 tests, 0 failures** (4 suites skipped without Ollama).
+Expected: **72/72 suites GREEN, 927+ tests, 0 failures** (4 suites skipped without Ollama).
 
 ---
 
@@ -365,7 +365,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 55 test suites (698 tests)
+├── tests/               # 72 test suites (927+ tests)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -421,7 +421,8 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
 - **Security + stability fixes (v0.8.0)** — 12 fixes: async safety, SQL injection prevention, SQLite write locks, WS callback leak, deprecated API cleanup, metrics rotation
 - **Major refactor (v0.9.0)** — hivemind.py 3321→1382 lines, 4 controller modules extracted, 12 Sonnet review fixes, Phi-3.5-mini LoRA pipeline validated
-- **GitHub Actions CI** — automated test runner (55/55 GREEN)
+- **GitHub Actions CI** — automated test runner (72/72 GREEN)
+- **SmartRouter v2 (v1.6–v1.15)** — capsule routing, Finnish normalization, word boundaries, matched_keywords transparency
 
 ---
 
@@ -431,7 +432,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 55/55 GREEN | 700+ tests, 4 skipped without Ollama |
+| Test suites | 72/72 GREEN | 927+ tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -442,7 +443,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | 55/55 GREEN, 698 tests |
+| CI pipeline | GitHub Actions | 72/72 GREEN, 927+ tests |
 
 ---
 
@@ -513,7 +514,7 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all 55 suites pass
+4. Ensure all 72 suites pass
 5. Submit a pull request
 
 ### Development Setup

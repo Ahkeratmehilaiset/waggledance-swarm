@@ -1,5 +1,20 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.1.0] — 2026-03-13
+
+### FAISS Vector Store + ReasoningDashboard
+
+#### Added
+- **FAISS Store** (`core/faiss_store.py`): `FaissCollection` (IndexFlatIP + L2 normalisation = cosine similarity), `FaissRegistry`, `SearchResult`; persists to `data/faiss/{name}/{index.faiss,meta.json}`
+- **Vectorize tool** (`tools/vectorize_all.py`): one-shot script that embeds axiom YAMLs, agent YAMLs (75 agents) and curated training pairs (score ≥ 8.0) into both FAISS and ChromaDB collections
+- **ReasoningDashboard** (`dashboard/src/ReasoningDashboard.jsx`): production single-file React dashboard — dark theme, bilingual EN/FI, 5-layer animation on each query, solver predictions panel, 👍/👎 feedback with correction form, friendly error messages, RuntimeOps slide-out panel, MorningBrief
+- **Dashboard toggle** (`dashboard/src/App.jsx`): `[CLASSIC | REASONING]` topbar button; `← Classic` back button in ReasoningDashboard
+- **`/api/solve` endpoint** (`web/dashboard.py`): `POST {model_id, inputs}` → `SymbolicSolver.solve()` → JSON result
+- **`tests/test_faiss_store.py`**: 10 tests — identical vector score ≥ 0.99, k-cap, add_batch, persist/reload, registry identity & stats, empty collection
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_faiss_store` — now **56 test suites**
+
 ## [1.0.0] — 2026-03-13
 
 ### Symbolic Layer — Domain Capsule Architecture

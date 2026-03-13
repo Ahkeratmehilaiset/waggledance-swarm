@@ -51,7 +51,7 @@ key_decisions:
 
   - id: honey_yield
     question: "Paljonko hunajaa saan tänä kesänä?"
-    keywords: ["hunaja", "honey", "hunajasato", "sato", "harvest", "yield", "tuotos", "mehiläi"]
+    keywords: ["hunaja", "honey", "hunajasato", "sato", "harvest", "yield", "tuotos"]
     primary_layer: model_based
     model: honey_yield
     inputs: [colony_strength, flow_days, forager_ratio]

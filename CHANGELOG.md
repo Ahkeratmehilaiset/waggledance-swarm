@@ -1,5 +1,35 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.12.0] — 2026-03-13
+
+### Capsule-Level Finnish Normalization
+
+#### Fixed
+- **`core/domain_capsule.py`**: `match_decision()` now matches ASCII queries against diacritic keywords
+  - Pre-compiles normalized keyword patterns (`_normalize_fi()`) alongside raw patterns
+  - Each keyword gets two patterns: raw (for diacritic queries) and normalized (for ASCII queries)
+  - Only compiles normalized pattern when keyword actually contains diacritics (no-op otherwise)
+  - Defined `_normalize_fi()` locally to avoid circular import with `smart_router_v2`
+- **`configs/capsules/cottage.yaml`**: removed "mehiläi" from `honey_yield` keywords
+  - Too generic: inflected form "mehilaisille" ("for bees") caused seasonal April queries to
+    false-route to model_based (honey yield) instead of retrieval (seasonal calendar)
+  - Remaining keywords (hunaja, honey, hunajasato, sato, harvest, yield, tuotos) are sufficient
+
+#### Added
+- **`tests/test_capsule_fi_normalization.py`**: 7 tests
+  - ASCII "lammitys" matches diacritic keyword "lämmitys" -> heating_cost
+  - ASCII "jaatya" matches "jäätyä" -> frost_protection
+  - ASCII "laakitys" matches "lääkitys" -> varroa_treatment
+  - ASCII "tehtava" matches "tehtävä" -> seasonal_task
+  - ASCII "selviaa" matches "selviää" -> hive_survival
+  - Regression: original diacritic queries unchanged
+  - Full router: "paljonko lammitys maksaa" -> model_based/heating_cost
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_capsule_fi_normalization` — now **69 test suites**
+
+**Finnish users typing ASCII queries now get correct capsule routing at Step 2, not just at Step 3**
+
 ## [1.11.0] — 2026-03-13
 
 ### Capsule Keyword Word-Boundary Fix

@@ -168,6 +168,7 @@ TESTS = [
     {"file": "tests/test_seasonal_routing.py",     "name": "Seasonal Routing",     "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_fi_normalization.py",     "name": "FI Normalization",     "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_capsule_word_boundary.py","name": "Capsule Word Boundary","phase": "v1",  "args": [], "timeout": 30},
+    {"file": "tests/test_capsule_fi_normalization.py","name": "Capsule FI Norm",  "phase": "v1",  "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

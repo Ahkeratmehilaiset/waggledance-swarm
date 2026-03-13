@@ -16,6 +16,20 @@ import yaml
 
 log = logging.getLogger(__name__)
 
+
+def _normalize_fi(text: str) -> str:
+    """Normalize Finnish diacritics to ASCII for keyword matching.
+
+    Defined here (not imported from smart_router_v2) to avoid circular imports.
+    Allows ASCII queries ('lammitys') to match diacritic keywords ('lämmitys').
+    """
+    return (
+        text
+        .replace("ä", "a").replace("ö", "o").replace("å", "a")
+        .replace("Ä", "a").replace("Ö", "o").replace("Å", "a")
+    )
+
+
 VALID_LAYERS = frozenset([
     "rule_constraints", "model_based", "statistical",
     "retrieval", "llm_reasoning",
@@ -61,13 +75,24 @@ class DomainCapsule:
         self.rules: list[dict] = data.get("rules", [])
         self.models: list[dict] = data.get("models", [])
         self.data_sources: list[dict] = data.get("data_sources", [])
-        # Pre-compile keyword patterns for fast matching
-        self._decision_keywords: list[tuple[dict, list[re.Pattern]]] = []
+        # Pre-compile keyword patterns (raw + normalized) for fast matching.
+        # patterns_norm entries are None when keyword has no diacritics (no-op).
+        self._decision_keywords: list[
+            tuple[dict, list[re.Pattern], list[Optional[re.Pattern]]]
+        ] = []
         for dec in self.key_decisions:
-            patterns = []
+            patterns: list[re.Pattern] = []
+            patterns_norm: list[Optional[re.Pattern]] = []
             for kw in dec.get("keywords", []):
-                patterns.append(re.compile(r'\b' + re.escape(kw.lower())))
-            self._decision_keywords.append((dec, patterns))
+                kw_lower = kw.lower()
+                kw_norm = _normalize_fi(kw_lower)
+                patterns.append(re.compile(r'\b' + re.escape(kw_lower)))
+                # Only compile a normalized pattern when the keyword has diacritics
+                patterns_norm.append(
+                    re.compile(r'\b' + re.escape(kw_norm))
+                    if kw_norm != kw_lower else None
+                )
+            self._decision_keywords.append((dec, patterns, patterns_norm))
 
     # ── Factory methods ──────────────────────────────────────
 
@@ -131,11 +156,19 @@ class DomainCapsule:
     # ── Decision matching ────────────────────────────────────
 
     def match_decision(self, query: str) -> Optional[DecisionMatch]:
-        """Match a user query to the best key decision by keyword overlap."""
+        """Match a user query to the best key decision by keyword overlap.
+
+        Matches against both the raw query (preserves diacritics) and a
+        normalized ASCII version so 'lammitys' matches keyword 'lämmitys'.
+        """
         q_lower = query.lower()
+        q_norm = _normalize_fi(q_lower)
         best: Optional[tuple[int, dict]] = None
-        for dec, patterns in self._decision_keywords:
-            hits = sum(1 for p in patterns if p.search(q_lower))
+        for dec, patterns, patterns_norm in self._decision_keywords:
+            hits = sum(
+                1 for p, pn in zip(patterns, patterns_norm)
+                if p.search(q_lower) or (pn is not None and pn.search(q_norm))
+            )
             if hits > 0 and (best is None or hits > best[0]):
                 best = (hits, dec)
         if best is None:

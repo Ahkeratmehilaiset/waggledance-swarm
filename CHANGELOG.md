@@ -1,5 +1,24 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.2.0] — 2026-03-13
+
+### FAISS Wiring + Enriched Chat API
+
+#### Added
+- **FAISS API endpoints** (`web/dashboard.py`): `GET /api/faiss/stats` (collection counts + dims), `POST /api/faiss/search` (embed via nomic-embed-text + cosine search)
+- **FAISS stats in ReasoningDashboard** (`dashboard/src/ReasoningDashboard.jsx`): Under the Hood panel shows per-collection vector counts
+- **FAISS retrieval layer** (`core/smart_router_v2.py`): `_RETRIEVAL_KEYWORDS` pattern routes "what is/explain/mitä on/selitä…" to `retrieval` layer
+- **FAISS context enrichment** (`core/chat_handler.py`): after memory context fetch, embeds query and prepends top-5 FAISS hits (score > 0.35) as DOMAIN KNOWLEDGE to LLM prompt
+- **Enriched `/api/chat` response**: now includes `method`, `model_result`, `explanation` fields — feeds ReasoningDashboard Decision Trace
+- **`_last_model_result` / `_last_explanation`** tracking in `ChatHandler._do_chat`: reset each request, set on model_based/rule_constraints paths
+- **`tests/test_faiss_api.py`**: 8 tests — stats structure, search keys, score range [-1,1], empty collection
+- **`tests/test_faiss_retrieval.py`**: 10 tests — keyword pattern, SmartRouter routing, SearchResult fields, ranking, threshold
+- **`tests/test_chat_model_result.py`**: 8 tests — reset tracking, ConstraintResult/SolverResult/ModelResult to_dict(), ExplainabilityEngine steps
+
+#### Changed
+- `hivemind.py`: FaissRegistry initialised at startup (data/faiss/), logs collection stats
+- `tools/waggle_backup.py`: registered 3 new suites — now **59 test suites**
+
 ## [1.1.0] — 2026-03-13
 
 ### FAISS Vector Store + ReasoningDashboard

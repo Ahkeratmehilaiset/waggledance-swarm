@@ -3,8 +3,9 @@
 WaggleDance Swarm AI — Local HiveNode Runtime (On-Prem)
 ========================================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v1.1.0 • Built: 2026-03-13
+Claude 4.6 • v1.2.0 • Built: 2026-03-13
 
+v1.2.0: FAISS API, retrieval routing, FAISS context enrichment, enriched /api/chat (method/model_result/explanation), 59 test suites.
 v1.1.0: FAISS vector store, ReasoningDashboard, Classic/Reasoning toggle, /api/solve endpoint.
 v1.0.0: Production hardening, V1 API wiring, agent rotation fix, MAGMA deep wiring, live optimization.
 v0.9.0: hivemind.py refactor (3321→1382 lines), Phi-3.5-mini LoRA, Sonnet review fixes (C2-C3, H2-H6, M2-M7).

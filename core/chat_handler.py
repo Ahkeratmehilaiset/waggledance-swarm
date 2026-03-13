@@ -238,6 +238,49 @@ class ChatHandler:
                 except Exception as _fast_err:
                     log.warning("memory_fast route failed: %s", _fast_err)
 
+        # ═══ Model-based solver (SmartRouter v2 → SymbolicSolver) ═══
+        if getattr(self, 'smart_router_v2', None) and getattr(self, 'symbolic_solver', None):
+            try:
+                _route = self.smart_router_v2.route(message)
+                if _route.layer == "model_based" and _route.decision_id:
+                    _model_id = _route.model or _route.decision_id
+                    _mr = self.symbolic_solver.solve_for_chat(_model_id, message)
+                    if _mr.success and _mr.value is not None:
+                        _lang = "fi" if _detected_lang == "fi" else "en"
+                        response = _mr.to_natural_language(_lang)
+                        if self.monitor:
+                            await self.monitor.system(
+                                f"MODEL: {_model_id} -> {_mr.value:.4g} {_mr.unit}")
+                        await self._notify_ws("chat_response", {
+                            "message": message, "response": response,
+                            "language": _detected_lang,
+                            "method": "model_based",
+                            "model_result": _mr.to_dict(),
+                        })
+                        self._populate_hot_cache(
+                            _original_message, response,
+                            score=_mr.confidence, source=f"model_{_model_id}",
+                            detected_lang=_detected_lang)
+                        self._last_chat_message = message
+                        self._last_chat_response = response
+                        self._last_chat_method = "model_based"
+                        self._last_chat_agent_id = f"solver_{_model_id}"
+                        if hasattr(self, 'consciousness') and self.consciousness:
+                            self._last_episode_id = self.consciousness.store_episode(
+                                query=message, response=response,
+                                prev_episode_id=self._last_episode_id,
+                                quality=_mr.confidence)
+                        self.metrics.log_chat(
+                            query=_original_message, method="model_based",
+                            agent_id=f"solver_{_model_id}",
+                            model_used="symbolic_solver",
+                            confidence=_mr.confidence,
+                            response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                            route="model_based", language=_detected_lang)
+                        return response
+            except Exception as _solver_err:
+                log.warning("Model-based solver failed: %s", _solver_err)
+
         # ═══ FI→EN käännös (~2ms) ═══
         if _detected_lang == "fi" and self.translation_proxy:
             try:

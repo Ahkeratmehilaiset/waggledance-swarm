@@ -1,0 +1,39 @@
+model_id: comfort_energy_tradeoff
+model_name: "Comfort vs Energy Cost"
+description: "Night setback energy saving"
+
+formulas:
+  - name: energy_saved_percent
+    formula: "(T_day - T_night) / (T_day - T_outdoor) * 100"
+    output_unit: "%"
+  - name: cost_saved_per_night
+    formula: "building_ua * (T_day - T_night) * night_hours / 1000 * avg_night_price / 100"
+    output_unit: "€"
+
+variables:
+  T_day:
+    description: "Daytime setpoint"
+    unit: "°C"
+    default: 21
+  T_night:
+    description: "Night setback temperature"
+    unit: "°C"
+    range: [15, 21]
+    default: 18
+  T_outdoor:
+    description: "Outdoor temperature"
+    unit: "°C"
+    source: "fmi_weather"
+    default: -5
+  building_ua:
+    description: "Building heat loss coefficient"
+    unit: "W/K"
+    default: 150
+  night_hours:
+    description: "Hours of night setback"
+    unit: "h"
+    default: 8
+  avg_night_price:
+    description: "Average night electricity price"
+    unit: "c/kWh"
+    default: 5

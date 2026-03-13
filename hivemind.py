@@ -728,6 +728,21 @@ DELEGATION RULES (IMPORTANT):
             self.capsule = None
             self.smart_router_v2 = None
 
+        # ── Symbolic Solver ───────────────────────────────────
+        try:
+            from core.symbolic_solver import SymbolicSolver, ModelRegistry
+            if self.capsule:
+                _reg = ModelRegistry.from_capsule(self.capsule._raw)
+            else:
+                _reg = ModelRegistry()
+            self.symbolic_solver = SymbolicSolver(_reg)
+            _models = self.symbolic_solver.registry.list_models()
+            print(f"  OK Symbolic Solver: {len(_models)} models ({', '.join(_models[:4])})",
+                  flush=True)
+        except Exception as e:
+            print(f"  !! Symbolic Solver: {e}", flush=True)
+            self.symbolic_solver = None
+
         # ── Improvement 5: Cache Warming at startup ───────────
         try:
             self._warm_caches()

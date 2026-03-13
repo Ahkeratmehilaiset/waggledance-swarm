@@ -1,0 +1,49 @@
+model_id: pipe_freezing
+model_name: "Pipe Freezing Risk"
+description: "Time until water reaches freezing point"
+
+formulas:
+  - name: heat_loss_rate
+    formula: "(T_water - T_outdoor) * pipe_length_m * 3.14159 * pipe_diameter_m / R_insulation"
+    output_unit: "W"
+  - name: time_to_freeze_hours
+    formula: "pipe_volume_liters * 4186 * (T_water - 0) / (heat_loss_rate * 3600)"
+    output_unit: "hours"
+
+variables:
+  T_outdoor:
+    description: "Outdoor temperature"
+    unit: "°C"
+    range: [-40, 10]
+    source: "fmi_weather"
+    default: -15
+  T_water:
+    description: "Initial water temperature"
+    unit: "°C"
+    range: [1, 20]
+    default: 10
+  pipe_length_m:
+    description: "Exposed pipe length"
+    unit: "m"
+    range: [0.5, 50]
+    default: 5
+  pipe_diameter_m:
+    description: "Pipe inner diameter"
+    unit: "m"
+    range: [0.01, 0.1]
+    default: 0.025
+  pipe_volume_liters:
+    description: "Water volume in pipe"
+    unit: "L"
+    range: [0.1, 50]
+    default: 2.5
+  R_insulation:
+    description: "Pipe insulation resistance"
+    unit: "m·K/W"
+    range: [0.1, 5.0]
+    default: 1.0
+
+risk_levels:
+  critical: "time_to_freeze_hours < 4"
+  warning: "time_to_freeze_hours < 12"
+  normal: "time_to_freeze_hours >= 12"

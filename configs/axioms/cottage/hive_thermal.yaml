@@ -1,0 +1,76 @@
+model_id: hive_thermal_balance
+model_name: "Hive Thermal Balance"
+description: "Calculate hive temperature and survival risk"
+
+formulas:
+  - name: Q_bees
+    formula: "N_bees * q_per_bee * activity_factor"
+    description: "Metabolic heat from bees"
+    output_unit: "W"
+  - name: Q_loss
+    formula: "(T_inside - T_outside) * surface_area / R_insulation"
+    description: "Heat loss through walls"
+    output_unit: "W"
+  - name: steady_state_temp
+    formula: "T_outside + Q_bees * R_insulation / surface_area"
+    description: "Equilibrium hive temperature"
+    output_unit: "°C"
+  - name: survival
+    formula: "steady_state_temp >= 14"
+    description: "Can cluster survive?"
+    output_unit: "bool"
+
+variables:
+  N_bees:
+    description: "Bees in cluster"
+    unit: "count"
+    range: [1000, 80000]
+    default: 20000
+  q_per_bee:
+    description: "Heat per bee"
+    unit: "W"
+    range: [0.001, 0.01]
+    default: 0.002
+  activity_factor:
+    description: "Activity (1=rest, 5=shivering)"
+    unit: "ratio"
+    range: [1.0, 5.0]
+    default: 1.5
+  T_outside:
+    description: "Outdoor temp"
+    unit: "°C"
+    range: [-40, 45]
+    source: "fmi_weather"
+    default: -10
+  T_inside:
+    description: "Target brood temp"
+    unit: "°C"
+    range: [14, 38]
+    default: 35
+  surface_area:
+    description: "Hive surface"
+    unit: "m²"
+    range: [0.5, 3.0]
+    default: 1.2
+  R_insulation:
+    description: "Thermal resistance"
+    unit: "m²·K/W"
+    range: [0.5, 5.0]
+    default: 1.5
+
+validation:
+  - check: "Q_bees >= 0"
+    message: "Heat production must be non-negative"
+
+risk_levels:
+  critical: "steady_state_temp < 10"
+  warning: "steady_state_temp < 20"
+  normal: "steady_state_temp >= 20"
+
+examples:
+  - description: "Strong colony, mild winter"
+    inputs: {N_bees: 30000, T_outside: -5}
+    expected: 85
+  - description: "Weak colony, harsh winter"
+    inputs: {N_bees: 5000, T_outside: -25, R_insulation: 0.8}
+    expected: -8

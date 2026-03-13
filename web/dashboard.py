@@ -643,8 +643,23 @@ loadFeeds();
                 conv_id, "assistant", response,
                 agent_name=agent_name, language=lang,
                 response_time_ms=elapsed_ms)
-            return {"response": response, "message_id": msg_id,
-                    "conversation_id": conv_id, "agent": agent_name}
+            # Attach structured results from ChatHandler if available
+            _method = None
+            _model_result = None
+            _explanation = None
+            if _ch:
+                _method = getattr(_ch, '_last_chat_method', None)
+                _model_result = getattr(_ch, '_last_model_result', None)
+                _explanation = getattr(_ch, '_last_explanation', None)
+            resp_body = {"response": response, "message_id": msg_id,
+                         "conversation_id": conv_id, "agent": agent_name}
+            if _method:
+                resp_body["method"] = _method
+            if _model_result:
+                resp_body["model_result"] = _model_result
+            if _explanation:
+                resp_body["explanation"] = _explanation
+            return resp_body
         except Exception as e:
             log.error("API chat error: %s", e, exc_info=True)
             return JSONResponse({"error": "Internal error"}, status_code=500)

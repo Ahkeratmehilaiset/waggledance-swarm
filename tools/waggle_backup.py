@@ -158,6 +158,7 @@ TESTS = [
     {"file": "tests/test_faiss_store.py",      "name": "FAISS Store",       "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_faiss_api.py",        "name": "FAISS API",         "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_faiss_retrieval.py",  "name": "FAISS Retrieval",   "phase": "v1",  "args": [], "timeout": 30},
+    {"file": "tests/test_chat_model_result.py","name": "Chat Model Result", "phase": "v1",  "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

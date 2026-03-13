@@ -47,6 +47,9 @@ class ChatHandler:
         _translation_used = False
         _fi_en_result = None
         _detected_lang = language
+        # Reset per-request structured results (read by /api/chat after return)
+        self._last_model_result = None
+        self._last_explanation = None
 
         # ═══ Kielentunnistus ═══
         if language == "auto":
@@ -286,6 +289,8 @@ class ChatHandler:
                         self._last_chat_response = response
                         self._last_chat_method = "model_based"
                         self._last_chat_agent_id = f"solver_{_model_id}"
+                        self._last_model_result = _mr.to_dict()
+                        self._last_explanation = _expl_dict
                         if hasattr(self, 'consciousness') and self.consciousness:
                             self._last_episode_id = self.consciousness.store_episode(
                                 query=message, response=response,
@@ -334,6 +339,8 @@ class ChatHandler:
                     self._last_chat_response = response
                     self._last_chat_method = "rule_constraints"
                     self._last_chat_agent_id = "constraint_engine"
+                    self._last_model_result = None
+                    self._last_explanation = _cr.to_dict() if hasattr(_cr, 'to_dict') else None
                     self.metrics.log_chat(
                         query=_original_message, method="rule_constraints",
                         agent_id="constraint_engine",

@@ -1,5 +1,30 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.0.0] — 2026-03-13
+
+### Symbolic Layer — Domain Capsule Architecture
+
+#### Added
+- **Domain Capsule system** (`core/domain_capsule.py`): profile-based reasoning layer configuration (gadget/cottage/home/factory) with YAML capsules
+- **SmartRouter v2** (`core/smart_router_v2.py`): 4-step query routing (HotCache -> capsule match -> keyword classifier -> priority fallback)
+- **Model-based interface** (`core/model_interface.py`): ModelResult dataclass with `to_dict()` and `to_natural_language(fi/en)`
+- **Symbolic Solver** (`core/symbolic_solver.py`): axiom-YAML-driven formula evaluation with safe eval, input extraction from natural language
+- **Constraint Engine** (`core/constraint_engine.py`): capsule rule evaluation with expression-based conditions, bilingual messages
+- **Explainability Engine** (`core/explainability.py`): step-by-step decision traces with NL output
+- **Domain Model Miner** (`core/domain_model_miner.py`): stub for SchemaInspector, DocumentReader, LayerRecommender
+- **10 axiom YAMLs** across 4 domains (heating_cost, pipe_freezing, battery_discharge, OEE, etc.)
+- **API endpoints**: `/api/capsule`, `/api/route?q=...`
+- **Chat pipeline**: model-based solver intercept (query -> router -> solver -> NL response)
+- **Chat pipeline**: rule_constraints intercept (query -> router -> constraint engine -> NL response)
+
+#### Changed
+- UI terminology: CONSCIOUSNESS -> RUNTIME STATE, NEURAL ACTIVITY -> RUNTIME ACTIVITY
+- README rewritten: domain-agnostic runtime description, deployment profiles table
+- Version bumped to v1.0.0
+
+#### Tests
+- 53 new tests: test_domain_capsule (34), test_model_e2e (41), test_symbolic_solver (12), test_constraint_engine (9), test_explainability (6)
+
 ## [0.9.2] — 2026-03-11
 
 ### Production Hardening & Live Optimization

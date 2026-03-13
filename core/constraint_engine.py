@@ -8,7 +8,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-_SEVERITY_ORDER = {"critical": 3, "warning": 2, "info": 1, "ok": 0}
+_SEVERITY_ORDER = {"critical": 3, "high": 3, "warning": 2, "info": 1, "ok": 0}
+
+
+def _normalize_severity(s: str) -> str:
+    """Normalize severity levels (high -> critical, etc.)."""
+    s = s.lower()
+    if s in ("high", "critical"):
+        return "critical"
+    if s in ("medium", "warning"):
+        return "warning"
+    if s in ("low", "info"):
+        return "info"
+    return s
 
 
 @dataclass
@@ -83,6 +95,32 @@ class ConstraintEngine:
         """
         self._rules = list(rules)
 
+    def load_capsule_rules(self, capsule_rules: List[Dict]):
+        """Load rules from capsule YAML format (expression-based conditions).
+
+        Capsule rule format::
+
+            {
+              "id": "frost_pipe_check",
+              "condition": "outdoor_temp < -5 and pipe_insulated == False",
+              "severity": "high",
+              "message_fi": "...",
+              "message_en": "..."
+            }
+        """
+        for rule in capsule_rules:
+            converted = {
+                "id": rule.get("id", "unknown"),
+                "severity": _normalize_severity(rule.get("severity", "info")),
+                "message": rule.get("message_fi", rule.get("message_en", "")),
+                "message_fi": rule.get("message_fi", ""),
+                "message_en": rule.get("message_en", ""),
+                # Store expression for eval-based evaluation
+                "expression": rule.get("condition", ""),
+                "conditions": [],  # empty — uses expression instead
+            }
+            self._rules.append(converted)
+
     def evaluate(self, context: Dict[str, Any]) -> ConstraintResult:
         all_results = [self._eval_rule(rule, context) for rule in self._rules]
         triggered = [r for r in all_results if r.triggered]
@@ -109,12 +147,45 @@ class ConstraintEngine:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def evaluate_with_lang(self, context: Dict[str, Any],
+                           lang: str = "fi") -> ConstraintResult:
+        """Evaluate and use language-specific messages."""
+        result = self.evaluate(context)
+        msg_key = f"message_{lang}"
+        for r in result.all_results:
+            # Find original rule and use localized message
+            for rule in self._rules:
+                if rule.get("id") == r.rule_id and msg_key in rule:
+                    if r.triggered:
+                        r.message = rule[msg_key]
+                    break
+        return result
+
     def _eval_rule(self, rule: Dict, context: Dict[str, Any]) -> RuleResult:
         rule_id = rule.get("id", "unknown")
         conditions = rule.get("conditions", [])
         logic = rule.get("logic", "AND").upper()
         severity = rule.get("severity", "info")
         message = rule.get("message", "")
+
+        # Expression-based evaluation (capsule rules)
+        expression = rule.get("expression", "")
+        if expression and not conditions:
+            try:
+                triggered = bool(eval(  # noqa: S307
+                    expression, {"__builtins__": {}},
+                    {**context, "True": True, "False": False}))
+            except Exception:
+                triggered = False
+            return RuleResult(
+                rule_id=rule_id,
+                triggered=triggered,
+                matched_conditions=[expression] if triggered else [],
+                unmatched_conditions=[] if triggered else [expression],
+                severity=severity if triggered else "ok",
+                message=message if triggered else "",
+                context_snapshot=dict(context),
+            )
 
         matched: List[str] = []
         unmatched: List[str] = []

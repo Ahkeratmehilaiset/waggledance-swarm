@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-0.9.2-green)
+![Version](https://img.shields.io/badge/version-1.0.0-green)
 
 **A local-first AI runtime that routes each task to the right reasoning layer — retrieval, rules, statistics, model-based inference, or LLM reasoning.**
 

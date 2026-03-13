@@ -1,8 +1,8 @@
 """
-WaggleDance Swarm AI — Swarm Queen v0.9.2
+WaggleDance Swarm AI — Swarm Queen v1.0.0
 ===========================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v0.9.2 • Built: 2026-03-11
+Claude 4.6 • v1.0.0 • Built: 2026-03-11
 
 Keskusagentti joka orkesteroi kaikkea.
 
@@ -742,6 +742,28 @@ DELEGATION RULES (IMPORTANT):
         except Exception as e:
             print(f"  !! Symbolic Solver: {e}", flush=True)
             self.symbolic_solver = None
+
+        # ── Constraint Engine + Explainability ────────────────
+        try:
+            from core.constraint_engine import ConstraintEngine
+            self.constraint_engine = ConstraintEngine()
+            if self.capsule and self.capsule.rules:
+                self.constraint_engine.load_capsule_rules(self.capsule.rules)
+                print(f"  OK Constraint Engine: {len(self.capsule.rules)} rules loaded",
+                      flush=True)
+            else:
+                print("  OK Constraint Engine: no rules (capsule has none)", flush=True)
+        except Exception as e:
+            print(f"  !! Constraint Engine: {e}", flush=True)
+            self.constraint_engine = None
+
+        try:
+            from core.explainability import ExplainabilityEngine
+            self.explainability = ExplainabilityEngine()
+            print("  OK Explainability Engine", flush=True)
+        except Exception as e:
+            print(f"  !! Explainability: {e}", flush=True)
+            self.explainability = None
 
         # ── Improvement 5: Cache Warming at startup ───────────
         try:

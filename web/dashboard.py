@@ -1,10 +1,10 @@
 """
-WaggleDance Swarm AI — Dashboard v0.9.2
+WaggleDance Swarm AI — Dashboard v1.0.0
 =========================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v0.9.2 • Built: 2026-03-11
+Claude 4.6 • v1.0.0 • Built: 2026-03-11
 
-v0.9.2 (MAGMA Activation):
+v1.0.0 (MAGMA Activation):
   - Round Table card (streaming discussion + synthesis)
   - Agent Level badges (L1-L5) in agent grid
   - Night mode moon indicator in topbar
@@ -194,7 +194,7 @@ def create_app(hivemind):
   </div>
   <div class="topbar-center">
     <h1>🐝 <span class="t-main">WaggleDance Swarm AI</span> <span class="t-sub">(on-prem)</span></h1>
-    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v0.9.2 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
+    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v1.0.0 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
   </div>
   <div class="topbar-right">
     <div class="mbadge">

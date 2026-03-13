@@ -248,15 +248,36 @@ class ChatHandler:
                     if _mr.success and _mr.value is not None:
                         _lang = "fi" if _detected_lang == "fi" else "en"
                         response = _mr.to_natural_language(_lang)
+                        # Add explainability trace if available
+                        _expl_dict = None
+                        if getattr(self, 'explainability', None):
+                            try:
+                                _sr = self.symbolic_solver.solve(
+                                    _model_id,
+                                    self.symbolic_solver.registry.get(_model_id)
+                                    and {} or {})
+                                # Use the original solver result for richer explanation
+                                _sr_for_expl = self.symbolic_solver.solve(
+                                    _model_id, _mr.inputs_used)
+                                _expl = self.explainability.from_solver_result(
+                                    _sr_for_expl,
+                                    model_id=_model_id,
+                                    model_name=_model_id.replace("_", " ").title())
+                                _expl_dict = _expl.to_dict()
+                            except Exception as _expl_err:
+                                log.debug("Explainability trace failed: %s", _expl_err)
                         if self.monitor:
                             await self.monitor.system(
                                 f"MODEL: {_model_id} -> {_mr.value:.4g} {_mr.unit}")
-                        await self._notify_ws("chat_response", {
+                        _ws_data = {
                             "message": message, "response": response,
                             "language": _detected_lang,
                             "method": "model_based",
                             "model_result": _mr.to_dict(),
-                        })
+                        }
+                        if _expl_dict:
+                            _ws_data["explanation"] = _expl_dict
+                        await self._notify_ws("chat_response", _ws_data)
                         self._populate_hot_cache(
                             _original_message, response,
                             score=_mr.confidence, source=f"model_{_model_id}",
@@ -280,6 +301,49 @@ class ChatHandler:
                         return response
             except Exception as _solver_err:
                 log.warning("Model-based solver failed: %s", _solver_err)
+
+        # ═══ Rule constraints (SmartRouter v2 → ConstraintEngine) ═══
+        if getattr(self, 'smart_router_v2', None) and getattr(self, 'constraint_engine', None):
+            try:
+                _route = getattr(self, '_last_route', None)
+                if _route is None:
+                    _route = self.smart_router_v2.route(message)
+                if _route.layer == "rule_constraints" and _route.decision_id:
+                    # Build context from available sensor data
+                    _ctx = {}
+                    if hasattr(self, 'sensor_hub') and self.sensor_hub:
+                        try:
+                            _ctx = self.sensor_hub.get_context() or {}
+                        except Exception:
+                            pass
+                    _lang = "fi" if _detected_lang == "fi" else "en"
+                    _cr = self.constraint_engine.evaluate_with_lang(_ctx, _lang)
+                    if _cr.triggered_rules:
+                        response = _cr.to_natural_language(_lang)
+                    else:
+                        if _lang == "fi":
+                            response = "Kaikki tarkistukset OK -- ei aktiivisia varoituksia."
+                        else:
+                            response = "All checks OK -- no active warnings."
+                    await self._notify_ws("chat_response", {
+                        "message": message, "response": response,
+                        "language": _detected_lang,
+                        "method": "rule_constraints",
+                    })
+                    self._last_chat_message = message
+                    self._last_chat_response = response
+                    self._last_chat_method = "rule_constraints"
+                    self._last_chat_agent_id = "constraint_engine"
+                    self.metrics.log_chat(
+                        query=_original_message, method="rule_constraints",
+                        agent_id="constraint_engine",
+                        model_used="constraint_engine",
+                        confidence=0.9,
+                        response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                        route="rule_constraints", language=_detected_lang)
+                    return response
+            except Exception as _rule_err:
+                log.warning("Rule constraints failed: %s", _rule_err)
 
         # ═══ FI→EN käännös (~2ms) ═══
         if _detected_lang == "fi" and self.translation_proxy:

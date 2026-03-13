@@ -147,6 +147,10 @@ TESTS = [
     {"file": "tests/test_metrics_fields.py", "name": "Metrics Fields",       "phase": "W11", "args": [], "timeout": 60},
     {"file": "tests/test_quality_scoring.py","name": "Quality Scoring",      "phase": "W11", "args": [], "timeout": 60},
     {"file": "tests/test_rss_activation.py", "name": "RSS Activation",       "phase": "W11", "args": [], "timeout": 60},
+    # Axiom Engine (S1-S5)
+    {"file": "tests/test_symbolic_solver.py",   "name": "Symbolic Solver",   "phase": "AX",  "args": [], "timeout": 30},
+    {"file": "tests/test_constraint_engine.py", "name": "Constraint Engine", "phase": "AX",  "args": [], "timeout": 30},
+    {"file": "tests/test_explainability.py",    "name": "Explainability",    "phase": "AX",  "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

@@ -75,6 +75,8 @@ class DomainCapsule:
         self.rules: list[dict] = data.get("rules", [])
         self.models: list[dict] = data.get("models", [])
         self.data_sources: list[dict] = data.get("data_sources", [])
+        # Step 4 fallback layer when no keyword or capsule decision matches
+        self.default_fallback: str = data.get("default_fallback", "llm_reasoning")
         # Pre-compile keyword patterns (raw + normalized) for fast matching.
         # patterns_norm entries are None when keyword has no diacritics (no-op).
         self._decision_keywords: list[

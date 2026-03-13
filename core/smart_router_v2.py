@@ -187,9 +187,13 @@ class SmartRouterV2:
             self._record(result.layer)
             return result
 
-        # Step 4: Capsule priority fallback
-        ordered = self.capsule.get_layers_by_priority()
-        fallback_layer = ordered[0].name if ordered else "llm_reasoning"
+        # Step 4: Default fallback (capsule-configured or llm_reasoning)
+        # Uses capsule.default_fallback rather than priority[0] so unknown
+        # queries get a conversational answer, not a rule-check.
+        fallback_layer = self.capsule.default_fallback
+        if not self.capsule.is_layer_enabled(fallback_layer):
+            ordered = self.capsule.get_layers_by_priority()
+            fallback_layer = ordered[0].name if ordered else "llm_reasoning"
         elapsed = (time.perf_counter() - t0) * 1000
         result = RouteResult(
             layer=fallback_layer,

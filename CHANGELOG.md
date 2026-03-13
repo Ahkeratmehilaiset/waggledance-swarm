@@ -1,5 +1,38 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.13.0] — 2026-03-13
+
+### Capsule Default Fallback — Unknown Queries Route to llm_reasoning
+
+#### Problem
+SmartRouterV2 Step 4 (priority fallback) was routing unknown queries to
+`rule_constraints` (priority=1 in cottage.yaml). This is semantically wrong:
+rule_constraints should be for safety checks, not general catch-all responses.
+A query like "viita räme sammalpinta" had no keywords matching any layer but
+still landed in rule_constraints.
+
+#### Fixed
+- **`core/smart_router_v2.py`** Step 4: uses `capsule.default_fallback` instead
+  of `capsule.get_layers_by_priority()[0]`
+  - If default_fallback layer is disabled, falls back to priority list as before
+- **`core/domain_capsule.py`**: `DomainCapsule.default_fallback` attribute
+  - Parsed from `default_fallback` field in capsule YAML
+  - Defaults to `"llm_reasoning"` if field absent
+
+#### Changed
+- **`configs/capsules/cottage.yaml`**: added `default_fallback: llm_reasoning`
+- `tools/waggle_backup.py`: registered `test_capsule_default_fallback` — now **70 test suites**
+
+#### Added
+- **`tests/test_capsule_default_fallback.py`**: 5 tests
+  - capsule.default_fallback == "llm_reasoning" from YAML
+  - Unknown query routes to llm_reasoning (not rule_constraints)
+  - Known query ("pitaako") still routes to rule_constraints
+  - Missing default_fallback field defaults to "llm_reasoning"
+  - Disabled default_fallback layer falls through to priority list
+
+**Unknown/off-topic queries now get a conversational LLM answer, not a rule check**
+
 ## [1.12.0] — 2026-03-13
 
 ### Capsule-Level Finnish Normalization

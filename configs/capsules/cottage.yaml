@@ -1,6 +1,7 @@
 domain: cottage
 version: "1.0"
 description: "Off-grid property management — heating, frost protection, seasonal tasks"
+default_fallback: llm_reasoning
 
 layers:
   rule_constraints:

@@ -73,6 +73,18 @@ models:
     type: statistical
     axiom_file: "configs/axioms/cottage/winter_survival.yaml"
 
+  - id: honey_yield
+    type: model_based
+    axiom_file: "configs/axioms/cottage/honey_yield.yaml"
+
+  - id: varroa_treatment
+    type: model_based
+    axiom_file: "configs/axioms/cottage/varroa_treatment.yaml"
+
+  - id: swarm_risk
+    type: model_based
+    axiom_file: "configs/axioms/cottage/swarm_risk.yaml"
+
 data_sources:
   - id: spot_price
     type: api

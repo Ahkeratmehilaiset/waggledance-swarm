@@ -1,5 +1,32 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.11.0] — 2026-03-13
+
+### Capsule Keyword Word-Boundary Fix
+
+#### Fixed
+- **`core/domain_capsule.py`**: keyword patterns now use `\b` word-start boundary
+  - `re.compile(re.escape(kw))` -> `re.compile(r'\b' + re.escape(kw))`
+  - Prevents "energi" keyword from matching inside "aurink**o**energi**a**" (mid-word)
+  - Prevents any keyword from triggering on mid-word substring hits
+- **`configs/capsules/cottage.yaml`**: removed "mite" from `varroa_treatment` keywords
+  - "mite" was a false positive for the extremely common Finnish word "miten" (how/how much)
+  - Remaining keywords (varroa, punkki, oksaalihappo, oxalic, lääkitys, treatment) are sufficient
+
+#### Added
+- **`tests/test_capsule_word_boundary.py`**: 6 tests
+  - "energi" no longer matches mid-word "aurinkoenergia"
+  - "mita on aurinkoenergia" routes to retrieval (not heating_cost)
+  - "miten" no longer triggers varroa_treatment
+  - "selita miten X" routes to retrieval
+  - varroa/oxalic/treatment keywords still match correctly (no regression)
+  - heating/cost/kwh keywords still match correctly (no regression)
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_capsule_word_boundary` — now **68 test suites**
+
+**Capsule routing no longer produces false positives from mid-word substring matches**
+
 ## [1.10.0] — 2026-03-13
 
 ### Finnish ASCII Diacritics Normalization — SmartRouter v2

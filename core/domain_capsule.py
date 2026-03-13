@@ -66,7 +66,7 @@ class DomainCapsule:
         for dec in self.key_decisions:
             patterns = []
             for kw in dec.get("keywords", []):
-                patterns.append(re.compile(re.escape(kw.lower())))
+                patterns.append(re.compile(r'\b' + re.escape(kw.lower())))
             self._decision_keywords.append((dec, patterns))
 
     # ── Factory methods ──────────────────────────────────────

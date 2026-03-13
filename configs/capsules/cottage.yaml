@@ -59,7 +59,7 @@ key_decisions:
 
   - id: varroa_treatment
     question: "Kuinka paljon varroa-lääkettä tarvitaan?"
-    keywords: ["varroa", "punkki", "mite", "oksaalihappo", "oxalic", "lääkitys", "treatment"]
+    keywords: ["varroa", "punkki", "oksaalihappo", "oxalic", "lääkitys", "treatment"]
     primary_layer: model_based
     model: varroa_treatment
     inputs: [combs_with_bees, varroa_before, colony_strength]

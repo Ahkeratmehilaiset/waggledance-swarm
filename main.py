@@ -3,9 +3,10 @@
 WaggleDance Swarm AI — Local HiveNode Runtime (On-Prem)
 ========================================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v1.6.0 • Built: 2026-03-13
+Claude 4.6 • v1.7.0 • Built: 2026-03-13
 
-v1.6.0: colony_food_reserves axiom, full 5-model bee-domain coverage, 62 test suites (12 bee axiom tests).
+v1.7.0: bee axiom FAISS indexing (92→135 vectors), incremental indexer, 64 test suites (8 axiom FAISS tests).
+v1.6.0: colony_food_reserves axiom, full 5-model bee-domain coverage, 63 test suites (16 capsule routing tests).
 v1.5.0: Bee axioms (honey_yield/varroa_treatment/swarm_risk), capsule routing fix, FAISS 10,784 vektoria, 62 test suites.
 v1.4.0: Statistical layer handler, Finnish inflection fix (anomaalia/poikkeamaa), 61 test suites.
 v1.3.0: Retrieval layer handler (FAISS direct search, EN/FI, score threshold, fall-through), training_pairs vectorization, 60 test suites.

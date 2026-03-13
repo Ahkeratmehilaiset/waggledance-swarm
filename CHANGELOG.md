@@ -1,5 +1,24 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.7.0] — 2026-03-13
+
+### Bee Axiom FAISS Indexing
+
+#### Added
+- **`tools/index_bee_axioms.py`**: Incremental FAISS indexer for bee-domain axioms
+  - Checks `_doc_ids` before adding — skips already-indexed, no duplicates
+  - Indexed 43 new vectors: honey_yield (15), varroa_treatment (12), swarm_risk (10), colony_food_reserves (6)
+  - Axioms collection: 92 → 135 vectors
+  - Verification search: honey_yield score 0.838 for "honey yield colony strength"
+- **`tests/test_axiom_faiss.py`**: 8 tests verifying bee axiom FAISS state
+  - Collection count >= 130, all 4 bee model main/variable/formula doc_ids present
+  - Metadata correctness (type, model_id, domain), no duplicate doc_ids
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_axiom_faiss` — now **64 test suites**
+
+**FAISS axioms collection: 135 vectors (92 base + 43 bee axioms)**
+
 ## [1.6.0] — 2026-03-13
 
 ### Colony Food Reserves + Full Bee-Domain Coverage
@@ -11,6 +30,9 @@
   - Critical when feeding_needed > 5 kg, warning when > 0 kg
 - **Cottage capsule `colony_food_reserves` key_decision** (9 keywords: ruoka/varasto/fondant/sokeriliu/tarpeeksi/riittää)
 - **`test_bee_axioms.py` extended to 12 tests**: added colony_food_reserves adequate/insufficient store tests
+- **`tests/test_capsule_routing.py`**: 16 integration tests covering all 8 cottage capsule key_decisions
+  - All 8 routing decisions (FI + EN), cross-routing isolation, confidence threshold, router stats
+  - Axiom file existence check, models list validation, non-bee query isolation
 
 #### Fixed
 - Cottage capsule `hive_survival` keywords: removed "mehiläi"/"bee" (too broad), added "talvehtimi"
@@ -18,6 +40,7 @@
 - `colony_food_reserves` keywords capped at 9 (1/9=0.11 > threshold 0.10)
 
 **Bee-domain axiom coverage: 5 models — honey_yield, varroa_treatment, swarm_risk, colony_food_reserves, hive_thermal_balance**
+**63 test suites, 880 tests**
 
 ## [1.5.0] — 2026-03-13
 

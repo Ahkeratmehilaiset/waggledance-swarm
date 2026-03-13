@@ -25,7 +25,7 @@ The system was originally developed in a demanding real-world field environment 
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-50/50 test suites pass (700 tests across 50 suites, measured locally). No subscription, no API keys required.
+55/55 test suites pass (700 tests across 55 suites, measured locally). No subscription, no API keys required.
 
 ---
 
@@ -341,7 +341,7 @@ python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **50/50 suites GREEN, 698 tests, 0 failures** (4 suites skipped without Ollama).
+Expected: **55/55 suites GREEN, 698 tests, 0 failures** (4 suites skipped without Ollama).
 
 ---
 
@@ -365,7 +365,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 50 test suites (698 tests)
+├── tests/               # 55 test suites (698 tests)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -421,7 +421,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
 - **Security + stability fixes (v0.8.0)** — 12 fixes: async safety, SQL injection prevention, SQLite write locks, WS callback leak, deprecated API cleanup, metrics rotation
 - **Major refactor (v0.9.0)** — hivemind.py 3321→1382 lines, 4 controller modules extracted, 12 Sonnet review fixes, Phi-3.5-mini LoRA pipeline validated
-- **GitHub Actions CI** — automated test runner (50/50 GREEN)
+- **GitHub Actions CI** — automated test runner (55/55 GREEN)
 
 ---
 
@@ -431,7 +431,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 50/50 GREEN | 700+ tests, 4 skipped without Ollama |
+| Test suites | 55/55 GREEN | 700+ tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -442,7 +442,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | 50/50 GREEN, 698 tests |
+| CI pipeline | GitHub Actions | 55/55 GREEN, 698 tests |
 
 ---
 
@@ -513,7 +513,7 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all 50 suites pass
+4. Ensure all 55 suites pass
 5. Submit a pull request
 
 ### Development Setup

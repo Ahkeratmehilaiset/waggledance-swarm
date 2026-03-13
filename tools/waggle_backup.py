@@ -151,6 +151,9 @@ TESTS = [
     {"file": "tests/test_symbolic_solver.py",   "name": "Symbolic Solver",   "phase": "AX",  "args": [], "timeout": 30},
     {"file": "tests/test_constraint_engine.py", "name": "Constraint Engine", "phase": "AX",  "args": [], "timeout": 30},
     {"file": "tests/test_explainability.py",    "name": "Explainability",    "phase": "AX",  "args": [], "timeout": 30},
+    # v1.0.0 — Domain Capsule + Model E2E
+    {"file": "tests/test_domain_capsule.py",   "name": "Domain Capsule",    "phase": "v1",  "args": [], "timeout": 30},
+    {"file": "tests/test_model_e2e.py",        "name": "Model E2E Chain",   "phase": "v1",  "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

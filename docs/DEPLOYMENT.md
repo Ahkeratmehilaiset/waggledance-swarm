@@ -143,14 +143,14 @@ Additional environment variables:
 ## Verify Installation
 
 ```bash
-# Run all 43 test suites
+# Run all 55 test suites
 python tools/waggle_backup.py --tests-only
 
 # Validate environment
 python tools/waggle_restore.py
 ```
 
-Expected: **50/50 suites GREEN, 700+ assertions, 0 failures.**
+Expected: **55/55 suites GREEN, 800+ assertions, 0 failures.**
 
 ---
 

@@ -1,5 +1,24 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.6.0] — 2026-03-13
+
+### Colony Food Reserves + Full Bee-Domain Coverage
+
+#### Added
+- **`colony_food_reserves.yaml`** (`configs/axioms/cottage/`): winter food sufficiency model
+  - Calculates food_needed, food_deficit, survival_weeks, feeding_needed_kg
+  - `max(food_deficit, 0)` — no negative feeding values
+  - Critical when feeding_needed > 5 kg, warning when > 0 kg
+- **Cottage capsule `colony_food_reserves` key_decision** (9 keywords: ruoka/varasto/fondant/sokeriliu/tarpeeksi/riittää)
+- **`test_bee_axioms.py` extended to 12 tests**: added colony_food_reserves adequate/insufficient store tests
+
+#### Fixed
+- Cottage capsule `hive_survival` keywords: removed "mehiläi"/"bee" (too broad), added "talvehtimi"
+- `honey_yield` keywords: added "mehiläi", "hunajasato" for better disambiguation
+- `colony_food_reserves` keywords capped at 9 (1/9=0.11 > threshold 0.10)
+
+**Bee-domain axiom coverage: 5 models — honey_yield, varroa_treatment, swarm_risk, colony_food_reserves, hive_thermal_balance**
+
 ## [1.5.0] — 2026-03-13
 
 ### Bee-Domain Axioms + Capsule Routing + FAISS Complete

@@ -157,6 +157,7 @@ TESTS = [
     # v1.1.0 — FAISS vector store
     {"file": "tests/test_faiss_store.py",      "name": "FAISS Store",       "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_faiss_api.py",        "name": "FAISS API",         "phase": "v1",  "args": [], "timeout": 30},
+    {"file": "tests/test_faiss_retrieval.py",  "name": "FAISS Retrieval",   "phase": "v1",  "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

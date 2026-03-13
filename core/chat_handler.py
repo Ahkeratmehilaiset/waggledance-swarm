@@ -379,6 +379,32 @@ class ChatHandler:
         context = await self.memory.get_full_context(_original_message)
         msg_lower = _original_message.lower()  # Reititys aina FI-sanoilla
 
+        # ═══ FAISS Semantic Context Enrichment ═══
+        _faiss_reg = getattr(self, 'faiss_registry', None)
+        if _faiss_reg and hasattr(self, 'consciousness') and self.consciousness:
+            try:
+                import numpy as np
+                _q_vec = self.consciousness.embed.embed_query(_en_message or _original_message)
+                if _q_vec is not None:
+                    _vec = np.array(_q_vec, dtype=np.float32)
+                    _faiss_hits = []
+                    for _col_name in ("axioms", "agent_knowledge"):
+                        try:
+                            _col = _faiss_reg.get_or_create(_col_name)
+                            if _col.count > 0:
+                                _faiss_hits.extend(_col.search(_vec, k=3))
+                        except Exception:
+                            pass
+                    _good_hits = sorted(
+                        [h for h in _faiss_hits if h.score > 0.35],
+                        key=lambda x: x.score, reverse=True)[:5]
+                    if _good_hits:
+                        _faiss_ctx = "DOMAIN KNOWLEDGE:\n" + "\n".join(
+                            f"- {h.text[:200]}" for h in _good_hits)
+                        context = f"{_faiss_ctx}\n\n{context}" if context else _faiss_ctx
+            except Exception as _fe:
+                log.debug("FAISS enrichment skipped: %s", _fe)
+
         # Multi-agent check (sama kuin ennen)
         multi_keywords = ["kaikki", "tilanne", "yhteenveto", "status", "yleiskatsaus"]
         is_multi = any(w in msg_lower for w in multi_keywords)

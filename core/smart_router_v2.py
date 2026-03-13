@@ -39,6 +39,12 @@ _STAT_KEYWORDS = re.compile(
     r"statistic|cpk|oee|spc|baseline)\b",
     re.IGNORECASE,
 )
+_RETRIEVAL_KEYWORDS = re.compile(
+    r"\b(mitä on|mitä tarkoittaa|mikä on|miten toimii|kerro|selitä|"
+    r"what is|what are|what does|how does|tell me about|explain|describe|"
+    r"define|find out|search for|look up|who is|where is|when did)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -184,6 +190,8 @@ class SmartRouterV2:
             return "rule_constraints"
         if _STAT_KEYWORDS.search(query):
             return "statistical"
+        if _RETRIEVAL_KEYWORDS.search(query):
+            return "retrieval"
         return None
 
     def _record(self, layer: str) -> None:

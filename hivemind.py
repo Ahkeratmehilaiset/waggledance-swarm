@@ -765,6 +765,21 @@ DELEGATION RULES (IMPORTANT):
             print(f"  !! Explainability: {e}", flush=True)
             self.explainability = None
 
+        # ── FAISS Registry ────────────────────────────────────
+        try:
+            from core.faiss_store import FaissRegistry
+            from pathlib import Path
+            _faiss_dir = Path(__file__).parent / "data" / "faiss"
+            self.faiss_registry = FaissRegistry(base_dir=str(_faiss_dir))
+            _faiss_stats = self.faiss_registry.stats()
+            _total = sum(_faiss_stats.values())
+            print(f"  OK FAISS Registry: {len(_faiss_stats)} collections, "
+                  f"{_total} vectors ({', '.join(f'{k}:{v}' for k,v in _faiss_stats.items())})",
+                  flush=True)
+        except Exception as e:
+            print(f"  ⚠️  FAISS Registry: {e}", flush=True)
+            self.faiss_registry = None
+
         # ── Improvement 5: Cache Warming at startup ───────────
         try:
             self._warm_caches()

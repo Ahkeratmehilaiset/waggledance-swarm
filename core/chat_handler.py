@@ -365,7 +365,7 @@ class ChatHandler:
                             _q_vec = np.array(_q_raw, dtype=np.float32)
                     if _q_vec is not None:
                         _ret_hits = []
-                        for _col_name in ("axioms", "agent_knowledge", "training_pairs"):
+                        for _col_name in ("bee_knowledge", "axioms", "agent_knowledge", "training_pairs"):
                             try:
                                 _col = self.faiss_registry.get_or_create(_col_name)
                                 if _col.count > 0:
@@ -496,7 +496,7 @@ class ChatHandler:
                 if _q_vec is not None:
                     _vec = np.array(_q_vec, dtype=np.float32)
                     _faiss_hits = []
-                    for _col_name in ("axioms", "agent_knowledge"):
+                    for _col_name in ("bee_knowledge", "axioms", "agent_knowledge"):
                         try:
                             _col = _faiss_reg.get_or_create(_col_name)
                             if _col.count > 0:

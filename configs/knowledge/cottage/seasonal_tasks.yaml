@@ -1,0 +1,234 @@
+knowledge_id: seasonal_tasks
+knowledge_name: "Finnish Beekeeping Seasonal Calendar"
+description: "Monthly beekeeping tasks for Finnish climate (zones 1-4)"
+domain: cottage
+language: fi+en
+
+months:
+  - month: 1
+    month_name_fi: Tammikuu
+    month_name_en: January
+    season_fi: Talvi
+    season_en: Winter
+    tasks_fi:
+      - "Tarkista pesän paino vaakahivellä tai nostamalla — ruoan riittävyys"
+      - "Varmista, että lentoaukko ei ole tukossa lumesta tai jäästä"
+      - "Pidä talvirauha — ei tarpeetonta häirintää"
+      - "Tarkista sisälämpötila talviklusterin ympärillä (15-35°C normaali)"
+    tasks_en:
+      - "Check hive weight — verify winter food reserves sufficient"
+      - "Ensure entrance is clear of snow and ice"
+      - "Maintain winter quiet — no unnecessary disturbance"
+      - "Monitor cluster temperature if sensors available (15-35C normal)"
+    risk_factors_fi: ["nälkiintyminen", "kosteuden kertyminen", "hiiri", "jäätyminen"]
+    keywords: ["tammikuu", "january", "talvi", "winter", "talvirauha", "kluster", "cluster", "paino", "ruoka"]
+
+  - month: 2
+    month_name_fi: Helmikuu
+    month_name_en: February
+    season_fi: Talvi / Kevättalvi
+    season_en: Late Winter
+    tasks_fi:
+      - "Ensimmäinen kevättarkastus lämpimänä päivänä (+8°C) — klusterin elinvoimaisuus"
+      - "Tarvittaessa lisäruokinta kandisokeri tai fondant pesän päälle"
+      - "Puhdista lentolauta kuolleista mehiläisistä"
+      - "Hive-tilasto: talvikuolleisuus alle 10% normaali, yli 30% korkea"
+    tasks_en:
+      - "First spring check on warm day (+8C) — assess cluster viability"
+      - "Emergency feed candy sugar or fondant if stores low"
+      - "Clean landing board of winter dead bees"
+      - "Winter mortality: below 10% normal, above 30% concerning"
+    risk_factors_fi: ["nälkiintyminen", "emottommuus", "nosema"]
+    keywords: ["helmikuu", "february", "kevättalvi", "late winter", "fondant", "kandisokeri", "candy", "talvikuolleisuus"]
+
+  - month: 3
+    month_name_fi: Maaliskuu
+    month_name_en: March
+    season_fi: Kevättalvi / Kevät
+    season_en: Early Spring
+    tasks_fi:
+      - "Varhainen keväintarkastus: emo löytyy, koiraskenno ei vielä"
+      - "Aloita lisäruokinta siirappiliuoksella (1:1) tai fondantilla kun ulkolämpötila +10°C"
+      - "Tarkista varroa-taso — tarvittaessa happokäsittely ennen pesyettä"
+      - "Laajenna pesätilaa tarvittaessa (päällyslaatikko)"
+    tasks_en:
+      - "Early spring inspection: find queen, no drone brood yet"
+      - "Start supplemental feeding with syrup (1:1) or fondant when +10C"
+      - "Check varroa levels — treat with oxalic acid if needed before brood starts"
+      - "Expand hive space if cluster fills 8+ combs"
+    risk_factors_fi: ["varroa", "nälkiintyminen", "kevätauringon äkillinen aktivointi"]
+    keywords: ["maaliskuu", "march", "kevät", "spring", "keväintarkastus", "siirapit", "syrup", "oxalic acid", "oksaalihappo"]
+
+  - month: 4
+    month_name_fi: Huhtikuu
+    month_name_en: April
+    season_fi: Kevät
+    season_en: Spring
+    tasks_fi:
+      - "Pääkeväintarkastus: emo, pesye, ruokavarannot, varroa-taso"
+      - "Puhdista pohjalauta talvijätteistä"
+      - "Vaihda vanha kennorakenne uuteen (kierto)"
+      - "Aloita pesän laajentaminen: lisää kehikot kun pesye täyttää 7 kehikkoa"
+      - "Parveamisriskin seuranta: kuningatasolut = vaara"
+    tasks_en:
+      - "Main spring inspection: queen, brood, food reserves, varroa count"
+      - "Clean bottom board of winter debris"
+      - "Begin comb rotation — replace old dark combs"
+      - "Expand hive: add frames when brood fills 7 combs"
+      - "Monitor swarm risk: queen cells = high risk"
+    risk_factors_fi: ["parveaminen", "varroa", "suolistotaudit"]
+    keywords: ["huhtikuu", "april", "keväintarkastus", "spring inspection", "parveaminen", "swarm", "kehikot", "frames", "kuningatasolut", "queen cells"]
+
+  - month: 5
+    month_name_fi: Toukokuu
+    month_name_en: May
+    season_fi: Kevät / Alkukesä
+    season_en: Spring / Early Summer
+    tasks_fi:
+      - "Korkein parveamisriski — tarkista 7-10 päivän välein"
+      - "Parveamisen esto: lisää super (hunajakennosto), tee jako tai emorajoitin"
+      - "Mesikasvien seuranta: koivu, omenapuu, vaahtera kukkivat"
+      - "Poista emorajoitin jos pesä on vahva ja runsas mesilähdepotentiaali"
+    tasks_en:
+      - "Peak swarm season — inspect every 7-10 days"
+      - "Swarm prevention: add super, split colony, or use queen excluder"
+      - "Monitor forage plants: birch, apple, maple in bloom"
+      - "Add honey super before main nectar flow"
+    risk_factors_fi: ["parveaminen", "kuningatasolut", "ylikansoittuminen"]
+    keywords: ["toukokuu", "may", "parveaminen", "swarming", "super", "hunajakennosto", "emorajoitin", "queen excluder", "jako", "split"]
+
+  - month: 6
+    month_name_fi: Kesäkuu
+    month_name_en: June
+    season_fi: Kesä
+    season_en: Summer
+    tasks_fi:
+      - "Päähunajavuosi alkaa — valkovapaa, apila, mesiangervo"
+      - "Lisää supereja tarvittaessa — hunajan kypsyminen 3-4 viikkoa"
+      - "Varroa-seuranta: luonnollinen putoaminen alle 10/vrk normaali"
+      - "Koiraskenno viittaa parveamisaikeisiin — tarkista kuningatasolut"
+    tasks_en:
+      - "Main honey flow begins — clover, meadowsweet, white clover"
+      - "Add honey supers as needed — honey ripens in 3-4 weeks"
+      - "Varroa monitoring: natural drop below 10/day normal"
+      - "Drone brood indicates swarm intention — check for queen cells"
+    risk_factors_fi: ["parveaminen", "superien puute", "liiallinen koiraskenno"]
+    keywords: ["kesäkuu", "june", "kesä", "summer", "hunajavuosi", "honey flow", "apila", "clover", "valkovapaa", "varroa seuranta"]
+
+  - month: 7
+    month_name_fi: Heinäkuu
+    month_name_en: July
+    season_fi: Kesä / Huippu
+    season_en: Peak Summer
+    tasks_fi:
+      - "Päähunajankorjuuaika — tarkista kennon kypsyys (peitetty yli 80%)"
+      - "Varroa-käsittely mesijaksolla: käytä orgaanisia happoja vasta erän jälkeen"
+      - "Seuraa vesivarantoja — kuumalla säällä mehiläiset tarvitsevat vettä"
+      - "Talvituvan (kielosuper) lisääminen heinä-elokuun vaihteessa"
+    tasks_en:
+      - "Main honey harvest — check capping (80%+ capped = ready)"
+      - "Do not treat varroa during honey flow — treat after harvest"
+      - "Monitor water supply in hot weather"
+      - "Add winter super in late July for winter stores"
+    risk_factors_fi: ["varroa", "ruuhkautuminen", "kuumuus"]
+    keywords: ["heinäkuu", "july", "hunajankorjuu", "honey harvest", "peitetty", "capped honey", "kypsyys", "ripeness"]
+
+  - month: 8
+    month_name_fi: Elokuu
+    month_name_en: August
+    season_fi: Loppukesä
+    season_en: Late Summer
+    tasks_fi:
+      - "Hunajankorjuu viimeistään elokuun alkuun — jätä talvitupavarannot"
+      - "Varroa-käsittely heti erän jälkeen — tärkein vuotuinen käsittely"
+      - "Seuraa talvituvan täyttymistä — tavoite 20-25 kg/pesä"
+      - "Emoarvointi: nuori emo talvehditaan paremmin kuin 2+ vuotias"
+    tasks_en:
+      - "Complete honey harvest by early August — leave winter stores"
+      - "Varroa treatment immediately after harvest — most critical annual treatment"
+      - "Monitor winter super filling — target 20-25 kg per hive"
+      - "Queen assessment: young queen overwinters better than 2+ year old"
+    risk_factors_fi: ["varroa", "talvivarantojen puute", "vanha emo"]
+    keywords: ["elokuu", "august", "loppukesä", "late summer", "varroa käsittely", "varroa treatment", "talvivarannot", "winter stores", "oksaalihappo", "oxalic acid"]
+
+  - month: 9
+    month_name_fi: Syyskuu
+    month_name_en: September
+    season_fi: Syksy
+    season_en: Autumn
+    tasks_fi:
+      - "Syystarkastus: pesye vähenee, talvikluster muodostuu"
+      - "Ruokavaranto: mittaa kehikoiden paino tai arvioi hunajamäärä"
+      - "Tarvittaessa loppuruokinta sokerisiirappi 2:1 — viimeistään 15.9"
+      - "Hiirisuoja lentoaukkoon — hiiri voi pesiytyä pesään talveksi"
+    tasks_en:
+      - "Autumn inspection: brood declining, winter cluster forming"
+      - "Check food reserves: weigh combs or estimate honey stores"
+      - "Emergency feeding with 2:1 syrup if stores insufficient — last chance by Sept 15"
+      - "Install mouse guard at hive entrance"
+    risk_factors_fi: ["talvivarantojen puute", "hiiri", "myöhäinen ruokinta"]
+    keywords: ["syyskuu", "september", "syksy", "autumn", "syystarkastus", "autumn inspection", "hiirisuoja", "mouse guard", "sokerisiirappi", "sugar syrup", "loppuruokinta"]
+
+  - month: 10
+    month_name_fi: Lokakuu
+    month_name_en: October
+    season_fi: Syksy / Talveen valmistautuminen
+    season_en: Late Autumn
+    tasks_fi:
+      - "Viimeinen tarkastus ennen talvea — pesyen lopettaminen (vähäinen pesye OK)"
+      - "Talvipakkauksien asennus — tuulensuoja, kosteudenpoisto"
+      - "Varroa-käsittely hapetoinnilla emottomana aikana (tehokkain tulos)"
+      - "Kirjaa ylös pesän tila, ruokamäärä, emon ikä talvikortille"
+    tasks_en:
+      - "Final autumn inspection — end of brood OK, check food stores"
+      - "Install winter insulation — wind protection and moisture control"
+      - "Oxalic acid vaporization when broodless (most effective treatment)"
+      - "Record hive status, food stores, queen age on winter card"
+    risk_factors_fi: ["myöhäinen varroa-käsittely", "riittämätön talvisuoja", "kosteus"]
+    keywords: ["lokakuu", "october", "syksy", "talvi", "talveen valmistautuminen", "winter preparation", "hapetus", "vaporization", "emottomana", "broodless", "talvikortti"]
+
+  - month: 11
+    month_name_fi: Marraskuu
+    month_name_en: November
+    season_fi: Myöhäissyksy / Alkutalvi
+    season_en: Late Autumn / Early Winter
+    tasks_fi:
+      - "Mehiläiset siirtyvät talviryppääseen — ei tarkastuksia"
+      - "Tarkista pesien tuentarakenteet ja talvisuojat myrskyn jälkeen"
+      - "Aloita kevätkauden valmistelu: hanki uusia kehikoita ja kennoaihioita"
+    tasks_en:
+      - "Bees forming winter cluster — no inspections"
+      - "Check hive stands and winter covers after storms"
+      - "Start spring preparation: order new frames and foundation"
+    risk_factors_fi: ["myrskyvauriot", "kosteuden kertyminen"]
+    keywords: ["marraskuu", "november", "alkutalvi", "early winter", "talvirypäs", "winter cluster", "talvisuoja"]
+
+  - month: 12
+    month_name_fi: Joulukuu
+    month_name_en: December
+    season_fi: Talvi
+    season_en: Winter
+    tasks_fi:
+      - "Täysi talvilepo — pesien rauhaan jättäminen"
+      - "Vaakahiveli-seuranta: paino laskee noin 100-200g viikossa (normaali)"
+      - "Suunnittele ensi kausi: emohankinta, pesälaajennus, koulutus"
+    tasks_en:
+      - "Full winter rest — leave hives undisturbed"
+      - "Weight monitoring if available: normal consumption 100-200g/week"
+      - "Plan next season: queen ordering, hive expansion, courses"
+    risk_factors_fi: ["lentoaukko tukossa", "kosteuden kertyminen"]
+    keywords: ["joulukuu", "december", "talvi", "winter", "talvilepo", "winter rest", "paino", "weight", "suunnittelu", "planning"]
+
+general_facts_fi:
+  - "Suomen mehiläishoitokausi on noin 5-6 kuukautta (huhtikuu-syyskuu)"
+  - "Varroa-käsittely on pakolliton vuosittain — laiminlyönti johtaa pesän kuolemaan 2-3 vuodessa"
+  - "Talvivarannot: vähimmäissuositus 20 kg hunajaa tai vastaava sokerisiirappi"
+  - "Emon uusiminen 2-3 vuoden iässä parantaa talvitumista ja tuottavuutta"
+  - "Parveaminen on luonnollinen käyttäytyminen — esto vaatii aktiivista havainnointia"
+
+general_facts_en:
+  - "Finnish beekeeping season is approximately 5-6 months (April-September)"
+  - "Annual varroa treatment is mandatory — neglect leads to colony death within 2-3 years"
+  - "Winter stores minimum: 20 kg honey or equivalent sugar syrup"
+  - "Queen replacement at age 2-3 years improves overwintering and productivity"
+  - "Swarming is natural behavior — prevention requires active monitoring"

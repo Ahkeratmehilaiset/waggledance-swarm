@@ -163,7 +163,8 @@ TESTS = [
     {"file": "tests/test_statistical_layer.py", "name": "Statistical Layer", "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_bee_axioms.py",         "name": "Bee Axioms",        "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_capsule_routing.py",    "name": "Capsule Routing",   "phase": "v1",  "args": [], "timeout": 30},
-    {"file": "tests/test_axiom_faiss.py",        "name": "Axiom FAISS",       "phase": "v1",  "args": [], "timeout": 30},
+    {"file": "tests/test_axiom_faiss.py",         "name": "Axiom FAISS",        "phase": "v1",  "args": [], "timeout": 30},
+    {"file": "tests/test_bee_knowledge_faiss.py", "name": "Bee Knowledge FAISS", "phase": "v1",  "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

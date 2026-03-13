@@ -1,5 +1,26 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.8.0] — 2026-03-13
+
+### Bee Seasonal Knowledge Base + Retrieval Wiring
+
+#### Added
+- **`configs/knowledge/cottage/seasonal_tasks.yaml`**: Finnish beekeeping calendar (12 months)
+  - 129 FAISS chunks: month overviews, FI/EN task chunks, keyword chunks, general facts
+  - Covers: winter rest, spring inspection, swarm prevention, honey harvest, varroa treatment, winterization
+- **`tools/index_bee_knowledge.py`**: FAISS indexer for bee knowledge YAMLs
+  - New `bee_knowledge` collection: 129 vectors
+  - Incremental (skips existing doc_ids)
+- **`tests/test_bee_knowledge_faiss.py`**: 8 tests — all 12 months, FI/EN tasks, facts, metadata, no duplicates
+
+#### Changed
+- **`core/chat_handler.py`**: retrieval layer now searches `bee_knowledge` first
+  - Order: `bee_knowledge`, `axioms`, `agent_knowledge`, `training_pairs`
+  - FAISS context enrichment also includes `bee_knowledge`
+- `tools/waggle_backup.py`: registered `test_bee_knowledge_faiss` — now **65 test suites**
+
+**Seasonal queries now return real Finnish beekeeping calendar content instead of LLM fallback**
+
 ## [1.7.0] — 2026-03-13
 
 ### Bee Axiom FAISS Indexing

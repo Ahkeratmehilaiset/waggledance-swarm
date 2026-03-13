@@ -1,5 +1,25 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.4.0] — 2026-03-13
+
+### Statistical Layer + Finnish Inflection Fix
+
+#### Added
+- **Statistical layer handler** (`core/chat_handler.py`): activates on trend/average/anomaly queries
+  - Collects metrics from `consciousness.get_stats()` and `elastic_scaler.summary()`
+  - Returns bilingual EN/FI system stats (memory entries, HW tier, CPU/RAM %)
+  - Falls through to LLM when no subsystem stats available
+  - Sets `_last_chat_method='statistical'`, `_last_explanation={method,stats}`
+- **`tests/test_statistical_layer.py`**: 8 tests — SmartRouter routing EN/FI, no false positives, response format, explanation structure
+
+#### Fixed
+- **SmartRouter v2 `_STAT_KEYWORDS`**: removed trailing `\b` for Finnish stems
+  - `anomaalia`, `poikkeamaa` (partitive) now correctly route to statistical
+  - Added `anomaali` alongside `anomal`
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_statistical_layer` — now **61 test suites**
+
 ## [1.3.0] — 2026-03-13
 
 ### Retrieval Layer Handler + training_pairs Vectorization

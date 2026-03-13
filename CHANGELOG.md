@@ -1,5 +1,38 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.14.0] — 2026-03-13
+
+### Router Performance + Reason Code Improvements
+
+#### Fixed
+- **`core/chat_handler.py`**: `_do_chat()` now calls `smart_router_v2.route()` **once**
+  instead of 3–4 times per query (was called separately for each layer block).
+  - Inserted a single routing block before all layer checks: `_route = smart_router_v2.route(message)`
+  - Removed the incomplete `_last_route` hack in rule_constraints block (line 313)
+  - All 4 layer blocks (model_based, rule_constraints, retrieval, statistical) now share `_route`
+  - Saves ~1–3ms per query; eliminates redundant HotCache lookups + keyword scanning
+
+#### Changed
+- **`core/smart_router_v2.py`**: `_classify_keywords()` now returns `(layer, reason)` tuple
+  - Reason codes are now category-specific instead of generic "keyword_classifier":
+    - `"keyword_classifier:math"` — math/formula keywords
+    - `"keyword_classifier:seasonal"` — Finnish/English month names
+    - `"keyword_classifier:rule"` — rule/constraint keywords
+    - `"keyword_classifier:stat"` — statistical keywords
+    - `"keyword_classifier:retrieval"` — question/explain keywords
+  - Improves debugging and API transparency
+- `tools/waggle_backup.py`: registered `test_router_stats` — now **71 test suites**
+
+#### Added
+- **`tests/test_router_stats.py`**: 7 tests
+  - stats() structure validation
+  - total_routes increments by exactly 1 per route() call
+  - Seasonal/rule/capsule reason codes verified
+  - Routing determinism check
+  - layer_distribution multi-layer tracking
+
+**Each query now triggers exactly one routing decision instead of three or four**
+
 ## [1.13.0] — 2026-03-13
 
 ### Capsule Default Fallback — Unknown Queries Route to llm_reasoning

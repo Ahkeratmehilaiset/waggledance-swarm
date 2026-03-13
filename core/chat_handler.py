@@ -241,10 +241,17 @@ class ChatHandler:
                 except Exception as _fast_err:
                     log.warning("memory_fast route failed: %s", _fast_err)
 
-        # ═══ Model-based solver (SmartRouter v2 → SymbolicSolver) ═══
-        if getattr(self, 'smart_router_v2', None) and getattr(self, 'symbolic_solver', None):
+        # Route once — all layer checks below share this result (avoids 3–4 calls)
+        _route = None
+        if getattr(self, 'smart_router_v2', None):
             try:
                 _route = self.smart_router_v2.route(message)
+            except Exception as _re:
+                log.warning("SmartRouter v2 routing failed: %s", _re)
+
+        # ═══ Model-based solver (SmartRouter v2 → SymbolicSolver) ═══
+        if _route and getattr(self, 'symbolic_solver', None):
+            try:
                 if _route.layer == "model_based" and _route.decision_id:
                     _model_id = _route.model or _route.decision_id
                     _mr = self.symbolic_solver.solve_for_chat(_model_id, message)
@@ -308,11 +315,8 @@ class ChatHandler:
                 log.warning("Model-based solver failed: %s", _solver_err)
 
         # ═══ Rule constraints (SmartRouter v2 → ConstraintEngine) ═══
-        if getattr(self, 'smart_router_v2', None) and getattr(self, 'constraint_engine', None):
+        if _route and getattr(self, 'constraint_engine', None):
             try:
-                _route = getattr(self, '_last_route', None)
-                if _route is None:
-                    _route = self.smart_router_v2.route(message)
                 if _route.layer == "rule_constraints" and _route.decision_id:
                     # Build context from available sensor data
                     _ctx = {}
@@ -353,10 +357,9 @@ class ChatHandler:
                 log.warning("Rule constraints failed: %s", _rule_err)
 
         # ═══ Retrieval layer (SmartRouter v2 → FAISS direct search) ═══
-        if getattr(self, 'smart_router_v2', None) and getattr(self, 'faiss_registry', None):
+        if _route and getattr(self, 'faiss_registry', None):
             try:
-                _ret_route = self.smart_router_v2.route(message)
-                if _ret_route.layer == "retrieval":
+                if _route.layer == "retrieval":
                     _q_vec = None
                     if hasattr(self, 'consciousness') and self.consciousness:
                         import numpy as np
@@ -401,10 +404,9 @@ class ChatHandler:
                 log.warning("Retrieval layer failed: %s", _ret_err)
 
         # ═══ Statistical layer (SmartRouter v2 → system metrics summary) ═══
-        if getattr(self, 'smart_router_v2', None):
+        if _route:
             try:
-                _stat_route = self.smart_router_v2.route(message)
-                if _stat_route.layer == "statistical":
+                if _route.layer == "statistical":
                     _lang = "fi" if _detected_lang == "fi" else "en"
                     _stats: dict = {}
                     # Collect metrics from available subsystems

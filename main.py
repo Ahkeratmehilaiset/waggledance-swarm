@@ -3,8 +3,9 @@
 WaggleDance Swarm AI — Local HiveNode Runtime (On-Prem)
 ========================================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v1.13.0 • Built: 2026-03-13
+Claude 4.6 • v1.14.0 • Built: 2026-03-13
 
+v1.14.0: route() called once per query (was 3-4x), reason codes, 71 test suites (7 router-stats tests).
 v1.13.0: capsule default_fallback (unknown queries -> llm_reasoning), 70 test suites (5 fallback tests).
 v1.12.0: capsule-level Finnish normalization (match_decision ASCII/diacritic), 69 test suites (7 FI capsule tests).
 v1.11.0: capsule keyword word-boundary fix, remove 'mite' false positive, 68 test suites (6 word-boundary tests).

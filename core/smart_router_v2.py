@@ -175,13 +175,13 @@ class SmartRouterV2:
                 return result
 
         # Step 3: Keyword classifier
-        layer = self._classify_keywords(query)
-        if layer and self.capsule.is_layer_enabled(layer):
+        _kw_result = self._classify_keywords(query)
+        if _kw_result and self.capsule.is_layer_enabled(_kw_result[0]):
             elapsed = (time.perf_counter() - t0) * 1000
             result = RouteResult(
-                layer=layer,
+                layer=_kw_result[0],
                 confidence=0.5,
-                reason="keyword_classifier",
+                reason=_kw_result[1],
                 routing_time_ms=elapsed,
             )
             self._record(result.layer)
@@ -215,23 +215,25 @@ class SmartRouterV2:
     # ── Internal ─────────────────────────────────────────────
 
     @staticmethod
-    def _classify_keywords(query: str) -> Optional[str]:
+    def _classify_keywords(query: str) -> Optional[tuple[str, str]]:
         """Classify query by keyword patterns.
 
         Matches against both original query (with diacritics) and ASCII-normalized
         version so 'pitaako' matches as well as 'pitääkö'.
+
+        Returns (layer, reason_detail) or None.
         """
         q_norm = _normalize_fi(query)
         if _MATH_KEYWORDS.search(query) or _MATH_KEYWORDS.search(q_norm):
-            return "model_based"
+            return "model_based", "keyword_classifier:math"
         if _SEASONAL_KEYWORDS.search(query) or _SEASONAL_KEYWORDS.search(q_norm):
-            return "retrieval"
+            return "retrieval", "keyword_classifier:seasonal"
         if _RULE_KEYWORDS.search(query) or _RULE_KEYWORDS.search(q_norm):
-            return "rule_constraints"
+            return "rule_constraints", "keyword_classifier:rule"
         if _STAT_KEYWORDS.search(query) or _STAT_KEYWORDS.search(q_norm):
-            return "statistical"
+            return "statistical", "keyword_classifier:stat"
         if _RETRIEVAL_KEYWORDS.search(query) or _RETRIEVAL_KEYWORDS.search(q_norm):
-            return "retrieval"
+            return "retrieval", "keyword_classifier:retrieval"
         return None
 
     def _record(self, layer: str) -> None:

@@ -1353,6 +1353,30 @@ loadFeeds();
             result["facts"] = hivemind.consciousness.memory.count
         return result
 
+    # ── Domain Capsule + SmartRouter v2 endpoints ──────────
+
+    @app.get("/api/capsule")
+    async def capsule_info():
+        """Return the active domain capsule configuration."""
+        if not getattr(hivemind, 'capsule', None):
+            return {"error": "no capsule loaded", "domain": None}
+        return hivemind.capsule.to_dict()
+
+    @app.get("/api/route")
+    async def route_query(q: str = ""):
+        """Test routing a query through SmartRouter v2."""
+        if not q:
+            return {"error": "missing ?q= parameter"}
+        router = getattr(hivemind, 'smart_router_v2', None)
+        if not router:
+            return {"error": "SmartRouter v2 not loaded"}
+        result = router.route(q)
+        return {
+            "query": q,
+            "result": result.to_dict(),
+            "stats": router.stats(),
+        }
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()

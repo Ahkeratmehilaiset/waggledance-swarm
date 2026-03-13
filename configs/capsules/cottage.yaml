@@ -1,0 +1,85 @@
+domain: cottage
+version: "1.0"
+description: "Off-grid property management — heating, frost protection, seasonal tasks"
+
+layers:
+  rule_constraints:
+    enabled: true
+    priority: 1
+  model_based:
+    enabled: true
+    priority: 2
+  statistical:
+    enabled: true
+    priority: 3
+  retrieval:
+    enabled: true
+    priority: 4
+  llm_reasoning:
+    enabled: true
+    priority: 5
+
+key_decisions:
+  - id: heating_cost
+    question: "Paljonko lämmitys maksaa?"
+    keywords: ["lämmitys", "heating", "kustannus", "cost", "energi", "kwh"]
+    primary_layer: model_based
+    model: heating_cost
+    inputs: [spot_price, outdoor_temp, indoor_temp, area_m2, R_value]
+    fallback: llm_reasoning
+
+  - id: frost_protection
+    question: "Pitääkö putkia suojata pakkaselta?"
+    keywords: ["pakkanen", "frost", "putki", "pipe", "jäätyä", "freeze"]
+    primary_layer: rule_constraints
+    rules: [frost_pipe_check, frost_outdoor_threshold]
+    fallback: llm_reasoning
+
+  - id: hive_survival
+    question: "Selviävätkö mehiläiset talvesta?"
+    keywords: ["talvi", "winter", "selviää", "survival", "mehiläi", "bee", "kuolleisuus"]
+    primary_layer: statistical
+    model: winter_survival
+    inputs: [colony_strength, varroa_count, food_reserves_kg, cluster_temp]
+    fallback: llm_reasoning
+
+  - id: seasonal_task
+    question: "Mitä pitää tehdä nyt?"
+    keywords: ["tehtävä", "task", "kausi", "season", "kuukausi", "month"]
+    primary_layer: retrieval
+    fallback: llm_reasoning
+
+rules:
+  - id: frost_pipe_check
+    condition: "outdoor_temp < -5 and pipe_insulated == False"
+    action: alert
+    severity: high
+    message_fi: "Putket voivat jäätyä! Ulkolämpötila alle -5°C eikä putkia ole eristetty."
+    message_en: "Pipes may freeze! Outdoor temperature below -5°C and pipes are not insulated."
+
+  - id: frost_outdoor_threshold
+    condition: "outdoor_temp < -20"
+    action: alert
+    severity: critical
+    message_fi: "Ankara pakkanen ({outdoor_temp}°C) — tarkista kaikki vesiputket ja lämmitys."
+    message_en: "Severe frost ({outdoor_temp}°C) — check all water pipes and heating."
+
+models:
+  - id: heating_cost
+    type: model_based
+    axiom_file: "configs/axioms/cottage/heating_cost.yaml"
+
+  - id: winter_survival
+    type: statistical
+    axiom_file: "configs/axioms/cottage/winter_survival.yaml"
+
+data_sources:
+  - id: spot_price
+    type: api
+    url: "https://api.porssisahko.net/v1/latest-prices.json"
+    unit: "c/kWh"
+
+  - id: outdoor_temp
+    type: sensor
+    source: fmi_weather
+    unit: "°C"

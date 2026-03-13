@@ -1,0 +1,97 @@
+domain: factory
+version: "1.0"
+description: "Industrial — OEE analysis, SPC monitoring, predictive maintenance"
+
+layers:
+  rule_constraints:
+    enabled: true
+    priority: 1
+  model_based:
+    enabled: true
+    priority: 2
+  statistical:
+    enabled: true
+    priority: 3
+  retrieval:
+    enabled: true
+    priority: 4
+  llm_reasoning:
+    enabled: true
+    priority: 5
+
+key_decisions:
+  - id: oee_analysis
+    question: "Mikä on linjan OEE?"
+    keywords: ["oee", "tehokkuus", "efficiency", "käytettävyys", "availability", "nopeus", "laatu", "quality"]
+    primary_layer: model_based
+    model: oee_calculator
+    inputs: [planned_time, run_time, total_count, good_count, ideal_cycle_time]
+    fallback: llm_reasoning
+
+  - id: spc_alert
+    question: "Onko prosessi hallinnassa?"
+    keywords: ["spc", "kontrolli", "control", "chart", "raja", "limit", "poikkeama", "deviation", "cpk"]
+    primary_layer: statistical
+    model: spc_monitor
+    inputs: [measurement_history, ucl, lcl, target]
+    fallback: rule_constraints
+
+  - id: maintenance_prediction
+    question: "Milloin laite tarvitsee huoltoa?"
+    keywords: ["huolto", "maintenance", "ennakko", "predictive", "käyttötunti", "runtime", "vibration"]
+    primary_layer: model_based
+    model: maintenance_predictor
+    inputs: [runtime_hours, vibration_rms, temperature_delta, last_service_date]
+    fallback: llm_reasoning
+
+  - id: downtime_reason
+    question: "Miksi linja seisoi?"
+    keywords: ["seisokki", "downtime", "syy", "reason", "pysähdys", "stoppage"]
+    primary_layer: retrieval
+    fallback: llm_reasoning
+
+rules:
+  - id: spc_out_of_control
+    condition: "abs(measurement - target) > 3 * sigma"
+    action: alert
+    severity: critical
+    message_fi: "SPC-hälytys: mittaus {measurement} ylittää 3σ rajan (tavoite {target})"
+    message_en: "SPC alert: measurement {measurement} exceeds 3σ limit (target {target})"
+
+  - id: oee_below_threshold
+    condition: "oee < 0.60"
+    action: alert
+    severity: high
+    message_fi: "OEE alle 60% ({oee:.0%}) — tarkista syyt"
+    message_en: "OEE below 60% ({oee:.0%}) — investigate causes"
+
+  - id: maintenance_overdue
+    condition: "runtime_hours > max_runtime_hours"
+    action: alert
+    severity: high
+    message_fi: "Huoltoväli ylittynyt ({runtime_hours}h / {max_runtime_hours}h)"
+    message_en: "Maintenance interval exceeded ({runtime_hours}h / {max_runtime_hours}h)"
+
+models:
+  - id: oee_calculator
+    type: model_based
+    axiom_file: "configs/axioms/factory/oee_calculator.yaml"
+
+  - id: spc_monitor
+    type: statistical
+    axiom_file: "configs/axioms/factory/spc_monitor.yaml"
+
+  - id: maintenance_predictor
+    type: model_based
+    axiom_file: "configs/axioms/factory/maintenance_predictor.yaml"
+
+data_sources:
+  - id: mes_data
+    type: database
+    connection: "sqlite:///data/mes.db"
+    description: "Manufacturing execution system data"
+
+  - id: sensor_data
+    type: mqtt
+    topic: "factory/sensors/#"
+    description: "Real-time sensor readings"

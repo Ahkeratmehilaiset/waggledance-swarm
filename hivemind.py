@@ -710,6 +710,24 @@ DELEGATION RULES (IMPORTANT):
             print(f"  ⚠️  ElasticScaler: {e}", flush=True)
             self.elastic_scaler = None
 
+        # ── Domain Capsule + SmartRouter v2 ────────────────────
+        try:
+            from core.domain_capsule import DomainCapsule
+            self.capsule = DomainCapsule.load_from_settings()
+            from core.smart_router_v2 import SmartRouterV2
+            self.smart_router_v2 = SmartRouterV2(
+                self.capsule,
+                getattr(self.consciousness, '_hot_cache', None)
+                if hasattr(self, 'consciousness') else None)
+            print(f"  ✅ Domain Capsule: {self.capsule.domain} "
+                  f"({len(self.capsule.key_decisions)} decisions, "
+                  f"{len([l for l in self.capsule.layers if l.enabled])} layers)",
+                  flush=True)
+        except Exception as e:
+            print(f"  ⚠️  Domain Capsule: {e}", flush=True)
+            self.capsule = None
+            self.smart_router_v2 = None
+
         # ── Improvement 5: Cache Warming at startup ───────────
         try:
             self._warm_caches()

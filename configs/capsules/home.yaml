@@ -1,0 +1,86 @@
+domain: home
+version: "1.0"
+description: "Smart home energy and comfort optimization"
+
+layers:
+  rule_constraints:
+    enabled: true
+    priority: 1
+  model_based:
+    enabled: true
+    priority: 2
+  statistical:
+    enabled: true
+    priority: 3
+  retrieval:
+    enabled: true
+    priority: 4
+  llm_reasoning:
+    enabled: true
+    priority: 5
+
+key_decisions:
+  - id: heating_schedule
+    question: "Milloin lämmitän halvimmalla?"
+    keywords: ["lämmitys", "heating", "halvin", "cheapest", "ajastus", "schedule", "hinta"]
+    primary_layer: model_based
+    model: heat_pump_cop
+    inputs: [spot_price, outdoor_temp, indoor_temp]
+    fallback: llm_reasoning
+
+  - id: safety_check
+    question: "Onko jokin laite unohtunut päälle?"
+    keywords: ["laite", "device", "unohtunut", "forgotten", "päälle", "on", "turvallisuus", "safety"]
+    primary_layer: rule_constraints
+    rules: [stove_timeout, heater_max_temp]
+    fallback: llm_reasoning
+
+  - id: energy_anomaly
+    question: "Onko energiankulutus normaalia?"
+    keywords: ["energia", "energy", "kulutus", "consumption", "anomalia", "anomaly", "normaali"]
+    primary_layer: statistical
+    model: energy_baseline
+    inputs: [daily_kwh, outdoor_temp, weekday]
+    fallback: llm_reasoning
+
+rules:
+  - id: stove_timeout
+    condition: "stove_on == True and duration > 3600"
+    action: alert
+    severity: high
+    message_fi: "Liesi on ollut päällä yli tunnin"
+    message_en: "Stove has been on for over an hour"
+
+  - id: heater_max_temp
+    condition: "heater_temp > 35"
+    action: alert
+    severity: medium
+    message_fi: "Lämmitys asetettu yli 35°C — tarkista onko tarkoitus"
+    message_en: "Heating set above 35°C — verify if intentional"
+
+models:
+  - id: heat_pump_cop
+    type: model_based
+    axiom_file: "configs/axioms/home/heat_pump_cop.yaml"
+
+  - id: energy_baseline
+    type: statistical
+    axiom_file: "configs/axioms/home/energy_baseline.yaml"
+
+data_sources:
+  - id: spot_price
+    type: api
+    url: "https://api.porssisahko.net/v1/latest-prices.json"
+    unit: "c/kWh"
+
+  - id: outdoor_temp
+    type: sensor
+    source: home_assistant
+    entity_id: "sensor.outdoor_temperature"
+    unit: "°C"
+
+  - id: indoor_temp
+    type: sensor
+    source: home_assistant
+    entity_id: "sensor.indoor_temperature"
+    unit: "°C"

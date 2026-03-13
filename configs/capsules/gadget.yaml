@@ -1,0 +1,75 @@
+domain: gadget
+version: "1.0"
+description: "IoT edge device — battery life, signal quality, sensor calibration"
+
+layers:
+  rule_constraints:
+    enabled: true
+    priority: 1
+  model_based:
+    enabled: true
+    priority: 2
+  statistical:
+    enabled: true
+    priority: 3
+  retrieval:
+    enabled: false
+    priority: 4
+  llm_reasoning:
+    enabled: false
+    priority: 5
+
+key_decisions:
+  - id: battery_life
+    question: "Kuinka kauan akku kestää?"
+    keywords: ["akku", "battery", "kestää", "life", "lataus", "charge", "virta"]
+    primary_layer: model_based
+    model: battery_discharge
+    inputs: [battery_mah, avg_current_ma, duty_cycle]
+    fallback: rule_constraints
+
+  - id: signal_quality
+    question: "Onko signaali riittävä?"
+    keywords: ["signaali", "signal", "rssi", "wifi", "yhteys", "connection", "kantama"]
+    primary_layer: rule_constraints
+    rules: [rssi_threshold, packet_loss_check]
+    fallback: statistical
+
+  - id: sensor_accuracy
+    question: "Onko sensori kalibroitu oikein?"
+    keywords: ["sensori", "sensor", "kalibrointi", "calibration", "tarkkuus", "accuracy", "drift"]
+    primary_layer: statistical
+    model: sensor_drift
+    inputs: [reading_history, reference_value, calibration_age_days]
+    fallback: rule_constraints
+
+rules:
+  - id: rssi_threshold
+    condition: "rssi_dbm < -80"
+    action: alert
+    severity: medium
+    message_fi: "Heikko signaali ({rssi_dbm} dBm) — siirrä laite lähemmäs tukiasemaa"
+    message_en: "Weak signal ({rssi_dbm} dBm) — move device closer to access point"
+
+  - id: packet_loss_check
+    condition: "packet_loss_pct > 10"
+    action: alert
+    severity: high
+    message_fi: "Korkea pakettihäviö ({packet_loss_pct}%) — tarkista yhteys"
+    message_en: "High packet loss ({packet_loss_pct}%) — check connection"
+
+  - id: battery_low
+    condition: "battery_pct < 15"
+    action: alert
+    severity: high
+    message_fi: "Akku vähissä ({battery_pct}%) — lataa laite"
+    message_en: "Battery low ({battery_pct}%) — charge device"
+
+models:
+  - id: battery_discharge
+    type: model_based
+    axiom_file: "configs/axioms/gadget/battery_discharge.yaml"
+
+  - id: sensor_drift
+    type: statistical
+    axiom_file: "configs/axioms/gadget/sensor_drift.yaml"

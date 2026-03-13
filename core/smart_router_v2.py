@@ -88,6 +88,7 @@ class RouteResult:
     rules: list[str] = field(default_factory=list)
     inputs: list[str] = field(default_factory=list)
     fallback: Optional[str] = None
+    matched_keywords: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +101,7 @@ class RouteResult:
             "rules": self.rules,
             "inputs": self.inputs,
             "fallback": self.fallback,
+            "matched_keywords": self.matched_keywords,
         }
 
 
@@ -155,6 +157,7 @@ class SmartRouterV2:
                     rules=match.rules,
                     inputs=match.inputs,
                     fallback=match.fallback,
+                    matched_keywords=match.matched_keywords,
                 )
                 self._record(result.layer)
                 return result
@@ -170,6 +173,7 @@ class SmartRouterV2:
                     model=match.model,
                     rules=match.rules,
                     inputs=match.inputs,
+                    matched_keywords=match.matched_keywords,
                 )
                 self._record(result.layer)
                 return result
@@ -183,6 +187,7 @@ class SmartRouterV2:
                 confidence=0.5,
                 reason=_kw_result[1],
                 routing_time_ms=elapsed,
+                matched_keywords=_kw_result[2],
             )
             self._record(result.layer)
             return result
@@ -215,25 +220,35 @@ class SmartRouterV2:
     # ── Internal ─────────────────────────────────────────────
 
     @staticmethod
-    def _classify_keywords(query: str) -> Optional[tuple[str, str]]:
+    def _classify_keywords(query: str) -> Optional[tuple[str, str, list[str]]]:
         """Classify query by keyword patterns.
 
         Matches against both original query (with diacritics) and ASCII-normalized
         version so 'pitaako' matches as well as 'pitääkö'.
 
-        Returns (layer, reason_detail) or None.
+        Returns (layer, reason_detail, matched_keywords) or None.
         """
         q_norm = _normalize_fi(query)
-        if _MATH_KEYWORDS.search(query) or _MATH_KEYWORDS.search(q_norm):
-            return "model_based", "keyword_classifier:math"
-        if _SEASONAL_KEYWORDS.search(query) or _SEASONAL_KEYWORDS.search(q_norm):
-            return "retrieval", "keyword_classifier:seasonal"
-        if _RULE_KEYWORDS.search(query) or _RULE_KEYWORDS.search(q_norm):
-            return "rule_constraints", "keyword_classifier:rule"
-        if _STAT_KEYWORDS.search(query) or _STAT_KEYWORDS.search(q_norm):
-            return "statistical", "keyword_classifier:stat"
-        if _RETRIEVAL_KEYWORDS.search(query) or _RETRIEVAL_KEYWORDS.search(q_norm):
-            return "retrieval", "keyword_classifier:retrieval"
+
+        def _first_match(pat: re.Pattern) -> Optional[str]:
+            m = pat.search(query) or pat.search(q_norm)
+            return m.group(0) if m else None
+
+        m = _first_match(_MATH_KEYWORDS)
+        if m:
+            return "model_based", "keyword_classifier:math", [m]
+        m = _first_match(_SEASONAL_KEYWORDS)
+        if m:
+            return "retrieval", "keyword_classifier:seasonal", [m]
+        m = _first_match(_RULE_KEYWORDS)
+        if m:
+            return "rule_constraints", "keyword_classifier:rule", [m]
+        m = _first_match(_STAT_KEYWORDS)
+        if m:
+            return "statistical", "keyword_classifier:stat", [m]
+        m = _first_match(_RETRIEVAL_KEYWORDS)
+        if m:
+            return "retrieval", "keyword_classifier:retrieval", [m]
         return None
 
     def _record(self, layer: str) -> None:

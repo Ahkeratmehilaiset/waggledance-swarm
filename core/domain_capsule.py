@@ -50,6 +50,7 @@ class DecisionMatch:
     rules: list[str] = field(default_factory=list)
     inputs: list[str] = field(default_factory=list)
     fallback: Optional[str] = None
+    matched_keywords: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -165,17 +166,18 @@ class DomainCapsule:
         """
         q_lower = query.lower()
         q_norm = _normalize_fi(q_lower)
-        best: Optional[tuple[int, dict]] = None
+        best: Optional[tuple[int, dict, list[str]]] = None
         for dec, patterns, patterns_norm in self._decision_keywords:
-            hits = sum(
-                1 for p, pn in zip(patterns, patterns_norm)
+            hit_kws = [
+                kw for kw, p, pn in zip(dec.get("keywords", []), patterns, patterns_norm)
                 if p.search(q_lower) or (pn is not None and pn.search(q_norm))
-            )
+            ]
+            hits = len(hit_kws)
             if hits > 0 and (best is None or hits > best[0]):
-                best = (hits, dec)
+                best = (hits, dec, hit_kws)
         if best is None:
             return None
-        hits, dec = best
+        hits, dec, hit_kws = best
         confidence = min(1.0, hits / max(len(dec.get("keywords", [])), 1))
         return DecisionMatch(
             decision_id=dec["id"],
@@ -185,6 +187,7 @@ class DomainCapsule:
             rules=dec.get("rules", []),
             inputs=dec.get("inputs", []),
             fallback=dec.get("fallback"),
+            matched_keywords=hit_kws,
         )
 
     def get_layer_for_query(self, query: str) -> str:

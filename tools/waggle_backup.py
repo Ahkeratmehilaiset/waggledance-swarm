@@ -171,6 +171,7 @@ TESTS = [
     {"file": "tests/test_capsule_fi_normalization.py","name": "Capsule FI Norm",  "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_capsule_default_fallback.py","name": "Capsule Fallback", "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_router_stats.py",           "name": "Router Stats",     "phase": "v1",  "args": [], "timeout": 30},
+    {"file": "tests/test_matched_keywords.py",       "name": "Matched Keywords", "phase": "v1",  "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

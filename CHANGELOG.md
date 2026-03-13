@@ -1,5 +1,32 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.15.0] — 2026-03-13
+
+### Routing Keyword Transparency — matched_keywords in RouteResult
+
+#### Added
+- **`core/smart_router_v2.py`** `RouteResult.matched_keywords: list[str]`
+  - Populated by all routing steps: capsule match, keyword classifier, fallback (empty)
+  - Included in `to_dict()` — visible in `/api/route` API response
+  - `_classify_keywords()` now returns `(layer, reason, matched_keywords)` tuple
+    Uses `re.Match.group(0)` to capture the exact matched text
+- **`core/domain_capsule.py`** `DecisionMatch.matched_keywords: list[str]`
+  - `match_decision()` now tracks which YAML keywords triggered each decision
+  - Also captures keywords matched via ASCII normalization (returns YAML form)
+- **`tests/test_matched_keywords.py`**: 7 tests
+  - Capsule diacritic match: matched_keywords contains YAML keyword "lämmitys"
+  - Capsule ASCII match: matched_keywords still contains YAML form "lämmitys"
+  - Seasonal: "maaliskuu" in matched_keywords
+  - Rule: "pitaako" in matched_keywords
+  - Statistical: "trendi" in matched_keywords
+  - Retrieval: "mita on" in matched_keywords
+  - to_dict() includes matched_keywords list
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_matched_keywords` — now **72 test suites**
+
+**`/api/route` now shows exactly which keywords triggered each routing decision**
+
 ## [1.14.0] — 2026-03-13
 
 ### Router Performance + Reason Code Improvements

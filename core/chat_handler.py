@@ -352,6 +352,54 @@ class ChatHandler:
             except Exception as _rule_err:
                 log.warning("Rule constraints failed: %s", _rule_err)
 
+        # ═══ Retrieval layer (SmartRouter v2 → FAISS direct search) ═══
+        if getattr(self, 'smart_router_v2', None) and getattr(self, 'faiss_registry', None):
+            try:
+                _ret_route = self.smart_router_v2.route(message)
+                if _ret_route.layer == "retrieval":
+                    _q_vec = None
+                    if hasattr(self, 'consciousness') and self.consciousness:
+                        import numpy as np
+                        _q_raw = self.consciousness.embed.embed_query(message)
+                        if _q_raw is not None:
+                            _q_vec = np.array(_q_raw, dtype=np.float32)
+                    if _q_vec is not None:
+                        _ret_hits = []
+                        for _col_name in ("axioms", "agent_knowledge", "training_pairs"):
+                            try:
+                                _col = self.faiss_registry.get_or_create(_col_name)
+                                if _col.count > 0:
+                                    _ret_hits.extend(_col.search(_q_vec, k=5))
+                            except Exception:
+                                pass
+                        _good = sorted(
+                            [h for h in _ret_hits if h.score > 0.35],
+                            key=lambda x: x.score, reverse=True)[:5]
+                        if _good:
+                            _lang = "fi" if _detected_lang == "fi" else "en"
+                            _header = "Löysin seuraavat tiedot:\n\n" if _lang == "fi" else "Here is what I found:\n\n"
+                            response = _header + "\n\n".join(
+                                f"{i}. {h.text[:300]}" for i, h in enumerate(_good, 1))
+                            self._last_chat_message = message
+                            self._last_chat_response = response
+                            self._last_chat_method = "retrieval"
+                            self._last_chat_agent_id = "faiss_retrieval"
+                            self._last_model_result = None
+                            self._last_explanation = {
+                                "method": "faiss_retrieval",
+                                "hits": [{"doc_id": h.doc_id, "score": round(h.score, 4),
+                                          "text": h.text[:120]} for h in _good],
+                            }
+                            self.metrics.log_chat(
+                                query=_original_message, method="retrieval",
+                                agent_id="faiss_retrieval", model_used="faiss",
+                                confidence=_good[0].score,
+                                response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                                route="retrieval", language=_detected_lang)
+                            return response
+            except Exception as _ret_err:
+                log.warning("Retrieval layer failed: %s", _ret_err)
+
         # ═══ FI→EN käännös (~2ms) ═══
         if _detected_lang == "fi" and self.translation_proxy:
             try:

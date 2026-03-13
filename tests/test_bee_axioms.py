@@ -1,6 +1,6 @@
-"""Tests for bee-domain axiom models: honey_yield, varroa_treatment, swarm_risk.
+"""Tests for bee-domain axiom models: honey_yield, varroa_treatment, swarm_risk, colony_food_reserves.
 
-10 tests covering:
+12 tests covering:
 - honey_yield: solve() returns success + value in kg
 - honey_yield: strong colony > weak colony yield
 - varroa_treatment: mite_load_pct calculation correct
@@ -8,9 +8,11 @@
 - swarm_risk: probability = 100 for crowded/old-queen/queen-cells case
 - swarm_risk: probability low for spacious/new-queen case
 - solve_for_chat returns ModelResult with to_natural_language
-- All 3 models appear in SymbolicSolver registry
-- ModelResult.to_dict() has required keys for all 3
-- Bee axioms loaded from cottage/ domain directory
+- All 4 models appear in SymbolicSolver registry
+- ModelResult.to_dict() has required keys for all 4
+- swarm_risk warning level triggers correctly
+- colony_food_reserves: feeding_needed=0 when adequate stores
+- colony_food_reserves: warning when deficit > 0
 """
 
 import sys
@@ -95,16 +97,16 @@ def run():
     else:
         FAIL_MSG("honey_yield solve_for_chat", nl[:80] if nl else "empty")
 
-    # 8. All 3 models in solver registry
-    needed = {"honey_yield", "varroa_treatment", "swarm_risk"}
+    # 8. All 4 models in solver registry
+    needed = {"honey_yield", "varroa_treatment", "swarm_risk", "colony_food_reserves"}
     # Check by trying to solve each
     found = set()
     for model_id in needed:
         sr_test = solver.solve(model_id, {})
         if sr_test.success or sr_test.error is None or "not found" not in str(sr_test.error or ""):
             found.add(model_id)
-    if len(found) == 3:
-        OK(f"All 3 bee models in registry: {found}")
+    if len(found) == 4:
+        OK(f"All 4 bee models in registry: {found}")
     else:
         FAIL_MSG("Bee models in registry", f"found={found}")
 
@@ -128,6 +130,22 @@ def run():
         OK(f"swarm_risk: warning/critical at {sr_warn.value:.1f}% (risk={sr_warn.risk_level})")
     else:
         FAIL_MSG("swarm_risk warning level", f"risk={sr_warn.risk_level}, value={sr_warn.value}")
+
+    # 11. colony_food_reserves: adequate stores → feeding_needed=0
+    sr_food_ok = solver.solve("colony_food_reserves",
+                              {"bee_cluster_kg": 2.5, "food_available_kg": 15, "winter_months": 5})
+    if sr_food_ok.success and sr_food_ok.value == 0.0 and sr_food_ok.risk_level == "normal":
+        OK(f"colony_food_reserves: adequate stores → feeding_needed=0, risk=normal")
+    else:
+        FAIL_MSG("colony_food_reserves adequate", f"value={sr_food_ok.value}, risk={sr_food_ok.risk_level}")
+
+    # 12. colony_food_reserves: insufficient stores → warning
+    sr_food_low = solver.solve("colony_food_reserves",
+                               {"bee_cluster_kg": 1.5, "food_available_kg": 5, "winter_months": 5})
+    if sr_food_low.success and sr_food_low.value > 0 and sr_food_low.risk_level in ("warning", "critical"):
+        OK(f"colony_food_reserves: insufficient stores → feeding_needed={sr_food_low.value:.2f} kg, risk={sr_food_low.risk_level}")
+    else:
+        FAIL_MSG("colony_food_reserves insufficient", f"value={sr_food_low.value}, risk={sr_food_low.risk_level}")
 
 
 def main():

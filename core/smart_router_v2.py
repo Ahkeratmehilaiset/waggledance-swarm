@@ -34,9 +34,9 @@ _RULE_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 _STAT_KEYWORDS = re.compile(
-    r"\b(normaali|normal|anomal|poikkeama|deviation|trendi|trend|"
-    r"keskiarvo|average|mediaani|median|hajonta|variance|tilasto|"
-    r"statistic|cpk|oee|spc|baseline)\b",
+    # Finnish words without trailing \b — they inflect heavily (anomaalia, poikkeamaa, ...)
+    r"\b(normaali|anomaali|anomal|poikkeama|trendi|tilasto|keskiarvo|mediaani|hajonta|"
+    r"normal|deviation|trend|average|median|variance|statistic|cpk|oee|spc|baseline)",
     re.IGNORECASE,
 )
 _RETRIEVAL_KEYWORDS = re.compile(

@@ -400,6 +400,59 @@ class ChatHandler:
             except Exception as _ret_err:
                 log.warning("Retrieval layer failed: %s", _ret_err)
 
+        # ═══ Statistical layer (SmartRouter v2 → system metrics summary) ═══
+        if getattr(self, 'smart_router_v2', None):
+            try:
+                _stat_route = self.smart_router_v2.route(message)
+                if _stat_route.layer == "statistical":
+                    _lang = "fi" if _detected_lang == "fi" else "en"
+                    _stats: dict = {}
+                    # Collect metrics from available subsystems
+                    if hasattr(self, 'consciousness') and self.consciousness:
+                        try:
+                            _mem_stats = self.consciousness.get_stats()
+                            _stats["memory_entries"] = _mem_stats.get("total_memories", 0)
+                            _stats["avg_importance"] = _mem_stats.get("avg_importance", 0)
+                        except Exception:
+                            pass
+                    if hasattr(self, 'elastic_scaler') and self.elastic_scaler:
+                        try:
+                            _hw = self.elastic_scaler.summary()
+                            _stats["hw_tier"] = _hw.get("tier", "unknown")
+                            _stats["cpu_pct"] = _hw.get("cpu_pct", 0)
+                            _stats["ram_pct"] = _hw.get("ram_pct", 0)
+                        except Exception:
+                            pass
+                    if _stats:
+                        if _lang == "fi":
+                            _lines = ["Järjestelmätilastot:"]
+                            if "memory_entries" in _stats:
+                                _lines.append(f"• Muistimerkintöjä: {_stats['memory_entries']}")
+                            if "hw_tier" in _stats:
+                                _lines.append(f"• HW-taso: {_stats['hw_tier']}, CPU {_stats.get('cpu_pct',0):.0f}%, RAM {_stats.get('ram_pct',0):.0f}%")
+                        else:
+                            _lines = ["System statistics:"]
+                            if "memory_entries" in _stats:
+                                _lines.append(f"• Memory entries: {_stats['memory_entries']}")
+                            if "hw_tier" in _stats:
+                                _lines.append(f"• HW tier: {_stats['hw_tier']}, CPU {_stats.get('cpu_pct',0):.0f}%, RAM {_stats.get('ram_pct',0):.0f}%")
+                        response = "\n".join(_lines)
+                        self._last_chat_message = message
+                        self._last_chat_response = response
+                        self._last_chat_method = "statistical"
+                        self._last_chat_agent_id = "stats_engine"
+                        self._last_model_result = None
+                        self._last_explanation = {"method": "statistical", "stats": _stats}
+                        self.metrics.log_chat(
+                            query=_original_message, method="statistical",
+                            agent_id="stats_engine", model_used="none",
+                            confidence=0.8,
+                            response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                            route="statistical", language=_detected_lang)
+                        return response
+            except Exception as _stat_err:
+                log.warning("Statistical layer failed: %s", _stat_err)
+
         # ═══ FI→EN käännös (~2ms) ═══
         if _detected_lang == "fi" and self.translation_proxy:
             try:

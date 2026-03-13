@@ -73,6 +73,14 @@ key_decisions:
     inputs: [empty_combs, total_combs, queen_age_years, queen_cells, season_factor]
     fallback: llm_reasoning
 
+  - id: colony_food_reserves
+    question: "Onko pesässä tarpeeksi ruokaa talvea varten?"
+    keywords: ["ruoka", "varasto", "food", "reserve", "lisäruok", "fondant", "sokeriliu", "tarpeeksi", "riittää"]
+    primary_layer: model_based
+    model: colony_food_reserves
+    inputs: [bee_cluster_kg, food_available_kg, winter_months]
+    fallback: llm_reasoning
+
 rules:
   - id: frost_pipe_check
     condition: "outdoor_temp < -5 and pipe_insulated == False"
@@ -108,6 +116,10 @@ models:
   - id: swarm_risk
     type: model_based
     axiom_file: "configs/axioms/cottage/swarm_risk.yaml"
+
+  - id: colony_food_reserves
+    type: model_based
+    axiom_file: "configs/axioms/cottage/colony_food_reserves.yaml"
 
 data_sources:
   - id: spot_price

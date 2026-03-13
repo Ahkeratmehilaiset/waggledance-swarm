@@ -1,5 +1,30 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.10.0] — 2026-03-13
+
+### Finnish ASCII Diacritics Normalization — SmartRouter v2
+
+#### Added
+- **`core/smart_router_v2.py`**: `_normalize_fi()` helper — maps ä→a, ö→o, å→a
+  - Allows ASCII queries ("pitaako", "mita on", "selita") to match the same layer as diacritic queries
+  - `_classify_keywords()` now matches both raw query and `_normalize_fi(query)`
+  - `_RULE_KEYWORDS`: added "pitaako" ASCII variant
+  - `_RETRIEVAL_KEYWORDS`: added "mita on", "mika on", "mita tarkoittaa", "selita" ASCII variants
+- **`tests/test_fi_normalization.py`**: 8 tests
+  - `_normalize_fi()` unit tests (ä->a, ö->o, å->a)
+  - "pitaako" routes to rule_constraints like "pitääkö"
+  - "mita on" routes to retrieval like "mitä on"
+  - "selita" routes to retrieval like "selitä"
+  - ASCII seasonal queries still route to retrieval
+  - Statistical keywords route correctly
+  - Regression check: original diacritics queries unchanged
+  - Mixed ASCII+diacritics (varroa query) routes correctly via capsule Step 2
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_fi_normalization` — now **67 test suites**
+
+**Finnish users can now type queries without diacritics and get correct routing**
+
 ## [1.9.0] — 2026-03-13
 
 ### Seasonal Routing Fix — SmartRouter v2 _SEASONAL_KEYWORDS

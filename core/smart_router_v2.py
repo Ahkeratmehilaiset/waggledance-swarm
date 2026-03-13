@@ -21,15 +21,29 @@ from core.domain_capsule import DomainCapsule
 
 log = logging.getLogger(__name__)
 
+def _normalize_fi(text: str) -> str:
+    """Normalize Finnish diacritics to ASCII for keyword matching.
+
+    Allows matching both 'pitääkö' and 'pitaako', 'mitä on' and 'mita on'.
+    """
+    return (
+        text.lower()
+        .replace("ä", "a").replace("ö", "o").replace("å", "a")
+        .replace("Ä", "a").replace("Ö", "o").replace("Å", "a")
+    )
+
+
 # Keyword patterns for layer classification (language-agnostic)
+# NOTE: Finnish patterns use diacritics — _normalize_fi() is applied to query before matching
 _MATH_KEYWORDS = re.compile(
     r"\b(paljonko|kuinka paljon|laske|calculate|how much|cost|hinta|"
     r"price|formula|kaava|kwh|watt|celsius|fahrenheit|euro|€|\d+\s*[+\-*/])\b",
     re.IGNORECASE,
 )
 _RULE_KEYWORDS = re.compile(
-    r"\b(pitääkö|must|should|onko sallittu|allowed|kielletty|forbidden|"
-    r"raja|limit|threshold|sääntö|rule|hälytys|alert|varoitus|warning|"
+    # Both diacritic and ASCII-normalized forms (pitääkö / pitaako, sääntö / saanto, etc.)
+    r"\b(pitääkö|pitaako|must|should|onko sallittu|allowed|kielletty|forbidden|"
+    r"raja|limit|threshold|saanto|saanto|rule|halytys|alert|varoitus|warning|"
     r"turvallisuus|safety|check|tarkista)\b",
     re.IGNORECASE,
 )
@@ -40,7 +54,9 @@ _STAT_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 _RETRIEVAL_KEYWORDS = re.compile(
-    r"\b(mitä on|mitä tarkoittaa|mikä on|miten toimii|kerro|selitä|"
+    # Both diacritic and ASCII-normalized forms (mitä/mita, selitä/selita, etc.)
+    r"\b(mitä on|mita on|mitä tarkoittaa|mita tarkoittaa|mikä on|mika on|"
+    r"miten toimii|kerro|selitä|selita|"
     r"what is|what are|what does|how does|tell me about|explain|describe|"
     r"define|find out|search for|look up|who is|where is|when did)\b",
     re.IGNORECASE,
@@ -196,16 +212,21 @@ class SmartRouterV2:
 
     @staticmethod
     def _classify_keywords(query: str) -> Optional[str]:
-        """Classify query by keyword patterns."""
-        if _MATH_KEYWORDS.search(query):
+        """Classify query by keyword patterns.
+
+        Matches against both original query (with diacritics) and ASCII-normalized
+        version so 'pitaako' matches as well as 'pitääkö'.
+        """
+        q_norm = _normalize_fi(query)
+        if _MATH_KEYWORDS.search(query) or _MATH_KEYWORDS.search(q_norm):
             return "model_based"
-        if _SEASONAL_KEYWORDS.search(query):   # before _RULE_KEYWORDS (month names > "should")
+        if _SEASONAL_KEYWORDS.search(query) or _SEASONAL_KEYWORDS.search(q_norm):
             return "retrieval"
-        if _RULE_KEYWORDS.search(query):
+        if _RULE_KEYWORDS.search(query) or _RULE_KEYWORDS.search(q_norm):
             return "rule_constraints"
-        if _STAT_KEYWORDS.search(query):
+        if _STAT_KEYWORDS.search(query) or _STAT_KEYWORDS.search(q_norm):
             return "statistical"
-        if _RETRIEVAL_KEYWORDS.search(query):
+        if _RETRIEVAL_KEYWORDS.search(query) or _RETRIEVAL_KEYWORDS.search(q_norm):
             return "retrieval"
         return None
 

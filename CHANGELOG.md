@@ -1,5 +1,21 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.3.0] — 2026-03-13
+
+### Retrieval Layer Handler + training_pairs Vectorization
+
+#### Added
+- **Retrieval layer handler** (`core/chat_handler.py`): new layer between rule_constraints and FI→EN translation
+  - Activated when SmartRouter v2 routes to `retrieval` (what is/explain/mitä on/selitä keywords)
+  - Embeds query via consciousness.embed, searches axioms + agent_knowledge + training_pairs FAISS collections
+  - Filters score > 0.35, formats top-5 hits as numbered list (bilingual EN/FI header)
+  - Falls through to LLM when no good FAISS hits available
+  - Sets `_last_chat_method='retrieval'`, `_last_explanation={method,hits}` for ReasoningDashboard
+- **`tests/test_retrieval_layer.py`**: 8 tests — SmartRouter routing EN/FI, FAISS ranking, score threshold, response headers, explanation structure, fall-through on empty
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_retrieval_layer` — now **60 test suites**
+
 ## [1.2.0] — 2026-03-13
 
 ### FAISS Wiring + Enriched Chat API

@@ -161,6 +161,7 @@ TESTS = [
     {"file": "tests/test_chat_model_result.py","name": "Chat Model Result", "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_retrieval_layer.py",   "name": "Retrieval Layer",   "phase": "v1",  "args": [], "timeout": 30},
     {"file": "tests/test_statistical_layer.py", "name": "Statistical Layer", "phase": "v1",  "args": [], "timeout": 30},
+    {"file": "tests/test_bee_axioms.py",         "name": "Bee Axioms",        "phase": "v1",  "args": [], "timeout": 30},
 ]
 
 # Backup exclusions

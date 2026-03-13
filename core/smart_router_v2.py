@@ -113,7 +113,7 @@ class SmartRouterV2:
 
         # Step 2: Capsule key_decision match
         match = self.capsule.match_decision(query)
-        if match and match.confidence >= 0.2:
+        if match and match.confidence >= 0.1:
             if self.capsule.is_layer_enabled(match.layer):
                 elapsed = (time.perf_counter() - t0) * 1000
                 result = RouteResult(

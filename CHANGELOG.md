@@ -1,5 +1,27 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.9.0] — 2026-03-13
+
+### Seasonal Routing Fix — SmartRouter v2 _SEASONAL_KEYWORDS
+
+#### Fixed
+- **`core/smart_router_v2.py`**: Added `_SEASONAL_KEYWORDS` pattern
+  - Matches all 12 Finnish month names (tammikuu…joulukuu), kesäkuu/heinäkuu stems
+  - Matches all 12 English month names
+  - Matches "kauden"/"kuukau"/"seasonal"/"tehtav" stems
+  - Checked **before** `_RULE_KEYWORDS` — "what should I do in august" no longer misroutes to rule_constraints
+- **`configs/capsules/cottage.yaml`**:
+  - `hive_survival` keywords: removed "winter" (too broad — "winter prep" hijacked seasonal queries)
+  - `seasonal_task` keywords: reverted to 5 core keywords (month names handled by `_SEASONAL_KEYWORDS`)
+
+#### Added
+- **`tests/test_seasonal_routing.py`**: 10 tests — FI/EN month routing, "should" fix, varroa priority, survival/frost unchanged, bee_knowledge FAISS coverage
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_seasonal_routing` — now **66 test suites**
+
+**Seasonal queries now reliably route to retrieval (bee_knowledge FAISS) for all month names in FI and EN**
+
 ## [1.8.0] — 2026-03-13
 
 ### Bee Seasonal Knowledge Base + Retrieval Wiring

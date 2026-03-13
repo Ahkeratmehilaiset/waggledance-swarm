@@ -3,8 +3,9 @@
 WaggleDance Swarm AI — Local HiveNode Runtime (On-Prem)
 ========================================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v1.8.0 • Built: 2026-03-13
+Claude 4.6 • v1.9.0 • Built: 2026-03-13
 
+v1.9.0: seasonal routing fix (_SEASONAL_KEYWORDS), 66 test suites (10 seasonal routing tests).
 v1.8.0: bee seasonal knowledge base (129 vectors), retrieval wired, 65 test suites (8 bee knowledge tests).
 v1.7.0: bee axiom FAISS indexing (92→135 vectors), incremental indexer, 64 test suites (8 axiom FAISS tests).
 v1.6.0: colony_food_reserves axiom, full 5-model bee-domain coverage, 63 test suites (16 capsule routing tests).

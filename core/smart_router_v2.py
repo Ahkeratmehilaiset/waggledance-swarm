@@ -45,6 +45,19 @@ _RETRIEVAL_KEYWORDS = re.compile(
     r"define|find out|search for|look up|who is|where is|when did)\b",
     re.IGNORECASE,
 )
+_SEASONAL_KEYWORDS = re.compile(
+    # Finnish month names (all except kesä/heinä have no diacritics)
+    r"\b(tammikuu|helmikuu|maaliskuu|huhtikuu|toukokuu|elokuu|syyskuu|"
+    r"lokakuu|marraskuu|joulukuu|"
+    # Finnish month stems with diacritics — searched without \b (inflect heavily)
+    r"kes[aä]kuu|hein[aä]kuu|"
+    # English month names
+    r"january|february|march|april|may\b|june|july|august|"
+    r"september|october|november|december|"
+    # Season + task words (FI+EN, without trailing \b for inflection)
+    r"kauden|kuukau|seasonal|tehtav)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -186,6 +199,8 @@ class SmartRouterV2:
         """Classify query by keyword patterns."""
         if _MATH_KEYWORDS.search(query):
             return "model_based"
+        if _SEASONAL_KEYWORDS.search(query):   # before _RULE_KEYWORDS (month names > "should")
+            return "retrieval"
         if _RULE_KEYWORDS.search(query):
             return "rule_constraints"
         if _STAT_KEYWORDS.search(query):

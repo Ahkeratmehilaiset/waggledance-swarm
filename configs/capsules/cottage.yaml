@@ -37,7 +37,7 @@ key_decisions:
 
   - id: hive_survival
     question: "Selviävätkö mehiläiset talvesta?"
-    keywords: ["talvi", "winter", "selviää", "survival", "kuolleisuus", "talvehtimi"]
+    keywords: ["talvi", "selviää", "survival", "kuolleisuus", "talvehtimi"]
     primary_layer: statistical
     model: winter_survival
     inputs: [colony_strength, varroa_count, food_reserves_kg, cluster_temp]
@@ -45,7 +45,7 @@ key_decisions:
 
   - id: seasonal_task
     question: "Mitä pitää tehdä nyt?"
-    keywords: ["tehtävä", "task", "kausi", "season", "kuukausi", "month"]
+    keywords: ["tehtävä", "kausi", "season", "kuukausi", "month"]
     primary_layer: retrieval
     fallback: llm_reasoning
 

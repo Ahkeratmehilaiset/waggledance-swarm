@@ -1,5 +1,27 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.5.0] — 2026-03-13
+
+### Bee-Domain Axioms + Capsule Routing + FAISS Complete
+
+#### Added
+- **Bee axiom models** (`configs/axioms/cottage/`):
+  - `honey_yield.yaml` — seasonal harvest estimation (colony strength × forager ratio × nectar flow × days)
+  - `varroa_treatment.yaml` — OA dosage + mite load % + reinfestation rate + critical alerts
+  - `swarm_risk.yaml` — swarming probability from space pressure + queen age + queen cells + season
+- **Cottage capsule key_decisions** for all 3 bee models (keywords → model_based routing)
+- **`tests/test_bee_axioms.py`**: 10 tests — yield ordering, mite load %, critical/warning risk levels, solve_for_chat NL, ModelResult.to_dict()
+- **training_pairs FAISS collection**: 10,542 vectors embedded from `finetune_curated.jsonl` (score≥8.0, deduped)
+  - **Total FAISS index: 10,784 vectors** (axioms=92, agent_knowledge=150, training_pairs=10,542)
+
+#### Fixed
+- **Capsule routing confidence threshold** (`core/smart_router_v2.py`): 0.2 → 0.1 (1 hit out of 7+ keywords now routes)
+- **`hive_survival` keywords**: removed broad "mehiläi"/"bee" → added "talvehtimi" to prevent collisions
+- **`honey_yield` keywords**: added "hunajasato", "mehiläi" for higher hit count in bee harvest queries
+
+#### Changed
+- `tools/waggle_backup.py`: registered `test_bee_axioms` — now **62 test suites**
+
 ## [1.4.0] — 2026-03-13
 
 ### Statistical Layer + Finnish Inflection Fix

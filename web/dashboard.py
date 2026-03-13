@@ -1396,6 +1396,67 @@ loadFeeds();
         except Exception as exc:
             return JSONResponse({"error": str(exc), "success": False}, status_code=500)
 
+    @app.get("/api/faiss/stats")
+    async def faiss_stats():
+        """Return FAISS collection stats: name, vector count, dimension."""
+        try:
+            from core.faiss_store import FaissRegistry
+            from pathlib import Path
+            faiss_dir = Path(__file__).parent.parent / "data" / "faiss"
+            if not faiss_dir.exists():
+                return {"collections": [], "total_vectors": 0}
+            reg = FaissRegistry(base_dir=str(faiss_dir))
+            collections = []
+            for col_dir in sorted(faiss_dir.iterdir()):
+                if col_dir.is_dir():
+                    col = reg.get_or_create(col_dir.name)
+                    collections.append({"name": col_dir.name, "count": col.count, "dim": col.dim})
+            return {"collections": collections, "total_vectors": sum(c["count"] for c in collections)}
+        except Exception as exc:
+            return JSONResponse({"error": str(exc), "collections": []}, status_code=500)
+
+    @app.post("/api/faiss/search")
+    async def faiss_search(request: Request):
+        """Semantic search over a FAISS collection using Ollama embeddings."""
+        try:
+            data = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+        query = data.get("query", "").strip()
+        collection = data.get("collection", "axioms")
+        k = min(int(data.get("k", 5)), 20)
+        if not query:
+            return JSONResponse({"error": "query required"}, status_code=400)
+        try:
+            import httpx
+            from core.faiss_store import FaissRegistry
+            from pathlib import Path
+            import numpy as np
+
+            # Embed via Ollama
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    "http://localhost:11434/api/embed",
+                    json={"model": "nomic-embed-text", "input": f"search_query: {query}"},
+                )
+            emb_data = resp.json()
+            embedding = emb_data.get("embeddings", [emb_data.get("embedding", [])])[0]
+            if not embedding:
+                return JSONResponse({"error": "embedding failed"}, status_code=502)
+
+            vec = np.array(embedding, dtype=np.float32)
+            faiss_dir = Path(__file__).parent.parent / "data" / "faiss"
+            reg = FaissRegistry(base_dir=str(faiss_dir))
+            col = reg.get_or_create(collection)
+            results = col.search(vec, k=k)
+            return {
+                "query": query,
+                "collection": collection,
+                "results": [{"doc_id": r.doc_id, "text": r.text, "score": round(r.score, 4), "metadata": r.metadata} for r in results],
+            }
+        except Exception as exc:
+            return JSONResponse({"error": str(exc), "results": []}, status_code=500)
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()

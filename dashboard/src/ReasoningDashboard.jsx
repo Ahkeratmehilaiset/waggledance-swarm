@@ -712,7 +712,7 @@ function LearningPanel({ status, microModel, learning, t, lang }) {
   );
 }
 
-function UnderTheHoodPanel({ capsule, magma, status, models, t, lang }) {
+function UnderTheHoodPanel({ capsule, magma, status, models, faissStats, t, lang }) {
   const items = [];
   if (capsule?.domain) items.push({ label: "Capsule", value: `${capsule.domain} v${capsule.version || "?"}` });
   if (capsule?.layers) items.push({ label: lang === "fi" ? "Kerrokset" : "Layers", value: `${capsule.layers.length} · ${capsule.models_count || 0} solvers` });
@@ -721,6 +721,14 @@ function UnderTheHoodPanel({ capsule, magma, status, models, t, lang }) {
   if (magma?.cognitive_graph?.nodes != null) items.push({ label: "Cog. Graph", value: `${magma.cognitive_graph.nodes} nodes` });
   if (magma?.trust_engine?.total_signals != null) items.push({ label: "Trust", value: `${magma.trust_engine.total_signals} signals` });
   if (magma?.audit_entries != null) items.push({ label: "Audit", value: `${magma.audit_entries} entries` });
+  // FAISS vector store stats
+  if (faissStats?.collections?.length > 0) {
+    faissStats.collections.forEach(col => {
+      items.push({ label: `FAISS ${col.name}`, value: `${col.count.toLocaleString()} vec` });
+    });
+  } else if (faissStats) {
+    items.push({ label: "FAISS", value: lang === "fi" ? "indeksi tyhjä" : "index empty" });
+  }
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -898,6 +906,7 @@ export default function ReasoningDashboard({ onSwitchView } = {}) {
   const [models, setModels] = useState([]);
   const [throttleHistory, setThrottleHistory] = useState([]);
   const [feeds, setFeeds] = useState(null);
+  const [faissStats, setFaissStats] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
   const [queryFlow, setQueryFlow] = useState({ phase: "idle", layer: null, skipped: [], activeLayer: null, currentLayerIndex: 0 });
   const [runtimeOpsOpen, setRuntimeOpsOpen] = useState(false);
@@ -918,7 +927,7 @@ export default function ReasoningDashboard({ onSwitchView } = {}) {
 
   useEffect(() => {
     const fetchAll = async () => {
-      const [hwR, stR, capR, magR, learnR, microR, modR, thrR, feedsR] = await Promise.allSettled([
+      const [hwR, stR, capR, magR, learnR, microR, modR, thrR, feedsR, faissR] = await Promise.allSettled([
         apiFetch("/api/hardware"),
         apiFetch("/api/status"),
         apiFetch("/api/capsule"),
@@ -928,6 +937,7 @@ export default function ReasoningDashboard({ onSwitchView } = {}) {
         apiFetch("/api/models"),
         apiFetch("/api/monitor/history"),
         apiFetch("/api/feeds"),
+        apiFetch("/api/faiss/stats"),
       ]);
       const get = (r) => r.status === "fulfilled" ? r.value : null;
       const hwD = get(hwR); const stD = get(stR);
@@ -947,6 +957,7 @@ export default function ReasoningDashboard({ onSwitchView } = {}) {
       const thrD = get(thrR);
       if (thrD) setThrottleHistory(Array.isArray(thrD) ? thrD : thrD.events || []);
       if (get(feedsR)) setFeeds(get(feedsR));
+      if (get(faissR)) setFaissStats(get(faissR));
     };
     fetchAll();
     const iv = setInterval(fetchAll, 5000);
@@ -1119,7 +1130,7 @@ export default function ReasoningDashboard({ onSwitchView } = {}) {
           <LiveDataPanel status={status} feeds={feeds} t={t} lang={lang} />
           <PredictionsPanel status={status} t={t} lang={lang} profile={profile} />
           <LearningPanel status={status} microModel={microModel} learning={learning} t={t} lang={lang} />
-          <UnderTheHoodPanel capsule={capsule} magma={magma} status={status} models={models} t={t} lang={lang} />
+          <UnderTheHoodPanel capsule={capsule} magma={magma} status={status} models={models} faissStats={faissStats} t={t} lang={lang} />
         </div>
 
         {/* ── Center: chat ─────────────────────────────────────────────── */}

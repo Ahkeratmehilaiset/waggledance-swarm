@@ -1377,6 +1377,25 @@ loadFeeds();
             "stats": router.stats(),
         }
 
+    @app.post("/api/solve")
+    async def solve_model(request: Request):
+        """Directly call SymbolicSolver with model_id + inputs."""
+        try:
+            data = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+        model_id = data.get("model_id", "")
+        inputs = data.get("inputs", {})
+        if not model_id:
+            return JSONResponse({"error": "model_id required"}, status_code=400)
+        try:
+            from core.symbolic_solver import SymbolicSolver
+            solver = SymbolicSolver()
+            result = solver.solve(model_id, inputs)
+            return result.to_dict()
+        except Exception as exc:
+            return JSONResponse({"error": str(exc), "success": False}, status_code=500)
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useApi } from "./hooks/useApi";
+import ReasoningDashboard from "./ReasoningDashboard";
 
 const hx = (v) => Math.round(Math.max(0, Math.min(255, v || 0))).toString(16).padStart(2, "0");
 
@@ -915,7 +916,7 @@ function ModelStatusPanel({data,color,lang}){
 function FeatureList({feats,color,label,onOpen,t}){return(<div><div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,.30)",marginBottom:10}}>{label}</div>{[{key:"hw",icon:"💻",title:t.hwSpec,d:t.hwDesc},{key:"agents",icon:"🤖",title:t.agents,d:t.agentsDesc}].map(s=>(<div key={s.key} onClick={()=>onOpen(s.key)} style={{cursor:"pointer",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,.025)"}}><div style={{fontSize:12,color:color+"90",fontWeight:600,letterSpacing:2}}>{s.icon} {s.title}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{s.d}</div></div>))}{feats.map((f,i)=>(<div key={i} onClick={()=>onOpen(f)} style={{cursor:"pointer",padding:"6px 0",borderBottom:"1px solid rgba(255,255,255,.02)",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontSize:11,color:"rgba(255,255,255,.55)",fontWeight:600,letterSpacing:1.5}}>{f.title}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{f.desc}</div></div><span style={{fontSize:10,color:color+"45"}}>→</span></div>))}<div onClick={()=>onOpen("info")} style={{cursor:"pointer",padding:"7px 0",marginTop:4,borderTop:`1px solid ${color}10`}}><div style={{fontSize:12,color:color+"90",fontWeight:600,letterSpacing:2}}>🧠 {t.techArch}</div><div style={{fontSize:9,color:"rgba(255,255,255,.28)"}}>{t.techArchDesc}</div></div><div onClick={()=>onOpen("disclaimer")} style={{cursor:"pointer",padding:"7px 0",borderTop:"1px solid rgba(255,255,255,.03)"}}><div style={{fontSize:12,color:"rgba(255,255,255,.40)",fontWeight:600,letterSpacing:2}}>⚠️ {t.disclaimer}</div><div style={{fontSize:9,color:"rgba(255,255,255,.25)"}}>{t.disclaimerDesc}</div></div></div>)}
 
 export default function App(){
-  const[fly,setFly]=useState(true);const[on,setOn]=useState(false);const[dom,setDom]=useState("home");const[lang,setLang]=useState("en");
+  const[fly,setFly]=useState(true);const[on,setOn]=useState(false);const[dom,setDom]=useState("home");const[lang,setLang]=useState("en");const[dashView,setDashView]=useState("classic");
   const[fc,setFc]=useState(0);const[lr,setLr]=useState(37);const[hb,setHb]=useState([]);
   const[think,setThink]=useState(false);const[cpuL,setCpu]=useState(0);const[gpuL,setGpu]=useState(0);
   const[vramU,setVram]=useState(0);const[vramTotal,setVramTotal]=useState(8);const[overlay,setOverlay]=useState(null);
@@ -1166,7 +1167,7 @@ export default function App(){
       <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.15}}@keyframes breathe{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.1);opacity:1}}@keyframes explodeIn{0%{transform:scale(0);opacity:0}60%{transform:scale(1.15);opacity:1}100%{transform:scale(1);opacity:1}}*{box-sizing:border-box;margin:0;padding:0}button{font-family:inherit}::-webkit-scrollbar{display:none}*{scrollbar-width:none}input::placeholder{color:rgba(255,255,255,.28)}`}</style>
       {fly&&<LearnToFly onDone={()=>setFly(false)}/>}
       {!on&&!fly&&<Boot onDone={boot}/>}
-      {on&&<>
+      {on&&<>{dashView==="reasoning"&&<ReasoningDashboard onSwitchView={()=>setDashView("classic")}/>}{dashView==="classic"&&<>
         <Rain rgb={D_RGB[dom]}/>
         {/* Nomic-embed-text alert banner */}
         {!_nomicOk&&<div style={{position:"fixed",top:0,left:0,right:0,zIndex:100,background:"rgba(239,68,68,.95)",padding:"8px 22px",display:"flex",alignItems:"center",justifyContent:"center",gap:8,animation:"fadeUp .4s"}}><span style={{fontSize:11,fontWeight:700,color:"#fff",letterSpacing:1}}>{lang==="fi"?"VAROITUS: nomic-embed-text EI SAATAVILLA — muistitoiminnot eiv\u00e4t toimi!":"WARNING: nomic-embed-text UNAVAILABLE — memory operations disabled!"}</span></div>}
@@ -1183,6 +1184,8 @@ export default function App(){
               <div style={{display:"flex",flex:1,justifyContent:"center",gap:3}}>{D_IDS.map(id=>(<button key={id} onClick={()=>sw(id)} style={{background:id===dom?D_COL[id]+"12":"none",border:id===dom?`1px solid ${D_COL[id]}25`:"1px solid transparent",borderRadius:4,cursor:"pointer",padding:"5px 12px",transition:"all .3s"}}><span style={{fontSize:9,letterSpacing:2,fontWeight:id===dom?600:300,color:id===dom?D_COL[id]:"rgba(255,255,255,.25)"}}>{D_IC[id]} {t.domains[id].label}</span></button>))}</div>
               {/* Mode indicator */}
               <span style={{fontSize:9,fontWeight:700,letterSpacing:3,color:api.backendMode==="production"?"#22C55E":api.backendMode==="stub"?"#F59E0B":"rgba(255,255,255,.20)",background:api.backendMode==="production"?"rgba(34,197,94,.12)":api.backendMode==="stub"?"rgba(245,158,11,.12)":"transparent",border:`1px solid ${api.backendMode==="production"?"rgba(34,197,94,.25)":api.backendMode==="stub"?"rgba(245,158,11,.25)":"rgba(255,255,255,.05)"}`,borderRadius:4,padding:"5px 10px",marginRight:8,boxShadow:api.backendMode==="production"?"0 0 8px rgba(34,197,94,.15)":api.backendMode==="stub"?"0 0 8px rgba(245,158,11,.15)":"none"}}>{api.backendMode==="production"?"PROD":api.backendMode==="stub"?"STUB":"—"}</span>
+              {/* Dashboard view toggle */}
+              <button onClick={()=>setDashView(v=>v==="classic"?"reasoning":"classic")} style={{background:dashView==="reasoning"?"rgba(167,139,250,.12)":"rgba(255,255,255,.02)",border:`1px solid ${dashView==="reasoning"?"rgba(167,139,250,.35)":"rgba(255,255,255,.05)"}`,borderRadius:4,padding:"4px 10px",cursor:"pointer",marginRight:8,transition:"all .3s"}}><span style={{fontSize:8,fontWeight:600,letterSpacing:2,color:dashView==="reasoning"?"#A78BFA":"rgba(255,255,255,.35)"}}>{dashView==="classic"?"CLASSIC":"REASONING"}</span></button>
               {/* Language toggle */}
               <button onClick={()=>setLang(l=>l==="en"?"fi":"en")} style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.05)",borderRadius:4,padding:"4px 8px",cursor:"pointer",marginRight:12,transition:"all .3s"}}>
                 <span style={{fontSize:8,fontWeight:600,color:lang==="fi"?"#22D3EE":"rgba(255,255,255,.25)",letterSpacing:2}}>{lang==="fi"?"FI":"EN"}</span>
@@ -1205,7 +1208,7 @@ export default function App(){
           </div>
           <div style={{position:"fixed",bottom:0,left:0,right:0,padding:"3px 22px",background:"rgba(0,0,0,.93)",borderTop:"1px solid rgba(255,255,255,.025)",display:"flex",justifyContent:"space-between",fontSize:6,color:"rgba(255,255,255,.15)",letterSpacing:3}}><span>{t.bottomL}</span><span>{t.bottomC}</span><span>{fc.toLocaleString()} FACTS</span><span>{lang==="fi"?"P\u00e4ivitetty":"Updated"}: {_lastUpdate}</span></div>
         </div>
-      </>}
+      </>}</>}
     </div>
   );
 }

@@ -9,6 +9,9 @@ authors = [
     {name = "Jani Korpi"}
 ]
 
+[project.scripts]
+waggledance = "waggledance.adapters.cli.start_runtime:main"
+
 [project.urls]
 Homepage = "https://github.com/Ahkeratmehilaiset/waggledance-swarm"
 Issues = "https://github.com/Ahkeratmehilaiset/waggledance-swarm/issues"

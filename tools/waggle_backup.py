@@ -260,6 +260,29 @@ def parse_test_output(stdout: str, test_file: str) -> dict:
             "warned": sum(int(x) for x in warn_nums) if warn_nums else warn_count,
         }
 
+    # Strategy 4a: ALL N TESTS PASSED
+    m = re.search(r"ALL\s+(\d+)\s+TESTS?\s+PASSED", clean, re.IGNORECASE)
+    if m:
+        return {"passed": int(m.group(1)), "failed": 0, "warned": 0}
+
+    # Strategy 4b: Result: N/N passed, N failed
+    m = re.search(r"Result:\s*(\d+)/\d+\s+passed,\s*(\d+)\s+failed", clean)
+    if m:
+        return {"passed": int(m.group(1)), "failed": int(m.group(2)), "warned": 0}
+
+    # Strategy 4c: Results: N ok, N fail
+    m = re.search(r"Results:\s*(\d+)\s+ok,\s*(\d+)\s+fail", clean)
+    if m:
+        return {"passed": int(m.group(1)), "failed": int(m.group(2)), "warned": 0}
+
+    # Strategy 4d: unittest — Ran N tests in Xs + OK/FAILED
+    m = re.search(r"Ran\s+(\d+)\s+tests?\s+in\s+[\d.]+s", clean)
+    if m:
+        total = int(m.group(1))
+        fail_m = re.search(r"FAILED\s*\(failures=(\d+)", clean)
+        failures = int(fail_m.group(1)) if fail_m else 0
+        return {"passed": total - failures, "failed": failures, "warned": 0}
+
     # Strategy 3: Fallback — count OK/FAIL lines
     ok_lines = len(re.findall(r"(?:OK |✅)", clean))
     fail_lines = len(re.findall(r"(?:FAIL |❌)", clean))

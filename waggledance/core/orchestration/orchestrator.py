@@ -97,12 +97,12 @@ class Orchestrator:
             return AgentResult(
                 agent_id="llm_direct",
                 response=response,
-                confidence=0.6 if response else 0.0,
+                confidence=route.confidence if response else 0.0,
                 latency_ms=elapsed,
                 source="llm",
             )
 
-        best_result = await self._execute_agents(task, selected)
+        best_result = await self._execute_agents(task, selected, route)
 
         self._scheduler_state = self._scheduler.update_state(
             self._scheduler_state,
@@ -180,7 +180,7 @@ class Orchestrator:
             )
 
     async def _execute_agents(
-        self, task: TaskRequest, agents: list[AgentDefinition]
+        self, task: TaskRequest, agents: list[AgentDefinition], route: TaskRoute
     ) -> AgentResult:
         """Execute task with selected agents, return best result."""
         start = time.monotonic()
@@ -207,7 +207,7 @@ class Orchestrator:
             result = AgentResult(
                 agent_id=agent.id,
                 response=response,
-                confidence=0.7 if response else 0.0,
+                confidence=route.confidence if response else 0.0,
                 latency_ms=elapsed,
                 source="swarm",
             )

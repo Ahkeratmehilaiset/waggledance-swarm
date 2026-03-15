@@ -88,23 +88,24 @@ class TestChatRouting(_BaseScenario):
 
 
 class TestCacheScenarios(_BaseScenario):
-    """HotCache behaviour — verify cache retrieval path.
+    """HotCache behaviour — auto-caching via API path.
 
     Cache stores require confidence >= 0.8 AND query_frequency >= 2.
-    Stub orchestrator returns confidence 0.6 for all LLM routes, so
-    auto-caching never triggers. We seed the cache directly to test
-    the retrieval path through the API.
+    Time/system queries get confidence=0.8 from routing_policy, so after
+    2 queries the 3rd hit is served from cache automatically.
     """
 
-    def test_seeded_cache_returns_cached(self):
-        """A pre-seeded hot cache entry is served as cached=True."""
-        cache = self.container.hot_cache
-        cache.set("cached scenario query", "Cached answer", ttl=3600)
-        resp = self._chat("Cached scenario query")
-        data = resp.json()
-        self.assertTrue(data["cached"])
-        self.assertEqual(data["source"], "hotcache")
-        self.assertEqual(data["response"], "Cached answer")
+    def test_repeated_time_query_auto_cached(self):
+        """Time query 3x → 3rd call is a cache hit (confidence=0.8, freq≥2)."""
+        q = "Paljonko kello on nyt?"
+        r1 = self._chat(q)
+        self.assertFalse(r1.json()["cached"])
+        r2 = self._chat(q)
+        self.assertFalse(r2.json()["cached"])
+        # After 2 calls: freq=2, confidence=0.8 → cache stored on 2nd call
+        r3 = self._chat(q)
+        self.assertTrue(r3.json()["cached"])
+        self.assertEqual(r3.json()["source"], "hotcache")
 
     def test_different_queries_no_cache(self):
         """Two distinct queries → neither is cached."""
@@ -115,11 +116,14 @@ class TestCacheScenarios(_BaseScenario):
 
     def test_cache_key_is_case_insensitive(self):
         """Cache key is query.strip().lower() — case variations share entry."""
-        cache = self.container.hot_cache
-        cache.set("case test query", "Case-insensitive hit", ttl=3600)
-        resp = self._chat("Case Test Query")
+        # Time query to get confidence=0.8 for auto-caching
+        q_lower = "what is the time right now?"
+        q_mixed = "What Is The Time Right Now?"
+        self._chat(q_lower)   # freq=1
+        self._chat(q_lower)   # freq=2 → cached
+        resp = self._chat(q_mixed)  # lowercase key matches → cache hit
         self.assertTrue(resp.json()["cached"])
-        self.assertEqual(resp.json()["response"], "Case-insensitive hit")
+        self.assertEqual(resp.json()["source"], "hotcache")
 
 
 # ── 3. Memory Round-trip ─────────────────────────────────────────

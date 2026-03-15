@@ -1022,12 +1022,15 @@ loadFeeds();
     @app.get("/api/learning")
     async def learning_status():
         """LearningEngine tiedot + laatutaulukko."""
+        result = {"status": {}, "leaderboard": []}
         if hivemind.learning:
-            return {
-                "status": hivemind.learning.get_status(),
-                "leaderboard": hivemind.learning.get_leaderboard(),
-            }
-        return {"status": {}, "leaderboard": []}
+            result["status"] = hivemind.learning.get_status()
+            result["leaderboard"] = hivemind.learning.get_leaderboard()
+        # v1.16.0: Night enricher source capabilities
+        ne = getattr(hivemind, 'night_enricher', None)
+        if ne and hasattr(ne, 'source_manager'):
+            result["source_capabilities"] = ne.source_manager.get_capability_map()
+        return result
 
     @app.get("/api/feeds")
     async def feeds_status():

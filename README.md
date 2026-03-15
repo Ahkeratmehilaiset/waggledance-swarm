@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-1.15.0-green)
+![Version](https://img.shields.io/badge/version-1.16.0-green)
 
 **A local-first AI runtime that routes each task to the right reasoning layer — retrieval, rules, statistics, model-based inference, or LLM reasoning.**
 
@@ -25,7 +25,7 @@ The system was originally developed in a demanding real-world field environment 
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-72/72 test suites pass (927+ tests across 72 suites, measured locally). No subscription, no API keys required.
+75/75 test suites pass (946+ tests across 75 suites, measured locally). No subscription, no API keys required.
 
 ---
 
@@ -66,7 +66,7 @@ The system was originally developed in a demanding real-world field environment 
 - **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
 - **MicroModel V3 (LoRA)** — Phi-3.5-mini pipeline validated (2.92GB VRAM), full training deferred
-- **CI runs basic test suite** — full 50-suite validation still requires local `tools/waggle_backup.py`
+- **CI runs basic test suite** — full 75-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
@@ -330,10 +330,20 @@ python main.py
 ### Launcher
 
 ```bash
-python start.py              # Interactive menu
+python start.py              # Interactive menu (legacy + new runtime options)
 python start.py --stub       # No Ollama needed — stub backend + React dashboard
 python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 ```
+
+### New Runtime (Recommended for New Deployments)
+
+```bash
+python -m waggledance.adapters.cli.start_runtime --stub        # Stub mode
+python -m waggledance.adapters.cli.start_runtime               # Production
+python -m waggledance.adapters.cli.start_runtime --port 9000   # Custom port
+```
+
+See [ENTRYPOINTS.md](ENTRYPOINTS.md) for details on primary vs legacy entrypoints.
 
 ### Verify Installation
 
@@ -341,7 +351,7 @@ python start.py --production  # Full HiveMind (requires Ollama + 4 models)
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **72/72 suites GREEN, 927+ tests, 0 failures** (4 suites skipped without Ollama).
+Expected: **75/75 suites GREEN, 946+ tests, 0 failures** (4 suites skipped without Ollama).
 
 ---
 
@@ -365,7 +375,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 72 test suites (927+ tests)
+├── tests/               # 75 test suites (946+ tests)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -373,9 +383,14 @@ waggledance-swarm/
 │   └── workflows/
 │       └── tests.yml    #   CI test runner
 ├── data/                # Runtime data (ChromaDB, SQLite, JSONL, JSON — not in git)
+├── waggledance/         # New hexagonal architecture (ports & adapters)
+│   ├── core/            #   Domain, ports (8 Protocol), orchestration, policies
+│   ├── application/     #   Services (chat, memory, learning, readiness)
+│   ├── adapters/        #   Ollama, ChromaDB, HotCache, HTTP, CLI
+│   └── bootstrap/       #   DI container, event bus
 ├── hivemind.py          # HiveMind orchestrator (~1382 lines + 4 controllers)
-├── main.py              # Production entry point
-├── start.py             # Launcher (--stub / --production)
+├── main.py              # Legacy entry point (see ENTRYPOINTS.md)
+├── start.py             # Launcher (--stub / --production / --new-runtime)
 ├── Dockerfile           # Python 3.13 + Voikko + healthcheck
 └── docker-compose.yml   # Ollama + WaggleDance stack
 ```
@@ -421,8 +436,11 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
 - **Security + stability fixes (v0.8.0)** — 12 fixes: async safety, SQL injection prevention, SQLite write locks, WS callback leak, deprecated API cleanup, metrics rotation
 - **Major refactor (v0.9.0)** — hivemind.py 3321→1382 lines, 4 controller modules extracted, 12 Sonnet review fixes, Phi-3.5-mini LoRA pipeline validated
-- **GitHub Actions CI** — automated test runner (72/72 GREEN)
+- **GitHub Actions CI** — automated test runner (75/75 GREEN)
 - **SmartRouter v2 (v1.6–v1.15)** — capsule routing, Finnish normalization, word boundaries, matched_keywords transparency
+- **Hexagonal refactor** — `waggledance/` package with ports & adapters, DI container, 172 new tests
+- **New runtime (v1.15+)** — `start_runtime.py` with argparse, UTF-8, Ollama check
+- **Safe self-improvement (v1.16)** — prompt evolution with rollback, micro-model eval gate, night learning source visibility
 
 ---
 
@@ -432,7 +450,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 72/72 GREEN | 927+ tests, 4 skipped without Ollama |
+| Test suites | 75/75 GREEN | 946+ tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -443,7 +461,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | 72/72 GREEN, 927+ tests |
+| CI pipeline | GitHub Actions | 75/75 GREEN, 946+ tests |
 
 ---
 
@@ -514,7 +532,7 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all 72 suites pass
+4. Ensure all 75 suites pass
 5. Submit a pull request
 
 ### Development Setup

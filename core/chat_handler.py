@@ -791,9 +791,17 @@ class ChatHandler:
 
         _t0 = time.monotonic()
 
-        # ═══ EN-prompt jos käännös aktiivinen ═══
+        # ═══ v1.16.0: Check for learning engine prompt override ═══
         _orig_agent_sys = None
-        if use_en_prompts:
+        _override = None
+        if hasattr(self, 'learning') and self.learning:
+            _atype = getattr(agent, 'agent_type', getattr(agent, 'type', ''))
+            _override = self.learning.get_prompt_override(_atype)
+        if _override:
+            _orig_agent_sys = agent.system_prompt
+            from datetime import datetime as _dt
+            agent.system_prompt = f"Date: {_dt.now():%Y-%m-%d %H:%M}. " + _override
+        elif use_en_prompts:
             _atype = getattr(agent, 'agent_type', getattr(agent, 'type', ''))
             if _atype in AGENT_EN_PROMPTS:
                 _orig_agent_sys = agent.system_prompt

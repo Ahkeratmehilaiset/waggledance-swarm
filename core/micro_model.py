@@ -297,6 +297,7 @@ class ClassifierModel:
         self._misses = 0
         self._available = False
         self._torch_available = False
+        self._holdout_ratio = 0.2  # v1.16.0: deterministic holdout
         self._check_torch()
         self._load_model()
 
@@ -420,10 +421,12 @@ class ClassifierModel:
         X = torch.tensor(embeddings, dtype=torch.float32)
         y = torch.tensor(answer_ids, dtype=torch.long)
 
-        # 80/20 split
+        # Deterministic holdout (v1.16.0)
         n = len(X)
-        n_train = max(int(n * 0.8), 1)
-        indices = torch.randperm(n)
+        holdout_ratio = self._holdout_ratio
+        gen = torch.Generator().manual_seed(42 + self._generation)
+        indices = torch.randperm(n, generator=gen)
+        n_train = max(int(n * (1 - holdout_ratio)), 1)
         X_train, y_train = X[indices[:n_train]], y[indices[:n_train]]
         X_val, y_val = X[indices[n_train:]], y[indices[n_train:]]
 
@@ -476,7 +479,38 @@ class ClassifierModel:
         except Exception:
             pass
 
-        return True
+        # v1.16.0: Return structured eval result
+        return self._evaluate_holdout(X_val, y_val, answers)
+
+    def _evaluate_holdout(self, X_val, y_val, answers):
+        """Evaluate model on holdout set. Returns structured dict or True if no holdout."""
+        if not self._torch_available or self._model is None:
+            return True
+        import torch
+        if len(X_val) == 0:
+            return True
+        try:
+            self._model.eval()
+            with torch.no_grad():
+                val_preds = self._model(X_val).argmax(dim=1)
+                correct = (val_preds == y_val).float()
+                accuracy = correct.mean().item()
+                # Per-class accuracy
+                per_class = {}
+                for cls_id in range(len(answers)):
+                    mask = (y_val == cls_id)
+                    if mask.sum().item() > 0:
+                        cls_acc = correct[mask].mean().item()
+                        per_class[answers[cls_id]] = round(cls_acc, 3)
+            return {
+                "accuracy": round(accuracy, 4),
+                "holdout_size": len(X_val),
+                "generation": self._generation,
+                "per_class": per_class,
+            }
+        except Exception as e:
+            log.warning(f"V2 eval failed: {e}")
+            return True
 
     def _save_model(self):
         """Save trained model to disk."""
@@ -637,6 +671,7 @@ class LoRAModel:
             "hits": self._hits,
             "misses": self._misses,
             "hit_rate": self._hits / max(total, 1),
+            "implementation_status": "stub" if not self._peft_available else "framework",
         }
 
 
@@ -791,6 +826,11 @@ class MicroModelOrchestrator:
             data_dir=data_dir, min_pairs=_promo_min, max_error=_promo_max_err
         ) if _promo_enabled else None
 
+        # v1.16.0: Eval gate config
+        self._min_eval_accuracy = _al.get("micro_model_min_accuracy", 0.70)
+        self._min_eval_examples = _al.get("micro_model_min_eval_examples", 25)
+        self._eval_enabled = _al.get("micro_model_eval_enabled", True)
+
     def predict(self, question_fi: str, embedding: list = None,
                 topic_hint: str = None) -> Optional[dict]:
         """Try models in order: V1 (0.01ms) -> V2 (1ms).
@@ -855,7 +895,7 @@ class MicroModelOrchestrator:
         if v1_data:
             self.v1.train(v1_data)
 
-        # Train V2 (if torch available)
+        # Train V2 (if torch available) — v1.16.0: eval gate
         if self.v2._torch_available:
             v2_data = self.collector.export_for_v2()
             if v2_data and len(v2_data.get("questions", [])) >= 10:
@@ -863,7 +903,23 @@ class MicroModelOrchestrator:
                 embeddings = self._compute_embeddings(v2_data["questions"])
                 if embeddings and len(embeddings) == len(v2_data["questions"]):
                     v2_data["embeddings"] = embeddings
-                    self.v2.train(v2_data)
+                    eval_result = self.v2.train(v2_data)
+
+                    # v1.16.0: Eval gate — check holdout accuracy before promotion
+                    if isinstance(eval_result, dict) and self._eval_enabled:
+                        self._save_eval_report(eval_result)
+                        hs = eval_result.get("holdout_size", 0)
+                        acc = eval_result.get("accuracy", 0.0)
+                        if (hs >= self._min_eval_examples
+                                and acc < self._min_eval_accuracy):
+                            self.v2._available = False
+                            log.warning(
+                                f"V2 eval gate BLOCKED: accuracy={acc:.2%} "
+                                f"< {self._min_eval_accuracy:.0%} "
+                                f"(holdout={hs})")
+                        else:
+                            log.info(f"V2 eval gate passed: accuracy={acc:.2%}, "
+                                     f"holdout={hs}")
 
         # Train V3 (stub — saves data for future)
         all_pairs = self.collector.get_training_data(min_pairs=10)
@@ -873,7 +929,10 @@ class MicroModelOrchestrator:
         # Save collector pairs
         self.collector.save_pairs()
 
-        log.info(f"🤖 Training complete: V1={self.v1.stats['lookup_count']} lookups, "
+        # v1.16.0: Save active manifest
+        self._save_active_manifest()
+
+        log.info(f"Training complete: V1={self.v1.stats['lookup_count']} lookups, "
                  f"V2={'available' if self.v2._available else 'unavailable'}, "
                  f"V3=gen{self.v3._generation}")
 
@@ -900,6 +959,52 @@ class MicroModelOrchestrator:
         except Exception as e:
             log.warning(f"Embedding computation failed: {e}")
             return None
+
+    def _save_eval_report(self, result: dict):
+        """Write eval report to data/micro_model_reports/."""
+        try:
+            report_dir = Path("data/micro_model_reports")
+            report_dir.mkdir(parents=True, exist_ok=True)
+            gen = result.get("generation", 0)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = report_dir / f"eval_gen{gen}_{ts}.json"
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.warning(f"Failed to save eval report: {e}")
+
+    def _save_active_manifest(self):
+        """Write data/micro_model_active.json with v1/v2/v3 status."""
+        try:
+            manifest = {
+                "v1": {
+                    "available": True,
+                    "lookup_count": self.v1.stats.get("lookup_count", 0),
+                    "pattern_count": self.v1.stats.get("pattern_count", 0),
+                },
+                "v2": {
+                    "available": self.v2._available,
+                    "generation": self.v2._generation,
+                    "torch_available": self.v2._torch_available,
+                },
+                "v3": {
+                    "available": self.v3._available,
+                    "generation": self.v3._generation,
+                    "peft_available": self.v3._peft_available,
+                    "implementation_status": self.v3.stats.get(
+                        "implementation_status", "stub"),
+                },
+                "training_count": self._training_count,
+                "timestamp": time.time(),
+            }
+            path = Path("data/micro_model_active.json")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, ensure_ascii=False, indent=2)
+            tmp.replace(path)
+        except Exception as e:
+            log.warning(f"Failed to save active manifest: {e}")
 
     @property
     def stats(self) -> dict:

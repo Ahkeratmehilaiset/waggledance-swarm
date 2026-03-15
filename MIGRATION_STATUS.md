@@ -1,7 +1,7 @@
 # Migration Status — WaggleDance Hexagonal Refactor
 
 **Updated:** 2026-03-14 (Integration Phase Complete)
-**Version:** v1.15.0
+**Version:** v1.16.0
 
 ---
 

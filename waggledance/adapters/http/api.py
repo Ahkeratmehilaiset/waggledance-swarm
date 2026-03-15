@@ -81,7 +81,7 @@ def create_app(container) -> FastAPI:
     """
     app = FastAPI(
         title="WaggleDance AI",
-        version="1.15.0",
+        version="1.16.0",
         lifespan=lifespan,
     )
     app.state.container = container

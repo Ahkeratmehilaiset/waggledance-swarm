@@ -7,8 +7,9 @@ LEGACY ENTRYPOINT. For the new hexagonal architecture, use:
 See ENTRYPOINTS.md for details.
 
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v1.15.0 • Built: 2026-03-13
+Claude 4.6 • v1.16.0 • Built: 2026-03-15
 
+v1.16.0: Safe self-improvement — prompt winner apply/rollback, micro-model eval gate, night-learning source visibility, 75 test suites.
 v1.15.0: matched_keywords in RouteResult (which keyword triggered routing), 72 test suites (7 tests).
 v1.14.0: route() called once per query (was 3-4x), reason codes, 71 test suites (7 router-stats tests).
 v1.13.0: capsule default_fallback (unknown queries -> llm_reasoning), 70 test suites (5 fallback tests).

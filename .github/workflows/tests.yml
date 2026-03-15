@@ -28,6 +28,31 @@ jobs:
       run: |
         pip install -r requirements.txt
 
-    - name: Run tests
+    - name: Run legacy tests
       run: |
         python tests/run_all.py --skip-ollama
+
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libvoikko1 voikko-fi
+
+    - name: Install Python dependencies
+      run: |
+        pip install -r requirements.txt
+
+    - name: Run pytest suites
+      run: |
+        python -m pytest tests/unit/ tests/unit_core/ tests/unit_app/ tests/contracts/ -v --tb=short

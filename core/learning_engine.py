@@ -105,6 +105,26 @@ class PromptExperiment:
 
 
 @dataclass
+class PromptWin:
+    """Record of a prompt experiment outcome with apply/rollback tracking (v1.16.0)."""
+    agent_id: str
+    evolved_prompt: str
+    original_prompt: str
+    source: str = "prompt_experiment"
+    experiment_started_at: float = 0.0
+    avg_original: float = 0.0
+    avg_evolved: float = 0.0
+    winner: str = ""           # "evolved" | "original"
+    replaced_prompt_preview: str = ""
+    status: str = "pending_apply"  # pending_apply | applied | rolled_back | lost | timeout
+    applied_at: float = 0.0
+    created_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return {k: getattr(self, k) for k in self.__dataclass_fields__}
+
+
+@dataclass
 class AgentPerformance:
     """Agentin suorituskykyprofiili."""
     agent_id: str
@@ -120,6 +140,7 @@ class AgentPerformance:
     # Prompt-evoluutio
     prompt_version: int = 0
     last_evolution: float = 0.0
+    prompt_apply_time: float = 0.0  # v1.16.0: when prompt was last applied
 
     @property
     def good_rate(self) -> float:
@@ -245,6 +266,17 @@ class LearningEngine:
         self._quality_history: deque = deque(maxlen=200)
         self._cycle_count = 0
         self._seen_hashes: set = set()  # Dedup: content hashes of curated responses
+
+        # ── v1.16.0: Prompt win persistence ──────────
+        self._prompt_wins_path = Path("data/prompt_wins.json")
+        self._prompt_wins: Dict[str, PromptWin] = {}
+        self._prompt_overrides: Dict[str, str] = {}  # agent_id -> evolved_prompt
+        self._auto_apply = learn_cfg.get("auto_apply_prompt_wins", False)
+        self._apply_min_delta = learn_cfg.get("prompt_apply_min_delta", 0.5)
+        self._apply_min_samples = learn_cfg.get("prompt_apply_min_samples_per_arm", 3)
+        self._live_apply = learn_cfg.get("prompt_live_apply", False)
+        self._rollback_on_regression = learn_cfg.get("prompt_rollback_on_regression", True)
+        self._load_prompt_wins()
 
         # ── Tiedostopolut ─────────────────────────────
         self._curated_path = Path("data/finetune_curated.jsonl")
@@ -758,57 +790,139 @@ class LearningEngine:
                     exp.evolved_scores.append(s.score)
 
             # Tarpeeksi dataa päätökseen?
-            if exp.has_enough_data:
+            if (len(exp.original_scores) >= self._apply_min_samples
+                    and len(exp.evolved_scores) >= self._apply_min_samples):
                 await self._decide_experiment(exp)
 
             # Timeout: 2h ilman päätöstä → peruuta
-            if time.monotonic() - exp.started_at > 7200:
+            if not exp.decided and time.monotonic() - exp.started_at > 7200:
                 exp.decided = True
                 exp.winner = "original"  # Turvallinen oletus
+                pw = PromptWin(
+                    agent_id=agent_id,
+                    evolved_prompt=exp.evolved_prompt,
+                    original_prompt=exp.original_prompt,
+                    experiment_started_at=exp.started_at,
+                    winner="original",
+                    status="timeout",
+                )
+                self._prompt_wins[agent_id] = pw
+                self._save_prompt_wins()
                 self._audit_log("prompt_experiment_timeout", {
                     "agent_id": agent_id,
+                    "status": "timeout",
                 })
 
+        # v1.16.0: Rollback check for applied prompt wins
+        self._check_prompt_rollbacks()
+
     async def _decide_experiment(self, exp: PromptExperiment):
-        """Päätä A/B-koe: kumpi prompt voittaa?"""
+        """Päätä A/B-koe: kumpi prompt voittaa? (v1.16.0: persist + apply)"""
         avg_orig = statistics.mean(exp.original_scores)
         avg_evolved = statistics.mean(exp.evolved_scores)
 
-        # Evolved voittaa jos selkeästi parempi (>0.5 pistettä)
-        if avg_evolved > avg_orig + 0.5:
+        if avg_evolved > avg_orig + self._apply_min_delta:
             exp.winner = "evolved"
             exp.decided = True
 
-            # TODO: Vaihda agentin system prompt
-            # Tämä vaatii hivemind-integraation: agent.system_prompt = exp.evolved_prompt
+            # v1.16.0: Create PromptWin and optionally apply
+            should_apply = self._auto_apply and self._live_apply
+            pw = PromptWin(
+                agent_id=exp.agent_id,
+                evolved_prompt=exp.evolved_prompt,
+                original_prompt=exp.original_prompt,
+                experiment_started_at=exp.started_at,
+                avg_original=avg_orig,
+                avg_evolved=avg_evolved,
+                winner="evolved",
+                status="applied" if should_apply else "pending_apply",
+                applied_at=time.time() if should_apply else 0.0,
+            )
 
+            if should_apply:
+                self._prompt_overrides[exp.agent_id] = exp.evolved_prompt
+                perf = self._performances.get(exp.agent_id)
+                if perf:
+                    perf.prompt_version += 1
+                    perf.prompt_apply_time = time.time()
+
+            self._prompt_wins[exp.agent_id] = pw
+            self._save_prompt_wins()
             self._audit_log("prompt_experiment_won", {
                 "agent_id": exp.agent_id,
                 "avg_original": round(avg_orig, 1),
                 "avg_evolved": round(avg_evolved, 1),
                 "evolved_prompt": exp.evolved_prompt[:300],
+                "status": pw.status,
             })
             logger.info(
-                f"[LEARN] ✅ Evolved prompt VOITTI: {exp.agent_id} "
-                f"({avg_orig:.1f} → {avg_evolved:.1f})"
+                f"[LEARN] Evolved prompt VOITTI: {exp.agent_id} "
+                f"({avg_orig:.1f} -> {avg_evolved:.1f}) status={pw.status}"
             )
-            logger.info(f"[LEARN] Prompt parantunut: {exp.agent_id} ({avg_orig:.1f} → {avg_evolved:.1f})")
         else:
             exp.winner = "original"
             exp.decided = True
+            pw = PromptWin(
+                agent_id=exp.agent_id,
+                evolved_prompt=exp.evolved_prompt,
+                original_prompt=exp.original_prompt,
+                experiment_started_at=exp.started_at,
+                avg_original=avg_orig,
+                avg_evolved=avg_evolved,
+                winner="original",
+                status="lost",
+            )
+            self._prompt_wins[exp.agent_id] = pw
+            self._save_prompt_wins()
             self._audit_log("prompt_experiment_lost", {
                 "agent_id": exp.agent_id,
                 "avg_original": round(avg_orig, 1),
                 "avg_evolved": round(avg_evolved, 1),
+                "status": "lost",
             })
             logger.info(
-                f"[LEARN] ❌ Evolved prompt HÄVISI: {exp.agent_id} "
+                f"[LEARN] Evolved prompt HAVISI: {exp.agent_id} "
                 f"({avg_orig:.1f} vs {avg_evolved:.1f})"
             )
 
         # Siivoa
         if exp.agent_id in self._experiments:
             del self._experiments[exp.agent_id]
+
+    def _check_prompt_rollbacks(self):
+        """v1.16.0: Check applied prompt wins for regression and rollback if needed."""
+        if not self._rollback_on_regression:
+            return
+        for aid, pw in list(self._prompt_wins.items()):
+            if pw.status != "applied":
+                continue
+            perf = self._performances.get(aid)
+            if not perf:
+                continue
+            # Collect scores since prompt was applied
+            post_scores = [
+                s.score for s in self._quality_history
+                if s.agent_id == aid and s.timestamp > pw.applied_at
+            ]
+            if len(post_scores) < 5:
+                continue
+            post_mean = statistics.mean(post_scores)
+            if post_mean < pw.avg_original - 0.3:
+                # Rollback
+                pw.status = "rolled_back"
+                self._prompt_overrides.pop(aid, None)
+                if perf:
+                    perf.prompt_version += 1
+                self._save_prompt_wins()
+                self._audit_log("prompt_rollback", {
+                    "agent_id": aid,
+                    "post_mean": round(post_mean, 2),
+                    "original_mean": round(pw.avg_original, 2),
+                })
+                logger.info(
+                    f"[LEARN] Prompt ROLLED BACK: {aid} "
+                    f"(post={post_mean:.1f} < orig={pw.avg_original:.1f}-0.3)"
+                )
 
     # ═══════════════════════════════════════════════════════════
     # 3. InsightDistiller — Oivalluksien tiivistys
@@ -931,6 +1045,46 @@ class LearningEngine:
         self._append_jsonl(self._audit_path, entry)
 
     # ─────────────────────────────────────────────────────────
+    # v1.16.0: Prompt Win Persistence
+    # ─────────────────────────────────────────────────────────
+
+    def _load_prompt_wins(self):
+        """Load persisted prompt wins and rebuild override map."""
+        if not self._prompt_wins_path.exists():
+            return
+        try:
+            with open(self._prompt_wins_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for aid, pw_dict in data.items():
+                pw = PromptWin(**{k: v for k, v in pw_dict.items()
+                                 if k in PromptWin.__dataclass_fields__})
+                self._prompt_wins[aid] = pw
+                if pw.status == "applied":
+                    self._prompt_overrides[aid] = pw.evolved_prompt
+        except Exception as e:
+            logger.warning(f"Failed to load prompt wins: {e}")
+
+    def _save_prompt_wins(self):
+        """Atomic write prompt wins to JSON."""
+        try:
+            self._prompt_wins_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._prompt_wins_path.with_suffix(".tmp")
+            data = {aid: pw.to_dict() for aid, pw in self._prompt_wins.items()}
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            tmp.replace(self._prompt_wins_path)
+        except Exception as e:
+            logger.warning(f"Failed to save prompt wins: {e}")
+
+    def get_prompt_override(self, agent_id: str) -> Optional[str]:
+        """Return evolved prompt if one is actively applied for this agent."""
+        return self._prompt_overrides.get(agent_id)
+
+    def get_prompt_wins_status(self) -> dict:
+        """Return all prompt wins as dicts for dashboard."""
+        return {aid: pw.to_dict() for aid, pw in self._prompt_wins.items()}
+
+    # ─────────────────────────────────────────────────────────
     # Julkinen API
     # ─────────────────────────────────────────────────────────
 
@@ -966,6 +1120,7 @@ class LearningEngine:
             "stats": self.stats,
             "agent_performance": perf_summaries,
             "experiments": experiments,
+            "prompt_wins": self.get_prompt_wins_status(),
         }
 
     def get_leaderboard(self) -> list:

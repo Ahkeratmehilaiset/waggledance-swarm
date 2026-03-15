@@ -167,6 +167,11 @@ class EnrichmentSource(ABC):
     def budget_info(self) -> dict:
         return {}
 
+    @property
+    def implementation_status(self) -> str:
+        """Return implementation status: implemented, stub, partial, disabled, unavailable."""
+        return "stub"  # default; subclasses override
+
 
 class SelfGenerateSource(EnrichmentSource):
     """Generate facts via llama1b. Reuses pattern from FactEnrichmentEngine."""
@@ -253,6 +258,10 @@ class SelfGenerateSource(EnrichmentSource):
 
     def is_available(self) -> bool:
         return self.llm_fast is not None and self.llm_validate is not None
+
+    @property
+    def implementation_status(self) -> str:
+        return "implemented"
 
     def _sample_existing_facts(self, topic: str, n: int = 3) -> str:
         """Sample existing facts for a topic to avoid regenerating them."""
@@ -450,6 +459,19 @@ class RssFeedSource(EnrichmentSource):
                 self._feedparser_ok = False
         return self._feedparser_ok
 
+    @property
+    def implementation_status(self) -> str:
+        try:
+            import feedparser  # noqa: F401
+            fp_ok = True
+        except ImportError:
+            fp_ok = False
+        if not fp_ok:
+            return "unavailable"
+        if not self._feeds:
+            return "disabled"
+        return "partial"
+
     async def generate_candidates(self, topic: str, agent_id: str,
                                   count: int = 3,
                                   throttle=None) -> List[EnrichmentCandidate]:
@@ -537,6 +559,7 @@ class SourceManager:
             result[sid] = {
                 "available": src.is_available(),
                 "budget_ok": src.budget_check(),
+                "implementation_status": src.implementation_status,
                 **src.metrics.to_dict(),
                 **src.budget_info(),
             }
@@ -551,6 +574,17 @@ class SourceManager:
         return [sid for sid in self._sources
                 if self.is_source_available(sid)
                 and self._sources[sid].budget_check()]
+
+    def get_capability_map(self) -> Dict[str, dict]:
+        """Return implementation status and availability for all registered sources."""
+        return {
+            sid: {
+                "implementation_status": src.implementation_status,
+                "available": src.is_available(),
+                "paused": src.metrics.is_paused,
+            }
+            for sid, src in self._sources.items()
+        }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1386,16 +1420,12 @@ class NightEnricher:
         self.source_manager.register(ClaudeDistillSource(
             weekly_budget_eur=distill_budget))
 
-        if ne_cfg.get("chat_history_enabled", False):
-            self.source_manager.register(ChatHistorySource())
-        else:
-            log.info("ChatHistorySource disabled by config")
-
-        if ne_cfg.get("rss_feed_enabled", False):
-            rss_feeds = config.get("feeds", {}).get("rss", {}).get("feeds", [])
-            self.source_manager.register(RssFeedSource(feeds=rss_feeds))
-        else:
-            log.info("RssFeedSource disabled by config")
+        # v1.16.0: Always register all sources (visible in capability map)
+        self.source_manager.register(ChatHistorySource())
+        rss_feeds = config.get("feeds", {}).get("rss", {}).get("feeds", [])
+        if not ne_cfg.get("rss_feed_enabled", False):
+            rss_feeds = []
+        self.source_manager.register(RssFeedSource(feeds=rss_feeds))
 
         # Adaptive tuner
         self.tuner = AdaptiveTuner(

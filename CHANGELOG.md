@@ -1,5 +1,51 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.16.0] — 2026-03-15
+
+### Safe Self-Improvement Sprint
+
+#### Added
+- **Prompt Evolution Loop** (`core/learning_engine.py`)
+  - `PromptWin` dataclass: tracks experiment outcomes with apply/rollback status
+  - Prompt win persistence: atomic JSON save/load to `data/prompt_wins.json`
+  - `get_prompt_override(agent_id)`: returns active evolved prompt if applied
+  - `_check_prompt_rollbacks()`: auto-rollback if post-apply quality drops >0.3 below original
+  - 5 new config flags in `configs/settings.yaml` under `learning:`
+  - `get_status()` now includes `prompt_wins` key
+- **Prompt Override Wiring** (`core/chat_handler.py`)
+  - Applied prompt wins injected before EN-prompt fallback in chat delegation
+- **Micro-Model Eval Gate** (`core/micro_model.py`)
+  - Deterministic holdout split (seeded `torch.Generator`, reproducible)
+  - `_evaluate_holdout()`: structured eval result with accuracy, holdout_size, per_class
+  - Eval gate in `maybe_train()`: blocks V2 if accuracy < threshold on sufficient holdout
+  - `_save_eval_report()`: writes JSON to `data/micro_model_reports/`
+  - `_save_active_manifest()`: writes `data/micro_model_active.json` (v1/v2/v3 status)
+  - V3 `LoRAModel.stats` now includes `implementation_status`
+  - 5 new config flags under `advanced_learning:`
+- **Night Learning Source Visibility** (`core/night_enricher.py`)
+  - `EnrichmentSource.implementation_status` property (default: "stub")
+  - Overrides: SelfGenerate="implemented", RssFeed="partial"/"disabled"/"unavailable"
+  - `SourceManager.get_capability_map()`: returns status/available/paused for all sources
+  - `get_all_stats()` now includes `implementation_status` key
+  - All 5 sources always registered (ChatHistory/RssFeed visible even when disabled)
+- **Dashboard** (`web/dashboard.py`)
+  - `/api/learning` response includes `source_capabilities` from night enricher
+- **Tests**: 3 new test suites (75 total)
+  - `test_learning_prompt_apply.py`: 10 tests (PromptWin lifecycle)
+  - `test_micro_model_eval_gate.py`: 10 tests (deterministic holdout, eval gate)
+  - `test_night_enricher_capabilities.py`: 8 tests (implementation_status, capability map)
+
+#### Changed
+- `_decide_experiment()`: uses configurable `min_delta` instead of hardcoded 0.5
+- `_check_experiments()`: uses configurable `min_samples` instead of hardcoded 3
+- V2 `ClassifierModel.train()`: returns structured eval dict instead of `True`
+- `tools/waggle_backup.py`: registered 3 new suites (72 -> 75)
+
+#### Limitations
+- V3/LoRA training remains optional stub (framework-level when peft installed)
+- Live prompt apply behind `prompt_live_apply: false` flag (safe default)
+- CI workflow pytest job included but needs PAT `workflow` scope to push
+
 ## [1.15.0] — 2026-03-13
 
 ### Routing Keyword Transparency — matched_keywords in RouteResult

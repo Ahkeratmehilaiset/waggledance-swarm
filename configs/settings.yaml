@@ -16,6 +16,11 @@ learning:
   eval_queue_size: 20
   evolve_interval_min: 30
   min_finetune_score: 7.0
+  auto_apply_prompt_wins: false
+  prompt_apply_min_delta: 0.5
+  prompt_apply_min_samples_per_arm: 3
+  prompt_live_apply: false
+  prompt_rollback_on_regression: true
 llm:
   base_url: http://localhost:11434
   model: phi4-mini
@@ -105,6 +110,11 @@ advanced_learning:
   micro_model_promotion_enabled: true
   micro_model_promotion_min_pairs: 200
   micro_model_promotion_max_error: 0.03
+  micro_model_holdout_ratio: 0.2
+  micro_model_min_eval_examples: 25
+  micro_model_min_accuracy: 0.70
+  micro_model_promotion_margin: 0.02
+  micro_model_eval_enabled: true
   agent_overlap_detection: true
   night_enricher:
     enabled: true

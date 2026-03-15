@@ -2,6 +2,10 @@
 """
 WaggleDance Swarm AI — Local HiveNode Runtime (On-Prem)
 ========================================================
+LEGACY ENTRYPOINT. For the new hexagonal architecture, use:
+    python -m waggledance.adapters.cli.start_runtime [--stub] [--port PORT]
+See ENTRYPOINTS.md for details.
+
 Jani Korpi (Ahkerat Mehiläiset)
 Claude 4.6 • v1.15.0 • Built: 2026-03-13
 

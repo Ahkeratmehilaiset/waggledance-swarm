@@ -2,10 +2,15 @@
 """
 WaggleDance Launcher — Choose Stub or Production mode.
 
+DEPRECATED: This launcher uses the legacy runtime (hivemind.py + main.py).
+For the new hexagonal architecture, use:
+    python -m waggledance.adapters.cli.start_runtime [--stub] [--port PORT]
+See ENTRYPOINTS.md for details.
+
 Usage:
-    python start.py              → interactive menu
-    python start.py --stub       → start stub backend + React dev server
-    python start.py --production → start full HiveMind (requires Ollama)
+    python start.py              -> interactive menu
+    python start.py --stub       -> start stub backend + React dev server
+    python start.py --production -> start full HiveMind (requires Ollama)
 """
 import argparse
 import subprocess
@@ -85,9 +90,40 @@ def check_ollama() -> bool:
         return False
 
 
+def _print_deprecation_warning(mode: str) -> None:
+    """Print deprecation notice for legacy modes."""
+    print(f"\n  NOTE: Legacy {mode} mode. For the new runtime, use:")
+    print("    python -m waggledance.adapters.cli.start_runtime [--stub]")
+    print("  See ENTRYPOINTS.md for details.\n")
+
+
+def start_new_runtime():
+    """Start the new hexagonal runtime via start_runtime.py."""
+    print("\n  Starting WaggleDance — New Runtime (hexagonal)...")
+    print("  Server:    http://localhost:8000")
+    print("  Use --stub for testing without Ollama.\n")
+
+    cmd = [sys.executable, "-m", "waggledance.adapters.cli.start_runtime"]
+
+    # Pass through --stub if the user wants stub mode
+    resp = input("  Start in stub mode? [y/N]: ").strip().lower()
+    if resp == "y":
+        cmd.append("--stub")
+
+    proc = subprocess.Popen(cmd, cwd=ROOT)
+
+    print("  Server running. Press Ctrl+C to stop.\n")
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        print("\n  Shutting down...")
+        proc.terminate()
+
+
 def start_stub():
     """Start backend stub (port 8000) + React dev server (port 5173)."""
-    print("\n  Starting WaggleDance in STUB mode...")
+    _print_deprecation_warning("STUB")
+    print("  Starting WaggleDance in STUB mode...")
     print("  Backend:   http://localhost:8000  (standalone, no Ollama)")
     print("  Dashboard: http://localhost:5173  (React + Vite)\n")
 
@@ -117,6 +153,7 @@ def start_stub():
 
 def start_production():
     """Start full HiveMind via main.py (requires Ollama)."""
+    _print_deprecation_warning("PRODUCTION")
     if not check_ollama():
         print("\n  WARNING: Ollama is not running at localhost:11434")
         print("  Production mode requires Ollama with these models:")
@@ -159,17 +196,19 @@ def interactive_menu():
     print("  +======================================+")
     print("  |   WaggleDance Launcher               |")
     print("  +======================================+")
-    print("  |  1. STUB mode                        |")
+    print("  |  1. STUB mode (legacy)               |")
     print("  |     No Ollama needed                 |")
     print("  |     Real GPU stats, demo data        |")
-    print("  |     For dashboard development        |")
     print("  |                                      |")
-    print("  |  2. PRODUCTION mode                  |")
+    print("  |  2. PRODUCTION mode (legacy)         |")
     print("  |     Requires Ollama + 4 models       |")
     print("  |     Full HiveMind, real AI           |")
-    print("  |     ChromaDB, agents, learning       |")
     print("  |                                      |")
-    print("  |  3. Change PROFILE                   |")
+    print("  |  3. NEW RUNTIME (recommended)        |")
+    print("  |     Hexagonal architecture            |")
+    print("  |     Ports & adapters, DI container   |")
+    print("  |                                      |")
+    print("  |  4. Change PROFILE                   |")
     print(f"  |     Current: {current_profile:<24}|")
     print("  +======================================+")
 
@@ -177,10 +216,12 @@ def interactive_menu():
     print(f"\n  Ollama: {ollama_status}")
     print(f"  Profile: {current_profile}")
 
-    choice = input("\n  Select [1/2/3]: ").strip()
+    choice = input("\n  Select [1/2/3/4]: ").strip()
     if choice == "2":
         start_production()
     elif choice == "3":
+        start_new_runtime()
+    elif choice == "4":
         select_profile()
         interactive_menu()  # Return to menu after profile change
     else:
@@ -189,18 +230,22 @@ def interactive_menu():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WaggleDance Launcher")
-    parser.add_argument("--stub", action="store_true", help="Start in stub mode")
+    parser.add_argument("--stub", action="store_true", help="Start in stub mode (legacy)")
     parser.add_argument("--production", "--prod", action="store_true",
-                        help="Start in production mode")
+                        help="Start in production mode (legacy)")
+    parser.add_argument("--new-runtime", action="store_true",
+                        help="Start the new hexagonal runtime (recommended)")
     parser.add_argument("--profile", choices=PROFILES,
                         help="Set active profile before starting")
     args = parser.parse_args()
 
     if args.profile:
         set_profile(args.profile)
-        print(f"  ✅ Profile set to: {args.profile}")
+        print(f"  Profile set to: {args.profile}")
 
-    if args.stub:
+    if args.new_runtime:
+        start_new_runtime()
+    elif args.stub:
         start_stub()
     elif args.production:
         start_production()

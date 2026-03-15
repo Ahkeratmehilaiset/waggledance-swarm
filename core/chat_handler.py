@@ -9,6 +9,10 @@ from core.hive_routing import (
     MASTER_NEGATIVE_KEYWORDS, AGENT_EN_PROMPTS,
 )
 
+# v1.18.0: shared singletons (convergence layer)
+from core.shared_routing_helpers import get_route_telemetry as _get_route_telemetry
+from core.shared_routing_helpers import get_learning_ledger as _get_learning_ledger
+
 try:
     from core.translation_proxy import detect_language
     _TRANSLATION_AVAILABLE = True
@@ -249,6 +253,22 @@ class ChatHandler:
             except Exception as _re:
                 log.warning("SmartRouter v2 routing failed: %s", _re)
 
+        # ═══ v1.18.0: Route Telemetry + Explainability ═══
+        self._last_route_explanation = None
+        if _route:
+            try:
+                from core.route_explainability import explain_route as _explain
+                _mm_on = bool(getattr(self, 'micro_model', None))
+                self._last_route_explanation = _explain(
+                    query=message,
+                    hot_cache_hit=False,
+                    memory_score=getattr(_pre, 'confidence', 0.0) if _pre else 0.0,
+                    micromodel_enabled=_mm_on,
+                    matched_keywords=getattr(_route, 'matched_keywords', []) or [],
+                ).to_dict()
+            except Exception:
+                pass
+
         # ═══ Model-based solver (SmartRouter v2 → SymbolicSolver) ═══
         if _route and getattr(self, 'symbolic_solver', None):
             try:
@@ -303,13 +323,16 @@ class ChatHandler:
                                 query=message, response=response,
                                 prev_episode_id=self._last_episode_id,
                                 quality=_mr.confidence)
+                        _model_ms = (time.perf_counter() - _chat_t0) * 1000
                         self.metrics.log_chat(
                             query=_original_message, method="model_based",
                             agent_id=f"solver_{_model_id}",
                             model_used="symbolic_solver",
                             confidence=_mr.confidence,
-                            response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                            response_time_ms=_model_ms,
                             route="model_based", language=_detected_lang)
+                        self._record_request_telemetry(
+                            "model_based", _mr.confidence, _model_ms, True, message)
                         return response
             except Exception as _solver_err:
                 log.warning("Model-based solver failed: %s", _solver_err)
@@ -556,14 +579,18 @@ class ChatHandler:
                 self._last_episode_id = self.consciousness.store_episode(
                     query=message, response=response,
                     prev_episode_id=self._last_episode_id)
+            _del_conf = _pre.confidence if _pre else 0.0
+            _del_ms = (time.perf_counter() - _chat_t0) * 1000
             self.metrics.log_chat(
                 query=_original_message, method="delegate",
                 agent_id=delegate_to,
                 model_used=getattr(self.llm, 'model', 'unknown'),
-                confidence=_pre.confidence if _pre else 0.0,
-                response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                confidence=_del_conf,
+                response_time_ms=_del_ms,
                 route="agent_delegate", language=_detected_lang,
                 translated=_translation_used)
+            self._record_request_telemetry(
+                "delegate", _del_conf, _del_ms, True, message)
             return response
         else:
             # AUDIT FIX: Negatiiviset avainsanat → pakota delegointi
@@ -681,15 +708,39 @@ class ChatHandler:
                     query=message, response=response,
                     prev_episode_id=self._last_episode_id,
                     quality=_quality)
+            _master_ms = (time.perf_counter() - _chat_t0) * 1000
             self.metrics.log_chat(
                 query=_original_message, method="master",
                 agent_id="master", model_used="phi4-mini",
                 confidence=_quality,
                 was_hallucination=bool(_hall and _hall.is_suspicious),
-                response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                response_time_ms=_master_ms,
                 route="llm_master", language=_detected_lang,
                 translated=_translation_used)
+            self._record_request_telemetry(
+                "llm", _quality, _master_ms, True, message, was_fallback=True)
             return response
+
+    def _record_request_telemetry(self, route_type: str, confidence: float,
+                                    latency_ms: float, success: bool,
+                                    query: str, was_fallback: bool = False):
+        """v1.18.0: Record route telemetry and low-confidence ledger entries."""
+        try:
+            _get_route_telemetry().record(route_type, latency_ms, success, was_fallback)
+        except Exception:
+            pass
+        try:
+            if confidence < 0.6:
+                _get_learning_ledger().log(
+                    "low_confidence_query",
+                    agent_id=route_type,
+                    query=query[:500],
+                    confidence=confidence,
+                    route=route_type,
+                    latency_ms=round(latency_ms, 1),
+                )
+        except Exception:
+            pass
 
     def _swarm_route(self, msg_lower: str, routing_rules: dict) -> tuple:
         """

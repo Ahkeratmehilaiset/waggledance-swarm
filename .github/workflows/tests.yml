@@ -43,3 +43,16 @@ jobs:
     - name: Run pytest — integration
       run: |
         python -m pytest tests/integration/ -v --tb=short
+
+    - name: Run benchmark baseline
+      run: |
+        python tools/run_benchmark.py --yaml configs/benchmarks.yaml
+
+    - name: Upload benchmark artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-v1_18
+        path: |
+          data/benchmark_v1_18.json
+          data/benchmark_v1_18_summary.md

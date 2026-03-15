@@ -238,6 +238,30 @@ class NightModeController:
                 rss_monitor=getattr(self, 'rss_monitor', None),
             )
 
+        # ── v1.18.0: Wire ActiveLearningScorer into NightEnricher ──
+        if self.night_enricher and not getattr(self.night_enricher, '_active_scorer', None):
+            try:
+                from core.active_learning import ActiveLearningScorer
+                # Build topic counts from gap scheduler's fact data
+                _topic_counts = {}
+                if hasattr(self.night_enricher, 'gap_scheduler'):
+                    _topic_counts = dict(
+                        getattr(self.night_enricher.gap_scheduler, '_fact_counts', {}))
+                self.night_enricher._active_scorer = ActiveLearningScorer(
+                    topic_counts=_topic_counts)
+                log.info("🎯 ActiveLearningScorer wired into NightEnricher")
+            except Exception as e:
+                log.warning("ActiveLearningScorer init failed: %s", e)
+
+        # ── v1.18.0: Wire LearningLedger into NightEnricher ──
+        if self.night_enricher and not getattr(self.night_enricher, '_ledger', None):
+            try:
+                from core.learning_ledger import LearningLedger
+                self.night_enricher._ledger = LearningLedger()
+                log.info("📋 LearningLedger wired into NightEnricher")
+            except Exception as e:
+                log.warning("LearningLedger init failed: %s", e)
+
         # ── NightEnricher unified path (replaces 5-way rotation) ──
         if self.night_enricher:
             try:

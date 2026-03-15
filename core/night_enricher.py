@@ -1571,6 +1571,26 @@ class NightEnricher:
             return 0
 
         agent_id, topic = self.gap_scheduler.next_agent_and_topic()
+
+        # v1.18.0: Use ActiveLearningScorer to log topic selection priority
+        _scorer = getattr(self, '_active_scorer', None)
+        _ledger = getattr(self, '_ledger', None)
+        if _scorer and _ledger:
+            try:
+                from core.active_learning import LearningCandidate
+                _cand = LearningCandidate(
+                    query=topic, confidence=0.5, topic=agent_id)
+                _priority = _scorer.score(_cand)
+                if _priority > 0.4:
+                    _ledger.log(
+                        "night_high_priority_topic",
+                        agent_id=agent_id,
+                        topic=topic[:200],
+                        priority=_priority,
+                    )
+            except Exception:
+                pass
+
         log.info(f"NightEnricher: source={source_id}, agent={agent_id}, "
                  f"topic={topic[:60]}")
 
@@ -1650,6 +1670,19 @@ class NightEnricher:
                     self._per_agent_stored[agent_id] = (
                         self._per_agent_stored.get(agent_id, 0) + 1)
                     self.gap_scheduler.record_enrichment()
+                    # v1.18.0: Log to learning ledger
+                    _ledger = getattr(self, '_ledger', None)
+                    if _ledger:
+                        try:
+                            _ledger.log(
+                                "fact_stored",
+                                agent_id=agent_id,
+                                source=source_id,
+                                topic=topic[:200],
+                                novel=verdict.novel,
+                            )
+                        except Exception:
+                            pass
                     # Layer 5: Record fact production trust signal
                     _te = getattr(self, '_trust_engine', None)
                     if _te:

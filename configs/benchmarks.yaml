@@ -1,5 +1,6 @@
+# WaggleDance v1.18.0 Benchmark Corpus — 30 queries across all route types
 queries:
-  # --- bee_qa domain (3 queries) ---
+  # --- bee_qa / model_based (6 queries) ---
   - id: bee_qa_honey_yield
     query: "How much honey can I expect from one hive this season?"
     domain: bee_qa
@@ -21,7 +22,28 @@ queries:
     expected_keywords: ["swarm", "risk"]
     language: en
 
-  # --- bilingual domain (2 queries) ---
+  - id: bee_qa_colony_food
+    query: "How much food reserves does a colony need for winter?"
+    domain: bee_qa
+    expected_route: model_based
+    expected_keywords: ["food", "reserves", "winter"]
+    language: en
+
+  - id: bee_qa_queen_rearing
+    query: "What is the best method for queen rearing in Finnish conditions?"
+    domain: bee_qa
+    expected_route: model_based
+    expected_keywords: ["queen", "rearing"]
+    language: en
+
+  - id: bee_qa_winter_survival
+    query: "What factors determine winter survival rate of colonies?"
+    domain: bee_qa
+    expected_route: model_based
+    expected_keywords: ["winter", "survival"]
+    language: en
+
+  # --- bilingual / Finnish (5 queries) ---
   - id: bilingual_fi_heating
     query: "Paljonko lämmitys maksaa talvella?"
     domain: bilingual
@@ -29,22 +51,64 @@ queries:
     expected_keywords: ["lämmitys", "kustannus"]
     language: fi
 
-  - id: bilingual_en_winter
-    query: "How do I prepare the hive for winter?"
+  - id: bilingual_fi_varroa
+    query: "Milloin pitää aloittaa varroa-hoito?"
     domain: bilingual
+    expected_route: model_based
+    expected_keywords: ["varroa"]
+    language: fi
+
+  - id: bilingual_fi_honey
+    query: "Kuinka paljon hunajaa yksi pesä tuottaa?"
+    domain: bilingual
+    expected_route: model_based
+    expected_keywords: ["hunaja"]
+    language: fi
+
+  - id: bilingual_fi_swarm
+    query: "Miten estän parveilua?"
+    domain: bilingual
+    expected_route: model_based
+    expected_keywords: ["parveilua"]
+    language: fi
+
+  - id: bilingual_fi_winter
+    query: "Miten valmistan pesät talveen?"
+    domain: bilingual
+    expected_route: retrieval
+    expected_keywords: ["talvi"]
+    language: fi
+
+  # --- retrieval (4 queries) ---
+  - id: retrieval_winter_prep
+    query: "How do I prepare the hive for winter?"
+    domain: retrieval
     expected_route: retrieval
     expected_keywords: ["winter", "prepare"]
     language: en
 
-  # --- correction domain (1 query) ---
-  - id: correction_typo
-    query: "How do I keep bug houses healthy?"
-    domain: correction
-    expected_route: llm_reasoning
-    expected_keywords: ["hives", "healthy"]
+  - id: retrieval_spring_inspection
+    query: "What should I check during spring inspection?"
+    domain: retrieval
+    expected_route: retrieval
+    expected_keywords: ["spring", "inspection"]
     language: en
 
-  # --- sensor domain (2 queries) ---
+  - id: retrieval_nectar_plants
+    query: "Tell me about the best nectar plants for bees in Finland"
+    domain: retrieval
+    expected_route: retrieval
+    expected_keywords: ["nectar", "plants"]
+    language: en
+
+  - id: retrieval_oxalic_acid
+    query: "Explain oxalic acid treatment for varroa mites"
+    domain: retrieval
+    expected_route: retrieval
+    expected_keywords: ["oxalic", "acid"]
+    language: en
+
+  # --- statistical / sensor (4 queries) ---
   - id: sensor_temperature
     query: "What is the current hive temperature?"
     domain: sensor
@@ -59,7 +123,73 @@ queries:
     expected_keywords: ["humidity", "trend"]
     language: en
 
-  # --- fallback domain (2 queries) ---
+  - id: sensor_anomaly
+    query: "Are there any anomalies in the sensor readings?"
+    domain: sensor
+    expected_route: statistical
+    expected_keywords: ["anomaly"]
+    language: en
+
+  - id: sensor_fi_stats
+    query: "Näytä pesän lämpötilatilastot"
+    domain: sensor
+    expected_route: statistical
+    expected_keywords: ["lämpötila"]
+    language: fi
+
+  # --- seasonal (3 queries) ---
+  - id: seasonal_march
+    query: "What beekeeping tasks should I do in March?"
+    domain: seasonal
+    expected_route: model_based
+    expected_keywords: ["march", "tasks"]
+    language: en
+
+  - id: seasonal_fi_spring
+    query: "Mitä mehiläishoitotöitä tehdään keväällä?"
+    domain: seasonal
+    expected_route: model_based
+    expected_keywords: ["kevät"]
+    language: fi
+
+  - id: seasonal_harvest
+    query: "When is the honey harvest season in Finland?"
+    domain: seasonal
+    expected_route: retrieval
+    expected_keywords: ["honey", "harvest"]
+    language: en
+
+  # --- math (2 queries) ---
+  - id: math_yield
+    query: "If I have 5 hives producing 20kg each, what is my total yield?"
+    domain: math
+    expected_route: model_based
+    expected_keywords: ["yield"]
+    language: en
+
+  - id: math_treatment
+    query: "Calculate formic acid dosage for 3 brood boxes"
+    domain: math
+    expected_route: model_based
+    expected_keywords: ["formic", "acid"]
+    language: en
+
+  # --- correction (2 queries) ---
+  - id: correction_typo
+    query: "How do I keep bug houses healthy?"
+    domain: correction
+    expected_route: llm_reasoning
+    expected_keywords: ["hives", "healthy"]
+    language: en
+
+  - id: correction_misspell
+    query: "What are the symtoms of nosema disease?"
+    domain: correction
+    expected_route: model_based
+    expected_keywords: ["nosema"]
+    language: en
+
+  # --- fallback / edge cases (4 queries) ---
   - id: fallback_unrelated
     query: "What is the capital of France?"
     domain: fallback
@@ -73,3 +203,17 @@ queries:
     expected_route: llm_reasoning
     expected_keywords: []
     language: en
+
+  - id: fallback_ambiguous
+    query: "How does the system work?"
+    domain: fallback
+    expected_route: llm_reasoning
+    expected_keywords: []
+    language: en
+
+  - id: fallback_fi_offtopic
+    query: "Mikä on Ranskan pääkaupunki?"
+    domain: fallback
+    expected_route: llm_reasoning
+    expected_keywords: []
+    language: fi

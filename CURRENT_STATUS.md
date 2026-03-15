@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-03-15
-**Version:** v1.17.0
+**Version:** v1.18.0
 
 ---
 
@@ -41,28 +41,37 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | 8 port contracts | `PORT_CONTRACTS.md`, locked, 0 mismatches |
 | State ownership rules | `STATE_OWNERSHIP.md`, 9 owners, 7 forbidden paths |
 | Domain models (5 modules) | `tests/contracts/` — 22 tests |
-| Orchestration (scheduler, routing, round table) | `tests/unit_core/` — 37 tests |
+| Orchestration (scheduler, routing, round table, micromodel) | `tests/unit_core/` — 130+ tests |
 | Application services (chat, memory, learning) | `tests/unit_app/` — 16 tests |
-| Adapter implementations (9 adapters) | `tests/unit/` — 97 tests |
+| Adapter implementations (9 adapters + SQLiteTrustStore) | `tests/unit/` — 300+ tests |
 | DI container (stub + production) | Smoke tests pass both modes |
-| Legacy test suite | 72 suites, 946 tests, Health 100/100 |
+| Legacy test suite | 72 suites, 2427 tests, 0 failures, Health 100/100 |
+| Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
-| Acceptance criteria | 27/27 GREEN |
+| MicroModel V1 routing (restored v1.17.0) | End-to-end: routing_policy → chat_service → orchestrator |
+| Persistent TrustStore (v1.17.0) | SQLiteTrustStore in container.py (prod=SQLite, stub=InMemory) |
 
 ---
 
 ## What Is Experimental / Future Work
 
-| Item | Status | Blocker |
-|------|--------|---------|
-| MicroModel port + adapter | Not started | Fix `hivemind.py:1365` type mismatch first |
+| Item | Status | Notes |
+|------|--------|-------|
+| MicroModel V1 (PatternMatchEngine) | **WIRED** (v1.17.0) | Legacy: `shared_routing_helpers.probe_micromodel()`. Hex: routing_policy → chat_service. Cached singleton. |
+| MicroModel V2 (ClassifierModel) | File exists, unwired | `data/micromodel_v2.pt` (3.8MB) exists but no runtime loading code. V1 patterns only. |
+| MicroModel V3 (LoRA) | Framework only | `core/lora_readiness.py` checker, `tools/train_micromodel_v3.py` script. No trained adapter yet (needs 4h+ GPU). |
 | Rule engine port + adapter | Not designed | No current requirement |
-| Sensor/MQTT adapter | Stub only (`SensorPort`) | Legacy `integrations/` works |
-| Persistent TrustStore (SQLite) | Not started | `InMemoryTrustStore` loses scores on restart |
+| Sensor/MQTT adapter | **WIRED** (v1.18.0) | `MQTTSensorIngest` → `SensorHub.start()` step 6, writes SharedMemory, dispatches alerts |
+| Persistent TrustStore (SQLite) | **COMPLETE** (v1.17.0) | `SQLiteTrustStore` in container.py (prod=SQLite, stub=InMemory, graceful fallback) |
 | Voice adapters (Whisper/Piper) | Legacy only | Not ported to new architecture |
-| Dashboard wiring | Static mount exists | React build separate process |
+| Dashboard wiring | **6 new endpoints** (v1.18.0) | route/explain, route/telemetry, experiments, graph/replay, graph/stats, learning/ledger |
 | Old code removal | Blocked | Needs 24h production validation first |
-| `micromodel` + `rules` route types | Excluded | `ALLOWED_ROUTE_TYPES = {hotcache, memory, llm, swarm}` |
+| `micromodel` route type | **RESTORED** (v1.17.0) | `ALLOWED_ROUTE_TYPES = {hotcache, micromodel, memory, llm, swarm}` |
+| `rules` route type | Excluded | Not in allowed types |
+| Night learning loop wiring | **WIRED** (v1.18.0) | ActiveLearningScorer + LearningLedger in NightModeController/NightEnricher |
+| Request loop telemetry | **WIRED** (v1.18.0) | RouteTelemetry + LearningLedger + RouteExplainability in chat_handler + chat_service |
+| FallbackChain | Dead code | Defined and tested (10 tests) but never used in production |
+| Runtime convergence | **Decided** (v1.18.0) | Legacy primary, hex = forward path, `core/shared_routing_helpers.py` convergence layer |
 
 ---
 
@@ -73,13 +82,14 @@ These test suites are the gatekeepers — all must pass before any change is mer
 | Gate | Command | Tests | What It Guards |
 |------|---------|-------|---------------|
 | Contract tests | `pytest tests/contracts/ -v` | 22 | Port signatures, DTOs, route types, event types |
-| Core unit tests | `pytest tests/unit_core/ -v` | 37 | Scheduler, routing, fallback, escalation, task tracking |
+| Core unit tests | `pytest tests/unit_core/ -v` | 130+ | Scheduler, routing, fallback, micromodel, active learning, telemetry, ledger |
 | App unit tests | `pytest tests/unit_app/ -v` | 16 | ChatService, LearningService (BUG 3 regression) |
-| Adapter unit tests | `pytest tests/unit/ -v` | 97 | All 9 adapters, container, event bus |
-| Legacy suite | `python tools/waggle_backup.py --tests-only` | 946 | Old stack regression (72 suites) |
+| Adapter unit tests | `pytest tests/unit/ -v` | 300+ | All adapters, container, event bus, SQLiteTrustStore |
+| Integration tests | `pytest tests/integration/ -v` | 90 | Runtime CLI, smoke, user scenarios, benchmarks, shadow compare |
+| Legacy suite | `python tools/waggle_backup.py --tests-only` | 2427 | Old stack regression (72 suites) |
 | Stub smoke | `Container(stub=True).build_app()` | 1 | DI wiring, no crash |
 | Non-stub smoke | `Container(stub=False).memory_repository` | 1 | ChromaMemoryRepository, not InMemory |
-| Compile check | `python -m compileall waggledance/ -q` | - | No syntax errors |
+| Compile check | `python -m compileall waggledance/ core/ -q` | - | No syntax errors |
 
 ---
 
@@ -91,7 +101,7 @@ These test suites are the gatekeepers — all must pass before any change is mer
 4. **No type mixing** — Never assign incompatible types to a typed attribute (prevents BUG 1).
 5. **Event bus failure policy** — Log with `exc_info=True`, increment failure counter, never swallow, max 5s handler timeout.
 6. **Env reads centralized** — Only `WaggleSettings` (in `settings_loader.py`) may read `os.environ`. All other config via `ConfigPort`.
-7. **Route type whitelist** — `select_route()` may only return `{hotcache, memory, llm, swarm}`.
+7. **Route type whitelist** — `select_route()` may only return `{hotcache, micromodel, memory, llm, swarm}`.
 8. **HTTP routes are thin** — Routes delegate to services; no business logic, no direct store writes.
 9. **Ollama timeout >= 120s** — Prevents embed timeouts under load (BUG 3 fix).
 10. **Stall detection active** — `LearningService` resets after N consecutive empty cycles (`night_stall_threshold`, default 10).

@@ -82,6 +82,31 @@ python -m waggledance.adapters.cli.start_runtime           # production mode
 2. Add routing keywords in `core/hive_routing.py` under `WEIGHTED_ROUTING`
 3. Write tests in `tests/`
 
+## Benchmarks
+
+Run the route-matching benchmark (30 queries):
+```bash
+python tools/run_benchmark.py --yaml configs/benchmarks.yaml
+```
+Artifacts saved to `data/benchmark_v1_18.json` and `data/benchmark_v1_18_summary.md`.
+
+Run shadow validation (legacy vs hex routing comparison, 75 queries):
+```bash
+python tools/run_shadow_validation.py
+```
+
+## Stub Mode (No GPU / No Ollama)
+
+The hexagonal runtime supports a `--stub` mode for development without Ollama:
+```bash
+python -m waggledance.adapters.cli.start_runtime --stub
+```
+In stub mode:
+- `StubLLMAdapter` returns canned responses (no GPU needed)
+- `InMemoryTrustStore` replaces SQLiteTrustStore
+- `InMemoryVectorStore` replaces ChromaDB
+- All port contracts are honored — tests pass identically
+
 ## Pull Requests
 
 - Run all tests before submitting

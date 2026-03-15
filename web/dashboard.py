@@ -1475,6 +1475,143 @@ loadFeeds();
         except Exception as exc:
             return JSONResponse({"error": str(exc), "results": []}, status_code=500)
 
+    # ═══ v1.18.0: Explainability + Causal Replay + Experiments ═══
+
+    @app.get("/api/route/explain")
+    async def route_explain(query: str = ""):
+        """Return structured route explanation for a query."""
+        if not query:
+            return {"error": "query parameter required"}
+        try:
+            from core.route_explainability import explain_route
+            mm_hit, mm_conf = False, 0.0
+            try:
+                from core.shared_routing_helpers import probe_micromodel
+                mm_hit, mm_conf = probe_micromodel(query)
+            except Exception:
+                pass
+            explanation = explain_route(
+                query=query,
+                hot_cache_hit=False,
+                memory_score=0.0,
+                micromodel_enabled=True,
+                micromodel_hit=mm_hit,
+                micromodel_confidence=mm_conf,
+                matched_keywords=[],
+            )
+            return explanation.to_dict()
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/route/telemetry")
+    async def route_telemetry():
+        """Return per-route telemetry stats."""
+        try:
+            from core.shared_routing_helpers import get_route_telemetry
+            return get_route_telemetry().summary()
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/experiments")
+    async def list_experiments():
+        """Return prompt experiment status."""
+        try:
+            if hivemind and hasattr(hivemind, 'learning') and hivemind.learning:
+                status = hivemind.learning.get_status()
+                experiments = status.get("experiments", [])
+                return {"experiments": experiments, "count": len(experiments)}
+            return {"experiments": [], "count": 0}
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/graph/replay/{node_id}")
+    async def causal_replay(node_id: str):
+        """Return causal chain for a node in the cognitive graph."""
+        try:
+            if hivemind and hasattr(hivemind, 'cognitive_graph') and hivemind.cognitive_graph:
+                cg = hivemind.cognitive_graph
+                ancestors = cg.find_ancestors(node_id, max_depth=5)
+                dependents = cg.find_dependents(node_id, max_depth=5)
+                return {
+                    "node_id": node_id,
+                    "ancestors": ancestors,
+                    "dependents": dependents,
+                    "chain_length": len(ancestors) + len(dependents),
+                }
+            return {"node_id": node_id, "error": "cognitive_graph not available"}
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/graph/stats")
+    async def graph_stats():
+        """Return cognitive graph statistics."""
+        try:
+            if hivemind and hasattr(hivemind, 'cognitive_graph') and hivemind.cognitive_graph:
+                return hivemind.cognitive_graph.stats()
+            return {"error": "cognitive_graph not available"}
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/learning/ledger")
+    async def learning_ledger(event_type: str = "", limit: int = 50):
+        """Return recent learning ledger entries."""
+        try:
+            from core.shared_routing_helpers import get_learning_ledger
+            ledger = get_learning_ledger()
+            entries = ledger.query(
+                event_type=event_type or None,
+                limit=min(limit, 200),
+            )
+            return {
+                "entries": [e.to_dict() for e in entries],
+                "count": len(entries),
+                "total": ledger.count(),
+            }
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/micromodel/status")
+    async def micromodel_status():
+        """Return honest V1/V2/V3 micromodel status."""
+        from pathlib import Path as P
+        status = {"v1": {}, "v2": {}, "v3": {}}
+        # V1: PatternMatchEngine
+        try:
+            from core.shared_routing_helpers import probe_micromodel
+            result = probe_micromodel("test")
+            status["v1"] = {
+                "name": "PatternMatchEngine",
+                "status": "wired",
+                "config_file": "configs/micro_v1_patterns.json",
+                "config_exists": P("configs/micro_v1_patterns.json").exists(),
+                "runtime": "legacy + hex (shared_routing_helpers)",
+            }
+        except Exception as e:
+            status["v1"] = {"name": "PatternMatchEngine", "status": "error", "error": str(e)}
+        # V2: ClassifierModel
+        v2_path = P("data/micromodel_v2.pt")
+        status["v2"] = {
+            "name": "ClassifierModel",
+            "status": "file_exists_unwired" if v2_path.exists() else "not_found",
+            "model_file": str(v2_path),
+            "file_exists": v2_path.exists(),
+            "file_size_mb": round(v2_path.stat().st_size / 1e6, 1) if v2_path.exists() else 0,
+            "runtime": "none — no loading code in production runtime",
+        }
+        # V3: LoRA
+        try:
+            from core.lora_readiness import LoRAReadinessChecker
+            manifest = LoRAReadinessChecker().full_check()
+            status["v3"] = {
+                "name": "LoRA fine-tuned",
+                "status": "ready" if manifest.ready else "not_ready",
+                "checks": manifest.to_dict()["checks"],
+                "runtime": "none — no trained adapter yet",
+            }
+        except Exception as e:
+            status["v3"] = {"name": "LoRA", "status": "error", "error": str(e)}
+        return JSONResponse(status)
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()

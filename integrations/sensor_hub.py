@@ -157,6 +157,53 @@ class SensorHub:
             log.warning(f"  HomeAssistant init failed: {e}")
             self.home_assistant = None
 
+        # 6. MQTT Sensor Ingest — hive temperature (v1.18.0)
+        self._sensor_ingest = None
+        if self.mqtt_hub and self.mqtt_hub.enabled:
+            try:
+                from core.mqtt_sensor_ingest import MQTTSensorIngest
+
+                def _on_store(reading):
+                    """Write valid reading to SharedMemory."""
+                    try:
+                        if self.consciousness and hasattr(self.consciousness, 'shared_memory'):
+                            self.consciousness.shared_memory.set(
+                                f"hive_{reading.hive_id}_temperature",
+                                {"temp_c": reading.temperature_c,
+                                 "ts": reading.timestamp,
+                                 "hive_id": reading.hive_id},
+                            )
+                    except Exception as e:
+                        log.debug("SharedMemory write: %s", e)
+
+                def _on_anomaly(reading, desc):
+                    """Fire alert on temperature anomaly."""
+                    if self.alert_dispatcher:
+                        try:
+                            import asyncio
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(self.alert_dispatcher.dispatch(
+                                "sensor_anomaly",
+                                {"hive_id": reading.hive_id,
+                                 "temperature_c": reading.temperature_c,
+                                 "anomaly": desc},
+                            ))
+                        except Exception:
+                            pass
+                    log.warning("Hive anomaly: %s", desc)
+
+                self._sensor_ingest = MQTTSensorIngest(
+                    on_store=_on_store, on_anomaly=_on_anomaly)
+
+                async def _mqtt_temp_handler(topic, payload):
+                    """MQTT callback: route hive/+/temperature to ingest."""
+                    self._sensor_ingest.on_message(topic, payload)
+
+                self.mqtt_hub.subscribe("hive/+/temperature", _mqtt_temp_handler)
+                log.info("  MQTTSensorIngest: OK (hive/+/temperature)")
+            except Exception as e:
+                log.warning("  MQTTSensorIngest init failed: %s", e)
+
         self._started = True
         log.info("SensorHub started")
 

@@ -1,7 +1,7 @@
 # Migration Status — WaggleDance Hexagonal Refactor
 
-**Updated:** 2026-03-15 (Big Sprint Complete)
-**Version:** v1.17.0
+**Updated:** 2026-03-15
+**Version:** v1.18.0 (in progress)
 
 ---
 
@@ -18,17 +18,18 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 
 ---
 
-## Test Results
+## Test Results (as of v1.17.0)
 
 | Suite | Tests | Status |
 |-------|-------|--------|
-| `tests/unit/` (Agent 2 adapter tests) | 97 | PASS |
-| `tests/unit_core/` (Agent 1 core tests) | 37 | PASS |
-| `tests/unit_app/` (Agent 1 service tests) | 16 | PASS |
+| `tests/unit/` (adapters + trust + container) | 300+ | PASS |
+| `tests/unit_core/` (core modules + Big Sprint) | 130+ | PASS |
+| `tests/unit_app/` (service tests) | 16 | PASS |
 | `tests/contracts/` (contract validation) | 22 | PASS |
-| **New architecture subtotal** | **172** | **ALL PASS** |
-| `tools/waggle_backup.py --tests-only` | 946 (72 suites) | PASS |
-| **Grand total** | **1118** | **ALL PASS** |
+| **New architecture subtotal** | **~469** | **ALL PASS** |
+| `tests/integration/` (runtime, smoke, scenarios) | 90 | PASS |
+| `tools/waggle_backup.py --tests-only` | 2427 (72 suites) | PASS |
+| **Grand total** | **~2986** | **ALL PASS** |
 
 ---
 
@@ -125,10 +126,44 @@ These files are functionally replaced but remain intact for backward compatibili
 
 ---
 
-## What's Next
+## v1.17.0 Big Sprint Additions
 
-1. **Production validation** — Run new stack 24h alongside old
-2. **MicroModel fix** — Fix `hivemind.py:1365` type mismatch, then create port
-3. **Persistent TrustStore** — SQLite-backed replacement for InMemoryTrustStore
-4. **Old code cleanup** — Remove superseded files after validation
-5. **Dashboard integration** — Wire React build into new HTTP layer
+15 new core modules and 25 new test files were added:
+
+| Module | Purpose | Status |
+|--------|---------|--------|
+| `core/circuit_breaker.py` | Extracted from memory_engine.py | Stable |
+| `core/embedding_cache.py` | Extracted from memory_engine.py | Stable |
+| `core/hallucination_checker.py` | Extracted from memory_engine.py | Stable |
+| `core/math_solver.py` | Extracted from memory_engine.py | Stable |
+| `core/active_learning.py` | ActiveLearningScorer for prioritization | Exists, not wired to runtime |
+| `core/canary_promoter.py` | CanaryPromoter for safe prompt/model promotion | Exists, not wired to runtime |
+| `core/learning_ledger.py` | JSONL append-only audit log | Exists, not wired to runtime |
+| `core/route_telemetry.py` | Per-route stats (count, latency, fallback) | Exists, not wired to runtime |
+| `core/route_explainability.py` | Route decision breakdown | Exists, not wired to runtime |
+| `core/causal_replay_api.py` | Causal chain query API | Exists, not wired to runtime |
+| `core/mqtt_sensor_ingest.py` | MQTT payload → SharedMemory | Exists, not wired to SensorHub |
+| `core/english_source_learner.py` | Night learning from English sources | Exists, not wired to NightEnricher |
+| `core/language_readiness.py` | Per-language capability report | Exists, standalone |
+| `core/lora_readiness.py` | LoRA V3 readiness checker | Exists, standalone |
+| `waggledance/adapters/trust/sqlite_trust_store.py` | Persistent TrustStore | **WIRED** in container.py |
+
+## v1.18.0 Runtime Convergence Decision
+
+**Legacy runtime** (`start.py` → `hivemind.py`) remains the **primary production path**.
+**Hexagonal runtime** (`start_runtime.py` → Container → ChatService) is the **forward path** for new deployments.
+
+Strategy: shared helper layer for duplicated logic, no third runtime, gradual migration.
+
+## What's Next (v1.18.0 Sprint)
+
+1. **Wire Sprint 17 modules into runtime loops** — telemetry, ledger, explainability in request path; ActiveLearningScorer in night path
+2. **MQTT bridge via SensorHub** — hive/+/temperature end-to-end
+3. **Explainability + causal replay APIs** — dashboard endpoints
+4. **memory_engine.py split** — bilingual_store.py extraction
+5. **Operational hardening** — backup, graceful degradation, EventBus wiring
+6. **Shadow validation** — 50-100 query corpus
+7. **Benchmark evidence** — release artifacts
+8. **V1/V2/V3 micromodel clarity** — honest status in docs and code
+9. **Production validation** — Run new stack 24h alongside old (blocked on convergence)
+10. **Old code cleanup** — Remove superseded files after validation

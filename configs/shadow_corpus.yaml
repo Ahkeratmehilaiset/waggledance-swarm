@@ -1,0 +1,320 @@
+# Shadow validation corpus — v1.18.0
+# 75 queries covering all route types and domains
+# Used by: tools/runtime_shadow_compare.py
+
+queries:
+  # ═══ Bee QA — English (10) ═══
+  - id: bee_en_01
+    query: "How much honey can I expect from one hive this season?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_02
+    query: "When should I apply varroa treatment?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_03
+    query: "What are the signs of an impending swarm?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_04
+    query: "How do I prepare the hive for winter?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_05
+    query: "What is the ideal bee cluster temperature in winter?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_06
+    query: "How many frames should I leave for the bees over winter?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_07
+    query: "What is the best time to do a spring inspection?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_08
+    query: "How do I check for American foulbrood?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_09
+    query: "What plants are best for bees in Finland?"
+    domain: bee_qa
+    language: en
+  - id: bee_en_10
+    query: "How do I combine two weak colonies?"
+    domain: bee_qa
+    language: en
+
+  # ═══ Bee QA — Finnish (10) ═══
+  - id: bee_fi_01
+    query: "Kuinka paljon hunajaa yksi pesä tuottaa?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_02
+    query: "Milloin varroapunkkien hoito pitäisi aloittaa?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_03
+    query: "Miten tunnistan parveilun merkit?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_04
+    query: "Miten pesä valmistellaan talveen?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_05
+    query: "Mikä on sopiva talvipesän lämpötila?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_06
+    query: "Miten oksaalihappohoito tehdään?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_07
+    query: "Onko mehiläisille haitallisia kasvinsuojeluaineita?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_08
+    query: "Kuinka monta kehää jätetään talviruoaksi?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_09
+    query: "Miten yhdistän kaksi heikkoa yhteiskuntaa?"
+    domain: bee_qa
+    language: fi
+  - id: bee_fi_10
+    query: "Milloin kevättarkastus kannattaa tehdä?"
+    domain: bee_qa
+    language: fi
+
+  # ═══ Model-based / axiom (10) ═══
+  - id: model_01
+    query: "How much honey does a hive produce in kilograms?"
+    domain: model_based
+    language: en
+  - id: model_02
+    query: "Calculate varroa treatment timing for 3 hives"
+    domain: model_based
+    language: en
+  - id: model_03
+    query: "What is the swarm risk percentage right now?"
+    domain: model_based
+    language: en
+  - id: model_04
+    query: "How much does it cost to heat the cottage this winter?"
+    domain: model_based
+    language: en
+  - id: model_05
+    query: "Paljonko lämmitys maksaa talvella?"
+    domain: model_based
+    language: fi
+  - id: model_06
+    query: "How much food reserves does the colony need for winter?"
+    domain: model_based
+    language: en
+  - id: model_07
+    query: "What is the hive thermal efficiency?"
+    domain: model_based
+    language: en
+  - id: model_08
+    query: "Calculate winter survival probability"
+    domain: model_based
+    language: en
+  - id: model_09
+    query: "Laske hunajasato tänä vuonna"
+    domain: model_based
+    language: fi
+  - id: model_10
+    query: "Kuinka paljon ruokavarastoja yhdyskunta tarvitsee?"
+    domain: model_based
+    language: fi
+
+  # ═══ Sensor / statistical (10) ═══
+  - id: sensor_01
+    query: "What is the current hive temperature?"
+    domain: sensor
+    language: en
+  - id: sensor_02
+    query: "Show me the humidity trend for this week"
+    domain: sensor
+    language: en
+  - id: sensor_03
+    query: "Mikä on pesän lämpötila nyt?"
+    domain: sensor
+    language: fi
+  - id: sensor_04
+    query: "Are there any temperature anomalies?"
+    domain: sensor
+    language: en
+  - id: sensor_05
+    query: "What is the average CPU usage?"
+    domain: sensor
+    language: en
+  - id: sensor_06
+    query: "Show system status and memory usage"
+    domain: sensor
+    language: en
+  - id: sensor_07
+    query: "Näytä järjestelmän tilastot"
+    domain: sensor
+    language: fi
+  - id: sensor_08
+    query: "What are the current weather conditions?"
+    domain: sensor
+    language: en
+  - id: sensor_09
+    query: "Is the hive weight decreasing?"
+    domain: sensor
+    language: en
+  - id: sensor_10
+    query: "Show me the trend of stored facts"
+    domain: sensor
+    language: en
+
+  # ═══ Retrieval / knowledge (10) ═══
+  - id: retrieval_01
+    query: "What are the seasonal beekeeping tasks for March?"
+    domain: retrieval
+    language: en
+  - id: retrieval_02
+    query: "Tell me about varroa mite biology"
+    domain: retrieval
+    language: en
+  - id: retrieval_03
+    query: "Explain how bees thermoregulate the hive"
+    domain: retrieval
+    language: en
+  - id: retrieval_04
+    query: "What is nosema disease?"
+    domain: retrieval
+    language: en
+  - id: retrieval_05
+    query: "Mitä on mehiläisten talvipesäkäyttäytyminen?"
+    domain: retrieval
+    language: fi
+  - id: retrieval_06
+    query: "What are the key differences between Carnica and Buckfast bees?"
+    domain: retrieval
+    language: en
+  - id: retrieval_07
+    query: "How does pollination work in Finland?"
+    domain: retrieval
+    language: en
+  - id: retrieval_08
+    query: "Kerro maaliskuun mehiläistarhaajan tehtävistä"
+    domain: retrieval
+    language: fi
+  - id: retrieval_09
+    query: "What flowers bloom first in spring for bees?"
+    domain: retrieval
+    language: en
+  - id: retrieval_10
+    query: "Explain the waggle dance communication"
+    domain: retrieval
+    language: en
+
+  # ═══ Correction / terminology (5) ═══
+  - id: correction_01
+    query: "How do I keep bug houses healthy?"
+    domain: correction
+    language: en
+  - id: correction_02
+    query: "My insect keepers need more food"
+    domain: correction
+    language: en
+  - id: correction_03
+    query: "The bug houses are swarming"
+    domain: correction
+    language: en
+  - id: correction_04
+    query: "How do I fix problems with my bee boxes?"
+    domain: correction
+    language: en
+  - id: correction_05
+    query: "Do insect keeper colonies need medicine?"
+    domain: correction
+    language: en
+
+  # ═══ Fallback / edge cases (10) ═══
+  - id: fallback_01
+    query: "What is the capital of France?"
+    domain: fallback
+    language: en
+  - id: fallback_02
+    query: "asdfghjkl qwerty zxcvb"
+    domain: fallback
+    language: en
+  - id: fallback_03
+    query: "Tell me a joke"
+    domain: fallback
+    language: en
+  - id: fallback_04
+    query: "What is the meaning of life?"
+    domain: fallback
+    language: en
+  - id: fallback_05
+    query: "Kerro vitsi"
+    domain: fallback
+    language: fi
+  - id: fallback_06
+    query: ""
+    domain: fallback
+    language: en
+  - id: fallback_07
+    query: "x"
+    domain: fallback
+    language: en
+  - id: fallback_08
+    query: "Mikä on Suomen pääkaupunki?"
+    domain: fallback
+    language: fi
+  - id: fallback_09
+    query: "How do I cook pasta?"
+    domain: fallback
+    language: en
+  - id: fallback_10
+    query: "What color is the sky on Mars?"
+    domain: fallback
+    language: en
+
+  # ═══ Multi-agent / complex (10) ═══
+  - id: complex_01
+    query: "Give me a complete status overview of all hives"
+    domain: complex
+    language: en
+  - id: complex_02
+    query: "Yhteenveto kaikista pesistä ja niiden tilanteesta"
+    domain: complex
+    language: fi
+  - id: complex_03
+    query: "What should I do if I find dead bees in front of the hive and the temperature dropped below zero last night?"
+    domain: complex
+    language: en
+  - id: complex_04
+    query: "Plan the next month of beekeeping activities considering current weather"
+    domain: complex
+    language: en
+  - id: complex_05
+    query: "Compare the honey yield across all my hives for this season"
+    domain: complex
+    language: en
+  - id: complex_06
+    query: "Miten valmistaudun ensi viikon kylmään aaltoon pesien osalta?"
+    domain: complex
+    language: fi
+  - id: complex_07
+    query: "Is there a correlation between hive temperature and honey production?"
+    domain: complex
+    language: en
+  - id: complex_08
+    query: "What are all the current alerts and warnings?"
+    domain: complex
+    language: en
+  - id: complex_09
+    query: "Give me a summary of night learning progress and what was learned"
+    domain: complex
+    language: en
+  - id: complex_10
+    query: "Kerro kaikki poikkeamat ja hälytykset tästä viikosta"
+    domain: complex
+    language: fi

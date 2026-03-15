@@ -1,5 +1,49 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.18.0] — 2026-03-15
+
+### Runtime Convergence & Wiring Sprint
+
+#### Runtime Wiring
+- Request loop: RouteTelemetry + LearningLedger + RouteExplainability wired into `chat_handler.py` and `chat_service.py`
+- Night loop: ActiveLearningScorer + LearningLedger wired into `night_mode_controller.py` and `night_enricher.py`
+- `core/shared_routing_helpers.py` — convergence layer (cached singletons for micromodel probe, telemetry, ledger)
+- Runtime convergence decision: legacy = primary, hex = forward path, shared helpers avoid duplication
+
+#### MQTT Bridge
+- `MQTTSensorIngest` wired into `SensorHub.start()` step 6
+- Writes validated readings to SharedMemory, dispatches anomaly alerts
+
+#### Dashboard APIs (6 new endpoints)
+- `GET /api/route/explain` — route explainability breakdown
+- `GET /api/route/telemetry` — per-route telemetry stats
+- `GET /api/experiments` — prompt experiment status
+- `GET /api/graph/replay/{node_id}` — causal replay via CognitiveGraph
+- `GET /api/graph/stats` — cognitive graph statistics
+- `GET /api/learning/ledger` — recent learning ledger entries
+- `GET /api/micromodel/status` — honest V1/V2/V3 micromodel status
+
+#### memory_engine.py Split (continued)
+- Extracted `core/memory_eviction.py` (MemoryEviction, ~170 lines)
+- Extracted `core/opus_mt_adapter.py` (OpusMTAdapter, ~80 lines)
+- Extracted `core/learning_task_queue.py` (LearningTaskQueue + constants, ~180 lines)
+- memory_engine.py: 1928 → 1292 lines (below 1500 target)
+
+#### Operational Hardening
+- SQLiteTrustStore graceful degradation (falls back to InMemory on failure)
+- trust_store.db already in backup via `data/*.db` glob
+- Benchmark corpus expanded: 12 → 30 queries across all route types
+- Shadow validation: 75-query corpus comparing legacy vs hex routing
+- `tools/run_benchmark.py` — benchmark runner with JSON + markdown artifacts
+- `tools/validate_all.py` — one-command full validation script
+- CI updated with benchmark step + artifact upload
+
+#### Documentation
+- CURRENT_STATUS.md synced with v1.18.0 changes
+- MIGRATION_STATUS.md updated with runtime convergence decision
+- CONTRIBUTING.md expanded (benchmarks, shadow validation, stub mode)
+- Honest micromodel V1/V2/V3 status in CURRENT_STATUS.md
+
 ## [1.17.0] — 2026-03-15
 
 ### Big Sprint — Deeper, Safer, More Testable

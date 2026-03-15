@@ -24,6 +24,9 @@ log = logging.getLogger(__name__)
 
 FI_CHARS = set("äöåÄÖÅ")
 
+# v1.18.0: use shared helpers (convergence layer)
+from core.shared_routing_helpers import probe_micromodel as _shared_probe_micromodel
+
 
 class ChatService:
     """Handles chat requests end-to-end: cache, route, execute, escalate."""
@@ -43,6 +46,9 @@ class ChatService:
         self._config = config
         self._escalation = EscalationPolicy()
         self._query_frequency: dict[str, int] = {}
+        # v1.18.0: telemetry + ledger (lazy-init)
+        self._telemetry = None
+        self._ledger = None
 
     async def handle(self, req: ChatRequest) -> ChatResult:
         """Process a chat request through the full pipeline.
@@ -139,6 +145,10 @@ class ChatService:
 
         elapsed = (time.monotonic() - start) * 1000
 
+        # v1.18.0: record telemetry + ledger
+        self._record_telemetry(
+            route.route_type, result.confidence, elapsed, True, req.query)
+
         return ChatResult(
             response=result.response,
             language=language,
@@ -150,18 +160,35 @@ class ChatService:
             cached=False,
         )
 
-    @staticmethod
-    def _probe_micromodel(query: str) -> tuple[bool, float]:
-        """Try legacy PatternMatchEngine. Returns (hit, confidence)."""
+    def _record_telemetry(self, route_type: str, confidence: float,
+                           latency_ms: float, success: bool, query: str):
+        """v1.18.0: Record telemetry + low-confidence ledger entries."""
         try:
-            from core.micro_model import PatternMatchEngine
-            engine = PatternMatchEngine()
-            result = engine.predict(query)
-            if result and result.get("confidence", 0) > 0:
-                return True, float(result["confidence"])
+            if self._telemetry is None:
+                from core.route_telemetry import RouteTelemetry
+                self._telemetry = RouteTelemetry()
+            self._telemetry.record(route_type, latency_ms, success)
         except Exception:
             pass
-        return False, 0.0
+        try:
+            if confidence < 0.6:
+                if self._ledger is None:
+                    from core.learning_ledger import LearningLedger
+                    self._ledger = LearningLedger()
+                self._ledger.log(
+                    "low_confidence_query",
+                    agent_id=route_type,
+                    query=query[:500],
+                    confidence=confidence,
+                    route=route_type,
+                )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _probe_micromodel(query: str) -> tuple[bool, float]:
+        """Try legacy PatternMatchEngine (cached singleton). Returns (hit, confidence)."""
+        return _shared_probe_micromodel(query)
 
     @staticmethod
     def _detect_language(query: str, hint: str) -> str:

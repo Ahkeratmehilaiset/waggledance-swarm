@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-WaggleDance Backup & Test Tool v6.0
+WaggleDance Backup & Test Tool v7.0
 =====================================
 Runs full component tests, generates AI report, creates backup.
 Supports 75-agent profile system (gadget/cottage/home/factory).
 Supports incremental backups (only changed files since last backup).
+v7.0: Adds manifest.json, requirements.lock.txt, env.template,
+      and restore automation files to every backup zip.
 
 Usage:
     python tools/waggle_backup.py              # Full: tests + report + backup
@@ -925,6 +927,63 @@ def checkpoint_sqlite_databases(project_root: Path):
         print(f"  {G}WAL checkpoint:{W} {', '.join(checkpointed)}")
 
 
+# ── Restore Automation Generators (v7.0) ─────────────────────────
+
+def generate_restore_manifest() -> str:
+    """Generate manifest.json for one-click restore automation."""
+    manifest = {
+        "project_name": "waggledance-swarm",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "platform": platform.system(),
+        "restore_entrypoints": {
+            "new": "python -m waggledance.adapters.cli.start_runtime --stub",
+            "old": "python main.py",
+        },
+        "requires_node": (PROJECT_ROOT / "dashboard" / "package.json").exists(),
+        "dashboard_path": "dashboard",
+        "python_requirements": "requirements.lock.txt",
+        "env_template": "env.template",
+        "excluded_paths": sorted(EXCLUDE_DIRS),
+        "required_ollama_models": ["phi4-mini", "llama3.2:1b", "nomic-embed-text", "all-minilm"],
+        "runtime_dirs": ["data", "logs", "chroma_data"],
+    }
+    return json.dumps(manifest, indent=2, ensure_ascii=False)
+
+
+def generate_pip_freeze() -> str:
+    """Run pip freeze and return as string for requirements.lock.txt."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            header = (
+                f"# WaggleDance pip freeze — {datetime.utcnow().isoformat()}Z\n"
+                f"# Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
+                f"# Restore: pip install -r requirements.lock.txt\n\n"
+            )
+            return header + result.stdout
+    except Exception:
+        pass
+    return ""
+
+
+def generate_env_template() -> str:
+    """Generate env.template with safe defaults (no secrets)."""
+    return (
+        "# WaggleDance Environment Template\n"
+        "# Copy to .env and edit as needed\n\n"
+        "WAGGLE_PROFILE=COTTAGE\n"
+        "WAGGLE_API_KEY=\n"
+        "OLLAMA_HOST=http://localhost:11434\n"
+        "WAGGLE_CHAT_MODEL=phi4-mini\n"
+        "WAGGLE_LEARNING_MODEL=llama3.2:1b\n"
+        "WAGGLE_EMBED_MODEL=nomic-embed-text\n"
+    )
+
+
 MANIFEST_FILE = "backup_manifest.json"
 
 
@@ -1048,6 +1107,24 @@ def do_backup(
                 test_output.append(strip_ansi(tr.raw_output))
                 test_output.append("")
             zf.writestr("test_output.txt", "\n".join(test_output))
+
+        # ── Restore automation files (v7.0) ──────────────────────
+        zf.writestr("manifest.json", generate_restore_manifest())
+
+        pip_lock = generate_pip_freeze()
+        if pip_lock:
+            zf.writestr("requirements.lock.txt", pip_lock)
+
+        zf.writestr("env.template", generate_env_template())
+
+        # Include restore tools so zip is self-contained
+        restore_py = project_root / "tools" / "restore.py"
+        if restore_py.exists():
+            zf.write(restore_py, "tools/restore.py")
+
+        restore_bat = project_root / "restore.bat"
+        if restore_bat.exists():
+            zf.write(restore_bat, "restore.bat")
 
     # Save updated manifest (always — so next incremental knows the baseline)
     save_manifest(backup_dir, new_manifest)

@@ -1,7 +1,7 @@
 # Migration Status — WaggleDance Hexagonal Refactor
 
 **Updated:** 2026-03-15
-**Version:** v1.18.0 (in progress)
+**Version:** v1.18.0
 
 ---
 
@@ -136,17 +136,21 @@ These files are functionally replaced but remain intact for backward compatibili
 | `core/embedding_cache.py` | Extracted from memory_engine.py | Stable |
 | `core/hallucination_checker.py` | Extracted from memory_engine.py | Stable |
 | `core/math_solver.py` | Extracted from memory_engine.py | Stable |
-| `core/active_learning.py` | ActiveLearningScorer for prioritization | Exists, not wired to runtime |
-| `core/canary_promoter.py` | CanaryPromoter for safe prompt/model promotion | Exists, not wired to runtime |
-| `core/learning_ledger.py` | JSONL append-only audit log | Exists, not wired to runtime |
-| `core/route_telemetry.py` | Per-route stats (count, latency, fallback) | Exists, not wired to runtime |
-| `core/route_explainability.py` | Route decision breakdown | Exists, not wired to runtime |
-| `core/causal_replay_api.py` | Causal chain query API | Exists, not wired to runtime |
-| `core/mqtt_sensor_ingest.py` | MQTT payload → SharedMemory | Exists, not wired to SensorHub |
+| `core/active_learning.py` | ActiveLearningScorer for prioritization | **WIRED** (v1.18.0) in night_mode_controller + night_enricher |
+| `core/canary_promoter.py` | CanaryPromoter for safe prompt/model promotion | Exists, standalone |
+| `core/learning_ledger.py` | JSONL append-only audit log | **WIRED** (v1.18.0) in chat_handler + night_enricher |
+| `core/route_telemetry.py` | Per-route stats (count, latency, fallback) | **WIRED** (v1.18.0) in chat_handler + chat_service |
+| `core/route_explainability.py` | Route decision breakdown | **WIRED** (v1.18.0) in chat_handler + dashboard API |
+| `core/causal_replay_api.py` | Causal chain query API | **WIRED** (v1.18.0) in dashboard API |
+| `core/mqtt_sensor_ingest.py` | MQTT payload → SharedMemory | **WIRED** (v1.18.0) in SensorHub step 6 |
 | `core/english_source_learner.py` | Night learning from English sources | Exists, not wired to NightEnricher |
 | `core/language_readiness.py` | Per-language capability report | Exists, standalone |
-| `core/lora_readiness.py` | LoRA V3 readiness checker | Exists, standalone |
-| `waggledance/adapters/trust/sqlite_trust_store.py` | Persistent TrustStore | **WIRED** in container.py |
+| `core/lora_readiness.py` | LoRA V3 readiness checker | **WIRED** (v1.18.0) in /api/micromodel/status |
+| `core/memory_eviction.py` | Extracted from memory_engine.py | **Stable** (v1.18.0) |
+| `core/opus_mt_adapter.py` | Extracted from memory_engine.py | **Stable** (v1.18.0) |
+| `core/learning_task_queue.py` | Extracted from memory_engine.py | **Stable** (v1.18.0) |
+| `core/shared_routing_helpers.py` | Convergence layer (cached singletons) | **Stable** (v1.18.0) |
+| `waggledance/adapters/trust/sqlite_trust_store.py` | Persistent TrustStore | **WIRED** in container.py (graceful fallback) |
 
 ## v1.18.0 Runtime Convergence Decision
 
@@ -155,15 +159,30 @@ These files are functionally replaced but remain intact for backward compatibili
 
 Strategy: shared helper layer for duplicated logic, no third runtime, gradual migration.
 
-## What's Next (v1.18.0 Sprint)
+## v1.18.0 Sprint — COMPLETE
 
-1. **Wire Sprint 17 modules into runtime loops** — telemetry, ledger, explainability in request path; ActiveLearningScorer in night path
-2. **MQTT bridge via SensorHub** — hive/+/temperature end-to-end
-3. **Explainability + causal replay APIs** — dashboard endpoints
-4. **memory_engine.py split** — bilingual_store.py extraction
-5. **Operational hardening** — backup, graceful degradation, EventBus wiring
-6. **Shadow validation** — 50-100 query corpus
-7. **Benchmark evidence** — release artifacts
-8. **V1/V2/V3 micromodel clarity** — honest status in docs and code
-9. **Production validation** — Run new stack 24h alongside old (blocked on convergence)
-10. **Old code cleanup** — Remove superseded files after validation
+All 12 phases delivered:
+
+| Phase | Deliverable | Status |
+|-------|-------------|--------|
+| 0 | Audit current state | Done |
+| 1 | CURRENT_STATUS.md + MIGRATION_STATUS.md sync | Done |
+| 2 | Wire Sprint 17 modules into runtime loops | Done |
+| 3 | Runtime convergence + shared_routing_helpers.py | Done |
+| 4 | Shadow validation (75 queries) | Done |
+| 5 | MQTT bridge via SensorHub | Done |
+| 6 | Explainability + causal replay API endpoints | Done |
+| 7 | memory_engine.py split (1928→1292 lines) | Done |
+| 8 | Benchmark (30 queries) + CI structure | Done |
+| 9 | Operational hardening | Done |
+| 10 | V1/V2/V3 micromodel status clarity | Done |
+| 11 | External validation path | Done |
+| 12 | Full tests + release v1.18.0 | Done |
+
+## What's Next
+
+1. **Production validation** — Run new stack 24h alongside old
+2. **Old code cleanup** — Remove superseded files after validation
+3. **EnglishSourceLearner wiring** — Wire into NightEnricher
+4. **CanaryPromoter wiring** — Wire into prompt/model promotion pipeline
+5. **MicroModel V3 LoRA training** — Full training with 5000+ samples (4h+ GPU)

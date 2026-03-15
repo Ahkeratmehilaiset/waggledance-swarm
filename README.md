@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-1.17.0-green)
+![Version](https://img.shields.io/badge/version-1.18.0-green)
 
 **A local-first, auditable AI runtime that routes each task to the right reasoning layer — memory, rules, micromodels, model-based inference, or LLM reasoning.**
 
@@ -25,7 +25,7 @@ The system was originally developed in a demanding real-world field environment 
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-Validated with 76 legacy suites (2427 tests), pytest unit/core/app/contracts (469 tests), and integration tests (90 tests) — 2986 total, 0 failures. No subscription, no API keys required.
+Validated with 72 legacy suites (2427 tests), pytest unit/core/app/contracts (469 tests), and integration tests (90 tests) — 2986 total, 0 failures. No subscription, no API keys required.
 
 ---
 
@@ -66,7 +66,7 @@ Validated with 76 legacy suites (2427 tests), pytest unit/core/app/contracts (46
 - **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
 - **MicroModel V3 (LoRA)** — Phi-3.5-mini pipeline validated (2.92GB VRAM), full training deferred
-- **CI runs basic test suite** — full 76-suite validation still requires local `tools/waggle_backup.py`
+- **CI runs basic test suite** — full 72-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
@@ -351,7 +351,7 @@ See [ENTRYPOINTS.md](ENTRYPOINTS.md) for details on primary vs legacy entrypoint
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **72/76 suites GREEN, 2427+ tests, 0 failures** (4 suites skipped without Ollama). Additional pytest suites: `pytest tests/ -q`.
+Expected: **72/76 suites GREEN, 2427+ tests, 0 failures** (4 skipped without Ollama). Full validation: `python tools/validate_all.py --skip-ollama`.
 
 ---
 
@@ -362,7 +362,7 @@ waggledance-swarm/
 ├── agents/              # 75 YAML agent knowledge bases
 ├── knowledge/           # Domain knowledge bases
 ├── core/                # Core modules (memory_engine, translation_proxy, models, scheduling)
-│   ├── memory_engine.py #   Memory, search, embedding, caching
+│   ├── memory_engine.py #   Memory, search, embedding (~1292 lines)
 │   ├── chat_history.py  #   SQLite chat storage + feedback
 │   ├── cognitive_graph.py#  NetworkX knowledge graph
 │   ├── trust_engine.py  #   6-signal agent reputation
@@ -375,7 +375,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 76 legacy suites + pytest unit/core/integration (~2986 tests)
+├── tests/               # 72 legacy suites + pytest unit/core/integration (~2986 tests)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -441,7 +441,8 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Hexagonal refactor** — `waggledance/` package with ports & adapters, DI container, 172 new tests
 - **New runtime (v1.15+)** — `start_runtime.py` with argparse, UTF-8, Ollama check
 - **Safe self-improvement (v1.16)** — prompt evolution with rollback, micro-model eval gate, night learning source visibility
-- **Big Sprint (v1.17)** — memory_engine split (4 extracted modules), persistent SQLite TrustStore, micromodel route restored end-to-end, active learning/canary/telemetry, MQTT ingest, runtime shadow-compare, test unification (76 suites + 559 pytest)
+- **Big Sprint (v1.17)** — memory_engine split (4 extracted modules), persistent SQLite TrustStore, micromodel route restored end-to-end, active learning/canary/telemetry, MQTT ingest, runtime shadow-compare, test unification (72 suites + 559 pytest)
+- **Runtime Convergence (v1.18)** — shared routing helpers, telemetry/ledger/explainability wired into request + night loops, MQTT bridge via SensorHub, 7 new dashboard APIs, memory_engine.py 1292 lines, 30-query benchmark, SQLiteTrustStore graceful fallback
 
 ---
 
@@ -451,7 +452,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 72/76 GREEN + 559 pytest | 2986 total tests, 4 skipped without Ollama |
+| Test suites | 72/76 GREEN + 559 pytest | ~2986 total tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -520,6 +521,12 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 | `/api/trust/agent/{id}` | GET | Full reputation breakdown |
 | `/api/cross/channels` | GET | Agent communication channels |
 | `/api/graph/stats` | GET | Cognitive graph node/edge counts |
+| `/api/graph/replay/{node_id}` | GET | Causal replay via CognitiveGraph |
+| `/api/route/explain` | GET | Route explainability breakdown |
+| `/api/route/telemetry` | GET | Per-route telemetry stats |
+| `/api/experiments` | GET | Prompt experiment status |
+| `/api/learning/ledger` | GET | Recent learning ledger entries |
+| `/api/micromodel/status` | GET | V1/V2/V3 micromodel status |
 
 ### WebSocket
 | Endpoint | Description |

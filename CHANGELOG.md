@@ -85,7 +85,7 @@
 #### Workstream B — Runtime Validation
 - `tools/runtime_shadow_compare.py` — shadow/canary/validate modes
 - `tools/benchmark_harness.py` — CLI benchmark with YAML queries
-- `configs/benchmarks.yaml` — 10 predefined queries across 5 domains
+- `configs/benchmarks.yaml` — 30 predefined queries across 7 domains
 
 #### Workstream F — Test Unification
 - `tests/legacy_pytest_adapter/` — pytest plugin wrapping legacy tests

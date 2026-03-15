@@ -89,6 +89,12 @@ class ChatService:
             self._query_frequency.get(cache_key, 0) + 1
         )
 
+        mm_enabled = bool(self._config.get("advanced_learning.micro_model_enabled", False))
+        mm_hit = False
+        mm_confidence = 0.0
+        if mm_enabled:
+            mm_hit, mm_confidence = self._probe_micromodel(req.query)
+
         features = extract_features(
             query=req.query,
             hot_cache_hit=False,
@@ -96,6 +102,9 @@ class ChatService:
             matched_keywords=[],
             profile=req.profile,
             language=language,
+            micromodel_enabled=mm_enabled,
+            micromodel_hit=mm_hit,
+            micromodel_confidence=mm_confidence,
         )
         route = select_route(features, self._config)
 
@@ -140,6 +149,19 @@ class ChatService:
             round_table=round_table_used,
             cached=False,
         )
+
+    @staticmethod
+    def _probe_micromodel(query: str) -> tuple[bool, float]:
+        """Try legacy PatternMatchEngine. Returns (hit, confidence)."""
+        try:
+            from core.micro_model import PatternMatchEngine
+            engine = PatternMatchEngine()
+            result = engine.predict(query)
+            if result and result.get("confidence", 0) > 0:
+                return True, float(result["confidence"])
+        except Exception:
+            pass
+        return False, 0.0
 
     @staticmethod
     def _detect_language(query: str, hint: str) -> str:

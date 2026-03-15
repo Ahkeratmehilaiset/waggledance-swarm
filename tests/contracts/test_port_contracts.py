@@ -68,12 +68,40 @@ class TestDTOFields:
         assert fields == expected
 
 
+class TestTrustStoreContracts:
+    """Verify both InMemory and SQLite trust stores implement TrustStorePort."""
+
+    def test_in_memory_has_get_trust(self):
+        from waggledance.adapters.trust.in_memory_trust_store import InMemoryTrustStore
+        assert hasattr(InMemoryTrustStore, "get_trust")
+        assert hasattr(InMemoryTrustStore, "update_trust")
+        assert hasattr(InMemoryTrustStore, "get_ranking")
+
+    def test_sqlite_has_get_trust(self):
+        from waggledance.adapters.trust.sqlite_trust_store import SQLiteTrustStore
+        assert hasattr(SQLiteTrustStore, "get_trust")
+        assert hasattr(SQLiteTrustStore, "update_trust")
+        assert hasattr(SQLiteTrustStore, "get_ranking")
+
+    def test_sqlite_method_signatures_match_port(self):
+        from waggledance.adapters.trust.sqlite_trust_store import SQLiteTrustStore
+        sig_get = inspect.signature(SQLiteTrustStore.get_trust)
+        sig_update = inspect.signature(SQLiteTrustStore.update_trust)
+        sig_rank = inspect.signature(SQLiteTrustStore.get_ranking)
+        assert "agent_id" in sig_get.parameters
+        assert "agent_id" in sig_update.parameters
+        assert "signals" in sig_update.parameters
+        assert "limit" in sig_rank.parameters
+
+
 class TestRouteTypes:
     def test_allowed_route_types_exact(self):
-        assert ALLOWED_ROUTE_TYPES == frozenset({"hotcache", "memory", "llm", "swarm"})
+        assert ALLOWED_ROUTE_TYPES == frozenset({"hotcache", "memory", "micromodel", "llm", "swarm"})
 
-    def test_no_micromodel_or_rules(self):
-        assert "micromodel" not in ALLOWED_ROUTE_TYPES
+    def test_micromodel_in_route_types(self):
+        assert "micromodel" in ALLOWED_ROUTE_TYPES
+
+    def test_no_rules(self):
         assert "rules" not in ALLOWED_ROUTE_TYPES
 
 

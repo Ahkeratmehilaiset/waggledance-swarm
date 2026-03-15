@@ -87,7 +87,20 @@ class Orchestrator:
             source="orchestrator",
         ))
 
-        if route.route_type == "llm" or not selected:
+        if route.route_type == "micromodel":
+            mm_result = self._try_micromodel(task.query)
+            if mm_result is not None:
+                elapsed = (time.monotonic() - start) * 1000
+                return AgentResult(
+                    agent_id="micromodel",
+                    response=mm_result["answer"],
+                    confidence=float(mm_result.get("confidence", route.confidence)),
+                    latency_ms=elapsed,
+                    source="micromodel",
+                )
+            log.info("Micromodel miss, falling back to LLM")
+
+        if route.route_type in ("llm", "micromodel") or not selected:
             response = await self._llm.generate(
                 prompt=task.query,
                 temperature=0.7,
@@ -159,6 +172,16 @@ class Orchestrator:
         except Exception as e:
             log.warning("Readiness check failed: %s", e)
             return False
+
+    @staticmethod
+    def _try_micromodel(query: str) -> dict | None:
+        """Try legacy micro_model.PatternMatchEngine. Returns result dict or None."""
+        try:
+            from core.micro_model import PatternMatchEngine
+            engine = PatternMatchEngine()
+            return engine.predict(query)
+        except Exception:
+            return None
 
     def _track_task(self, coro: object) -> asyncio.Task:
         """Create a tracked background task with error logging (BUG 2 fix)."""

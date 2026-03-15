@@ -1,0 +1,75 @@
+queries:
+  # --- bee_qa domain (3 queries) ---
+  - id: bee_qa_honey_yield
+    query: "How much honey can I expect from one hive this season?"
+    domain: bee_qa
+    expected_route: model_based
+    expected_keywords: ["honey", "yield"]
+    language: en
+
+  - id: bee_qa_varroa
+    query: "When should I apply varroa treatment?"
+    domain: bee_qa
+    expected_route: model_based
+    expected_keywords: ["varroa", "treatment"]
+    language: en
+
+  - id: bee_qa_swarm_risk
+    query: "What are the signs of an impending swarm?"
+    domain: bee_qa
+    expected_route: model_based
+    expected_keywords: ["swarm", "risk"]
+    language: en
+
+  # --- bilingual domain (2 queries) ---
+  - id: bilingual_fi_heating
+    query: "Paljonko lämmitys maksaa talvella?"
+    domain: bilingual
+    expected_route: model_based
+    expected_keywords: ["lämmitys", "kustannus"]
+    language: fi
+
+  - id: bilingual_en_winter
+    query: "How do I prepare the hive for winter?"
+    domain: bilingual
+    expected_route: retrieval
+    expected_keywords: ["winter", "prepare"]
+    language: en
+
+  # --- correction domain (1 query) ---
+  - id: correction_typo
+    query: "How do I keep bug houses healthy?"
+    domain: correction
+    expected_route: llm_reasoning
+    expected_keywords: ["hives", "healthy"]
+    language: en
+
+  # --- sensor domain (2 queries) ---
+  - id: sensor_temperature
+    query: "What is the current hive temperature?"
+    domain: sensor
+    expected_route: statistical
+    expected_keywords: ["temperature", "hive"]
+    language: en
+
+  - id: sensor_humidity
+    query: "Show me the humidity trend for this week"
+    domain: sensor
+    expected_route: statistical
+    expected_keywords: ["humidity", "trend"]
+    language: en
+
+  # --- fallback domain (2 queries) ---
+  - id: fallback_unrelated
+    query: "What is the capital of France?"
+    domain: fallback
+    expected_route: llm_reasoning
+    expected_keywords: []
+    language: en
+
+  - id: fallback_nonsense
+    query: "asdfghjkl qwerty zxcvb"
+    domain: fallback
+    expected_route: llm_reasoning
+    expected_keywords: []
+    language: en

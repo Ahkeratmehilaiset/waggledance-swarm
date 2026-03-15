@@ -1,7 +1,7 @@
 """Routing policy — pure function, no I/O.
 
 Ported from core/smart_router_v2.py and backend/routes/chat.py.
-Routing order: hotcache -> memory -> llm -> swarm.
+Routing order: hotcache -> micromodel -> memory -> llm -> swarm.
 Only returns route types from ALLOWED_ROUTE_TYPES.
 """
 
@@ -11,7 +11,7 @@ from waggledance.core.domain.task import TaskRoute
 from waggledance.core.ports.config_port import ConfigPort
 
 
-ALLOWED_ROUTE_TYPES = frozenset({"hotcache", "memory", "llm", "swarm"})
+ALLOWED_ROUTE_TYPES = frozenset({"hotcache", "memory", "micromodel", "llm", "swarm"})
 
 SYSTEM_KEYWORDS = frozenset({
     "status", "tila", "health", "terveys", "uptime", "agents", "agentit",
@@ -36,6 +36,9 @@ class RoutingFeatures:
     is_system_query: bool = False
     matched_keywords: list[str] = field(default_factory=list)
     profile: str = "COTTAGE"
+    has_micromodel_hit: bool = False
+    micromodel_confidence: float = 0.0
+    micromodel_enabled: bool = False
 
 
 def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
@@ -58,6 +61,17 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
         return TaskRoute(
             route_type="hotcache",
             confidence=1.0,
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
+    if (
+        features.micromodel_enabled
+        and features.has_micromodel_hit
+        and features.micromodel_confidence > 0.85
+    ):
+        return TaskRoute(
+            route_type="micromodel",
+            confidence=features.micromodel_confidence,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
@@ -101,6 +115,9 @@ def extract_features(
     matched_keywords: list[str],
     profile: str,
     language: str = "auto",
+    micromodel_enabled: bool = False,
+    micromodel_hit: bool = False,
+    micromodel_confidence: float = 0.0,
 ) -> RoutingFeatures:
     """Extract routing features from a query."""
     query_lower = query.lower()
@@ -115,4 +132,7 @@ def extract_features(
         is_system_query=bool(words & SYSTEM_KEYWORDS),
         matched_keywords=matched_keywords,
         profile=profile,
+        has_micromodel_hit=micromodel_hit,
+        micromodel_confidence=micromodel_confidence,
+        micromodel_enabled=micromodel_enabled,
     )

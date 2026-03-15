@@ -1,5 +1,71 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [1.17.0] — 2026-03-15
+
+### Big Sprint — Deeper, Safer, More Testable
+
+#### Workstream A — memory_engine.py Split
+- Extracted `core/circuit_breaker.py` (CircuitBreaker)
+- Extracted `core/embedding_cache.py` (EmbeddingEngine, EvalEmbeddingEngine)
+- Extracted `core/hallucination_checker.py` (HallucinationChecker, HallucinationResult)
+- Extracted `core/math_solver.py` (MathSolver)
+- memory_engine.py: 2494 → ~1930 lines, backward-compatible re-exports
+
+#### Workstream E — Persistent TrustStore
+- `waggledance/adapters/trust/sqlite_trust_store.py` — SQLite WAL-mode trust store
+- Same 6-signal composite weights as InMemoryTrustStore
+- Contract tests verify both implementations
+
+#### Workstream D — Micromodel Route Type Restored
+- `"micromodel"` added to ALLOWED_ROUTE_TYPES (5 total)
+- RoutingFeatures: has_micromodel_hit, micromodel_confidence, micromodel_enabled
+- Routing: hotcache → micromodel (>0.85) → memory → llm → swarm
+- FallbackChain default: memory → micromodel → llm → swarm
+
+#### Workstream G — Learning Infrastructure
+- `core/active_learning.py` — ActiveLearningScorer (4-signal priority scoring)
+- `core/canary_promoter.py` — CanaryPromoter (gate promotions, auto-rollback)
+- `core/learning_ledger.py` — LearningLedger (JSONL append-only audit log)
+- `core/route_telemetry.py` — RouteTelemetry (per-route stats, bounded tuning ±0.05)
+- `core/english_source_learner.py` — EnglishSourceLearner (night learning, allowlist, budget)
+- `core/language_readiness.py` — LanguageReadiness (per-language capability report)
+- `core/route_explainability.py` — explain_route() structured breakdown
+- `core/prompt_experiment_status.py` — ExperimentStatusFormatter for API
+- `core/causal_replay_api.py` — CausalReplayService for graph traversal
+- `core/lora_readiness.py` — LoRAReadinessChecker (deps, GPU, data, disk)
+
+#### Workstream C — MQTT End-to-End
+- `core/mqtt_sensor_ingest.py` — SensorReading + MQTTSensorIngest
+- Parse hive/+/temperature topics, validate -40..80°C, anomaly detection
+
+#### Workstream B — Runtime Validation
+- `tools/runtime_shadow_compare.py` — shadow/canary/validate modes
+- `tools/benchmark_harness.py` — CLI benchmark with YAML queries
+- `configs/benchmarks.yaml` — 10 predefined queries across 5 domains
+
+#### Workstream F — Test Unification
+- `tests/legacy_pytest_adapter/` — pytest plugin wrapping legacy tests
+- `.github/workflows/tests.yml` — unified CI (legacy + pytest + integration)
+
+#### Workstream H — Docs & Release
+- `CONTRIBUTING.md` — setup, tests, runtime, PRs
+- `examples/cottage_demo/` — demo queries
+- `examples/custom_agent/` — YAML agent template
+- Version bump to v1.17.0
+
+#### New Tests
+- ~25 new test files, ~200+ new tests
+- Phase 1: test_circuit_breaker, test_embedding_cache, test_hallucination_checker, test_math_solver, test_memory_engine_orchestration
+- Phase 2: test_sqlite_trust_store
+- Phase 3: test_routing_policy_micromodel, test_fallback_policy_micromodel
+- Phase 4: test_active_learning_priority, test_prompt_canary, test_micromodel_canary, test_learning_ledger
+- Phase 5: test_benchmark_runner, test_route_telemetry, test_bounded_route_tuning
+- Phase 6: test_mqtt_sensor_ingest, test_mqtt_to_shared_memory
+- Phase 7: test_runtime_shadow_compare
+- Phase 8: test_adapter_smoke
+- Phase 9: test_web_learning_english_sources, test_language_capabilities
+- Phase 10: test_route_explainability, test_prompt_experiment_status_payload, test_causal_replay_api, test_micromodel_v3_readiness
+
 ## [1.16.0] — 2026-03-15
 
 ### Safe Self-Improvement Sprint

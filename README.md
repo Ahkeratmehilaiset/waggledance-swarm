@@ -4,13 +4,13 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-1.16.0-green)
+![Version](https://img.shields.io/badge/version-1.17.0-green)
 
-**A local-first AI runtime that routes each task to the right reasoning layer — retrieval, rules, statistics, model-based inference, or LLM reasoning.**
+**A local-first, auditable AI runtime that routes each task to the right reasoning layer — memory, rules, micromodels, model-based inference, or LLM reasoning.**
 
-WaggleDance is built for real-world environments where answers should be grounded in local data, structured rules, explicit models, and auditable decision paths. It runs entirely on your own hardware and can combine documents, sensors, time-series data, and domain memory without relying on cloud APIs.
+WaggleDance is built for real-world environments where answers should be grounded in local data, structured rules, explicit models, and auditable decision paths. It runs on your own hardware and can combine documents, sensors, time-series data, and domain memory without relying on cloud-first assumptions.
 
-Instead of treating every task as a chatbot problem, WaggleDance selects the best available method for the job: memory for recall, rules for constraints, statistics for pattern detection, model-based inference for calculable systems, and LLMs for language, ambiguity, and explanation.
+Instead of treating every task as a chatbot problem, WaggleDance selects the best available method for the job: memory for recall, rules for constraints, micromodels for fast low-cost inference, model-based inference for calculable systems, and LLMs for language, ambiguity, and explanation.
 
 The system was originally developed in a demanding real-world field environment and is being generalized into a broader runtime for sensor-rich, domain-specific applications.
 
@@ -25,26 +25,26 @@ The system was originally developed in a demanding real-world field environment 
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-75/75 test suites pass (946+ tests across 75 suites, measured locally). No subscription, no API keys required.
+Validated with 76 legacy suites (2427 tests), pytest unit/core/app/contracts (469 tests), and integration tests (90 tests) — 2986 total, 0 failures. No subscription, no API keys required.
 
 ---
 
 ## Key Features
 
-- **75 specialized agents** communicating through HiveMind orchestrator (5 trust levels: NOVICE → MASTER)
+- **75 specialized agents** communicating through HiveMind orchestrator (5 trust levels: NOVICE → MASTER, persistent trust via SQLite)
 - **Elastic scaling** — auto-detects GPU/RAM/CPU at startup, selects optimal model tier (minimal → enterprise)
-- **SmartRouter** — routes queries through cache → memory → LLM layers, response time improves with use
+- **SmartRouter** — routes queries through cache → micromodel → memory → LLM layers, response time improves with use
 - **Finnish NLP** — Voikko lemmatization + compound splitting + Opus-MT translation (language-swappable for other languages)
 - **Vector memory** — ChromaDB with bilingual FI+EN index (55ms retrieval, measured on RTX A2000)
 - **Round Table consensus** — up to 6 agents debate and cross-validate answers
-- **MicroModel evolution** — V1 (pattern match, 0.01ms) + V2 (neural classifier, 1ms) auto-promote from LLM
+- **MicroModel routing** — V1 (pattern match, 0.01ms) + V2 (neural classifier, 1ms) with end-to-end route selection, canary promotion, and auto-rollback
 - **Smart home sensors** — MQTT hub, Frigate NVR cameras, Home Assistant bridge, Telegram/webhook alerts
 - **Audio sensors** — ESP32 bee audio analysis (stress/swarming/queen piping detection), BirdNET integration
 - **Voice interface** — Whisper STT (Finnish) + Piper TTS, wake word activation
 - **External data feeds** — FMI weather, electricity spot prices, RSS disease alerts
 - **MAGMA memory architecture** — append-only audit log, selective replay, write proxy, agent rollback, overlay branches, A/B testing, mood presets
 - **Cognitive Graph** — NetworkX-based knowledge graph with causal/semantic edges, dependency traversal, causal replay
-- **Trust & Reputation** — 6-signal agent trust scoring (hallucination, validation, consensus, correction, fact production, freshness)
+- **Trust & Reputation** — 6-signal agent trust scoring with persistent SQLite trust store (hallucination, validation, consensus, correction, fact production, freshness)
 - **Cross-agent memory** — agent channels, provenance tracking, consensus records, filtered overlay views
 - **Production hardening** — CircuitBreaker, graceful degradation, structured logging, TTL eviction
 - **Night mode** — autonomous learning when idle (fact enrichment, Round Table debates, MicroModel retraining)
@@ -66,7 +66,7 @@ The system was originally developed in a demanding real-world field environment 
 - **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
 - **MicroModel V3 (LoRA)** — Phi-3.5-mini pipeline validated (2.92GB VRAM), full training deferred
-- **CI runs basic test suite** — full 75-suite validation still requires local `tools/waggle_backup.py`
+- **CI runs basic test suite** — full 76-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
@@ -351,7 +351,7 @@ See [ENTRYPOINTS.md](ENTRYPOINTS.md) for details on primary vs legacy entrypoint
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **75/75 suites GREEN, 946+ tests, 0 failures** (4 suites skipped without Ollama).
+Expected: **72/76 suites GREEN, 2427+ tests, 0 failures** (4 suites skipped without Ollama). Additional pytest suites: `pytest tests/ -q`.
 
 ---
 
@@ -375,7 +375,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 75 test suites (946+ tests)
+├── tests/               # 76 legacy suites + pytest unit/core/integration (~2986 tests)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -436,11 +436,12 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
 - **Security + stability fixes (v0.8.0)** — 12 fixes: async safety, SQL injection prevention, SQLite write locks, WS callback leak, deprecated API cleanup, metrics rotation
 - **Major refactor (v0.9.0)** — hivemind.py 3321→1382 lines, 4 controller modules extracted, 12 Sonnet review fixes, Phi-3.5-mini LoRA pipeline validated
-- **GitHub Actions CI** — automated test runner (75/75 GREEN)
+- **GitHub Actions CI** — unified test runner (legacy + pytest)
 - **SmartRouter v2 (v1.6–v1.15)** — capsule routing, Finnish normalization, word boundaries, matched_keywords transparency
 - **Hexagonal refactor** — `waggledance/` package with ports & adapters, DI container, 172 new tests
 - **New runtime (v1.15+)** — `start_runtime.py` with argparse, UTF-8, Ollama check
 - **Safe self-improvement (v1.16)** — prompt evolution with rollback, micro-model eval gate, night learning source visibility
+- **Big Sprint (v1.17)** — memory_engine split (4 extracted modules), persistent SQLite TrustStore, micromodel route restored end-to-end, active learning/canary/telemetry, MQTT ingest, runtime shadow-compare, test unification (76 suites + 559 pytest)
 
 ---
 
@@ -450,7 +451,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 75/75 GREEN | 946+ tests, 4 skipped without Ollama |
+| Test suites | 72/76 GREEN + 559 pytest | 2986 total tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -461,7 +462,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | 75/75 GREEN, 946+ tests |
+| CI pipeline | GitHub Actions | Legacy + pytest, 2986 total tests |
 
 ---
 
@@ -532,7 +533,7 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all 75 suites pass
+4. Ensure all suites pass
 5. Submit a pull request
 
 ### Development Setup

@@ -1,7 +1,6 @@
 """Fallback chain — ordered multi-step execution with confidence threshold.
 
-Fallback order in this sprint: memory -> llm -> swarm.
-No micromodel step (broken in production, excluded).
+Fallback order: memory -> micromodel -> llm -> swarm.
 """
 
 import logging
@@ -21,7 +20,7 @@ class FallbackChain:
         steps: list[str] | None = None,
         min_confidence: float = 0.6,
     ) -> None:
-        self.steps = steps or ["memory", "llm", "swarm"]
+        self.steps = steps or ["memory", "micromodel", "llm", "swarm"]
         self.min_confidence = min_confidence
 
     async def execute(

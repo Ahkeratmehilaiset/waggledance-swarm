@@ -97,9 +97,13 @@ def test_memory_bounded():
 
 def test_source_code_no_unbounded_check():
     """Source code uses LRU eviction, not 'if len < max' guard."""
-    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    # LRU cache code may be in memory_engine.py or extracted embedding_cache.py
+    src = ""
+    for fname in ("memory_engine.py", "embedding_cache.py"):
+        fpath = os.path.join(os.path.dirname(__file__), "..", "core", fname)
+        if os.path.exists(fpath):
+            with open(fpath, "r", encoding="utf-8") as f:
+                src += f.read()
 
     # Should NOT have the old pattern: "if len(self._cache) < self._cache_max"
     old_pattern_count = src.count("if len(self._cache) < self._cache_max")

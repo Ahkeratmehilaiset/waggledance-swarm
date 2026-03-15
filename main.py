@@ -7,8 +7,9 @@ LEGACY ENTRYPOINT. For the new hexagonal architecture, use:
 See ENTRYPOINTS.md for details.
 
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v1.16.0 • Built: 2026-03-15
+Claude 4.6 • v1.17.0 • Built: 2026-03-15
 
+v1.17.0: Big Sprint — memory_engine split (4 modules), SQLite TrustStore, micromodel routing, active learning, canary promoter, MQTT ingest, route telemetry, test unification, language readiness, LoRA readiness, route explainability.
 v1.16.0: Safe self-improvement — prompt winner apply/rollback, micro-model eval gate, night-learning source visibility, 75 test suites.
 v1.15.0: matched_keywords in RouteResult (which keyword triggered routing), 72 test suites (7 tests).
 v1.14.0: route() called once per query (was 3-4x), reason codes, 71 test suites (7 router-stats tests).

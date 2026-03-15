@@ -118,14 +118,18 @@ def test_circuit_breaker_in_embedding():
     from core.memory_engine import EmbeddingEngine, EvalEmbeddingEngine
     ee = EmbeddingEngine.__init__.__code__
     # Check that CircuitBreaker is used (by checking the source)
-    with open(os.path.join(os.path.dirname(__file__), "..", "core", "memory_engine.py"),
-              "r", encoding="utf-8") as f:
-        src = f.read()
+    # CircuitBreaker usage may be in memory_engine.py or extracted embedding_cache.py
+    src = ""
+    for fname in ("memory_engine.py", "embedding_cache.py"):
+        fpath = os.path.join(os.path.dirname(__file__), "..", "core", fname)
+        if os.path.exists(fpath):
+            with open(fpath, "r", encoding="utf-8") as f:
+                src += f.read()
 
     assert "self.breaker = CircuitBreaker" in src
     count = src.count("self.breaker = CircuitBreaker")
     assert count >= 2, f"Expected 2+ CircuitBreaker instances, found {count}"
-    print(f"  [PASS] {count} CircuitBreaker instances in memory_engine.py")
+    print(f"  [PASS] {count} CircuitBreaker instances in core modules")
 
 
 if __name__ == "__main__":

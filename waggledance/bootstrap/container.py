@@ -55,9 +55,14 @@ class Container:
 
     @cached_property
     def trust_store(self):
-        """TrustStorePort -- always returns a real implementation."""
-        from waggledance.adapters.trust.in_memory_trust_store import InMemoryTrustStore
-        return InMemoryTrustStore()
+        """TrustStorePort -- stub=InMemory, production=SQLite (persistent)."""
+        if self._stub:
+            from waggledance.adapters.trust.in_memory_trust_store import InMemoryTrustStore
+            return InMemoryTrustStore()
+        import os
+        from waggledance.adapters.trust.sqlite_trust_store import SQLiteTrustStore
+        db_dir = os.path.dirname(self._settings.db_path) or "."
+        return SQLiteTrustStore(db_path=os.path.join(db_dir, "trust_store.db"))
 
     @cached_property
     def shared_memory(self):

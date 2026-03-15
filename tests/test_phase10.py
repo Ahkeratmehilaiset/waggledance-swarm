@@ -520,7 +520,7 @@ try:
         }
 
         result = v2.train(training_data, epochs=30, lr=0.01)
-        assert result is True
+        assert result  # v1.16.0: returns eval dict or True
         assert v2._available is True
         assert v2._num_classes == num_classes
         assert v2._generation == 1

@@ -112,9 +112,9 @@ if exist "%~dp0tools\restore.py" (
 
     :: .env
     if not exist ".env" (
-        if exist "env.template" (
-            copy "env.template" ".env" >nul
-            echo  .env luotu env.template:sta
+        if exist ".env.example" (
+            copy ".env.example" ".env" >nul
+            echo  .env luotu .env.example:sta
         ) else (
             echo WAGGLE_PROFILE=COTTAGE> .env
             echo WAGGLE_API_KEY=>> .env

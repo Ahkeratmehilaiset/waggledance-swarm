@@ -23,17 +23,16 @@ services:
     build: .
     ports:
       - "8000:8000"
-      - "5173:5173"
     volumes:
       - ./data:/app/data
       - ./knowledge:/app/knowledge
       - ./agents:/app/agents
       - ./configs:/app/configs
-      - chroma_data:/app/data/chroma_db
     env_file: .env
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - PYTHONUTF8=1
+      - WAGGLE_PROFILE=HOME
     depends_on:
       - ollama
     healthcheck:
@@ -45,4 +44,3 @@ services:
 
 volumes:
   ollama_data:
-  chroma_data:

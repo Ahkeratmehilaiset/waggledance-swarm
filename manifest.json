@@ -1,0 +1,43 @@
+{
+  "project_name": "waggledance-swarm",
+  "created_at": "2026-03-15T18:03:12.417255Z",
+  "python_version": "3.13.7",
+  "platform": "Windows",
+  "restore_entrypoints": {
+    "new": "python -m waggledance.adapters.cli.start_runtime --stub",
+    "old": "python main.py"
+  },
+  "requires_node": true,
+  "dashboard_path": "dashboard",
+  "python_requirements": "requirements.lock.txt",
+  "env_template": "env.template",
+  "excluded_paths": [
+    ".claude",
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "backups",
+    "chroma",
+    "chromadb_data",
+    "dist",
+    "logs",
+    "node_modules",
+    "test_consciousness_v2",
+    "unsloth_compiled_cache",
+    "venv"
+  ],
+  "required_ollama_models": [
+    "phi4-mini",
+    "llama3.2:1b",
+    "nomic-embed-text",
+    "all-minilm"
+  ],
+  "runtime_dirs": [
+    "data",
+    "logs",
+    "chroma_data"
+  ]
+}

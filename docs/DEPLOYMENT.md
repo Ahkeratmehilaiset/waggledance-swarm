@@ -51,8 +51,11 @@ git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
 pip install -r requirements.txt
 
-# 5. Run
+# 5. Run (legacy)
 python main.py
+
+# 5b. Run (new runtime)
+python -m waggledance.adapters.cli.start_runtime
 ```
 
 ### Linux / macOS
@@ -70,8 +73,11 @@ git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
 pip install -r requirements.txt
 
-# 4. Run
+# 4. Run (legacy)
 python main.py
+
+# 4b. Run (new runtime)
+python -m waggledance.adapters.cli.start_runtime
 ```
 
 ---
@@ -116,6 +122,14 @@ Hardware is auto-detected at startup by `core/elastic_scaler.py`. Only STANDARD 
 Copy `.env.example` to `.env`:
 
 ```env
+# Core
+WAGGLE_PROFILE=COTTAGE
+OLLAMA_HOST=http://localhost:11434
+WAGGLE_CHAT_MODEL=phi4-mini
+WAGGLE_LEARNING_MODEL=llama3.2:1b
+WAGGLE_EMBED_MODEL=nomic-embed-text
+WAGGLE_API_KEY=
+
 # GitHub PAT (for backup/push)
 GITHUB_PAT=
 
@@ -134,7 +148,12 @@ Additional environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `WAGGLE_PROFILE` | `COTTAGE` | Deployment profile (GADGET/COTTAGE/HOME/FACTORY) |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API endpoint |
+| `WAGGLE_CHAT_MODEL` | `phi4-mini` | Primary chat model |
+| `WAGGLE_LEARNING_MODEL` | `llama3.2:1b` | Background learning model |
+| `WAGGLE_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `WAGGLE_API_KEY` | *(auto-generated)* | API bearer token |
 | `PYTHONUTF8` | `1` | Force UTF-8 on Windows |
 | `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Allowed CORS origins |
 
@@ -143,14 +162,20 @@ Additional environment variables:
 ## Verify Installation
 
 ```bash
-# Run all 55 test suites
+# Run all 72 legacy test suites
 python tools/waggle_backup.py --tests-only
+
+# Run pytest — unit, core, app, contracts
+python -m pytest tests/unit/ tests/unit_core/ tests/unit_app/ tests/contracts/ -v
+
+# Run pytest — integration
+python -m pytest tests/integration/ -v
 
 # Validate environment
 python tools/waggle_restore.py
 ```
 
-Expected: **55/55 suites GREEN, 800+ assertions, 0 failures.**
+Expected: **72 legacy suites GREEN (~2427 assertions), 469 pytest unit + 90 integration = ~2986 total tests.**
 
 ---
 

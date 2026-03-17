@@ -8,21 +8,21 @@ def count_lines(path):
     try:
         with open(path, encoding="utf-8") as f:
             return sum(1 for _ in f)
-    except: return 0
+    except Exception: return 0
 
 def tail_jsonl(path, n=5):
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.readlines()
         return [json.loads(l.strip()) for l in lines[-n:]]
-    except: return []
+    except Exception: return []
 
 def api_status():
     try:
         import urllib.request
         with urllib.request.urlopen("http://localhost:8000/api/status", timeout=5) as r:
             return json.loads(r.read())
-    except: return None
+    except Exception: return None
 
 def snapshot(tick):
     ts = datetime.datetime.now().isoformat()

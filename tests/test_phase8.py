@@ -449,7 +449,7 @@ if __name__ == "__main__":
 
         with patch("integrations.rss_feed.asyncio") as mock_asyncio:
             # Mock run_in_executor to return our mock feed
-            loop = asyncio.get_event_loop()
+            loop = asyncio.new_event_loop()
             import feedparser
             with patch.object(loop, "run_in_executor", new_callable=AsyncMock) as mock_exec:
                 mock_exec.return_value = mock_feed

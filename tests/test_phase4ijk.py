@@ -376,7 +376,7 @@ if __name__ == "__main__":
         stored = await fe2.enrichment_cycle(throttle=None)
         return stored, fe2, mock_c
 
-    stored, fe2, mock_c = asyncio.get_event_loop().run_until_complete(_test_enrichment_cycle())
+    stored, fe2, mock_c = asyncio.new_event_loop().run_until_complete(_test_enrichment_cycle())
     if stored == 3:
         OK(f"enrichment_cycle stored {stored} facts (all validated)")
     elif stored > 0:
@@ -420,7 +420,7 @@ if __name__ == "__main__":
         stored = await fe3.enrichment_cycle(throttle=None)
         return stored, fe3
 
-    stored_r, fe3 = asyncio.get_event_loop().run_until_complete(_test_enrichment_reject())
+    stored_r, fe3 = asyncio.new_event_loop().run_until_complete(_test_enrichment_reject())
     if stored_r == 0 and fe3.stats["rejected"] > 0:
         OK(f"INVALID validation rejects facts: stored={stored_r}, rejected={fe3.stats['rejected']}")
     else:
@@ -440,7 +440,7 @@ if __name__ == "__main__":
         stored = await fe4.enrichment_cycle(throttle=None)
         return stored
 
-    stored_e = asyncio.get_event_loop().run_until_complete(_test_enrichment_error())
+    stored_e = asyncio.new_event_loop().run_until_complete(_test_enrichment_error())
     if stored_e == 0:
         OK("LLM error returns 0 stored facts (graceful)")
     else:

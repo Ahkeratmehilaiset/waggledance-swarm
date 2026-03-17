@@ -196,7 +196,7 @@ if __name__ == "__main__":
         stored = await wl.web_learning_cycle()
         return stored, wl, c
 
-    stored, wl_test, c_test = asyncio.get_event_loop().run_until_complete(
+    stored, wl_test, c_test = asyncio.new_event_loop().run_until_complete(
         test_web_learning_cycle())
 
     if stored > 0:
@@ -236,7 +236,7 @@ if __name__ == "__main__":
         wl = WebLearningAgent(c, make_mock_llm(), make_mock_llm(), daily_budget=0)
         return await wl.web_learning_cycle()
 
-    result = asyncio.get_event_loop().run_until_complete(test_budget_exhausted())
+    result = asyncio.new_event_loop().run_until_complete(test_budget_exhausted())
     if result == 0:
         OK("Budget exhausted returns 0")
     else:
@@ -315,7 +315,7 @@ if __name__ == "__main__":
         kd = KnowledgeDistiller(make_mock_consciousness(), api_key="")
         return await kd.distillation_cycle()
 
-    result = asyncio.get_event_loop().run_until_complete(test_distill_no_key())
+    result = asyncio.new_event_loop().run_until_complete(test_distill_no_key())
     if result == 0:
         OK("Distillation without API key returns 0")
     else:
@@ -461,7 +461,7 @@ if __name__ == "__main__":
                                  enrichment=enrichment, web_learner=web_learner)
         return await ml.weekly_analysis(), ml
 
-    report, ml_test = asyncio.get_event_loop().run_until_complete(
+    report, ml_test = asyncio.new_event_loop().run_until_complete(
         test_weekly_analysis())
 
     expected_keys = ["timestamp", "memory_stats", "hallucination_stats",
@@ -493,7 +493,7 @@ if __name__ == "__main__":
                        {"action": "review_agent", "auto_safe": False}]
         return await ml.auto_apply_safe_optimizations(suggestions), c
 
-    applied, c_opt = asyncio.get_event_loop().run_until_complete(test_auto_optimize())
+    applied, c_opt = asyncio.new_event_loop().run_until_complete(test_auto_optimize())
     if applied == 1:
         OK("auto_apply applied 1 safe optimization")
     else:
@@ -609,7 +609,7 @@ if __name__ == "__main__":
         suggestions = await cr.monthly_code_review()
         return suggestions, cr
 
-    suggestions, cr_test = asyncio.get_event_loop().run_until_complete(
+    suggestions, cr_test = asyncio.new_event_loop().run_until_complete(
         test_code_review())
 
     if len(suggestions) == 2:
@@ -949,7 +949,7 @@ if __name__ == "__main__":
             stored = await wl.web_learning_cycle()
         return stored
 
-    result = asyncio.get_event_loop().run_until_complete(test_no_websearch())
+    result = asyncio.new_event_loop().run_until_complete(test_no_websearch())
     if result == 0:
         OK("No web search tool -> returns 0 gracefully")
     else:
@@ -960,7 +960,7 @@ if __name__ == "__main__":
     async def test_minimal_meta():
         return await ml_minimal.weekly_analysis()
 
-    report = asyncio.get_event_loop().run_until_complete(test_minimal_meta())
+    report = asyncio.new_event_loop().run_until_complete(test_minimal_meta())
     if "memory_stats" in report:
         OK("Meta-learning works without optional components")
     else:
@@ -972,7 +972,7 @@ if __name__ == "__main__":
         cr.meta_learning = None
         return await cr.monthly_code_review()
 
-    suggestions = asyncio.get_event_loop().run_until_complete(test_no_meta_report())
+    suggestions = asyncio.new_event_loop().run_until_complete(test_no_meta_report())
     # Should still work, using consciousness stats fallback
     if isinstance(suggestions, list):
         OK("Code review works without meta-learning report")
@@ -1000,7 +1000,7 @@ if __name__ == "__main__":
     async def test_no_anthropic():
         return await kd_no_lib.distillation_cycle()
 
-    result = asyncio.get_event_loop().run_until_complete(test_no_anthropic())
+    result = asyncio.new_event_loop().run_until_complete(test_no_anthropic())
     if result == 0:
         OK("Distillation without anthropic returns 0 gracefully")
     else:
@@ -1018,7 +1018,7 @@ if __name__ == "__main__":
         wl._web_search = mock_ws
         return await wl.web_learning_cycle()
 
-    result = asyncio.get_event_loop().run_until_complete(test_search_error())
+    result = asyncio.new_event_loop().run_until_complete(test_search_error())
     if result == 0:
         OK("Search error returns 0 gracefully")
     else:
@@ -1034,7 +1034,7 @@ if __name__ == "__main__":
         wl._web_search = mock_ws
         return await wl.web_learning_cycle()
 
-    result = asyncio.get_event_loop().run_until_complete(test_search_exception())
+    result = asyncio.new_event_loop().run_until_complete(test_search_exception())
     if result == 0:
         OK("Search exception returns 0 gracefully")
     else:
@@ -1060,7 +1060,7 @@ if __name__ == "__main__":
         report = await ml.weekly_analysis()
         return report
 
-    report = asyncio.get_event_loop().run_until_complete(test_broken_consciousness())
+    report = asyncio.new_event_loop().run_until_complete(test_broken_consciousness())
     if "memory_stats" in report:
         OK("Meta-learning handles broken consciousness gracefully")
     else:
@@ -1075,7 +1075,7 @@ if __name__ == "__main__":
         result = await wl._validate_fact("Some fact")
         return result
 
-    result = asyncio.get_event_loop().run_until_complete(test_validate_error())
+    result = asyncio.new_event_loop().run_until_complete(test_validate_error())
     if result == False:
         OK("Validation LLM error returns False gracefully")
     else:

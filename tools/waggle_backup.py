@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -979,7 +979,7 @@ def generate_restore_manifest() -> str:
     """Generate manifest.json for one-click restore automation."""
     manifest = {
         "project_name": "waggledance-swarm",
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat() + "Z",
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         "platform": platform.system(),
         "restore_entrypoints": {
@@ -1006,7 +1006,7 @@ def generate_pip_freeze() -> str:
         )
         if result.returncode == 0 and result.stdout.strip():
             header = (
-                f"# WaggleDance pip freeze — {datetime.utcnow().isoformat()}Z\n"
+                f"# WaggleDance pip freeze — {datetime.now(timezone.utc).isoformat()}Z\n"
                 f"# Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
                 f"# Restore: pip install -r requirements.lock.txt\n\n"
             )

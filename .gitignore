@@ -236,6 +236,7 @@ output/
 
 # Test output
 test_output.txt
+configs/confusion_memory.json
 WAGGLEDANCE_AI_BRIEF.md
 mass_test_results_*.json
 

@@ -281,3 +281,6 @@ elastic_scaling:
   auto_detect: true
   vram_unload_threshold_pct: 90
   queue_spawn_threshold: 10
+runtime:
+  primary: waggledance        # "hivemind" during transition, "waggledance" after cutover
+  compatibility_mode: false   # true = legacy primary, false = autonomy primary

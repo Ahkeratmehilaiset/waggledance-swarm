@@ -52,6 +52,19 @@ class AlertsConfig(BaseModel):
     enabled: bool = False
 
 
+class RuntimeConfig(BaseModel):
+    primary: str = "waggledance"
+    compatibility_mode: bool = False
+
+    @field_validator("primary")
+    @classmethod
+    def valid_primary(cls, v: str) -> str:
+        allowed = {"waggledance", "hivemind", "shadow"}
+        if v not in allowed:
+            raise ValueError(f"runtime.primary must be one of {allowed}, got '{v}'")
+        return v
+
+
 class WaggleSettings(BaseModel):
     """Top-level settings validation."""
     profile: str = "cottage"
@@ -60,6 +73,7 @@ class WaggleSettings(BaseModel):
     llm_heartbeat: Optional[LLMConfig] = None
     learning: LearningConfig = LearningConfig()
     alerts: AlertsConfig = AlertsConfig()
+    runtime: RuntimeConfig = RuntimeConfig()
 
     @field_validator("profile")
     @classmethod

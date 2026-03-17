@@ -321,3 +321,20 @@ class ElasticScaler:
                 "os": h.os_name,
             },
         }
+
+    # ── v2.0: ResourceKernel bridge ────────────────────────────
+
+    def get_resource_kernel(self):
+        """Return a ResourceKernel wrapping this ElasticScaler's tier.
+
+        Lazily imports to avoid circular dependency. Returns None if
+        the autonomy module is not installed.
+        """
+        try:
+            from waggledance.core.autonomy.resource_kernel import ResourceKernel
+            tier_name = self.tier.tier
+            rk = ResourceKernel(tier=tier_name)
+            rk.start()
+            return rk
+        except ImportError:
+            return None

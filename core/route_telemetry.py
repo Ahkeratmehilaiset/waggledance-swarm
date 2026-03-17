@@ -93,3 +93,29 @@ class RouteTelemetry:
             }
             for rt, s in self._stats.items()
         }
+
+    # ── v2.0: Specialist trainer feed ─────────────────────────
+
+    def feed_specialist_trainer(self, specialist_trainer=None) -> int:
+        """Export route telemetry data for specialist model training.
+
+        Returns the number of route stats entries exported.
+        The specialist trainer uses route-level success/failure data
+        to train the route_classifier specialist model.
+        """
+        if specialist_trainer is None or not self._stats:
+            return 0
+        try:
+            exported = 0
+            for route_type, stats in self._stats.items():
+                if stats.count >= 10:  # Only export meaningful samples
+                    specialist_trainer.record_route_stats(
+                        route_type=route_type,
+                        success_rate=stats.success_rate,
+                        avg_latency_ms=stats.avg_latency_ms,
+                        sample_count=stats.count,
+                    )
+                    exported += 1
+            return exported
+        except Exception:
+            return 0

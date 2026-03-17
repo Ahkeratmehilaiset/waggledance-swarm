@@ -420,3 +420,24 @@ class TrainingDataCollector:
             "total_rejected": self._total_rejected,
             "sources": sources,
         }
+
+    # ── v2.0: Feed CaseTrajectoryBuilder ──────────────────────
+
+    def feed_case_builder(self, case_builder=None) -> int:
+        """Convert collected Q&A pairs to case trajectories via LegacyConverter.
+
+        Returns number of cases created. This bridges the old Q&A-based
+        training pipeline to the new case trajectory model.
+        """
+        if not self._pairs:
+            return 0
+        try:
+            from waggledance.core.learning.legacy_converter import LegacyConverter
+            converter = LegacyConverter()
+            cases = converter.convert_training_pairs(self._pairs)
+            if case_builder:
+                for case in cases:
+                    case_builder.record(case)
+            return len(cases)
+        except ImportError:
+            return 0

@@ -10,7 +10,7 @@
   "requires_node": true,
   "dashboard_path": "dashboard",
   "python_requirements": "requirements.lock.txt",
-  "env_template": "env.template",
+  "env_template": ".env.example",
   "excluded_paths": [
     ".claude",
     ".git",

@@ -377,7 +377,7 @@ waggledance-swarm/
 │       ├── models.py    #   Ollama model status endpoint
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
-├── dashboard/           # Vite + React UI (port 5173)
+├── dashboard/           # Vite + React UI (dev :5173, prod served from :8000)
 ├── tests/               # 79 legacy suites + 2406 pytest tests (~3876 total)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml

@@ -39,6 +39,13 @@ class ProvenanceTracker:
             );
             CREATE INDEX IF NOT EXISTS idx_cons_fact ON consensus(fact_id);
         """)
+        # Phase 1 autonomy: add canonical_id columns if missing
+        for table, id_col in [("validations", "validator_id"), ("consensus", "participating_agents")]:
+            cols = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "canonical_id" not in cols and table == "validations":
+                self._conn.execute(
+                    "ALTER TABLE validations ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''"
+                )
         self._conn.commit()
 
     def get_origin(self, fact_id: str) -> Optional[dict]:

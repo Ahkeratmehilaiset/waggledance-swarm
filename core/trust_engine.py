@@ -132,6 +132,15 @@ class TrustEngine:
                 CREATE INDEX IF NOT EXISTS idx_trust_agent ON trust_signals(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_trust_name ON trust_signals(signal_name);
             """)
+            # Phase 1 autonomy: add canonical_id if missing
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(trust_signals)").fetchall()}
+            if "canonical_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE trust_signals ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_trust_canonical ON trust_signals(canonical_id)"
+                )
             self._conn.commit()
 
     def record_signal(self, agent_id: str, signal_name: str, value: float):

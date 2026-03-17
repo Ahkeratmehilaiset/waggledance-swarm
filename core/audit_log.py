@@ -48,12 +48,25 @@ class AuditLog:
             CREATE INDEX IF NOT EXISTS idx_audit_doc      ON audit(doc_id);
             CREATE INDEX IF NOT EXISTS idx_audit_hash     ON audit(content_hash);
         """)
+        # Phase 1 autonomy: add canonical_id column if missing
+        self._maybe_add_canonical_id()
         self._conn.commit()
+
+    def _maybe_add_canonical_id(self):
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(audit)").fetchall()}
+        if "canonical_id" not in cols:
+            self._conn.execute(
+                "ALTER TABLE audit ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_audit_canonical ON audit(canonical_id)"
+            )
 
     def record(self, action: str, doc_id: str, *,
                collection: str = "waggle_memory",
                layer: str = "working",
                agent_id: str = "",
+               canonical_id: str = "",
                session_id: str = "",
                spawn_chain: str = "",
                content_hash: str = "",
@@ -67,10 +80,10 @@ class AuditLog:
         with self._write_lock:
             cur = self._conn.execute(
                 "INSERT INTO audit (timestamp, action, doc_id, collection, layer, "
-                "agent_id, session_id, spawn_chain, content_hash, metadata, details) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "agent_id, canonical_id, session_id, spawn_chain, content_hash, metadata, details) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (time.time(), action, doc_id, collection, layer,
-                 agent_id, session_id, spawn_chain, content_hash, metadata, details)
+                 agent_id, canonical_id, session_id, spawn_chain, content_hash, metadata, details)
             )
             self._conn.commit()
             return cur.lastrowid

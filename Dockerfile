@@ -18,9 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvoikko1 voikko-fi && \
     rm -rf /var/lib/apt/lists/*
 
-# Python deps
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Python deps (pinned versions for reproducible builds)
+COPY requirements.lock.txt .
+RUN pip install --no-cache-dir -r requirements.lock.txt
 
 # App code
 COPY . .
@@ -40,5 +40,4 @@ ENV PYTHONUNBUFFERED=1
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://localhost:8000/health || exit 1
 
-# Legacy entrypoint; new runtime: python -m waggledance.adapters.cli.start_runtime
 CMD ["python", "main.py"]

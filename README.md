@@ -351,7 +351,7 @@ See [ENTRYPOINTS.md](ENTRYPOINTS.md) for details on primary vs legacy entrypoint
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **72/76 suites GREEN, 2427+ tests, 0 failures** (4 skipped without Ollama). Full validation: `python tools/validate_all.py --skip-ollama`.
+Expected: **76 suites GREEN, 2427+ tests, 0 failures** (4 skipped without Ollama). Full validation: `python tools/validate_all.py --skip-ollama`.
 
 ---
 
@@ -441,7 +441,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Hexagonal refactor** — `waggledance/` package with ports & adapters, DI container, 172 new tests
 - **New runtime (v1.15+)** — `start_runtime.py` with argparse, UTF-8, Ollama check
 - **Safe self-improvement (v1.16)** — prompt evolution with rollback, micro-model eval gate, night learning source visibility
-- **Big Sprint (v1.17)** — memory_engine split (4 extracted modules), persistent SQLite TrustStore, micromodel route restored end-to-end, active learning/canary/telemetry, MQTT ingest, runtime shadow-compare, test unification (72 suites + 559 pytest)
+- **Big Sprint (v1.17)** — memory_engine split (4 extracted modules), persistent SQLite TrustStore, micromodel route restored end-to-end, active learning/canary/telemetry, MQTT ingest, runtime shadow-compare, test unification (76 suites + 559 pytest)
 - **Runtime Convergence (v1.18)** — shared routing helpers, telemetry/ledger/explainability wired into request + night loops, MQTT bridge via SensorHub, 7 new dashboard APIs, memory_engine.py 1292 lines, 30-query benchmark, SQLiteTrustStore graceful fallback
 
 ---
@@ -452,7 +452,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 72/76 GREEN + 559 pytest | ~2986 total tests, 4 skipped without Ollama |
+| Test suites | 76 suites GREEN + 559 pytest | ~2986 total tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |

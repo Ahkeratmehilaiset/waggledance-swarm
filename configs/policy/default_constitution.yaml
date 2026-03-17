@@ -1,0 +1,97 @@
+# WaggleDance Default Constitution — deny-by-default policy rules
+# All write/act operations are DENIED unless explicitly allowed by a rule.
+
+constitution:
+  version: 1
+  default_action: deny
+
+  global_rules:
+    - rule_id: deny_irreversible_unverified
+      description: "Deny irreversible actions without verifier confirmation"
+      applies_to: [act]
+      conditions:
+        reversibility_lt: 0.3
+        severity_gt: 0.6
+      enforcement: deny
+      unless: approval_granted
+
+    - rule_id: require_verifier_for_llm_only
+      description: "LLM-only suggestions with high uncertainty need verifier"
+      applies_to: [act, predict, optimize]
+      conditions:
+        uncertainty_gt: 0.7
+        source_type: proposed_by_llm
+      enforcement: require_verifier
+
+    - rule_id: require_observability_for_critical
+      description: "Critical actions must be observable"
+      applies_to: [act, optimize]
+      conditions:
+        severity_gt: 0.7
+        observability_lt: 0.5
+      enforcement: deny
+
+    - rule_id: allow_read_operations
+      description: "Read-only operations are always allowed"
+      applies_to: [sense, retrieve, normalize, estimate, detect, explain, verify]
+      conditions: {}
+      enforcement: allow
+
+    - rule_id: allow_low_risk_writes
+      description: "Allow write operations with low composite risk"
+      applies_to: [act, learn]
+      conditions:
+        composite_lt: 0.3
+      enforcement: allow
+
+    - rule_id: require_approval_high_risk
+      description: "High-risk actions require human approval"
+      applies_to: [act, optimize, plan]
+      conditions:
+        composite_gt: 0.7
+      enforcement: require_approval
+
+    - rule_id: allow_solver_verified
+      description: "Solver+verifier confirmed actions are trustworthy"
+      applies_to: [act]
+      conditions:
+        quality_path: gold
+        composite_lt: 0.5
+      enforcement: allow
+
+  profile_overrides:
+    HOME:
+      - rule_id: heating_safety
+        description: "Allow heating adjustments within safe bounds"
+        applies_to: [act]
+        conditions:
+          capability_id: act.heating_control
+          severity_lt: 0.5
+        enforcement: allow
+
+    COTTAGE:
+      - rule_id: frost_protection_emergency
+        description: "Emergency frost protection overrides normal policy"
+        applies_to: [act]
+        conditions:
+          capability_id: act.heating_control
+          goal_type: protect
+          emergency: true
+        enforcement: allow_emergency
+
+    FACTORY:
+      - rule_id: maintenance_always_approve
+        description: "Factory maintenance always requires human approval"
+        applies_to: [act, optimize]
+        conditions:
+          capability_id_prefix: optimize.maintenance
+        enforcement: require_approval
+
+    APIARY:
+      - rule_id: varroa_seasonal_defer
+        description: "Varroa treatment deferred to seasonal guard"
+        applies_to: [act]
+        conditions:
+          capability_id_prefix: act.varroa
+          goal_type: protect
+        enforcement: defer_to_seasonal_guard

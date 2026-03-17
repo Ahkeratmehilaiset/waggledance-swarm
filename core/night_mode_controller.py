@@ -7,6 +7,15 @@ import random
 import time
 from pathlib import Path
 
+# v2.0: Autonomy night learning pipeline (optional)
+_NIGHT_PIPELINE_AVAILABLE = False
+try:
+    from waggledance.core.learning.night_learning_pipeline import NightLearningPipeline
+    from waggledance.core.learning.morning_report import MorningReportBuilder
+    _NIGHT_PIPELINE_AVAILABLE = True
+except ImportError:
+    pass
+
 log = logging.getLogger("hivemind")
 
 
@@ -56,6 +65,30 @@ class NightModeController:
 
     def _emit_morning_report(self):
         """Generate and store morning report when night mode ends."""
+        # v2.0: Autonomy morning report
+        _rt_cfg = self.config.get("runtime", {})
+        if (_rt_cfg.get("primary") == "waggledance"
+                and not _rt_cfg.get("compatibility_mode", True)
+                and _NIGHT_PIPELINE_AVAILABLE):
+            _nlp = getattr(self, '_night_pipeline', None)
+            if _nlp and _nlp._last_result:
+                try:
+                    builder = MorningReportBuilder()
+                    morning = builder.build(
+                        night_result=_nlp._last_result,
+                        grading_results=_nlp._last_grading_results,
+                    )
+                    report = morning.to_dict()
+                    reports_path = Path("data/morning_reports.jsonl")
+                    reports_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(reports_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(report, ensure_ascii=False) + "\n")
+                    log.info("🌅 Autonomy morning report: %d cases, %d specialists",
+                             morning.cases_graded, morning.specialists_updated)
+                    return
+                except Exception as e:
+                    log.warning("Autonomy morning report failed: %s", e)
+
         if not self.night_enricher:
             return
         try:
@@ -198,7 +231,10 @@ class NightModeController:
     async def _night_learning_cycle(self):
         """Night mode: guided task, enrichment, web learning, distillation.
 
-        5-way rotation:
+        v2.0: When runtime.primary=waggledance, delegates to NightLearningPipeline
+        which uses case trajectories instead of Q&A pairs.
+
+        Legacy 5-way rotation:
           %5 == 0,1: guided task
           %5 == 2: enrichment (Layer 2)
           %5 == 3: web learning (Layer 3)
@@ -208,6 +244,37 @@ class NightModeController:
         """
         if not self.consciousness:
             return
+
+        # v2.0: Autonomy night learning pipeline
+        _rt_cfg = self.config.get("runtime", {})
+        if (_rt_cfg.get("primary") == "waggledance"
+                and not _rt_cfg.get("compatibility_mode", True)
+                and _NIGHT_PIPELINE_AVAILABLE):
+            try:
+                _nlp = getattr(self, '_night_pipeline', None)
+                if _nlp is None:
+                    _nlp = NightLearningPipeline(
+                        profile=self.config.get("profile", "DEFAULT"))
+                    self._night_pipeline = _nlp
+                result = _nlp.run_cycle()
+                self._night_mode_facts_learned += result.cases_graded
+                log.info(
+                    "🌙 Autonomy night cycle: %d cases graded, %d specialist trained "
+                    "(%s)", result.cases_graded, result.specialists_trained,
+                    result.duration_s)
+                await self._notify_ws("night_learning", {
+                    "source": "autonomy_pipeline",
+                    "cases_graded": result.cases_graded,
+                    "specialists_trained": result.specialists_trained,
+                    "procedures_updated": result.procedures_updated,
+                    "facts_learned": self._night_mode_facts_learned,
+                })
+                # Still run periodic checks (meta-learning, code review)
+                await self._run_periodic_checks()
+                return
+            except Exception as _nlp_err:
+                log.warning("Autonomy night pipeline failed, legacy fallback: %s",
+                            _nlp_err)
 
         # Lazy init all learning engines
         _al_cfg = self.config.get("advanced_learning", {})

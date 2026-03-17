@@ -288,3 +288,37 @@ class MoodPreset:
             if idx > 0:
                 return content[:idx + 1]
         return content[:200] if len(content) > 200 else content
+
+
+# ── v2.0: Autonomy overlay views ────────────────────────────────
+
+class AutonomyOverlayView:
+    """Provides profile/mission/entity filtered views over memory overlays.
+
+    Extends the overlay system with autonomy-aware filtering based on
+    active profile, mission context, and entity registry.
+    """
+
+    def __init__(self, branch_manager: BranchManager = None):
+        self._branch_manager = branch_manager or BranchManager()
+
+    def get_profile_view(self, profile: str) -> list:
+        """Get overlays filtered by profile (cottage, home, factory, gadget)."""
+        return [
+            b for b in self._branch_manager.list_branches()
+            if b.get("profile") == profile or b.get("name", "").startswith(profile)
+        ]
+
+    def get_mission_view(self, goal_id: str) -> list:
+        """Get overlays related to a specific mission/goal."""
+        return [
+            b for b in self._branch_manager.list_branches()
+            if b.get("goal_id") == goal_id
+        ]
+
+    def get_entity_view(self, entity_id: str) -> list:
+        """Get overlays related to a specific entity."""
+        return [
+            b for b in self._branch_manager.list_branches()
+            if entity_id in str(b.get("metadata", {}))
+        ]

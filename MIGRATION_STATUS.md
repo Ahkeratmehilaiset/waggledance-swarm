@@ -1,11 +1,11 @@
-# Migration Status — WaggleDance Hexagonal Refactor
+# Migration Status — WaggleDance Hexagonal Refactor + Full Autonomy
 
-**Updated:** 2026-03-15
-**Version:** v1.18.0
+**Updated:** 2026-03-17
+**Version:** v2.0.0 (full-autonomy-v3)
 
 ---
 
-## Overall Status: INTEGRATION COMPLETE
+## Overall Status: FULL AUTONOMY CUTOVER READY
 
 All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 
@@ -27,9 +27,10 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 | `tests/unit_app/` (service tests) | 16 | PASS |
 | `tests/contracts/` (contract validation) | 22 | PASS |
 | **New architecture subtotal** | **~469** | **ALL PASS** |
+| `tests/autonomy/` (9 phases + integration) | 463 | PASS |
 | `tests/integration/` (runtime, smoke, scenarios) | 90 | PASS |
 | `tools/waggle_backup.py --tests-only` | 2427 (72 suites) | PASS |
-| **Grand total** | **~2986** | **ALL PASS** |
+| **Grand total** | **~3449** | **ALL PASS** |
 
 ---
 

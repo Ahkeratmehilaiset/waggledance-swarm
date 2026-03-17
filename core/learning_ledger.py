@@ -115,3 +115,26 @@ class LearningLedger:
         if event_type is None:
             return len(self._read_all())
         return sum(1 for e in self._read_all() if e.event_type == event_type)
+
+    # ── v2.0: Autonomy learning events ──────────────────────────
+
+    def log_case_trajectory(self, case_id: str, quality_grade: str,
+                             intent: str, capability: str = "") -> None:
+        """Log a case trajectory grading event."""
+        self.log(
+            event_type=f"case:{quality_grade}",
+            agent_id=capability or "autonomy",
+            case_id=case_id,
+            intent=intent,
+            quality_grade=quality_grade,
+        )
+
+    def log_specialist_training(self, model_name: str, accuracy: float,
+                                 sample_count: int) -> None:
+        """Log a specialist model training event."""
+        self.log(
+            event_type="specialist_training",
+            agent_id=model_name,
+            accuracy=accuracy,
+            sample_count=sample_count,
+        )

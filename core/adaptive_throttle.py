@@ -343,3 +343,19 @@ class AdaptiveThrottle:
             "optimal_embed_batch": self.state.optimal_embed_batch,
             "optimal_translate_batch": self.state.optimal_translate_batch,
         }
+
+    # ── v2.0: ResourceKernel integration ─────────────────────
+
+    def feed_resource_kernel(self, resource_kernel) -> None:
+        """Feed throttle metrics into a ResourceKernel for unified monitoring.
+
+        Called periodically (e.g., from heartbeat) to sync throttle state
+        with the autonomy resource kernel.
+        """
+        if resource_kernel is None:
+            return
+        try:
+            resource_kernel.record_task_end(
+                latency_ms=self.state.avg_latency_ms)
+        except Exception:
+            pass

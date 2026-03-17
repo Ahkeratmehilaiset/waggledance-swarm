@@ -240,3 +240,29 @@ class ReplayEngine:
                 results.append({"doc_id": entry["doc_id"], "action": action, "status": "replayed"})
 
         return results
+
+    # ── v2.0: Mission-level replay ──────────────────────────────
+
+    def replay_mission(self, goal_id: str, *, proxy=None, dry_run: bool = True) -> dict:
+        """Replay all actions from an autonomy mission (goal → plan → actions).
+
+        Extends the replay engine to support the new mission/plan/action/case
+        path from the autonomy runtime.
+        """
+        try:
+            from waggledance.core.learning.case_builder import CaseTrajectoryBuilder
+            builder = CaseTrajectoryBuilder()
+            cases = [c for c in builder.get_all() if c.goal and c.goal.goal_id == goal_id]
+            if not cases:
+                return {"goal_id": goal_id, "status": "not_found", "actions": []}
+            results = []
+            for case in cases:
+                for action in case.actions:
+                    results.append({
+                        "action_id": action.action_id,
+                        "capability": action.capability_id,
+                        "status": "would_replay" if dry_run else "replayed",
+                    })
+            return {"goal_id": goal_id, "status": "ok", "actions": results, "dry_run": dry_run}
+        except ImportError:
+            return {"goal_id": goal_id, "status": "autonomy_not_available"}

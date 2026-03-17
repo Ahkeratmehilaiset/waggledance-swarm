@@ -244,6 +244,9 @@ class Consciousness:
             f"muisti={self.memory.count}, math=✅"
         )
 
+        # v2.0: SafeActionBus write proxy (set by runtime when autonomy active)
+        self._write_proxy = None  # Optional[SafeActionBus]
+
         # Phase 4: correction tracking
         self._corrections_count = 0
         self._active_learning_count = 0
@@ -982,9 +985,22 @@ class Consciousness:
 
         return True
 
+    def set_write_proxy(self, action_bus):
+        """Set SafeActionBus as write proxy for autonomy mode.
+
+        When set, all memory writes go through the action bus for
+        policy evaluation before storage.
+        """
+        self._write_proxy = action_bus
+        log.info("v2.0: SafeActionBus write proxy set on Consciousness")
+
     def _learn_single(self, text, agent_id="system", source_type="heartbeat",
                       confidence=0.5, validated=False, metadata=None):
-        """Original single-item learn logic: translate → embed → dedup → store."""
+        """Original single-item learn logic: translate → embed → dedup → store.
+
+        v2.0: When _write_proxy is set, wraps the store operation through
+        SafeActionBus for policy evaluation.
+        """
         text_fi = text
         text_en = self._to_english(text)
         combined = f"{text_fi} | {text_en}" if text_en != text_fi else text
@@ -1012,6 +1028,30 @@ class Consciousness:
         }
         if metadata:
             meta.update(metadata)
+
+        # v2.0: Route through SafeActionBus if write proxy is set
+        if self._write_proxy is not None:
+            try:
+                from waggledance.core.domain.autonomy import Action
+                action = Action(capability_id="memory.store")
+                # Create a minimal capability for policy check
+                from waggledance.core.domain.autonomy import Capability
+                cap = Capability(
+                    capability_id="memory.store",
+                    name="Memory Store",
+                    category="write",
+                )
+                result = self._write_proxy.submit(
+                    action, cap,
+                    quality_path="silver" if confidence >= 0.8 else "bronze",
+                    context={"obs_id": obs_id, "text": combined[:200]},
+                )
+                if not result.decision.approved:
+                    log.info("v2.0: Memory write denied by policy: %s",
+                             result.decision.reason)
+                    return False
+            except Exception as _wp_err:
+                log.debug("v2.0: Write proxy check failed, proceeding: %s", _wp_err)
 
         self.memory.store(obs_id, combined, embedding, meta)
 

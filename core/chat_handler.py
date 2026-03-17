@@ -20,6 +20,15 @@ except ImportError:
     _TRANSLATION_AVAILABLE = False
     def detect_language(t): return "fi"
 
+# v2.0: Autonomy runtime (optional — graceful degradation)
+_AUTONOMY_AVAILABLE = False
+try:
+    from waggledance.core.autonomy.runtime import AutonomyRuntime as _AutonomyRuntime
+    from waggledance.application.services.autonomy_service import AutonomyService as _AutonomyService
+    _AUTONOMY_AVAILABLE = True
+except ImportError:
+    pass
+
 log = logging.getLogger("hivemind")
 
 
@@ -58,6 +67,51 @@ class ChatHandler:
         # ═══ Kielentunnistus ═══
         if language == "auto":
             _detected_lang = detect_language(message) if _TRANSLATION_AVAILABLE else "fi"
+
+        # ═══ v2.0: Autonomy Runtime path (solver-first, LLM-last) ═══
+        # When runtime.primary=waggledance and compatibility_mode=false,
+        # route through AutonomyRuntime instead of legacy path.
+        _rt_cfg = self.config.get("runtime", {})
+        if (_rt_cfg.get("primary") == "waggledance"
+                and not _rt_cfg.get("compatibility_mode", True)
+                and _AUTONOMY_AVAILABLE):
+            try:
+                _autonomy_svc = getattr(self, '_autonomy_service', None)
+                if _autonomy_svc is None:
+                    _autonomy_svc = _AutonomyService(
+                        profile=self.config.get("profile", "DEFAULT"))
+                    _autonomy_svc.start()
+                    self._autonomy_service = _autonomy_svc
+                result = _autonomy_svc.handle_query(
+                    message, {"language": _detected_lang, "source": source})
+                # Format response from autonomy result
+                if result.get("error"):
+                    # Autonomy failed — fall through to legacy path
+                    log.warning("Autonomy runtime error, falling back: %s",
+                                result["error"])
+                else:
+                    _r = result.get("result") or {}
+                    response = _r.get("answer", str(_r)) if _r else str(result)
+                    self._last_chat_message = message
+                    self._last_chat_response = response
+                    self._last_chat_method = f"autonomy_{result.get('quality_path', 'bronze')}"
+                    self._last_chat_agent_id = result.get("capability", "autonomy")
+                    self._last_model_result = result
+                    _auto_ms = (time.perf_counter() - _chat_t0) * 1000
+                    self.metrics.log_chat(
+                        query=_original_message,
+                        method=self._last_chat_method,
+                        agent_id=self._last_chat_agent_id,
+                        model_used="autonomy_runtime",
+                        confidence=0.9 if result.get("quality_path") == "gold" else 0.7,
+                        response_time_ms=_auto_ms,
+                        route="autonomy", language=_detected_lang)
+                    self._record_request_telemetry(
+                        "autonomy", 0.9, _auto_ms, True, message)
+                    return response
+            except Exception as _auto_err:
+                log.warning("Autonomy runtime unavailable, legacy fallback: %s",
+                            _auto_err)
 
         # ═══ Phase 4: Detect user correction ("ei", "väärin", correction text) ═══
         _CORRECTION_WORDS = {"ei", "väärin", "wrong", "väärä", "virhe",

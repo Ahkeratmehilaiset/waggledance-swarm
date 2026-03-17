@@ -1,0 +1,385 @@
+# WaggleDance Alias Registry — Canonical ID mapping for all 75 agents
+# Format: legacy agent_id → canonical ID + aliases + profile assignment
+# Used by: waggledance/core/capabilities/aliasing.py
+# Generated: 2026-03-17 (Phase 1: Full Autonomy v3)
+
+# ── APIARY domain (beekeeping) ────────────────────────────────
+beekeeper:
+  canonical: domain.apiary.beekeeper
+  aliases: [beekeeper, bee_keeper, tarhaaja]
+  profiles: [gadget, cottage, home, factory]
+
+disease_monitor:
+  canonical: domain.apiary.disease
+  aliases: [disease_monitor, tautimonitori, tautivahti]
+  profiles: [cottage, home]
+
+nectar_scout:
+  canonical: domain.apiary.nectar
+  aliases: [nectar_scout, nektari]
+  profiles: [cottage, home]
+
+swarm_watcher:
+  canonical: domain.apiary.swarm
+  aliases: [swarm_watcher, parveiluvahti]
+  profiles: [cottage, home]
+
+hive_security:
+  canonical: domain.apiary.security
+  aliases: [hive_security, pesaturvallisuus]
+  profiles: [cottage, home]
+
+hive_temperature:
+  canonical: domain.apiary.temperature
+  aliases: [hive_temperature, pesalampo]
+  profiles: [cottage, home]
+
+entomologist:
+  canonical: domain.apiary.entomology
+  aliases: [entomologist, entomologi]
+  profiles: [cottage, home]
+
+# ── HOME domain ───────────────────────────────────────────────
+smart_home:
+  canonical: domain.home.automation
+  aliases: [smart_home, home_automation, kotialy]
+  profiles: [home]
+
+apartment_board:
+  canonical: domain.home.housing
+  aliases: [apartment_board, taloyhtio]
+  profiles: [home]
+
+budget_tracker:
+  canonical: domain.home.budget
+  aliases: [budget_tracker, raha_asiat]
+  profiles: [home]
+
+child_safety:
+  canonical: domain.home.child_safety
+  aliases: [child_safety, lapsiturvallinen]
+  profiles: [home]
+
+cleaning_manager:
+  canonical: domain.home.cleaning
+  aliases: [cleaning_manager, siivousvastaava]
+  profiles: [home, factory]
+
+commute_planner:
+  canonical: domain.home.commute
+  aliases: [commute_planner, tyomatka]
+  profiles: [home]
+
+delivery_tracker:
+  canonical: domain.home.delivery
+  aliases: [delivery_tracker, paketit]
+  profiles: [home]
+
+entertainment_chief:
+  canonical: domain.home.entertainment
+  aliases: [entertainment_chief, viihdepaallikko]
+  profiles: [home]
+
+indoor_garden:
+  canonical: domain.home.garden
+  aliases: [indoor_garden, huonekasvit]
+  profiles: [home]
+
+lighting_master:
+  canonical: domain.home.lighting
+  aliases: [lighting_master, valaistusmestari]
+  profiles: [cottage, home]
+
+locksmith:
+  canonical: domain.home.locks
+  aliases: [locksmith, lukkoseppa]
+  profiles: [cottage, home]
+
+movie_expert:
+  canonical: domain.home.cinema
+  aliases: [movie_expert, elokuva]
+  profiles: [home]
+
+noise_monitor:
+  canonical: domain.home.noise
+  aliases: [noise_monitor, melumonitori]
+  profiles: [home]
+
+nutritionist:
+  canonical: domain.home.nutrition
+  aliases: [nutritionist, ravintoterapeutti]
+  profiles: [home]
+
+pet_care:
+  canonical: domain.home.pets
+  aliases: [pet_care, lemmikinhoito]
+  profiles: [home, cottage]
+
+# ── COTTAGE domain ────────────────────────────────────────────
+astronomer:
+  canonical: domain.cottage.astronomy
+  aliases: [astronomer, tahtitieteilija]
+  profiles: [cottage]
+
+baker:
+  canonical: domain.cottage.baking
+  aliases: [baker, leipuri]
+  profiles: [cottage, home]
+
+carpenter:
+  canonical: domain.cottage.carpentry
+  aliases: [carpenter, timpuri]
+  profiles: [cottage, home]
+
+chimney_sweep:
+  canonical: domain.cottage.chimney
+  aliases: [chimney_sweep, nuohooja]
+  profiles: [cottage]
+
+firewood:
+  canonical: domain.cottage.firewood
+  aliases: [firewood, polttopuuhuolto]
+  profiles: [cottage]
+
+fish_identifier:
+  canonical: domain.cottage.fish
+  aliases: [fish_identifier, kalantunnistaja]
+  profiles: [cottage]
+
+fishing_guide:
+  canonical: domain.cottage.fishing
+  aliases: [fishing_guide, kalastusopas]
+  profiles: [cottage]
+
+forester:
+  canonical: domain.cottage.forestry
+  aliases: [forester, metsanhoitaja]
+  profiles: [cottage]
+
+frost_soil:
+  canonical: domain.cottage.frost
+  aliases: [frost_soil, routa, maaperanalyysi]
+  profiles: [cottage]
+
+ice_specialist:
+  canonical: domain.cottage.ice
+  aliases: [ice_specialist, jaaasiantuntija]
+  profiles: [cottage]
+
+limnologist:
+  canonical: domain.cottage.limnology
+  aliases: [limnologist, limnologi]
+  profiles: [cottage]
+
+light_shadow:
+  canonical: domain.cottage.light
+  aliases: [light_shadow, valo_varjo]
+  profiles: [cottage]
+
+nature_photographer:
+  canonical: domain.cottage.photography
+  aliases: [nature_photographer, luontokuvaaja]
+  profiles: [cottage]
+
+ornithologist:
+  canonical: domain.cottage.ornithology
+  aliases: [ornithologist, ornitologi]
+  profiles: [cottage]
+
+phenologist:
+  canonical: domain.cottage.phenology
+  aliases: [phenologist, fenologi]
+  profiles: [cottage]
+
+sauna_master:
+  canonical: domain.cottage.sauna
+  aliases: [sauna_master, saunamajuri]
+  profiles: [cottage]
+
+septic_manager:
+  canonical: domain.cottage.septic
+  aliases: [septic_manager, jatevesi]
+  profiles: [cottage]
+
+shore_guard:
+  canonical: domain.cottage.shore
+  aliases: [shore_guard, rantavahti]
+  profiles: [cottage]
+
+well_water:
+  canonical: domain.cottage.water
+  aliases: [well_water, kaivovesi]
+  profiles: [cottage]
+
+wilderness_chef:
+  canonical: domain.cottage.outdoor_cooking
+  aliases: [wilderness_chef, erakokki]
+  profiles: [cottage]
+
+wildlife_ranger:
+  canonical: domain.cottage.wildlife
+  aliases: [wildlife_ranger, riistanvartija]
+  profiles: [cottage]
+
+# ── FACTORY domain ────────────────────────────────────────────
+compliance:
+  canonical: domain.factory.compliance
+  aliases: [compliance, vaatimustenmukaisuus]
+  profiles: [factory]
+
+energy_manager:
+  canonical: domain.factory.energy
+  aliases: [energy_manager, tehdasenergia]
+  profiles: [factory]
+
+forklift_fleet:
+  canonical: domain.factory.forklifts
+  aliases: [forklift_fleet, trukkiliikenne]
+  profiles: [factory]
+
+hvac_industrial:
+  canonical: domain.factory.hvac
+  aliases: [hvac_industrial, teollisuusilmastointi]
+  profiles: [factory]
+
+inventory_chief:
+  canonical: domain.factory.inventory
+  aliases: [inventory_chief, inventaario]
+  profiles: [cottage, factory]
+
+lab_analyst:
+  canonical: domain.factory.lab
+  aliases: [lab_analyst, laboratorio]
+  profiles: [factory]
+
+maintenance_planner:
+  canonical: domain.factory.maintenance
+  aliases: [maintenance_planner, kunnossapito]
+  profiles: [factory]
+
+production_line:
+  canonical: domain.factory.line
+  aliases: [production_line, tuotantolinja]
+  profiles: [factory]
+
+quality_inspector:
+  canonical: domain.factory.quality
+  aliases: [quality_inspector, laadunvalvonta]
+  profiles: [factory]
+
+safety_officer:
+  canonical: domain.factory.safety
+  aliases: [safety_officer, tyoturvallisuus]
+  profiles: [factory]
+
+shift_manager:
+  canonical: domain.factory.shifts
+  aliases: [shift_manager, vuoropaallikko]
+  profiles: [factory]
+
+supply_chain:
+  canonical: domain.factory.supply
+  aliases: [supply_chain, toimitusketju]
+  profiles: [factory]
+
+waste_handler:
+  canonical: domain.factory.waste
+  aliases: [waste_handler, jatevirrat]
+  profiles: [factory]
+
+# ── SHARED domain (cross-profile) ────────────────────────────
+air_quality:
+  canonical: shared.environment.air_quality
+  aliases: [air_quality, ilmanlaatu]
+  profiles: [home, factory]
+
+cyber_guard:
+  canonical: shared.security.cyber
+  aliases: [cyber_guard, kybervahti]
+  profiles: [home, factory]
+
+electrician:
+  canonical: shared.maintenance.electrical
+  aliases: [electrician, sahkoasentaja]
+  profiles: [cottage, home, factory]
+
+energy_advisor:
+  canonical: shared.energy.advisor
+  aliases: [energy_advisor, energianeuvoja]
+  profiles: [home, factory]
+
+equipment_tech:
+  canonical: shared.maintenance.equipment
+  aliases: [equipment_tech, laitehuoltaja]
+  profiles: [cottage, factory]
+
+fire_officer:
+  canonical: shared.safety.fire
+  aliases: [fire_officer, paloesimies]
+  profiles: [cottage, home, factory]
+
+flight_weather:
+  canonical: shared.weather.flight
+  aliases: [flight_weather, lentosaa]
+  profiles: [cottage, home]
+
+horticulturist:
+  canonical: shared.nature.horticulture
+  aliases: [horticulturist, hortonomi]
+  profiles: [cottage, home]
+
+hvac_specialist:
+  canonical: shared.maintenance.hvac
+  aliases: [hvac_specialist, lvi]
+  profiles: [cottage, home, factory]
+
+logistics:
+  canonical: shared.operations.logistics
+  aliases: [logistics, logistikko]
+  profiles: [cottage, factory]
+
+math_physicist:
+  canonical: shared.science.math_physics
+  aliases: [math_physicist, matemaatikko, fyysikko]
+  profiles: [cottage, home, factory]
+
+meteorologist:
+  canonical: shared.weather.meteorology
+  aliases: [meteorologist, meteorologi, saaasiantuntija]
+  profiles: [gadget, cottage, home, factory]
+
+microclimate:
+  canonical: shared.weather.microclimate
+  aliases: [microclimate, mikroilmasto]
+  profiles: [cottage, home]
+
+pest_control:
+  canonical: shared.maintenance.pest_control
+  aliases: [pest_control, tuholaiset]
+  profiles: [cottage, home]
+
+privacy_guard:
+  canonical: shared.security.privacy
+  aliases: [privacy_guard, tietosuoja]
+  profiles: [home, factory]
+
+recycling:
+  canonical: shared.environment.recycling
+  aliases: [recycling, kierratys]
+  profiles: [home, factory]
+
+storm_alert:
+  canonical: shared.weather.storm
+  aliases: [storm_alert, myrskyvaroitus]
+  profiles: [cottage, home]
+
+yard_guard:
+  canonical: shared.security.yard
+  aliases: [yard_guard, pihavahti]
+  profiles: [cottage, home]
+
+# ── SYSTEM ────────────────────────────────────────────────────
+core_dispatcher:
+  canonical: system.dispatcher
+  aliases: [core_dispatcher, dispatcher, paallikko]
+  profiles: [gadget, cottage, home, factory]

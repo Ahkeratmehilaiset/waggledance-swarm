@@ -141,8 +141,23 @@ class SQLiteSharedMemory:
                 row[0], SCHEMA_VERSION,
             )
 
+        # Phase 1 autonomy: add canonical_id columns to agent-referencing tables
+        await self._add_canonical_columns()
+
         await self._db.commit()
         log.info("SQLiteSharedMemory initialized: %s (schema v%d)", self._db_path, SCHEMA_VERSION)
+
+    async def _add_canonical_columns(self) -> None:
+        """Add canonical_id column to tables that reference agents (idempotent)."""
+        tables_with_agent = ["agents", "memories", "events", "tasks"]
+        for table in tables_with_agent:
+            cursor = await self._db.execute(f"PRAGMA table_info({table})")
+            cols = {row[1] async for row in cursor}
+            if "canonical_id" not in cols:
+                await self._db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''"
+                )
+                log.info("Added canonical_id column to %s", table)
 
     async def close(self) -> None:
         """Close the database connection."""

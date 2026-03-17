@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
-![Version](https://img.shields.io/badge/version-1.18.0-green)
+![Version](https://img.shields.io/badge/version-2.0.0-green)
 
 **A local-first, auditable AI runtime that routes each task to the right reasoning layer — memory, rules, micromodels, model-based inference, or LLM reasoning.**
 
@@ -25,7 +25,7 @@ The system was originally developed in a demanding real-world field environment 
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-Validated with 72 legacy suites (2427 tests), pytest unit/core/app/contracts (469 tests), and integration tests (90 tests) — 2986 total, 0 failures. No subscription, no API keys required.
+Validated with 72 legacy suites (2427 tests), pytest unit/core/app/contracts (469 tests), integration tests (90 tests), and autonomy tests (463 tests) — 3449 total, 0 failures. No subscription, no API keys required.
 
 ---
 

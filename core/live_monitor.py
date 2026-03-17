@@ -126,3 +126,18 @@ class LiveMonitor:
 
     def get_history(self, limit: int = 50) -> list[dict]:
         return [e.to_dict() for e in self.events[-limit:]]
+
+    # ── v2.0: Autonomy runtime monitoring ────────────────────────
+
+    async def autonomy_event(self, event_type: str, details: str = "",
+                              quality_path: str = "") -> None:
+        """Log an autonomy runtime event to the live monitor.
+
+        Extends the monitor with autonomy-aware event types:
+        - autonomy:query — solver-first query handled
+        - autonomy:mission — goal/mission executed
+        - autonomy:policy — policy decision made
+        - autonomy:night — night learning cycle completed
+        """
+        prefix = {"gold": "🥇", "silver": "🥈", "bronze": "🥉"}.get(quality_path, "🔧")
+        await self.system(f"{prefix} {event_type}: {details[:200]}")

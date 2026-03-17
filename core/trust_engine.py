@@ -132,6 +132,15 @@ class TrustEngine:
                 CREATE INDEX IF NOT EXISTS idx_trust_agent ON trust_signals(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_trust_name ON trust_signals(signal_name);
             """)
+            # Phase 1 autonomy: add canonical_id if missing
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(trust_signals)").fetchall()}
+            if "canonical_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE trust_signals ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_trust_canonical ON trust_signals(canonical_id)"
+                )
             self._conn.commit()
 
     def record_signal(self, agent_id: str, signal_name: str, value: float):
@@ -266,3 +275,33 @@ class TrustEngine:
             (agent_id, limit)
         ).fetchall()
         return [{"signal": r[0], "value": r[1], "timestamp": r[2]} for r in rows]
+
+    # ── v2.0: Multi-dimensional trust ─────────────────────────────
+
+    def record_autonomy_trust(self, capability_id: str, quality_path: str,
+                               verified: bool, execution_ms: float = 0.0) -> None:
+        """Record trust signal from autonomy runtime execution.
+
+        Extends trust engine with capability-level trust tracking.
+        Maps quality paths to trust signals for the unified trust model.
+        """
+        quality_trust_map = {
+            "gold": 1.0,
+            "silver": 0.7,
+            "bronze": 0.3,
+            "quarantine": -0.5,
+        }
+        value = quality_trust_map.get(quality_path, 0.3)
+        if not verified:
+            value *= 0.5
+
+        self.record_signal(
+            agent_id=f"cap:{capability_id}",
+            signal_name="autonomy_execution",
+            value=value,
+        )
+
+    def get_capability_trust(self, capability_id: str) -> float:
+        """Get trust score for a specific capability."""
+        rep = self.compute_reputation(f"cap:{capability_id}")
+        return rep.composite_score if rep else 0.5

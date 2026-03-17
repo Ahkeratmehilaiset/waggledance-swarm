@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS agent_trust (
 );
 """
 
+_ADD_CANONICAL = "ALTER TABLE agent_trust ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''"
+
 _UPSERT = """
 INSERT INTO agent_trust
     (agent_id, composite_score,
@@ -63,6 +65,14 @@ class SQLiteTrustStore:
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.executescript(_SCHEMA)
+        # Phase 1 autonomy: add canonical_id if missing
+        try:
+            async with self._db.execute("PRAGMA table_info(agent_trust)") as cur:
+                cols = {r[1] async for r in cur}
+            if "canonical_id" not in cols:
+                await self._db.execute(_ADD_CANONICAL)
+        except Exception:
+            pass  # column already exists or DB locked
         await self._db.commit()
         return self._db
 

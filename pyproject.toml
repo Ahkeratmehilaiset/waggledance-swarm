@@ -1,6 +1,6 @@
 [project]
 name = "waggledance-swarm"
-version = "1.18.0"
+version = "2.0.0"
 description = "Local-first multi-agent AI with Finnish NLP and autonomous learning"
 readme = "README.md"
 license = {text = "MIT"}

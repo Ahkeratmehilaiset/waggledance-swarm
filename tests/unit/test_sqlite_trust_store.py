@@ -35,8 +35,10 @@ class TestSQLiteTrustStore(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
         self._db_path = os.path.join(self._tmpdir, "trust_test.db")
+        self._loop = asyncio.new_event_loop()
 
     def tearDown(self):
+        self._loop.close()
         try:
             os.unlink(self._db_path)
         except FileNotFoundError:
@@ -44,7 +46,7 @@ class TestSQLiteTrustStore(unittest.TestCase):
         os.rmdir(self._tmpdir)
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return self._loop.run_until_complete(coro)
 
     def test_get_trust_missing_returns_none(self):
         store = SQLiteTrustStore(self._db_path)

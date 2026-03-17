@@ -464,7 +464,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | MicroModel V1 (pattern match) | ~0.01ms | Regex + lookup table |
 | MicroModel V2 (classifier) | ~1ms | PyTorch 250K params on CPU |
 | Hallucination rate | ~1.8% | Contrastive + keyword detection on internal test set |
-| Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
+| Night learning rate | 400-640 facts/night | ~50-80 facts/hour over 8h; varies with sources and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
 | CI pipeline | GitHub Actions | Legacy + pytest, 4219 total tests |

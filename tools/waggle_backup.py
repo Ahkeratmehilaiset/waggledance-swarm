@@ -178,6 +178,11 @@ TESTS = [
     {"file": "tests/test_learning_prompt_apply.py",       "name": "Prompt Apply",       "phase": "v1.16", "args": [], "timeout": 30},
     {"file": "tests/test_micro_model_eval_gate.py",       "name": "Eval Gate",          "phase": "v1.16", "args": [], "timeout": 60},
     {"file": "tests/test_night_enricher_capabilities.py", "name": "Enricher Caps",      "phase": "v1.16", "args": [], "timeout": 30},
+    # v2.0.0 — Full Autonomy Regression Gates (pytest)
+    {"file": "tests/migration/test_alias_migration.py",           "name": "Alias Migration",     "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
+    {"file": "tests/night_learning_v2/test_night_pipeline.py",    "name": "Night Pipeline v2",   "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
+    {"file": "tests/resource_kernel/test_resource_kernel.py",     "name": "Resource Kernel",     "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
+    {"file": "tests/specialist_models/test_specialist_models.py", "name": "Specialist Models",   "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
 ]
 
 # Backup exclusions
@@ -287,6 +292,17 @@ def parse_test_output(stdout: str, test_file: str) -> dict:
         failures = int(fail_m.group(1)) if fail_m else 0
         return {"passed": total - failures, "failed": failures, "warned": 0}
 
+    # Strategy 4e: pytest — "N passed" / "N failed" / "N warnings"
+    m_passed = re.search(r"(\d+)\s+passed", clean)
+    m_failed = re.search(r"(\d+)\s+failed", clean)
+    m_warned = re.search(r"(\d+)\s+warnings?", clean)
+    if m_passed:
+        return {
+            "passed": int(m_passed.group(1)),
+            "failed": int(m_failed.group(1)) if m_failed else 0,
+            "warned": int(m_warned.group(1)) if m_warned else 0,
+        }
+
     # Strategy 3: Fallback — count OK/FAIL lines
     ok_lines = len(re.findall(r"(?:OK |✅)", clean))
     fail_lines = len(re.findall(r"(?:FAIL |❌)", clean))
@@ -327,7 +343,10 @@ def run_single_test(entry: dict, project_root: Path) -> TestResult:
     env["PYTHONIOENCODING"] = "utf-8"
 
     timeout = entry.get("timeout", TEST_TIMEOUT)
-    args = [sys.executable, str(test_path)] + entry.get("args", [])
+    if entry.get("runner") == "pytest":
+        args = [sys.executable, "-m", "pytest", str(test_path), "-v", "--tb=short"] + entry.get("args", [])
+    else:
+        args = [sys.executable, str(test_path)] + entry.get("args", [])
     start = time.time()
 
     try:

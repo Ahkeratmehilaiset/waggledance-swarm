@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-03-17
-**Version:** v2.0.0 (full-autonomy-v3)
+**Version:** v2.0.0 (merged to master)
 
 ---
 
@@ -13,7 +13,7 @@ WaggleDance now has three stacks:
 |-------|-----------|--------|-------|
 | **Legacy** | `start.py` / `main.py` | Production, running | `hivemind.py` + `core/*.py` monolith |
 | **Hexagonal** | `waggledance.adapters.cli.start_runtime` | Integrated | `waggledance/` package, ports & adapters |
-| **Autonomy** | `waggledance.core.autonomy.runtime` | **NEW — cutover ready** | Solver-first, capability-driven |
+| **Autonomy** | `waggledance.core.autonomy.runtime` | **Merged to master** | Solver-first, capability-driven |
 
 The autonomy runtime is wired into the legacy stack. When `runtime.primary=waggledance`
 and `compatibility_mode=false`, queries route through the autonomy runtime first.
@@ -51,8 +51,9 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | Legacy test suite | 72 suites, 2427 tests, 0 failures, Health 100/100 |
 | Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
-| **Autonomy runtime (v2.0)** | **463 tests (9 phases + integration), all pass** |
+| **Autonomy runtime (v2.0)** | **504 tests (9 phases + 5 regression gates), all pass** |
 | **Cutover validation** | **"FULL AUTONOMY MODE ENABLED"** |
+| **Regression gates** | **migration, night_learning_v2, resource_kernel, specialist_models — 41 tests** |
 | MicroModel V1 routing (restored v1.17.0) | End-to-end: routing_policy → chat_service → orchestrator |
 | Persistent TrustStore (v1.17.0) | SQLiteTrustStore in container.py (prod=SQLite, stub=InMemory) |
 
@@ -91,6 +92,8 @@ These test suites are the gatekeepers — all must pass before any change is mer
 | App unit tests | `pytest tests/unit_app/ -v` | 16 | ChatService, LearningService (BUG 3 regression) |
 | Adapter unit tests | `pytest tests/unit/ -v` | 300+ | All adapters, container, event bus, SQLiteTrustStore |
 | Integration tests | `pytest tests/integration/ -v` | 90 | Runtime CLI, smoke, user scenarios, benchmarks, shadow compare |
+| Autonomy unit tests | `pytest tests/autonomy/ -v` | 463 | Domain models, phases 1-9 |
+| Regression gates | `pytest tests/migration/ tests/night_learning_v2/ tests/resource_kernel/ tests/specialist_models/ -v` | 41 | Alias migration, night pipeline, resource kernel, specialist models |
 | Legacy suite | `python tools/waggle_backup.py --tests-only` | 2427 | Old stack regression (72 suites) |
 | Stub smoke | `Container(stub=True).build_app()` | 1 | DI wiring, no crash |
 | Non-stub smoke | `Container(stub=False).memory_repository` | 1 | ChromaMemoryRepository, not InMemory |

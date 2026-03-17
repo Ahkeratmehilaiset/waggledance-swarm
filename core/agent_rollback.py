@@ -4,7 +4,7 @@ Layer 1: Undo agent writes by session, respecting layer safety.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 log = logging.getLogger("waggledance.agent_rollback")
 

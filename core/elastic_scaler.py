@@ -16,7 +16,7 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 log = logging.getLogger("elastic_scaler")
 
@@ -173,7 +173,7 @@ class ElasticScaler:
                 if lines:
                     return lines[0]
             else:
-                with open("/proc/cpuinfo") as f:
+                with open("/proc/cpuinfo", encoding="utf-8") as f:
                     for line in f:
                         if line.startswith("model name"):
                             return line.split(":")[1].strip()
@@ -193,7 +193,7 @@ class ElasticScaler:
                     if line.isdigit():
                         return int(line) / (1024 ** 3)
             else:
-                with open("/proc/meminfo") as f:
+                with open("/proc/meminfo", encoding="utf-8") as f:
                     for line in f:
                         if line.startswith("MemTotal:"):
                             kb = int(line.split()[1])

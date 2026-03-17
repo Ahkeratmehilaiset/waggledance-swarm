@@ -6,7 +6,7 @@ Supports ==, !=, <, <=, >, >=, IN, NOT IN compound (AND/OR/NOT) conditions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 _SEVERITY_ORDER = {"critical": 3, "high": 3, "warning": 2, "info": 1, "ok": 0}
 

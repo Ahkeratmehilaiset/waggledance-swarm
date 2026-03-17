@@ -9,7 +9,6 @@ Stores Finnish-language weather facts in ChromaDB via consciousness.learn().
 
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Optional
 
 log = logging.getLogger("weather_feed")

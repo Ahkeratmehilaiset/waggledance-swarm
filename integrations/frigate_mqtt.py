@@ -17,7 +17,6 @@ import logging
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Optional
 
 log = logging.getLogger("frigate_mqtt")
 

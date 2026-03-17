@@ -14,7 +14,6 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger("code_reviewer")
 

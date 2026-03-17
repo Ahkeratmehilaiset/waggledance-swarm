@@ -16,7 +16,7 @@ import asyncio
 import time
 import logging
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger("openclaw.throttle")
 

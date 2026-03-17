@@ -4,7 +4,7 @@ Provides role/domain/provenance-filtered queries over shared memory.
 """
 
 import logging
-from typing import List, Optional
+from typing import List
 
 log = logging.getLogger("waggledance.cross_agent_search")
 

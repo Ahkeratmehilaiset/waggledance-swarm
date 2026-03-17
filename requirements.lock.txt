@@ -55,7 +55,7 @@ duckduckgo_search==8.1.1
 durationpy==0.10
 et_xmlfile==2.0.0
 faiss-cpu==1.13.2
-fastapi==0.129.1
+fastapi==0.135.1
 faster-whisper==1.2.0
 feedparser==6.0.12
 ffmpeg-python==0.2.0

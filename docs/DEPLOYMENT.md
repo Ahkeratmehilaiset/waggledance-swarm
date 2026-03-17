@@ -49,7 +49,7 @@ ollama pull all-minilm
 # 4. Clone and install
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-pip install -r requirements.txt
+pip install -r requirements.txt   # or: pip install -e .
 
 # 5. Run (legacy)
 python main.py
@@ -71,7 +71,7 @@ ollama pull nomic-embed-text && ollama pull all-minilm
 # 3. Clone and install
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-pip install -r requirements.txt
+pip install -r requirements.txt   # or: pip install -e .
 
 # 4. Run (legacy)
 python main.py
@@ -162,7 +162,7 @@ Additional environment variables:
 ## Verify Installation
 
 ```bash
-# Run all 72 legacy test suites
+# Run all 79 legacy test suites
 python tools/waggle_backup.py --tests-only
 
 # Run pytest — unit, core, app, contracts
@@ -175,7 +175,7 @@ python -m pytest tests/integration/ -v
 python tools/waggle_restore.py
 ```
 
-Expected: **72 legacy suites GREEN (~2427 assertions), 469 pytest unit + 90 integration = ~2986 total tests.**
+Expected: **79 legacy suites GREEN (~1470 assertions), 2406 pytest tests = ~3876 total tests.**
 
 ---
 

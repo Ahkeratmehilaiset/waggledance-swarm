@@ -3,7 +3,7 @@ import sys, os, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unittest.mock import MagicMock, patch
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 
 class MockMemoryStore:
@@ -56,8 +56,8 @@ def test_ttl_eviction():
     from core.memory_engine import MemoryEviction
 
     # Create items with old timestamps
-    old_ts = (datetime.utcnow() - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S")
-    fresh_ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+    old_ts = (datetime.now(UTC) - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    fresh_ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
     items = {
         "ids": ["w1", "w2", "w3"],
@@ -85,7 +85,7 @@ def test_ttl_protects_user_sources():
     """Protected sources are not TTL-evicted."""
     from core.memory_engine import MemoryEviction
 
-    old_ts = (datetime.utcnow() - timedelta(hours=9999)).strftime("%Y-%m-%dT%H:%M:%S")
+    old_ts = (datetime.now(UTC) - timedelta(hours=9999)).strftime("%Y-%m-%dT%H:%M:%S")
     items = {
         "ids": ["u1", "u2"],
         "metadatas": [

@@ -323,7 +323,7 @@ ollama pull all-minilm
 # 3. Clone and install
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-pip install -r requirements.txt
+pip install -r requirements.txt   # or: pip install -e .
 
 # 4. Run
 python main.py

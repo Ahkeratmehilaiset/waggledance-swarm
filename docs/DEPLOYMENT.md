@@ -165,11 +165,8 @@ Additional environment variables:
 # Run all 79 legacy test suites
 python tools/waggle_backup.py --tests-only
 
-# Run pytest — unit, core, app, contracts
-python -m pytest tests/unit/ tests/unit_core/ tests/unit_app/ tests/contracts/ -v
-
-# Run pytest — integration
-python -m pytest tests/integration/ -v
+# Run all pytest tests (unit, core, app, contracts, integration, autonomy)
+python -m pytest tests/ -v
 
 # Validate environment
 python tools/waggle_restore.py

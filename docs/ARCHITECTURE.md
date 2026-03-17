@@ -190,17 +190,17 @@ Monitors learning novelty. Pauses sources that plateau (threshold 0.10, patience
 
 | File | Lines | Role |
 |------|-------|------|
-| `hivemind.py` | ~1382 | Main orchestrator (delegates to 4 controllers) |
-| `core/chat_handler.py` | ~716 | Chat routing, swarm routing, collaboration |
-| `core/night_mode_controller.py` | ~455 | Night learning cycle, convergence |
-| `core/round_table_controller.py` | ~476 | Round Table debates, agent selection |
-| `core/heartbeat_controller.py` | ~662 | Heartbeat loop, proactive thinking |
-| `core/memory_engine.py` | ~1500 | Memory, search, embedding |
-| `core/night_enricher.py` | ~600 | Night learning + convergence |
-| `core/meta_learning.py` | ~400 | Weekly report generation |
-| `core/elastic_scaler.py` | ~300 | Hardware detection + tier selection |
-| `core/learning_engine.py` | ~560 | Quality gate, prompt evolution |
-| `core/cognitive_graph.py` | ~250 | NetworkX knowledge graph |
-| `core/trust_engine.py` | ~300 | 6-signal agent reputation |
-| `web/dashboard.py` | ~1100 | Production FastAPI + endpoints |
-| `start.py` | ~200 | Launcher (stub/production) |
+| `hivemind.py` | ~1500 | Main orchestrator (delegates to 4 controllers) |
+| `core/chat_handler.py` | ~1100 | Chat routing, swarm routing, collaboration |
+| `core/night_mode_controller.py` | ~560 | Night learning cycle, convergence |
+| `core/round_table_controller.py` | ~545 | Round Table debates, agent selection |
+| `core/heartbeat_controller.py` | ~700 | Heartbeat loop, proactive thinking |
+| `core/memory_engine.py` | ~1330 | Memory, search, embedding |
+| `core/night_enricher.py` | ~1790 | Night learning + convergence + gap scheduler |
+| `core/meta_learning.py` | ~610 | Weekly report generation |
+| `core/elastic_scaler.py` | ~340 | Hardware detection + tier selection |
+| `core/learning_engine.py` | ~1140 | Quality gate, prompt evolution |
+| `core/cognitive_graph.py` | ~210 | NetworkX knowledge graph |
+| `core/trust_engine.py` | ~310 | 6-signal agent reputation |
+| `web/dashboard.py` | ~1760 | Production FastAPI + endpoints |
+| `start.py` | ~250 | Launcher (stub/production) |

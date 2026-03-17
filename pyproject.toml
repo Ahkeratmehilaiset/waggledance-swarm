@@ -51,3 +51,8 @@ waggledance = "waggledance.adapters.cli.start_runtime:main"
 [project.urls]
 Homepage = "https://github.com/Ahkeratmehilaiset/waggledance-swarm"
 Issues = "https://github.com/Ahkeratmehilaiset/waggledance-swarm/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+asyncio_mode = "strict"

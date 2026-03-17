@@ -43,7 +43,7 @@ WaggleDance is designed as a **localhost-only, single-user** system. It is NOT d
 - Methods restricted to `GET` and `POST`
 - Headers restricted to `Content-Type` and `Authorization`
 - Credentials disabled
-- Origins configurable via `CORS_ORIGINS` env var
+- Origins restricted to localhost (`localhost:5173`, `localhost:3000`, `localhost:8000`, `127.0.0.1:5173`, `127.0.0.1:8000`)
 
 ### Error Handling (H4)
 - All API errors return generic `{"error": "Internal error"}`
@@ -94,6 +94,6 @@ If you need to expose WaggleDance beyond localhost:
 
 1. Put it behind a reverse proxy (nginx, Caddy) with TLS
 2. Add HTTP Basic Auth or OAuth2 at the proxy level
-3. Restrict `CORS_ORIGINS` to your domain
+3. Update CORS `allow_origins` in `web/dashboard.py` to your domain
 4. Consider network-level firewall rules
 5. Monitor `/health` and `/ready` endpoints externally

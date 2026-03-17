@@ -116,7 +116,7 @@ class TestEventTypes:
         assert hasattr(EventType, "APP_SHUTDOWN")
 
     def test_event_type_count(self):
-        assert len(EventType) == 16
+        assert len(EventType) == 34  # 16 legacy + 18 autonomy Phase 2
 
 
 class TestPortSignatures:

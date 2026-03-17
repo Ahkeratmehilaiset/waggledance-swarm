@@ -25,7 +25,7 @@ The system was originally developed in a demanding real-world field environment 
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-Validated with 72 legacy suites (2427 tests), pytest unit/core/app/contracts (469 tests), integration tests (90 tests), and autonomy tests (463 tests) — 3449 total, 0 failures. No subscription, no API keys required.
+Validated with 79 legacy suites (1470 tests) and 2406 pytest tests — 3876 total, 0 failures, Health 100/100. No subscription, no API keys required.
 
 ---
 
@@ -66,7 +66,7 @@ Validated with 72 legacy suites (2427 tests), pytest unit/core/app/contracts (46
 - **Single-node only** — no clustering or distributed deployment
 - **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
 - **MicroModel V3 (LoRA)** — Phi-3.5-mini pipeline validated (2.92GB VRAM), full training deferred
-- **CI runs basic test suite** — full 72-suite validation still requires local `tools/waggle_backup.py`
+- **CI runs basic test suite** — full 79-suite validation still requires local `tools/waggle_backup.py`
 - **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
 - **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
 - **Performance numbers** — self-measured with internal test suites, not independently verified
@@ -227,7 +227,7 @@ User (Finnish / English) → FastAPI (port 8000)
   │   ├── Opus-MT fi↔en (on-device)
   │   └── Auto-skip when input is English
   │
-  └── Dashboard (Vite + React, port 5173)
+  └── Dashboard (Vite + React, served from port 8000)
       ├── 3D neural brain visualization
       ├── Real-time agent heartbeat feed
       ├── CPU / GPU / VRAM gauges
@@ -351,7 +351,7 @@ See [ENTRYPOINTS.md](ENTRYPOINTS.md) for details on primary vs legacy entrypoint
 python tools/waggle_backup.py --tests-only
 ```
 
-Expected: **76 suites GREEN, 2427+ tests, 0 failures** (4 skipped without Ollama). Full validation: `python tools/validate_all.py --skip-ollama`.
+Expected: **79 suites GREEN, 1470+ tests, 0 failures** (4 skipped without Ollama).
 
 ---
 
@@ -375,7 +375,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (port 5173)
-├── tests/               # 72 legacy suites + pytest unit/core/integration (~2986 tests)
+├── tests/               # 79 legacy suites + 2406 pytest tests (~3876 total)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -443,6 +443,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 - **Safe self-improvement (v1.16)** — prompt evolution with rollback, micro-model eval gate, night learning source visibility
 - **Big Sprint (v1.17)** — memory_engine split (4 extracted modules), persistent SQLite TrustStore, micromodel route restored end-to-end, active learning/canary/telemetry, MQTT ingest, runtime shadow-compare, test unification (76 suites + 559 pytest)
 - **Runtime Convergence (v1.18)** — shared routing helpers, telemetry/ledger/explainability wired into request + night loops, MQTT bridge via SensorHub, 7 new dashboard APIs, memory_engine.py 1292 lines, 30-query benchmark, SQLiteTrustStore graceful fallback
+- **Full Autonomy v3 (v2.0)** — solver-first runtime (3 layers: solvers → specialist models → LLM), capability contracts, quality gates, procedural memory, night learning v2, resource kernel, alias migration, 504 autonomy tests
 
 ---
 
@@ -452,7 +453,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 76 suites GREEN + 559 pytest | ~2986 total tests, 4 skipped without Ollama |
+| Test suites | 79 legacy suites + 2406 pytest | ~3876 total tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -463,7 +464,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | Night learning rate | 50-200 facts/night | Varies with hardware and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | Legacy + pytest, 2986 total tests |
+| CI pipeline | GitHub Actions | Legacy + pytest, 3876 total tests |
 
 ---
 

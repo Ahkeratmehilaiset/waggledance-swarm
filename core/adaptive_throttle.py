@@ -185,9 +185,10 @@ class AdaptiveThrottle:
             logger.info(f"Optimal embed batch: {best_batch}")
 
         # ── Translate batch benchmark ──
-        # DISABLED: Opus-MT loading during startup causes crashes
-        # TODO: Re-enable after implementing proper lazy loading
-        if False and translation_proxy and hasattr(translation_proxy, 'opus') and translation_proxy.opus.available:
+        # Only runs if Opus-MT is already loaded (avoids startup crash)
+        if (translation_proxy and hasattr(translation_proxy, 'opus')
+                and getattr(translation_proxy.opus, 'available', False)
+                and getattr(translation_proxy.opus, '_model', None) is not None):
             test_texts_fi = [
                 "Mehiläishoito on tärkeää",
                 "Varroa-punkkien torjunta",

@@ -1,20 +1,23 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-03-15
-**Version:** v1.18.0
+**Updated:** 2026-03-17
+**Version:** v2.0.0 (full-autonomy-v3)
 
 ---
 
-## Dual-Stack Architecture
+## Tri-Stack Architecture
 
-WaggleDance currently runs two parallel stacks:
+WaggleDance now has three stacks:
 
 | Stack | Entrypoint | Status | Notes |
 |-------|-----------|--------|-------|
 | **Legacy** | `start.py` / `main.py` | Production, running | `hivemind.py` + `core/*.py` monolith |
-| **New (hexagonal)** | `waggledance.adapters.cli.start_runtime` | Integrated, not yet production | `waggledance/` package, ports & adapters |
+| **Hexagonal** | `waggledance.adapters.cli.start_runtime` | Integrated | `waggledance/` package, ports & adapters |
+| **Autonomy** | `waggledance.core.autonomy.runtime` | **NEW — cutover ready** | Solver-first, capability-driven |
 
-The legacy stack serves all production traffic. The new stack is wired, tested, and bootable but has not yet run a 24h production validation.
+The autonomy runtime is wired into the legacy stack. When `runtime.primary=waggledance`
+and `compatibility_mode=false`, queries route through the autonomy runtime first.
+See `docs/AUTONOMY_RUNTIME.md` for details.
 
 ---
 
@@ -48,6 +51,8 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | Legacy test suite | 72 suites, 2427 tests, 0 failures, Health 100/100 |
 | Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
+| **Autonomy runtime (v2.0)** | **463 tests (9 phases + integration), all pass** |
+| **Cutover validation** | **"FULL AUTONOMY MODE ENABLED"** |
 | MicroModel V1 routing (restored v1.17.0) | End-to-end: routing_policy → chat_service → orchestrator |
 | Persistent TrustStore (v1.17.0) | SQLiteTrustStore in container.py (prod=SQLite, stub=InMemory) |
 

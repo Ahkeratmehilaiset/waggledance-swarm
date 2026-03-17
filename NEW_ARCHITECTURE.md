@@ -1,10 +1,11 @@
-# NEW_ARCHITECTURE.md — WaggleDance Hexagonal Architecture
+# NEW_ARCHITECTURE.md — WaggleDance Hexagonal + Autonomy Architecture
 
 ## Overview
 
-WaggleDance is being migrated from a monolithic architecture (`hivemind.py` + `core/*.py`) to a hexagonal (ports & adapters) architecture under the `waggledance/` package.
+WaggleDance has been migrated from a monolithic architecture (`hivemind.py` + `core/*.py`) to a hexagonal (ports & adapters) architecture under the `waggledance/` package, with a full autonomy runtime added in v2.0.
 
-**Agent 1** (this sprint) built the inner hexagon: domain models, ports, orchestration, policies, and application services. **Agent 2** builds the outer ring: adapters, bootstrap, and HTTP routes.
+**Hexagonal refactor** built the inner hexagon: domain models, ports, orchestration, policies, and application services.
+**Full Autonomy v3** added the solver-first runtime: goals, planning, policy, actions, world model, capabilities, night learning v2, resource kernel, and lifecycle management.
 
 ## Package Structure
 
@@ -105,11 +106,60 @@ Excluded: `micromodel` (P0 production bug), `rules` (not in current architecture
 | BUG 2 | `asyncio.create_task()` without error callbacks | All tasks via `Orchestrator._track_task()` with `.add_done_callback()` |
 | BUG 3 | Night learning stall (3979 facts stuck for 6h) | `LearningService._consecutive_empty_cycles` counter + `NIGHT_STALL_DETECTED` event |
 
+## Full Autonomy Runtime (v2.0)
+
+The autonomy runtime adds solver-first, capability-driven decision-making:
+
+```
+waggledance/core/
+  autonomy/
+    runtime.py              # AutonomyRuntime (main orchestrator)
+    lifecycle.py            # State machine (RUNNING/DEGRADED/STOPPED)
+    resource_kernel.py      # Load management + admission control
+    compatibility.py        # Legacy/autonomy bridge
+  goals/
+    goal_engine.py          # Goal lifecycle management
+    mission_store.py        # Goal persistence
+  planning/
+    planner.py              # Capability chain builder
+  policy/
+    policy_engine.py        # Deny-by-default evaluation
+    risk_scoring.py         # Risk assessment
+    constitution.py         # Immutable safety rules
+    approvals.py            # Approval workflow
+  actions/
+    action_bus.py           # Safe execution with rollback
+  reasoning/
+    solver_router.py        # 3-tier solver-first routing
+    verifier.py             # Outcome validation
+  capabilities/
+    registry.py             # Capability registry
+    selector.py             # Capability selection
+  world/
+    world_model.py          # Unified situation picture
+    entity_registry.py      # Named entities
+    baseline_store.py       # Normal baselines for anomaly detection
+  memory/
+    working_memory.py       # Short-term query context
+  learning/
+    case_builder.py         # Case trajectory builder
+    quality_gate.py         # Grading (gold/silver/bronze/quarantine)
+    procedural_memory.py    # Proven action chains
+    night_learning_pipeline.py  # Night learning orchestrator
+    morning_report.py       # End-of-night summary
+    legacy_converter.py     # Q&A → case trajectory bridge
+  specialist_models/
+    specialist_trainer.py   # Model training + canary lifecycle
+    model_store.py          # Model persistence
+  domain/
+    autonomy.py             # DTOs, enums, dataclasses
+    alias_registry.py       # Canonical ID + alias resolution
+```
+
+See `docs/AUTONOMY_RUNTIME.md` for full details.
+
 ## What's NOT Done Yet
 
-- **Integration phase**: Wiring `waggledance/` into `start.py` / `main.py` (requires Agent 2 adapters)
-- **Old code removal**: `hivemind.py`, `core/chat_handler.py`, etc. remain untouched
-- **FAISS/ChromaDB adapters**: Live in `waggledance/adapters/` (Agent 2)
-- **HTTP layer**: Routes, middleware in `waggledance/adapters/http/` (Agent 2)
-- **Dashboard**: No changes to React frontend
-- **Config migration**: `configs/settings.yaml` reader in `waggledance/adapters/config/` (Agent 2)
+- **Old code removal**: `hivemind.py`, `core/chat_handler.py`, etc. remain (wrapped, not rewritten)
+- **Dashboard autonomy views**: No autonomy-specific dashboard components yet
+- **24h production validation**: Autonomy runtime tested but not yet run in production

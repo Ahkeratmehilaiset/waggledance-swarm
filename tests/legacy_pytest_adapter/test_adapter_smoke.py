@@ -1,25 +1,20 @@
 """Smoke tests for the legacy pytest adapter (v1.17.0)."""
 
-import os
-import sys
+import importlib.util
 import unittest
 from pathlib import Path
 
-import importlib
-import sys
-from pathlib import Path
-
-# Import from conftest in same directory
-_conftest_dir = Path(__file__).parent
-sys.path.insert(0, str(_conftest_dir))
-from conftest import (
-    _is_legacy_test,
-    _discover_legacy_tests,
-    LegacyTestFailure,
-    SKIP_PREFIXES,
-    OLLAMA_TESTS,
-)
-sys.path.pop(0)
+# Import from conftest in same directory (use importlib to avoid shadowing
+# by tests/conftest.py which only has collect_ignore)
+_conftest_path = Path(__file__).parent / "conftest.py"
+_spec = importlib.util.spec_from_file_location("legacy_conftest", _conftest_path)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+_is_legacy_test = _mod._is_legacy_test
+_discover_legacy_tests = _mod._discover_legacy_tests
+LegacyTestFailure = _mod.LegacyTestFailure
+SKIP_PREFIXES = _mod.SKIP_PREFIXES
+OLLAMA_TESTS = _mod.OLLAMA_TESTS
 
 
 class TestLegacyDiscovery(unittest.TestCase):

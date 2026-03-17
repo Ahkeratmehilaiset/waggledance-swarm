@@ -804,7 +804,16 @@ DELEGATION RULES (IMPORTANT):
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._log_task_error)
         return task
+
+    @staticmethod
+    def _log_task_error(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            log.error("Background task %s failed: %s", task.get_name(), exc)
 
     async def stop(self):
         log.info("Sammutetaan WaggleDance...")

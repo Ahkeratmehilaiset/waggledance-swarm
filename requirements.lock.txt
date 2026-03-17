@@ -280,7 +280,7 @@ torch==2.7.1+cu118
 torchao==0.16.0
 torchaudio==2.7.1+cu118
 torchvision==0.22.1+cu118
-tornado==6.5.2
+tornado==6.5.5
 tqdm==4.67.1
 transformers==5.2.0
 trio==0.30.0

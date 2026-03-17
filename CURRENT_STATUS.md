@@ -41,8 +41,8 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 
 | Component | Evidence |
 |-----------|----------|
-| 8 port contracts | `PORT_CONTRACTS.md`, locked, 0 mismatches |
-| State ownership rules | `STATE_OWNERSHIP.md`, 9 owners, 7 forbidden paths |
+| 8 port contracts | `docs/PORT_CONTRACTS.md`, locked, 0 mismatches |
+| State ownership rules | `docs/STATE_OWNERSHIP.md`, 9 owners, 7 forbidden paths |
 | Domain models (5 modules) | `tests/contracts/` — 22 tests |
 | Orchestration (scheduler, routing, round table, micromodel) | `tests/unit_core/` — 130+ tests |
 | Application services (chat, memory, learning) | `tests/unit_app/` — 16 tests |
@@ -104,7 +104,7 @@ These test suites are the gatekeepers — all must pass before any change is mer
 ## Runtime Rules
 
 1. **No silent fallbacks** — Non-stub mode must fail fast if a real adapter is unavailable; never silently fall back to in-memory stub.
-2. **Single-writer ownership** — Every persistent state type has exactly one writing component (see `STATE_OWNERSHIP.md`).
+2. **Single-writer ownership** — Every persistent state type has exactly one writing component (see `docs/STATE_OWNERSHIP.md`).
 3. **No fire-and-forget tasks** — Every `asyncio.create_task()` must use `_track_task()` or `TaskGroup` with error callbacks.
 4. **No type mixing** — Never assign incompatible types to a typed attribute (prevents BUG 1).
 5. **Event bus failure policy** — Log with `exc_info=True`, increment failure counter, never swallow, max 5s handler timeout.

@@ -343,7 +343,7 @@ python -m waggledance.adapters.cli.start_runtime               # Production
 python -m waggledance.adapters.cli.start_runtime --port 9000   # Custom port
 ```
 
-See [ENTRYPOINTS.md](ENTRYPOINTS.md) for details on primary vs legacy entrypoints.
+See [docs/ENTRYPOINTS.md](docs/ENTRYPOINTS.md) for details on primary vs legacy entrypoints.
 
 ### Verify Installation
 
@@ -389,7 +389,7 @@ waggledance-swarm/
 │   ├── adapters/        #   Ollama, ChromaDB, HotCache, HTTP, CLI
 │   └── bootstrap/       #   DI container, event bus
 ├── hivemind.py          # HiveMind orchestrator (~1382 lines + 4 controllers)
-├── main.py              # Legacy entry point (see ENTRYPOINTS.md)
+├── main.py              # Legacy entry point (see docs/ENTRYPOINTS.md)
 ├── start.py             # Launcher (--stub / --production / --new-runtime)
 ├── Dockerfile           # Python 3.13 + Voikko + healthcheck
 └── docker-compose.yml   # Ollama + WaggleDance stack

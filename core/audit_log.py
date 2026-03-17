@@ -147,3 +147,21 @@ class AuditLog:
     @staticmethod
     def content_hash(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+    # ── v2.0: Autonomy black box ─────────────────────────────────
+
+    def record_autonomy_event(self, event_type: str, goal_id: str = "",
+                               action_id: str = "", capability: str = "",
+                               quality_path: str = "", details: str = "") -> None:
+        """Record an autonomy runtime event for black-box audit trail.
+
+        Extends the audit log to capture goal/mission/action/policy events
+        from the autonomy runtime.
+        """
+        self.record(
+            action=f"autonomy:{event_type}",
+            doc_id=goal_id or action_id,
+            agent_id=capability or "autonomy_runtime",
+            content_hash=self.content_hash(details) if details else "",
+            details=f"[{quality_path}] {details[:500]}" if details else "",
+        )

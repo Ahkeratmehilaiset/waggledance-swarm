@@ -1017,3 +1017,35 @@ class MicroModelOrchestrator:
             "collector": self.collector.stats,
             "promotions": self.promotions.stats if self.promotions else {},
         }
+
+    # ── v2.0: Specialist model base ─────────────────────────────
+
+    def get_specialist_trainer(self):
+        """Return a SpecialistTrainer that can use V2/V3 as training base.
+
+        Bridges the legacy micro-model pipeline to the new specialist
+        model training system. The specialist trainer uses case trajectories
+        instead of Q&A pairs.
+        """
+        try:
+            from waggledance.core.specialist_models.specialist_trainer import SpecialistTrainer
+            return SpecialistTrainer(profile=getattr(self, '_profile', 'DEFAULT'))
+        except ImportError:
+            return None
+
+    def feed_specialist_training(self, case_trajectories: list) -> int:
+        """Feed case trajectories into V2/V3 model training pipeline.
+
+        Returns number of features extracted for training.
+        """
+        trainer = self.get_specialist_trainer()
+        if trainer is None:
+            return 0
+        results = []
+        for model_name in ("route_classifier", "intent_classifier"):
+            try:
+                result = trainer.train(model_name, case_trajectories)
+                results.append(result)
+            except Exception:
+                pass
+        return len(results)

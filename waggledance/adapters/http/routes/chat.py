@@ -1,7 +1,5 @@
 """Chat HTTP route -- thin wrapper around ChatService."""
 
-from dataclasses import asdict
-
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 

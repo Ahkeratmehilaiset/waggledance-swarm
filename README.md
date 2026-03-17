@@ -25,7 +25,7 @@ The system was originally developed in a demanding real-world field environment 
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-Validated with 79 legacy suites (1470 tests) and 2747 pytest tests — 4217 total, 0 failures, Health 100/100. No subscription, no API keys required.
+Validated with 79 legacy suites (1470 tests) and 2796 pytest tests — 4266 total, 0 failures, Health 100/100. No subscription, no API keys required.
 
 ---
 
@@ -378,7 +378,7 @@ waggledance-swarm/
 │       └── ...          #   16 API route modules
 ├── web/                 # Production FastAPI app (dashboard.py)
 ├── dashboard/           # Vite + React UI (dev :5173, prod served from :8000)
-├── tests/               # 79 legacy suites + 2747 pytest tests (~4217 total)
+├── tests/               # 79 legacy suites + 2796 pytest tests (~4266 total)
 ├── tools/               # Backup, restore, benchmarks, night shift
 ├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
 ├── docs/                # Architecture, API, deployment, security, sensors
@@ -456,7 +456,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test suites | 79 legacy suites + 2747 pytest | ~4217 total tests, 4 skipped without Ollama |
+| Test suites | 79 legacy suites + 2796 pytest | ~4266 total tests, 4 skipped without Ollama |
 | Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
 | Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
 | Bilingual ChromaDB search | ~55ms | FI+EN vector search |
@@ -467,7 +467,7 @@ All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using 
 | Night learning rate | 400-640 facts/night | ~50-80 facts/hour over 8h; varies with sources and convergence |
 | Chat history storage | SQLite (local) | Persistent across page refresh |
 | Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | Legacy + pytest, 4217 total tests |
+| CI pipeline | GitHub Actions | Legacy + pytest, 4266 total tests |
 
 ---
 

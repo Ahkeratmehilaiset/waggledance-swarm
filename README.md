@@ -83,6 +83,9 @@ Validated with 79 legacy suites (1470 tests) and 2406 pytest tests — 3876 tota
 | [Security](docs/SECURITY.md) | Threat model, mitigations, secrets management |
 | [Data & Migrations](docs/MIGRATIONS.md) | Database schemas, backup/restore, data layout |
 | [Sensors & Integrations](docs/SENSORS.md) | MQTT, Frigate, HA, audio, voice, alerts |
+| [Port Contracts](docs/PORT_CONTRACTS.md) | 8 protocol interfaces, locked signatures |
+| [State Ownership](docs/STATE_OWNERSHIP.md) | Single-writer rules, 9 owners |
+| [Entrypoints](docs/ENTRYPOINTS.md) | Legacy vs hexagonal vs autonomy runtime |
 
 ---
 

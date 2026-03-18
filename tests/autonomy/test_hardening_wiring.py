@@ -270,7 +270,7 @@ class TestContainerResourceKernel:
     def test_container_resource_kernel_default_tier(self):
         from waggledance.bootstrap.container import Container
         from waggledance.adapters.config.settings_loader import WaggleSettings
-        s = WaggleSettings(profile="HOME")
+        s = WaggleSettings(profile="HOME", hardware_tier="standard")
         c = Container(settings=s, stub=True)
         svc = c.autonomy_service
         assert svc._resource_kernel.tier.value == "standard"

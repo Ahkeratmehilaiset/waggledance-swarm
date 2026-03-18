@@ -157,16 +157,11 @@ echo   RESTORE VALMIS
 echo  =============================================
 echo.
 
-:: Detect which entrypoint exists
-if exist "%~dp0waggledance\adapters\cli\start_runtime.py" (
-    echo  Kaynnista WaggleDance:
-    echo    cd /d "%~dp0"
-    echo    .venv\Scripts\activate
-    echo    python -m waggledance.adapters.cli.start_runtime
-) else (
-    echo  Kaynnista WaggleDance:
-    echo    cd /d "%~dp0"
-    echo    python main.py
-)
+echo  Kaynnista WaggleDance:
+echo    cd /d "%~dp0"
+echo    .venv\Scripts\activate
+echo    python -m waggledance.adapters.cli.start_runtime
+echo.
+echo  (Legacy: python main.py — deprecated, use only if new runtime fails)
 echo.
 pause

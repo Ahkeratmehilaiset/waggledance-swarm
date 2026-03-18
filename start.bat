@@ -15,5 +15,5 @@ REM PHASE1 TASK7: Ollama model keep-alive and max loaded models
 set OLLAMA_KEEP_ALIVE=24h
 set OLLAMA_MAX_LOADED_MODELS=4
 
-REM Käynnistä
-python main.py %*
+REM Käynnistä (new runtime)
+python -m waggledance.adapters.cli.start_runtime %*

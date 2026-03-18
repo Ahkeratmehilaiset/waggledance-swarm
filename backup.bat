@@ -21,6 +21,8 @@ cd /d "%~dp0"
 python -X utf8 tools/waggle_backup.py
 
 echo.
+echo  Options: --skip-tests  --incremental  --tests-only
+echo.
 echo  Backup complete. Check output above for details.
 echo.
 pause

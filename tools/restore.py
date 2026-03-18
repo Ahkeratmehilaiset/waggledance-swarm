@@ -48,7 +48,7 @@ os.system("")  # Enable ANSI on Windows
 _script_dir = Path(__file__).resolve().parent
 ROOT = _script_dir.parent if _script_dir.name == "tools" else _script_dir
 
-REQUIRED_PYTHON = (3, 11)
+REQUIRED_PYTHON = (3, 13)
 REQUIRED_MODELS = ["phi4-mini", "llama3.2:1b", "nomic-embed-text", "all-minilm"]
 RUNTIME_DIRS = ["data", "logs", "chroma_data"]
 

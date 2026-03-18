@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-WaggleDance Backup & Test Tool v7.0
+WaggleDance Backup & Test Tool v8.0
 =====================================
 Runs full component tests, generates AI report, creates backup.
 Supports 75-agent profile system (gadget/cottage/home/factory).
 Supports incremental backups (only changed files since last backup).
-v7.0: Adds manifest.json, requirements.lock.txt, env.template,
-      and restore automation files to every backup zip.
+v8.0: Adds pytest directory runners for autonomy, unit, contract,
+      integration, and app test suites (v2.0 architecture).
 
 Usage:
     python tools/waggle_backup.py              # Full: tests + report + backup
@@ -183,6 +183,13 @@ TESTS = [
     {"file": "tests/night_learning_v2/test_night_pipeline.py",    "name": "Night Pipeline v2",   "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
     {"file": "tests/resource_kernel/test_resource_kernel.py",     "name": "Resource Kernel",     "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
     {"file": "tests/specialist_models/test_specialist_models.py", "name": "Specialist Models",   "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
+    # New autonomy + hexagonal architecture tests (run as pytest directories)
+    {"file": "tests/autonomy/",     "name": "Autonomy Runtime",       "phase": "auto",  "args": [], "timeout": 120, "runner": "pytest"},
+    {"file": "tests/unit_core/",    "name": "Core Unit Tests",        "phase": "core",  "args": [], "timeout": 60,  "runner": "pytest"},
+    {"file": "tests/unit/",         "name": "Adapter Unit Tests",     "phase": "adapt", "args": [], "timeout": 60,  "runner": "pytest"},
+    {"file": "tests/unit_app/",     "name": "App Unit Tests",         "phase": "app",   "args": [], "timeout": 60,  "runner": "pytest"},
+    {"file": "tests/contracts/",    "name": "Contract Tests",         "phase": "cont",  "args": [], "timeout": 30,  "runner": "pytest"},
+    {"file": "tests/integration/",  "name": "Integration Tests",      "phase": "integ", "args": [], "timeout": 120, "runner": "pytest"},
 ]
 
 # Backup exclusions
@@ -1354,7 +1361,7 @@ def print_final_summary(zip_path, file_count, brief_path, elapsed):
 
 # ── Main ─────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="WaggleDance Backup & Test Tool v6.0")
+    parser = argparse.ArgumentParser(description="WaggleDance Backup & Test Tool v8.0")
     parser.add_argument("--skip-tests", action="store_true", help="Skip test execution")
     parser.add_argument("--tests-only", action="store_true", help="Run tests + report only, no zip")
     parser.add_argument("--incremental", action="store_true", help="Incremental backup (only changed files)")

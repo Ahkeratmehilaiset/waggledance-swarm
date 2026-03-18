@@ -78,10 +78,15 @@ class ChatHandler:
             try:
                 _autonomy_svc = getattr(self, '_autonomy_service', None)
                 if _autonomy_svc is None:
-                    _autonomy_svc = _AutonomyService(
+                    _svc = _AutonomyService(
                         profile=self.config.get("profile", "DEFAULT"))
-                    _autonomy_svc.start()
-                    self._autonomy_service = _autonomy_svc
+                    _svc.start()
+                    # Avoid race: only set if still None (first writer wins)
+                    if getattr(self, '_autonomy_service', None) is None:
+                        self._autonomy_service = _svc
+                    else:
+                        _svc.stop()
+                    _autonomy_svc = self._autonomy_service
                 result = _autonomy_svc.handle_query(
                     message, {"language": _detected_lang, "source": source})
                 # Format response from autonomy result
@@ -115,9 +120,9 @@ class ChatHandler:
 
         # ═══ Phase 4: Detect user correction ("ei", "väärin", correction text) ═══
         _CORRECTION_WORDS = {"ei", "väärin", "wrong", "väärä", "virhe",
-                             "korjaus", "eikä", "ei ole", "tarkoitin"}
-        _CORRECTION_PHRASES = {"ei vaan", "oikea vastaus", "tarkoitin että",
-                               "ei vaan ", "väärä vastaus"}
+                             "korjaus", "eikä", "tarkoitin"}
+        _CORRECTION_PHRASES = {"ei vaan", "ei ole", "oikea vastaus",
+                               "tarkoitin että", "väärä vastaus"}
         if (self._last_chat_message and self._last_chat_response
                 and hasattr(self, 'consciousness') and self.consciousness):
             msg_lower = message.lower()

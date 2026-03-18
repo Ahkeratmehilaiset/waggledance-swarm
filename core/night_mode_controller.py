@@ -71,20 +71,27 @@ class NightModeController:
                 and not _rt_cfg.get("compatibility_mode", True)
                 and _NIGHT_PIPELINE_AVAILABLE):
             _nlp = getattr(self, '_night_pipeline', None)
-            if _nlp and _nlp._last_result:
+            _last = _nlp.last_result() if _nlp else None
+            if _last:
                 try:
-                    builder = MorningReportBuilder()
-                    morning = builder.build(
-                        night_result=_nlp._last_result,
-                        grading_results=_nlp._last_grading_results,
-                    )
+                    # Use the report already built by the pipeline if available
+                    if _last.report:
+                        morning = _last.report
+                    else:
+                        builder = MorningReportBuilder(
+                            profile=self.config.get("profile", "DEFAULT"))
+                        morning = builder.build(
+                            cases=[],
+                            training_results=[],
+                            canary_results=_last.canary_results,
+                        )
                     report = morning.to_dict()
                     reports_path = Path("data/morning_reports.jsonl")
                     reports_path.parent.mkdir(parents=True, exist_ok=True)
                     with open(reports_path, "a", encoding="utf-8") as f:
                         f.write(json.dumps(report, ensure_ascii=False) + "\n")
-                    log.info("🌅 Autonomy morning report: %d cases, %d specialists",
-                             morning.cases_graded, morning.specialists_updated)
+                    log.info("🌅 Autonomy morning report: %d cases, %d models trained",
+                             morning.total_cases, morning.models_trained)
                     return
                 except Exception as e:
                     log.warning("Autonomy morning report failed: %s", e)
@@ -259,14 +266,14 @@ class NightModeController:
                 result = _nlp.run_cycle()
                 self._night_mode_facts_learned += result.cases_graded
                 log.info(
-                    "🌙 Autonomy night cycle: %d cases graded, %d specialist trained "
-                    "(%s)", result.cases_graded, result.specialists_trained,
+                    "🌙 Autonomy night cycle: %d cases graded, %d models trained "
+                    "(%.1fs)", result.cases_graded, result.models_trained,
                     result.duration_s)
                 await self._notify_ws("night_learning", {
                     "source": "autonomy_pipeline",
                     "cases_graded": result.cases_graded,
-                    "specialists_trained": result.specialists_trained,
-                    "procedures_updated": result.procedures_updated,
+                    "models_trained": result.models_trained,
+                    "procedures_learned": result.procedures_learned,
                     "facts_learned": self._night_mode_facts_learned,
                 })
                 # Still run periodic checks (meta-learning, code review)

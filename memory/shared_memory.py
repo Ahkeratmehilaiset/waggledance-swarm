@@ -15,6 +15,12 @@ ALLOWED_TASK_COLUMNS = frozenset({
     "assigned_agent", "project_id", "priority", "started_at", "completed_at",
 })
 
+# Pre-built SQL to avoid f-string column interpolation (defense in depth)
+_UPDATE_TASK_SQL = {
+    col: f"UPDATE tasks SET {col} = ? WHERE id = ?"
+    for col in ALLOWED_TASK_COLUMNS
+}
+
 
 class SharedMemory:
     """Async SQLite-pohjainen jaettu muisti."""
@@ -216,9 +222,7 @@ class SharedMemory:
         for key, value in kwargs.items():
             if key not in ALLOWED_TASK_COLUMNS:
                 raise ValueError(f"Column '{key}' not allowed in task update")
-            await self._db.execute(
-                f"UPDATE tasks SET {key} = ? WHERE id = ?", (value, task_id)
-            )
+            await self._db.execute(_UPDATE_TASK_SQL[key], (value, task_id))
         await self._db.commit()
 
     # ── Projektit ────────────────────────────────────────────

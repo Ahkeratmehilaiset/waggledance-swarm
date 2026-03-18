@@ -268,7 +268,7 @@ class HiveMind:
         except Exception as e:
             issues.append(f"Ollama API: {type(e).__name__} (onko Ollama käynnissä?)")
 
-        # 2. Required models
+        # 2. Required models (reuses Ollama API, separate try-block)
         required_models = {
             "chat": self.config.get("llm", {}).get("model", "phi4-mini"),
             "heartbeat": self.config.get("llm_heartbeat", self.config.get("llm", {})).get("model", "llama3.2:1b"),
@@ -278,10 +278,9 @@ class HiveMind:
             r = await asyncio.to_thread(
                 requests.get, "http://localhost:11434/api/tags", timeout=5)
             if r.status_code == 200:
-                installed = {m["name"].split(":")[0]
-                             for m in r.json().get("models", [])}
-                installed_full = {m["name"]
-                                  for m in r.json().get("models", [])}
+                models_data = r.json().get("models", [])
+                installed = {m["name"].split(":")[0] for m in models_data}
+                installed_full = {m["name"] for m in models_data}
                 for role, model in required_models.items():
                     base = model.split(":")[0]
                     if model in installed_full or base in installed:
@@ -295,8 +294,8 @@ class HiveMind:
                         print(f"  [OK] Embed model {emb_model}", flush=True)
                     else:
                         issues.append(f"Embed model {emb_model} not installed")
-        except Exception:
-            pass  # Already caught above
+        except Exception as e:
+            issues.append(f"Model check failed: {type(e).__name__}: {e}")
 
         # 3. ChromaDB
         try:
@@ -1048,33 +1047,6 @@ DELEGATION RULES (IMPORTANT):
                                           plan: dict, context: str) -> str:
         """Delegated to ChatHandler."""
         return await self._chat_handler._multi_agent_collaboration(mission, plan, context)
-
-    # ── Knowledge injection (backward compat) ────────────────
-    # Nämä säilytetään VANHAN KOODIN yhteensopivuutta varten.
-    # Uusi koodi käyttää _enriched_prompt context manageria.
-
-    def _inject_knowledge(self, agent, max_chars=2000):
-        """
-        LEGACY: Lisää agentin tietopankki system_promptiin.
-        Palauttaa alkuperäisen promptin tai None.
-        HUOM: Käytä mieluummin _enriched_prompt() context manageria.
-        """
-        if not self.knowledge_loader:
-            return None
-        agent_type = getattr(agent, 'agent_type', getattr(agent, 'type', ''))
-        if not agent_type:
-            return None
-        knowledge = self.knowledge_loader.get_knowledge_summary(agent_type)
-        if not knowledge:
-            return None
-        original = agent.system_prompt
-        agent.system_prompt = original + "\n" + knowledge[:max_chars]
-        return original
-
-    def _restore_prompt(self, agent, original_prompt):
-        """LEGACY: Palauta alkuperäinen prompt."""
-        if original_prompt is not None:
-            agent.system_prompt = original_prompt
 
     # ── Oracle ──────────────────────────────────────────────
 

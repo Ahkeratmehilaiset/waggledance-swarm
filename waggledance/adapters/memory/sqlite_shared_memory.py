@@ -28,6 +28,12 @@ ALLOWED_UPDATE_COLUMNS = frozenset({
     "project_id", "priority", "started_at", "updated_at",
 })
 
+# Pre-built SQL to avoid f-string column interpolation (defense in depth)
+_UPDATE_TASK_SQL = {
+    col: f"UPDATE tasks SET {col} = ? WHERE id = ?"
+    for col in ALLOWED_UPDATE_COLUMNS
+}
+
 # ── Schema DDL ────────────────────────────────────────────────
 
 _SCHEMA_DDL = """
@@ -388,10 +394,7 @@ class SQLiteSharedMemory:
 
         db = self._ensure_db()
         for col, value in updates.items():
-            await db.execute(
-                f"UPDATE tasks SET {col} = ? WHERE id = ?",
-                (value, task_id),
-            )
+            await db.execute(_UPDATE_TASK_SQL[col], (value, task_id))
         await db.commit()
 
     async def get_task(self, task_id: str) -> dict | None:

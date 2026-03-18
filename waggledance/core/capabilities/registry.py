@@ -376,6 +376,10 @@ class CapabilityRegistry:
         """Return number of bound executors."""
         return len(self._executors)
 
+    def executor_ids(self) -> List[str]:
+        """Return capability IDs that have bound executors."""
+        return list(self._executors.keys())
+
     # ── Lookup ────────────────────────────────────────────
 
     def get(self, capability_id: str) -> Optional[CapabilityContract]:

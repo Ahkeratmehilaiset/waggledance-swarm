@@ -42,6 +42,28 @@ except ImportError:
 log = logging.getLogger("waggledance.autonomy.runtime")
 
 
+def _make_adapter_executor(adapter):
+    """Bridge adapter.execute(...) to ActionBus Executor(action) protocol.
+
+    ActionBus calls ``executor(action: Action) -> dict``.
+    Adapters expose ``adapter.execute(query=..., **kwargs) -> dict``.
+    This bridge extracts the payload from the Action and forwards it.
+    """
+
+    def executor(action: Action) -> Dict[str, Any]:
+        payload = action.payload or {}
+        # Try full payload as kwargs (most flexible — works for
+        # specialized adapters that accept metric=, entity=, etc.)
+        try:
+            return adapter.execute(**payload)
+        except TypeError:
+            # Fallback: positional query string (MathSolverAdapter etc.)
+            query = payload.get("query", "")
+            return adapter.execute(query)
+
+    return executor
+
+
 class AutonomyRuntime:
     """
     Main autonomy runtime that orchestrates all components.
@@ -90,6 +112,14 @@ class AutonomyRuntime:
             self._executor_count = bind_executors(self.capability_registry)
         except Exception as exc:
             log.debug("Capability loader unavailable: %s", exc)
+
+        # Wire registry executors → action bus (bridge adapter interface)
+        for cap_id in self.capability_registry.executor_ids():
+            adapter = self.capability_registry.get_executor(cap_id)
+            if adapter is not None:
+                self.action_bus.register_executor(
+                    cap_id, _make_adapter_executor(adapter)
+                )
 
         # MAGMA adapters (audit, event log, trust)
         self.audit = None
@@ -286,7 +316,10 @@ class AutonomyRuntime:
             }
 
         primary_cap = route_result.selection.selected[0]
-        action = Action(capability_id=primary_cap.capability_id)
+        action = Action(
+            capability_id=primary_cap.capability_id,
+            payload={"query": query},
+        )
 
         # 5. Submit through action bus (policy + execution)
         action_result = self.action_bus.submit(
@@ -488,6 +521,7 @@ class AutonomyRuntime:
             action = Action(
                 capability_id=step.capability_id,
                 goal_id=goal.goal_id,
+                payload={"query": description},
             )
 
             result = self.action_bus.submit(

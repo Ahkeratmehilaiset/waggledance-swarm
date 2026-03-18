@@ -576,12 +576,11 @@ class AgentOverlapDetector:
         return suggestions
 
     def _load_yaml_index(self) -> list:
-        """Try to import YAML index from chat.py."""
+        """Try to import YAML index from legacy backend (deprecated path)."""
         try:
-            from backend.routes.chat import _YAML_INDEX
+            from backend.routes.chat import _YAML_INDEX  # legacy only
             return _YAML_INDEX
         except ImportError:
-            log.debug("Cannot import _YAML_INDEX for overlap detection")
             return []
 
     def _save_suggestions(self, suggestions: list):

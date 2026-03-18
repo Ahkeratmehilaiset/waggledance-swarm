@@ -105,6 +105,16 @@ class AutonomyRuntime:
         self.verifier = verifier or Verifier()
         self.case_builder = case_builder or CaseTrajectoryBuilder(profile=profile)
 
+        # GraphBuilder — records query→capability relationships
+        self.graph_builder = None
+        try:
+            from waggledance.core.world.graph_builder import GraphBuilder
+            if self.world_model.graph is not None:
+                self.graph_builder = GraphBuilder(self.world_model.graph)
+                self.graph_builder.ensure_capability_nodes(self.capability_registry)
+        except Exception as exc:
+            log.debug("GraphBuilder unavailable: %s", exc)
+
         # Executor binding
         self._executor_count = 0
         try:
@@ -404,6 +414,15 @@ class AutonomyRuntime:
                 capability_id=primary_cap.capability_id,
                 quality_grade=case.quality_grade.value,
                 confidence=conf)
+
+        # 8. Record in CognitiveGraph
+        if self.graph_builder:
+            self._magma_safe("graph.record", self.graph_builder.record,
+                query=query, intent=intent,
+                capability_id=primary_cap.capability_id,
+                executed=action_result.executed,
+                quality_grade=case.quality_grade.value,
+                quality_path=route_result.quality_path)
 
         # Persist: save case trajectory
         if self.case_store:

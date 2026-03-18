@@ -29,35 +29,35 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "category": "solve",
         "description": "Mathematical expression evaluator",
         "preconditions": ["numbers_present"],
-        "success_criteria": ["result_verified"],
+        "success_criteria": ["success", "value"],
     },
     {
         "capability_id": "solve.symbolic",
         "category": "solve",
         "description": "Axiom-based formula evaluation (ModelRegistry)",
         "preconditions": ["model_available", "inputs_present"],
-        "success_criteria": ["result_verified", "validation_passed"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "solve.constraints",
         "category": "solve",
         "description": "Rule-based constraint evaluation",
         "preconditions": ["rules_loaded", "context_available"],
-        "success_criteria": ["rules_evaluated"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "solve.pattern_match",
         "category": "solve",
         "description": "MicroModel V1 pattern matching",
         "preconditions": ["model_loaded"],
-        "success_criteria": ["confidence_above_threshold"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "solve.neural_classifier",
         "category": "solve",
         "description": "MicroModel V2 neural classifier",
         "preconditions": ["model_loaded"],
-        "success_criteria": ["confidence_above_threshold"],
+        "success_criteria": ["success"],
     },
     # ── Retrieval ─────────────────────────────────────────
     {
@@ -65,21 +65,21 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "category": "retrieve",
         "description": "Fast in-memory HotCache lookup",
         "preconditions": [],
-        "success_criteria": ["cache_hit"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "retrieve.semantic_search",
         "category": "retrieve",
         "description": "ChromaDB semantic memory search",
         "preconditions": ["embeddings_available"],
-        "success_criteria": ["results_found"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "retrieve.vector_search",
         "category": "retrieve",
         "description": "FAISS vector similarity search",
         "preconditions": ["index_loaded"],
-        "success_criteria": ["results_above_threshold"],
+        "success_criteria": ["success"],
     },
     # ── Normalization ─────────────────────────────────────
     {
@@ -87,14 +87,14 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "category": "normalize",
         "description": "Finnish text normalization (Voikko)",
         "preconditions": ["voikko_available"],
-        "success_criteria": ["text_normalized"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "normalize.translate_fi_en",
         "category": "normalize",
         "description": "Finnish to English translation proxy",
         "preconditions": ["translation_model_available"],
-        "success_criteria": ["translation_complete"],
+        "success_criteria": ["success"],
     },
     # ── Sensing ───────────────────────────────────────────
     {
@@ -150,21 +150,21 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "category": "verify",
         "description": "Hallucination checker for LLM outputs",
         "preconditions": ["response_available"],
-        "success_criteria": ["no_hallucination_detected"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "verify.consensus",
         "category": "verify",
         "description": "Round Table multi-agent consensus",
         "preconditions": ["multiple_agents_available"],
-        "success_criteria": ["consensus_reached"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "verify.english_output",
         "category": "verify",
         "description": "English output quality validator",
         "preconditions": ["response_available"],
-        "success_criteria": ["quality_check_passed"],
+        "success_criteria": ["success"],
     },
     # ── Explanation ───────────────────────────────────────
     {
@@ -172,7 +172,7 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "category": "explain",
         "description": "LLM-based reasoning and explanation (Ollama)",
         "preconditions": ["ollama_available"],
-        "success_criteria": ["response_generated"],
+        "success_criteria": ["success"],
     },
     # ── Detection ─────────────────────────────────────────
     {
@@ -180,14 +180,14 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "category": "detect",
         "description": "Seasonal guard rule matching",
         "preconditions": ["calendar_available"],
-        "success_criteria": ["rules_checked"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "detect.anomaly",
         "category": "detect",
         "description": "Statistical anomaly detection via residuals",
         "preconditions": ["baselines_available"],
-        "success_criteria": ["anomaly_score_computed"],
+        "success_criteria": ["success"],
     },
     # ── Reasoning engines ────────────────────────────────
     {
@@ -195,35 +195,35 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "category": "solve",
         "description": "Physics-based thermal calculations (heat loss, frost, COP)",
         "preconditions": ["numbers_present"],
-        "success_criteria": ["result_computed"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "solve.stats",
         "category": "solve",
         "description": "Statistical analysis and time-series summarization",
         "preconditions": [],
-        "success_criteria": ["summary_computed"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "solve.causal",
         "category": "solve",
         "description": "Causal chain discovery and impact analysis",
         "preconditions": [],
-        "success_criteria": ["chain_found"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "optimize.schedule",
         "category": "optimize",
         "description": "Energy cost minimization and task scheduling",
         "preconditions": [],
-        "success_criteria": ["solution_found"],
+        "success_criteria": ["success"],
     },
     {
         "capability_id": "analyze.routing",
         "category": "detect",
         "description": "Route accuracy tracking and optimization recommendations",
         "preconditions": [],
-        "success_criteria": ["metrics_computed"],
+        "success_criteria": ["success"],
     },
     # ── Domain engines (profile-gated) ───────────────────
     {

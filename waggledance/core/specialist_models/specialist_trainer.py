@@ -75,7 +75,7 @@ class SpecialistTrainer:
     def __init__(
         self,
         model_store: Optional[ModelStore] = None,
-        min_samples: int = 10,
+        min_samples: int = 3,
         min_accuracy: float = 0.85,
         canary_hours: int = 48,
     ):
@@ -103,6 +103,8 @@ class SpecialistTrainer:
         # 1. Extract training features
         features = self._extract_features(model_id, cases)
         if len(features) < self._min_samples:
+            log.info("Skipped %s: %d features < %d min_samples",
+                     model_id, len(features), self._min_samples)
             return TrainingResult(
                 model_id=model_id,
                 training_samples=len(features),

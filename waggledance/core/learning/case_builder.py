@@ -204,6 +204,21 @@ class CaseTrajectoryBuilder:
         self._cases.append(case)
         return case
 
+    # ── Drain ──────────────────────────────────────────────
+
+    def drain_cases(self) -> List[CaseTrajectory]:
+        """Return all accumulated cases and clear the internal buffer.
+
+        Used by NightLearningPipeline to consume the day's cases.
+        """
+        cases = self._cases[:]
+        self._cases.clear()
+        return cases
+
+    def pending_count(self) -> int:
+        """Number of cases waiting to be drained."""
+        return len(self._cases)
+
     # ── Query ─────────────────────────────────────────────
 
     def recent_cases(self, limit: int = 50) -> List[CaseTrajectory]:

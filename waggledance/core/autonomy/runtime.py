@@ -198,6 +198,7 @@ class AutonomyRuntime:
             self.capsule.domain if self.capsule else "none",
         )
 
+        self._night_pipeline = None  # lazy-initialized on first night learning run
         self._started = False
         log.info("AutonomyRuntime initialised (profile=%s)", profile)
 
@@ -699,6 +700,42 @@ class AutonomyRuntime:
             log.info("Proposed %d proactive goals from %d residuals",
                      len(proposed), len(residuals))
         return proposed
+
+    # ── Night learning ─────────────────────────────────────
+
+    def run_night_learning(
+        self,
+        legacy_records: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        """Drain accumulated day cases and run a night learning cycle.
+
+        Returns the NightLearningResult as a dict.
+        """
+        from waggledance.core.learning.night_learning_pipeline import (
+            NightLearningPipeline,
+        )
+
+        if self._night_pipeline is None:
+            self._night_pipeline = NightLearningPipeline(
+                profile=self.profile,
+                case_builder=self.case_builder,
+            )
+
+        day_cases = self.case_builder.drain_cases()
+        result = self._night_pipeline.run_cycle(
+            day_cases=day_cases,
+            legacy_records=legacy_records,
+        )
+
+        log.info(
+            "Night learning: %d cases → %d gold, %d silver, %d bronze, %d quarantine",
+            len(day_cases),
+            result.gold_count,
+            result.silver_count,
+            result.bronze_count,
+            result.quarantine_count,
+        )
+        return result.to_dict()
 
     # ── Stats ─────────────────────────────────────────────
 

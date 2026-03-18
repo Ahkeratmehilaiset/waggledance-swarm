@@ -30,7 +30,7 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 | `tests/integration/` (runtime, smoke, scenarios) | 90 | PASS |
 | `tests/migration/` (alias, backfill fixtures) | 10+ | PASS |
 | `tests/specialist_models/` + `tests/resource_kernel/` | 41 | PASS |
-| **Pytest total** | **3832** | **ALL PASS** |
+| **Pytest total** | **3836** | **ALL PASS** |
 | `tools/waggle_backup.py --tests-only` (legacy) | 1468 (79 suites) | PASS |
 | **Grand total** | **~5300** | **ALL PASS** |
 

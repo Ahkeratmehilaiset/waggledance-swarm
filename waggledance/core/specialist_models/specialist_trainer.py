@@ -112,8 +112,8 @@ class SpecialistTrainer:
                 error=f"Insufficient samples: {len(features)} < {self._min_samples}",
             )
 
-        # 2. Simulate training (actual ML training would go here)
-        accuracy = self._simulate_training(model_id, features)
+        # 2. Train (real sklearn for route_classifier, simulated for others)
+        accuracy = self._train_real_or_simulate(model_id, features)
 
         # 3. Register new version
         mv = self._store.register_version(
@@ -252,14 +252,77 @@ class SpecialistTrainer:
                 "profile": case.profile,
             }
 
+    def _train_real_or_simulate(
+        self, model_id: str, features: List[Dict[str, Any]],
+    ) -> float:
+        """Train with sklearn if available, otherwise simulate."""
+        if model_id == "route_classifier":
+            try:
+                return self._train_route_classifier(features)
+            except ImportError:
+                log.info("sklearn not available, falling back to simulation")
+            except Exception as exc:
+                log.warning("Real training failed for %s: %s", model_id, exc)
+        return self._simulate_training(model_id, features)
+
+    def _train_route_classifier(self, features: List[Dict[str, Any]]) -> float:
+        """Train a real route classifier using sklearn TF-IDF + LogisticRegression.
+
+        Features must have 'goal_type' and 'capabilities' (target).
+        Uses goal_type as text feature → predicts primary capability_id.
+        """
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import cross_val_score
+
+        # Build X (text) and y (target capability)
+        texts = []
+        labels = []
+        for f in features:
+            goal_type = f.get("goal_type", "")
+            caps = f.get("capabilities", [])
+            profile = f.get("profile", "")
+            if not caps:
+                continue
+            # Feature text: combine goal_type + profile
+            texts.append(f"{goal_type} {profile}")
+            labels.append(caps[0])  # primary capability
+
+        if len(texts) < self._min_samples:
+            return 0.0
+
+        # Need at least 2 distinct labels for classification
+        if len(set(labels)) < 2:
+            log.info("route_classifier: only 1 class, using simulation")
+            return self._simulate_training("route_classifier", features)
+
+        vectorizer = TfidfVectorizer(max_features=50)
+        X = vectorizer.fit_transform(texts)
+        n_splits = min(3, len(texts))
+        if n_splits < 2:
+            n_splits = 2
+
+        model = LogisticRegression(max_iter=200, solver="lbfgs")
+        try:
+            scores = cross_val_score(model, X, labels, cv=n_splits)
+            accuracy = float(scores.mean())
+        except ValueError:
+            # Too few samples for cross-val — just fit and report
+            model.fit(X, labels)
+            accuracy = float(model.score(X, labels))
+
+        log.info("route_classifier real training: accuracy=%.3f, samples=%d",
+                 accuracy, len(texts))
+        return accuracy
+
     def _simulate_training(
         self, model_id: str, features: List[Dict[str, Any]],
     ) -> float:
         """
         Simulate model training and return accuracy.
 
-        In production, this would run actual sklearn/PyTorch training.
-        For now, estimate accuracy from data quality distribution.
+        Fallback when sklearn is not available or for non-route models.
+        Estimates accuracy from data quality distribution.
         """
         if not features:
             return 0.0

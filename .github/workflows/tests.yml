@@ -42,9 +42,8 @@ jobs:
         python -m compileall core memory web waggledance backend integrations tests -q
 
     - name: Run legacy tests (informational)
-      continue-on-error: true
       run: |
-        python tests/run_all.py --skip-ollama
+        python tests/run_all.py --skip-ollama || echo "Legacy tests exited $? (expected without Ollama)"
 
     - name: Run pytest
       run: |

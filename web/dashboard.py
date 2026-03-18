@@ -162,9 +162,9 @@ def create_app(hivemind):
   button{{background:#238636;color:white;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;margin:4px;font-size:12px}}
   button:hover{{background:#2ea043}}
   .stat{{display:inline-block;background:#21262d;border-radius:4px;padding:4px 8px;margin:2px;font-size:11px}}
-  .role-scout{{border-left:3px solid #58a6ff}}
-  .role-worker{{border-left:3px solid #3fb950}}
-  .role-judge{{border-left:3px solid #d29922}}
+  .role-explorer{{border-left:3px solid #58a6ff}}
+  .role-executor{{border-left:3px solid #3fb950}}
+  .role-evaluator{{border-left:3px solid #d29922}}
   #livefeed div{{animation:fadeIn .3s}}
   @keyframes fadeIn{{from{{opacity:0}}to{{opacity:1}}}}
   .twarn{{color:#f85149;font-size:10px;padding:2px 6px;background:#f8514922;border-radius:3px}}
@@ -194,7 +194,7 @@ def create_app(hivemind):
   </div>
   <div class="topbar-center">
     <h1>&#x2699;&#xFE0F; <span class="t-main">WaggleDance AI</span> <span class="t-sub">(on-prem)</span></h1>
-    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v2.0.0 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
+    <div class="sub2">Jani Korpi • v2.0.0 • <span class="sbadge">MULTI-AGENT {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
   </div>
   <div class="topbar-right">
     <div class="mbadge">
@@ -458,9 +458,9 @@ async function loadStatus(){{
       <div class="stat">Agentit: ${{ss.total_agents||0}}</div>
       <div class="stat">Kalibr: ${{ss.calibrated||0}}</div>
       <div class="stat">Exploration: ${{((ss.exploration_rate||0)*100).toFixed(0)}}%</div>
-      <div class="stat role-scout">Scouts: ${{ss.roles?.scout||0}}</div>
-      <div class="stat role-worker">Workers: ${{ss.roles?.worker||0}}</div>
-      <div class="stat role-judge">Judges: ${{ss.roles?.judge||0}}</div>
+      <div class="stat role-explorer">Explorers: ${{ss.roles?.scout||0}}</div>
+      <div class="stat role-executor">Executors: ${{ss.roles?.worker||0}}</div>
+      <div class="stat role-evaluator">Evaluators: ${{ss.roles?.judge||0}}</div>
     `;
 
     const th=document.getElementById('throttle');const tt=d.throttle||{{}};
@@ -1111,19 +1111,19 @@ loadFeeds();
         if (not hasattr(hivemind, 'sensor_hub')
                 or not hivemind.sensor_hub
                 or not hivemind.sensor_hub.audio_monitor):
-            return JSONResponse({"available": False, "hives": {}})
+            return JSONResponse({"available": False, "units": {}})
         audio = hivemind.sensor_hub.audio_monitor
-        bee = audio._bee_analyzer
-        if not bee:
-            return JSONResponse({"available": False, "hives": {}})
-        hives = {
-            hive_id: bee.get_hive_status(hive_id)
-            for hive_id in bee._hive_status
+        analyzer = audio._bee_analyzer
+        if not analyzer:
+            return JSONResponse({"available": False, "units": {}})
+        units = {
+            unit_id: analyzer.get_hive_status(unit_id)
+            for unit_id in analyzer._hive_status
         }
         return JSONResponse({
             "available": True,
-            "hives": hives,
-            "stats": bee.stats,
+            "units": units,
+            "stats": analyzer.stats,
         })
 
     # ── Phase 7: Voice Interface ─────────────────────────────
@@ -1282,9 +1282,9 @@ loadFeeds();
                 }
         elif event_type == "queen_insight":
             entry = {
-                "agent": "Queen",
+                "agent": "Coordinator",
                 "message": d.get("insight", d.get("content", "")),
-                "type": "queen",
+                "type": "coordinator",
             }
         elif event_type == "round_table_insight":
             entry = {
@@ -1733,13 +1733,13 @@ def _register_round_table_routes(app, hivemind):
                 # Build discussion entries for dashboard compatibility
                 discussion = []
                 if agents:
-                    # Show last agent as Kuningatar (Queen) with synthesis
+                    # Show last agent as Coordinator with synthesis
                     for a in agents[:-1]:
                         discussion.append({
                             "agent": a.replace("_", " ").title(),
                             "msg": ""})
                     discussion.append({
-                        "agent": "Kuningatar",
+                        "agent": "Coordinator",
                         "msg": synthesis[:200]})
                 discussions.append({
                     "id": e.get("doc_id", ""),

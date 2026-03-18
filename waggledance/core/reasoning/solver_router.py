@@ -183,7 +183,9 @@ class SolverRouter:
         # Thermal
         thermal_signals = {"temperature", "lämpötila", "heat", "frost", "pakkanen",
                            "thermal", "heating", "cooling", "lämmitys",
-                           "celsius", "fahrenheit"}
+                           "celsius", "fahrenheit", "degrees", "astetta",
+                           "too hot", "too cold", "liian kuuma", "liian kylmä",
+                           "warm", "lämmin", "cold", "kylmä"}
         if any(s in q for s in thermal_signals):
             return "thermal"
         # Temperature pattern: number followed by C/F (e.g. "45C", "20 °C")

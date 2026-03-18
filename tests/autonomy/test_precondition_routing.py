@@ -85,6 +85,15 @@ class TestRoutingAccuracy:
         cap_ids = [c.capability_id for c in result.selection.selected]
         assert "solve.thermal" in cap_ids, f"Expected solve.thermal, got {cap_ids}"
 
+    def test_is_45_degrees_too_hot(self, router):
+        """'Is 45 degrees too hot?' must classify as thermal, not chat."""
+        from waggledance.core.reasoning.solver_router import SolverRouter
+        intent = SolverRouter.classify_intent("Is 45 degrees too hot?")
+        assert intent == "thermal", f"Expected thermal, got {intent}"
+        result = router.route("thermal", "Is 45 degrees too hot?")
+        cap_ids = [c.capability_id for c in result.selection.selected]
+        assert "solve.thermal" in cap_ids, f"Expected solve.thermal, got {cap_ids}"
+
     def test_optimize_heating(self, router):
         """'Optimize heating' routes to thermal solvers (has no numbers, so
         solve.thermal filtered out → falls to solve.stats, which is OK)."""

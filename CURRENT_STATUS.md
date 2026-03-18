@@ -92,7 +92,7 @@ These test suites are the gatekeepers — all must pass before any change is mer
 | App unit tests | `pytest tests/unit_app/ -v` | 16 | ChatService, LearningService (BUG 3 regression) |
 | Adapter unit tests | `pytest tests/unit/ -v` | 300+ | All adapters, container, event bus, SQLiteTrustStore |
 | Integration tests | `pytest tests/integration/ -v` | 90 | Runtime CLI, smoke, user scenarios, benchmarks, shadow compare |
-| Autonomy unit tests | `pytest tests/autonomy/ -v` | 463 | Domain models, phases 1-9 |
+| Autonomy unit tests | `pytest tests/autonomy/ -v` | 1368 | Domain models, phases 1-9, runtime wiring |
 | Regression gates | `pytest tests/migration/ tests/night_learning_v2/ tests/resource_kernel/ tests/specialist_models/ -v` | 41 | Alias migration, night pipeline, resource kernel, specialist models |
 | Legacy suite | `python tools/waggle_backup.py --tests-only` | 1470 | Old stack regression (79 suites) |
 | Stub smoke | `Container(stub=True).build_app()` | 1 | DI wiring, no crash |

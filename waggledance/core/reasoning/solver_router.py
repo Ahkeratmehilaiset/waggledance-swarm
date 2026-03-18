@@ -16,6 +16,7 @@ SmartRouterV2 is NOT replaced — it feeds intent classification into this route
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -105,8 +106,8 @@ class SolverRouter:
         t0 = time.time()
         context = context or {}
 
-        # 1. Detect available conditions from context
-        conditions = self._detect_conditions(context)
+        # 1. Detect available conditions from context + query text
+        conditions = self._detect_conditions(context, query)
 
         # 2. Enrich with working memory context
         wm_context = self._working_memory.as_context_dict()
@@ -181,8 +182,12 @@ class SolverRouter:
 
         # Thermal
         thermal_signals = {"temperature", "lämpötila", "heat", "frost", "pakkanen",
-                           "thermal", "heating", "cooling", "lämmitys"}
+                           "thermal", "heating", "cooling", "lämmitys",
+                           "celsius", "fahrenheit"}
         if any(s in q for s in thermal_signals):
+            return "thermal"
+        # Temperature pattern: number followed by C/F (e.g. "45C", "20 °C")
+        if re.search(r'\d+\s*°?[cf]\b', q):
             return "thermal"
 
         # Statistics
@@ -251,14 +256,21 @@ class SolverRouter:
 
     # ── Internal ──────────────────────────────────────────
 
-    def _detect_conditions(self, context: Dict[str, Any]) -> Dict[str, bool]:
-        """Detect which preconditions are available from context."""
+    # Regex for detecting numbers in query text (digits, decimals, percentages)
+    _NUMBER_RE = re.compile(r'\d')
+
+    def _detect_conditions(self, context: Dict[str, Any], query: str = "") -> Dict[str, bool]:
+        """Detect which preconditions are available from context and query text."""
         conditions: Dict[str, bool] = {}
 
         # Always available capabilities
         conditions["text_normalized"] = True
 
-        # Check for specific signals
+        # Detect numbers from query text (enables solve.math, solve.thermal)
+        if query and self._NUMBER_RE.search(query):
+            conditions["numbers_present"] = True
+
+        # Check for specific signals from caller context
         if context.get("numbers_present") or context.get("has_numbers"):
             conditions["numbers_present"] = True
         if context.get("model_available") or context.get("axiom_model"):

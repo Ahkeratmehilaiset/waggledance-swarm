@@ -52,6 +52,20 @@ def _check_ollama(host: str) -> bool:
         return False
 
 
+def _resolve_lan_ip() -> str | None:
+    """Best-effort LAN IP detection. Returns None on failure."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+    except Exception:
+        pass
+    return None
+
+
 def _print_banner(
     stub: bool, host: str, port: int, log_level: str,
     settings=None,
@@ -62,6 +76,16 @@ def _print_banner(
     compat = getattr(settings, "compatibility_mode", False) if settings else False
     profile = getattr(settings, "profile", "?") if settings else "?"
     compat_str = "ON" if compat else "OFF"
+
+    # Build user-facing URLs distinct from bind address
+    local_url = f"http://localhost:{port}"
+    bind_str = f"{host}:{port}"
+    lan_line = ""
+    if host in ("0.0.0.0", "::"):
+        lan_ip = _resolve_lan_ip()
+        if lan_ip:
+            lan_line = f"\n  |  LAN URL:   http://{lan_ip}:{port:<17}|"
+
     print(f"""
   +=============================================+
   |  WaggleDance AI — New Runtime (hexagonal)   |
@@ -70,9 +94,9 @@ def _print_banner(
   |  Primary:   {runtime_primary:<33}|
   |  Compat:    {compat_str:<33}|
   |  Profile:   {profile:<33}|
-  |  Listen:    {host}:{port:<24}|
+  |  Bind:      {bind_str:<33}|
   |  Log level: {log_level:<33}|
-  |  Dashboard: http://{host}:{port:<17}|
+  |  Local URL: {local_url:<33}|{lan_line}
   |  Stop:      Ctrl+C                          |
   +=============================================+
 """, flush=True)

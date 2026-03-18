@@ -375,6 +375,43 @@ class TestStartupBanner:
         out = capsys.readouterr().out
         assert "waggledance" in out  # default
 
+    def test_banner_shows_localhost_not_0000(self, capsys):
+        """Banner must show http://localhost:PORT, not http://0.0.0.0:PORT."""
+        from waggledance.adapters.cli.start_runtime import _print_banner
+        _print_banner(stub=False, host="0.0.0.0", port=8000,
+                      log_level="warning", settings=None)
+        out = capsys.readouterr().out
+        assert "http://localhost:8000" in out
+        assert "http://0.0.0.0" not in out
+
+    def test_banner_shows_bind_address(self, capsys):
+        """Banner should show bind address separately from browser URL."""
+        from waggledance.adapters.cli.start_runtime import _print_banner
+        _print_banner(stub=False, host="0.0.0.0", port=9000,
+                      log_level="warning", settings=None)
+        out = capsys.readouterr().out
+        assert "0.0.0.0:9000" in out        # bind address shown
+        assert "http://localhost:9000" in out  # local URL shown
+
+    def test_banner_custom_host_uses_localhost(self, capsys):
+        """When host is 127.0.0.1, local URL still shows localhost."""
+        from waggledance.adapters.cli.start_runtime import _print_banner
+        _print_banner(stub=False, host="127.0.0.1", port=8000,
+                      log_level="warning", settings=None)
+        out = capsys.readouterr().out
+        assert "http://localhost:8000" in out
+        # No LAN line for loopback-only bind
+        assert "LAN URL" not in out
+
+    def test_banner_custom_port(self, capsys):
+        """Custom port appears in both bind and local URL."""
+        from waggledance.adapters.cli.start_runtime import _print_banner
+        _print_banner(stub=False, host="0.0.0.0", port=3000,
+                      log_level="warning", settings=None)
+        out = capsys.readouterr().out
+        assert "http://localhost:3000" in out
+        assert "0.0.0.0:3000" in out
+
 
 # ── dotted-key extras access ────────────────────────────
 

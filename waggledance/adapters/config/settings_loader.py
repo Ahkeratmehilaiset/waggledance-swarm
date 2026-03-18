@@ -31,7 +31,7 @@ class WaggleSettings:
     """
 
     # Core
-    profile: str = "COTTAGE"
+    profile: str = "HOME"
     ollama_host: str = "http://localhost:11434"
     chroma_dir: str = "./chroma_data"
     db_path: str = "./shared_memory.db"
@@ -94,7 +94,7 @@ class WaggleSettings:
         settings = cls(
             profile=os.environ.get(
                 "WAGGLE_PROFILE",
-                yaml_base.get("profile", "cottage")).upper(),
+                yaml_base.get("profile", "home")).upper(),
             ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
             chroma_dir=os.environ.get("CHROMA_DIR", "./chroma_data"),
             db_path=os.environ.get("WAGGLE_DB_PATH", "./shared_memory.db"),
@@ -136,7 +136,7 @@ class WaggleSettings:
         if not settings.api_key:
             settings.api_key = secrets.token_urlsafe(32)
             logger.warning(
-                "No API key configured -- auto-generated: %s", settings.api_key
+                "No API key configured -- auto-generated (set WAGGLE_API_KEY to override)"
             )
 
         return settings

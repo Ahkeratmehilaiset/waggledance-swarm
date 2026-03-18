@@ -1,4 +1,4 @@
-profile: cottage  # gadget | cottage | home | factory
+profile: home  # gadget | cottage | home | factory
 facts:
   apiary_count: 35
   business_name: JKH Service

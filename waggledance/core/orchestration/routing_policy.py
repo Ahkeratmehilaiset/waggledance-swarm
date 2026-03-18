@@ -35,7 +35,7 @@ class RoutingFeatures:
     is_time_query: bool = False
     is_system_query: bool = False
     matched_keywords: list[str] = field(default_factory=list)
-    profile: str = "COTTAGE"
+    profile: str = "HOME"
     has_micromodel_hit: bool = False
     micromodel_confidence: float = 0.0
     micromodel_enabled: bool = False

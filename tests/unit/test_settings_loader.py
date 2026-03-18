@@ -11,9 +11,9 @@ from waggledance.adapters.config.settings_loader import WaggleSettings
 class TestWaggleSettingsDefaults:
     """Default values when no environment variables are set."""
 
-    def test_default_profile_is_cottage(self) -> None:
+    def test_default_profile_is_home(self) -> None:
         settings = WaggleSettings()
-        assert settings.profile == "COTTAGE"
+        assert settings.profile == "HOME"
 
     def test_default_ollama_host(self) -> None:
         settings = WaggleSettings()

@@ -16,7 +16,7 @@ except ImportError:
 
         query: str
         language: str = "auto"
-        profile: str = "COTTAGE"
+        profile: str = "HOME"
         user_id: str | None = None
         session_id: str | None = None
         context_turns: int = 5
@@ -43,7 +43,7 @@ class ChatHttpRequest(BaseModel):
 
     query: str
     language: str = "auto"
-    profile: str = "COTTAGE"
+    profile: str = "HOME"
     user_id: str | None = None
     session_id: str | None = None
     context_turns: int = 5

@@ -1127,6 +1127,12 @@ def do_backup(
     file_count = 0
     skipped = 0
 
+    # Files written explicitly after tree walk — skip during rglob to avoid duplicates
+    _GENERATED_NAMES = {
+        "WAGGLEDANCE_AI_BRIEF.md", "manifest.json",
+        "requirements.lock.txt", "tools/restore.py", "restore.bat",
+    }
+
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in sorted(project_root.rglob("*")):
             if not p.is_file():
@@ -1134,6 +1140,8 @@ def do_backup(
             if not should_include(p, project_root):
                 continue
             rel = str(p.relative_to(project_root))
+            if rel.replace("\\", "/") in _GENERATED_NAMES:
+                continue
             try:
                 h = _file_hash(p)
                 new_manifest[rel] = h

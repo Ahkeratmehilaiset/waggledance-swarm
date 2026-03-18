@@ -27,8 +27,15 @@ jobs:
 
     - name: Install Python dependencies
       run: |
-        pip install -e ".[dev]"
-        pip install scipy || true
+        pip install -r requirements-ci.txt 2>&1 | tee /tmp/pip-install.log
+        echo "--- pip install completed ---"
+
+    - name: Upload pip log on failure
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: pip-install-log
+        path: /tmp/pip-install.log
 
     - name: Compile all Python files
       run: |

@@ -31,6 +31,7 @@ services:
       - OLLAMA_HOST=http://ollama:11434
       - PYTHONUTF8=1
       - WAGGLE_PROFILE=HOME
+    command: ["python", "-m", "waggledance.adapters.cli.start_runtime"]
     depends_on:
       - ollama
     healthcheck:

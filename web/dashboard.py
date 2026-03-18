@@ -1,8 +1,8 @@
 """
-WaggleDance Swarm AI — Dashboard v1.0.0
+WaggleDance AI — Dashboard v2.0.0
 =========================================
 Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v1.0.0 • Built: 2026-03-11
+Claude 4.6 • v2.0.0 • Built: 2026-03-18
 
 v1.0.0 (MAGMA Activation):
   - Round Table card (streaming discussion + synthesis)
@@ -40,7 +40,7 @@ def _get_seasonal_focus():
 
 
 def _get_enrichment_stats_from(hm):
-    """Get NightEnricher stats from hivemind if available."""
+    """Get NightEnricher stats from orchestrator if available."""
     try:
         ne = getattr(hm, 'night_enricher', None)
         if not ne:
@@ -65,7 +65,7 @@ def _get_enrichment_stats_from(hm):
 
 
 def create_app(hivemind):
-    app = FastAPI(title="WaggleDance Swarm AI Dashboard")
+    app = FastAPI(title="WaggleDance AI Dashboard")
 
     # ── UTF-8 kaikkialle (Windows-fix) ────────────────────
     from starlette.middleware.base import BaseHTTPMiddleware
@@ -118,7 +118,7 @@ def create_app(hivemind):
 <html><head>
 <meta charset="utf-8">
 <script>localStorage.setItem("WAGGLE_API_KEY","{_api_key}")</script>
-<title>WaggleDance Swarm AI (on-prem)</title>
+<title>WaggleDance AI (on-prem)</title>
 <style>
   *{{box-sizing:border-box}}
   body{{font-family:'Cascadia Mono','Fira Code',monospace;background:#0d1117;color:#e6edf3;margin:0;padding:0}}
@@ -193,8 +193,8 @@ def create_app(hivemind):
     </div>
   </div>
   <div class="topbar-center">
-    <h1>🐝 <span class="t-main">WaggleDance Swarm AI</span> <span class="t-sub">(on-prem)</span></h1>
-    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v1.0.0 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
+    <h1>&#x2699;&#xFE0F; <span class="t-main">WaggleDance AI</span> <span class="t-sub">(on-prem)</span></h1>
+    <div class="sub2">Jani Korpi (Ahkerat Mehiläiset) • v2.0.0 • <span class="sbadge">SWARM {swarm_badge}</span><span id="night-badge" class="night-badge">🌙 NIGHT</span><span id="corrections-badge" style="display:none;background:#da368822;color:#da3688;border:1px solid #da368844;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;margin-left:6px">📝 0</span></div>
   </div>
   <div class="topbar-right">
     <div class="mbadge">
@@ -229,7 +229,7 @@ def create_app(hivemind):
     <div id="leaderboard"></div>
   </div>
   <div class="card">
-    <h2>📊 Swarm Stats</h2>
+    <h2>📊 Scheduler Stats</h2>
     <div id="swarm"></div>
     <h2 style="margin-top:14px">⚙️ Throttle</h2>
     <div id="throttle"></div>
@@ -406,7 +406,7 @@ async function sendChat(){{
   try{{
     const r=await fetch('/api/chat',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{message:msg}})}});
     const d=await r.json();
-    log.innerHTML+=`<div style="color:#79c0ff">🐝 ${{d.response||d.error}}</div>`;
+    log.innerHTML+=`<div style="color:#79c0ff">&#x1F4AC; ${{d.response||d.error}}</div>`;
   }}catch(e){{log.innerHTML+=`<div style="color:#f85149">❌ ${{e}}</div>`;}}
   inp.disabled=false;log.scrollTop=log.scrollHeight;
   // User chatted → hide night badge
@@ -505,7 +505,7 @@ async function loadStatus(){{
     const epCount=d.episodes_count||0;
     cs.innerHTML=`
       <div class="stat">Muisti: ${{con.memories||0}}</div>
-      <div class="stat">Swarm: ${{con.swarm_facts||0}}</div>
+      <div class="stat">Shared: ${{con.swarm_facts||0}}</div>
       <div class="stat" style="color:#da3688">Korjaukset: ${{con.corrections||corrCount}}</div>
       <div class="stat">Episodit: ${{con.episodes||epCount}}</div>
       <div class="stat">Kyselyt: ${{con.total_queries||0}}</div>
@@ -1107,7 +1107,7 @@ loadFeeds();
 
     @app.get("/api/sensors/audio/bee")
     async def sensors_audio_bee():
-        """Phase 6: Bee health status per hive."""
+        """Phase 6: Audio analysis status per monitored unit."""
         if (not hasattr(hivemind, 'sensor_hub')
                 or not hivemind.sensor_hub
                 or not hivemind.sensor_hub.audio_monitor):

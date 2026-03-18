@@ -100,6 +100,11 @@ class CapabilitySelector:
         if result:
             return result
 
+        # Try optimization
+        result = self._try_optimization(intent, conditions)
+        if result:
+            return result
+
         # Try retrieval
         result = self._try_retrieval(intent, conditions)
         if result:
@@ -137,7 +142,8 @@ class CapabilitySelector:
 
     def _try_solvers(self, intent: str, conditions: Dict[str, bool]) -> Optional[SelectionResult]:
         """Try to match a solver capability."""
-        solver_intents = {"math", "symbolic", "constraint", "calculate", "solve", "formula"}
+        solver_intents = {"math", "symbolic", "constraint", "calculate", "solve",
+                          "formula", "thermal", "stats", "causal"}
         if intent not in solver_intents:
             return None
 
@@ -155,6 +161,9 @@ class CapabilitySelector:
             "formula": "solve.symbolic",
             "constraint": "solve.constraints",
             "solve": "solve.symbolic",  # default solver
+            "thermal": "solve.thermal",
+            "stats": "solve.stats",
+            "causal": "solve.causal",
         }
         preferred_id = solver_map.get(intent)
         preferred = [s for s in usable if s.capability_id == preferred_id]
@@ -174,7 +183,8 @@ class CapabilitySelector:
 
     def _try_detection(self, intent: str, conditions: Dict[str, bool]) -> Optional[SelectionResult]:
         """Try detection/rule capabilities."""
-        detect_intents = {"seasonal", "anomaly", "rule", "detect", "check"}
+        detect_intents = {"seasonal", "anomaly", "rule", "detect", "check",
+                          "routing", "route"}
         if intent not in detect_intents:
             return None
 
@@ -187,6 +197,24 @@ class CapabilitySelector:
         return SelectionResult(
             selected=usable,
             reason=f"Detection match for intent '{intent}'",
+            quality_path="gold",
+        )
+
+    def _try_optimization(self, intent: str, conditions: Dict[str, bool]) -> Optional[SelectionResult]:
+        """Try optimization capabilities."""
+        optim_intents = {"optimization", "optimize", "schedule", "allocate"}
+        if intent not in optim_intents:
+            return None
+
+        optimizers = self._registry.list_by_category(CapabilityCategory.OPTIMIZE)
+        usable = self._filter_by_preconditions(optimizers, conditions)
+
+        if not usable:
+            return None
+
+        return SelectionResult(
+            selected=usable,
+            reason=f"Optimization match for intent '{intent}'",
             quality_path="gold",
         )
 

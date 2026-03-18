@@ -56,7 +56,7 @@ class TestSolverRouterIntentClassification:
         assert SolverRouter.classify_intent("kevät tehtävät") == "seasonal"
 
     def test_anomaly_intent(self):
-        assert SolverRouter.classify_intent("detect anomaly in temperature") == "anomaly"
+        assert SolverRouter.classify_intent("detect anomaly in sensor data") == "anomaly"
         assert SolverRouter.classify_intent("onko poikkeama?") == "anomaly"
 
     def test_retrieval_intent(self):

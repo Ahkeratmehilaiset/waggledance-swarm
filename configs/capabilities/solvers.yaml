@@ -1,0 +1,71 @@
+capabilities:
+  - id: solve.math
+    category: SOLVE
+    description: "Safe math expression evaluation with Finnish support"
+    legacy_module: core.math_solver
+    legacy_class: MathSolver
+    preconditions:
+      - "query contains mathematical expression"
+    success_criteria:
+      - "returns numeric result"
+      - "expression is safely evaluated"
+    rollback_possible: true
+    max_latency_ms: 100
+    trust_baseline: 0.95
+
+  - id: solve.symbolic
+    category: SOLVE
+    description: "Axiom-based formula models from YAML definitions"
+    legacy_module: core.symbolic_solver
+    legacy_class: SymbolicSolver
+    preconditions:
+      - "model_id exists in ModelRegistry"
+      - "required inputs available"
+    success_criteria:
+      - "formula evaluates without error"
+      - "result within domain bounds"
+    rollback_possible: true
+    max_latency_ms: 200
+    trust_baseline: 0.90
+
+  - id: solve.constraints
+    category: SOLVE
+    description: "Rule-based constraint evaluation against context"
+    legacy_module: core.constraint_engine
+    legacy_class: ConstraintEngine
+    preconditions:
+      - "rules are loaded"
+      - "context data available"
+    success_criteria:
+      - "all conditions evaluated"
+      - "severity classified"
+    rollback_possible: true
+    max_latency_ms: 100
+    trust_baseline: 0.92
+
+  - id: solve.pattern_match
+    category: SOLVE
+    description: "MicroModel V1 pattern matching engine"
+    legacy_module: core.micro_model
+    legacy_class: PatternMatchEngine
+    preconditions:
+      - "pattern database loaded"
+    success_criteria:
+      - "confidence > threshold"
+    rollback_possible: true
+    max_latency_ms: 50
+    trust_baseline: 0.85
+
+  - id: solve.neural_classifier
+    category: SOLVE
+    description: "MicroModel V2 PyTorch classifier"
+    legacy_module: core.micro_model
+    legacy_class: NeuralClassifier
+    preconditions:
+      - "model weights loaded"
+      - "embedding available"
+    success_criteria:
+      - "classification confidence > 0.7"
+    rollback_possible: true
+    max_latency_ms: 150
+    trust_baseline: 0.80

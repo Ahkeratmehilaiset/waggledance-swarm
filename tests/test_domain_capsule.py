@@ -105,8 +105,8 @@ m = c.match_decision("frost pipe freeze")
 check("Cottage: frost keywords match", m is not None and m.decision_id == "frost_protection",
       f"got {m}")
 
-m = c.match_decision("bee winter survival colony")
-check("Cottage: hive survival match", m is not None and m.decision_id == "hive_survival",
+m = c.match_decision("electricity consumption watt")
+check("Cottage: energy consumption match", m is not None and m.decision_id == "energy_consumption",
       f"got {m}")
 
 m = c.match_decision("completely unrelated topic about cooking")

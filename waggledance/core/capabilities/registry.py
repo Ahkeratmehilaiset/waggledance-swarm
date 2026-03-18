@@ -14,7 +14,8 @@ fails, and how it rolls back. The registry is loaded from:
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Set
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
 from waggledance.core.domain.autonomy import CapabilityCategory, CapabilityContract
 
@@ -127,6 +128,22 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "success_criteria": ["events_processed"],
         "rollback_possible": False,
     },
+    {
+        "capability_id": "sense.audio",
+        "category": "sense",
+        "description": "Audio monitoring for bee colony and bird sounds",
+        "preconditions": ["audio_monitor_available"],
+        "success_criteria": ["audio_processed"],
+        "rollback_possible": False,
+    },
+    {
+        "capability_id": "sense.fusion",
+        "category": "sense",
+        "description": "Multi-source sensor fusion and context building",
+        "preconditions": [],
+        "success_criteria": ["observations_merged"],
+        "rollback_possible": False,
+    },
     # ── Verification ──────────────────────────────────────
     {
         "capability_id": "verify.hallucination",
@@ -172,6 +189,59 @@ _BUILTIN_CAPABILITIES: List[dict] = [
         "preconditions": ["baselines_available"],
         "success_criteria": ["anomaly_score_computed"],
     },
+    # ── Reasoning engines ────────────────────────────────
+    {
+        "capability_id": "solve.thermal",
+        "category": "solve",
+        "description": "Physics-based thermal calculations (heat loss, frost, COP)",
+        "preconditions": ["numbers_present"],
+        "success_criteria": ["result_computed"],
+    },
+    {
+        "capability_id": "solve.stats",
+        "category": "solve",
+        "description": "Statistical analysis and time-series summarization",
+        "preconditions": [],
+        "success_criteria": ["summary_computed"],
+    },
+    {
+        "capability_id": "solve.causal",
+        "category": "solve",
+        "description": "Causal chain discovery and impact analysis",
+        "preconditions": [],
+        "success_criteria": ["chain_found"],
+    },
+    {
+        "capability_id": "optimize.schedule",
+        "category": "optimize",
+        "description": "Energy cost minimization and task scheduling",
+        "preconditions": [],
+        "success_criteria": ["solution_found"],
+    },
+    {
+        "capability_id": "analyze.routing",
+        "category": "detect",
+        "description": "Route accuracy tracking and optimization recommendations",
+        "preconditions": [],
+        "success_criteria": ["metrics_computed"],
+    },
+    # ── Domain engines (profile-gated) ───────────────────
+    {
+        "capability_id": "sense.seasonal",
+        "category": "sense",
+        "description": "Finnish beekeeping seasonal calendar and recommendations",
+        "preconditions": ["seasonal_yaml_available"],
+        "success_criteria": ["recommendations_returned"],
+        "rollback_possible": True,
+    },
+    {
+        "capability_id": "solve.bee_domain",
+        "category": "solve",
+        "description": "Bee colony health, swarm risk, honey yield, disease diagnosis",
+        "preconditions": [],
+        "success_criteria": ["assessment_computed"],
+        "rollback_possible": True,
+    },
 ]
 
 
@@ -185,6 +255,7 @@ class CapabilityRegistry:
 
     def __init__(self, load_builtins: bool = True):
         self._capabilities: Dict[str, CapabilityContract] = {}
+        self._executors: Dict[str, Any] = {}
         if load_builtins:
             self._load_builtins()
 
@@ -202,6 +273,78 @@ class CapabilityRegistry:
             self._capabilities[cap.capability_id] = cap
         log.info("Loaded %d builtin capabilities", len(self._capabilities))
 
+    def load_yaml_configs(self, config_dir: Optional[str] = None) -> int:
+        """Load capability configs from YAML files, enriching existing entries.
+
+        YAML configs provide additional metadata (max_latency_ms, trust_baseline)
+        that supplements the builtin Python definitions. If a capability ID in YAML
+        matches an existing entry, it is enriched; otherwise a new entry is created.
+
+        Returns:
+            Number of capabilities enriched or added.
+        """
+        try:
+            import yaml
+        except ImportError:
+            log.debug("PyYAML not available, skipping YAML config loading")
+            return 0
+
+        if config_dir is None:
+            config_dir = str(Path(__file__).resolve().parents[3] / "configs" / "capabilities")
+
+        config_path = Path(config_dir)
+        if not config_path.is_dir():
+            log.debug("Capability config dir not found: %s", config_path)
+            return 0
+
+        enriched = 0
+        for yaml_file in sorted(config_path.glob("*.yaml")):
+            try:
+                with open(yaml_file, encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                if not isinstance(data, dict):
+                    continue
+                caps = data.get("capabilities", [])
+                for defn in caps:
+                    cap_id = defn.get("id", "")
+                    if not cap_id:
+                        continue
+                    existing = self._capabilities.get(cap_id)
+                    if existing:
+                        # Enrich existing capability with YAML metadata
+                        if "max_latency_ms" in defn:
+                            existing.max_latency_ms = float(defn["max_latency_ms"])
+                        if "trust_baseline" in defn:
+                            existing.trust_score = float(defn["trust_baseline"])
+                        if "description" in defn and not existing.description:
+                            existing.description = defn["description"]
+                        enriched += 1
+                    else:
+                        # New capability from YAML
+                        category_str = defn.get("category", "solve").lower()
+                        try:
+                            category = CapabilityCategory(category_str)
+                        except ValueError:
+                            category = CapabilityCategory.SOLVE
+                        cap = CapabilityContract(
+                            capability_id=cap_id,
+                            category=category,
+                            description=defn.get("description", ""),
+                            preconditions=defn.get("preconditions", []),
+                            success_criteria=defn.get("success_criteria", []),
+                            rollback_possible=defn.get("rollback_possible", True),
+                            max_latency_ms=float(defn.get("max_latency_ms", 5000.0)),
+                            trust_score=float(defn.get("trust_baseline", 0.5)),
+                        )
+                        self._capabilities[cap_id] = cap
+                        enriched += 1
+            except Exception as exc:
+                log.debug("Failed to load %s: %s", yaml_file, exc)
+
+        if enriched:
+            log.info("YAML config: enriched/added %d capabilities from %s", enriched, config_path)
+        return enriched
+
     # ── Registration ──────────────────────────────────────
 
     def register(self, capability: CapabilityContract) -> None:
@@ -214,6 +357,24 @@ class CapabilityRegistry:
             del self._capabilities[capability_id]
             return True
         return False
+
+    # ── Executor binding ────────────────────────────────────
+
+    def register_executor(self, capability_id: str, executor: Any) -> None:
+        """Bind an executor (adapter) to a capability ID.
+
+        Executors are duck-typed objects with execute() and available.
+        """
+        self._executors[capability_id] = executor
+        log.debug("Bound executor for capability: %s", capability_id)
+
+    def get_executor(self, capability_id: str) -> Optional[Any]:
+        """Get the executor bound to a capability ID, or None."""
+        return self._executors.get(capability_id)
+
+    def executor_count(self) -> int:
+        """Return number of bound executors."""
+        return len(self._executors)
 
     # ── Lookup ────────────────────────────────────────────
 
@@ -260,4 +421,5 @@ class CapabilityRegistry:
         return {
             "total": len(self._capabilities),
             "categories": cat_counts,
+            "executors_bound": len(self._executors),
         }

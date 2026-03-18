@@ -52,14 +52,24 @@ def _check_ollama(host: str) -> bool:
         return False
 
 
-def _print_banner(stub: bool, host: str, port: int, log_level: str) -> None:
-    """Print startup banner."""
+def _print_banner(
+    stub: bool, host: str, port: int, log_level: str,
+    settings=None,
+) -> None:
+    """Print startup banner with runtime diagnostics."""
     mode = "STUB" if stub else "PRODUCTION"
+    runtime_primary = getattr(settings, "runtime_primary", "waggledance") if settings else "waggledance"
+    compat = getattr(settings, "compatibility_mode", False) if settings else False
+    profile = getattr(settings, "profile", "?") if settings else "?"
+    compat_str = "ON" if compat else "OFF"
     print(f"""
   +=============================================+
   |  WaggleDance AI — New Runtime (hexagonal)   |
   +=============================================+
   |  Mode:      {mode:<33}|
+  |  Primary:   {runtime_primary:<33}|
+  |  Compat:    {compat_str:<33}|
+  |  Profile:   {profile:<33}|
   |  Listen:    {host}:{port:<24}|
   |  Log level: {log_level:<33}|
   |  Dashboard: http://{host}:{port:<17}|
@@ -129,7 +139,11 @@ def main(argv: list[str] | None = None) -> None:
 
         settings = WaggleSettings.from_env()
 
-    _print_banner(args.stub, args.host, args.port, args.log_level)
+    # Log runtime diagnostics
+    diag = settings.runtime_diagnostics()
+    logger.info("Runtime diagnostics: %s", diag)
+
+    _print_banner(args.stub, args.host, args.port, args.log_level, settings=settings)
 
     from waggledance.bootstrap.container import Container
 

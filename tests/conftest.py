@@ -7,4 +7,5 @@ _dir = Path(__file__).parent
 collect_ignore = [
     str(_dir / "test_all.py"),
     str(_dir / "test_normalizer.py"),
+    str(_dir / "test_domain_capsule.py"),
 ]

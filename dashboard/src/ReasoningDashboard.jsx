@@ -52,7 +52,7 @@ const TIERS = [
   { name: "ENTERPRISE", vram: "48 GB+",   model: "llama3.3:70b", vram_gb: 48 },
 ];
 
-const PROFILES = ["gadget", "cottage", "home", "factory"];
+const PROFILES = ["gadget", "cottage", "home", "factory", "apiary"];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -66,12 +66,14 @@ const T = {
       cottage: "Monitors conditions, costs, frost risk and anomalies. Generates summaries and forecasts without cloud.",
       factory: "Explains production anomalies, monitors OEE/SPC signals, helps prioritize actions.",
       gadget: "Monitors battery, signal, sensors and device state. Detects drift, predicts issues.",
+      apiary: "Monitors hive health, predicts swarms and honey flow. Optimizes treatments and seasonal tasks.",
     },
     quickActions: {
       home:    ["What's the cheapest time to heat today?", "Is energy usage normal this week?", "Is anything unusual in the house?", "What did the system learn this week?"],
       cottage: ["How much has electricity cost so far?", "Is there frost risk tonight?", "What happened at the property in the last 24h?", "Should heating be shifted to cheaper hours?"],
       factory: ["Why did OEE drop today?", "Which signals show drift?", "What should the next shift know?", "What's the biggest recurring issue this week?"],
       gadget:  ["How long will battery last at this usage?", "Is there signal or sensor drift?", "When should this device be serviced?", "How does usage mode affect battery life?"],
+      apiary:  ["How are the hives doing today?", "Is there swarm risk this week?", "When is the optimal treatment window?", "What's the projected honey yield?"],
     },
     knowsNow: "What it knows now", predicts: "What it predicts",
     learned: "What it learned", underTheHood: "Under the hood",
@@ -111,12 +113,14 @@ const T = {
       cottage: "Valvoo olosuhteita, kustannuksia, jäätymisriskejä ja poikkeamia. Tekee yhteenvedot ja ennusteet ilman pilveä.",
       factory: "Selittää tuotannon poikkeamat, seuraa OEE/SPC-signaaleja ja auttaa priorisoimaan oikeat toimenpiteet.",
       gadget: "Valvoo akkua, signaalia, sensoreita ja laitteen tilaa. Havaitsee driftin ja ennustaa ongelmia.",
+      apiary: "Valvoo pesien terveyttä, ennustaa parveilun ja satokierrot. Optimoi hoidot ja kausiluonteiset tehtävät.",
     },
     quickActions: {
       home:    ["Milloin lämmitys on halvinta tänään?", "Onko energiankulutus normaalia tällä viikolla?", "Onko talossa jotain poikkeavaa?", "Mitä järjestelmä oppi tällä viikolla?"],
       cottage: ["Paljonko sähkö on maksanut tähän mennessä?", "Onko jäätymisriskiä ensi yönä?", "Mitä mökillä tapahtui viimeisen 24h aikana?", "Kannattaako lämmitys siirtää halvoille tunneille?"],
       factory: ["Miksi OEE laski tänään?", "Mitkä signaalit näyttävät driftia?", "Mitä seuraavan vuoron pitää tietää?", "Mikä on viikon suurin toistuva häiriö?"],
       gadget:  ["Kuinka kauan akku kestää tällä käytöllä?", "Onko signaalissa tai sensorissa driftia?", "Milloin laite kannattaa huoltaa?", "Miten käyttötila vaikuttaa akun kestoon?"],
+      apiary:  ["Miten pesät voivat tänään?", "Onko parveiluriskiä tällä viikolla?", "Milloin on optimaalinen hoitoikkuna?", "Mikä on ennustettu hunajasato?"],
     },
     knowsNow: "Mitä tietää nyt", predicts: "Mitä ennustaa",
     learned: "Mitä oppinut", underTheHood: "Konepellin alla",
@@ -236,7 +240,7 @@ function LangToggle({ lang, setLang }) {
 
 function ProfileDropdown({ profile, setProfile, reloadCapsule }) {
   const [open, setOpen] = useState(false);
-  const profileColors = { gadget: "#06B6D4", cottage: "#10B981", home: "#6366F1", factory: "#F59E0B" };
+  const profileColors = { gadget: "#06B6D4", cottage: "#10B981", home: "#6366F1", factory: "#F59E0B", apiary: "#A3E635" };
   const handleSelect = async (p) => {
     setOpen(false);
     await apiFetch("/api/profile", { method: "POST", body: JSON.stringify({ profile: p }) });
@@ -616,7 +620,7 @@ function PredictionsPanel({ status, t, lang, profile }) {
   const [loading, setLoading] = useState(false);
   const prevInputKey = useRef("");
 
-  const modelMap = { home: "heat_pump_cop", cottage: "pipe_freezing", gadget: "battery_discharge", factory: "oee_decomposition" };
+  const modelMap = { home: "heat_pump_cop", cottage: "pipe_freezing", gadget: "battery_discharge", factory: "oee_decomposition", apiary: "hive_weight_trend" };
   const modelId = modelMap[profile] || "heat_pump_cop";
 
   useEffect(() => {

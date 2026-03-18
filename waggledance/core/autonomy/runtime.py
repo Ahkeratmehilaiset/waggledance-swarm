@@ -24,8 +24,6 @@ from waggledance.core.capabilities.registry import CapabilityRegistry
 from waggledance.core.domain.autonomy import (
     Action,
     Goal,
-    GoalStatus,
-    Plan,
 )
 from waggledance.core.goals.goal_engine import GoalEngine
 from waggledance.core.learning.case_builder import CaseTrajectoryBuilder
@@ -35,6 +33,11 @@ from waggledance.core.policy.policy_engine import PolicyEngine
 from waggledance.core.reasoning.solver_router import SolverRouter
 from waggledance.core.reasoning.verifier import Verifier
 from waggledance.core.world.world_model import WorldModel
+
+try:
+    from waggledance.core.magma.audit_projector import AuditEntry
+except ImportError:
+    AuditEntry = None
 
 log = logging.getLogger("waggledance.autonomy.runtime")
 
@@ -80,6 +83,91 @@ class AutonomyRuntime:
         self.verifier = verifier or Verifier()
         self.case_builder = case_builder or CaseTrajectoryBuilder(profile=profile)
 
+        # Executor binding
+        self._executor_count = 0
+        try:
+            from waggledance.bootstrap.capability_loader import bind_executors
+            self._executor_count = bind_executors(self.capability_registry)
+        except Exception as exc:
+            log.debug("Capability loader unavailable: %s", exc)
+
+        # MAGMA adapters (audit, event log, trust)
+        self.audit = None
+        self.event_log = None
+        self.trust = None
+        try:
+            from waggledance.core.magma.audit_projector import AuditProjector
+            self.audit = AuditProjector()
+        except Exception as exc:
+            log.debug("AuditProjector unavailable: %s", exc)
+        try:
+            from waggledance.core.magma.event_log_adapter import EventLogAdapter
+            self.event_log = EventLogAdapter()
+        except Exception as exc:
+            log.debug("EventLogAdapter unavailable: %s", exc)
+        try:
+            from waggledance.core.magma.trust_adapter import TrustAdapter
+            self.trust = TrustAdapter()
+        except Exception as exc:
+            log.debug("TrustAdapter unavailable: %s", exc)
+        self.replay = None
+        try:
+            from waggledance.core.magma.replay_engine import ReplayAdapter
+            self.replay = ReplayAdapter()
+        except Exception as exc:
+            log.debug("ReplayAdapter unavailable: %s", exc)
+        self.provenance = None
+        try:
+            from waggledance.core.magma.provenance import ProvenanceAdapter
+            self.provenance = ProvenanceAdapter()
+        except Exception as exc:
+            log.debug("ProvenanceAdapter unavailable: %s", exc)
+
+        # Persistence adapters
+        self.world_store = None
+        self.procedural_store = None
+        self.case_store = None
+        self.verifier_store = None
+        try:
+            from waggledance.adapters.persistence.sqlite_world_store import SQLiteWorldStore
+            self.world_store = SQLiteWorldStore()
+        except Exception as exc:
+            log.debug("SQLiteWorldStore unavailable: %s", exc)
+        try:
+            from waggledance.adapters.persistence.sqlite_procedural_store import SQLiteProceduralStore
+            self.procedural_store = SQLiteProceduralStore()
+        except Exception as exc:
+            log.debug("SQLiteProceduralStore unavailable: %s", exc)
+        try:
+            from waggledance.adapters.persistence.sqlite_case_store import SQLiteCaseStore
+            self.case_store = SQLiteCaseStore()
+        except Exception as exc:
+            log.debug("SQLiteCaseStore unavailable: %s", exc)
+        try:
+            from waggledance.adapters.persistence.sqlite_verifier_store import SQLiteVerifierStore
+            self.verifier_store = SQLiteVerifierStore()
+        except Exception as exc:
+            log.debug("SQLiteVerifierStore unavailable: %s", exc)
+
+        # Domain capsule (profile-specific reasoning config)
+        self.capsule = None
+        try:
+            from core.domain_capsule import DomainCapsule
+            self.capsule = DomainCapsule.load(profile.lower())
+        except Exception as exc:
+            log.debug("DomainCapsule unavailable for %s: %s", profile, exc)
+
+        magma_ok = any([self.audit, self.event_log, self.trust, self.replay, self.provenance])
+        persist_ok = any([self.world_store, self.procedural_store,
+                          self.case_store, self.verifier_store])
+        log.info(
+            "%d executors bound, MAGMA: %s, persistence: %s, capsule: %s",
+            self._executor_count,
+            "yes" if magma_ok else "no",
+            "yes" if persist_ok else "no",
+            self.capsule.domain if self.capsule else "none",
+        )
+
         self._started = False
         log.info("AutonomyRuntime initialised (profile=%s)", profile)
 
@@ -94,11 +182,34 @@ class AutonomyRuntime:
         """Stop the runtime and persist state."""
         self._started = False
         self.world_model.save()
+        for store_name in ("world_store", "procedural_store",
+                           "case_store", "verifier_store"):
+            store = getattr(self, store_name, None)
+            if store:
+                self._persist_safe(f"close.{store_name}", store.close)
         log.info("AutonomyRuntime stopped")
 
     @property
     def is_running(self) -> bool:
         return self._started
+
+    # ── MAGMA helpers ─────────────────────────────────────
+
+    def _magma_safe(self, label: str, fn, *args, **kwargs):
+        """Call a MAGMA adapter method safely — never break the hot path."""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            log.debug("MAGMA %s failed: %s", label, exc)
+            return None
+
+    def _persist_safe(self, label: str, fn, *args, **kwargs):
+        """Call a persistence adapter method safely — never break the hot path."""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            log.debug("Persist %s failed: %s", label, exc)
+            return None
 
     # ── Query path ────────────────────────────────────────
 
@@ -125,12 +236,44 @@ class AutonomyRuntime:
         # 1. Intent classification
         intent = SolverRouter.classify_intent(query)
 
+        # 1b. Capsule decision matching (enriches context for routing)
+        capsule_match = None
+        if self.capsule:
+            try:
+                capsule_match = self.capsule.match_decision(query)
+                if capsule_match:
+                    context["capsule_decision"] = capsule_match.decision_id
+                    context["capsule_layer"] = capsule_match.layer
+                    context["capsule_confidence"] = capsule_match.confidence
+            except Exception as exc:
+                log.debug("Capsule match failed: %s", exc)
+
         # 2. World model enrichment
         snapshot_before = self.world_model.take_snapshot()
         context["profile"] = self.profile
 
+        # Persist: save snapshot_before
+        if self.world_store:
+            self._persist_safe("world.snapshot_before",
+                self.world_store.save_snapshot,
+                snapshot_before.snapshot_id,
+                snapshot_before.to_dict(),
+                profile=self.profile,
+                source_type="observed")
+
         # 3. Capability selection
         route_result = self.solver_router.route(intent, query, context)
+
+        # MAGMA: record capability selection
+        if self.audit and AuditEntry is not None:
+            cap_ids = [c.capability_id for c in route_result.selection.selected]
+            self._magma_safe("audit.capability_selected", self.audit.record,
+                AuditEntry(
+                    event_type="capability.selected",
+                    payload={"intent": intent, "capabilities": cap_ids,
+                             "quality_path": route_result.quality_path},
+                    capability_id=cap_ids[0] if cap_ids else "",
+                ))
 
         # 4. Create action for first selected capability
         if not route_result.selection.selected:
@@ -152,6 +295,21 @@ class AutonomyRuntime:
             context=context,
         )
 
+        # MAGMA: record policy decision + action outcome
+        decision_str = "approved" if action_result.decision.approved else "denied"
+        if self.audit:
+            self._magma_safe("audit.policy", self.audit.record_policy_decision,
+                action.action_id, decision_str,
+                reason=action_result.decision.reason or "")
+            action_status = "executed" if action_result.executed else "denied"
+            self._magma_safe("audit.action", self.audit.record_action_event,
+                action.action_id, action_status,
+                capability_id=primary_cap.capability_id)
+        if self.event_log:
+            self._magma_safe("event_log.policy", self.event_log.log_policy_decision,
+                action.action_id, decision_str,
+                reason=action_result.decision.reason or "")
+
         # 6. Verification (if executed)
         verifier_result = None
         if action_result.executed:
@@ -159,9 +317,27 @@ class AutonomyRuntime:
                 action_result.result or {},
                 expected_fields=primary_cap.success_criteria,
             )
+            # MAGMA: record verification outcome
+            if self.audit and verifier_result and AuditEntry is not None:
+                v_status = "passed" if verifier_result.passed else "failed"
+                self._magma_safe("audit.verification", self.audit.record,
+                    AuditEntry(
+                        event_type=f"verification.{v_status}",
+                        payload={"confidence": verifier_result.confidence},
+                        action_id=action.action_id,
+                        capability_id=primary_cap.capability_id,
+                    ))
+
+        # Persist: save verifier result
+        if self.verifier_store and verifier_result:
+            self._persist_safe("verifier.result",
+                self.verifier_store.save_result,
+                verifier_result.to_dict(),
+                action_id=action.action_id,
+                capability_id=primary_cap.capability_id)
 
         # 7. Case trajectory
-        self.case_builder.build(
+        case = self.case_builder.build(
             query=query,
             intent=intent,
             capabilities=route_result.selection.selected,
@@ -170,8 +346,41 @@ class AutonomyRuntime:
             snapshot_before=snapshot_before,
         )
 
+        # MAGMA: record case + trust + provenance
+        if self.audit:
+            self._magma_safe("audit.case", self.audit.record_case,
+                case.trajectory_id, case.quality_grade.value,
+                detail={"intent": intent, "capability": primary_cap.capability_id})
+        if self.event_log:
+            self._magma_safe("event_log.case", self.event_log.log_case_trajectory,
+                case.trajectory_id, case.quality_grade.value,
+                intent=intent, capability=primary_cap.capability_id)
+        verified_ok = verifier_result.passed if verifier_result else False
+        if self.trust:
+            self._magma_safe("trust.capability", self.trust.record_observation,
+                "capability", primary_cap.capability_id,
+                success=action_result.executed and verified_ok,
+                quality_path=route_result.quality_path)
+        if self.provenance:
+            src = "confirmed_by_verifier" if verified_ok else "proposed_by_llm"
+            conf = verifier_result.confidence if verifier_result else 0.5
+            self._magma_safe("provenance.case", self.provenance.record_provenance,
+                fact_id=f"case:{case.trajectory_id}",
+                source_type=src,
+                capability_id=primary_cap.capability_id,
+                quality_grade=case.quality_grade.value,
+                confidence=conf)
+
+        # Persist: save case trajectory
+        if self.case_store:
+            self._persist_safe("case.trajectory",
+                self.case_store.save_case,
+                case.to_dict(),
+                intent=intent,
+                elapsed_ms=round((time.time() - t0) * 1000, 2))
+
         elapsed = round((time.time() - t0) * 1000, 2)
-        return {
+        result = {
             "intent": intent,
             "quality_path": route_result.quality_path,
             "capability": primary_cap.capability_id,
@@ -180,6 +389,10 @@ class AutonomyRuntime:
             "approved": action_result.decision.approved,
             "elapsed_ms": elapsed,
         }
+        if capsule_match:
+            result["capsule_decision"] = capsule_match.decision_id
+            result["capsule_layer"] = capsule_match.layer
+        return result
 
     # ── Mission path ──────────────────────────────────────
 
@@ -202,24 +415,72 @@ class AutonomyRuntime:
           6. Case trajectory recording
         """
         context = context or {}
+        t0 = time.time()
 
         # 1. Create and accept goal
         goal = self.goal_engine.propose(goal_type, description, priority)
+        if self.audit:
+            self._magma_safe("audit.goal.proposed", self.audit.record_goal_event,
+                goal.goal_id, "proposed",
+                {"type": goal_type, "priority": priority})
         self.goal_engine.accept(goal.goal_id)
+        if self.audit:
+            self._magma_safe("audit.goal.accepted", self.audit.record_goal_event,
+                goal.goal_id, "accepted")
+        if self.replay:
+            self._magma_safe("replay.goal.proposed", self.replay.record_mission_event,
+                goal.goal_id, "goal.proposed",
+                payload={"type": goal_type, "description": description[:200]},
+                step_order=0)
 
         # 2. Create plan
         plan = self.planner.create_plan(goal, context)
         self.goal_engine.mark_planned(goal.goal_id)
+        if self.audit and AuditEntry is not None:
+            self._magma_safe("audit.plan.created", self.audit.record,
+                AuditEntry(
+                    event_type="plan.created",
+                    payload={"steps": len(plan.steps)},
+                    goal_id=goal.goal_id,
+                ))
+            self._magma_safe("audit.goal.planned", self.audit.record_goal_event,
+                goal.goal_id, "planned")
+        if self.replay:
+            self._magma_safe("replay.plan", self.replay.record_mission_event,
+                goal.goal_id, "plan.created",
+                payload={"steps": len(plan.steps)},
+                step_order=0)
 
         # 3. Take snapshot before execution
         snapshot_before = self.world_model.take_snapshot()
+
+        # Persist: save snapshot_before
+        if self.world_store:
+            self._persist_safe("mission.snapshot_before",
+                self.world_store.save_snapshot,
+                snapshot_before.snapshot_id,
+                snapshot_before.to_dict(),
+                profile=self.profile,
+                source_type="observed")
+
         self.goal_engine.start_execution(goal.goal_id)
+        if self.audit:
+            self._magma_safe("audit.goal.executing", self.audit.record_goal_event,
+                goal.goal_id, "executing")
+        if self.replay:
+            try:
+                sb_dict = snapshot_before.to_dict()
+            except Exception:
+                sb_dict = {"snapshot_id": getattr(snapshot_before, "snapshot_id", "")}
+            self._magma_safe("replay.snapshot_before", self.replay.set_mission_metadata,
+                goal.goal_id, goal_type=goal_type, status="executing",
+                world_before=sb_dict)
 
         # 4. Execute steps
         executed_actions: List[Action] = []
         all_succeeded = True
 
-        for step in plan.steps:
+        for step_idx, step in enumerate(plan.steps):
             cap = self.capability_registry.get(step.capability_id)
             if cap is None:
                 continue
@@ -236,6 +497,26 @@ class AutonomyRuntime:
             )
             executed_actions.append(action)
 
+            # MAGMA: record step execution
+            action_status = "executed" if result.executed else "denied"
+            if self.audit:
+                self._magma_safe("audit.step", self.audit.record_action_event,
+                    action.action_id, action_status,
+                    capability_id=step.capability_id)
+            if self.trust:
+                self._magma_safe("trust.step", self.trust.record_observation,
+                    "capability", step.capability_id,
+                    success=result.executed,
+                    quality_path=self.planner.estimate_quality_path(plan))
+            if self.replay:
+                self._magma_safe("replay.step", self.replay.record_mission_event,
+                    goal.goal_id, f"action.{action_status}",
+                    payload={"capability_id": step.capability_id},
+                    step_order=step_idx + 1,
+                    capability_id=step.capability_id,
+                    action_id=action.action_id,
+                    result="ok" if result.executed else "failed")
+
             if result.executed:
                 step.completed = True
             else:
@@ -245,11 +526,39 @@ class AutonomyRuntime:
         # 5. Take snapshot after
         snapshot_after = self.world_model.take_snapshot()
 
+        # Persist: save snapshot_after
+        if self.world_store:
+            self._persist_safe("mission.snapshot_after",
+                self.world_store.save_snapshot,
+                snapshot_after.snapshot_id,
+                snapshot_after.to_dict(),
+                profile=self.profile,
+                source_type="observed")
+
         # 6. Verify and update goal status
         if all_succeeded and plan.is_complete:
             self.goal_engine.mark_verified(goal.goal_id)
+            if self.audit:
+                self._magma_safe("audit.goal.verified", self.audit.record_goal_event,
+                    goal.goal_id, "verified")
         elif not all_succeeded:
             self.goal_engine.mark_failed(goal.goal_id, "Step execution failed")
+            if self.audit:
+                self._magma_safe("audit.goal.failed", self.audit.record_goal_event,
+                    goal.goal_id, "failed",
+                    {"reason": "Step execution failed"})
+
+        # MAGMA: finalize replay metadata
+        elapsed_ms = round((time.time() - t0) * 1000, 2)
+        if self.replay:
+            try:
+                sa_dict = snapshot_after.to_dict()
+            except Exception:
+                sa_dict = {"snapshot_id": getattr(snapshot_after, "snapshot_id", "")}
+            final_status = goal.status.value
+            self._magma_safe("replay.finalize", self.replay.set_mission_metadata,
+                goal.goal_id, status=final_status,
+                world_after=sa_dict, duration_ms=elapsed_ms)
 
         # 7. Record case trajectory
         quality_path = self.planner.estimate_quality_path(plan)
@@ -265,6 +574,35 @@ class AutonomyRuntime:
             goal=goal,
         )
 
+        # MAGMA: record case + event log + provenance
+        if self.audit:
+            self._magma_safe("audit.case", self.audit.record_case,
+                case.trajectory_id, case.quality_grade.value,
+                goal_id=goal.goal_id,
+                detail={"quality_path": quality_path,
+                        "steps": len(plan.steps)})
+        if self.event_log:
+            self._magma_safe("event_log.case", self.event_log.log_case_trajectory,
+                case.trajectory_id, case.quality_grade.value,
+                intent=goal_type, goal_id=goal.goal_id)
+        if self.provenance:
+            self._magma_safe("provenance.case", self.provenance.record_provenance,
+                fact_id=f"mission:{case.trajectory_id}",
+                source_type="learned_from_case",
+                quality_grade=case.quality_grade.value,
+                confidence=0.75 if all_succeeded else 0.3)
+        if self.replay:
+            self._magma_safe("replay.grade", self.replay.set_mission_metadata,
+                goal.goal_id, quality_grade=case.quality_grade.value)
+
+        # Persist: save case trajectory
+        if self.case_store:
+            self._persist_safe("mission.case",
+                self.case_store.save_case,
+                case.to_dict(),
+                intent=goal_type,
+                elapsed_ms=elapsed_ms)
+
         return {
             "goal_id": goal.goal_id,
             "status": goal.status.value,
@@ -274,12 +612,67 @@ class AutonomyRuntime:
             "quality_grade": case.quality_grade.value,
         }
 
+    # ── Proactive goals ────────────────────────────────────
+
+    def check_proactive_goals(
+        self,
+        observations: Optional[Dict[str, float]] = None,
+        threshold: float = 2.0,
+    ) -> List[Goal]:
+        """Check world model residuals and propose proactive goals for deviations.
+
+        Args:
+            observations: {entity.metric: current_value} readings
+            threshold: absolute residual above which a goal is proposed
+
+        Returns:
+            List of newly proposed Goal objects.
+        """
+        if not observations:
+            return []
+
+        residuals = self.world_model.compute_all_residuals(observations)
+        proposed: List[Goal] = []
+
+        for key, residual in residuals.items():
+            if abs(residual) < threshold:
+                continue
+            parts = key.split(".", 1)
+            entity_id = parts[0] if parts else key
+            metric = parts[1] if len(parts) > 1 else "metric"
+
+            direction = "high" if residual > 0 else "low"
+            goal = self.goal_engine.propose(
+                goal_type="diagnose",
+                description=(
+                    f"Investigate {entity_id}.{metric}: "
+                    f"residual {residual:+.2f} ({direction})"
+                ),
+                priority=70 if abs(residual) > threshold * 2 else 50,
+            )
+            proposed.append(goal)
+
+            if self.audit:
+                self._magma_safe(
+                    "audit.proactive_goal",
+                    self.audit.record_goal_event,
+                    goal.goal_id, "proposed",
+                    {"proactive": True, "entity": entity_id,
+                     "metric": metric, "residual": residual},
+                )
+
+        if proposed:
+            log.info("Proposed %d proactive goals from %d residuals",
+                     len(proposed), len(residuals))
+        return proposed
+
     # ── Stats ─────────────────────────────────────────────
 
     def stats(self) -> dict:
-        return {
+        s = {
             "profile": self.profile,
             "running": self._started,
+            "capsule": self.capsule.to_dict() if self.capsule else None,
             "goals": self.goal_engine.stats(),
             "capabilities": self.capability_registry.stats(),
             "policy": self.policy_engine.stats(),
@@ -290,3 +683,22 @@ class AutonomyRuntime:
             "world_model": self.world_model.stats(),
             "working_memory": self.working_memory.stats(),
         }
+        if self.audit:
+            s["magma_audit"] = self._magma_safe("stats.audit", self.audit.stats) or {}
+        if self.event_log:
+            s["magma_event_log"] = self._magma_safe("stats.event_log", self.event_log.stats) or {}
+        if self.trust:
+            s["magma_trust"] = self._magma_safe("stats.trust", self.trust.stats) or {}
+        if self.replay:
+            s["magma_replay"] = self._magma_safe("stats.replay", self.replay.stats) or {}
+        if self.provenance:
+            s["magma_provenance"] = self._magma_safe("stats.provenance", self.provenance.stats) or {}
+        if self.world_store:
+            s["persist_world"] = self._persist_safe("stats.world_store", self.world_store.stats) or {}
+        if self.procedural_store:
+            s["persist_procedural"] = self._persist_safe("stats.procedural_store", self.procedural_store.stats) or {}
+        if self.case_store:
+            s["persist_cases"] = self._persist_safe("stats.case_store", self.case_store.stats) or {}
+        if self.verifier_store:
+            s["persist_verifier"] = self._persist_safe("stats.verifier_store", self.verifier_store.stats) or {}
+        return s

@@ -1,10 +1,6 @@
 """Dependency injection container -- wires everything together."""
 
 from functools import cached_property
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 
 class Container:
@@ -165,6 +161,46 @@ class Container:
             orchestrator=self.orchestrator,
             vector_store=self.vector_store,
             llm=self.llm,
+        )
+
+    @cached_property
+    def night_pipeline(self):
+        """NightLearningPipeline from core learning."""
+        from waggledance.core.learning.night_learning_pipeline import NightLearningPipeline
+        return NightLearningPipeline(profile=self._settings.get_profile())
+
+    @cached_property
+    def autonomy_service(self):
+        """AutonomyService — wires runtime mode from settings."""
+        from waggledance.application.services.autonomy_service import AutonomyService
+        from waggledance.core.autonomy.compatibility import CompatibilityLayer
+        from waggledance.core.autonomy.lifecycle import AutonomyLifecycle
+        from waggledance.core.autonomy.resource_kernel import ResourceKernel
+        from waggledance.core.autonomy.runtime import AutonomyRuntime
+
+        profile = self._settings.get_profile()
+        runtime = AutonomyRuntime(profile=profile)
+        lifecycle = AutonomyLifecycle(
+            primary=self._settings.runtime_primary,
+            compatibility_mode=self._settings.compatibility_mode,
+            profile=profile,
+        )
+        compatibility = CompatibilityLayer(
+            runtime=runtime,
+            compatibility_mode=self._settings.compatibility_mode,
+        )
+
+        # Build ResourceKernel with tier from settings
+        tier = self._settings.get_hardware_tier()
+        resource_kernel = ResourceKernel(tier=tier)
+
+        return AutonomyService(
+            runtime=runtime,
+            lifecycle=lifecycle,
+            resource_kernel=resource_kernel,
+            compatibility=compatibility,
+            profile=profile,
+            night_pipeline=self.night_pipeline,
         )
 
     def build_app(self):

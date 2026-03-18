@@ -1,0 +1,51 @@
+profile: FACTORY
+version: "1.0"
+description: "Industrial — OEE, SPC, predictive maintenance"
+inherits: default_constitution
+
+overrides:
+  - id: spc_alert_auto
+    description: "Allow automated SPC out-of-control alerts"
+    condition:
+      category: DETECT
+      capability_pattern: "*.spc*"
+    action: allow
+    reason: "SPC alerts are observational, no physical action"
+
+  - id: maintenance_schedule_approval
+    description: "Require approval for maintenance scheduling"
+    condition:
+      category: PLAN
+      capability_pattern: "*.maintenance*"
+    action: require_approval
+    reason: "Maintenance scheduling affects production capacity"
+
+  - id: production_line_control
+    description: "Require approval for production line control actions"
+    condition:
+      category: ACT
+      capability_pattern: "*.production*"
+    action: require_approval
+    reason: "Production line changes have high blast radius"
+
+  - id: quality_auto_detect
+    description: "Allow automated quality anomaly detection"
+    condition:
+      category: DETECT
+      capability_pattern: "*.quality*"
+    action: allow
+    reason: "Quality detection is observational"
+
+  - id: deny_unsupervised_shutdown
+    description: "Never allow automated production shutdown"
+    condition:
+      category: ACT
+      capability_pattern: "*.shutdown*"
+    action: deny
+    reason: "Production shutdowns require human decision"
+
+thresholds:
+  max_composite_auto_approve: 0.3
+  max_severity_auto_approve: 0.4
+  night_learning_budget_hours: 4
+  max_proactive_goals_per_day: 15

@@ -1,0 +1,38 @@
+capabilities:
+  - id: retrieve.hot_cache
+    category: RETRIEVE
+    description: "In-memory LRU cache with TTL"
+    legacy_module: core.fast_memory
+    legacy_class: HotCache
+    preconditions: []
+    success_criteria:
+      - "cache hit found"
+    rollback_possible: true
+    max_latency_ms: 5
+    trust_baseline: 0.99
+
+  - id: retrieve.semantic_search
+    category: RETRIEVE
+    description: "ChromaDB semantic similarity search"
+    legacy_module: core.memory_engine
+    preconditions:
+      - "embedding model available"
+      - "ChromaDB collection exists"
+    success_criteria:
+      - "results returned with score > threshold"
+    rollback_possible: true
+    max_latency_ms: 500
+    trust_baseline: 0.85
+
+  - id: retrieve.vector_search
+    category: RETRIEVE
+    description: "FAISS vector similarity search (IndexFlatIP cosine)"
+    legacy_module: core.faiss_store
+    legacy_class: FaissRegistry
+    preconditions:
+      - "FAISS index loaded"
+    success_criteria:
+      - "cosine similarity > 0.35"
+    rollback_possible: true
+    max_latency_ms: 100
+    trust_baseline: 0.82

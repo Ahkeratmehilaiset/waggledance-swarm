@@ -1,6 +1,6 @@
 domain: cottage
-version: "1.0"
-description: "Off-grid property management — heating, frost protection, seasonal tasks"
+version: "1.1"
+description: "Off-grid property management — heating, frost protection, seasonal maintenance"
 default_fallback: llm_reasoning
 
 layers:
@@ -36,50 +36,25 @@ key_decisions:
     rules: [frost_pipe_check, frost_outdoor_threshold]
     fallback: llm_reasoning
 
-  - id: hive_survival
-    question: "Selviävätkö mehiläiset talvesta?"
-    keywords: ["talvi", "selviää", "survival", "kuolleisuus", "talvehtimi"]
-    primary_layer: statistical
-    model: winter_survival
-    inputs: [colony_strength, varroa_count, food_reserves_kg, cluster_temp]
-    fallback: llm_reasoning
-
   - id: seasonal_task
     question: "Mitä pitää tehdä nyt?"
     keywords: ["tehtävä", "kausi", "season", "kuukausi", "month"]
     primary_layer: retrieval
     fallback: llm_reasoning
 
-  - id: honey_yield
-    question: "Paljonko hunajaa saan tänä kesänä?"
-    keywords: ["hunaja", "honey", "hunajasato", "sato", "harvest", "yield", "tuotos"]
-    primary_layer: model_based
-    model: honey_yield
-    inputs: [colony_strength, flow_days, forager_ratio]
+  - id: water_system
+    question: "Onko vesijärjestelmä kunnossa?"
+    keywords: ["vesi", "water", "pumppu", "pump", "kaivo", "well", "paine", "pressure"]
+    primary_layer: rule_constraints
+    rules: [water_pressure_check]
     fallback: llm_reasoning
 
-  - id: varroa_treatment
-    question: "Kuinka paljon varroa-lääkettä tarvitaan?"
-    keywords: ["varroa", "punkki", "oksaalihappo", "oxalic", "lääkitys", "treatment"]
-    primary_layer: model_based
-    model: varroa_treatment
-    inputs: [combs_with_bees, varroa_before, colony_strength]
-    fallback: llm_reasoning
-
-  - id: swarm_risk
-    question: "Onko parveamisriski korkea?"
-    keywords: ["parveami", "swarm", "kuningatar solu", "queen cell", "täynnä", "ahdas"]
-    primary_layer: model_based
-    model: swarm_risk
-    inputs: [empty_combs, total_combs, queen_age_years, queen_cells, season_factor]
-    fallback: llm_reasoning
-
-  - id: colony_food_reserves
-    question: "Onko pesässä tarpeeksi ruokaa talvea varten?"
-    keywords: ["ruoka", "varasto", "food", "reserve", "lisäruok", "fondant", "sokeriliu", "tarpeeksi", "riittää"]
-    primary_layer: model_based
-    model: colony_food_reserves
-    inputs: [bee_cluster_kg, food_available_kg, winter_months]
+  - id: energy_consumption
+    question: "Paljonko sähköä kuluu?"
+    keywords: ["sähkö", "electricity", "kulutus", "consumption", "watti", "watt"]
+    primary_layer: statistical
+    model: energy_baseline
+    inputs: [daily_kwh, outdoor_temp, heating_mode]
     fallback: llm_reasoning
 
 rules:
@@ -97,30 +72,21 @@ rules:
     message_fi: "Ankara pakkanen ({outdoor_temp}°C) — tarkista kaikki vesiputket ja lämmitys."
     message_en: "Severe frost ({outdoor_temp}°C) — check all water pipes and heating."
 
+  - id: water_pressure_check
+    condition: "water_pressure_bar < 1.0"
+    action: alert
+    severity: medium
+    message_fi: "Vedenpaine alhainen ({water_pressure_bar} bar). Tarkista pumppu."
+    message_en: "Water pressure low ({water_pressure_bar} bar). Check pump."
+
 models:
   - id: heating_cost
     type: model_based
     axiom_file: "configs/axioms/cottage/heating_cost.yaml"
 
-  - id: winter_survival
+  - id: energy_baseline
     type: statistical
-    axiom_file: "configs/axioms/cottage/winter_survival.yaml"
-
-  - id: honey_yield
-    type: model_based
-    axiom_file: "configs/axioms/cottage/honey_yield.yaml"
-
-  - id: varroa_treatment
-    type: model_based
-    axiom_file: "configs/axioms/cottage/varroa_treatment.yaml"
-
-  - id: swarm_risk
-    type: model_based
-    axiom_file: "configs/axioms/cottage/swarm_risk.yaml"
-
-  - id: colony_food_reserves
-    type: model_based
-    axiom_file: "configs/axioms/cottage/colony_food_reserves.yaml"
+    description: "Baseline energy consumption model for off-grid property"
 
 data_sources:
   - id: spot_price

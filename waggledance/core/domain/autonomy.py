@@ -16,6 +16,7 @@ units of the autonomy runtime:
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -179,7 +180,7 @@ class WorldSnapshot:
             "baselines": self.baselines,
             "residuals": self.residuals,
             "profile": self.profile,
-            "source_type": self.source_type.value,
+            "source_type": self.source_type.value if hasattr(self.source_type, 'value') else str(self.source_type),
         }
 
 
@@ -288,6 +289,42 @@ class Action:
             "idempotency_key": self.idempotency_key,
             "created_at": self.created_at.isoformat(),
             "executed_at": self.executed_at.isoformat() if self.executed_at else None,
+        }
+
+
+@dataclass
+class SensorObservation:
+    """Normalized sensor observation for the world model.
+
+    All sensor adapters produce observations in this format to enable
+    uniform baseline updates, residual computation, and anomaly detection.
+    """
+    sensor_id: str          # e.g., "hive_1.temperature"
+    entity_id: str          # e.g., "hive_1"
+    metric: str             # e.g., "temperature"
+    value: float
+    unit: str = ""          # e.g., "°C", "lux", "%"
+    source: str = ""        # e.g., "mqtt", "home_assistant", "frigate", "audio"
+    timestamp: float = field(default_factory=time.time)
+    quality: float = 1.0    # 0-1, confidence in reading
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def key(self) -> str:
+        """Baseline store key: entity_id.metric."""
+        return f"{self.entity_id}.{self.metric}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "sensor_id": self.sensor_id,
+            "entity_id": self.entity_id,
+            "metric": self.metric,
+            "value": self.value,
+            "unit": self.unit,
+            "source": self.source,
+            "timestamp": self.timestamp,
+            "quality": self.quality,
+            "metadata": self.metadata,
         }
 
 

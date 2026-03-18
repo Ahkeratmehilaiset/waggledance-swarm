@@ -179,6 +179,30 @@ class SolverRouter:
         if any(s in q for s in seasonal_signals):
             return "seasonal"
 
+        # Thermal
+        thermal_signals = {"temperature", "lämpötila", "heat", "frost", "pakkanen",
+                           "thermal", "heating", "cooling", "lämmitys"}
+        if any(s in q for s in thermal_signals):
+            return "thermal"
+
+        # Statistics
+        stats_signals = {"statistics", "tilasto", "trend", "average", "keskiarvo",
+                         "median", "percentile", "correlation", "summary"}
+        if any(s in q for s in stats_signals):
+            return "stats"
+
+        # Optimization
+        optim_signals = {"optimize", "optimoi", "schedule", "aikatauluta",
+                         "minimize", "allocate", "cheapest", "halvin"}
+        if any(s in q for s in optim_signals):
+            return "optimization"
+
+        # Causal
+        causal_signals = {"cause", "syy", "why", "miksi", "impact", "vaikutus",
+                          "root cause", "because", "koska", "depends"}
+        if any(s in q for s in causal_signals):
+            return "causal"
+
         # Anomaly / deviation
         anomaly_signals = {"anomaly", "anomalia", "deviation", "poikkeama",
                           "outlier", "unusual", "epätavallinen"}

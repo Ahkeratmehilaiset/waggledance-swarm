@@ -27,6 +27,11 @@ def get_memory_service(request: Request):
     return get_container(request).memory_service
 
 
+def get_autonomy_service(request: Request):
+    """Provide the AutonomyService instance from the container."""
+    return get_container(request).autonomy_service
+
+
 def require_auth(request: Request):
     """Placeholder -- actual auth is enforced by BearerAuthMiddleware.
 

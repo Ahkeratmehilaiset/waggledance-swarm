@@ -1,0 +1,104 @@
+capabilities:
+  - id: verify.hallucination
+    category: VERIFY
+    description: "LLM output hallucination detection"
+    legacy_module: core.hallucination_checker
+    legacy_class: HallucinationChecker
+    preconditions:
+      - "LLM response available"
+    success_criteria:
+      - "hallucination score computed"
+    rollback_possible: true
+    max_latency_ms: 200
+    trust_baseline: 0.88
+
+  - id: verify.consensus
+    category: VERIFY
+    description: "Multi-agent Round Table consensus"
+    legacy_module: core.round_table_controller
+    legacy_class: RoundTableController
+    preconditions:
+      - "multiple agent responses available"
+      - "LLM available for synthesis"
+    success_criteria:
+      - "consensus reached or dissent recorded"
+    rollback_possible: true
+    max_latency_ms: 10000
+    trust_baseline: 0.85
+
+  - id: verify.english_output
+    category: VERIFY
+    description: "English language quality validation"
+    legacy_module: core.en_validator
+    legacy_class: EnglishValidator
+    preconditions:
+      - "text in English available"
+    success_criteria:
+      - "grammar and coherence acceptable"
+    rollback_possible: true
+    max_latency_ms: 100
+    trust_baseline: 0.90
+
+  - id: explain.llm_reasoning
+    category: EXPLAIN
+    description: "LLM-based explanations and natural language generation"
+    legacy_module: waggledance.adapters.llm.ollama_adapter
+    legacy_class: OllamaAdapter
+    preconditions:
+      - "Ollama available"
+      - "model loaded"
+    success_criteria:
+      - "coherent explanation generated"
+    rollback_possible: true
+    max_latency_ms: 5000
+    trust_baseline: 0.70
+
+  - id: detect.seasonal_rules
+    category: DETECT
+    description: "Seasonal guard rule evaluation"
+    legacy_module: core.seasonal_guard
+    preconditions:
+      - "current date available"
+      - "seasonal rules loaded"
+    success_criteria:
+      - "seasonal context identified"
+    rollback_possible: true
+    max_latency_ms: 50
+    trust_baseline: 0.92
+
+  - id: detect.anomaly
+    category: DETECT
+    description: "Statistical anomaly detection"
+    legacy_module: core.anomaly_detector
+    preconditions:
+      - "baseline data available"
+      - "current observation available"
+    success_criteria:
+      - "anomaly score computed"
+      - "threshold comparison made"
+    rollback_possible: true
+    max_latency_ms: 100
+    trust_baseline: 0.85
+
+  - id: normalize.finnish
+    category: NORMALIZE
+    description: "Finnish text normalization via Voikko"
+    legacy_module: core.normalizer
+    preconditions: []
+    success_criteria:
+      - "text normalized"
+    rollback_possible: true
+    max_latency_ms: 50
+    trust_baseline: 0.95
+
+  - id: normalize.translate_fi_en
+    category: NORMALIZE
+    description: "Finnish to English translation proxy"
+    legacy_module: core.translation_proxy
+    preconditions:
+      - "LLM available for translation"
+    success_criteria:
+      - "translation produced"
+    rollback_possible: true
+    max_latency_ms: 3000
+    trust_baseline: 0.80

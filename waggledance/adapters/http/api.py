@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from waggledance.adapters.http.middleware.auth import BearerAuthMiddleware
 from waggledance.adapters.http.middleware.rate_limit import RateLimitMiddleware
+from waggledance.adapters.http.routes.autonomy import router as autonomy_router
 from waggledance.adapters.http.routes.chat import router as chat_router
 from waggledance.adapters.http.routes.memory import router as memory_router
 from waggledance.adapters.http.routes.status import router as status_router
@@ -101,6 +102,8 @@ def create_app(container) -> FastAPI:
     app.include_router(chat_router, prefix="/api")
     # Memory routes under /api prefix (/api/memory/ingest, /api/memory/search)
     app.include_router(memory_router, prefix="/api")
+    # Autonomy routes under /api prefix (/api/autonomy/*)
+    app.include_router(autonomy_router, prefix="/api")
 
     # ---- Static files ---- CONDITIONAL mount
     # Missing dashboard/dist must NOT crash the application

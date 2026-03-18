@@ -88,9 +88,9 @@ class TestHomeHeatingOptimization:
         runtime.stop()
 
     def test_heating_query_routes_correctly(self):
-        """Heating query should classify as optimization intent."""
+        """Heating query should classify as thermal or optimization intent."""
         intent = SolverRouter.classify_intent("optimize heating schedule")
-        assert intent in ("optimize", "math", "chat")
+        assert intent in ("thermal", "optimization", "optimize", "math", "chat")
 
 
 # ── 2. COTTAGE frost protection end-to-end (rule path) ──

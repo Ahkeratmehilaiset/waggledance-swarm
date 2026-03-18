@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from waggledance.core.domain.autonomy import (
     CaseTrajectory,
@@ -65,6 +65,9 @@ class NightLearningResult:
     bronze_count: int = 0
     quarantine_count: int = 0
 
+    # Canary evaluation results {model_id: "promoted"/"rolled_back"}
+    canary_results: Dict[str, str] = field(default_factory=dict)
+
     report: Optional[MorningReport] = None
     errors: List[str] = field(default_factory=list)
 
@@ -88,6 +91,7 @@ class NightLearningResult:
                 "bronze": self.bronze_count,
                 "quarantine": self.quarantine_count,
             },
+            "canary_results": self.canary_results,
             "errors": self.errors,
             "success": self.success,
         }
@@ -234,6 +238,7 @@ class NightLearningPipeline:
             # Evaluate existing canaries
             canary_results = self._trainer.evaluate_all_canaries()
             result.canaries_evaluated = len(canary_results)
+            result.canary_results = canary_results
 
         except Exception as e:
             result.errors.append(f"Specialist training: {e}")

@@ -1,0 +1,37 @@
+profile: COTTAGE
+version: "1.0"
+description: "Off-grid property — heating, frost protection, seasonal maintenance"
+inherits: default_constitution
+
+overrides:
+  - id: frost_protection_emergency
+    description: "Allow immediate frost protection without human approval"
+    condition:
+      category: ACT
+      capability_pattern: "*.frost*"
+      severity_max: 0.8
+    action: allow
+    reason: "Frost damage is irreversible and time-critical"
+
+  - id: heating_auto_adjust
+    description: "Allow heating adjustments within safe range"
+    condition:
+      category: ACT
+      capability_pattern: "*.heating*"
+      blast_radius_max: 0.3
+    action: allow
+    reason: "Low-risk heating adjustments within bounds"
+
+  - id: deny_structural_changes
+    description: "Require approval for any structural/building actions"
+    condition:
+      category: ACT
+      capability_pattern: "*.structural*"
+    action: require_approval
+    reason: "Structural decisions need human oversight"
+
+thresholds:
+  max_composite_auto_approve: 0.5
+  max_severity_auto_approve: 0.6
+  night_learning_budget_hours: 8
+  max_proactive_goals_per_day: 5

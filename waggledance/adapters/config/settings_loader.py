@@ -1,4 +1,8 @@
-"""WaggleSettings — the ONLY place that reads os.environ and .env files."""
+"""WaggleSettings — the ONLY place that reads os.environ and .env files.
+
+Also merges runtime.primary and compatibility_mode from configs/settings.yaml
+when env vars are not set, providing a single source of truth for cutover config.
+"""
 # implements ConfigPort
 
 import logging
@@ -9,7 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 logger = logging.getLogger(__name__)
+
+_VALID_RUNTIME_PRIMARIES = frozenset({"waggledance", "hivemind", "shadow"})
+
+_SETTINGS_YAML_PATH = Path("configs/settings.yaml")
 
 
 @dataclass
@@ -49,6 +59,10 @@ class WaggleSettings:
     # Night learning -- BUG 3 fix: convergence stall threshold
     night_stall_threshold: int = 10
 
+    # Runtime cutover
+    runtime_primary: str = "waggledance"
+    compatibility_mode: bool = False
+
     # Extra settings loaded from YAML, kept in a flat dict for dotted-key access
     _extras: dict = field(default_factory=dict, repr=False)
 
@@ -57,18 +71,30 @@ class WaggleSettings:
     # ------------------------------------------------------------------ #
 
     @classmethod
-    def from_env(cls, env_path: str = ".env") -> "WaggleSettings":
+    def from_env(cls, env_path: str = ".env",
+                 yaml_path: str | Path | None = None) -> "WaggleSettings":
         """Load from environment variables and .env file.
 
         This is the ONLY place in the entire application that reads
         os.environ or .env files.  It is also the ONLY place that
         generates a default API key when none is provided.
+
+        Resolution order (highest wins):
+          1. Environment variables (WAGGLE_*)
+          2. configs/settings.yaml (for runtime section + profile)
+          3. Dataclass defaults
         """
         # Try loading .env file into os.environ (best-effort)
         _load_dotenv(env_path)
 
+        # Merge settings.yaml as base layer
+        yaml_base = _load_yaml_settings(yaml_path)
+        yaml_runtime = yaml_base.get("runtime", {})
+
         settings = cls(
-            profile=os.environ.get("WAGGLE_PROFILE", "COTTAGE").upper(),
+            profile=os.environ.get(
+                "WAGGLE_PROFILE",
+                yaml_base.get("profile", "cottage")).upper(),
             ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
             chroma_dir=os.environ.get("CHROMA_DIR", "./chroma_data"),
             db_path=os.environ.get("WAGGLE_DB_PATH", "./shared_memory.db"),
@@ -89,7 +115,22 @@ class WaggleSettings:
             night_stall_threshold=int(
                 os.environ.get("WAGGLE_STALL_THRESHOLD", "10")
             ),
+            runtime_primary=os.environ.get(
+                "WAGGLE_RUNTIME_PRIMARY",
+                yaml_runtime.get("primary", "waggledance")),
+            compatibility_mode=_parse_bool(os.environ.get(
+                "WAGGLE_COMPAT_MODE",
+                str(yaml_runtime.get("compatibility_mode", False)))),
+            _extras=yaml_base,
         )
+
+        # Validate runtime_primary
+        if settings.runtime_primary not in _VALID_RUNTIME_PRIMARIES:
+            logger.error(
+                "Invalid runtime_primary '%s' — must be one of %s. "
+                "Falling back to 'waggledance'.",
+                settings.runtime_primary, sorted(_VALID_RUNTIME_PRIMARIES))
+            settings.runtime_primary = "waggledance"
 
         # Auto-generate API key if none provided
         if not settings.api_key:
@@ -99,6 +140,31 @@ class WaggleSettings:
             )
 
         return settings
+
+    # ------------------------------------------------------------------ #
+    #  Runtime mode helpers                                               #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def is_autonomy_primary(self) -> bool:
+        """True when waggledance runtime is the primary path."""
+        return (self.runtime_primary == "waggledance"
+                and not self.compatibility_mode)
+
+    @property
+    def is_shadow_mode(self) -> bool:
+        """True when running in shadow mode (both runtimes, new shadows)."""
+        return self.runtime_primary == "shadow"
+
+    def runtime_diagnostics(self) -> dict:
+        """Return a diagnostic summary for startup logging."""
+        return {
+            "runtime_primary": self.runtime_primary,
+            "compatibility_mode": self.compatibility_mode,
+            "is_autonomy_primary": self.is_autonomy_primary,
+            "profile": self.profile,
+            "hardware_tier": self.hardware_tier,
+        }
 
     # ------------------------------------------------------------------ #
     #  ConfigPort interface                                               #
@@ -229,3 +295,21 @@ def _load_dotenv(env_path: str) -> None:
                 os.environ[key] = value
     except Exception as exc:
         logger.warning("Could not read %s: %s", env_path, exc)
+
+
+def _load_yaml_settings(yaml_path: str | Path | None = None) -> dict:
+    """Load settings.yaml as a base config layer. Returns empty dict on failure."""
+    path = Path(yaml_path) if yaml_path else _SETTINGS_YAML_PATH
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.warning("Could not read settings YAML %s: %s", path, exc)
+        return {}
+
+
+def _parse_bool(value: str) -> bool:
+    """Parse a boolean from a string (env var or YAML value)."""
+    return str(value).lower() in ("true", "1", "yes", "on")

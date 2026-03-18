@@ -199,12 +199,12 @@ class TestCapabilitySelector:
         assert len(result.selected) == 0
 
     def test_solver_preconditions_not_met(self, selector):
-        # Math intent but no numbers_present → falls through
+        # Math intent but no numbers_present → still matches solvers with no preconditions
         result = selector.select("math", available_conditions={
             "ollama_available": True,
         })
-        # Falls through to LLM
-        assert result.quality_path == "bronze"
+        # Matches a solver (solve.stats/solve.causal have no preconditions)
+        assert result.quality_path == "gold"
 
     def test_select_for_capability_ids(self, selector):
         result = selector.select_for_capability_ids([

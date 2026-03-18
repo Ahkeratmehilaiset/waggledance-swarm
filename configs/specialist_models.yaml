@@ -1,0 +1,108 @@
+version: "1.0"
+description: "Specialist model training and deployment configuration"
+
+models:
+  - id: route_classifier
+    description: "Classifies incoming queries to optimal route type"
+    training_data: route_telemetry
+    training_frequency: nightly
+    architecture: sklearn_sgd
+    input_features: ["query_length", "keyword_matches", "language", "hour_of_day", "has_numbers"]
+    output_classes: ["hotcache", "memory", "micromodel", "llm", "swarm", "solver"]
+    min_training_samples: 100
+    canary_duration_hours: 48
+    canary_traffic_pct: 10
+    min_accuracy: 0.85
+    fallback_on_failure: keyword_classifier
+
+  - id: capability_selector
+    description: "Selects optimal capability chain for a given intent"
+    training_data: case_trajectories
+    training_frequency: nightly
+    architecture: sklearn_sgd
+    input_features: ["intent", "available_capabilities", "context_size", "profile"]
+    output_classes: ["solver", "retrieval", "detection", "micromodel", "llm"]
+    min_training_samples: 50
+    canary_duration_hours: 48
+    canary_traffic_pct: 10
+    min_accuracy: 0.80
+    fallback_on_failure: solver_first_heuristic
+
+  - id: anomaly_detector
+    description: "Detects anomalies in sensor and baseline data"
+    training_data: baseline_deviations
+    training_frequency: nightly
+    architecture: sklearn_isolation_forest
+    input_features: ["residual", "z_score", "trend_slope", "day_of_year"]
+    min_training_samples: 200
+    canary_duration_hours: 48
+    canary_traffic_pct: 10
+    min_accuracy: 0.85
+    fallback_on_failure: z_score_threshold
+
+  - id: baseline_scorer
+    description: "Scores deviation from expected normal values"
+    training_data: world_snapshots
+    training_frequency: nightly
+    architecture: sklearn_gradient_boosting
+    input_features: ["metric_value", "baseline_value", "confidence", "sample_count", "season"]
+    min_training_samples: 100
+    canary_duration_hours: 48
+    canary_traffic_pct: 10
+    min_accuracy: 0.80
+    fallback_on_failure: residual_threshold
+
+  - id: approval_predictor
+    description: "Predicts whether human approval will be needed"
+    training_data: policy_decisions
+    training_frequency: weekly
+    architecture: sklearn_logistic_regression
+    input_features: ["composite_risk", "severity", "reversibility", "category", "profile"]
+    output_classes: ["auto_approve", "needs_approval", "auto_deny"]
+    min_training_samples: 50
+    canary_duration_hours: 48
+    canary_traffic_pct: 10
+    min_accuracy: 0.90
+    fallback_on_failure: risk_threshold
+
+  - id: missing_var_predictor
+    description: "Predicts which variables are missing before a decision"
+    training_data: failed_cases
+    training_frequency: weekly
+    architecture: sklearn_random_forest
+    input_features: ["intent", "available_vars", "capability_id", "profile"]
+    min_training_samples: 30
+    canary_duration_hours: 48
+    canary_traffic_pct: 10
+    min_accuracy: 0.75
+    fallback_on_failure: precondition_check
+
+  - id: verifier_prior
+    description: "Predicts outcome success probability before execution"
+    training_data: action_outcomes
+    training_frequency: nightly
+    architecture: sklearn_sgd
+    input_features: ["capability_id", "risk_composite", "context_completeness", "previous_success_rate"]
+    min_training_samples: 100
+    canary_duration_hours: 48
+    canary_traffic_pct: 10
+    min_accuracy: 0.80
+    fallback_on_failure: historical_average
+
+  - id: domain_language_adapter
+    description: "Maps domain-specific language to canonical intents"
+    training_data: chat_history
+    training_frequency: weekly
+    architecture: sklearn_sgd
+    input_features: ["query_tokens", "language", "profile", "domain"]
+    min_training_samples: 200
+    canary_duration_hours: 48
+    canary_traffic_pct: 10
+    min_accuracy: 0.80
+    fallback_on_failure: keyword_matching
+
+deployment:
+  model_store_dir: "data/specialist_models"
+  max_canary_models: 3
+  rollback_on_accuracy_drop: true
+  accuracy_drop_threshold: 0.05

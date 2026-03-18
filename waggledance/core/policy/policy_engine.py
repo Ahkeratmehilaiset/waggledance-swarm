@@ -29,6 +29,7 @@ from waggledance.core.domain.autonomy import (
 from waggledance.core.policy.constitution import (
     Constitution,
     ConstitutionRule,
+    ProfileThresholds,
     load_constitution,
 )
 from waggledance.core.policy.risk_scoring import RiskScorer
@@ -81,6 +82,14 @@ class PolicyEngine:
         self._risk_scorer = risk_scorer or RiskScorer()
         self._profile = profile
         self._decision_log: List[PolicyDecision] = []
+
+        # Safety case builder for non-readonly actions
+        self._safety_builder = None
+        try:
+            from waggledance.core.policy.safety_cases import SafetyCaseBuilder
+            self._safety_builder = SafetyCaseBuilder()
+        except Exception:
+            pass
 
     @property
     def profile(self) -> str:
@@ -163,6 +172,21 @@ class PolicyEngine:
                 if quality_path != "gold":
                     needs_approval = True
 
+        # Apply profile thresholds for auto-approve
+        thresholds = self._constitution.get_thresholds(self._profile)
+        threshold_auto = False
+        if (not deny_found and not needs_approval
+                and risk.composite <= thresholds.max_composite_auto_approve
+                and risk.severity <= thresholds.max_severity_auto_approve):
+            threshold_auto = True
+            if not allow_found:
+                allow_found = True
+                allow_reason = (
+                    f"Within profile thresholds "
+                    f"(composite={risk.composite:.2f}<="
+                    f"{thresholds.max_composite_auto_approve})")
+                matched.append("profile_threshold_auto_approve")
+
         # Also check RiskScore approval requirement
         if risk.requires_approval:
             needs_approval = True
@@ -207,6 +231,18 @@ class PolicyEngine:
                     matched_rules=matched,
                 )
 
+        # Build safety case for audit trail (non-readonly actions only)
+        if self._safety_builder:
+            try:
+                self._safety_builder.build_case(
+                    action_id=action.capability_id,
+                    capability_id=action.capability_id,
+                    claim=f"Action '{action.capability_id}' is safe to execute",
+                    risk_score=risk,
+                )
+            except Exception as exc:
+                log.debug("Safety case build failed: %s", exc)
+
         self._record(decision)
         return decision
 
@@ -232,6 +268,7 @@ class PolicyEngine:
         approved = sum(1 for d in self._decision_log if d.approved)
         denied = sum(1 for d in self._decision_log if not d.approved and not d.needs_approval)
         pending = sum(1 for d in self._decision_log if d.needs_approval)
+        thresholds = self._constitution.get_thresholds(self._profile)
         return {
             "total_decisions": total,
             "approved": approved,
@@ -239,6 +276,8 @@ class PolicyEngine:
             "pending_approval": pending,
             "profile": self._profile,
             "constitution_version": self._constitution.version,
+            "max_composite_auto_approve": thresholds.max_composite_auto_approve,
+            "max_severity_auto_approve": thresholds.max_severity_auto_approve,
         }
 
     # ── Internal ──────────────────────────────────────────

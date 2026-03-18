@@ -62,3 +62,21 @@ jobs:
         path: |
           data/benchmark_v1_18.json
           data/benchmark_v1_18_summary.md
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: 'npm'
+        cache-dependency-path: dashboard/package-lock.json
+    - name: Install dashboard dependencies
+      working-directory: dashboard
+      run: npm ci
+    - name: Build dashboard
+      working-directory: dashboard
+      run: npm run build

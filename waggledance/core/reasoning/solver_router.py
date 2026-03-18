@@ -198,9 +198,19 @@ class SolverRouter:
         if any(s in q for s in stats_signals):
             return "stats"
 
+        # Schedule disambiguation: schedule without active verb → retrieval
+        _SCHED_WORDS = {"schedule", "aikataulu", "kalenteri", "calendar", "timetable"}
+        _OPTIM_VERBS = {"optimize", "optimoi", "minimize", "maximize", "allocate",
+                        "create", "build", "schedule this", "optimization"}
+        if any(sw in q for sw in _SCHED_WORDS):
+            if any(ov in q for ov in _OPTIM_VERBS):
+                return "optimization"
+            return "retrieval"
+
         # Optimization
-        optim_signals = {"optimize", "optimoi", "schedule", "aikatauluta",
-                         "minimize", "allocate", "cheapest", "halvin"}
+        optim_signals = {"optimize", "optimoi", "aikatauluta",
+                         "minimize", "allocate", "cheapest", "halvin",
+                         "optimization"}
         if any(s in q for s in optim_signals):
             return "optimization"
 

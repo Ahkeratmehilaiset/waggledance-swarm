@@ -25,7 +25,6 @@ const L = {
     send: "SEND",
     domains: DOMAIN_LABELS.en,
     feats: FEATS_EN,
-    },
     agentsGuide: "Define agents in YAML:\n\n# agents/my_agent.yaml\nname: my_agent\nspecialties: [topic1, topic2]\ntools: [chromadb, web_search]\nlevel: 1  # auto 1→5\n\nLevels: NOVICE → MASTER\nAuto-discovers /agents/*.yaml",
     info: `═══ WAGGLEDANCE AI — TECHNICAL ARCHITECTURE ═══
 

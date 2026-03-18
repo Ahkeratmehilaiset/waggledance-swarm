@@ -176,10 +176,10 @@ Each decision includes: what was decided, why, and what it affects.
 
 ---
 
-## AD-18: asyncio.run() Test Pattern (No pytest-asyncio)
+## AD-18: Async Tests Use pytest-asyncio
 
-**Decision:** Async tests use `asyncio.run()` wrapping instead of `pytest-asyncio` plugin.
+**Decision:** Async tests use `pytest-asyncio` with `@pytest.mark.asyncio`. The earlier `asyncio.run()` wrapper pattern is deprecated.
 
-**Rationale:** `pytest-asyncio` was not installed in the project. Adding a dependency for test infrastructure was considered unnecessary when `asyncio.run()` works reliably.
+**Rationale:** 13+ test files already used `@pytest.mark.asyncio`. `pytest-asyncio>=0.23.0` is now in both `requirements.txt` and `requirements-ci.txt`. The plugin handles event-loop lifecycle correctly and avoids subtle bugs with manual `asyncio.run()` wrapping in test fixtures.
 
-**Impact:** All async tests follow the pattern: `def test_X(self): asyncio.run(async_inner())`. No `@pytest.mark.asyncio` decorators needed.
+**Impact:** New async tests should use `@pytest.mark.asyncio` decorator directly. Existing `asyncio.run()` wrappers still work but should be migrated when touched.

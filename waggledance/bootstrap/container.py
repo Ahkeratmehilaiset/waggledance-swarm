@@ -51,7 +51,11 @@ class Container:
 
     @cached_property
     def trust_store(self):
-        """TrustStorePort -- stub=InMemory, production=SQLite with InMemory fallback."""
+        """TrustStorePort -- stub=InMemory, production=SQLite with InMemory fallback.
+
+        WARNING: If SQLite fails, falls back to InMemory (data lost on restart).
+        Check logs for ERROR level.
+        """
         if self._stub:
             from waggledance.adapters.trust.in_memory_trust_store import InMemoryTrustStore
             return InMemoryTrustStore()
@@ -60,12 +64,15 @@ class Container:
             from waggledance.adapters.trust.sqlite_trust_store import SQLiteTrustStore
             db_dir = os.path.dirname(self._settings.db_path) or "."
             return SQLiteTrustStore(db_path=os.path.join(db_dir, "trust_store.db"))
-        except Exception:
+        except Exception as exc:
             import logging
-            logging.getLogger(__name__).warning(
-                "SQLiteTrustStore unavailable, falling back to InMemoryTrustStore")
+            log = logging.getLogger(__name__)
+            log.error(
+                "SQLiteTrustStore failed — trust data will NOT persist across restarts: %s", exc)
             from waggledance.adapters.trust.in_memory_trust_store import InMemoryTrustStore
-            return InMemoryTrustStore()
+            store = InMemoryTrustStore()
+            store._fallback_active = True
+            return store
 
     @cached_property
     def shared_memory(self):

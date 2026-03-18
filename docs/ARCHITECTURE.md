@@ -13,8 +13,8 @@
                    │
 ┌──────────────────▼───────────────────────────────────────────────┐
 │                     FastAPI  (port 8000)                          │
-│  REST endpoints (~45)  │  WebSocket /ws  │  Health/Ready probes  │
-│  Rate limiting (20/min)│  CORS (GET/POST)│  Input validation     │
+│  REST endpoints (~70+) │  WebSocket /ws  │  Health/Ready probes  │
+│  Rate limiting (60/min)│  CORS (GET/POST)│  Input validation     │
 └──────────────────┬───────────────────────────────────────────────┘
                    │
 ┌──────────────────▼───────────────────────────────────────────────┐
@@ -30,7 +30,7 @@
 │                    (hivemind.py ~1382 + 4 controllers)            │
 │                                                                   │
 │  ┌─────────────┐ ┌──────────────┐ ┌────────────────┐            │
-│  │ 75 Agents   │ │ Round Table  │ │ Night Mode     │            │
+│  │ 128 Agents  │ │ Round Table  │ │ Night Mode     │            │
 │  │ (YAML defs) │ │ (6-agent     │ │ (idle learning │            │
 │  │ 5 trust lvl │ │  consensus)  │ │  + enrichment) │            │
 │  └─────────────┘ └──────────────┘ └────────────────┘            │

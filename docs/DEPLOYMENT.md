@@ -172,7 +172,7 @@ python -m pytest tests/ -v
 python tools/waggle_restore.py
 ```
 
-Expected: **79 legacy suites GREEN (~1470 assertions), 2880 pytest tests = ~4350 total tests.**
+Expected: **79 legacy suites GREEN (~1470 assertions), 3671 pytest tests = ~5100 total tests.**
 
 ---
 

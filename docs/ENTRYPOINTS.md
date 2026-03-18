@@ -88,11 +88,11 @@ Interactive menu with 4 options:
 | Architecture | Monolith (hivemind.py) | Hexagonal (ports & adapters) |
 | DI container | None (manual wiring) | `Container` with `cached_property` |
 | Testability | Needs live services | In-memory stubs, <1s tests |
-| Agent spawning | Yes (20+ agents) | Not yet (future work) |
-| Dashboard API | 40+ endpoints | 5 endpoints (health, ready, chat, memory) |
-| Night learning | Yes | Not yet (future work) |
-| FAISS | Yes | Not yet (future work) |
-| Test coverage | 946 tests (72 suites) | 172 tests (unit/core/app/contracts) |
+| Agent spawning | Yes (128 agents) | Via CompatibilityLayer |
+| Dashboard API | 40+ endpoints | 12 endpoints (health, ready, chat, memory, autonomy) |
+| Night learning | Yes | Yes (NightLearningPipeline v2) |
+| Autonomy runtime | No | Yes (solver-first, 29 capabilities) |
+| Test coverage | 1470 tests (79 suites) | 3671 pytest tests |
 
 ---
 
@@ -100,8 +100,8 @@ Interactive menu with 4 options:
 
 | Scenario | Entrypoint |
 |----------|-----------|
-| Production (full features) | `main.py` (until new runtime catches up) |
-| Development / testing new architecture | `start_runtime.py --stub` |
-| 24h validation of new stack | `start_runtime.py` (non-stub) |
+| Production (recommended) | `start_runtime.py` (autonomy runtime, primary) |
+| Production (legacy fallback) | `main.py` (HiveMind orchestrator) |
+| Development / testing | `start_runtime.py --stub` |
 | Dashboard development | `start.py --stub` (legacy, starts React dev server) |
 | CI/CD smoke tests | `start_runtime.py --stub` + pytest |

@@ -29,7 +29,7 @@ WaggleDance is designed as a **localhost-only, single-user** system. It is NOT d
 - Settings toggle: Pydantic model validation
 
 ### Rate Limiting (H2)
-- `/api/chat`: 20 requests/min per IP (in-process token bucket)
+- All API routes: 60 requests/min per IP (in-process token bucket)
 - No external dependencies required
 
 ### API Authentication (H5)

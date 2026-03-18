@@ -23,7 +23,7 @@ Authorization: Bearer <WAGGLE_API_KEY>
 
 ### Rate Limits & Input Validation
 
-Rate limit: **20 requests/min** per IP on `/api/chat` (token bucket).
+Rate limit: **60 requests/min** per IP (token bucket).
 Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10MB.
 
 ---
@@ -78,12 +78,43 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 
 ---
 
+## Autonomy Runtime (v2.0.0)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/autonomy/status` | GET | Full autonomy runtime status, KPIs, resource kernel |
+| `GET /api/autonomy/kpis` | GET | 13 autonomy KPIs with targets and current values |
+| `POST /api/autonomy/learning/run` | POST | Trigger night learning cycle (optional day_cases, legacy_records) |
+| `GET /api/autonomy/learning/status` | GET | Night learning pipeline status and history |
+| `POST /api/autonomy/goals/check-proactive` | POST | Check world model for proactive goal opportunities |
+| `GET /api/autonomy/safety-cases` | GET | Recent safety cases (optional `?limit=N`) |
+| `GET /api/autonomy/safety-cases/stats` | GET | Safety case verdict distribution |
+
+```json
+// GET /api/autonomy/kpis
+{
+  "kpis": {
+    "route_accuracy": {"value": 0.92, "target": 0.90},
+    "llm_fallback_rate": {"value": 0.25, "target": 0.30},
+    "specialist_accuracy": {"value": 0.88, "target": 0.85}
+  }
+}
+
+// POST /api/autonomy/goals/check-proactive
+// Request
+{"observations": {"hive1.temperature": 25.0}, "threshold": 2.0}
+// Response
+{"goals_proposed": 1, "goal_ids": ["goal-abc123"]}
+```
+
+---
+
 ## Agents & Learning
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `GET /api/agent_levels` | GET | All agents with current trust levels |
-| `GET /api/agents/levels` | GET | All 75 agents with level/trust/hallucination rate |
+| `GET /api/agents/levels` | GET | All 128 agents with level/trust/hallucination rate |
 | `GET /api/agents/leaderboard` | GET | Top agents by trust, queries, reliability |
 | `GET /api/consciousness` | GET | Memory engine state and statistics |
 | `GET /api/swarm/scores` | GET | SwarmScheduler agent scores |

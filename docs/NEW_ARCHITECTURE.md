@@ -11,7 +11,7 @@ WaggleDance has been migrated from a monolithic architecture (`hivemind.py` + `c
 
 ```
 waggledance/
-  __init__.py                         # __version__ = "1.15.0"
+  __init__.py                         # __version__ = "2.0.0"
   core/                               # PURE DOMAIN — zero external deps
     domain/
       agent.py                        # AgentDefinition, AgentResult

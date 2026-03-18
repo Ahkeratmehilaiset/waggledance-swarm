@@ -6,70 +6,170 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Docker-lightgrey)
 ![Version](https://img.shields.io/badge/version-2.0.0-green)
 
-**A local-first, auditable AI runtime that routes each task to the right reasoning layer — memory, rules, micromodels, model-based inference, or LLM reasoning.**
+**A local-first, solver-first AI runtime that routes each task to the right reasoning layer — solvers, specialist models, memory, or LLM — with full audit trail and autonomous learning.**
 
-WaggleDance is built for real-world environments where answers should be grounded in local data, structured rules, explicit models, and auditable decision paths. It runs on your own hardware and can combine documents, sensors, time-series data, and domain memory without relying on cloud-first assumptions.
+WaggleDance runs on your own hardware and selects the best available method for each task: physics solvers for calculations, trained specialists for classification, memory for recall, rules for constraints, and LLMs only when reasoning or language generation is actually needed.
 
-Instead of treating every task as a chatbot problem, WaggleDance selects the best available method for the job: memory for recall, rules for constraints, micromodels for fast low-cost inference, model-based inference for calculable systems, and LLMs for language, ambiguity, and explanation.
-
-The system was originally developed in a demanding real-world field environment and is being generalized into a broader runtime for sensor-rich, domain-specific applications.
+The system was developed in a demanding real-world field environment (Finnish commercial beekeeping) and is being generalized into a broader runtime for sensor-rich, domain-specific applications.
 
 ## Deployment Profiles
 
 | Profile | Environment | Example use cases |
 |---------|-------------|-------------------|
 | **GADGET** | IoT, edge | Battery life, signal quality, sensor calibration |
-| **COTTAGE** | Off-grid property | Heating cost, frost protection, seasonal tasks |
+| **COTTAGE** | Off-grid property | Heating cost, frost protection, colony health, seasonal tasks |
 | **HOME** | Smart home | Energy optimization, safety alerts, comfort |
 | **FACTORY** | Industrial | OEE analysis, SPC monitoring, predictive maintenance |
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-Validated with 79 legacy suites (1470 tests) and 2880 pytest tests — 4350 total, 0 failures, Health 100/100. No subscription, no API keys required.
+Validated with 79 legacy suites (1470 tests) and 3671 pytest tests — over 5100 total, 0 failures. No subscription, no external API keys required for core operation.
+
+---
+
+## Architecture Overview
+
+WaggleDance has three integrated stacks:
+
+| Stack | Purpose | Entrypoint |
+|-------|---------|------------|
+| **Legacy** | Production HiveMind orchestrator with 128 YAML agents | `start.py` / `main.py` |
+| **Hexagonal** | Ports & adapters runtime with DI container | `waggledance.adapters.cli.start_runtime` |
+| **Autonomy** | Solver-first runtime with capability contracts | `waggledance.core.autonomy.runtime` |
+
+The autonomy runtime is the primary path (`runtime.primary: waggledance` in settings.yaml). Legacy runs in parallel for backward compatibility.
+
+### Autonomy Runtime — Solver-First, 3-Layer
+
+```
+Query → Intent Classification → Capability Selection → Policy Check → Execution → Verification → Case Recording
+
+Layer 3 (Authoritative): Solvers, axioms, constraints, verifiers
+Layer 2 (Learned):       Specialist trained models with canary lifecycle
+Layer 1 (Fallback):      LLM via capability contracts, quality-gated
+```
+
+Each query follows the path: **solve it if possible, learn from specialists if available, ask the LLM only as last resort**. Every execution produces a CaseTrajectory graded as gold/silver/bronze/quarantine — feeding back into overnight learning.
+
+### Capability Registry
+
+29 builtin capabilities across 8 categories, 20 executors bound at startup:
+
+| Category | Capabilities | Examples |
+|----------|-------------|---------|
+| **SOLVE** | 8 | math, symbolic, constraints, thermal, stats, causal, pattern match, bee domain |
+| **RETRIEVE** | 3 | hot cache, semantic search, vector search |
+| **SENSE** | 7 | intent classify, MQTT, Home Assistant, Frigate, audio, fusion, seasonal |
+| **DETECT** | 3 | seasonal rules, anomaly, routing analysis |
+| **VERIFY** | 3 | hallucination, consensus, English output |
+| **NORMALIZE** | 2 | Finnish, translation |
+| **EXPLAIN** | 1 | LLM reasoning |
+| **OPTIMIZE** | 1 | schedule/energy |
+
+Capabilities are defined in Python (registry builtins) and enriched from YAML configs (`configs/capabilities/*.yaml`). Each has preconditions, success criteria, and rollback support.
+
+### MAGMA Integration
+
+The autonomy runtime integrates MAGMA (Memory Architecture for Grounded Multi-Agent AI) adapters:
+
+- **AuditProjector** — structured audit events for the full autonomy lifecycle
+- **EventLogAdapter** — policy decisions, case trajectories, capability selections
+- **TrustAdapter** — per-capability trust scoring from execution outcomes
+- **ReplayAdapter** — mission replay with world snapshots before/after
+- **ProvenanceAdapter** — fact provenance with source type and confidence
+
+All MAGMA adapters are optional and fail-safe — the runtime never breaks if an adapter is unavailable.
+
+### Persistence
+
+SQLite-backed stores for durable state:
+
+- **WorldStore** — world model snapshots
+- **ProceduralStore** — proven capability chains and anti-patterns
+- **CaseStore** — case trajectories with quality grades
+- **VerifierStore** — verification results per action
+
+### Night Learning v2
+
+The NightLearningPipeline runs overnight and performs:
+
+1. **Case grading** — QualityGate evaluates day's trajectories (gold/silver/bronze/quarantine)
+2. **Specialist training** — trains 8 specialist models from gold/silver cases
+3. **Canary evaluation** — 48h canary period, auto-promote or auto-rollback
+4. **Procedural memory** — gold cases → proven chains, quarantine → anti-patterns
+5. **Morning report** — summary of overnight learning activity
+
+The pipeline is wired through the hexagonal path: `Container → AutonomyService.run_learning_cycle()`. Specialist accuracy metrics are emitted from canary evaluation results.
+
+### Proactive Goals
+
+The runtime can detect deviations in the world model and autonomously propose diagnostic goals:
+
+- `AutonomyRuntime.check_proactive_goals(observations)` computes residuals against baselines
+- Deviations exceeding a threshold generate `diagnose` goals via GoalEngine
+- Each proposed goal is tracked in the `proactive_goals_today` KPI
+
+### Safety Cases
+
+High-risk actions are documented with structured safety arguments:
+
+- Evidence from historical success rate, verifier pass rate, procedural memory, risk scores
+- Verdict: `safe`, `needs_review`, or `unsafe`
+- Accessible via `GET /api/autonomy/safety-cases`
+
+### KPI Tracking
+
+13 autonomy KPIs tracked in real-time:
+
+| KPI | Target | Description |
+|-----|--------|-------------|
+| Route accuracy | >90% | Correct routing decisions |
+| Capability chain success | >75% | Full chain executions without failure |
+| Verifier pass rate | >85% | Actions passing verification |
+| LLM fallback rate | <30% | Queries requiring LLM (lower = better) |
+| Specialist accuracy | >85% | Per-model prediction accuracy |
+| Proactive goal rate | >5/day | Autonomously proposed goals |
+| Night learning gold rate | >40% | Cases graded gold |
 
 ---
 
 ## Key Features
 
-- **75 specialized agents** communicating through HiveMind orchestrator (5 trust levels: NOVICE → MASTER, persistent trust via SQLite)
-- **Elastic scaling** — auto-detects GPU/RAM/CPU at startup, selects optimal model tier (minimal → enterprise)
-- **SmartRouter** — routes queries through cache → micromodel → memory → LLM layers, response time improves with use
-- **Finnish NLP** — Voikko lemmatization + compound splitting + Opus-MT translation (language-swappable for other languages)
-- **Vector memory** — ChromaDB with bilingual FI+EN index (55ms retrieval, measured on RTX A2000)
+- **Solver-first routing** — 29 capabilities across 8 categories, solvers tried before LLM
+- **128 specialized agents** communicating through HiveMind orchestrator (5 trust levels, persistent SQLite trust store)
+- **Elastic scaling** — auto-detects GPU/RAM/CPU at startup, selects optimal model tier
+- **Finnish NLP** — Voikko lemmatization + compound splitting + Opus-MT translation
+- **Vector memory** — ChromaDB with bilingual FI+EN index
 - **Round Table consensus** — up to 6 agents debate and cross-validate answers
-- **MicroModel routing** — V1 (pattern match, 0.01ms) + V2 (neural classifier, 1ms) with end-to-end route selection, canary promotion, and auto-rollback
+- **MicroModel routing** — V1 (pattern match) + V2 (neural classifier) with canary promotion
 - **Smart home sensors** — MQTT hub, Frigate NVR cameras, Home Assistant bridge, Telegram/webhook alerts
-- **Audio sensors** — ESP32 bee audio analysis (stress/swarming/queen piping detection), BirdNET integration
+- **Audio sensors** — ESP32 bee audio analysis, BirdNET integration
 - **Voice interface** — Whisper STT (Finnish) + Piper TTS, wake word activation
-- **External data feeds** — FMI weather, electricity spot prices, RSS disease alerts
-- **MAGMA memory architecture** — append-only audit log, selective replay, write proxy, agent rollback, overlay branches, A/B testing, mood presets
-- **Cognitive Graph** — NetworkX-based knowledge graph with causal/semantic edges, dependency traversal, causal replay
-- **Trust & Reputation** — 6-signal agent trust scoring with persistent SQLite trust store (hallucination, validation, consensus, correction, fact production, freshness)
-- **Cross-agent memory** — agent channels, provenance tracking, consensus records, filtered overlay views
-- **Production hardening** — CircuitBreaker, graceful degradation, structured logging, TTL eviction
-- **Night mode** — autonomous learning when idle (fact enrichment, Round Table debates, MicroModel retraining)
-- **Persistent chat history** — conversations stored in SQLite, survive page refresh
-- **User feedback system** — thumbs up/down on every AI response, feeds into corrections memory
-- **Model status dashboard** — real-time VRAM usage, loaded models, role mapping, utilization
-- **Active profile switching** — GADGET/COTTAGE/HOME/FACTORY tabs change agent behavior in real-time
-- **Stub / Production mode** — develop dashboard without Ollama (`python start.py --stub`)
-- **4 deployment profiles** — GADGET / COTTAGE / HOME / FACTORY
+- **External data feeds** — FMI weather, electricity spot prices, RSS alerts
+- **MAGMA memory architecture** — append-only audit, selective replay, provenance, trust scoring
+- **Cognitive Graph** — NetworkX knowledge graph with causal/semantic edges
+- **Night learning v2** — autonomous overnight learning with specialist training and canary lifecycle
+- **Safety cases** — structured safety arguments for high-risk actions
+- **Domain engines** — bee colony health, swarm risk, seasonal calendar (profile-gated)
+- **Proactive goals** — autonomous goal generation from world model deviations
+- **Resource kernel** — admission control with accept/defer/reject based on system load
+- **4 deployment profiles** — GADGET / COTTAGE / HOME / FACTORY with domain-agnostic dashboard
 
 ---
 
 ## Limitations & Known Issues
 
 - **Single developer project** — not yet validated by external users
-- **Finnish beekeeping focus** — adapting to other domains requires new YAML agent definitions
-- **Bearer token authentication** — auto-generated `WAGGLE_API_KEY` on first startup; `/health` and `/api/status` are public
+- **Finnish beekeeping origin** — domain engines (bee, seasonal) are profile-gated; other domains require new capability adapters
+- **Bearer token authentication** — auto-generated on first startup; `/health` and `/ready` are public
 - **No TLS** — use nginx/Caddy if exposing beyond localhost
 - **Single-node only** — no clustering or distributed deployment
-- **MAGMA memory layers** — fully wired (Layers 1-5 + Cognitive Graph), but not production-tested at scale
-- **MicroModel V3 (LoRA)** — Phi-3.5-mini pipeline validated (2.92GB VRAM), full training deferred
-- **CI runs basic test suite** — full 79-suite validation still requires local `tools/waggle_backup.py`
-- **Web learning & Claude distillation** — disabled by design (offline-first), code ready but untested in production
-- **ESP32/GADGET tier** — theoretical, not tested on actual ESP32 hardware
-- **Performance numbers** — self-measured with internal test suites, not independently verified
+- **Specialist models** — training pipeline validated with simulated accuracy; real ML training (sklearn/PyTorch) is a placeholder
+- **MicroModel V3 (LoRA)** — Phi-3.5-mini pipeline validated, full training deferred
+- **CI runs pytest only** — full legacy validation still requires local `tools/waggle_backup.py`
+- **GADGET and FACTORY tiers** — theoretical, not tested on actual hardware
+- **Performance numbers** — self-measured, not independently verified
+- **MAGMA persistence** — wired and functional but not production-tested at scale
 
 ---
 
@@ -78,14 +178,18 @@ Validated with 79 legacy suites (1470 tests) and 2880 pytest tests — 4350 tota
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/ARCHITECTURE.md) | System overview, components, data flow |
-| [API Reference](docs/API.md) | All ~70 REST endpoints + WebSocket protocol |
+| [Autonomy Runtime](docs/AUTONOMY_RUNTIME.md) | Solver-first runtime, capability contracts |
+| [Capability Model](docs/CAPABILITY_MODEL.md) | 29 capabilities, categories, wiring |
+| [Night Learning v2](docs/NIGHT_LEARNING_V2.md) | Learning pipeline, quality gates, specialist training |
+| [Specialist Models](docs/SPECIALIST_MODELS.md) | 8 specialist models, canary lifecycle |
+| [API Reference](docs/API.md) | REST endpoints + WebSocket protocol |
 | [Deployment](docs/DEPLOYMENT.md) | Docker, native install, profiles, hardware requirements |
 | [Security](docs/SECURITY.md) | Threat model, mitigations, secrets management |
-| [Data & Migrations](docs/MIGRATIONS.md) | Database schemas, backup/restore, data layout |
 | [Sensors & Integrations](docs/SENSORS.md) | MQTT, Frigate, HA, audio, voice, alerts |
-| [Port Contracts](docs/PORT_CONTRACTS.md) | 8 protocol interfaces, locked signatures |
-| [State Ownership](docs/STATE_OWNERSHIP.md) | Single-writer rules, 9 owners |
+| [Port Contracts](docs/PORT_CONTRACTS.md) | 8 protocol interfaces |
+| [State Ownership](docs/STATE_OWNERSHIP.md) | Single-writer rules |
 | [Entrypoints](docs/ENTRYPOINTS.md) | Legacy vs hexagonal vs autonomy runtime |
+| [Data & Migrations](docs/MIGRATIONS.md) | Database schemas, backup/restore |
 
 ---
 
@@ -98,7 +202,7 @@ Your Language → Morphological Engine → Lemmatization → Compound Splitting
     → Spell Correction → Translation → LLM (English) → Back-Translation → Your Language
 ```
 
-For Finnish, Voikko resolves grammar, inflections, and compound words. For example, "mehiläispesässä" (= "in the beehive") is decomposed into clean concepts the LLM can reason about.
+For Finnish, Voikko resolves grammar, inflections, and compound words. English queries skip translation entirely for faster response.
 
 | Language | Engine | Notes |
 |----------|--------|-------|
@@ -107,146 +211,91 @@ For Finnish, Voikko resolves grammar, inflections, and compound words. For examp
 | Japanese | MeCab | Morphological analysis + tokenization |
 | **English** | **None needed** | Direct LLM path, no translation overhead |
 
-English queries skip the translation step entirely for faster response.
-
 ---
 
 ## How Self-Learning Works
 
-WaggleDance gets smarter over time by recording every Q&A interaction as a training pair:
+WaggleDance learns through two pathways:
+
+### Continuous Learning (Day)
+Every query produces a CaseTrajectory: intent → capability selection → execution → verification → quality grade. These accumulate during the day.
+
+### Night Learning v2 (Overnight)
+The NightLearningPipeline processes the day's cases:
 
 ```
-               ┌─────────────────────────────────────────────────┐
-               │          CONTINUOUS SELF-LEARNING LOOP           │
-               │                                                  │
-  SOURCES      │   PROCESS              VALIDATION    STORAGE     │
-  ──────       │   ───────              ──────────    ───────     │
-  YAML files ──┤                                                  │
-  User chat  ──┤→  Extract facts ──→ Embed (nomic) ──→ ChromaDB  │
-  Corrections──┤   (no LLM needed)    768-dim vectors   (FI+EN)  │
-  Round Table──┤                                                  │
-  Enrichment ──┤                                                  │
-               │                                                  │
-               │   MicroModel trains on accumulated pairs.        │
-               │   When accuracy exceeds LLM for a topic,        │
-               │   that topic is promoted to MicroModel-only.     │
-               │   Response time drops from ~3,000ms to <1ms.    │
-               └─────────────────────────────────────────────────┘
+Day Cases → Quality Gate → Specialist Training → Canary (48h) → Procedural Memory → Morning Report
+                ↓                    ↓                  ↓                ↓
+           gold/silver/         8 specialist       promote or       proven chains
+           bronze/quarantine    models trained      rollback         anti-patterns
 ```
 
-**What's implemented:**
+### MicroModel Routing
 - V1 Pattern Match — regex + lookup table, ~0.01ms
 - V2 Neural Classifier — PyTorch 768→256→128→N, ~1ms, trains on collected pairs
-- Topic auto-promotion — 200+ pairs + <3% error → promoted
-- Training collector — records every Q&A with source and confidence
-- V3 LoRA nano-LLM — Phi-3.5-mini pipeline validated (4-bit NF4, 2.92GB VRAM), full training deferred
+- Topic auto-promotion — 200+ pairs + <3% error → promoted to fast path
 
 ### Round Table — Agent Consensus
-
-Every 20 heartbeats, 6 agents hold a structured debate:
-
-1. **Selection** — pick agents by topic relevance + level
-2. **Discussion** — each agent responds, seeing previous answers (sequential, llama1b)
-3. **Synthesis** — Queen agent summarizes consensus
-4. **Storage** — consensus stored as high-confidence fact (0.85)
-
-### Agent Levels — Earned Trust
-
-```
-Level 1 NOVICE:      Memory-only, all answers checked
-Level 2 APPRENTICE:  +LLM access, can read shared facts     (50 correct, <15% halluc)
-Level 3 JOURNEYMAN:  +write shared facts, consult 1 agent   (200 correct, <8% halluc)
-Level 4 EXPERT:      +consult 3 agents, web search           (500 correct, <3% halluc)
-Level 5 MASTER:      Full autonomy, can teach other agents   (1000 correct, <1% halluc)
-```
-
-Demotion is automatic if hallucination rate exceeds threshold over a 50-response window.
-
-### Night Mode
-
-When idle for 30+ minutes, the system shifts to aggressive learning:
-- Fact enrichment (generate with llama1b → validate with phi4-mini → store if both agree)
-- Round Table debates on queued topics
-- MicroModel retraining on accumulated pairs
-- Pauses instantly when user returns (chat priority lock)
+Every 20 heartbeats, up to 6 agents hold a structured debate, cross-validate answers, and store consensus as high-confidence facts.
 
 ---
 
-## Architecture
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full system diagrams.
+## System Architecture
 
 ```
 User (Finnish / English) → FastAPI (port 8000)
   │
-  ├── Language Detection (auto FI/EN)
+  ├── Autonomy Runtime (solver-first, primary path)
+  │   ├── SolverRouter — intent classification + capability selection
+  │   ├── CapabilityRegistry — 29 capabilities, 20 bound executors
+  │   ├── PolicyEngine — deny-by-default + safety cases
+  │   ├── SafeActionBus — policy-checked execution
+  │   ├── Verifier — outcome validation
+  │   ├── WorldModel — baselines, residuals, snapshots
+  │   ├── GoalEngine — lifecycle: propose → plan → execute → verify
+  │   ├── CaseTrajectoryBuilder — learning data capture
+  │   └── MAGMA Adapters — audit, events, trust, replay, provenance
   │
-  ├── SmartRouter
-  │   ├── Layer 0: HotCache (~0.5ms, pre-computed answers)
-  │   ├── Layer 1: Native-language index (~18ms, skip translation)
-  │   ├── Layer 2: YAML eval_questions (confidence matching)
-  │   └── Layer 3: Full LLM pipeline (55ms+)
+  ├── Compatibility Layer (routes to legacy if needed)
+  │   └── HiveMind Orchestrator (hivemind.py, 128 agents)
   │
-  ├── HiveMind Orchestrator (hivemind.py)
-  │   ├── Priority Lock (chat pauses all background tasks)
-  │   ├── Round Table (up to 6 agents debate + cross-validate)
-  │   ├── Heartbeat (continuous background learning)
-  │   ├── Seasonal Guard (rejects out-of-season claims)
-  │   └── CircuitBreaker (auto-disable failing subsystems, self-heal)
+  ├── Application Services
+  │   ├── AutonomyService — queries, missions, learning, safety cases
+  │   ├── ChatService — routing policy + orchestrator
+  │   ├── MemoryService — vector store operations
+  │   └── LearningService — night learning coordination
   │
-  ├── Memory Engine (core/memory_engine.py)
-  │   ├── Hot Cache (top queries in RAM, auto-fill)
-  │   ├── LRU Cache (smart eviction, memory-bounded)
-  │   ├── Bilingual Index (FI+EN vectors in ChromaDB)
-  │   ├── Dual Embedding (nomic for search + minilm for eval)
-  │   ├── Corrections Memory (prevents repeat mistakes)
-  │   ├── Hallucination Detection (contrastive + keyword)
-  │   └── Eviction TTL (stale facts auto-expire)
-  │
-  ├── MAGMA Memory Architecture (core/)
-  │   ├── L1: Audit Log + Write Proxy + Agent Rollback
-  │   ├── L2: Replay Store + Replay Engine (time/session/causal)
-  │   ├── L3: Overlay Networks + API endpoints
-  │   ├── L4: Agent Channels + Provenance + Cross-Agent Search
-  │   ├── L5: Trust Engine (6-signal reputation)
-  │   └── Cognitive Graph (NetworkX, causal edges)
+  ├── Adapters
+  │   ├── Capabilities — 23 adapters (math, thermal, stats, causal, bee domain, ...)
+  │   ├── Sensors — MQTT, Frigate, Home Assistant, audio, fusion
+  │   ├── Persistence — SQLite stores (world, procedural, cases, verifier)
+  │   ├── Memory — ChromaDB, HotCache, shared memory
+  │   └── Trust — SQLite trust store with InMemory fallback
   │
   ├── Sensors & Integrations
-  │   ├── MQTT Hub (paho-mqtt, reconnect, dedup)
-  │   ├── Frigate NVR (camera events, severity alerts)
-  │   ├── Home Assistant Bridge (REST poll)
-  │   ├── Audio Monitor (ESP32 bee audio + BirdNET)
-  │   ├── Voice Interface (Whisper STT + Piper TTS)
-  │   ├── Data Feeds (FMI weather, electricity, RSS)
-  │   └── Alert Dispatcher (Telegram + webhook)
+  │   ├── MQTT Hub — paho-mqtt, reconnect, dedup
+  │   ├── Frigate NVR — camera events, severity alerts
+  │   ├── Home Assistant — REST poll
+  │   ├── Audio — ESP32 bee audio + BirdNET
+  │   ├── Voice — Whisper STT + Piper TTS
+  │   ├── Data Feeds — FMI weather, electricity, RSS
+  │   └── Alerts — Telegram + webhook
   │
-  ├── Production Hardening
-  │   ├── CircuitBreaker — auto-disable, self-heal after 3 failures
-  │   ├── Structured Logging — JSON to learning_metrics.jsonl
-  │   ├── ConvergenceDetector — pauses learning when plateauing
-  │   └── Graceful Degradation — missing deps → warning, never crash
-  │
-  ├── Translation Pipeline
-  │   ├── Opus-MT fi↔en (on-device)
-  │   └── Auto-skip when input is English
-  │
-  └── Dashboard (Vite + React, served from port 8000)
-      ├── 3D neural brain visualization
-      ├── Real-time agent heartbeat feed
-      ├── CPU / GPU / VRAM gauges
+  └── Dashboard (Vite + React, domain-agnostic)
+      ├── Profile switching (GADGET/COTTAGE/HOME/FACTORY)
       ├── Interactive chat (FI/EN)
-      ├── Analytics, Round Table, Agent Grid panels
-      ├── Profile switching (GADGET/COTTAGE/HOME/FACTORY — changes active agents)
-      ├── Model status panel (VRAM usage, loaded models, utilization)
-      ├── Persistent chat history (SQLite, survives refresh)
-      └── Feedback system (thumbs up/down on AI responses)
+      ├── CPU / GPU / VRAM gauges
+      ├── Agent heartbeat feed
+      ├── Analytics, Round Table, Agent Grid
+      ├── Persistent chat history
+      └── User feedback (thumbs up/down)
 ```
 
 ---
 
 ## Hardware Scaling
 
-WaggleDance auto-detects hardware at startup and selects the appropriate tier:
+WaggleDance auto-detects hardware at startup:
 
 ```
 VRAM < 2GB   → MINIMAL:       No LLM, V1 pattern match only
@@ -256,30 +305,9 @@ VRAM 16-48GB → PROFESSIONAL:  phi4:14b + qwen3:4b, 15 agents + vision
 VRAM 48GB+   → ENTERPRISE:    llama3.3:70b + llama3.1:8b, 75 agents
 ```
 
-**Development hardware:** NVIDIA RTX A2000 8GB + 128GB RAM → STANDARD tier (4.3G / 8.0G VRAM used).
+**Development hardware:** NVIDIA RTX A2000 8GB + 128GB RAM → STANDARD tier.
 
-**Note:** The EDGE/ESP32 and ENTERPRISE/DGX tiers are theoretical — they have not been tested on actual hardware. The STANDARD tier is the only configuration tested in production.
-
----
-
-## Deployment Profiles
-
-### GADGET — Edge Intelligence (3 agents)
-ESP32, Raspberry Pi, wearables. TinyML classifiers, sensor fusion. *(Theoretical — not tested on hardware.)*
-
-### COTTAGE — Off-Grid Intelligence (46 agents)
-Purpose-built for Finnish beekeeping. Hive monitoring, varroa detection, weather integration, acoustic analysis.
-
-### HOME — Smart Living (43 agents)
-Mac Mini, NUC, any decent PC. Home Assistant integration, voice control, energy optimization.
-
-### FACTORY — Industrial Scale (28 agents)
-Server rack / DGX. Predictive maintenance, monitoring, shift handover. *(Theoretical — not tested on hardware.)*
-
-Switching profiles:
-- Changes which agents are active
-- Adjusts Round Table size to available agents
-- Persists across server restarts (stored in settings.yaml)
+**Note:** Only STANDARD tier is tested in production. MINIMAL, PROFESSIONAL, and ENTERPRISE tiers are implemented but not hardware-validated.
 
 ---
 
@@ -301,15 +329,11 @@ Pull required models (one-time, ~3GB total):
 ```bash
 docker compose exec ollama ollama pull phi4-mini
 docker compose exec ollama ollama pull llama3.2:1b
-docker compose exec ollama ollama pull nomic-embed-text   # CRITICAL — must be running
+docker compose exec ollama ollama pull nomic-embed-text   # Required for memory
 docker compose exec ollama ollama pull all-minilm
 ```
 
-> **Critical dependency:** `nomic-embed-text` is required for all memory operations (search, learn, dedup). WaggleDance will **refuse to start** if this model is not available. Ensure Ollama is running and the model is pulled before starting WaggleDance. The system monitors nomic health every 10 heartbeats and sends a WebSocket alert if it goes down.
-
 Open **http://localhost:8000**.
-
-> **GPU note:** Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on Linux, or Docker Desktop with WSL2 GPU support on Windows. No GPU? Remove the `deploy.resources` block from `docker-compose.yml`.
 
 ### Option B: Native Install
 
@@ -317,44 +341,33 @@ Open **http://localhost:8000**.
 # 1. Install Ollama (https://ollama.ai)
 # 2. Pull models
 ollama pull phi4-mini && ollama pull llama3.2:1b
-ollama pull nomic-embed-text   # CRITICAL — required for all memory operations
-ollama pull all-minilm
+ollama pull nomic-embed-text && ollama pull all-minilm
 
 # 3. Clone and install
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-pip install -r requirements.txt   # or: pip install -e .
+pip install -e .
 
-# 4. Run
-python main.py
-# → http://localhost:8000
+# 4. Run (autonomy runtime — recommended)
+python -m waggledance.adapters.cli.start_runtime
+
+# Or: legacy runtime
+python start.py --production
 ```
 
-### Launcher
+### Stub Mode (No Ollama)
 
 ```bash
-python start.py              # Interactive menu (legacy + new runtime options)
-python start.py --stub       # No Ollama needed — stub backend + React dashboard
-python start.py --production  # Full HiveMind (requires Ollama + 4 models)
+python -m waggledance.adapters.cli.start_runtime --stub
+# Or: python start.py --stub
 ```
-
-### New Runtime (Recommended for New Deployments)
-
-```bash
-python -m waggledance.adapters.cli.start_runtime --stub        # Stub mode
-python -m waggledance.adapters.cli.start_runtime               # Production
-python -m waggledance.adapters.cli.start_runtime --port 9000   # Custom port
-```
-
-See [docs/ENTRYPOINTS.md](docs/ENTRYPOINTS.md) for details on primary vs legacy entrypoints.
 
 ### Verify Installation
 
 ```bash
-python tools/waggle_backup.py --tests-only
+python -m pytest -q                          # 3671 tests
+python tools/waggle_backup.py --tests-only   # 79 legacy suites, 1470 tests
 ```
-
-Expected: **79 suites GREEN, 1470+ tests, 0 failures** (4 skipped without Ollama).
 
 ---
 
@@ -362,41 +375,85 @@ Expected: **79 suites GREEN, 1470+ tests, 0 failures** (4 skipped without Ollama
 
 ```
 waggledance-swarm/
-├── agents/              # 75 YAML agent knowledge bases
-├── knowledge/           # Domain knowledge bases
-├── core/                # Core modules (memory_engine, translation_proxy, models, scheduling)
-│   ├── memory_engine.py #   Memory, search, embedding (~1292 lines)
-│   ├── chat_history.py  #   SQLite chat storage + feedback
-│   ├── cognitive_graph.py#  NetworkX knowledge graph
-│   ├── trust_engine.py  #   6-signal agent reputation
-│   ├── night_enricher.py#   Night learning + convergence
-│   └── elastic_scaler.py#   Hardware detection + tier selection
-├── integrations/        # External systems (MQTT, Frigate, HA, audio, voice, feeds)
-├── backend/             # Standalone stub backend (no Ollama needed)
-│   └── routes/
-│       ├── models.py    #   Ollama model status endpoint
-│       └── ...          #   16 API route modules
-├── web/                 # Production FastAPI app (dashboard.py)
-├── dashboard/           # Vite + React UI (dev :5173, prod served from :8000)
-├── tests/               # 79 legacy suites + 2880 pytest tests (~4350 total)
-├── tools/               # Backup, restore, benchmarks, night shift
-├── configs/             # settings.yaml, bee_terms.yaml, seasonal_rules.yaml
-├── docs/                # Architecture, API, deployment, security, sensors
-├── .github/
-│   └── workflows/
-│       └── tests.yml    #   CI test runner
-├── data/                # Runtime data (ChromaDB, SQLite, JSONL, JSON — not in git)
-├── waggledance/         # New hexagonal architecture (ports & adapters)
-│   ├── core/            #   Domain, ports (8 Protocol), orchestration, policies
-│   ├── application/     #   Services (chat, memory, learning, readiness)
-│   ├── adapters/        #   Ollama, ChromaDB, HotCache, HTTP, CLI
-│   └── bootstrap/       #   DI container, event bus
-├── hivemind.py          # HiveMind orchestrator (~1382 lines + 4 controllers)
-├── main.py              # Legacy entry point (see docs/ENTRYPOINTS.md)
-├── start.py             # Launcher (--stub / --production / --new-runtime)
-├── Dockerfile           # Python 3.13 + Voikko + healthcheck
-└── docker-compose.yml   # Ollama + WaggleDance stack
+├── waggledance/                # Hexagonal + autonomy runtime (~21,800 lines, 172 files)
+│   ├── core/                   #   Domain models, autonomy, reasoning, capabilities, learning
+│   │   ├── autonomy/           #     Runtime, lifecycle, metrics, resource kernel, compatibility
+│   │   ├── capabilities/       #     Registry (29 builtins), selector, aliasing
+│   │   ├── reasoning/          #     10 reasoning engines (thermal, stats, causal, bee, seasonal, ...)
+│   │   ├── learning/           #     Night learning pipeline, case builder, quality gate, procedural
+│   │   ├── specialist_models/  #     Trainer, model store, canary lifecycle
+│   │   ├── goals/              #     Goal engine, mission store, decomposition
+│   │   ├── world/              #     World model, baselines, entity registry
+│   │   ├── policy/             #     Policy engine, safety cases, constitution
+│   │   ├── magma/              #     Audit, events, trust, replay, provenance adapters
+│   │   └── domain/             #     Pydantic DTOs (Goal, CaseTrajectory, QualityGrade, ...)
+│   ├── application/            #   Services (autonomy, chat, memory, learning, readiness)
+│   ├── adapters/               #   23 capability adapters, 5 sensor adapters, HTTP routes, CLI
+│   │   ├── capabilities/       #     Math, thermal, stats, causal, bee domain, seasonal, ...
+│   │   ├── sensors/            #     MQTT, Frigate, HA, audio, fusion
+│   │   ├── persistence/        #     SQLite stores (world, procedural, cases, verifier)
+│   │   ├── http/               #     FastAPI routes (chat, memory, status, autonomy)
+│   │   └── cli/                #     start_runtime entrypoint
+│   └── bootstrap/              #   DI container, capability loader, event bus
+├── core/                       # Legacy modules (memory_engine, routing, translation, ...)
+├── integrations/               # Legacy sensors (MQTT, Frigate, HA, audio, voice, feeds)
+├── agents/                     # 128 YAML agent knowledge bases
+├── configs/                    # settings.yaml, capabilities/*.yaml, capsules, policies
+├── dashboard/                  # Vite + React UI (domain-agnostic, profile-switching)
+├── tests/                      # 174 test files (3671 pytest tests + 79 legacy suites)
+├── tools/                      # Backup, migration, benchmarks, training scripts
+├── docs/                       # Architecture, API, deployment, security, sensors
+├── hivemind.py                 # HiveMind orchestrator (~1382 lines)
+├── start.py                    # Launcher (--stub / --production / --new-runtime)
+├── Dockerfile                  # Python 3.13 + Voikko + healthcheck
+└── docker-compose.yml          # Ollama + WaggleDance stack
 ```
+
+---
+
+## API Endpoints
+
+### Autonomy Runtime (new in v2.0.0)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/autonomy/status` | GET | Full runtime status, KPIs, resource kernel |
+| `/api/autonomy/kpis` | GET | 13 autonomy KPIs with targets |
+| `/api/autonomy/learning/run` | POST | Trigger night learning cycle |
+| `/api/autonomy/learning/status` | GET | Pipeline status and history |
+| `/api/autonomy/goals/check-proactive` | POST | Check world model for proactive goals |
+| `/api/autonomy/safety-cases` | GET | Recent safety cases |
+| `/api/autonomy/safety-cases/stats` | GET | Safety case verdict distribution |
+
+### Core
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Liveness probe |
+| `/ready` | GET | Readiness probe |
+| `/api/chat` | POST | Chat (auto FI/EN) |
+| `/api/memory/ingest` | POST | Store content in memory |
+| `/api/memory/search` | POST | Semantic search |
+
+See [docs/API.md](docs/API.md) for the complete list (~70+ endpoints including legacy).
+
+---
+
+## Performance
+
+All measurements on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, internal test suites.
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Test coverage | 79 legacy + 3671 pytest | ~5100 total, 0 failures |
+| Capabilities | 29 registered, 20 bound | 8 categories |
+| Hot Cache response | ~0.5ms | Pre-computed answers |
+| MicroModel V1 | ~0.01ms | Pattern match |
+| MicroModel V2 | ~1ms | Neural classifier |
+| ChromaDB search | ~55ms | Bilingual FI+EN |
+| Full LLM response | 500-3,000ms | phi4-mini, varies by complexity |
+| Night learning | 400-640 facts/night | ~50-80 facts/hour over 8h |
+| Specialist models | 8 types | Simulated training (real ML is placeholder) |
 
 ---
 
@@ -406,136 +463,11 @@ See [docs/SECURITY.md](docs/SECURITY.md) for full threat model.
 
 - **Localhost-only** — Bearer token auth for API, single-user design
 - **No TLS** — use a reverse proxy for network exposure
-- **Rate limiting** — 20 req/min on `/api/chat`
-- **Input validation** — Pydantic models, size limits on all inputs
-- **CORS** — restricted to GET/POST, configurable origins
-- **Generic errors** — stack traces never leaked to clients
+- **Rate limiting** — 60 req/min per IP
+- **Input validation** — Pydantic models, size limits
+- **Deny-by-default policy** — PolicyEngine checks every action before execution
+- **Safety cases** — structured safety arguments for high-risk actions
 - **Secrets in .env** — git-ignored, never committed
-
----
-
-## Current Status
-
-- **Phase 1:** Foundation — memory engine, dual embedding, smart router
-- **Phase 2:** Batch Pipeline — batch embedding/translation, 3,147+ facts in ChromaDB
-- **Phase 3:** Social Learning — Round Table, agent levels, night mode
-- **Phase 4:** Advanced Learning — bilingual index, hot cache, fact enrichment, corrections, MicroModel V1+V2
-- **Phase 5:** Smart Home Sensors — MQTT hub, Frigate NVR, Home Assistant, Telegram alerts
-- **Phase 6:** Audio Sensors — bee audio analysis, BirdNET bird detection, ESP32 MQTT
-- **Phase 7:** Voice Interface — Whisper STT (Finnish) + Piper TTS, wake word
-- **Phase 8:** External Data Feeds — FMI weather, electricity spot price, RSS disease alerts
-- **Phase 9:** Documentation Overhaul — architecture, API, deployment, security guides
-- **Phase B/C/D:** Production Hardening — CircuitBreaker, caching, structured logging, convergence detection
-- **Phase 11:** Elastic Scaling — auto-detect GPU/RAM/CPU, 5-tier classification
-- **MAGMA L1-L3:** Memory Architecture — audit log, replay store, write proxy, overlay networks, agent rollback
-- **MAGMA L4:** Cross-Agent Memory — agent channels, provenance tracking, consensus records
-- **MAGMA L5:** Trust & Reputation — 6-signal trust scoring, domain experts, temporal decay
-- **Cognitive Graph:** NetworkX knowledge graph — causal/semantic edges, dependency traversal, causal replay
-- **Overlay Expansion:** Branchable memory — A/B testing, mood presets, agent contribution transforms
-- **Profile switching** — frontend tabs wired to backend, agent filtering active
-- **Model status display** — Ollama integration, VRAM monitoring
-- **Chat history persistence** — SQLite storage, conversation replay
-- **User feedback** — thumbs up/down, corrections memory integration
-- **Critical bug fixes (v0.7.0)** — 31 bugs fixed: race conditions in concurrent chat, resource leak prevention, CORS middleware, async nvidia-smi, WebSocket fixes, embedding dimension correction, shutdown ordering, bounded growth for all runtime data
-- **Security + stability fixes (v0.8.0)** — 12 fixes: async safety, SQL injection prevention, SQLite write locks, WS callback leak, deprecated API cleanup, metrics rotation
-- **Major refactor (v0.9.0)** — hivemind.py 3321→1382 lines, 4 controller modules extracted, 12 Sonnet review fixes, Phi-3.5-mini LoRA pipeline validated
-- **GitHub Actions CI** — unified test runner (legacy + pytest)
-- **SmartRouter v2 (v1.6–v1.15)** — capsule routing, Finnish normalization, word boundaries, matched_keywords transparency
-- **Hexagonal refactor** — `waggledance/` package with ports & adapters, DI container, 172 new tests
-- **New runtime (v1.15+)** — `start_runtime.py` with argparse, UTF-8, Ollama check
-- **Safe self-improvement (v1.16)** — prompt evolution with rollback, micro-model eval gate, night learning source visibility
-- **Big Sprint (v1.17)** — memory_engine split (4 extracted modules), persistent SQLite TrustStore, micromodel route restored end-to-end, active learning/canary/telemetry, MQTT ingest, runtime shadow-compare, test unification (76 suites + 559 pytest)
-- **Runtime Convergence (v1.18)** — shared routing helpers, telemetry/ledger/explainability wired into request + night loops, MQTT bridge via SensorHub, 7 new dashboard APIs, memory_engine.py 1292 lines, 30-query benchmark, SQLiteTrustStore graceful fallback
-- **Full Autonomy v3 (v2.0)** — solver-first runtime (3 layers: solvers → specialist models → LLM), capability contracts, quality gates, procedural memory, night learning v2, resource kernel, alias migration, 504 autonomy tests
-
----
-
-## Performance
-
-All measurements taken on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, using internal test suites.
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Test suites | 79 legacy suites + 2880 pytest | ~4350 total tests, 4 skipped without Ollama |
-| Agent routing accuracy | 97.7% | 1,235 internal test questions across 75 agents |
-| Hot Cache response | ~0.5ms | Previously seen queries, in-memory lookup |
-| Bilingual ChromaDB search | ~55ms | FI+EN vector search |
-| Full LLM response (phi4-mini) | 500-3,000ms | Depends on query complexity and context |
-| MicroModel V1 (pattern match) | ~0.01ms | Regex + lookup table |
-| MicroModel V2 (classifier) | ~1ms | PyTorch 250K params on CPU |
-| Hallucination rate | ~1.8% | Contrastive + keyword detection on internal test set |
-| Night learning rate | 400-640 facts/night | ~50-80 facts/hour over 8h; varies with sources and convergence |
-| Chat history storage | SQLite (local) | Persistent across page refresh |
-| Feedback → corrections | Automatic | Thumbs down triggers correction memory |
-| CI pipeline | GitHub Actions | Legacy + pytest, 4350 total tests |
-
----
-
-## API Reference
-
-See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoints).
-
-### Core
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Liveness probe |
-| `/ready` | GET | Readiness probe |
-| `/api/status` | GET | System status, uptime, metrics |
-| `/api/chat` | POST | Chat with HiveMind (auto FI/EN) |
-| `/api/heartbeat` | GET | Agent activity feed |
-| `/api/hardware` | GET | Live CPU/GPU/VRAM stats |
-
-### Sensors & Voice
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/sensors` | GET | Sensor hub overview |
-| `/api/sensors/home` | GET | Home Assistant entities |
-| `/api/sensors/camera/events` | GET | Frigate camera events |
-| `/api/sensors/audio` | GET | Audio monitor status + events |
-| `/api/sensors/audio/bee` | GET | Bee audio analysis |
-| `/api/voice/status` | GET | Voice interface status |
-| `/api/voice/text` | POST | Send text for TTS |
-| `/api/voice/audio` | POST | Send audio for STT |
-
-### Analytics & Configuration
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/analytics/trends` | GET | 7-day performance trends |
-| `/api/round-table/recent` | GET | Latest Round Table transcripts |
-| `/api/agents/levels` | GET | All 75 agents with levels/trust |
-| `/api/settings` | GET | Feature toggles |
-| `/api/settings/toggle` | POST | Toggle a feature on/off |
-
-### Dashboard Features
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/models` | GET | Ollama model status, VRAM, roles |
-| `/api/history` | GET | Conversation history |
-| `/api/history/recent/messages` | GET | Recent chat messages |
-| `/api/feedback` | POST | User feedback collection (thumbs up/down) |
-| `/api/profile` | GET/POST | Get or switch deployment profile |
-
-### MAGMA Memory Architecture
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/magma/stats` | GET | Audit log + replay store status |
-| `/api/magma/audit` | GET | Last 24h audit entries |
-| `/api/magma/branches` | GET | Overlay branches and status |
-| `/api/trust/ranking` | GET | All agents ranked by reputation |
-| `/api/trust/agent/{id}` | GET | Full reputation breakdown |
-| `/api/cross/channels` | GET | Agent communication channels |
-| `/api/graph/stats` | GET | Cognitive graph node/edge counts |
-| `/api/graph/replay/{node_id}` | GET | Causal replay via CognitiveGraph |
-| `/api/route/explain` | GET | Route explainability breakdown |
-| `/api/route/telemetry` | GET | Per-route telemetry stats |
-| `/api/experiments` | GET | Prompt experiment status |
-| `/api/learning/ledger` | GET | Recent learning ledger entries |
-| `/api/micromodel/status` | GET | V1/V2/V3 micromodel status |
-
-### WebSocket
-| Endpoint | Description |
-|----------|-------------|
-| `ws://localhost:8000/ws` | Real-time event stream (heartbeat, chat, alerts) |
 
 ---
 
@@ -543,21 +475,16 @@ See [docs/API.md](docs/API.md) for complete endpoint documentation (~70 endpoint
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Run tests: `python tools/waggle_backup.py --tests-only`
-4. Ensure all suites pass
+3. Run tests: `python -m pytest -q`
+4. Ensure all tests pass
 5. Submit a pull request
 
 ### Development Setup
 
 ```bash
-python start.py --stub    # Dashboard dev without Ollama
-cd dashboard && npm run dev  # React dev server (hot reload)
+python -m waggledance.adapters.cli.start_runtime --stub   # No Ollama needed
+cd dashboard && npm run dev                                # React dev server
 ```
-
-### Code Style
-- Python: standard library conventions, type hints where useful
-- Finnish UI output, English internal processing
-- All new features must include test suite
 
 ---
 
@@ -579,5 +506,5 @@ MIT — Free to use, modify, distribute.
 ---
 
 <p align="center">
-  <strong>Ahkerat Mehiläiset · Helsinki, Finland · 2024–2026</strong>
+  <strong>Ahkerat Mehiläiset &middot; Helsinki, Finland &middot; 2024-2026</strong>
 </p>

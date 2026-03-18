@@ -1,5 +1,106 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [2.0.0] — 2026-03-18
+
+### Full Autonomy v3 — Solver-First Runtime
+
+Major architectural release introducing a solver-first autonomy runtime with capability contracts, quality-gated learning, and full audit trail.
+
+#### Autonomy Runtime
+- Solver-first 3-layer architecture: solvers (authoritative) → specialist models (learned) → LLM (fallback)
+- CapabilityRegistry with 29 builtin capabilities across 8 categories (solve, retrieve, sense, detect, verify, normalize, explain, optimize)
+- 23 capability adapters with 20 executors bound at startup
+- SolverRouter with intent classification and capability selection
+- PolicyEngine with deny-by-default evaluation and safety cases
+- SafeActionBus for policy-checked execution
+- Verifier for outcome validation
+- GoalEngine with full lifecycle: propose → accept → plan → execute → verify → archive
+- WorldModel with baselines, residuals, entity registry, and CognitiveGraph integration
+- ResourceKernel with AdmissionControl (accept/defer/reject based on system load)
+- AutonomyLifecycle state machine with cutover validation
+- CompatibilityLayer routing between autonomy and legacy runtimes
+
+#### Night Learning v2
+- NightLearningPipeline: grade → train → canary → procedural → report
+- QualityGate: gold/silver/bronze/quarantine grading for case trajectories
+- SpecialistTrainer: 8 specialist models with train → canary (48h) → promote/rollback lifecycle
+- ProceduralMemory: gold cases → proven chains, quarantine → anti-patterns
+- MorningReportBuilder: overnight learning summary
+- LegacyConverter: converts legacy Q&A data to case trajectories
+- Pipeline wired through hexagonal path: Container → AutonomyService.run_learning_cycle()
+
+#### MAGMA Integration
+- AuditProjector: structured autonomy audit events (goals, plans, actions, capabilities, verification)
+- EventLogAdapter: policy decisions, case trajectories
+- TrustAdapter: per-capability trust from execution outcomes
+- ReplayAdapter: mission replay with world snapshots
+- ProvenanceAdapter: fact provenance with source type and confidence
+- All adapters optional and fail-safe (try/except, never break hot path)
+
+#### Persistence
+- SQLiteWorldStore: world model snapshots
+- SQLiteProceduralStore: proven chains and anti-patterns
+- SQLiteCaseStore: case trajectories with quality grades
+- SQLiteVerifierStore: verification results per action
+
+#### Capability Adapters (23 total)
+- 5 legacy wrappers: math solver, symbolic solver, constraint engine, LLM explainer, micromodel (V1+V2)
+- 6 reasoning engines: thermal, anomaly, stats, optimization, causal, route analysis
+- 2 domain engines: bee domain (colony health, swarm risk, disease diagnosis), seasonal calendar
+- 5 legacy retrieval/verification: hot cache, semantic search, vector search, hallucination checker, English validator
+- 3 sensor adapters: MQTT, Frigate, Home Assistant + audio, fusion
+- 2 normalization: Finnish, translation
+
+#### Metrics & KPIs
+- 13 autonomy KPIs with targets (route accuracy >90%, LLM fallback <30%, specialist accuracy >85%, etc.)
+- Per-specialist-model accuracy tracking
+- Proactive goal rate counter
+- Night learning gold rate
+- Daily counter reset
+
+#### Proactive Goals
+- AutonomyRuntime.check_proactive_goals() generates diagnostic goals from world model residual deviations
+- Emits proactive_goal metric per proposed goal
+
+#### Safety Cases
+- SafetyCaseBuilder: evidence-based safety arguments with verdict (safe/needs_review/unsafe)
+- Exposed via AutonomyService.get_safety_cases() and API endpoint
+- Evidence from historical success rate, verifier pass rate, procedural memory, risk scores
+
+#### API Endpoints (7 new)
+- GET /api/autonomy/status — full runtime status
+- GET /api/autonomy/kpis — 13 KPIs with targets
+- POST /api/autonomy/learning/run — trigger learning cycle
+- GET /api/autonomy/learning/status — pipeline status
+- POST /api/autonomy/goals/check-proactive — proactive goal check
+- GET /api/autonomy/safety-cases — recent safety cases
+- GET /api/autonomy/safety-cases/stats — verdict distribution
+
+#### Domain Configuration
+- Profile-gated capability adapters (bee domain and seasonal active only with relevant profiles)
+- Domain capsules: profile-specific reasoning config loaded at runtime
+- Profile policies: per-profile policy rules in configs/policy/profile_policies/
+
+#### Bug Fixes
+- MicroModelAdapter: missing CAPABILITY_ID and execute() caused silent binding failure
+- Container: hardware tier resolution used dot-notation key that never resolved
+- AuditProjector: kwarg mismatch (detail vs details) caused every legacy write to silently fail
+- 4 unused imports cleaned across 3 files
+
+#### Testing
+- 3671 pytest tests (174 test files), 0 failures
+- 79 legacy suites (1470 tests), 0 failures
+- ~5100 total tests
+- 40 new priority wiring tests covering all 5 cutover integrations
+- Runtime start/stop verified clean in primary mode
+
+#### Infrastructure
+- FastAPI version string updated to 2.0.0
+- Docker multi-stage build on master
+- Capability YAML configs: reasoning_engines, sensors, solvers, retrievers, verifiers
+
+---
+
 ## [1.18.0] — 2026-03-15
 
 ### Runtime Convergence & Wiring Sprint

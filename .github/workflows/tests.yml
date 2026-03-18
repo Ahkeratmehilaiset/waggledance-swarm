@@ -27,7 +27,8 @@ jobs:
 
     - name: Install Python dependencies
       run: |
-        pip install -e ".[dev,voice,audio]"
+        pip install -e ".[dev]"
+        pip install scipy || true
 
     - name: Compile all Python files
       run: |

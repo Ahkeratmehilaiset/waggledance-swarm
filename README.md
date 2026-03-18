@@ -146,7 +146,17 @@ python validate_cutover.py          # Autonomy cutover check
 
 ## License
 
-MIT — free to use, modify, distribute.
+Dual-licensed:
+
+- **Apache License 2.0** — the open core (all files except those listed below).
+- **Business Source License 1.1** — MAGMA audit architecture (`core/audit_log.py`,
+  `trust_engine.py`, `replay_engine.py`, `memory_overlay.py`, `provenance.py`,
+  `cognitive_graph.py`), autonomy adapters (`waggledance/core/magma/`), and
+  CaseTrajectory quality gate (`waggledance/core/learning/`).
+  Free for non-commercial and evaluation use. Commercial production use requires
+  a separate license. These files become Apache 2.0 on 2030-03-18.
+
+See [LICENSE](LICENSE) and [LICENSE-CORE.md](LICENSE-CORE.md) for details.
 
 ---
 

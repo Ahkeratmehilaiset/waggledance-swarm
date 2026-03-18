@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """
 MAGMA: Cognitive Graph — NetworkX-based knowledge graph layer.
 Tracks causal, derived_from, input_to, and semantic edges between facts.

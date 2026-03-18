@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """
 MAGMA Layer 5: Trust & Reputation Engine
 ==========================================

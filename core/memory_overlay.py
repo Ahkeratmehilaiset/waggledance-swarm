@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """
 MAGMA Layer 3: Memory overlay networks.
 Provides filtered views over ChromaDB collections using metadata filters.

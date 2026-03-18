@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """Replay engine adapter — wraps legacy ReplayEngine for mission-level replay.
 
 Extends L2 replay to support:

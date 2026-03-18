@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """
 Case Trajectory Builder — creates CaseTrajectory from query lifecycle.
 

@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """
 Quality Gate — controls what learning data gets promoted.
 

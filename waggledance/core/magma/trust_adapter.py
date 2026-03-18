@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """Trust adapter — wraps legacy TrustEngine with multi-dimensional trust targets.
 
 Extends L5 trust from agent-only to also cover:

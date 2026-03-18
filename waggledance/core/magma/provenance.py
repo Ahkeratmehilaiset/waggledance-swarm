@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """Provenance adapter — wraps legacy ProvenanceTracker with tiered source types.
 
 Extends L4 provenance to distinguish between observed, inferred_by_solver,

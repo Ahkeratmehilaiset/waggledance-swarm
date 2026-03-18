@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """Event log adapter — wraps legacy LearningLedger for autonomy event logging.
 
 Extends the learning ledger with structured event types for case trajectories,

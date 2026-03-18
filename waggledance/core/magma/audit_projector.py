@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """Audit projector — wraps legacy AuditLog as an autonomy black-box recorder.
 
 Extends L1 audit to capture goal lifecycle, plan steps, action bus events,

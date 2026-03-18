@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """
 MAGMA Layer 4: Provenance tracking for fact origin, validation, and consensus.
 Extends the audit_log SQLite DB with validation and consensus tables.

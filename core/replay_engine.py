@@ -1,3 +1,4 @@
+# BUSL-1.1 - see LICENSE-CORE.md
 """
 Selective replay engine for MAGMA Layer 2.
 Reads audit log entries and re-applies memory operations through a MemoryWriteProxy.

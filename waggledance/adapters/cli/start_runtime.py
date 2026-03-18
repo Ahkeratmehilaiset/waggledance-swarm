@@ -132,6 +132,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["debug", "info", "warning", "error", "critical"],
         help="Logging level (default: warning)",
     )
+    parser.add_argument(
+        "--check-autonomy",
+        action="store_true",
+        default=False,
+        help="Run cutover validation and exit (does not start the server)",
+    )
     return parser.parse_args(argv)
 
 
@@ -140,6 +146,13 @@ def main(argv: list[str] | None = None) -> None:
     _setup_windows_utf8()
 
     args = parse_args(argv)
+
+    # --check-autonomy: validate and exit without starting the server
+    if args.check_autonomy:
+        from waggledance.tools.validate_cutover import run_validation
+
+        success = run_validation()
+        sys.exit(0 if success else 1)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper()),

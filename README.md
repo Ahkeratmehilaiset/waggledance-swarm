@@ -23,7 +23,7 @@ The system was developed in a demanding real-world field environment (Finnish co
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-Validated with 79 legacy suites (1470 tests) and 3671 pytest tests — over 5100 total, 0 failures. No subscription, no external API keys required for core operation.
+Validated with 79 legacy suites (1470 tests) and 3722 pytest tests — over 3890 total, 0 failures. No subscription, no external API keys required for core operation.
 
 ---
 
@@ -365,7 +365,7 @@ python -m waggledance.adapters.cli.start_runtime --stub
 ### Verify Installation
 
 ```bash
-python -m pytest -q                          # 3671 tests
+python -m pytest -q                          # 3722 tests
 python tools/waggle_backup.py --tests-only   # 79 legacy suites, 1470 tests
 ```
 
@@ -400,7 +400,7 @@ waggledance-swarm/
 ├── agents/                     # 128 YAML agent knowledge bases
 ├── configs/                    # settings.yaml, capabilities/*.yaml, capsules, policies
 ├── dashboard/                  # Vite + React UI (domain-agnostic, profile-switching)
-├── tests/                      # 174 test files (3671 pytest tests + 79 legacy suites)
+├── tests/                      # 177 test files (3722 pytest tests + 79 legacy suites)
 ├── tools/                      # Backup, migration, benchmarks, training scripts
 ├── docs/                       # Architecture, API, deployment, security, sensors
 ├── hivemind.py                 # HiveMind orchestrator (~1382 lines)
@@ -445,7 +445,7 @@ All measurements on HP ZBook with NVIDIA RTX A2000 8GB + 128GB RAM, internal tes
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Test coverage | 79 legacy + 3671 pytest | ~5100 total, 0 failures |
+| Test coverage | 79 legacy + 3722 pytest | ~5192 total, 0 failures |
 | Capabilities | 29 registered, 20 bound | 8 categories |
 | Hot Cache response | ~0.5ms | Pre-computed answers |
 | MicroModel V1 | ~0.01ms | Pattern match |

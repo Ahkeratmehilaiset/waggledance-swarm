@@ -1,5 +1,11 @@
 # Specialist Models — WaggleDance v2.0
 
+> **Note:** Training is currently **simulated** — accuracy is estimated from
+> quality grade distributions rather than actual sklearn/PyTorch model fitting.
+> The full pipeline infrastructure (feature extraction, grading, canary lifecycle)
+> is in place and tested. Real ML training is planned for v3.2.
+> See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md) for details.
+
 ## Overview
 
 Specialist models are small, locally-trained models that handle specific
@@ -39,7 +45,7 @@ TRAINED → CANARY (10% traffic, 48h) → PRODUCTION
 ```
 
 ### Canary Evaluation
-- Model serves 10% of traffic during canary period
+- Model serves 10% of traffic during canary period (metadata-tracked, not enforced)
 - Accuracy tracked against production model
 - Auto-promote if accuracy >= threshold after 48h
 - Auto-rollback if accuracy drops below baseline

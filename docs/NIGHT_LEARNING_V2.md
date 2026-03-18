@@ -1,5 +1,8 @@
 # Night Learning v2 — WaggleDance v2.0
 
+> **Note:** Specialist model training is currently **simulated** (grade-based
+> accuracy estimation). See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md).
+
 ## Overview
 
 Night Learning v2 replaces the legacy Q&A-pair-based learning with a
@@ -31,16 +34,17 @@ NightLearningPipeline.run_cycle()
 ```python
 @dataclass
 class CaseTrajectory:
-    case_id: str
-    query: str
-    intent: str
-    quality_grade: QualityGrade   # gold/silver/bronze/quarantine
-    capabilities_used: list
-    actions_taken: list
+    trajectory_id: str
+    goal: Goal                                    # Goal dataclass (not query/intent strings)
+    world_snapshot_before: WorldSnapshot
+    selected_capabilities: List[CapabilityContract]
+    actions: List[Action]
+    world_snapshot_after: WorldSnapshot
     verifier_result: dict
-    snapshot_before: dict
-    snapshot_after: dict
-    timestamp: float
+    quality_grade: QualityGrade                   # gold/silver/bronze/quarantine
+    canonical_id: str                             # agent/capability canonical ID
+    profile: str
+    created_at: datetime
 ```
 
 ## Quality Gate

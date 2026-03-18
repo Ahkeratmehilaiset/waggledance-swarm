@@ -1033,11 +1033,11 @@ class Consciousness:
                 from waggledance.core.domain.autonomy import Action
                 action = Action(capability_id="memory.store")
                 # Create a minimal capability for policy check
-                from waggledance.core.domain.autonomy import Capability
-                cap = Capability(
+                from waggledance.core.domain.autonomy import CapabilityContract, CapabilityCategory
+                cap = CapabilityContract(
                     capability_id="memory.store",
-                    name="Memory Store",
-                    category="write",
+                    category=CapabilityCategory.ACT,
+                    description="Memory store write operation",
                 )
                 result = self._write_proxy.submit(
                     action, cap,

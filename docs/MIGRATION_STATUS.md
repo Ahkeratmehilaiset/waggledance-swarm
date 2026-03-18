@@ -5,7 +5,7 @@
 
 ---
 
-## Overall Status: FULL AUTONOMY CUTOVER READY
+## Overall Status: FULL AUTONOMY CUTOVER VALIDATED
 
 All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 
@@ -18,7 +18,7 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 
 ---
 
-## Test Results (as of v1.17.0)
+## Test Results (as of v2.0.0)
 
 | Suite | Tests | Status |
 |-------|-------|--------|
@@ -26,11 +26,16 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 | `tests/unit_core/` (core modules + Big Sprint) | 130+ | PASS |
 | `tests/unit_app/` (service tests) | 16 | PASS |
 | `tests/contracts/` (contract validation) | 22 | PASS |
-| **New architecture subtotal** | **~469** | **ALL PASS** |
-| `tests/autonomy/` (9 phases + integration) | 463 | PASS |
+| `tests/autonomy/` (9 phases + v3.0 compliance) | 490+ | PASS |
 | `tests/integration/` (runtime, smoke, scenarios) | 90 | PASS |
-| `tools/waggle_backup.py --tests-only` | 2427 (72 suites) | PASS |
-| **Grand total** | **~3449** | **ALL PASS** |
+| `tests/migration/` (alias, backfill fixtures) | 10+ | PASS |
+| `tests/specialist_models/` + `tests/resource_kernel/` | 41 | PASS |
+| **Pytest total** | **3722** | **ALL PASS** |
+| `tools/waggle_backup.py --tests-only` (legacy) | 1470 (79 suites) | PASS |
+| **Grand total** | **~5192** | **ALL PASS** |
+
+> **Note:** Specialist model training is simulated (grade-based accuracy estimation).
+> See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md) for deviation details.
 
 ---
 

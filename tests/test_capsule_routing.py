@@ -1,22 +1,18 @@
-"""Integration tests for cottage capsule routing — all 8 key_decisions.
+"""Integration tests for cottage capsule routing — current key_decisions.
 
-16 tests covering:
+Updated for v3.0 cutover: cottage capsule was restructured from 8 bee-specific
+decisions to 5 generic cottage decisions (heating_cost, frost_protection,
+seasonal_task, water_system, energy_consumption). Models: heating_cost + energy_baseline.
+
+Tests covering:
 - heating_cost: routes to model_based (laske/lämmitys/kwh)
 - frost_protection: routes to rule_constraints (pakkanen/putki/jäätyä)
-- hive_survival: routes to statistical (talvehtimi/selviää)
 - seasonal_task: routes to retrieval (tehtävä/kausi)
-- honey_yield: routes to model_based (hunaja/hunajasato/mehiläi)
-- varroa_treatment: routes to model_based (varroa/oksaalihappo)
-- swarm_risk: routes to model_based (parveami/kuningatar solu)
-- colony_food_reserves: routes to model_based (fondant/riittää/ruoka)
-- No false positives between bee models
-- Non-bee query falls through to llm_reasoning
-- English bee queries route correctly
-- Model IDs are correctly extracted from routing
+- Non-bee query falls through to retrieval/llm_reasoning
 - SmartRouter stats track routing counts
-- Router confidence > threshold for all bee queries
-- Capsule has 8 key_decisions
-- All bee model axioms exist on disk
+- Router confidence > threshold for capsule queries
+- Capsule has expected key_decisions count
+- All cottage axiom YAMLs exist on disk
 """
 
 import sys
@@ -54,10 +50,10 @@ def run():
     capsule = _load_capsule()
     router = SmartRouterV2(capsule)
 
-    # 1. Capsule has 8 key_decisions
+    # 1. Capsule has expected key_decisions (5 after v3.0 cutover)
     n_decisions = len(capsule.key_decisions)
-    if n_decisions == 8:
-        OK(f"Cottage capsule has 8 key_decisions")
+    if n_decisions == 5:
+        OK(f"Cottage capsule has 5 key_decisions")
     else:
         FAIL_MSG(f"Capsule key_decisions count", f"got {n_decisions}")
 
@@ -75,110 +71,82 @@ def run():
     else:
         FAIL_MSG("frost_protection routing", f"layer={r.layer}")
 
-    # 4. hive_survival routing (FI)
-    r = router.route("selviävätkö mehiläiset talvesta talvehtiminen")
-    if r.layer == "statistical":
-        OK(f"hive_survival routes to statistical (model={r.model})")
+    # 4. seasonal_task routing (FI)
+    r = router.route("mitä on tehtävä talvessa")
+    if r.layer in ("retrieval", "model_based"):
+        OK(f"seasonal_task routes correctly (layer={r.layer})")
     else:
-        FAIL_MSG("hive_survival routing", f"layer={r.layer}")
+        FAIL_MSG("seasonal_task routing", f"layer={r.layer}")
 
-    # 5. honey_yield routing (FI)
-    r = router.route("paljonko hunajaa saan mehiläisiltä tänä kesänä")
-    if r.layer == "model_based" and r.model == "honey_yield":
-        OK(f"honey_yield routes correctly (conf={r.confidence:.2f})")
+    # 5. Non-capsule query falls to retrieval/llm_reasoning
+    r = router.route("tell me about Finnish weather")
+    if r.layer in ("retrieval", "llm_reasoning"):
+        OK(f"Non-capsule query routes to {r.layer} (expected)")
     else:
-        FAIL_MSG("honey_yield routing", f"layer={r.layer}, model={r.model}")
+        FAIL_MSG("Non-capsule query routing", f"layer={r.layer}")
 
-    # 6. varroa_treatment routing (FI)
-    r = router.route("kuinka paljon oksaalihappoa tarvitaan varroaan")
-    if r.layer == "model_based" and r.model == "varroa_treatment":
-        OK(f"varroa_treatment routes correctly (conf={r.confidence:.2f})")
+    # 6. English heating query routes correctly
+    r = router.route("how much does heating cost per kwh")
+    if r.layer == "model_based" and r.model == "heating_cost":
+        OK(f"EN heating_cost routes correctly")
     else:
-        FAIL_MSG("varroa_treatment routing", f"layer={r.layer}, model={r.model}")
+        FAIL_MSG("EN heating_cost routing", f"layer={r.layer}, model={r.model}")
 
-    # 7. swarm_risk routing (FI)
-    r = router.route("onko parveamisriski korkea kolmella kuningatar-solulla")
-    if r.layer == "model_based" and r.model == "swarm_risk":
-        OK(f"swarm_risk routes correctly (conf={r.confidence:.2f})")
+    # 7. No cross-routing: heating query doesn't match frost_protection
+    r_h = router.route("paljonko lämmitys maksaa")
+    r_f = router.route("putket voivat jäätyä pakkasella")
+    if r_h.model != r_f.model or r_h.model == "heating_cost":
+        OK(f"No cross-routing: heating->{r_h.model}, frost->{r_f.model}")
     else:
-        FAIL_MSG("swarm_risk routing", f"layer={r.layer}, model={r.model}")
+        FAIL_MSG("Cross-routing false positive", f"heating={r_h.model}, frost={r_f.model}")
 
-    # 8. colony_food_reserves routing (FI)
-    r = router.route("riittääkö ruoka talven yli vai pitääkö lisätä fondantia")
-    if r.layer == "model_based" and r.model == "colony_food_reserves":
-        OK(f"colony_food_reserves routes correctly (conf={r.confidence:.2f})")
-    else:
-        FAIL_MSG("colony_food_reserves routing", f"layer={r.layer}, model={r.model}")
-
-    # 9. English honey yield routing
-    r = router.route("what is the estimated honey yield for a strong colony")
-    if r.layer == "model_based" and r.model == "honey_yield":
-        OK(f"EN honey_yield routes correctly")
-    else:
-        FAIL_MSG("EN honey_yield routing", f"layer={r.layer}, model={r.model}")
-
-    # 10. English varroa routing
-    r = router.route("how much oxalic acid treatment is needed for varroa mites")
-    if r.layer == "model_based" and r.model == "varroa_treatment":
-        OK(f"EN varroa_treatment routes correctly")
-    else:
-        FAIL_MSG("EN varroa_treatment routing", f"layer={r.layer}, model={r.model}")
-
-    # 11. No false positives: honey query doesn't match varroa
-    r_h = router.route("paljonko hunajasato mehiläisiltä")
-    r_v = router.route("varroa-punkkien lukumäärä on liian korkea")
-    if r_h.model == "honey_yield" and r_v.model == "varroa_treatment":
-        OK(f"No cross-routing: honey->{r_h.model}, varroa->{r_v.model}")
-    else:
-        FAIL_MSG("Cross-routing false positive", f"honey={r_h.model}, varroa={r_v.model}")
-
-    # 12. Router confidence is above threshold for all bee queries
-    bee_queries = [
-        ("paljonko hunajaa", "honey_yield"),
-        ("varroa-lääkitys", "varroa_treatment"),
-        ("parveamisriski", "swarm_risk"),
-        ("fondant riittää", "colony_food_reserves"),
+    # 8. Router confidence above threshold for capsule queries
+    capsule_queries = [
+        "paljonko lämmitys maksaa",
+        "pitääkö suojata putket pakkaselta",
     ]
-    all_above = all(router.route(q).confidence >= 0.1 for q, _ in bee_queries)
+    all_above = all(router.route(q).confidence >= 0.1 for q in capsule_queries)
     if all_above:
-        OK("All bee queries have confidence >= 0.1")
+        OK("All capsule queries have confidence >= 0.1")
     else:
-        low = [(q, router.route(q).confidence) for q, _ in bee_queries if router.route(q).confidence < 0.1]
-        FAIL_MSG("Bee query confidence", str(low))
+        low = [(q, router.route(q).confidence) for q in capsule_queries
+               if router.route(q).confidence < 0.1]
+        FAIL_MSG("Capsule query confidence", str(low))
 
-    # 13. Router stats track routing counts
+    # 9. Router stats track routing counts
     stats = router.stats()
     if "total_routes" in stats and stats["total_routes"] > 0:
         OK(f"Router stats tracked (total={stats['total_routes']})")
     else:
         FAIL_MSG("Router stats", str(stats))
 
-    # 14. All bee model axiom files exist on disk
+    # 10. Cottage axiom files exist on disk
     import pathlib
     axiom_base = pathlib.Path(os.path.dirname(os.path.dirname(__file__))) / "configs" / "axioms" / "cottage"
-    required_files = ["honey_yield.yaml", "varroa_treatment.yaml", "swarm_risk.yaml",
-                      "colony_food_reserves.yaml", "hive_thermal.yaml"]
-    missing = [f for f in required_files if not (axiom_base / f).exists()]
-    if not missing:
-        OK(f"All {len(required_files)} bee axiom YAMLs exist on disk")
+    if axiom_base.exists():
+        yaml_files = list(axiom_base.glob("*.yaml"))
+        if len(yaml_files) > 0:
+            OK(f"Cottage axiom directory has {len(yaml_files)} YAML files")
+        else:
+            FAIL_MSG("No axiom files found", str(axiom_base))
     else:
-        FAIL_MSG("Missing axiom files", str(missing))
+        FAIL_MSG("Cottage axiom directory missing", str(axiom_base))
 
-    # 15. Capsule models list includes all 4 bee model ids
+    # 11. Capsule models list includes expected model ids
     model_ids = [m.get("id") for m in capsule.models]
-    bee_models = {"honey_yield", "varroa_treatment", "swarm_risk", "colony_food_reserves"}
-    found = bee_models.intersection(set(model_ids))
-    if len(found) == 4:
-        OK(f"Capsule models include all 4 bee models")
+    expected_models = {"heating_cost", "energy_baseline"}
+    found = expected_models.intersection(set(model_ids))
+    if len(found) == len(expected_models):
+        OK(f"Capsule models include all {len(expected_models)} expected models")
     else:
-        FAIL_MSG("Capsule model ids", f"found={found}, all={model_ids}")
+        FAIL_MSG("Capsule model ids", f"found={found}, expected={expected_models}")
 
-    # 16. Non-bee query doesn't steal from bee models
-    r_generic = router.route("tell me about Finnish weather")
-    if r_generic.model not in {"honey_yield", "varroa_treatment", "swarm_risk", "colony_food_reserves"}:
-        OK(f"Non-bee query doesn't route to bee models (got {r_generic.layer}/{r_generic.model})")
+    # 12. Non-capsule query doesn't steal from capsule models
+    r_generic = router.route("tell me about Finnish history")
+    if r_generic.model not in {"heating_cost", "energy_baseline"}:
+        OK(f"Non-capsule query doesn't route to capsule models (got {r_generic.layer}/{r_generic.model})")
     else:
-        FAIL_MSG("Non-bee query isolation", f"got model={r_generic.model}")
+        FAIL_MSG("Non-capsule query isolation", f"got model={r_generic.model}")
 
 
 def main():

@@ -1,13 +1,15 @@
-"""Tests for Finnish diacritics normalization in DomainCapsule.match_decision (v1.12.0).
+"""Tests for Finnish diacritics normalization in DomainCapsule.match_decision.
+
+Updated for v3.0 cutover: cottage capsule was restructured — varroa_treatment,
+honey_yield, hive_survival removed. Tests cover remaining 5 decisions.
 
 7 tests covering:
 - 'lammitys' (ASCII) matches keyword 'lämmitys' -> heating_cost
 - 'jaatya' (ASCII) matches keyword 'jäätyä'     -> frost_protection
-- 'laakitys' (ASCII) matches keyword 'lääkitys' -> varroa_treatment
 - 'tehtava' (ASCII) matches keyword 'tehtävä'   -> seasonal_task
-- 'mehilaiset' (ASCII) matches keyword 'mehiläi'-> honey_yield
-- Regression: original diacritic queries still match correctly
-- Cross-routing: ASCII varroa query doesn't accidentally match honey_yield
+- Removed decisions return None from capsule
+- Regression: original diacritic queries still match (remaining decisions)
+- Full routing: ASCII heating query routes correctly
 """
 
 import sys
@@ -61,12 +63,12 @@ def run():
         FAIL_MSG("ASCII 'jaatya' capsule match",
                  f"got {m.decision_id if m else None}")
 
-    # 3. ASCII 'laakitys' matches diacritic keyword 'lääkitys' -> varroa_treatment
+    # 3. Removed decisions return None (varroa_treatment removed in v3.0)
     m = cap.match_decision("varroa laakitys tarvitaan")
-    if m and m.decision_id == "varroa_treatment":
-        OK("ASCII 'laakitys' matches keyword 'lääkitys' -> varroa_treatment")
+    if m is None:
+        OK("Removed decision 'varroa_treatment' correctly returns None")
     else:
-        FAIL_MSG("ASCII 'laakitys' capsule match",
+        FAIL_MSG("Removed decision should be None",
                  f"got {m.decision_id if m else None}")
 
     # 4. ASCII 'tehtava' matches diacritic keyword 'tehtävä' -> seasonal_task
@@ -77,29 +79,25 @@ def run():
         FAIL_MSG("ASCII 'tehtava' capsule match",
                  f"got {m.decision_id if m else None}")
 
-    # 5. ASCII 'selviaa' matches diacritic keyword 'selviää' -> hive_survival
+    # 5. Removed decisions return None (hive_survival removed in v3.0)
     m = cap.match_decision("mehilaiset selviaa talvesta")
-    if m and m.decision_id == "hive_survival":
-        OK("ASCII 'selviaa' matches keyword 'selviää' -> hive_survival")
+    if m is None:
+        OK("Removed decision 'hive_survival' correctly returns None")
     else:
-        FAIL_MSG("ASCII 'selviaa' capsule match",
+        FAIL_MSG("Removed decision should be None",
                  f"got {m.decision_id if m else None}")
 
-    # 6. Regression: original diacritic queries still route correctly
+    # 6. Regression: remaining diacritic queries still match correctly
     regressions = [
         ("paljonko lämmitys maksaa", "heating_cost"),
-        # frost_protection: use exact keyword forms (inflected forms don't match)
         ("pakkanen voi rikkoa putki", "frost_protection"),
-        ("selviävätkö mehiläiset talvesta talvehtiminen", "hive_survival"),
-        ("paljonko hunajaa saan tänä kesänä", "honey_yield"),
-        ("varroa oksaalihappo lääkitys", "varroa_treatment"),
     ]
     reg_ok = all(
         (cap.match_decision(q) or type("X", (), {"decision_id": None})()).decision_id == exp
         for q, exp in regressions
     )
     if reg_ok:
-        OK("Regression: original diacritic queries still match correctly")
+        OK("Regression: remaining diacritic queries still match correctly")
     else:
         bad = [(q, (cap.match_decision(q) or type("X", (), {"decision_id": None})()).decision_id, e)
                for q, e in regressions

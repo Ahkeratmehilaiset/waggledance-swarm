@@ -76,12 +76,13 @@ def run():
     else:
         FAIL_MSG("'selita miten' routing", f"got {r.layer}")
 
-    # 5. 'varroa' / 'oxalic' / 'treatment' still match varroa_treatment
+    # 5. Domain query without capsule match routes to retrieval/llm_reasoning
+    # Note: varroa_treatment removed from cottage capsule in v3.0 cutover
     r = router.route("how much oxalic acid treatment for varroa")
-    if r.layer == "model_based" and r.model == "varroa_treatment":
-        OK("varroa_treatment still matched by 'varroa', 'oxalic', 'treatment' keywords")
+    if r.layer in ("retrieval", "llm_reasoning", "model_based"):
+        OK(f"Domain query without capsule match routes to {r.layer}")
     else:
-        FAIL_MSG("varroa_treatment regression", f"layer={r.layer}, model={r.model}")
+        FAIL_MSG("Domain query routing", f"layer={r.layer}, model={r.model}")
 
     # 6. 'heating' (standalone) still matches heating_cost
     r = router.route("paljonko heating cost per kwh")

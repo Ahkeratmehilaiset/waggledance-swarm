@@ -220,8 +220,8 @@ class ResourceKernel:
         if self._elastic_scaler:
             try:
                 vram_pct = self._elastic_scaler.get_vram_usage_pct()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("VRAM monitoring failed: %s", exc)
 
         snapshot = ResourceSnapshot(
             tier=self._tier,
@@ -303,8 +303,8 @@ class ResourceKernel:
         if self._adaptive_throttle:
             try:
                 throttle_status = self._adaptive_throttle.get_status()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Throttle status failed: %s", exc)
 
         return {
             "tier": self._tier.value,

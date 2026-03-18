@@ -56,18 +56,18 @@ These features remain in the legacy entrypoint (`main.py`) until ported.
 
 ## Legacy Entrypoints (Deprecated)
 
-### `main.py` — Full HiveMind Runtime
+### `main.py` — Full HiveMind Runtime (DEPRECATED)
 
 ```bash
-python main.py
+python main.py  # emits DeprecationWarning at startup
 ```
 
-Runs the complete legacy system: HiveMind, 20+ agents, FAISS, bilingual cache, night learning, dashboard. Production-proven but monolithic.
+Runs the complete legacy system: HiveMind, 20+ agents, FAISS, bilingual cache, night learning, dashboard. Production-proven but monolithic. **DEPRECATED** — use `start_runtime.py` instead.
 
-### `start.py` — Interactive Launcher
+### `start.py` — Interactive Launcher (DEPRECATED)
 
 ```bash
-python start.py              # interactive menu
+python start.py              # emits DeprecationWarning at startup
 python start.py --stub       # legacy stub mode
 python start.py --production # legacy production mode
 python start.py --new-runtime # launches the new runtime
@@ -101,7 +101,7 @@ Interactive menu with 4 options:
 | Scenario | Entrypoint |
 |----------|-----------|
 | Production (recommended) | `start_runtime.py` (autonomy runtime, primary) |
-| Production (legacy fallback) | `main.py` (HiveMind orchestrator) |
+| Production (legacy fallback) | `main.py` (DEPRECATED — HiveMind orchestrator) |
 | Development / testing | `start_runtime.py --stub` |
-| Dashboard development | `start.py --stub` (legacy, starts React dev server) |
+| Dashboard development | `start.py --stub` (DEPRECATED — starts React dev server) |
 | CI/CD smoke tests | `start_runtime.py --stub` + pytest |

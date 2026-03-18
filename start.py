@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# DEPRECATED — Use 'python -m waggledance.adapters.cli.start_runtime' instead.
 """
 WaggleDance Launcher — Choose Stub or Production mode.
 
@@ -229,6 +230,12 @@ def interactive_menu():
 
 
 if __name__ == "__main__":
+    import warnings
+    warnings.warn(
+        "start.py is the legacy launcher. Use 'python -m waggledance.adapters.cli.start_runtime' instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     parser = argparse.ArgumentParser(description="WaggleDance Launcher")
     parser.add_argument("--stub", action="store_true", help="Start in stub mode (legacy)")
     parser.add_argument("--production", "--prod", action="store_true",

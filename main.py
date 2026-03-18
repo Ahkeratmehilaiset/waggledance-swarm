@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+# DEPRECATED — Use 'python -m waggledance.adapters.cli.start_runtime' instead.
 """
 WaggleDance Swarm AI — Local HiveNode Runtime (On-Prem)
 ========================================================
-Primary entrypoint. Alternative hexagonal runtime:
+DEPRECATED: This is the legacy entrypoint. Use the hexagonal runtime:
     python -m waggledance.adapters.cli.start_runtime [--stub] [--port PORT]
 See ENTRYPOINTS.md for details.
 
@@ -101,6 +102,13 @@ AUTO_SPAWN = [
 
 async def main() -> None:
     """Initialize HiveMind, spawn agents, populate caches, and start the web server."""
+    import warnings
+    warnings.warn(
+        "main.py is the legacy entrypoint. Use 'python -m waggledance.adapters.cli.start_runtime' instead. "
+        "See ENTRYPOINTS.md for details.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     hive = HiveMind("configs/settings.yaml")
     await hive.start()
 

@@ -46,3 +46,4 @@ paho-mqtt>=2.0.0               # Phase 5: MQTT for smart home sensors
 # PyMuPDF>=1.23.0              # fitz — PDF knowledge import
 networkx>=3.0
 pytest>=7.0
+pytest-asyncio>=0.23.0

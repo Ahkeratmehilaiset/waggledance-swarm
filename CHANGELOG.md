@@ -88,9 +88,9 @@ Major architectural release introducing a solver-first autonomy runtime with cap
 - 4 unused imports cleaned across 3 files
 
 #### Testing
-- 3671 pytest tests (174 test files), 0 failures
-- 79 legacy suites (1470 tests), 0 failures
-- ~5100 total tests
+- 3832 pytest tests, 0 failures
+- 79 legacy suites (1468 tests), 0 failures
+- ~5300 total tests
 - 40 new priority wiring tests covering all 5 cutover integrations
 - Runtime start/stop verified clean in primary mode
 

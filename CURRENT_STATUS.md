@@ -48,7 +48,7 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | Application services (chat, memory, learning) | `tests/unit_app/` — 16 tests |
 | Adapter implementations (9 adapters + SQLiteTrustStore) | `tests/unit/` — 300+ tests |
 | DI container (stub + production) | Smoke tests pass both modes |
-| Legacy test suite | 79 suites, 1470 tests, 0 failures, Health 100/100 |
+| Legacy test suite | 79 suites, 1468 tests, 0 failures, Health 100/100 |
 | Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
 | **Autonomy runtime (v2.0)** | **504 tests (9 phases + 5 regression gates), all pass** |
@@ -94,7 +94,7 @@ These test suites are the gatekeepers — all must pass before any change is mer
 | Integration tests | `pytest tests/integration/ -v` | 90 | Runtime CLI, smoke, user scenarios, benchmarks, shadow compare |
 | Autonomy unit tests | `pytest tests/autonomy/ -v` | 1368 | Domain models, phases 1-9, runtime wiring |
 | Regression gates | `pytest tests/migration/ tests/night_learning_v2/ tests/resource_kernel/ tests/specialist_models/ -v` | 41 | Alias migration, night pipeline, resource kernel, specialist models |
-| Legacy suite | `python tools/waggle_backup.py --tests-only` | 1470 | Old stack regression (79 suites) |
+| Legacy suite | `python tools/waggle_backup.py --tests-only` | 1468 | Old stack regression (79 suites) |
 | Stub smoke | `Container(stub=True).build_app()` | 1 | DI wiring, no crash |
 | Non-stub smoke | `Container(stub=False).memory_repository` | 1 | ChromaMemoryRepository, not InMemory |
 | Compile check | `python -m compileall waggledance/ core/ -q` | - | No syntax errors |

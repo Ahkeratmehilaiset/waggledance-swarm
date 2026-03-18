@@ -23,7 +23,7 @@ The system was developed in a demanding real-world field environment (Finnish co
 
 ![WaggleDance Dashboard](docs/images/dashboard-cottage.png)
 
-Validated with 79 legacy suites (1470 tests) and 3832 pytest tests — over 5300 total, 0 failures. No subscription, no external API keys required for core operation.
+Validated with 79 legacy suites (1468 tests) and 3832 pytest tests — over 5300 total, 0 failures. No subscription, no external API keys required for core operation.
 
 ---
 
@@ -366,7 +366,7 @@ python -m waggledance.adapters.cli.start_runtime --stub
 
 ```bash
 python -m pytest -q                          # 3832 tests
-python tools/waggle_backup.py --tests-only   # 79 legacy suites, 1470 tests
+python tools/waggle_backup.py --tests-only   # 79 legacy suites, 1468 tests
 ```
 
 ---

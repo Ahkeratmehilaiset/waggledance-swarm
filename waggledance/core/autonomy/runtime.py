@@ -209,6 +209,20 @@ class AutonomyRuntime:
         )
 
         self._night_pipeline = None  # lazy-initialized on first night learning run
+
+        # ResourceKernel + AdmissionControl (load management)
+        self.resource_kernel = None
+        self.admission_control = None
+        try:
+            from waggledance.core.autonomy.resource_kernel import (
+                AdmissionControl,
+                ResourceKernel,
+            )
+            self.resource_kernel = ResourceKernel()
+            self.admission_control = AdmissionControl(kernel=self.resource_kernel)
+        except Exception as exc:
+            log.debug("ResourceKernel unavailable: %s", exc)
+
         self._started = False
         log.info("AutonomyRuntime initialised (profile=%s)", profile)
 
@@ -216,12 +230,16 @@ class AutonomyRuntime:
 
     def start(self):
         """Start the runtime."""
+        if self.resource_kernel:
+            self.resource_kernel.start()
         self._started = True
         log.info("AutonomyRuntime started")
 
     def stop(self):
         """Stop the runtime and persist state."""
         self._started = False
+        if self.resource_kernel:
+            self.resource_kernel.stop()
         self.world_model.save()
         for store_name in ("world_store", "procedural_store",
                            "case_store", "verifier_store"):
@@ -273,6 +291,30 @@ class AutonomyRuntime:
         """
         context = context or {}
         t0 = time.time()
+
+        # 0. Admission check (resource-gated)
+        if self.admission_control:
+            from waggledance.core.autonomy.resource_kernel import AdmissionDecision
+            admission = self.admission_control.check(work_type="query")
+            if admission.decision == AdmissionDecision.REJECT:
+                return {
+                    "intent": "unknown",
+                    "error": f"Rejected: {admission.reason}",
+                    "deferred": False,
+                    "elapsed_ms": round((time.time() - t0) * 1000, 2),
+                }
+            elif admission.decision == AdmissionDecision.DEFER:
+                return {
+                    "intent": "unknown",
+                    "error": f"Deferred: {admission.reason}",
+                    "deferred": True,
+                    "wait_ms": admission.wait_ms,
+                    "elapsed_ms": round((time.time() - t0) * 1000, 2),
+                }
+
+        # Track task start for load management
+        if self.resource_kernel:
+            self.resource_kernel.record_task_start()
 
         # 1. Intent classification
         intent = SolverRouter.classify_intent(query)
@@ -433,6 +475,12 @@ class AutonomyRuntime:
                 elapsed_ms=round((time.time() - t0) * 1000, 2))
 
         elapsed = round((time.time() - t0) * 1000, 2)
+
+        # Track task end for load management
+        if self.resource_kernel:
+            self.resource_kernel.record_task_end(
+                latency_ms=elapsed, success=action_result.executed)
+
         result = {
             "intent": intent,
             "quality_path": route_result.quality_path,
@@ -773,6 +821,10 @@ class AutonomyRuntime:
             "world_model": self.world_model.stats(),
             "working_memory": self.working_memory.stats(),
         }
+        if self.resource_kernel:
+            s["resource_kernel"] = self.resource_kernel.stats()
+        if self.admission_control:
+            s["admission_control"] = self.admission_control.stats()
         if self.audit:
             s["magma_audit"] = self._magma_safe("stats.audit", self.audit.stats) or {}
         if self.event_log:

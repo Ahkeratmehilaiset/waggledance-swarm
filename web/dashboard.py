@@ -64,6 +64,16 @@ def _get_enrichment_stats_from(hm):
         return {}
 
 
+# Profiles that have bee/hive-specific dashboard sections
+_APIARY_PROFILES = {"apiary", "cottage", "mehilainen", "beekeeper"}
+
+
+def _is_apiary_profile(hivemind) -> bool:
+    """Check if current profile should show bee-specific sections."""
+    profile = (hivemind.config.get("profile", "") or "").lower()
+    return profile in _APIARY_PROFILES
+
+
 def create_app(hivemind):
     app = FastAPI(title="WaggleDance AI Dashboard")
 
@@ -1107,7 +1117,11 @@ loadFeeds();
 
     @app.get("/api/sensors/audio/bee")
     async def sensors_audio_bee():
-        """Phase 6: Audio analysis status per monitored unit."""
+        """Phase 6: Audio analysis status per monitored unit.
+        Only available for apiary-related profiles."""
+        if not _is_apiary_profile(hivemind):
+            return JSONResponse({"available": False, "units": {},
+                                 "reason": "Not an apiary profile"})
         if (not hasattr(hivemind, 'sensor_hub')
                 or not hivemind.sensor_hub
                 or not hivemind.sensor_hub.audio_monitor):

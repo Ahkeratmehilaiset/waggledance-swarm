@@ -223,6 +223,15 @@ patch_*.py
 hotfix_*.py
 *_mega_patch.py
 
+# Runtime SQLite databases and WAL artifacts
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Runtime monitor/telemetry logs
+docs/monitor_log.jsonl
+
 # ChromaDB data
 chromadb_data/
 chroma/

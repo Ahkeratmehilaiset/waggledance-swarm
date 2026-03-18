@@ -47,7 +47,7 @@ Every action produces an auditable CaseTrajectory that feeds overnight learning.
 | **GADGET** | Edge / IoT | Battery optimization, sensor calibration |
 | **COTTAGE** | Off-grid property | Heating, frost protection, energy management |
 | **HOME** | Smart home | Comfort, safety, energy optimization |
-| **FACTORY** | Industrial | OEE, predictive maintenance, quality control |
+| **FACTORY** | Industrial lines | OEE, SPC, predictive maintenance. Integrates via MQTT with ROS 2, OPC-UA, Modbus, Node-RED. Protocol-agnostic — works with Siemens, ABB, Tesla, BYD, Mitsubishi, or any MQTT-capable system. Full MAGMA audit trail for ISO/GMP compliance. |
 | **APIARY** | Beekeeping | Colony health, varroa detection, seasonal tasks |
 
 ---

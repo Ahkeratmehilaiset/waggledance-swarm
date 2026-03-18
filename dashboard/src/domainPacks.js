@@ -32,14 +32,14 @@ const DOMAIN_LABELS = {
     gadget:  { label: "GADGET",  tag: "ESP32 • RPi • wearables • edge intelligence everywhere" },
     cottage: { label: "COTTAGE", tag: "sauna • forest • off-grid intelligence" },
     home:    { label: "HOME",    tag: "47 devices • 6 rooms • smart living" },
-    factory: { label: "FACTORY", tag: "142 equipment • 24/7 semiconductor production" },
+    factory: { label: "FACTORY", tag: "OEE • SPC • predictive maintenance • MQTT/ROS 2/OPC-UA • any PLC vendor • ISO audit trail" },
     apiary:  { label: "APIARY",  tag: "professional beekeeping • 50+ hives • full monitoring" },
   },
   fi: {
     gadget:  { label: "LAITE",  tag: "ESP32 • RPi • puettavat • reunaälyä kaikkialle" },
     cottage: { label: "MÖKKI",  tag: "sauna • metsä • off-grid-älykkyys" },
     home:    { label: "KOTI",   tag: "47 laitetta • 6 huonetta • älykäs asuminen" },
-    factory: { label: "TEHDAS", tag: "142 laitetta • 24/7 puolijohdetuotanto" },
+    factory: { label: "TEHDAS", tag: "OEE • SPC • ennakoiva huolto • MQTT/ROS 2/OPC-UA • kaikki PLC-valmistajat • ISO-auditointi" },
     apiary:  { label: "TARHA",  tag: "ammattimainen mehiläistarhaus • 50+ pesää • täysi valvonta" },
   },
 };

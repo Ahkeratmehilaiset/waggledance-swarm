@@ -95,3 +95,24 @@ data_sources:
     type: mqtt
     topic: "factory/sensors/#"
     description: "Real-time sensor readings"
+
+integrations:
+  mqtt:
+    topics_config: "configs/mqtt/factory_topics.yaml"
+    broker_default: "localhost:1883"
+    qos: 1
+
+  # External system bridges (user provides)
+  supported_bridges:
+    - name: "ROS 2"
+      method: "mqtt_bridge (standard ROS 2 package)"
+      docs: "docs/FACTORY_INTEGRATION.md"
+    - name: "OPC-UA"
+      method: "opcua-mqtt-gateway"
+      docs: "docs/FACTORY_INTEGRATION.md"
+    - name: "Modbus"
+      method: "modbus-mqtt-bridge"
+      docs: "docs/FACTORY_INTEGRATION.md"
+    - name: "Node-RED"
+      method: "MQTT nodes (built-in)"
+      docs: "docs/FACTORY_INTEGRATION.md"

@@ -1,9 +1,10 @@
 # Specialist Models — WaggleDance v2.0
 
-> **Note:** Training is currently **simulated** — accuracy is estimated from
-> quality grade distributions rather than actual sklearn/PyTorch model fitting.
+> **Note:** The `route_classifier` uses **real sklearn training** (TF-IDF +
+> LogisticRegression with cross-validation). The remaining 7 specialists use
+> **simulated training** — accuracy estimated from quality grade distributions.
 > The full pipeline infrastructure (feature extraction, grading, canary lifecycle)
-> is in place and tested. Real ML training is planned for v3.2.
+> is in place and tested. Real ML training for all models is planned for v3.2.
 > See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md) for details.
 
 ## Overview

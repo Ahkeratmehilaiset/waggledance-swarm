@@ -146,17 +146,32 @@ python validate_cutover.py          # Autonomy cutover check
 
 ## License
 
-Dual-licensed:
+WaggleDance is **dual-licensed**.
 
-- **Apache License 2.0** — the open core (all files except those listed below).
-- **Business Source License 1.1** — MAGMA audit architecture (`core/audit_log.py`,
-  `trust_engine.py`, `replay_engine.py`, `memory_overlay.py`, `provenance.py`,
-  `cognitive_graph.py`), autonomy adapters (`waggledance/core/magma/`), and
-  CaseTrajectory quality gate (`waggledance/core/learning/`).
-  Free for non-commercial and evaluation use. Commercial production use requires
-  a separate license. These files become Apache 2.0 on 2030-03-18.
+### Open core
+Most of the repository is licensed under **Apache License 2.0**.
+This includes the general runtime, adapters, policy scaffolding, CLI, tests, and other open-core components.
 
-See [LICENSE](LICENSE) and [LICENSE-CORE.md](LICENSE-CORE.md) for details.
+### Protected modules
+Selected moat modules are licensed under **Business Source License 1.1 (BUSL-1.1)**.
+These include the protected MAGMA audit components, CaseTrajectory quality-gate components, and the v3.2 protected modules listed in `LICENSE-CORE.md`.
+
+### What you may do
+- **Apache-2.0 files**: use them under normal Apache terms.
+- **BUSL-1.1 files**: use them freely for development, testing, evaluation, CI, education, security review, and research.
+- **BUSL-1.1 files** may also be used in production for **personal, non-commercial use**.
+
+### Commercial production use
+If you want to use the protected BUSL-1.1 modules in a commercial product, commercial service, managed service, hosted offering, or competitive offering, you need a separate commercial license.
+
+**Commercial licensing contact:** janikorpi@hotmail.com
+
+If you are unsure whether your use counts as commercial production use, ask before shipping.
+
+### Change date
+BUSL-1.1 protected files convert to **Apache License 2.0 on 2030-03-18**.
+
+See `LICENSE`, `LICENSE-BUSL.txt`, and `LICENSE-CORE.md` for details.
 
 ---
 

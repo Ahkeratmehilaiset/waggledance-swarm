@@ -1,4 +1,6 @@
-# BUSL-1.1 - see LICENSE-CORE.md
+# SPDX-License-Identifier: BUSL-1.1
+# SPDX-FileCopyrightText: Jani Korpi / Ahkerat Mehilaiset / JKH Service
+# See LICENSE-BUSL.txt and LICENSE-CORE.md
 """Trust adapter — wraps legacy TrustEngine with multi-dimensional trust targets.
 
 Extends L5 trust from agent-only to also cover:

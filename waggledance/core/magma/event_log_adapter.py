@@ -1,4 +1,6 @@
-# BUSL-1.1 - see LICENSE-CORE.md
+# SPDX-License-Identifier: BUSL-1.1
+# SPDX-FileCopyrightText: Jani Korpi / Ahkerat Mehilaiset / JKH Service
+# See LICENSE-BUSL.txt and LICENSE-CORE.md
 """Event log adapter — wraps legacy LearningLedger for autonomy event logging.
 
 Extends the learning ledger with structured event types for case trajectories,

@@ -1,4 +1,6 @@
-# BUSL-1.1 - see LICENSE-CORE.md
+# SPDX-License-Identifier: BUSL-1.1
+# SPDX-FileCopyrightText: Jani Korpi / Ahkerat Mehilaiset / JKH Service
+# See LICENSE-BUSL.txt and LICENSE-CORE.md
 """
 Append-only SQLite audit trail for memory operations.
 Layer 1 of MAGMA memory architecture.

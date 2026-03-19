@@ -134,7 +134,23 @@ def run():
     else:
         FAIL_MSG("Router stats missing retrieval", str(stats))
 
-    # 10. bee_knowledge FAISS has content for spring/summer/autumn/winter months
+    # 10. New seasonal keywords: vuodenaika, kevät, syksy, talvi → retrieval
+    season_kw_queries = [
+        ("Mikä vuodenaika nyt on mehiläisten kannalta", "vuodenaika"),
+        ("kevät on paras aika aloittaa", "kevät"),
+        ("syksy on kiireistä aikaa", "syksy"),
+        ("talvi on lepoa mehiläisille", "talvi"),
+    ]
+    season_kw_ok = True
+    for q, kw in season_kw_queries:
+        r = router.route(q)
+        if r.layer != "retrieval":
+            FAIL_MSG(f"Season keyword '{kw}' routing", f"got {r.layer}")
+            season_kw_ok = False
+    if season_kw_ok:
+        OK("New season keywords (vuodenaika/kevät/syksy/talvi) route to retrieval")
+
+    # 11. bee_knowledge FAISS has content for spring/summer/autumn/winter months
     registry = FaissRegistry()
     col = registry.get_or_create("bee_knowledge")
     doc_ids = set(col._doc_ids)

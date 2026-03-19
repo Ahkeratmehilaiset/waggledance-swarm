@@ -15,6 +15,8 @@ Integrates all Phase 1-6 components into a cohesive runtime:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -42,12 +44,29 @@ except ImportError:
 log = logging.getLogger("waggledance.autonomy.runtime")
 
 
+def _run_maybe_async(result):
+    """If *result* is a coroutine, run it to completion and return the value."""
+    if not inspect.isawaitable(result):
+        return result
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        return asyncio.run(result)
+    # Already inside an event loop — run in a new thread to avoid deadlock
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, result).result()
+
+
 def _make_adapter_executor(adapter):
     """Bridge adapter.execute(...) to ActionBus Executor(action) protocol.
 
     ActionBus calls ``executor(action: Action) -> dict``.
     Adapters expose ``adapter.execute(query=..., **kwargs) -> dict``.
     This bridge extracts the payload from the Action and forwards it.
+    Handles both sync and async adapter.execute() transparently.
     """
 
     def executor(action: Action) -> Dict[str, Any]:
@@ -55,11 +74,12 @@ def _make_adapter_executor(adapter):
         # Try full payload as kwargs (most flexible — works for
         # specialized adapters that accept metric=, entity=, etc.)
         try:
-            return adapter.execute(**payload)
+            result = adapter.execute(**payload)
         except TypeError:
             # Fallback: positional query string (MathSolverAdapter etc.)
             query = payload.get("query", "")
-            return adapter.execute(query)
+            result = adapter.execute(query)
+        return _run_maybe_async(result)
 
     return executor
 

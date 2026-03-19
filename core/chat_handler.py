@@ -90,46 +90,65 @@ class ChatHandler:
                 result = _autonomy_svc.handle_query(
                     message, {"language": _detected_lang, "source": source})
                 # Format response from autonomy result
-                if result.get("error"):
-                    # Autonomy failed — fall through to legacy path
-                    log.warning("Autonomy runtime error, falling back: %s",
-                                result["error"])
+                if result.get("error") or not result.get("executed"):
+                    # Autonomy failed or did not execute — fall through to legacy path
+                    log.warning("Autonomy runtime %s, falling back: %s",
+                                "error" if result.get("error") else "not executed",
+                                result.get("error", result.get("capability", "unknown")))
                 else:
                     _r = result.get("result") or {}
-                    response = _r.get("answer", str(_r)) if _r else str(result)
-                    self._last_chat_message = message
-                    self._last_chat_response = response
-                    self._last_chat_method = f"autonomy_{result.get('quality_path', 'bronze')}"
-                    self._last_chat_agent_id = result.get("capability", "autonomy")
-                    self._last_model_result = result
-                    _auto_ms = (time.perf_counter() - _chat_t0) * 1000
-                    self.metrics.log_chat(
-                        query=_original_message,
-                        method=self._last_chat_method,
-                        agent_id=self._last_chat_agent_id,
-                        model_used="autonomy_runtime",
-                        confidence=0.9 if result.get("quality_path") == "gold" else 0.7,
-                        response_time_ms=_auto_ms,
-                        route="autonomy", language=_detected_lang)
-                    self._record_request_telemetry(
-                        "autonomy", 0.9, _auto_ms, True, message)
-                    return response
+                    response = _r.get("answer", "") if _r else ""
+                    if not response:
+                        log.warning("Autonomy returned empty answer, falling back")
+                    else:
+                        self._last_chat_message = message
+                        self._last_chat_response = response
+                        self._last_chat_method = f"autonomy_{result.get('quality_path', 'bronze')}"
+                        self._last_chat_agent_id = result.get("capability", "autonomy")
+                        self._last_model_result = result
+                        _auto_ms = (time.perf_counter() - _chat_t0) * 1000
+                        self.metrics.log_chat(
+                            query=_original_message,
+                            method=self._last_chat_method,
+                            agent_id=self._last_chat_agent_id,
+                            model_used="autonomy_runtime",
+                            confidence=0.9 if result.get("quality_path") == "gold" else 0.7,
+                            response_time_ms=_auto_ms,
+                            route="autonomy", language=_detected_lang)
+                        self._record_request_telemetry(
+                            "autonomy", 0.9, _auto_ms, True, message)
+                        return response
             except Exception as _auto_err:
                 log.warning("Autonomy runtime unavailable, legacy fallback: %s",
                             _auto_err)
 
-        # ═══ Phase 4: Detect user correction ("ei", "väärin", correction text) ═══
-        _CORRECTION_WORDS = {"ei", "väärin", "wrong", "väärä", "virhe",
-                             "korjaus", "eikä", "tarkoitin"}
-        _CORRECTION_PHRASES = {"ei vaan", "ei ole", "oikea vastaus",
-                               "tarkoitin että", "väärä vastaus"}
+        # ═══ Phase 4: Detect user correction (score-based) ═══
+        _STRONG_CORRECTION = {"väärin", "wrong", "väärä", "virhe",
+                              "korjaus", "tarkoitin"}          # +2 each
+        _CORRECTION_PHRASES = {"ei vaan", "ei ole oikea", "väärä vastaus",
+                               "oikea vastaus", "tarkoitin että"}  # +3 each
+        _WEAK_CORRECTION = {"ei", "eikä"}                      # +1 at start or short msg
         if (self._last_chat_message and self._last_chat_response
                 and hasattr(self, 'consciousness') and self.consciousness):
             msg_lower = message.lower()
-            msg_words = set(msg_lower.split())
-            _has_correction_word = bool(msg_words & _CORRECTION_WORDS)
-            _has_correction_phrase = any(p in msg_lower for p in _CORRECTION_PHRASES)
-            if (_has_correction_word or _has_correction_phrase) and len(message) > 5:
+            msg_words = [w.strip(".,!?;:\"'") for w in msg_lower.split()]
+            msg_word_set = set(msg_words)
+            # Score-based correction detection (threshold >= 2)
+            _corr_score = 0
+            # Strong words: +2
+            _corr_score += 2 * len(msg_word_set & _STRONG_CORRECTION)
+            # Phrases: +3
+            for _p in _CORRECTION_PHRASES:
+                if _p in msg_lower:
+                    _corr_score += 3
+            # Weak words ("ei", "eikä"): +1 only at start or in short messages
+            _weak_hit = msg_word_set & _WEAK_CORRECTION
+            if _weak_hit:
+                if msg_words[0] in _WEAK_CORRECTION:
+                    _corr_score += 1  # at message start
+                if len(message) < 20:
+                    _corr_score += 1  # short message
+            if _corr_score >= 2 and len(message) > 5:
                 self.consciousness.store_correction(
                     query=self._last_chat_message,
                     bad_answer=self._last_chat_response,
@@ -411,30 +430,37 @@ class ChatHandler:
                     _cr = self.constraint_engine.evaluate_with_lang(_ctx, _lang)
                     if _cr.triggered_rules:
                         response = _cr.to_natural_language(_lang)
+                    elif getattr(_route, 'confidence', 1.0) < 0.3:
+                        # Low-confidence routing with no triggered rules —
+                        # fall through to next layer instead of generic OK
+                        log.debug("rule_constraints: no rules + low confidence (%.2f), falling through",
+                                  _route.confidence)
+                        response = None
                     else:
                         if _lang == "fi":
                             response = "Kaikki tarkistukset OK -- ei aktiivisia varoituksia."
                         else:
                             response = "All checks OK -- no active warnings."
-                    await self._notify_ws("chat_response", {
-                        "message": message, "response": response,
-                        "language": _detected_lang,
-                        "method": "rule_constraints",
-                    })
-                    self._last_chat_message = message
-                    self._last_chat_response = response
-                    self._last_chat_method = "rule_constraints"
-                    self._last_chat_agent_id = "constraint_engine"
-                    self._last_model_result = None
-                    self._last_explanation = _cr.to_dict() if hasattr(_cr, 'to_dict') else None
-                    self.metrics.log_chat(
-                        query=_original_message, method="rule_constraints",
-                        agent_id="constraint_engine",
-                        model_used="constraint_engine",
-                        confidence=0.9,
-                        response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
-                        route="rule_constraints", language=_detected_lang)
-                    return response
+                    if response is not None:
+                        await self._notify_ws("chat_response", {
+                            "message": message, "response": response,
+                            "language": _detected_lang,
+                            "method": "rule_constraints",
+                        })
+                        self._last_chat_message = message
+                        self._last_chat_response = response
+                        self._last_chat_method = "rule_constraints"
+                        self._last_chat_agent_id = "constraint_engine"
+                        self._last_model_result = None
+                        self._last_explanation = _cr.to_dict() if hasattr(_cr, 'to_dict') else None
+                        self.metrics.log_chat(
+                            query=_original_message, method="rule_constraints",
+                            agent_id="constraint_engine",
+                            model_used="constraint_engine",
+                            confidence=0.9,
+                            response_time_ms=(time.perf_counter() - _chat_t0) * 1000,
+                            route="rule_constraints", language=_detected_lang)
+                        return response
             except Exception as _rule_err:
                 log.warning("Rule constraints failed: %s", _rule_err)
 

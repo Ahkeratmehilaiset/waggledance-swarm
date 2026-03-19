@@ -694,6 +694,20 @@ class Consciousness:
         # YAML seeding will work fine with mixed FI/EN facts
         return text
 
+    # ── Complex question detection ─────────────────────────────
+
+    def _is_complex_question(self, message: str) -> bool:
+        """Return True if the question needs phi4-mini (not llama1b)."""
+        _ALWAYS_COMPLEX = {"miksi", "miten", "selitä", "selita", "kuvaile",
+                           "why", "how", "explain", "describe", "compare"}
+        _QW = {"mitä", "mita", "kerro", "what", "tell"}
+        words = message.lower().split()
+        if any(w in _ALWAYS_COMPLEX for w in words):
+            return True
+        if any(w in _QW for w in words) and len(words) >= 6:
+            return True
+        return False
+
     # ── A) PRE-FILTER ─────────────────────────────────────────
 
     def before_llm(self, message):
@@ -826,7 +840,8 @@ class Consciousness:
                             method="memory_direct", confidence=best.score)
 
                     # Tier 2: >0.70 → use llama1b (fast) with context
-                    if best.score > 0.70:
+                    #         (skip for complex questions — they need phi4-mini)
+                    if best.score > 0.70 and not self._is_complex_question(message):
                         parts = []
                         for m in matches[:3]:
                             en = m.text_en or m.text

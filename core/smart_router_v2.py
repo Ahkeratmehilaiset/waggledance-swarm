@@ -71,7 +71,9 @@ _SEASONAL_KEYWORDS = re.compile(
     r"january|february|march|april|may\b|june|july|august|"
     r"september|october|november|december|"
     # Season + task words (FI+EN, without trailing \b for inflection)
-    r"kauden|kuukau|seasonal|tehtav)",
+    r"kauden|kuukau|seasonal|tehtav|"
+    # Finnish season names (vuodenaika inflects: vuodenaikaa, vuodenaikojen...)
+    r"vuodenaika|kevät|kevat|syksy|talvi)",
     re.IGNORECASE,
 )
 

@@ -14,7 +14,7 @@ No cloud. No API keys. No subscription.
 - **MAGMA audit backplane** — append-only provenance, causal replay, branchable overlays and multi-dimensional trust scoring across 5 layers.
 - **Night Learning v2** — CaseTrajectory-based learning with quality gate (gold/silver/bronze/quarantine), specialist model training with canary promotion, and procedural memory.
 - **Safe Action Bus** — deny-by-default policy engine with risk scoring, verifier, and rollback for every write operation.
-- **Domain-agnostic core** — add new domains with YAML configs and Python adapters. Beekeeping, smart home, and industrial profiles are included examples.
+- **Domain-agnostic core** — add new domains with YAML configs and Python adapters. Multiple profiles included out of the box.
 - **Hardware-aware scaling** — automatic detection and tier selection from microcontrollers to GPU clusters. Same codebase everywhere.
 
 ---
@@ -48,7 +48,7 @@ Every action produces an auditable CaseTrajectory that feeds overnight learning.
 | **COTTAGE** | Off-grid property | Heating, frost protection, energy management |
 | **HOME** | Smart home | Comfort, safety, energy optimization |
 | **FACTORY** | Industrial lines | OEE, SPC, predictive maintenance. Integrates via MQTT with ROS 2, OPC-UA, Modbus, Node-RED. Protocol-agnostic — works with Siemens, ABB, Tesla, BYD, Mitsubishi, or any MQTT-capable system. Full MAGMA audit trail for ISO/GMP compliance. |
-| **APIARY** | Beekeeping | Colony health, varroa detection, seasonal tasks |
+| **APIARY** | Specialized domain | Domain-specific monitoring, anomaly detection, seasonal tasks |
 
 ---
 
@@ -177,9 +177,7 @@ See `LICENSE`, `LICENSE-BUSL.txt`, and `LICENSE-CORE.md` for details.
 
 ## Credits
 
-Built by Jani Korpi (Ahkerat Mehilaiset, Helsinki) with Claude Code.
-
-Originally developed for Finnish commercial beekeeping (300 hives, 10,000 kg honey/year). The architecture proved general enough to become a domain-agnostic autonomy runtime.
+Built by Jani Korpi (Ahkerat Mehilaiset, Helsinki) with Claude Code, codex and many other agents
 
 ---
 

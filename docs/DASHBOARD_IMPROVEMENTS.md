@@ -21,32 +21,32 @@ The profile system (`gadget | cottage | home | factory`) is **partially function
 Each profile should represent a meaningfully different deployment:
 
 #### GADGET (ESP32 / RPi Zero, 5W)
-- **Agents**: 2-3 (beekeeper, core_dispatcher, meteorologist)
-- **Primary responder**: beekeeper (single-purpose device)
+- **Agents**: 2-3 (domain_specialist, core_dispatcher, meteorologist)
+- **Primary responder**: domain_specialist (single-purpose device)
 - **Models**: qwen3:0.6b or TinyML (CPU-only)
 - **Round Table**: Disabled (too few agents)
-- **Use case**: Single-hive monitoring sensor
+- **Use case**: Single-sensor edge monitoring
 
 #### COTTAGE (Intel NUC / ZBook, 28W)
-- **Agents**: 8-15 (bee monitoring + property + weather)
+- **Agents**: 8-15 (monitoring + property + weather)
 - **Primary responder**: core_dispatcher (routes to specialists)
 - **Models**: phi4-mini (chat), llama3.2:1b (background), nomic-embed-text
 - **Round Table**: 3-4 agents, every 20 heartbeats
-- **Use case**: Hobby beekeeper's summer cottage
+- **Use case**: Off-grid property monitoring
 
 #### HOME (Mac Mini Pro / RTX workstation, 30W)
 - **Agents**: 20-25 (full specialist roster)
 - **Primary responder**: core_dispatcher with embedding-based routing
 - **Models**: phi4:14b (chat), llama3.3:8b (background), whisper + Piper (voice)
 - **Round Table**: 6 agents, every 10 heartbeats
-- **Use case**: Smart home with beekeeping + property management
+- **Use case**: Smart home with multiple automation domains
 
 #### FACTORY (NVIDIA DGX, 14.4kW)
 - **Agents**: 40-50 (all agents, multiple instances)
 - **Primary responder**: core_dispatcher with full embedding + centroid routing
 - **Models**: llama3.3:70b (chat), vision models, 50 micro-models
 - **Round Table**: 8-10 agents, every 5 heartbeats
-- **Use case**: Commercial apiary / research facility
+- **Use case**: Industrial / research facility
 
 ### Gap Analysis
 
@@ -156,8 +156,8 @@ GET  /api/consciousness     → {facts, corrections_count, ...}
       "id": "conv_001",
       "timestamp": "2026-03-08T11:29:00Z",
       "messages": [
-        {"role": "user", "text": "miten varroa-punkkia torjutaan?", "timestamp": "..."},
-        {"role": "assistant", "text": "[Beekeeper] Varroa-torjunta...", "agent": "beekeeper", "timestamp": "..."}
+        {"role": "user", "text": "miten optimoin energiankulutusta?", "timestamp": "..."},
+        {"role": "assistant", "text": "[Energy Advisor] Energiankulutuksen optimointi...", "agent": "energy_advisor", "timestamp": "..."}
       ]
     }
   ],
@@ -178,9 +178,9 @@ GET  /api/consciousness     → {facts, corrections_count, ...}
   "rating": "up",
   "correction": {
     "wrong_agent": "meteorologist",
-    "correct_agent": "beekeeper"
+    "correct_agent": "energy_advisor"
   },
-  "comment": "This should have gone to beekeeper"
+  "comment": "This should have gone to energy_advisor"
 }
 
 // Response

@@ -40,7 +40,7 @@ compare.save_report(report, "data/shadow_report.json")
 
 Located in `configs/benchmarks.yaml`, organized by domain:
 
-- **bee_qa** — honey yield, varroa treatment, swarm risk
+- **domain_qa** — domain-specific queries (monitoring, diagnostics, scheduling)
 - **bilingual** — Finnish and English queries
 - **correction** — testing correction recovery
 - **sensor** — temperature and humidity queries

@@ -232,7 +232,7 @@ All DTOs are `@dataclass` classes. Field order is canonical.
 class AgentDefinition:
     id: str                        # unique agent identifier
     name: str                      # English display name
-    domain: str                    # knowledge domain (e.g., "beekeeping")
+    domain: str                    # knowledge domain (e.g., "energy", "monitoring")
     tags: list[str]                # routing keywords
     skills: list[str]              # DECISION_METRICS keys from YAML
     trust_level: int               # 0-4: NOVICE, APPRENTICE, JOURNEYMAN, EXPERT, MASTER

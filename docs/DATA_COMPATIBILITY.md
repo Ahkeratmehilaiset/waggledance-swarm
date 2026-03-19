@@ -13,7 +13,7 @@ All entities (agents, profiles, capabilities, models) use a canonical ID:
 ```python
 @dataclass
 class CanonicalId:
-    canonical_id: str   # e.g., "agent:cottage_beekeeper"
+    canonical_id: str   # e.g., "agent:cottage_monitor"
     entity_type: str    # "agent", "profile", "capability", "model"
 ```
 
@@ -24,15 +24,15 @@ Legacy identifiers map to canonical IDs through the `AliasRegistry`:
 ```python
 registry = AliasRegistry()
 registry.register(AgentAlias(
-    legacy_id="beekeeper",
-    canonical_id="agent:cottage_beekeeper",
-    aliases=("mehiläishoitaja", "bee_keeper"),
+    legacy_id="monitor",
+    canonical_id="agent:cottage_monitor",
+    aliases=("valvoja", "env_monitor"),
     profiles=("cottage",),
 ))
 
 # Lookup works with any known identifier
-canonical = registry.resolve("mehiläishoitaja")
-# → "agent:cottage_beekeeper"
+canonical = registry.resolve("valvoja")
+# → "agent:cottage_monitor"
 ```
 
 ## Data Stores

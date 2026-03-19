@@ -97,7 +97,7 @@ python start.py --production # Full HiveMind (requires Ollama + 4 models)
 | Profile | Target Hardware | Use Case |
 |---------|----------------|----------|
 | **GADGET** | ESP32, RPi, wearables | TinyML classifiers, sensor fusion *(theoretical)* |
-| **COTTAGE** | Any PC with GPU | Finnish beekeeping: hive monitoring, varroa, weather |
+| **COTTAGE** | Any PC with GPU | Off-grid monitoring, environmental sensing, weather |
 | **HOME** | Mac Mini, NUC, desktop | Home automation, voice control, energy optimization |
 | **FACTORY** | Server rack, DGX | Predictive maintenance, monitoring *(theoretical)* |
 

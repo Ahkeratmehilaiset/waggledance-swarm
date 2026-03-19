@@ -63,12 +63,12 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 ```json
 // POST /api/chat
 // Request
-{"message": "Miten käsittelen varroa-punkkeja?"}
+{"message": "Miten optimoin energiankulutusta?"}
 
 // Response
 {
-  "response": "Varroa-punkkien käsittelyyn...",
-  "agent": "disease_monitor",
+  "response": "Energiankulutuksen optimointiin...",
+  "agent": "energy_advisor",
   "confidence": 0.87,
   "source": "chromadb",
   "language": "fi",
@@ -102,7 +102,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 
 // POST /api/autonomy/goals/check-proactive
 // Request
-{"observations": {"hive1.temperature": 25.0}, "threshold": 2.0}
+{"observations": {"zone1.temperature": 25.0}, "threshold": 2.0}
 // Response
 {"goals_proposed": 1, "goal_ids": ["goal-abc123"]}
 ```
@@ -152,7 +152,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /api/sensors/home` | GET | Home Assistant entity states |
 | `GET /api/sensors/camera/events` | GET | Frigate NVR camera events |
 | `GET /api/sensors/audio` | GET | Audio monitor status + recent events |
-| `GET /api/sensors/audio/bee` | GET | Bee audio analysis (stress/swarming/queen) |
+| `GET /api/sensors/audio/analysis` | GET | Audio analysis (anomaly detection, pattern recognition) |
 
 ---
 
@@ -167,7 +167,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 ```json
 // POST /api/voice/text
 // Request
-{"text": "Tervetuloa mehiläistarhalle"}
+{"text": "Tervetuloa järjestelmään"}
 
 // POST /api/voice/audio
 // Request
@@ -321,7 +321,7 @@ Real-time event stream. Messages are JSON with `type` field:
   "type": "heartbeat",
   "agent": "disease_monitor",
   "action": "proactive_think",
-  "result": "Checked varroa treatment timing",
+  "result": "Checked scheduled maintenance timing",
   "timestamp": "2026-03-07T14:30:00"
 }
 ```

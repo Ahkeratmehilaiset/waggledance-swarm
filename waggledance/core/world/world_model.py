@@ -192,6 +192,50 @@ class WorldModel:
             source_type=source_type,
         )
 
+    # ── Self-entity (v3.2) ─────────────────────────────────────
+
+    def ensure_self_entity(self, **overrides) -> Optional[dict]:
+        """Ensure self-entity exists in the CognitiveGraph."""
+        if self._graph is None:
+            return None
+        return self._graph.ensure_self_entity(**overrides)
+
+    def get_self_entity(self) -> Optional[dict]:
+        if self._graph is None:
+            return None
+        return self._graph.get_self_entity()
+
+    def update_self_entity(self, **attrs) -> Optional[dict]:
+        if self._graph is None:
+            return None
+        return self._graph.update_self_entity(**attrs)
+
+    # ── Epistemic uncertainty (v3.2) ───────────────────────────
+
+    def compute_epistemic_uncertainty(
+        self,
+        open_observe_goals: int = 0,
+        stale_ttl_seconds: float = 3600,
+    ):
+        """Compute uncertainty and update self-entity."""
+        from waggledance.core.world.epistemic_uncertainty import compute_uncertainty
+
+        entities = self._entities.list()
+        baseline_keys = set(self._baselines.get_baselines_dict().keys())
+        report = compute_uncertainty(
+            entities=entities,
+            baseline_keys=baseline_keys,
+            open_observe_goals=open_observe_goals,
+            stale_ttl_seconds=stale_ttl_seconds,
+        )
+        # Update self-entity with uncertainty score
+        if self._graph is not None:
+            self._graph.update_self_entity(
+                epistemic_uncertainty_score=report.score,
+                uncertainty_areas=report.stale_entity_ids[:20],
+            )
+        return report
+
     # ── Graph stats ───────────────────────────────────────────
 
     def stats(self) -> dict:

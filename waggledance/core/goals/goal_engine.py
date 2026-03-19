@@ -163,13 +163,15 @@ class GoalEngine:
         log.info("Decomposed %s into %d sub-goals", goal_id, len(sub_goals))
         return sub_goals
 
-    # ── Prioritization ────────────────────────────────────
+    # ── Prioritization (v3.2: motive valence) ─────────────
 
     def prioritize(self, goal_ids: Optional[List[str]] = None) -> List[Goal]:
         """
-        Return goals sorted by priority (highest first).
+        Return goals sorted by effective priority (highest first).
 
-        Considers: priority value, goal type urgency, parent dependencies.
+        v3.2: effective_priority = base + urgency_boost + valence_boost
+        Promise-to-user goals get a +15 boost.
+        Carry-forward goals get a +5 boost.
         """
         if goal_ids:
             goals = [self._get_goal(gid) for gid in goal_ids]
@@ -186,12 +188,39 @@ class GoalEngine:
         def sort_key(g: Goal) -> float:
             base = g.priority
             base += urgency_boost.get(g.type, 0)
+            # v3.2: valence boost
+            if g.motive_valence > 0:
+                base += g.motive_valence * 10
+            # v3.2: promise and carry-forward boosts
+            if g.promise_to_user:
+                base += 15
+            if g.carry_forward:
+                base += 5
             # Penalize non-actionable states
             if g.status in (GoalStatus.ARCHIVED, GoalStatus.ROLLED_BACK):
                 base -= 100
             return base
 
         return sorted(goals, key=sort_key, reverse=True)
+
+    # ── Unfinished business (v3.2) ──────────────────────────
+
+    def get_unfinished_business(self) -> List[Goal]:
+        """Return carry-forward or promise-to-user goals not yet archived."""
+        return [
+            g for g in self._active_goals.values()
+            if (g.carry_forward or g.promise_to_user)
+            and g.status not in (GoalStatus.ARCHIVED, GoalStatus.ROLLED_BACK)
+        ]
+
+    def get_open_observe_goals(self) -> List[Goal]:
+        """Return open observe-type goals (for epistemic uncertainty)."""
+        return [
+            g for g in self._active_goals.values()
+            if g.type == GoalType.OBSERVE
+            and g.status not in (GoalStatus.VERIFIED, GoalStatus.ARCHIVED,
+                                 GoalStatus.ROLLED_BACK, GoalStatus.FAILED)
+        ]
 
     # ── Queries ───────────────────────────────────────────
 

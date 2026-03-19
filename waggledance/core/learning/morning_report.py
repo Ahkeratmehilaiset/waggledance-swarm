@@ -55,6 +55,10 @@ class MorningReport:
     coverage_gaps: List[str] = field(default_factory=list)
     suggested_goals: List[str] = field(default_factory=list)
 
+    # Capability confidence trends
+    improving_solvers: List[Dict[str, Any]] = field(default_factory=list)
+    degrading_solvers: List[Dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "report_id": self.report_id,
@@ -85,6 +89,10 @@ class MorningReport:
             },
             "gaps": self.coverage_gaps,
             "suggested_goals": self.suggested_goals,
+            "confidence_trends": {
+                "improving": self.improving_solvers,
+                "degrading": self.degrading_solvers,
+            },
         }
 
     def summary_text(self) -> str:
@@ -105,6 +113,12 @@ class MorningReport:
             lines.append(f"  Coverage gaps: {', '.join(self.coverage_gaps[:5])}")
         if self.suggested_goals:
             lines.append(f"  Suggested goals: {', '.join(self.suggested_goals[:5])}")
+        if self.improving_solvers:
+            names = [s.get("solver", "?") for s in self.improving_solvers[:3]]
+            lines.append(f"  Improving solvers: {', '.join(names)}")
+        if self.degrading_solvers:
+            names = [s.get("solver", "?") for s in self.degrading_solvers[:3]]
+            lines.append(f"  Degrading solvers: {', '.join(names)}")
         return "\n".join(lines)
 
 
@@ -122,6 +136,7 @@ class MorningReportBuilder:
         canary_results: Optional[Dict[str, str]] = None,
         world_changes: Optional[Dict[str, int]] = None,
         procedural_stats: Optional[Dict[str, int]] = None,
+        confidence_trends: Optional[Dict[str, List]] = None,
     ) -> MorningReport:
         """Build a morning report from night learning outputs."""
         cases = cases or []
@@ -173,6 +188,11 @@ class MorningReportBuilder:
         # Coverage gap detection
         report.coverage_gaps = self._detect_gaps(cases)
         report.suggested_goals = self._suggest_goals(cases, report)
+
+        # Capability confidence trends
+        if confidence_trends:
+            report.improving_solvers = confidence_trends.get("improving", [])
+            report.degrading_solvers = confidence_trends.get("degrading", [])
 
         self._reports.append(report)
         if len(self._reports) > 365:

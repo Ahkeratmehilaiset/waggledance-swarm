@@ -230,6 +230,20 @@ class AutonomyRuntime:
 
         self._night_pipeline = None  # lazy-initialized on first night learning run
 
+        # Prediction Error Ledger + Capability Confidence
+        self.prediction_ledger = None
+        self.capability_confidence = None
+        try:
+            from waggledance.core.learning.prediction_error_ledger import PredictionErrorLedger
+            self.prediction_ledger = PredictionErrorLedger()
+        except Exception as exc:
+            log.debug("PredictionErrorLedger unavailable: %s", exc)
+        try:
+            from waggledance.core.learning.capability_confidence import CapabilityConfidenceTracker
+            self.capability_confidence = CapabilityConfidenceTracker()
+        except Exception as exc:
+            log.debug("CapabilityConfidenceTracker unavailable: %s", exc)
+
         # ResourceKernel + AdmissionControl (load management)
         self.resource_kernel = None
         self.admission_control = None
@@ -441,6 +455,27 @@ class AutonomyRuntime:
                 verifier_result.to_dict(),
                 action_id=action.action_id,
                 capability_id=primary_cap.capability_id)
+
+        # 6b. Record prediction error + update capability confidence
+        if action_result.executed:
+            verified_ok = verifier_result.passed if verifier_result else False
+            v_confidence = verifier_result.confidence if verifier_result else 0.0
+            if self.prediction_ledger:
+                self._persist_safe("ledger.record",
+                    self.prediction_ledger.record,
+                    query_id=action.action_id,
+                    solver_used=primary_cap.capability_id,
+                    verified=verified_ok,
+                    confidence=v_confidence,
+                    intent=intent)
+            if self.capability_confidence:
+                self._persist_safe("confidence.update",
+                    self.capability_confidence.update,
+                    primary_cap.capability_id, verified_ok)
+                # Sync confidence scores to solver_router for tiebreaking
+                self.solver_router.set_capability_confidence(
+                    self.capability_confidence.get_all()
+                )
 
         # 7. Case trajectory
         case = self.case_builder.build(
@@ -863,4 +898,8 @@ class AutonomyRuntime:
             s["persist_cases"] = self._persist_safe("stats.case_store", self.case_store.stats) or {}
         if self.verifier_store:
             s["persist_verifier"] = self._persist_safe("stats.verifier_store", self.verifier_store.stats) or {}
+        if self.prediction_ledger:
+            s["prediction_ledger"] = self.prediction_ledger.stats()
+        if self.capability_confidence:
+            s["capability_confidence"] = self.capability_confidence.stats()
         return s

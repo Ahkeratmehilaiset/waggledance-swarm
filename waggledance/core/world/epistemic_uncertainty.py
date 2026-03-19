@@ -57,6 +57,7 @@ class UncertaintyReport:
     stale_entities: int = 0
     unresolved_questions: int = 0
     total_tracked: int = 0
+    low_confidence_capabilities: int = 0
     stale_entity_ids: List[str] = field(default_factory=list)
     missing_baseline_keys: List[str] = field(default_factory=list)
 
@@ -66,6 +67,7 @@ class UncertaintyReport:
             "missing_baselines": self.missing_baselines,
             "stale_entities": self.stale_entities,
             "unresolved_questions": self.unresolved_questions,
+            "low_confidence_capabilities": self.low_confidence_capabilities,
             "total_tracked": self.total_tracked,
             "stale_entity_ids": self.stale_entity_ids[:10],
             "missing_baseline_keys": self.missing_baseline_keys[:10],
@@ -87,6 +89,8 @@ def compute_uncertainty(
     open_observe_goals: int = 0,
     stale_ttl_seconds: float = DEFAULT_STALE_TTL_SECONDS,
     now: float | None = None,
+    capability_confidence: dict[str, float] | None = None,
+    low_confidence_threshold: float = 0.5,
 ) -> UncertaintyReport:
     """
     Compute epistemic uncertainty score.
@@ -97,6 +101,10 @@ def compute_uncertainty(
         open_observe_goals: count of unresolved observe-type goals
         stale_ttl_seconds: how old before an entity is considered stale
         now: current time (defaults to time.time())
+        capability_confidence: optional {capability_id: confidence} map;
+            capabilities below *low_confidence_threshold* contribute to score.
+        low_confidence_threshold: confidence below which a capability is
+            considered uncertain (default 0.5).
     """
     if now is None:
         now = time.time()
@@ -124,7 +132,15 @@ def compute_uncertainty(
             missing += 1
             missing_keys.append(eid)
 
-    raw = (missing + stale + open_observe_goals) / total
+    # Count low-confidence capabilities
+    low_conf_count = 0
+    if capability_confidence:
+        low_conf_count = sum(
+            1 for v in capability_confidence.values()
+            if v < low_confidence_threshold
+        )
+
+    raw = (missing + stale + open_observe_goals + low_conf_count) / total
     score = min(1.0, max(0.0, raw))
 
     return UncertaintyReport(
@@ -132,6 +148,7 @@ def compute_uncertainty(
         missing_baselines=missing,
         stale_entities=stale,
         unresolved_questions=open_observe_goals,
+        low_confidence_capabilities=low_conf_count,
         total_tracked=len(entities),
         stale_entity_ids=stale_ids,
         missing_baseline_keys=missing_keys,

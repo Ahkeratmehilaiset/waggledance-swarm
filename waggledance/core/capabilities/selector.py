@@ -68,6 +68,7 @@ class CapabilitySelector:
 
     def __init__(self, registry: CapabilityRegistry):
         self._registry = registry
+        self._confidence_scores: Dict[str, float] = {}
 
     def select(
         self,
@@ -117,6 +118,10 @@ class CapabilitySelector:
 
         # LLM fallback
         return self._llm_fallback(conditions)
+
+    def set_confidence_scores(self, scores: Dict[str, float]):
+        """Set capability confidence scores for tiebreaking."""
+        self._confidence_scores = dict(scores)
 
     def select_for_capability_ids(
         self, capability_ids: List[str]
@@ -275,8 +280,18 @@ class CapabilitySelector:
     def _filter_by_preconditions(
         self, capabilities: List[CapabilityContract], conditions: Dict[str, bool]
     ) -> List[CapabilityContract]:
-        """Return capabilities whose preconditions are all met."""
-        return [c for c in capabilities if self._check_preconditions(c, conditions)]
+        """Return capabilities whose preconditions are all met.
+
+        When confidence scores are set, ties within the same category
+        are broken by confidence (higher first).
+        """
+        usable = [c for c in capabilities if self._check_preconditions(c, conditions)]
+        if self._confidence_scores and len(usable) > 1:
+            usable.sort(
+                key=lambda c: self._confidence_scores.get(c.capability_id, 0.5),
+                reverse=True,
+            )
+        return usable
 
     @staticmethod
     def _check_preconditions(cap: CapabilityContract, conditions: Dict[str, bool]) -> bool:

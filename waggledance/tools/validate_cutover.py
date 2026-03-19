@@ -73,6 +73,9 @@ REQUIRED_MODULES = [
     ("waggledance.core.projections.projection_validator", "Projection validator"),
     # v3.2 MAGMA expansion
     ("waggledance.core.magma.confidence_decay", "Confidence decay"),
+    # v3.2 Prediction error + capability confidence
+    ("waggledance.core.learning.prediction_error_ledger", "Prediction error ledger"),
+    ("waggledance.core.learning.capability_confidence", "Capability confidence"),
 ]
 
 

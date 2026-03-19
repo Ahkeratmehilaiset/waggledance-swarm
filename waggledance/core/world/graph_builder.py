@@ -144,6 +144,43 @@ class GraphBuilder:
                 added += 1
         return added
 
+    def find_alternative_paths(
+        self,
+        intent: str,
+        exclude_capabilities: Optional[list] = None,
+        min_success_rate: float = 0.3,
+    ) -> list:
+        """Find alternative capability IDs for a given intent using graph edges.
+
+        Returns list of (capability_id, success_rate) tuples sorted by success
+        rate descending, excluding the given capabilities.
+        """
+        if self._graph is None:
+            return []
+
+        exclude = set(exclude_capabilities or [])
+        intent_id = f"intent:{intent}"
+        edges = self._graph.get_edges(intent_id)
+
+        alternatives = []
+        for edge in edges:
+            target = edge.get("target", "")
+            if not target.startswith("capability:"):
+                continue
+            cap_id = target[len("capability:"):]
+            if cap_id in exclude:
+                continue
+            # Get success rate from the capability node
+            cap_node = self._graph.get_node(target)
+            if cap_node is None:
+                continue
+            sr = cap_node.get("success_rate", 0.0)
+            if sr >= min_success_rate:
+                alternatives.append((cap_id, sr))
+
+        alternatives.sort(key=lambda x: x[1], reverse=True)
+        return alternatives
+
     def stats(self) -> dict:
         if self._graph is None:
             return {"graph": None}

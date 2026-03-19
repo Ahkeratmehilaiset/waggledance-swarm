@@ -254,6 +254,37 @@ class SolverRouter:
         # Default: chat (LLM fallback)
         return "chat"
 
+    # ── Dream mode routing hints ─────────────────────────
+
+    def apply_dream_hints(self, dream_session) -> int:
+        """Ingest routing hints from a DreamSession into working memory.
+
+        Each successful counterfactual is stored as a routing hint so the
+        next time the same intent is encountered, the alternative capability
+        is preferred.
+
+        Returns the number of hints applied.
+        """
+        applied = 0
+        for traj in dream_session.simulated_trajectories:
+            outcome = traj.verifier_result.get("outcome", "inconclusive")
+            if outcome != "success":
+                continue
+            alt_chain = traj.counterfactual_alternatives or []
+            original_id = traj.verifier_result.get("original_trajectory_id", "")
+            if alt_chain:
+                hint_key = f"dream_hint:{original_id}"
+                self._working_memory.put(
+                    hint_key,
+                    {"alternative_chain": alt_chain, "outcome": outcome},
+                    category="dream_hint",
+                    salience=0.7,
+                )
+                applied += 1
+        if applied:
+            log.info("Applied %d dream routing hints to working memory", applied)
+        return applied
+
     # ── Working memory integration ────────────────────────
 
     def set_context(self, key: str, value: Any, category: str = "observation",

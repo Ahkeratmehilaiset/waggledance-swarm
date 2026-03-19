@@ -160,31 +160,107 @@ def select_candidates(
 def simulate_counterfactual(
     candidate: DreamCandidate,
     available_capabilities: List[str],
+    graph_builder=None,
 ) -> CounterfactualResult:
     """
     Simulate an alternative capability chain for a failed/uncertain case.
 
     This is a simplified simulation — real execution is never triggered.
-    The CognitiveGraph + WorldModel are queried but not modified.
+    When a GraphBuilder is provided, the CognitiveGraph success_rate data
+    is used to score alternative chains and produce non-inconclusive outcomes.
     """
-    # Generate alternative chain: swap capabilities
-    alt_chain = []
-    for cap_id in candidate.original_capabilities:
-        # Simple strategy: try alternatives from available pool
-        alternatives = [c for c in available_capabilities if c != cap_id]
-        if alternatives:
-            alt_chain.append(alternatives[0])
-        else:
-            alt_chain.append(cap_id)
+    original_set = set(candidate.original_capabilities)
 
-    # Simulated outcome is always inconclusive without real execution
+    # --- Try graph-informed alternative selection first ---
+    alt_chain: List[str] = []
+    alt_scores: List[float] = []
+
+    if graph_builder is not None:
+        # Infer intent from first capability (best effort)
+        _intent = _infer_intent(candidate)
+        if _intent:
+            graph_alts = graph_builder.find_alternative_paths(
+                _intent,
+                exclude_capabilities=candidate.original_capabilities,
+                min_success_rate=0.0,
+            )
+            graph_alt_ids = [cap_id for cap_id, _sr in graph_alts]
+            graph_alt_map = {cap_id: sr for cap_id, sr in graph_alts}
+
+            for cap_id in candidate.original_capabilities:
+                picked = None
+                for alt_id in graph_alt_ids:
+                    if alt_id != cap_id and alt_id not in alt_chain:
+                        picked = alt_id
+                        break
+                if picked:
+                    alt_chain.append(picked)
+                    alt_scores.append(graph_alt_map.get(picked, 0.0))
+                else:
+                    alt_chain.append(cap_id)
+                    alt_scores.append(0.0)
+
+    # --- Fallback: simple pool-based swap ---
+    if not alt_chain:
+        for cap_id in candidate.original_capabilities:
+            alternatives = [c for c in available_capabilities if c != cap_id]
+            if alternatives:
+                alt_chain.append(alternatives[0])
+                alt_scores.append(0.0)
+            else:
+                alt_chain.append(cap_id)
+                alt_scores.append(0.0)
+
+    # --- Score the alternative chain ---
+    changed = any(a != o for a, o in zip(alt_chain, candidate.original_capabilities))
+    avg_score = sum(alt_scores) / len(alt_scores) if alt_scores else 0.0
+
+    if not changed:
+        outcome = "inconclusive"
+        confidence = 0.1
+        insight = f"No alternative found for: {candidate.failure_reason}"
+    elif avg_score >= 0.6:
+        outcome = "success"
+        confidence = min(0.85, 0.4 + avg_score * 0.5)
+        insight = (f"High-success alternative chain (avg_rate={avg_score:.2f}) "
+                   f"for: {candidate.failure_reason}")
+    elif avg_score >= 0.3:
+        outcome = "success"
+        confidence = 0.3 + avg_score * 0.3
+        insight = (f"Moderate alternative chain (avg_rate={avg_score:.2f}) "
+                   f"for: {candidate.failure_reason}")
+    else:
+        outcome = "failure"
+        confidence = 0.3
+        insight = (f"Low-success alternative (avg_rate={avg_score:.2f}) "
+                   f"for: {candidate.failure_reason}")
+
     return CounterfactualResult(
         original_trajectory_id=candidate.original_trajectory_id,
         alternative_chain=alt_chain,
-        simulated_outcome="inconclusive",
-        insight=f"Alternative chain for: {candidate.failure_reason}",
-        confidence=0.3,  # low confidence — simulated only
+        simulated_outcome=outcome,
+        insight=insight,
+        confidence=confidence,
     )
+
+
+def _infer_intent(candidate: DreamCandidate) -> str:
+    """Best-effort intent inference from candidate goal description."""
+    desc = (candidate.goal_description or "").lower()
+    if not desc:
+        return ""
+    # Simple keyword-based mapping matching solver_router.classify_intent
+    for keyword, intent in [
+        ("math", "math"), ("calculate", "math"), ("laske", "math"),
+        ("thermal", "thermal"), ("temperature", "thermal"), ("lämpötila", "thermal"),
+        ("seasonal", "seasonal"), ("vuodenaika", "seasonal"),
+        ("schedule", "optimization"), ("optimize", "optimization"),
+        ("anomaly", "anomaly"), ("deviation", "anomaly"),
+        ("search", "retrieval"), ("find", "retrieval"),
+    ]:
+        if keyword in desc:
+            return intent
+    return "chat"
 
 
 def create_simulated_trajectory(
@@ -213,14 +289,38 @@ def create_simulated_trajectory(
     )
 
 
+def compute_insight_score(session: DreamSession) -> float:
+    """Compute insight_score for a dream session.
+
+    insight_score = (insights with success outcome) / total simulations
+    Ranges from -1.0 (all failures) to +1.0 (all successes).
+    """
+    if session.simulations_run == 0:
+        return 0.0
+    successes = 0
+    failures = 0
+    for traj in session.simulated_trajectories:
+        outcome = traj.verifier_result.get("outcome", "inconclusive")
+        if outcome == "success":
+            successes += 1
+        elif outcome == "failure":
+            failures += 1
+    # Score: net useful insights normalised to [-1, 1]
+    return (successes - failures) / session.simulations_run
+
+
 def run_dream_session(
     day_trajectories: List[CaseTrajectory],
     available_capabilities: List[str],
     max_simulations: int = DEFAULT_MAX_SIMULATIONS,
     max_candidates: int = 5,
+    graph_builder=None,
 ) -> DreamSession:
     """
     Run a complete nightly dream mode session.
+
+    When *graph_builder* is provided, counterfactual evaluation uses
+    CognitiveGraph success_rate data to produce non-inconclusive outcomes.
 
     Returns a DreamSession with all simulated trajectories.
     """
@@ -233,7 +333,9 @@ def run_dream_session(
         if session.simulations_run >= max_simulations:
             break
 
-        result = simulate_counterfactual(candidate, available_capabilities)
+        result = simulate_counterfactual(
+            candidate, available_capabilities, graph_builder=graph_builder,
+        )
         trajectory = create_simulated_trajectory(candidate, result)
         session.simulated_trajectories.append(trajectory)
         session.simulations_run += 1
@@ -241,8 +343,11 @@ def run_dream_session(
         if result.simulated_outcome != "inconclusive":
             session.insights_found += 1
 
-    log.info("Dream session %s: %d candidates, %d simulations, %d insights",
+    # Compute insight score for adaptive simulation count
+    session.insight_score = compute_insight_score(session)
+
+    log.info("Dream session %s: %d candidates, %d simulations, %d insights (score=%.2f)",
              session.night_id, session.candidates_evaluated,
-             session.simulations_run, session.insights_found)
+             session.simulations_run, session.insights_found, session.insight_score)
 
     return session

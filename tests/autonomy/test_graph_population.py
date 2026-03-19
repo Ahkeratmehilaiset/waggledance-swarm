@@ -125,17 +125,25 @@ class TestRuntimeGraphIntegration:
         rt = AutonomyRuntime(profile="VALIDATION")
         rt.start()
 
-        # Get initial graph state
-        initial_nodes = 0
-        if rt.graph_builder:
-            initial_nodes = rt.graph_builder.stats().get("graph_nodes", 0)
+        # Graph and builder should be active
+        assert rt.graph_builder is not None
+
+        # Get initial invocation count for math capability
+        graph = rt.world_model.graph
+        math_node = graph.get_node("capability:solve.math")
+        initial_count = math_node.get("invocation_count", 0) if math_node else 0
 
         rt.handle_query("What is 2+2?")
         rt.handle_query("paljonko on 5+3")
 
-        if rt.graph_builder:
-            after = rt.graph_builder.stats()
-            assert after["graph_nodes"] > initial_nodes
-            assert after["edge_types"].get("causal", 0) > 0
+        # Invocation count should have grown
+        math_node = graph.get_node("capability:solve.math")
+        assert math_node is not None
+        assert math_node["invocation_count"] > initial_count
+
+        # Intent node should exist and have query_count
+        intent_node = graph.get_node("intent:math")
+        assert intent_node is not None
+        assert intent_node["query_count"] >= 2
 
         rt.stop()

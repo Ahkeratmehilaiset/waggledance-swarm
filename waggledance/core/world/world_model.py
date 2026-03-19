@@ -45,7 +45,10 @@ class WorldModel:
                 cognitive_graph = CognitiveGraph()
             except ImportError:
                 cognitive_graph = None
-                log.warning("CognitiveGraph not available — world model runs without graph layer")
+                log.error(
+                    "CognitiveGraph not available — learning loop INACTIVE. "
+                    "Install core.cognitive_graph or pass an instance explicitly."
+                )
 
         self._graph = cognitive_graph
         self._baselines = baseline_store or BaselineStore()

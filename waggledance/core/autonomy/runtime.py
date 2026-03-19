@@ -108,10 +108,9 @@ class AutonomyRuntime:
     ):
         self.profile = profile
 
-        # Core components
-        self.world_model = world_model or WorldModel(
-            cognitive_graph=None, profile=profile
-        )
+        # Core components — let WorldModel use _UNSET sentinel for proper
+        # CognitiveGraph lazy-init (passing None explicitly disables it)
+        self.world_model = world_model or WorldModel(profile=profile)
         self.capability_registry = capability_registry or CapabilityRegistry()
         self.policy_engine = policy_engine or PolicyEngine(profile=profile)
         self.action_bus = SafeActionBus(self.policy_engine)
@@ -135,7 +134,13 @@ class AutonomyRuntime:
         except Exception as exc:
             log.debug("GraphBuilder unavailable: %s", exc)
 
+        # Seed self-entity in the CognitiveGraph
+        if self.world_model.graph is not None:
+            self.world_model.ensure_self_entity(profile=profile)
+
         # Executor binding
+        self._query_count = 0
+        self._graph_health_logged = False
         self._executor_count = 0
         try:
             from waggledance.bootstrap.capability_loader import bind_executors
@@ -494,6 +499,12 @@ class AutonomyRuntime:
                 intent=intent,
                 elapsed_ms=round((time.time() - t0) * 1000, 2))
 
+        # Graph health check — log once after 10 queries
+        self._query_count += 1
+        if self._query_count == 10 and not self._graph_health_logged:
+            self._graph_health_logged = True
+            self._check_graph_health()
+
         elapsed = round((time.time() - t0) * 1000, 2)
 
         # Track task end for load management
@@ -823,6 +834,24 @@ class AutonomyRuntime:
             result.quarantine_count,
         )
         return result.to_dict()
+
+    # ── Graph health ──────────────────────────────────────
+
+    def _check_graph_health(self):
+        """Log a graph health summary after initial queries."""
+        g = self.world_model.graph
+        if g is None:
+            log.warning("Graph health: CognitiveGraph is None — learning loop inactive")
+            return
+        stats = g.stats()
+        nodes = stats.get("nodes", 0)
+        edges = stats.get("edges", 0)
+        if edges == 0:
+            log.warning("Graph health: %d nodes, 0 edges after %d queries — graph may not be recording",
+                        nodes, self._query_count)
+        else:
+            log.info("Graph health: %d nodes, %d edges after %d queries — OK",
+                     nodes, edges, self._query_count)
 
     # ── Stats ─────────────────────────────────────────────
 

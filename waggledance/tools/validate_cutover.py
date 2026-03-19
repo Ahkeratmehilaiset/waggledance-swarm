@@ -141,6 +141,19 @@ def check_core_classes() -> List[Tuple[str, bool, str]]:
     return checks
 
 
+def check_cognitive_graph() -> Tuple[bool, str]:
+    """Check that CognitiveGraph is available and WorldModel can use it."""
+    try:
+        from waggledance.core.world.world_model import WorldModel
+        wm = WorldModel(profile="VALIDATION")
+        if wm.graph is not None:
+            stats = wm.graph.stats()
+            return True, f"graph OK ({stats.get('nodes', 0)} nodes, {stats.get('edges', 0)} edges)"
+        return False, "CognitiveGraph is None — learning loop inactive"
+    except Exception as e:
+        return False, str(e)
+
+
 def run_validation() -> bool:
     """Run full cutover validation."""
     print("=" * 60)
@@ -150,7 +163,7 @@ def run_validation() -> bool:
     all_pass = True
 
     # 1. Import checks
-    print("\n[1/3] Module imports:")
+    print("\n[1/4] Module imports:")
     imports = check_imports()
     for module, desc, ok, err in imports:
         status = "PASS" if ok else "FAIL"
@@ -164,14 +177,21 @@ def run_validation() -> bool:
     print(f"\n  Imports: {import_pass}/{import_total}")
 
     # 2. Runtime mode
-    print("\n[2/3] Runtime mode:")
+    print("\n[2/4] Runtime mode:")
     mode_ok, mode_msg = check_runtime_mode()
     print(f"  {'PASS' if mode_ok else 'FAIL'}: {mode_msg}")
     if not mode_ok:
         all_pass = False
 
-    # 3. Core class checks
-    print("\n[3/3] Core class instantiation:")
+    # 3. CognitiveGraph check
+    print("\n[3/4] CognitiveGraph:")
+    graph_ok, graph_msg = check_cognitive_graph()
+    print(f"  {'PASS' if graph_ok else 'FAIL'}: {graph_msg}")
+    if not graph_ok:
+        all_pass = False
+
+    # 4. Core class checks
+    print("\n[4/4] Core class instantiation:")
     classes = check_core_classes()
     for name, ok, msg in classes:
         print(f"  {'PASS' if ok else 'FAIL'}: {name} — {msg}")

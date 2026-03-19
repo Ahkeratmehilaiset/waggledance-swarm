@@ -43,7 +43,7 @@ class TestSpecialistTrainer:
         return SpecialistTrainer(model_store=store)
 
     def test_model_list(self):
-        assert len(SPECIALIST_MODELS) == 8
+        assert len(SPECIALIST_MODELS) == 14
         assert "route_classifier" in SPECIALIST_MODELS
 
     def test_train_no_cases(self, trainer):

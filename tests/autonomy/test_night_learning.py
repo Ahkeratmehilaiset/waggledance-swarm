@@ -333,7 +333,7 @@ class TestSpecialistTrainer:
     def test_train_all(self, trainer):
         cases = [_gold_case(f"g{i}") for i in range(5)]
         results = trainer.train_all(cases)
-        assert len(results) == 8  # All specialist model types
+        assert len(results) == 14  # All specialist model types
         completed = [r for r in results if r.status == "completed"]
         assert len(completed) > 0
 

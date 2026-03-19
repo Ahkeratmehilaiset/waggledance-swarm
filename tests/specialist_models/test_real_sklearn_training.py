@@ -57,8 +57,8 @@ def _make_diverse_cases(n: int = 20) -> list[CaseTrajectory]:
     """Create diverse cases covering multiple goal types, capabilities, grades, profiles."""
     combos = [
         (GoalType.OBSERVE, "solve.math", QualityGrade.GOLD, "APIARY", True, {"temp": 0.3}),
-        (GoalType.DIAGNOSE, "solve.symbolic", QualityGrade.SILVER, "HOME", False, {"humidity": 0.7}),
-        (GoalType.PROTECT, "solve.constraints", QualityGrade.BRONZE, "FACTORY", True, {"weight": 0.1}),
+        (GoalType.DIAGNOSE, "solve.symbolic", QualityGrade.SILVER, "HOME", False, {"humidity": 1.7}),
+        (GoalType.PROTECT, "solve.constraints", QualityGrade.BRONZE, "FACTORY", True, {"weight": 4.1}),
         (GoalType.OPTIMIZE, "optimize.schedule", QualityGrade.GOLD, "GADGET", False, {"latency": 0.9}),
         (GoalType.PLAN, "retrieve.hot_cache", QualityGrade.SILVER, "APIARY", True, {"load": 0.5}),
     ]
@@ -151,7 +151,7 @@ class TestAllModelsNoSimulation:
         with patch.object(trainer, "_simulate_training", wraps=trainer._simulate_training) as mock_sim:
             results = trainer.train_all(cases)
             completed = [r for r in results if r.status == "completed"]
-            assert len(completed) == 8
+            assert len(completed) == 14
 
             # _simulate_training should not be called for any model
             assert mock_sim.call_count == 0, (

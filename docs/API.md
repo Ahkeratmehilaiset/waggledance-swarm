@@ -78,7 +78,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 
 ---
 
-## Autonomy Runtime (v2.0.0)
+## Autonomy Runtime (v3.2)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -106,6 +106,19 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 // Response
 {"goals_proposed": 1, "goal_ids": ["goal-abc123"]}
 ```
+
+---
+
+## Autonomy v3.2 — Self-Entity & Projections
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/autonomy/epistemic-uncertainty` | GET | Uncertainty report: total uncertainty, observability gaps, per-entity uncertainty |
+| `GET /api/autonomy/attention-budget` | GET | Current attention allocation across 4 buckets (critical/normal/background/reflection) |
+| `GET /api/autonomy/dream-mode/latest` | GET | Latest dream session results: simulations run, insights generated |
+| `GET /api/autonomy/memory/consolidation-stats` | GET | Memory consolidation stats: episodes consolidated, significance distribution |
+| `GET /api/autonomy/introspection` | GET | Self-introspection snapshot (profile-gated: APIARY=full, GADGET=counts only) |
+| `GET /api/autonomy/narrative` | GET | Human-readable self-narrative in en or fi (60s cache) |
 
 ---
 

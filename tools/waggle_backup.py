@@ -6,7 +6,7 @@ Runs full component tests, generates AI report, creates backup.
 Supports 75-agent profile system (gadget/cottage/home/factory).
 Supports incremental backups (only changed files since last backup).
 v8.0: Adds pytest directory runners for autonomy, unit, contract,
-      integration, and app test suites (v2.0 architecture).
+      integration, and app test suites (v3.2 architecture).
 
 Usage:
     python tools/waggle_backup.py              # Full: tests + report + backup
@@ -178,7 +178,7 @@ TESTS = [
     {"file": "tests/test_learning_prompt_apply.py",       "name": "Prompt Apply",       "phase": "v1.16", "args": [], "timeout": 30},
     {"file": "tests/test_micro_model_eval_gate.py",       "name": "Eval Gate",          "phase": "v1.16", "args": [], "timeout": 60},
     {"file": "tests/test_night_enricher_capabilities.py", "name": "Enricher Caps",      "phase": "v1.16", "args": [], "timeout": 30},
-    # v2.0.0 — Full Autonomy Regression Gates (pytest)
+    # v2.0.0+ — Full Autonomy Regression Gates (pytest)
     {"file": "tests/migration/test_alias_migration.py",           "name": "Alias Migration",     "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
     {"file": "tests/night_learning_v2/test_night_pipeline.py",    "name": "Night Pipeline v2",   "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
     {"file": "tests/resource_kernel/test_resource_kernel.py",     "name": "Resource Kernel",     "phase": "v2.0", "args": [], "timeout": 30, "runner": "pytest"},
@@ -190,6 +190,9 @@ TESTS = [
     {"file": "tests/unit_app/",     "name": "App Unit Tests",         "phase": "app",   "args": [], "timeout": 60,  "runner": "pytest"},
     {"file": "tests/contracts/",    "name": "Contract Tests",         "phase": "cont",  "args": [], "timeout": 30,  "runner": "pytest"},
     {"file": "tests/integration/",  "name": "Integration Tests",      "phase": "integ", "args": [], "timeout": 120, "runner": "pytest"},
+    # v3.2 continuity + night learning tests
+    {"file": "tests/continuity/",      "name": "Continuity Tests",       "phase": "v3.2",  "args": [], "timeout": 60,  "runner": "pytest"},
+    {"file": "tests/night_learning_v2/", "name": "Night Learning v2",    "phase": "v3.2",  "args": [], "timeout": 60,  "runner": "pytest"},
 ]
 
 # Backup exclusions

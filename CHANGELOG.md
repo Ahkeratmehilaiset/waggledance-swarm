@@ -1,5 +1,60 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.2.0] — 2026-03-19
+
+### v3.2 — Self-Entity, Dream Mode, MAGMA Expansion
+
+Major extension adding self-entity capabilities, counterfactual dream mode, memory consolidation, and confidence decay.
+
+#### Self-Entity & World Model
+- Epistemic uncertainty tracking with observability gap detection
+- Persistent motives with valence scoring and conflict resolution
+- Curiosity-driven goal generation from uncertainty reports
+- WorldSnapshot source_type extension (SELF_REFLECTION, SIMULATED)
+
+#### Night Learning Enhancements
+- Dream Mode: counterfactual simulation of failed/low-quality missions (nightly, max 20 sims)
+- Memory Consolidator: Ebbinghaus retention curve, significance protection (>0.7 never consolidated)
+- Meta-optimizer: hyperparameter learning from canary results (3-cycle activation gate)
+
+#### Attention & Resource Management
+- 4-bucket attention budget (critical/normal/background/reflection) with load-aware reallocation
+- Continuity floor: hard minimums prevent starvation of any bucket
+
+#### Projections (Read-Only Views)
+- Narrative projector: bilingual en/fi self-narrative with 60s cache (no LLM in fast path)
+- Introspection view: profile-gated (APIARY=full, HOME/FACTORY=filtered, GADGET=counts)
+- Autobiographical index: episodic memory query with significance ranking
+- Projection validator: no-hidden-deps validation for all projection modules
+
+#### MAGMA Expansion (Section 10)
+- L1 AuditLog: `self_reflection` and `simulated` fields, 9 new event types
+- L2 Replay: `is_simulation` flag, `record_dream_replay()`, `list_dream_replays()`
+- L4 Provenance: `self_reflection` (weight 0.60) and `simulated` (weight 0.30) source types, 9-tier hierarchy
+- L5 Trust: `context` field ("actual"|"simulated"), simulated observations at 50% weight
+- `decayed_confidence()`: query-time exponential decay, verified facts decay slower (168h vs 84h half-life)
+
+#### Rollback & Safety
+- Rollback matrix: every v3.2 feature individually disableable via config
+- Simulated trajectories never contaminate production (trajectory_origin="simulated", synthetic=True)
+- Original confidence values never destructively modified
+
+#### API Endpoints (6 new)
+- GET /api/autonomy/epistemic-uncertainty
+- GET /api/autonomy/attention-budget
+- GET /api/autonomy/dream-mode/latest
+- GET /api/autonomy/memory/consolidation-stats
+- GET /api/autonomy/introspection
+- GET /api/autonomy/narrative
+
+#### Tests
+- 55 new MAGMA expansion tests
+- 171 total continuity tests (self-entity, uncertainty, attention, projections, MAGMA)
+- **4129 pytest tests total, 0 failures**
+- validate_cutover: 42/42 modules pass
+
+---
+
 ## [2.0.0] — 2026-03-18
 
 ### Full Autonomy v3 — Solver-First Runtime

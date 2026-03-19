@@ -94,8 +94,8 @@ Dashboard: http://localhost:8000
 | L1 | AuditLog | Append-only event log — goals, plans, actions, verifications |
 | L2 | ReplayEngine | Mission-level replay with chronological step reconstruction |
 | L3 | MemoryOverlay | Filtered views by profile, mission, entity, canary vs production |
-| L4 | Provenance | Tiered source tracking: observed, solver, stats, rule, LLM, verifier |
-| L5 | TrustEngine | Multi-dimensional scoring for agents, capabilities, solvers, routes |
+| L4 | Provenance | 9-tier source tracking: verifier, observed, solver, rule, stats, case, reflection, LLM, simulated |
+| L5 | TrustEngine | Multi-dimensional scoring for agents, capabilities, solvers, routes, specialists |
 | -- | CognitiveGraph | NetworkX knowledge graph with causal/semantic edges, JSON persistence |
 
 ---

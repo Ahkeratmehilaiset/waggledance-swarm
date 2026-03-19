@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WaggleDance Restore & Environment Validator v3.0
+WaggleDance Restore & Environment Validator v3.2
 =================================================
 Validates the environment and restores from a backup zip if needed.
 Supports restore to any target directory via --target flag.

@@ -1,4 +1,4 @@
-# Specialist Models — WaggleDance v2.0
+# Specialist Models — WaggleDance v3.2
 
 > **Note:** The `route_classifier` uses **real sklearn training** (TF-IDF +
 > LogisticRegression with cross-validation). The remaining 7 specialists use

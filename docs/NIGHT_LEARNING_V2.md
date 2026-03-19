@@ -1,4 +1,4 @@
-# Night Learning v2 — WaggleDance v2.0
+# Night Learning v2 — WaggleDance v3.2
 
 > **Note:** The `route_classifier` uses real sklearn training. Other specialists
 > use simulated training (grade-based accuracy estimation). v3.2 adds dream mode

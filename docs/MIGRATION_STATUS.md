@@ -18,7 +18,7 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 
 ---
 
-## Test Results (as of v2.0.0)
+## Test Results (as of v3.2)
 
 | Suite | Tests | Status |
 |-------|-------|--------|
@@ -26,15 +26,15 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 | `tests/unit_core/` (core modules + Big Sprint) | 130+ | PASS |
 | `tests/unit_app/` (service tests) | 16 | PASS |
 | `tests/contracts/` (contract validation) | 22 | PASS |
-| `tests/autonomy/` (9 phases + v3.0 compliance) | 490+ | PASS |
+| `tests/autonomy/` (9 phases + v3.0 compliance + rollback) | 490+ | PASS |
 | `tests/integration/` (runtime, smoke, scenarios) | 90 | PASS |
 | `tests/migration/` (alias, backfill fixtures) | 10+ | PASS |
 | `tests/specialist_models/` + `tests/resource_kernel/` | 41 | PASS |
-| `tests/continuity/` (v3.2: self-entity, uncertainty, attention, projections) | 116 | PASS |
+| `tests/continuity/` (v3.2: self-entity, uncertainty, attention, projections, MAGMA) | 171 | PASS |
 | `tests/night_learning_v2/` (consolidator, dream mode) | 60+ | PASS |
-| **Pytest total** | **4074** | **ALL PASS** |
+| **Pytest total** | **4129** | **ALL PASS** |
 | `tools/waggle_backup.py --tests-only` (legacy) | 1468 (79 suites) | PASS |
-| **Grand total** | **~5540** | **ALL PASS** |
+| **Grand total** | **~5600** | **ALL PASS** |
 
 > **Note:** The `route_classifier` uses real sklearn training (TF-IDF + LogisticRegression).
 > The remaining 7 specialists use simulated training (grade-based accuracy estimation).
@@ -192,6 +192,6 @@ All 12 phases delivered:
 
 1. **Production validation** — Run new stack 24h alongside old
 2. **Old code cleanup** — Remove superseded files after validation
-3. **EnglishSourceLearner wiring** — Wire into NightEnricher
-4. **CanaryPromoter wiring** — Wire into prompt/model promotion pipeline
-5. **MicroModel V3 LoRA training** — Full training with 5000+ samples (4h+ GPU)
+3. **Real sklearn for remaining 7 specialists** — route_classifier done, extend to others
+4. **MicroModel V3 LoRA training** — Full training with 5000+ samples (4h+ GPU)
+5. **Dashboard v3.2 integration** — Wire projection and autonomy API endpoints to React frontend

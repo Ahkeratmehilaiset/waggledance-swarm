@@ -156,10 +156,21 @@ class SolverRouter:
         """
         q = query.lower().strip()
 
-        # Math / calculation
+        # ── Early arithmetic detection (overrides "what is" retrieval) ──
+        # "what is 15% of 300", "paljonko on 15% sadasta"
+        if re.search(r'\d+\s*%\s*(?:of|sadasta)?\s*\d+', q):
+            return "math"
+        # "what is 12 squared", "5 cubed"
+        if re.search(r'\d+\s*(?:squared|cubed)', q):
+            return "math"
+
+        # Math / calculation keywords + digit-operator-digit
         math_signals = {"laske", "calculate", "compute", "paljonko", "how much",
-                        "+", "-", "*", "/", "=", "sum", "average"}
+                        "sum"}
         if any(s in q for s in math_signals):
+            return "math"
+        # Arithmetic: digit OP digit (excludes bare "-" which appears in "-5C")
+        if re.search(r'\d\s*[+*/=]\s*\d', q):
             return "math"
 
         # Symbolic / formula
@@ -180,30 +191,32 @@ class SolverRouter:
         if any(s in q for s in seasonal_signals):
             return "seasonal"
 
-        # Thermal
+        # ── Time-series stats: metric + time window (before thermal) ──
+        _TS_METRICS = {"average", "trend", "compare", "cost", "consumption",
+                       "energy", "keskiarvo", "keskimääräinen"}
+        _TS_WINDOWS = {"last", "this", "week", "month", "days", "yesterday",
+                       "today", "viime", "tämä", "viikko", "kuukausi", "päivää"}
+        if any(m in q for m in _TS_METRICS) and any(w in q for w in _TS_WINDOWS):
+            return "stats"
+
+        # Thermal — but skip if optimization verb present ("optimize heating")
         thermal_signals = {"temperature", "lämpötila", "heat", "frost", "pakkanen",
-                           "thermal", "heating", "cooling", "lämmitys",
+                           "pakkasvaara", "thermal", "heating", "cooling", "lämmitys",
                            "celsius", "fahrenheit", "degrees", "astetta",
                            "too hot", "too cold", "liian kuuma", "liian kylmä",
                            "warm", "lämmin", "cold", "kylmä"}
-        if any(s in q for s in thermal_signals):
+        _OPTIM_VERBS = {"optimize", "optimoi", "minimize", "maximize", "allocate",
+                        "cheapest", "halvin", "optimization"}
+        has_thermal = any(s in q for s in thermal_signals) or re.search(r'\d+\s*°?[cf]\b', q)
+        if has_thermal and not any(ov in q for ov in _OPTIM_VERBS):
             return "thermal"
-        # Temperature pattern: number followed by C/F (e.g. "45C", "20 °C")
-        if re.search(r'\d+\s*°?[cf]\b', q):
-            return "thermal"
-
-        # Statistics
-        stats_signals = {"statistics", "tilasto", "trend", "average", "keskiarvo",
-                         "median", "percentile", "correlation", "summary"}
-        if any(s in q for s in stats_signals):
-            return "stats"
 
         # Schedule disambiguation: schedule without active verb → retrieval
         _SCHED_WORDS = {"schedule", "aikataulu", "kalenteri", "calendar", "timetable"}
-        _OPTIM_VERBS = {"optimize", "optimoi", "minimize", "maximize", "allocate",
+        _SCHED_VERBS = {"optimize", "optimoi", "minimize", "maximize", "allocate",
                         "create", "build", "schedule this", "optimization"}
         if any(sw in q for sw in _SCHED_WORDS):
-            if any(ov in q for ov in _OPTIM_VERBS):
+            if any(ov in q for ov in _SCHED_VERBS):
                 return "optimization"
             return "retrieval"
 
@@ -213,6 +226,12 @@ class SolverRouter:
                          "optimization"}
         if any(s in q for s in optim_signals):
             return "optimization"
+
+        # Statistics (no time window required)
+        stats_signals = {"statistics", "tilasto", "trend", "keskiarvo",
+                         "median", "percentile", "correlation", "summary"}
+        if any(s in q for s in stats_signals):
+            return "stats"
 
         # Causal
         causal_signals = {"cause", "syy", "why", "miksi", "impact", "vaikutus",

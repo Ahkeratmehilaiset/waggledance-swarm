@@ -1,5 +1,25 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.2.1] — 2026-03-19
+
+### Real sklearn Training for All 8 Specialist Models
+
+- All 8 specialist models now use real sklearn algorithms instead of simulated training
+- `capability_selector`: LogisticRegression on encoded goal_type → primary capability
+- `anomaly_detector`: IsolationForest on residual vectors (unsupervised)
+- `baseline_scorer`: DecisionTreeClassifier on goal_type + profile → grade
+- `approval_predictor`: LogisticRegression on goal_type + profile → approved (bool)
+- `missing_var_predictor`: DecisionTreeClassifier on goal_type + profile → grade
+- `verifier_prior`: LogisticRegression on capabilities → verifier_passed (bool)
+- `domain_language_adapter`: LogisticRegression on profile → goal_type
+- Added `_encode_categorical()` shared helper for string → integer encoding
+- Dispatch dict replaces single `if model_id == "route_classifier"` branch
+- Enriched feature extraction: capabilities, n_capabilities, has_world_snapshot
+- `_simulate_training()` retained as fallback (sklearn unavailable / single class)
+- 11 new tests in `test_real_sklearn_training.py`
+
+---
+
 ## [3.2.0] — 2026-03-19
 
 ### v3.2 — Self-Entity, Dream Mode, MAGMA Expansion

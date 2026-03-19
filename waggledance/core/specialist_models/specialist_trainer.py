@@ -201,6 +201,12 @@ class SpecialistTrainer:
 
     # ── Internal ───────────────────────────────────────────
 
+    @staticmethod
+    def _encode_categorical(values: List[str]) -> tuple:
+        """Encode string values to integers for sklearn. Returns (encoded, mapping)."""
+        mapping = {v: i for i, v in enumerate(sorted(set(values)))}
+        return [mapping[v] for v in values], mapping
+
     def _extract_features(
         self, model_id: str, cases: List[CaseTrajectory],
     ) -> List[Dict[str, Any]]:
@@ -245,20 +251,34 @@ class SpecialistTrainer:
                 "grade": case.quality_grade.value,
             }
         else:
-            # Generic features for other model types
+            # Enriched features for remaining model types
             return {
                 "goal_type": case.goal.type.value if case.goal else "",
                 "grade": case.quality_grade.value,
                 "profile": case.profile,
+                "capabilities": [c.capability_id for c in case.selected_capabilities],
+                "n_capabilities": len(case.selected_capabilities),
+                "has_world_snapshot": case.world_snapshot_before is not None,
             }
 
     def _train_real_or_simulate(
         self, model_id: str, features: List[Dict[str, Any]],
     ) -> float:
         """Train with sklearn if available, otherwise simulate."""
-        if model_id == "route_classifier":
+        _TRAINERS = {
+            "route_classifier": self._train_route_classifier,
+            "capability_selector": self._train_capability_selector,
+            "anomaly_detector": self._train_anomaly_detector,
+            "baseline_scorer": self._train_baseline_scorer,
+            "approval_predictor": self._train_approval_predictor,
+            "missing_var_predictor": self._train_missing_var_predictor,
+            "verifier_prior": self._train_verifier_prior,
+            "domain_language_adapter": self._train_domain_language_adapter,
+        }
+        trainer = _TRAINERS.get(model_id)
+        if trainer:
             try:
-                return self._train_route_classifier(features)
+                return trainer(features)
             except ImportError:
                 log.info("sklearn not available, falling back to simulation")
             except Exception as exc:
@@ -313,6 +333,219 @@ class SpecialistTrainer:
 
         log.info("route_classifier real training: accuracy=%.3f, samples=%d",
                  accuracy, len(texts))
+        return accuracy
+
+    def _train_capability_selector(self, features: List[Dict[str, Any]]) -> float:
+        """Train capability selector: predict primary capability from goal_type."""
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import cross_val_score
+
+        goal_types = [f.get("goal_type", "") for f in features]
+        labels = [f["chain"][0] if f.get("chain") else "" for f in features]
+        labels = [l for l in labels if l]
+        goal_types = goal_types[:len(labels)]
+
+        if len(labels) < self._min_samples:
+            return 0.0
+        if len(set(labels)) < 2:
+            return self._simulate_training("capability_selector", features)
+
+        X_enc, _ = self._encode_categorical(goal_types)
+        X = [[v] for v in X_enc]
+        n_splits = max(2, min(3, len(X)))
+
+        model = LogisticRegression(max_iter=200, solver="lbfgs")
+        try:
+            scores = cross_val_score(model, X, labels, cv=n_splits)
+            accuracy = float(scores.mean())
+        except ValueError:
+            model.fit(X, labels)
+            accuracy = float(model.score(X, labels))
+
+        log.info("capability_selector real training: accuracy=%.3f, samples=%d",
+                 accuracy, len(labels))
+        return accuracy
+
+    def _train_anomaly_detector(self, features: List[Dict[str, Any]]) -> float:
+        """Train anomaly detector using IsolationForest (unsupervised)."""
+        from sklearn.ensemble import IsolationForest
+
+        rows = []
+        for f in features:
+            residuals = f.get("residuals", {})
+            if residuals:
+                rows.append(list(residuals.values()))
+
+        if len(rows) < self._min_samples:
+            return 0.0
+
+        # Pad to uniform length
+        max_len = max(len(r) for r in rows)
+        X = [r + [0.0] * (max_len - len(r)) for r in rows]
+
+        model = IsolationForest(contamination=0.1, random_state=42, n_estimators=50)
+        model.fit(X)
+        preds = model.predict(X)
+        outlier_fraction = sum(1 for p in preds if p == -1) / len(preds)
+        accuracy = 1.0 - outlier_fraction
+
+        log.info("anomaly_detector real training: accuracy=%.3f, samples=%d",
+                 accuracy, len(rows))
+        return accuracy
+
+    def _train_baseline_scorer(self, features: List[Dict[str, Any]]) -> float:
+        """Train baseline scorer: predict grade from goal_type + profile."""
+        from sklearn.model_selection import cross_val_score
+        from sklearn.tree import DecisionTreeClassifier
+
+        goal_types = [f.get("goal_type", "") for f in features]
+        profiles = [f.get("profile", "") for f in features]
+        labels = [f.get("grade", "") for f in features]
+
+        if len(labels) < self._min_samples:
+            return 0.0
+        if len(set(labels)) < 2:
+            return self._simulate_training("baseline_scorer", features)
+
+        gt_enc, _ = self._encode_categorical(goal_types)
+        pr_enc, _ = self._encode_categorical(profiles)
+        X = [[g, p] for g, p in zip(gt_enc, pr_enc)]
+        n_splits = max(2, min(3, len(X)))
+
+        model = DecisionTreeClassifier(max_depth=5, random_state=42)
+        try:
+            scores = cross_val_score(model, X, labels, cv=n_splits)
+            accuracy = float(scores.mean())
+        except ValueError:
+            model.fit(X, labels)
+            accuracy = float(model.score(X, labels))
+
+        log.info("baseline_scorer real training: accuracy=%.3f, samples=%d",
+                 accuracy, len(labels))
+        return accuracy
+
+    def _train_approval_predictor(self, features: List[Dict[str, Any]]) -> float:
+        """Train approval predictor: predict if grade is gold/silver (approved)."""
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import cross_val_score
+
+        goal_types = [f.get("goal_type", "") for f in features]
+        profiles = [f.get("profile", "") for f in features]
+        labels = [1 if f.get("grade") in ("gold", "silver") else 0 for f in features]
+
+        if len(labels) < self._min_samples:
+            return 0.0
+        if len(set(labels)) < 2:
+            return self._simulate_training("approval_predictor", features)
+
+        gt_enc, _ = self._encode_categorical(goal_types)
+        pr_enc, _ = self._encode_categorical(profiles)
+        X = [[g, p] for g, p in zip(gt_enc, pr_enc)]
+        n_splits = max(2, min(3, len(X)))
+
+        model = LogisticRegression(max_iter=200, solver="lbfgs")
+        try:
+            scores = cross_val_score(model, X, labels, cv=n_splits)
+            accuracy = float(scores.mean())
+        except ValueError:
+            model.fit(X, labels)
+            accuracy = float(model.score(X, labels))
+
+        log.info("approval_predictor real training: accuracy=%.3f, samples=%d",
+                 accuracy, len(labels))
+        return accuracy
+
+    def _train_missing_var_predictor(self, features: List[Dict[str, Any]]) -> float:
+        """Train missing variable predictor: predict grade from goal_type + profile."""
+        from sklearn.model_selection import cross_val_score
+        from sklearn.tree import DecisionTreeClassifier
+
+        goal_types = [f.get("goal_type", "") for f in features]
+        profiles = [f.get("profile", "") for f in features]
+        labels = [f.get("grade", "") for f in features]
+
+        if len(labels) < self._min_samples:
+            return 0.0
+        if len(set(labels)) < 2:
+            return self._simulate_training("missing_var_predictor", features)
+
+        gt_enc, _ = self._encode_categorical(goal_types)
+        pr_enc, _ = self._encode_categorical(profiles)
+        X = [[g, p] for g, p in zip(gt_enc, pr_enc)]
+        n_splits = max(2, min(3, len(X)))
+
+        model = DecisionTreeClassifier(max_depth=5, random_state=42)
+        try:
+            scores = cross_val_score(model, X, labels, cv=n_splits)
+            accuracy = float(scores.mean())
+        except ValueError:
+            model.fit(X, labels)
+            accuracy = float(model.score(X, labels))
+
+        log.info("missing_var_predictor real training: accuracy=%.3f, samples=%d",
+                 accuracy, len(labels))
+        return accuracy
+
+    def _train_verifier_prior(self, features: List[Dict[str, Any]]) -> float:
+        """Train verifier prior: predict verifier_passed from capabilities."""
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import cross_val_score
+
+        cap_texts = []
+        labels = []
+        for f in features:
+            caps = f.get("capabilities", [])
+            cap_texts.append(caps[0] if caps else "")
+            labels.append(1 if f.get("verifier_passed") else 0)
+
+        if len(labels) < self._min_samples:
+            return 0.0
+        if len(set(labels)) < 2:
+            return self._simulate_training("verifier_prior", features)
+
+        X_enc, _ = self._encode_categorical(cap_texts)
+        X = [[v] for v in X_enc]
+        n_splits = max(2, min(3, len(X)))
+
+        model = LogisticRegression(max_iter=200, solver="lbfgs")
+        try:
+            scores = cross_val_score(model, X, labels, cv=n_splits)
+            accuracy = float(scores.mean())
+        except ValueError:
+            model.fit(X, labels)
+            accuracy = float(model.score(X, labels))
+
+        log.info("verifier_prior real training: accuracy=%.3f, samples=%d",
+                 accuracy, len(labels))
+        return accuracy
+
+    def _train_domain_language_adapter(self, features: List[Dict[str, Any]]) -> float:
+        """Train domain language adapter: predict goal_type from profile."""
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import cross_val_score
+
+        profiles = [f.get("profile", "") for f in features]
+        labels = [f.get("goal_type", "") for f in features]
+
+        if len(labels) < self._min_samples:
+            return 0.0
+        if len(set(labels)) < 2:
+            return self._simulate_training("domain_language_adapter", features)
+
+        X_enc, _ = self._encode_categorical(profiles)
+        X = [[v] for v in X_enc]
+        n_splits = max(2, min(3, len(X)))
+
+        model = LogisticRegression(max_iter=200, solver="lbfgs")
+        try:
+            scores = cross_val_score(model, X, labels, cv=n_splits)
+            accuracy = float(scores.mean())
+        except ValueError:
+            model.fit(X, labels)
+            accuracy = float(model.score(X, labels))
+
+        log.info("domain_language_adapter real training: accuracy=%.3f, samples=%d",
+                 accuracy, len(labels))
         return accuracy
 
     def _simulate_training(

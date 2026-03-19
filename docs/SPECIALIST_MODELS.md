@@ -1,12 +1,9 @@
 # Specialist Models — WaggleDance v3.2
 
-> **Note:** The `route_classifier` uses **real sklearn training** (TF-IDF +
-> LogisticRegression with cross-validation). The remaining 7 specialists use
-> **simulated training** — accuracy estimated from quality grade distributions.
-> The full pipeline infrastructure (feature extraction, grading, canary lifecycle)
-> is in place and tested. Real ML training for remaining models is a future goal. v3.2 adds meta-optimizer
-> (hyperparameter learning from canary results) to accelerate specialist improvement.
-> See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md) for details.
+> **All 8 specialist models now use real sklearn training.** Simulated training
+> (`_simulate_training`) is retained only as a fallback when sklearn is unavailable
+> or when a model has insufficient class diversity for cross-validation.
+> See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md) for fallback details.
 
 ## Overview
 
@@ -16,16 +13,16 @@ tasks better than the general-purpose LLM. They sit at Layer 2 in the
 
 ## Model Types
 
-| Model | Purpose | Training Source |
-|-------|---------|----------------|
-| `route_classifier` | Predict best routing layer | Route telemetry data |
-| `capability_selector` | Rank capabilities for intent | Case trajectories |
-| `anomaly_detector` | Detect unusual patterns | Gold/quarantine cases |
-| `intent_classifier` | Classify query intent | Labeled intents |
-| `quality_predictor` | Predict response quality | Quality grades |
-| `risk_scorer` | Assess action risk level | Policy decisions |
-| `priority_estimator` | Estimate task priority | Goal priorities |
-| `domain_classifier` | Classify domain context | Profile data |
+| Model | Purpose | Algorithm | Training Source |
+|-------|---------|-----------|----------------|
+| `route_classifier` | Predict best routing layer | TF-IDF + LogisticRegression | Route telemetry data |
+| `capability_selector` | Rank capabilities for intent | LogisticRegression | Case trajectories |
+| `anomaly_detector` | Detect unusual patterns | IsolationForest | Gold/quarantine cases |
+| `baseline_scorer` | Score baseline quality | DecisionTreeClassifier | Quality grades |
+| `approval_predictor` | Predict approval likelihood | LogisticRegression | Policy decisions |
+| `missing_var_predictor` | Predict missing variables | DecisionTreeClassifier | Case trajectories |
+| `verifier_prior` | Predict verification outcome | LogisticRegression | Verifier results |
+| `domain_language_adapter` | Adapt to domain language | LogisticRegression | Profile data |
 
 ## Training Pipeline
 

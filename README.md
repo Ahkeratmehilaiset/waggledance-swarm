@@ -73,7 +73,7 @@ Dashboard: http://localhost:8000
 ## Current Status (March 2026)
 
 - **v3.2** — full autonomy runtime with self-entity, epistemic uncertainty, dream mode
-- **4074 pytest tests passing**, CI green
+- **4129 pytest tests passing**, CI green
 - Solver-first routing verified end-to-end (query -> solver -> verified answer -> gold case -> overnight learning)
 - MAGMA audit trail captures full lifecycle (capability selection -> policy -> execution -> verification -> case recording)
 - Specialist model training functional with sklearn route classifier; canary promotion pipeline in place

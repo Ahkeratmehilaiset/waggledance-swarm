@@ -191,10 +191,13 @@ def step_create_env_file(result: RestoreResult) -> None:
         result.ok(".env file", "already exists")
         return
 
-    template = ROOT / "env.template"
+    # Check both names: .env.example (repo) and env.template (backup zip)
+    template = ROOT / ".env.example"
+    if not template.exists():
+        template = ROOT / "env.template"
     if template.exists():
         shutil.copy2(template, env_file)
-        result.ok(".env file", "created from env.template")
+        result.ok(".env file", f"created from {template.name}")
     else:
         # Write minimal default
         env_file.write_text(

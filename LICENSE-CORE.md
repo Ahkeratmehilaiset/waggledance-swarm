@@ -24,6 +24,7 @@ For the Apache-2.0 text, see `LICENSE`.
 - `waggledance/core/magma/provenance.py`
 - `waggledance/core/magma/replay_engine.py`
 - `waggledance/core/magma/trust_adapter.py`
+- `waggledance/core/magma/confidence_decay.py`
 
 ### Existing protected learning files
 - `waggledance/core/learning/case_builder.py`

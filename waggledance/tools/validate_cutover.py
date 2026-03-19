@@ -71,6 +71,8 @@ REQUIRED_MODULES = [
     ("waggledance.core.projections.introspection_view", "Introspection view"),
     ("waggledance.core.projections.autobiographical_index", "Autobiographical index"),
     ("waggledance.core.projections.projection_validator", "Projection validator"),
+    # v3.2 MAGMA expansion
+    ("waggledance.core.magma.confidence_decay", "Confidence decay"),
 ]
 
 

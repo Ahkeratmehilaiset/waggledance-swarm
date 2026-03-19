@@ -47,6 +47,7 @@ class TrustRecord:
     latency_ms: float = 0.0
     quality_path: str = ""
     timestamp: float = field(default_factory=time.time)
+    context: str = "actual"  # "actual" | "simulated" — v3.2 MAGMA expansion
 
 
 class TrustAdapter:
@@ -72,7 +73,8 @@ class TrustAdapter:
     def record_observation(self, target_type: str, target_id: str,
                            success: bool, confidence: float = 0.0,
                            latency_ms: float = 0.0,
-                           quality_path: str = "") -> None:
+                           quality_path: str = "",
+                           context: str = "actual") -> None:
         """Record a trust observation for any target type."""
         if target_type not in self.VALID_TARGET_TYPES:
             raise ValueError(f"Invalid target_type: {target_type}")
@@ -84,6 +86,7 @@ class TrustAdapter:
             confidence=confidence,
             latency_ms=latency_ms,
             quality_path=quality_path,
+            context=context,
         )
 
         key = f"{target_type}:{target_id}"
@@ -129,7 +132,9 @@ class TrustAdapter:
         for r in obs:
             age_hours = (now - r.timestamp) / 3600
             decay = 0.95 ** age_hours  # half-life ~14 hours
-            w = decay
+            # Simulated observations contribute half weight (v3.2)
+            context_weight = 0.5 if r.context == "simulated" else 1.0
+            w = decay * context_weight
             weighted_sum += w * (1.0 if r.success else 0.0)
             weight_total += w
 

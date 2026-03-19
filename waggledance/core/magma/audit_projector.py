@@ -45,6 +45,8 @@ class AuditEntry:
     action_id: Optional[str] = None
     capability_id: Optional[str] = None
     quality_grade: Optional[str] = None
+    self_reflection: bool = False
+    simulated: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -57,6 +59,8 @@ class AuditEntry:
             "action_id": self.action_id,
             "capability_id": self.capability_id,
             "quality_grade": self.quality_grade,
+            "self_reflection": self.self_reflection,
+            "simulated": self.simulated,
         }
 
 
@@ -82,6 +86,12 @@ class AuditProjector:
         "specialist.canary_start", "specialist.promoted",
         "specialist.rolled_back",
         "case.recorded",
+        # v3.2 MAGMA expansion: self-reflection + simulated events
+        "reflection.started", "reflection.insight",
+        "reflection.completed",
+        "learning.case_graded", "learning.consolidated",
+        "learning.dream_started", "learning.dream_completed",
+        "simulated.trajectory_created", "simulated.counterfactual",
     })
 
     def __init__(self, audit_log=None, db_path: str = "data/audit_log.db"):
@@ -159,6 +169,40 @@ class AuditProjector:
             goal_id=goal_id,
             quality_grade=quality_grade,
         ))
+
+    def record_self_reflection(self, insight: str, goal_id: str = "",
+                               detail: dict = None) -> None:
+        """Record a self-reflection event (v3.2 MAGMA expansion)."""
+        self.record(AuditEntry(
+            event_type="reflection.insight",
+            payload={"insight": insight, **(detail or {})},
+            goal_id=goal_id,
+            self_reflection=True,
+        ))
+
+    def record_simulated_event(self, event_type: str, goal_id: str = "",
+                               quality_grade: str = "",
+                               detail: dict = None) -> None:
+        """Record a simulated/dream-mode event (v3.2 MAGMA expansion)."""
+        self.record(AuditEntry(
+            event_type=event_type,
+            payload=detail or {},
+            goal_id=goal_id,
+            quality_grade=quality_grade,
+            simulated=True,
+        ))
+
+    def query_self_reflections(self, limit: int = 50) -> List[AuditEntry]:
+        """Return recent self-reflection audit entries."""
+        with self._lock:
+            matches = [e for e in reversed(self._recent) if e.self_reflection]
+            return matches[:limit]
+
+    def query_simulated(self, limit: int = 50) -> List[AuditEntry]:
+        """Return recent simulated/dream-mode audit entries."""
+        with self._lock:
+            matches = [e for e in reversed(self._recent) if e.simulated]
+            return matches[:limit]
 
     def query_by_goal(self, goal_id: str) -> List[AuditEntry]:
         """Return all audit entries for a given goal."""

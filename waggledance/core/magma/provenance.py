@@ -40,6 +40,9 @@ VALID_SOURCE_TYPES = frozenset({
     "proposed_by_llm",
     "confirmed_by_verifier",
     "learned_from_case",
+    # v3.2 MAGMA expansion
+    "self_reflection",
+    "simulated",
 })
 
 
@@ -64,7 +67,9 @@ class ProvenanceRecord:
             "inferred_by_rule": 0.85,
             "inferred_by_stats": 0.80,
             "learned_from_case": 0.75,
+            "self_reflection": 0.60,
             "proposed_by_llm": 0.50,
+            "simulated": 0.30,
         }
         return weights.get(self.source_type, 0.50)
 

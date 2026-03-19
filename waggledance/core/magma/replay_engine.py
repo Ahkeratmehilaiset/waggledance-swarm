@@ -45,6 +45,7 @@ class MissionReplayEntry:
     capability_id: str = ""
     action_id: str = ""
     result: Optional[str] = None
+    is_simulation: bool = False
 
 
 @dataclass
@@ -58,6 +59,7 @@ class MissionReplay:
     world_snapshot_after: Optional[Dict] = None
     quality_grade: str = ""
     total_duration_ms: float = 0.0
+    is_simulation: bool = False
 
     @property
     def entry_count(self) -> int:
@@ -76,12 +78,14 @@ class MissionReplay:
             "capabilities_used": self.capabilities_used,
             "quality_grade": self.quality_grade,
             "total_duration_ms": self.total_duration_ms,
+            "is_simulation": self.is_simulation,
             "entries": [
                 {
                     "event_type": e.event_type,
                     "timestamp": e.timestamp,
                     "step_order": e.step_order,
                     "capability_id": e.capability_id,
+                    "is_simulation": e.is_simulation,
                 }
                 for e in self.entries
             ],
@@ -105,7 +109,8 @@ class ReplayAdapter:
     def record_mission_event(self, goal_id: str, event_type: str,
                              payload: dict = None, step_order: int = 0,
                              capability_id: str = "", action_id: str = "",
-                             result: str = None) -> None:
+                             result: str = None,
+                             is_simulation: bool = False) -> None:
         """Append an event to a mission's replay sequence."""
         entry = MissionReplayEntry(
             event_type=event_type,
@@ -115,6 +120,7 @@ class ReplayAdapter:
             capability_id=capability_id,
             action_id=action_id,
             result=result,
+            is_simulation=is_simulation,
         )
         with self._lock:
             if goal_id not in self._missions:
@@ -123,7 +129,10 @@ class ReplayAdapter:
                                  if self._missions[k].entries else float("inf"))
                     del self._missions[oldest]
                 self._missions[goal_id] = MissionReplay(goal_id=goal_id)
-            self._missions[goal_id].entries.append(entry)
+            mission = self._missions[goal_id]
+            if is_simulation:
+                mission.is_simulation = True
+            mission.entries.append(entry)
 
     def set_mission_metadata(self, goal_id: str, goal_type: str = "",
                              status: str = "", quality_grade: str = "",
@@ -208,10 +217,47 @@ class ReplayAdapter:
             for e in capability_entries
         ]
 
+    def record_dream_replay(self, goal_id: str, original_goal_id: str,
+                             counterfactual_chain: list,
+                             outcome: str = "inconclusive") -> None:
+        """Record a dream-mode counterfactual replay (v3.2 MAGMA expansion).
+
+        Dream replays re-simulate a past mission with alternative capability
+        choices. The replay is always marked as simulated and never overwrites
+        the original mission.
+        """
+        self.record_mission_event(
+            goal_id=goal_id,
+            event_type="simulated.counterfactual",
+            payload={
+                "original_goal_id": original_goal_id,
+                "counterfactual_chain": counterfactual_chain,
+                "outcome": outcome,
+            },
+            is_simulation=True,
+        )
+        self.set_mission_metadata(
+            goal_id=goal_id,
+            goal_type="dream_counterfactual",
+            status="simulated",
+            quality_grade="BRONZE",
+        )
+
+    def list_dream_replays(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """List recent dream-mode (simulated) mission replays."""
+        with self._lock:
+            simulated = [m for m in self._missions.values() if m.is_simulation]
+        simulated.sort(
+            key=lambda m: m.entries[-1].timestamp if m.entries else 0,
+            reverse=True,
+        )
+        return [m.to_dict() for m in simulated[:limit]]
+
     def stats(self) -> Dict[str, Any]:
         """Summary statistics."""
         with self._lock:
             total = len(self._missions)
+            simulated_count = sum(1 for m in self._missions.values() if m.is_simulation)
             by_grade: Dict[str, int] = {}
             by_status: Dict[str, int] = {}
             for m in self._missions.values():
@@ -221,6 +267,7 @@ class ReplayAdapter:
                     by_status[m.status] = by_status.get(m.status, 0) + 1
             return {
                 "total_missions": total,
+                "simulated_missions": simulated_count,
                 "by_grade": by_grade,
                 "by_status": by_status,
                 "legacy_engine_available": self._engine is not None,

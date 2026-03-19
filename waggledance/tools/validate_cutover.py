@@ -59,6 +59,18 @@ REQUIRED_MODULES = [
     ("waggledance.core.autonomy.lifecycle", "Lifecycle manager"),
     ("waggledance.core.autonomy.compatibility", "Compatibility layer"),
     ("waggledance.application.services.autonomy_service", "Autonomy service"),
+    # v3.2 additions
+    ("waggledance.core.world.epistemic_uncertainty", "Epistemic uncertainty"),
+    ("waggledance.core.goals.motives", "Motive registry"),
+    ("waggledance.core.learning.consolidator", "Memory consolidator"),
+    ("waggledance.core.learning.dream_mode", "Dream mode"),
+    ("waggledance.core.specialist_models.meta_optimizer", "Meta-optimizer"),
+    ("waggledance.core.autonomy.attention_budget", "Attention budget"),
+    ("waggledance.core.projections", "Projections package"),
+    ("waggledance.core.projections.narrative_projector", "Narrative projector"),
+    ("waggledance.core.projections.introspection_view", "Introspection view"),
+    ("waggledance.core.projections.autobiographical_index", "Autobiographical index"),
+    ("waggledance.core.projections.projection_validator", "Projection validator"),
 ]
 
 

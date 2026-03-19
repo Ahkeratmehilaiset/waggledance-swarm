@@ -24,7 +24,8 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from waggledance.core.domain.autonomy import (
     CaseTrajectory,
@@ -49,7 +50,15 @@ SPECIALIST_MODELS = [
     "missing_var_predictor",
     "verifier_prior",
     "domain_language_adapter",
+    "intent_disambiguator",
+    "quality_grader",
+    "sensor_health",
+    "thermal_predictor",
+    "energy_forecaster",
+    "schedule_optimizer",
 ]
+
+MODELS_DIR = Path("data/models")
 
 
 @dataclass
@@ -112,8 +121,8 @@ class SpecialistTrainer:
                 error=f"Insufficient samples: {len(features)} < {self._min_samples}",
             )
 
-        # 2. Train (real sklearn for route_classifier, simulated for others)
-        accuracy = self._train_real_or_simulate(model_id, features)
+        # 2. Train (real sklearn, simulated fallback)
+        accuracy, weight_path = self._train_real_or_simulate(model_id, features)
 
         # 3. Register new version
         mv = self._store.register_version(
@@ -121,6 +130,7 @@ class SpecialistTrainer:
             accuracy=accuracy,
             training_samples=len(features),
             metadata={"feature_count": len(features)},
+            weight_path=weight_path,
         )
 
         result = TrainingResult(
@@ -207,6 +217,35 @@ class SpecialistTrainer:
         mapping = {v: i for i, v in enumerate(sorted(set(values)))}
         return [mapping[v] for v in values], mapping
 
+    @staticmethod
+    def _save_weights(model_id: str, version: int, pipeline: Any) -> str:
+        """Persist sklearn pipeline to disk via joblib. Returns weight file path."""
+        import joblib
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        path = MODELS_DIR / f"{model_id}_v{version}.joblib"
+        joblib.dump(pipeline, path)
+        log.info("Saved weights: %s", path)
+        return str(path)
+
+    @staticmethod
+    def load_weights(model_id: str, version: int) -> Any:
+        """Load a saved sklearn pipeline from disk."""
+        import joblib
+        path = MODELS_DIR / f"{model_id}_v{version}.joblib"
+        if not path.exists():
+            raise FileNotFoundError(f"No weights at {path}")
+        return joblib.load(path)
+
+    @staticmethod
+    def _holdout_split(X, y, test_fraction: float = 0.2):
+        """Simple deterministic holdout split (no sklearn dependency for split)."""
+        n = len(X) if hasattr(X, '__len__') else X.shape[0]
+        split_idx = max(1, int(n * (1 - test_fraction)))
+        if hasattr(X, 'toarray') or hasattr(X, 'tocsr'):
+            # Sparse matrix
+            return X[:split_idx], X[split_idx:], y[:split_idx], y[split_idx:]
+        return X[:split_idx], X[split_idx:], y[:split_idx], y[split_idx:]
+
     def _extract_features(
         self, model_id: str, cases: List[CaseTrajectory],
     ) -> List[Dict[str, Any]]:
@@ -250,6 +289,73 @@ class SpecialistTrainer:
                 "verifier_passed": case.verifier_result.get("passed", False),
                 "grade": case.quality_grade.value,
             }
+        elif model_id == "intent_disambiguator":
+            return {
+                "goal_type": case.goal.type.value if case.goal else "",
+                "goal_desc": case.goal.description if case.goal else "",
+                "capabilities": [c.capability_id for c in case.selected_capabilities],
+                "profile": case.profile,
+            }
+        elif model_id == "quality_grader":
+            return {
+                "goal_type": case.goal.type.value if case.goal else "",
+                "profile": case.profile,
+                "n_capabilities": len(case.selected_capabilities),
+                "has_world_snapshot": 1 if case.world_snapshot_before else 0,
+                "grade": case.quality_grade.value,
+            }
+        elif model_id == "sensor_health":
+            if not case.world_snapshot_before:
+                return None
+            residuals = case.world_snapshot_before.residuals or {}
+            vals = list(residuals.values()) if residuals else []
+            max_r = max(abs(v) for v in vals) if vals else 0.0
+            health = "failed" if max_r > 3.0 else ("degraded" if max_r > 1.0 else "healthy")
+            return {
+                "residuals": residuals,
+                "n_residuals": len(vals),
+                "max_residual": max_r,
+                "mean_residual": sum(abs(v) for v in vals) / len(vals) if vals else 0.0,
+                "grade": case.quality_grade.value,
+                "health": health,
+            }
+        elif model_id == "thermal_predictor":
+            if not case.world_snapshot_before:
+                return None
+            residuals = case.world_snapshot_before.residuals or {}
+            # Use first residual as thermal target, rest as features
+            vals = list(residuals.values())
+            if not vals:
+                return None
+            return {
+                "target": vals[0],
+                "features": vals[1:] if len(vals) > 1 else [0.0],
+                "grade_num": {"gold": 1.0, "silver": 0.75, "bronze": 0.5, "quarantine": 0.25}.get(
+                    case.quality_grade.value, 0.5),
+                "n_capabilities": len(case.selected_capabilities),
+            }
+        elif model_id == "energy_forecaster":
+            if not case.world_snapshot_before:
+                return None
+            residuals = case.world_snapshot_before.residuals or {}
+            vals = list(residuals.values())
+            if not vals:
+                return None
+            return {
+                "target": sum(abs(v) for v in vals) / len(vals),
+                "features": vals,
+                "profile": case.profile,
+                "n_capabilities": len(case.selected_capabilities),
+            }
+        elif model_id == "schedule_optimizer":
+            return {
+                "goal_type": case.goal.type.value if case.goal else "",
+                "profile": case.profile,
+                "n_capabilities": len(case.selected_capabilities),
+                "has_world_snapshot": 1 if case.world_snapshot_before else 0,
+                "score": {"gold": 1.0, "silver": 0.75, "bronze": 0.5, "quarantine": 0.25}.get(
+                    case.quality_grade.value, 0.5),
+            }
         else:
             # Enriched features for remaining model types
             return {
@@ -263,8 +369,11 @@ class SpecialistTrainer:
 
     def _train_real_or_simulate(
         self, model_id: str, features: List[Dict[str, Any]],
-    ) -> float:
-        """Train with sklearn if available, otherwise simulate."""
+    ) -> Tuple[float, Optional[str]]:
+        """Train with sklearn if available, otherwise simulate.
+
+        Returns (accuracy, weight_path). weight_path is None for simulated models.
+        """
         _TRAINERS = {
             "route_classifier": self._train_route_classifier,
             "capability_selector": self._train_capability_selector,
@@ -274,16 +383,26 @@ class SpecialistTrainer:
             "missing_var_predictor": self._train_missing_var_predictor,
             "verifier_prior": self._train_verifier_prior,
             "domain_language_adapter": self._train_domain_language_adapter,
+            "intent_disambiguator": self._train_intent_disambiguator,
+            "quality_grader": self._train_quality_grader,
+            "sensor_health": self._train_sensor_health,
+            "thermal_predictor": self._train_thermal_predictor,
+            "energy_forecaster": self._train_energy_forecaster,
+            "schedule_optimizer": self._train_schedule_optimizer,
         }
         trainer = _TRAINERS.get(model_id)
         if trainer:
             try:
-                return trainer(features)
+                result = trainer(features)
+                # Trainers may return (accuracy, weight_path) or just accuracy
+                if isinstance(result, tuple):
+                    return result
+                return result, None
             except ImportError:
                 log.info("sklearn not available, falling back to simulation")
             except Exception as exc:
                 log.warning("Real training failed for %s: %s", model_id, exc)
-        return self._simulate_training(model_id, features)
+        return self._simulate_training(model_id, features), None
 
     def _train_route_classifier(self, features: List[Dict[str, Any]]) -> float:
         """Train a real route classifier using sklearn TF-IDF + LogisticRegression.
@@ -366,7 +485,7 @@ class SpecialistTrainer:
                  accuracy, len(labels))
         return accuracy
 
-    def _train_anomaly_detector(self, features: List[Dict[str, Any]]) -> float:
+    def _train_anomaly_detector(self, features: List[Dict[str, Any]]) -> Tuple[float, Optional[str]]:
         """Train anomaly detector using IsolationForest (unsupervised)."""
         from sklearn.ensemble import IsolationForest
 
@@ -377,21 +496,25 @@ class SpecialistTrainer:
                 rows.append(list(residuals.values()))
 
         if len(rows) < self._min_samples:
-            return 0.0
+            return 0.0, None
 
         # Pad to uniform length
         max_len = max(len(r) for r in rows)
         X = [r + [0.0] * (max_len - len(r)) for r in rows]
 
+        # Holdout split for evaluation
+        X_train, X_test, _, _ = self._holdout_split(X, X)
         model = IsolationForest(contamination=0.1, random_state=42, n_estimators=50)
-        model.fit(X)
-        preds = model.predict(X)
+        model.fit(X_train)
+        preds = model.predict(X_test) if len(X_test) > 0 else model.predict(X_train)
         outlier_fraction = sum(1 for p in preds if p == -1) / len(preds)
         accuracy = 1.0 - outlier_fraction
 
+        next_ver = len(self._store.list_versions("anomaly_detector")) + 1
+        wp = self._save_weights("anomaly_detector", next_ver, model)
         log.info("anomaly_detector real training: accuracy=%.3f, samples=%d",
                  accuracy, len(rows))
-        return accuracy
+        return accuracy, wp
 
     def _train_baseline_scorer(self, features: List[Dict[str, Any]]) -> float:
         """Train baseline scorer: predict grade from goal_type + profile."""
@@ -547,6 +670,199 @@ class SpecialistTrainer:
         log.info("domain_language_adapter real training: accuracy=%.3f, samples=%d",
                  accuracy, len(labels))
         return accuracy
+
+    # ── New specialist trainers (v3.2 sprint) ─────────────
+
+    def _train_intent_disambiguator(self, features: List[Dict[str, Any]]) -> Tuple[float, Optional[str]]:
+        """Train intent disambiguator: predict primary capability from goal text.
+
+        Pattern: TF-IDF on goal description + LogisticRegression (same as route_classifier).
+        """
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
+
+        texts, labels = [], []
+        for f in features:
+            caps = f.get("capabilities", [])
+            if not caps:
+                continue
+            desc = f.get("goal_desc", "") or f.get("goal_type", "")
+            profile = f.get("profile", "")
+            texts.append(f"{desc} {profile}")
+            labels.append(caps[0])
+
+        if len(texts) < self._min_samples:
+            return 0.0, None
+        if len(set(labels)) < 2:
+            return self._simulate_training("intent_disambiguator", features), None
+
+        pipe = Pipeline([
+            ("tfidf", TfidfVectorizer(max_features=100)),
+            ("clf", LogisticRegression(max_iter=200, solver="lbfgs")),
+        ])
+
+        X_train, X_test, y_train, y_test = self._holdout_split(texts, labels)
+        pipe.fit(X_train, y_train)
+        accuracy = float(pipe.score(X_test, y_test)) if len(X_test) > 0 else float(pipe.score(X_train, y_train))
+
+        # Persist
+        next_ver = len(self._store.list_versions("intent_disambiguator")) + 1
+        wp = self._save_weights("intent_disambiguator", next_ver, pipe)
+        log.info("intent_disambiguator real training: accuracy=%.3f, samples=%d", accuracy, len(texts))
+        return accuracy, wp
+
+    def _train_quality_grader(self, features: List[Dict[str, Any]]) -> Tuple[float, Optional[str]]:
+        """Train quality grader: predict GOLD/SILVER/BRONZE/QUARANTINE from case features.
+
+        RandomForestClassifier on numeric + encoded categorical features.
+        """
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import LabelEncoder
+
+        goal_types = [f.get("goal_type", "") for f in features]
+        profiles = [f.get("profile", "") for f in features]
+        labels = [f.get("grade", "") for f in features]
+
+        if len(labels) < self._min_samples:
+            return 0.0, None
+        if len(set(labels)) < 2:
+            return self._simulate_training("quality_grader", features), None
+
+        gt_enc, _ = self._encode_categorical(goal_types)
+        pr_enc, _ = self._encode_categorical(profiles)
+        X = [[g, p, f.get("n_capabilities", 0), f.get("has_world_snapshot", 0)]
+             for g, p, f in zip(gt_enc, pr_enc, features)]
+
+        X_train, X_test, y_train, y_test = self._holdout_split(X, labels)
+        model = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
+        model.fit(X_train, y_train)
+        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
+
+        next_ver = len(self._store.list_versions("quality_grader")) + 1
+        wp = self._save_weights("quality_grader", next_ver, model)
+        log.info("quality_grader real training: accuracy=%.3f, samples=%d", accuracy, len(labels))
+        return accuracy, wp
+
+    def _train_sensor_health(self, features: List[Dict[str, Any]]) -> Tuple[float, Optional[str]]:
+        """Train sensor health classifier: predict healthy/degraded/failed.
+
+        RandomForestClassifier on residual statistics.
+        """
+        from sklearn.ensemble import RandomForestClassifier
+
+        X, labels = [], []
+        for f in features:
+            labels.append(f.get("health", "healthy"))
+            X.append([f.get("n_residuals", 0), f.get("max_residual", 0.0), f.get("mean_residual", 0.0)])
+
+        if len(labels) < self._min_samples:
+            return 0.0, None
+        if len(set(labels)) < 2:
+            return self._simulate_training("sensor_health", features), None
+
+        X_train, X_test, y_train, y_test = self._holdout_split(X, labels)
+        model = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
+        model.fit(X_train, y_train)
+        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
+
+        next_ver = len(self._store.list_versions("sensor_health")) + 1
+        wp = self._save_weights("sensor_health", next_ver, model)
+        log.info("sensor_health real training: accuracy=%.3f, samples=%d", accuracy, len(labels))
+        return accuracy, wp
+
+    def _train_thermal_predictor(self, features: List[Dict[str, Any]]) -> Tuple[float, Optional[str]]:
+        """Train thermal predictor: predict thermal residual from other residuals.
+
+        Ridge regression on numeric features.
+        """
+        from sklearn.linear_model import Ridge
+
+        X, y = [], []
+        for f in features:
+            target = f.get("target", 0.0)
+            feats = f.get("features", [0.0])
+            X.append(feats + [f.get("grade_num", 0.5), f.get("n_capabilities", 0)])
+            y.append(target)
+
+        if len(y) < self._min_samples:
+            return 0.0, None
+
+        # Pad to uniform length
+        max_len = max(len(row) for row in X)
+        X = [row + [0.0] * (max_len - len(row)) for row in X]
+
+        X_train, X_test, y_train, y_test = self._holdout_split(X, y)
+        model = Ridge(alpha=1.0)
+        model.fit(X_train, y_train)
+        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
+        accuracy = max(accuracy, 0.0)  # R² can be negative
+
+        next_ver = len(self._store.list_versions("thermal_predictor")) + 1
+        wp = self._save_weights("thermal_predictor", next_ver, model)
+        log.info("thermal_predictor real training: R²=%.3f, samples=%d", accuracy, len(y))
+        return accuracy, wp
+
+    def _train_energy_forecaster(self, features: List[Dict[str, Any]]) -> Tuple[float, Optional[str]]:
+        """Train energy forecaster: predict mean absolute residual.
+
+        Ridge regression on residual values.
+        """
+        from sklearn.linear_model import Ridge
+
+        X, y = [], []
+        for f in features:
+            feats = f.get("features", [0.0])
+            X.append(feats + [f.get("n_capabilities", 0)])
+            y.append(f.get("target", 0.0))
+
+        if len(y) < self._min_samples:
+            return 0.0, None
+
+        max_len = max(len(row) for row in X)
+        X = [row + [0.0] * (max_len - len(row)) for row in X]
+
+        X_train, X_test, y_train, y_test = self._holdout_split(X, y)
+        model = Ridge(alpha=1.0)
+        model.fit(X_train, y_train)
+        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
+        accuracy = max(accuracy, 0.0)
+
+        next_ver = len(self._store.list_versions("energy_forecaster")) + 1
+        wp = self._save_weights("energy_forecaster", next_ver, model)
+        log.info("energy_forecaster real training: R²=%.3f, samples=%d", accuracy, len(y))
+        return accuracy, wp
+
+    def _train_schedule_optimizer(self, features: List[Dict[str, Any]]) -> Tuple[float, Optional[str]]:
+        """Train schedule optimizer: predict quality score from case metadata.
+
+        GradientBoostingRegressor on encoded categoricals + numeric features.
+        """
+        from sklearn.ensemble import GradientBoostingRegressor
+
+        goal_types = [f.get("goal_type", "") for f in features]
+        profiles = [f.get("profile", "") for f in features]
+        y = [f.get("score", 0.5) for f in features]
+
+        if len(y) < self._min_samples:
+            return 0.0, None
+
+        gt_enc, _ = self._encode_categorical(goal_types)
+        pr_enc, _ = self._encode_categorical(profiles)
+        X = [[g, p, f.get("n_capabilities", 0), f.get("has_world_snapshot", 0)]
+             for g, p, f in zip(gt_enc, pr_enc, features)]
+
+        X_train, X_test, y_train, y_test = self._holdout_split(X, y)
+        model = GradientBoostingRegressor(n_estimators=50, max_depth=3, random_state=42)
+        model.fit(X_train, y_train)
+        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
+        accuracy = max(accuracy, 0.0)
+
+        next_ver = len(self._store.list_versions("schedule_optimizer")) + 1
+        wp = self._save_weights("schedule_optimizer", next_ver, model)
+        log.info("schedule_optimizer real training: R²=%.3f, samples=%d", accuracy, len(y))
+        return accuracy, wp
 
     def _simulate_training(
         self, model_id: str, features: List[Dict[str, Any]],

@@ -49,9 +49,10 @@ class ModelVersion:
     promoted_at: Optional[float] = None
     rolled_back_at: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    weight_path: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "model_id": self.model_id,
             "version": self.version,
             "status": self.status.value,
@@ -61,6 +62,9 @@ class ModelVersion:
             "promoted_at": self.promoted_at,
             "rolled_back_at": self.rolled_back_at,
         }
+        if self.weight_path:
+            d["weight_path"] = self.weight_path
+        return d
 
 
 class ModelStore:
@@ -84,6 +88,7 @@ class ModelStore:
         accuracy: float = 0.0,
         training_samples: int = 0,
         metadata: Optional[Dict[str, Any]] = None,
+        weight_path: Optional[str] = None,
     ) -> ModelVersion:
         """Register a new trained version of a model."""
         if model_id not in self._models:
@@ -96,6 +101,7 @@ class ModelStore:
             accuracy=accuracy,
             training_samples=training_samples,
             metadata=metadata or {},
+            weight_path=weight_path,
         )
         self._models[model_id].append(mv)
         self._save()
@@ -209,6 +215,7 @@ class ModelStore:
                         trained_at=v.get("trained_at", 0.0),
                         promoted_at=v.get("promoted_at"),
                         rolled_back_at=v.get("rolled_back_at"),
+                        weight_path=v.get("weight_path"),
                     )
                     for v in versions
                 ]

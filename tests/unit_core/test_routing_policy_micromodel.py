@@ -23,8 +23,9 @@ class TestMicromodelInRouteTypes:
     def test_micromodel_allowed(self):
         assert "micromodel" in ALLOWED_ROUTE_TYPES
 
-    def test_five_route_types(self):
-        assert len(ALLOWED_ROUTE_TYPES) == 5
+    def test_six_route_types(self):
+        assert len(ALLOWED_ROUTE_TYPES) == 6
+        assert "solver" in ALLOWED_ROUTE_TYPES
 
 
 class TestRoutingFeaturesMicromodel:

@@ -59,8 +59,23 @@ class MathSolver:
         has_digit = bool(re.search(r'\d', clean))
         has_operator = bool(re.search(r'[+\-*/^%×÷()]', clean))
         has_func = any(fn in clean for fn in
-                       ["sqrt", "sin", "cos", "log", "pow", "abs"])
-        return (has_digit and has_operator) or has_func
+                       ["sqrt", "sin", "cos", "log", "pow", "abs",
+                        "squared", "cubed"])
+        return (has_digit and has_operator) or (has_digit and has_func)
+
+    # Natural-language math patterns → computed results
+    NL_MATH_PATTERNS = [
+        # "15% of 300" → 45
+        (r'(\d+\.?\d*)\s*%\s*(?:of|kertaa)\s*(\d+\.?\d*)',
+         lambda m: f"{float(m.group(1))*float(m.group(2))/100:.6g}"),
+        # "15% sadasta" → 15 (sadasta = of 100 in Finnish)
+        (r'(\d+\.?\d*)\s*%\s*sadasta',
+         lambda m: f"{float(m.group(1)):.6g}"),
+        # "12 squared" → 144
+        (r'(\d+\.?\d*)\s*squared', lambda m: str(float(m.group(1)) ** 2)),
+        # "5 cubed" → 125
+        (r'(\d+\.?\d*)\s*cubed', lambda m: str(float(m.group(1)) ** 3)),
+    ]
 
     @classmethod
     def solve(cls, text):
@@ -69,6 +84,14 @@ class MathSolver:
             m = re.search(pattern, clean)
             if m:
                 return converter(m)
+        # Natural-language math (percentage, squared, cubed)
+        for pattern, converter in cls.NL_MATH_PATTERNS:
+            m = re.search(pattern, clean)
+            if m:
+                result = converter(m)
+                if float(result) == int(float(result)):
+                    return str(int(float(result)))
+                return result
         for w in sorted(cls.MATH_TRIGGERS, key=len, reverse=True):
             clean = clean.replace(w, "")
         clean = clean.strip().rstrip("?=")

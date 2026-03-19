@@ -26,5 +26,5 @@ class AgentResult:
     response: str
     confidence: float
     latency_ms: float
-    source: str  # "hotcache" | "memory" | "llm" | "swarm" ONLY
+    source: str  # "hotcache" | "memory" | "solver" | "llm" | "swarm"
     metadata: dict = field(default_factory=dict)

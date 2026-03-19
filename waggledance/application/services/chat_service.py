@@ -16,6 +16,10 @@ from waggledance.core.orchestration.routing_policy import (
     select_route,
 )
 from waggledance.core.policies.confidence_policy import should_cache_result
+
+# Solver caching: high-confidence solver results are always cache-worthy
+def should_cache_result_simple(response: str, freq: int) -> bool:
+    return bool(response) and freq >= 2
 from waggledance.core.policies.escalation_policy import EscalationPolicy
 from waggledance.core.ports.config_port import ConfigPort
 from waggledance.core.ports.hot_cache_port import HotCachePort
@@ -114,6 +118,30 @@ class ChatService:
         )
         route = select_route(features, self._config)
 
+        # Solver-first: try deterministic solver before LLM
+        if route.route_type == "solver":
+            solver_result = self._try_solver(req.query, features.solver_intent)
+            if solver_result is not None:
+                elapsed = (time.monotonic() - start) * 1000
+                if should_cache_result_simple(solver_result, self._query_frequency.get(cache_key, 0)):
+                    self._hot_cache.set(cache_key, solver_result, ttl=3600)
+                self._record_telemetry("solver", 0.95, elapsed, True, req.query)
+                return ChatResult(
+                    response=solver_result,
+                    language=language,
+                    source="solver",
+                    confidence=0.95,
+                    latency_ms=elapsed,
+                    agent_id=None,
+                    round_table=False,
+                    cached=False,
+                )
+            # Solver miss — fall through to LLM
+            route = route.__class__(
+                route_type="llm", confidence=0.6,
+                routing_latency_ms=route.routing_latency_ms,
+            )
+
         task = TaskRequest(
             id=str(uuid.uuid4()),
             query=req.query,
@@ -186,6 +214,51 @@ class ChatService:
             pass
 
     @staticmethod
+    def _try_solver(query: str, intent: str) -> str | None:
+        """Try deterministic solver for math/thermal/stats. Returns answer or None."""
+        try:
+            if intent == "math":
+                from core.math_solver import MathSolver
+                if MathSolver.is_math(query):
+                    result = MathSolver.solve(query)
+                    if result is not None:
+                        return result
+            elif intent == "thermal":
+                from waggledance.core.reasoning.thermal_solver import ThermalSolver
+                import re
+                solver = ThermalSolver()
+                # Frost risk: extract temperature
+                m = re.search(r'(-?\d+(?:\.\d+)?)\s*°?[cC]', query)
+                if m and ("frost" in query.lower() or "pakkas" in query.lower()):
+                    t = float(m.group(1))
+                    r = solver.frost_risk(t, pipe_insulated=True)
+                    return f"Frost risk at {t}°C: {r.value:.1f} ({_risk_label(r.value)})"
+                # Temperature conversion
+                if "celsius" in query.lower() or "to c" in query.lower():
+                    from core.math_solver import MathSolver
+                    result = MathSolver.solve(query)
+                    if result is not None:
+                        return result
+                if "fahrenheit" in query.lower() or "to f" in query.lower():
+                    from core.math_solver import MathSolver
+                    result = MathSolver.solve(query)
+                    if result is not None:
+                        return result
+                # "is X degrees too hot?" — threshold check
+                m = re.search(r'(\d+(?:\.\d+)?)\s*(?:degrees|°|astetta)', query.lower())
+                if m:
+                    t = float(m.group(1))
+                    label = "too hot" if t > 40 else "comfortable" if t > 15 else "cold"
+                    return f"{t}° is {label} (threshold: >40 hot, 15-40 comfortable, <15 cold)"
+            elif intent == "stats":
+                # Stats queries describe time-series aggregations — LLM needs context
+                # but we can at least acknowledge the intent for proper routing
+                return None
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
     def _probe_micromodel(query: str) -> tuple[bool, float]:
         """Try legacy PatternMatchEngine (cached singleton). Returns (hit, confidence)."""
         return _shared_probe_micromodel(query)
@@ -198,3 +271,13 @@ class ChatService:
         if any(c in FI_CHARS for c in query):
             return "fi"
         return "en"
+
+
+def _risk_label(score: float) -> str:
+    if score <= 0.0:
+        return "safe"
+    elif score <= 0.3:
+        return "low risk"
+    elif score <= 0.6:
+        return "medium risk"
+    return "high risk"

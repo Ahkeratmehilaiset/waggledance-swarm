@@ -1,7 +1,7 @@
 """Routing policy — pure function, no I/O.
 
 Ported from core/smart_router_v2.py and backend/routes/chat.py.
-Routing order: hotcache -> micromodel -> memory -> llm -> swarm.
+Routing order: hotcache -> micromodel -> solver -> memory -> llm -> swarm.
 Only returns route types from ALLOWED_ROUTE_TYPES.
 """
 
@@ -11,7 +11,12 @@ from waggledance.core.domain.task import TaskRoute
 from waggledance.core.ports.config_port import ConfigPort
 
 
-ALLOWED_ROUTE_TYPES = frozenset({"hotcache", "memory", "micromodel", "llm", "swarm"})
+ALLOWED_ROUTE_TYPES = frozenset({
+    "hotcache", "memory", "micromodel", "solver", "llm", "swarm",
+})
+
+# Solver-eligible intents (deterministic, no LLM needed)
+SOLVER_INTENTS = frozenset({"math", "thermal", "stats", "symbolic", "constraint"})
 
 SYSTEM_KEYWORDS = frozenset({
     "status", "tila", "health", "terveys", "uptime", "agents", "agentit",
@@ -39,15 +44,17 @@ class RoutingFeatures:
     has_micromodel_hit: bool = False
     micromodel_confidence: float = 0.0
     micromodel_enabled: bool = False
+    solver_intent: str = ""
 
 
 def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
-    """Pure routing decision. Order: hotcache -> memory -> llm -> swarm.
+    """Pure routing decision. Order: hotcache -> micromodel -> solver -> memory -> llm -> swarm.
 
     Only returns route_type from ALLOWED_ROUTE_TYPES.
 
     Decision logic ported from core/smart_router_v2.py:
     - Hot cache hit (confidence=1.0) -> hotcache
+    - Solver-eligible intent (math/thermal/stats) -> solver
     - High memory score (>0.7) -> memory
     - Time/system queries or short queries -> llm
     - Complex queries (long, multi-keyword) with swarm enabled -> swarm
@@ -75,17 +82,26 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
-    if features.memory_score > 0.7:
-        return TaskRoute(
-            route_type="memory",
-            confidence=features.memory_score,
-            routing_latency_ms=(time.monotonic() - start) * 1000,
-        )
-
+    # Time/system queries override solver ("paljonko kello" is time, not math)
     if features.is_time_query or features.is_system_query:
         return TaskRoute(
             route_type="llm",
             confidence=0.8,
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
+    # Solver-first: math, thermal, stats intents get deterministic answers
+    if features.solver_intent in SOLVER_INTENTS:
+        return TaskRoute(
+            route_type="solver",
+            confidence=0.95,
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
+    if features.memory_score > 0.7:
+        return TaskRoute(
+            route_type="memory",
+            confidence=features.memory_score,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
@@ -120,6 +136,8 @@ def extract_features(
     micromodel_confidence: float = 0.0,
 ) -> RoutingFeatures:
     """Extract routing features from a query."""
+    from waggledance.core.reasoning.solver_router import SolverRouter
+
     query_lower = query.lower()
     words = set(query_lower.split())
 
@@ -135,4 +153,5 @@ def extract_features(
         has_micromodel_hit=micromodel_hit,
         micromodel_confidence=micromodel_confidence,
         micromodel_enabled=micromodel_enabled,
+        solver_intent=SolverRouter.classify_intent(query),
     )

@@ -22,7 +22,10 @@ class TestClassifyIntent:
         assert SolverRouter.classify_intent("frost risk for pipes") == "thermal"
 
     def test_thermal_heating(self):
-        assert SolverRouter.classify_intent("heating cost today") == "thermal"
+        # "heating cost today" has cost + today → time-series stats (not thermal)
+        assert SolverRouter.classify_intent("heating cost today") == "stats"
+        # Pure heating query → thermal
+        assert SolverRouter.classify_intent("heating system status") == "thermal"
 
     def test_thermal_finnish(self):
         assert SolverRouter.classify_intent("lämpötila nyt") == "thermal"

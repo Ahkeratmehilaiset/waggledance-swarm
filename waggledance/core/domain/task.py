@@ -20,7 +20,7 @@ class TaskRequest:
 class TaskRoute:
     """Routing decision for a task."""
 
-    route_type: str  # "hotcache" | "memory" | "llm" | "swarm" ONLY
+    route_type: str  # "hotcache" | "memory" | "solver" | "llm" | "swarm"
     selected_agents: list[str] = field(default_factory=list)
     confidence: float = 0.0
     routing_latency_ms: float = 0.0

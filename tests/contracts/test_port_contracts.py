@@ -96,7 +96,7 @@ class TestTrustStoreContracts:
 
 class TestRouteTypes:
     def test_allowed_route_types_exact(self):
-        assert ALLOWED_ROUTE_TYPES == frozenset({"hotcache", "memory", "micromodel", "llm", "swarm"})
+        assert ALLOWED_ROUTE_TYPES == frozenset({"hotcache", "memory", "micromodel", "solver", "llm", "swarm"})
 
     def test_micromodel_in_route_types(self):
         assert "micromodel" in ALLOWED_ROUTE_TYPES

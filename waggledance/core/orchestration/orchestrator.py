@@ -100,7 +100,7 @@ class Orchestrator:
                 )
             log.info("Micromodel miss, falling back to LLM")
 
-        if route.route_type in ("llm", "micromodel") or not selected:
+        if route.route_type in ("llm", "micromodel", "solver") or not selected:
             response = await self._llm.generate(
                 prompt=task.query,
                 temperature=0.7,

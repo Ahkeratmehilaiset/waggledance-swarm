@@ -199,6 +199,50 @@ class CognitiveGraph:
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return None
 
+    # ── Self-entity (v3.2) ──────────────────────────────────
+
+    SELF_ENTITY_ID = "self"
+
+    def ensure_self_entity(self, **overrides) -> dict:
+        """Ensure the self-entity node exists with v3.2 attributes.
+
+        The self-entity is a CognitiveGraph node, not a separate store.
+        Same versioning, snapshots, diffs, provenance, and replay apply.
+        """
+        defaults = {
+            "entity_type": "system",
+            "active_goals": [],
+            "persistent_motives": [],
+            "confidence_self_assessment": 0.5,
+            "felt_load": 0.0,
+            "uncertainty_areas": [],
+            "epistemic_uncertainty_score": 0.0,
+            "last_major_correction": "",
+            "capability_limits": [],
+            "identity_version": "v3.2-autonomy",
+            "last_reflection_at": "",
+            "hardware": {},
+        }
+        if self.has_node(self.SELF_ENTITY_ID):
+            existing = dict(self.graph.nodes[self.SELF_ENTITY_ID])
+            defaults.update(existing)
+        defaults.update(overrides)
+        self.add_node(self.SELF_ENTITY_ID, **defaults)
+        return self.get_node(self.SELF_ENTITY_ID)
+
+    def get_self_entity(self) -> Optional[dict]:
+        """Return self-entity attributes or None if not initialized."""
+        return self.get_node(self.SELF_ENTITY_ID)
+
+    def update_self_entity(self, **attrs) -> dict:
+        """Update self-entity attributes. Creates if missing."""
+        if not self.has_node(self.SELF_ENTITY_ID):
+            return self.ensure_self_entity(**attrs)
+        for k, v in attrs.items():
+            self.graph.nodes[self.SELF_ENTITY_ID][k] = v
+        self.graph.nodes[self.SELF_ENTITY_ID]["timestamp"] = time.time()
+        return self.get_node(self.SELF_ENTITY_ID)
+
     def stats(self) -> dict:
         """Summary statistics."""
         edge_types: Dict[str, int] = {}
@@ -209,4 +253,5 @@ class CognitiveGraph:
             "nodes": self.graph.number_of_nodes(),
             "edges": self.graph.number_of_edges(),
             "edge_types": edge_types,
+            "has_self_entity": self.has_node(self.SELF_ENTITY_ID),
         }

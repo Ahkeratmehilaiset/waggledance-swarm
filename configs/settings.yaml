@@ -284,3 +284,56 @@ elastic_scaling:
 runtime:
   primary: waggledance        # "hivemind" during transition, "waggledance" after cutover
   compatibility_mode: false   # true = legacy primary, false = autonomy primary
+  shadow_mode: true           # v3.2: shadow mode for safe rollout
+  canary_enabled: true        # v3.2: canary rollout for new features
+
+# ── v3.2 config additions ────────────────────────────────────
+
+learning:
+  primary_unit: case_trajectory
+  llm_max_grade: bronze
+  specialist_canary_hours: 48
+  specialist_min_accuracy: 0.85
+  meta_optimizer_enabled: true
+  meta_optimizer_min_canary_cycles: 3
+  dream_mode_enabled: true
+  dream_mode_max_simulations_per_night: 20
+  dream_mode_min_simulations_per_night: 4
+  dream_mode_insight_backoff_window_nights: 3
+
+continuity:
+  heartbeat_seconds: 120
+  continuity_floor_enabled: true
+  epistemic_uncertainty_threshold: 0.4
+  curiosity_goal_max_priority: 35
+
+curiosity:
+  max_active:
+    GADGET: 3
+    COTTAGE: 5
+    HOME: 10
+    FACTORY: 20
+    APIARY: 10
+
+memory:
+  consolidation_enabled: true
+  consolidation_evict_enabled: false   # start safe; enable later in rollout
+  consolidation_min_age_days: 90
+  consolidation_retention_threshold: 0.1
+  episodic_max_active_count: 10000
+  significance_never_consolidate_threshold: 0.7
+
+attention:
+  critical_pct: 40
+  normal_pct: 35
+  background_pct: 15
+  reflection_pct: 10
+  high_load_threshold: 0.80
+  emergency_load_threshold: 0.95
+  reflection_min_pct: 2
+
+motives:
+  conflict_resolution:
+    strategy: minimize_harm_always
+    log_all_conflicts: true
+    escalate_to_user_if_unresolvable: true

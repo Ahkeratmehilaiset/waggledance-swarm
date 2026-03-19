@@ -72,6 +72,8 @@ class SourceType(str, Enum):
     PROPOSED_BY_LLM = "proposed_by_llm"
     CONFIRMED_BY_VERIFIER = "confirmed_by_verifier"
     LEARNED_FROM_CASE = "learned_from_case"
+    SELF_REFLECTION = "self_reflection"      # v3.2: introspection entries
+    SIMULATED = "simulated"                  # v3.2: dream mode outputs
 
 
 class CapabilityCategory(str, Enum):
@@ -113,6 +115,13 @@ class Goal:
     source: str = ""  # who/what created this goal
     profile: str = ""  # COTTAGE/HOME/FACTORY/GADGET
     parent_goal_id: Optional[str] = None
+    # v3.2 continuity fields
+    carry_forward: bool = False         # survives restart
+    promise_to_user: bool = False       # committed to user
+    blocked_reason: str = ""            # why not progressing
+    resume_after: Optional[datetime] = None  # deferred until
+    active_motive_id: str = ""          # which motive drives this
+    motive_valence: float = 0.0         # motive priority weight
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
 
@@ -149,6 +158,12 @@ class Goal:
             "source": self.source,
             "profile": self.profile,
             "parent_goal_id": self.parent_goal_id,
+            "carry_forward": self.carry_forward,
+            "promise_to_user": self.promise_to_user,
+            "blocked_reason": self.blocked_reason,
+            "resume_after": self.resume_after.isoformat() if self.resume_after else None,
+            "active_motive_id": self.active_motive_id,
+            "motive_valence": self.motive_valence,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
@@ -398,6 +413,10 @@ class CaseTrajectory:
     quality_grade: QualityGrade = QualityGrade.BRONZE
     canonical_id: str = ""  # agent/capability canonical ID
     profile: str = ""
+    # v3.2 dream mode / simulation fields
+    counterfactual_alternatives: List[str] = field(default_factory=list)
+    trajectory_origin: str = "observed"  # observed | simulated
+    synthetic: bool = False
     created_at: datetime = field(default_factory=_now)
 
     def grade(self) -> QualityGrade:
@@ -440,5 +459,35 @@ class CaseTrajectory:
             "quality_grade": self.quality_grade.value,
             "canonical_id": self.canonical_id,
             "profile": self.profile,
+            "counterfactual_alternatives": self.counterfactual_alternatives,
+            "trajectory_origin": self.trajectory_origin,
+            "synthetic": self.synthetic,
             "created_at": self.created_at.isoformat(),
+        }
+
+
+@dataclass
+class MotiveActivation:
+    """Runtime motive activation record — logged to audit, not a separate store.
+
+    Tracks which motive influenced a decision, conflicts, and resolution.
+    Valence is a prioritization weight, not an emotion.
+    """
+    motive_id: str
+    valence: float = 0.0               # -1.0..+1.0 (negative=avoid, positive=pursue)
+    intensity: float = 0.0             # 0.0..1.0
+    triggered_by_goal_id: str = ""
+    conflict_with: str = ""            # other motive_id if conflict
+    resolution: str = ""               # how conflict was resolved
+    timestamp: datetime = field(default_factory=_now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "motive_id": self.motive_id,
+            "valence": self.valence,
+            "intensity": self.intensity,
+            "triggered_by_goal_id": self.triggered_by_goal_id,
+            "conflict_with": self.conflict_with,
+            "resolution": self.resolution,
+            "timestamp": self.timestamp.isoformat(),
         }

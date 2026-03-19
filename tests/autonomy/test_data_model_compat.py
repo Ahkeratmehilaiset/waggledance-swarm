@@ -33,13 +33,15 @@ class TestSourceTypeAllSpecValues:
         "proposed_by_llm",
         "confirmed_by_verifier",
         "learned_from_case",
+        "self_reflection",   # v3.2
+        "simulated",         # v3.2
     }
 
     def test_source_type_all_spec_values(self):
-        """All 7 SourceType values from the spec are present."""
+        """All 9 SourceType values from the spec are present."""
         actual = {st.value for st in SourceType}
         assert actual == self.EXPECTED
-        assert len(SourceType) == 7
+        assert len(SourceType) == 9
 
 
 # ── QualityGrade ──────────────────────────────────────────────

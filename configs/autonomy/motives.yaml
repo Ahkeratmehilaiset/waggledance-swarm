@@ -1,0 +1,22 @@
+# Persistent motives — config-defined, runtime-activated, audit-logged.
+# Valence is a prioritization weight, not an emotion.
+
+motives:
+  - id: reliability
+    description: "Maintain system reliability"
+    base_valence: 0.8
+  - id: user_trust
+    description: "Protect user trust"
+    base_valence: 0.9
+  - id: reduce_uncertainty
+    description: "Reduce unnecessary uncertainty"
+    base_valence: 0.6
+  - id: memory_continuity
+    description: "Preserve memory continuity"
+    base_valence: 0.7
+  - id: minimize_harm
+    description: "Minimize harmful actions"
+    base_valence: 1.0
+  - id: keep_promises
+    description: "Keep promises if possible"
+    base_valence: 0.75

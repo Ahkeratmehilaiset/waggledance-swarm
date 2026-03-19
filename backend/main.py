@@ -20,6 +20,7 @@ from backend.routes.round_table import router as round_table_router
 from backend.routes.agents import router as agents_router
 from backend.routes.settings import router as settings_router
 from backend.routes.models import router as models_router
+from backend.routes.autonomy import router as autonomy_router
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("waggledance-backend")
@@ -56,6 +57,7 @@ app.include_router(round_table_router)
 app.include_router(agents_router)
 app.include_router(settings_router)
 app.include_router(models_router)
+app.include_router(autonomy_router)
 
 
 @app.get("/api/auth/token")

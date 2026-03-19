@@ -13,9 +13,36 @@ _LEVEL_NAMES = {1: "NOVICE", 2: "APPRENTICE", 3: "JOURNEYMAN", 4: "EXPERT", 5: "
 # Agent roster — populated on first call from agents/ directory
 _agent_cache: list[dict] | None = None
 
+# Profile-based level ranges (canonical via alias registry)
+_PROFILE_LEVEL_RANGES: dict[str, tuple[int, int]] = {
+    "apiary": (4, 5),    # domain experts — most training data
+    "factory": (3, 5),   # industrial specialists
+    "home": (3, 4),      # home automation
+    "cottage": (3, 4),   # off-grid / property
+}
+_DEFAULT_LEVEL_RANGE = (1, 3)
+
+
+def _agent_level_range(agent_id: str) -> tuple[int, int]:
+    """Resolve agent level range via alias registry profiles."""
+    try:
+        from waggledance.core.capabilities.aliasing import AliasRegistry
+        registry = AliasRegistry.from_yaml_default()
+        canonical = registry.resolve(agent_id)
+        if canonical:
+            agent = registry.get(canonical)
+            if agent:
+                for profile in agent.profiles:
+                    p = profile.lower()
+                    if p in _PROFILE_LEVEL_RANGES:
+                        return _PROFILE_LEVEL_RANGES[p]
+    except Exception:
+        pass
+    return _DEFAULT_LEVEL_RANGE
+
 
 def _load_agents() -> list[dict]:
-    """Build agent list from agents/ directory with simulated levels."""
+    """Build agent list from agents/ directory with profile-based levels."""
     global _agent_cache
     if _agent_cache is not None:
         return _agent_cache
@@ -26,16 +53,8 @@ def _load_agents() -> list[dict]:
         for d in sorted(agents_dir.iterdir()):
             if d.is_dir() and (d / "core.yaml").exists():
                 agent_id = d.name
-                # Simulate levels — production reads from ChromaDB agent_stats
-                # Bee-related agents tend to be higher level (more training data)
-                if agent_id in ("beekeeper", "disease_monitor", "swarm_watcher",
-                                "nectar_scout", "hive_temperature"):
-                    level = random.choice([4, 5])
-                elif agent_id in ("meteorologist", "flight_weather", "phenologist",
-                                  "electrician", "energy_advisor"):
-                    level = random.choice([3, 4])
-                else:
-                    level = random.choice([1, 2, 3])
+                lo, hi = _agent_level_range(agent_id)
+                level = random.randint(lo, hi)
 
                 trust = round(min(1.0, 0.1 + level * 0.18 + random.uniform(-0.05, 0.05)), 2)
                 total_resp = level * random.randint(30, 120)

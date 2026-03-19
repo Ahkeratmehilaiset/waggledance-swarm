@@ -283,7 +283,7 @@ torchvision==0.22.1+cu118
 tornado==6.5.5
 tqdm==4.67.3
 transformers==5.2.0
-trio==0.30.0
+trio==0.33.0
 trio-websocket==0.12.2
 triton-windows==3.6.0.post25
 trl==0.24.0

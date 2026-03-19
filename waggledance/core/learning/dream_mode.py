@@ -117,13 +117,17 @@ class InsightHistory:
 def select_candidates(
     trajectories: List[CaseTrajectory],
     max_candidates: int = 5,
+    capability_confidence: Optional[Dict[str, float]] = None,
 ) -> List[DreamCandidate]:
     """
     Select top uncertainty/failure cases for counterfactual simulation.
 
     Priority: failures first, then low-quality, then high-uncertainty.
+    When *capability_confidence* is provided, low-confidence capabilities
+    boost the candidate's score (prioritised for dream simulation).
     """
     candidates = []
+    conf = capability_confidence or {}
 
     for ct in trajectories:
         # Skip already-simulated
@@ -142,6 +146,16 @@ def select_candidates(
         elif ct.verifier_result.get("passed") is False:
             score = 0.9
             reason = "verifier failed"
+
+        # Boost score for low-confidence capabilities
+        if conf and ct.selected_capabilities:
+            cap_ids = [c.capability_id for c in ct.selected_capabilities]
+            min_conf = min(conf.get(cid, 0.5) for cid in cap_ids)
+            if min_conf < 0.5:
+                # Add up to 0.3 boost for very low confidence
+                score += 0.3 * (1.0 - min_conf * 2)
+                if not reason:
+                    reason = f"low confidence ({min_conf:.2f})"
 
         if score > 0:
             candidates.append(DreamCandidate(

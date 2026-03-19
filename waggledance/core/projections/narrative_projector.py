@@ -85,6 +85,7 @@ def project_narrative(
     active_motives: Optional[List[Dict[str, Any]]] = None,
     observability_gaps: Optional[List[Dict[str, Any]]] = None,
     recent_achievements: Optional[List[str]] = None,
+    capability_confidence: Optional[Dict[str, float]] = None,
     language: str = "en",
 ) -> Dict[str, Any]:
     """
@@ -186,6 +187,17 @@ def project_narrative(
             ))
         lines.append("")
     sections["gaps_count"] = len(gap_list)
+
+    # Capability confidence
+    conf = capability_confidence or {}
+    if conf:
+        sorted_conf = sorted(conf.items(), key=lambda x: x[1])
+        lines.append("Capability confidence:")
+        for cap_id, score in sorted_conf[:5]:
+            bar = "#" * int(score * 10)
+            lines.append(f"  {cap_id}: {score:.2f} [{bar}]")
+        lines.append("")
+    sections["capability_confidence"] = conf
 
     # Achievements
     ach = recent_achievements or []

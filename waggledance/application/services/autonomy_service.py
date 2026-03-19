@@ -424,6 +424,24 @@ class AutonomyService:
             self._error_count += 1
             return {"error": str(e)}
 
+    # ── Capability confidence ─────────────────────────────
+
+    def get_capability_confidence(self) -> Dict[str, Any]:
+        """Get current capability confidence scores."""
+        tracker = getattr(self._runtime, "capability_confidence", None)
+        if tracker is None:
+            return {"available": False}
+        all_scores = tracker.get_all()
+        lowest = tracker.get_lowest(5)
+        improving, degrading = tracker.get_trends(3)
+        return {
+            "available": True,
+            "scores": {k: round(v, 4) for k, v in all_scores.items()},
+            "lowest": [{"capability": c, "confidence": round(v, 4)} for c, v in lowest],
+            "improving": [{"capability": c, "delta": round(d, 4)} for c, d in improving],
+            "degrading": [{"capability": c, "delta": round(d, 4)} for c, d in degrading],
+        }
+
     # ── Safety cases (Priority 4) ─────────────────────────
 
     def get_safety_cases(self, limit: int = 20) -> List[Dict[str, Any]]:

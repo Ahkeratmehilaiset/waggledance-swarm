@@ -83,6 +83,7 @@ class SolverRouter:
         self._selector = selector or CapabilitySelector(self._registry)
         self._working_memory = working_memory or WorkingMemory()
         self._route_history: List[SolverRouteResult] = []
+        self._capability_confidence: Optional[Dict[str, float]] = None
 
     # ── Main routing ──────────────────────────────────────
 
@@ -284,6 +285,13 @@ class SolverRouter:
         if applied:
             log.info("Applied %d dream routing hints to working memory", applied)
         return applied
+
+    # ── Capability confidence integration ─────────────────
+
+    def set_capability_confidence(self, scores: Dict[str, float]):
+        """Feed capability confidence scores for tiebreaking in selection."""
+        self._capability_confidence = dict(scores)
+        self._selector.set_confidence_scores(scores)
 
     # ── Working memory integration ────────────────────────
 

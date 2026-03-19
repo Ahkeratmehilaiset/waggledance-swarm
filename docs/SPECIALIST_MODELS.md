@@ -1,9 +1,11 @@
 # Specialist Models — WaggleDance v3.2
 
-> **All 8 specialist models now use real sklearn training.** Simulated training
+> **All 14 specialist models now use real sklearn training.** Simulated training
 > (`_simulate_training`) is retained only as a fallback when sklearn is unavailable
 > or when a model has insufficient class diversity for cross-validation.
 > See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md) for fallback details.
+>
+> v3.2 sprint added 6 new models with joblib weight persistence and 80/20 holdout evaluation.
 
 ## Overview
 
@@ -23,15 +25,23 @@ tasks better than the general-purpose LLM. They sit at Layer 2 in the
 | `missing_var_predictor` | Predict missing variables | DecisionTreeClassifier | Case trajectories |
 | `verifier_prior` | Predict verification outcome | LogisticRegression | Verifier results |
 | `domain_language_adapter` | Adapt to domain language | LogisticRegression | Profile data |
+| `intent_disambiguator` | Disambiguate intent → capability | TF-IDF + LogisticRegression | Goal descriptions |
+| `quality_grader` | Predict quality grade | RandomForestClassifier | Case metadata |
+| `sensor_health` | Classify sensor state | RandomForestClassifier | Residual statistics |
+| `thermal_predictor` | Predict thermal residual | Ridge | Sensor residuals |
+| `energy_forecaster` | Forecast energy proxy | Ridge | Channel residuals |
+| `schedule_optimizer` | Optimize scheduling score | GradientBoostingRegressor | Case metadata |
 
 ## Training Pipeline
 
 ```
 CaseTrajectories → SpecialistTrainer.train(model_name)
   → Feature extraction (per model type)
-  → Train on gold/silver cases
+  → 80/20 holdout split
+  → Train on 80%, evaluate on 20%
+  → Persist weights via joblib to data/models/{model_id}_v{N}.joblib
   → Generate TrainingResult
-  → Store in ModelStore
+  → Store metadata + weight_path in ModelStore
 ```
 
 ## Canary Lifecycle

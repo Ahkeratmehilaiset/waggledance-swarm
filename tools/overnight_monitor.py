@@ -72,6 +72,11 @@ class MetricsCollector:
         self.start_time = time.time()
         self.night_learning_results = []
         self.restarts = 0
+        # v3.2 metrics
+        self.v32_endpoint_checks = 0
+        self.v32_endpoint_failures = 0
+        self.attention_snapshots = []
+        self.uncertainty_snapshots = []
 
     def record_query(self, query, response, latency_ms):
         self.total_queries += 1
@@ -182,6 +187,42 @@ def trigger_night_learning(client, metrics):
     return None
 
 
+V32_ENDPOINTS = [
+    "/api/autonomy/epistemic-uncertainty",
+    "/api/autonomy/attention-budget",
+    "/api/autonomy/dream-mode/latest",
+    "/api/autonomy/memory/consolidation-stats",
+    "/api/autonomy/introspection",
+    "/api/autonomy/narrative",
+]
+
+
+def check_v32_endpoints(client, metrics):
+    """Check all v3.2 autonomy endpoints are responsive."""
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+    all_ok = True
+    for ep in V32_ENDPOINTS:
+        try:
+            r = client.get(f"{BASE_URL}{ep}", headers=headers, timeout=10)
+            metrics.v32_endpoint_checks += 1
+            if r.status_code != 200:
+                metrics.v32_endpoint_failures += 1
+                metrics.record_error("v32_endpoint", f"{ep} status={r.status_code}")
+                all_ok = False
+            else:
+                data = r.json()
+                if "uncertainty" in ep and "total_uncertainty" in data:
+                    metrics.uncertainty_snapshots.append(data.get("total_uncertainty", 0))
+                if "attention" in ep and "buckets" in data:
+                    metrics.attention_snapshots.append(data)
+        except Exception as e:
+            metrics.v32_endpoint_checks += 1
+            metrics.v32_endpoint_failures += 1
+            metrics.record_error("v32_endpoint", f"{ep}: {e}")
+            all_ok = False
+    return all_ok
+
+
 def write_report(metrics):
     """Write final markdown report."""
     duration_h = round(metrics.uptime_hours(), 1)
@@ -222,6 +263,16 @@ def write_report(metrics):
         report += f"- [{err['time']}] {err['type']}: {err['detail'][:100]}\n"
     if len(metrics.errors) > 20:
         report += f"- ... and {len(metrics.errors) - 20} more\n"
+
+    v32_success = metrics.v32_endpoint_checks - metrics.v32_endpoint_failures
+    v32_rate = round(100 * v32_success / max(metrics.v32_endpoint_checks, 1), 1)
+    report += f"\n## v3.2 Endpoint Health\n"
+    report += f"- Checks: {metrics.v32_endpoint_checks} ({v32_rate}% success)\n"
+    report += f"- Failures: {metrics.v32_endpoint_failures}\n"
+    if metrics.uncertainty_snapshots:
+        avg_unc = round(sum(metrics.uncertainty_snapshots) / len(metrics.uncertainty_snapshots), 3)
+        report += f"- Avg uncertainty: {avg_unc}\n"
+    report += f"- Endpoints checked: {', '.join(V32_ENDPOINTS)}\n"
 
     report += "\n## Metrics Timeline\nSee `logs/overnight_metrics.jsonl` for full data.\n"
 
@@ -276,6 +327,12 @@ def main():
             else:
                 log.warning(f"Query FAIL: {query[:40]}")
             last_query_time = now
+
+        # Check v3.2 endpoints every 30 minutes
+        if cycle % 60 == 1:
+            v32_ok = check_v32_endpoints(client, metrics)
+            if not v32_ok:
+                log.warning("Some v3.2 endpoints unhealthy")
 
         # Trigger night learning every 2 hours
         if now - last_night_learning >= 7200:

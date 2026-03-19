@@ -37,6 +37,7 @@ For the Apache-2.0 text, see `LICENSE`.
 - `waggledance/core/projections/introspection_view.py`
 - `waggledance/core/projections/autobiographical_index.py`
 - `waggledance/core/projections/projection_validator.py`
+- `waggledance/core/projections/__init__.py`
 
 ## Default rule
 

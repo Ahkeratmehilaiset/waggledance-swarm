@@ -72,15 +72,15 @@ Dashboard: http://localhost:8000
 
 ## Current Status (March 2026)
 
-- **v2.0.0-rc2** — autonomy runtime is the primary path
-- **3836 pytest tests passing**, CI green
+- **v3.2** — full autonomy runtime with self-entity, epistemic uncertainty, dream mode
+- **4074 pytest tests passing**, CI green
 - Solver-first routing verified end-to-end (query -> solver -> verified answer -> gold case -> overnight learning)
 - MAGMA audit trail captures full lifecycle (capability selection -> policy -> execution -> verification -> case recording)
 - Specialist model training functional with sklearn route classifier; canary promotion pipeline in place
-- Dashboard operational but still contains legacy domain references in HTML
+- v3.2 modules: epistemic uncertainty, attention budget, dream mode, consolidator, meta-optimizer, projections
+- CognitiveGraph populated: 5726 nodes, 6615 edges (agents + capabilities + intents)
 
 **Known limitations:**
-- CognitiveGraph (World Model) is initialized empty at runtime — population from existing data is a manual step
 - Specialist model training beyond route classifier uses simulated accuracy
 - Dashboard HTML has not been fully domain-neutralized
 - Legacy entrypoints (main.py, start.py) still exist alongside new runtime
@@ -104,9 +104,9 @@ Dashboard: http://localhost:8000
 
 | Version | Focus |
 |---------|-------|
-| **v2.0.0** (current) | Autonomy runtime, solver-first routing, MAGMA integration, night learning v2 |
+| **v2.0.0** | Autonomy runtime, solver-first routing, MAGMA integration, night learning v2 |
 | **v3.0** | Full alias migration, CognitiveGraph auto-population, complete domain-agnostic cutover |
-| **v3.2** | Self-entity in World Model, epistemic uncertainty, dream mode (counterfactual simulation), meta-optimizer, attention budget |
+| **v3.2** (current) | Self-entity in World Model, epistemic uncertainty, dream mode, meta-optimizer, attention budget, projections |
 | **Future** | Distributed multi-node clustering, advanced LoRA specialist models |
 
 ---

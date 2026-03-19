@@ -4,7 +4,8 @@
 > LogisticRegression with cross-validation). The remaining 7 specialists use
 > **simulated training** — accuracy estimated from quality grade distributions.
 > The full pipeline infrastructure (feature extraction, grading, canary lifecycle)
-> is in place and tested. Real ML training for all models is planned for v3.2.
+> is in place and tested. Real ML training for remaining models is a future goal. v3.2 adds meta-optimizer
+> (hyperparameter learning from canary results) to accelerate specialist improvement.
 > See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md) for details.
 
 ## Overview

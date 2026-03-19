@@ -1,7 +1,9 @@
 # Night Learning v2 — WaggleDance v2.0
 
-> **Note:** Specialist model training is currently **simulated** (grade-based
-> accuracy estimation). See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md).
+> **Note:** The `route_classifier` uses real sklearn training. Other specialists
+> use simulated training (grade-based accuracy estimation). v3.2 adds dream mode
+> (counterfactual simulation), memory consolidation, and meta-optimizer.
+> See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md).
 
 ## Overview
 

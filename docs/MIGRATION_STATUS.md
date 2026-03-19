@@ -1,7 +1,7 @@
 # Migration Status — WaggleDance Hexagonal Refactor + Full Autonomy
 
-**Updated:** 2026-03-17
-**Version:** v2.0.0 (full-autonomy-v3)
+**Updated:** 2026-03-19
+**Version:** v3.2 (full-autonomy)
 
 ---
 
@@ -30,11 +30,14 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 | `tests/integration/` (runtime, smoke, scenarios) | 90 | PASS |
 | `tests/migration/` (alias, backfill fixtures) | 10+ | PASS |
 | `tests/specialist_models/` + `tests/resource_kernel/` | 41 | PASS |
-| **Pytest total** | **3836** | **ALL PASS** |
+| `tests/continuity/` (v3.2: self-entity, uncertainty, attention, projections) | 116 | PASS |
+| `tests/night_learning_v2/` (consolidator, dream mode) | 60+ | PASS |
+| **Pytest total** | **4074** | **ALL PASS** |
 | `tools/waggle_backup.py --tests-only` (legacy) | 1468 (79 suites) | PASS |
-| **Grand total** | **~5300** | **ALL PASS** |
+| **Grand total** | **~5540** | **ALL PASS** |
 
-> **Note:** Specialist model training is simulated (grade-based accuracy estimation).
+> **Note:** The `route_classifier` uses real sklearn training (TF-IDF + LogisticRegression).
+> The remaining 7 specialists use simulated training (grade-based accuracy estimation).
 > See [SIMULATED_TRAINING.md](SIMULATED_TRAINING.md) for deviation details.
 
 ---

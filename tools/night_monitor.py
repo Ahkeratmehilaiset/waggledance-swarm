@@ -6,6 +6,7 @@ Checks health every 60s, feeds every 5min, chat every 10min.
 
 Usage: python tools/night_monitor.py [--hours 10]
 """
+import concurrent.futures
 import json
 import logging
 import os
@@ -166,7 +167,10 @@ def check_feeds():
 def test_chat(msg):
     t0 = time.perf_counter()
     try:
-        d = _post("/api/chat", {"message": msg})
+        # Use thread pool for total timeout (urllib timeout only covers socket ops)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_post, "/api/chat", {"message": msg})
+            d = future.result(timeout=90)
         ms = (time.perf_counter() - t0) * 1000
         m["chat_tests"] += 1
         resp = d.get("response", "")
@@ -290,6 +294,11 @@ def main():
             if cycle % 10 == 0:
                 msg = TEST_MSGS[cycle // 10 % len(TEST_MSGS)]
                 test_chat(msg)
+
+            # Heartbeat log (brief, so we know the process is alive)
+            elapsed_h = (time.time() - m["start"]) / 3600
+            log.info("cycle %d | %.1fh | health=%s | err=%d",
+                     cycle, elapsed_h, "ok" if ok else "FAIL", len(m["errors"]))
 
             # Report every 30 cycles (30 min)
             if cycle % 30 == 0:

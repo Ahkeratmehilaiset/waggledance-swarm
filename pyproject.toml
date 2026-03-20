@@ -4,16 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "waggledance-swarm"
-version = "3.2.0"
-description = "Local-first multi-agent AI with Finnish NLP and autonomous learning"
+version = "3.3.0"
+description = "Local-first multi-agent AI runtime — solver-first, autonomous overnight learning, full audit trail"
 readme = "README.md"
 license = "Apache-2.0 AND BUSL-1.1"
 license-files = ["LICENSE", "LICENSE-BUSL.txt", "LICENSE-CORE.md"]
-requires-python = ">=3.13"
+requires-python = ">=3.11"
+keywords = [
+    "local-first", "multi-agent", "ai-runtime", "solver-first",
+    "autonomous-learning", "iot", "smart-home", "mqtt",
+    "ollama", "pytorch", "sklearn", "chromadb",
+]
 authors = [
     {name = "Jani Korpi"}
 ]
 classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
 ]

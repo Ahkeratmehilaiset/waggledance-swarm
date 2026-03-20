@@ -1,0 +1,10 @@
+#!/bin/bash
+# Auto-regenerate CURRENT_STATE.md before push
+echo "Regenerating CURRENT_STATE.md..."
+python tools/generate_state.py
+git add CURRENT_STATE.md
+# Amend last commit silently if state changed
+if ! git diff --cached --quiet CURRENT_STATE.md; then
+    git commit --amend --no-edit CURRENT_STATE.md
+    echo "CURRENT_STATE.md updated and amended to last commit."
+fi

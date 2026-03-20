@@ -72,6 +72,18 @@ class RSSFeedMonitor:
             if not parsed or not hasattr(parsed, "entries"):
                 continue
 
+            # Check for HTTP errors or malformed feeds
+            status = getattr(parsed, "status", 200)
+            if status and status >= 400:
+                log.warning("RSS feed %s: HTTP %d", name, status)
+                self._errors += 1
+                continue
+            if getattr(parsed, "bozo", False) and not parsed.entries:
+                exc = getattr(parsed, "bozo_exception", "unknown")
+                log.warning("RSS feed %s: parse error: %s", name, exc)
+                self._errors += 1
+                continue
+
             for entry in parsed.entries:
                 entry_id = getattr(entry, "id", None) or getattr(entry, "link", None)
                 if not entry_id or entry_id in self._seen_ids:

@@ -202,13 +202,13 @@ feeds:
     interval_min: 15
   rss:
     enabled: true
-    interval_min: 120
+    interval_min: 60
     feeds:
-      - url: "https://www.ruokavirasto.fi/rss"
-        name: Ruokavirasto
+      - url: "https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_UUTISET"
+        name: Yle-uutiset
         critical: true
-      - url: "https://www.ilmatieteenlaitos.fi/rss/saa"
-        name: FMI-saa
+      - url: "https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_NEWS"
+        name: Yle-news-en
         critical: false
       - url: "https://blog.home-assistant.io/atom.xml"
         name: HA-blog

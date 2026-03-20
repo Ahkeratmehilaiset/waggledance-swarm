@@ -184,6 +184,22 @@ class HallucinationChecker:
                       f"corrections={corr_penalty:.0%}, combined={combined:.0%}")
             log.warning(f"⚠️ Hallusinaatio? {reason}")
 
+        # RAG deep verification for borderline cases
+        if 0.35 < combined < 0.60 and memory_matches:
+            try:
+                from core.rag_verifier import RAGVerifier
+                verifier = RAGVerifier(
+                    memory_store=getattr(self, '_memory_store', None),
+                    consciousness=getattr(self, '_consciousness', None))
+                vr = verifier.verify(question, answer)
+                if vr.verified and vr.contradicted_count > 0:
+                    is_suspicious = True
+                    reason += f" | RAG: {vr.contradicted_count} contradicted claims"
+                elif vr.verified and vr.overall_score > 0.7:
+                    is_suspicious = False  # RAG says it's OK
+            except ImportError:
+                pass  # RAG verifier not available
+
         return HallucinationResult(
             relevance=similarity,
             keyword_overlap=overlap,

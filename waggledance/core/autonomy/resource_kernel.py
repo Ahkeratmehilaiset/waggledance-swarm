@@ -200,18 +200,18 @@ class ResourceKernel:
     def set_night_mode(self, enabled: bool):
         """Enable/disable night mode (affects resource allocation)."""
         self._night_mode = enabled
+        # Always start from default limits to prevent ratcheting
+        defaults = copy.copy(_TIER_LIMITS.get(self._tier.value, ResourceLimits()))
         if enabled:
             # Night mode: reduce query capacity, increase learning capacity
-            self._limits.max_concurrent_queries = max(
-                1, self._limits.max_concurrent_queries // 2
+            defaults.max_concurrent_queries = max(
+                1, defaults.max_concurrent_queries // 2
             )
-            self._limits.max_concurrent_learning = min(
-                self._limits.max_concurrent_learning * 2,
-                self._limits.max_concurrent_queries + self._limits.max_concurrent_learning,
+            defaults.max_concurrent_learning = min(
+                defaults.max_concurrent_learning * 2,
+                defaults.max_concurrent_queries + defaults.max_concurrent_learning,
             )
-        else:
-            # Restore default limits for tier
-            self._limits = copy.copy(_TIER_LIMITS.get(self._tier.value, ResourceLimits()))
+        self._limits = defaults
         log.info("Night mode: %s", "enabled" if enabled else "disabled")
 
     def take_snapshot(self) -> ResourceSnapshot:

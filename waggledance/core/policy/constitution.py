@@ -231,13 +231,15 @@ def _parse_profile_override(data: dict) -> Optional[ConstitutionRule]:
 
     # Build applies_to from condition.category
     applies_to: List[str] = []
-    category = condition.pop("category", None)
+    category = condition.get("category", None)
     if category:
         applies_to = [category.lower()]
 
     # Build conditions dict from remaining condition fields
     conditions: Dict[str, Any] = {}
     for key, value in condition.items():
+        if key == "category":
+            continue
         if key == "capability_pattern":
             conditions["capability_id_pattern"] = value
         elif key == "severity_max":

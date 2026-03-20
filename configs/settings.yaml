@@ -18,6 +18,17 @@ learning:
   prompt_apply_min_samples_per_arm: 3
   prompt_live_apply: false
   prompt_rollback_on_regression: true
+  # v3.2 autonomy learning
+  primary_unit: case_trajectory
+  llm_max_grade: bronze
+  specialist_canary_hours: 48
+  specialist_min_accuracy: 0.85
+  meta_optimizer_enabled: true
+  meta_optimizer_min_canary_cycles: 3
+  dream_mode_enabled: true
+  dream_mode_max_simulations_per_night: 20
+  dream_mode_min_simulations_per_night: 4
+  dream_mode_insight_backoff_window_nights: 3
 llm:
   base_url: http://localhost:11434
   model: phi4-mini
@@ -32,6 +43,13 @@ llm_heartbeat:
   timeout: 15
 memory:
   db_path: data/waggle_dance.db
+  # v3.2 consolidation
+  consolidation_enabled: true
+  consolidation_evict_enabled: false   # start safe; enable later in rollout
+  consolidation_min_age_days: 90
+  consolidation_retention_threshold: 0.1
+  episodic_max_active_count: 10000
+  significance_never_consolidate_threshold: 0.7
 ops_agent:
   auto_model_switch: false
   error_rate_critical: 0.25
@@ -279,18 +297,6 @@ runtime:
 
 # ── v3.2 config additions ────────────────────────────────────
 
-learning:
-  primary_unit: case_trajectory
-  llm_max_grade: bronze
-  specialist_canary_hours: 48
-  specialist_min_accuracy: 0.85
-  meta_optimizer_enabled: true
-  meta_optimizer_min_canary_cycles: 3
-  dream_mode_enabled: true
-  dream_mode_max_simulations_per_night: 20
-  dream_mode_min_simulations_per_night: 4
-  dream_mode_insight_backoff_window_nights: 3
-
 continuity:
   heartbeat_seconds: 120
   continuity_floor_enabled: true
@@ -304,14 +310,6 @@ curiosity:
     HOME: 10
     FACTORY: 20
     DOMAIN: 10
-
-memory:
-  consolidation_enabled: true
-  consolidation_evict_enabled: false   # start safe; enable later in rollout
-  consolidation_min_age_days: 90
-  consolidation_retention_threshold: 0.1
-  episodic_max_active_count: 10000
-  significance_never_consolidate_threshold: 0.7
 
 attention:
   critical_pct: 40

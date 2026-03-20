@@ -180,14 +180,16 @@ class SensorHub:
                     """Fire alert on temperature anomaly."""
                     if self.alert_dispatcher:
                         try:
+                            from integrations.alert_dispatcher import Alert
                             import asyncio
+                            alert = Alert(
+                                severity="high",
+                                title="Sensor anomaly",
+                                message=desc,
+                                source="sensor_anomaly",
+                            )
                             loop = asyncio.get_running_loop()
-                            loop.create_task(self.alert_dispatcher.dispatch(
-                                "sensor_anomaly",
-                                {"hive_id": reading.hive_id,
-                                 "temperature_c": reading.temperature_c,
-                                 "anomaly": desc},
-                            ))
+                            loop.create_task(self.alert_dispatcher.send_alert(alert))
                         except Exception:
                             pass
                     log.warning("Hive anomaly: %s", desc)

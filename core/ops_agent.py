@@ -288,7 +288,11 @@ class OpsAgent:
                 # 3. Laadun arviointi (harvoin)
                 if (self._cycle_count % self.quality_eval_every == 0
                         and self._cycle_count > 0):
-                    asyncio.create_task(self._quality_benchmark())
+                    task = asyncio.create_task(self._quality_benchmark())
+                    task.add_done_callback(
+                        lambda t: t.result() if not t.cancelled() and t.exception() is None
+                        else logger.error("Quality benchmark failed: %s", t.exception()) if t.exception() else None
+                    )
 
             except asyncio.CancelledError:
                 break

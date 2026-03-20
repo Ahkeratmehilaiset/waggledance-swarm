@@ -38,8 +38,15 @@ def main():
         print(f"WaggleDance starting with preset: {args.preset}")
         print(f"   Profile: {preset.get('profile')}, Agents: {preset.get('agents_max')}")
 
+    # Build argv for runtime, stripping --preset which it doesn't understand
+    runtime_argv = []
+    if args.port != 8000:
+        runtime_argv += ["--port", str(args.port)]
+    if args.stub:
+        runtime_argv.append("--stub")
+
     from waggledance.adapters.cli.start_runtime import main as runtime_main
-    runtime_main()
+    runtime_main(runtime_argv if runtime_argv else None)
 
 
 if __name__ == "__main__":

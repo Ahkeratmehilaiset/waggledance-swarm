@@ -664,7 +664,10 @@ class AutonomyRuntime:
         for step_idx, step in enumerate(plan.steps):
             cap = self.capability_registry.get(step.capability_id)
             if cap is None:
-                continue
+                log.warning("Capability not found: %s (step %d/%d)",
+                            step.capability_id, step_idx + 1, len(plan.steps))
+                all_succeeded = False
+                break
 
             action = Action(
                 capability_id=step.capability_id,

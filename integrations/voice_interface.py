@@ -216,6 +216,13 @@ class VoiceInterface:
         response.total_latency_ms = (time.monotonic() - t0) * 1000
         return response
 
+    async def stop(self):
+        """Cleanup voice resources."""
+        self._ready = False
+        self._stt = None
+        self._tts = None
+        log.info("Voice interface stopped")
+
     def status(self) -> dict:
         """Return component status for dashboard."""
         return {

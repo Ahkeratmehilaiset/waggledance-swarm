@@ -74,7 +74,7 @@ class QualityScore:
     reasoning: str         # 7b:n perustelu
     prompt_preview: str
     response_preview: str
-    timestamp: float = field(default_factory=time.monotonic)
+    timestamp: float = field(default_factory=time.time)
 
     @property
     def is_good(self) -> bool:
@@ -95,7 +95,7 @@ class PromptExperiment:
     # Tulokset
     original_scores: list = field(default_factory=list)
     evolved_scores: list = field(default_factory=list)
-    started_at: float = field(default_factory=time.monotonic)
+    started_at: float = field(default_factory=time.time)
     decided: bool = False
     winner: str = ""  # "original" | "evolved"
 
@@ -651,10 +651,10 @@ class LearningEngine:
                 logger.debug(f"Dedup rejected: {_resp_text[:60]}...")
             else:
                 self._seen_hashes.add(_content_hash)
-                # Cap dedup set to prevent memory growth
+                # Cap dedup set to prevent memory growth — keep recent half
                 if len(self._seen_hashes) > 50000:
-                    # Keep last ~40k by clearing and re-adding recent
-                    self._seen_hashes.clear()
+                    as_list = list(self._seen_hashes)
+                    self._seen_hashes = set(as_list[len(as_list) // 2:])
                 self._append_jsonl(self._curated_path, finetune_entry)
                 self.stats["total_curated"] += 1
         else:
@@ -781,8 +781,9 @@ class LearningEngine:
                 and s.timestamp > exp.started_at
             ]
 
-            # Jako: parilliset → original, parittomat → evolved
-            # (yksinkertaistettu — oikeasti pitäisi vuorotella promptia)
+            # Rebuild from scratch to avoid duplicate appending
+            exp.original_scores.clear()
+            exp.evolved_scores.clear()
             for i, s in enumerate(recent_scores):
                 if i % 2 == 0:
                     exp.original_scores.append(s.score)
@@ -795,7 +796,7 @@ class LearningEngine:
                 await self._decide_experiment(exp)
 
             # Timeout: 2h ilman päätöstä → peruuta
-            if not exp.decided and time.monotonic() - exp.started_at > 7200:
+            if not exp.decided and time.time() - exp.started_at > 7200:
                 exp.decided = True
                 exp.winner = "original"  # Turvallinen oletus
                 pw = PromptWin(

@@ -226,6 +226,7 @@ class NightLearningPipeline:
 
         try:
             training_results = self._trainer.train_all(eligible)
+            self._last_training_results = training_results
             result.models_trained = sum(
                 1 for r in training_results if r.status == "completed"
             )

@@ -121,7 +121,7 @@ class AudioMonitor:
         self._started = False
         log.info("AudioMonitor stopped")
 
-    def _handle_spectrum(self, topic: str, payload: bytes):
+    async def _handle_spectrum(self, topic: str, payload: str):
         """Handle incoming FFT spectrum data from MQTT.
 
         Expected payload: JSON with "hive_id" and "spectrum" array
@@ -178,7 +178,7 @@ class AudioMonitor:
                 if detection.is_predator:
                     self._on_predator_detected(detection)
 
-    def _handle_event(self, topic: str, payload: bytes):
+    async def _handle_event(self, topic: str, payload: str):
         """Handle audio event messages from MQTT."""
         try:
             data = json.loads(payload)
@@ -200,7 +200,7 @@ class AudioMonitor:
         # Store in ChromaDB
         self._store_event(event)
 
-    def _handle_status(self, topic: str, payload: bytes):
+    async def _handle_status(self, topic: str, payload: str):
         """Handle sensor status messages from MQTT."""
         try:
             data = json.loads(payload)

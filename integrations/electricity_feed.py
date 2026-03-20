@@ -73,19 +73,25 @@ class ElectricityFeed:
             return None
 
         now = datetime.now(timezone.utc)
-        now_str = now.isoformat()
 
         for entry in self._today_prices:
-            start = entry.get("startDate", "")
-            end = entry.get("endDate", "")
-            if start <= now_str <= end:
-                self._current_price = entry
-                return entry
+            try:
+                start = datetime.fromisoformat(entry.get("startDate", ""))
+                end = datetime.fromisoformat(entry.get("endDate", ""))
+                if start <= now <= end:
+                    self._current_price = entry
+                    return entry
+            except (ValueError, TypeError):
+                continue
 
         # Fallback: return the most recent past entry
-        past = [
-            p for p in self._today_prices if p.get("startDate", "") <= now_str
-        ]
+        past = []
+        for p in self._today_prices:
+            try:
+                if datetime.fromisoformat(p.get("startDate", "")) <= now:
+                    past.append(p)
+            except (ValueError, TypeError):
+                continue
         if past:
             self._current_price = past[-1]
             return past[-1]

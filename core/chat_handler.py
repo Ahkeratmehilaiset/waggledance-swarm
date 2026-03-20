@@ -7,6 +7,7 @@ v3.3 refactor: split from 1136-line god object into 5 focused modules:
 - chat_telemetry.py      — metrics, hot cache, route telemetry
 - chat_router.py         — autonomy → legacy → hex → fallback chain
 """
+import asyncio
 import logging
 import time
 
@@ -16,6 +17,8 @@ from core.chat_routing_engine import ChatRoutingEngine
 from core.chat_delegation import AgentDelegator
 from core.chat_telemetry import ChatTelemetry
 from core.tracing import get_tracer
+
+_autonomy_init_lock = asyncio.Lock()
 
 _tracer = get_tracer("waggledance.chat")
 
@@ -84,14 +87,15 @@ class ChatHandler:
             try:
                 _autonomy_svc = getattr(self, '_autonomy_service', None)
                 if _autonomy_svc is None:
-                    _svc = _AutonomyService(
-                        profile=self.config.get("profile", "DEFAULT"))
-                    _svc.start()
-                    if getattr(self, '_autonomy_service', None) is None:
-                        self._autonomy_service = _svc
-                    else:
-                        _svc.stop()
-                    _autonomy_svc = self._autonomy_service
+                    async with _autonomy_init_lock:
+                        # Re-check after acquiring lock
+                        _autonomy_svc = getattr(self, '_autonomy_service', None)
+                        if _autonomy_svc is None:
+                            _svc = _AutonomyService(
+                                profile=self.config.get("profile", "DEFAULT"))
+                            _svc.start()
+                            self._autonomy_service = _svc
+                            _autonomy_svc = _svc
 
                 from core.chat_router import ChatRouter
                 _router = ChatRouter(autonomy_service=_autonomy_svc)

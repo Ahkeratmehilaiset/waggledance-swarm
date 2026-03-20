@@ -1022,7 +1022,7 @@ loadFeeds();
         stats = {"cpu_percent": 0, "memory_percent": 0, "gpu_percent": None}
         try:
             import psutil
-            stats["cpu_percent"] = psutil.cpu_percent(interval=0.1)
+            stats["cpu_percent"] = psutil.cpu_percent(interval=None)
             stats["memory_percent"] = psutil.virtual_memory().percent
         except ImportError:
             pass
@@ -1360,7 +1360,7 @@ loadFeeds();
         result = {"cpu": 0, "gpu": 0, "vram": 0.0, "ram_gb": 0.0}
         try:
             import psutil
-            _raw_cpu = psutil.cpu_percent(interval=0.1)
+            _raw_cpu = psutil.cpu_percent(interval=None)
             _cpu_samples.append(_raw_cpu)
             if len(_cpu_samples) > 5:
                 _cpu_samples[:] = _cpu_samples[-5:]

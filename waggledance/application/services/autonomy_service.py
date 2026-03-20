@@ -49,7 +49,12 @@ class AutonomyService:
         self._profile = profile
         self._runtime = runtime or AutonomyRuntime(profile=profile)
         self._lifecycle = lifecycle or AutonomyLifecycle(profile=profile)
-        self._resource_kernel = resource_kernel or ResourceKernel()
+        # Prefer runtime's resource kernel to avoid split-brain
+        self._resource_kernel = (
+            resource_kernel
+            or getattr(self._runtime, "resource_kernel", None)
+            or ResourceKernel()
+        )
         self._compatibility = compatibility or CompatibilityLayer(
             runtime=self._runtime,
         )

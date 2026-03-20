@@ -44,6 +44,13 @@ except ImportError:
 log = logging.getLogger("waggledance.autonomy.runtime")
 
 
+import concurrent.futures
+
+_ASYNC_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="autonomy-async",
+)
+
+
 def _run_maybe_async(result):
     """If *result* is a coroutine, run it to completion and return the value."""
     if not inspect.isawaitable(result):
@@ -54,10 +61,8 @@ def _run_maybe_async(result):
         loop = None
     if loop is None:
         return asyncio.run(result)
-    # Already inside an event loop — run in a new thread to avoid deadlock
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, result).result()
+    # Already inside an event loop — run in shared pool to avoid deadlock
+    return _ASYNC_POOL.submit(asyncio.run, result).result()
 
 
 def _make_adapter_executor(adapter):
@@ -105,6 +110,7 @@ class AutonomyRuntime:
         verifier: Optional[Verifier] = None,
         case_builder: Optional[CaseTrajectoryBuilder] = None,
         working_memory: Optional[WorkingMemory] = None,
+        resource_kernel=None,
     ):
         self.profile = profile
 
@@ -257,7 +263,7 @@ class AutonomyRuntime:
                 AdmissionControl,
                 ResourceKernel,
             )
-            self.resource_kernel = ResourceKernel()
+            self.resource_kernel = resource_kernel or ResourceKernel()
             self.admission_control = AdmissionControl(kernel=self.resource_kernel)
         except Exception as exc:
             log.debug("ResourceKernel unavailable: %s", exc)

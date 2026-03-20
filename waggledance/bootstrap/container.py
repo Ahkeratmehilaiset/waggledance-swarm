@@ -186,7 +186,13 @@ class Container:
         from waggledance.core.autonomy.runtime import AutonomyRuntime
 
         profile = self._settings.get_profile()
-        runtime = AutonomyRuntime(profile=profile)
+
+        # Build ResourceKernel with tier from settings — single instance shared
+        # across runtime and service to avoid split-brain limit tracking
+        tier = self._settings.get_hardware_tier()
+        resource_kernel = ResourceKernel(tier=tier)
+
+        runtime = AutonomyRuntime(profile=profile, resource_kernel=resource_kernel)
         lifecycle = AutonomyLifecycle(
             primary=self._settings.runtime_primary,
             compatibility_mode=self._settings.compatibility_mode,
@@ -196,10 +202,6 @@ class Container:
             runtime=runtime,
             compatibility_mode=self._settings.compatibility_mode,
         )
-
-        # Build ResourceKernel with tier from settings
-        tier = self._settings.get_hardware_tier()
-        resource_kernel = ResourceKernel(tier=tier)
 
         return AutonomyService(
             runtime=runtime,

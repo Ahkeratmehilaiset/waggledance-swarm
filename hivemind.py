@@ -1475,3 +1475,7 @@ DELEGATION RULES (IMPORTANT):
                 await callback({"type": event_type, "data": data})
             except Exception:
                 pass
+
+    async def _broadcast(self, event_type: str, data: dict):
+        """Broadcast event to WebSocket clients (used by VoiceInterface)."""
+        await self._notify_ws(event_type, data)

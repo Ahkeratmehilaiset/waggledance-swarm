@@ -302,6 +302,7 @@ def create_app(hivemind):
 </div>
 
 <script>
+function esc(s){{const d=document.createElement('div');d.textContent=String(s);return d.innerHTML;}}
 let toCount=0;
 let agentLevels={{}};
 const ws=new WebSocket(`ws://${{location.host}}/ws`);
@@ -323,7 +324,7 @@ ws.onmessage=e=>{{
   if(tp==='round_table_insight'){{
     const feed=document.getElementById('rt-feed');
     const div=document.createElement('div');
-    div.innerHTML=`<span style="color:#d29922">[${{d.agent_type||d.agent}}]</span> ${{d.response}}`;
+    div.innerHTML=`<span style="color:#d29922">[${{esc(d.agent_type||d.agent)}}]</span> ${{esc(d.response)}}`;
     feed.appendChild(div);
     feed.scrollTop=feed.scrollHeight;
     return;
@@ -331,7 +332,7 @@ ws.onmessage=e=>{{
   if(tp==='round_table_synthesis'){{
     const syn=document.getElementById('rt-synthesis');
     syn.style.display='block';
-    syn.innerHTML=`<strong style="color:#f0b429">Synteesi:</strong> ${{d.synthesis}}`;
+    syn.innerHTML=`<strong style="color:#f0b429">Synteesi:</strong> ${{esc(d.synthesis)}}`;
     document.getElementById('rt-status').textContent=`(${{d.agent_count}} agenttia)`;
     return;
   }}
@@ -351,7 +352,7 @@ ws.onmessage=e=>{{
   if(tp==='correction_stored'){{
     const cf=document.getElementById('corrections-feed');
     const div=document.createElement('div');
-    div.innerHTML=`<span style="color:#da3688">📝</span> Korjaus: ${{d.query||''}} → ${{d.good_answer||''}}`;
+    div.innerHTML=`<span style="color:#da3688">📝</span> Korjaus: ${{esc(d.query||'')}} → ${{esc(d.good_answer||'')}}`;
     cf.prepend(div);
     if(cf.children.length>20)cf.lastChild.remove();
     const cb=document.getElementById('corrections-badge');
@@ -364,7 +365,7 @@ ws.onmessage=e=>{{
   if(tp==='feed_update'){{
     const cf=document.getElementById('corrections-feed');
     const div=document.createElement('div');
-    div.innerHTML=`<span style="color:#58a6ff">📡</span> ${{d.feed||'feed'}}: ${{d.facts_stored||0}} facts`;
+    div.innerHTML=`<span style="color:#58a6ff">📡</span> ${{esc(d.feed||'feed')}}: ${{d.facts_stored||0}} facts`;
     cf.prepend(div);
     if(cf.children.length>20)cf.lastChild.remove();
   }}
@@ -418,7 +419,7 @@ ws.onmessage=e=>{{
   if(tp==='user_teaching'){{
     const cf=document.getElementById('corrections-feed');
     const div=document.createElement('div');
-    div.innerHTML=`<span style="color:#3fb950">🎓</span> Opittu: ${{d.teaching||''}}`;
+    div.innerHTML=`<span style="color:#3fb950">🎓</span> Opittu: ${{esc(d.teaching||'')}}`;
     cf.prepend(div);
     if(cf.children.length>20)cf.lastChild.remove();
   }}
@@ -433,7 +434,7 @@ ws.onmessage=e=>{{
     const tc=document.getElementById('timeout-count');
     tc.style.display='inline';tc.textContent=`⚠️ ${{toCount}} timeoutia`;
   }}
-  div.innerHTML=`<span style="color:#484f58">${{t}}</span> ${{txt}}`;
+  div.innerHTML=`<span style="color:#484f58">${{t}}</span> ${{esc(txt)}}`;
   feed.prepend(div);
   if(feed.children.length>60)feed.lastChild.remove();
 }};
@@ -442,13 +443,13 @@ async function sendChat(){{
   const inp=document.getElementById('chatinput');
   const msg=inp.value.trim();if(!msg)return;
   const log=document.getElementById('chatlog');
-  log.innerHTML+=`<div>🧑 ${{msg}}</div>`;
+  log.innerHTML+=`<div>🧑 ${{esc(msg)}}</div>`;
   inp.value='';inp.disabled=true;
   try{{
     const r=await fetch('/api/chat',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{message:msg}})}});
     const d=await r.json();
-    log.innerHTML+=`<div style="color:#79c0ff">&#x1F4AC; ${{d.response||d.error}}</div>`;
-  }}catch(e){{log.innerHTML+=`<div style="color:#f85149">❌ ${{e}}</div>`;}}
+    log.innerHTML+=`<div style="color:#79c0ff">&#x1F4AC; ${{esc(d.response||d.error)}}</div>`;
+  }}catch(e){{log.innerHTML+=`<div style="color:#f85149">❌ ${{esc(e)}}</div>`;}}
   inp.disabled=false;log.scrollTop=log.scrollHeight;
   // User chatted → hide night badge
   document.getElementById('night-badge').style.display='none';
@@ -486,12 +487,12 @@ async function loadStatus(){{
       const role=ag.role||'worker';
       const sc=ag.status==='idle'?'#484f58':ag.status==='thinking'?'#d29922':'#3fb950';
       const badge=lvlBadge(ag.id||'');
-      return `<div class="stat role-${{role}}"><span style="color:${{sc}}">●</span> ${{ag.name}} <span style="color:#484f58">[${{role}}]</span>${{badge}}</div>`;
+      return `<div class="stat role-${{esc(role)}}"><span style="color:${{sc}}">●</span> ${{esc(ag.name)}} <span style="color:#484f58">[${{esc(role)}}]</span>${{badge}}</div>`;
     }}).join('')||'Ei agentteja';
 
     const lb=document.getElementById('leaderboard');
     lb.innerHTML=(d.token_economy?.leaderboard||[]).slice(0,10).map(e=>
-      `<div class="stat">${{e.agent_id.slice(0,18)}} = ${{e.balance}}🪙</div>`
+      `<div class="stat">${{esc(e.agent_id.slice(0,18))}} = ${{e.balance}}🪙</div>`
     ).join('')||'—';
 
     const sw=document.getElementById('swarm');const ss=d.swarm||{{}};

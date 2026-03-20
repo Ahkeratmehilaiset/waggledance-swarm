@@ -48,7 +48,7 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | Application services (chat, memory, learning) | `tests/unit_app/` — 16 tests |
 | Adapter implementations (9 adapters + SQLiteTrustStore) | `tests/unit/` — 300+ tests |
 | DI container (stub + production) | Smoke tests pass both modes |
-| Legacy test suite | 79 suites, 1468 tests, 0 failures, Health 100/100 |
+| Legacy test suite | 87 suites, 2754 tests, 0 failures, Health 84/100 |
 | Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
 | **Autonomy runtime (v3.2)** | **4350 pytest tests (phases 1-9 + continuity + regression + e2e), all pass** |

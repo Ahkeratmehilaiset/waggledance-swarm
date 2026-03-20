@@ -1,0 +1,13 @@
+# configs/presets/cottage-full.yaml
+profile: cottage
+agents_max: 30
+memory_max_items: 50000
+ollama_model: llama3.2:3b
+embedding_model: nomic-embed-text
+micromodel_v2_enabled: true
+micromodel_v3_enabled: false
+resource_guard:
+  max_memory_percent: 85
+  critical_memory_percent: 93
+mqtt_tls: true
+log_format: text

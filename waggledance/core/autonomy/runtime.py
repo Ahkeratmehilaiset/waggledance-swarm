@@ -262,6 +262,14 @@ class AutonomyRuntime:
         except Exception as exc:
             log.debug("ResourceKernel unavailable: %s", exc)
 
+        # ResourceGuard — OOM protection + throttling
+        self.resource_guard = None
+        try:
+            from core.resource_guard import ResourceGuard
+            self.resource_guard = ResourceGuard()
+        except Exception as exc:
+            log.debug("ResourceGuard unavailable: %s", exc)
+
         self._started = False
         log.info("AutonomyRuntime initialised (profile=%s)", profile)
 
@@ -350,6 +358,12 @@ class AutonomyRuntime:
                     "wait_ms": admission.wait_ms,
                     "elapsed_ms": round((time.time() - t0) * 1000, 2),
                 }
+
+        # ResourceGuard — OOM protection
+        if self.resource_guard:
+            if self.resource_guard.is_critical():
+                self.resource_guard.trigger_emergency_gc()
+                log.warning("ResourceGuard: critical memory — emergency GC triggered")
 
         # Track task start for load management
         if self.resource_kernel:
@@ -909,6 +923,8 @@ class AutonomyRuntime:
             s["resource_kernel"] = self.resource_kernel.stats()
         if self.admission_control:
             s["admission_control"] = self.admission_control.stats()
+        if self.resource_guard:
+            s["resource_guard"] = self.resource_guard.stats
         if self.audit:
             s["magma_audit"] = self._magma_safe("stats.audit", self.audit.stats) or {}
         if self.event_log:

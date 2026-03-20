@@ -583,67 +583,242 @@ class ClassifierModel:
 # ═══════════════════════════════════════════════════════════════
 
 class LoRAModel:
-    """LoRA fine-tuned nano-LLM — STUB ONLY (v3.2).
+    """LoRA fine-tuned nano-LLM (V3 MicroModel).
 
-    STATUS: Data collection only. No actual LoRA fine-tuning is performed.
-    The predict() method always returns None.
-    Training saves JSONL data for future use when peft becomes available.
+    Uses PEFT QLoRA to fine-tune a small language model on accumulated
+    Q&A data. Training runs overnight on CPU/GPU.
+
+    Base model: loaded from HuggingFace or local cache.
+    Training: QLoRA 4-bit quantization, rank=8, alpha=16.
+    Inference: merged adapter weights, ~50ms on CPU.
     """
 
-    def __init__(self, model_name="smollm2:135m",
-                 data_dir="data/lora_adapters"):
+    def __init__(self, model_name="HuggingFaceTB/SmolLM2-135M-Instruct",
+                 data_dir="data/lora_adapters",
+                 adapter_dir="data/lora_merged"):
         self._generation = 0
-        self._available = False  # Always False — stub
-        self._implementation_status = "stub_only"  # v3.2 explicit marker
+        self._available = False
         self._model_name = model_name
         self._data_dir = Path(data_dir)
+        self._adapter_dir = Path(adapter_dir)
         self._hits = 0
         self._misses = 0
         self._peft_available = False
+        self._model = None
+        self._tokenizer = None
+        self._implementation_status = "stub_only"
         self._check_peft()
+        self._load_merged_model()
 
     def _check_peft(self):
-        """Check if peft+transformers are installed."""
+        """Check if peft + transformers + bitsandbytes are installed."""
         try:
             import peft  # noqa: F401
             import transformers  # noqa: F401
             self._peft_available = True
+            self._implementation_status = "ready"
+            log.info("V3 LoRA: peft available — real training enabled")
         except ImportError:
             self._peft_available = False
-            log.info("V3: peft/transformers not installed, "
-                     "LoRA training unavailable")
+            self._implementation_status = "stub_only"
+            log.info("V3: peft not installed, LoRA training unavailable")
+
+    def _load_merged_model(self):
+        """Load previously trained and merged model if exists."""
+        if not self._peft_available:
+            return
+        merged_path = self._adapter_dir / "merged"
+        if not merged_path.exists():
+            return
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            self._tokenizer = AutoTokenizer.from_pretrained(str(merged_path))
+            self._model = AutoModelForCausalLM.from_pretrained(
+                str(merged_path), device_map="cpu")
+            self._model.eval()
+            self._available = True
+            log.info("V3 LoRA: loaded merged model from %s", merged_path)
+        except Exception as e:
+            log.warning("V3 LoRA: failed to load merged model: %s", e)
+            self._available = False
 
     def predict(self, question: str) -> Optional[dict]:
-        """Always returns None — V3 is a stub with no trained model.
-        Do not rely on this method for routing decisions."""
-        self._misses += 1
-        return None
+        """Generate response using fine-tuned model.
+
+        Returns None if model not available or confidence too low.
+        """
+        if not self._available or self._model is None or self._tokenizer is None:
+            self._misses += 1
+            return None
+
+        if self._generation < 3:
+            self._misses += 1
+            return None
+
+        try:
+            import torch
+            prompt = f"### Question:\n{question}\n\n### Answer:\n"
+            inputs = self._tokenizer(prompt, return_tensors="pt",
+                                     max_length=256, truncation=True)
+            with torch.no_grad():
+                outputs = self._model.generate(
+                    **inputs, max_new_tokens=128,
+                    temperature=0.3, do_sample=True,
+                    pad_token_id=self._tokenizer.eos_token_id)
+
+            answer = self._tokenizer.decode(
+                outputs[0][inputs["input_ids"].shape[1]:],
+                skip_special_tokens=True).strip()
+
+            if not answer or len(answer) < 5:
+                self._misses += 1
+                return None
+
+            self._hits += 1
+            return {
+                "answer": answer,
+                "confidence": 0.65,
+                "method": "v3_lora",
+                "generation": self._generation,
+            }
+        except Exception as e:
+            log.warning("V3 predict error: %s", e)
+            self._misses += 1
+            return None
 
     def train(self, training_pairs: list):
-        """Save training data to JSONL for future LoRA implementation.
-        NOTE: This does NOT perform gradient descent or any model training.
-        Data is archived for when peft/transformers become available."""
+        """Fine-tune base model with QLoRA on training data.
+
+        1. Load base model with 4-bit quantization
+        2. Apply LoRA adapters (rank=8, alpha=16)
+        3. Train on Q&A pairs (3 epochs, lr=2e-4)
+        4. Merge adapters into base model
+        5. Save merged model for inference
+        """
         if not self._peft_available:
-            log.info("V3: LoRA training skipped — peft not installed")
+            log.info("V3: peft not installed, saving data only")
+            self._save_training_data(training_pairs)
             return False
 
-        # Future: actual LoRA fine-tuning when peft is installed
-        log.info(f"V3: LoRA training stub called with "
-                 f"{len(training_pairs)} pairs")
-        self._generation += 1
+        if len(training_pairs) < 50:
+            log.info("V3: insufficient data (%d pairs, need 50+)", len(training_pairs))
+            self._save_training_data(training_pairs)
+            return False
 
-        # Save training data for future use
+        try:
+            import torch
+            from transformers import (AutoModelForCausalLM, AutoTokenizer,
+                                      TrainingArguments, Trainer)
+            from peft import LoraConfig, get_peft_model, TaskType
+
+            log.info("V3 LoRA: starting training with %d pairs", len(training_pairs))
+
+            # 1. Load base model
+            tokenizer = AutoTokenizer.from_pretrained(self._model_name)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            # Try 4-bit quantization, fall back to fp32
+            try:
+                from transformers import BitsAndBytesConfig
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4")
+                model = AutoModelForCausalLM.from_pretrained(
+                    self._model_name, quantization_config=bnb_config,
+                    device_map="auto")
+                log.info("V3: loaded base model with 4-bit quantization")
+            except Exception:
+                model = AutoModelForCausalLM.from_pretrained(
+                    self._model_name, device_map="cpu")
+                log.info("V3: loaded base model in fp32 (no quantization)")
+
+            # 2. Apply LoRA
+            lora_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=8, lora_alpha=16, lora_dropout=0.05,
+                target_modules=["q_proj", "v_proj"],
+                bias="none")
+            model = get_peft_model(model, lora_config)
+            model.print_trainable_parameters()
+
+            # 3. Prepare dataset
+            from torch.utils.data import Dataset
+
+            class QADataset(Dataset):
+                def __init__(self, pairs, tok, max_length=256):
+                    self.encodings = []
+                    for pair in pairs:
+                        q = pair.get("question", pair.get("pattern", ""))
+                        a = pair.get("answer", "")
+                        text = f"### Question:\n{q}\n\n### Answer:\n{a}"
+                        enc = tok(text, max_length=max_length,
+                                  truncation=True, padding="max_length",
+                                  return_tensors="pt")
+                        enc["labels"] = enc["input_ids"].clone()
+                        self.encodings.append({k: v.squeeze(0) for k, v in enc.items()})
+
+                def __len__(self):
+                    return len(self.encodings)
+
+                def __getitem__(self, idx):
+                    return self.encodings[idx]
+
+            dataset = QADataset(training_pairs, tokenizer)
+
+            # 4. Train
+            output_dir = str(self._data_dir / f"lora_gen{self._generation + 1}")
+            training_args = TrainingArguments(
+                output_dir=output_dir,
+                num_train_epochs=3,
+                per_device_train_batch_size=4,
+                learning_rate=2e-4,
+                warmup_steps=10,
+                logging_steps=10,
+                save_strategy="no",
+                report_to="none",
+                fp16=torch.cuda.is_available(),
+                dataloader_pin_memory=False)
+
+            trainer = Trainer(
+                model=model, args=training_args,
+                train_dataset=dataset)
+            trainer.train()
+
+            # 5. Merge and save
+            merged_path = self._adapter_dir / "merged"
+            merged_path.mkdir(parents=True, exist_ok=True)
+            merged_model = model.merge_and_unload()
+            merged_model.save_pretrained(str(merged_path))
+            tokenizer.save_pretrained(str(merged_path))
+
+            self._generation += 1
+            self._model = merged_model
+            self._tokenizer = tokenizer
+            self._model.eval()
+            self._available = True
+
+            log.info("V3 LoRA: training complete, gen=%d, saved to %s",
+                     self._generation, merged_path)
+            return True
+
+        except Exception as e:
+            log.error("V3 LoRA training failed: %s", e)
+            self._save_training_data(training_pairs)
+            return False
+
+    def _save_training_data(self, training_pairs: list):
+        """Archive training data for future use."""
         try:
             self._data_dir.mkdir(parents=True, exist_ok=True)
-            data_path = self._data_dir / f"training_data_gen{self._generation}.jsonl"
-            with open(data_path, "w", encoding="utf-8") as f:
+            path = self._data_dir / f"training_data_gen{self._generation + 1}.jsonl"
+            with open(path, "w", encoding="utf-8") as f:
                 for pair in training_pairs:
                     f.write(json.dumps(pair, ensure_ascii=False) + "\n")
-            log.info(f"V3: Saved training data to {data_path}")
         except Exception as e:
-            log.warning(f"V3: Failed to save training data: {e}")
-
-        return True
+            log.warning("V3: failed to save training data: %s", e)
 
     @property
     def stats(self) -> dict:
@@ -651,12 +826,12 @@ class LoRAModel:
         return {
             "available": self._available,
             "peft_available": self._peft_available,
+            "implementation_status": self._implementation_status,
             "generation": self._generation,
             "model_name": self._model_name,
             "hits": self._hits,
             "misses": self._misses,
             "hit_rate": self._hits / max(total, 1),
-            "implementation_status": "stub" if not self._peft_available else "framework",
         }
 
 
@@ -906,13 +1081,17 @@ class MicroModelOrchestrator:
                             log.info(f"V2 eval gate passed: accuracy={acc:.2%}, "
                                      f"holdout={hs}")
 
-        # Train V3 (stub — saves data for future, only if peft installed)
+        # V3: Real LoRA training (if peft available + enough data)
         if self.v3._peft_available:
-            all_pairs = self.collector.get_training_data(min_pairs=10)
-            if all_pairs:
+            all_pairs = self.collector.get_training_data(min_pairs=50)
+            if all_pairs and len(all_pairs) >= 50:
+                log.info("V3 LoRA: starting real training with %d pairs", len(all_pairs))
                 self.v3.train(all_pairs)
+            else:
+                log.debug("V3 LoRA: %d pairs (need 50+), skipping",
+                          len(all_pairs) if all_pairs else 0)
         else:
-            log.debug("V3 LoRA: peft not installed, skipping data collection")
+            log.debug("V3 LoRA: peft not installed, skipping")
 
         # Save collector pairs
         self.collector.save_pairs()

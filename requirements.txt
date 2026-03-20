@@ -26,11 +26,11 @@ feedparser>=6.0.11         # RSS feed monitor (Phase 8)
 # Set ANTHROPIC_API_KEY env var to enable. Weekly budget: ~5€.
 anthropic>=0.30.0
 
-# === OPTIONAL: LoRA fine-tuning (STUB ONLY — NOT YET IMPLEMENTED) ===
-# V3 LoRA training pipeline is incomplete. Installing peft enables
-# data collection only, not actual fine-tuning.
-# peft>=0.11.0
-# accelerate>=0.30.0
+# === OPTIONAL: LoRA fine-tuning (V3 MicroModel — now real) ===
+# peft>=0.11.0               # LoRA adapters
+# accelerate>=0.30.0         # Training acceleration
+# bitsandbytes>=0.43.0       # 4-bit quantization (QLoRA)
+# Note: requires torch>=2.1.0 (already in requirements)
 
 # === OPTIONAL: Voice interface (Phase 7) ===
 # openai-whisper>=20231117     # STT

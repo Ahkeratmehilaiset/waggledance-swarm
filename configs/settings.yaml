@@ -210,7 +210,9 @@ feeds:
 mqtt:
   enabled: false
   host: "192.168.1.100"
-  port: 1883
+  mqtt_tls: true
+  port: 8883
+  # mqtt_tls_insecure: false    # uncomment for self-signed certs
   username: ""
   password: ""
   client_id: "waggledance"

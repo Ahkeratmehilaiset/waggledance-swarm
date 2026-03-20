@@ -10,6 +10,7 @@ Used by: FrigateIntegration, SensorHub
 import asyncio
 import hashlib
 import logging
+import ssl
 import threading
 import time
 from collections import defaultdict
@@ -24,7 +25,9 @@ class MQTTHub:
     def __init__(self, config: dict, loop: Optional[asyncio.AbstractEventLoop] = None):
         self.enabled = config.get("enabled", False)
         self.host = config.get("host", "192.168.1.100")
-        self.port = config.get("port", 1883)
+        self.use_tls = config.get("mqtt_tls", True)
+        self.port = config.get("port", 8883 if self.use_tls else 1883)
+        self.tls_insecure = config.get("mqtt_tls_insecure", False)
         self.username = config.get("username", "")
         self.password = config.get("password", "")
         self.client_id = config.get("client_id", "waggledance")
@@ -113,6 +116,17 @@ class MQTTHub:
                 self._client.on_connect = self._on_connect
                 self._client.on_message = self._on_message
                 self._client.on_disconnect = self._on_disconnect
+
+                # TLS — default ON for encrypted transport
+                if self.use_tls:
+                    tls_context = ssl.create_default_context()
+                    if self.tls_insecure:
+                        tls_context.check_hostname = False
+                        tls_context.verify_mode = ssl.CERT_NONE
+                        log.warning("MQTT TLS: certificate verification disabled (insecure)")
+                    self._client.tls_set_context(tls_context)
+                else:
+                    log.warning("MQTT TLS DISABLED — traffic is unencrypted!")
 
                 if self.username:
                     self._client.username_pw_set(self.username, self.password)

@@ -651,8 +651,9 @@ if __name__ == "__main__":
             else:
                 FAIL(f"self.{var} missing from HiveMind")
 
-        # Correction detection in _do_chat
-        if "CORRECTION_WORDS" in src or "correction_words" in src.lower():
+        # Correction detection in _do_chat (score-based since v3.2)
+        if ("CORRECTION_WORDS" in src or "correction_words" in src.lower()
+                or "_STRONG_CORRECTION" in src or "_corr_score" in src):
             OK("Correction detection present in _do_chat()")
         else:
             FAIL("Correction detection missing from _do_chat()")

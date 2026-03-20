@@ -5,7 +5,7 @@
 ## Overview
 
 WaggleDance exposes a REST API via FastAPI. Two modes:
-- **Production** (`python main.py` / `start.py --production`) — full HiveMind, real data
+- **Production** (`python start_waggledance.py`) — full runtime, real data
 - **Stub** (`start.py --stub`) — mock backend for dashboard development, no Ollama needed
 
 ### Authentication
@@ -33,7 +33,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `GET /health` | GET | Liveness probe. Returns `{"status": "ok"}` |
-| `GET /ready` | GET | Readiness probe. Checks HiveMind running state |
+| `GET /ready` | GET | Readiness probe. Checks runtime running state |
 
 ```json
 // GET /health
@@ -50,7 +50,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `GET /api/status` | GET | System status, uptime, agent count, metrics |
-| `POST /api/chat` | POST | Send message to HiveMind (auto FI/EN detection) |
+| `POST /api/chat` | POST | Send message to runtime (auto FI/EN detection) |
 | `GET /api/heartbeat` | GET | Latest agent activity feed entries |
 | `GET /api/hardware` | GET | Live CPU/GPU/VRAM/RAM stats |
 | `GET /api/system` | GET | psutil CPU% + nvidia-smi GPU% |

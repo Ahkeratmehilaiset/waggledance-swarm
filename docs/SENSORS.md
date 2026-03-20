@@ -7,19 +7,19 @@ All sensors are **disabled by default** in `configs/settings.yaml`. Enable indiv
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────┐
-│                  SensorHub                         │
-│        (integrations/sensor_hub.py)                │
-│                                                    │
-│  Init order: AlertDispatcher → MQTT → Frigate      │
-│              → HomeAssistant → AudioMonitor        │
-│                                                    │
-│  Provides: aggregated status, Finnish context      │
-│            for agents, WebSocket broadcast          │
-└───────────────────┬───────────────────────────────┘
-                    │
-    ┌───────┬───────┼───────┬──────────┐
-    ▼       ▼       ▼       ▼          ▼
++---------------------------------------------------+
+|                  SensorHub                         |
+|        (integrations/sensor_hub.py)                |
+|                                                    |
+|  Init order: AlertDispatcher -> MQTT -> Frigate    |
+|              -> HomeAssistant -> AudioMonitor      |
+|                                                    |
+|  Provides: aggregated status, Finnish context      |
+|            for agents, WebSocket broadcast          |
++-------------------+-------------------------------+
+                    |
+    +-------+-------+-------+----------+
+    v       v       v       v          v
   MQTT   Frigate   HA    Audio      Voice
   Hub     NVR    Bridge  Monitor   Interface
 ```
@@ -31,7 +31,7 @@ All sensors are **disabled by default** in `configs/settings.yaml`. Enable indiv
 Central message broker integration using paho-mqtt:
 - Background thread with asyncio bridge
 - MD5 message deduplication (configurable window)
-- Exponential reconnect backoff (1s → 60s)
+- Exponential reconnect backoff (1s -> 60s)
 - Subscribes to configured topics for all sensor subsystems
 
 **Config** (`settings.yaml`):
@@ -39,7 +39,8 @@ Central message broker integration using paho-mqtt:
 mqtt:
   enabled: false
   broker: "localhost"
-  port: 1883
+  port: 8883
+  mqtt_tls: true
 ```
 
 ---
@@ -84,14 +85,13 @@ home_assistant:
 
 ## Audio Sensors
 
-### Bee Audio Analyzer (`integrations/bee_audio.py`)
+### Audio Analyzer (`integrations/audio_monitor.py`)
 
-ESP32-based hive audio analysis via MQTT:
+ESP32-based environmental audio analysis via MQTT:
 - FFT spectrum analysis (frequency distribution)
-- 7-day rolling baseline per hive
-- **Stress detection:** >30 Hz frequency shift from baseline
-- **Swarming detection:** broad 200-600 Hz energy increase
-- **Queen piping:** 400-500 Hz peak detection
+- 7-day rolling baseline per sensor node
+- **Anomaly detection:** frequency shift from baseline
+- **Alert classification:** broad energy increase in target bands
 - Finnish status descriptions
 
 ### Bird Monitor (`integrations/bird_monitor.py`)
@@ -102,27 +102,19 @@ BirdNET-Lite integration for bird species detection:
 - Finnish species name mapping
 - Alerts on predator detection
 
-### Audio Monitor (`integrations/audio_monitor.py`)
-
-Orchestrator for bee + bird audio:
-- MQTT subscriptions for spectrum, event, and status topics
-- Routes data to BeeAudioAnalyzer and BirdMonitor
-- Stores events in ChromaDB (category=audio_event)
-- Dispatches alerts for bee stress/swarming
-
 **Config:**
 ```yaml
 audio:
-  bee_audio:
+  audio_analyzer:
     enabled: false
   bird_monitor:
     enabled: false
   mqtt_topics:
-    spectrum: "hive/+/audio/spectrum"
-    event: "hive/+/audio/event"
+    spectrum: "waggledance/audio/+/spectrum"
+    event: "waggledance/audio/+/event"
 ```
 
-**API:** `GET /api/sensors/audio`, `GET /api/sensors/audio/bee`
+**API:** `GET /api/sensors/audio`
 
 ---
 
@@ -146,8 +138,8 @@ Text-to-speech using Piper:
 ### Voice Interface (`integrations/voice_interface.py`)
 
 Orchestrator combining STT + TTS:
-- Audio pipeline: Mic → STT → Chat → TTS → Speaker
-- Text pipeline: API text → Chat → TTS
+- Audio pipeline: Mic -> STT -> Chat -> TTS -> Speaker
+- Text pipeline: API text -> Chat -> TTS
 - Graceful degradation without models
 
 **Config:**
@@ -193,6 +185,6 @@ Not strictly sensors, but provide environmental context:
 |------|--------|------|
 | FMI Weather | Finnish Meteorological Institute | Temperature, wind, precipitation |
 | Electricity | Spot price API | Current price (snt/kWh) |
-| RSS Disease | Evira/Ruokavirasto | Bee disease alerts |
+| RSS Feeds | Ruokavirasto, FMI | Food safety, weather alerts |
 
-Managed by `DataFeedScheduler` in `hivemind.py`. Configured in `settings.yaml` under `feeds:`.
+Managed by `DataFeedScheduler`. Configured in `settings.yaml` under `feeds:`.

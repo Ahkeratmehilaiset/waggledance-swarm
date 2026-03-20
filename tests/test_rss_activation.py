@@ -17,13 +17,13 @@ def test_rss_feed_enabled_in_config():
 
 
 def test_rss_feeds_configured():
-    """RSS feeds list should have 5+ URLs."""
+    """RSS feeds list should have 3+ URLs."""
     import yaml
     cfg_path = ROOT / "configs" / "settings.yaml"
     with open(cfg_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     feeds = cfg.get("feeds", {}).get("rss", {}).get("feeds", [])
-    assert len(feeds) >= 5, f"Expected >=5 feeds, got {len(feeds)}"
+    assert len(feeds) >= 3, f"Expected >=3 feeds, got {len(feeds)}"
     # Verify URLs are valid
     for feed in feeds:
         url = feed.get("url", "")

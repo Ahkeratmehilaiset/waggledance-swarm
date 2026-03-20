@@ -268,10 +268,10 @@ class TestIntegration(unittest.TestCase):
         self.assertIn("audio", cfg)
         audio = cfg["audio"]
         self.assertIn("enabled", audio)
-        self.assertIn("bee_audio", audio)
+        self.assertIn("audio_analyzer", audio)
         self.assertIn("bird_monitor", audio)
         self.assertIn("mqtt_topics", audio)
-        self.assertEqual(audio["bee_audio"]["baseline_days"], 7)
+        self.assertEqual(audio["audio_analyzer"]["baseline_days"], 7)
 
     def test_sensor_hub_has_audio_monitor(self):
         """SensorHub has audio_monitor attribute."""

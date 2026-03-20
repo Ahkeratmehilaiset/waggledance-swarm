@@ -1,9 +1,6 @@
 profile: home  # gadget | cottage | home | factory
 facts:
-  apiary_count: 35
   business_name: JKH Service
-  colony_count: 202
-  evira: '18533284'
   owner: Jani Korpi
   y_tunnus: 2828492-2
 hivemind:
@@ -189,20 +186,11 @@ feeds:
     enabled: true
     interval_min: 120
     feeds:
-      - url: "https://www.mehilaishoitajat.fi/feed"
-        name: SML
-        critical: false
       - url: "https://www.ruokavirasto.fi/rss"
         name: Ruokavirasto
         critical: true
       - url: "https://www.ilmatieteenlaitos.fi/rss/saa"
         name: FMI-saa
-        critical: false
-      - url: "https://bee-health.extension.org/feed/"
-        name: BeeHealth
-        critical: false
-      - url: "https://www.honeybeeworld.com/feed/"
-        name: HoneybeeWorld
         critical: false
       - url: "https://blog.home-assistant.io/atom.xml"
         name: HA-blog
@@ -267,10 +255,10 @@ voice:
     speed: 1.0
 audio:
   enabled: false
-  bee_audio:
+  audio_analyzer:
     baseline_days: 7
-    stress_threshold_hz_shift: 30
-    swarming_amplitude_threshold: 0.7
+    anomaly_threshold_hz_shift: 30
+    alert_amplitude_threshold: 0.7
   bird_monitor:
     enabled: false
     model: "BirdNET-Lite"
@@ -315,7 +303,7 @@ curiosity:
     COTTAGE: 5
     HOME: 10
     FACTORY: 20
-    APIARY: 10
+    DOMAIN: 10
 
 memory:
   consolidation_enabled: true

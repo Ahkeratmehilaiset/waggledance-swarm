@@ -7,16 +7,16 @@ from __future__ import annotations
 import pytest
 
 
-class TestApiaryProfileGating:
-    def test_apiary_profiles_recognized(self):
-        from web.dashboard import _APIARY_PROFILES
-        assert "apiary" in _APIARY_PROFILES
-        assert "cottage" in _APIARY_PROFILES
+class TestDomainProfileGating:
+    def test_domain_profiles_recognized(self):
+        from web.dashboard import _DOMAIN_PROFILES
+        assert "cottage" in _DOMAIN_PROFILES
+        assert "factory" in _DOMAIN_PROFILES
 
-    def test_non_apiary_profile_not_recognized(self):
-        from web.dashboard import _APIARY_PROFILES
-        assert "industrial" not in _APIARY_PROFILES
-        assert "medical" not in _APIARY_PROFILES
+    def test_non_domain_profile_not_recognized(self):
+        from web.dashboard import _DOMAIN_PROFILES
+        assert "industrial" not in _DOMAIN_PROFILES
+        assert "medical" not in _DOMAIN_PROFILES
 
     def test_is_apiary_profile_true(self):
         from web.dashboard import _is_apiary_profile
@@ -38,7 +38,7 @@ class TestApiaryProfileGating:
         from web.dashboard import _is_apiary_profile
 
         class FakeHivemind:
-            config = {"profile": "APIARY"}
+            config = {"profile": "FACTORY"}
 
         assert _is_apiary_profile(FakeHivemind()) is True
 

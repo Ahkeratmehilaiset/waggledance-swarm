@@ -3,7 +3,7 @@
 
 ## 1. PROJECT OVERVIEW
 
-Local-first multi-agent AI for Finnish beekeeping. 75 agents, HiveMind orchestrator,
+Local-first multi-agent AI system. 75+ agents, orchestrator,
 translation pipeline, memory engine, autonomous learning.
 
 **Developer:** Jani Korpi, ~300 colonies (Helsinki + Kouvola), ~10,000 kg honey/year.

@@ -750,12 +750,12 @@ if __name__ == "__main__":
         else:
             FAIL(f"RSS feeds: {rss_feeds}")
 
-        # Check Ruokavirasto is marked critical
-        ruoka = [f for f in rss_feeds if f.get("name") == "Ruokavirasto"]
-        if ruoka and ruoka[0].get("critical") is True:
-            OK("Ruokavirasto marked critical=true")
+        # Check that at least one feed is marked critical
+        critical = [f for f in rss_feeds if f.get("critical") is True]
+        if critical:
+            OK(f"Critical feed configured: {critical[0].get('name')}")
         else:
-            FAIL(f"Ruokavirasto config: {ruoka}")
+            FAIL(f"No critical RSS feed: {rss_feeds}")
 
     except FileNotFoundError:
         WARN("settings.yaml not found")

@@ -583,18 +583,18 @@ class ClassifierModel:
 # ═══════════════════════════════════════════════════════════════
 
 class LoRAModel:
-    """LoRA fine-tuned nano-LLM framework.
+    """LoRA fine-tuned nano-LLM — STUB ONLY (v3.2).
 
-    Base: smollm2:135m via Ollama.
-    Actual LoRA training requires peft+transformers — this is the framework.
-    In Phase 10 we implement the interface and stub the training.
-    Full training pipeline deferred to when peft is installed.
+    STATUS: Data collection only. No actual LoRA fine-tuning is performed.
+    The predict() method always returns None.
+    Training saves JSONL data for future use when peft becomes available.
     """
 
     def __init__(self, model_name="smollm2:135m",
                  data_dir="data/lora_adapters"):
         self._generation = 0
-        self._available = False
+        self._available = False  # Always False — stub
+        self._implementation_status = "stub_only"  # v3.2 explicit marker
         self._model_name = model_name
         self._data_dir = Path(data_dir)
         self._hits = 0
@@ -614,30 +614,15 @@ class LoRAModel:
                      "LoRA training unavailable")
 
     def predict(self, question: str) -> Optional[dict]:
-        """Generate response via Ollama if model available.
-
-        Returns None if model not loaded or not trained.
-        """
-        if not self._available:
-            self._misses += 1
-            return None
-
-        # V3 not included in router until generation >= 5
-        if self._generation < 5:
-            self._misses += 1
-            return None
-
-        # Future: call Ollama with LoRA-adapted model
+        """Always returns None — V3 is a stub with no trained model.
+        Do not rely on this method for routing decisions."""
         self._misses += 1
         return None
 
     def train(self, training_pairs: list):
-        """LoRA training stub.
-
-        Logs intent, checks for peft/transformers.
-        If libraries available: actual LoRA fine-tuning (future).
-        If not: logs warning, returns gracefully.
-        """
+        """Save training data to JSONL for future LoRA implementation.
+        NOTE: This does NOT perform gradient descent or any model training.
+        Data is archived for when peft/transformers become available."""
         if not self._peft_available:
             log.info("V3: LoRA training skipped — peft not installed")
             return False
@@ -921,10 +906,13 @@ class MicroModelOrchestrator:
                             log.info(f"V2 eval gate passed: accuracy={acc:.2%}, "
                                      f"holdout={hs}")
 
-        # Train V3 (stub — saves data for future)
-        all_pairs = self.collector.get_training_data(min_pairs=10)
-        if all_pairs:
-            self.v3.train(all_pairs)
+        # Train V3 (stub — saves data for future, only if peft installed)
+        if self.v3._peft_available:
+            all_pairs = self.collector.get_training_data(min_pairs=10)
+            if all_pairs:
+                self.v3.train(all_pairs)
+        else:
+            log.debug("V3 LoRA: peft not installed, skipping data collection")
 
         # Save collector pairs
         self.collector.save_pairs()

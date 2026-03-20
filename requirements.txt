@@ -26,7 +26,9 @@ feedparser>=6.0.11         # RSS feed monitor (Phase 8)
 # Set ANTHROPIC_API_KEY env var to enable. Weekly budget: ~5€.
 anthropic>=0.30.0
 
-# === OPTIONAL: LoRA fine-tuning (Phase 10 MicroModel V3) ===
+# === OPTIONAL: LoRA fine-tuning (STUB ONLY — NOT YET IMPLEMENTED) ===
+# V3 LoRA training pipeline is incomplete. Installing peft enables
+# data collection only, not actual fine-tuning.
 # peft>=0.11.0
 # accelerate>=0.30.0
 

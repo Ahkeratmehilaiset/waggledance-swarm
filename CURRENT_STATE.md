@@ -1,7 +1,7 @@
 # WaggleDance Swarm — Project State (auto-generated)
 
-**Generated**: 2026-03-20T15:15:30+0200
-**Commit**: `99308bb` on `main`
+**Generated**: 2026-03-20T15:38:09+0200
+**Commit**: `2f305b5` on `main`
 **Generator**: `python tools/generate_state.py`
 
 > This file is auto-generated from actual code. Do not edit manually.
@@ -211,7 +211,7 @@
 # Clone and verify:
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-git checkout 99308bb
+git checkout 2f305b5
 
 # Count core modules (expect 40+):
 find waggledance/core -name "*.py" -not -name "__init__.py" | wc -l

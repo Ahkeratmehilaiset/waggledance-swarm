@@ -608,16 +608,12 @@ try:
 except Exception as e:
     FAIL(f"V3 predict: {e}")
 
-# 4d. Train stub
+# 4d. Train stub (10 pairs < 50 minimum → returns False regardless of peft)
 try:
     pairs = [{"question": "q?", "answer": "a"} for _ in range(10)]
     result = v3.train(pairs)
-    if v3._peft_available:
-        assert result is True
-        OK("V3 train with peft")
-    else:
-        assert result is False
-        OK("V3 train graceful without peft")
+    assert result is False
+    OK("V3 train returns False with insufficient data")
 except Exception as e:
     FAIL(f"V3 train: {e}")
 

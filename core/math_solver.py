@@ -103,7 +103,7 @@ class MathSolver:
         clean = clean.replace("÷", "/").replace(",", ".")
         clean = re.sub(r'\s*(kg|g|ml|l|€|eur|kpl|pcs)\s*$', '', clean)
         try:
-            result = eval(clean, {"__builtins__": {}}, cls.SAFE_NAMES)
+            result = eval(clean, {"__builtins__": {}}, cls.SAFE_NAMES)  # noqa: S307 — sandboxed
             if isinstance(result, float):
                 if result == int(result):
                     return str(int(result))

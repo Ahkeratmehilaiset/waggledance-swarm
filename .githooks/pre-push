@@ -1,10 +1,8 @@
 #!/bin/bash
-# Auto-regenerate CURRENT_STATE.md before push
-echo "Regenerating CURRENT_STATE.md..."
-python tools/generate_state.py
-git add CURRENT_STATE.md
-# Amend last commit silently if state changed
-if ! git diff --cached --quiet CURRENT_STATE.md; then
-    git commit --amend --no-edit CURRENT_STATE.md
-    echo "CURRENT_STATE.md updated and amended to last commit."
+# Auto-regenerate CURRENT_STATE.md before push — warn if outdated
+python tools/generate_state.py 2>/dev/null
+if ! git diff --quiet CURRENT_STATE.md 2>/dev/null; then
+    echo "WARNING: CURRENT_STATE.md is outdated. Run:"
+    echo "  python tools/generate_state.py && git add CURRENT_STATE.md && git commit --amend --no-edit"
+    git checkout -- CURRENT_STATE.md  # Revert to avoid blocking push
 fi

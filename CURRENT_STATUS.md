@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-03-19
-**Version:** v3.2 (merged to master)
+**Updated:** 2026-03-20
+**Version:** v3.3 (production-ready on main+master)
 
 ---
 
@@ -51,7 +51,7 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | Legacy test suite | 79 suites, 1468 tests, 0 failures, Health 100/100 |
 | Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
-| **Autonomy runtime (v3.2)** | **4129 pytest tests (phases 1-9 + continuity + regression), all pass** |
+| **Autonomy runtime (v3.2)** | **4350 pytest tests (phases 1-9 + continuity + regression + e2e), all pass** |
 | **Cutover validation** | **"FULL AUTONOMY MODE ENABLED" — 42/42 modules** |
 | **Regression gates** | **migration, night_learning_v2, resource_kernel, specialist_models — 41 tests** |
 | **v3.2 self-entity** | **Epistemic uncertainty, motives, attention budget, dream mode, consolidator, meta-optimizer** |
@@ -99,7 +99,7 @@ These test suites are the gatekeepers — all must pass before any change is mer
 | Regression gates | `pytest tests/migration/ tests/night_learning_v2/ tests/resource_kernel/ tests/specialist_models/ -v` | 41 | Alias migration, night pipeline, resource kernel, specialist models |
 | Continuity tests | `pytest tests/continuity/ -v` | 171 | v3.2: self-entity, uncertainty, attention, projections, MAGMA |
 | Night learning v2 | `pytest tests/night_learning_v2/ -v` | 60+ | Consolidator, dream mode, pipeline |
-| Legacy suite | `python tools/waggle_backup.py --tests-only` | 1468 | Old stack regression (79 suites) |
+| Legacy suite | `python tools/waggle_backup.py --tests-only` | 2754 | Old stack regression (87 suites) |
 | Stub smoke | `Container(stub=True).build_app()` | 1 | DI wiring, no crash |
 | Non-stub smoke | `Container(stub=False).memory_repository` | 1 | ChromaMemoryRepository, not InMemory |
 | Compile check | `python -m compileall waggledance/ core/ -q` | - | No syntax errors |

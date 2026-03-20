@@ -1,8 +1,8 @@
 """
 WaggleDance AI — Dashboard v2.0.0
 =========================================
-Jani Korpi (Ahkerat Mehiläiset)
-Claude 4.6 • v2.0.0 • Built: 2026-03-18
+Jani Korpi
+Claude 4.6 • v3.3 • Built: 2026-03-20
 
 v1.0.0 (MAGMA Activation):
   - Round Table card (streaming discussion + synthesis)
@@ -70,14 +70,14 @@ def _get_enrichment_stats_from(hm):
         return {}
 
 
-# Profiles that have bee/hive-specific dashboard sections
-_APIARY_PROFILES = {"apiary", "cottage", "mehilainen", "beekeeper"}
+# Profiles that have domain-specific dashboard sections (sensor-rich)
+_DOMAIN_PROFILES = {"apiary", "cottage", "factory", "mehilainen", "beekeeper"}
 
 
 def _is_apiary_profile(hivemind) -> bool:
-    """Check if current profile should show bee-specific sections."""
+    """Check if current profile should show domain-specific sensor sections."""
     profile = (hivemind.config.get("profile", "") or "").lower()
-    return profile in _APIARY_PROFILES
+    return profile in _DOMAIN_PROFILES
 
 
 def create_app(hivemind):

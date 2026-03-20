@@ -43,7 +43,7 @@ Major extension adding self-entity capabilities, counterfactual dream mode, memo
 
 #### Projections (Read-Only Views)
 - Narrative projector: bilingual en/fi self-narrative with 60s cache (no LLM in fast path)
-- Introspection view: profile-gated (APIARY=full, HOME/FACTORY=filtered, GADGET=counts)
+- Introspection view: profile-gated (FACTORY=full, HOME=filtered, GADGET=counts)
 - Autobiographical index: episodic memory query with significance ranking
 - Projection validator: no-hidden-deps validation for all projection modules
 
@@ -121,7 +121,7 @@ Major architectural release introducing a solver-first autonomy runtime with cap
 #### Capability Adapters (23 total)
 - 5 legacy wrappers: math solver, symbolic solver, constraint engine, LLM explainer, micromodel (V1+V2)
 - 6 reasoning engines: thermal, anomaly, stats, optimization, causal, route analysis
-- 2 domain engines: bee domain (colony health, swarm risk, disease diagnosis), seasonal calendar
+- 2 domain engines: domain-specific monitoring (health, anomaly, diagnostics), seasonal calendar
 - 5 legacy retrieval/verification: hot cache, semantic search, vector search, hallucination checker, English validator
 - 3 sensor adapters: MQTT, Frigate, Home Assistant + audio, fusion
 - 2 normalization: Finnish, translation
@@ -152,7 +152,7 @@ Major architectural release introducing a solver-first autonomy runtime with cap
 - GET /api/autonomy/safety-cases/stats — verdict distribution
 
 #### Domain Configuration
-- Profile-gated capability adapters (bee domain and seasonal active only with relevant profiles)
+- Profile-gated capability adapters (domain engines and seasonal active only with relevant profiles)
 - Domain capsules: profile-specific reasoning config loaded at runtime
 - Profile policies: per-profile policy rules in configs/policy/profile_policies/
 

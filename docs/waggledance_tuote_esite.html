@@ -16,9 +16,9 @@
 
         /* ===== BASE ===== */
         :root {
-            --honey: #F5A623;
-            --honey-dark: #D4880F;
-            --honey-light: #FFF4E0;
+            --accent: #F5A623;
+            --accent-dark: #D4880F;
+            --accent-light: #FFF4E0;
             --navy: #1B2A4A;
             --navy-light: #2C3E6B;
             --slate: #3D4F5F;
@@ -96,7 +96,7 @@
         .cover-stat .value {
             font-size: 2.4em;
             font-weight: 800;
-            color: var(--honey);
+            color: var(--accent);
             line-height: 1.1;
         }
         .cover-stat .label {
@@ -107,7 +107,7 @@
         .cover-divider {
             width: 60px;
             height: 3px;
-            background: var(--honey);
+            background: var(--accent);
             margin: 30px auto;
             border-radius: 2px;
         }
@@ -121,7 +121,7 @@
         .section-header {
             margin: 50px 0 25px;
             padding-bottom: 12px;
-            border-bottom: 3px solid var(--honey);
+            border-bottom: 3px solid var(--accent);
         }
         .section-header h2 {
             font-size: 1.7em;
@@ -144,15 +144,15 @@
 
         /* ===== KEY MESSAGE BOX ===== */
         .key-message {
-            background: linear-gradient(135deg, var(--honey-light) 0%, #FFF9EE 100%);
-            border: 2px solid var(--honey);
+            background: linear-gradient(135deg, var(--accent-light) 0%, #FFF9EE 100%);
+            border: 2px solid var(--accent);
             border-radius: 12px;
             padding: 28px 32px;
             margin: 30px 0;
             text-align: center;
         }
         .key-message h3 {
-            color: var(--honey-dark);
+            color: var(--accent-dark);
             font-size: 1.3em;
             margin: 0 0 8px;
         }
@@ -169,8 +169,8 @@
         }
         .key-message .tag {
             background: white;
-            border: 1px solid var(--honey);
-            color: var(--honey-dark);
+            border: 1px solid var(--accent);
+            color: var(--accent-dark);
             padding: 4px 14px;
             border-radius: 20px;
             font-size: 0.85em;
@@ -186,7 +186,7 @@
             box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 6px 16px rgba(0,0,0,0.04);
             border: 1px solid var(--border);
         }
-        .card-accent { border-left: 4px solid var(--honey); }
+        .card-accent { border-left: 4px solid var(--accent); }
         .card-green { border-left: 4px solid var(--green); }
 
         /* ===== TIER GRID ===== */
@@ -208,7 +208,7 @@
         .tier:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
         .tier-badge {
             position: absolute; top: -1px; right: 16px;
-            background: var(--honey);
+            background: var(--accent);
             color: white;
             font-size: 0.7em;
             font-weight: 700;
@@ -253,12 +253,12 @@
         .learn-rate .rate-value {
             font-size: 1.3em;
             font-weight: 700;
-            color: var(--honey-dark);
+            color: var(--accent-dark);
         }
 
         /* Highlight recommended tier */
         .tier.recommended {
-            border: 2px solid var(--honey);
+            border: 2px solid var(--accent);
             box-shadow: 0 4px 20px rgba(245,166,35,0.15);
         }
 
@@ -285,12 +285,12 @@
             border-bottom: 1px solid var(--border);
         }
         tbody tr:nth-child(even) { background: #FAFBFC; }
-        tbody tr:hover { background: var(--honey-light); }
+        tbody tr:hover { background: var(--accent-light); }
 
         .pro { color: var(--green); font-weight: 600; }
         .con { color: var(--red); }
         .highlight {
-            background: var(--honey);
+            background: var(--accent);
             color: white;
             padding: 2px 10px;
             border-radius: 4px;
@@ -307,7 +307,7 @@
         }
         .badge-green { background: var(--green-light); color: var(--green); }
         .badge-red { background: var(--red-light); color: var(--red); }
-        .badge-amber { background: var(--honey-light); color: var(--honey-dark); }
+        .badge-amber { background: var(--accent-light); color: var(--accent-dark); }
 
         /* ===== BAR CHARTS (CSS-only) ===== */
         .bar-chart { margin: 20px 0; }
@@ -346,7 +346,7 @@
             min-width: fit-content;
         }
         .bar-fill.cloud { background: linear-gradient(90deg, #e74c3c, #c0392b); }
-        .bar-fill.local { background: linear-gradient(90deg, var(--honey), var(--honey-dark)); }
+        .bar-fill.local { background: linear-gradient(90deg, var(--accent), var(--accent-dark)); }
         .bar-fill.wd { background: linear-gradient(90deg, var(--green), #219a52); }
         .bar-value {
             position: absolute;
@@ -368,7 +368,7 @@
             margin: 30px 0;
         }
         .metric-highlight h3 {
-            color: var(--honey);
+            color: var(--accent);
             font-size: 1.1em;
             margin-bottom: 10px;
         }
@@ -400,7 +400,7 @@
         .tech-item .tech-icon {
             width: 44px; height: 44px;
             margin: 0 auto 10px;
-            background: var(--honey-light);
+            background: var(--accent-light);
             border-radius: 10px;
             display: flex;
             align-items: center;
@@ -477,8 +477,8 @@
         }
         .pipeline-step:nth-child(1) { background: var(--green-light); border-radius: 10px 0 0 10px; }
         .pipeline-step:nth-child(1)::after { border-left-color: var(--green-light); }
-        .pipeline-step:nth-child(2) { background: var(--honey-light); }
-        .pipeline-step:nth-child(2)::after { border-left-color: var(--honey-light); }
+        .pipeline-step:nth-child(2) { background: var(--accent-light); }
+        .pipeline-step:nth-child(2)::after { border-left-color: var(--accent-light); }
         .pipeline-step:nth-child(3) { background: #EBF0FF; border-radius: 0 10px 10px 0; }
         .pipeline-step .step-num {
             font-size: 0.75em;
@@ -574,7 +574,7 @@
             margin: 40px 0;
         }
         .contact-card h2 {
-            color: var(--honey);
+            color: var(--accent);
             font-size: 1.5em;
             margin-bottom: 20px;
         }
@@ -605,7 +605,7 @@
         .contact-card .stat-item .num {
             font-size: 1.8em;
             font-weight: 800;
-            color: var(--honey);
+            color: var(--accent);
         }
         .contact-card .stat-item .txt {
             font-size: 0.8em;
@@ -949,7 +949,7 @@
         <tbody>
             <tr><td><strong>FI-validointi</strong></td><td>Voikko + suffix-tunnistus</td><td>Varmistaa syötteen oikeellisuuden</td></tr>
             <tr><td><strong>EN-validointi</strong></td><td>WordNet + domain-synonyymit</td><td>Tarkistaa käännöksen laadun</td></tr>
-            <tr><td><strong>Moniosakorjaukset</strong></td><td>107 synonymiaparia</td><td>Esim. &quot;insect keeper&quot; &#8594; &quot;beekeeper&quot;</td></tr>
+            <tr><td><strong>Moniosakorjaukset</strong></td><td>107 synonymiaparia</td><td>Esim. &quot;heat pump&quot; &#8594; &quot;HVAC unit&quot;</td></tr>
             <tr><td><strong>Hallusinaatiosuoja</strong></td><td>Embedding + keyword overlap</td><td>Varmistaa LLM-vastauksen osuvuuden</td></tr>
         </tbody>
     </table>
@@ -1057,7 +1057,7 @@
             <div class="layer-speed">55 ms</div>
         </div>
         <div class="layer-row">
-            <div class="layer-num" style="background: var(--honey-dark);">3</div>
+            <div class="layer-num" style="background: var(--accent-dark);">3</div>
             <div class="layer-content">
                 <strong>EN ChromaDB + llama1b</strong>
                 <div class="layer-desc">Standardi RAG-putki käännöksen kautta</div>
@@ -1065,7 +1065,7 @@
             <div class="layer-speed">500 ms</div>
         </div>
         <div class="layer-row">
-            <div class="layer-num" style="background: var(--honey-dark);">4</div>
+            <div class="layer-num" style="background: var(--accent-dark);">4</div>
             <div class="layer-content">
                 <strong>phi4-mini + konteksti</strong>
                 <div class="layer-desc">Monimutkaiset analyysit, multi-hop-päättely</div>
@@ -1203,7 +1203,7 @@
             <tr style="background: var(--green-light); font-weight: 700;">
                 <td>5 vuotta yhteensä</td><td class="con">&euro;36 000</td><td class="con">&euro;25 680</td><td class="pro">&euro;2 600</td>
             </tr>
-            <tr style="background: var(--honey-light); font-weight: 700;">
+            <tr style="background: var(--accent-light); font-weight: 700;">
                 <td>Säästö vs. WaggleDance</td><td><span class="highlight">&euro;33 400 (93 %)</span></td><td><span class="highlight">&euro;23 080 (90 %)</span></td><td>&mdash;</td>
             </tr>
         </tbody>

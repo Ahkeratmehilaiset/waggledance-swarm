@@ -42,13 +42,20 @@ Every action produces an auditable CaseTrajectory that feeds overnight learning.
 
 ## Deployment Profiles
 
-| Profile | Target | Typical Use Cases |
-|---------|--------|-------------------|
-| **GADGET** | Edge / IoT | Battery optimization, sensor calibration |
-| **COTTAGE** | Off-grid property | Heating, frost protection, energy management |
-| **HOME** | Smart home | Comfort, safety, energy optimization |
-| **FACTORY** | Industrial lines | OEE, SPC, predictive maintenance. Integrates via MQTT with ROS 2, OPC-UA, Modbus, Node-RED. Protocol-agnostic — works with Siemens, ABB, Tesla, BYD, Mitsubishi, or any MQTT-capable system. Full MAGMA audit trail for ISO/GMP compliance. |
-| **APIARY** | Specialized domain | Domain-specific monitoring, anomaly detection, seasonal tasks |
+| Profile | Target | Hardware | Typical Use Cases |
+|---------|--------|----------|-------------------|
+| **GADGET** | Edge / IoT | RPi, ESP32, Jetson Nano | Sensor calibration, battery optimization, environmental monitoring |
+| **COTTAGE** | Off-grid property | Mini-PC, NUC | Heating control, frost protection, energy management, weather-aware scheduling |
+| **HOME** | Smart home | Desktop, NAS, GPU workstation | Comfort automation, safety monitoring, energy optimization, multi-room orchestration |
+| **FACTORY** | Industrial | Server, DGX, on-prem cluster | OEE, SPC, predictive maintenance. MQTT, ROS 2, OPC-UA, Modbus, Node-RED. Protocol-agnostic — Siemens, ABB, Mitsubishi, or any MQTT-capable system. Full MAGMA audit trail for ISO/GMP compliance. |
+
+One-command deployment with hardware presets:
+
+```bash
+python start_waggledance.py --preset=raspberry-pi-iot   # GADGET
+python start_waggledance.py --preset=cottage-full        # COTTAGE
+python start_waggledance.py --preset=factory-production  # FACTORY
+```
 
 ---
 
@@ -63,27 +70,22 @@ docker compose up -d
 
 # Native (requires Ollama running locally)
 pip install -r requirements.txt
-python -m waggledance.adapters.cli.start_runtime --profile HOME
+python start_waggledance.py --preset=cottage-full
 ```
 
 Dashboard: http://localhost:8000
 
 ---
 
-## Current Status (March 2026)
+## Current Status (v3.3 — March 2026)
 
-- **v3.2** — full autonomy runtime with self-entity, epistemic uncertainty, dream mode
-- **4129 pytest tests passing**, CI green
+- **4350 pytest tests**, CI green across Python 3.11/3.12/3.13
 - Solver-first routing verified end-to-end (query -> solver -> verified answer -> gold case -> overnight learning)
 - MAGMA audit trail captures full lifecycle (capability selection -> policy -> execution -> verification -> case recording)
-- Specialist model training functional with sklearn route classifier; canary promotion pipeline in place
-- v3.2 modules: epistemic uncertainty, attention budget, dream mode, consolidator, meta-optimizer, projections
-- CognitiveGraph populated: 5726 nodes, 6615 edges (agents + capabilities + intents)
-
-**Known limitations:**
-- Specialist model training beyond route classifier uses simulated accuracy
-- Dashboard HTML has not been fully domain-neutralized
-- Legacy entrypoints (main.py, start.py) still exist alongside new runtime
+- 8 specialist models with real sklearn training + canary promotion pipeline
+- RAG-based fact verification, OpenTelemetry distributed tracing, ResourceGuard OOM protection
+- CognitiveGraph: 5726 nodes, 6615 edges (agents + capabilities + intents)
+- Hardware presets for one-command deployment (RPi IoT, cottage, factory)
 
 ---
 
@@ -104,10 +106,11 @@ Dashboard: http://localhost:8000
 
 | Version | Focus |
 |---------|-------|
-| **v2.0.0** | Autonomy runtime, solver-first routing, MAGMA integration, night learning v2 |
-| **v3.0** | Full alias migration, CognitiveGraph auto-population, complete domain-agnostic cutover |
-| **v3.2** (current) | Self-entity in World Model, epistemic uncertainty, dream mode, meta-optimizer, attention budget, projections |
-| **Future** | Distributed multi-node clustering, advanced LoRA specialist models |
+| **v2.0** | Autonomy runtime, solver-first routing, MAGMA integration, night learning v2 |
+| **v3.0** | Full alias migration, CognitiveGraph, domain-agnostic cutover |
+| **v3.2** | Self-entity, epistemic uncertainty, dream mode, meta-optimizer, attention budget |
+| **v3.3** (current) | Production hardening: god-object refactor, RAG verification, real LoRA V3, OTEL tracing, OOM protection, CI/CD, E2E tests |
+| **Future** | Distributed multi-node clustering, federated learning, advanced LoRA specialist models |
 
 ---
 
@@ -138,7 +141,7 @@ waggledance/
 ## Testing
 
 ```bash
-python -m pytest tests/ -q          # Full suite
+python -m pytest tests/ -q          # Full suite (4350 tests)
 python validate_cutover.py          # Autonomy cutover check
 ```
 
@@ -177,7 +180,7 @@ See `LICENSE`, `LICENSE-BUSL.txt`, and `LICENSE-CORE.md` for details.
 
 ## Credits
 
-Built by Jani Korpi (Ahkerat Mehilaiset, Helsinki) with Claude Code, codex and many other agents
+Built by Jani Korpi (Helsinki) with Claude Code and other AI agents.
 
 ---
 

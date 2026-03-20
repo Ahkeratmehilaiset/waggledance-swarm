@@ -131,7 +131,9 @@ def test_log_chat_in_source_at_return_points():
         f"Expected >= 5 log_chat calls (one per return path), found {metrics_log_count}"
 
     # Each log_chat should include response_time_ms calculation
-    perf_calc_count = src.count("perf_counter() - _chat_t0")
+    # v3.3: sub-modules use chat_t0, handler uses _chat_t0
+    perf_calc_count = (src.count("perf_counter() - _chat_t0")
+                       + src.count("perf_counter() - chat_t0"))
     assert perf_calc_count >= 5, \
         f"Expected >= 5 response_time calculations, found {perf_calc_count}"
 

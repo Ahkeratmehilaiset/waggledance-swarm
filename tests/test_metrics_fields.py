@@ -9,11 +9,21 @@ sys.path.insert(0, str(ROOT))
 
 
 def test_all_log_chat_have_model_used():
-    """Every metrics.log_chat() call in chat_handler.py must include model_used."""
-    source = (ROOT / "core" / "chat_handler.py").read_text(encoding="utf-8")
+    """Every metrics.log_chat() call in chat modules must include model_used."""
+    # v3.3: chat_handler split into sub-modules — check all of them
+    chat_modules = [
+        ROOT / "core" / "chat_handler.py",
+        ROOT / "core" / "chat_preprocessing.py",
+        ROOT / "core" / "chat_routing_engine.py",
+        ROOT / "core" / "chat_delegation.py",
+        ROOT / "core" / "chat_telemetry.py",
+    ]
+    source = ""
+    for mod in chat_modules:
+        if mod.exists():
+            source += mod.read_text(encoding="utf-8") + "\n"
 
     # Find all log_chat( calls and verify model_used is present
-    # Use regex to find each call block
     pattern = re.compile(r'metrics\.log_chat\((.*?)\)', re.DOTALL)
     matches = pattern.findall(source)
 
@@ -22,10 +32,7 @@ def test_all_log_chat_have_model_used():
     missing = []
     for i, match in enumerate(matches):
         if "model_used" not in match:
-            # Find line number for better error reporting
-            idx = source.find(match)
-            line_no = source[:idx].count("\n") + 1
-            missing.append(f"call #{i+1} near line {line_no}")
+            missing.append(f"call #{i+1}")
 
     assert not missing, f"log_chat calls missing model_used: {missing}"
 

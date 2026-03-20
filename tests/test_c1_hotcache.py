@@ -9,11 +9,11 @@ def test_hotcache_put_calls_in_hivemind():
     """All chat response paths should populate HotCache."""
     src = read_hive_source()
 
-    # Count _populate_hot_cache calls
-    calls = src.count("_populate_hot_cache")
-    # 1 definition + 4 call sites (memory_fast, delegate, neg_kw_delegate, master)
-    assert calls >= 5, f"Expected >= 5 _populate_hot_cache refs, found {calls}"
-    print(f"  [PASS] {calls} _populate_hot_cache references (1 def + 4 calls)")
+    # Count populate_hot_cache calls (v3.3: telemetry.populate_hot_cache or _populate_hot_cache)
+    calls = src.count("populate_hot_cache")
+    # 1+ definition + 3+ call sites (delegate, neg_kw_delegate, master, and/or memory_fast)
+    assert calls >= 5, f"Expected >= 5 populate_hot_cache refs, found {calls}"
+    print(f"  [PASS] {calls} populate_hot_cache references")
 
 
 def test_hotcache_put_calls_in_consciousness():
@@ -28,29 +28,32 @@ def test_hotcache_put_calls_in_consciousness():
 
 
 def test_populate_method_exists():
-    """_populate_hot_cache method exists on HiveMind."""
+    """populate_hot_cache method exists (in handler or telemetry module)."""
     src = read_hive_source()
 
-    assert "def _populate_hot_cache(self, query" in src
-    # Verify it checks: consciousness, hot_cache, valid response, fi lang, min score
-    # Find the real implementation (skip delegate stubs that just forward)
+    # v3.3: implementation may be in chat_telemetry.py as populate_hot_cache
+    assert "def populate_hot_cache" in src or "def _populate_hot_cache" in src
+    # Find the real implementation (has hot_cache.put)
     method_body = None
-    search_from = 0
-    while True:
-        pos = src.find("def _populate_hot_cache", search_from)
-        if pos == -1:
+    for prefix in ("def populate_hot_cache", "def _populate_hot_cache"):
+        search_from = 0
+        while True:
+            pos = src.find(prefix, search_from)
+            if pos == -1:
+                break
+            candidate = src[pos:pos + 800]
+            if "hot_cache.put(" in candidate:
+                method_body = candidate
+                break
+            search_from = pos + 1
+        if method_body:
             break
-        candidate = src[pos:pos + 800]
-        if "hot_cache.put(" in candidate:
-            method_body = candidate
-            break
-        search_from = pos + 1
-    assert method_body is not None, "_populate_hot_cache implementation not found"
+    assert method_body is not None, "populate_hot_cache implementation not found"
     assert "hot_cache" in method_body
     assert "_is_valid_response" in method_body
     assert "detected_lang" in method_body
     assert "score < 0.6" in method_body
-    print("  [PASS] _populate_hot_cache has all guards")
+    print("  [PASS] populate_hot_cache has all guards")
 
 
 def test_hotcache_lru_eviction():

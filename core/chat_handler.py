@@ -15,6 +15,9 @@ from core.chat_preprocessing import ChatPreprocessor
 from core.chat_routing_engine import ChatRoutingEngine
 from core.chat_delegation import AgentDelegator
 from core.chat_telemetry import ChatTelemetry
+from core.tracing import get_tracer
+
+_tracer = get_tracer("waggledance.chat")
 
 # v2.0: Autonomy runtime (optional)
 _AUTONOMY_AVAILABLE = False
@@ -60,8 +63,18 @@ class ChatHandler:
         self._last_model_result = None
         self._last_explanation = None
 
+        with _tracer.start_as_current_span("chat_request") as _span:
+            _span.set_attribute("query", message[:100])
+            _span.set_attribute("source", source)
+            return await self._do_chat_inner(
+                message, language, source, _chat_t0, _original_message, _span)
+
+    async def _do_chat_inner(self, message, language, source, _chat_t0,
+                             _original_message, _span) -> str:
+        """Inner chat logic wrapped by tracing span."""
         # ═══ 1. Language detection ═══
         _detected_lang = self.preprocessor.detect_lang(message, language)
+        _span.set_attribute("language", _detected_lang)
 
         # ═══ 2. Autonomy routing (ChatRouter) ═══
         _rt_cfg = self.config.get("runtime", {})

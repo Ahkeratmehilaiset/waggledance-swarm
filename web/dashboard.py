@@ -83,6 +83,22 @@ def _is_apiary_profile(hivemind) -> bool:
 def create_app(hivemind):
     app = FastAPI(title="WaggleDance AI Dashboard")
 
+    # v3.3: OpenTelemetry FastAPI instrumentation
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        FastAPIInstrumentor.instrument_app(app)
+    except ImportError:
+        pass
+
+    # v3.3: Tracing + structured logging setup
+    try:
+        from core.tracing import setup_tracing
+        from core.structured_logging import setup_logging
+        setup_logging()
+        setup_tracing()
+    except ImportError:
+        pass
+
     # ── UTF-8 kaikkialle (Windows-fix) ────────────────────
     from starlette.middleware.base import BaseHTTPMiddleware
 

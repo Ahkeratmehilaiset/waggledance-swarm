@@ -48,8 +48,13 @@ paho-mqtt>=2.0.0               # Phase 5: MQTT for smart home sensors
 scikit-learn>=1.4.0            # Route classifier, anomaly detector, quality grader, etc.
 joblib>=1.3.0                  # Model persistence (save/load sklearn pipelines)
 
-# === OBSERVABILITY ===
+# === OBSERVABILITY (full stack) ===
 prometheus-client>=0.20.0      # /metrics endpoint for Prometheus/Grafana
+# opentelemetry-api>=1.24.0             # Distributed tracing (optional)
+# opentelemetry-sdk>=1.24.0             # Tracing SDK
+# opentelemetry-exporter-otlp>=1.24.0   # OTLP exporter (Jaeger/Tempo)
+# opentelemetry-instrumentation-fastapi>=0.45b0  # FastAPI auto-instrumentation
+# structlog>=24.1.0                     # Structured JSON logging
 
 # === OPTIONAL: PDF parsing ===
 # PyMuPDF>=1.23.0              # fitz — PDF knowledge import

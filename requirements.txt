@@ -48,6 +48,9 @@ paho-mqtt>=2.0.0               # Phase 5: MQTT for smart home sensors
 scikit-learn>=1.4.0            # Route classifier, anomaly detector, quality grader, etc.
 joblib>=1.3.0                  # Model persistence (save/load sklearn pipelines)
 
+# === OBSERVABILITY ===
+prometheus-client>=0.20.0      # /metrics endpoint for Prometheus/Grafana
+
 # === OPTIONAL: PDF parsing ===
 # PyMuPDF>=1.23.0              # fitz — PDF knowledge import
 networkx>=3.0

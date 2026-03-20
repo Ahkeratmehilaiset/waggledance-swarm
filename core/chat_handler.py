@@ -31,6 +31,14 @@ except ImportError:
 
 log = logging.getLogger("hivemind")
 
+# v3.2: Prometheus metrics (optional)
+_METRICS_AVAILABLE = False
+try:
+    from core.observability import CHAT_REQUESTS, CHAT_LATENCY, HALLUCINATION_DETECTED
+    _METRICS_AVAILABLE = True
+except ImportError:
+    pass
+
 
 class ChatHandler:
     """Handles chat routing, delegation, and response processing.
@@ -801,6 +809,17 @@ class ChatHandler:
                                     latency_ms: float, success: bool,
                                     query: str, was_fallback: bool = False):
         """v1.18.0: Record route telemetry and low-confidence ledger entries."""
+        # v3.2: Prometheus metrics
+        if _METRICS_AVAILABLE:
+            try:
+                CHAT_REQUESTS.labels(
+                    method=getattr(self, '_last_chat_method', route_type) or route_type,
+                    language="fi",
+                    agent_id=getattr(self, '_last_chat_agent_id', route_type) or route_type,
+                ).inc()
+                CHAT_LATENCY.observe(latency_ms / 1000.0)
+            except Exception:
+                pass
         try:
             _get_route_telemetry().record(route_type, latency_ms, success, was_fallback)
         except Exception:

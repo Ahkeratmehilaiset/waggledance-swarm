@@ -29,6 +29,12 @@ log = logging.getLogger("waggledance.dashboard")
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 
+try:
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:
+    _PROMETHEUS_AVAILABLE = False
+
 
 def _get_seasonal_focus():
     """Get current month's seasonal keywords from consciousness module."""
@@ -112,6 +118,15 @@ def create_app(hivemind):
     chat_model = hivemind.llm.model if hivemind.llm else "?"
     hb_model = (hivemind.llm_heartbeat.model
                 if hivemind.llm_heartbeat else chat_model)
+
+    # ── Prometheus metrics endpoint ─────────────────────
+    if _PROMETHEUS_AVAILABLE:
+        @app.get("/metrics")
+        async def prometheus_metrics():
+            """Prometheus metrics endpoint."""
+            return Response(
+                content=generate_latest(),
+                media_type=CONTENT_TYPE_LATEST)
 
     # ── Chat history storage ────────────────────────────
     from core.chat_history import ChatHistory

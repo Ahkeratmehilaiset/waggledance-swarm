@@ -13,18 +13,9 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 from core.model_interface import ModelResult
+from core.safe_eval import safe_eval, SafeEvalError
 
 log = logging.getLogger(__name__)
-
-
-SAFE_MATH: Dict[str, Any] = {
-    "abs": abs, "max": max, "min": min, "round": round,
-    "log10": math.log10, "log": math.log, "exp": math.exp,
-    "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
-    "tan": math.tan, "pi": math.pi, "e": math.e,
-    "True": True, "False": False,
-    "__builtins__": {},
-}
 
 
 @dataclass
@@ -267,8 +258,7 @@ class SymbolicSolver:
                     )
 
         # Step 3: Evaluate formulas sequentially
-        eval_ctx = dict(SAFE_MATH)
-        eval_ctx.update(context)
+        eval_ctx = dict(context)
 
         derivation_steps: List[Dict[str, Any]] = []
         formulas_used: List[str] = []
@@ -283,7 +273,7 @@ class SymbolicSolver:
             fdesc = formula_def.get("description", "")
 
             try:
-                result = eval(fexpr, {"__builtins__": {}}, eval_ctx)  # noqa: S307
+                result = safe_eval(fexpr, eval_ctx)
                 eval_ctx[fname] = result
                 last_value = result
                 last_unit = funit
@@ -295,6 +285,17 @@ class SymbolicSolver:
                     "unit": funit,
                     "description": fdesc,
                 })
+            except SafeEvalError as exc:
+                eval_error = f"Formula '{fname}': {exc}"
+                derivation_steps.append({
+                    "name": fname,
+                    "formula": fexpr,
+                    "result": None,
+                    "unit": funit,
+                    "description": fdesc,
+                    "error": str(exc),
+                })
+                break
             except Exception as exc:
                 eval_error = f"Formula '{fname}': {exc}"
                 derivation_steps.append({
@@ -313,7 +314,9 @@ class SymbolicSolver:
             check = v.get("check", "")
             msg = v.get("message", "")
             try:
-                passed = bool(eval(check, {"__builtins__": {}}, eval_ctx))  # noqa: S307
+                passed = bool(safe_eval(check, eval_ctx))
+            except SafeEvalError:
+                passed = False
             except Exception as exc:
                 passed = False
                 msg = f"{msg} [eval error: {exc}]"
@@ -326,9 +329,11 @@ class SymbolicSolver:
             if not expr:
                 continue
             try:
-                if bool(eval(expr, {"__builtins__": {}}, eval_ctx)):  # noqa: S307
+                if bool(safe_eval(expr, eval_ctx)):
                     risk_level = level
                     break
+            except SafeEvalError:
+                pass
             except Exception:
                 pass
 

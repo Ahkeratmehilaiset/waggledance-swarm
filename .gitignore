@@ -216,6 +216,8 @@ __marimo__/
 # Backups
 *_backup_*.py
 backups/
+data_backup_*/
+LICENSE-CORE-BACKUP.md
 
 # Benchmark results (keep scripts, remove outputs)
 benchmark_*.json
@@ -251,6 +253,8 @@ test_output.txt
 configs/confusion_memory.json
 WAGGLEDANCE_AI_BRIEF.md
 mass_test_results_*.json
+v32_test_results.txt
+validate_v32.ps1
 
 # Node modules & dashboard build
 dashboard/node_modules/

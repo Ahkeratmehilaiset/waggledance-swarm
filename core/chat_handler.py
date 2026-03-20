@@ -68,9 +68,9 @@ class ChatHandler:
         if language == "auto":
             _detected_lang = detect_language(message) if _TRANSLATION_AVAILABLE else "fi"
 
-        # ═══ v2.0: Autonomy Runtime path (solver-first, LLM-last) ═══
-        # When runtime.primary=waggledance and compatibility_mode=false,
-        # route through AutonomyRuntime instead of legacy path.
+        # ═══ v3.2: Autonomy routing moved to ChatRouter (core/chat_router.py) ═══
+        # ChatRouter handles autonomy → legacy → hex → fallback chain.
+        # Legacy inline autonomy code removed — ChatRouter is the single entry point.
         _rt_cfg = self.config.get("runtime", {})
         if (_rt_cfg.get("primary") == "waggledance"
                 and not _rt_cfg.get("compatibility_mode", True)
@@ -81,43 +81,34 @@ class ChatHandler:
                     _svc = _AutonomyService(
                         profile=self.config.get("profile", "DEFAULT"))
                     _svc.start()
-                    # Avoid race: only set if still None (first writer wins)
                     if getattr(self, '_autonomy_service', None) is None:
                         self._autonomy_service = _svc
                     else:
                         _svc.stop()
                     _autonomy_svc = self._autonomy_service
-                result = _autonomy_svc.handle_query(
-                    message, {"language": _detected_lang, "source": source})
-                # Format response from autonomy result
-                if result.get("error") or not result.get("executed"):
-                    # Autonomy failed or did not execute — fall through to legacy path
-                    log.warning("Autonomy runtime %s, falling back: %s",
-                                "error" if result.get("error") else "not executed",
-                                result.get("error", result.get("capability", "unknown")))
-                else:
-                    _r = result.get("result") or {}
-                    response = _r.get("answer", "") if _r else ""
-                    if not response:
-                        log.warning("Autonomy returned empty answer, falling back")
-                    else:
-                        self._last_chat_message = message
-                        self._last_chat_response = response
-                        self._last_chat_method = f"autonomy_{result.get('quality_path', 'bronze')}"
-                        self._last_chat_agent_id = result.get("capability", "autonomy")
-                        self._last_model_result = result
-                        _auto_ms = (time.perf_counter() - _chat_t0) * 1000
-                        self.metrics.log_chat(
-                            query=_original_message,
-                            method=self._last_chat_method,
-                            agent_id=self._last_chat_agent_id,
-                            model_used="autonomy_runtime",
-                            confidence=0.9 if result.get("quality_path") == "gold" else 0.7,
-                            response_time_ms=_auto_ms,
-                            route="autonomy", language=_detected_lang)
-                        self._record_request_telemetry(
-                            "autonomy", 0.9, _auto_ms, True, message)
-                        return response
+
+                from core.chat_router import ChatRouter
+                _router = ChatRouter(autonomy_service=_autonomy_svc)
+                _chat_result = await _router.route(message, _detected_lang, source)
+                if _chat_result.method == "autonomy" and _chat_result.response:
+                    self._last_chat_message = message
+                    self._last_chat_response = _chat_result.response
+                    self._last_chat_method = f"autonomy_{_chat_result.method}"
+                    self._last_chat_agent_id = _chat_result.agent_id
+                    self._last_model_result = None
+                    _auto_ms = _chat_result.latency_ms
+                    self.metrics.log_chat(
+                        query=_original_message,
+                        method=self._last_chat_method,
+                        agent_id=self._last_chat_agent_id,
+                        model_used="autonomy_runtime",
+                        confidence=_chat_result.confidence,
+                        response_time_ms=_auto_ms,
+                        route="autonomy", language=_detected_lang)
+                    self._record_request_telemetry(
+                        "autonomy", _chat_result.confidence, _auto_ms, True, message)
+                    return _chat_result.response
+                # Autonomy returned no result — fall through to legacy path
             except Exception as _auto_err:
                 log.warning("Autonomy runtime unavailable, legacy fallback: %s",
                             _auto_err)

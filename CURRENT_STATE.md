@@ -1,7 +1,7 @@
 # WaggleDance Swarm — Project State (auto-generated)
 
-**Generated**: 2026-03-20T15:38:09+0200
-**Commit**: `2f305b5` on `main`
+**Generated**: 2026-03-21T00:13:16+0200
+**Commit**: `87aad07` on `main`
 **Generator**: `python tools/generate_state.py`
 
 > This file is auto-generated from actual code. Do not edit manually.
@@ -9,8 +9,8 @@
 
 ## Summary
 
-- **Hexagonal runtime** (`waggledance/`): 80 core modules, 24,863 lines
-- **Legacy core** (`core/`): 85 modules, 27,204 lines
+- **Hexagonal runtime** (`waggledance/`): 80 core modules, 24,880 lines
+- **Legacy core** (`core/`): 85 modules, 27,213 lines
 - **Tests**: 198 files, 3339 test functions
 - **Licensing**: 24 BUSL-protected files, 90 Apache files
 
@@ -40,7 +40,7 @@
 | `waggledance/core/autonomy/lifecycle.py` | 212 | RuntimeState, RuntimeMode, HealthCheck +1 | Complete |
 | `waggledance/core/autonomy/metrics.py` | 235 | MetricSample, AutonomyMetrics | Complete |
 | `waggledance/core/autonomy/resource_kernel.py` | 510 | LoadLevel, ResourceTier, ResourceSnapshot +5 | Complete |
-| `waggledance/core/autonomy/runtime.py` | 950 | AutonomyRuntime | Complete |
+| `waggledance/core/autonomy/runtime.py` | 959 | AutonomyRuntime | Complete |
 | `waggledance/core/capabilities/aliasing.py` | 176 | AgentAlias, AliasRegistry | Complete |
 | `waggledance/core/capabilities/registry.py` | 429 | CapabilityRegistry | Complete |
 | `waggledance/core/capabilities/selector.py` | 313 | SelectionResult, CapabilitySelector | Complete |
@@ -59,7 +59,7 @@
 | `waggledance/core/learning/dream_mode.py` | 367 | DreamCandidate, CounterfactualResult, DreamSession +1 | Complete |
 | `waggledance/core/learning/legacy_converter.py` | 140 | LegacyRecord, LegacyConverter | Complete |
 | `waggledance/core/learning/morning_report.py` | 251 | MorningReport, MorningReportBuilder | Complete |
-| `waggledance/core/learning/night_learning_pipeline.py` | 296 | NightLearningResult, NightLearningPipeline | Complete |
+| `waggledance/core/learning/night_learning_pipeline.py` | 297 | NightLearningResult, NightLearningPipeline | Complete |
 | `waggledance/core/learning/prediction_error_ledger.py` | 233 | PredictionError, SolverErrorProfile, LedgerAnalysis +1 | Complete |
 | `waggledance/core/learning/procedural_memory.py` | 204 | Procedure, ProceduralMemory | Complete |
 | `waggledance/core/learning/quality_gate.py` | 170 | PromotionDecision, QualityGate | Complete |
@@ -80,7 +80,7 @@
 | `waggledance/core/policies/escalation_policy.py` | 39 | EscalationPolicy | Complete |
 | `waggledance/core/policies/fallback_policy.py` | 62 | FallbackChain | Complete |
 | `waggledance/core/policy/approvals.py` | 172 | ApprovalRequest, ApprovalManager | Complete |
-| `waggledance/core/policy/constitution.py` | 267 | ConstitutionRule, ProfileThresholds, Constitution | Complete |
+| `waggledance/core/policy/constitution.py` | 269 | ConstitutionRule, ProfileThresholds, Constitution | Complete |
 | `waggledance/core/policy/policy_engine.py` | 317 | PolicyDecision, PolicyEngine | Complete |
 | `waggledance/core/policy/risk_scoring.py` | 129 | RiskScorer | Complete |
 | `waggledance/core/policy/safety_cases.py` | 214 | SafetyEvidence, SafetyCase, SafetyCaseBuilder | Complete |
@@ -129,7 +129,7 @@
 | `core/canary_promoter.py` | 157 | CanaryResult, CanaryPromoter | Complete |
 | `core/causal_replay_api.py` | 55 | ReplayResult, CausalReplayService | Complete |
 | `core/chat_delegation.py` | 214 | AgentDelegator | Complete |
-| `core/chat_handler.py` | 380 | ChatHandler | Complete |
+| `core/chat_handler.py` | 384 | ChatHandler | Complete |
 | `core/chat_history.py` | 199 | ChatHistory | Complete |
 | `core/chat_preprocessing.py` | 210 | PreprocessResult, ChatPreprocessor | Complete |
 | `core/chat_router.py` | 112 | ChatResult, ChatRouter | Complete |
@@ -158,7 +158,7 @@
 | `core/knowledge_distiller.py` | 280 | KnowledgeDistiller | Complete |
 | `core/knowledge_loader.py` | 410 | KnowledgeLoader | Complete |
 | `core/language_readiness.py` | 75 | LanguageCapability, LanguageReadiness | Complete |
-| `core/learning_engine.py` | 1143 | QualityScore, PromptExperiment, PromptWin +2 | Complete |
+| `core/learning_engine.py` | 1144 | QualityScore, PromptExperiment, PromptWin +2 | Complete |
 | `core/learning_ledger.py` | 140 | LedgerEntry, LearningLedger | Complete |
 | `core/learning_task_queue.py` | 178 | LearningTaskQueue | Complete |
 | `core/live_monitor.py` | 143 | EventCategory, MonitorEvent, LiveMonitor | Complete |
@@ -177,7 +177,7 @@
 | `core/night_mode_controller.py` | 565 | NightModeController | Complete |
 | `core/normalizer.py` | 360 |  | Complete |
 | `core/observability.py` | 45 |  | Complete |
-| `core/ops_agent.py` | 826 | ModelProfile, OllamaSnapshot, OpsDecision +1 | Complete |
+| `core/ops_agent.py` | 830 | ModelProfile, OllamaSnapshot, OpsDecision +1 | Complete |
 | `core/opus_mt_adapter.py` | 85 | OpusMTAdapter | Complete |
 | `core/prompt_experiment_status.py` | 51 | ExperimentSummary, ExperimentStatusFormatter | Complete |
 | `core/provenance.py` | 130 | ProvenanceTracker | Complete |
@@ -211,7 +211,7 @@
 # Clone and verify:
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-git checkout 2f305b5
+git checkout 87aad07
 
 # Count core modules (expect 40+):
 find waggledance/core -name "*.py" -not -name "__init__.py" | wc -l

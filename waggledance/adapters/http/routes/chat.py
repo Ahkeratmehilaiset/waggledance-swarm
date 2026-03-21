@@ -1,7 +1,7 @@
 """Chat HTTP route -- thin wrapper around ChatService."""
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, field_validator
 
 from waggledance.adapters.http.deps import get_chat_service
 
@@ -38,6 +38,11 @@ except ImportError:
 router = APIRouter()
 
 
+# Maximum query length (characters).  Prevents OOM / DoS via
+# oversized payloads that block the LLM for minutes.
+MAX_QUERY_LENGTH = 10_000
+
+
 class ChatHttpRequest(BaseModel):
     """Pydantic model for incoming chat HTTP requests."""
 
@@ -47,6 +52,15 @@ class ChatHttpRequest(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     context_turns: int = 5
+
+    @field_validator("query")
+    @classmethod
+    def query_not_too_long(cls, v: str) -> str:
+        if len(v) > MAX_QUERY_LENGTH:
+            raise ValueError(
+                f"query exceeds maximum length of {MAX_QUERY_LENGTH} characters"
+            )
+        return v
 
     def to_dto(self) -> ChatRequest:
         """Convert Pydantic model to application-layer DTO."""

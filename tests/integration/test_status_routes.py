@@ -382,3 +382,25 @@ class TestChatEdgeCases:
         )
         data = r.json()
         assert isinstance(data["cached"], bool)
+
+    def test_chat_rejects_oversized_query(self):
+        """Queries exceeding MAX_QUERY_LENGTH must be rejected with 422."""
+        _reset_rate_limit()
+        client, _ = _get_client()
+        r = client.post(
+            "/api/chat",
+            json={"query": "A" * 10_001},
+            headers=_headers(),
+        )
+        assert r.status_code == 422, f"Expected 422, got {r.status_code}"
+
+    def test_chat_accepts_max_length_query(self):
+        """A query at exactly MAX_QUERY_LENGTH should be accepted."""
+        _reset_rate_limit()
+        client, _ = _get_client()
+        r = client.post(
+            "/api/chat",
+            json={"query": "A" * 10_000},
+            headers=_headers(),
+        )
+        assert r.status_code == 200

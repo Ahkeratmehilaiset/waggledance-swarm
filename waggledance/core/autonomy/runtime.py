@@ -299,6 +299,7 @@ class AutonomyRuntime:
             store = getattr(self, store_name, None)
             if store:
                 self._persist_safe(f"close.{store_name}", store.close)
+        _ASYNC_POOL.shutdown(wait=False)
         log.info("AutonomyRuntime stopped")
 
     @property

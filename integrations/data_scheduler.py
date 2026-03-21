@@ -117,8 +117,8 @@ class DataFeedScheduler:
                     # CRITICAL: respect PriorityLock — block if user chatting
                     try:
                         await self.priority.wait_if_chat()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning("PriorityLock wait failed: %s", e)
 
                     try:
                         stored = await feed.update_context(self.consciousness)

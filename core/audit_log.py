@@ -145,7 +145,13 @@ class AuditLog:
         return self._conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
 
     def close(self):
-        self._conn.close()
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.close()
 
     @staticmethod
     def content_hash(text: str) -> str:

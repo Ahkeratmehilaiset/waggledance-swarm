@@ -222,7 +222,13 @@ class SQLiteCaseStore:
     def close(self) -> None:
         """Close the database connection."""
         with self._lock:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def __del__(self):
+        self.close()
 
     def stats(self) -> Dict[str, Any]:
         total = self._conn.execute(

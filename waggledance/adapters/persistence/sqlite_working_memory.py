@@ -125,7 +125,13 @@ class SQLiteWorkingMemory:
 
     def close(self) -> None:
         with self._lock:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def __del__(self):
+        self.close()
 
     def stats(self) -> Dict[str, Any]:
         now = time.time()

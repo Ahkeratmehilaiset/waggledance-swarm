@@ -125,6 +125,7 @@ class NightLearningPipeline:
         self._report_builder = report_builder or MorningReportBuilder(profile=profile)
 
         self._history: List[NightLearningResult] = []
+        self._last_training_results = []
         self._running = False
 
     @property

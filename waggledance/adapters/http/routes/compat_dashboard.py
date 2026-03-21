@@ -315,8 +315,19 @@ _ws_clients: set = set()
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket for real-time dashboard updates."""
-    # Accept without token check for hologram page
+    """WebSocket for real-time dashboard updates.
+
+    BaseHTTPMiddleware does NOT intercept WebSocket upgrades, so
+    token auth must be checked here, not in the auth middleware.
+    """
+    # Validate token query param before accepting
+    container = websocket.app.state.container
+    expected_key = container._settings.api_key
+    token = websocket.query_params.get("token", "")
+    if token != expected_key:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
     await websocket.accept()
     _ws_clients.add(websocket)
     logger.info("Hologram WebSocket connected (%d clients)", len(_ws_clients))

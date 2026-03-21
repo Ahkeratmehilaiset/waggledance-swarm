@@ -404,3 +404,32 @@ class TestChatEdgeCases:
             headers=_headers(),
         )
         assert r.status_code == 200
+
+
+class TestWebSocketAuth:
+    """WebSocket endpoint must require authentication via query param."""
+
+    def test_ws_rejects_without_token(self):
+        """WebSocket without token should be closed with 4001."""
+        _reset_rate_limit()
+        client, _ = _get_client()
+        with pytest.raises(Exception):
+            # Unauthenticated WebSocket should fail to connect
+            with client.websocket_connect("/ws"):
+                pass  # should not reach here
+
+    def test_ws_rejects_wrong_token(self):
+        """WebSocket with wrong token should be closed with 4001."""
+        _reset_rate_limit()
+        client, _ = _get_client()
+        with pytest.raises(Exception):
+            with client.websocket_connect("/ws?token=wrong-token"):
+                pass
+
+    def test_ws_accepts_valid_token(self):
+        """WebSocket with valid token should connect and receive data."""
+        _reset_rate_limit()
+        client, key = _get_client()
+        with client.websocket_connect(f"/ws?token={key}") as ws:
+            data = ws.receive_json()
+            assert "type" in data

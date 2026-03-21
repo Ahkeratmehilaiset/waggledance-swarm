@@ -56,7 +56,11 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
         # Non-API paths (static files, root, etc.) -- no auth required
         if not path.startswith("/api/"):
-            # WebSocket upgrade with token query param
+            # NOTE: WebSocket auth is handled in the route handler
+            # (compat_dashboard.websocket_endpoint) because Starlette's
+            # BaseHTTPMiddleware does NOT intercept WebSocket upgrades.
+            # This HTTP-level check is kept as defence-in-depth for
+            # non-WebSocket requests to /ws (e.g. plain GET).
             if path == "/ws":
                 token = request.query_params.get("token", "")
                 if token != self._api_key:

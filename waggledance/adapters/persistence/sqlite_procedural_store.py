@@ -171,6 +171,14 @@ class SQLiteProceduralStore:
                 pass
 
     def __del__(self):
+        if not hasattr(self, '_lock'):
+            conn = getattr(self, '_conn', None)
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            return
         self.close()
 
     def stats(self) -> Dict[str, Any]:

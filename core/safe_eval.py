@@ -6,6 +6,7 @@ Everything else raises SafeEvalError. No blacklist, no __builtins__ tricks.
 
 import ast
 import math
+import warnings
 from typing import Any, Dict, Optional
 
 
@@ -35,7 +36,9 @@ ALLOWED_NODE_TYPES = (
 # Python <3.8 compat — ast.Num/ast.Str deprecated since 3.8, removed in 3.14
 _LEGACY = ()
 for _name in ("Num", "Str"):
-    _node = getattr(ast, _name, None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        _node = getattr(ast, _name, None)
     if _node is not None:
         _LEGACY = _LEGACY + (_node,)
 if _LEGACY:

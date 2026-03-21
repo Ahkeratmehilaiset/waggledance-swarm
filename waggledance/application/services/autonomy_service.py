@@ -75,6 +75,36 @@ class AutonomyService:
         except Exception:
             pass
 
+        # Seed KPI metrics with historical data from persistent stores
+        self._seed_historical_metrics()
+
+    def _seed_historical_metrics(self) -> None:
+        """Seed KPI counters with historical data from persistent stores.
+
+        Without this, KPI case_grades show all zeros on startup even
+        when the persistent case store contains thousands of graded
+        records from prior sessions.  Only counters are seeded (not
+        rate samples, which are session-scoped by design).
+        """
+        if not self._metrics:
+            return
+
+        # Seed case grade counters from the persistent case store
+        case_store = getattr(self._runtime, "case_store", None)
+        if case_store is not None:
+            try:
+                grades = case_store.grade_distribution()
+                for grade, count in grades.items():
+                    self._metrics.increment(f"case_grade_{grade}", count)
+                total = sum(grades.values())
+                if total:
+                    log.info(
+                        "Seeded KPI case grade counters with %d historical cases",
+                        total,
+                    )
+            except Exception as exc:
+                log.warning("Failed to seed case grade metrics: %s", exc)
+
     # ── Lifecycle ──────────────────────────────────────────
 
     def start(self) -> Dict[str, Any]:

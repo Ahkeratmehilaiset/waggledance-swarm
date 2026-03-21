@@ -1,0 +1,165 @@
+header:
+  agent_id: child_safety
+  agent_name:  Child Safety Advisor
+  name_fi: 'Lapsiturvallinen koti'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: medium
+ASSUMPTIONS:
+- Pienten lasten (0-6v) koti Suomessa
+- Myrkytystietokeskus 0800 147 111 (24h)
+- Hätänumero 112
+- Jani Korpin perhe — lapset kotona, mökki myös käytössä
+DECISION_METRICS_AND_THRESHOLDS:
+  fall_height_cm:
+    value: 60
+    action: ">60 cm putoamiskorkeus → asenna suojakaide tai turvaportit välittömästi"
+    source: src:CS1
+  stair_gate_height_cm:
+    value: 75
+    action: "Turvaportit vähintään 75 cm korkeat, jäykästi kiinnitetyt (ei puristusportteja portaissa)"
+    source: src:CS1
+  window_opening_max_cm:
+    value: 10
+    action: "Ikkunat auki max 10 cm jos lapsi pääsee lähelle — asenna ikkunalukko tai rajoitin"
+    source: src:CS1
+  toxic_plants_distance_m:
+    value: 2
+    action: "Myrkylliset kasvit (esim. alppiruusu, neilikka) vähintään 2 m ulottumattomissa tai poista"
+    source: src:CS2
+  medication_storage_height_cm:
+    value: 150
+    action: "Lääkkeet vähintään 150 cm korkeudessa tai lukitussa kaapissa — lasten käsiin pääsy kriittinen vaara"
+    source: src:CS2
+  bathtub_supervision_age_years:
+    value: 6
+    action: "Alle 6-vuotias ei saa koskaan olla yksin kylvyssä — hukkuminen alle 5 cm vedessä mahdollinen"
+    source: src:CS1
+  small_object_diameter_mm:
+    value: 32
+    action: "<32 mm esine → tukehtumisvaara alle 3-vuotiaalle, poista tai säilytä lukitussa"
+    source: src:CS1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: pihan turvatarkistus ennen ulkoleikkejä — tarkista aidat, portit, terassin kaiteet ja mahdolliset talven jälkeiset vauriot. Vesiaihe (allas, lampi) suojattava verkolla tai tyhjennettävä."
+  source: src:CS1
+- season: Kesä
+  action: "Kesäkuu–elokuu: aurinkosuoja (SPF 50+ alle 1v, SPF 30+ 1-6v), hyönteismyrkyt vain yli 2-vuotiaille. Grilli ja nuotiopaikka aidattava. Mökillä: rantavalvonta jatkuvaa, pelastusrengas näkyvillä."
+  source: src:CS3
+- season: Syksy
+  action: "Syyskuu–marraskuu: tarkista koti syyssiivous-yhteydessä — liukastumisvaarat mattojen alle, patterien suojaukset kuntoon ennen talvea. Pimeyden takia heijastimet lapselle."
+  source: src:CS1
+- season: Talvi
+  action: "Joulukuu–helmikuu: joulukuusen koristeet (pienet pallot, teräväkärjet) lasten ulottumattomiin. Kynttilät ei koskaan ilman valvontaa. Liukkaus pihalla — hiekoita tai asenna liukuesteet."
+  source: src:CS1
+FAILURE_MODES:
+- mode: Lapsi on niellyt myrkyllisen aineen
+  detection: "Lapsi itkee selittämättömästi, sylissä kemikaaleja, löytyy avoin pakkaus, oksentelu tai suun punoitus"
+  action: "1. Soita VÄLITTÖMÄSTI Myrkytystietokeskukseen 0800 147 111. 2. ÄLÄ okseta ellei erikseen ohjeisteta. 3. Ota pakkaus mukaan. 4. Jos tajuton tai kouristaa → 112."
+  source: src:CS2
+- mode: Lapsi pudonnut merkittävältä korkeudelta
+  detection: "Lapsi pudottunut >60 cm, itkee poikkeavasti tai on sekava, kieltäytyy liikkumasta"
+  action: "1. ÄLÄ siirrä jos epäilet selkärangavamma. 2. Soita 112 tai mene päivystykseen. 3. Tarkkaile päänalueen oireita 24h (oksentelu, uneliaisuus → päivystykseen heti)."
+  source: src:CS1
+- mode: Lapsi on juuttunut porttilukon tai turvalaitteen taakse
+  detection: "Lapsi ei pysty palata, hätääntyy, itkee"
+  action: "Avaa turvalukon erikoisavaus (testaa etukäteen). Tarkista kaikki turvaportit säännöllisesti ettei lapsi opi avaamaan niitä. Vaihda turvalukkoa jos lapsi oppii mekanismin."
+  source: src:CS1
+PROCESS_FLOWS:
+  safety_audit:
+    steps:
+    - 'Kuukausittain: tarkista turvaportit (kiinnitys, toiminta), pistorasiasuojat, lukitut kaapit'
+    - 'Puolivuosittain: kaikki putoamiskorkeudet, ikkunarajoittimet, myrkylliset kasvit'
+    - 'Ennen mökkikautta: ranta-aidan kunto, pelastusrengas, vesialtaat'
+    - 'Ennen juhlasesonkia (joulu, syntymäpäivä): koristeet, kynttilät, vierailijat ja heidän laukkunsa'
+    - 'Vuosittain: päivitä ensiapuvalmius, tarkista sammuttimien toimivuus, harjoittele 112-soitto lapsen kanssa'
+COMPLIANCE_AND_LEGAL:
+  tuoteturvallisuus: "Tukes valvoo lelujen turvallisuutta — tarkista CE-merkki ja ikäsuositus [src:CS3]"
+  vanhemman_vastuu: "Huoltaja on lain mukaan vastuussa lapsen turvallisuudesta — laiminlyönti voi johtaa rikosoikeudelliseen vastuuseen [src:CS1]"
+  paivakoti: "Päiväkodissa turvallisuusstandardit valvottuja (THL) — kotona samat periaatteet [src:CS1]"
+UNCERTAINTY_NOTES:
+- "Ikärajat ovat suuntaa-antavia — lasten kehitys vaihtelee, arvioi lapsikohtaisesti."
+- "Myrkylliset kasvit: lista vaihtelee, tarkista aina Myrkytystietokeskuksen sivulta."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:CS1
+    org: THL / Lastensuojelu
+    title: Tapaturmien ehkäisy lapsilla
+    year: 2024
+    url: https://thl.fi/fi/web/tapaturmat-ja-vakivalta/tapaturmien-ehkaisy/lasten-tapaturmat
+    supports: Putoaminen, turvaportit, kylpy, tukehtuminen.
+  - id: src:CS2
+    org: Myrkytystietokeskus HUS
+    title: Lasten myrkytystapaukset
+    year: 2024
+    url: https://www.hus.fi/potilaille/myrkytyskeskus
+    supports: Myrkkytietous, kemikaalit, lääkkeet, kasvit.
+  - id: src:CS3
+    org: Tukes (Turvallisuus- ja kemikaalivirasto)
+    title: Lasten tuotteiden turvallisuus
+    year: 2024
+    url: https://tukes.fi/tuotteet-ja-palvelut/lelut
+    supports: CE-merkki, ikärajat, aurinkosuoja, hyönteismyrkyt.
+eval_questions:
+- q: Mikä on putoamiskorkeus josta porttisuoja vaaditaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fall_height_cm.value
+  source: src:CS1
+- q: Kuinka korkeita turvaportit pitää olla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.stair_gate_height_cm.value
+  source: src:CS1
+- q: Mikä on ikkunan maksimi avausleveys lasten turvallisuuden kannalta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.window_opening_max_cm.value
+  source: src:CS1
+- q: Miten myrkylliset kasvit pitää sijoittaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.toxic_plants_distance_m.action
+  source: src:CS2
+- q: Mihin korkeuteen lääkkeet pitää säilyttää?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.medication_storage_height_cm.value
+  source: src:CS2
+- q: Saako alle 6-vuotias olla yksin kylvyssä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.bathtub_supervision_age_years.action
+  source: src:CS1
+- q: Mikä on tukehtumisvaaran muodostava esinekoko?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.small_object_diameter_mm.value
+  source: src:CS1
+- q: Mitä turvallisuusasioita tarkistetaan keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:CS1
+- q: Miten auringolta suojataan eri-ikäiset lapset?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:CS3
+- q: Mitä pitää huomioida mökillä veden lähellä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:CS3
+- q: Mitä talvella pitää tarkistaa lapsen turvallisuuden osalta?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:CS1
+- q: Miten toimitaan jos lapsi on niellyt myrkyllisen aineen?
+  a_ref: FAILURE_MODES[0].action
+  source: src:CS2
+- q: Mikä on Myrkytystietokeskuksen numero?
+  a_ref: ASSUMPTIONS
+  source: src:CS2
+- q: Mitä tehdään jos lapsi on pudonnut korkealta?
+  a_ref: FAILURE_MODES[1].action
+  source: src:CS1
+- q: Milloin pään lyömisen jälkeen mennään päivystykseen?
+  a_ref: FAILURE_MODES[1].action
+  source: src:CS1
+- q: Miten turvaportit tarkistetaan?
+  a_ref: PROCESS_FLOWS.safety_audit.steps
+  source: src:CS1
+- q: Kuinka usein kotitarkistus pitää tehdä?
+  a_ref: PROCESS_FLOWS.safety_audit.steps
+  source: src:CS1
+- q: Onko vanhemmilla laillinen vastuu lapsen turvallisuudesta?
+  a_ref: COMPLIANCE_AND_LEGAL.vanhemman_vastuu
+  source: src:CS1
+- q: Mistä tarkistetaan myrkylliset kasvit?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:CS2
+- q: Mitä CE-merkki tarkoittaa leluissa?
+  a_ref: COMPLIANCE_AND_LEGAL.tuoteturvallisuus
+  source: src:CS3

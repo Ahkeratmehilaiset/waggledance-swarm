@@ -1,0 +1,25 @@
+title: Spc
+agent: Laadunvalvonta
+facts:
+- 'X-bar/R-kortti: keskiarvon ja vaihteluvälin seuranta'
+- Cpk = min((USL-mean), (mean-LSL)) / (3*sigma)
+- 'Western Electric -säännöt: hälytys poikkeavista kuvioista'
+- 'Control Limit vs Specification Limit: eri asia'
+SPC_RULES:
+- rule: 1 piste yli 3σ rajojen
+  action: Pysäytä prosessi, selvitä syy
+  type: Poikkeama
+- rule: 7 peräkkäistä pistettä samalla puolella
+  action: Prosessin siirtymä, kalibroi
+  type: Trendi
+- rule: 6 peräkkäistä nousevaa/laskevaa
+  action: Trendi käynnissä, tarkista kuluminen
+  type: Trendi
+- rule: 14 peräkkäistä vuorotellen ylös/alas
+  action: Systemaattinen vaihtelu, tarkista 2 konetta/raaka-ainetta
+  type: Syklinen
+CPK_INTERPRETATION:
+  cpk_below_1: Prosessi ei kyvykäs → välitön toimenpide
+  cpk_1_to_1_33: Rajallinen kyvykkyys → paranna
+  cpk_1_33_to_1_67: Kyvykäs → normaali seuranta
+  cpk_above_1_67: Erinomainen → harkitse toleranssien kiristystä

@@ -1,0 +1,14 @@
+# configs/presets/factory-production.yaml
+profile: factory
+agents_max: 75
+memory_max_items: 200000
+ollama_model: llama3.2:3b
+embedding_model: nomic-embed-text
+micromodel_v2_enabled: true
+micromodel_v3_enabled: true
+resource_guard:
+  max_memory_percent: 80
+  critical_memory_percent: 90
+mqtt_tls: true
+log_format: json
+otel_endpoint: "http://localhost:4317"

@@ -1,0 +1,77 @@
+model_id: honey_yield
+model_name: "Honey Yield Estimate"
+description: "Estimate seasonal honey yield based on colony strength and nectar flow"
+
+formulas:
+  - name: daily_foragers
+    formula: "colony_strength * forager_ratio"
+    description: "Active foraging bees per day"
+    output_unit: "count"
+  - name: daily_nectar_kg
+    formula: "daily_foragers * nectar_load_mg * flights_per_day / 1000000"
+    description: "Nectar collected per day"
+    output_unit: "kg"
+  - name: daily_honey_kg
+    formula: "daily_nectar_kg * nectar_to_honey_ratio"
+    description: "Honey produced per day (after evaporation)"
+    output_unit: "kg"
+  - name: season_honey_kg
+    formula: "daily_honey_kg * flow_days * surplus_fraction"
+    description: "Harvestable honey for the season"
+    output_unit: "kg"
+
+variables:
+  colony_strength:
+    description: "Total bee population"
+    unit: "count"
+    range: [5000, 80000]
+    default: 40000
+  forager_ratio:
+    description: "Fraction of bees that forage"
+    unit: "ratio"
+    range: [0.2, 0.5]
+    default: 0.35
+  nectar_load_mg:
+    description: "Nectar per trip (mg)"
+    unit: "mg"
+    range: [20, 80]
+    default: 40
+  flights_per_day:
+    description: "Foraging trips per bee per day"
+    unit: "trips"
+    range: [5, 15]
+    default: 10
+  nectar_to_honey_ratio:
+    description: "Nectar-to-honey conversion (water evaporation)"
+    unit: "ratio"
+    range: [0.2, 0.3]
+    default: 0.25
+  flow_days:
+    description: "Active nectar flow days per season"
+    unit: "days"
+    range: [20, 90]
+    default: 45
+  surplus_fraction:
+    description: "Fraction harvested (rest left for bees)"
+    unit: "ratio"
+    range: [0.3, 0.7]
+    default: 0.5
+
+validation:
+  - check: "colony_strength >= 10000"
+    message: "Colony must be strong enough for surplus honey"
+  - check: "flow_days > 0"
+    message: "Flow days must be positive"
+
+risk_levels:
+  critical: "season_honey_kg < 5"
+  warning: "season_honey_kg < 15"
+  normal: "season_honey_kg >= 15"
+
+examples:
+  - description: "Strong colony, good nectar flow"
+    inputs: {colony_strength: 60000, flow_days: 60}
+    expected: 63.0
+  - description: "Average colony, short flow"
+    inputs: {colony_strength: 30000, flow_days: 30}
+    expected: 15.75

@@ -1,0 +1,9 @@
+# Jätevirtojen hallinta — Vaarallinen
+# Auto-generated for WaggleDance Swarm AI
+title: "Vaarallinen"
+agent: "Jätevirtojen hallinta"
+facts:
+  - "Vaarallinen jäte: merkintä, erilliskeräys, siirtoasiakirja"
+  - "Jäteöljy: keräysastia, ei sekoiteta muuhun"
+  - "Akut: erilliskeräys, litium-akut palovaara"
+  - "SER: tuottajavastuu, EcoTake/Stena"

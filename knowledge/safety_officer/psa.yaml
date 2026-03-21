@@ -1,0 +1,20 @@
+title: Psa
+agent: Työturvallisuuspäällikkö
+facts:
+- 'Suojalasit: aina koneistamossa, hionta, kemikaalit'
+- 'Kuulosuojaimet: >85 dB pakollinen'
+- 'Turvakengät: S3 (varvassuoja + naulaanastumissuoja)'
+- 'Hengityssuojain: FFP2/FFP3 pöly, A2 liuottimet'
+PPE_REQUIREMENTS:
+- area: Tuotantohalli
+  required: Turvakengät, kuulosuojaus >85dB, suojalasit
+  standard: EN ISO 20345
+- area: Kemikaalivarasto
+  required: Kemikaalikäsineet, suojalasit, hengityssuojain
+  standard: EN 374
+- area: Hitsaustyö
+  required: Hitsausmaski DIN 11-13, nahkakäsineet, esiliina
+  standard: EN 169
+- area: Korkealla työskentely >2m
+  required: Turvavaljas + kiinnityspiste, kypärä
+  standard: EN 361

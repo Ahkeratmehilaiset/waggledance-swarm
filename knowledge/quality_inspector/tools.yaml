@@ -1,0 +1,10 @@
+# Laadunvalvonta — Tools
+# Auto-generated for WaggleDance Swarm AI
+title: "Tools"
+agent: "Laadunvalvonta"
+facts:
+  - "8D-raportti: 8 askelta ongelmanratkaisuun"
+  - "5 Why: kysy miksi 5 kertaa → juurisyy"
+  - "Ishikawa (kalanruoto): syy-seuraus-kaavio, 6M"
+  - "Pareto: 80/20-sääntö, suurimmat ongelmat ensin"
+  - "MSA: gage R&R, toistettavuus + uusittavuus"

@@ -1,0 +1,19 @@
+sources:
+- id: src:TAH1
+  org: Ilmatieteen laitos
+  title: Avaruussää ja revontulet
+  year: 2025
+  url: https://www.ilmatieteenlaitos.fi/revontulet
+  supports: Kp-indeksi, revontuliennusteet, aurinkotuuli.
+- id: src:TAH2
+  org: Tähtitieteellinen yhdistys Ursa
+  title: Tähtitaivaan seuranta
+  year: 2025
+  url: https://www.ursa.fi/
+  supports: Seeing, Bortle, havaintokohteet, fenologia.
+- id: src:TAH3
+  org: International Meteor Organization
+  title: Meteor Shower Calendar
+  year: 2026
+  url: https://www.imo.net/
+  supports: Meteorisuihkut, ZHR-arvot, ajankohdat.

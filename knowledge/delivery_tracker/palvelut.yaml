@@ -1,0 +1,29 @@
+title: Palvelut
+agent: Paketit ja tilaukset
+facts:
+- 'Posti: pakettiautomaatit, SmartPost, Posti.fi-seuranta'
+- 'Matkahuolto: bussipaketti, noutopiste'
+- 'DHL Express: nopea kansainvälinen, tulliselvitys mukana'
+- 'Budbee/Instabox: samapäivätoimitus isoihin kaupunkeihin'
+DELIVERY_SERVICES_FINLAND:
+- service: Posti
+  tracking: seuranta.posti.fi
+  customs_limit_eur: 150
+  note: Yleisin, laajin verkosto
+- service: Matkahuolto
+  tracking: matkahuolto.fi/seuranta
+  note: Bussipaketti-verkosto, noutopisteet
+- service: DHL Express
+  tracking: dhl.fi
+  note: Kansainväliset pikatoimitukset
+- service: UPS
+  tracking: ups.com
+  note: B2B-toimitukset, raskas tavara
+- service: Amazon
+  tracking: amazon.fi
+  note: Oma logistiikka, Prime-toimitukset
+CUSTOMS_RULES:
+  eu_internal: Ei tullia EU:n sisällä
+  eu_external_under_150: ALV 24%, ei tullia
+  eu_external_over_150: ALV 24% + tulli (tuoteryhmäkohtainen 0-17%)
+  alcohol_tobacco: Erityisverot, rajoitukset

@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waggledance-swarm"
+version = "3.3.0"
+description = "Local-first multi-agent AI runtime — solver-first, autonomous overnight learning, full audit trail"
+readme = "README.md"
+license = "Apache-2.0 AND BUSL-1.1"
+license-files = ["LICENSE", "LICENSE-BUSL.txt", "LICENSE-CORE.md"]
+requires-python = ">=3.11"
+keywords = [
+    "local-first", "multi-agent", "ai-runtime", "solver-first",
+    "autonomous-learning", "iot", "smart-home", "mqtt",
+    "ollama", "pytorch", "sklearn", "chromadb",
+]
+authors = [
+    {name = "Jani Korpi"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.20.0",
+    "websockets>=13.0",
+    "pyyaml>=6.0",
+    "psutil>=5.9.0",
+    "chromadb>=1.0.0",
+    "transformers>=4.40.0",
+    "torch>=2.1.0",
+    "sentencepiece>=0.1.99",
+    "duckduckgo-search>=6.0",
+    "aiohttp>=3.9.0",
+    "feedparser>=6.0.11",
+    "anthropic>=0.30.0",
+    "paho-mqtt>=2.0.0",
+    "networkx>=3.0",
+    "pydantic>=2.0",
+    "scikit-learn>=1.4.0",
+    "joblib>=1.3.0",
+    "prometheus-client>=0.20.0",
+]
+
+[project.optional-dependencies]
+voice = [
+    "faster-whisper>=1.0.0",
+    "webrtcvad>=2.0.10",
+]
+audio = [
+    "scipy>=1.12.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=1.3.0",
+]
+lora = [
+    "peft>=0.11.0",
+    "accelerate>=0.30.0",
+]
+
+[project.scripts]
+waggledance = "waggledance.adapters.cli.start_runtime:main"
+
+[project.urls]
+Homepage = "https://github.com/Ahkeratmehilaiset/waggledance-swarm"
+Issues = "https://github.com/Ahkeratmehilaiset/waggledance-swarm/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+asyncio_mode = "strict"

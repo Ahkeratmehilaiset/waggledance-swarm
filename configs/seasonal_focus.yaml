@@ -1,0 +1,67 @@
+# WaggleDance — Seasonal Focus Keywords
+# Used by fi_fast collection for seasonal pre-warm embedding.
+# Month-based keywords for Finnish beekeeping (FI + EN).
+# These get pre-embedded into fi_fast on startup for faster seasonal lookups.
+
+seasonal_focus:
+  1:
+    - "talvehtiminen"
+    - "wintering"
+    - "talviruokinta"
+    - "winter feeding"
+  2:
+    - "kevättarkastus"
+    - "spring inspection"
+    - "nosema"
+    - "emojen tarkistus"
+  3:
+    - "keväthoito"
+    - "spring management"
+    - "siitepöly"
+    - "pollen"
+  4:
+    - "yhdistäminen"
+    - "combining"
+    - "emojen kasvatus"
+    - "queen rearing"
+  5:
+    - "rakennuskehä"
+    - "foundation"
+    - "parven esto"
+    - "swarm prevention"
+  6:
+    - "linkoaminen"
+    - "honey extraction"
+    - "lisäkorotus"
+    - "super"
+  7:
+    - "linkous"
+    - "extraction"
+    - "hunaja"
+    - "honey"
+    - "mesikausi"
+  8:
+    - "varroa"
+    - "treatment"
+    - "muurahaishappo"
+    - "formic acid"
+  9:
+    - "syyshoito"
+    - "autumn management"
+    - "oksaalihappo"
+    - "oxalic acid"
+  10:
+    - "talvivalmistelut"
+    - "winter preparation"
+    - "syysruokinta"
+    - "autumn feeding"
+  11:
+    - "talvehtiminen"
+    - "wintering"
+    - "eristys"
+    - "insulation"
+  12:
+    - "talvilepo"
+    - "winter rest"
+    - "lumitilanne"
+    - "monitoring"

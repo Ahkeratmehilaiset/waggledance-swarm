@@ -1,0 +1,28 @@
+header:
+  agent_id: hvac_industrial
+  agent_name: Industrial HVAC
+  name_fi: 'Teollisuusilmastointi'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Teollisuuslaitos
+- Prosessin vaatima ympäristönhallinta
+DECISION_METRICS_AND_THRESHOLDS:
+  temp_deviation_c:
+    value: 2
+    action: ">2°C poikkeama → hälytys"
+    source: src:HI1
+  humidity_rh:
+    value: '40-60'
+    action: "<40% staattinen sähkö, >60% korroosio"
+    source: src:HI1
+eval_questions:
+- q: Mikä on temp deviation c?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.temp_deviation_c.value
+  source: src:HI1
+- q: Mikä on humidity rh?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.humidity_rh.value
+  source: src:HI1

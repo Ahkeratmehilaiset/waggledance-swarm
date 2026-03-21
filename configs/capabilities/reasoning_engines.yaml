@@ -1,0 +1,51 @@
+capabilities:
+  - id: solve.thermal
+    category: SOLVE
+    description: "Physics-based thermal calculations (heat loss, frost risk, COP)"
+    preconditions:
+      - "numeric inputs available"
+    success_criteria:
+      - "thermal result computed and validated"
+    rollback_possible: true
+    max_latency_ms: 100
+    trust_baseline: 0.95
+
+  - id: solve.stats
+    category: SOLVE
+    description: "Statistical analysis and time-series summarization"
+    preconditions: []
+    success_criteria:
+      - "summary or comparison computed"
+    rollback_possible: true
+    max_latency_ms: 200
+    trust_baseline: 0.90
+
+  - id: solve.causal
+    category: SOLVE
+    description: "Causal chain discovery and impact analysis"
+    preconditions: []
+    success_criteria:
+      - "causal chain or root causes identified"
+    rollback_possible: true
+    max_latency_ms: 300
+    trust_baseline: 0.85
+
+  - id: optimize.schedule
+    category: OPTIMIZE
+    description: "Energy cost minimization and task scheduling"
+    preconditions: []
+    success_criteria:
+      - "optimization solution found"
+    rollback_possible: true
+    max_latency_ms: 500
+    trust_baseline: 0.85
+
+  - id: analyze.routing
+    category: DETECT
+    description: "Route accuracy tracking and optimization recommendations"
+    preconditions: []
+    success_criteria:
+      - "route metrics computed"
+    rollback_possible: true
+    max_latency_ms: 100
+    trust_baseline: 0.90

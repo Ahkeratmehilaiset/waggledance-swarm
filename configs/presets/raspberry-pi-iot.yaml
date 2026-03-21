@@ -1,0 +1,13 @@
+# configs/presets/raspberry-pi-iot.yaml
+profile: gadget
+agents_max: 5
+memory_max_items: 5000
+ollama_model: phi4-mini
+embedding_model: nomic-embed-text
+micromodel_v2_enabled: false
+micromodel_v3_enabled: false
+resource_guard:
+  max_memory_percent: 75
+  critical_memory_percent: 85
+mqtt_tls: true
+log_format: json

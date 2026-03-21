@@ -1,0 +1,73 @@
+capabilities:
+  - id: sense.intent_classify
+    category: SENSE
+    description: "SmartRouterV2 keyword-based intent classification"
+    legacy_module: core.smart_router_v2
+    legacy_class: SmartRouterV2
+    preconditions: []
+    success_criteria:
+      - "intent classified with confidence > 0.3"
+    rollback_possible: true
+    max_latency_ms: 10
+    trust_baseline: 0.80
+
+  - id: sense.mqtt_ingest
+    category: SENSE
+    description: "MQTT sensor data ingestion"
+    legacy_module: integrations.mqtt_hub
+    legacy_class: MQTTHub
+    preconditions:
+      - "MQTT broker reachable"
+    success_criteria:
+      - "message received and parsed"
+    rollback_possible: true
+    max_latency_ms: 1000
+    trust_baseline: 0.95
+
+  - id: sense.home_assistant
+    category: SENSE
+    description: "Home Assistant entity state polling"
+    legacy_module: integrations.home_assistant
+    legacy_class: HomeAssistantBridge
+    preconditions:
+      - "HA API reachable"
+      - "HA token configured"
+    success_criteria:
+      - "entity states retrieved"
+    rollback_possible: true
+    max_latency_ms: 2000
+    trust_baseline: 0.90
+
+  - id: sense.camera_frigate
+    category: SENSE
+    description: "Frigate NVR camera event processing"
+    legacy_module: integrations.frigate_mqtt
+    legacy_class: FrigateIntegration
+    preconditions:
+      - "Frigate MQTT messages available"
+    success_criteria:
+      - "detection event classified"
+    rollback_possible: true
+    max_latency_ms: 500
+    trust_baseline: 0.85
+
+  - id: sense.audio
+    category: SENSE
+    description: "Audio monitoring for colony and environmental sounds"
+    preconditions:
+      - "audio monitor available"
+    success_criteria:
+      - "audio processed and classified"
+    rollback_possible: false
+    max_latency_ms: 2000
+    trust_baseline: 0.80
+
+  - id: sense.fusion
+    category: SENSE
+    description: "Multi-source sensor fusion and context building"
+    preconditions: []
+    success_criteria:
+      - "observations merged into unified context"
+    rollback_possible: false
+    max_latency_ms: 500
+    trust_baseline: 0.85

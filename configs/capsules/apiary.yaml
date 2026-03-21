@@ -1,0 +1,187 @@
+domain: apiary
+version: "1.0"
+description: "Professional beekeeping — colony management, disease control, honey production, seasonal care"
+default_fallback: llm_reasoning
+
+layers:
+  rule_constraints:
+    enabled: true
+    priority: 1
+  model_based:
+    enabled: true
+    priority: 2
+  statistical:
+    enabled: true
+    priority: 3
+  retrieval:
+    enabled: true
+    priority: 4
+  llm_reasoning:
+    enabled: true
+    priority: 5
+
+key_decisions:
+  - id: honey_yield
+    question: "Paljonko hunajaa saan tänä kesänä?"
+    keywords: ["hunaja", "honey", "hunajasato", "sato", "harvest", "yield", "tuotos"]
+    primary_layer: model_based
+    model: honey_yield
+    inputs: [colony_strength, flow_days, forager_ratio]
+    fallback: llm_reasoning
+
+  - id: varroa_treatment
+    question: "Kuinka paljon varroa-lääkettä tarvitaan?"
+    keywords: ["varroa", "punkki", "oksaalihappo", "oxalic", "lääkitys", "treatment", "käsittely"]
+    primary_layer: model_based
+    model: varroa_treatment
+    inputs: [combs_with_bees, varroa_before, colony_strength]
+    fallback: llm_reasoning
+
+  - id: swarm_risk
+    question: "Onko parveamisriski korkea?"
+    keywords: ["parveami", "swarm", "kuningatar solu", "queen cell", "täynnä", "ahdas"]
+    primary_layer: model_based
+    model: swarm_risk
+    inputs: [empty_combs, total_combs, queen_age_years, queen_cells, season_factor]
+    fallback: llm_reasoning
+
+  - id: colony_food_reserves
+    question: "Onko pesässä tarpeeksi ruokaa talvea varten?"
+    keywords: ["ruoka", "varasto", "food", "reserve", "lisäruok", "fondant", "sokeriliu", "tarpeeksi", "riittää"]
+    primary_layer: model_based
+    model: colony_food_reserves
+    inputs: [bee_cluster_kg, food_available_kg, winter_months]
+    fallback: llm_reasoning
+
+  - id: hive_survival
+    question: "Selviävätkö mehiläiset talvesta?"
+    keywords: ["talvi", "selviää", "survival", "kuolleisuus", "talvehtimi", "winter"]
+    primary_layer: statistical
+    model: winter_survival
+    inputs: [colony_strength, varroa_count, food_reserves_kg, cluster_temp]
+    fallback: llm_reasoning
+
+  - id: hive_thermal
+    question: "Mikä on pesän lämpötila ja onko se normaali?"
+    keywords: ["lämpötila", "temperature", "pesä", "hive", "kuuma", "kylmä", "thermal"]
+    primary_layer: model_based
+    model: hive_thermal
+    inputs: [cluster_temp, ambient_temp, colony_size, season_factor]
+    fallback: llm_reasoning
+
+  - id: disease_detection
+    question: "Onko pesässä tautia?"
+    keywords: ["tauti", "disease", "nosema", "sikiöme", "foulbrood", "sairas", "oire", "symptom"]
+    primary_layer: rule_constraints
+    rules: [nosema_threshold, foulbrood_visual, deformed_wing]
+    fallback: llm_reasoning
+
+  - id: seasonal_task
+    question: "Mitä hoitotoimenpiteitä nyt pitää tehdä?"
+    keywords: ["tehtävä", "kausi", "season", "kuukausi", "month", "hoito", "care", "tarkast"]
+    primary_layer: retrieval
+    fallback: llm_reasoning
+
+  - id: queen_status
+    question: "Mikä on kuningattaren tilanne?"
+    keywords: ["kuningatar", "queen", "muninta", "laying", "korvaus", "supersedure", "ikä", "merkitty"]
+    primary_layer: rule_constraints
+    rules: [queen_age_check, laying_pattern_check]
+    fallback: llm_reasoning
+
+  - id: acoustic_analysis
+    question: "Mitä pesän ääni kertoo?"
+    keywords: ["ääni", "sound", "piping", "akustinen", "acoustic", "buzz", "humina"]
+    primary_layer: statistical
+    model: bee_audio_baseline
+    inputs: [dominant_freq_hz, amplitude_db, spectrum_shape]
+    fallback: llm_reasoning
+
+rules:
+  - id: nosema_threshold
+    condition: "spore_count_per_bee > 1000000"
+    action: alert
+    severity: high
+    message_fi: "Nosema-itiötaso kriittinen (>{spore_count_per_bee}/mehiläinen). Käsittely tarpeen."
+    message_en: "Nosema spore count critical (>{spore_count_per_bee}/bee). Treatment required."
+
+  - id: foulbrood_visual
+    condition: "sunken_caps == True or ropy_larvae == True"
+    action: alert
+    severity: critical
+    message_fi: "Mahdollinen esikoismätä havaittu! Ota yhteys Eviraan."
+    message_en: "Possible foulbrood detected! Contact food safety authority."
+
+  - id: deformed_wing
+    condition: "deformed_wing_pct > 5"
+    action: alert
+    severity: high
+    message_fi: "Epämuodostuneiden siipien osuus {deformed_wing_pct}% — varroa-käsittely kiireellinen."
+    message_en: "Deformed wing rate {deformed_wing_pct}% — varroa treatment urgent."
+
+  - id: queen_age_check
+    condition: "queen_age_years > 2"
+    action: warn
+    severity: medium
+    message_fi: "Kuningatar on {queen_age_years}-vuotias. Harkitse vaihtoa."
+    message_en: "Queen is {queen_age_years} years old. Consider replacement."
+
+  - id: laying_pattern_check
+    condition: "laying_pattern_score < 0.6"
+    action: alert
+    severity: high
+    message_fi: "Kuningattaren munintakuvio heikko ({laying_pattern_score}). Vaihto suositeltava."
+    message_en: "Queen laying pattern poor ({laying_pattern_score}). Replacement recommended."
+
+models:
+  - id: honey_yield
+    type: model_based
+    axiom_file: "configs/axioms/cottage/honey_yield.yaml"
+
+  - id: varroa_treatment
+    type: model_based
+    axiom_file: "configs/axioms/cottage/varroa_treatment.yaml"
+
+  - id: swarm_risk
+    type: model_based
+    axiom_file: "configs/axioms/cottage/swarm_risk.yaml"
+
+  - id: colony_food_reserves
+    type: model_based
+    axiom_file: "configs/axioms/cottage/colony_food_reserves.yaml"
+
+  - id: winter_survival
+    type: statistical
+    axiom_file: "configs/axioms/cottage/winter_survival.yaml"
+
+  - id: hive_thermal
+    type: model_based
+    axiom_file: "configs/axioms/cottage/hive_thermal.yaml"
+
+  - id: bee_audio_baseline
+    type: statistical
+    description: "Baseline frequency analysis for hive health"
+
+data_sources:
+  - id: hive_temp
+    type: sensor
+    source: mqtt
+    topic: "apiary/+/temperature"
+    unit: "°C"
+
+  - id: hive_weight
+    type: sensor
+    source: mqtt
+    topic: "apiary/+/weight"
+    unit: "kg"
+
+  - id: ambient_temp
+    type: sensor
+    source: fmi_weather
+    unit: "°C"
+
+  - id: bee_audio
+    type: sensor
+    source: mqtt
+    topic: "apiary/+/audio"
+    unit: "spectrum"

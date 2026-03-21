@@ -1,0 +1,25 @@
+title: Kompressorit
+agent: Tehdasenergian hallinta
+facts:
+- 'Paineilma: ~10% sähkökulutuksesta tehtaalla'
+- 'Vuotokartoitus ultraäänellä: 20-30% vuotaa tyypillisesti'
+- Painetason lasku 1 bar → 7% säästö
+- 'Lämmön talteenotto: 90% hukkalämmöstä hyödynnettävissä'
+COMPRESSED_AIR_EFFICIENCY:
+- issue: Vuodot
+  typical_loss_pct: 20-30%
+  action: Ultraäänivuotokartoitus vuosittain, korjaus heti
+- issue: Paine liian korkea
+  saving: 1 bar vähennys = 7% säästö
+  action: Optimoi verkostopaine 6-7 bar
+- issue: Kuivain ylimitoitettu
+  saving: Oikea pistelämpötila +3°C → 10% säästö
+  action: Tarkista pistelämpötila
+- issue: Lämmön talteenotto
+  saving: Jopa 94% moottoritehosta talteen
+  action: Ohjaa lämpö tilojen/veden lämmitykseen
+POWER_FACTOR_CORRECTION:
+  target: '>0.95'
+  penalty_threshold: <0.90 → verkkoyhtiön korotus
+  compensation: Kondensaattoriparisto, automaattinen kompensaatio
+  measurement: Tehoanalysaattori, 1 viikon mittaus

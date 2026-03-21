@@ -1,0 +1,57 @@
+# Version control & tooling
+.git
+.github
+.claude
+
+# Python caches
+__pycache__
+*.pyc
+*.egg-info
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+# Virtual environments
+.venv
+venv
+
+# Runtime data (rebuilt inside container)
+data/
+logs/
+backups/
+output/
+chroma_data/
+
+# Model artifacts (downloaded at runtime)
+models/
+micro_models/
+*.pt
+*.onnx
+
+# Node (dashboard built in stage 1, source not needed in stage 2)
+node_modules
+dashboard/node_modules
+dashboard/dist
+
+# Tests & tools (not needed in production image)
+tests/
+tools/
+docs/
+
+# Planning & docs at root
+*.md
+!requirements*.txt
+
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Env files
+.env
+.env.*
+!.env.example

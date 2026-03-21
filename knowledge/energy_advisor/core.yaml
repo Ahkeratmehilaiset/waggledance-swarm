@@ -1,0 +1,29 @@
+header:
+  agent_id: energy_advisor
+  agent_name: Energy Advisor
+  name_fi: 'Sähkö- ja energiaoptimointi'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+  - factory
+priority: high
+ASSUMPTIONS:
+- Suomen sähkömarkkina (Nord Pool)
+- Kotitalous tai pienyritys
+DECISION_METRICS_AND_THRESHOLDS:
+  spot_expensive_c_kwh:
+    value: 20
+    action: ">20 c/kWh → siirrä kuormia halvemmalle tunnille"
+    source: src:EN1
+  spot_cheap_c_kwh:
+    value: 5
+    action: "<5 c/kWh → käynnistä lämminvesivaraaja"
+    source: src:EN1
+eval_questions:
+- q: Mikä on spot expensive c kwh?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spot_expensive_c_kwh.value
+  source: src:EN1
+- q: Mikä on spot cheap c kwh?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spot_cheap_c_kwh.value
+  source: src:EN1

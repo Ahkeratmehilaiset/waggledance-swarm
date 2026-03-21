@@ -1,0 +1,9 @@
+# Jätevesijärjestelmä — Jarjestelmat
+# Auto-generated for WaggleDance Swarm AI
+title: "Jarjestelmat"
+agent: "Jätevesijärjestelmä"
+facts:
+  - "Saostussäiliö + maasuodattamo: yleisin ratkaisu haja-asutusalueella"
+  - "Pienpuhdistamo: kompakti, vaatii sähköä ja huoltoa"
+  - "Umpisäiliö: kaikki jätevedet kerätään, sopii pienen kulutuksen kohteisiin"
+  - "Harmaavesisuodatin: pesuvesille kun WC on kuivakäymälä"

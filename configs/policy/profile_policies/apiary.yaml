@@ -1,0 +1,52 @@
+profile: APIARY
+version: "1.0"
+description: "Professional beekeeping — colony management, disease, honey production"
+inherits: default_constitution
+
+overrides:
+  - id: varroa_treatment_alert
+    description: "Allow automated varroa treatment alerts"
+    condition:
+      category: DETECT
+      capability_pattern: "*.varroa*"
+    action: allow
+    reason: "Varroa detection is observational"
+
+  - id: swarm_prevention_alert
+    description: "Allow urgent swarm prevention alerts"
+    condition:
+      category: DETECT
+      capability_pattern: "*.swarm*"
+    action: allow
+    reason: "Swarm risk detection is time-critical observation"
+
+  - id: disease_report_authority
+    description: "Require approval before contacting food safety authorities"
+    condition:
+      category: ACT
+      capability_pattern: "*.authority*"
+    action: require_approval
+    reason: "Official disease reports have legal implications"
+
+  - id: feeding_auto_recommend
+    description: "Allow automated feeding recommendations"
+    condition:
+      category: OPTIMIZE
+      capability_pattern: "*.feeding*"
+      severity_max: 0.5
+    action: allow
+    reason: "Feeding recommendations are advisory only"
+
+  - id: queen_replacement_approval
+    description: "Require approval for queen replacement decisions"
+    condition:
+      category: ACT
+      capability_pattern: "*.queen*"
+    action: require_approval
+    reason: "Queen decisions are irreversible"
+
+thresholds:
+  max_composite_auto_approve: 0.5
+  max_severity_auto_approve: 0.6
+  night_learning_budget_hours: 8
+  max_proactive_goals_per_day: 8

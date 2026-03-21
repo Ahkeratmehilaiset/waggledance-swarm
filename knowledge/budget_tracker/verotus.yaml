@@ -1,0 +1,30 @@
+title: Verotus
+agent: Kotitalouden raha-asiat
+facts:
+- 'Verokortti: OmaVero.fi'
+- 'Matkakustannusten vähennys: halvimman kulkuneuvon mukaan'
+- 'Työhuonevähennys: 900€ (kaavamainen)'
+- 'Kotitalousvähennys: siivous, remontti, hoiva — 40%'
+TAX_DEDUCTIONS_2024:
+- deduction: Kotitalousvähennys
+  max_eur: 2250
+  percent: 40
+  note: Remontti, siivous, hoiva — työn osuus
+- deduction: Työmatkakulut
+  max_eur: 7000
+  min_eur: 750
+  note: Halvimman kulkutavan mukaan
+- deduction: Asuntolainan korkovähennys
+  percent: 0
+  note: Poistunut kokonaan 2023
+- deduction: Tulonhankkimiskulut
+  default_eur: 750
+  note: Automaattinen, ei tarvitse vaatia
+- deduction: Ammattiliittomaksu
+  percent: 100
+  note: Kokonaan vähennyskelpoinen
+KELA_BENEFITS:
+  asumistuki_max_eur: Riippuu paikkakunta + perhe, Helsinki max ~500 €/kk
+  toimeentulotuki: Perusosa 1 hlö 555.11 €/kk (2024)
+  sairauspaivaraha: Omavastuuaika 1+9 pv, korvaus ~70% palkasta
+  vanhempainpaivaraha: 320 pv yhteensä (äiti+isä), ~70% palkasta

@@ -1,0 +1,13 @@
+sources:
+- id: src:VA1
+  org: Suomen Valoteknillinen Seura
+  title: Valaistussuositukset
+  year: 2024
+  url: https://www.valosto.com/
+  supports: Lux, värilämpötila.
+- id: src:VA2
+  org: IDA/Ursa
+  title: Valosaaste
+  year: 2025
+  url: https://www.darksky.org/
+  supports: Valosaasteentorjunta.

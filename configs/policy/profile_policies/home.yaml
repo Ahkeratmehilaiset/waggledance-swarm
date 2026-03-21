@@ -1,0 +1,46 @@
+profile: HOME
+version: "1.0"
+description: "Smart home — energy optimization, automation, safety"
+inherits: default_constitution
+
+overrides:
+  - id: energy_auto_optimize
+    description: "Allow automated energy optimization decisions"
+    condition:
+      category: OPTIMIZE
+      capability_pattern: "*.energy*"
+      severity_max: 0.4
+    action: allow
+    reason: "Energy optimization is low-risk and easily reversible"
+
+  - id: lighting_auto_control
+    description: "Allow automated lighting control"
+    condition:
+      category: ACT
+      capability_pattern: "*.lighting*"
+      blast_radius_max: 0.2
+    action: allow
+    reason: "Lighting changes are trivially reversible"
+
+  - id: security_require_approval
+    description: "Always require approval for security-related actions"
+    condition:
+      category: ACT
+      capability_pattern: "*.security*"
+    action: require_approval
+    reason: "Security actions affect physical safety"
+
+  - id: hvac_bounded_control
+    description: "Allow HVAC within temperature bounds"
+    condition:
+      category: ACT
+      capability_pattern: "*.hvac*"
+      severity_max: 0.5
+    action: allow
+    reason: "Bounded HVAC adjustments are safe"
+
+thresholds:
+  max_composite_auto_approve: 0.4
+  max_severity_auto_approve: 0.5
+  night_learning_budget_hours: 6
+  max_proactive_goals_per_day: 10

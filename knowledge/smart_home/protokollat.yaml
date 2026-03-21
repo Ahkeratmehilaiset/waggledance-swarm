@@ -1,0 +1,33 @@
+title: Protokollat
+agent: Kodin automaatio ja IoT
+facts:
+- 'Zigbee: mesh-verkko, pieni virrankulutus, vaatii koordinaattorin'
+- 'Matter: uusi standardi, Apple/Google/Amazon tuki'
+- 'WiFi: suora yhteys, kuormittaa verkkoa'
+- 'Thread: IPv6-pohjainen mesh, Matterin kuljetuskerros'
+PROTOCOL_COMPARISON:
+- protocol: Zigbee
+  range_m: 10
+  mesh: true
+  devices_max: 100
+  note: Vaatii hubin (Ikea/Hue/Conbee)
+- protocol: Z-Wave
+  range_m: 30
+  mesh: true
+  devices_max: 232
+  note: Vähemmän häiriöitä, kalliimpi
+- protocol: Matter
+  range_m: vaihtelee
+  mesh: true
+  devices_max: rajoittamaton
+  note: Uusi standardi 2023+, yhdistää kaikki
+- protocol: WiFi
+  range_m: 30
+  mesh: false
+  devices_max: reitittimen raja
+  note: Kuormittaa verkkoa, ei mesh
+- protocol: Bluetooth LE
+  range_m: 10
+  mesh: true
+  devices_max: 32767
+  note: Matala virrankulutus, lyhyt kantama

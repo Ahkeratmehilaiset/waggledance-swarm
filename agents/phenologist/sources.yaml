@@ -1,0 +1,13 @@
+sources:
+- id: src:FEN1
+  org: Ilmatieteen laitos
+  title: Kasvukauden tilastot ja terminen kasvukausi
+  year: 2024
+  url: https://www.ilmatieteenlaitos.fi/kasvukauden-olosuhteet
+  supports: Kasvukauden alku/loppu, °Cvr, fenologiset kynnykset.
+- id: src:FEN2
+  org: Luonnontieteellinen keskusmuseo (Luomus)
+  title: Fenologinen seuranta
+  year: 2024
+  url: https://www.luomus.fi/fi/fenologia
+  supports: Valtakunnallinen fenologinen seuranta, kukintojen ajoitukset.

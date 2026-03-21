@@ -1,0 +1,31 @@
+title: Valaistus
+agent: Huonekasvit ja sisäviljely
+facts:
+- 'LED-kasvivalo: 30-50W riittää ikkunapenkille'
+- 'Täysspektri-LED: luonnollisempi, helppo käytettävyys'
+- 'Ajastin: automaattinen 14-16h valojakso talvella'
+LIGHT_REQUIREMENTS:
+- plant_type: Yrtti (basilika, persilja)
+  ppfd_umol: 200-400
+  hours: 14-16 h/pv
+  note: DLI 10-15 mol/m²/pv
+- plant_type: Salaatti, pinaatti
+  ppfd_umol: 150-300
+  hours: 12-14 h/pv
+  note: Viileä viljely 15-20°C
+- plant_type: Tomaatti, chili
+  ppfd_umol: 400-600
+  hours: 16-18 h/pv
+  note: Vaatii paljon valoa, lämmin
+- plant_type: Orkidea
+  ppfd_umol: 100-200
+  hours: 12 h/pv
+  note: Ei suoraa auringonvaloa
+- plant_type: Sukulentti
+  ppfd_umol: 200-400
+  hours: 10-14 h/pv
+  note: Kestää kuivuutta, vähän kastelua
+LED_SPECTRUM:
+  red_nm: 620-680 (kukkiminen, hedelmätuotanto)
+  blue_nm: 440-470 (vegetatiivinen kasvu, kompaktisuus)
+  full_spectrum: Paras yleiskäyttöön, 3000-5000K valkoinen + punainen

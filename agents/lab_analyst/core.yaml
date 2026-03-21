@@ -1,0 +1,154 @@
+header:
+  agent_id: lab_analyst
+  agent_name:  Lab Analyst
+  name_fi: 'Laboratorioanalyytikko'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- JKH Service hunajan laadunhallinta (~10 000 kg/v)
+- Hunaja-analyysit: kosteus, HMF, diastaasiaktiivisuus, mikrobisto
+- ISO/GMP-tavoite elintarvikesektorilla
+- Laitteet: refraktometri, vesipitoisuusmittari, pH-mittari, mikroskopia
+DECISION_METRICS_AND_THRESHOLDS:
+  calibration_months:
+    value: 12
+    action: "Erääntynyt kalibrointi → mittari pois käytöstä välittömästi — käytä varamittaria tai lähetä kalibrointiin"
+    source: src:LA1
+  honey_moisture_max_pct:
+    value: 18.0
+    action: ">18.0% kosteus → ei saa myydä elintarvikkeena (EU-asetus) — linkoaminen kielletty, anna kypsyä tai hylkää erä"
+    source: src:LA2
+  honey_hmf_max_mg_per_kg:
+    value: 40
+    action: ">40 mg/kg HMF → hunaja ylikuumentunut tai liian vanha — älä myy kuluttajalle"
+    source: src:LA2
+  diastase_activity_min:
+    value: 8
+    action: "<8 (Schade-luku) → hunaja ylikuumentunut — tarkista prosessointi ja varastointi"
+    source: src:LA2
+  microbial_count_cfu_per_g:
+    value: 1000
+    action: ">1000 CFU/g mesofiilisiä bakteereita → poikkeava tulos, toista analyysi tai hylkää erä"
+    source: src:LA3
+  ph_honey_range:
+    value: "3.5-4.5"
+    action: "pH alle 3.5 tai yli 4.5 → epätavallinen, tarkista kontaminaatio tai ristisekoitus"
+    source: src:LA2
+  sample_frequency_batches:
+    value: 1
+    action: "Jokainen linkouserä → vähintään yksi koetusnäyte kosteus + HMF ennen pakkaamista"
+    source: src:LA1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: kalibroi refraktometri ja muut mittarit ennen linkoamiskautta. Tarkista reagenssien ja standardien voimassaolo. Valmistele näytteenotto-suunnitelma kesän erille."
+  source: src:LA1
+- season: Kesä
+  action: "Kesäkuu–elokuu: aktiivinen linkoamiskausi — jokainen erä kirjataan (päivä, pesä/sijainti, kosteus, paino). HMF-analyysi välittömästi ennen pakkaamista. Näytteet talletetaan 6 kk."
+  source: src:LA2
+- season: Syksy
+  action: "Syyskuu–marraskuu: loppusadon analyysit, vuosiraportti. Laitteiden kalibrointi ennen talvivarastointia. Tarkista varastoidun hunajan HMF-kehitys (kuumuus nopeuttaa)."
+  source: src:LA2
+- season: Talvi
+  action: "Joulukuu–helmikuu: analytiikan vuosiyhteenveto ja dokumenttien arkistointi. Laitteiden huolto ja kalibrointi ennen seuraavaa kautta. Koulutustarpeiden kartoitus."
+  source: src:LA1
+FAILURE_MODES:
+- mode: Kosteusraja ylittyy linkouserässä
+  detection: "Refraktometri näyttää >18.0% linkattavassa hunajassa"
+  action: "1. Keskeytä linkoaminen välittömästi. 2. Dokumentoi erä ja mittaustulos. 3. Anna kehykset takaisin pesihin kypsymään (1-2 viikkoa). 4. Mittaa uudelleen ennen uutta linkoamista. 5. Jos toistuva ongelma → tutki säätila (korkea ilmankosteus)."
+  source: src:LA2
+- mode: HMF-arvo ylittää raja-arvon
+  detection: "Laboratoriotestissä >40 mg/kg tai laaduntarkastuksessa hylätty"
+  action: "1. Erota erä muusta varastosta. 2. Tarkista varastointi- ja prosessointilämpötila (ei yli +40°C hunajalle). 3. Tutki erän ikä ja alkuperä. 4. Tekninen käyttö mahdollinen (esim. leivontaan) jos käyttöä ei rajoiteta. 5. Kuluttajamyyntiä ei saa jatkaa."
+  source: src:LA2
+- mode: Mittarin kalibrointiepäselvyys
+  detection: "Kaksi rinnakkaista mittaria antaa >0.5% erilaisen tuloksen, standardiliuos ei anna odotettua arvoa"
+  action: "1. Poista molemmat mittarit käytöstä. 2. Käytä kalibroitua standardiliuosta (Brix-standardi refraktometrille). 3. Jos vika: lähetä ulkopuoliseen kalibrointiin (akkreditoitu laboratorio). 4. Dokumentoi toimenpiteet kalibrointipöytäkirjaan."
+  source: src:LA1
+PROCESS_FLOWS:
+  quality_analysis:
+    steps:
+    - 'Ennen linkoamista: visuaalinen tarkistus (kypsyys, kansitus vähintään 2/3)'
+    - 'Linkoamishetkellä: kostuusmittaus (refraktometri) jokaisesta erästä'
+    - 'Pakkaamista ennen: HMF-pikakoe tai laboratoriolähetys isoille erille'
+    - 'Erän kirjaus: päivä, sijainti, paino kg, kosteus %, lajike, säilytyspaikka'
+    - 'Varastointi: alle +20°C, pimeässä, sinetöity — tarkista HMF joka 3 kk'
+    - 'Myynti: asiakkaalle annettava erätiedot (tarvittaessa jäljitettävyys-dokumentti)'
+COMPLIANCE_AND_LEGAL:
+  eu_honey_directive: "EU:n hunaja-asetus (2001/110/EC, uudistettu 2023) — kosteusraja 20% (kanervahunajaksi 23%), HMF max 40 mg/kg [src:LA2]"
+  elintarvikekirjanpito: "Jäljitettävyyskirjanpito pakollinen (Elintarvikelaki 297/2021) — erä, päivä, ostaja [src:LA3]"
+  suomalainen_hunaja: "Suomalaisille erikoishunajoille (valkoinen apila, kanerva) omat laatuvaatimukset — SML:n ohjeet [src:LA2]"
+UNCERTAINTY_NOTES:
+- "HMF-raja 40 mg/kg koskee pääosin EU-myyntiä — korkean lämpötilan alueiden hunajalle löysempi raja (80 mg/kg)."
+- "Diastaasiaktiivisuus vaihtelee lajikkeittain — kanervahunajaksi erillinen standardi."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:LA1
+    org: ISO / FINAS (Suomen akkreditointipalvelu)
+    title: Mittausmenetelmät ja kalibrointi elintarvikelaboratoriossa
+    year: 2024
+    url: https://www.finas.fi/
+    supports: Kalibrointi, mittausepävarmuus, ISO 17025, näytteenotto.
+  - id: src:LA2
+    org: Ruokavirasto / EU
+    title: Hunajan laatu- ja analyysimenetelmät
+    year: 2024
+    url: https://www.ruokavirasto.fi/yritykset/elintarvikeala/valmistus/elintarvikeryhmia-koskevat-vaatimukset/hunaja/
+    supports: Kosteus, HMF, diastaasiaktiivisuus, EU-asetus, lajikestandardit.
+  - id: src:LA3
+    org: Elintarviketurvallisuusvirasto / EFSA
+    title: Elintarvikekirjanpito ja jäljitettävyys
+    year: 2024
+    url: https://efsa.europa.eu/
+    supports: Kirjanpito, jäljitettävyys, mikrobiologiset vaatimukset.
+eval_questions:
+- q: Kuinka usein mittarit on kalibroitava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.calibration_months.value
+  source: src:LA1
+- q: Mikä on hunajan maksimikosteus myyntiä varten?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_moisture_max_pct.value
+  source: src:LA2
+- q: Mikä on HMF:n EU-raja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_hmf_max_mg_per_kg.value
+  source: src:LA2
+- q: Mikä on diastaasiaktiivisuuden minimiluku?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.diastase_activity_min.value
+  source: src:LA2
+- q: Mikä on hunajan normaali pH-alue?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ph_honey_range.value
+  source: src:LA2
+- q: Kuinka usein näytteitä otetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sample_frequency_batches.action
+  source: src:LA1
+- q: Mitä laboratoriotoimia tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:LA1
+- q: Miten linkoamiserä dokumentoidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:LA2
+- q: Mitä tehdään kun kosteus ylittää 18%?
+  a_ref: FAILURE_MODES[0].action
+  source: src:LA2
+- q: Miten HMF-ylitys käsitellään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:LA2
+- q: Miten mittarien kalibrointiepäselvyys ratkaistaan?
+  a_ref: FAILURE_MODES[2].action
+  source: src:LA1
+- q: Mikä on laadunhallintaprosessin vaiheet?
+  a_ref: PROCESS_FLOWS.quality_analysis.steps
+  source: src:LA2
+- q: Mikä EU-asetus koskee hunajaa?
+  a_ref: COMPLIANCE_AND_LEGAL.eu_honey_directive
+  source: src:LA2
+- q: Onko jäljitettävyyskirjanpito pakollista?
+  a_ref: COMPLIANCE_AND_LEGAL.elintarvikekirjanpito
+  source: src:LA3
+- q: Koskeeko HMF-raja aina 40 mg/kg?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:LA2
+- q: Mitä kirjataan linkoamiserästä?
+  a_ref: PROCESS_FLOWS.quality_analysis.steps
+  source: src:LA2

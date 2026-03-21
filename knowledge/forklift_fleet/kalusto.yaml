@@ -1,0 +1,23 @@
+# Trukkiliikenne ja sisälogistiikka — Kalusto
+# WaggleDance Swarm AI
+title: "Trukkikalusto"
+agent: "Trukkiliikenne ja sisälogistiikka"
+facts:
+  - "Vastapainotrukki (counterbalance): yleisin trukkilaji, kantavuus 1.5–5 t, sopii sisä- ja ulkokäyttöön"
+  - "Lavansiirtäjä (pallet truck): matala profiili, kantavuus 1–2.5 t, vain tasaisille pinnoille"
+  - "Pinoaja (stacker): kantavuus 0.8–2.5 t, käytäväleveys ≥2.5 m, sopii matalahyllyisiin varastoihin"
+  - "Kapeat käytävätrukki (VNA/SSI): käytäväleveys 1.6–1.8 m, korkeus 10–14 m, vaatii erityiskoulutuksen"
+  - "AGV (Automated Guided Vehicle): automatisoitu lattiaan asennetun magneettikiskon tai laserin ohjaama"
+  - "AMR (Autonomous Mobile Robot): autonominen, karttalaserin avulla navigoiva, ei vaadi infrastruktuuria"
+  - "Nostokorkeus: vastapainotrukilla tyypillisesti 3–6 m, VNA-trukilla jopa 14 m"
+  - "Trukinkuljettajan ajokortti: trukkikortti pakollinen (VNA-trukki vaatii lisäpätevyyden), uusinta 5 vuoden välein"
+  - "Tarkastus ennen käyttöä: renkaat, haarukka, jarrut, äänimerkki, valot, nestepinnat — kirjattava tarkastuskorttiin"
+  - "Vuosihuolto: 500 tuntia tai 12 kuukautta, hydrauliöljy, suodattimet, jarrut, masto — valtuutettu huoltoliike"
+  - "Renkaat: superelastic (SE) tai pneumaattinen, SE kestää 2500–4000 h, vaihda kun kulutuspinta ≤25% jäljellä"
+  - "Kuorman merkintä: suurin sallittu kantavuus kuormakeskusetäisyydellä on merkitty kilpeen (kg @ mm)"
+  - "Kuorman stabiliteetti: vapaat haarukat 15 cm irti lattiasta ajon aikana, takakallistus kuljetuksen ajan"
+  - "Lattiamerkinnät: ajoväylät keltainen, varastopaikat valkoinen, vaaravyöhykkeet punainen (SFS 5642)"
+  - "Trukkiliikenteen ohjaus: nopeudet max 10 km/h sisällä, 5 km/h jalankulkualueilla, törmäyksenhallintajärjestelmät"
+  - "Vuokra vs. oma trukki: vuokra (täyspalveluleasing) 300–800 €/kk, ei pääomaa sitoudu, huolto sisältyy"
+  - "Telemetria: GPS-seuranta, käyttötuntilaskuri, vikadiagnostiikka — etävalvonta vähentää seisokkeja"
+  - "Polttomoottoritrukit (LPG/diesel): sallittu vain hyvin tuuletetuissa tiloissa tai ulkona, pakokaasut vaarallisia"

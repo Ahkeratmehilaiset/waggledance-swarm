@@ -1,0 +1,163 @@
+# WaggleDance — Seasonal Guard Rules
+# Deterministic rules for flagging out-of-season advice.
+# SeasonalGuard.check(text) scans for forbidden keywords outside valid months.
+#
+# Each rule:
+#   months: [list of valid month numbers 1-12]
+#   forbidden: [keywords that are WRONG outside those months]
+#   reason_fi: Finnish explanation shown to user
+#   reason_en: English explanation (internal/logging)
+#   suggestion_fi: What to do instead (Finnish)
+
+rules:
+  # ── Honey extraction ──
+  honey_extraction:
+    months: [6, 7, 8]
+    forbidden:
+      - "linkoa nyt"
+      - "linkoa hunajaa"
+      - "lingotaan"
+      - "linkoaminen nyt"
+      - "extract honey now"
+      - "harvest now"
+    reason_fi: "Hunajalinkousta tehdään vain kesä-elokuussa."
+    reason_en: "Honey extraction only Jun-Aug in Finland."
+    suggestion_fi: "Odota satokautta (kesä-elokuu) ennen linkoamista."
+
+  # ── Swarming prevention ──
+  swarming:
+    months: [5, 6, 7]
+    forbidden:
+      - "parveilunesto"
+      - "parven esto nyt"
+      - "parveiluaika"
+      - "emocellien riko"
+      - "prevent swarming now"
+    reason_fi: "Parveilukausi on touko-heinäkuussa."
+    reason_en: "Swarming season is May-Jul."
+    suggestion_fi: "Parveilunestoa valmistellaan huhtikuussa, toteutetaan touko-heinäkuussa."
+
+  # ── Oxalic acid treatment ──
+  oxalic_treatment:
+    months: [10, 11, 12, 1]
+    forbidden:
+      - "oksaalihappo nyt"
+      - "tihkuta oksaalihappo"
+      - "oksaalihappokäsittely"
+      - "oxalic acid treatment now"
+      - "OA treatment now"
+    reason_fi: "Oksaalihappohoito tehdään loka-tammikuussa sikiöttömänä aikana."
+    reason_en: "Oxalic acid treatment Oct-Jan (broodless period)."
+    suggestion_fi: "Odota sikiötöntä kautta (loka-tammikuu). Kesällä käytä muurahaishappoa."
+
+  # ── Formic acid treatment ──
+  formic_treatment:
+    months: [7, 8, 9]
+    forbidden:
+      - "muurahaishappo nyt"
+      - "muurahaishappokäsittely"
+      - "MAQS nyt"
+      - "formic acid now"
+    reason_fi: "Muurahaishappohoito tehdään heinä-syyskuussa."
+    reason_en: "Formic acid treatment Jul-Sep."
+    suggestion_fi: "Muurahaishappo toimii heinä-syyskuussa. Talvella käytä oksaalihappoa."
+
+  # ── Spring inspection ──
+  spring_inspection:
+    months: [3, 4, 5]
+    forbidden:
+      - "kevättarkastus nyt"
+      - "tee kevättarkastus"
+      - "spring inspection now"
+      - "do spring inspection"
+    reason_fi: "Kevättarkastus tehdään maalis-toukokuussa."
+    reason_en: "Spring inspection Mar-May."
+    suggestion_fi: "Kevättarkastuksen aika on maalis-toukokuussa kun lämpötila ylittää +12 °C."
+
+  # ── Winter feeding ──
+  winter_feeding:
+    months: [8, 9, 10]
+    forbidden:
+      - "syysruokinta nyt"
+      - "talviruokinta nyt"
+      - "ruoki sokeriliuoksella nyt"
+      - "feed sugar now"
+      - "autumn feeding now"
+    reason_fi: "Syysruokinta tehdään elo-lokakuussa."
+    reason_en: "Autumn/winter feeding Aug-Oct."
+    suggestion_fi: "Ruokinta tehdään elo-lokakuussa. Talvella pesää ei avata."
+
+  # ── Queen rearing ──
+  queen_rearing:
+    months: [5, 6, 7]
+    forbidden:
+      - "kasvata emoja nyt"
+      - "emottaminen nyt"
+      - "emon kasvatus nyt"
+      - "rear queens now"
+    reason_fi: "Emojen kasvatus tehdään touko-heinäkuussa."
+    reason_en: "Queen rearing May-Jul."
+    suggestion_fi: "Emojen kasvatus onnistuu parhaiten touko-heinäkuussa."
+
+  # ── Flying / colony activity ──
+  flying_activity:
+    months: [4, 5, 6, 7, 8, 9]
+    forbidden:
+      - "mehiläiset lentävät nyt"
+      - "lentoaktiivisuus nyt"
+      - "bees are flying now"
+    reason_fi: "Mehiläiset lentävät vain huhti-syyskuussa Suomessa."
+    reason_en: "Bees only fly Apr-Sep in Finland."
+    suggestion_fi: "Talvella mehiläiset ovat talvipalloissa. Lentokausi alkaa huhtikuussa."
+
+  # ── Hive opening in winter ──
+  winter_no_open:
+    months: [4, 5, 6, 7, 8, 9, 10]
+    forbidden:
+      - "avaa pesä nyt"
+      - "tarkasta pesä nyt"
+      - "open hive now"
+      - "inspect hive now"
+    reason_fi: "Pesää ei avata marras-maaliskuussa (talvilepoa ei saa häiritä)."
+    reason_en: "Do not open hives Nov-Mar (winter rest)."
+    suggestion_fi: "Odota kevättarkastukseen (maalis-huhtikuu). Talvella seuraa painoa ulkoapäin."
+
+  # ── Combining colonies ──
+  combining:
+    months: [7, 8, 9, 10]
+    forbidden:
+      - "yhdistä pesät nyt"
+      - "yhdistäminen nyt"
+      - "combine colonies now"
+    reason_fi: "Pesien yhdistäminen tehdään heinä-lokakuussa."
+    reason_en: "Colony combining Jul-Oct."
+    suggestion_fi: "Yhdistäminen toimii parhaiten satokauden jälkeen (heinä-lokakuu)."
+
+# ── Finnish month names for Queen context ──
+month_names_fi:
+  1: "tammikuu"
+  2: "helmikuu"
+  3: "maaliskuu"
+  4: "huhtikuu"
+  5: "toukokuu"
+  6: "kesäkuu"
+  7: "heinäkuu"
+  8: "elokuu"
+  9: "syyskuu"
+  10: "lokakuu"
+  11: "marraskuu"
+  12: "joulukuu"
+
+month_names_en:
+  1: "January"
+  2: "February"
+  3: "March"
+  4: "April"
+  5: "May"
+  6: "June"
+  7: "July"
+  8: "August"
+  9: "September"
+  10: "October"
+  11: "November"
+  12: "December"

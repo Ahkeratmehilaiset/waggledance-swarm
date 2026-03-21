@@ -1,0 +1,82 @@
+name: Tests
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  unified:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+        cache: 'pip'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libvoikko1 voikko-fi
+
+    - name: Install Python dependencies
+      run: |
+        pip install -r requirements-ci.txt 2>&1 | tee /tmp/pip-install.log
+        echo "--- pip install completed ---"
+
+    - name: Upload pip log on failure
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: pip-install-log
+        path: /tmp/pip-install.log
+
+    - name: Compile all Python files
+      run: |
+        python -m compileall core memory web waggledance backend integrations tests -q
+
+    - name: Run legacy tests (informational)
+      run: |
+        python tests/run_all.py --skip-ollama || echo "Legacy tests exited $? (expected without Ollama)"
+
+    - name: Run pytest
+      run: |
+        python -m pytest tests/ -v --tb=short
+
+    - name: Run benchmark baseline
+      run: |
+        mkdir -p data
+        python tools/run_benchmark.py --yaml configs/benchmarks.yaml
+
+    - name: Upload benchmark artifacts
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: benchmark-v2_0
+        path: |
+          data/benchmark_v1_18.json
+          data/benchmark_v1_18_summary.md
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: 'npm'
+        cache-dependency-path: dashboard/package-lock.json
+    - name: Install dashboard dependencies
+      working-directory: dashboard
+      run: npm ci
+    - name: Build dashboard
+      working-directory: dashboard
+      run: npm run build

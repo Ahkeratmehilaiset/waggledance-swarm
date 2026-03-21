@@ -1,0 +1,23 @@
+# Huonekasvit ja sisäviljely — Kasvit
+# WaggleDance Swarm AI
+title: "Sisäkasvit ja sisäviljely"
+agent: "Huonekasvit ja sisäviljely"
+facts:
+  - "Peikonlehti (Monstera deliciosa): helppo, kestää varjoa, kastele 1–2 viikoin välein, repimät lehdissä = normaali kehitys"
+  - "Kultalaakas (Epipremnum aureum): ilmaa puhdistava (formaldehydi, bentseeni), kestää lähes täyttä varjoa, myrkyllinen lemmikille"
+  - "Anopinkieli (Sansevieria trifasciata): kuivuudenkestävä, kastele kuukausittain talvella, sopii makuuhuoneeseen yöajan hapentuotantona"
+  - "Orkidea (Phalaenopsis): kastele upottamalla 10–15 min viikoin välein, kukkii 2–4 kk, leikkaa pitkä latva kukinnan jälkeen"
+  - "Fikukset (Ficus elastica / benjamina): tarvitsee paljon valoa, ei tykkää siirtämisestä — valitse paikka pysyväksi"
+  - "Violettipiikkari (Spathiphyllum): sopii varjoon, roikkuu kuivana, kukat valkoisia, poistaa ilmasta asetonia ja ksyleeniä"
+  - "Kaktukset ja mehikasvit: kastele harvoin (kerran kuukaudessa talvella), runsaasti valoa, hyvin läpäisevä multa"
+  - "Yrttitarha sisällä: basilika, persilja, tilli — LED-valo 14 h/päivä, kastele kun multa kuiva 2–3 cm syvyydeltä"
+  - "Tomaatit sisäviljelyyn: kasvivalo 16–18 h/päivä, 600–1000 µmol/m²/s PPFD, pölytys keinotekoinen"
+  - "Lehtisalaatit ja yrttit: kasvuvalolla 12–16 h, satoa 4–6 viikossa, vesiviljely (hydroponics) nopeuttaa kasvua 30–50%"
+  - "Hydroponiikka NFT (Nutrient Film Technique): ohut ravinneliuoskalvo juurien yli, sopii yrteille ja lehtivihanneksille"
+  - "Kasvivalo LED: PPFD 200–400 µmol/m²/s lehtikasveille, 400–600 µmol/m²/s yrteille, 600–1000 µmol/m²/s hedelmäkasveille"
+  - "Kastelu: useimmat huonekasvit kahden viikon välein — sormikoetti multa 2 cm syvyydestä, jos kuiva, kasta"
+  - "Lannoitus kasvukaudella: nestemäinen yleislannoite 1–2 viikon välein huhtikuusta syyskuuhun"
+  - "Ilmankosteus huonekasveille: 40–60% RH sopii useimmille, trooppiset tarvitsevat 60–80% RH"
+  - "Talvilepotila: lyhentyvä päivä + viileämpi ylämpötila (15–18°C) pysäyttää kasvun, vähennä kastelua ja lannoitusta"
+  - "Pistokas lisäys: basilikavarsi vesilasiin juurtuu 1–2 viikossa, monstera yksittäinen lehtivarsi mullataan"
+  - "Ilmaa puhdistavat kasvit (NASA-tutkimus): monia huonekasveja testattu, teho toimistossa hyvin pieni ilman riittävää määrää"

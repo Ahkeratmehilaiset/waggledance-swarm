@@ -1,0 +1,23 @@
+# Tehdasenergian hallinta — Kulutus
+# WaggleDance Swarm AI
+title: "Energiankulutuksen hallinta"
+agent: "Tehdasenergian hallinta"
+facts:
+  - "Huipputehon leikkaus (peak shaving): porrastettu käynnistys raskailla laitteilla → tehomaksu pienenee 10–20%"
+  - "Taajuusmuuttajat (VFD): osakuormalla 20–50% energiansäästö, investointi maksaa itsensä 1–3 vuodessa"
+  - "LED-valaistus teollisuustiloissa: 50–70% säästö vs. elohopeahöyrylamppu, takaisinmaksuaika 1–3 vuotta"
+  - "Energiakatselmus: lakisääteinen velvoite yli 250 hengen tai yli 50 milj. € liikevaihdon yrityksille, 4 vuoden välein"
+  - "Paineilman optimointi: yhden barin paineen lasku säästää noin 7% kompressorienergiaa, tavoitetaso 6–7 bar"
+  - "Tehokerroin cos φ: tavoite ≥0.95, reaktiivisesta tehosta peritään siirtomaksu, kondensaattoriparisto korjaa"
+  - "Kuormituskäyrä ja submetering: mittaa jokainen tuotantolinja erikseen, löydä turhaa kulutusta yövuoroissa"
+  - "Tuotantotaukojen hallinta: sammuta koneet ja puhalteet tauoilla, standby-tila vie 5–15% nimelliskuormasta"
+  - "Prosessijäähdytys: vesiviileä tai glykoli, lämpötila mahdollisimman korkeaksi (joka +1°C → 3% tehonsäästö)"
+  - "Höyryjärjestelmä: eristä putket ja venttiilit, 10 mm eristys höyryputkessa säästää 80–90% eristyshäviöistä"
+  - "Häviöt sähkömuuntajissa: kuormitustaso 40–70% on optimialue häviöiden kannalta, ali- tai ylikuormitus kasvattaa häviöitä"
+  - "Vuotuinen energiankulutusraportti: vertaa normeerattua kulutusta edellisiin vuosiin, tavoite −2–5%/vuosi"
+  - "Energiankulutuksen benchmarking: vertaa toimialan energiaintensiteettiin (kWh/tuotettu yksikkö)"
+  - "Demand response (kysyntäjousto): sähkönsiirtoverkon ohjaus vähentää kulutusta ruuhka-aikoina, korvaus 10–50 €/MWh"
+  - "Paineilmavuotokartoitus ultraäänilaitteella: vuosi-investointi 1000–3000€, tunnistettu säästöpotentiaali tyypillisesti 10–20 kW"
+  - "Koneiden käynnistysvirtapiikki: pehmostartterin tai taajuusmuuttajan käyttö leikkaa käynnistysvirran 1/3:aan"
+  - "Energia-asiakirjat: kulutusprofiilit, huoltopöytäkirjat ja parannustoimet arkistoidaan ISO 50001 -järjestelmässä"
+  - "Sähköenergian hankinta: kilpailuta määräajoin, harkitse kiinteä vs. pörssisähkö tuotantolaitoksen kuormitusprofiilin mukaan"

@@ -1,0 +1,148 @@
+header:
+  agent_id: delivery_tracker
+  agent_name:  Delivery Tracker
+  name_fi: 'Paketit ja tilaukset'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: low
+ASSUMPTIONS:
+- Verkko-ostaminen Suomessa ja EU:n ulkopuolelta
+- Käytetyt operaattorit: Posti, DHL, PostNord, UPS, Matkahuolto
+- Tulli EU:n ulkopuolisille paketeille
+- Toimitusosoite Helsinki tai Kouvola
+DECISION_METRICS_AND_THRESHOLDS:
+  customs_threshold_eur:
+    value: 150
+    action: ">150 € EU:n ulkopuolelta → tulliselvitys pakollinen + ALV 24% perittävä"
+    source: src:DT1
+  delivery_delay_days:
+    value: 5
+    action: ">5 arkipäivää odotettua myöhässä → reklamaatio myyjälle tai toimittajalle"
+    source: src:DT2
+  posti_storage_days:
+    value: 7
+    action: "Posti säilyttää paketin noutopisteessä 7 vrk — nouda ajoissa tai pyydä lisäaikaa"
+    source: src:DT2
+  return_window_days:
+    value: 14
+    action: "EU:n kuluttajansuoja: etämyynti 14 vrk palautusoikeus ilman syytä (kuluttajansuojalaki)"
+    source: src:DT3
+  cod_verification_eur:
+    value: 200
+    action: ">200 € jälkivaatimus → tarkista toimittajan aitous ennen lunastusta (huijausriski)"
+    source: src:DT2
+  dhl_customs_fee_eur:
+    value: 20
+    action: "DHL perii ~20 € tullaustoimitusmaksu EU:n ulkopuolisista paketeista, ota huomioon kokonaishinnassa"
+    source: src:DT1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: mehiläishoitotarvikkeiden tilaussesonki — varaudu 1-2 viikon toimitusaikoihin. Tarkista kausitilausten saldo (tarvikeliikkeet). Ruuhka-aikaa ei vielä, nopein toimitusaika."
+  source: src:DT2
+- season: Kesä
+  action: "Kesäkuu–elokuu: kesälomat hidastavat toimituksia (heinäkuu erityisesti). Posti-toimipisteet voivat olla lyhyemmillä aukioloajoilla. Varmista noutopiste tai kotitoimitus ennen loma-aikaa."
+  source: src:DT2
+- season: Syksy
+  action: "Syyskuu–marraskuu: Black Friday (marraskuun loppu) — tilaa riittävän ajoissa. Kansainväliset tilaukset voivat viivästyä. Tarkista tullauskäytäntö isommille tilauksille."
+  source: src:DT1
+- season: Talvi
+  action: "Joulukuu–tammikuu: joulusesonki ruuhkauttaa postin ja kuriirit — viimeiset joulutilaukset viim. joulukuun 15. Tammikuu: saldot ja palautukset, joulun nettiostokset palautetaan kuluttajansuojan 14 vrk:n sisällä."
+  source: src:DT3
+FAILURE_MODES:
+- mode: Paketti merkitty toimitetuksi mutta ei saapunut
+  detection: "Seurantatiedot sanovat 'toimitettu' mutta paketti ei löydy postilaatikosta tai ovelta"
+  action: "1. Tarkista naapurit ja taloyhtiön varastotila. 2. Ota yhteys toimittajaan (Posti 0200 71000, DHL 0207 38383) seurantanumerolla. 3. Tee reklamaatio myyjälle kirjallisesti. 4. Jos ei ratkea 14 vrk — kuluttajaneuvojalta neuvoja tai palautus/uusi toimitus."
+  source: src:DT2
+- mode: Tulli pidättää paketin
+  detection: "Seurantatiedoissa 'tullissa' tai 'vaatii selvitystä', tullilasku saapuu postilla"
+  action: "1. Odota tullilaskua (Tulli.fi tai kirje). 2. Maksa tullilaitos.fi:n kautta tai anna kuriirin hoitaa (lisämaksu). 3. Epäilyttävä lasku → tarkista oikeellisuus Tullista ennen maksua. 4. Yli 6 kk vanha → voi vanhenua."
+  source: src:DT1
+- mode: Paketti vahingoittunut toimituksessa
+  detection: "Ulkopuoli rikki, sisältö vaurioitunut, nestettä vuotanut"
+  action: "1. Älä heitä pakkausmateriaalia pois — ota valokuvat ennen avaamista. 2. Kirjaa vahinko kuriirille samana päivänä. 3. Reklamaatio myyjälle kirjallisesti valokuvien kanssa. 4. EU:n kuluttajansuoja: myyjä vastuussa toimituksesta perille."
+  source: src:DT3
+PROCESS_FLOWS:
+  order_lifecycle:
+    steps:
+    - 'Tilaus: tarkista toimitusosoite, noutopiste vai kotiinkuljetus'
+    - 'Vahvistus: talleta tilausnumero, seurantakoodi ja arvioitu toimituspäivä'
+    - 'Seuranta: aktivoi sähköposti-/SMS-ilmoitukset (Posti/DHL-sovellus)'
+    - 'Saapumisilmoitus: nouda 7 vrk:n sisällä noutopisteestä'
+    - 'Vastaanotto: tarkista pakkauksen kunto ennen hyväksymistä'
+    - 'Ongelma: reklamaatio myyjälle kirjallisesti heti, 14 vrk palautusoikeus'
+    - 'EU-tulli: varmista aina osto >150 € sisältää kaikki verot ja tullit'
+COMPLIANCE_AND_LEGAL:
+  kuluttajansuoja: "KSL luku 6 — etämyynti: 14 vrk palautusoikeus, myyjä vastaa toimituksesta [src:DT3]"
+  tulli: "EU:n ulkopuoliset ostokset >150 € tullataan — ALV + tullimaksu perittävä [src:DT1]"
+  reklamaatio: "Kirjallinen reklamaatio ensisijainen — Kuluttajariitalautakunta vaihtoehtona jos myyjä kieltäytyy [src:DT3]"
+UNCERTAINTY_NOTES:
+- "Postin säilytysaika vaihtelee palvelutyypin mukaan — kirjepaketti 14 vrk, paketti 7 vrk."
+- "Tullirajat voivat muuttua — tarkista ajantasaiset rajat tulli.fi:stä."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:DT1
+    org: Tulli (Finnish Customs)
+    title: Ostokset EU:n ulkopuolelta — tullaus ja verot
+    year: 2026
+    url: https://tulli.fi/henkiloasiakkaat/tilaaminen-ulkomailta
+    supports: Tullikynnys, ALV, tullausmaksut, DHL-palvelumaksu.
+  - id: src:DT2
+    org: Posti Group Oyj
+    title: Paketit ja toimitusehdot
+    year: 2026
+    url: https://www.posti.fi/fi/asiakkaalle/paketit/
+    supports: Toimitusajat, noutopisteet, reklamaatiot, seuranta.
+  - id: src:DT3
+    org: Kilpailu- ja kuluttajavirasto (KKV)
+    title: Verkko-ostajan oikeudet
+    year: 2025
+    url: https://www.kkv.fi/kuluttajaneuvonta/
+    supports: Palautusoikeus, reklamaatio, kuluttajansuoja, vahingot.
+eval_questions:
+- q: Milloin EU:n ulkopuolinen paketti tullataan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.customs_threshold_eur.value
+  source: src:DT1
+- q: Milloin kannattaa tehdä reklamaatio myöhässä olevasta paketista?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.delivery_delay_days.action
+  source: src:DT2
+- q: Kauanko Posti säilyttää paketin noutopisteessä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.posti_storage_days.value
+  source: src:DT2
+- q: Mikä on etämyynnin palautusoikeusaika?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.return_window_days.value
+  source: src:DT3
+- q: Mitä DHL perii tullauksesta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.dhl_customs_fee_eur.action
+  source: src:DT1
+- q: Mitä pitää huomioida kesätilauksissa?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:DT2
+- q: Milloin jouluostokset pitää tilata viimeistään?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:DT3
+- q: Miten toimitaan jos paketti on merkitty toimitetuksi mutta ei löydy?
+  a_ref: FAILURE_MODES[0].action
+  source: src:DT2
+- q: Miten toimitaan tullitilanteessa?
+  a_ref: FAILURE_MODES[1].action
+  source: src:DT1
+- q: Mitä tehdään kun paketti on vahingoittunut?
+  a_ref: FAILURE_MODES[2].action
+  source: src:DT3
+- q: Mikä on tilauksen elinkaari vaihe vaiheelta?
+  a_ref: PROCESS_FLOWS.order_lifecycle.steps
+  source: src:DT2
+- q: Mitä kuluttajansuoja sanoo palautusoikeudesta?
+  a_ref: COMPLIANCE_AND_LEGAL.kuluttajansuoja
+  source: src:DT3
+- q: Miten reklamaatio tehdään?
+  a_ref: COMPLIANCE_AND_LEGAL.reklamaatio
+  source: src:DT3
+- q: Muuttuvatko tullirajat?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:DT1
+- q: Paljonko ALV lisätään EU:n ulkopuoliseen ostokseen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.customs_threshold_eur.action
+  source: src:DT1

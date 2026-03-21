@@ -1,0 +1,13 @@
+sources:
+- id: src:TEC1
+  org: SESKO ry / Suomen Standardisoimisliitto
+  title: SFS 6000:2022 Pienjännitesähköasennukset
+  year: 2022
+  url: N/A
+  what_it_supports: RCD (30 mA) -vaatimus pistorasiaryhmille (enintään 32 A) yleistasolla.
+- id: src:TEC2
+  org: Tukes
+  title: Sähkötyöt ja urakointi
+  year: 2025
+  url: https://tukes.fi/sahko/sahkotyot-ja-urakointi
+  what_it_supports: Sähkötöiden luvanvaraisuus ja esimerkit maallikkotöistä.

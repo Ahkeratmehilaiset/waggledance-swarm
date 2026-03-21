@@ -1,0 +1,38 @@
+title: Puulajit
+agent: Polttopuuhuolto
+facts:
+- 'Koivu: 1300 kWh/m³ — suosituin polttopuu, kuivuu hyvin'
+- 'Mänty: 1100 kWh/m³ — hartsi aiheuttaa nokea, hyvä sytykkeeksi'
+- 'Kuusi: 1000 kWh/m³ — rätisee, nopea palaminen'
+- 'Leppä: 1000 kWh/m³ — vähän savua, sopii savustukseen'
+- 'Haapa: 900 kWh/m³ — polttaa nokea pois piipusta'
+WOOD_SPECIES_HEATING:
+- species: Koivu
+  energy_kwh_per_m3: 1700
+  drying_months: 12
+  note: Paras yleispuu, hyvä lämpö ja paloaika
+- species: Leppä
+  energy_kwh_per_m3: 1300
+  drying_months: 6
+  note: Kuivuu nopeasti, syttyy helposti, hyvä savustukseen
+- species: Haapa
+  energy_kwh_per_m3: 1150
+  drying_months: 8
+  note: Nopeakasvuinen, ei kipinöi, hyvä saunaan
+- species: Mänty
+  energy_kwh_per_m3: 1500
+  drying_months: 18
+  note: Pihkainen, kipinöi — varovasti avotulessa
+- species: Kuusi
+  energy_kwh_per_m3: 1350
+  drying_months: 12
+  note: Syttyy nopeasti, hyvä sytytykseen, kipinöi
+- species: Tammi
+  energy_kwh_per_m3: 2100
+  drying_months: 24
+  note: Paras energiatiheys, pitkä kuivausaika
+CORD_MEASUREMENTS:
+  pinokuutiometri: 1 m × 1 m × 1 m pinottu = ~0.67 irtokuutiota
+  irtokuutiometri: 1 m³ irtopuuta = ~1.5 pinokuutiota
+  koivuhalko_kg_per_pm3: ~400 kg kuivana (kosteus <20%)
+  annual_consumption_pm3: 'Puusauna: 3-5 p-m³/v, Puulämmitys 100m²: 15-25 p-m³/v'

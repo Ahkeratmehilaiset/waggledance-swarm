@@ -1,0 +1,41 @@
+title: Veden Laatu
+agent: Kaivoveden laadunvalvonta
+facts:
+- Kaivovesi on Suomessa yleensä hapanta (pH 5.5-6.5) kallioporakaivoissa
+- Rauta- ja mangaanipitoisuudet yleisiä Suomen kallioperässä
+- E. coli -löydös vaatii välitöntä toimenpidettä
+- Nitraatti >50 mg/l vaarallinen imeväisikäisille
+- Fluoridi >1.5 mg/l vaikuttaa hampaisiin pitkäaikaisessa käytössä
+WATER_QUALITY_THRESHOLDS:
+  manganese_mg_l:
+    value: 0.05
+    action: '>0.05 mg/l → värimuutos, maku, pyykinpesun tahrat'
+    source: STM 1352/2015
+  nitrate_mg_l:
+    value: 50
+    action: '>50 mg/l → terveysriski erityisesti vauvoille'
+    source: STM 1352/2015
+  fluoride_mg_l:
+    value: 1.5
+    action: '>1.5 mg/l → hammasfluoroosi, luustovaikutukset'
+    source: STM 1352/2015
+  radon_bq_l:
+    value: 300
+    action: '>300 Bq/l → ilmanvaihdon tehostaminen, aktiivihiilisuodatus'
+    source: STUK
+  alkalinity_mmol_l:
+    value: 0.6
+    action: <0.6 mmol/l → vesi syövyttävää, putkien korroosio
+    source: THL
+  hardness_dh:
+    value: 4-8
+    action: Ihanne 4-8°dH. <2°dH pehmeä, >15°dH kova → kalkinpoisto
+    source: THL
+  e_coli_cfu_100ml:
+    value: 0
+    action: Yksikin E. coli → keittokehotus, desinfiointi, uusintanäyte
+    source: STM 1352/2015
+  sampling_frequency:
+    value: 3 vuoden välein
+    action: Vähintään joka 3. vuosi, rankkasateen jälkeen ylimääräinen
+    source: THL

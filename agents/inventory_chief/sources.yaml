@@ -1,0 +1,7 @@
+sources:
+- id: src:IN1
+  org: JKH Service sisäinen
+  title: Varastohallinta
+  year: 2026
+  url: null
+  supports: Inventointi, tilauspisteet.

@@ -1,0 +1,18 @@
+title: Kuivaus
+agent: Polttopuuhuolto
+facts:
+- 'Halko kuivuu kesässä: pilkonta keväällä → valmis syksyllä'
+- 'Optimaali halkopituus: 25-33 cm takalle, 40 cm leivinuuniin'
+- Varastoi irti maasta lavoilla, katto päälle, sivut auki
+- 'Tuore puu: ~50% kosteutta. Kuiva: <20%.'
+DRYING_GUIDELINES:
+- rule: Pilko keväällä, käytä seuraavana talvena
+  source: Suomen Metsäkeskus
+- rule: 'Klapiteline: ilmankierto joka suunnasta, katto päälle'
+  note: Alusta >10cm maasta
+- rule: 'Kosteusmittari: tavoite <20%, käyttökelpoinen <25%'
+  note: Mittaa halkaistusta pinnasta 3cm syvyydeltä
+- rule: 'Liian kostea puu: nokea, syöpyy hormi, heikko lämpö'
+  threshold: '>25% → ei polttoon'
+- rule: 'Ylikuiva puu (<12%): palaa liian nopeasti, huono hyötysuhde'
+  note: Varastoi oikein

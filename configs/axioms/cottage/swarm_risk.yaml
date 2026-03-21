@@ -1,0 +1,67 @@
+model_id: swarm_risk
+model_name: "Swarm Risk Assessment"
+description: "Estimate probability of swarming based on hive conditions"
+
+formulas:
+  - name: space_pressure
+    formula: "1 - (empty_combs / total_combs)"
+    description: "Hive space pressure (0=empty, 1=completely full)"
+    output_unit: "ratio"
+  - name: queen_age_factor
+    formula: "queen_age_years / 3.0"
+    description: "Swarming tendency increases with queen age"
+    output_unit: "ratio"
+  - name: base_swarm_score
+    formula: "space_pressure * 40 + queen_age_factor * 30 + queen_cells * 20 + season_factor * 10"
+    description: "Raw swarming risk score (0-100)"
+    output_unit: "score"
+  - name: swarm_probability_pct
+    formula: "min(base_swarm_score, 100)"
+    description: "Estimated swarming probability"
+    output_unit: "%"
+
+variables:
+  empty_combs:
+    description: "Empty or partially filled combs available"
+    unit: "combs"
+    range: [0, 30]
+    default: 3
+  total_combs:
+    description: "Total combs in hive"
+    unit: "combs"
+    range: [5, 30]
+    default: 12
+  queen_age_years:
+    description: "Current queen age"
+    unit: "years"
+    range: [0.1, 5]
+    default: 1.0
+  queen_cells:
+    description: "Number of queen cells visible"
+    unit: "count"
+    range: [0, 20]
+    default: 0
+  season_factor:
+    description: "Seasonal swarming pressure (0=winter, 1=peak spring)"
+    unit: "ratio"
+    range: [0.0, 1.0]
+    default: 0.5
+
+validation:
+  - check: "empty_combs <= total_combs"
+    message: "Empty combs cannot exceed total combs"
+  - check: "queen_cells >= 0"
+    message: "Queen cell count must be non-negative"
+
+risk_levels:
+  critical: "swarm_probability_pct >= 70"
+  warning: "swarm_probability_pct >= 40"
+  normal: "swarm_probability_pct < 40"
+
+examples:
+  - description: "Crowded hive, peak spring, old queen"
+    inputs: {empty_combs: 1, total_combs: 12, queen_age_years: 2.5, queen_cells: 3, season_factor: 1.0}
+    expected: 100
+  - description: "Spacious hive, new queen, off-season"
+    inputs: {empty_combs: 8, total_combs: 12, queen_age_years: 0.5, queen_cells: 0, season_factor: 0.1}
+    expected: 12.1

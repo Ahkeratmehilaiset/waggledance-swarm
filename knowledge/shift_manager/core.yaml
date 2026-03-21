@@ -1,0 +1,28 @@
+header:
+  agent_id: shift_manager
+  agent_name: Shift Manager
+  name_fi: 'Vuoropäällikkö'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: high
+ASSUMPTIONS:
+- 2- tai 3-vuorojärjestelmä
+- Suomen työaikalaki
+DECISION_METRICS_AND_THRESHOLDS:
+  overtime_hours_week:
+    value: 8
+    action: ">8h/vko → liian korkea kuormitus"
+    source: src:SM1
+  absence_rate_pct:
+    value: 5
+    action: ">5% → selvitä syyt"
+    source: src:SM1
+eval_questions:
+- q: Mikä on overtime hours week?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.overtime_hours_week.value
+  source: src:SM1
+- q: Mikä on absence rate pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.absence_rate_pct.value
+  source: src:SM1

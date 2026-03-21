@@ -1,0 +1,192 @@
+header:
+  agent_id: waste_handler
+  agent_name:  Waste Stream Manager
+  name_fi: 'Jätevirtojen hallinta'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Jätelaki 646/2011 ja sen muutokset
+- Ympäristölupa teollisuuslaitokselle
+- EU:n jätelainsäädäntö (2008/98/EY) ohjaa etusijajärjestystä
+- JKH Service tuottaa jätettä mehiläistuotannossa (hunajapurkit, vahat, kemikaalit)
+- Mökkikiinteistö Huhdasjärvellä: kompostointi ja biojäte relevanttia
+DECISION_METRICS_AND_THRESHOLDS:
+  recycling_rate_pct:
+    value: 70
+    action: "<70% → tehosta lajittelua, kouluta henkilöstö, tarkista jäteastiat"
+    source: src:WH1
+  hazardous_waste_kg_year:
+    value: 150
+    action: ">150 kg/vuosi → ympäristöluvan tarkistus pakollinen, ilmoitus ELY-keskukselle"
+    source: src:WH2
+  landfill_ratio_pct:
+    value: 10
+    action: ">10% kaatopaikalle → jäteanalyysi, etsi kierrätys- tai hyödyntämisvaihtoehto"
+    source: src:WH1
+  composting_temp_c:
+    value: 55
+    action: "Lämpötila <55°C kompostissa → hygieenisoituminen epätäydellinen, sekoita tai lisää rakenneainetta"
+    source: src:WH3
+  waste_cost_eur_tonne:
+    value: 200
+    action: ">200 €/tonni kokonaisjätekustannus → prosessitarkastelu, vähennä syntyä"
+    source: src:WH1
+  chemical_storage_liters:
+    value: 200
+    action: ">200 L vaarallista nestettä → kemikaalien säilytysasetus, suoja-allas pakollinen"
+    source: src:WH2
+  biowaste_contamination_pct:
+    value: 5
+    action: ">5% biojätteessä muovia/metallia → lajitteluohje ja tarkastus"
+    source: src:WH3
+SEASONAL_RULES:
+- season: Kevät
+  action: "Talven aikana kertyneet vaaralliset jätteet (akut, öljyt, torjunta-aineet) toimitetaan
+    keräyspisteeseen. Puutarhan ja mökillä syntyneet biomassat kompostiin. Tarkista
+    kompostin talvitila ja lisää rakenneainetta."
+  source: src:WH3
+- season: Kesä
+  action: "Mehiläistuotannon sivutuotteet: vahajätteet kierrätykseen, tyhjät kemikaaliastiat
+    asianmukaiseen keräykseen. Mökin jätehuolto aktiivinen — biojätekompostori käyttöön.
+    Tarkista ympäristöluvan noudattaminen tehtaalla."
+  source: src:WH2
+- season: Syksy
+  action: "Hunajankäsittelyn jätteet (lasipurkit, muovikannet, folio) lajitellaan.
+    Vaarallisen jätteen vuosiraportti valmisteluun. Kompostori talvikuntoon, viimeinen
+    tyhjennys ennen pakkasia."
+  source: src:WH3
+- season: Talvi
+  action: "Vähentynyt jätemäärä — seuraa silti lajitteluasteiden toteutuminen.
+    Vaaralliset jätteet varastoidaan asianmukaisesti sisätiloissa odottamaan
+    kevään keräystä. Tarkista varastojen kunto ja vuotavuus."
+  source: src:WH2
+FAILURE_MODES:
+- mode: Vaarallinen jäte sekajätteen joukossa
+  detection: "Jäteastioiden tarkastuksessa löytyy paristoja, maalipurkkeja tai kemikaaleja
+    sekajätteen seassa"
+  action: "Erota välittömästi, toimita vaarallisen jätteen keräyspisteeseen. Kouluta
+    henkilöstö uudelleen. Dokumentoi poikkeama ja korjaavat toimenpiteet."
+  source: src:WH2
+- mode: Ympäristöluvan ylitys
+  detection: "Vaarallisen jätteen määrä ylittää luvan rajan tai jätteet pääsevät
+    ympäristöön (vuoto, virheellinen käsittely)"
+  action: "Välitön ilmoitus ELY-keskukselle ja ympäristöviranomaiselle. Toimenpidesuunnitelma
+    72 tunnin kuluessa. Dokumentoi kaikki toimet."
+  source: src:WH2
+- mode: Kompostorin ylikuormitus tai haitta
+  detection: "Kompostori haisee voimakkaasti (ammoniak), hyönteiset lisääntyvät,
+    lämpötila laskee alle 40°C pitkäaikaisesti"
+  action: "Lisää rakenneainetta (lastut, olki), sekoita, tarkista kosteus (50–60%).
+    Jos ongelma jatkuu yli 2 viikkoa, tyhjennä ja aloita uudelleen."
+  source: src:WH3
+PROCESS_FLOWS:
+  vuosikaari:
+    steps:
+    - 'Tammi: vaarallisen jätteen varastokirjanpito ajantasaiseksi'
+    - 'Helmi-maalis: vaarallisten jätteiden toimitus keräyspisteeseen'
+    - 'Huhti: kompostorin aktivointi, kevätsiivous biojakeen osalta'
+    - 'Kesä: mehiläistuotannon sivutuotteiden lajittelu ja kierrätys'
+    - 'Elo-syys: hunajankäsittelyn pakkausjätteiden lajittelu'
+    - 'Loka: vuosiraportin valmistelu ympäristöluvan edellyttämällä tavalla'
+    - 'Marras: kompostorin talvikuntoon laitto'
+    - 'Joulu: loppuvuoden kirjanpito, jätekustannusten arviointi'
+COMPLIANCE_AND_LEGAL:
+  jakelaki: "Jätelaki 646/2011 — etusijajärjestys: ehkäise, vähennä, valmistele uudelleenkäyttöön,
+    kierrätä, hyödynnä energiana, loppukäsittely viimeisenä [src:WH1]"
+  vaarallinen_jate: "Vaarallinen jäte kirjattava siirtoasiakirjaan (jätelaki 121§).
+    Ammattimainen tuottaja: ilmoitus Pirkanmaan ELY-keskukselle [src:WH2]"
+  kompostointi: "Kompostointi omalle maalle sallittua ilman lupaa, jos ei aiheudu
+    haittaa naapureille (ympäristönsuojelulaki 527/2014) [src:WH3]"
+UNCERTAINTY_NOTES:
+- "Ympäristöluvan tarve riippuu laitoksen koosta ja toimialasta — tarkista ELY-keskuksesta."
+- "Mökin kompostoinnin säännöt voivat erota kunnan jätehuoltomääräyksistä."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:WH1
+    org: Ympäristöministeriö / Suomi
+    title: Jätelaki 646/2011 ja jätehierarkia
+    year: 2023
+    url: https://www.finlex.fi/fi/laki/ajantasa/2011/20110646
+    supports: Kierrätysaste, etusijajärjestys, lajittelu.
+  - id: src:WH2
+    org: ELY-keskus / Pirkanmaa
+    title: Vaarallisten jätteiden käsittely ja ilmoitusmenettely
+    year: 2024
+    url: https://www.ely-keskus.fi/ymparisto/jatteet
+    supports: Vaaralliset jätteet, ympäristölupa, siirtoasiakirja.
+  - id: src:WH3
+    org: Luonnonvarakeskus LUKE / HSY
+    title: Kompostointi ja biojätteen hyödyntäminen
+    year: 2024
+    url: https://www.hsy.fi/jatteet-ja-kierratys/lajittele-ja-kierrata/kompostointi/
+    supports: Kompostointi, biojäte, lämpötilavaatimukset.
+eval_questions:
+- q: Mikä on tavoiteltu kierrätysaste?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.recycling_rate_pct.value
+  source: src:WH1
+- q: Mitä tapahtuu, jos kierrätysaste jää alle 70%?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.recycling_rate_pct.action
+  source: src:WH1
+- q: Milloin vaarallisen jätteen määrä edellyttää ympäristöluvan tarkistusta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hazardous_waste_kg_year.value
+  source: src:WH2
+- q: Mikä on suurin sallittu kaatopaikkasijoituksen osuus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.landfill_ratio_pct.value
+  source: src:WH1
+- q: Mikä lämpötila kompostissa varmistaa hygieenisoitumisen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.composting_temp_c.value
+  source: src:WH3
+- q: Milloin jätekustannus on liian korkea ja mitä tehdään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.waste_cost_eur_tonne.action
+  source: src:WH1
+- q: Kuinka paljon vaarallista nestettä saa varastoida ilman suoja-allasta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.chemical_storage_liters.value
+  source: src:WH2
+- q: Mikä on biojätteen sallittu epäpuhtaustaso?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.biowaste_contamination_pct.value
+  source: src:WH3
+- q: Mitä tehdään keväällä jätehuollossa?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:WH3
+- q: Miten mehiläistuotannon jätteet käsitellään kesällä?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:WH2
+- q: Mitä jätevirtoja syntyy hunajankäsittelyssä syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:WH3
+- q: Miten vaaralliset jätteet varastoidaan talvella?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:WH2
+- q: Miten toimitaan jos vaarallista jätettä löytyy sekajätteestä?
+  a_ref: FAILURE_MODES[0].action
+  source: src:WH2
+- q: Miten ympäristöluvan ylitys havaitaan ja mitä tehdään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:WH2
+- q: Mitä tehdään, kun kompostori ylikuormittuu?
+  a_ref: FAILURE_MODES[2].action
+  source: src:WH3
+- q: Mitä jätelaki sanoo etusijajärjestyksestä?
+  a_ref: COMPLIANCE_AND_LEGAL.jakelaki
+  source: src:WH1
+- q: Onko vaarallisen jätteen siirtoasiakirja pakollinen?
+  a_ref: COMPLIANCE_AND_LEGAL.vaarallinen_jate
+  source: src:WH2
+- q: Tarvitaanko lupa kompostointiin omalla maalla?
+  a_ref: COMPLIANCE_AND_LEGAL.kompostointi
+  source: src:WH3
+- q: Milloin tehdään vaarallisen jätteen vuosiraportti?
+  a_ref: PROCESS_FLOWS.vuosikaari.steps
+  source: src:WH2
+- q: Mitkä jätteet syntyvät hunajankäsittelystä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:WH3
+- q: Miten kompostorin kosteus tarkistetaan?
+  a_ref: FAILURE_MODES[2].action
+  source: src:WH3
+- q: Kenelle ilmoitetaan ympäristöluparikkomuksesta?
+  a_ref: FAILURE_MODES[1].action
+  source: src:WH2

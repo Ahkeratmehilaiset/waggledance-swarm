@@ -1,0 +1,13 @@
+sources:
+- id: src:EL1
+  org: Elonet / SES
+  title: Suomalaiset elokuvat
+  year: 2025
+  url: https://elonet.finna.fi/
+  supports: Elokuvatiedot, arviot.
+- id: src:EL2
+  org: KAVI
+  title: Kuvaohjelmalaki 710/2011
+  year: 2011
+  url: https://www.kavi.fi/
+  supports: Ikärajat.

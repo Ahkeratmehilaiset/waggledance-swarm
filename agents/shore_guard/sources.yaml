@@ -1,0 +1,13 @@
+sources:
+- id: src:RV1
+  org: SUH
+  title: Vesiturvallisuus
+  year: 2025
+  url: https://www.suh.fi/
+  supports: Uintiturvallisuus.
+- id: src:RV2
+  org: Pelastuslaitos/THL
+  title: Hätäohjeet
+  year: 2025
+  url: https://www.112.fi/
+  supports: Ensiapu, hätänumerot.

@@ -1,0 +1,23 @@
+title: Riskit
+agent: Työturvallisuuspäällikkö
+facts:
+- 'Riskimatriisi: Todennäköisyys × Vakavuus = Riski (1-25)'
+- 'Punainen >15: välitön toimenpide, työ keskeytetään'
+- 'Keltainen 8-15: toimenpide suunniteltava'
+- Riskiarviointi päivitettävä vuosittain + muutosten yhteydessä
+RISK_ASSESSMENT_MATRIX:
+  probability_levels:
+    '1': Epätodennäköinen
+    '2': Mahdollinen
+    '3': Todennäköinen
+    '4': Lähes varma
+  severity_levels:
+    '1': Vähäinen
+    '2': Haitallinen
+    '3': Vakava
+    '4': Erittäin vakava
+  action_levels:
+    1-4: Hyväksyttävä → seuranta
+    5-8: Kohtalainen → toimenpidesuunnitelma 30pv
+    9-12: Merkittävä → välitön toimenpide
+    13-16: Sietämätön → työ keskeytetään kunnes korjattu

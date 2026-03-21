@@ -1,0 +1,27 @@
+title: Toimittajat
+agent: Toimitusketjun hallinta
+facts:
+- Toimittaja-auditointi vuosittain, ISO 9001
+- 'Dual sourcing: vähintään 2 lähdettä kriittisille'
+- 'Scorecard: toimitusvarmuus, laatu, hinta, reagointi'
+SUPPLIER_EVALUATION:
+- criteria: Toimitusvarmuus (OTD)
+  weight_pct: 30
+  target: '>95%'
+- criteria: Laatu (PPM)
+  weight_pct: 25
+  target: <1000 PPM
+- criteria: Hinta/kustannus
+  weight_pct: 20
+  target: Kilpailukykyinen, ei halvin
+- criteria: Joustavuus
+  weight_pct: 15
+  target: Lead time <2 viikkoa muutoksille
+- criteria: Viestintä & yhteistyö
+  weight_pct: 10
+  target: Proaktiivinen, ongelmien raportointi
+INVENTORY_MODELS:
+  abc_analysis: A=80% arvosta 20% nimikkeistä, B=15%/30%, C=5%/50%
+  safety_stock: Turvavarasto = Z × σ × √(L), Z=1.65 (95% palvelutaso)
+  eoq: Taloudellinen tilausmäärä = √(2×D×S/H)
+  kanban_cards: N = D×L×(1+S)/C, D=kysyntä, L=läpimenoaika

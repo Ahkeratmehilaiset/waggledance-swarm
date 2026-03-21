@@ -1,0 +1,45 @@
+model_id: signal_propagation
+model_name: "Signal Strength Calculator"
+description: "Free-space path loss and link budget"
+
+formulas:
+  - name: fspl_db
+    formula: "20 * log10(distance_m) + 20 * log10(frequency_mhz) + 32.44"
+    description: "Free-space path loss"
+    output_unit: "dB"
+  - name: received_power_dbm
+    formula: "tx_power_dbm - fspl_db + tx_gain_dbi + rx_gain_dbi"
+    description: "Received signal strength"
+    output_unit: "dBm"
+
+variables:
+  distance_m:
+    description: "Distance"
+    unit: "m"
+    range: [1, 100000]
+    default: 1000
+  frequency_mhz:
+    description: "Frequency"
+    unit: "MHz"
+    range: [100, 6000]
+    default: 868
+  tx_power_dbm:
+    description: "TX power"
+    unit: "dBm"
+    range: [-10, 30]
+    default: 14
+  tx_gain_dbi:
+    description: "TX antenna gain"
+    unit: "dBi"
+    range: [0, 20]
+    default: 2
+  rx_gain_dbi:
+    description: "RX antenna gain"
+    unit: "dBi"
+    range: [0, 20]
+    default: 2
+
+risk_levels:
+  critical: "received_power_dbm < -120"
+  warning: "received_power_dbm < -100"
+  normal: "received_power_dbm >= -100"

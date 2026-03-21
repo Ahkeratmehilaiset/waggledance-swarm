@@ -1,0 +1,7 @@
+sources:
+- id: src:CORE1
+  org: OpenClaw
+  title: HiveMind System Architecture v2
+  year: 2026
+  url: null
+  supports: Järjestelmäarkkitehtuuri, priorisointisäännöt, heartbeat-protokolla.

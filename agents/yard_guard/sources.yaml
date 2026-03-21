@@ -1,0 +1,13 @@
+sources:
+- id: src:PI1
+  org: Turva-ala
+  title: Kotiturvallisuus
+  year: 2025
+  url: null
+  supports: Kamera, ihmistunnistus.
+- id: src:PI2
+  org: Tietosuojavaltuutettu
+  title: Kameravalvonta GDPR
+  year: 2025
+  url: https://tietosuoja.fi/kameravalvonta
+  supports: Yksityisyys.

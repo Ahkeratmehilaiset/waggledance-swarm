@@ -1,0 +1,153 @@
+header:
+  agent_id: noise_monitor
+  agent_name:  Noise Monitor
+  name_fi: 'Melu ja ääniympäristö'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: low
+ASSUMPTIONS:
+- Kerrostaloasuminen Helsingissä (Jani Korpin koti)
+- Taloyhtiön järjestyssäännöt velvoittavat
+- Ympäristönsuojelulaki (527/2014) ja asumisterveyden ohjeet
+- Mahdollinen meluntarkkailu myös tehtaan ympäristössä (JKH Service)
+DECISION_METRICS_AND_THRESHOLDS:
+  night_noise_db:
+    value: 30
+    action: ">30 dB yöaikaan (klo 22-07) asunnossa → häiritsevä melu, tee kirjallinen ilmoitus taloyhtiölle"
+    source: src:NM1
+  day_noise_db_indoor:
+    value: 45
+    action: ">45 dB päiväaikaan sisällä asunnossa → terveyshaittaraja — ota yhteys isännöitsijään tai terveystarkastajaan"
+    source: src:NM1
+  construction_noise_max_db:
+    value: 65
+    action: ">65 dB rakennusmelu lähikiinteistöllä → tarkista lupa ja aikataulut kunnalta (vain ark. 07-22)"
+    source: src:NM2
+  quiet_hours_start:
+    value: 22
+    action: "Hiljaisuusaika alkaa klo 22 (joissain taloyhtiöissä klo 21) — kovaääninen musiikki, porakoneet lopetettava"
+    source: src:NM3
+  quiet_hours_end:
+    value: 7
+    action: "Hiljaisuusaika päättyy klo 07 arkipäivinä (la/su klo 08 tai 09 taloyhtiökohtaisesti)"
+    source: src:NM3
+  industrial_noise_limit_day_db:
+    value: 55
+    action: "Teollisuusmelun päiväohjearvo 55 dB(A) asuinalueella — tarkista ympäristölupa [src:NM2]"
+    source: src:NM2
+  vibration_threshold_mm_per_s:
+    value: 2.5
+    action: ">2.5 mm/s tärinä rakenteissa → rakennusvahinkoepäily, ota yhteys rakennusvalvontaan"
+    source: src:NM2
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: rakennustyöt ja piharemontit alkavat — selvitä naapurihankkeiden aikataulut ja luvat etukäteen. Avoikkunakausi alkaa — melu kulkee paremmin. Tarkista tuulettimen ja ilmastoinnin ääni."
+  source: src:NM2
+- season: Kesä
+  action: "Kesäkuu–elokuu: kesäjuhlat (midsummer, syntymäpäivät) — muista hiljaisuusaika. Piha-alueiden melu lisääntyy. Rakentaminen vilkkaimmillaan — pidä kirjaa poikkeuksellisesta melusta. Avoimet ikkunat altistavat enemmän melulle."
+  source: src:NM3
+- season: Syksy
+  action: "Syyskuu–marraskuu: lehtipuhaltimien ja ruohonleikkureiden äänekäs kausi. Tarkista lämpöpumppujen ja ilmanvaihtokojeiden äänitasot (vuosikatsastus). Ikkunat kiinni → sisämelutaso tasaantuu."
+  source: src:NM1
+- season: Talvi
+  action: "Joulukuu–helmikuu: uudenvuodenyö poikkeus melurajoihin (kunta voi sallia). Lumenpoisto yöllä sallittu kunnossapitolain perusteella. Kanavamelu lämpöpattereissa → ilmaa patterit. Joulun juhlat — huomioi naapurit."
+  source: src:NM3
+FAILURE_MODES:
+- mode: Jatkuva häiriömelu naapurista
+  detection: "Sama melu toistuu säännöllisesti (esim. yöllinen musiikki, koiran haukunta, koneet)"
+  action: "1. Kirjaa meluajat ja luonne päiväkirjaan (päivä, klo, kesto, tyyppi). 2. Yritä ensin suora, ystävällinen yhteys naapuriin. 3. Kirjallinen ilmoitus isännöitsijälle melukirjanpidon kanssa. 4. Jos ei korjaannu: kunnan ympäristöterveystarkastaja. 5. Viimeisenä: poliisi (häiriösoitto 0295 419 800) tai tuomioistuinasiat."
+  source: src:NM3
+- mode: Rakennusmelu luvattomaan aikaan
+  detection: "Porakoneet tai raskas rakentaminen klo 22-07 tai viikonloppuaamuisin"
+  action: "1. Dokumentoi kellonaika ja äänen tyyppi (video/äänitys). 2. Soita isännöitsijälle tai taloyhtiön hallitukselle. 3. Tarkista kunnan rakennusvalvonnasta onko poikkeusaikataulu sallittu. 4. Ilmoitus kunnan ympäristövalvontaan kirjallisesti. 5. Toistuvat rikkomukset → poliisi tai tuomioistuin."
+  source: src:NM2
+- mode: Tehtaan tai laitoksen meluylitys
+  detection: "Piha-alueella tai tehdasympäristössä yli 55 dB(A) päivällä, yli 45 dB yöllä"
+  action: "1. Mittaa melu kalibroitua äänimittaria käyttäen (tai tilaa konsultti). 2. Tarkista yrityksen ympäristölupa (lupa.fi tai ELY-keskus). 3. Ilmoitus ELY-keskukselle kirjallisesti melukartoituksen kanssa. 4. Valvontaviranomainen voi velvoittaa korjaustoimiin. 5. Harkitse äänieristekorjauksia."
+  source: src:NM2
+PROCESS_FLOWS:
+  noise_management:
+    steps:
+    - 'Havaittu melu: kirjaa päiväkirjaan (päivä, klo, kesto, dB-arvio tai mittaus)'
+    - 'Ensimmäinen häiriö: suullinen tai kirjallinen huomautus naapurille'
+    - 'Toistuva häiriö: kirjallinen ilmoitus isännöitsijälle melukirjanpidon kanssa'
+    - 'Viranomaistoimet: yhteys kunnan ympäristöterveystarkastajaan tai rakennusvalvontaan'
+    - 'Vuosittain tehtaalla: ympäristömelumittaus, raportti ELY-keskukselle tarvittaessa'
+COMPLIANCE_AND_LEGAL:
+  ymparistonsuojelulaki: "YSL 527/2014 — ympäristömelu kielletty jos aiheuttaa terveyshaittaa [src:NM2]"
+  jarjestyssaannot: "Taloyhtiön järjestyssäännöt velvoittavat kaikkia asukkaita — hiljaisuusaikojen noudattaminen [src:NM3]"
+  terveysperusteiset_ohjearvot: "Asumisterveysohjeet (STM/THL) — yöohjearvo 30 dB makuuhuoneessa [src:NM1]"
+UNCERTAINTY_NOTES:
+- "Hiljaisuusajat vaihtelevat taloyhtiöittäin — tarkista oman taloyhtiön järjestyssäännöt."
+- "dB-mittaukseen tarvitaan kalibroitu mittari — älypuhelinsovellukset ovat suuntaa-antavia."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:NM1
+    org: THL / STM
+    title: Asumisterveysohjeet — sisäilman melu ja tärinä
+    year: 2024
+    url: https://thl.fi/fi/web/ymparistoterveys/asumisterveys
+    supports: Yöohjearvo, terveyshaittaraja, sisämelutasot.
+  - id: src:NM2
+    org: Ympäristöministeriö / ELY-keskus
+    title: Ympäristönsuojelulaki ja meluntorjunta
+    year: 2024
+    url: https://www.ymparisto.fi/fi/Elinymparisto-ja-kaavoitus/Ymparistomelu
+    supports: Rakennusmelu, teollisuusmelu, ympäristölupa, tärinä.
+  - id: src:NM3
+    org: Kilpailu- ja kuluttajavirasto / Kiinteistöliitto
+    title: Taloyhtiön järjestyssäännöt ja asumisohjeet
+    year: 2024
+    url: https://www.kiinteistoliitto.fi/
+    supports: Hiljaisuusajat, naapurisuhteet, järjestyssäännöt.
+eval_questions:
+- q: Mikä on häiritsevän yömelun desibeliraja asunnossa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.night_noise_db.value
+  source: src:NM1
+- q: Milloin sisämelutaso on terveydelle haitallinen päivällä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.day_noise_db_indoor.value
+  source: src:NM1
+- q: Mikä on rakennusmelun maksimiraja lähikiinteistöllä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.construction_noise_max_db.value
+  source: src:NM2
+- q: Milloin hiljaisuusaika alkaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.quiet_hours_start.value
+  source: src:NM3
+- q: Milloin hiljaisuusaika päättyy arkipäivinä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.quiet_hours_end.value
+  source: src:NM3
+- q: Mikä on teollisuusmelun päiväohjearvo asuinalueella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.industrial_noise_limit_day_db.value
+  source: src:NM2
+- q: Milloin tärinä on merkki rakennusvahingosta?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vibration_threshold_mm_per_s.action
+  source: src:NM2
+- q: Mitä pitää huomioida rakentamisen suhteen keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:NM2
+- q: Miten kesän juhlat vaikuttavat meluasioihin?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:NM3
+- q: Mitä tehdään talven uudenvuodenyönä meluasioissa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:NM3
+- q: Miten käsitellään jatkuva häiriömelu naapurista?
+  a_ref: FAILURE_MODES[0].action
+  source: src:NM3
+- q: Mitä tehdään luvattomaan aikaan tapahtuvasta rakennusmelusta?
+  a_ref: FAILURE_MODES[1].action
+  source: src:NM2
+- q: Miten reagoidaan tehtaan meluylitykseen?
+  a_ref: FAILURE_MODES[2].action
+  source: src:NM2
+- q: Mitä ympäristönsuojelulaki sanoo melusta?
+  a_ref: COMPLIANCE_AND_LEGAL.ymparistonsuojelulaki
+  source: src:NM2
+- q: Mikä on meluasioiden hallintaprosessi?
+  a_ref: PROCESS_FLOWS.noise_management.steps
+  source: src:NM3
+- q: Ovatko hiljaisuusajat samat kaikissa taloyhtiöissä?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:NM3

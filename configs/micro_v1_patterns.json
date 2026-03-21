@@ -1,0 +1,15 @@
+{
+  "promoted": {
+    "varroa-kynnys": {
+      "answer": "3 punkkia per 100 mehiläistä",
+      "confidence": 0.92,
+      "promoted_at": 1772476595.9482455
+    },
+    "olla varroa-kynnys": {
+      "answer": "3 punkkia per 100 mehiläistä",
+      "confidence": 0.92,
+      "promoted_at": 1772526623.3742003
+    }
+  },
+  "timestamp": 1772526623.374201
+}

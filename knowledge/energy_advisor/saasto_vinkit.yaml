@@ -1,0 +1,23 @@
+# Sähkö- ja energiaoptimointi — Säästövinkit
+# WaggleDance Swarm AI
+title: "Energiansäästövinkit kotitaloudelle"
+agent: "Sähkö- ja energiaoptimointi"
+facts:
+  - "LED-valaistus: 80% säästö vs. hehkulamppu, 50% vs. energiansäästölamppu — takaisinmaksu alle 1 vuosi"
+  - "Huonelämpötilan lasku 1°C → noin 5% säästö lämmityskustannuksissa — 20°C on suosituslämpötila"
+  - "Pyykinpesu yöllä spot-sähköllä: 3–10 senttiä per pesu säästöä, ohjaukseen esim. Shelly tai ajastuskytkin"
+  - "Standby-kulutus tyypillisessä kodissa: 50–100 W jatkuvasti → 440–880 kWh/vuosi → 44–88 € (0.10 €/kWh)"
+  - "Älypistoke tehomonitoroinnilla: tunnista suurimmat kuluttajat (kuivaaja, sähkösauna, liesi) ja optimoi ajastus"
+  - "Ilmalämpöpumppu: COP 2.5–4.5, 1 kWh sähköä tuottaa 2.5–4.5 kWh lämpöä — paras lisälämmitys Suomessa"
+  - "Vesikiertoinen lattialämmitys yöllä: ennakkokuumennus yön halvoilla tunnilla, tasoittaa kulutusprofiilia"
+  - "Jääkaapin sijainti: ei lieden tai astianpesukoneen viereen — lämpö lisää sähkönkulutusta 10–30%"
+  - "Astianpesukoneen täysi täyttö: vajaa kone tekee saman työn — säästää 30–50% verrattuna puolityhjään koneeseen"
+  - "Kuivausrumpu vs. narukuivatus: kuivausrumpu kuluttaa 2–5 kWh/kerta, narukuivatus 0 kWh — iso ero vuosikustannuksissa"
+  - "Ikkunatiivisteet tarkistus: vuotavat tiivisteet lisäävät lämmitystarvetta 5–15%, tarkista ja vaihda 5–10 vuoden välein"
+  - "Liesituuletin: käytä pienimmällä riittävällä teholla, sammuta 5 min ruoanlaiton jälkeen — puhaltaa lämpimän ilman ulos"
+  - "Sähkösauna: lyhennä esilämmitysaika 30→20 min, käytä ajastinta, sauna-kiuas kuluttaa 6–12 kWh/kerta"
+  - "Tietokoneet ja näytöt: lepotila 5 min jälkeen, sammuta yöksi — näyttö kuluttaa 15–50 W, tietokone 50–200 W"
+  - "Aurinkoenergia: paneeli 400W tuottaa 350–450 kWh/vuosi Suomessa, kotiasennus 5–8 kWp → 4000–7000 kWh/v"
+  - "Kuuman veden käyttö: suihku 5 min vs. 10 min säästää 50% vedenkulutuksesta ja lämmitysenergiasta"
+  - "Termostaattiventtiilit pattereihin: vesikiertoisessa lämmityksessä säästää 10–15%, asenna kaikille pattereille"
+  - "Sähköauton lataus yöllä: spot-sähkön yöhinta 3–8 c/kWh vs. päivähinta 10–30 c/kWh — säästö merkittävä"

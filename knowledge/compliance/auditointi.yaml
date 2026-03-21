@@ -1,0 +1,23 @@
+# Vaatimustenmukaisuus — Auditointi
+# WaggleDance Swarm AI
+title: "Auditointi"
+agent: "Vaatimustenmukaisuus"
+facts:
+  - "Sisäinen auditointi: vuosisuunnitelma, auditoija ei saa tarkastaa omaa työtään (riippumattomuusperiaate)"
+  - "Ulkoinen sertifiointiauditointi: akkreditoitu sertifiointielin, uudelleensertifiointi 3 vuoden syklissä"
+  - "Seurantaauditointi (surveillance): vuosittain sertifioinnin voimassaoloaikana, suppeampi kuin täysauditointi"
+  - "Löydöstyypit: major (pääpoikkeama) = sertifikaatti vaarassa, minor (sivupoikkeama) = korjattava 90 pv, OFI = parannusehdotus"
+  - "Korjaava toimenpide (CAPA): juurisyyanalyysi (5 × Miksi / Fishbone), korjaustoimenpide, todentaminen, sulkeminen"
+  - "Juurisyyanalyysi-menetelmät: 5 Miksi, Ishikawa (kalanruoto), Fault Tree Analysis (FTA), FMEA"
+  - "Auditointisuunnitelma: ohjelma kattaa kaikki ISO-prosessit 3 vuoden kierrolla, riskiperusteisuus ohjaa painotuksia"
+  - "Auditointiprotokolla: avauspalaveri → toimintaan tutustuminen → haastattelut → todisteet → havaintoyhteenveto → sulkemispalaveri"
+  - "Auditointi ISO 9001: laadunhallintajärjestelmä, 7 päävaatimusta, auditoi prosessit asiakastyytyväisyys etusijalla"
+  - "Auditointi ISO 14001: ympäristöjärjestelmä, elinkaarinäkökulma, lakisääteiset vaatimukset keskeisiä"
+  - "Auditointi ISO 45001: työterveys ja -turvallisuus, riskiarviointi, johdon sitoutuminen, osallistaminen"
+  - "Auditointi ISO 27001: tietoturvallisuus, toimittaja-auditoinnit, tekninen testaus + prosessiauditointi"
+  - "Toimittaja-auditointi (second-party): asiakas auditoi toimittajan, yleensä ennen sopimuksen tekoa tai vuosittain"
+  - "Haastattelutekniikka: avoimet kysymykset (Mitä, Miten, Näytä minulle), vältä johdattelevia kysymyksiä"
+  - "Auditointiraportti: jaetaan 10 vrk kuluessa auditointijakson päättymisestä, sisältää kaikki löydökset ja OFI:t"
+  - "Löydösten seuranta: poikkeamien sulkeminen todennettava asiakirjoin, ei vain lupauksin"
+  - "IATF 16949 (autoteollisuus): tiukemmat vaatimukset kuin ISO 9001, 3-vuoden sertifikaatti, vuosittainen seuranta"
+  - "GMP-auditointi (lääketeollisuus): Fimea tai asiakas auditoi, voi johtaa toimituskieltoon — korkein riski"

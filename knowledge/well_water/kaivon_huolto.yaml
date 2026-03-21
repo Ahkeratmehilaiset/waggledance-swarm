@@ -1,0 +1,9 @@
+# Kaivoveden laadunvalvonta — Kaivon Huolto
+# Auto-generated for WaggleDance Swarm AI
+title: "Kaivon Huolto"
+agent: "Kaivoveden laadunvalvonta"
+facts:
+  - "Rengaskaivon kansi tulee olla tiivis — estää pintaveden ja eläinten pääsy"
+  - "Kaivon puhdistus ja desinfiointi 5-10 vuoden välein"
+  - "Porakaivon tuotto tarkistettava — heikkeneminen voi kertoa tukkeutumisesta"
+  - "Pumpun huolto: painekytkimen säätö, painesäiliön esipaine vuosittain"

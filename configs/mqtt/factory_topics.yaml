@@ -1,0 +1,39 @@
+# Factory MQTT topic definitions
+# WaggleDance subscribes to these via MQTTSensorIngest
+
+subscriptions:
+  - pattern: "factory/sensors/+/temperature"
+    capability: solve.thermal
+    unit: celsius
+    anomaly_low: -10
+    anomaly_high: 80
+
+  - pattern: "factory/sensors/+/vibration"
+    capability: detect.anomaly
+    unit: mm_s_rms
+    anomaly_high: 7.1  # ISO 10816 class III limit
+
+  - pattern: "factory/sensors/+/oee"
+    capability: solve.stats
+    fields: [oee, availability, performance, quality]
+
+  - pattern: "factory/sensors/+/pressure"
+    capability: solve.thermal
+    unit: bar
+    anomaly_low: 0.5
+    anomaly_high: 10.0
+
+  - pattern: "factory/sensors/+/capacity_ah"
+    capability: solve.stats
+    unit: ah
+    description: "Battery cell formation capacity measurement"
+
+  - pattern: "factory/sensors/+/yield_pct"
+    capability: solve.stats
+    unit: percent
+    anomaly_low: 85.0
+    description: "Production line yield percentage"
+
+  - pattern: "factory/alerts/+/+"
+    capability: retrieve.hot_cache
+    action: log_and_forward

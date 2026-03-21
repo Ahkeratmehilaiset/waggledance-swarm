@@ -1,0 +1,23 @@
+# Sähkö- ja energiaoptimointi — Sähkösopimukset
+# WaggleDance Swarm AI
+title: "Sähkösopimukset"
+agent: "Sähkö- ja energiaoptimointi"
+facts:
+  - "Pörssisähkösopimus: hinta seuraa Nordpool spot-hintaa tunneittain, hyötyy alhaisista yöhinnoista (0.01–0.08 €/kWh)"
+  - "Kiinteähintainen sopimus: vakaa hinta 12–24 kk, sopii jos haluaa ennustettavan laskun — ei hyödy halvista hetkistä"
+  - "Toistaiseksi voimassa oleva sopimus: irtioanno 14 vrk, hinta voi nousta — lue toimitusehdot ennen allekirjoitusta"
+  - "Sähkövero 2026: sähkölämmittäjillä ja lämpöpumppukäyttäjillä veroluokka II: 0.7837 c/kWh, muilla luokka I: 2.253 c/kWh"
+  - "Siirtomaksu: paikallinen verkkoyhtiö (esim. Caruna, Elenia, Helen Sähköverkko) — ei kilpailutettavissa, monopoli"
+  - "Siirtomaksun tariffit: päivä/yö (yö 50–70% halvempi) tai aikasidonnainen huipputariff (kallis arkipäivisin 7–22)"
+  - "Sähkön kilpailutus: Energiamarkkinavirasto.fi tai Sähkönhinta.fi — vaihto mahdollista milloin tahansa"
+  - "Vähittäismarkkinoiden vapauttaminen 1995: jokainen suomalainen voi valita oman sähkönmyyjänsä vapaasti"
+  - "Toimitusvelvollisuus: jos sopimus ei ole voimassa, verkkoyhtiö toimittaa sähköä toimitusvelvollisuussopimuksella (kalliimpaa)"
+  - "Sopimusehdot: lue erityisesti irtisanomisaika, hinnanmuutoskäytäntö ja sopimussakko ennenaikaisesta purkamisesta"
+  - "Pörssisähkön käyttöönotto: tarvitaan tuntimittari (AMR) — asennettuna useimmissa suomalaisissa kodeissa jo 2013→"
+  - "Ajanvarausohjaus (spot-ohjaus): Shelly Plug, Tibber-sovellus, Elering API — laitteet käynnistyvät halvimpina tunteina automaattisesti"
+  - "Tibber tai Nordpool-API: sovellus laskee halvimmat tunnit ja ohjaa latauksia, saunaohjausta, vesikierron pumppuja"
+  - "ALV sähkölaskussa: 25.5% (2026) käyttösähköstä, siirtomaksusta ja energiaverosta — kaikki laskussa näkyy ALV"
+  - "Vihreä sähkö ja GO-sertifikaatit: alkuperätakuu osoittaa tuotettu uusiutuvilla, lisähinta 0.1–0.5 c/kWh"
+  - "Kotimyyjien markkinaosuudet (2025): Helen, Fortum, Vattenfall, NesTe, Lumme Energia, Caruna — vertaa spot-hinnoittelua"
+  - "Sopimuksen purkaminen: muutot, hinnankorotus (14 vrk irtisanomisaika korotuksen jälkeen ilman sakkoa)"
+  - "Tasauslaskujen seuranta: sähkön ennakkomaksu tasataan vuosittain — talvisähköpiikit näkyvät tasauslaskussa"

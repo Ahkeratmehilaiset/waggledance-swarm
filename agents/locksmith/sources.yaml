@@ -1,0 +1,13 @@
+sources:
+- id: src:LU1
+  org: Lukkoliikkeet
+  title: Älylukot
+  year: 2025
+  url: null
+  supports: Huolto, jäätyminen.
+- id: src:LU2
+  org: Finanssiala ry
+  title: Murtosuojaus
+  year: 2025
+  url: https://www.finanssiala.fi/
+  supports: Vakuutusvaatimukset.

@@ -1,0 +1,22 @@
+title: Oee
+agent: Tuotantolinjan monitorointi
+facts:
+- OEE = Saatavuus × Suorituskyky × Laatu
+- 'World Class OEE: 85%+ (90% × 95% × 99.9%)'
+- 'Saatavuushävikki: asetukset, viat, odotusajat'
+- 'Suorituskykyhävikki: hidastuminen, lyhyet pysähdykset'
+- 'Laatuhävikki: hylkäykset, uudelleenkäsittely'
+OEE_CALCULATION:
+  formula: OEE = Käytettävyys × Nopeus × Laatu
+  availability: Suunniteltu ajoaika - seisokit / Suunniteltu ajoaika
+  performance: Todellinen tuotanto / Teoreettinen maksimi
+  quality: Hyvät kappaleet / Kaikki kappaleet
+  world_class: '>85% OEE'
+  typical_range: 60-75% useimmilla teollisuuslinjoilla
+  losses_categories:
+  - Laiterikkot
+  - Asetukset/säädöt
+  - Tyhjäkäynti
+  - Alentunut nopeus
+  - Prosessivirheet
+  - Käynnistystappiot

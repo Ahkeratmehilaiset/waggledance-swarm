@@ -1,0 +1,27 @@
+title: Kalibrointi
+agent: Laboratorioanalyytikko
+facts:
+- 'Jäljitettävyys: MIKES/VTT → tehdasstandardi → käyttömittari'
+- 'Kalibrointiväli: 6-12 kk riskinarvioinnin mukaan'
+- 'Drift-seuranta: edellisten kalibrointien vertailu'
+CALIBRATION_BEST_PRACTICES:
+- instrument: Vaaka
+  interval: 6 kk tai 12 kk
+  standard: OIML R 76
+  note: Referenssimassat FINAS-kalibroituja
+- instrument: pH-mittari
+  interval: Ennen jokaista mittausta (puskuriliuokset pH 4, 7, 10)
+  note: Elektrodin ikä max 2v
+- instrument: Lämpömittari
+  interval: 12 kk
+  standard: ITS-90
+  note: Jääpiste 0°C tarkistus viikoittain
+- instrument: Pipetti
+  interval: 6 kk
+  standard: ISO 8655
+  note: Gravimetrinen kalibrointi
+MEASUREMENT_UNCERTAINTY:
+  type_a: 'Tilastollinen: mittaussarjan keskihajonta'
+  type_b: 'Systemaattinen: kalibrointitodistus, resoluutio, ympäristö'
+  combined: u_c = √(u_A² + u_B²)
+  expanded: U = k × u_c, k=2 (95% luottamusväli)

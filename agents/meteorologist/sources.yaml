@@ -1,0 +1,7 @@
+sources:
+- id: src:ME1
+  org: Ilmatieteen laitos
+  title: Sääennusteet ja varoitukset
+  year: 2026
+  url: https://www.ilmatieteenlaitos.fi/
+  supports: Säädata, ennusteet, varoitusrajat.

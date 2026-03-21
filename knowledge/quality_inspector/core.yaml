@@ -1,0 +1,87 @@
+header:
+  agent_id: quality_inspector
+  agent_name: Quality Inspector
+  name_fi: 'Laadunvalvonta'
+  version: 1.1.0
+  last_updated: '2026-03-04'
+profiles:
+  - factory
+  - beekeeping
+priority: high
+ASSUMPTIONS:
+- ISO 9001 -sertifioitu tuotanto
+- SPC-valvontakortit käytössä
+- Hunajan laatu Suomen elintarvikelainsäädännön mukainen
+DECISION_METRICS_AND_THRESHOLDS:
+  cpk_min:
+    value: 1.33
+    action: "<1.33 → prosessi ei kyvykäs"
+    source: src:QI1
+  defect_rate_ppm:
+    value: 1000
+    action: ">1000 ppm → 8D-raportti"
+    source: src:QI1
+  honey_water_content_max_pct:
+    value: 18
+    action: ">18% vesipitoisuus → hunaja käynee, ei saa myydä"
+    source: src:QI2
+  honey_water_content_good_pct:
+    value: 17
+    action: "≤17% → erinomainen säilyvyys"
+    source: src:QI2
+  hmf_mg_per_kg_max:
+    value: 40
+    action: ">40 mg/kg HMF → hunaja ylikuumentunut tai vanha"
+    source: src:QI2
+  diastase_number_min:
+    value: 8
+    action: "<8 → hunajan laatu heikentynyt"
+    source: src:QI2
+  pollen_count_min:
+    value: 10000
+    action: "<10 000 siitepölyhiukkasta/10g → ei voi todistaa alkuperää"
+    source: src:QI3
+SEASONAL_RULES:
+  - month: [6, 7, 8]
+    rule: "Linkouskausi — mittaa vesipitoisuus refraktometrillä ennen linkousta"
+  - month: [9, 10]
+    rule: "Syyshunajanäytteet laboon ennen myyntiä"
+  - month: [1, 2, 3]
+    rule: "Talvella analysoi edellisen kauden varastohunajan HMF ja diastaasi"
+FAILURE_MODES:
+  - mode: "Hunajan käyminen"
+    cause: "Vesipitoisuus >18%, lämpötila >15°C"
+    action: "Hylkää tai kuivata uudelleen ennen linkousta"
+    source: src:QI2
+  - mode: "Kristalloituminen liian aikaisin"
+    cause: "Korkea rypälesokeri/fruktoosisuhs, matala lämpötila"
+    action: "Lämmitä varovasti max 40°C"
+    source: src:QI2
+  - mode: "Sokeriruokinnan jäämät"
+    cause: "Ruokinta liian lähellä linkousta"
+    action: "Lopeta ruokinta 6 viikkoa ennen linkousta"
+    source: src:QI3
+PROCESS_FLOWS:
+  honey_quality_check:
+    steps:
+      - "1. Mittaa vesipitoisuus refraktometrillä"
+      - "2. Jos >18% → älä linko, anna kypsyä"
+      - "3. Linkouksen jälkeen suodata 1mm + 0.5mm siivilöillä"
+      - "4. Varastoi 15–25°C, sulje tiiviisti"
+      - "5. Myyntierästä labonäyte tarvittaessa"
+eval_questions:
+- q: Mikä on hunajan sallittu maksimivesipitoisuus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_water_content_max_pct.value
+  source: src:QI2
+- q: Mikä on HMF-raja hunajassa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.hmf_mg_per_kg_max.value
+  source: src:QI2
+- q: Mikä on cpk min?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cpk_min.value
+  source: src:QI1
+- q: Mikä on defect rate ppm?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.defect_rate_ppm.value
+  source: src:QI1
+- q: Milloin hunaja on liian märkää linkoukseen?
+  a: "Kun vesipitoisuus on yli 18 prosenttia mitattuna refraktometrillä"
+  source: src:QI2

@@ -1,0 +1,81 @@
+header:
+  agent_id: pet_care
+  agent_name: Pet Care
+  name_fi: 'Lemmikinhoito'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+  - cottage
+priority: low
+ASSUMPTIONS:
+- Koira tai kissa lemmikinä
+- EU-lemmikkipassi matkustukseen
+DECISION_METRICS_AND_THRESHOLDS:
+  vaccination_interval_months:
+    value: 12
+    action: "Rabies + perustauteja → eläinlääkäri"
+    source: src:PC1
+  mikrosirutus:
+    value: "pakollinen"
+    action: "Mikrosiru pakollinen koirilla — rekisteröinti Kennelliitto tai muu tietokanta, kissoille suositeltava"
+    source: src:PC2
+  madotus_kk:
+    value: 3
+    action: "Madotus 3 kk välein aikuisilla — pennut 2 viikon välein 12 vko asti, metsästyskoirat tiheämmin"
+    source: src:PC3
+  kastrointi_ika_kk:
+    value: 6
+    action: "Kastrointi/sterilointi 6-12 kk iässä — rodun koko vaikuttaa ajoitukseen, eläinlääkärin suositus"
+    source: src:PC4
+  hammastarkastus_kk:
+    value: 12
+    action: "Hammastarkastus eläinlääkärillä 12 kk välein — hammaskivi yleisin ongelma, harjaus kotona päivittäin"
+    source: src:PC5
+  vakuutus_omavastuu_eur:
+    value: 150
+    action: "Eläinvakuutuksen omavastuu tyypillisesti 100-200€ — vertaile kattavuus: leikkaukset, lääkkeet, diagnostiikka"
+    source: src:PC6
+  matkustus_EU_passi:
+    value: "EU-lemmikkipassi"
+    action: "EU-matkustus vaatii: lemmikkipassi + mikrosiru + rabies-rokotus (>21 vrk ennen) — eläinlääkäri myöntää"
+    source: src:PC7
+  ruokinta_g_per_kg:
+    value: 25
+    action: "Aikuisen koiran ruokinta ~20-30 g kuivaruokaa/kg/vrk — aktiivisuus ja rotu vaikuttavat, kissoilla ~40-60 g/vrk"
+    source: src:PC8
+  tassunhoito_talvi:
+    value: "suojarasva"
+    action: "Talvella tassut suojataan rasvalla ennen ulkoilua — tiesuola ja pakkanen halkaisevat anturat, pese jälkeen"
+    source: src:PC9
+  punkkisuoja_kk:
+    value: "4-11"
+    action: "Punkkisuoja huhtikuusta marraskuuhun — tabletti tai spot-on, tarkista punkki jokaisen lenkin jälkeen"
+    source: src:PC10
+  eläinlääkäri_päivystys:
+    value: "24h"
+    action: "Päivystyseläinlääkärin numero valmiina — myrkytys, vierasesine, kohtaus → välitön hoito, älä odota"
+    source: src:PC11
+  pentu_sosiaalistaminen_vko:
+    value: 7
+    action: "Kriittinen sosiaalistamiskausi 3-12 viikkoa — uusia kokemuksia turvallisesti, pentukoulut 7 vko alkaen"
+    source: src:PC12
+eval_questions:
+- q: Mikä on vaccination interval months?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.vaccination_interval_months.value
+  source: src:PC1
+- q: Onko mikrosirutus pakollinen koirille Suomessa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.mikrosirutus.value
+  source: src:PC2
+- q: Kuinka usein aikuinen koira madotetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.madotus_kk.value
+  source: src:PC3
+- q: Mikä on lemmikin kastroinnin suositusikä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kastrointi_ika_kk.value
+  source: src:PC4
+- q: Mitä EU-matkustus vaatii lemmikiltä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.matkustus_EU_passi.value
+  source: src:PC7
+- q: Paljonko kuivaruokaa aikuinen koira syö painokiloa kohden?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ruokinta_g_per_kg.value
+  source: src:PC8

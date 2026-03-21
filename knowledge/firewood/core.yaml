@@ -1,0 +1,86 @@
+header:
+  agent_id: firewood
+  agent_name: Firewood Supply
+  name_fi: 'Polttopuuhuolto'
+  version: 1.1.0
+  last_updated: '2026-03-04'
+profiles:
+  - cottage
+  - beekeeping
+priority: low
+ASSUMPTIONS:
+- Tulisija- ja saunalämmitys mökillä
+- Puut omasta metsästä tai ostettu
+- Varastointi ulkona katoksessa
+- Mehiläistarhan lämmitystarpeet talvella ja keväällä
+DECISION_METRICS_AND_THRESHOLDS:
+  moisture_pct:
+    value: 20
+    action: "<20% kosteus → valmis poltettavaksi"
+    source: src:PP1
+  co_risk_moisture:
+    value: 25
+    action: ">25% kosteus → häkäriski, nokeutuminen"
+    source: src:PP1
+  drying_months_birch:
+    value: 18
+    action: "Koivu: min 18 kuukautta ulkokuivausta"
+    source: src:PP2
+  drying_months_spruce:
+    value: 12
+    action: "Kuusi/mänty: min 12 kuukautta"
+    source: src:PP2
+  cord_volume_m3:
+    value: 5
+    action: "Talvivarasto mökillä: min 5 m³ pilkettä"
+    source: src:PP2
+  bee_hive_heating_temp_c:
+    value: 4
+    action: "Alla 4°C: varmista mehiläispesien tuulensuoja ja eristys"
+    source: src:PP3
+SEASONAL_RULES:
+  - month: [3, 4, 5]
+    rule: "Keväthallan aikaan mehiläistarha tarvitsee suojauksen — tee pesäkotelot tai verhot"
+  - month: [4, 5]
+    rule: "Hakkaa ja pilko uudet puut kuivumaan kesäksi"
+  - month: [9, 10]
+    rule: "Siirrä kuivuneet puut sisäkatokseen talveksi"
+  - month: [11, 12]
+    rule: "Patterit täyteen: varmista lämmitys hakkuista huolimatta"
+FAILURE_MODES:
+  - mode: "Märkä puu — nokeutuminen"
+    cause: "Kosteuspitoisuus yli 25%"
+    action: "Mittaa kosteusmittarilla, jatka kuivausta katoksessa"
+    source: src:PP1
+  - mode: "Talvivarasto loppuu helmikuussa"
+    cause: "Liian pieni varasto tai kylmä talvi"
+    action: "Varaa min 5 m³, mielellään 7 m³ ennen pakkasten alkua"
+    source: src:PP2
+  - mode: "Mehiläispesät jäähtyvät liikaa"
+    cause: "Mehiläistarha avonainen, kova tuuli pohjoispuolelta"
+    action: "Suojaa pesät tuulisuojalla, rakenna kotelot tai käytä talvipäällyste"
+    source: src:PP3
+PROCESS_FLOWS:
+  firewood_annual:
+    steps:
+      - "1. Kevät: hakkaa koivu/mänty, kuivat oksat pois"
+      - "2. Pilko 25–33 cm palasiksi, pinoa katokseen"
+      - "3. Kesä: 12–18kk kuivaus ilmavassa katoksessa"
+      - "4. Syksy: mittaa kosteus (<20%), siirrä sisälle"
+      - "5. Talvi: kuluta varastosta, täydennä tarpeen mukaan"
+eval_questions:
+- q: Mikä on polttopuun sallittu maksimikosteus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.moisture_pct.value
+  source: src:PP1
+- q: Missä kosteudessa on häkäriski?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.co_risk_moisture.value
+  source: src:PP1
+- q: Kuinka kauan koivu kuivuu?
+  a: "Vähintään 18 kuukautta ulkoilmassa katoksessa"
+  source: src:PP2
+- q: Paljonko talvivarastoa tarvitaan mökille?
+  a: "Vähintään 5 kuutiometriä pilkettä"
+  source: src:PP2
+- q: Milloin mehiläispesiä pitää suojata kylmältä?
+  a: "Alle neljän asteen lämpötiloissa, erityisesti keväthallakaudella maaliskuusta toukokuuhun"
+  source: src:PP3

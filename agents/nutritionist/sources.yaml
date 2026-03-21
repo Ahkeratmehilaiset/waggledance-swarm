@@ -1,0 +1,7 @@
+sources:
+- id: src:RA1
+  org: THL / Ruokavirasto
+  title: Suomalaiset ravitsemussuositukset
+  year: 2024
+  url: https://www.ruokavirasto.fi/teemat/terveytta-edistava-ruokavalio/
+  supports: Energia, proteiini, D-vitamiini, nesteytys.

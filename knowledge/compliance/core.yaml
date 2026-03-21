@@ -1,0 +1,72 @@
+header:
+  agent_id: compliance
+  agent_name: Compliance Officer
+  name_fi: 'Vaatimustenmukaisuus'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Sertifioitu toimintajärjestelmä
+- Sisäiset ja ulkoiset auditoinnit
+DECISION_METRICS_AND_THRESHOLDS:
+  audit_finding_days:
+    value: 30
+    action: "Major korjattava 30 vrk kuluessa"
+    source: src:CO1
+  iso9001_sertifiointisykli_v:
+    value: 3
+    action: "ISO 9001 uudelleensertifiointi 3 vuoden välein, valvonta-auditointi vuosittain"
+    source: src:CO2
+  iso14001_ymparistoauditointi_kk:
+    value: 12
+    action: "ISO 14001 sisäinen ympäristöauditointi vähintään 12 kk välein"
+    source: src:CO3
+  reach_rekisterointi_tonnit:
+    value: 1
+    action: ">1 tonni/v kemikaalia EU:ssa → REACH-rekisteröinti pakollinen"
+    source: src:CO4
+  tyoturvallisuus_tapaturma_ilmoitus_h:
+    value: 24
+    action: "Vakava työtapaturma → ilmoitus AVI:lle 24 h kuluessa"
+    source: src:CO5
+  ce_merkinta_vaatimus:
+    value: "pakollinen"
+    action: "CE-merkintä pakollinen ennen tuotteen markkinoille saattamista EU:ssa"
+    source: src:CO6
+  kalibrointi_vali_kk:
+    value: 12
+    action: "Mittalaitteiden kalibrointi 12 kk välein, kriittiset 6 kk"
+    source: src:CO7
+  dokumentointi_sailytys_v:
+    value: 10
+    action: "Laatudokumentit säilytettävä vähintään 10 vuotta (tuotevastuu)"
+    source: src:CO8
+  poikkeama_vastaus_h:
+    value: 48
+    action: "Asiakasreklamaatio/poikkeama → juurisyyanalyysi aloitettava <48 h"
+    source: src:CO9
+  johdon_katselmus_kk:
+    value: 12
+    action: "Johdon katselmus vähintään 12 kk välein, pöytäkirja arkistoitava"
+    source: src:CO10
+eval_questions:
+- q: Mikä on audit finding days?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.audit_finding_days.value
+  source: src:CO1
+- q: Kuinka usein ISO 9001 uudelleensertifiointi tehdään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.iso9001_sertifiointisykli_v.value
+  source: src:CO2
+- q: Mikä on REACH-rekisteröinnin tonniraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.reach_rekisterointi_tonnit.value
+  source: src:CO4
+- q: Kuinka nopeasti vakava työtapaturma on ilmoitettava AVI:lle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.tyoturvallisuus_tapaturma_ilmoitus_h.value
+  source: src:CO5
+- q: Mikä on mittalaitteiden kalibrointiväli kuukausissa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kalibrointi_vali_kk.value
+  source: src:CO7
+- q: Kuinka monta vuotta laatudokumentit on säilytettävä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.dokumentointi_sailytys_v.value
+  source: src:CO8

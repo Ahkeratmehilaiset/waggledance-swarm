@@ -1,0 +1,23 @@
+# Vuoropäällikkö — Raportointi
+# WaggleDance Swarm AI
+title: "Vuororaportointi"
+agent: "Vuoropäällikkö"
+facts:
+  - "Vuoronvaihtopalaveri: 10–15 min, läsnä tulevat ja lähtevät operaattorit — kaikki kriittiset tiedot siirrettävä"
+  - "Luovutusraportti: tuotantomäärä, hylkyaste, konerikot, turvallisuushavainnot, avoimet toimenpiteet"
+  - "Eskalointi: tuotantopysähdys yli 30 min → välitön ilmoitus tuotantopäällikölle ja kunnossapidolle"
+  - "Sähköinen vuororaportti: SAP PM / MES-järjestelmään kirjaus, paperia ei hyväksytä pääjärjestelmäksi"
+  - "Häiriökirjanpito: alkuaika, loppuaika, syy, toimenpide, vastuuhenkilö — pohja RCA-analyysille"
+  - "OEE-laskenta reaaliajassa: käytettävyys × suorituskyky × laatu, MES raportoi automaattisesti"
+  - "Turvallisuushavainto: jokainen vaarallinen tilanne tai läheltä-piti kirjataan 24 h kuluessa Near Miss -järjestelmään"
+  - "Tapaturman ilmoitus: TapaturmaVakuutusLain mukaan, työnantaja ilmoittaa Tapaturmavakuutuskeskukselle 10 vrk kuluessa"
+  - "Vuoron KPI-raportti: tuotanto vs. tavoite, hylky-%, energiankulutus, OEE — jaetaan koko tiimille vuoron lopussa"
+  - "5S-tarkastus vuoron alussa: sortti, systemoi, siivoa, standardoi, ylläpidä — valokuvadokumentaatio"
+  - "Henkilöresurssien hallinta: varmistu miehityksestä jo edellisenä päivänä, sairauspoissaolojen varamiehityssuunnitelma"
+  - "Viestintäloki: kaikki vuoron aikana tehdyt päätökset ja kommunikaatiot kirjataan raportille"
+  - "Laatureklamaatio tuotannossa: välitön pysähdys epäilyttävässä erässä, karanteeni, ilmoitus laadunvalvontaan"
+  - "Energiankulutuksen seuranta: kWh/tuotettu tonni tai kappale per vuoro, poikkeama ±10% käynnistää tutkinnan"
+  - "Vuoropäällikön tarkastuskierros: tehtaan läpikäynti vuoron alussa ja lopussa, dokumentoitava havainnot"
+  - "Vuorosuunnitteluohjelmisto (Quinyx, Työvuoro.fi): aikataulut 2 viikkoa etukäteen, muutokset sovelluksella"
+  - "Vuorohenkilöstön koulutusseuranta: varmista että kaikilla on voimassa olevat pätevyydet (trukkikortti, ensiapu, EA1)"
+  - "Raportoinnin arkistointi: vuororaportit säilytettävä vähintään 5 vuotta, laatu- ja ympäristötiedot 10 vuotta"

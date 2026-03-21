@@ -1,0 +1,36 @@
+title: Terveys
+agent: Lemmikinhoito
+facts:
+- 'Perusrokotukset: penikkatauti, parvo, rabies'
+- 'Punkkisuoja: huhtikuu-marraskuu, Bravecto/NexGard'
+- 'Madotus: aikuiset 2-4x/vuosi'
+- 'Vakuutus: eläinvakuutus 20-80€/kk'
+DOG_VACCINATION_SCHEDULE:
+- vaccine: Perusrokotus (pentu)
+  age: 8 vk + 12 vk + 16 vk
+  note: Penikkatauti, parvo, hepatiitti
+- vaccine: Tehosterokotus
+  interval: 1 vuosi, sitten 3 v
+  note: Rabies pakollinen ulkomaille
+- vaccine: Bordetella (kennelyskä)
+  interval: Vuosittain
+  note: Jos koirapuistot, hoitola
+CAT_VACCINATION_SCHEDULE:
+- vaccine: Perusrokotus (pentu)
+  age: 9 vk + 12 vk
+  note: Kissarutto, calici, herpes
+- vaccine: Tehosterokotus
+  interval: 1 vuosi, sitten 3 v
+  note: Rabies jos ulkona/ulkomaille
+- vaccine: FeLV (leukemia)
+  interval: Vuosittain
+  note: Jos ulkokissa tai kontakti muihin
+EMERGENCY_SIGNS:
+- Syömättömyys >24h
+- Oksentelu >3 kertaa
+- Ripuli >2 pv
+- Veriset ulosteet/oksennus
+- Hengitysvaikeus
+- Kouristelu
+- Päähän kohdistunut isku
+- Myrkyn nieleminen

@@ -1,0 +1,29 @@
+header:
+  agent_id: septic_manager
+  agent_name:  Septic System Manager
+  name_fi: 'Jätevesijärjestelmä'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - cottage
+priority: medium
+ASSUMPTIONS:
+- Haja-asutusalueen kiinteistö
+- Valtioneuvoston asetus 157/2017
+- Kompostoiva kuivakäymälä vaihtoehto
+DECISION_METRICS_AND_THRESHOLDS:
+  emptying_interval_months:
+    value: 12
+    action: "Tyhjennettävä vähintään 1x/vuosi"
+    source: src:JV1
+  sludge_level_pct:
+    value: 33
+    action: ">33% lietettä → tyhjennys"
+    source: src:JV1
+eval_questions:
+- q: Mikä on emptying interval months?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.emptying_interval_months.value
+  source: src:JV1
+- q: Mikä on sludge level pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.sludge_level_pct.value
+  source: src:JV1

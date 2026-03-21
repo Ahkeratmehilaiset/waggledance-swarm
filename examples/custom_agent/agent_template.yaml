@@ -1,0 +1,39 @@
+# Custom Agent Template
+# Copy this file to configs/agents/my_agent.yaml and customize.
+
+id: my_custom_agent
+name: "My Custom Agent"
+domain: general
+description: "A custom agent for handling specific domain queries."
+
+# Tags used for agent selection
+tags:
+  - custom
+  - my_domain
+
+# Skills this agent can perform
+skills:
+  - answer_questions
+  - lookup_facts
+
+# Trust level (0=NOVICE, 1=APPRENTICE, 2=JOURNEYMAN, 3=EXPERT, 4=MASTER)
+trust_level: 1
+
+# Specialization score (0.0-1.0, higher = more specialized)
+specialization_score: 0.5
+
+# Active flag (set to false to disable without removing)
+active: true
+
+# Deployment profile (GADGET, COTTAGE, HOME, FACTORY, ALL)
+profile: ALL
+
+# Routing keywords (Finnish and English)
+# Add these to core/hive_routing.py WEIGHTED_ROUTING
+routing_keywords:
+  fi:
+    - keyword: "oma_aihe"
+      weight: 0.8
+  en:
+    - keyword: "my_topic"
+      weight: 0.8

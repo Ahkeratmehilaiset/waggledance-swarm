@@ -1,0 +1,28 @@
+title: Turvallisuus
+agent: Trukkiliikenne ja sisälogistiikka
+facts:
+- 'Päivittäinen tarkastus: renkaat, nesteet, jarrut'
+- 'Nopeusrajoitus sisätiloissa: 5-10 km/h'
+- Varoitusääni risteyksiin, peilit
+- 'Kuorma: painopiste alhaalla, kallistus taaksepäin'
+FORKLIFT_SAFETY_RULES:
+- rule: Ajonopeus sisätiloissa max 10 km/h
+  source: Työturvallisuuslaki
+- rule: Haarukka-alas kun ei kuormaa
+  note: Haarukat 5-10 cm maasta ajaessa
+- rule: Mastin kallistus taaksepäin kuormaa nostaessa
+  note: Estää kuorman putoamisen
+- rule: Turvavyö aina kiinni
+  note: Kaatumissuojaus, ROPS/FOPS
+- rule: Ei matkustajia trukissa
+  note: 'Poikkeus: koulutettava kouluttajan kanssa'
+- rule: Lataus/tankkaus vain merkityillä alueilla
+  note: Kipinävaara, kaasut
+- rule: 'Kuormauskapasiteetti: tarkista kuormakaavio'
+  note: Masto kallistus ja nostokorkeus vaikuttavat
+LICENSE_REQUIREMENTS:
+  type_1: Vastapainotrukki (sisä/ulko) — peruskurssi 2-3 pv
+  type_2: Tukipyörätrukki — lisäkoulutus 1 pv
+  type_3: Kurottaja — erikoiskoulutus 2 pv
+  renewal: Voimassa 5 vuotta, uusinnan kesto 1 pv
+  medical: 'Terveystarkastus: näkö, kuulo, reaktiokyky'

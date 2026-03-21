@@ -1,0 +1,203 @@
+header:
+  agent_id: safety_officer
+  agent_name:  Safety Officer
+  name_fi: 'Työturvallisuuspäällikkö'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: high
+ASSUMPTIONS:
+- Teollisuustuotanto, Työturvallisuuslaki 738/2002 (TTurvL) sovellettavana
+- JKH Service: mehiläishoito fyysisesti vaativaa, mehiläisten pistokset riskitekijä
+- Linkaushuone: pyörivät osat (linko), raskaat kehykset, kuuma hunaja
+- Mökkityöt: metsänhakkuu, tikastyöt, moottorisahan käyttö mahdollinen
+- Yksintyöskentely tarhoilla yleistä — erityinen riskitekijä
+DECISION_METRICS_AND_THRESHOLDS:
+  near_miss_hours:
+    value: 24
+    action: "Läheltä piti -tapaus käsiteltävä 24h kuluessa: kirjaa järjestelmään,
+      juurisyy selvitys, korjaavat toimenpiteet sovittava"
+    source: src:SO1
+  accident_frequency:
+    value: 10
+    action: ">10 tapaturmataajuus (LTA per miljoona työtuntia) → vakava tilanne,
+      toimenpidesuunnitelma viikon sisällä"
+    source: src:SO1
+  risk_assessment_review_years:
+    value: 3
+    action: "Riskiarviointi tarkistettava vähintään 3 vuoden välein tai kun olosuhteet
+      muuttuvat merkittävästi"
+    source: src:SO2
+  ppe_compliance_pct:
+    value: 95
+    action: "<95% suojainten käyttöaste → koulutus, suojainten saatavuuden tarkistus,
+      kirjallinen muistutus"
+    source: src:SO1
+  anaphylaxis_risk_briefing_days:
+    value: 1
+    action: "Kaikki uudet mehiläishoitotyöntekijät saavat anafylaksiakoulutuksen
+      ensimmäisenä päivänä (pistosallergia)"
+    source: src:SO3
+  fire_extinguisher_inspection_months:
+    value: 12
+    action: "Sammuttimet tarkistettava vuosittain — kelpoisuusleima vanhentunut →
+      vaihda välittömästi"
+    source: src:SO2
+  lone_worker_checkin_hours:
+    value: 4
+    action: "Yksintyöskentelijä: varmistusviesti tai soitto vähintään 4h välein
+      tarhoilla tai metsätöissä"
+    source: src:SO3
+SEASONAL_RULES:
+- season: Kevät
+  action: "Kausiapulaisten perehdytys ennen töiden aloittamista (pakollinen TTurvL 14§).
+    Mehiläispukujen tarkistus (ehjä, hyväkuntoinen). Ensiaputarvikkeiden täydennys
+    (adrenaliiniautoinjektor pistosallergisille). Tartuntatautiriski lepakkojen
+    ulosteesta talvipesistä — suojakäsineet."
+  source: src:SO2
+- season: Kesä
+  action: "Kuumatyö: linkoussali lämpenee — tauot, nestejuonti, lämpörasituksen seuranta.
+    Mehiläisten aggressiivisuus parveilukaudella — kaksikerroksinen suoja.
+    Yksintyöskentelykäytäntö tarhoilla. Sähköturvallisuus ulkona sähkölaitteet."
+  source: src:SO3
+- season: Syksy
+  action: "Liukkaat pinnat: tarhapoluilla, tikkailla. Kiilahammasremmit ja liukuesteet
+    käyttöön. Pimeän lisääntyminen — heijastimet ja otsalamput. Metsätöiden
+    aloittaminen (polttopuu): moottorisahan turvavarusteet pakollisia."
+  source: src:SO2
+- season: Talvi
+  action: "Lumikuorma: kattojen tarkistus, katolta ei saa kaivaa yksin ilman
+    turvavaljaita. Liukkaudentorjunta piha-alueilla. Kylmätyö: alle -15°C
+    ulkotyölle raja. Tulityöt lämmityskauden huolloissa — tulityölupa pakollinen."
+  source: src:SO2
+FAILURE_MODES:
+- mode: Mehiläisen pistos ja anafylaktinen reaktio
+  detection: "Henkilö oireilee pistoksen jälkeen: ihottuma, turvotus, hengitysvaikeus,
+    tajunnan lasku"
+  action: "Pistä adrenaliiniautoinjektori välittömästi (reisi). Soita 112.
+    Laita henkilö makuulle jalat ylös. Älä jätä yksin. Seuraa hengitystä.
+    Autossa aina adrenaliini jos tunnettu allergia."
+  source: src:SO3
+- mode: Tapaturma yksintyöskentelyn aikana
+  detection: "Henkilö ei vastaa varmistusviestiin 4h kuluttua, tai löydetään loukkaantuneena"
+  action: "Soita 112. Aktivoi yksintyöskentelyn hätäprotokolla. Jos oma liikkuminen
+    mahdollista, siirrä turvaan. Ilmoita Työturvallisuuskeskukselle tapaturmasta
+    48h kuluessa."
+  source: src:SO3
+- mode: Tulipalo linkoussalissa tai varastossa
+  detection: "Savuhälytys, liekit, savun haju — mahdollinen syttymislähde kuuma hunaja,
+    sähkölaitteet tai tuhoeläinsuojaus"
+  action: "Aktivoi paloilmoitin, soita 112. Evakuoi henkilöstö kokoontumispisteeseen.
+    Alkusammutus vain jos palo on pieni ja poistuminen turvallista. EI PALATA
+    palavaan rakennukseen."
+  source: src:SO2
+PROCESS_FLOWS:
+  turvallisuussykli:
+    steps:
+    - 'Tammi: vuoden tapaturmatilasto, toimenpidesuunnitelma'
+    - 'Helmi: riskiarvioinnin tarkistus, turvallisuuskoulutuksen suunnittelu'
+    - 'Maalis: kausiapulaisten perehdytysmateriaalin päivitys'
+    - 'Huhti: ensiaputarvikkeiden täydennys, mehiläispukujen tarkistus'
+    - 'Touko-elo: viikoittainen turvallisuuskierros tarhalla ja linkoussalissa'
+    - 'Syys: syyskauden riskinarviointi (liukkaus, pimeys, metsätyöt)'
+    - 'Loka: sammutinten vuositarkistus, tulityölupaohjeistus'
+    - 'Marras: talviturvallisuuden perehdytys, kylmätyöohjeet'
+    - 'Joulu: vuoden yhteenveto, kehitystavoitteet ensi vuodelle'
+COMPLIANCE_AND_LEGAL:
+  tturvallisuuslaki: "Työturvallisuuslaki 738/2002: työnantaja velvoitettu arvioimaan
+    ja poistamaan riskit (9§). Perehdytys pakollinen (14§). [src:SO2]"
+  tapaturmailmoitus: "Työtapaturma- ja ammattitautilaki 459/2015: tapaturma
+    ilmoitettava vakuutusyhtiölle ja vakavat AVI:lle 1 vrk kuluessa [src:SO1]"
+  anafylaksia: "Pelastuslaki 379/2011: työnantajan vastuu ensiapuvalmiudesta.
+    Mehiläistarhoilla adrenaliiniautoinjektori suositeltava [src:SO3]"
+UNCERTAINTY_NOTES:
+- "Pistosallergian yleisyys väestössä 0,5–3% — mehiläishoitajilla desensibilisaatio mahdollinen."
+- "Yksintyöskentelyn raja-arvot ovat ohjeellisia, ei laillisesti sitovia — riskiarvio ratkaisee."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:SO1
+    org: Työturvallisuuskeskus TTK
+    title: Tapaturmataajuus ja turvallisuusindikaattorit
+    year: 2024
+    url: https://ttk.fi/tyoturvallisuus-ja-tyosuojelu/
+    supports: Tapaturmataajuus, läheltä piti, turvallisuusindikaattorit.
+  - id: src:SO2
+    org: Sosiaali- ja terveysministeriö / AVI
+    title: Työturvallisuuslaki 738/2002 ja soveltamisopas
+    year: 2023
+    url: https://stm.fi/tyosuojelu
+    supports: Riskiarviointi, perehdytys, tulityö, paloturvallisuus.
+  - id: src:SO3
+    org: Suomen Mehiläishoitajain Liitto / Duodecim
+    title: Mehiläispistos ja anafylaksia — hoito-ohje mehiläishoitajille
+    year: 2024
+    url: https://www.mehilainen.fi/
+    supports: Pistosallergia, anafylaksia, yksintyöskentely.
+eval_questions:
+- q: Millä aikataululla läheltä piti -tapaukset käsitellään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.near_miss_hours.value
+  source: src:SO1
+- q: Mikä on hälyttävä tapaturmataajuus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.accident_frequency.value
+  source: src:SO1
+- q: Kuinka usein riskiarviointi tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.risk_assessment_review_years.value
+  source: src:SO2
+- q: Mikä on suojainten käyttöasteen tavoite?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.ppe_compliance_pct.value
+  source: src:SO1
+- q: Milloin uudet mehiläishoitajat saavat anafylaksiakoulutuksen?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.anaphylaxis_risk_briefing_days.action
+  source: src:SO3
+- q: Kuinka usein sammuttimet tarkistetaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fire_extinguisher_inspection_months.value
+  source: src:SO2
+- q: Kuinka usein yksintyöskentelijä tarkistaa itsensä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lone_worker_checkin_hours.value
+  source: src:SO3
+- q: Mitä turvallisuustoimia tehdään keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:SO2
+- q: Miten kuumatyön riskit hallitaan kesällä linkoussalissa?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:SO3
+- q: Mitä syksyllä pitää huomioida turvallisuudessa?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:SO2
+- q: Mitkä ovat talven erityiset turvallisuusriskit?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SO2
+- q: Miten anafylaktiseen reaktioon reagoidaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:SO3
+- q: Miten toimitaan yksintyöskentelijän tapaturmassa?
+  a_ref: FAILURE_MODES[1].action
+  source: src:SO3
+- q: Mitä tehdään linkoussalin tulipalossa?
+  a_ref: FAILURE_MODES[2].action
+  source: src:SO2
+- q: Mitä TTurvL velvoittaa työnantajalta?
+  a_ref: COMPLIANCE_AND_LEGAL.tturvallisuuslaki
+  source: src:SO2
+- q: Milloin työtapaturma ilmoitetaan viranomaisille?
+  a_ref: COMPLIANCE_AND_LEGAL.tapaturmailmoitus
+  source: src:SO1
+- q: Onko adrenaliiniautoinjektori pakollinen tarhoilla?
+  a_ref: COMPLIANCE_AND_LEGAL.anafylaksia
+  source: src:SO3
+- q: Miten mehiläispistoallergia tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:SO3
+- q: Milloin perehdytys on pakollinen lakisääteisesti?
+  a_ref: COMPLIANCE_AND_LEGAL.tturvallisuuslaki
+  source: src:SO2
+- q: Mitä tarkoittaa tulityölupa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SO2
+- q: Miten yksintyöskentelyn vaara havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:SO3
+- q: Mikä on kylmätyön raja-arvo ulkotyölle?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SO2

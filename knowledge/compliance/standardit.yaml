@@ -1,0 +1,33 @@
+title: Standardit
+agent: Vaatimustenmukaisuus
+facts:
+- 'ISO 9001: laadunhallinta, PDCA-sykli'
+- 'ISO 14001: ympäristöjärjestelmä'
+- 'ISO 45001: työterveys ja -turvallisuus'
+- 'ISO 50001: energianhallinta'
+COMMON_ISO_STANDARDS:
+- standard: ISO 9001
+  scope: Laadunhallinta
+  audit_cycle: 3 vuotta + vuosiseuranta
+  note: Yleisin hallintajärjestelmästandardi
+- standard: ISO 14001
+  scope: Ympäristöhallinta
+  audit_cycle: 3 vuotta + vuosiseuranta
+  note: Ympäristövaikutusten hallinta
+- standard: ISO 45001
+  scope: Työterveys ja -turvallisuus
+  audit_cycle: 3 vuotta + vuosiseuranta
+  note: Korvasi OHSAS 18001
+- standard: ISO 22000
+  scope: Elintarviketurvallisuus
+  audit_cycle: 3 vuotta + vuosiseuranta
+  note: HACCP-pohjanen
+- standard: ISO 50001
+  scope: Energiahallinta
+  audit_cycle: 3 vuotta + vuosiseuranta
+  note: Energiatehokkuuden parantaminen
+AUDIT_FINDING_TYPES:
+  major_nc: 'Vakava poikkeama: järjestelmällinen vaatimuksen rikkominen → korjaus 30pv'
+  minor_nc: 'Lievä poikkeama: yksittäinen puute → korjaus 90pv'
+  observation: 'Huomautus: parannusmahdollisuus, ei vaatimusta korjata'
+  positive: 'Vahvuus: hyvä käytäntö, esimerkki muille'

@@ -1,0 +1,204 @@
+header:
+  agent_id: shift_manager
+  agent_name:  Shift Manager
+  name_fi: 'Vuoropäällikkö'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: high
+ASSUMPTIONS:
+- 2- tai 3-vuorojärjestelmä, Suomen työaikalaki 872/2019
+- JKH Service: kausiluonteinen toiminta — linkauskauden huiput vaativat ylitöitä
+- Kausiapulaiset ja vakituiset: eri työsopimukset, molemmat lain alaisia
+- Väsymyksen hallinta kriittistä mehiläishoidossa (pyörivät laitteet, mehiläisten käsittely)
+- TES (työehtosopimus) soveltuva: maatalous- tai elintarviketeollisuuden TES
+DECISION_METRICS_AND_THRESHOLDS:
+  overtime_hours_week:
+    value: 8
+    action: ">8h ylityötä viikossa → kuormitusanalyysi, lisäresurssi tai tehtävien
+      priorisointi. Ylityökorvaus (50%/100%) laskettava oikein."
+    source: src:SM1
+  absence_rate_pct:
+    value: 5
+    action: ">5% poissaoloaste → selvitä syyt (sairaus, motivaatio, olosuhteet),
+      varhaisen tuen malli käynnistettävä"
+    source: src:SM1
+  daily_rest_hours:
+    value: 11
+    action: "<11h vuoroväli → lainvastainen. Muuta vuorolistaa välittömästi, poikkeus
+      vain sopimuksella ja max 9h."
+    source: src:SM2
+  weekly_work_hours_max:
+    value: 40
+    action: ">40h/vko säännöllinen → ylityölisät ja kirjanpito pakollisia. Tasoittamisjakso
+      max 52 viikkoa."
+    source: src:SM2
+  shift_handover_min:
+    value: 15
+    action: "<15 min vuoronvaihtokuittaus → kriittinen tieto (laitevirat, turvallisuus)
+      siirtyy puutteellisesti. Pidennä siirto 20 minuuttiin."
+    source: src:SM3
+  fatigue_risk_hours_continuous:
+    value: 6
+    action: ">6h yhtäjaksoinen työ ilman taukoa → lakisääteinen tauko 30 min pakollinen.
+      Mehiläishoidossa +lämpöstressi → harkitse lyhyempiä taukoja."
+    source: src:SM2
+  staffing_coverage_pct:
+    value: 85
+    action: "<85% miehityskattavuus suunniteltuun nähden → avaa sijaislista, ylitöiden
+      tarjoaminen vapaaehtoisille ensin"
+    source: src:SM1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Kausiapulaisten palkkaaminen ja työsopimukset ennen linkauskauden alkua.
+    Perehdytysaikataulu laaditaan (1–3 päivää). Vuorolista linkauskautta varten
+    valmiina toukokuun alussa. Vuosilomasuunnittelu: vuosilomalaki 162/2005."
+  source: src:SM2
+- season: Kesä
+  action: "Huipputuotantoaika: pidennetty vuoropäiväkesto mahdollinen (max 10h/pv
+    sopimuksella). Ylityöraja 138h/4kk-jakso seurannassa. Tauot ja nestejuonti
+    kuumassakin pakollisia. Vuosilomat porrastettava — ei koko tiimi yhtä aikaa
+    pois."
+  source: src:SM2
+- season: Syksy
+  action: "Kausiapulaisten työsuhteen päättäminen asianmukaisesti (irtisanomisaika
+    noudattaen). Ylityötuntien tasoitussuunnitelma — lakisääteinen tasoitusjakso.
+    Vakituisten vuosilomasaldo tarkistettava (laki: lomat pidettävä lomakauden aikana)."
+  source: src:SM2
+- season: Talvi
+  action: "Minimivuorotus: vain välttämättömät tehtävät. Koulutukset ja kehityskeskustelut
+    talviaikaan. Ensi kauden vuorolistan suunnittelu hyvissä ajoin. Väsymysriski
+    pimeänä kautena — seuraa poissaoloja."
+  source: src:SM3
+FAILURE_MODES:
+- mode: Kriittinen henkilövaje linkouspäivänä
+  detection: "2 tai useampi henkilö sairauslomalla tai poissa yllättäen
+    huipputuotantopäivänä"
+  action: "Kutsu sijaiset varalistan mukaan. Tarjoa ylityötä vapaaehtoisesti ennen
+    pakottamista. Jos ei saada täytettyä → lyhennä linkausaikaa tai siirrä ylimääräinen
+    kenttäerä seuraavaan päivään."
+  source: src:SM1
+- mode: Vuorolistariita tai työvuorosta kieltäytyminen
+  detection: "Työntekijä kieltäytyy työvuorosta ilman laillista perustetta tai
+    riitauttaa vuorolistan"
+  action: "Selvitä syy rauhallisesti. Tarkista lain ja TES:n asettamat oikeudet.
+    Jos laiton kieltäytyminen → kirjallinen huomautus. Jos vuorolista virheellinen
+    → korjaa ja kompensoi."
+  source: src:SM2
+- mode: Väsymiseen liittyvä turvallisuusriski
+  detection: "Henkilö tekee virheitä, nukahtaa tauon ulkopuolella, tai ilmoittaa
+    itse olevansa liian väsynyt pyörittämään konetta"
+  action: "Siirrä henkilö välittömästi kevyempiin tehtäviin tai kotiin lepäämään.
+    Älä anna käyttää pyöriviä koneita väsyneenä. Kirjaa tapahtuma. Tarkista
+    vuorolistan kuormittavuus."
+  source: src:SM3
+PROCESS_FLOWS:
+  vuorosuunnittelusykli:
+    steps:
+    - 'Tammi: ensi kauden henkilöstösuunnitelma, kausiapulaiset'
+    - 'Helmi-maalis: työsopimukset, perehdytysmateriaalit valmiiksi'
+    - 'Huhti: vuorolista linkauskauden huipuille (touko-elo)'
+    - 'Touko: kausiapulaisten perehdytys, ensimmäiset vuorot'
+    - 'Kesä: päivittäinen seuranta, ylityöt, miehityskattavuus'
+    - 'Elo: ylityötuntien saldo, tasoitussuunnitelma'
+    - 'Syys: kausiapulaisten työsuhteen päättäminen, lomasaldot'
+    - 'Loka-marras: kehityskeskustelut, ensi kauden suunnittelu'
+    - 'Joulu: vuoden yhteenveto, poissaolotilasto, KPI-raportti'
+COMPLIANCE_AND_LEGAL:
+  tyoaika: "Työaikalaki 872/2019: säännöllinen aika max 8h/pv, 40h/vko. Ylityö max
+    138h/4kk tai 250h/vuosi. Tasoitusjakso max 52 viikkoa [src:SM2]"
+  vuorovali: "Työaikalaki 25§: vuorojen välinen lepoaika vähintään 11h (9h poikkeus
+    sopimuksella). Rikkominen → AVI-ilmoitus [src:SM2]"
+  vuosiloma: "Vuosilomalaki 162/2005: 2,5 pv/kk työsuhteen ensimmäisen vuoden jälkeen.
+    Pääosin pidettävä lomakauden aikana (2.5.–30.9.) [src:SM2]"
+UNCERTAINTY_NOTES:
+- "Kausiapulaisten TES (maatalous tai elintarviketeollisuus) voi poiketa yleisestä — tarkista."
+- "Ylityörajan laskenta voi erota, jos sovelletaan tasoittamisjaksoa — kirjanpito kriittistä."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:SM1
+    org: Työturvallisuuskeskus TTK / Elintarviketeollisuusliitto
+    title: Vuorotyö ja henkilöstösuunnittelu elintarviketeollisuudessa
+    year: 2024
+    url: https://ttk.fi/tyoturvallisuus-ja-tyosuojelu/tyosuojelu-tyopaikalla/
+    supports: Poissaolot, miehityskattavuus, henkilöstöresurssit.
+  - id: src:SM2
+    org: Työ- ja elinkeinoministeriö
+    title: Työaikalaki 872/2019 ja vuosilomalaki 162/2005
+    year: 2019
+    url: https://www.finlex.fi/fi/laki/ajantasa/2019/20190872
+    supports: Ylityö, vuoroväli, lepoajat, vuosiloma, tasoitusjakso.
+  - id: src:SM3
+    org: Työterveyslaitos
+    title: Vuorotyön terveysvaikutukset ja väsymyksen hallinta
+    year: 2024
+    url: https://www.ttl.fi/teemat/tyoaika/vuorotyo
+    supports: Väsymys, vuorolistasuunnittelu, tauot, turvallisuus.
+eval_questions:
+- q: Mikä on viikottaisen ylityön raja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.overtime_hours_week.value
+  source: src:SM1
+- q: Mitä tehdään ylityörajan ylittyessä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.overtime_hours_week.action
+  source: src:SM1
+- q: Milloin poissaoloaste on hälyttävä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.absence_rate_pct.value
+  source: src:SM1
+- q: Mikä on lakisääteinen vuorojen välinen lepoaika?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.daily_rest_hours.value
+  source: src:SM2
+- q: Mikä on säännöllisen viikkotyöajan yläraja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.weekly_work_hours_max.value
+  source: src:SM2
+- q: Kuinka pitkä vuoronvaihtokuittauksen tulee olla?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.shift_handover_min.value
+  source: src:SM3
+- q: Milloin pakollinen tauko on pidettävä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fatigue_risk_hours_continuous.action
+  source: src:SM2
+- q: Mikä on miehityskattavuuden tavoite?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.staffing_coverage_pct.value
+  source: src:SM1
+- q: Mitä keväällä tehdään vuorosuunnittelussa?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:SM2
+- q: Miten kesän huipputuotantoajan ylityöt hallitaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:SM2
+- q: Miten kausiapulaisen työsuhde päätetään syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:SM2
+- q: Mitä talvella suunnitellaan henkilöstön osalta?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:SM3
+- q: Miten kriittinen henkilövaje hoidetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:SM1
+- q: Miten vuorolistariita ratkaistaan?
+  a_ref: FAILURE_MODES[1].action
+  source: src:SM2
+- q: Miten toimitaan väsymiseen liittyvässä turvallisuusriskissä?
+  a_ref: FAILURE_MODES[2].action
+  source: src:SM3
+- q: Mikä on ylityön enimmäismäärä neljän kuukauden jaksossa?
+  a_ref: COMPLIANCE_AND_LEGAL.tyoaika
+  source: src:SM2
+- q: Mitä tapahtuu jos vuoroväli on alle 11 tuntia?
+  a_ref: COMPLIANCE_AND_LEGAL.vuorovali
+  source: src:SM2
+- q: Kuinka paljon vuosilomaa kertyy kuukaudessa?
+  a_ref: COMPLIANCE_AND_LEGAL.vuosiloma
+  source: src:SM2
+- q: Milloin väsynyt henkilö on turvallisuusriski?
+  a_ref: FAILURE_MODES[2].detection
+  source: src:SM3
+- q: Miten ylityökorvaus lasketaan?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.overtime_hours_week.action
+  source: src:SM2
+- q: Milloin vuosittainen tasoitusjakso päättyy?
+  a_ref: COMPLIANCE_AND_LEGAL.tyoaika
+  source: src:SM2
+- q: Mikä on varhaisen tuen malli?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.absence_rate_pct.action
+  source: src:SM1

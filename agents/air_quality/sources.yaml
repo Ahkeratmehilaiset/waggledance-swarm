@@ -1,0 +1,25 @@
+sources:
+- id: src:IL1
+  org: HSY/SYKE
+  title: Ilmanlaatu
+  year: 2025
+  url: https://www.ilmanlaatu.fi/
+  supports: PM2.5, PM10, otsoni.
+- id: src:IL2
+  org: THL
+  title: Häkämyrkytys
+  year: 2025
+  url: https://thl.fi/
+  supports: CO-rajat.
+- id: src:IL3
+  org: Turun yo / Norkko
+  title: Siitepöly
+  year: 2025
+  url: https://www.norkko.fi/
+  supports: Siitepölylaskennat.
+- id: src:IL4
+  org: STUK
+  title: Radon
+  year: 2025
+  url: https://www.stuk.fi/aiheet/radon
+  supports: Radon.

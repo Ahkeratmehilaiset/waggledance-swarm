@@ -1,0 +1,23 @@
+# Lemmikinhoito — Hoito
+# WaggleDance Swarm AI
+title: "Lemmikkihoito"
+agent: "Lemmikinhoito"
+facts:
+  - "Koiran ulkoilutus: vähintään 2–3 kertaa päivässä, yhteensä 30–120 min rotukohtaisesti — aktiiviset rodut tarvitsevat enemmän"
+  - "Kissan hiekkalaatikko: puhdistus päivittäin tai useammin useamman kissan taloudessa — likainen hiekka = käyttämättömyys"
+  - "Koiran kynsien leikkuu: 4–6 viikon välein, leikkaa hiljalleen pinkki suoni (quick) näkyviin asti, verenvuoto styptinen jauhe"
+  - "Hammashoito lemmikille: koira/kissa tutkittava vuosittain eläinlääkärissä, hammasharja päivittäin = paras ennaltaehkäisy"
+  - "Loistorjunta koira: kirppu- ja puutiaistorjunta kuukausittain (Frontline, Bravecto, NexGard) erityisesti kevät–syksy"
+  - "Loistorjunta kissa: sisäkissa harvoin loisia, ulkokissa kirppu/mato-lääkitys 3–6 kk välein — pysy ennaltaehkäisevänä"
+  - "Madotus: koirat ja kissat 2–4 kertaa vuodessa, pennut 2 viikon välein 8 viikkoon asti, sitten kuukausittain"
+  - "Rokotusohjema koira: DHLPP-perusrokotus, Bordetella (kennelyskä), rabiies (kansainväliseen matkustukseen)"
+  - "Rokotusohjema kissa: FCV+FHV+FPV trirokotus vuosittain, rabiies jos uloskäynti tai matkustus"
+  - "Eläinlääkärikäynti: terveelle lemmikille vuosittain, hampaat+rokotukset+yleistutkimus — vanha eläin 2 kertaa/vuosi"
+  - "Koiran ruokinta: laadukkaaksi merkitty koiranruoka pääravinteena, sopivat annoskoot painon mukaan — ylipainoisuus yleistä"
+  - "Ruokintatiheys aikuinen koira: 2 kertaa päivässä, pentu 3–4 kertaa — ei vettä rajoita, aina tarjolla"
+  - "Kissan vesipiste: suodata tai vesifontaine — kissat juovat mieluummin liikkuvaa vettä, vähentää virtsatietulehduksia"
+  - "Turkin hoito: pitkäkarvaiset rodut harjattava päivittäin, lyhytkarvaiset viikoittain, uiminen tarpeen mukaan"
+  - "Koiran käyttäytymisterapia: aggressio, pelokkuus tai hyperaktiivisuus → käyttäytymisterapeutti tai kouluttaja"
+  - "Chippaustiedot ajan tasalle: koira tai kissa sirutettuna → tiedot rekisterissä (Traficomin eläinrekisteri)"
+  - "Eläinlääkärivakuutus: sairasvakuutus koiralle 20–80 €/kk, kissa 15–50 €/kk — kattaa isot sairaudet ja tapaturmat"
+  - "Kuumuus ja lemmikki: yli +25°C asvaltti polttaa tassut — testaa 5 s kämmenellä, yli 30°C pitkä kävelyt vaarallisia"

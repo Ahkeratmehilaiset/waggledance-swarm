@@ -1,0 +1,13 @@
+sources:
+- id: src:RO1
+  org: GTK/IL
+  title: Routatiedot
+  year: 2025
+  url: https://www.gtk.fi/
+  supports: Routasyvyys, maaperä.
+- id: src:RO2
+  org: Oikeusministeriö
+  title: Rakentamislaki 751/2023
+  year: 2023
+  url: https://finlex.fi/fi/laki/ajantasa/2023/20230751
+  supports: Perustamisvaatimukset.

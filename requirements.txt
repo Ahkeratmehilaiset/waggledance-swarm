@@ -1,0 +1,64 @@
+# WaggleDance Swarm AI — Python Dependencies
+# Python 3.13+ required (tested on 3.13.x)
+# Install: pip install -r requirements.txt
+
+# === CORE (always needed) ===
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0
+aiosqlite>=0.20.0
+websockets>=13.0
+pyyaml>=6.0
+psutil>=5.9.0
+chromadb>=1.0.0
+
+# === TRANSLATION (Opus-MT Finnish <-> English) ===
+transformers>=4.40.0
+torch>=2.1.0
+sentencepiece>=0.1.99
+
+# === SEARCH & WEB ===
+duckduckgo-search>=6.0     # Web learning agent (Phase 9)
+aiohttp>=3.9.0             # Weather + electricity APIs (Phase 8)
+feedparser>=6.0.11         # RSS feed monitor (Phase 8)
+
+# === OPTIONAL: Claude API distillation (Phase 9 Layer 4) ===
+# Set ANTHROPIC_API_KEY env var to enable. Weekly budget: ~5€.
+anthropic>=0.30.0
+
+# === OPTIONAL: LoRA fine-tuning (V3 MicroModel — now real) ===
+# peft>=0.11.0               # LoRA adapters
+# accelerate>=0.30.0         # Training acceleration
+# bitsandbytes>=0.43.0       # 4-bit quantization (QLoRA)
+# Note: requires torch>=2.1.0 (already in requirements)
+
+# === OPTIONAL: Voice interface (Phase 7) ===
+# openai-whisper>=20231117     # STT
+# faster-whisper>=1.0.0        # Faster STT alternative
+# webrtcvad>=2.0.10            # Voice Activity Detection
+# openwakeword>=0.6.0          # Wake word detection
+
+# === OPTIONAL: Audio sensors (Phase 6) ===
+# scipy>=1.12.0                # FFT analysis
+# tflite-runtime>=2.14.0       # YAMNet audio classifier
+# birdnetlib>=0.9.0            # BirdNET bird identification
+paho-mqtt>=2.0.0               # Phase 5: MQTT for smart home sensors
+
+# === SPECIALIST MODELS (autonomy Layer 2 training) ===
+scikit-learn>=1.4.0            # Route classifier, anomaly detector, quality grader, etc.
+joblib>=1.3.0                  # Model persistence (save/load sklearn pipelines)
+
+# === OBSERVABILITY (full stack) ===
+prometheus-client>=0.20.0      # /metrics endpoint for Prometheus/Grafana
+# opentelemetry-api>=1.24.0             # Distributed tracing (optional)
+# opentelemetry-sdk>=1.24.0             # Tracing SDK
+# opentelemetry-exporter-otlp>=1.24.0   # OTLP exporter (Jaeger/Tempo)
+# opentelemetry-instrumentation-fastapi>=0.45b0  # FastAPI auto-instrumentation
+# structlog>=24.1.0                     # Structured JSON logging
+
+# === OPTIONAL: PDF parsing ===
+# PyMuPDF>=1.23.0              # fitz — PDF knowledge import
+networkx>=3.0
+pydantic>=2.0
+pytest>=7.0
+pytest-asyncio>=0.23.0

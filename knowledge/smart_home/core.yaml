@@ -1,0 +1,80 @@
+header:
+  agent_id: smart_home
+  agent_name: Smart Home & IoT
+  name_fi: 'Kodin automaatio ja IoT'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: medium
+ASSUMPTIONS:
+- Langaton kotiautomaatio
+- Home Assistant tai vastaava
+DECISION_METRICS_AND_THRESHOLDS:
+  zigbee_devices_max:
+    value: 100
+    action: ">100 laitetta → toinen koordinaattori"
+    source: src:SH1
+  zigbee_mesh_kantama_m:
+    value: 10
+    action: "Zigbee-verkon kantama sisällä ~10 m — lisää reititinlaitteita (esim. älypistoke) katvealueille"
+    source: src:SH2
+  wifi_laitteet_per_AP:
+    value: 30
+    action: "Max 30 IoT-laitetta per tukiasema — ylitys hidastaa verkkoa, erillinen IoT-VLAN suositus"
+    source: src:SH3
+  matter_versio:
+    value: "1.3"
+    action: "Matter 1.3 tuki vaaditaan — yhteensopivuus Apple/Google/Amazon, Thread-reuna suositellaan"
+    source: src:SH4
+  shelly_virrankulutus_W:
+    value: 0.8
+    action: "Shelly-releen oma kulutus ~0.8 W lepotilassa — 10 relettä = ~70 kWh/vuosi, huomioi kokonaiskulutus"
+    source: src:SH5
+  automaatio_viive_ms:
+    value: 200
+    action: "Automaation laukaisuviive <200 ms hyväksyttävä — >500 ms käyttäjä huomaa, tarkista mesh-reititys"
+    source: src:SH6
+  yolasku_tunnit:
+    value: "22:00-07:00"
+    action: "Yösähkö (halvempi) klo 22-07 — ajasta lämmitys, latarit ja pesukone yöaikaan"
+    source: src:SH7
+  varavoimala_UPS_min:
+    value: 15
+    action: "UPS vähintään 15 min — suojaa keskusyksikkö ja reititin, automaatio tallentaa tilan ennen sammutusta"
+    source: src:SH8
+  IoT_tietoturva_paivitys_vrk:
+    value: 30
+    action: "Firmware-päivitys max 30 vrk julkaisusta — tunnetut haavoittuvuudet <7 vrk, automaattipäivitys päälle"
+    source: src:SH9
+  verkon_segmentointi:
+    value: "pakollinen"
+    action: "IoT-laitteet omaan VLAN-verkkoon — estä pääsy sisäverkon laitteisiin, palomuuri väliin"
+    source: src:SH10
+  sahkon_mittaus_W:
+    value: 1
+    action: "Energianmittaus tarkkuus <1 W — Shelly EM tai vastaava DIN-kiskoon, data Home Assistantiin"
+    source: src:SH11
+  bluetooth_mesh_laitteet:
+    value: 20
+    action: "Bluetooth Mesh max ~20 laitetta luotettavasti — suosi Zigbee/Thread isommissa asennuksissa"
+    source: src:SH12
+eval_questions:
+- q: Mikä on zigbee devices max?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.zigbee_devices_max.value
+  source: src:SH1
+- q: Mikä on Zigbee-verkon kantama sisätiloissa metreinä?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.zigbee_mesh_kantama_m.value
+  source: src:SH2
+- q: Kuinka monta IoT-laitetta voi olla yhdessä WiFi-tukiasemassa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.wifi_laitteet_per_AP.value
+  source: src:SH3
+- q: Mikä on hyväksyttävä automaation laukaisuviive?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.automaatio_viive_ms.value
+  source: src:SH6
+- q: Kuinka pitkä UPS-varakäyntiaika tarvitaan kotiautomaatioon?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.varavoimala_UPS_min.value
+  source: src:SH8
+- q: Kuinka usein IoT-laitteiden firmware tulee päivittää?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.IoT_tietoturva_paivitys_vrk.value
+  source: src:SH9

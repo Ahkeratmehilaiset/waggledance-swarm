@@ -1,0 +1,30 @@
+title: Hsl
+agent: Liikkuminen ja työmatka
+facts:
+- 'HSL-sovellus: reaaliaikainen reittisuunnittelu ja mobiililippu'
+- 'Kausiliput: AB-vyöhyke ~62€/kk (2026)'
+- 'Työsuhde-etu: HSL-lippu verovapaasti (max 3400€/v)'
+HSL_ZONES_2024:
+- zone: A
+  area: Helsinki keskusta
+  single_eur: 2.4
+  monthly_eur: 56.3
+- zone: AB
+  area: Helsinki
+  single_eur: 2.95
+  monthly_eur: 63.2
+- zone: ABC
+  area: Helsinki + Espoo/Vantaa
+  single_eur: 3.95
+  monthly_eur: 74.1
+- zone: ABCD
+  area: + Kerava/Kirkkonummi
+  single_eur: 5.45
+  monthly_eur: 112.8
+COMMUTE_TAX_DEDUCTION:
+  cheapest_route: Vähennys halvimman kulkuneuvon mukaan
+  own_car_if_saves_time: Oma auto jos säästää >1h/pv kokonaismatka-aikaa
+  deduction_eur_per_km: 0.25
+  min_deduction_eur: 750
+  max_deduction_eur: 7000
+  source: Verohallinto 2024

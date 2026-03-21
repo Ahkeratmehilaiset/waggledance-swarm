@@ -1,0 +1,201 @@
+header:
+  agent_id: production_line
+  agent_name:  Production Line Monitor
+  name_fi: 'Tuotantolinjan monitorointi'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: high
+ASSUMPTIONS:
+- OEE-seuranta käytössä, MES/ERP-järjestelmä integroituna
+- JKH Servicen hunajanlinkauslinja: linko, pumput, suodattimet, purkituslaitteet
+- Linkouskausityöntekijät tai aputyövoima — suomen työaikalaki vaikuttaa vuoroihin
+- Vuosituotanto ~10 000 kg hunajaa, kapasiteetti noin 1000–2000 kg/päivä linkaushuipuilla
+- Tuotantotehokkuuden parantaminen tärkeää kustannusten hallitsemiseksi
+DECISION_METRICS_AND_THRESHOLDS:
+  oee_target_pct:
+    value: 85
+    action: "<85% OEE → analysoi kolme tekijää: saatavuus (A), suorituskyky (P),
+      laatu (Q). Paranna heikoin ensin."
+    source: src:PL1
+  cycle_deviation_pct:
+    value: 10
+    action: ">10% poikkeama syklin tavoiteajasta → selvitä juurisyy (pullonkaula,
+      raaka-ainevaje, toimintahäiriö)"
+    source: src:PL1
+  honey_extraction_kg_hour:
+    value: 150
+    action: "<150 kg/h linkouksessa → tarkista linkon täyttöaste, kehysten kunto,
+      lämpötila (hunaja juoksevampaa >25°C)"
+    source: src:PL2
+  filling_accuracy_g:
+    value: 5
+    action: ">±5 g purkituspoikkeama → kalibroi täyttökone, tarkista viskositeetti"
+    source: src:PL2
+  downtime_min_shift:
+    value: 30
+    action: ">30 min suunnittelematon seisokki vuorossa → seisokkiraportti, RCA
+      viikon sisällä"
+    source: src:PL1
+  yield_loss_pct:
+    value: 3
+    action: ">3% hukka (hunaja suodattimissa, putkissa) → puhdistusprotokolla ja
+      putkiston tarkistus"
+    source: src:PL2
+  changeover_time_min:
+    value: 45
+    action: ">45 min tuotannonvaihtoaika → SMED-analyysi, sisäisten toimintojen
+      ulkoistaminen"
+    source: src:PL1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Linkauskauden valmistelu: huolto, kalibroinnit, tarvikkeet (suodatinkangas,
+    purkit, kannet). Tuotantosuunnitelma satoennusteen perusteella. Henkilöstön
+    perehdytys kausiapulaisille ennen kauden alkua."
+  source: src:PL2
+- season: Kesä
+  action: "Huipputuotantoaika. Linkouspäivien optimointi: hunajakennot kypsiksi
+    ennen linkoa (kosteus alle 18%). Linjaa ei saa seisottaa turhan pitkään — käyttämätön
+    hunaja kristalloituu putkistoon. Ylityöt mahdollisia — TTurvL huomioitava."
+  source: src:PL2
+- season: Syksy
+  action: "Viimeinen linkouskierros ennakoitava huolellisesti. Linjan pesuprotokolla
+    kauden lopussa (steriloitu vesi + elintarvikepesuaine). Varastoon jäävä hunaja
+    dokumentoitava eräkohtaisesti. Laitteiden talvisäilytys puhdistettuna."
+  source: src:PL2
+- season: Talvi
+  action: "Talvikunnossapito ja laiteinvestointien suunnittelu. OEE-analyysi edelliseltä
+    kaudelta — oppimispisteet seuraavaan. Mahdollisten uusien laitteiden hankintapäätökset
+    (linko, purkitusautomaatti). Henkilöstösuunnitelma seuraavalle kaudelle."
+  source: src:PL1
+FAILURE_MODES:
+- mode: Linkon tasapainovikaantuminen kesken linkauksen
+  detection: "Linko tärisee epätavallisesti, turvalukko laukeaa, pyörimisnopeus
+    ei stabiloidu"
+  action: "Pysäytä linko välittömästi. Avaa ja tarkista kehysten asettelu —
+    epätasainen jako aiheuttaa tärinän. Tasapainota kehykset ennen uudelleenkäynnistystä.
+    Dokumentoi tapahtuma."
+  source: src:PL2
+- mode: Tuotantolinjan pullonkaula (suodatin tukkeutunut)
+  detection: "Hunajan virtausnopeus laskee, paine-ero suodattimen yli kasvaa,
+    pumppu ylikuormittuu"
+  action: "Vaihda suodatinkangas. Jos paine-ero yli 0,5 bar — tuotanto pysäytetään
+    suodattimen vaihtoa varten. Pidä vähintään 2 varaoitta aina."
+  source: src:PL2
+- mode: Purkituskoneen täyttöpään tukkeutuminen
+  detection: "Täyttöpaino vaihtelee yli ±10 g, täyttöpää valuttaa tai ei aukeile
+    normaalisti"
+  action: "Pysäytä linja. Pura täyttöpää ja puhdista kuumalla vedellä. Tarkista
+    O-renkaat. Käynnistä testierällä ennen tuotantoa."
+  source: src:PL2
+PROCESS_FLOWS:
+  linkauskauden_sykli:
+    steps:
+    - 'Touko: laitteiston huolto, kalibroinnit, tarvikkeet'
+    - 'Kesäkuu: ensimmäinen linkaus (kevätmesi, rypsi)'
+    - 'Heinä: päälinkoukset, ylityöt tarvittaessa'
+    - 'Elo: viimeiset linkoukset, linja-analyysi'
+    - 'Syys: linjapuhdistus, laitteiden varastointi'
+    - 'Loka-marras: OEE-raportti, kehitysehdotukset'
+    - 'Joulu-helmi: investointisuunnittelu, henkilöstösuunnitelma'
+    - 'Maalis: seuraavan kauden ennakkovalmistelu'
+COMPLIANCE_AND_LEGAL:
+  tyoaika: "Työaikalaki 872/2019: säännöllinen työaika max 8h/pv, 40h/vko.
+    Ylityö max 138h/4kk-jakso tai 250h/vuosi [src:PL3]"
+  elintarviketurvallisuus: "Elintarvikelaki 297/2021: hunaja on elintarvike,
+    omavalvontasuunnitelma pakollinen. Eräkohtainen jäljitettävyys vaadittava [src:PL2]"
+  paineastiasaadokset: "Tukes: painelaitteet (linko, paine-säiliöt) vaativat
+    tarkastuksen jos yli 0,5 bar. Linko = ei painelaite, mutta turvallisuus huomioitava [src:PL1]"
+UNCERTAINTY_NOTES:
+- "OEE 85% on World Class -taso teollisuudessa; hunajankäsittelyssä sesonkiluonne
+  vaikeuttaa vertailua."
+- "Hunajan viskositeetti vaihtelee merkittävästi kukkalajin ja lämpötilan mukaan —
+  prosessointiolosuhteet sovitettava."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:PL1
+    org: Teknologiateollisuus / ABB Finland
+    title: OEE ja tuotannonohjaus teollisuudessa
+    year: 2024
+    url: https://www.teknologiateollisuus.fi/tuotanto
+    supports: OEE, seisokit, syklin poikkeama, SMED.
+  - id: src:PL2
+    org: Ruokavirasto / Suomen Mehiläishoitajain Liitto
+    title: Hunajan käsittely ja tuotannon omavalvonta
+    year: 2024
+    url: https://www.ruokavirasto.fi/elintarvikkeet/
+    supports: Linkausnopeus, suodatus, purkitus, jäljitettävyys.
+  - id: src:PL3
+    org: Työ- ja elinkeinoministeriö
+    title: Työaikalaki 872/2019
+    year: 2019
+    url: https://www.finlex.fi/fi/laki/ajantasa/2019/20190872
+    supports: Ylityö, vuorot, lepoajat, kausihuiput.
+eval_questions:
+- q: Mikä on OEE:n tavoitetaso?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oee_target_pct.value
+  source: src:PL1
+- q: Mitä tehdään kun OEE jää alle 85%?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.oee_target_pct.action
+  source: src:PL1
+- q: Mikä on linkauksen tavoitetehokkuus?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.honey_extraction_kg_hour.value
+  source: src:PL2
+- q: Milloin purkituspoikkeama vaatii kalibroinnin?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.filling_accuracy_g.value
+  source: src:PL2
+- q: Mikä on suurin sallittu suunnittelematon seisokki vuorossa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.downtime_min_shift.value
+  source: src:PL1
+- q: Mikä on syklipoiskeaman raja?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.cycle_deviation_pct.value
+  source: src:PL1
+- q: Milloin hukkaprosentti on liian suuri?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.yield_loss_pct.action
+  source: src:PL2
+- q: Mikä on tavoiteltu tuotannonvaihtoaika?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.changeover_time_min.value
+  source: src:PL1
+- q: Mitä keväällä valmistellaan tuotantolinjalla?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:PL2
+- q: Miten kesän linkousta optimoidaan?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PL2
+- q: Mitä tehdään kauden päättyessä syksyllä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:PL2
+- q: Mitä talvella suunnitellaan tuotannon osalta?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:PL1
+- q: Miten toimitaan linkon tärinävikaantumisessa?
+  a_ref: FAILURE_MODES[0].action
+  source: src:PL2
+- q: Mitä tehdään kun suodatin tukkeutuu?
+  a_ref: FAILURE_MODES[1].action
+  source: src:PL2
+- q: Miten purkituskoneen täyttöpää puhdistetaan?
+  a_ref: FAILURE_MODES[2].action
+  source: src:PL2
+- q: Mikä on ylityön enimmäismäärä vuodessa?
+  a_ref: COMPLIANCE_AND_LEGAL.tyoaika
+  source: src:PL3
+- q: Onko hunajalle omavalvontasuunnitelma pakollinen?
+  a_ref: COMPLIANCE_AND_LEGAL.elintarviketurvallisuus
+  source: src:PL2
+- q: Milloin hunaja on liian märkää linkoukseen?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:PL2
+- q: Miten täyttöpään ongelma tunnistetaan?
+  a_ref: FAILURE_MODES[2].detection
+  source: src:PL2
+- q: Miten pullonkaula suodattimessa havaitaan?
+  a_ref: FAILURE_MODES[1].detection
+  source: src:PL2
+- q: Milloin linkon tärinä viittaa ongelmaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:PL2
+- q: Mikä on säännöllisen työajan raja?
+  a_ref: COMPLIANCE_AND_LEGAL.tyoaika
+  source: src:PL3

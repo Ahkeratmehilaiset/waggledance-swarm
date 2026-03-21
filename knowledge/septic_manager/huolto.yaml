@@ -1,0 +1,23 @@
+title: Huolto
+agent: Jätevesijärjestelmä
+facts:
+- Saostussäiliön tyhjennys 1-2 kertaa vuodessa, loka-auto
+- 'Pienpuhdistamon vuosihuolto: lietteenpoisto, ilmastin'
+- Maasuodattamon käyttöikä 20-30 vuotta oikein hoidettuna
+- 'Talvisuojaus: routaeristys, ei tyhjentämistä pakkasella'
+MAINTENANCE_SCHEDULE:
+- task: Saostuskaivon tyhjennys
+  interval: 1-2 kertaa vuodessa
+  season: Kevät ja syksy
+- task: Umpikaivon tyhjennys
+  interval: Kun 2/3 täynnä, tyypillisesti 3-6 krt/v
+  note: Seuraa pinnantasoa
+- task: Suodatinkentän tarkistus
+  interval: Vuosittain keväällä
+  check: Pinnannousu, hajut, tukkeumat
+- task: Näytteenotto puhdistetusta vedestä
+  interval: 2 v välein
+  source: Kunnan ympäristöviranomainen
+- task: Fosforinpoistomassan vaihto
+  interval: 1-2 v
+  note: Kustannus 100-200 €/vaihto

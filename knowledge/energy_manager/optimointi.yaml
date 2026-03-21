@@ -1,0 +1,23 @@
+# Tehdasenergian hallinta — Optimointi
+# WaggleDance Swarm AI
+title: "Energian optimointi teollisuudessa"
+agent: "Tehdasenergian hallinta"
+facts:
+  - "Sähkömoottorit muodostavat 60–70% teollisuuslaitoksen sähkökulutuksesta — IE4-luokan (Premium) moottori säästää 2–5% IE2:een verrattuna"
+  - "Taajuusmuuttaja (VFD) pumpuissa ja puhaltimissa: kuormituksen lasku 20% nopeudessa → 50% energiansäästö (kuutiollinen laki)"
+  - "Vapaajäähdytys (free cooling): ulkoilma tai glykoli-kiertovesi korvaa kompressorin kun ulkolämpötila <15°C, säästö 30–60%"
+  - "Hukkalämmön talteenotto: prosessijättelämpö tilalämmitykseen tai kuumavesiverkostoon — säästö 10–25% lämmitysenergiasta"
+  - "Paineilmajärjestelmä: vuotohaku ultraäänilaitteella, 10% vuoto = 10% tehohäviö, paineen lasku 1 bar → 7% säästö"
+  - "Kompressorin jälkilämpö: 90% sähköstä muuttuu lämmöksi — talteenotto kuumaveden tuotantoon kannattaa aina"
+  - "Energiamittausjärjestelmä (EMS): reaaliaikainen kulutusseuranta laitteittain, anomaliahälytykset poikkeamista"
+  - "Huipputehon leikkaus: raskaiden laitteiden käynnistys porrastetusti eri aikaan, säästää tehomaksua 10–20%"
+  - "Reaktiivinen teho (cos φ): kondensaattoripatterit parantavat tehokerrointa → 0.95–1.0 tavoite, siirtomaksusäästö"
+  - "Harmonisten yliaaltojen suodatus: taajuusmuuttajien aiheuttamat häiriöt kuriin, parantaa verkkolaatua ja vähentää häviöitä"
+  - "Valaistus LED + ohjausjärjestelmä: liiketunnistus + päivänvaloanturi → 60–80% säästö vanhoihin valaisimiin nähden"
+  - "Termostaattiset höyrynsulkimet: tarkista vuosittain, vuotava sulkija tuhlaaa 5–10 kW jatkuvasti"
+  - "ISO 50001 energianhallintajärjestelmä: systemaattinen jatkuvan parantamisen kehys, sertifiointi parantaa imagoa"
+  - "Energiatehokkuussopimus (KETS): työ- ja elinkeinoministeriön vapaaehtoinen sopimus, energiatuki 20–40% investointeihin"
+  - "Aurinkoenergia kattoasennus: tuotanto 100–150 kWh/kWp/vuosi Suomessa, takaisinmaksu 7–12 vuotta"
+  - "Lämpöpumppu prosessijäähdytykseen: COP 3–5, korvaa sähkölämmityksen, investointi maksaa itsensä 3–6 vuodessa"
+  - "Energiakatselmuksen tulokset: tyypillisesti 10–30% säästöpotentiaali löydetään, pakollinen yli 250 hengen yrityksille 4v välein"
+  - "Kuormitusprofiili ja spot-sähkö: ajoita energiaintensiiviset prosessit halpoihin tunteihin (Nordpool-hinta alle 0.05 €/kWh)"

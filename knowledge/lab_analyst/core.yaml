@@ -1,0 +1,80 @@
+header:
+  agent_id: lab_analyst
+  agent_name: Lab Analyst
+  name_fi: 'Laboratorioanalyytikko'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: medium
+ASSUMPTIONS:
+- Tuotantolaboratorio
+- ISO/GMP-vaatimukset
+DECISION_METRICS_AND_THRESHOLDS:
+  calibration_months:
+    value: 12
+    action: "Erääntynyt → mittari pois käytöstä"
+    source: src:LA1
+  kalibrointisykli_kk:
+    value: 6
+    action: "Kriittiset mittarit kalibroitava 6 kk välein — pH-mittarit ja vaa'at erikseen 3 kk"
+    source: src:LA2
+  puhdastila_ISO:
+    value: 7
+    action: "ISO luokka 7 (10000 hiukkasta/m³) — luokka 5 vaatii laminaarivirtauskaappia"
+    source: src:LA3
+  lampotila_sailytys_C:
+    value: "2-8"
+    action: "Reagenssien säilytys 2-8°C — poikkeama >2°C/4h → kirjaa ja arvioi käyttökelpoisuus"
+    source: src:LA4
+  pH_mittaus_tarkkuus:
+    value: 0.01
+    action: "pH-mittarin tarkkuus ±0.01 yksikköä — kalibroi 2-pisteen puskuriliuoksilla (4.00 ja 7.00)"
+    source: src:LA5
+  naytteen_sailytys_vrk:
+    value: 30
+    action: "Vastanäytteet säilytetään 30 vrk — erityisnäytteet (ympäristö) 90 vrk, kirjaa olosuhteet"
+    source: src:LA6
+  mittausepävarmuus_pct:
+    value: 5
+    action: "Mittausepävarmuus <5% — ylitys vaatii menetelmän uudelleenvalidoinnin ja juurisyyanalyysin"
+    source: src:LA7
+  GMP_tarkistus_kk:
+    value: 3
+    action: "GMP-sisäinen auditointi 3 kk välein — ulkoinen akkreditointiauditointi 12 kk, FINAS-vaatimus"
+    source: src:LA8
+  kemikaalit_sailytys:
+    value: "erilliskaappi"
+    action: "Kemikaalit omissa kaapeissaan yhteensopimattomuuden mukaan — hapot/emäkset eri kaapit, KTT-kortit saatavilla"
+    source: src:LA9
+  lämpötilaseuranta_min:
+    value: 15
+    action: "Jääkaappilämpötila kirjataan 15 min välein dataloggerilla — hälytysraja ±2°C asetusarvosta"
+    source: src:LA10
+  jäljitettävyys_erä:
+    value: "pakollinen"
+    action: "Jokainen näyte-erä jäljitettävä raaka-aineista tuloksiin — LIMS-järjestelmä pakollinen ISO 17025"
+    source: src:LA11
+  sterilointi_autoklaavi_C:
+    value: 121
+    action: "Autoklavointi 121°C / 15 min / 1 bar ylipaine — spoori-indikaattori joka ajossa"
+    source: src:LA12
+eval_questions:
+- q: Mikä on calibration months?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.calibration_months.value
+  source: src:LA1
+- q: Kuinka usein kriittiset mittarit on kalibroitava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.kalibrointisykli_kk.value
+  source: src:LA2
+- q: Mikä ISO-puhtausluokka vaaditaan tuotantolaboratoriossa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.puhdastila_ISO.value
+  source: src:LA3
+- q: Mikä on reagenssien säilytyslämpötila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.lampotila_sailytys_C.value
+  source: src:LA4
+- q: Kuinka kauan vastanäytteitä säilytetään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.naytteen_sailytys_vrk.value
+  source: src:LA6
+- q: Kuinka usein GMP-sisäinen auditointi tehdään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.GMP_tarkistus_kk.value
+  source: src:LA8

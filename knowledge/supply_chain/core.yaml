@@ -1,0 +1,82 @@
+header:
+  agent_id: supply_chain
+  agent_name: Supply Chain Manager
+  name_fi: 'Toimitusketjun hallinta'
+  version: 1.1.0
+  last_updated: '2026-03-04'
+profiles:
+  - factory
+  - beekeeping
+priority: medium
+ASSUMPTIONS:
+- Valmistava teollisuus
+- ERP-järjestelmä
+- Mehiläistalous: tarvikkeet, hunajan pakkaus ja jakelu
+DECISION_METRICS_AND_THRESHOLDS:
+  inventory_turnover:
+    value: 8
+    action: "<8/v → liikaa varastoa"
+    source: src:SC1
+  supplier_otd_pct:
+    value: 95
+    action: "<95% → vaihtoehtoinen lähde"
+    source: src:SC1
+  honey_packaging_lead_days:
+    value: 3
+    action: "Hunajan pakkausaika 1–3 päivää linkousesta"
+    source: src:SC2
+  jar_stock_weeks:
+    value: 6
+    action: "<6 viikon purkkivarasto → tilaa lisää ennen linkouskautta"
+    source: src:SC2
+  wax_recovery_pct:
+    value: 70
+    action: "<70% vahatalteenotto → sulatus- tai suodatusprosessi"
+    source: src:SC2
+SEASONAL_RULES:
+  - month: [3, 4]
+    rule: "Tilataan kesäksi tarvikkeet: kennolevyt, pakkausastiat, ruokintalaitteet"
+  - month: [5, 6]
+    rule: "Varmista purkkivarasto ennen pääsatoa — 300 g, 500 g, 1 kg purkki"
+  - month: [7, 8]
+    rule: "Linkouskausi — pakkauslinja käyttöön, tarrat ja etiketit valmiina"
+  - month: [10, 11]
+    rule: "Syysvarasto: talvileivike, oksaalihappo, mehiläispakkaukset keväksi"
+FAILURE_MODES:
+  - mode: "Purkkipula linkouskauden alkaessa"
+    cause: "Tilauksia ei tehty ajoissa maaliskuussa"
+    action: "Tilaa huhti-toukokuussa vähintään 6 viikon tarve"
+    source: src:SC2
+  - mode: "Vahajäte jää käsittelemättä"
+    cause: "Ei sulatus- tai myyntisuunnitelmaa"
+    action: "Sulata vaha lokakuussa, myy tai tee kiertolevyjä"
+    source: src:SC2
+  - mode: "Mehiläistarvikkeiden pitkä toimitusaika"
+    cause: "Kevätsesonki — tavarantoimittajilla ruuhkaa"
+    action: "Tilaa kriittiset tarvikkeet helmikuussa"
+    source: src:SC2
+PROCESS_FLOWS:
+  honey_supply_chain:
+    steps:
+      - "1. Linkous: pesät → hunajavati → linskouskone"
+      - "2. Suodatus: 1mm + 0.5mm siivilä"
+      - "3. Laskeutus: 24–48h astiassa (vaahto pinnalle)"
+      - "4. Pakkaus: purkki + kansi + etiketti (erä + pvä)"
+      - "5. Varastointi: max 25°C, kuivassa, pimeässä"
+      - "6. Jakelu: tori/myymälä/tilaus"
+eval_questions:
+- q: Mikä on inventory turnover?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.inventory_turnover.value
+  source: src:SC1
+- q: Mikä on supplier otd pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.supplier_otd_pct.value
+  source: src:SC1
+- q: Milloin tilataan mehiläistarvikkeet kevääksi?
+  a: "Helmikuussa, ennen kevätsesongin ruuhkaa tavarantoimittajilla"
+  source: src:SC2
+- q: Kuinka monta viikkoa purkkivarastoa tarvitaan ennen linkouskautta?
+  a: "Vähintään kuusi viikkoa"
+  source: src:SC2
+- q: Mikä on vahatalteenottotavoite?
+  a: "Vähintään 70 prosenttia kennoista saatavasta vahasta"
+  source: src:SC2

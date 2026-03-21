@@ -1,0 +1,25 @@
+title: Vaarat
+agent: Lapsiturvallinen koti
+facts:
+- 'Keittiö: kuuma liesi, veitset, pesuaineet — lukkoportti'
+- 'Kylpyhuone: kuuma vesi (max 50°C), liukas lattia'
+- 'Ikkunat: putoamissuoja, ikkunalukot, turvaverkko'
+- 'Pistorasiat: suojatulpat'
+- 'Portaikot: turvaportit ylä- ja alaporteille'
+AGE_SPECIFIC_RISKS:
+- age: 0-6 kk
+  risks: Tukehtuminen, putoaminen, kylmettyminen
+  actions: Nukutusasento selällään, pinnasänky, lämpötila 18-20°C
+- age: 6-12 kk
+  risks: Pienesineet suuhun, myrkyt, putoaminen
+  actions: Lattiatasolla pienesinetarkistus, kaapistojen lukitus
+- age: 1-3 v
+  risks: Vesi (hukkunmiset), portaat, kuumuus, myrkyt
+  actions: Turvaportit, pistorasiasuojat, pesuaine lukot, vesivahti
+- age: 3-6 v
+  risks: Liikenne, putoaminen, palovammat
+  actions: Liikennekasvatus, ikkunalukot, heijastin
+POISON_CENTER:
+  number: 0800 147 111
+  available: 24/7
+  note: Myrkytystietokeskus HUS — soita AINA epäillessä

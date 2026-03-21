@@ -1,0 +1,33 @@
+title: Raja Arvot
+agent: Melu ja ääniympäristö
+facts:
+- 'Yöaikaan (22-07) asunnossa: ohjearvo 30 dB, päivällä 35 dB'
+- 'Hiljaisuusaika: tyypillisesti 22-07 ja sunnuntaisin'
+- 'Remonttityöt: arkisin 07-18, ei pyhäpäivinä'
+- Häiritsevä melu → isännöitsijä → poliisi
+NOISE_LIMITS_FINLAND:
+- area: Asunto sisällä, päivä (07-22)
+  limit_db: 35
+  source: VNA 545/2015
+- area: Asunto sisällä, yö (22-07)
+  limit_db: 30
+  source: VNA 545/2015
+- area: Piha-alue, päivä
+  limit_db: 55
+  source: VNA 993/1992
+- area: Piha-alue, yö
+  limit_db: 50
+  source: VNA 993/1992
+- area: Virkistysalue
+  limit_db: 45
+  source: VNA 993/1992
+- area: Työmelu, 8h altistus
+  limit_db: 85
+  source: VNA 85/2006
+COMMON_NOISE_LEVELS_DB:
+  whisper: 30
+  normal_speech: 60
+  vacuum_cleaner: 70
+  lawn_mower: 85
+  chainsaw: 100
+  pain_threshold: 130

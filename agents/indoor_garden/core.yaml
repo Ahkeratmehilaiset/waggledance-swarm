@@ -1,0 +1,150 @@
+header:
+  agent_id: indoor_garden
+  agent_name:  Indoor Garden & Houseplants
+  name_fi: 'Huonekasvit ja sisäviljely'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - home
+priority: low
+ASSUMPTIONS:
+- Kaupunkiasunnon sisäkasvit Helsingissä ja mahdollisesti mökillä
+- Suomen pimeä talvi (Helsinki: talvella ~6h päivänvaloa)
+- Mehiläishoitajan intressinä myös pölyttäjäkasvit ja yrtit
+- Home Assistant mahdollisesti integroitu kasteluautomaatioon
+DECISION_METRICS_AND_THRESHOLDS:
+  light_hours_min:
+    value: 12
+    action: "Trooppiset kasvit vaativat 12-16h valoa/vrk — lisää kasvivalo (LED, täysspektri) lokakuu–maaliskuu"
+    source: src:IG1
+  watering_interval_days_winter:
+    value: 14
+    action: "Useimmat huonekasvit talvella 2 viikon kastelu riittää — ylimääräinen kastelu aiheuttaa juurimätää"
+    source: src:IG1
+  temperature_min_c:
+    value: 15
+    action: "Trooppiset lajit: ei alle +15°C — ikkunalaudan vetoilma talvella voi tappaa kasvin"
+    source: src:IG1
+  humidity_min_pct:
+    value: 40
+    action: "Sisäilman kosteus <40% talvella → sumuttele tai käytä kostutinta (trooppiset: 50-70%)"
+    source: src:IG2
+  fertilizer_interval_weeks:
+    value: 4
+    action: "Kasvukausi (huhti-syys): lannoitus 4 viikon välein. Talvella ei lannoiteta — kasvit lepotilassa."
+    source: src:IG1
+  led_grow_light_distance_cm:
+    value: 30
+    action: "LED-kasvivaion etäisyys kasvista 20-40 cm — liian lähellä polttaa, liian kaukana ei tehoa"
+    source: src:IG2
+  pest_threshold_count:
+    value: 5
+    action: ">5 hyönteistä / tuholaiskoloniaa näkyvissä → välitön torjuntatoimenpide ennen lisääntymistä"
+    source: src:IG1
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: pidentyvä päivänvalo herättää kasvit talvilevosta. Lisää kastelua asteittain maaliskuusta alkaen. Repotoi kasvavia kasveja keväällä. Aloita lannoitus huhtikuusta. Siirä sisäkasvit ikkunan lähelle."
+  source: src:IG1
+- season: Kesä
+  action: "Kesäkuu–elokuu: kasvukauden huippu. Kasvit kesäparvekkelle sopii useimmille (suojassa tuulelta). Kastele useammin (jopa päivittäin kuumana). Seuraa tuholaisia — puutarhahyönteisten sisäänpääsy avoimesta ikkunasta."
+  source: src:IG2
+- season: Syksy
+  action: "Syyskuu–marraskuu: vähennä kastelua ja lannoitusta syyskuusta alkaen. Siirrä ulkoilmankasvit sisälle ennen hallaa (syyskuu Helsingissä). Lisää kasvivoimalamppu lokakuussa. Tarkista tuholaiset ennen talvea."
+  source: src:IG1
+- season: Talvi
+  action: "Joulukuu–helmikuu: minimikastelu (kerran 1-2 viikossa useimmille). Ei lannoitusta. Kasvilamput päälle klo 07-19. Huolehdi kostutuksesta — patterilämmitys kuivattaa ilmaa. Pidä kasvit poissa kylmiltä ikkunoilta."
+  source: src:IG1
+FAILURE_MODES:
+- mode: Juurimätä (ylisyöttö tai ylimääräinen kastelu)
+  detection: "Lehdet kellastuvat, varsi pehmenee tyveltä, multakosken hajua, juuret ruskeat ja pehmeät"
+  action: "1. Poista kasvi ruukusta, leikkaa mätäjuuret terävällä desinfioidulla saksella. 2. Anna kuivua 30-60 min. 3. Repotoi tuoreeseen, hyvärakenteiseen kasvualustaan. 4. Älä kastu 2-3 viikkoon. 5. Jos yli 70% juuristosta mennyt — kasvi todennäköisesti menehtyy."
+  source: src:IG1
+- mode: Tuholaisinfestio (kirvat, punkit, jauhovillakilpikirva)
+  detection: "Tahmea pinta, hopeiset naarmut lehdillä, näkyvät hyönteisryppäät, varisevat lehdet"
+  action: "1. Eristä kasvi muista välittömästi. 2. Pese lehdet vedellä (suihkuttele). 3. Saippuavesisuihku (1 rkl nestesaippua / litra). 4. Toistuva käsittely 7 vrk välein 3 kertaa. 5. Vakava infestio → pyretriini-pohjainen kasvisuojeluaine (käytä ulkona tai tuuletetussa tilassa)."
+  source: src:IG2
+- mode: Kasvi ei kasva tai jää pieneksi
+  detection: "Ei uusia lehtiä 4-6 viikkoon kasvukaudella, pieneksi jäänyt, kalpeat lehdet"
+  action: "1. Tarkista valo (liian vähän → kasvilamput). 2. Tarkista kastelu (liian vähän tai paljon). 3. Lisää lannoitus kasvukaudella. 4. Tarkista ruukkukoko — juurtuminen hidastaa kasvua. 5. Lämpötila alle +15°C → siirrä lämpimämpään."
+  source: src:IG1
+PROCESS_FLOWS:
+  garden_care:
+    steps:
+    - 'Viikoittain: tarkista kastelu (sormitesti — multa kuiva 2 cm syvyydestä → kastele)'
+    - 'Kuukausittain: tarkista lehdet tuholaisille, pyyhi pölyt suurilta lehdiltä'
+    - 'Kasvukaudella (huhti-syys): lannoitus 4 viikon välein, repotointi tarvittaessa'
+    - 'Lokakuu: lisää kasvilamput, vähennä lannoitus, siirrä ulkoilmakasvit sisään'
+    - 'Talvi: minimikastelu, seuraa kosteus, kasvivalo päällä arkipäivät'
+    - 'Kevät: uusi multa, aloita kasvatus ja lannoitus, tarkista tuholaiset'
+COMPLIANCE_AND_LEGAL:
+  kasvilista: "Tukes: myrkylliset kasvit (esim. difenbachia, filodendron) lasten ja lemmikkien ulottumattomiin [src:IG2]"
+  kasvinsuojelu: "Kasvinsuojeluaineiden kotikäyttö: valitse vain kotikäyttöön hyväksytyt valmisteet (Tukes-rekisteri) [src:IG2]"
+UNCERTAINTY_NOTES:
+- "Kastelutarve vaihtelee suuresti lajikohtaisesti — yleisohje on suuntaa-antava."
+- "LED-kasvilamppujen teho vaihtelee tuotteittain — tarkista lux tai PPFD-arvo."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:IG1
+    org: Puutarhaliitto / Viherpiha.fi
+    title: Huonekasvien hoito-oppaat
+    year: 2024
+    url: https://www.puutarhaliitto.fi/
+    supports: Kastelu, lannoitus, repotointi, kasvukausi, tuholaiset.
+  - id: src:IG2
+    org: Tukes (Turvallisuus- ja kemikaalivirasto)
+    title: Kasvinsuojeluaineet ja myrkylliset kasvit
+    year: 2024
+    url: https://tukes.fi/kemikaalit/kasvinsuojeluaineet
+    supports: Tuholaistentorijunta, myrkylliset kasvit, kasvilamput.
+eval_questions:
+- q: Kuinka monta tuntia valoa trooppiset kasvit tarvitsevat?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.light_hours_min.value
+  source: src:IG1
+- q: Kuinka usein kasveja kastellaan talvella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.watering_interval_days_winter.action
+  source: src:IG1
+- q: Mikä on huonekasvien minimikasvulämpötila?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.temperature_min_c.value
+  source: src:IG1
+- q: Mikä on sisäilman minimikosteusvaatimus kasveille?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.humidity_min_pct.value
+  source: src:IG2
+- q: Kuinka usein huonekasveja lannoitetaan kasvukaudella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.fertilizer_interval_weeks.action
+  source: src:IG1
+- q: Millä etäisyydellä LED-kasvilamput pidetään kasveista?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.led_grow_light_distance_cm.action
+  source: src:IG2
+- q: Milloin tuholaistorjunta pitää aloittaa?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pest_threshold_count.action
+  source: src:IG1
+- q: Mitä tehdään kasveille keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:IG1
+- q: Milloin kasvilamput pitää lisätä?
+  a_ref: SEASONAL_RULES[2].action
+  source: src:IG1
+- q: Miten toimitaan talvella kasvien hoidossa?
+  a_ref: SEASONAL_RULES[3].action
+  source: src:IG1
+- q: Miten juurimätä tunnistetaan?
+  a_ref: FAILURE_MODES[0].detection
+  source: src:IG1
+- q: Miten juurimätä hoidetaan?
+  a_ref: FAILURE_MODES[0].action
+  source: src:IG1
+- q: Miten tuholainen poistetaan kasvista?
+  a_ref: FAILURE_MODES[1].action
+  source: src:IG2
+- q: Miksi kasvi ei kasva kasvukaudella?
+  a_ref: FAILURE_MODES[2].action
+  source: src:IG1
+- q: Mikä on kasvien viikkorutiini?
+  a_ref: PROCESS_FLOWS.garden_care.steps
+  source: src:IG1
+- q: Mitkä kasvit voivat olla vaarallisia lapsille?
+  a_ref: COMPLIANCE_AND_LEGAL.kasvilista
+  source: src:IG2
+- q: Mitä kasvinsuojeluaineita saa käyttää kotona?
+  a_ref: COMPLIANCE_AND_LEGAL.kasvinsuojelu
+  source: src:IG2

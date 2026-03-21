@@ -1,0 +1,83 @@
+header:
+  agent_id: energy_manager
+  agent_name: Factory Energy Manager
+  name_fi: 'Tehdasenergian hallinta'
+  version: 1.1.0
+  last_updated: '2026-03-04'
+profiles:
+  - factory
+  - beekeeping
+priority: medium
+ASSUMPTIONS:
+- Teollisuuslaitos tai mehiläistarha sähkönkäyttäjänä
+- ISO 50001 suositeltava
+- Pörssisähkö (spot-hinta) vaihtelee tunnin tarkkuudella
+DECISION_METRICS_AND_THRESHOLDS:
+  power_factor_min:
+    value: 0.95
+    action: "<0.95 → loistehomaksu, kompensoi"
+    source: src:EM1
+  air_leak_pct:
+    value: 10
+    action: ">10% vuodot → vuotokartoitus"
+    source: src:EM1
+  spot_price_cheap_c_kwh:
+    value: 5
+    action: "<5 snt/kWh → käytä energiaintensiiviset laitteet nyt"
+    source: src:EM2
+  spot_price_expensive_c_kwh:
+    value: 20
+    action: ">20 snt/kWh → siirrä kuormia halvemmalle tunnille"
+    source: src:EM2
+  honey_extractor_kwh:
+    value: 0.5
+    action: "Linkouskone kuluttaa n. 0.5 kWh/tunti — aja halvan sähkön tunnilla"
+    source: src:EM3
+  bee_heater_kwh_day:
+    value: 2
+    action: "Talvipesälämmitysvastus kuluttaa 1–2 kWh/vrk"
+    source: src:EM3
+SEASONAL_RULES:
+  - month: [7, 8]
+    rule: "Linkouskausi — aja linkouskone ja hunajan lämmitin halvalla sähköllä yöllä/aamuyöllä"
+  - month: [11, 12, 1, 2]
+    rule: "Talvi — mehiläispesälämmittimet päällä, seuraa spot-hintaa"
+  - month: [3, 4]
+    rule: "Kevät — varroakäsittelyssä tarvittavat laitteet (oksaalihappohöyrystin) halvalla sähköllä"
+FAILURE_MODES:
+  - mode: "Suuri sähkölasku talvella"
+    cause: "Lämmitysvastusten ohjaus puuttuu, ei spot-seuranta"
+    action: "Asenna smart plug + porssisahko.net integraatio"
+    source: src:EM2
+  - mode: "Linkous kalliin sähkön tunnilla"
+    cause: "Ei suunniteltu ajoitus"
+    action: "Aja linkouskone yöllä tai tarkista WaggleDance-halvin-tunnit"
+    source: src:EM2
+  - mode: "Loistehomaksu"
+    cause: "Power factor <0.95 teollisuuslaitteilla"
+    action: "Lisää kondensaattoripatteri"
+    source: src:EM1
+PROCESS_FLOWS:
+  energy_optimization:
+    steps:
+      - "1. Hae päivän spot-hinnat porssisahko.net / WaggleDance"
+      - "2. Tunnista halvimmat 3–4 tunnin ikkuna"
+      - "3. Ajasta linkouskone, lämmitin, pesät halvalle ikkunalle"
+      - "4. Kalliiden tuntien aikana sammuta turhat kuormat"
+      - "5. Tallenna kulutusdata kuukausittain"
+eval_questions:
+- q: Mikä on power factor min?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.power_factor_min.value
+  source: src:EM1
+- q: Mikä on air leak pct?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.air_leak_pct.value
+  source: src:EM1
+- q: Milloin spot-sähkö on halpaa?
+  a: "Alle 5 senttiä kilowattitunti on edullista — käytä energiaintensiiviset laitteet silloin"
+  source: src:EM2
+- q: Paljonko linkouskone kuluttaa?
+  a: "Noin 0.5 kilowattituntia tunnissa"
+  source: src:EM3
+- q: Miten säästää sähköä linkouskauden aikana?
+  a: "Aja linkouskone halvimman spot-hinnan tunneilla, yleensä yöaikaan tai varhain aamulla"
+  source: src:EM2

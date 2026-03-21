@@ -1,0 +1,154 @@
+header:
+  agent_id: forklift_fleet
+  agent_name:  Forklift Fleet & Internal Logistics
+  name_fi: 'Trukkiliikenne ja sisälogistiikka'
+  version: 1.0.0
+  last_updated: '2026-03-02'
+profiles:
+  - factory
+priority: low
+ASSUMPTIONS:
+- JKH Servicen tehtaan/varaston sisälogistiikka
+- Trukinkuljettajan pätevyysvaatimus (SFS-standardi, Työsuojeluviranomainen)
+- Sähkö- tai polttomoottorikäyttöisiä trukkeja
+- Suomen työturvallisuuslaki 738/2002 noudatettava
+DECISION_METRICS_AND_THRESHOLDS:
+  license_renewal_years:
+    value: 5
+    action: "Trukkikortti (VT-kortti) uusittava 5 vuoden välein — vanhentuneen kortilla ajaminen on lainvastaista"
+    source: src:FF1
+  forklift_inspection_months:
+    value: 12
+    action: "Trukin määräaikaistarkastus vuosittain (12 kk) — kirjaa tarkastuspöytäkirja"
+    source: src:FF2
+  max_load_capacity_pct:
+    value: 90
+    action: "Älä ylitä 90% trukin nimellisnosto-kapasiteetista — vakausriski kasvaa merkittävästi"
+    source: src:FF1
+  aisle_width_min_m:
+    value: 2.5
+    action: "Käytävän minimileveys kaksisuuntaiselle trukkiliikenteelle 2.5 m + turvamarginaali"
+    source: src:FF2
+  battery_charge_min_pct:
+    value: 20
+    action: "Sähkötrukki: lataa kun akku <20% — syvätyhjennyksestä varottava, lyhentää akkuikää"
+    source: src:FF2
+  pedestrian_zone_speed_kmh:
+    value: 5
+    action: "Jalankulkualueilla trukin max nopeus 5 km/h — käytä äänisignaalia kulmissa"
+    source: src:FF1
+  maintenance_oil_change_h:
+    value: 500
+    action: "Öljynvaihto 500 käyttötunnin välein (tai valmistajan ohje) — kirjaa huoltopäiväkirjaan"
+    source: src:FF2
+SEASONAL_RULES:
+- season: Kevät
+  action: "Maalis–toukokuu: talven jälkeen tarkista trukkien hydrauliikkaletkut (jäätymis/sulatusvauriot), renkaat ja akut. Ulkovarastoalueen pinnoitteet ja merkinnät kuntoon ennen kesäsesonkia."
+  source: src:FF2
+- season: Kesä
+  action: "Kesäkuu–elokuu: kuumuus vaikuttaa polttomoottoritrukkien jäähdytysjärjestelmään — tarkista nesteet. Sähköakun kapasiteetti heikkenee kuumassa. Varo ulkoalueilla höyryjä ja auringonpaistetta ohjaamon lämpöön."
+  source: src:FF2
+- season: Syksy
+  action: "Syyskuu–marraskuu: varaudu liukkaaseen keliin ulkoalueilla — hanki liukuesteet tai vaihda renkaita. Tarkista lämmittimet (polttomoottorit) ja akkujen kylmäsuorituskyky sähkötrukeilta."
+  source: src:FF1
+- season: Talvi
+  action: "Joulukuu–helmikuu: ulkoajossa talvikäyttöön soveltuvat renkaat. Tarkista akkujen lämmityskaapelit. Lumi ja jää varastokäytävillä: hiekoita, merkitse vaara-alueet. Polttomoottorit: kylmäkäynnistykset."
+  source: src:FF2
+FAILURE_MODES:
+- mode: Trukki kaatuu tai lasti putoaa
+  detection: "Trukin kippi sivulle, lasti putoaa piikistä, kuljettaja ei kontrolloi"
+  action: "1. ÄLÄ poistu ohjaamosta jos se kaatuu — pidä kiinni ja nojaa poispäin. 2. Pysäytä kaikki liikenne alueella. 3. Ensihoito tarvittaessa (112). 4. Ilmoita työtapaturma (24h Tapaturmavakuutuskeskus). 5. Älä siirrä trukkia ennen turvallisuusselvitystä."
+  source: src:FF1
+- mode: Hydrauliikkavuoto
+  detection: "Öljyläikkä lattialla trukin alla, haarat laskevat itsestään tai epätasaisesti"
+  action: "1. Laske haarat kokonaan alas ja aseta taakka maahan. 2. Poista trukki käytöstä välittömästi — ÄLÄ aja. 3. Estä öljy valumasta viemäriin (absorptioaine). 4. Tilaa huolto tai vaihda trukki. 5. Kirjaa huoltopäiväkirjaan."
+  source: src:FF2
+- mode: Kuljettajan ajokortti vanhentunut
+  detection: "Tarkistuksessa VT-kortti voimassaolonsa ulkopuolella"
+  action: "1. Keskeytä ajaminen välittömästi — lainvastaista jatkaa. 2. Ilmoita työnantajalle. 3. Varaa uusintakoulutus (Suomen Trukkilisenssi tai AEL). 4. Koulutuksen kesto ~1 päivä + koe. 5. Päivitä kortti ennen paluuta trukille."
+  source: src:FF1
+PROCESS_FLOWS:
+  fleet_management:
+    steps:
+    - 'Päivittäin: kuljettajan aloitustarkastus (renkaat, valot, haarat, nesteet, akku)'
+    - 'Viikoittain: käytäväleveydet ja merkinnät, latausasema kunto, kalustorekisteri'
+    - 'Kuukausittain: tarkastuspöytäkirja, kuljetuskorttien voimassaolo, huoltotarpeet'
+    - 'Puolivuosittain: ulkopuolinen tarkastus tai huoltoliike, akkutestit (sähkötrukit)'
+    - 'Vuosittain: määräaikaistarkastus (12 kk), riskiarvio, koulutuspäivitys'
+    - 'Viiden vuoden välein: VT-kortit uusittava kaikilla kuljettajilla'
+COMPLIANCE_AND_LEGAL:
+  trukkikortti: "VT-kortti (Valtakunnallinen Trukkikortti) pakollinen ammattimaiseen trukinajoon — SFS 5914 [src:FF1]"
+  tyoturvallisuus: "Työnantajan velvollisuus perehdyttää kuljettajat ja varmistaa pätevyydet — TTL 738/2002 [src:FF1]"
+  maaraaikaistarkastus: "Nostolaitteet: vuosittainen tarkastus kirjataan pöytäkirjaan, Tukes-asetus [src:FF2]"
+UNCERTAINTY_NOTES:
+- "VT-kortin pakollisuus vaihtelee — joissain yrityksissä yritysspesifi koulutus riittää, mutta VT-kortti on yleinen standardi."
+- "Akkujen huoltoväli vaihtelee valmistajan ja käyttöintensiteetin mukaan."
+SOURCE_REGISTRY:
+  sources:
+  - id: src:FF1
+    org: Työsuojeluhallinto / Tukes
+    title: Trukkien käyttöturvallisuus ja kuljettajien pätevyysvaatimukset
+    year: 2024
+    url: https://www.tyosuojelu.fi/tyoturvallisuus-ja-tyoolot/tyovalineet/henkilonostimet
+    supports: VT-kortti, kaatuminen, nopeusrajoitukset, pätevyys.
+  - id: src:FF2
+    org: SFS / Suomen Standardisoimisliitto
+    title: SFS 5914 Trukit — turvallisuus ja tarkastukset
+    year: 2023
+    url: https://www.sfs.fi/
+    supports: Määräaikaistarkastus, käytäväleveydet, huoltovälit, akkuturvallisuus.
+  - id: src:FF3
+    org: AEL / Suomen Trukkilisenssi
+    title: Trukkikorttikoulutus
+    year: 2024
+    url: https://www.ael.fi/
+    supports: VT-kortin uusiminen, koulutus, koe.
+eval_questions:
+- q: Kuinka usein trukkikortti on uusittava?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.license_renewal_years.value
+  source: src:FF1
+- q: Kuinka usein trukin määräaikaistarkastus tehdään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.forklift_inspection_months.value
+  source: src:FF2
+- q: Mikä on turvallinen maksimikuormaprosentti?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.max_load_capacity_pct.value
+  source: src:FF1
+- q: Mikä on käytävän minimileveys trukkiliikenteelle?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.aisle_width_min_m.value
+  source: src:FF2
+- q: Milloin sähkötrukki pitää ladata?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.battery_charge_min_pct.action
+  source: src:FF2
+- q: Mikä on suurin sallittu nopeus jalankulkualueella?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.pedestrian_zone_speed_kmh.value
+  source: src:FF1
+- q: Kuinka usein öljynvaihto tehdään?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.maintenance_oil_change_h.value
+  source: src:FF2
+- q: Mitä tarkistetaan trukeilta keväällä?
+  a_ref: SEASONAL_RULES[0].action
+  source: src:FF2
+- q: Miten kuumuus vaikuttaa trukkeihin?
+  a_ref: SEASONAL_RULES[1].action
+  source: src:FF2
+- q: Mitä tehdään jos trukki kaatuu?
+  a_ref: FAILURE_MODES[0].action
+  source: src:FF1
+- q: Miten hydrauliikkavuoto käsitellään?
+  a_ref: FAILURE_MODES[1].action
+  source: src:FF2
+- q: Miten toimitaan jos kuljettajan kortti on vanhentunut?
+  a_ref: FAILURE_MODES[2].action
+  source: src:FF1
+- q: Mikä on päivittäinen aloitustarkastusmenettely?
+  a_ref: PROCESS_FLOWS.fleet_management.steps
+  source: src:FF2
+- q: Onko VT-kortti pakollinen?
+  a_ref: COMPLIANCE_AND_LEGAL.trukkikortti
+  source: src:FF1
+- q: Mitä laki sanoo trukkikuljettajien perehdyttämisestä?
+  a_ref: COMPLIANCE_AND_LEGAL.tyoturvallisuus
+  source: src:FF1
+- q: Onko VT-kortti aina riittävä vai voiko yritysspesifi koulutus riittää?
+  a_ref: UNCERTAINTY_NOTES
+  source: src:FF1

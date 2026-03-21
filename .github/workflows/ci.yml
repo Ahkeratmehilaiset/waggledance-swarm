@@ -1,0 +1,86 @@
+name: WaggleDance CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Security check — no eval() in solver
+        run: |
+          HITS=$(grep -cn '[^_]eval(' core/symbolic_solver.py | grep -v safe_eval || true)
+          RAW=$(grep -n 'eval(' core/symbolic_solver.py | grep -v safe_eval | wc -l)
+          if [ "$RAW" -gt 0 ]; then
+            grep -n 'eval(' core/symbolic_solver.py | grep -v safe_eval
+            echo "Raw eval() found in symbolic_solver.py!"
+            exit 1
+          fi
+          echo "No raw eval() in solver"
+
+      - name: Security check — safe_eval blocks RCE
+        run: |
+          python -c "
+          from core.safe_eval import safe_eval, SafeEvalError
+          assert safe_eval('2+3', {}) == 5
+          try:
+              safe_eval('__import__(\"os\")', {})
+              exit(1)
+          except SafeEvalError:
+              pass
+          print('Security OK')
+          "
+
+      - name: Run tests
+        run: pytest tests/ -x -q --tb=short -p no:warnings
+
+      - name: Check test count
+        run: |
+          COUNT=$(pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -oP '\d+')
+          echo "Test count: $COUNT"
+          if [ "$COUNT" -lt 4200 ]; then
+            echo "Test count dropped below 4200!"
+            exit 1
+          fi
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for dangerous patterns
+        run: |
+          echo "=== Checking for eval() outside safe_eval ==="
+          EVAL_HITS=$(grep -rn "eval(" --include="*.py" core/ waggledance/ \
+            | grep -v safe_eval | grep -v "# noqa" | grep -v "test_" \
+            | grep -v '\.eval()' | grep -v 'retrieval(' | grep -v 'evaluate(' | wc -l)
+          echo "eval() hits outside safe_eval: $EVAL_HITS"
+          if [ "$EVAL_HITS" -gt 0 ]; then
+            grep -rn "eval(" --include="*.py" core/ waggledance/ \
+              | grep -v safe_eval | grep -v "# noqa" | grep -v "test_" \
+              | grep -v '\.eval()' | grep -v 'retrieval(' | grep -v 'evaluate('
+            echo "Unauthorized eval() found!"
+            exit 1
+          fi
+          echo "No unauthorized eval()"
+
+          echo "=== Checking for plaintext MQTT ==="
+          grep -rn "port.*1883" --include="*.py" core/ waggledance/ | grep -v test | grep -v "# TLS" && exit 1 || echo "No hardcoded 1883"

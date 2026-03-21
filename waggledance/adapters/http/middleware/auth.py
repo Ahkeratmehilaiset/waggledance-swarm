@@ -15,6 +15,17 @@ PUBLIC_PATHS = frozenset({
     "/docs",
     "/openapi.json",
     "/redoc",
+    "/api/hologram/state",
+    "/api/status",
+    "/api/system",
+    "/api/consciousness",
+    "/api/learning",
+    "/api/micro_model",
+    "/api/ops",
+    "/api/feeds",
+    "/api/agent_levels",
+    "/api/swarm/scores",
+    "/api/monitor/history",
 })
 
 

@@ -228,6 +228,17 @@ class SQLiteCaseStore:
                 pass
 
     def __del__(self):
+        # Guard against partially-initialized instances (e.g. __init__ failed
+        # before _lock was set, or attributes cleared during interpreter shutdown)
+        if not hasattr(self, '_lock'):
+            # Best-effort close without lock
+            conn = getattr(self, '_conn', None)
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            return
         self.close()
 
     def stats(self) -> Dict[str, Any]:

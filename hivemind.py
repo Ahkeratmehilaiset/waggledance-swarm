@@ -1341,8 +1341,15 @@ DELEGATION RULES (IMPORTANT):
             # Store V1 on consciousness for predict() routing
             if hasattr(self, 'consciousness') and self.consciousness:
                 self.consciousness._v1_engine = v1
-            # Also wire to hivemind for API exposure
-            self.micro_model = v1
+            # Wire V1 into the orchestrator if it exists, otherwise
+            # expose directly (but only if micro_model isn't already set
+            # to a MicroModelOrchestrator — overwriting would break
+            # is_training_due / maybe_train calls in NightModeController)
+            if self.micro_model is not None and hasattr(self.micro_model, 'v1'):
+                # Update the orchestrator's V1 engine with refreshed patterns
+                self.micro_model.v1 = v1
+            elif self.micro_model is None:
+                self.micro_model = v1
         except Exception as e:
             log.warning(f"V1 startup warm: {e}")
 

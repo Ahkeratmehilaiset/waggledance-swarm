@@ -25,6 +25,7 @@ PUBLIC_PATHS = frozenset({
     "/api/health",
     "/api/status",
     "/api/auth/token",
+    "/api/hologram/state",
 })
 
 

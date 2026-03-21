@@ -1,0 +1,1356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hologram Brain — waggle + LLM + micromodels</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 45%, rgba(9, 36, 72, 0.96) 0%, rgba(4, 10, 20, 0.98) 46%, #010206 100%);
+      font-family: Inter, Arial, sans-serif;
+      color: #dff8ff;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .panel {
+      position: fixed;
+      left: 16px;
+      top: 16px;
+      width: min(360px, calc(100vw - 32px));
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(4, 12, 24, 0.52);
+      border: 1px solid rgba(110, 220, 255, 0.16);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(10px);
+      z-index: 2;
+    }
+
+    .panel h1 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      font-weight: 700;
+      color: #a8efff;
+    }
+
+    .panel p {
+      margin: 6px 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: rgba(220, 244, 255, 0.86);
+    }
+
+    .legend {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 10px;
+      font-size: 12px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: rgba(230, 248, 255, 0.92);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+      box-shadow: 0 0 12px currentColor;
+    }
+
+    .footer {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      max-width: min(500px, calc(100vw - 32px));
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(3, 10, 18, 0.45);
+      border: 1px solid rgba(110, 220, 255, 0.12);
+      font-size: 12px;
+      color: rgba(210, 242, 255, 0.82);
+      z-index: 2;
+      line-height: 1.4;
+    }
+
+    code {
+      color: #bff5ff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .menu-bar {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-width: min(760px, calc(100vw - 420px));
+      justify-content: center;
+      padding: 10px 12px;
+      border-radius: 16px;
+      background: rgba(4, 12, 24, 0.54);
+      border: 1px solid rgba(110, 220, 255, 0.16);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(10px);
+      z-index: 4;
+    }
+    .menu-btn {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      color: rgba(225,244,255,0.92);
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+    }
+    .menu-btn:hover {
+      transform: translateY(-1px);
+      background: rgba(255,255,255,0.08);
+    }
+    .menu-btn.active {
+      background: rgba(90,220,255,0.18);
+      border-color: rgba(90,220,255,0.38);
+      color: #dff8ff;
+    }
+    .menu-drawer {
+      position: fixed;
+      right: 16px;
+      bottom: 92px;
+      width: min(420px, calc(100vw - 32px));
+      min-height: 220px;
+      max-height: min(48vh, 420px);
+      overflow: auto;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(4, 12, 24, 0.62);
+      border: 1px solid rgba(110, 220, 255, 0.16);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(12px);
+      z-index: 3;
+    }
+    .menu-drawer h3 {
+      margin: 0 0 6px;
+      font-size: 15px;
+      color: #d7f6ff;
+    }
+    .menu-drawer .menu-sub {
+      font-size: 12px;
+      color: rgba(220,244,255,0.78);
+      margin-bottom: 10px;
+    }
+    .menu-section {
+      margin-top: 10px;
+    }
+    .menu-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .menu-card {
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .menu-card .k {
+      display: block;
+      font-size: 11px;
+      color: rgba(200,230,244,0.72);
+      margin-bottom: 4px;
+    }
+    .menu-card .v {
+      display: block;
+      font-size: 13px;
+      color: rgba(240,248,255,0.94);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .menu-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .menu-list-item {
+      padding: 9px 10px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.06);
+      font-size: 12px;
+      line-height: 1.4;
+      color: rgba(235,247,255,0.92);
+    }
+    .menu-toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    .menu-toolbar button {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.05);
+      color: rgba(235,247,255,0.92);
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .menu-status {
+      font-size: 11px;
+      color: rgba(200,230,244,0.72);
+      margin-left: auto;
+    }
+
+
+    .inspector {
+      position: fixed;
+      right: 16px;
+      top: 16px;
+      width: min(360px, calc(100vw - 32px));
+      min-height: 140px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(4, 12, 24, 0.58);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(10px);
+      z-index: 3;
+    }
+    .inspector.hidden { display: none; }
+    .inspector h2 {
+      margin: 0 0 6px;
+      font-size: 16px;
+      color: #d7f6ff;
+    }
+    .inspector .sub {
+      font-size: 12px;
+      color: rgba(220,244,255,0.78);
+      margin-bottom: 8px;
+    }
+    .inspector p {
+      margin: 8px 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: rgba(225,244,255,0.9);
+    }
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .chip {
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: rgba(235,247,255,0.92);
+    }
+    .inspector button {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      border: 0;
+      background: rgba(255,255,255,0.08);
+      color: #d7f6ff;
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+
+    @media (max-width: 1100px) {
+      .menu-bar {
+        top: auto;
+        bottom: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: calc(100vw - 32px);
+      }
+      .menu-drawer {
+        left: 16px;
+        right: 16px;
+        width: auto;
+        bottom: 84px;
+      }
+      .inspector {
+        top: auto;
+        bottom: 320px;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+
+
+  <div class="menu-bar" id="menuBar">
+    <button class="menu-btn active" data-menu="overview">Overview</button>
+    <button class="menu-btn" data-menu="memory">Memory</button>
+    <button class="menu-btn" data-menu="reasoning">Reasoning</button>
+    <button class="menu-btn" data-menu="micro">Micromodels</button>
+    <button class="menu-btn" data-menu="learning">Learning</button>
+    <button class="menu-btn" data-menu="feeds">Feeds</button>
+    <button class="menu-btn" data-menu="ops">Ops</button>
+  </div>
+
+  <div class="menu-drawer" id="menuDrawer">
+    <h3 id="menuTitle">Overview</h3>
+    <div class="menu-sub" id="menuSub">This menu is designed to plug into the current dashboard REST and WebSocket interfaces.</div>
+    <div id="menuContent"></div>
+    <div class="menu-toolbar">
+      <button id="menuRefreshBtn">Refresh data</button>
+      <button id="menuSocketBtn">Open /ws</button>
+      <div class="menu-status" id="menuStatus">No data yet</div>
+    </div>
+  </div>
+
+
+  <div class="inspector hidden" id="inspector">
+    <button id="inspectorClose" aria-label="Close">×</button>
+    <h2 id="inspectorTitle">Node details</h2>
+    <div class="sub" id="inspectorSub">Click a node in the hologram</div>
+    <p id="inspectorDesc">You will see a short description, interactions and the most important links here.</p>
+    <div class="chip-row" id="inspectorChips"></div>
+  </div>
+
+  <div class="panel">
+    <h1>Hologram Brain: waggle + LLM + micromodels</h1>
+    <p>This canvas renders the visible cause-and-effect chain: <strong>perception → waggle memory → LLM → causal map → micromodel training → decision</strong>.</p>
+    <p>All activation regions are attached to the same 3D hologram, so rotation preserves their relative positions.</p>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="footer">
+    Real-time input: <code>window.updateBrainState(data)</code><br>
+    WebSocket-ready: <code>window.connectBrainSocket(url)</code>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    function resize() {
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      canvas.width = Math.floor(window.innerWidth * dpr);
+      canvas.height = Math.floor(window.innerHeight * dpr);
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    const TAU = Math.PI * 2;
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const ease = t => t * t * (3 - 2 * t);
+
+    function rotateY(p, angle) {
+      const c = Math.cos(angle), s = Math.sin(angle);
+      return { x: p.x * c + p.z * s, y: p.y, z: -p.x * s + p.z * c };
+    }
+
+    function rotateX(p, angle) {
+      const c = Math.cos(angle), s = Math.sin(angle);
+      return { x: p.x, y: p.y * c - p.z * s, z: p.y * s + p.z * c };
+    }
+
+    function project(p, cameraDistance, scale) {
+      const depth = cameraDistance / (cameraDistance - p.z);
+      return { x: p.x * depth * scale, y: p.y * depth * scale, depth };
+    }
+
+    function rgba(rgb, a) {
+      return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
+    }
+
+    function glowCircle(x, y, radius, rgb, alpha) {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+      g.addColorStop(0, rgba(rgb, alpha));
+      g.addColorStop(0.4, rgba(rgb, alpha * 0.45));
+      g.addColorStop(1, rgba(rgb, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, TAU);
+      ctx.fill();
+    }
+
+    function neonLine(x1, y1, x2, y2, rgb, alpha, width) {
+      ctx.save();
+      ctx.strokeStyle = rgba(rgb, alpha);
+      ctx.lineWidth = width;
+      ctx.shadowBlur = 16;
+      ctx.shadowColor = rgba(rgb, alpha);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    class HolographicBrainSystem {
+      constructor() {
+        this.cameraDistance = 700;
+        this.scale = 3.18;
+        this.rotationY = 0;
+        this.rotationX = -0.1;
+        this.rotationDrift = 0.08;
+        this.lastExternalUpdate = 0;
+
+        this.shellPoints = [];
+        this.shellLines = [];
+        this.internalCurves = [];
+        this.particles = [];
+        this.causalEvents = [];
+        this.lastProjectedNodes = [];
+        this.selectedNodeId = null;
+
+        this.nodes = [
+          { id: 'sensory', label: 'Perception', short: 'SNS', role: 'input', rgb: [255, 196, 64], pos: { x: 92, y: -18, z: -48 }, baseActivity: 0.35, activity: 0.35, size: 15 },
+          { id: 'waggle_memory', label: 'Waggle memory', short: 'WGM', role: 'memory', rgb: [255, 122, 72], pos: { x: 28, y: -6, z: 36 }, baseActivity: 0.28, activity: 0.28, size: 16 },
+          { id: 'episodic_memory', label: 'Episodic memory', short: 'EPI', role: 'memory', rgb: [255, 170, 105], pos: { x: 6, y: -42, z: 52 }, baseActivity: 0.24, activity: 0.24, size: 13 },
+          { id: 'semantic_memory', label: 'Semantic memory', short: 'SEM', role: 'memory', rgb: [255, 145, 120], pos: { x: -6, y: 34, z: 46 }, baseActivity: 0.22, activity: 0.22, size: 13 },
+          { id: 'working_memory', label: 'Working memory', short: 'WM', role: 'memory', rgb: [255, 120, 160], pos: { x: -36, y: -16, z: 54 }, baseActivity: 0.26, activity: 0.26, size: 14 },
+          { id: 'llm_core', label: 'LLM semantic core', short: 'LLM', role: 'reasoning', rgb: [255, 76, 96], pos: { x: -8, y: 14, z: 18 }, baseActivity: 0.32, activity: 0.32, size: 18 },
+          { id: 'reason_layer', label: 'Reasoning layer', short: 'RZN', role: 'reasoning', rgb: [255, 92, 208], pos: { x: -44, y: 2, z: 10 }, baseActivity: 0.26, activity: 0.26, size: 14 },
+          { id: 'causal_map', label: 'Causal map', short: 'CAU', role: 'causal', rgb: [88, 214, 255], pos: { x: -30, y: -8, z: 82 }, baseActivity: 0.24, activity: 0.24, size: 14 },
+          { id: 'micro_route', label: 'Route model', short: 'RT', role: 'micro', rgb: [166, 104, 255], pos: { x: -72, y: -46, z: -2 }, baseActivity: 0.18, activity: 0.18, size: 11 },
+          { id: 'micro_anom', label: 'Anomaly model', short: 'AN', role: 'micro', rgb: [205, 104, 255], pos: { x: -56, y: -60, z: 18 }, baseActivity: 0.17, activity: 0.17, size: 11 },
+          { id: 'micro_therm', label: 'Thermal model', short: 'TH', role: 'micro', rgb: [190, 128, 255], pos: { x: -44, y: -56, z: -26 }, baseActivity: 0.16, activity: 0.16, size: 11 },
+          { id: 'micro_stats', label: 'Stats model', short: 'ST', role: 'micro', rgb: [168, 150, 255], pos: { x: -84, y: -28, z: 26 }, baseActivity: 0.15, activity: 0.15, size: 11 },
+          { id: 'micro_train', label: 'Micromodel training', short: 'TRN', role: 'adaptation', rgb: [222, 92, 255], pos: { x: -56, y: -40, z: -8 }, baseActivity: 0.2, activity: 0.2, size: 15 },
+          { id: 'decision', label: 'Decision / response', short: 'DEC', role: 'output', rgb: [86, 255, 132], pos: { x: 58, y: 42, z: -18 }, baseActivity: 0.26, activity: 0.26, size: 16 }
+        ];
+
+        this.edges = [
+          { from: 'sensory', to: 'waggle_memory', rgb: [255, 182, 88], weight: 0.70, signal: 0.50, label: 'perception stored' },
+          { from: 'sensory', to: 'working_memory', rgb: [255, 176, 118], weight: 0.56, signal: 0.38, label: 'perception to working memory' },
+          { from: 'sensory', to: 'llm_core', rgb: [255, 214, 120], weight: 0.58, signal: 0.42, label: 'perception to interpretation' },
+          { from: 'waggle_memory', to: 'episodic_memory', rgb: [255, 146, 86], weight: 0.70, signal: 0.48, label: 'event trace' },
+          { from: 'waggle_memory', to: 'semantic_memory', rgb: [255, 132, 104], weight: 0.64, signal: 0.41, label: 'meaning structure' },
+          { from: 'episodic_memory', to: 'working_memory', rgb: [255, 165, 112], weight: 0.62, signal: 0.35, label: 'restore to working memory' },
+          { from: 'semantic_memory', to: 'llm_core', rgb: [255, 118, 100], weight: 0.78, signal: 0.56, label: 'semantic support' },
+          { from: 'working_memory', to: 'llm_core', rgb: [255, 126, 165], weight: 0.82, signal: 0.61, label: 'active context' },
+          { from: 'llm_core', to: 'reason_layer', rgb: [255, 84, 170], weight: 0.76, signal: 0.62, label: 'token→reasoning' },
+          { from: 'reason_layer', to: 'causal_map', rgb: [162, 138, 255], weight: 0.70, signal: 0.52, label: 'causal structure' },
+          { from: 'llm_core', to: 'causal_map', rgb: [255, 110, 140], weight: 0.70, signal: 0.56, label: 'explanation / structure' },
+          { from: 'causal_map', to: 'micro_train', rgb: [140, 150, 255], weight: 0.52, signal: 0.35, label: 'parameter tuning' },
+          { from: 'micro_train', to: 'micro_route', rgb: [184, 110, 255], weight: 0.62, signal: 0.30, label: 'route training' },
+          { from: 'micro_train', to: 'micro_anom', rgb: [208, 112, 255], weight: 0.58, signal: 0.26, label: 'anomaly training' },
+          { from: 'micro_train', to: 'micro_therm', rgb: [188, 132, 255], weight: 0.54, signal: 0.24, label: 'thermal training' },
+          { from: 'micro_train', to: 'micro_stats', rgb: [166, 152, 255], weight: 0.50, signal: 0.22, label: 'stats training' },
+          { from: 'micro_route', to: 'llm_core', rgb: [166, 104, 255], weight: 0.44, signal: 0.20, label: 'routing feedback' },
+          { from: 'micro_anom', to: 'llm_core', rgb: [205, 104, 255], weight: 0.44, signal: 0.20, label: 'anomaly feedback' },
+          { from: 'micro_therm', to: 'llm_core', rgb: [190, 128, 255], weight: 0.40, signal: 0.18, label: 'thermal feedback' },
+          { from: 'micro_stats', to: 'llm_core', rgb: [168, 150, 255], weight: 0.38, signal: 0.17, label: 'stats feedback' },
+          { from: 'causal_map', to: 'decision', rgb: [78, 220, 255], weight: 0.68, signal: 0.50, label: 'selected action pattern' },
+          { from: 'llm_core', to: 'decision', rgb: [140, 255, 160], weight: 0.76, signal: 0.58, label: 'response formation' },
+          { from: 'decision', to: 'waggle_memory', rgb: [100, 255, 178], weight: 0.38, signal: 0.18, label: 'experience writeback' }
+        ];
+
+        this.buildShell();
+        this.initParticles();
+        this.renderLegend();
+      }
+
+      renderLegend() {
+        const legend = document.getElementById('legend');
+        legend.innerHTML = this.nodes.map(node => `
+          <div class="legend-item">
+            <span class="dot" style="background: rgb(${node.rgb.join(',')}); color: rgb(${node.rgb.join(',')});"></span>
+            <span>${node.short ? `${node.short} · ${node.label}` : node.label}</span>
+          </div>
+        `).join('');
+      }
+
+      buildShell() {
+        const profile = [];
+        const profileCount = 52;
+        for (let i = 0; i < profileCount; i++) {
+          const t = i / (profileCount - 1);
+          const a = t * TAU;
+          let x = Math.cos(a) * 136;
+          let y = Math.sin(a) * 94;
+
+          if (x < 0) x *= 1.1;
+          if (x > 50) x *= 0.92;
+          if (y < -10) y *= 1.08;
+          if (y > 0) y *= 0.72;
+          if (x > 72 && y > 20) {
+            x -= 10;
+            y += 22;
+          }
+          if (x < -90 && y > -10) y -= 6;
+          profile.push({ x, y });
+        }
+
+        const layers = 12;
+        for (let zi = 0; zi < layers; zi++) {
+          const zt = zi / (layers - 1);
+          const z = lerp(-72, 72, zt);
+          const squash = 1 - Math.pow(Math.abs(z) / 80, 1.75) * 0.56;
+          for (const p of profile) {
+            this.shellPoints.push({ x: p.x, y: p.y * squash, z });
+          }
+        }
+
+        for (let zi = 0; zi < layers; zi++) {
+          const off = zi * profile.length;
+          for (let i = 0; i < profile.length; i++) {
+            this.shellLines.push([off + i, off + ((i + 1) % profile.length)]);
+          }
+        }
+
+        for (let zi = 0; zi < layers - 1; zi++) {
+          const aOff = zi * profile.length;
+          const bOff = (zi + 1) * profile.length;
+          for (let i = 0; i < profile.length; i += 2) {
+            this.shellLines.push([aOff + i, bOff + i]);
+          }
+        }
+
+        for (let row = 0; row < 7; row++) {
+          const pts = [];
+          for (let i = 0; i < 20; i++) {
+            const t = i / 19;
+            pts.push({
+              x: lerp(-98, 104, t),
+              y: Math.sin(t * TAU * 0.9 + row * 0.7) * 12 + lerp(-56, 34, row / 6),
+              z: Math.cos(t * TAU * 0.6 + row * 0.8) * 17
+            });
+          }
+          this.internalCurves.push(pts);
+        }
+      }
+
+      initParticles() {
+        for (let i = 0; i < 180; i++) {
+          this.particles.push({
+            x: Math.random() * window.innerWidth,
+            y: Math.random() * window.innerHeight,
+            r: Math.random() * 2 + 0.6,
+            speed: Math.random() * 0.15 + 0.02,
+            phase: Math.random() * TAU
+          });
+        }
+      }
+
+      transformed(p) {
+        let q = rotateY(p, this.rotationY);
+        q = rotateX(q, this.rotationX);
+        return q;
+      }
+
+      getNodeById(id) {
+        return this.nodes.find(n => n.id === id);
+      }
+
+      update(dt, now) {
+        this.rotationY += dt * this.rotationDrift;
+        const t = now * 0.001;
+        const idleMix = this.lastExternalUpdate && now - this.lastExternalUpdate < 500 ? 0.2 : 1;
+
+        this.nodes.forEach((node, i) => {
+          const roleBias = node.role === 'micro' ? 0.75 : node.role === 'memory' ? 0.95 : 1.0;
+          const wave = 0.1 * Math.sin(t * 1.2 + i * 0.9) + 0.06 * Math.sin(t * 2.3 + i * 1.7);
+          const target = clamp(node.activity * (1 - 0.18 * idleMix) + (node.baseActivity + wave * roleBias) * 0.18 * idleMix, 0.04, 1);
+          node.activity = lerp(node.activity, target, 0.06);
+        });
+
+        this.edges.forEach((edge, i) => {
+          const from = this.getNodeById(edge.from);
+          const to = this.getNodeById(edge.to);
+          const coupling = (from.activity + to.activity) * 0.5;
+          const drift = 0.08 * Math.sin(t * 2 + i * 0.8);
+          edge.signal = clamp(lerp(edge.signal, coupling * edge.weight + drift, 0.04), 0.02, 1);
+        });
+
+        if (Math.random() < 0.03) this.spawnCausalEvent(now);
+      }
+
+      spawnCausalEvent(now, fromId, toId) {
+        const edge = fromId && toId
+          ? this.edges.find(e => e.from === fromId && e.to === toId)
+          : this.edges[Math.floor(Math.random() * this.edges.length)];
+        if (!edge) return;
+        this.causalEvents.push({ edge, progress: 0, speed: 0.18 + edge.signal * 0.7, born: now });
+      }
+
+      updateBrainState(data = {}) {
+        const now = performance.now();
+        this.lastExternalUpdate = now;
+
+        if (typeof data.rotationY === 'number') this.rotationY = data.rotationY;
+        if (typeof data.rotationX === 'number') this.rotationX = data.rotationX;
+
+        if (data.nodes) {
+          Object.entries(data.nodes).forEach(([id, value]) => {
+            const node = this.getNodeById(id);
+            if (node) node.activity = clamp(Number(value) || 0, 0, 1);
+          });
+        }
+
+        if (data.edges) {
+          Object.entries(data.edges).forEach(([key, value]) => {
+            const [from, to] = key.split('->');
+            const edge = this.edges.find(e => e.from === from && e.to === to);
+            if (edge) edge.signal = clamp(Number(value) || 0, 0, 1);
+          });
+        }
+
+        if (Array.isArray(data.events)) {
+          data.events.forEach(evt => this.spawnCausalEvent(now, evt.from, evt.to));
+        }
+      }
+
+      drawBackground(now) {
+        const t = now * 0.001;
+        for (const p of this.particles) {
+          const y = (p.y + t * 8 * p.speed + Math.sin(t + p.phase) * 0.25) % (window.innerHeight + 40);
+          glowCircle(p.x, y - 20, p.r * 4, [80, 170, 255], 0.05);
+        }
+      }
+
+
+      setSelectedNode(nodeId) {
+        this.selectedNodeId = nodeId || null;
+      }
+
+      getNodeShort(nodeId) {
+        const node = this.nodes.find(n => n.id === nodeId);
+        return node ? node.short : nodeId;
+      }
+
+      getNodeDetails(nodeId) {
+        const node = this.nodes.find(n => n.id === nodeId);
+        if (!node) return null;
+        const meta = NODE_META[nodeId] || {};
+        const incoming = this.edges.filter(e => e.to === nodeId).map(e => `${this.getNodeShort(e.from)} → ${node.short}`);
+        const outgoing = this.edges.filter(e => e.from === nodeId).map(e => `${node.short} → ${this.getNodeShort(e.to)}`);
+        return {
+          id: node.id,
+          short: node.short,
+          title: node.label,
+          layer: meta.layer || node.role,
+          role: meta.role || node.role,
+          desc: meta.desc || '',
+          incoming,
+          outgoing,
+        };
+      }
+
+      render(now) {
+        ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+        const cx = window.innerWidth * 0.56;
+        const cy = window.innerHeight * 0.54;
+
+        this.drawBackground(now);
+
+        const shellProjected = this.shellPoints.map(p => {
+          const q = this.transformed(p);
+          const s = project(q, this.cameraDistance, this.scale);
+          return { x: cx + s.x, y: cy + s.y, z: q.z, depth: s.depth };
+        });
+
+        for (const [ia, ib] of this.shellLines) {
+          const a = shellProjected[ia];
+          const b = shellProjected[ib];
+          const alpha = clamp(0.05 + (a.depth + b.depth) * 0.16, 0.04, 0.28);
+          neonLine(a.x, a.y, b.x, b.y, [90, 220, 255], alpha, 1.05);
+        }
+
+        for (const curve of this.internalCurves) {
+          for (let i = 0; i < curve.length - 1; i++) {
+            const a = project(this.transformed(curve[i]), this.cameraDistance, this.scale);
+            const b = project(this.transformed(curve[i + 1]), this.cameraDistance, this.scale);
+            neonLine(cx + a.x, cy + a.y, cx + b.x, cy + b.y, [100, 170, 255], 0.08, 1);
+          }
+        }
+
+        const transformedNodes = this.nodes.map(node => {
+          const q = this.transformed(node.pos);
+          const s = project(q, this.cameraDistance, this.scale);
+          return { ...node, sx: cx + s.x, sy: cy + s.y, z: q.z, depth: s.depth };
+        });
+        const nodeMap = Object.fromEntries(transformedNodes.map(n => [n.id, n]));
+        this.lastProjectedNodes = transformedNodes.map(n => ({ id: n.id, x: n.sx, y: n.sy, r: n.size * 1.8 }));
+
+        this.edges.forEach((edge, i) => {
+          const a = nodeMap[edge.from];
+          const b = nodeMap[edge.to];
+          const alpha = 0.12 + edge.signal * 0.42;
+          const width = 1 + edge.signal * 2.2;
+          neonLine(a.sx, a.sy, b.sx, b.sy, edge.rgb, alpha, width);
+
+          const importantEdge = edge.signal > 0.72 || ['working_memory', 'semantic_memory', 'reason_layer', 'micro_train'].includes(edge.from);
+          if (importantEdge && edge.label) {
+            const mx = lerp(a.sx, b.sx, 0.5);
+            const my = lerp(a.sy, b.sy, 0.5);
+            ctx.save();
+            ctx.fillStyle = `rgba(220,240,255,${0.16 + edge.signal * 0.34})`;
+            ctx.font = '10px Inter, Arial, sans-serif';
+            ctx.fillText(edge.label, mx + 6, my - 4);
+            ctx.restore();
+          }
+
+          const waveCount = 2;
+          for (let w = 0; w < waveCount; w++) {
+            const phase = ((now * 0.0003 * (0.5 + edge.signal)) + (w / waveCount) + i * 0.07) % 1;
+            const px = lerp(a.sx, b.sx, phase);
+            const py = lerp(a.sy, b.sy, phase);
+            glowCircle(px, py, 4 + edge.signal * 8, edge.rgb, 0.18 + edge.signal * 0.3);
+          }
+        });
+
+        this.causalEvents = this.causalEvents.filter(evt => now - evt.born < 2400);
+        this.causalEvents.forEach(evt => {
+          const a = nodeMap[evt.edge.from];
+          const b = nodeMap[evt.edge.to];
+          evt.progress += evt.speed * 0.012;
+          const p = ease(clamp(evt.progress, 0, 1));
+          const px = lerp(a.sx, b.sx, p);
+          const py = lerp(a.sy, b.sy, p);
+          glowCircle(px, py, 16, evt.edge.rgb, 0.45);
+          glowCircle(px, py, 7, [255, 255, 255], 0.9);
+        });
+
+        transformedNodes
+          .sort((a, b) => a.z - b.z)
+          .forEach((node, i) => {
+            const pulse = 0.82 + Math.sin(now * 0.003 + i) * 0.18;
+            const r = node.size * (0.7 + node.activity * 0.9) * pulse;
+            const selected = this.selectedNodeId === node.id;
+            if (selected) glowCircle(node.sx, node.sy, r * 3.2, [255,255,255], 0.18);
+            glowCircle(node.sx, node.sy, r * 2.4, node.rgb, 0.22 + node.activity * 0.36 + (selected ? 0.12 : 0));
+            glowCircle(node.sx, node.sy, r, node.rgb, 0.76 + node.activity * 0.2);
+            ctx.save();
+            ctx.fillStyle = `rgba(240,248,255,${0.62 + node.activity * 0.34})`;
+            ctx.font = '12px Inter, Arial, sans-serif';
+            ctx.fillText(node.short || node.label, node.sx + 10, node.sy - 10);
+            ctx.restore();
+          });
+
+        shellProjected.forEach((p, i) => {
+          if (i % 4 === 0) glowCircle(p.x, p.y, 2.2, [120, 235, 255], 0.08);
+        });
+      }
+    }
+
+
+
+    const NODE_META = {
+  "sensory": {
+    "layer": "Input layer",
+    "role": "ingest",
+    "desc": "Sensor and runtime perception entering the hologram pipeline."
+  },
+  "waggle_memory": {
+    "layer": "Memory layer",
+    "role": "directional memory",
+    "desc": "General experience memory that keeps directional patterns, recurrence and route-like traces."
+  },
+  "episodic_memory": {
+    "layer": "Memory layer",
+    "role": "episode recall",
+    "desc": "Event-chain memory for case history, sequence replay and past outcome recall."
+  },
+  "semantic_memory": {
+    "layer": "Memory layer",
+    "role": "semantic compression",
+    "desc": "Compressed meaning memory used to support abstraction and concept retrieval."
+  },
+  "working_memory": {
+    "layer": "Memory layer",
+    "role": "active context",
+    "desc": "Short-lived active context buffer used by reasoning and decision formation."
+  },
+  "llm_core": {
+    "layer": "Reasoning layer",
+    "role": "semantic core",
+    "desc": "Main language-model reasoning core. Integrates active context, memory and model feedback."
+  },
+  "reason_layer": {
+    "layer": "Reasoning layer",
+    "role": "deliberation",
+    "desc": "Explicit reasoning stage for structured interpretation before causal mapping."
+  },
+  "causal_map": {
+    "layer": "Causal layer",
+    "role": "cause/effect",
+    "desc": "Cause-and-effect structure that turns interpretation into a decision-ready state graph."
+  },
+  "micro_route": {
+    "layer": "Micromodel layer",
+    "role": "routing",
+    "desc": "Routing specialist micromodel that helps choose paths, tools or execution branches."
+  },
+  "micro_anom": {
+    "layer": "Micromodel layer",
+    "role": "anomaly detection",
+    "desc": "Anomaly specialist micromodel used for irregularity and deviation signals."
+  },
+  "micro_therm": {
+    "layer": "Micromodel layer",
+    "role": "thermal reasoning",
+    "desc": "Thermal specialist micromodel for heat and environmental behavior patterns."
+  },
+  "micro_stats": {
+    "layer": "Micromodel layer",
+    "role": "statistical scoring",
+    "desc": "Statistical micromodel for numerical scoring, confidence support and trend features."
+  },
+  "micro_train": {
+    "layer": "Learning layer",
+    "role": "trainer",
+    "desc": "Micromodel training node handling adaptation, canary-driven updates and feedback propagation."
+  },
+  "decision": {
+    "layer": "Output layer",
+    "role": "response",
+    "desc": "Final decision / response node. Sends outcome back into memory as experience writeback."
+  }
+};
+
+
+    const dashboardMenus = {
+      overview: { title: 'Overview', sub: 'Fast summary of the full dashboard: system, decision, WebSocket and active states.' },
+      memory: { title: 'Memory', sub: 'WGM, EPI, SEM and WM. This panel is for memory state, counts and interactions from the current backend.' },
+      reasoning: { title: 'Reasoning', sub: 'LLM, RZN and CAU. This panel is for reasoning layers, uncertainty, attention and selected links.' },
+      micro: { title: 'Micromodels', sub: 'RT, AN, TH, ST and their training and feedback signals.' },
+      learning: { title: 'Learning', sub: 'TRN, canaries, leaderboards, learning status and overnight learning states.' },
+      feeds: { title: 'Feeds', sub: 'Data feeds, monitor history and other external signals.' },
+      ops: { title: 'Ops', sub: 'OpsAgent, system stats, swarm scores and decision support states.' }
+    };
+
+    const dashboardState = {
+      status: null,
+      system: null,
+      consciousness: null,
+      learning: null,
+      micro_model: null,
+      ops: null,
+      feeds: null,
+      agent_levels: null,
+      swarm_scores: null,
+      monitor_history: null,
+      ws: { connected: false, lastMessageAt: 0, lastType: '' }
+    };
+
+    const menuBar = document.getElementById('menuBar');
+    const menuDrawer = document.getElementById('menuDrawer');
+    const menuTitle = document.getElementById('menuTitle');
+    const menuSub = document.getElementById('menuSub');
+    const menuContent = document.getElementById('menuContent');
+    const menuRefreshBtn = document.getElementById('menuRefreshBtn');
+    const menuSocketBtn = document.getElementById('menuSocketBtn');
+    const menuStatus = document.getElementById('menuStatus');
+    let activeMenu = 'overview';
+    let dashboardSocket = null;
+
+    function fmt(value, fallback = '—') {
+      if (value === null || value === undefined || value === '') return fallback;
+      if (typeof value === 'number') {
+        if (Number.isInteger(value)) return String(value);
+        return value.toFixed(2);
+      }
+      if (typeof value === 'boolean') return value ? 'yes' : 'no';
+      if (Array.isArray(value)) return value.length ? value.join(', ') : fallback;
+      if (typeof value === 'object') return JSON.stringify(value);
+      return String(value);
+    }
+
+    function card(k, v) {
+      return `<div class="menu-card"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+    }
+
+    function listItem(text) {
+      return `<div class="menu-list-item">${text}</div>`;
+    }
+
+    function getAny(obj, keys, fallback = null) {
+      if (!obj || typeof obj !== 'object') return fallback;
+      for (const key of keys) {
+        if (obj[key] !== undefined && obj[key] !== null) return obj[key];
+      }
+      return fallback;
+    }
+
+    function normalize01(value, hardMax = 100) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      if (n <= 1) return clamp(n, 0, 1);
+      return clamp(n / hardMax, 0, 1);
+    }
+
+    function synthesizeBrainFromDashboard() {
+      const c = dashboardState.consciousness || {};
+      const l = dashboardState.learning || {};
+      const m = (dashboardState.micro_model && (dashboardState.micro_model.stats || dashboardState.micro_model)) || {};
+      const o = dashboardState.ops || {};
+      const sys = dashboardState.system || {};
+      const levels = dashboardState.agent_levels || {};
+      const swarmScores = Array.isArray(dashboardState.swarm_scores?.scores) ? dashboardState.swarm_scores.scores : [];
+
+      const episodes = normalize01(getAny(c, ['episodes_count', 'episodes', 'memory_count'], 0), 500);
+      const memories = normalize01(getAny(c, ['memory_count'], 0), 2000);
+      const corrections = normalize01(getAny(c, ['corrections_count'], 0), 200);
+      const uncertainty = clamp(Number(getAny(c, ['uncertainty_score', 'hallucination_rate'], 0)) || 0, 0, 1);
+      const learningLoad = normalize01(getAny(l.status || l, ['queue_size', 'active_jobs', 'trained_models', 'completed'], 0), 20);
+      const leaderboard = normalize01((l.leaderboard || []).length, 20);
+      const cpu = normalize01(sys.cpu_percent || 0, 100);
+      const gpu = normalize01(sys.gpu_percent || 0, 100);
+      const opsSignal = normalize01(getAny(o.status || o, ['confidence', 'score', 'load', 'health'], 0.5), 1);
+      const microCount = normalize01(Object.keys(m).length, 12);
+      const levelCount = normalize01(Object.keys(levels.levels || levels).length, 20);
+      const swarmStrength = normalize01(swarmScores.length, 16);
+
+      const microRoute = normalize01(getAny(m, ['route', 'route_model_accuracy', 'routing_accuracy', 'route_accuracy'], 0.35), 1);
+      const microAnom = normalize01(getAny(m, ['anomaly', 'anomaly_score', 'anomaly_accuracy'], 0.28), 1);
+      const microTherm = normalize01(getAny(m, ['thermal', 'thermal_score', 'thermal_accuracy'], 0.24), 1);
+      const microStats = normalize01(getAny(m, ['stats', 'stats_score', 'stats_accuracy'], 0.22), 1);
+
+      const payload = {
+        nodes: {
+          sensory: clamp(0.25 + cpu * 0.35 + gpu * 0.15, 0.12, 1),
+          waggle_memory: clamp(0.25 + memories * 0.55, 0.18, 1),
+          episodic_memory: clamp(0.18 + episodes * 0.72, 0.12, 1),
+          semantic_memory: clamp(0.18 + memories * 0.42 + leaderboard * 0.18, 0.12, 1),
+          working_memory: clamp(0.22 + cpu * 0.25 + swarmStrength * 0.25, 0.14, 1),
+          llm_core: clamp(0.26 + gpu * 0.32 + levelCount * 0.22, 0.18, 1),
+          reason_layer: clamp(0.22 + uncertainty * 0.35 + opsSignal * 0.18, 0.16, 1),
+          causal_map: clamp(0.2 + corrections * 0.28 + uncertainty * 0.38, 0.12, 1),
+          micro_train: clamp(0.18 + learningLoad * 0.46 + leaderboard * 0.22, 0.14, 1),
+          micro_route: clamp(0.12 + microRoute * 0.88, 0.1, 1),
+          micro_anom: clamp(0.12 + microAnom * 0.88, 0.1, 1),
+          micro_therm: clamp(0.12 + microTherm * 0.88, 0.1, 1),
+          micro_stats: clamp(0.12 + microStats * 0.88, 0.1, 1),
+          decision: clamp(0.2 + opsSignal * 0.38 + swarmStrength * 0.14, 0.14, 1)
+        },
+        edges: {
+          'working_memory->llm_core': clamp(0.32 + cpu * 0.38, 0.18, 1),
+          'semantic_memory->llm_core': clamp(0.32 + memories * 0.28, 0.18, 1),
+          'llm_core->reason_layer': clamp(0.34 + gpu * 0.34, 0.2, 1),
+          'reason_layer->causal_map': clamp(0.24 + uncertainty * 0.5, 0.16, 1),
+          'causal_map->micro_train': clamp(0.2 + learningLoad * 0.54, 0.14, 1),
+          'micro_train->micro_route': clamp(0.18 + microRoute * 0.56, 0.12, 1),
+          'micro_train->micro_anom': clamp(0.18 + microAnom * 0.56, 0.12, 1),
+          'micro_train->micro_therm': clamp(0.18 + microTherm * 0.56, 0.12, 1),
+          'micro_train->micro_stats': clamp(0.18 + microStats * 0.56, 0.12, 1),
+          'llm_core->decision': clamp(0.24 + opsSignal * 0.46, 0.14, 1),
+          'causal_map->decision': clamp(0.22 + uncertainty * 0.24 + opsSignal * 0.24, 0.14, 1),
+          'decision->waggle_memory': clamp(0.16 + corrections * 0.28, 0.1, 1)
+        }
+      };
+      brain.updateBrainState(payload);
+      return payload;
+    }
+
+    function buildOverviewMenu() {
+      const wsAge = dashboardState.ws.lastMessageAt ? Math.round((Date.now() - dashboardState.ws.lastMessageAt) / 1000) + ' s ago' : 'no messages';
+      return `
+        <div class="menu-grid">
+          ${card('WebSocket', dashboardState.ws.connected ? 'connected' : 'not connected')}
+          ${card('Latest WS', wsAge)}
+          ${card('CPU %', fmt(dashboardState.system?.cpu_percent))}
+          ${card('GPU %', fmt(dashboardState.system?.gpu_percent))}
+          ${card('Memory traces', fmt(dashboardState.consciousness?.memory_count))}
+          ${card('Canary / training', fmt(dashboardState.learning?.status?.active_jobs || dashboardState.learning?.status?.queue_size || dashboardState.learning?.trained_models))}
+        </div>
+        <div class="menu-list">
+          ${listItem('This version includes the improved hologram and embedded dashboard menus on the same page.')}
+          ${listItem('Direct wiring works through the current codebase via the WebSocket (/ws) and REST endpoints.')}
+          ${listItem('Recommended integration: serve this as a dedicated dashboard view instead of embedding everything into the legacy inline HTML string.')}
+        </div>
+      `;
+    }
+
+    function buildMemoryMenu() {
+      const c = dashboardState.consciousness || {};
+      return `
+        <div class="menu-grid">
+          ${card('memory_count', fmt(c.memory_count))}
+          ${card('episodes_count', fmt(c.episodes_count))}
+          ${card('corrections_count', fmt(c.corrections_count))}
+          ${card('hallucination_rate', fmt(c.hallucination_rate))}
+        </div>
+        <div class="menu-list">
+          ${listItem('WGM ← general experience store and direction memory')}
+          ${listItem('EPI ← episodes / case history / event chains')}
+          ${listItem('SEM ← compact semantic memory')}
+          ${listItem('WM ← active context buffer')}
+        </div>
+      `;
+    }
+
+    function buildReasoningMenu() {
+      const c = dashboardState.consciousness || {};
+      const levels = dashboardState.agent_levels?.levels || dashboardState.agent_levels || {};
+      return `
+        <div class="menu-grid">
+          ${card('uncertainty / hallucination', fmt(c.hallucination_rate))}
+          ${card('active_learning_count', fmt(c.active_learning_count))}
+          ${card('agent levels', fmt(Object.keys(levels || {}).length))}
+          ${card('swarm scores', fmt((dashboardState.swarm_scores?.scores || []).length))}
+        </div>
+        <div class="menu-list">
+          ${listItem('LLM = semantic core, RZN = reasoning layer, CAU = causal structure')}
+          ${listItem('If you want exact attention/uncertainty values in the hologram, add one adapter endpoint that returns a ready-made summary payload.')}
+        </div>
+      `;
+    }
+
+    function buildMicroMenu() {
+      const m = (dashboardState.micro_model && (dashboardState.micro_model.stats || dashboardState.micro_model)) || {};
+      const keys = Object.keys(m);
+      return `
+        <div class="menu-grid">
+          ${card('micro_model available', fmt(dashboardState.micro_model?.available))}
+          ${card('stats keys', fmt(keys.length))}
+          ${card('route', fmt(getAny(m, ['route', 'route_accuracy', 'route_model_accuracy'])))}
+          ${card('anomaly', fmt(getAny(m, ['anomaly', 'anomaly_accuracy', 'anomaly_score'])))}
+          ${card('thermal', fmt(getAny(m, ['thermal', 'thermal_accuracy', 'thermal_score'])))}
+          ${card('stats', fmt(getAny(m, ['stats', 'stats_accuracy', 'stats_score'])))}
+        </div>
+        <div class="menu-list">
+          ${keys.length ? keys.slice(0, 8).map(k => listItem(`${k}: ${fmt(m[k])}`)).join('') : listItem('The current endpoint appears to expose a generic stats object. If you want RT/AN/TH/ST as true separate signals, add explicit backend fields for each.') }
+        </div>
+      `;
+    }
+
+    function buildLearningMenu() {
+      const l = dashboardState.learning || {};
+      const status = l.status || {};
+      const leaderboard = Array.isArray(l.leaderboard) ? l.leaderboard : [];
+      return `
+        <div class="menu-grid">
+          ${card('queue / active', fmt(getAny(status, ['queue_size', 'active_jobs', 'pending'], 0)))}
+          ${card('leaderboard rows', fmt(leaderboard.length))}
+          ${card('micro training', fmt(dashboardState.micro_model?.available))}
+          ${card('top training source', leaderboard[0] ? fmt(leaderboard[0].model_id || leaderboard[0].name || 'top result') : '—')}
+        </div>
+        <div class="menu-list">
+          ${leaderboard.length ? leaderboard.slice(0, 5).map((row, idx) => listItem(`#${idx + 1}: ${fmt(row.model_id || row.name || row.label)} · ${fmt(row.accuracy || row.score || row.value)}`)).join('') : listItem('No leaderboard data available right now.') }
+        </div>
+      `;
+    }
+
+    function buildFeedsMenu() {
+      const f = dashboardState.feeds || {};
+      const hist = dashboardState.monitor_history?.events || [];
+      return `
+        <div class="menu-grid">
+          ${card('feeds enabled', fmt(f.enabled))}
+          ${card('critical alerts', fmt((f.critical_alerts || []).length))}
+          ${card('monitor events', fmt(hist.length))}
+          ${card('WS last type', fmt(dashboardState.ws.lastType))}
+        </div>
+        <div class="menu-list">
+          ${(f.critical_alerts || []).slice(0, 4).map(a => listItem(typeof a === 'string' ? a : JSON.stringify(a))).join('') || listItem('No critical alerts at the moment.')}
+          ${hist.slice(0, 3).map(e => listItem(typeof e === 'string' ? e : JSON.stringify(e))).join('')}
+        </div>
+      `;
+    }
+
+    function buildOpsMenu() {
+      const o = dashboardState.ops || {};
+      const status = o.status || {};
+      const rec = o.recommendation || {};
+      return `
+        <div class="menu-grid">
+          ${card('ops status', fmt(Object.keys(status).length))}
+          ${card('recommendation', fmt(Object.keys(rec).length))}
+          ${card('system cpu', fmt(dashboardState.system?.cpu_percent))}
+          ${card('system mem', fmt(dashboardState.system?.memory_percent))}
+        </div>
+        <div class="menu-list">
+          ${Object.keys(status).length ? Object.entries(status).slice(0, 6).map(([k,v]) => listItem(`${k}: ${fmt(v)}`)).join('') : listItem('No ops status fields at the moment.')}
+          ${Object.keys(rec).length ? Object.entries(rec).slice(0, 4).map(([k,v]) => listItem(`recommendation ${k}: ${fmt(v)}`)).join('') : ''}
+        </div>
+      `;
+    }
+
+    function renderMenu(name = activeMenu) {
+      activeMenu = name;
+      const meta = dashboardMenus[name];
+      menuTitle.textContent = meta.title;
+      menuSub.textContent = meta.sub;
+      menuBar.querySelectorAll('.menu-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.menu === name));
+      let html = '';
+      if (name === 'overview') html = buildOverviewMenu();
+      if (name === 'memory') html = buildMemoryMenu();
+      if (name === 'reasoning') html = buildReasoningMenu();
+      if (name === 'micro') html = buildMicroMenu();
+      if (name === 'learning') html = buildLearningMenu();
+      if (name === 'feeds') html = buildFeedsMenu();
+      if (name === 'ops') html = buildOpsMenu();
+      menuContent.innerHTML = html;
+      menuStatus.textContent = dashboardState.ws.connected ? 'WS active' : 'REST / offline';
+    }
+
+    async function safeJson(url) {
+      try {
+        const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+        return await res.json();
+      } catch (err) {
+        return { __error: String(err), __url: url };
+      }
+    }
+
+    async function fetchDashboardMenus(apiBase = '') {
+      const base = apiBase.replace(/\/$/, '');
+      const endpoints = {
+        status: '/api/status',
+        system: '/api/system',
+        consciousness: '/api/consciousness',
+        learning: '/api/learning',
+        micro_model: '/api/micro_model',
+        ops: '/api/ops',
+        feeds: '/api/feeds',
+        agent_levels: '/api/agent_levels',
+        swarm_scores: '/api/swarm/scores',
+        monitor_history: '/api/monitor/history'
+      };
+      const entries = await Promise.all(Object.entries(endpoints).map(async ([key, path]) => [key, await safeJson(base + path)]));
+      for (const [key, value] of entries) dashboardState[key] = value;
+      synthesizeBrainFromDashboard();
+      renderMenu(activeMenu);
+      menuStatus.textContent = 'Updated ' + new Date().toLocaleTimeString('en-GB');
+      return dashboardState;
+    }
+
+    function handleDashboardSocketMessage(payload) {
+      dashboardState.ws.lastMessageAt = Date.now();
+      dashboardState.ws.lastType = payload?.type || payload?.event || payload?.kind || 'ws';
+      if (payload && payload.type === 'system' && payload.data) dashboardState.system = payload.data;
+      if (payload && payload.type === 'learning' && payload.data) dashboardState.learning = payload.data;
+      if (payload && payload.type === 'micro_model' && payload.data) dashboardState.micro_model = payload.data;
+      if (payload && payload.type === 'ops' && payload.data) dashboardState.ops = payload.data;
+      if (payload && payload.type === 'consciousness' && payload.data) dashboardState.consciousness = payload.data;
+      if (payload && payload.type === 'monitor' && payload.data) {
+        const arr = dashboardState.monitor_history?.events || [];
+        dashboardState.monitor_history = { events: [payload.data, ...arr].slice(0, 50) };
+      }
+      if (payload && payload.brain) {
+        brain.updateBrainState(payload.brain);
+      } else {
+        synthesizeBrainFromDashboard();
+      }
+      renderMenu(activeMenu);
+    }
+
+    window.fetchDashboardMenus = fetchDashboardMenus;
+
+    window.connectDashboardHologram = async function(config = {}) {
+      const apiBase = config.apiBase || '';
+      const wsUrl = config.wsUrl || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+      await fetchDashboardMenus(apiBase);
+      if (dashboardSocket) {
+        try { dashboardSocket.close(); } catch {}
+      }
+      dashboardSocket = new WebSocket(wsUrl);
+      dashboardSocket.onopen = () => {
+        dashboardState.ws.connected = true;
+        renderMenu(activeMenu);
+      };
+      dashboardSocket.onclose = () => {
+        dashboardState.ws.connected = false;
+        renderMenu(activeMenu);
+      };
+      dashboardSocket.onerror = () => {
+        dashboardState.ws.connected = false;
+        renderMenu(activeMenu);
+      };
+      dashboardSocket.onmessage = event => {
+        try {
+          const payload = JSON.parse(event.data);
+          handleDashboardSocketMessage(payload);
+        } catch (err) {
+          console.warn('Invalid dashboard WebSocket payload', err);
+        }
+      };
+      return dashboardSocket;
+    };
+
+    menuBar.addEventListener('click', event => {
+      const btn = event.target.closest('.menu-btn');
+      if (!btn) return;
+      renderMenu(btn.dataset.menu);
+    });
+    menuRefreshBtn.addEventListener('click', () => fetchDashboardMenus(''));
+    menuSocketBtn.addEventListener('click', () => window.connectDashboardHologram({}));
+
+
+    const brain = new HolographicBrainSystem();
+    window.updateBrainState = data => brain.updateBrainState(data);
+    const inspector = document.getElementById('inspector');
+    const inspectorTitle = document.getElementById('inspectorTitle');
+    const inspectorSub = document.getElementById('inspectorSub');
+    const inspectorDesc = document.getElementById('inspectorDesc');
+    const inspectorChips = document.getElementById('inspectorChips');
+    const inspectorClose = document.getElementById('inspectorClose');
+
+    function showNodeInspector(nodeId) {
+      const info = brain.getNodeDetails(nodeId);
+      if (!info) return;
+      brain.setSelectedNode(nodeId);
+      inspector.classList.remove('hidden');
+      inspectorTitle.textContent = `${info.short} · ${info.title}`;
+      inspectorSub.textContent = `${info.layer} · ${info.role}`;
+      inspectorDesc.textContent = info.desc;
+      const chips = [];
+      chips.push(`<span class="chip">Incoming: ${info.incoming.length || 0}</span>`);
+      chips.push(`<span class="chip">Outgoing: ${info.outgoing.length || 0}</span>`);
+      info.incoming.slice(0, 4).forEach(x => chips.push(`<span class="chip">${x}</span>`));
+      info.outgoing.slice(0, 4).forEach(x => chips.push(`<span class="chip">${x}</span>`));
+      inspectorChips.innerHTML = chips.join('');
+    }
+
+    function hideNodeInspector() {
+      brain.setSelectedNode(null);
+      inspector.classList.add('hidden');
+    }
+
+    inspectorClose.addEventListener('click', hideNodeInspector);
+
+    canvas.addEventListener('click', event => {
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      let best = null;
+      for (const node of brain.lastProjectedNodes) {
+        const dx = x - node.x;
+        const dy = y - node.y;
+        const d = Math.hypot(dx, dy);
+        const hit = Math.max(16, node.r);
+        if (d <= hit && (!best || d < best.d)) best = { id: node.id, d };
+      }
+      if (best) showNodeInspector(best.id);
+    });
+
+
+    window.connectBrainSocket = function(url) {
+      const ws = new WebSocket(url);
+      ws.onmessage = event => {
+        try {
+          const payload = JSON.parse(event.data);
+          brain.updateBrainState(payload);
+        } catch (err) {
+          console.warn('Invalid WebSocket payload', err);
+        }
+      };
+      ws.onopen = () => console.log('Brain socket connected:', url);
+      ws.onclose = () => console.log('Brain socket closed');
+      ws.onerror = err => console.warn('Brain socket error', err);
+      return ws;
+    };
+
+    renderMenu('overview');
+
+    // ── Live mode: connect to backend, fall back to demo ──
+    let _liveConnected = false;
+    let _demoInterval = null;
+
+    // Try live connection: dashboard menus + WebSocket + hologram state polling
+    (async function initLiveMode() {
+      try {
+        await connectDashboardHologram();
+        _liveConnected = true;
+        console.log('Hologram: live dashboard connection established');
+
+        // Poll /api/hologram/state every 2s for brain node activations
+        setInterval(async () => {
+          try {
+            const state = await safeJson('/api/hologram/state');
+            if (state && state.nodes && !state.__error) {
+              brain.updateBrainState(state);
+            }
+          } catch (e) { /* silent — WS or next poll will catch up */ }
+        }, 2000);
+
+      } catch (err) {
+        console.warn('Hologram: backend not available, running demo mode', err);
+        _startDemoSequence();
+      }
+    })();
+
+    function _startDemoSequence() {
+      let phase = 0;
+      _demoInterval = setInterval(() => {
+        phase = (phase + 1) % 5;
+        if (phase === 0) {
+          brain.updateBrainState({
+            nodes: { sensory: 0.95, waggle_memory: 0.52, episodic_memory: 0.24, semantic_memory: 0.18, working_memory: 0.44, llm_core: 0.22, reason_layer: 0.16, micro_train: 0.1, causal_map: 0.14, decision: 0.08 },
+            edges: { 'sensory->waggle_memory': 0.9, 'sensory->working_memory': 0.72, 'sensory->llm_core': 0.6 },
+            events: [{ from: 'sensory', to: 'waggle_memory' }, { from: 'sensory', to: 'working_memory' }, { from: 'sensory', to: 'llm_core' }]
+          });
+        }
+        if (phase === 1) {
+          brain.updateBrainState({
+            nodes: { sensory: 0.62, waggle_memory: 0.94, episodic_memory: 0.72, semantic_memory: 0.58, working_memory: 0.82, llm_core: 0.54, reason_layer: 0.22, micro_train: 0.18, causal_map: 0.25, decision: 0.12 },
+            edges: { 'waggle_memory->episodic_memory': 0.82, 'waggle_memory->semantic_memory': 0.75, 'episodic_memory->working_memory': 0.74, 'working_memory->llm_core': 0.86 },
+            events: [{ from: 'waggle_memory', to: 'episodic_memory' }, { from: 'waggle_memory', to: 'semantic_memory' }, { from: 'working_memory', to: 'llm_core' }]
+          });
+        }
+        if (phase === 2) {
+          brain.updateBrainState({
+            nodes: { sensory: 0.3, waggle_memory: 0.66, episodic_memory: 0.58, semantic_memory: 0.72, working_memory: 0.76, llm_core: 0.96, reason_layer: 0.88, micro_train: 0.3, causal_map: 0.9, decision: 0.42 },
+            edges: { 'semantic_memory->llm_core': 0.84, 'working_memory->llm_core': 0.92, 'llm_core->reason_layer': 0.95, 'reason_layer->causal_map': 0.91, 'llm_core->causal_map': 0.78 },
+            events: [{ from: 'semantic_memory', to: 'llm_core' }, { from: 'working_memory', to: 'llm_core' }, { from: 'llm_core', to: 'reason_layer' }, { from: 'reason_layer', to: 'causal_map' }]
+          });
+        }
+        if (phase === 3) {
+          brain.updateBrainState({
+            nodes: { sensory: 0.18, waggle_memory: 0.44, episodic_memory: 0.34, semantic_memory: 0.55, working_memory: 0.48, llm_core: 0.78, reason_layer: 0.72, micro_train: 0.96, micro_route: 0.72, micro_anom: 0.68, micro_therm: 0.62, micro_stats: 0.58, causal_map: 0.76, decision: 0.52 },
+            edges: { 'causal_map->micro_train': 0.88, 'micro_train->micro_route': 0.82, 'micro_train->micro_anom': 0.78, 'micro_train->micro_therm': 0.71, 'micro_train->micro_stats': 0.67, 'micro_route->llm_core': 0.48, 'micro_anom->llm_core': 0.44 },
+            events: [{ from: 'causal_map', to: 'micro_train' }, { from: 'micro_train', to: 'micro_route' }, { from: 'micro_train', to: 'micro_anom' }, { from: 'micro_train', to: 'micro_therm' }, { from: 'micro_train', to: 'micro_stats' }]
+          });
+        }
+        if (phase === 4) {
+          brain.updateBrainState({
+            nodes: { sensory: 0.12, waggle_memory: 0.58, episodic_memory: 0.3, semantic_memory: 0.46, working_memory: 0.38, llm_core: 0.64, reason_layer: 0.58, micro_train: 0.34, micro_route: 0.33, micro_anom: 0.28, micro_therm: 0.24, micro_stats: 0.22, causal_map: 0.55, decision: 0.98 },
+            edges: { 'causal_map->decision': 0.93, 'llm_core->decision': 0.88, 'decision->waggle_memory': 0.55 },
+            events: [{ from: 'causal_map', to: 'decision' }, { from: 'llm_core', to: 'decision' }, { from: 'decision', to: 'waggle_memory' }]
+          });
+        }
+      }, 1200);
+    }
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min((now - last) / 1000, 0.033);
+      last = now;
+      brain.update(dt, now);
+      brain.render(now);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

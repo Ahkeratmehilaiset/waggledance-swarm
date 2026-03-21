@@ -11,6 +11,8 @@ from waggledance.adapters.http.middleware.auth import BearerAuthMiddleware
 from waggledance.adapters.http.middleware.rate_limit import RateLimitMiddleware
 from waggledance.adapters.http.routes.autonomy import router as autonomy_router
 from waggledance.adapters.http.routes.chat import router as chat_router
+from waggledance.adapters.http.routes.compat_dashboard import router as compat_router
+from waggledance.adapters.http.routes.hologram import router as hologram_router
 from waggledance.adapters.http.routes.memory import router as memory_router
 from waggledance.adapters.http.routes.status import router as status_router
 from waggledance.core.domain.events import DomainEvent, EventType
@@ -37,11 +39,27 @@ async def lifespan(app: FastAPI):
     _verify = container.memory_repository
     _verify = container.trust_store
 
+    # Start autonomy runtime if available
+    if hasattr(container, "autonomy_service"):
+        try:
+            container.autonomy_service.start()
+            logger.info("AutonomyService started")
+        except Exception as exc:
+            logger.warning("AutonomyService start failed: %s", exc)
+
     logger.info("WaggleDance startup complete")
 
     yield  # application is running
 
     # ---- SHUTDOWN ----
+    # Stop autonomy runtime
+    if hasattr(container, "autonomy_service"):
+        try:
+            container.autonomy_service.stop()
+            logger.info("AutonomyService stopped")
+        except Exception as exc:
+            logger.warning("AutonomyService stop failed: %s", exc)
+
     # Close OllamaAdapter httpx client if present
     llm = container.llm
     if hasattr(llm, "close"):
@@ -104,6 +122,10 @@ def create_app(container) -> FastAPI:
     app.include_router(memory_router, prefix="/api")
     # Autonomy routes under /api prefix (/api/autonomy/*)
     app.include_router(autonomy_router, prefix="/api")
+    # Hologram brain visualization (/hologram + /api/hologram/state)
+    app.include_router(hologram_router)
+    # Legacy dashboard compat endpoints for hologram menus + /ws
+    app.include_router(compat_router)
 
     # ---- Static files ---- CONDITIONAL mount
     # Missing dashboard/dist must NOT crash the application

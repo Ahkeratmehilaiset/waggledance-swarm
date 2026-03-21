@@ -145,7 +145,11 @@ def check_core_classes() -> List[Tuple[str, bool, str]]:
 
 
 def check_cognitive_graph() -> Tuple[bool, str]:
-    """Check that CognitiveGraph is available and WorldModel can use it."""
+    """Check that CognitiveGraph is available and WorldModel can use it.
+
+    In autonomy mode (primary=waggledance, compatibility_mode=false),
+    CognitiveGraph must be non-None.
+    """
     try:
         from waggledance.core.world.world_model import WorldModel
         wm = WorldModel(profile="VALIDATION")
@@ -153,6 +157,19 @@ def check_cognitive_graph() -> Tuple[bool, str]:
             stats = wm.graph.stats()
             return True, f"graph OK ({stats.get('nodes', 0)} nodes, {stats.get('edges', 0)} edges)"
         return False, "CognitiveGraph is None — learning loop inactive"
+    except Exception as e:
+        return False, str(e)
+
+
+def check_autonomy_mode_graph() -> Tuple[bool, str]:
+    """Check that WorldModel rejects None graph in autonomy mode."""
+    try:
+        from waggledance.core.world.world_model import WorldModel
+        try:
+            WorldModel(cognitive_graph=None, profile="VALIDATION", autonomy_mode=True)
+            return False, "WorldModel accepted None graph in autonomy mode (should reject)"
+        except RuntimeError:
+            return True, "WorldModel correctly rejects None graph in autonomy mode"
     except Exception as e:
         return False, str(e)
 
@@ -187,14 +204,21 @@ def run_validation() -> bool:
         all_pass = False
 
     # 3. CognitiveGraph check
-    print("\n[3/4] CognitiveGraph:")
+    print("\n[3/5] CognitiveGraph:")
     graph_ok, graph_msg = check_cognitive_graph()
     print(f"  {'PASS' if graph_ok else 'FAIL'}: {graph_msg}")
     if not graph_ok:
         all_pass = False
 
-    # 4. Core class checks
-    print("\n[4/4] Core class instantiation:")
+    # 3b. Autonomy mode graph rejection
+    print("\n[4/5] Autonomy mode graph guard:")
+    guard_ok, guard_msg = check_autonomy_mode_graph()
+    print(f"  {'PASS' if guard_ok else 'FAIL'}: {guard_msg}")
+    if not guard_ok:
+        all_pass = False
+
+    # 5. Core class checks
+    print("\n[5/5] Core class instantiation:")
     classes = check_core_classes()
     for name, ok, msg in classes:
         print(f"  {'PASS' if ok else 'FAIL'}: {name} — {msg}")

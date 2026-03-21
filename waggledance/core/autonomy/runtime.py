@@ -26,6 +26,7 @@ from waggledance.core.capabilities.registry import CapabilityRegistry
 from waggledance.core.domain.autonomy import (
     Action,
     Goal,
+    QualityGrade,
 )
 from waggledance.core.goals.goal_engine import GoalEngine
 from waggledance.core.learning.case_builder import CaseTrajectoryBuilder
@@ -547,6 +548,13 @@ class AutonomyRuntime:
                 quality_grade=case.quality_grade.value,
                 quality_path=route_result.quality_path)
 
+        # 8b. Update graph with entity + confidence from verifier
+        if self.graph_builder and self.world_model.graph is not None:
+            self._update_graph_from_result(
+                query, intent, primary_cap.capability_id,
+                action_result, verifier_result,
+            )
+
         # Persist: save case trajectory
         if self.case_store:
             self._persist_safe("case.trajectory",
@@ -866,6 +874,10 @@ class AutonomyRuntime:
     ) -> Dict[str, Any]:
         """Drain accumulated day cases and run a night learning cycle.
 
+        Includes Dream Mode: counterfactual simulation with real solver
+        evaluation.  Successful dream insights are fed as routing hints
+        into the SolverRouter for the next day.
+
         Returns the NightLearningResult as a dict.
         """
         from waggledance.core.learning.night_learning_pipeline import (
@@ -884,15 +896,198 @@ class AutonomyRuntime:
             legacy_records=legacy_records,
         )
 
+        # ── Dream Mode ──────────────────────────────────────────
+        from waggledance.core.learning.dream_mode import run_dream_session
+        available_caps = [c.capability_id for c in self.capability_registry.list_all()]
+        dream_session = run_dream_session(
+            day_trajectories=day_cases,
+            available_capabilities=available_caps,
+            graph_builder=self.graph_builder,
+        )
+
+        # Run real solver evaluation on successful alternatives
+        dream_session = self._evaluate_dream_alternatives(dream_session)
+
+        # Feed dream routing hints into solver_router
+        if dream_session.simulated_trajectories:
+            self.solver_router.apply_dream_hints(dream_session)
+
         log.info(
-            "Night learning: %d cases → %d gold, %d silver, %d bronze, %d quarantine",
+            "Night learning: %d cases → %d gold, %d silver, %d bronze, %d quarantine; "
+            "dream: %d simulations, %d insights (score=%.2f)",
             len(day_cases),
             result.gold_count,
             result.silver_count,
             result.bronze_count,
             result.quarantine_count,
+            dream_session.simulations_run,
+            dream_session.insights_found,
+            dream_session.insight_score,
         )
-        return result.to_dict()
+        result_dict = result.to_dict()
+        result_dict["dream"] = {
+            "night_id": dream_session.night_id,
+            "simulations_run": dream_session.simulations_run,
+            "insights_found": dream_session.insights_found,
+            "insight_score": dream_session.insight_score,
+        }
+        return result_dict
+
+    def _evaluate_dream_alternatives(self, dream_session) -> Any:
+        """Evaluate dream counterfactual alternatives against real solvers.
+
+        For each simulated trajectory with a non-empty alternative chain,
+        attempt real execution (marked synthetic=True) and compare verifier
+        scores against the original outcome.
+        """
+        from waggledance.core.learning.dream_mode import DreamSession
+
+        for traj in dream_session.simulated_trajectories:
+            alt_chain = traj.counterfactual_alternatives or []
+            if not alt_chain:
+                continue
+
+            # Get original query from goal description
+            query = traj.goal.description if traj.goal else ""
+            if not query:
+                continue
+
+            alt_scores: List[float] = []
+            for cap_id in alt_chain:
+                cap = self.capability_registry.get(cap_id)
+                if cap is None:
+                    continue
+                action = Action(
+                    capability_id=cap_id,
+                    payload={"query": query},
+                )
+                try:
+                    action_result = self.action_bus.submit(
+                        action, cap,
+                        quality_path="bronze",
+                        context={"synthetic": True, "trajectory_origin": "simulated"},
+                    )
+                    if action_result.executed:
+                        v_result = self.verifier.verify_simple(
+                            action_result.result or {},
+                            expected_fields=cap.success_criteria,
+                        )
+                        alt_scores.append(v_result.confidence if v_result else 0.0)
+                except Exception as exc:
+                    log.debug("Dream eval failed for %s: %s", cap_id, exc)
+
+            # Re-score the trajectory based on real execution
+            if alt_scores:
+                avg_score = sum(alt_scores) / len(alt_scores)
+                if avg_score >= 0.3:
+                    traj.verifier_result["outcome"] = "success"
+                    traj.verifier_result["real_eval_score"] = round(avg_score, 3)
+                    # Upgrade quality grade if real eval succeeded
+                    if avg_score >= 0.6:
+                        traj.quality_grade = QualityGrade.SILVER
+                else:
+                    traj.verifier_result["outcome"] = "failure"
+                    traj.verifier_result["real_eval_score"] = round(avg_score, 3)
+
+        # Recompute insight score after real evaluation
+        from waggledance.core.learning.dream_mode import compute_insight_score
+        dream_session.insight_score = compute_insight_score(dream_session)
+        dream_session.insights_found = sum(
+            1 for t in dream_session.simulated_trajectories
+            if t.verifier_result.get("outcome") != "inconclusive"
+        )
+        return dream_session
+
+    # ── Graph updates ─────────────────────────────────────
+
+    def _update_graph_from_result(
+        self,
+        query: str,
+        intent: str,
+        capability_id: str,
+        action_result,
+        verifier_result,
+    ):
+        """Update CognitiveGraph nodes from a query/response cycle.
+
+        Creates a query-entity node and edges to the capability used.
+        Updates confidence on the capability edge from verifier outcome.
+        """
+        g = self.world_model.graph
+        if g is None:
+            return
+
+        # Create a query-entity node (keyed by query count to avoid collision)
+        query_node_id = f"query:{self._query_count}"
+        g.add_node(
+            query_node_id,
+            node_type="query",
+            text=query[:200],
+            intent=intent,
+        )
+
+        # Edge: query → capability (input_to)
+        cap_node_id = f"capability:{capability_id}"
+        if g.has_node(cap_node_id):
+            confidence = 0.5
+            if verifier_result is not None:
+                confidence = verifier_result.confidence
+            g.add_edge(
+                query_node_id, cap_node_id,
+                link_type="input_to",
+                executed=action_result.executed if action_result else False,
+                confidence=confidence,
+            )
+
+        # If action result contains entity references, register them
+        if action_result and action_result.executed and action_result.result:
+            result_data = action_result.result
+            if isinstance(result_data, dict):
+                entity_id = result_data.get("entity_id")
+                if entity_id and not g.has_node(entity_id):
+                    g.add_node(
+                        entity_id,
+                        node_type="entity",
+                        discovered_by=capability_id,
+                    )
+
+    def ingest_sensor_observation(self, observation: Dict[str, Any]):
+        """Ingest a sensor observation into WorldModel + CognitiveGraph.
+
+        Updates baselines and registers/updates entity and metric nodes
+        in the graph so Dream Mode has real-world data to simulate against.
+        """
+        entity_id = observation.get("entity_id", "")
+        metric = observation.get("metric", "")
+        value = observation.get("value")
+        source = observation.get("source", "sensor")
+        quality = observation.get("quality", 0.8)
+
+        if not entity_id or value is None:
+            return
+
+        # Update baseline in world model
+        self.world_model.update_baseline(
+            entity_id, metric, float(value),
+            source_type="observed", confidence=quality,
+        )
+
+        # Register entity in world model (idempotent)
+        self.world_model.register_entity(
+            entity_id, entity_type="sensor_entity",
+            attributes={"source": source},
+        )
+
+        # Update CognitiveGraph node with latest reading
+        g = self.world_model.graph
+        if g is not None:
+            g.add_node(
+                entity_id,
+                node_type="sensor_entity",
+                latest_metric=metric,
+                latest_value=float(value),
+                source=source,
+            )
 
     # ── Graph health ──────────────────────────────────────
 
@@ -900,12 +1095,25 @@ class AutonomyRuntime:
         """Log a graph health summary after initial queries."""
         g = self.world_model.graph
         if g is None:
-            log.warning("Graph health: CognitiveGraph is None — learning loop inactive")
+            log.error("Graph health: CognitiveGraph is None — learning loop inactive")
             return
         stats = g.stats()
         nodes = stats.get("nodes", 0)
         edges = stats.get("edges", 0)
-        if edges == 0:
+        # System nodes (self, intent:*, capability:*) don't count as user-created
+        user_nodes = 0
+        for nid in g.graph.nodes:
+            ndata = g.graph.nodes[nid]
+            ntype = ndata.get("node_type", ndata.get("entity_type", ""))
+            if ntype not in ("system", "intent", "capability"):
+                user_nodes += 1
+        if user_nodes == 0:
+            log.error(
+                "Graph health: 0 user-created nodes after %d queries "
+                "(total %d nodes, %d edges) — CognitiveGraph is not being populated",
+                self._query_count, nodes, edges,
+            )
+        elif edges == 0:
             log.warning("Graph health: %d nodes, 0 edges after %d queries — graph may not be recording",
                         nodes, self._query_count)
         else:

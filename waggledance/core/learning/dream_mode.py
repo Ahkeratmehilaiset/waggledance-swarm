@@ -306,8 +306,12 @@ def create_simulated_trajectory(
 def compute_insight_score(session: DreamSession) -> float:
     """Compute insight_score for a dream session.
 
-    insight_score = (insights with success outcome) / total simulations
-    Ranges from -1.0 (all failures) to +1.0 (all successes).
+    insight_score = alternatives_that_beat_original / total_alternatives
+    where "beat" means outcome == "success".
+
+    Ranges from 0.0 (no alternative beat original) to 1.0 (all did).
+    Returns negative when failures exceed successes, allowing the adaptive
+    simulation count to detect persistently unhelpful sessions.
     """
     if session.simulations_run == 0:
         return 0.0
@@ -319,7 +323,8 @@ def compute_insight_score(session: DreamSession) -> float:
             successes += 1
         elif outcome == "failure":
             failures += 1
-    # Score: net useful insights normalised to [-1, 1]
+    # Primary metric: fraction of alternatives that beat original
+    # Subtract failures to penalise sessions that are actively harmful
     return (successes - failures) / session.simulations_run
 
 

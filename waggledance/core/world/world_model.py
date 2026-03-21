@@ -37,6 +37,7 @@ class WorldModel:
         baseline_store: Optional[BaselineStore] = None,
         entity_registry: Optional[EntityRegistry] = None,
         profile: str = "DEFAULT",
+        autonomy_mode: bool = False,
     ):
         # Lazy import to avoid circular dependency with legacy core/
         if cognitive_graph is _UNSET:
@@ -45,18 +46,36 @@ class WorldModel:
                 cognitive_graph = CognitiveGraph()
             except ImportError:
                 cognitive_graph = None
+                if autonomy_mode:
+                    log.error(
+                        "CognitiveGraph required in autonomy mode but import failed. "
+                        "Install core.cognitive_graph or pass an instance explicitly."
+                    )
+                    raise RuntimeError(
+                        "CognitiveGraph required in autonomy mode "
+                        "(primary=waggledance, compatibility_mode=false)"
+                    )
                 log.error(
                     "CognitiveGraph not available — learning loop INACTIVE. "
                     "Install core.cognitive_graph or pass an instance explicitly."
                 )
 
+        # In autonomy mode, explicitly passing None is also an error
+        if autonomy_mode and cognitive_graph is None:
+            log.error("CognitiveGraph required in autonomy mode")
+            raise RuntimeError(
+                "CognitiveGraph required in autonomy mode "
+                "(primary=waggledance, compatibility_mode=false)"
+            )
+
         self._graph = cognitive_graph
         self._baselines = baseline_store or BaselineStore()
         self._entities = entity_registry or EntityRegistry()
         self._profile = profile
+        self._autonomy_mode = autonomy_mode
         self._last_snapshot_time: float = 0.0
-        log.info("WorldModel initialised (profile=%s, graph=%s)",
-                 profile, "yes" if cognitive_graph else "no")
+        log.info("WorldModel initialised (profile=%s, graph=%s, autonomy=%s)",
+                 profile, "yes" if cognitive_graph else "no", autonomy_mode)
 
     # ── Properties ────────────────────────────────────────────
 

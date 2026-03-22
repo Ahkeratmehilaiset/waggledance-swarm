@@ -2,7 +2,7 @@
 
 > Local-first multi-agent AI runtime with solver-first architecture, autonomous overnight learning, and full audit trail.
 
-[![Tests](https://img.shields.io/badge/tests-4350%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-4446%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 
@@ -22,12 +22,12 @@ waggledance/                    <- Hexagonal runtime (primary)
     reasoning/              <- 10 solver engines (thermal, causal, anomaly...)
     learning/               <- Dream mode, consolidator, night pipeline
     specialist_models/      <- Specialist trainer, meta-optimizer, model store
-    goals/                  <- Goal engine, motives, mission store
+    goals/                  <- Goal engine, motives, mission store, user promises
     planning/               <- Planner
     policy/                 <- Policy engine, risk scoring, constitution
     actions/                <- Safe Action Bus (deny-by-default)
     capabilities/           <- Registry, selector, aliasing
-    projections/            <- Narrative, introspection, autobiographical (read-only)
+    projections/            <- Narrative (+ user section), introspection, autobiographical (read-only)
     magma/                  <- Audit, provenance, replay, trust, confidence decay
     domain/                 <- CaseTrajectory, Goal, WorldSnapshot dataclasses
   adapters/                   <- LLM, memory, sensors, HTTP, config
@@ -49,15 +49,16 @@ core/                           <- Legacy modules (still functional)
 
 | Feature | File | Lines | What it does |
 |---------|------|------:|--------------|
-| Dream Mode | `waggledance/core/learning/dream_mode.py` | 367 | Counterfactual simulation overnight |
+| Dream Mode | `waggledance/core/learning/dream_mode.py` | 410 | Counterfactual simulation overnight |
 | Case Trajectories | `waggledance/core/domain/autonomy.py` | 493 | Goal -> snapshot -> action -> outcome learning |
-| World Model | `waggledance/core/world/world_model.py` | 268 | Self-entity, snapshots, epistemic state |
+| World Model | `waggledance/core/world/world_model.py` | 317 | Self-entity, user entity, snapshots, epistemic state |
 | Solver-first routing | `waggledance/core/reasoning/solver_router.py` | 370 | 10 engines before LLM |
 | Safe Action Bus | `waggledance/core/actions/action_bus.py` | 240 | Deny-by-default for writes |
 | Specialist training | `waggledance/core/specialist_models/specialist_trainer.py` | 890 | 14 sklearn models (TF-IDF, RF, Ridge...) |
 | LoRA V3 training | `core/micro_model.py` | 1218 | PEFT QLoRA fine-tuning |
 | Hallucination detection | `core/hallucination_checker.py` | 212 | 5 signals + RAG verification |
 | MAGMA audit trail | `waggledance/core/magma/` | 1151 | Provenance, replay, trust, confidence decay |
+| User Model Lite | `core/cognitive_graph.py` | 303 | User entity tracking, promise sync, verification fail counting |
 | Prometheus metrics | `core/observability.py` | 45 | /metrics endpoint |
 | OpenTelemetry tracing | `core/tracing.py` | 81 | Distributed tracing with OTLP export |
 | OOM protection | `core/resource_guard.py` | 123 | Memory/disk/CPU monitoring + emergency GC |
@@ -134,7 +135,7 @@ Every action produces an auditable CaseTrajectory that feeds overnight learning.
 ## Testing
 
 ```bash
-pytest tests/ -q                    # 4350+ tests
+pytest tests/ -q                    # 4446+ tests
 pytest tests/ -k "safe_eval" -v     # Security tests specifically
 python tools/generate_state.py      # Regenerate CURRENT_STATE.md
 ```

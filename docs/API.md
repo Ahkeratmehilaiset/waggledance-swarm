@@ -78,7 +78,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 
 ---
 
-## Autonomy Runtime (v3.2)
+## Autonomy Runtime (v3.3)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -88,6 +88,9 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /api/autonomy/learning/status` | GET | Night learning pipeline status and history |
 | `POST /api/autonomy/goals/check-proactive` | POST | Check world model for proactive goal opportunities |
 | `GET /api/autonomy/safety-cases` | GET | Recent safety cases (optional `?limit=N`) |
+| `GET /api/autonomy/capability-confidence` | GET | Per-solver capability confidence scores, trends |
+| `GET /api/autonomy/prediction-ledger` | GET | Prediction error ledger analysis |
+| `GET /api/autonomy/user-model` | GET | Lightweight user model: interactions, corrections, pending promises |
 | `GET /api/autonomy/safety-cases/stats` | GET | Safety case verdict distribution |
 
 ```json
@@ -105,6 +108,30 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 {"observations": {"zone1.temperature": 25.0}, "threshold": 2.0}
 // Response
 {"goals_proposed": 1, "goal_ids": ["goal-abc123"]}
+```
+
+---
+
+## Autonomy v3.3 — User Model Lite
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/autonomy/user-model` | GET | User entity state + pending promises from GoalEngine |
+
+```json
+// GET /api/autonomy/user-model
+{
+  "available": true,
+  "interaction_count": 42,
+  "explicit_correction_count": 0,
+  "verification_fail_count": 3,
+  "promises_pending": [
+    {"goal_id": "goal-abc", "description": "Fix sensor", "priority": 70, "status": "executing"}
+  ],
+  "preferred_language": "",
+  "last_interaction_at": 1711100000.0,
+  "last_user_correction_at": 0.0
+}
 ```
 
 ---
@@ -129,7 +156,9 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /api/agent_levels` | GET | All agents with current trust levels |
 | `GET /api/agents/levels` | GET | All 128 agents with level/trust/hallucination rate |
 | `GET /api/agents/leaderboard` | GET | Top agents by trust, queries, reliability |
-| `GET /api/consciousness` | GET | Memory engine state and statistics |
+| `GET /api/consciousness` | GET | Memory engine state + user model summary (v3.3: interaction count, corrections, promises) |
+| `GET /api/hologram/state` | GET | Hologram brain visualization state (nodes, edges, events) |
+| `GET /hologram` | GET | Hologram brain HTML page |
 | `GET /api/swarm/scores` | GET | SwarmScheduler agent scores |
 | `GET /api/learning` | GET | LearningEngine status + leaderboard |
 | `GET /api/ops` | GET | OpsAgent status + model recommendations |

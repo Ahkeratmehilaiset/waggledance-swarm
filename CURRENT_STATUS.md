@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-03-21
-**Version:** v3.3.1 (production-validated on main+master)
+**Updated:** 2026-03-22
+**Version:** v3.3.2 (user-model-lite on main+master)
 
 ---
 
@@ -51,12 +51,13 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | Legacy test suite | 87 suites, 2754 tests, 0 failures, Health 84/100 |
 | Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
-| **Autonomy runtime (v3.2)** | **4350 pytest tests (phases 1-9 + continuity + regression + e2e), all pass** |
+| **Autonomy runtime (v3.3)** | **4446 pytest tests (phases 1-9 + continuity + regression + user-model + e2e), all pass** |
 | **Cutover validation** | **"FULL AUTONOMY MODE ENABLED" — 42/42 modules** |
 | **Regression gates** | **migration, night_learning_v2, resource_kernel, specialist_models — 41 tests** |
 | **v3.2 self-entity** | **Epistemic uncertainty, motives, attention budget, dream mode, consolidator, meta-optimizer** |
 | **v3.2 projections** | **Narrative (en/fi), introspection (profile-gated), autobiographical index, validator** |
 | **v3.2 MAGMA expansion** | **Confidence decay, self_reflection/simulated events, dream replay, 9-tier provenance** |
+| **v3.3 User Model Lite** | **User entity in CognitiveGraph, promise tracking from GoalEngine, verification fail counting, hologram MAGMA nodes** |
 | MicroModel V1 routing (restored v1.17.0) | End-to-end: routing_policy → chat_service → orchestrator |
 | Persistent TrustStore (v1.17.0) | SQLiteTrustStore in container.py (prod=SQLite, stub=InMemory) |
 
@@ -95,7 +96,7 @@ These test suites are the gatekeepers — all must pass before any change is mer
 | App unit tests | `pytest tests/unit_app/ -v` | 16 | ChatService, LearningService (BUG 3 regression) |
 | Adapter unit tests | `pytest tests/unit/ -v` | 300+ | All adapters, container, event bus, SQLiteTrustStore |
 | Integration tests | `pytest tests/integration/ -v` | 90 | Runtime CLI, smoke, user scenarios, benchmarks, shadow compare |
-| Autonomy unit tests | `pytest tests/autonomy/ -v` | 1368 | Domain models, phases 1-9, runtime wiring |
+| Autonomy unit tests | `pytest tests/autonomy/ -v` | 1600 | Domain models, phases 1-9, runtime wiring, user-model |
 | Regression gates | `pytest tests/migration/ tests/night_learning_v2/ tests/resource_kernel/ tests/specialist_models/ -v` | 41 | Alias migration, night pipeline, resource kernel, specialist models |
 | Continuity tests | `pytest tests/continuity/ -v` | 171 | v3.2: self-entity, uncertainty, attention, projections, MAGMA |
 | Night learning v2 | `pytest tests/night_learning_v2/ -v` | 60+ | Consolidator, dream mode, pipeline |

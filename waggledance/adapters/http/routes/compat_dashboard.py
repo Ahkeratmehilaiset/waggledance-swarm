@@ -120,6 +120,18 @@ def api_consciousness(service=Depends(get_autonomy_service)):
     node_count = graph.get("nodes", graph.get("node_count", 0))
     edge_count = graph.get("edges", graph.get("edge_count", 0))
 
+    # User model data (v3.3)
+    try:
+        user = service._runtime.world_model.get_user_entity() or {}
+    except Exception:
+        user = {}
+    # GoalEngine is source of truth for promise count
+    promise_count = 0
+    try:
+        promise_count = len(service._runtime.goal_engine.get_promises_to_user())
+    except Exception:
+        pass
+
     return {
         "memory_count": node_count,
         "episodes_count": cb.get("total", 0),
@@ -129,6 +141,9 @@ def api_consciousness(service=Depends(get_autonomy_service)):
         "active_learning_count": wmem.get("size", 0),
         "graph_nodes": node_count,
         "graph_edges": edge_count,
+        "user_interaction_count": user.get("interaction_count", 0),
+        "user_correction_count": user.get("explicit_correction_count", 0),
+        "user_promises_pending": promise_count,
     }
 
 

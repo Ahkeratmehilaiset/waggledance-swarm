@@ -145,6 +145,10 @@ class AutonomyRuntime:
         if self.world_model.graph is not None:
             self.world_model.ensure_self_entity(profile=profile)
 
+        # Seed user entity (v3.3)
+        if self.world_model.graph is not None:
+            self.world_model.ensure_user_entity()
+
         # Executor binding
         self._query_count = 0
         self._graph_health_logged = False
@@ -507,6 +511,14 @@ class AutonomyRuntime:
                     self.capability_confidence.sync_to_self_entity,
                     self.world_model)
 
+            # 6b-ii. Track verification failures on user entity (v3.3)
+            if not verified_ok and self.world_model.graph is not None:
+                user_ent = self.world_model.get_user_entity()
+                if user_ent:
+                    self._persist_safe("user_entity.vfail",
+                        self.world_model.update_user_entity,
+                        verification_fail_count=user_ent.get("verification_fail_count", 0) + 1)
+
         # 7. Case trajectory
         case = self.case_builder.build(
             query=query,
@@ -571,6 +583,18 @@ class AutonomyRuntime:
         if self._query_count == 10 and not self._graph_health_logged:
             self._graph_health_logged = True
             self._check_graph_health()
+
+        # 6c. Update user entity (v3.3)
+        if self.world_model.graph is not None:
+            promise_ids = [g.goal_id for g in self.goal_engine.get_promises_to_user()]
+            user_ent = self.world_model.get_user_entity()
+            old_interactions = user_ent.get("interaction_count", 0) if user_ent else 0
+            self._persist_safe("user_entity.update",
+                self.world_model.update_user_entity,
+                interaction_count=old_interactions + 1,
+                last_interaction_at=time.time(),
+                pending_promise_goal_ids=promise_ids,
+                last_promise_sync_at=time.time())
 
         elapsed = round((time.time() - t0) * 1000, 2)
 
@@ -920,10 +944,16 @@ class AutonomyRuntime:
                     analysis.degrading_solvers[:3],
                 )
 
+        # Unfulfilled promises for morning report (v3.3)
+        unfulfilled = [
+            g.description for g in self.goal_engine.get_promises_to_user()
+        ]
+
         result = self._night_pipeline.run_cycle(
             day_cases=day_cases,
             legacy_records=legacy_records,
             confidence_trends=confidence_trends,
+            unfulfilled_promises=unfulfilled,
         )
 
         # ── Dream Mode ──────────────────────────────────────────
@@ -1146,7 +1176,7 @@ class AutonomyRuntime:
         for nid in g.graph.nodes:
             ndata = g.graph.nodes[nid]
             ntype = ndata.get("node_type", ndata.get("entity_type", ""))
-            if ntype not in ("system", "intent", "capability"):
+            if ntype not in ("system", "intent", "capability", "user"):
                 user_nodes += 1
         if user_nodes == 0:
             log.error(

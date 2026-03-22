@@ -59,6 +59,9 @@ class MorningReport:
     improving_solvers: List[Dict[str, Any]] = field(default_factory=list)
     degrading_solvers: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Unfulfilled promises (v3.3)
+    unfulfilled_promises: List[str] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "report_id": self.report_id,
@@ -93,6 +96,7 @@ class MorningReport:
                 "improving": self.improving_solvers,
                 "degrading": self.degrading_solvers,
             },
+            "unfulfilled_promises": self.unfulfilled_promises,
         }
 
     def summary_text(self) -> str:
@@ -119,6 +123,10 @@ class MorningReport:
         if self.degrading_solvers:
             names = [s.get("solver", "?") for s in self.degrading_solvers[:3]]
             lines.append(f"  Degrading solvers: {', '.join(names)}")
+        if self.unfulfilled_promises:
+            lines.append(f"  Unfulfilled promises: {len(self.unfulfilled_promises)}")
+            for p in self.unfulfilled_promises[:3]:
+                lines.append(f"    - {p}")
         return "\n".join(lines)
 
 
@@ -137,6 +145,7 @@ class MorningReportBuilder:
         world_changes: Optional[Dict[str, int]] = None,
         procedural_stats: Optional[Dict[str, int]] = None,
         confidence_trends: Optional[Dict[str, List]] = None,
+        unfulfilled_promises: Optional[List[str]] = None,
     ) -> MorningReport:
         """Build a morning report from night learning outputs."""
         cases = cases or []
@@ -193,6 +202,9 @@ class MorningReportBuilder:
         if confidence_trends:
             report.improving_solvers = confidence_trends.get("improving", [])
             report.degrading_solvers = confidence_trends.get("degrading", [])
+
+        # Unfulfilled promises (v3.3)
+        report.unfulfilled_promises = unfulfilled_promises or []
 
         self._reports.append(report)
         if len(self._reports) > 365:

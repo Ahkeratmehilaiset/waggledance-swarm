@@ -489,6 +489,40 @@ class AutonomyService:
         result["available"] = True
         return result
 
+    # ── User model (v3.3) ─────────────────────────────────
+
+    def get_user_model(self) -> Dict[str, Any]:
+        """Get lightweight user model from CognitiveGraph.
+
+        Pending promises are derived from GoalEngine (source of truth),
+        NOT from cached pending_promise_goal_ids on the user node.
+        """
+        user = self._runtime.world_model.get_user_entity()
+        if user is None:
+            return {"available": False}
+        # GoalEngine is the source of truth for pending promises
+        live_promises = []
+        try:
+            for g in self._runtime.goal_engine.get_promises_to_user():
+                live_promises.append({
+                    "goal_id": g.goal_id,
+                    "description": g.description,
+                    "priority": g.priority,
+                    "status": g.status.value,
+                })
+        except Exception:
+            pass
+        return {
+            "available": True,
+            "interaction_count": user.get("interaction_count", 0),
+            "explicit_correction_count": user.get("explicit_correction_count", 0),
+            "verification_fail_count": user.get("verification_fail_count", 0),
+            "promises_pending": live_promises,
+            "preferred_language": user.get("preferred_language", ""),
+            "last_interaction_at": user.get("last_interaction_at", 0.0),
+            "last_user_correction_at": user.get("last_user_correction_at", 0.0),
+        }
+
     # ── Safety cases (Priority 4) ─────────────────────────
 
     def get_safety_cases(self, limit: int = 20) -> List[Dict[str, Any]]:

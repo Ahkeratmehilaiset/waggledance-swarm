@@ -213,6 +213,17 @@ class GoalEngine:
             and g.status not in (GoalStatus.ARCHIVED, GoalStatus.ROLLED_BACK)
         ]
 
+    def get_promises_to_user(self) -> List[Goal]:
+        """Return open promise-to-user goals (not in terminal state)."""
+        return [
+            g for g in self._active_goals.values()
+            if g.promise_to_user
+            and g.status not in (
+                GoalStatus.VERIFIED, GoalStatus.FAILED,
+                GoalStatus.ROLLED_BACK, GoalStatus.ARCHIVED,
+            )
+        ]
+
     def get_open_observe_goals(self) -> List[Goal]:
         """Return open observe-type goals (for epistemic uncertainty)."""
         return [

@@ -50,6 +50,8 @@ def build_hologram_state(service) -> Dict[str, Any]:
                 "reason_layer", "causal_map", "micro_train",
                 "micro_route", "micro_anom", "micro_therm",
                 "micro_stats", "decision",
+                "user_model", "magma_audit", "magma_trust",
+                "magma_event_log", "magma_replay", "magma_provenance",
             )},
             "edges": {},
             "events": [],
@@ -117,6 +119,21 @@ def build_hologram_state(service) -> Dict[str, Any]:
     pass_rate = vf_stats.get("pass_rate", 0.5)
     decision = _clamp(pass_rate)
 
+    # User model (v3.3)
+    user_ent = runtime.world_model.get_user_entity()
+    user_act = 0.0
+    if user_ent:
+        interactions = user_ent.get("interaction_count", 0)
+        user_act = _clamp(interactions / 50.0) if interactions else 0.0
+
+    # MAGMA subsystem nodes (v3.3)
+    rs = runtime.stats() if runtime.is_running else {}
+    magma_audit = rs.get("magma_audit", {})
+    magma_trust = rs.get("magma_trust", {})
+    magma_event_log = rs.get("magma_event_log", {})
+    magma_replay = rs.get("magma_replay", {})
+    magma_provenance = rs.get("magma_provenance", {})
+
     nodes = {
         "sensory": round(sensory, 2),
         "waggle_memory": round(waggle_memory, 2),
@@ -132,6 +149,12 @@ def build_hologram_state(service) -> Dict[str, Any]:
         "micro_therm": round(micro_therm, 2),
         "micro_stats": round(micro_stats_val, 2),
         "decision": round(decision, 2),
+        "user_model": round(user_act, 2),
+        "magma_audit": round(_clamp(magma_audit.get("total_entries", 0) / 100.0), 2),
+        "magma_trust": round(_clamp(magma_trust.get("total_observations", 0) / 50.0), 2),
+        "magma_event_log": round(_clamp(magma_event_log.get("total_entries", 0) / 100.0), 2),
+        "magma_replay": round(_clamp(magma_replay.get("total_missions", 0) / 20.0), 2),
+        "magma_provenance": round(_clamp(magma_provenance.get("total_entries", 0) / 50.0), 2),
     }
 
     # Build edges — intensity from connected node activations
@@ -144,6 +167,9 @@ def build_hologram_state(service) -> Dict[str, Any]:
         "causal_map->micro_train": round((causal_map + micro_train) / 2, 2),
         "causal_map->decision": round((causal_map + decision) / 2, 2),
         "llm_core->decision": round((llm_core + decision) / 2, 2),
+        "user_model->working_memory": round((user_act + working_memory) / 2, 2),
+        "sensory->magma_audit": round((sensory + nodes.get("magma_audit", 0.0)) / 2, 2),
+        "magma_trust->decision": round((nodes.get("magma_trust", 0.0) + decision) / 2, 2),
     }
 
     # Active flow events — top 4 most active edges

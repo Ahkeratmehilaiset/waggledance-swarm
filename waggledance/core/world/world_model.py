@@ -242,6 +242,24 @@ class WorldModel:
             return None
         return self._graph.update_self_entity(**attrs)
 
+    # ── User entity (v3.3) ──────────────────────────────────────
+
+    def ensure_user_entity(self, **overrides) -> Optional[dict]:
+        """Ensure user entity exists in the CognitiveGraph."""
+        if not self._require_graph("ensure_user_entity"):
+            return None
+        return self._graph.ensure_user_entity(**overrides)
+
+    def get_user_entity(self) -> Optional[dict]:
+        if not self._require_graph("get_user_entity"):
+            return None
+        return self._graph.get_user_entity()
+
+    def update_user_entity(self, **attrs) -> Optional[dict]:
+        if not self._require_graph("update_user_entity"):
+            return None
+        return self._graph.update_user_entity(**attrs)
+
     # ── Epistemic uncertainty (v3.2) ───────────────────────────
 
     def compute_epistemic_uncertainty(

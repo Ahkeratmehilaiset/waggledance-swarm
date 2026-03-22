@@ -40,6 +40,10 @@ _TEMPLATES = {
         "gap_line": "- {entity}: {reason}",
         "achievements": "Recent achievements: {count}",
         "no_achievements": "No recent achievements",
+        "user_header": "User model:",
+        "user_interactions": "  Interactions: {count}",
+        "user_corrections": "  Corrections: {count}",
+        "user_promises": "  Pending promises: {count}",
     },
     "fi": {
         "header": "Järjestelmäkertomus — {timestamp}",
@@ -58,6 +62,10 @@ _TEMPLATES = {
         "gap_line": "- {entity}: {reason}",
         "achievements": "Viimeaikaiset saavutukset: {count}",
         "no_achievements": "Ei viimeaikaisia saavutuksia",
+        "user_header": "Käyttäjämalli:",
+        "user_interactions": "  Vuorovaikutukset: {count}",
+        "user_corrections": "  Korjaukset: {count}",
+        "user_promises": "  Avoimet lupaukset: {count}",
     },
 }
 
@@ -87,6 +95,7 @@ def project_narrative(
     recent_achievements: Optional[List[str]] = None,
     capability_confidence: Optional[Dict[str, float]] = None,
     language: str = "en",
+    user_entity: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Generate a human-readable narrative from current system state.
@@ -100,8 +109,19 @@ def project_narrative(
     """
     global _cache
 
+    # Track whether live promises were provided before normalization (v3.3)
+    _live_promises_provided = promises is not None
+
     # Build cache key from inputs
-    cache_key = f"{len(goals or [])}:{uncertainty_score:.3f}:{language}"
+    user_key = ""
+    if user_entity:
+        u = user_entity
+        if _live_promises_provided:
+            p_count = len(promises or [])
+        else:
+            p_count = len(u.get("pending_promise_goal_ids", []))
+        user_key = f":{u.get('interaction_count', 0)}:{u.get('explicit_correction_count', 0)}:{p_count}:{u.get('preferred_language', '')}"
+    cache_key = f"{len(goals or [])}:{uncertainty_score:.3f}:{language}{user_key}"
     now = time.time()
 
     if _cache and _cache.cache_key == cache_key and (now - _cache.timestamp) < CACHE_TTL_SECONDS:
@@ -198,6 +218,24 @@ def project_narrative(
             lines.append(f"  {cap_id}: {score:.2f} [{bar}]")
         lines.append("")
     sections["capability_confidence"] = conf
+
+    # User entity (v3.3)
+    user = user_entity or {}
+    if _live_promises_provided:
+        pending_count = len(promise_list)
+    else:
+        pending_count = len(user.get("pending_promise_goal_ids", []))
+    if user:
+        lines.append(t["user_header"])
+        lines.append(t["user_interactions"].format(count=user.get("interaction_count", 0)))
+        lines.append(t["user_corrections"].format(count=user.get("explicit_correction_count", 0)))
+        lines.append(t["user_promises"].format(count=pending_count))
+        lines.append("")
+    sections["user_entity"] = {
+        "interaction_count": user.get("interaction_count", 0),
+        "corrections": user.get("explicit_correction_count", 0),
+        "pending_promises": pending_count,
+    }
 
     # Achievements
     ach = recent_achievements or []

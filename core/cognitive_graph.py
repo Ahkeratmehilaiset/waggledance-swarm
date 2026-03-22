@@ -202,6 +202,7 @@ class CognitiveGraph:
     # ── Self-entity (v3.2) ──────────────────────────────────
 
     SELF_ENTITY_ID = "self"
+    USER_ENTITY_ID = "user:primary"
 
     def ensure_self_entity(self, **overrides) -> dict:
         """Ensure the self-entity node exists with v3.2 attributes.
@@ -243,6 +244,50 @@ class CognitiveGraph:
         self.graph.nodes[self.SELF_ENTITY_ID]["timestamp"] = time.time()
         return self.get_node(self.SELF_ENTITY_ID)
 
+    # ── User entity (v3.3) ──────────────────────────────────
+
+    def ensure_user_entity(self, **overrides) -> dict:
+        """Ensure the user entity node exists with v3.3 attributes."""
+        defaults = {
+            "entity_type": "user",
+            "interaction_count": 0,
+            "explicit_correction_count": 0,
+            "verification_fail_count": 0,
+            "pending_promise_goal_ids": [],
+            "preferred_language": "",
+            "last_interaction_at": 0.0,
+            "last_user_correction_at": 0.0,
+            "last_promise_sync_at": 0.0,
+            "identity_version": "v3.3-user-model-lite",
+        }
+        if self.has_node(self.USER_ENTITY_ID):
+            existing = dict(self.graph.nodes[self.USER_ENTITY_ID])
+            defaults.update(existing)
+        defaults.update(overrides)
+        self.add_node(self.USER_ENTITY_ID, **defaults)
+        # Add semantic edge self → user if self entity exists and edge missing
+        if self.has_node(self.SELF_ENTITY_ID) and not self.graph.has_edge(
+            self.SELF_ENTITY_ID, self.USER_ENTITY_ID
+        ):
+            self.add_edge(
+                self.SELF_ENTITY_ID, self.USER_ENTITY_ID,
+                link_type="semantic", relation="serves",
+            )
+        return self.get_node(self.USER_ENTITY_ID)
+
+    def get_user_entity(self) -> Optional[dict]:
+        """Return user entity attributes or None if not initialized."""
+        return self.get_node(self.USER_ENTITY_ID)
+
+    def update_user_entity(self, **attrs) -> dict:
+        """Update user entity attributes. Creates if missing."""
+        if not self.has_node(self.USER_ENTITY_ID):
+            return self.ensure_user_entity(**attrs)
+        for k, v in attrs.items():
+            self.graph.nodes[self.USER_ENTITY_ID][k] = v
+        self.graph.nodes[self.USER_ENTITY_ID]["timestamp"] = time.time()
+        return self.get_node(self.USER_ENTITY_ID)
+
     def stats(self) -> dict:
         """Summary statistics."""
         edge_types: Dict[str, int] = {}
@@ -254,4 +299,5 @@ class CognitiveGraph:
             "edges": self.graph.number_of_edges(),
             "edge_types": edge_types,
             "has_self_entity": self.has_node(self.SELF_ENTITY_ID),
+            "has_user_entity": self.has_node(self.USER_ENTITY_ID),
         }

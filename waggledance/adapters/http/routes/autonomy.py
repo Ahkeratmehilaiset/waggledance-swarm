@@ -96,6 +96,12 @@ def prediction_ledger(service=Depends(get_autonomy_service)):
     return service.get_prediction_ledger_analysis()
 
 
+@router.get("/autonomy/user-model")
+def user_model(service=Depends(get_autonomy_service)):
+    """Get lightweight user model state."""
+    return service.get_user_model()
+
+
 @router.get("/autonomy/safety-cases/stats")
 def safety_cases_stats(service=Depends(get_autonomy_service)):
     """Get safety case statistics."""

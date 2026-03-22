@@ -26,6 +26,9 @@ PUBLIC_PATHS = frozenset({
     "/api/agent_levels",
     "/api/swarm/scores",
     "/api/monitor/history",
+    "/api/profile/impact",
+    "/api/capabilities/state",
+    "/api/learning/state-machine",
 })
 
 

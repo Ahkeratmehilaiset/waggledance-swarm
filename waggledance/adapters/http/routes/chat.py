@@ -108,4 +108,21 @@ async def chat_endpoint(
 ) -> ChatHttpResponse:
     """Handle a chat request.  No business logic here -- delegates entirely."""
     result = await chat_service.handle(request.to_dto())
-    return ChatHttpResponse.from_result(result)
+    resp = ChatHttpResponse.from_result(result)
+
+    # Broadcast chat_route event to WS clients (fire-and-forget)
+    try:
+        from waggledance.adapters.http.routes.compat_dashboard import broadcast_ws
+        import asyncio
+        asyncio.ensure_future(broadcast_ws({
+            "type": "chat_route",
+            "data": {
+                "source": resp.source,
+                "confidence": resp.confidence,
+                "agent_id": resp.agent_id,
+            },
+        }))
+    except Exception:
+        pass  # WS broadcast is best-effort
+
+    return resp

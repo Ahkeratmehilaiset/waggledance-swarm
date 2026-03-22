@@ -1,0 +1,1567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WaggleDance Swarm AI — Hologram Brain</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: radial-gradient(circle at 50% 45%, rgba(9,36,72,0.96) 0%, rgba(4,10,20,0.98) 46%, #010206 100%);
+      font-family: Inter, Arial, sans-serif;
+      color: #dff8ff;
+    }
+
+    /* ── Grid layout ─────────────────────────────── */
+    #app {
+      display: grid;
+      grid-template-rows: 48px 40px 1fr;
+      grid-template-columns: 1fr 400px;
+      grid-template-areas:
+        "header header"
+        "tabs tabs"
+        "canvas panel";
+      width: 100vw; height: 100vh;
+    }
+    #app.panel-closed {
+      grid-template-columns: 1fr 0px;
+      grid-template-areas:
+        "header header"
+        "tabs tabs"
+        "canvas canvas";
+    }
+
+    /* ── Header ──────────────────────────────────── */
+    .header {
+      grid-area: header;
+      display: flex; align-items: center; gap: 12px;
+      padding: 0 16px;
+      background: rgba(4,12,24,0.72);
+      border-bottom: 1px solid rgba(110,220,255,0.12);
+      z-index: 5;
+    }
+    .header .brand { font-size: 15px; font-weight: 700; color: #a8efff; white-space: nowrap; }
+    .header .subtitle { font-size: 11px; color: rgba(200,230,244,0.7); white-space: nowrap; }
+    .header .spacer { flex: 1; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 8px; border-radius: 999px; font-size: 11px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: rgba(235,247,255,0.92);
+    }
+    .badge .bdot {
+      width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+    }
+    .lang-toggle {
+      appearance: none; border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.06); color: #dff8ff;
+      padding: 3px 8px; border-radius: 999px; font-size: 11px;
+      cursor: pointer;
+    }
+
+    /* ── Tab bar ──────────────────────────────────── */
+    .tab-bar {
+      grid-area: tabs;
+      display: flex; align-items: center; gap: 2px;
+      padding: 0 12px; overflow-x: auto;
+      background: rgba(4,12,24,0.54);
+      border-bottom: 1px solid rgba(110,220,255,0.10);
+      z-index: 4;
+    }
+    .tab-btn {
+      appearance: none; border: none;
+      background: transparent; color: rgba(225,244,255,0.72);
+      padding: 8px 14px; font-size: 12px; cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 120ms, border-color 120ms;
+      white-space: nowrap;
+    }
+    .tab-btn:hover { color: rgba(225,244,255,0.92); }
+    .tab-btn.active {
+      color: #dff8ff;
+      border-bottom-color: rgba(90,220,255,0.6);
+    }
+
+    /* ── Canvas ───────────────────────────────────── */
+    .canvas-area {
+      grid-area: canvas;
+      position: relative; overflow: hidden;
+    }
+    .canvas-area canvas {
+      display: block; width: 100%; height: 100%;
+    }
+
+    /* ── Docked panel ─────────────────────────────── */
+    .panel {
+      grid-area: panel;
+      display: flex; flex-direction: column;
+      background: rgba(4,12,24,0.62);
+      border-left: 1px solid rgba(110,220,255,0.12);
+      overflow: hidden;
+      z-index: 3;
+    }
+    #app.panel-closed .panel { display: none; }
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(110,220,255,0.08);
+    }
+    .panel-header h3 { font-size: 14px; color: #d7f6ff; }
+    .panel-close {
+      appearance: none; border: 0;
+      background: rgba(255,255,255,0.08); color: #d7f6ff;
+      width: 26px; height: 26px; border-radius: 50%;
+      cursor: pointer; font-size: 14px;
+    }
+    .panel-body {
+      flex: 1; overflow-y: auto; padding: 12px 14px;
+      font-size: 12px; line-height: 1.5;
+      color: rgba(220,244,255,0.86);
+    }
+    .panel-toolbar {
+      display: flex; gap: 6px; align-items: center;
+      padding: 8px 14px;
+      border-top: 1px solid rgba(110,220,255,0.08);
+    }
+    .panel-toolbar button {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.05);
+      color: rgba(235,247,255,0.92);
+      padding: 5px 10px; border-radius: 999px;
+      font-size: 11px; cursor: pointer;
+    }
+    .panel-status {
+      font-size: 11px; color: rgba(200,230,244,0.6);
+      margin-left: auto;
+    }
+
+    /* ── Panel content helpers ────────────────────── */
+    .p-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .p-card {
+      border-radius: 10px; padding: 8px 10px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .p-card .k { display: block; font-size: 10px; color: rgba(200,230,244,0.6); margin-bottom: 3px; }
+    .p-card .v { display: block; font-size: 12px; color: rgba(240,248,255,0.94); word-break: break-word; }
+    .p-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .p-list-item {
+      padding: 7px 10px; border-radius: 8px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.06);
+      font-size: 12px; color: rgba(235,247,255,0.92);
+    }
+    .p-section { margin-top: 12px; }
+    .p-section-title { font-size: 11px; font-weight: 600; color: rgba(200,230,244,0.8); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .p-bar-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06); margin-top: 3px; }
+    .p-bar-fill { height: 100%; border-radius: 3px; }
+
+    /* ── State badge colors ───────────────────────── */
+    .state-dot {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; margin-right: 4px; vertical-align: middle;
+    }
+    .state-active { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+    .state-idle { background: #22c55e; opacity: 0.5; }
+    .state-training { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; animation: pulse-badge 1.5s infinite; }
+    .state-framework { background: transparent; border: 1px dashed rgba(255,255,255,0.3); }
+    .state-unwired { background: #6b7280; }
+    .state-unavailable { background: #374151; }
+    .state-failed { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+    @keyframes pulse-badge { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    /* ── Inspector (bottom-right overlay on node click) */
+    .inspector {
+      position: absolute; right: 12px; bottom: 12px;
+      width: min(340px, calc(100% - 24px));
+      padding: 12px 14px; border-radius: 14px;
+      background: rgba(4,12,24,0.72);
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+      backdrop-filter: blur(10px);
+      z-index: 6; font-size: 12px;
+    }
+    .inspector.hidden { display: none; }
+    .inspector h4 { font-size: 14px; color: #d7f6ff; margin-bottom: 4px; }
+    .inspector .sub { font-size: 11px; color: rgba(220,244,255,0.7); margin-bottom: 6px; }
+    .inspector .close-btn {
+      position: absolute; top: 8px; right: 8px;
+      border: 0; background: rgba(255,255,255,0.08);
+      color: #d7f6ff; width: 24px; height: 24px;
+      border-radius: 50%; cursor: pointer; font-size: 12px;
+    }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .chip {
+      padding: 2px 7px; border-radius: 999px; font-size: 10px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: rgba(235,247,255,0.92);
+    }
+
+    /* ── Chat panel ───────────────────────────────── */
+    .chat-messages {
+      flex: 1; overflow-y: auto; display: flex;
+      flex-direction: column; gap: 6px; padding-bottom: 8px;
+    }
+    .chat-msg {
+      padding: 6px 10px; border-radius: 8px; font-size: 12px;
+      line-height: 1.4; max-width: 90%; word-break: break-word;
+    }
+    .chat-msg.user {
+      align-self: flex-end;
+      background: rgba(90,220,255,0.14);
+      border: 1px solid rgba(90,220,255,0.2);
+    }
+    .chat-msg.assistant {
+      align-self: flex-start;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .chat-msg.system {
+      align-self: center; text-align: center;
+      color: rgba(200,230,244,0.6); font-style: italic;
+    }
+    .chat-input-row {
+      display: flex; gap: 6px; padding-top: 8px;
+      border-top: 1px solid rgba(110,220,255,0.08);
+    }
+    .chat-input {
+      flex: 1; appearance: none;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #dff8ff; padding: 6px 10px;
+      border-radius: 8px; font-size: 12px; font-family: inherit;
+    }
+    .chat-input:disabled { opacity: 0.4; }
+    .chat-send {
+      appearance: none;
+      background: rgba(90,220,255,0.18);
+      border: 1px solid rgba(90,220,255,0.3);
+      color: #dff8ff; padding: 6px 12px;
+      border-radius: 8px; font-size: 12px; cursor: pointer;
+    }
+    .chat-send:disabled { opacity: 0.4; cursor: default; }
+
+    /* ── Responsive ───────────────────────────────── */
+    @media (max-width: 900px) {
+      #app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 48px 40px 1fr 40%;
+        grid-template-areas:
+          "header"
+          "tabs"
+          "canvas"
+          "panel";
+      }
+      #app.panel-closed {
+        grid-template-columns: 1fr;
+        grid-template-rows: 48px 40px 1fr;
+        grid-template-areas:
+          "header"
+          "tabs"
+          "canvas";
+      }
+      .panel { border-left: none; border-top: 1px solid rgba(110,220,255,0.12); }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <div class="header">
+      <span class="brand" id="brandTitle">WaggleDance Swarm AI</span>
+      <span class="subtitle" id="brandSubtitle">Hologram Brain: Waggle + LLM + Micromodels</span>
+      <span class="spacer"></span>
+      <span class="badge" id="badgeProfile"><span class="bdot" style="background:#4ade80"></span><span id="badgeProfileText">—</span></span>
+      <span class="badge" id="badgeCompute"><span class="bdot" style="background:#60a5fa"></span><span id="badgeComputeText">—</span></span>
+      <span class="badge" id="badgeRuntime"><span class="bdot" style="background:#a78bfa"></span><span id="badgeRuntimeText">—</span></span>
+      <button class="lang-toggle" id="langToggle">FI</button>
+    </div>
+
+    <!-- Tab bar -->
+    <div class="tab-bar" id="tabBar">
+      <button class="tab-btn active" data-tab="overview" id="tabOverview">Overview</button>
+      <button class="tab-btn" data-tab="memory" id="tabMemory">Memory</button>
+      <button class="tab-btn" data-tab="reasoning" id="tabReasoning">Reasoning</button>
+      <button class="tab-btn" data-tab="micro" id="tabMicro">Micromodels</button>
+      <button class="tab-btn" data-tab="learning" id="tabLearning">Learning</button>
+      <button class="tab-btn" data-tab="feeds" id="tabFeeds">Feeds</button>
+      <button class="tab-btn" data-tab="ops" id="tabOps">Ops</button>
+      <button class="tab-btn" data-tab="chat" id="tabChat">Chat</button>
+    </div>
+
+    <!-- Canvas area -->
+    <div class="canvas-area">
+      <canvas id="canvas"></canvas>
+      <div class="inspector hidden" id="inspector">
+        <button class="close-btn" id="inspectorClose">×</button>
+        <h4 id="inspectorTitle">Node</h4>
+        <div class="sub" id="inspectorSub"></div>
+        <div id="inspectorBody"></div>
+        <div class="chip-row" id="inspectorChips"></div>
+      </div>
+    </div>
+
+    <!-- Docked panel -->
+    <div class="panel" id="dockedPanel">
+      <div class="panel-header">
+        <h3 id="panelTitle">Overview</h3>
+        <button class="panel-close" id="panelClose">×</button>
+      </div>
+      <div class="panel-body" id="panelBody"></div>
+      <div class="panel-toolbar">
+        <button id="panelRefresh">Refresh</button>
+        <span class="panel-status" id="panelStatus">—</span>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// i18n — FI / EN.  No forbidden brand strings.
+// ═══════════════════════════════════════════════════════════════
+const LANG = {
+  en: {
+    brand: "WaggleDance Swarm AI",
+    subtitle: "Hologram Brain: Waggle + LLM + Micromodels",
+    tabs: { overview: "Overview", memory: "Memory", reasoning: "Reasoning",
+            micro: "Micromodels", learning: "Learning", feeds: "Feeds",
+            ops: "Ops", chat: "Chat" },
+    profiles: {
+      gadget: "Gadget", cottage: "Cottage", home: "Home",
+      factory: "Factory", custom: "Custom"
+    },
+    node_states: {
+      unavailable: "Unavailable", unwired: "Unwired",
+      framework: "Framework only", idle: "Idle", active: "Active",
+      training: "Training", failed: "Failed"
+    },
+    source_classes: {
+      live: "Live", simulated: "Simulated", legacy: "Legacy", error: "Error"
+    },
+    freshness: { stale: "Stale" },
+    devices: { CPU: "CPU", GPU: "GPU", MIXED: "Mixed", UNKNOWN: "Unknown" },
+    learning_states: {
+      awake: "Awake", replay: "Replay", consolidation: "Consolidation",
+      dream: "Dream", training: "Training", canary: "Canary",
+      morning_report: "Morning Report"
+    },
+    badges: { profile: "Profile", compute: "Compute", runtime: "Runtime" },
+    sections: {
+      overview_health: "Health", overview_active: "Top Active",
+      overview_learning: "Learning State", overview_alerts: "Alerts",
+      mem_waggle: "Waggle Memory", mem_episodic: "Episodic", mem_semantic: "Semantic",
+      mem_working: "Working Memory", mem_magma: "MAGMA",
+      reason_route: "Current Route", reason_solver: "Active Solver",
+      reason_verifier: "Verifier", reason_confidence: "Confidence",
+      micro_families: "Capability Families", micro_training: "Training Status",
+      learn_state: "State Machine", learn_pipeline: "Pipeline",
+      feeds_sources: "Sources", feeds_health: "Feed Health",
+      ops_cpu: "CPU", ops_gpu: "GPU", ops_memory: "Memory",
+      ops_auth: "Auth", ops_ws: "WebSocket", ops_queues: "Queues",
+      chat_route: "Route", chat_explain: "Explainability"
+    },
+    chat: {
+      no_auth: "Open the WaggleDance Dashboard to enable Chat.",
+      placeholder: "Type a message...",
+      placeholder_disabled: "Open dashboard first to enable chat",
+      send: "Send",
+      route_label: "Route",
+      confidence_label: "Confidence"
+    },
+    inspector: {
+      state: "State", device: "Device", freshness: "Freshness",
+      source: "Source", quality: "Quality", connections: "Connections",
+      incoming: "Incoming", outgoing: "Outgoing"
+    },
+    refresh: "Refresh", no_data: "No data yet"
+  },
+  fi: {
+    brand: "WaggleDance Swarm AI",
+    subtitle: "Hologrammi-aivot: Waggle + LLM + Mikromallit",
+    tabs: { overview: "Yleiskatsaus", memory: "Muisti", reasoning: "Paattely",
+            micro: "Mikromallit", learning: "Oppiminen", feeds: "Syotteet",
+            ops: "Operaatiot", chat: "Keskustelu" },
+    profiles: {
+      gadget: "Laite", cottage: "Mokki", home: "Koti",
+      factory: "Tehdas", custom: "Mukautettu"
+    },
+    node_states: {
+      unavailable: "Ei saatavilla", unwired: "Ei kytketty",
+      framework: "Vain kehys", idle: "Odottaa", active: "Aktiivinen",
+      training: "Kouluttaa", failed: "Epaonnistunut"
+    },
+    source_classes: {
+      live: "Live", simulated: "Simuloitu", legacy: "Legacy", error: "Virhe"
+    },
+    freshness: { stale: "Vanhentunut" },
+    devices: { CPU: "CPU", GPU: "GPU", MIXED: "Seka", UNKNOWN: "Tuntematon" },
+    learning_states: {
+      awake: "Hereilla", replay: "Toisto", consolidation: "Vahvistus",
+      dream: "Uni", training: "Koulutus", canary: "Kanaria",
+      morning_report: "Aamuraportti"
+    },
+    badges: { profile: "Profiili", compute: "Laskenta", runtime: "Ajoymparisto" },
+    sections: {
+      overview_health: "Terveys", overview_active: "Aktiivisimmat",
+      overview_learning: "Oppimistila", overview_alerts: "Halytykset",
+      mem_waggle: "Waggle-muisti", mem_episodic: "Episodinen", mem_semantic: "Semanttinen",
+      mem_working: "Tyomuisti", mem_magma: "MAGMA",
+      reason_route: "Nykyinen reitti", reason_solver: "Aktiivinen ratkaisija",
+      reason_verifier: "Vahvistaja", reason_confidence: "Luottamus",
+      micro_families: "Kyvykkyysperheet", micro_training: "Koulutustila",
+      learn_state: "Tilakaavio", learn_pipeline: "Putki",
+      feeds_sources: "Lahteet", feeds_health: "Syotteiden terveys",
+      ops_cpu: "CPU", ops_gpu: "GPU", ops_memory: "Muisti",
+      ops_auth: "Tunnistautuminen", ops_ws: "WebSocket", ops_queues: "Jonot",
+      chat_route: "Reitti", chat_explain: "Selitettavyys"
+    },
+    chat: {
+      no_auth: "Avaa WaggleDance Dashboard ottaaksesi keskustelun kayttoon.",
+      placeholder: "Kirjoita viesti...",
+      placeholder_disabled: "Avaa dashboard ensin",
+      send: "Laheta",
+      route_label: "Reitti",
+      confidence_label: "Luottamus"
+    },
+    inspector: {
+      state: "Tila", device: "Laite", freshness: "Tuoreus",
+      source: "Lahde", quality: "Laatu", connections: "Yhteydet",
+      incoming: "Saapuvat", outgoing: "Lahtevat"
+    },
+    refresh: "Paivita", no_data: "Ei dataa"
+  }
+};
+
+let currentLang = 'en';
+const STALE_THRESHOLD_S = 30;
+
+function t(path) {
+  const parts = path.split('.');
+  let obj = LANG[currentLang];
+  for (const p of parts) {
+    if (!obj) return path;
+    obj = obj[p];
+  }
+  return obj !== undefined ? obj : path;
+}
+
+function localizeProfile(raw) {
+  const key = (raw || '').toLowerCase();
+  return LANG[currentLang].profiles[key] || LANG[currentLang].profiles.custom;
+}
+
+function localizeState(state) {
+  return (LANG[currentLang].node_states || {})[state] || state || '';
+}
+
+function localizeSourceClass(sc) {
+  return (LANG[currentLang].source_classes || {})[sc] || sc || '';
+}
+
+function localizeDevice(dev) {
+  return (LANG[currentLang].devices || {})[dev] || dev || '';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 32 Node Definitions — 4 rings
+// ═══════════════════════════════════════════════════════════════
+const NODE_DEFS = [
+  // ── Core cognition (10) ── ring: "core"
+  { id: 'sensory', label: 'Perception', short: 'SNS', ring: 'core', rgb: [255,196,64], pos: {x:92,y:-18,z:-48}, size: 15 },
+  { id: 'waggle_memory', label: 'Waggle Memory', short: 'WGM', ring: 'core', rgb: [255,122,72], pos: {x:28,y:-6,z:36}, size: 16 },
+  { id: 'episodic_memory', label: 'Episodic Memory', short: 'EPI', ring: 'core', rgb: [255,170,105], pos: {x:6,y:-42,z:52}, size: 13 },
+  { id: 'semantic_memory', label: 'Semantic Memory', short: 'SEM', ring: 'core', rgb: [255,145,120], pos: {x:-6,y:34,z:46}, size: 13 },
+  { id: 'working_memory', label: 'Working Memory', short: 'WM', ring: 'core', rgb: [255,120,160], pos: {x:-36,y:-16,z:54}, size: 14 },
+  { id: 'llm_core', label: 'LLM Core', short: 'LLM', ring: 'core', rgb: [255,76,96], pos: {x:-8,y:14,z:18}, size: 18 },
+  { id: 'reason_layer', label: 'Reasoning', short: 'RZN', ring: 'core', rgb: [255,92,208], pos: {x:-44,y:2,z:10}, size: 14 },
+  { id: 'causal_map', label: 'Causal Map', short: 'CAU', ring: 'core', rgb: [88,214,255], pos: {x:-30,y:-8,z:82}, size: 14 },
+  { id: 'decision', label: 'Decision', short: 'DEC', ring: 'core', rgb: [86,255,132], pos: {x:58,y:42,z:-18}, size: 16 },
+  { id: 'user_model', label: 'User Model', short: 'USR', ring: 'core', rgb: [255,220,100], pos: {x:72,y:28,z:30}, size: 12 },
+
+  // ── MAGMA ring (5) ── ring: "magma", orbital r~110
+  { id: 'magma_audit', label: 'MAGMA Audit', short: 'AUD', ring: 'magma', rgb: [0,210,180], pos: {x:110,y:0,z:0}, size: 9 },
+  { id: 'magma_event_log', label: 'Event Log', short: 'EVT', ring: 'magma', rgb: [0,190,200], pos: {x:34,y:0,z:105}, size: 9 },
+  { id: 'magma_replay', label: 'Replay', short: 'RPL', ring: 'magma', rgb: [0,220,160], pos: {x:-89,y:0,z:65}, size: 9 },
+  { id: 'magma_provenance', label: 'Provenance', short: 'PRV', ring: 'magma', rgb: [0,200,140], pos: {x:-89,y:0,z:-65}, size: 9 },
+  { id: 'magma_trust', label: 'Trust', short: 'TRS', ring: 'magma', rgb: [0,230,190], pos: {x:34,y:0,z:-105}, size: 9 },
+
+  // ── System ring (8) ── ring: "system", orbital r~140
+  { id: 'sys_auth', label: 'Auth', short: 'ATH', ring: 'system', rgb: [100,160,220], pos: {x:140,y:10,z:0}, size: 8 },
+  { id: 'sys_policy', label: 'Policy', short: 'POL', ring: 'system', rgb: [100,170,210], pos: {x:99,y:10,z:99}, size: 8 },
+  { id: 'sys_api', label: 'API', short: 'API', ring: 'system', rgb: [110,180,220], pos: {x:0,y:10,z:140}, size: 8 },
+  { id: 'sys_websocket', label: 'WebSocket', short: 'WS', ring: 'system', rgb: [90,170,230], pos: {x:-99,y:10,z:99}, size: 8 },
+  { id: 'sys_feeds', label: 'Feeds', short: 'FDS', ring: 'system', rgb: [100,160,200], pos: {x:-140,y:10,z:0}, size: 8 },
+  { id: 'sys_queues', label: 'Queues', short: 'QUE', ring: 'system', rgb: [110,170,210], pos: {x:-99,y:10,z:-99}, size: 8 },
+  { id: 'sys_storage', label: 'Storage', short: 'STO', ring: 'system', rgb: [100,180,200], pos: {x:0,y:10,z:-140}, size: 8 },
+  { id: 'sys_compute', label: 'Compute', short: 'CMP', ring: 'system', rgb: [120,180,230], pos: {x:99,y:10,z:-99}, size: 8 },
+
+  // ── Learning ring (9 = 4 new + 5 micro) ── ring: "learning", orbital r~125
+  { id: 'learn_night', label: 'Night Pipeline', short: 'NGT', ring: 'learning', rgb: [200,140,255], pos: {x:125,y:-10,z:0}, size: 9 },
+  { id: 'learn_dream', label: 'Dream Mode', short: 'DRM', ring: 'learning', rgb: [220,120,255], pos: {x:77,y:-10,z:97}, size: 9 },
+  { id: 'learn_training', label: 'Training', short: 'LTR', ring: 'learning', rgb: [210,130,255], pos: {x:-29,y:-10,z:122}, size: 9 },
+  { id: 'learn_canary', label: 'Canary', short: 'CNR', ring: 'learning', rgb: [190,150,255], pos: {x:-113,y:-10,z:54}, size: 9 },
+  { id: 'micro_train', label: 'Micro Training', short: 'TRN', ring: 'learning', rgb: [222,92,255], pos: {x:-113,y:-10,z:-54}, size: 9 },
+  { id: 'micro_route', label: 'Route Model', short: 'RT', ring: 'learning', rgb: [166,104,255], pos: {x:-29,y:-10,z:-122}, size: 9 },
+  { id: 'micro_anom', label: 'Anomaly Model', short: 'AN', ring: 'learning', rgb: [205,104,255], pos: {x:77,y:-10,z:-97}, size: 9 },
+  { id: 'micro_therm', label: 'Thermal Model', short: 'TH', ring: 'learning', rgb: [190,128,255], pos: {x:122,y:-10,z:-29}, size: 9 },
+  { id: 'micro_stats', label: 'Stats Model', short: 'ST', ring: 'learning', rgb: [168,150,255], pos: {x:108,y:-10,z:62}, size: 9 },
+];
+
+const EDGE_DEFS = [
+  // Core
+  { from: 'sensory', to: 'working_memory', rgb: [255,176,118] },
+  { from: 'working_memory', to: 'llm_core', rgb: [255,126,165] },
+  { from: 'semantic_memory', to: 'llm_core', rgb: [255,118,100] },
+  { from: 'llm_core', to: 'reason_layer', rgb: [255,84,170] },
+  { from: 'reason_layer', to: 'causal_map', rgb: [162,138,255] },
+  { from: 'causal_map', to: 'micro_train', rgb: [140,150,255] },
+  { from: 'causal_map', to: 'decision', rgb: [78,220,255] },
+  { from: 'llm_core', to: 'decision', rgb: [140,255,160] },
+  { from: 'user_model', to: 'working_memory', rgb: [255,210,100] },
+  // MAGMA
+  { from: 'sensory', to: 'magma_audit', rgb: [0,210,180] },
+  { from: 'magma_trust', to: 'decision', rgb: [0,230,190] },
+  { from: 'magma_audit', to: 'magma_replay', rgb: [0,200,170] },
+  { from: 'magma_provenance', to: 'magma_trust', rgb: [0,200,160] },
+  // System
+  { from: 'sensory', to: 'sys_feeds', rgb: [100,160,200] },
+  { from: 'sys_auth', to: 'sys_policy', rgb: [100,170,215] },
+  { from: 'sys_policy', to: 'decision', rgb: [100,170,210] },
+  { from: 'sys_compute', to: 'llm_core', rgb: [120,180,230] },
+  { from: 'sys_queues', to: 'sensory', rgb: [110,170,210] },
+  // Learning
+  { from: 'learn_night', to: 'learn_dream', rgb: [210,130,255] },
+  { from: 'learn_dream', to: 'learn_training', rgb: [215,125,255] },
+  { from: 'learn_training', to: 'learn_canary', rgb: [200,140,255] },
+  { from: 'learn_canary', to: 'micro_train', rgb: [195,120,255] },
+];
+
+const NODE_META_INFO = {
+  sensory: { layer: "Input", desc: "Sensor and runtime perception" },
+  waggle_memory: { layer: "Memory", desc: "Directional pattern memory" },
+  episodic_memory: { layer: "Memory", desc: "Event-chain case history" },
+  semantic_memory: { layer: "Memory", desc: "Compressed meaning memory" },
+  working_memory: { layer: "Memory", desc: "Active context buffer" },
+  llm_core: { layer: "Reasoning", desc: "LLM semantic reasoning core" },
+  reason_layer: { layer: "Reasoning", desc: "Solver-first deliberation" },
+  causal_map: { layer: "Causal", desc: "Cause-effect state graph" },
+  decision: { layer: "Output", desc: "Decision and response formation" },
+  user_model: { layer: "Input", desc: "User interaction model" },
+  magma_audit: { layer: "MAGMA", desc: "Audit trail entries" },
+  magma_event_log: { layer: "MAGMA", desc: "Event log store" },
+  magma_replay: { layer: "MAGMA", desc: "Mission replay buffer" },
+  magma_provenance: { layer: "MAGMA", desc: "Data provenance tracker" },
+  magma_trust: { layer: "MAGMA", desc: "Trust observations" },
+  sys_auth: { layer: "System", desc: "Authentication health" },
+  sys_policy: { layer: "System", desc: "Policy engine" },
+  sys_api: { layer: "System", desc: "API lifecycle health" },
+  sys_websocket: { layer: "System", desc: "WebSocket connections" },
+  sys_feeds: { layer: "System", desc: "Data feed health" },
+  sys_queues: { layer: "System", desc: "Admission control queues" },
+  sys_storage: { layer: "System", desc: "Persistent storage health" },
+  sys_compute: { layer: "System", desc: "GPU/CPU compute" },
+  learn_night: { layer: "Learning", desc: "Night pipeline" },
+  learn_dream: { layer: "Learning", desc: "Dream simulation" },
+  learn_training: { layer: "Learning", desc: "Specialist training" },
+  learn_canary: { layer: "Learning", desc: "Canary validation" },
+  micro_train: { layer: "Learning", desc: "Micromodel training" },
+  micro_route: { layer: "Learning", desc: "Routing specialist" },
+  micro_anom: { layer: "Learning", desc: "Anomaly detection" },
+  micro_therm: { layer: "Learning", desc: "Thermal reasoning" },
+  micro_stats: { layer: "Learning", desc: "Statistical scoring" },
+};
+
+// Ring colors for orbital arcs
+const RING_COLORS = {
+  magma: [0, 210, 180],
+  system: [100, 170, 220],
+  learning: [200, 140, 255],
+};
+
+// ═══════════════════════════════════════════════════════════════
+// Canvas 3D renderer
+// ═══════════════════════════════════════════════════════════════
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const area = document.querySelector('.canvas-area');
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const w = area.clientWidth;
+  const h = area.clientHeight;
+  canvas.width = Math.floor(w * dpr);
+  canvas.height = Math.floor(h * dpr);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t * t * (3 - 2 * t);
+
+function rotateY(p, angle) {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return { x: p.x * c + p.z * s, y: p.y, z: -p.x * s + p.z * c };
+}
+function rotateX(p, angle) {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return { x: p.x, y: p.y * c - p.z * s, z: p.y * s + p.z * c };
+}
+function project(p, camDist, scale) {
+  const d = camDist / (camDist - p.z);
+  return { x: p.x * d * scale, y: p.y * d * scale, depth: d };
+}
+function rgba(rgb, a) { return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`; }
+
+function glowCircle(x, y, radius, rgb, alpha) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+  g.addColorStop(0, rgba(rgb, alpha));
+  g.addColorStop(0.4, rgba(rgb, alpha * 0.45));
+  g.addColorStop(1, rgba(rgb, 0));
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, TAU);
+  ctx.fill();
+}
+
+function neonLine(x1, y1, x2, y2, rgb, alpha, width) {
+  ctx.save();
+  ctx.strokeStyle = rgba(rgb, alpha);
+  ctx.lineWidth = width;
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = rgba(rgb, alpha);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Brain system
+// ═══════════════════════════════════════════════════════════════
+class HolographicBrainSystem {
+  constructor() {
+    this.cameraDistance = 700;
+    this.scale = 2.4;
+    this.rotationY = 0;
+    this.rotationX = -0.1;
+    this.rotationDrift = 0.08;
+    this.lastExternalUpdate = 0;
+
+    this.shellPoints = [];
+    this.shellLines = [];
+    this.internalCurves = [];
+    this.particles = [];
+    this.causalEvents = [];
+    this.lastProjectedNodes = [];
+    this.selectedNodeId = null;
+    this.nodeMeta = {};
+
+    this.nodes = NODE_DEFS.map(d => ({
+      ...d, activity: 0.0, baseActivity: 0.0
+    }));
+
+    this.edges = EDGE_DEFS.map(d => ({
+      ...d, weight: 0.6, signal: 0.0
+    }));
+
+    this.buildShell();
+    this.initParticles();
+  }
+
+  buildShell() {
+    const profile = [];
+    const profileCount = 52;
+    for (let i = 0; i < profileCount; i++) {
+      const t = i / (profileCount - 1);
+      const a = t * TAU;
+      let x = Math.cos(a) * 136;
+      let y = Math.sin(a) * 94;
+      if (x < 0) x *= 1.1;
+      if (x > 50) x *= 0.92;
+      if (y < -10) y *= 1.08;
+      if (y > 0) y *= 0.72;
+      if (x > 72 && y > 20) { x -= 10; y += 22; }
+      if (x < -90 && y > -10) y -= 6;
+      profile.push({ x, y });
+    }
+    const layers = 12;
+    for (let zi = 0; zi < layers; zi++) {
+      const zt = zi / (layers - 1);
+      const z = lerp(-72, 72, zt);
+      const squash = 1 - Math.pow(Math.abs(z) / 80, 1.75) * 0.56;
+      for (const p of profile) this.shellPoints.push({ x: p.x, y: p.y * squash, z });
+    }
+    for (let zi = 0; zi < layers; zi++) {
+      const off = zi * profile.length;
+      for (let i = 0; i < profile.length; i++) this.shellLines.push([off + i, off + ((i+1) % profile.length)]);
+    }
+    for (let zi = 0; zi < layers - 1; zi++) {
+      const aOff = zi * profile.length, bOff = (zi+1) * profile.length;
+      for (let i = 0; i < profile.length; i += 2) this.shellLines.push([aOff + i, bOff + i]);
+    }
+    for (let row = 0; row < 7; row++) {
+      const pts = [];
+      for (let i = 0; i < 20; i++) {
+        const t = i / 19;
+        pts.push({
+          x: lerp(-98, 104, t),
+          y: Math.sin(t * TAU * 0.9 + row * 0.7) * 12 + lerp(-56, 34, row / 6),
+          z: Math.cos(t * TAU * 0.6 + row * 0.8) * 17
+        });
+      }
+      this.internalCurves.push(pts);
+    }
+  }
+
+  initParticles() {
+    for (let i = 0; i < 140; i++) {
+      this.particles.push({
+        x: Math.random() * 2000, y: Math.random() * 1200,
+        r: Math.random() * 2 + 0.5, speed: Math.random() * 0.12 + 0.02,
+        phase: Math.random() * TAU
+      });
+    }
+  }
+
+  transformed(p) {
+    return rotateX(rotateY(p, this.rotationY), this.rotationX);
+  }
+
+  getNodeById(id) { return this.nodes.find(n => n.id === id); }
+
+  update(dt, now) {
+    this.rotationY += dt * this.rotationDrift;
+    const t = now * 0.001;
+    const idleMix = this.lastExternalUpdate && now - this.lastExternalUpdate < 500 ? 0.15 : 1;
+
+    this.nodes.forEach((node, i) => {
+      const wave = 0.06 * Math.sin(t * 1.2 + i * 0.9) + 0.03 * Math.sin(t * 2.3 + i * 1.7);
+      const target = clamp(node.activity * (1 - 0.12 * idleMix) + wave * 0.12 * idleMix, 0, 1);
+      node.activity = lerp(node.activity, target, 0.06);
+    });
+
+    this.edges.forEach((edge, i) => {
+      const from = this.getNodeById(edge.from);
+      const to = this.getNodeById(edge.to);
+      if (!from || !to) return;
+      const coupling = (from.activity + to.activity) * 0.5;
+      const drift = 0.06 * Math.sin(t * 2 + i * 0.8);
+      edge.signal = clamp(lerp(edge.signal, coupling * edge.weight + drift, 0.04), 0, 1);
+    });
+
+    if (Math.random() < 0.025) this.spawnCausalEvent(now);
+  }
+
+  spawnCausalEvent(now, fromId, toId) {
+    const edge = fromId && toId
+      ? this.edges.find(e => e.from === fromId && e.to === toId)
+      : this.edges[Math.floor(Math.random() * this.edges.length)];
+    if (!edge) return;
+    this.causalEvents.push({ edge, progress: 0, speed: 0.18 + edge.signal * 0.6, born: now });
+  }
+
+  updateBrainState(data = {}) {
+    const now = performance.now();
+    this.lastExternalUpdate = now;
+
+    if (data.nodes) {
+      Object.entries(data.nodes).forEach(([id, value]) => {
+        const node = this.getNodeById(id);
+        if (node) node.activity = clamp(Number(value) || 0, 0, 1);
+      });
+    }
+    if (data.edges) {
+      Object.entries(data.edges).forEach(([key, value]) => {
+        const [from, to] = key.split('->');
+        const edge = this.edges.find(e => e.from === from && e.to === to);
+        if (edge) edge.signal = clamp(Number(value) || 0, 0, 1);
+      });
+    }
+    if (Array.isArray(data.events)) {
+      data.events.forEach(evt => this.spawnCausalEvent(now, evt.from, evt.to));
+    }
+    if (data.node_meta) {
+      this.nodeMeta = data.node_meta;
+    }
+  }
+
+  drawBackground(now, w, h) {
+    const t = now * 0.001;
+    for (const p of this.particles) {
+      const y = (p.y + t * 6 * p.speed + Math.sin(t + p.phase) * 0.2) % (h + 40);
+      glowCircle(p.x % w, y - 20, p.r * 3, [80,170,255], 0.04);
+    }
+  }
+
+  drawRingOrbitals(cx, cy) {
+    // Draw faint orbital ring paths
+    for (const [ringName, rgb] of Object.entries(RING_COLORS)) {
+      const ringNodes = this.nodes.filter(n => n.ring === ringName);
+      if (ringNodes.length < 2) continue;
+      const projected = ringNodes.map(n => {
+        const q = this.transformed(n.pos);
+        const s = project(q, this.cameraDistance, this.scale);
+        return { x: cx + s.x, y: cy + s.y };
+      });
+      ctx.save();
+      ctx.strokeStyle = rgba(rgb, 0.08);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath();
+      projected.forEach((p, i) => { i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); });
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  getStateBadgeColor(state) {
+    const map = {
+      active: '#4ade80', idle: 'rgba(34,197,94,0.5)', training: '#f59e0b',
+      framework: 'rgba(255,255,255,0.2)', unwired: '#6b7280',
+      unavailable: '#374151', failed: '#ef4444'
+    };
+    return map[state] || '#374151';
+  }
+
+  render(now) {
+    const area = document.querySelector('.canvas-area');
+    const w = area.clientWidth, h = area.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+    const cx = w * 0.5, cy = h * 0.5;
+
+    this.drawBackground(now, w, h);
+
+    // Shell
+    const shellProjected = this.shellPoints.map(p => {
+      const q = this.transformed(p);
+      const s = project(q, this.cameraDistance, this.scale);
+      return { x: cx + s.x, y: cy + s.y, z: q.z, depth: s.depth };
+    });
+    for (const [ia, ib] of this.shellLines) {
+      const a = shellProjected[ia], b = shellProjected[ib];
+      const alpha = clamp(0.04 + (a.depth + b.depth) * 0.12, 0.03, 0.2);
+      neonLine(a.x, a.y, b.x, b.y, [90,220,255], alpha, 0.8);
+    }
+    for (const curve of this.internalCurves) {
+      for (let i = 0; i < curve.length - 1; i++) {
+        const a = project(this.transformed(curve[i]), this.cameraDistance, this.scale);
+        const b = project(this.transformed(curve[i+1]), this.cameraDistance, this.scale);
+        neonLine(cx + a.x, cy + a.y, cx + b.x, cy + b.y, [100,170,255], 0.06, 0.8);
+      }
+    }
+
+    // Ring orbitals
+    this.drawRingOrbitals(cx, cy);
+
+    // Nodes
+    const transformedNodes = this.nodes.map(node => {
+      const q = this.transformed(node.pos);
+      const s = project(q, this.cameraDistance, this.scale);
+      return { ...node, sx: cx + s.x, sy: cy + s.y, z: q.z, depth: s.depth };
+    });
+    const nodeMap = Object.fromEntries(transformedNodes.map(n => [n.id, n]));
+    this.lastProjectedNodes = transformedNodes.map(n => ({ id: n.id, x: n.sx, y: n.sy, r: n.size * 1.6 }));
+
+    // Edges
+    this.edges.forEach((edge, i) => {
+      const a = nodeMap[edge.from], b = nodeMap[edge.to];
+      if (!a || !b) return;
+      const alpha = 0.08 + edge.signal * 0.35;
+      const width = 0.8 + edge.signal * 2;
+      neonLine(a.sx, a.sy, b.sx, b.sy, edge.rgb, alpha, width);
+      // Flowing particles
+      const phase = ((now * 0.0003 * (0.5 + edge.signal)) + i * 0.07) % 1;
+      const px = lerp(a.sx, b.sx, phase), py = lerp(a.sy, b.sy, phase);
+      glowCircle(px, py, 3 + edge.signal * 6, edge.rgb, 0.15 + edge.signal * 0.25);
+    });
+
+    // Causal events
+    this.causalEvents = this.causalEvents.filter(evt => now - evt.born < 2400);
+    this.causalEvents.forEach(evt => {
+      const a = nodeMap[evt.edge.from], b = nodeMap[evt.edge.to];
+      if (!a || !b) return;
+      evt.progress += evt.speed * 0.012;
+      const p = ease(clamp(evt.progress, 0, 1));
+      const px = lerp(a.sx, b.sx, p), py = lerp(a.sy, b.sy, p);
+      glowCircle(px, py, 14, evt.edge.rgb, 0.4);
+      glowCircle(px, py, 6, [255,255,255], 0.85);
+    });
+
+    // Render nodes (sorted by z for depth)
+    transformedNodes.sort((a, b) => a.z - b.z).forEach((node, i) => {
+      const pulse = 0.85 + Math.sin(now * 0.003 + i) * 0.15;
+      const r = node.size * (0.5 + node.activity * 0.8) * pulse;
+      const selected = this.selectedNodeId === node.id;
+      const meta = this.nodeMeta[node.id];
+      const isUnavailable = meta && meta.state === 'unavailable';
+      const opacityMod = isUnavailable ? 0.3 : 1.0;
+
+      if (selected) glowCircle(node.sx, node.sy, r * 3, [255,255,255], 0.16);
+      glowCircle(node.sx, node.sy, r * 2.2, node.rgb, (0.18 + node.activity * 0.32) * opacityMod + (selected ? 0.1 : 0));
+      glowCircle(node.sx, node.sy, r, node.rgb, (0.7 + node.activity * 0.25) * opacityMod);
+
+      // State badge dot
+      if (meta && meta.state && meta.state !== 'idle') {
+        const badgeColor = this.getStateBadgeColor(meta.state);
+        ctx.save();
+        ctx.fillStyle = badgeColor;
+        ctx.beginPath();
+        ctx.arc(node.sx + r * 0.7, node.sy - r * 0.7, 3, 0, TAU);
+        ctx.fill();
+        if (meta.state === 'active' || meta.state === 'failed') {
+          ctx.shadowBlur = 6;
+          ctx.shadowColor = badgeColor;
+          ctx.beginPath();
+          ctx.arc(node.sx + r * 0.7, node.sy - r * 0.7, 3, 0, TAU);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // Source class halo (simulated = orange ring)
+      if (meta && meta.source_class === 'simulated') {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,160,40,0.3)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(node.sx, node.sy, r * 1.6, 0, TAU);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Stale indicator
+      if (meta && meta.freshness_s > STALE_THRESHOLD_S) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(250,204,21,0.4)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.arc(node.sx, node.sy, r * 1.8, 0, TAU);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Label
+      ctx.save();
+      ctx.fillStyle = `rgba(240,248,255,${(0.5 + node.activity * 0.4) * opacityMod})`;
+      ctx.font = `${node.ring === 'core' ? 11 : 9}px Inter,Arial,sans-serif`;
+      ctx.fillText(node.short, node.sx + r + 4, node.sy - 3);
+      ctx.restore();
+    });
+
+    // Shell vertex dots
+    shellProjected.forEach((p, i) => {
+      if (i % 5 === 0) glowCircle(p.x, p.y, 1.8, [120,235,255], 0.06);
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Dashboard state + data fetching
+// ═══════════════════════════════════════════════════════════════
+const dashboardState = {
+  status: null, system: null, consciousness: null, learning: null,
+  micro_model: null, ops: null, feeds: null, agent_levels: null,
+  swarm_scores: null, monitor_history: null,
+  profile_impact: null, capabilities_state: null, learning_state: null,
+  hologram: null,
+  ws: { connected: false, lastMessageAt: 0 }
+};
+
+async function fetchJson(url) {
+  try {
+    const token = localStorage.getItem('WAGGLE_API_KEY');
+    const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+    const r = await fetch(url, { headers });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+async function fetchPublicJson(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+async function refreshDashboardData() {
+  const results = await Promise.allSettled([
+    fetchPublicJson('/api/status'),
+    fetchPublicJson('/api/system'),
+    fetchPublicJson('/api/consciousness'),
+    fetchPublicJson('/api/learning'),
+    fetchPublicJson('/api/micro_model'),
+    fetchPublicJson('/api/ops'),
+    fetchPublicJson('/api/feeds'),
+    fetchPublicJson('/api/profile/impact'),
+    fetchPublicJson('/api/capabilities/state'),
+    fetchPublicJson('/api/learning/state-machine'),
+  ]);
+  const keys = ['status','system','consciousness','learning','micro_model','ops','feeds','profile_impact','capabilities_state','learning_state'];
+  keys.forEach((k, i) => {
+    if (results[i].status === 'fulfilled' && results[i].value) {
+      dashboardState[k] = results[i].value;
+    }
+  });
+  updateHeaderBadges();
+  buildActivePanel();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Header badges
+// ═══════════════════════════════════════════════════════════════
+function updateHeaderBadges() {
+  const st = dashboardState.status;
+  if (st) {
+    document.getElementById('badgeProfileText').textContent = localizeProfile(st.profile);
+    const rtText = st.status === 'running' ? (st.uptime_s > 0 ? `${Math.floor(st.uptime_s/60)}m` : 'OK') : st.status;
+    document.getElementById('badgeRuntimeText').textContent = rtText;
+  }
+  // Compute badge from hologram node_meta
+  const holo = dashboardState.hologram;
+  if (holo && holo.node_meta && holo.node_meta.sys_compute) {
+    const cm = holo.node_meta.sys_compute;
+    const dev = cm.device || 'CPU';
+    const stateLabel = cm.state === 'active'
+      ? (dev + ' ' + localizeState('active'))
+      : (dev + ' ' + localizeState(cm.state || 'idle'));
+    document.getElementById('badgeComputeText').textContent = stateLabel;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Language toggle
+// ═══════════════════════════════════════════════════════════════
+function applyLanguage() {
+  document.getElementById('brandTitle').textContent = t('brand');
+  document.getElementById('brandSubtitle').textContent = t('subtitle');
+  const tabs = LANG[currentLang].tabs;
+  document.getElementById('tabOverview').textContent = tabs.overview;
+  document.getElementById('tabMemory').textContent = tabs.memory;
+  document.getElementById('tabReasoning').textContent = tabs.reasoning;
+  document.getElementById('tabMicro').textContent = tabs.micro;
+  document.getElementById('tabLearning').textContent = tabs.learning;
+  document.getElementById('tabFeeds').textContent = tabs.feeds;
+  document.getElementById('tabOps').textContent = tabs.ops;
+  document.getElementById('tabChat').textContent = tabs.chat;
+  document.getElementById('langToggle').textContent = currentLang === 'en' ? 'FI' : 'EN';
+  document.getElementById('panelRefresh').textContent = t('refresh');
+  updateHeaderBadges();
+  buildActivePanel();
+}
+
+document.getElementById('langToggle').addEventListener('click', () => {
+  currentLang = currentLang === 'en' ? 'fi' : 'en';
+  applyLanguage();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Tab / Panel system
+// ═══════════════════════════════════════════════════════════════
+let activeTab = 'overview';
+
+function setActiveTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.getElementById('app').classList.remove('panel-closed');
+  buildActivePanel();
+}
+
+document.getElementById('tabBar').addEventListener('click', e => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  const tab = btn.dataset.tab;
+  if (tab === activeTab) {
+    // Toggle panel closed
+    document.getElementById('app').classList.toggle('panel-closed');
+    resizeCanvas();
+    return;
+  }
+  setActiveTab(tab);
+  resizeCanvas();
+});
+
+document.getElementById('panelClose').addEventListener('click', () => {
+  document.getElementById('app').classList.add('panel-closed');
+  resizeCanvas();
+});
+
+document.getElementById('panelRefresh').addEventListener('click', refreshDashboardData);
+
+// ═══════════════════════════════════════════════════════════════
+// Panel builders
+// ═══════════════════════════════════════════════════════════════
+function fmt(value, fallback) {
+  if (fallback === undefined) fallback = '\u2014';
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(3);
+  return String(value);
+}
+
+function card(key, val) {
+  return `<div class="p-card"><span class="k">${key}</span><span class="v">${fmt(val)}</span></div>`;
+}
+
+function stateDot(state) {
+  return `<span class="state-dot state-${state || 'unavailable'}"></span>${localizeState(state)}`;
+}
+
+function qualityBar(q) {
+  if (q === null || q === undefined) return '';
+  const pct = Math.round(q * 100);
+  const color = q > 0.7 ? '#4ade80' : q > 0.4 ? '#f59e0b' : '#ef4444';
+  return `<div class="p-bar-track"><div class="p-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+          <span style="font-size:10px;color:rgba(200,230,244,0.6)">${t('inspector.quality')}: ${pct}%</span>`;
+}
+
+function buildActivePanel() {
+  const title = document.getElementById('panelTitle');
+  const body = document.getElementById('panelBody');
+  const status = document.getElementById('panelStatus');
+  title.textContent = t(`tabs.${activeTab}`);
+  status.textContent = new Date().toLocaleTimeString();
+
+  const builders = {
+    overview: buildOverviewPanel,
+    memory: buildMemoryPanel,
+    reasoning: buildReasoningPanel,
+    micro: buildMicroPanel,
+    learning: buildLearningPanel,
+    feeds: buildFeedsPanel,
+    ops: buildOpsPanel,
+    chat: buildChatPanel,
+  };
+  (builders[activeTab] || buildOverviewPanel)(body);
+}
+
+function buildOverviewPanel(el) {
+  const st = dashboardState.status || {};
+  const pi = dashboardState.profile_impact || {};
+  const ls = dashboardState.learning_state || {};
+  let html = `<div class="p-section"><div class="p-section-title">${t('sections.overview_health')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card(t('badges.profile'), localizeProfile(st.profile));
+  html += card(t('badges.runtime'), st.status || '\u2014');
+  html += card('Load', st.load_level || '\u2014');
+  html += card('Tasks', st.active_tasks);
+  html += `</div></div>`;
+
+  if (pi.target_environment) {
+    html += `<div class="p-section"><div class="p-section-title">${t('badges.profile')} Impact</div>`;
+    html += `<div class="p-grid">`;
+    html += card('Target', pi.target_environment);
+    html += card('Risk', pi.risk_mode || 'standard');
+    html += card('Capabilities', (pi.enabled_capabilities || []).length);
+    html += card('Feeds', (pi.active_feeds || []).length);
+    html += `</div></div>`;
+  }
+
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.overview_learning')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card(t('sections.learn_state'), t(`learning_states.${ls.state || 'awake'}`));
+  html += card('Night', ls.night_pipeline_running ? 'Active' : 'Off');
+  html += `</div></div>`;
+  el.innerHTML = html;
+}
+
+function buildMemoryPanel(el) {
+  const c = dashboardState.consciousness || {};
+  let html = `<div class="p-section"><div class="p-section-title">${t('sections.mem_waggle')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Nodes', c.graph_nodes);
+  html += card('Edges', c.graph_edges);
+  html += `</div></div>`;
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.mem_episodic')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Episodes', c.episodes_count);
+  html += card('Corrections', c.corrections_count);
+  html += `</div></div>`;
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.mem_working')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Active Items', c.active_learning_count);
+  html += card('Uncertainty', c.uncertainty_score);
+  html += `</div></div>`;
+  el.innerHTML = html;
+}
+
+function buildReasoningPanel(el) {
+  const c = dashboardState.consciousness || {};
+  const ss = dashboardState.swarm_scores || {};
+  let html = `<div class="p-section"><div class="p-section-title">${t('sections.reason_verifier')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Hallucinations', c.hallucination_rate);
+  html += card('Uncertainty', c.uncertainty_score);
+  html += `</div></div>`;
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.reason_solver')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Total Routed', ss.total_routed);
+  html += card('Avg Time', ss.avg_time_ms ? ss.avg_time_ms + 'ms' : '\u2014');
+  html += `</div></div>`;
+  if (ss.scores && ss.scores.length) {
+    html += `<div class="p-section"><div class="p-section-title">Quality Distribution</div><div class="p-list">`;
+    ss.scores.forEach(s => { html += `<div class="p-list-item">${s.quality}: ${s.count}</div>`; });
+    html += `</div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function buildMicroPanel(el) {
+  const mm = dashboardState.micro_model || {};
+  const cs = dashboardState.capabilities_state || {};
+  let html = `<div class="p-section"><div class="p-section-title">${t('sections.micro_families')}</div>`;
+  html += `<div class="p-list">`;
+  for (const [nid, info] of Object.entries(cs)) {
+    html += `<div class="p-list-item">${stateDot(info.state)} <strong>${nid}</strong>`;
+    if (info.device) html += ` &middot; ${localizeDevice(info.device)}`;
+    if (info.quality !== null && info.quality !== undefined) html += ` &middot; Q:${(info.quality * 100).toFixed(0)}%`;
+    if (info.source_class) html += ` &middot; ${localizeSourceClass(info.source_class)}`;
+    html += `</div>`;
+  }
+  html += `</div></div>`;
+  if (mm.stats) {
+    html += `<div class="p-section"><div class="p-section-title">${t('sections.reason_confidence')}</div>`;
+    html += `<div class="p-grid">`;
+    html += card('Mean', mm.stats.mean_confidence);
+    html += card('Tracked', mm.tracked);
+    html += `</div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function buildLearningPanel(el) {
+  const l = dashboardState.learning || {};
+  const ls = dashboardState.learning_state || {};
+  let html = `<div class="p-section"><div class="p-section-title">${t('sections.learn_state')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card(t('sections.learn_state'), t(`learning_states.${ls.state || 'awake'}`));
+  html += card('Night', ls.night_pipeline_running ? 'Running' : 'Off');
+  html += card('Dream', ls.dream_active ? 'Active' : 'Off');
+  html += card('Trainers', ls.active_trainers || 0);
+  html += `</div></div>`;
+  if (l.leaderboard && l.leaderboard.length) {
+    html += `<div class="p-section"><div class="p-section-title">Leaderboard</div><div class="p-list">`;
+    l.leaderboard.forEach(e => {
+      html += `<div class="p-list-item">${e.name}: ${(e.accuracy * 100).toFixed(1)}%</div>`;
+    });
+    html += `</div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function buildFeedsPanel(el) {
+  const f = dashboardState.feeds || {};
+  let html = `<div class="p-section"><div class="p-section-title">${t('sections.feeds_sources')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Enabled', f.enabled ? 'Yes' : 'No');
+  html += `</div></div>`;
+  if (f.critical_alerts && f.critical_alerts.length) {
+    html += `<div class="p-section"><div class="p-section-title">${t('sections.overview_alerts')}</div><div class="p-list">`;
+    f.critical_alerts.forEach(a => { html += `<div class="p-list-item" style="color:#f87171">${a}</div>`; });
+    html += `</div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function buildOpsPanel(el) {
+  const sys = dashboardState.system || {};
+  const ops = dashboardState.ops || {};
+  const st = ops.status || {};
+  let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('CPU %', sys.cpu_percent);
+  html += card('GPU %', sys.gpu_percent);
+  html += card('RAM %', sys.memory_percent);
+  html += card('GPU Mem', sys.gpu_mem_used_mb ? `${sys.gpu_mem_used_mb}/${sys.gpu_mem_total_mb} MB` : '\u2014');
+  html += `</div></div>`;
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.ops_queues')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Queue', st.queue_depth);
+  html += card('Accepted', st.accepted);
+  html += card('Deferred', st.deferred);
+  html += card('Rejected', st.rejected);
+  html += `</div></div>`;
+  el.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Chat panel — reads token from localStorage
+// ═══════════════════════════════════════════════════════════════
+let chatMessages = [];
+let chatRouteInfo = null;
+
+function buildChatPanel(el) {
+  const token = localStorage.getItem('WAGGLE_API_KEY');
+  const hasAuth = !!token;
+  let html = '';
+
+  // Route explainability section
+  if (chatRouteInfo) {
+    html += `<div class="p-section"><div class="p-section-title">${t('chat.route_label')}</div>`;
+    html += `<div class="p-grid">`;
+    html += card(t('chat.route_label'), chatRouteInfo.source || '\u2014');
+    html += card(t('chat.confidence_label'), chatRouteInfo.confidence != null ? (chatRouteInfo.confidence * 100).toFixed(0) + '%' : '\u2014');
+    html += `</div></div>`;
+  }
+
+  html += `<div class="chat-messages" id="chatMessages">`;
+  if (!hasAuth) {
+    html += `<div class="chat-msg system">${t('chat.no_auth')}</div>`;
+  }
+  chatMessages.forEach(m => {
+    html += `<div class="chat-msg ${m.role}">${escapeHtml(m.text)}</div>`;
+  });
+  html += `</div>`;
+  html += `<div class="chat-input-row">`;
+  html += `<input class="chat-input" id="chatInput" type="text"
+    placeholder="${hasAuth ? t('chat.placeholder') : t('chat.placeholder_disabled')}"
+    ${hasAuth ? '' : 'disabled'} />`;
+  html += `<button class="chat-send" id="chatSend" ${hasAuth ? '' : 'disabled'}>${t('chat.send')}</button>`;
+  html += `</div>`;
+  el.innerHTML = html;
+
+  // Attach event handlers
+  const input = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('chatSend');
+  if (input && hasAuth) {
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+    sendBtn.addEventListener('click', sendChat);
+  }
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function sendChat() {
+  const token = localStorage.getItem('WAGGLE_API_KEY');
+  if (!token) return;
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  chatMessages.push({ role: 'user', text: msg });
+  buildActivePanel();
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token,
+      },
+      body: JSON.stringify({ query: msg }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      chatMessages.push({ role: 'assistant', text: data.response || '' });
+      chatRouteInfo = { source: data.source, confidence: data.confidence, agent_id: data.agent_id };
+      // Highlight nodes for 3s
+      if (data.source) highlightChatRoute(data.source, 3000);
+    } else {
+      chatMessages.push({ role: 'system', text: `Error: ${res.status}` });
+    }
+  } catch (e) {
+    chatMessages.push({ role: 'system', text: 'Connection error' });
+  }
+  buildActivePanel();
+}
+
+function highlightChatRoute(source, durationMs) {
+  // Highlight the route source node briefly
+  const nid = source.replace(/\./g, '_');
+  const prev = brain.selectedNodeId;
+  brain.selectedNodeId = nid;
+  setTimeout(() => { if (brain.selectedNodeId === nid) brain.selectedNodeId = prev; }, durationMs);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Inspector — node click
+// ═══════════════════════════════════════════════════════════════
+function showInspector(nodeId) {
+  const node = brain.getNodeById(nodeId);
+  if (!node) return;
+  const meta = brain.nodeMeta[nodeId] || {};
+  const info = NODE_META_INFO[nodeId] || {};
+  const insp = document.getElementById('inspector');
+  insp.classList.remove('hidden');
+  brain.selectedNodeId = nodeId;
+
+  document.getElementById('inspectorTitle').textContent = `${node.short} \u2014 ${node.label}`;
+  document.getElementById('inspectorSub').textContent = info.desc || '';
+
+  let bodyHtml = `<div class="p-grid" style="margin-top:6px">`;
+  bodyHtml += card(t('inspector.state'), stateDot(meta.state));
+  if (meta.device) bodyHtml += card(t('inspector.device'), localizeDevice(meta.device));
+  if (meta.source_class) bodyHtml += card(t('inspector.source'), localizeSourceClass(meta.source_class));
+  if (meta.freshness_s != null) {
+    const stale = meta.freshness_s > STALE_THRESHOLD_S;
+    bodyHtml += card(t('inspector.freshness'), `${meta.freshness_s}s${stale ? ' \u26a0 ' + t('freshness.stale') : ''}`);
+  }
+  bodyHtml += `</div>`;
+  // Quality bar
+  if (meta.quality !== null && meta.quality !== undefined) {
+    bodyHtml += `<div style="margin-top:8px">${qualityBar(meta.quality)}</div>`;
+  }
+  bodyHtml += `<div style="margin-top:6px;font-size:10px;color:rgba(200,230,244,0.5)">`;
+  bodyHtml += `${t('inspector.connections')}: `;
+  bodyHtml += `Layer: ${info.layer || node.ring}`;
+  bodyHtml += `</div>`;
+  document.getElementById('inspectorBody').innerHTML = bodyHtml;
+
+  // Connection chips
+  const incoming = brain.edges.filter(e => e.to === nodeId).map(e => brain.getNodeById(e.from)?.short || e.from);
+  const outgoing = brain.edges.filter(e => e.from === nodeId).map(e => brain.getNodeById(e.to)?.short || e.to);
+  let chipHtml = '';
+  incoming.forEach(s => { chipHtml += `<span class="chip">\u2190 ${s}</span>`; });
+  outgoing.forEach(s => { chipHtml += `<span class="chip">${s} \u2192</span>`; });
+  document.getElementById('inspectorChips').innerHTML = chipHtml;
+}
+
+document.getElementById('inspectorClose').addEventListener('click', () => {
+  document.getElementById('inspector').classList.add('hidden');
+  brain.selectedNodeId = null;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Canvas click detection
+// ═══════════════════════════════════════════════════════════════
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let closest = null, closestDist = 999;
+  for (const n of brain.lastProjectedNodes) {
+    const d = Math.hypot(mx - n.x, my - n.y);
+    if (d < n.r * 2 && d < closestDist) {
+      closest = n; closestDist = d;
+    }
+  }
+  if (closest) showInspector(closest.id);
+});
+
+// ═══════════════════════════════════════════════════════════════
+// WebSocket
+// ═══════════════════════════════════════════════════════════════
+let wsConnection = null;
+
+function connectWebSocket() {
+  const token = localStorage.getItem('WAGGLE_API_KEY');
+  if (!token) {
+    // No WS — use REST polling
+    setInterval(pollHologramState, 2000);
+    return;
+  }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}`);
+  wsConnection = ws;
+
+  ws.onopen = () => {
+    dashboardState.ws.connected = true;
+    document.getElementById('panelStatus').textContent = 'WS connected';
+  };
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      dashboardState.ws.lastMessageAt = Date.now();
+      if (msg.type === 'brain_update' && msg.brain) {
+        dashboardState.hologram = msg.brain;
+        brain.updateBrainState(msg.brain);
+        updateHeaderBadges();
+      } else if (msg.type === 'system' && msg.data) {
+        dashboardState.system = { ...dashboardState.system, ...msg.data };
+      } else if (msg.type === 'chat_route' && msg.data) {
+        chatRouteInfo = msg.data;
+        if (activeTab === 'chat') buildActivePanel();
+        if (msg.data.source) highlightChatRoute(msg.data.source, 3000);
+      }
+    } catch {}
+  };
+  ws.onclose = () => {
+    dashboardState.ws.connected = false;
+    wsConnection = null;
+    // Reconnect after 5s
+    setTimeout(connectWebSocket, 5000);
+  };
+  ws.onerror = () => ws.close();
+}
+
+async function pollHologramState() {
+  const data = await fetchPublicJson('/api/hologram/state');
+  if (data) {
+    dashboardState.hologram = data;
+    brain.updateBrainState(data);
+    updateHeaderBadges();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Demo sequence
+// ═══════════════════════════════════════════════════════════════
+function _startDemoSequence() {
+  const phases = [
+    // Phase 1: Idle state
+    { delay: 0, nodes: Object.fromEntries(NODE_DEFS.map(n => [n.id, 0.05])) },
+    // Phase 2: Perception activates
+    { delay: 2000, nodes: { sensory: 0.7, sys_feeds: 0.4, sys_queues: 0.3 } },
+    // Phase 3: Memory + LLM
+    { delay: 4000, nodes: { waggle_memory: 0.5, working_memory: 0.6, llm_core: 0.8, semantic_memory: 0.4, sys_compute: 0.6 } },
+    // Phase 4: Reasoning + Decision
+    { delay: 6000, nodes: { reason_layer: 0.7, causal_map: 0.5, decision: 0.6, magma_audit: 0.3, magma_trust: 0.4 } },
+    // Phase 5: Learning ring
+    { delay: 8000, nodes: { learn_dream: 0.6, learn_training: 0.5, micro_train: 0.4, micro_route: 0.3, learn_canary: 0.2 } },
+    // Phase 6: System ring health
+    { delay: 10000, nodes: { sys_auth: 1.0, sys_policy: 1.0, sys_api: 0.8, sys_storage: 0.7, sys_websocket: 0.3 } },
+    // Phase 7: Settle to light idle
+    { delay: 12000, nodes: Object.fromEntries(NODE_DEFS.map(n => [n.id, 0.08 + Math.random() * 0.12])) },
+  ];
+  phases.forEach(phase => {
+    setTimeout(() => brain.updateBrainState({ nodes: phase.nodes }), phase.delay);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Init + animation loop
+// ═══════════════════════════════════════════════════════════════
+const brain = new HolographicBrainSystem();
+window.updateBrainState = data => brain.updateBrainState(data);
+window.connectBrainSocket = () => connectWebSocket();
+
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+applyLanguage();
+
+let lastFrameTime = performance.now();
+function animate(now) {
+  const dt = Math.min((now - lastFrameTime) / 1000, 0.1);
+  lastFrameTime = now;
+  brain.update(dt, now);
+  brain.render(now);
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+// Initial data fetch + WS connect
+refreshDashboardData();
+connectWebSocket();
+
+// Start demo if no live data after 3s
+setTimeout(() => {
+  if (!dashboardState.hologram) _startDemoSequence();
+}, 3000);
+
+// Periodic REST refresh (for panels)
+setInterval(refreshDashboardData, 10000);
+</script>
+</body>
+</html>

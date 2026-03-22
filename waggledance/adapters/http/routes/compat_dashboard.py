@@ -1,7 +1,7 @@
 """Compatibility bridge: legacy dashboard endpoints for hologram menus.
 
 Maps hexagonal AutonomyService stats → legacy /api/* JSON formats
-so that the hologram-brain-v5 HTML menus populate correctly.
+so that the hologram-brain-v6 HTML menus populate correctly.
 """
 
 import asyncio
@@ -13,6 +13,7 @@ import psutil
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 
 from waggledance.adapters.http.deps import get_autonomy_service
+from waggledance.adapters.http.routes._capability_state import derive_capability_state
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +321,151 @@ def api_monitor_history(service=Depends(get_autonomy_service)):
     return {
         "events": events,
     }
+
+
+# ── Profile target mapping ────────────────────────────────
+_PROFILE_TARGETS = {
+    "GADGET": "embedded",
+    "COTTAGE": "low-power",
+    "HOME": "general",
+    "FACTORY": "industrial",
+}
+
+
+def _derive_protocols(rk: dict) -> list:
+    """Derive active protocols from resource kernel stats."""
+    protocols = []
+    if rk.get("http_active"):
+        protocols.append("HTTP")
+    if rk.get("ws_active") or rk.get("websocket_active"):
+        protocols.append("WebSocket")
+    if rk.get("mqtt_active"):
+        protocols.append("MQTT")
+    return protocols or ["HTTP"]
+
+
+def _derive_feeds(st: dict) -> list:
+    """Derive active feed names from status."""
+    feeds_data = st.get("feeds", {})
+    feed_list = feeds_data.get("feeds", {})
+    return [
+        name for name, info in feed_list.items()
+        if info.get("active")
+    ] if feed_list else []
+
+
+def _derive_learning_perms(rk: dict) -> dict:
+    """Derive learning permission flags from resource kernel."""
+    return {
+        "night_pipeline": rk.get("night_mode_allowed", True),
+        "dream_mode": rk.get("dream_mode_allowed", True),
+        "specialist_training": rk.get("training_allowed", True),
+    }
+
+
+# ── /api/profile/impact ─────────────────────────────────
+
+@router.get("/api/profile/impact")
+def api_profile_impact(service=Depends(get_autonomy_service)):
+    """Profile impact summary for hologram overview panel."""
+    st = service.get_status()
+    profile = st.get("profile", "HOME")
+    rk = st.get("resource_kernel", {})
+    lifecycle = st.get("lifecycle", {})
+    caps = st.get("capabilities", {})
+
+    registered = caps.get("registered", {})
+    cap_names = list(registered.keys())[:20] if isinstance(registered, dict) else []
+
+    return {
+        "loaded_profile": profile,
+        "effective_profile": profile,
+        "source": "config",
+        "target_environment": _PROFILE_TARGETS.get(
+            profile.upper() if isinstance(profile, str) else "HOME", "general"
+        ),
+        "enabled_capabilities": cap_names,
+        "disabled_capabilities": caps.get("disabled", []),
+        "active_protocols": _derive_protocols(rk),
+        "active_feeds": _derive_feeds(st),
+        "risk_mode": rk.get("risk_mode", "standard"),
+        "learning_permissions": _derive_learning_perms(rk),
+    }
+
+
+# ── /api/capabilities/state ─────────────────────────────
+
+@router.get("/api/capabilities/state")
+def api_capabilities_state(service=Depends(get_autonomy_service)):
+    """Per-family capability state — uses shared derive_capability_state().
+
+    Same derivation as hologram node_meta. Single source of truth.
+    """
+    rt = getattr(service, "_runtime", None)
+    rs = {}
+    if rt and getattr(rt, "is_running", False):
+        try:
+            rs = rt.stats()
+        except Exception:
+            pass
+    states = derive_capability_state(rt, rs)
+    return {
+        nid: {
+            "state": info.state,
+            "device": info.device,
+            "quality": info.quality,
+            "source_class": info.source_class,
+        }
+        for nid, info in states.items()
+    }
+
+
+# ── /api/learning/state-machine ──────────────────────────
+
+@router.get("/api/learning/state-machine")
+def api_learning_state_machine(service=Depends(get_autonomy_service)):
+    """Current learning lifecycle state."""
+    rs = _runtime_stats(service)
+    night = rs.get("night_pipeline", {})
+    dream = rs.get("dream_mode", {})
+    trainer = rs.get("specialist_trainer", {})
+
+    # Determine current state from runtime flags
+    if trainer.get("canary_active"):
+        state = "canary"
+    elif trainer.get("active_trainers", 0) > 0:
+        state = "training"
+    elif dream.get("active"):
+        state = "dream"
+    elif night.get("consolidating"):
+        state = "consolidation"
+    elif night.get("replaying"):
+        state = "replay"
+    elif night.get("running"):
+        state = "morning_report"
+    else:
+        state = "awake"
+
+    return {
+        "state": state,
+        "night_pipeline_running": night.get("running", False),
+        "dream_active": dream.get("active", False),
+        "active_trainers": trainer.get("active_trainers", 0),
+        "canary_active": trainer.get("canary_active", False),
+    }
+
+
+# ── WS broadcast helper ─────────────────────────────────
+
+async def broadcast_ws(message: dict):
+    """Broadcast a message to all connected WebSocket clients."""
+    dead = set()
+    for ws in _ws_clients:
+        try:
+            await ws.send_json(message)
+        except Exception:
+            dead.add(ws)
+    _ws_clients.difference_update(dead)
 
 
 # ── /ws WebSocket ─────────────────────────────────────────

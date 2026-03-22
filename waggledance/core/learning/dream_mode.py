@@ -190,14 +190,36 @@ def simulate_counterfactual(
     alt_scores: List[float] = []
 
     if graph_builder is not None:
-        # Infer intent from first capability (best effort)
+        # Infer intent from goal description or first capability
         _intent = _infer_intent(candidate)
+        # Try graph-informed alternatives with inferred intent
+        graph_alts = []
         if _intent:
             graph_alts = graph_builder.find_alternative_paths(
                 _intent,
                 exclude_capabilities=candidate.original_capabilities,
                 min_success_rate=0.0,
             )
+        # Fallback: try each original capability's intent as query
+        if not graph_alts:
+            for cap_id in candidate.original_capabilities:
+                cap_intent = cap_id.split(".")[-1] if "." in cap_id else cap_id
+                found = graph_builder.find_alternative_paths(
+                    cap_intent,
+                    exclude_capabilities=candidate.original_capabilities,
+                    min_success_rate=0.0,
+                )
+                graph_alts.extend(found)
+        # Deduplicate
+        seen = set()
+        deduped = []
+        for cap_id, sr in graph_alts:
+            if cap_id not in seen:
+                seen.add(cap_id)
+                deduped.append((cap_id, sr))
+        graph_alts = deduped
+
+        if graph_alts:
             graph_alt_ids = [cap_id for cap_id, _sr in graph_alts]
             graph_alt_map = {cap_id: sr for cap_id, sr in graph_alts}
 
@@ -259,22 +281,34 @@ def simulate_counterfactual(
 
 
 def _infer_intent(candidate: DreamCandidate) -> str:
-    """Best-effort intent inference from candidate goal description."""
+    """Best-effort intent inference from candidate goal description.
+
+    Falls back to first capability's domain if no keyword matches,
+    ensuring graph-informed alternatives are always attempted.
+    """
     desc = (candidate.goal_description or "").lower()
-    if not desc:
-        return ""
-    # Simple keyword-based mapping matching solver_router.classify_intent
-    for keyword, intent in [
-        ("math", "math"), ("calculate", "math"), ("laske", "math"),
-        ("thermal", "thermal"), ("temperature", "thermal"), ("lämpötila", "thermal"),
-        ("seasonal", "seasonal"), ("vuodenaika", "seasonal"),
-        ("schedule", "optimization"), ("optimize", "optimization"),
-        ("anomaly", "anomaly"), ("deviation", "anomaly"),
-        ("search", "retrieval"), ("find", "retrieval"),
-    ]:
-        if keyword in desc:
-            return intent
-    return "chat"
+    # Keyword-based mapping matching solver_router.classify_intent
+    if desc:
+        for keyword, intent in [
+            ("math", "math"), ("calculate", "math"), ("laske", "math"),
+            ("thermal", "thermal"), ("temperature", "thermal"), ("lämpötila", "thermal"),
+            ("seasonal", "seasonal"), ("vuodenaika", "seasonal"),
+            ("schedule", "optimization"), ("optimize", "optimization"),
+            ("anomaly", "anomaly"), ("deviation", "anomaly"),
+            ("search", "retrieval"), ("find", "retrieval"),
+            ("monitor", "monitoring"), ("check", "monitoring"),
+            ("predict", "prediction"), ("forecast", "prediction"),
+            ("route", "routing"), ("solve", "general"),
+        ]:
+            if keyword in desc:
+                return intent
+    # Fallback: derive intent from first original capability id
+    if candidate.original_capabilities:
+        cap = candidate.original_capabilities[0]
+        # "solve.thermal" → "thermal", "detect.anomaly" → "anomaly"
+        parts = cap.split(".")
+        return parts[-1] if len(parts) > 1 else cap
+    return "general"
 
 
 def create_simulated_trajectory(

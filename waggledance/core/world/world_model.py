@@ -122,24 +122,34 @@ class WorldModel:
 
     # ── Relations (delegates to CognitiveGraph) ───────────────
 
-    def add_relation(self, source: str, target: str, link_type: str = "semantic", **attrs):
+    def _require_graph(self, operation: str):
+        """Guard: log error if graph is missing in autonomy mode."""
         if self._graph is None:
-            log.warning("No graph layer — relation not added")
+            if self._autonomy_mode:
+                log.error("Graph layer MISSING in autonomy mode during %s — "
+                          "this should never happen. Data loss likely.", operation)
+            else:
+                log.warning("No graph layer — %s skipped", operation)
+            return False
+        return True
+
+    def add_relation(self, source: str, target: str, link_type: str = "semantic", **attrs):
+        if not self._require_graph("add_relation"):
             return
         self._graph.add_edge(source, target, link_type=link_type, **attrs)
 
     def get_relations(self, entity_id: str) -> List[dict]:
-        if self._graph is None:
+        if not self._require_graph("get_relations"):
             return []
         return self._graph.get_edges(entity_id)
 
     def find_dependents(self, entity_id: str, max_depth: int = 5):
-        if self._graph is None:
+        if not self._require_graph("find_dependents"):
             return []
         return self._graph.find_dependents(entity_id, max_depth)
 
     def find_ancestors(self, entity_id: str, max_depth: int = 5):
-        if self._graph is None:
+        if not self._require_graph("find_ancestors"):
             return []
         return self._graph.find_ancestors(entity_id, max_depth)
 
@@ -218,17 +228,17 @@ class WorldModel:
 
     def ensure_self_entity(self, **overrides) -> Optional[dict]:
         """Ensure self-entity exists in the CognitiveGraph."""
-        if self._graph is None:
+        if not self._require_graph("ensure_self_entity"):
             return None
         return self._graph.ensure_self_entity(**overrides)
 
     def get_self_entity(self) -> Optional[dict]:
-        if self._graph is None:
+        if not self._require_graph("get_self_entity"):
             return None
         return self._graph.get_self_entity()
 
     def update_self_entity(self, **attrs) -> Optional[dict]:
-        if self._graph is None:
+        if not self._require_graph("update_self_entity"):
             return None
         return self._graph.update_self_entity(**attrs)
 

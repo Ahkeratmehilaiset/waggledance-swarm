@@ -197,6 +197,50 @@ class PredictionErrorLedger:
 
         return analysis
 
+    def intent_error_frequency(
+        self,
+        max_age_seconds: float = 7 * 86400,
+    ) -> Dict[str, float]:
+        """Per-intent error frequency (0.0–1.0) within the time window.
+
+        Returns {intent: error_rate}.  Intents with zero errors are included
+        with rate 0.0 so callers can distinguish "known-good" from "unseen".
+        """
+        now = time.time()
+        cutoff = now - max_age_seconds
+        entries = self._read_all()
+        recent = [e for e in entries if e.timestamp >= cutoff]
+        if not recent:
+            return {}
+        groups: Dict[str, List[PredictionError]] = {}
+        for e in recent:
+            key = e.intent or e.solver_used
+            groups.setdefault(key, []).append(e)
+        return {
+            intent: sum(1 for e in elist if e.error_magnitude > 0) / len(elist)
+            for intent, elist in groups.items()
+        }
+
+    def intent_query_counts(
+        self,
+        max_age_seconds: float = 7 * 86400,
+    ) -> Dict[str, int]:
+        """Per-intent query count within the time window.
+
+        Proxy for user query frequency — counts how many times each
+        intent/topic appears in the ledger.
+        """
+        now = time.time()
+        cutoff = now - max_age_seconds
+        entries = self._read_all()
+        counts: Dict[str, int] = {}
+        for e in entries:
+            if e.timestamp < cutoff:
+                continue
+            key = e.intent or e.solver_used
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
     def stats(self) -> Dict[str, Any]:
         return {
             "buffer_size": len(self._buffer),

@@ -80,7 +80,8 @@ class CuriosityGoal:
     entity_id: str
     description: str
     priority: int  # capped by config
-    reason: str  # "stale" | "missing_baseline"
+    reason: str  # "stale" | "missing_baseline" | "low_confidence" | "high_error"
+    impact_score: float = 0.0  # 0.0–1.0, higher = more impactful
 
 
 def compute_uncertainty(
@@ -202,3 +203,160 @@ def generate_curiosity_goals(
         ))
 
     return goals
+
+
+# ── Impact weights ──────────────────────────────────────────────
+
+IMPACT_WEIGHT_ERROR_FREQUENCY = 0.4
+IMPACT_WEIGHT_LOW_CONFIDENCE = 0.3
+IMPACT_WEIGHT_QUERY_FREQUENCY = 0.2
+IMPACT_WEIGHT_STALENESS = 0.1
+
+
+def _compute_impact(
+    topic: str,
+    error_frequency: Dict[str, float],
+    capability_confidence: Dict[str, float],
+    query_counts: Dict[str, int],
+    stale_set: set,
+    max_queries: int,
+) -> float:
+    """Compute impact score for a single topic/entity.
+
+    impact = 0.4 * error_freq + 0.3 * (1 - confidence) + 0.2 * query_freq + 0.1 * staleness
+    """
+    err_freq = error_frequency.get(topic, 0.0)
+
+    # Find the best-matching capability confidence
+    conf = 0.5  # default if no match
+    for cap_id, c in capability_confidence.items():
+        # Match by topic appearing in capability id (e.g. "thermal" in "solve.thermal")
+        if topic in cap_id or cap_id.split(".")[-1] == topic:
+            conf = c
+            break
+
+    query_freq = 0.0
+    if max_queries > 0:
+        query_freq = min(1.0, query_counts.get(topic, 0) / max_queries)
+
+    staleness = 1.0 if topic in stale_set else 0.0
+
+    return (
+        IMPACT_WEIGHT_ERROR_FREQUENCY * err_freq
+        + IMPACT_WEIGHT_LOW_CONFIDENCE * (1.0 - conf)
+        + IMPACT_WEIGHT_QUERY_FREQUENCY * query_freq
+        + IMPACT_WEIGHT_STALENESS * staleness
+    )
+
+
+def generate_impact_curiosity_goals(
+    report: UncertaintyReport,
+    error_frequency: Optional[Dict[str, float]] = None,
+    capability_confidence: Optional[Dict[str, float]] = None,
+    query_counts: Optional[Dict[str, int]] = None,
+    threshold: float = DEFAULT_UNCERTAINTY_THRESHOLD,
+    max_priority: int = DEFAULT_CURIOSITY_MAX_PRIORITY,
+    max_active: int = 10,
+    existing_curiosity_count: int = 0,
+    profile: str = "HOME",
+) -> List[CuriosityGoal]:
+    """Generate impact-prioritized curiosity goals.
+
+    Unlike :func:`generate_curiosity_goals` which uses a fixed
+    stale-then-missing ordering, this function scores every candidate by
+    a 4-factor impact formula:
+
+        impact = 0.4 * prediction_error_frequency(topic)
+               + 0.3 * (1.0 - capability_confidence(solver))
+               + 0.2 * user_query_frequency(topic)
+               + 0.1 * staleness(topic)
+
+    Goals are sorted by impact descending and the top *budget* fill the
+    per-profile cap.  Topics with zero errors in the last 7 days are
+    deprioritized.
+
+    Args:
+        report: UncertaintyReport from :func:`compute_uncertainty`.
+        error_frequency: {topic: error_rate} from ledger (0.0–1.0).
+        capability_confidence: {capability_id: confidence} (0.0–1.0).
+        query_counts: {topic: query_count} from ledger.
+        threshold: uncertainty score below which no goals are generated.
+        max_priority: cap on goal priority (always yield to user goals).
+        max_active: default max active curiosity goals.
+        existing_curiosity_count: how many curiosity goals already exist.
+        profile: runtime profile for per-profile cap.
+
+    Returns:
+        List of CuriosityGoal sorted by impact_score descending,
+        capped to the per-profile budget.
+    """
+    if report.score <= threshold:
+        return []
+
+    profile_max = DEFAULT_CURIOSITY_MAX_ACTIVE.get(profile.upper(), max_active)
+    budget = profile_max - existing_curiosity_count
+    if budget <= 0:
+        return []
+
+    err_freq = error_frequency or {}
+    conf = capability_confidence or {}
+    q_counts = query_counts or {}
+    max_queries = max(q_counts.values()) if q_counts else 0
+    stale_set = set(report.stale_entity_ids)
+
+    # Collect all candidate topics
+    candidates: List[tuple] = []  # (topic, reason, description)
+
+    for eid in report.stale_entity_ids:
+        candidates.append((eid, "stale", f"Observe {eid} — data is stale"))
+
+    for eid in report.missing_baseline_keys:
+        if eid not in stale_set:  # avoid duplicates
+            candidates.append((
+                eid, "missing_baseline",
+                f"Observe {eid} — no baseline established",
+            ))
+
+    # Low-confidence capabilities → domain curiosity goals
+    for cap_id, c in conf.items():
+        if c < 0.5:
+            domain = cap_id.split(".")[-1] if "." in cap_id else cap_id
+            # Avoid duplicating entity-based candidates
+            if not any(cand[0] == domain for cand in candidates):
+                candidates.append((
+                    domain, "low_confidence",
+                    f"Improve {domain} prediction accuracy "
+                    f"(confidence {c:.2f})",
+                ))
+
+    # High-error intents not already covered
+    for intent, rate in err_freq.items():
+        if rate > 0.3 and not any(cand[0] == intent for cand in candidates):
+            candidates.append((
+                intent, "high_error",
+                f"Investigate {intent} errors (error rate {rate:.0%})",
+            ))
+
+    # Score all candidates
+    scored: List[CuriosityGoal] = []
+    for topic, reason, description in candidates:
+        impact = _compute_impact(
+            topic, err_freq, conf, q_counts, stale_set, max_queries,
+        )
+        scored.append(CuriosityGoal(
+            entity_id=topic,
+            description=description,
+            priority=min(max_priority, 30),
+            reason=reason,
+            impact_score=round(impact, 4),
+        ))
+
+    # Sort by impact descending
+    scored.sort(key=lambda g: g.impact_score, reverse=True)
+
+    # Deprioritize zero-error topics: move them to the end
+    with_errors = [g for g in scored if err_freq.get(g.entity_id, 0.0) > 0]
+    without_errors = [g for g in scored if err_freq.get(g.entity_id, 0.0) == 0]
+    scored = with_errors + without_errors
+
+    return scored[:budget]

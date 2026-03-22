@@ -248,6 +248,7 @@ class WorldModel:
         self,
         open_observe_goals: int = 0,
         stale_ttl_seconds: float = 3600,
+        capability_confidence: Optional[Dict[str, float]] = None,
     ):
         """Compute uncertainty and update self-entity."""
         from waggledance.core.world.epistemic_uncertainty import compute_uncertainty
@@ -259,6 +260,7 @@ class WorldModel:
             baseline_keys=baseline_keys,
             open_observe_goals=open_observe_goals,
             stale_ttl_seconds=stale_ttl_seconds,
+            capability_confidence=capability_confidence,
         )
         # Update self-entity with uncertainty score
         if self._graph is not None:

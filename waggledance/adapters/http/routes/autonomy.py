@@ -84,6 +84,18 @@ def get_safety_cases(
     return {"cases": service.get_safety_cases(limit=limit)}
 
 
+@router.get("/autonomy/capability-confidence")
+def capability_confidence(service=Depends(get_autonomy_service)):
+    """Get current per-solver capability confidence scores."""
+    return service.get_capability_confidence()
+
+
+@router.get("/autonomy/prediction-ledger")
+def prediction_ledger(service=Depends(get_autonomy_service)):
+    """Get prediction error ledger analysis."""
+    return service.get_prediction_ledger_analysis()
+
+
 @router.get("/autonomy/safety-cases/stats")
 def safety_cases_stats(service=Depends(get_autonomy_service)):
     """Get safety case statistics."""

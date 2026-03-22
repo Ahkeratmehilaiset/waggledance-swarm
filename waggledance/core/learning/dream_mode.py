@@ -368,6 +368,7 @@ def run_dream_session(
     max_simulations: int = DEFAULT_MAX_SIMULATIONS,
     max_candidates: int = 5,
     graph_builder=None,
+    capability_confidence: Optional[Dict[str, float]] = None,
 ) -> DreamSession:
     """
     Run a complete nightly dream mode session.
@@ -379,7 +380,10 @@ def run_dream_session(
     """
     session = DreamSession()
 
-    candidates = select_candidates(day_trajectories, max_candidates)
+    candidates = select_candidates(
+        day_trajectories, max_candidates,
+        capability_confidence=capability_confidence,
+    )
     session.candidates_evaluated = len(candidates)
 
     for candidate in candidates:

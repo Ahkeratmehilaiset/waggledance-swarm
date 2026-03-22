@@ -136,6 +136,7 @@ class NightLearningPipeline:
         self,
         day_cases: Optional[List[CaseTrajectory]] = None,
         legacy_records: Optional[List[LegacyRecord]] = None,
+        confidence_trends: Optional[Dict[str, list]] = None,
     ) -> NightLearningResult:
         """
         Run a full night learning cycle.
@@ -172,7 +173,10 @@ class NightLearningPipeline:
             self._update_procedural(all_cases, result)
 
             # Phase 6: Generate morning report
-            result.report = self._generate_report(all_cases, result)
+            result.report = self._generate_report(
+                all_cases, result,
+                confidence_trends=confidence_trends,
+            )
 
         except Exception as e:
             result.errors.append(str(e))
@@ -264,6 +268,7 @@ class NightLearningPipeline:
         self,
         cases: List[CaseTrajectory],
         result: NightLearningResult,
+        confidence_trends: Optional[Dict[str, list]] = None,
     ) -> MorningReport:
         """Phase 6: Generate morning report."""
         training_details = []
@@ -276,6 +281,7 @@ class NightLearningPipeline:
                 "new_procedures": result.procedures_learned,
                 "new_anti_patterns": result.anti_patterns_learned,
             },
+            confidence_trends=confidence_trends,
         )
 
     # ── Query ──────────────────────────────────────────────

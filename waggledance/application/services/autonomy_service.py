@@ -477,6 +477,18 @@ class AutonomyService:
             "degrading": [{"capability": c, "delta": round(d, 4)} for c, d in degrading],
         }
 
+    # ── Prediction error ledger ─────────────────────────────
+
+    def get_prediction_ledger_analysis(self) -> Dict[str, Any]:
+        """Get prediction error ledger analysis."""
+        ledger = getattr(self._runtime, "prediction_ledger", None)
+        if ledger is None:
+            return {"available": False}
+        analysis = ledger.analyze()
+        result = analysis.to_dict()
+        result["available"] = True
+        return result
+
     # ── Safety cases (Priority 4) ─────────────────────────
 
     def get_safety_cases(self, limit: int = 20) -> List[Dict[str, Any]]:

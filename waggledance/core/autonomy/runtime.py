@@ -500,9 +500,12 @@ class AutonomyRuntime:
                     self.capability_confidence.update,
                     primary_cap.capability_id, verified_ok)
                 # Sync confidence scores to solver_router for tiebreaking
-                self.solver_router.set_capability_confidence(
-                    self.capability_confidence.get_all()
-                )
+                conf_all = self.capability_confidence.get_all()
+                self.solver_router.set_capability_confidence(conf_all)
+                # Sync to self-entity in CognitiveGraph
+                self._persist_safe("confidence.sync_self_entity",
+                    self.capability_confidence.sync_to_self_entity,
+                    self.world_model)
 
         # 7. Case trajectory
         case = self.case_builder.build(
@@ -891,18 +894,50 @@ class AutonomyRuntime:
             )
 
         day_cases = self.case_builder.drain_cases()
+
+        # Build confidence trends for morning report
+        confidence_trends = None
+        if self.capability_confidence:
+            improving, degrading = self.capability_confidence.get_trends(3)
+            confidence_trends = {
+                "improving": [
+                    {"solver": c, "delta": round(d, 4)} for c, d in improving
+                ],
+                "degrading": [
+                    {"solver": c, "delta": round(d, 4)} for c, d in degrading
+                ],
+            }
+
+        # Analyze prediction error ledger
+        if self.prediction_ledger:
+            analysis = self.prediction_ledger.analyze()
+            if analysis.total_entries > 0:
+                log.info(
+                    "Ledger analysis: %d entries, error_rate=%.2f, "
+                    "improving=%s, degrading=%s",
+                    analysis.total_entries, analysis.overall_error_rate,
+                    analysis.improving_solvers[:3],
+                    analysis.degrading_solvers[:3],
+                )
+
         result = self._night_pipeline.run_cycle(
             day_cases=day_cases,
             legacy_records=legacy_records,
+            confidence_trends=confidence_trends,
         )
 
         # ── Dream Mode ──────────────────────────────────────────
         from waggledance.core.learning.dream_mode import run_dream_session
         available_caps = [c.capability_id for c in self.capability_registry.list_all()]
+        conf_scores = (
+            self.capability_confidence.get_all()
+            if self.capability_confidence else None
+        )
         dream_session = run_dream_session(
             day_trajectories=day_cases,
             available_capabilities=available_caps,
             graph_builder=self.graph_builder,
+            capability_confidence=conf_scores,
         )
 
         # Run real solver evaluation on successful alternatives
@@ -911,6 +946,12 @@ class AutonomyRuntime:
         # Feed dream routing hints into solver_router
         if dream_session.simulated_trajectories:
             self.solver_router.apply_dream_hints(dream_session)
+
+        # Update epistemic uncertainty with current capability confidence
+        if self.capability_confidence:
+            self._persist_safe("uncertainty.compute",
+                self.world_model.compute_epistemic_uncertainty,
+                capability_confidence=conf_scores)
 
         log.info(
             "Night learning: %d cases → %d gold, %d silver, %d bronze, %d quarantine; "

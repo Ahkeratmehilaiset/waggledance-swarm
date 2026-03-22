@@ -2,7 +2,7 @@
 
 > Local-first multi-agent AI runtime with solver-first architecture, autonomous overnight learning, and full audit trail.
 
-[![Tests](https://img.shields.io/badge/tests-4446%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-4512%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 
@@ -59,6 +59,7 @@ core/                           <- Legacy modules (still functional)
 | Hallucination detection | `core/hallucination_checker.py` | 212 | 5 signals + RAG verification |
 | MAGMA audit trail | `waggledance/core/magma/` | 1151 | Provenance, replay, trust, confidence decay |
 | User Model Lite | `core/cognitive_graph.py` | 303 | User entity tracking, promise sync, verification fail counting |
+| Hologram Brain v6 | `web/hologram-brain-v6.html` | 1500+ | 32-node 4-ring 3D visualization, docked panels, FI/EN i18n, state badges |
 | Prometheus metrics | `core/observability.py` | 45 | /metrics endpoint |
 | OpenTelemetry tracing | `core/tracing.py` | 81 | Distributed tracing with OTLP export |
 | OOM protection | `core/resource_guard.py` | 123 | Memory/disk/CPU monitoring + emergency GC |
@@ -124,6 +125,21 @@ Every action produces an auditable CaseTrajectory that feeds overnight learning.
 | L4 | Provenance | 9-tier source tracking: verifier, observed, solver, rule, stats, case, reflection, LLM, simulated |
 | L5 | TrustEngine | Multi-dimensional scoring for agents, capabilities, solvers, routes, specialists |
 
+## Hologram Brain Visualization
+
+The `/hologram` page renders a real-time 3D brain with 32 nodes across 4 concentric rings:
+
+| Ring | Nodes | Glow Semantic |
+|------|------:|---------------|
+| **Core cognition** | 10 | Utilization / occupancy / current load |
+| **MAGMA audit** | 5 | Throughput / volume |
+| **System** | 8 | Health / availability |
+| **Learning** | 9 | Lifecycle activity |
+
+Each node carries `node_meta` with: `state` (7-value enum), `device`, `freshness_s`, `source_class` (4-value enum), and `quality`. The frontend renders state badges, quality bars, and staleness indicators. FI/EN language toggle; no fake activation floors.
+
+Docked panel with 8 tabs (Overview, Memory, Reasoning, Micromodels, Learning, Feeds, Ops, Chat). Chat requires prior dashboard authentication via localStorage token.
+
 ## Security
 
 - **No eval()**: All expression evaluation uses AST-based whitelist (`core/safe_eval.py`)
@@ -135,7 +151,7 @@ Every action produces an auditable CaseTrajectory that feeds overnight learning.
 ## Testing
 
 ```bash
-pytest tests/ -q                    # 4446+ tests
+pytest tests/ -q                    # 4512+ tests
 pytest tests/ -k "safe_eval" -v     # Security tests specifically
 python tools/generate_state.py      # Regenerate CURRENT_STATE.md
 ```

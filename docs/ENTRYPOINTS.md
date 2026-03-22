@@ -88,7 +88,7 @@ Interactive menu with 4 options:
 | Architecture | Monolith (hivemind.py) | Hexagonal (ports & adapters) |
 | DI container | None (manual wiring) | `Container` with `cached_property` |
 | Testability | Needs live services | In-memory stubs, <1s tests |
-| Agent spawning | Yes (128 agents) | Via CompatibilityLayer |
+| Agent spawning | Yes (76 agents) | Via CompatibilityLayer |
 | Dashboard API | 40+ endpoints | 12 endpoints (health, ready, chat, memory, autonomy) |
 | Night learning | Yes | Yes (NightLearningPipeline v2) |
 | Autonomy runtime | No | Yes (solver-first, 29 capabilities) |

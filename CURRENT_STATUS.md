@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-03-22
-**Version:** v3.3.2 (user-model-lite on main+master)
+**Version:** v3.3.3 (hologram-wow-v2 on feat/hologram-wow-v2)
 
 ---
 
@@ -51,13 +51,14 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | Legacy test suite | 87 suites, 2754 tests, 0 failures, Health 84/100 |
 | Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
-| **Autonomy runtime (v3.3)** | **4446 pytest tests (phases 1-9 + continuity + regression + user-model + e2e), all pass** |
+| **Autonomy runtime (v3.3)** | **4512 pytest tests (phases 1-9 + continuity + regression + user-model + hologram-v6 + e2e), all pass** |
 | **Cutover validation** | **"FULL AUTONOMY MODE ENABLED" — 42/42 modules** |
 | **Regression gates** | **migration, night_learning_v2, resource_kernel, specialist_models — 41 tests** |
 | **v3.2 self-entity** | **Epistemic uncertainty, motives, attention budget, dream mode, consolidator, meta-optimizer** |
 | **v3.2 projections** | **Narrative (en/fi), introspection (profile-gated), autobiographical index, validator** |
 | **v3.2 MAGMA expansion** | **Confidence decay, self_reflection/simulated events, dream replay, 9-tier provenance** |
 | **v3.3 User Model Lite** | **User entity in CognitiveGraph, promise tracking from GoalEngine, verification fail counting, hologram MAGMA nodes** |
+| **v3.3.3 Hologram v6** | **32 nodes (4 rings), node_meta contract, docked panels, 8 tabs + Chat, FI/EN i18n, 66 tests, no fake floors** |
 | MicroModel V1 routing (restored v1.17.0) | End-to-end: routing_policy → chat_service → orchestrator |
 | Persistent TrustStore (v1.17.0) | SQLiteTrustStore in container.py (prod=SQLite, stub=InMemory) |
 

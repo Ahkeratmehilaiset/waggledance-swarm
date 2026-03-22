@@ -30,7 +30,7 @@
 │                    (hivemind.py ~1382 + 4 controllers)            │
 │                                                                   │
 │  ┌─────────────┐ ┌──────────────┐ ┌────────────────┐            │
-│  │ 128 Agents  │ │ Round Table  │ │ Night Mode     │            │
+│  │ 76 Agents   │ │ Round Table  │ │ Night Mode     │            │
 │  │ (YAML defs) │ │ (6-agent     │ │ (idle learning │            │
 │  │ 5 trust lvl │ │  consensus)  │ │  + enrichment) │            │
 │  └─────────────┘ └──────────────┘ └────────────────┘            │

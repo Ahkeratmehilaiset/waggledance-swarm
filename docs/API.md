@@ -144,7 +144,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /api/autonomy/attention-budget` | GET | Current attention allocation across 4 buckets (critical/normal/background/reflection) |
 | `GET /api/autonomy/dream-mode/latest` | GET | Latest dream session results: simulations run, insights generated |
 | `GET /api/autonomy/memory/consolidation-stats` | GET | Memory consolidation stats: episodes consolidated, significance distribution |
-| `GET /api/autonomy/introspection` | GET | Self-introspection snapshot (profile-gated: APIARY=full, GADGET=counts only) |
+| `GET /api/autonomy/introspection` | GET | Self-introspection snapshot (profile-gated: FACTORY=full, GADGET=counts only) |
 | `GET /api/autonomy/narrative` | GET | Human-readable self-narrative in en or fi (60s cache) |
 
 ---
@@ -154,11 +154,14 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `GET /api/agent_levels` | GET | All agents with current trust levels |
-| `GET /api/agents/levels` | GET | All 128 agents with level/trust/hallucination rate |
+| `GET /api/agents/levels` | GET | All agents with level/trust/hallucination rate |
 | `GET /api/agents/leaderboard` | GET | Top agents by trust, queries, reliability |
 | `GET /api/consciousness` | GET | Memory engine state + user model summary (v3.3: interaction count, corrections, promises) |
-| `GET /api/hologram/state` | GET | Hologram brain visualization state (nodes, edges, events) |
-| `GET /hologram` | GET | Hologram brain HTML page |
+| `GET /api/hologram/state` | GET | Hologram brain state: 32 nodes (4 rings), node_meta (state/device/freshness/source_class/quality), edges, events |
+| `GET /hologram` | GET | Hologram brain v6 HTML page (32 nodes, docked panels, FI/EN i18n) |
+| `GET /api/profile/impact` | GET | Profile impact: target environment, enabled/disabled capabilities, risk mode, learning permissions |
+| `GET /api/capabilities/state` | GET | Per-family capability state: state/device/quality/source_class (shared derivation with hologram) |
+| `GET /api/learning/state-machine` | GET | Current learning lifecycle state (awake/replay/consolidation/dream/training/canary/morning_report) |
 | `GET /api/swarm/scores` | GET | SwarmScheduler agent scores |
 | `GET /api/learning` | GET | LearningEngine status + leaderboard |
 | `GET /api/ops` | GET | OpsAgent status + model recommendations |

@@ -1,5 +1,54 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.3.3] — 2026-03-22
+
+### Hologram UI v2 — 32 Nodes, 4 Rings, Docked Panels, FI/EN i18n
+
+Full hologram overhaul: concentric ring layout, node metadata contract, bilingual interface.
+
+#### Backend (hologram.py + _capability_state.py)
+- Removed 13 fake activation floors (0.1/0.5 fallbacks → 0.0)
+- Rewrote 8 node formulas: activation = current activity (load/lifecycle), historical quality → `node_meta.quality`
+- Added 8 system ring nodes: sys_auth, sys_policy, sys_api, sys_websocket, sys_feeds, sys_queues, sys_storage, sys_compute
+- Added 4 learning ring nodes: learn_night, learn_dream, learn_training, learn_canary
+- 5 existing micro nodes repositioned into learning ring (same IDs)
+- Added `node_meta` dict with 32 entries: state (7-value enum), device, freshness_s, source_class (4-value enum), quality
+- Created `_capability_state.py`: shared `derive_capability_state()` — single source of truth for hologram + capabilities endpoint
+- Updated zero-state to 32 nodes (all 0.0, all state="unavailable")
+- `_recent_activity()` helper for per-capability activity counters
+- `_gpu_info_safe()` for nvidia-smi telemetry (never crashes)
+
+#### New Endpoints
+- `GET /api/profile/impact` — profile impact summary (target environment, enabled capabilities, risk mode)
+- `GET /api/capabilities/state` — per-family capability state/device/quality/source_class (uses shared derivation)
+- `GET /api/learning/state-machine` — current learning lifecycle state (awake/replay/dream/training/canary/morning_report)
+- 3 new public paths in auth middleware
+
+#### Frontend (hologram-brain-v6.html)
+- CSS grid docked-panel layout (canvas left, panel right, responsive)
+- 32 node definitions across 4 rings (core, MAGMA, system, learning)
+- 8 tabs + Chat (Overview, Memory, Reasoning, Micromodels, Learning, Feeds, Ops, Chat)
+- FI/EN i18n with `localizeProfile()` sanitization (no raw profile in DOM)
+- Node state badges (active/idle/training/framework/unwired/unavailable/failed)
+- Source class indicators (simulated = orange halo, stale = yellow dashed)
+- Quality progress bars in inspector panel
+- Chat tab: localStorage-based auth (no API key in HTML source), Bearer token from prior dashboard session
+- 7-phase demo sequence for all 4 rings
+- Ring orbital arcs (dashed, color-coded per ring)
+- chat_route WS broadcast from chat.py for live route highlighting
+
+#### Tests
+- 66 new tests in `test_hologram_v6.py`
+- **4512 pytest tests total, 0 failures**
+
+#### Security
+- Zero literal "APIARY" strings in frontend HTML/JS
+- No `__WAGGLE_API_KEY__` server-side injection placeholder
+- `localStorage.getItem('WAGGLE_API_KEY')` only (JS key name, not value)
+- v5 HTML preserved as fallback
+
+---
+
 ## [3.2.1] — 2026-03-19
 
 ### Real sklearn Training for All 8 Specialist Models

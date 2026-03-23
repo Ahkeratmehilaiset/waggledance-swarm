@@ -1,3 +1,7 @@
+// DEPRECATED: This React dashboard is superseded by /hologram (hologram-brain-v6.html).
+// Auth model changed: HttpOnly session cookie replaces localStorage + Bearer.
+// This file is retained for reference only. Do not build or serve dashboard/dist/.
+
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const POLL_INTERVAL = 5000;

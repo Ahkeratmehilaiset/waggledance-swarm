@@ -1,5 +1,43 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.3.4] — 2026-03-23
+
+### Secure Session Auth + Real Feeds for Unified Hologram View
+
+#### Security — HttpOnly Session Cookie Auth
+- API key (WAGGLE_API_KEY) never reaches the browser — no HTML injection, no localStorage, no Bearer in frontend JS
+- New `auth_session.py`: in-memory session store with `create_session()`, `validate_session()`, `destroy_session()`
+- Session cookie: HttpOnly, SameSite=Strict, 1h TTL, `secrets.token_urlsafe(32)`
+- Dashboard sets cookie server-side; hologram uses it transparently
+- Removed: `localStorage.setItem("WAGGLE_API_KEY")` injection in dashboard
+- Removed: `localStorage.getItem('WAGGLE_API_KEY')` in hologram HTML (all 3 occurrences)
+- Removed: Bearer header construction in frontend JS
+- Removed: `?token=<master_key>` in frontend WS connection
+- Server-side Bearer + WS `?token=` support retained for cURL/scripts/CI
+
+#### Feeds — Config-Based Sources with State Derivation
+- `/api/feeds` rewritten: returns 5 configured sources (FMI weather, Porssisahko electricity, 3 RSS) from `settings.yaml`
+- State derivation per source: `idle`, `unwired`, `framework`, `failed`, `active`, `unavailable`
+- Two-level model: public = source status, authenticated = ChromaDB-enriched (`latest_items`, `latest_value`, `freshness_s`)
+- Per-source isolation: RSS sources get only their own ChromaDB entries (no cross-contamination)
+
+#### Frontend
+- `checkAuth()` on page load → `GET /api/auth/check` (public)
+- `sendChat()` uses `credentials: 'same-origin'` (cookie auth)
+- WebSocket connects without `?token=` (cookie sent on upgrade)
+- `buildFeedsPanel()` renders source list with state dots, protocol, interval, enrichment
+- Feeds i18n: EN + FI labels
+
+#### Legacy Cleanup
+- Deprecated `dashboard/src/` React dashboard (superseded by `/hologram`)
+- Updated `docs/SECURITY.md` and `docs/API.md` with new auth model
+
+#### Tests
+- 31 new tests in `test_hologram_v6.py` (97 total in file)
+- **4543 pytest tests total, 0 failures**
+
+---
+
 ## [3.3.3] — 2026-03-22
 
 ### Hologram UI v2 — 32 Nodes, 4 Rings, Docked Panels, FI/EN i18n
@@ -44,8 +82,8 @@ Full hologram overhaul: concentric ring layout, node metadata contract, bilingua
 #### Security
 - Zero literal "APIARY" strings in frontend HTML/JS
 - No `__WAGGLE_API_KEY__` server-side injection placeholder
-- `localStorage.getItem('WAGGLE_API_KEY')` only (JS key name, not value)
 - v5 HTML preserved as fallback
+- *(Note: localStorage auth replaced by HttpOnly session cookie in v3.3.4)*
 
 ---
 

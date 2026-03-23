@@ -13,7 +13,8 @@ WaggleDance is designed as a **localhost-only, single-user** system. It is NOT d
 
 | Decision | Rationale |
 |----------|-----------|
-| **Bearer token auth** | Auto-generated on first startup, saved to `.env` as `WAGGLE_API_KEY`. All `/api/*` routes require it except `/api/status` and `/health`. |
+| **Bearer token auth** | Auto-generated on first startup, saved to `.env` as `WAGGLE_API_KEY`. All `/api/*` routes require it except public paths (`/api/status`, `/health`, `/api/auth/check`, `/api/feeds`, etc.). |
+| **HttpOnly session cookie** | Browser auth uses an opaque session cookie (HttpOnly, SameSite=Strict, 1h TTL). The API key never reaches the browser. Dashboard sets cookie server-side; hologram uses it transparently. |
 | **No TLS** | Localhost traffic only. Use a reverse proxy (nginx, Caddy) if exposing to network. |
 | **No multi-tenant isolation** | All agents share one memory space by design (collaborative learning). |
 
@@ -33,11 +34,12 @@ WaggleDance is designed as a **localhost-only, single-user** system. It is NOT d
 - No external dependencies required
 
 ### API Authentication (H5)
-- Bearer token required for all `/api/*` endpoints
-- Exempt: `/health`, `/ready`, `/api/status` (public health/status)
+- Bearer token required for all `/api/*` endpoints (for cURL, scripts, CI)
+- HttpOnly session cookie accepted as fallback (for browser — hologram, dashboard)
+- Exempt: `/health`, `/ready`, `/api/status`, `/api/auth/check`, `/api/feeds`, `/api/hologram/state`
 - Token auto-generated on first startup if `WAGGLE_API_KEY` not set
-- WebSocket auth: pass token as `?token=` query parameter
-- Dashboard reads token from `localStorage.WAGGLE_API_KEY`
+- WebSocket auth: session cookie (browser) or `?token=` query parameter (scripts)
+- The API key value NEVER appears in served HTML, inline JS, localStorage, or sessionStorage
 
 ### CORS (H3)
 - Methods restricted to `GET` and `POST`

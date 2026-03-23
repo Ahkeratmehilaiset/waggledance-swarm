@@ -10,16 +10,22 @@ WaggleDance exposes a REST API via FastAPI. Two modes:
 
 ### Authentication
 
-All `/api/*` endpoints require a Bearer token in the `Authorization` header:
+Protected `/api/*` endpoints accept two auth methods:
 
-```
-Authorization: Bearer <WAGGLE_API_KEY>
-```
+1. **Bearer token** (for cURL, scripts, CI):
+   ```
+   Authorization: Bearer <WAGGLE_API_KEY>
+   ```
+2. **HttpOnly session cookie** (for browser — set automatically by dashboard):
+   ```
+   Cookie: waggle_session=<opaque_token>
+   ```
 
 - Token auto-generated on first startup and saved to `.env` as `WAGGLE_API_KEY`
-- **Public (no auth):** `/health`, `/ready`, `/api/status`
-- **WebSocket:** pass token as `?token=` query parameter: `ws://host:8000/ws?token=KEY`
-- Dashboard reads token from `localStorage.WAGGLE_API_KEY`
+- **Public (no auth):** `/health`, `/ready`, `/api/status`, `/api/auth/check`, `/api/feeds`, `/api/hologram/state`, `/api/capabilities/state`, `/api/learning/state-machine`
+- **Session endpoints:** `POST /api/auth/session` (create, requires Bearer), `GET /api/auth/check` (public), `DELETE /api/auth/session` (logout)
+- **WebSocket:** session cookie (browser) or `?token=` query parameter (scripts)
+- The API key value never appears in served HTML, inline JS, or browser storage
 
 ### Rate Limits & Input Validation
 

@@ -34,7 +34,7 @@ logging.basicConfig(
 log = logging.getLogger("night_monitor")
 
 BASE = "http://localhost:8000"
-TOKEN = ""
+TOKEN = os.environ.get("WAGGLE_API_KEY", "")
 
 
 def _get(path, timeout=10):
@@ -242,7 +242,6 @@ def write_report():
 
 def main():
     import argparse
-    global TOKEN
     parser = argparse.ArgumentParser()
     parser.add_argument("--hours", type=float, default=10.0)
     args = parser.parse_args()
@@ -266,13 +265,9 @@ def main():
         log.error("Server not available after 5 min")
         return
 
-    # Get API token
-    try:
-        d = _get("/api/auth/token", timeout=5)
-        TOKEN = d.get("token", "")
-        log.info("Token acquired (%d chars)", len(TOKEN))
-    except Exception as e:
-        log.warning("No token: %s", e)
+    # API token from env (server-side only — no /api/auth/token endpoint needed)
+    if not TOKEN:
+        log.warning("No WAGGLE_API_KEY in environment — API calls may fail")
 
     # Main loop
     while time.time() < end:

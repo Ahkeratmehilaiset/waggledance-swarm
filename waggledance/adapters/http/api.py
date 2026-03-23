@@ -1,7 +1,6 @@
 """FastAPI application factory."""
 
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 
@@ -129,22 +128,5 @@ def create_app(container) -> FastAPI:
     app.include_router(hologram_router)
     # Legacy dashboard compat endpoints for hologram menus + /ws
     app.include_router(compat_router)
-
-    # ---- Static files ---- CONDITIONAL mount
-    # Missing dashboard/dist must NOT crash the application
-    dashboard_dir = "dashboard/dist"
-    if os.path.isdir(dashboard_dir):
-        try:
-            from fastapi.staticfiles import StaticFiles
-
-            app.mount("/", StaticFiles(directory=dashboard_dir, html=True))
-            logger.info("Dashboard static files mounted from %s", dashboard_dir)
-        except Exception as exc:
-            logger.warning("Could not mount dashboard static files: %s", exc)
-    else:
-        logger.info(
-            "Dashboard directory '%s' not found -- static files not mounted",
-            dashboard_dir,
-        )
 
     return app

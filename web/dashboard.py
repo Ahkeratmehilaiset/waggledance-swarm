@@ -1013,13 +1013,9 @@ loadFeeds();
 
         return result
 
-    @app.get("/api/auth/token")
-    async def auth_token(request: Request):
-        """Return API key — localhost only."""
-        client_host = request.client.host if request.client else ""
-        if client_host not in ("127.0.0.1", "::1"):
-            return JSONResponse({"error": "Forbidden"}, status_code=403)
-        return {"token": _api_key}
+    # /api/auth/token removed — API key no longer served over HTTP.
+    # Browser auth uses HttpOnly session cookie (set above in index route).
+    # CLI tools read WAGGLE_API_KEY from environment.
 
     @app.get("/health")
     async def health():

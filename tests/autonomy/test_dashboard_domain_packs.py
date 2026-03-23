@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-DASHBOARD_SRC = Path(__file__).resolve().parents[2] / "dashboard" / "src"
+DASHBOARD_SRC = Path(__file__).resolve().parents[2] / "_archive" / "dashboard-react-v0" / "src"
 
 
 @pytest.fixture(scope="module")

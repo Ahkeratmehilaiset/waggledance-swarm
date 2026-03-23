@@ -256,9 +256,9 @@ mass_test_results_*.json
 v32_test_results.txt
 validate_v32.ps1
 
-# Node modules & dashboard build
-dashboard/node_modules/
-dashboard/dist/
+# Archived React dashboard (superseded by /hologram)
+_archive/dashboard-react-v0/node_modules/
+_archive/dashboard-react-v0/dist/
 
 # Logs
 logs/

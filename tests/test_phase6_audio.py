@@ -298,7 +298,7 @@ class TestDashboard(unittest.TestCase):
 
     def test_useapi_has_audio_status(self):
         """useApi.js exports audioStatus."""
-        fpath = os.path.join(_project_root, "dashboard", "src", "hooks", "useApi.js")
+        fpath = os.path.join(_project_root, "_archive", "dashboard-react-v0", "src", "hooks", "useApi.js")
         self.assertTrue(os.path.exists(fpath), "Missing: useApi.js")
         with open(fpath, encoding="utf-8") as f:
             content = f.read()

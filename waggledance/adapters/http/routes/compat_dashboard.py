@@ -12,8 +12,9 @@ import time
 import psutil
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 
-from waggledance.adapters.http.deps import get_autonomy_service
+from waggledance.adapters.http.deps import get_autonomy_service, get_container
 from waggledance.adapters.http.routes._capability_state import derive_capability_state
+from waggledance.adapters.http.routes.auth_session import validate_session
 
 logger = logging.getLogger(__name__)
 
@@ -239,12 +240,264 @@ def api_ops(service=Depends(get_autonomy_service)):
 
 # ── /api/feeds ────────────────────────────────────────────
 
+FEED_AGENT_IDS = {
+    "weather": "weather_feed",
+    "electricity": "electricity_feed",
+    "rss": "rss_feed",
+}
+
+
+def _is_request_authenticated(request: Request) -> bool:
+    """Check if request has valid session cookie or Bearer token."""
+    sid = request.cookies.get("waggle_session", "")
+    if validate_session(sid):
+        return True
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        try:
+            container = request.app.state.container
+            return auth_header[7:] == container._settings.api_key
+        except Exception:
+            pass
+    return False
+
+
+def _derive_feed_state(feed_type: str) -> tuple[str, str | None]:
+    """Derive state for a feed source. Returns (state, last_error)."""
+    import importlib.util
+
+    module_map = {
+        "weather": "integrations.weather_feed",
+        "electricity": "integrations.electricity_feed",
+        "rss": "integrations.rss_feed",
+    }
+    module_name = module_map.get(feed_type)
+    if not module_name:
+        return "unwired", f"Unknown feed type: {feed_type}"
+
+    spec = importlib.util.find_spec(module_name)
+    if spec is None:
+        return "unwired", f"{module_name} not found"
+
+    # Check dependencies
+    if feed_type == "rss":
+        try:
+            import feedparser  # noqa: F401
+        except ImportError:
+            return "framework", "feedparser not installed"
+
+    return "idle", None
+
+
+def _build_feed_sources(feeds_cfg: dict) -> list[dict]:
+    """Build source list from feeds configuration."""
+    sources = []
+
+    # Weather
+    weather_cfg = feeds_cfg.get("weather", {})
+    if weather_cfg.get("enabled", True):
+        state, last_error = _derive_feed_state("weather")
+        sources.append({
+            "id": "weather_fmi",
+            "name": "FMI Weather",
+            "type": "weather",
+            "provider": "fmi",
+            "protocol": "HTTPS/REST",
+            "interval_min": weather_cfg.get("interval_min", 30),
+            "critical": False,
+            "enabled": True,
+            "configured": True,
+            "state": state,
+            "source_class": "live",
+            "freshness_s": None,
+            "last_success_at": None,
+            "last_error_at": None,
+            "last_error": last_error,
+            "items_count": 0,
+            "latest_value": None,
+            "latest_items": [],
+        })
+
+    # Electricity
+    elec_cfg = feeds_cfg.get("electricity", {})
+    if elec_cfg.get("enabled", True):
+        state, last_error = _derive_feed_state("electricity")
+        sources.append({
+            "id": "electricity_porssisahko",
+            "name": "Spot Electricity",
+            "type": "electricity",
+            "provider": "porssisahko",
+            "protocol": "HTTPS/REST",
+            "interval_min": elec_cfg.get("interval_min", 15),
+            "critical": False,
+            "enabled": True,
+            "configured": True,
+            "state": state,
+            "source_class": "live",
+            "freshness_s": None,
+            "last_success_at": None,
+            "last_error_at": None,
+            "last_error": last_error,
+            "items_count": 0,
+            "latest_value": None,
+            "latest_items": [],
+        })
+
+    # RSS feeds
+    rss_cfg = feeds_cfg.get("rss", {})
+    if rss_cfg.get("enabled", True):
+        rss_feeds = rss_cfg.get("feeds", [])
+        state, last_error = _derive_feed_state("rss")
+        for feed in rss_feeds:
+            name = feed.get("name", "Unknown RSS")
+            feed_id = "rss_" + name.lower().replace("-", "_").replace(" ", "_")
+            sources.append({
+                "id": feed_id,
+                "name": name,
+                "type": "rss",
+                "url": feed.get("url", ""),
+                "protocol": "RSS/Atom",
+                "interval_min": rss_cfg.get("interval_min", 60),
+                "critical": feed.get("critical", False),
+                "enabled": True,
+                "configured": True,
+                "state": state,
+                "source_class": "live",
+                "freshness_s": None,
+                "last_success_at": None,
+                "last_error_at": None,
+                "last_error": last_error,
+                "items_count": 0,
+                "latest_value": None,
+                "latest_items": [],
+            })
+
+    return sources
+
+
+def _parse_ts(ts_str: str) -> float:
+    """Parse ISO timestamp string to epoch float."""
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _parse_latest_value(feed_type: str, doc: str, meta: dict) -> dict | None:
+    """Extract structured latest_value from ChromaDB document."""
+    import json as _json
+    try:
+        val = meta.get("latest_value")
+        if val and isinstance(val, str):
+            return _json.loads(val)
+        if val and isinstance(val, dict):
+            return val
+    except Exception:
+        pass
+    # Fallback: parse from document text
+    if feed_type == "weather":
+        return None  # Can't reliably parse Finnish weather text
+    if feed_type == "electricity":
+        return None
+    return None
+
+
+def _enrich_from_chroma(source: dict, chroma_collection) -> None:
+    """Add latest_items/latest_value from ChromaDB. Truthful: empty if no data.
+
+    Uses BOTH agent_id (feed type) AND feed_id (source-specific) to ensure
+    each RSS source gets only its own entries — not a shared pool.
+    """
+    agent_id = FEED_AGENT_IDS.get(source["type"])
+    if not agent_id:
+        return
+    feed_id = source["id"]
+    try:
+        # Query with source-level filter: agent_id + feed_id
+        where_filter = {"$and": [
+            {"agent_id": agent_id},
+            {"feed_id": feed_id},
+        ]}
+        results = chroma_collection.get(
+            where=where_filter,
+            limit=5,
+            include=["documents", "metadatas"],
+        )
+        docs = results.get("documents", [])
+        metas = results.get("metadatas", [])
+
+        # Fallback: if no feed_id-tagged entries, try agent_id only
+        # (backwards compat with data stored before feed_id was added)
+        # NOT for RSS — prevents cross-contamination between sources
+        if not docs and source["type"] not in ("rss",):
+            results = chroma_collection.get(
+                where={"agent_id": agent_id},
+                limit=5,
+                include=["documents", "metadatas"],
+            )
+            docs = results.get("documents", [])
+            metas = results.get("metadatas", [])
+
+        source["items_count"] = len(docs)
+        if docs:
+            # Derive freshness from most recent timestamp
+            timestamps = [m.get("timestamp") for m in metas if m.get("timestamp")]
+            if timestamps:
+                latest_ts = max(timestamps)
+                source["last_success_at"] = latest_ts
+                source["freshness_s"] = int(time.time() - _parse_ts(latest_ts))
+            # Type-specific enrichment
+            if source["type"] == "rss":
+                source["latest_items"] = [
+                    {"title": d[:120], "published": m.get("timestamp")}
+                    for d, m in zip(docs[:5], metas[:5])
+                ]
+            elif source["type"] in ("weather", "electricity"):
+                source["latest_value"] = _parse_latest_value(
+                    source["type"], docs[0], metas[0]
+                )
+    except Exception:
+        pass  # Leave defaults (truthful empty state)
+
+
+def _get_chroma_collection(container):
+    """Get ChromaDB collection for feed enrichment."""
+    try:
+        vs = container.vector_store
+        if hasattr(vs, "_collection"):
+            return vs._collection
+        if hasattr(vs, "collection"):
+            return vs.collection
+    except Exception:
+        pass
+    return None
+
+
 @router.get("/api/feeds")
-def api_feeds(service=Depends(get_autonomy_service)):
-    """Data feeds for hologram feeds menu."""
+def api_feeds(request: Request, service=Depends(get_autonomy_service),
+              container=Depends(get_container)):
+    """Data feeds for hologram feeds menu — config-based with ChromaDB enrichment."""
+    settings = container._settings
+    feeds_cfg = settings.get("feeds") if hasattr(settings, "get") else {}
+    if feeds_cfg is None:
+        feeds_cfg = {}
+
+    # Build sources from config
+    sources = _build_feed_sources(feeds_cfg)
+
+    # Enrich with ChromaDB data if authenticated
+    is_authed = _is_request_authenticated(request)
+    if is_authed:
+        chroma = _get_chroma_collection(container)
+        if chroma:
+            for source in sources:
+                _enrich_from_chroma(source, chroma)
+
+    # Verifier alerts (existing)
     rs = _runtime_stats(service)
     vf = rs.get("verifier", {})
-
     alerts = []
     if vf.get("hallucinations", 0) > 0:
         alerts.append(f"Hallucinations detected: {vf['hallucinations']}")
@@ -252,7 +505,9 @@ def api_feeds(service=Depends(get_autonomy_service)):
         alerts.append(f"Verifier conflicts: {vf['conflicts']}")
 
     return {
-        "enabled": True,
+        "enabled": feeds_cfg.get("enabled", False),
+        "source_count": len(sources),
+        "sources": sources,
         "critical_alerts": alerts,
     }
 
@@ -481,11 +736,12 @@ async def websocket_endpoint(websocket: WebSocket):
     BaseHTTPMiddleware does NOT intercept WebSocket upgrades, so
     token auth must be checked here, not in the auth middleware.
     """
-    # Validate token query param before accepting
+    # Validate token query param or session cookie before accepting
     container = websocket.app.state.container
     expected_key = container._settings.api_key
     token = websocket.query_params.get("token", "")
-    if token != expected_key:
+    session_id = websocket.cookies.get("waggle_session", "")
+    if token != expected_key and not validate_session(session_id):
         await websocket.close(code=4001, reason="Unauthorized")
         return
 

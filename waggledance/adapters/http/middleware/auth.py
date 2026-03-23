@@ -23,6 +23,7 @@ PUBLIC_PATHS = frozenset({
     "/api/micro_model",
     "/api/ops",
     "/api/feeds",
+    "/api/auth/check",
     "/api/agent_levels",
     "/api/swarm/scores",
     "/api/monitor/history",
@@ -82,6 +83,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             token = ""
 
         if token != self._api_key:
+            # Fallback: check HttpOnly session cookie
+            from waggledance.adapters.http.routes.auth_session import validate_session
+
+            session_id = request.cookies.get("waggle_session", "")
+            if validate_session(session_id):
+                return await call_next(request)
+
             return JSONResponse(
                 {"error": "Unauthorized", "detail": "Valid Bearer token required"},
                 status_code=401,

@@ -373,6 +373,10 @@ const LANG = {
       route_label: "Route",
       confidence_label: "Confidence"
     },
+    feeds: {
+      title: "Data Feeds", enabled_label: "Feeds Enabled", yes: "Yes", no: "No",
+      source_count: "Sources", sources_title: "Configured Sources", critical: "Critical"
+    },
     inspector: {
       state: "State", device: "Device", freshness: "Freshness",
       source: "Source", quality: "Quality", connections: "Connections",
@@ -427,6 +431,10 @@ const LANG = {
       send: "Laheta",
       route_label: "Reitti",
       confidence_label: "Luottamus"
+    },
+    feeds: {
+      title: "Datasyotteet", enabled_label: "Syotteet kaytossa", yes: "Kylla", no: "Ei",
+      source_count: "Lahteet", sources_title: "Konfiguroidut lahteet", critical: "Kriittinen"
     },
     inspector: {
       state: "Tila", device: "Laite", freshness: "Tuoreus",
@@ -975,19 +983,19 @@ const dashboardState = {
   ws: { connected: false, lastMessageAt: 0 }
 };
 
-async function fetchJson(url) {
+let isAuthenticated = false;
+
+async function checkAuth() {
   try {
-    const token = localStorage.getItem('WAGGLE_API_KEY');
-    const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
-    const r = await fetch(url, { headers });
-    if (!r.ok) return null;
-    return await r.json();
-  } catch { return null; }
+    const res = await fetch('/api/auth/check', { credentials: 'same-origin' });
+    const data = await res.json();
+    isAuthenticated = data.authenticated === true;
+  } catch { isAuthenticated = false; }
 }
 
 async function fetchPublicJson(url) {
   try {
-    const r = await fetch(url);
+    const r = await fetch(url, { credentials: 'same-origin' });
     if (!r.ok) return null;
     return await r.json();
   } catch { return null; }
@@ -1259,13 +1267,60 @@ function buildLearningPanel(el) {
 
 function buildFeedsPanel(el) {
   const f = dashboardState.feeds || {};
-  let html = `<div class="p-section"><div class="p-section-title">${t('sections.feeds_sources')}</div>`;
+  let html = '';
+
+  html += `<div class="p-section"><div class="p-section-title">${t('feeds.title')}</div>`;
   html += `<div class="p-grid">`;
-  html += card('Enabled', f.enabled ? 'Yes' : 'No');
+  html += card(t('feeds.enabled_label'), f.enabled ? t('feeds.yes') : t('feeds.no'));
+  html += card(t('feeds.source_count'), f.source_count || 0);
   html += `</div></div>`;
+
+  const sources = f.sources || [];
+  if (sources.length) {
+    html += `<div class="p-section"><div class="p-section-title">${t('feeds.sources_title')}</div>`;
+    html += `<div class="p-list">`;
+    sources.forEach(s => {
+      const stateColor = {
+        active:'#22c55e', idle:'#94a3b8', framework:'#f59e0b',
+        unwired:'#6b7280', unavailable:'#374151', failed:'#ef4444',
+      }[s.state] || '#6b7280';
+
+      html += `<div class="p-list-item" style="display:flex;align-items:center;gap:8px">`;
+      html += `<span style="width:8px;height:8px;border-radius:50%;background:${stateColor};flex-shrink:0"></span>`;
+      html += `<div style="flex:1">`;
+      html += `<strong>${escapeHtml(s.name)}</strong>`;
+      html += ` <span style="opacity:0.5;font-size:0.85em">${s.protocol}</span>`;
+      html += `<div style="opacity:0.6;font-size:0.85em">`;
+      html += `${t('node_states.' + s.state)}`;
+      html += ` \u00b7 ${s.interval_min}min`;
+      if (s.critical) html += ` \u00b7 <span style="color:#f87171">${t('feeds.critical')}</span>`;
+      if (s.items_count > 0) html += ` \u00b7 ${s.items_count} items`;
+      if (s.freshness_s != null) html += ` \u00b7 ${Math.round(s.freshness_s/60)}min ago`;
+      if (s.last_error) html += `<br><span style="color:#f87171">${escapeHtml(s.last_error)}</span>`;
+      html += `</div>`;
+      if (s.latest_items && s.latest_items.length) {
+        html += `<div style="margin-top:4px;font-size:0.8em;opacity:0.7">`;
+        s.latest_items.slice(0,3).forEach(item => {
+          html += `<div>\u00b7 ${escapeHtml(item.title || item.text || '')}</div>`;
+        });
+        html += `</div>`;
+      }
+      if (s.latest_value) {
+        html += `<div style="margin-top:4px;font-size:0.85em">`;
+        if (s.type==='weather') html += `${s.latest_value.temp_c}\u00b0C, ${s.latest_value.wind_ms} m/s`;
+        if (s.type==='electricity') html += `${s.latest_value.price_c_kwh} c/kWh`;
+        html += `</div>`;
+      }
+      html += `</div></div>`;
+    });
+    html += `</div></div>`;
+  }
+
   if (f.critical_alerts && f.critical_alerts.length) {
     html += `<div class="p-section"><div class="p-section-title">${t('sections.overview_alerts')}</div><div class="p-list">`;
-    f.critical_alerts.forEach(a => { html += `<div class="p-list-item" style="color:#f87171">${a}</div>`; });
+    f.critical_alerts.forEach(a => {
+      html += `<div class="p-list-item" style="color:#f87171">${escapeHtml(a)}</div>`;
+    });
     html += `</div></div>`;
   }
   el.innerHTML = html;
@@ -1299,8 +1354,7 @@ let chatMessages = [];
 let chatRouteInfo = null;
 
 function buildChatPanel(el) {
-  const token = localStorage.getItem('WAGGLE_API_KEY');
-  const hasAuth = !!token;
+  const hasAuth = isAuthenticated;
   let html = '';
 
   // Route explainability section
@@ -1344,8 +1398,7 @@ function escapeHtml(s) {
 }
 
 async function sendChat() {
-  const token = localStorage.getItem('WAGGLE_API_KEY');
-  if (!token) return;
+  if (!isAuthenticated) return;
   const input = document.getElementById('chatInput');
   if (!input) return;
   const msg = input.value.trim();
@@ -1357,17 +1410,14 @@ async function sendChat() {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + token,
-      },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ query: msg }),
     });
     if (res.ok) {
       const data = await res.json();
       chatMessages.push({ role: 'assistant', text: data.response || '' });
       chatRouteInfo = { source: data.source, confidence: data.confidence, agent_id: data.agent_id };
-      // Highlight nodes for 3s
       if (data.source) highlightChatRoute(data.source, 3000);
     } else {
       chatMessages.push({ role: 'system', text: `Error: ${res.status}` });
@@ -1456,14 +1506,13 @@ canvas.addEventListener('click', e => {
 let wsConnection = null;
 
 function connectWebSocket() {
-  const token = localStorage.getItem('WAGGLE_API_KEY');
-  if (!token) {
+  if (!isAuthenticated) {
     // No WS — use REST polling
     setInterval(pollHologramState, 2000);
     return;
   }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}`);
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
   wsConnection = ws;
 
   ws.onopen = () => {
@@ -1551,9 +1600,11 @@ function animate(now) {
 }
 requestAnimationFrame(animate);
 
-// Initial data fetch + WS connect
-refreshDashboardData();
-connectWebSocket();
+// Initial auth check, then data fetch + WS connect
+checkAuth().then(() => {
+  refreshDashboardData();
+  connectWebSocket();
+});
 
 // Start demo if no live data after 3s
 setTimeout(() => {

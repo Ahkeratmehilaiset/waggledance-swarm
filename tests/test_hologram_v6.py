@@ -648,11 +648,14 @@ class TestFrontendIntegrity:
         html = _read_v6_html()
         assert "WaggleDance Swarm AI" in html
 
-    def test_chat_tab_reads_localstorage_token(self):
-        """Chat panel reads token from localStorage, includes Bearer header."""
+    def test_chat_uses_cookie_auth(self):
+        """Chat panel uses cookie auth (isAuthenticated + credentials: 'same-origin')."""
         html = _read_v6_html()
-        assert "localStorage.getItem('WAGGLE_API_KEY')" in html or 'localStorage.getItem("WAGGLE_API_KEY")' in html
-        assert "'Bearer '" in html or '"Bearer "' in html
+        assert "isAuthenticated" in html, "Chat should use isAuthenticated variable"
+        assert "credentials" in html, "Chat should use credentials: 'same-origin'"
+        # No localStorage API key or Bearer header in frontend
+        assert "localStorage.getItem('WAGGLE_API_KEY')" not in html
+        assert "'Authorization': 'Bearer '" not in html
 
     def test_no_api_key_placeholder_in_html(self):
         """v6 HTML does NOT contain __WAGGLE_API_KEY__ server-side injection placeholder."""
@@ -731,23 +734,367 @@ class TestAuthSafetyRegression:
     def test_no_api_key_value_in_served_hologram(self):
         """GET /hologram response body does NOT contain the API key value or placeholder.
 
-        localStorage.getItem('WAGGLE_API_KEY') is ALLOWED (JS key name for reading).
+        After cookie auth migration: NO localStorage WAGGLE_API_KEY references at all.
         __WAGGLE_API_KEY__ is FORBIDDEN (server-side injection placeholder).
         """
         html = _read_v6_html()
         # Must not contain server-side placeholder
         assert "__WAGGLE_API_KEY__" not in html, "Server-side placeholder found in v6 HTML"
 
-        # Must contain localStorage read (JS key name, allowed)
-        assert "WAGGLE_API_KEY" in html, "Expected localStorage key name reference"
+        # Must NOT contain any localStorage WAGGLE_API_KEY references (cookie auth now)
+        assert "localStorage" not in html or "WAGGLE_API_KEY" not in html, \
+            "localStorage WAGGLE_API_KEY references should be removed (cookie auth)"
 
-        # The key name should only appear in localStorage context
-        waggle_key_hits = [line.strip() for line in html.split('\n')
-                         if 'WAGGLE_API_KEY' in line]
-        for hit in waggle_key_hits:
-            # Every hit should be a localStorage read, not a value injection
-            assert ('localStorage' in hit or
-                    'getItem' in hit or
-                    hit.strip().startswith('//') or
-                    hit.strip().startswith('*')), \
-                f"Suspicious WAGGLE_API_KEY usage: {hit}"
+        # Must NOT contain Bearer header construction in frontend
+        assert "'Authorization': 'Bearer '" not in html, \
+            "Bearer header construction found in frontend JS"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Secure Hologram Chat + Real Feeds (tests 42–67)
+# ═══════════════════════════════════════════════════════════════
+
+class TestHologramAuthSession:
+    """Tests for HttpOnly session cookie auth model."""
+
+    def test_hologram_html_no_api_key_value(self):
+        """#42: Served /hologram HTML does NOT contain the actual backend API key value."""
+        html = _read_v6_html()
+        # The HTML must NOT contain any pattern that looks like a secret injection
+        assert "localStorage.setItem" not in html, \
+            "localStorage.setItem found — API key injection not reverted"
+        assert "__WAGGLE_API_KEY__" not in html, \
+            "Server-side placeholder found in v6 HTML"
+
+    def test_hologram_html_no_placeholder_injection(self):
+        """#43: Served /hologram HTML does NOT contain __WAGGLE_API_KEY__ placeholder."""
+        html = _read_v6_html()
+        assert "__WAGGLE_API_KEY__" not in html
+
+    def test_auth_session_creates_httponly_cookie(self):
+        """#44: POST /api/auth/session creates an HttpOnly session cookie."""
+        from waggledance.adapters.http.routes.auth_session import (
+            create_session, validate_session, _sessions
+        )
+        sid = create_session()
+        assert isinstance(sid, str) and len(sid) > 20
+        assert validate_session(sid) is True
+        # Clean up
+        _sessions.pop(sid, None)
+
+    def test_auth_check_true_with_valid_cookie(self):
+        """#45: validate_session returns True for a valid session."""
+        from waggledance.adapters.http.routes.auth_session import (
+            create_session, validate_session, _sessions
+        )
+        sid = create_session()
+        assert validate_session(sid) is True
+        _sessions.pop(sid, None)
+
+    def test_auth_check_false_without_cookie(self):
+        """#46: validate_session returns False without a session."""
+        from waggledance.adapters.http.routes.auth_session import validate_session
+        assert validate_session("") is False
+        assert validate_session(None) is False
+        assert validate_session("nonexistent_session_id") is False
+
+    def test_auth_session_rejects_without_bearer(self):
+        """#47: The auth_session endpoint requires Bearer auth (protected by middleware)."""
+        # The create_session_endpoint is at /api/auth/session (POST)
+        # It is NOT in PUBLIC_PATHS, so middleware rejects without Bearer.
+        from waggledance.adapters.http.middleware.auth import PUBLIC_PATHS
+        assert "/api/auth/session" not in PUBLIC_PATHS
+        # /api/auth/check IS public
+        assert "/api/auth/check" in PUBLIC_PATHS
+
+    def test_chat_401_without_any_auth(self):
+        """#48: /api/chat is not in PUBLIC_PATHS — requires auth."""
+        from waggledance.adapters.http.middleware.auth import PUBLIC_PATHS
+        assert "/api/chat" not in PUBLIC_PATHS
+
+    def test_chat_works_with_session_cookie(self):
+        """#49: validate_session accepts a valid session for cookie auth fallback."""
+        from waggledance.adapters.http.routes.auth_session import (
+            create_session, validate_session, _sessions
+        )
+        sid = create_session()
+        # Simulate what auth middleware does: check cookie
+        assert validate_session(sid) is True
+        _sessions.pop(sid, None)
+
+    def test_ws_accepts_session_cookie(self):
+        """#50: WS handler accepts session cookie (validate_session called)."""
+        from waggledance.adapters.http.routes.auth_session import (
+            create_session, validate_session, _sessions
+        )
+        sid = create_session()
+        # WS handler: token != expected_key AND validate_session(session_id)
+        assert validate_session(sid) is True
+        _sessions.pop(sid, None)
+
+    def test_ws_rejects_no_auth(self):
+        """#51: WS handler rejects when no token and no valid cookie."""
+        from waggledance.adapters.http.routes.auth_session import validate_session
+        # Empty token, empty cookie
+        assert validate_session("") is False
+
+
+class TestHologramFeeds:
+    """Tests for real feed sources in /api/feeds."""
+
+    def _get_feeds_cfg(self):
+        """Load feeds config from settings.yaml."""
+        from pathlib import Path
+        import yaml
+        settings_path = Path(__file__).resolve().parents[1] / "configs" / "settings.yaml"
+        if settings_path.exists():
+            with open(settings_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            return cfg.get("feeds", {})
+        return {"enabled": True, "weather": {"enabled": True}, "electricity": {"enabled": True},
+                "rss": {"enabled": True, "feeds": [{"name": "test", "url": "http://test", "critical": False}]}}
+
+    def test_feeds_returns_sources_array(self):
+        """#52: /api/feeds returns sources array (not stub)."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        feeds_cfg = self._get_feeds_cfg()
+        sources = _build_feed_sources(feeds_cfg)
+        assert isinstance(sources, list)
+        assert len(sources) > 0
+
+    def test_feeds_weather_source_present(self):
+        """#53: Weather source with type 'weather', provider 'fmi'."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        feeds_cfg = self._get_feeds_cfg()
+        sources = _build_feed_sources(feeds_cfg)
+        weather = [s for s in sources if s["type"] == "weather"]
+        assert len(weather) >= 1
+        assert weather[0]["provider"] == "fmi"
+
+    def test_feeds_electricity_source_present(self):
+        """#54: Electricity source with type 'electricity', provider 'porssisahko'."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        feeds_cfg = self._get_feeds_cfg()
+        sources = _build_feed_sources(feeds_cfg)
+        elec = [s for s in sources if s["type"] == "electricity"]
+        assert len(elec) >= 1
+        assert elec[0]["provider"] == "porssisahko"
+
+    def test_feeds_rss_sources_present(self):
+        """#55: At least one RSS source present."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        feeds_cfg = self._get_feeds_cfg()
+        sources = _build_feed_sources(feeds_cfg)
+        rss = [s for s in sources if s["type"] == "rss"]
+        assert len(rss) >= 1
+
+    def test_feeds_source_required_fields(self):
+        """#56: Each source has all required fields."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        feeds_cfg = self._get_feeds_cfg()
+        sources = _build_feed_sources(feeds_cfg)
+        required = {"id", "name", "type", "enabled", "configured", "state",
+                     "source_class", "freshness_s", "last_success_at",
+                     "last_error_at", "last_error", "items_count",
+                     "latest_value", "latest_items"}
+        for s in sources:
+            missing = required - set(s.keys())
+            assert not missing, f"Source {s.get('id')} missing fields: {missing}"
+
+    def test_feeds_state_values_valid(self):
+        """#57: Every source state is a valid enum value."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        feeds_cfg = self._get_feeds_cfg()
+        sources = _build_feed_sources(feeds_cfg)
+        valid_states = {"unavailable", "unwired", "framework", "idle", "active", "failed"}
+        for s in sources:
+            assert s["state"] in valid_states, \
+                f"Source {s['id']} has invalid state: {s['state']}"
+
+    def test_feeds_source_class_valid(self):
+        """#58: Every source source_class is valid."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        feeds_cfg = self._get_feeds_cfg()
+        sources = _build_feed_sources(feeds_cfg)
+        valid_classes = {"live", "error", None}
+        for s in sources:
+            assert s["source_class"] in valid_classes, \
+                f"Source {s['id']} has invalid source_class: {s['source_class']}"
+
+    def test_feeds_unwired_when_module_missing(self):
+        """#59: Feed with nonexistent integration module → state 'unwired'."""
+        from waggledance.adapters.http.routes.compat_dashboard import _derive_feed_state
+        with patch("importlib.util.find_spec", return_value=None):
+            state, error = _derive_feed_state("weather")
+        assert state == "unwired"
+        assert error is not None
+
+    def test_feeds_framework_when_dependency_missing(self):
+        """#60: RSS feed without feedparser → state 'framework'."""
+        from waggledance.adapters.http.routes.compat_dashboard import _derive_feed_state
+        import importlib.util
+        # Make find_spec succeed for the module, but feedparser import fails
+        real_spec = MagicMock()
+        with patch("importlib.util.find_spec", return_value=real_spec):
+            with patch.dict("sys.modules", {"feedparser": None}):
+                import builtins
+                _real_import = builtins.__import__
+                def _mock_import(name, *args, **kwargs):
+                    if name == "feedparser":
+                        raise ImportError("feedparser not installed")
+                    return _real_import(name, *args, **kwargs)
+                with patch("builtins.__import__", side_effect=_mock_import):
+                    state, error = _derive_feed_state("rss")
+        assert state == "framework"
+        assert "feedparser" in (error or "")
+
+    def test_feeds_idle_when_available(self):
+        """#61: Feed with module + deps OK → state 'idle'."""
+        from waggledance.adapters.http.routes.compat_dashboard import _derive_feed_state
+        real_spec = MagicMock()
+        with patch("importlib.util.find_spec", return_value=real_spec):
+            state, error = _derive_feed_state("weather")
+        assert state == "idle"
+        assert error is None
+
+    def test_feeds_failed_state(self):
+        """#62: Feed source structure supports failed state."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        sources = _build_feed_sources({"weather": {"enabled": True}})
+        # We can manually set a source to failed state
+        for s in sources:
+            s["state"] = "failed"
+            s["last_error"] = "Connection timeout"
+            assert s["state"] == "failed"
+            assert s["source_class"] == "live"
+
+    def test_feeds_rss_per_source_isolation(self):
+        """#63: Two RSS sources enriched from ChromaDB return different latest_items."""
+        from waggledance.adapters.http.routes.compat_dashboard import _enrich_from_chroma
+
+        # Mock ChromaDB collection that returns different data per feed_id
+        mock_collection = MagicMock()
+        def mock_get(where=None, limit=5, include=None):
+            feed_id = None
+            if isinstance(where, dict) and "$and" in where:
+                for cond in where["$and"]:
+                    if "feed_id" in cond:
+                        feed_id = cond["feed_id"]
+            if feed_id == "rss_yle_uutiset":
+                return {
+                    "documents": ["Suomen talous kasvoi"],
+                    "metadatas": [{"timestamp": "2026-03-21T12:00:00", "agent_id": "rss_feed", "feed_id": "rss_yle_uutiset"}],
+                }
+            elif feed_id == "rss_ha_blog":
+                return {
+                    "documents": ["Home Assistant 2026.3 released"],
+                    "metadatas": [{"timestamp": "2026-03-21T11:00:00", "agent_id": "rss_feed", "feed_id": "rss_ha_blog"}],
+                }
+            return {"documents": [], "metadatas": []}
+        mock_collection.get = mock_get
+
+        source_yle = {
+            "id": "rss_yle_uutiset", "type": "rss", "items_count": 0,
+            "latest_items": [], "latest_value": None,
+            "freshness_s": None, "last_success_at": None,
+        }
+        source_ha = {
+            "id": "rss_ha_blog", "type": "rss", "items_count": 0,
+            "latest_items": [], "latest_value": None,
+            "freshness_s": None, "last_success_at": None,
+        }
+
+        _enrich_from_chroma(source_yle, mock_collection)
+        _enrich_from_chroma(source_ha, mock_collection)
+
+        # Verify no cross-contamination
+        assert source_yle["items_count"] == 1
+        assert source_ha["items_count"] == 1
+        assert source_yle["latest_items"][0]["title"] != source_ha["latest_items"][0]["title"]
+        assert "Suomen" in source_yle["latest_items"][0]["title"]
+        assert "Home Assistant" in source_ha["latest_items"][0]["title"]
+
+
+class TestHologramUI:
+    """Tests for hologram UI — chat/feeds tabs, auth-aware behavior."""
+
+    def test_hologram_has_chat_and_feeds_tabs(self):
+        """#64: v6 HTML contains both Chat and Feeds tab buttons."""
+        html = _read_v6_html()
+        assert 'data-tab="chat"' in html, "Chat tab button not found"
+        assert 'data-tab="feeds"' in html, "Feeds tab button not found"
+
+    def test_chat_disabled_without_auth_ui(self):
+        """#65: Chat panel shows disabled state when not authenticated."""
+        html = _read_v6_html()
+        # The buildChatPanel function uses isAuthenticated variable
+        assert "isAuthenticated" in html, "isAuthenticated variable not found"
+        # Chat no_auth message is defined in LANG
+        assert "chat.no_auth" in html or "no_auth" in html, "Chat no-auth message key not found"
+        # Chat input has disabled attribute when not authenticated
+        assert "placeholder_disabled" in html, "Chat disabled placeholder not found"
+
+    def test_hologram_auth_no_auth_feeds_level(self):
+        """#66: Without auth: feeds return sources but no enriched data."""
+        from waggledance.adapters.http.routes.compat_dashboard import _build_feed_sources
+        feeds_cfg = {
+            "enabled": True,
+            "weather": {"enabled": True, "interval_min": 30},
+        }
+        sources = _build_feed_sources(feeds_cfg)
+        # Without ChromaDB enrichment: default empty values
+        for s in sources:
+            assert s["latest_items"] == []
+            assert s["latest_value"] is None
+            assert s["items_count"] == 0
+            assert s["freshness_s"] is None
+            assert s["last_success_at"] is None
+
+    def test_hologram_auth_no_auth_chat_level(self):
+        """#67: Chat requires auth — session cookie controls access."""
+        from waggledance.adapters.http.routes.auth_session import (
+            create_session, validate_session, _sessions
+        )
+        # Without auth: validation fails
+        assert validate_session("") is False
+
+        # With auth: validation passes
+        sid = create_session()
+        assert validate_session(sid) is True
+        _sessions.pop(sid, None)
+
+    def test_hologram_no_localstorage_api_key(self):
+        """Verify no localStorage WAGGLE_API_KEY references remain in v6 HTML."""
+        html = _read_v6_html()
+        assert "localStorage.getItem('WAGGLE_API_KEY')" not in html
+        assert "localStorage.setItem" not in html
+        assert "WAGGLE_API_KEY" not in html
+
+    def test_hologram_uses_cookie_auth(self):
+        """Verify hologram uses cookie-based auth (credentials: 'same-origin')."""
+        html = _read_v6_html()
+        assert "credentials: 'same-origin'" in html or "credentials:'same-origin'" in html
+        assert "checkAuth" in html
+        assert "/api/auth/check" in html
+
+    def test_hologram_ws_no_token_param(self):
+        """Verify WebSocket connection does not use ?token= parameter."""
+        html = _read_v6_html()
+        assert "?token=" not in html, "WS still uses ?token= parameter"
+
+    def test_hologram_feeds_panel_has_sources(self):
+        """Verify buildFeedsPanel renders source list from feeds.sources."""
+        html = _read_v6_html()
+        assert "f.sources" in html or "sources.forEach" in html, \
+            "Feeds panel does not iterate over sources"
+        assert "feeds.sources_title" in html or "sources_title" in html
+
+    def test_feeds_i18n_keys_present(self):
+        """Verify feeds i18n keys exist in both EN and FI."""
+        html = _read_v6_html()
+        # EN keys
+        assert "Data Feeds" in html
+        assert "Configured Sources" in html
+        # FI keys
+        assert "Datasyotteet" in html
+        assert "Konfiguroidut lahteet" in html

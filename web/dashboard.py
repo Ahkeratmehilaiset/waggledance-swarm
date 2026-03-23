@@ -131,6 +131,9 @@ def create_app(hivemind):
     _api_key = get_or_create_api_key()
     app.add_middleware(BearerAuthMiddleware, api_key=_api_key)
 
+    # ── Session cookie helper (replaces localStorage injection) ──
+    from waggledance.adapters.http.routes.auth_session import create_session as _create_session
+
     chat_model = hivemind.llm.model if hivemind.llm else "?"
     hb_model = (hivemind.llm_heartbeat.model
                 if hivemind.llm_heartbeat else chat_model)
@@ -155,10 +158,10 @@ def create_app(hivemind):
         swarm_color = ("#3fb950" if hivemind._swarm_enabled
                        else "#f85149")
 
+        session_id = _create_session()
         html = f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<script>localStorage.setItem("WAGGLE_API_KEY","{_api_key}")</script>
 <title>WaggleDance AI (on-prem)</title>
 <style>
   *{{box-sizing:border-box}}
@@ -642,10 +645,20 @@ loadFeeds();
 
         # KRIITTINEN: charset=utf-8 HTTP-headerissa
         # Ilman tätä Windows-selain käyttää cp1252:ta → ääkköset rikki
-        return Response(
+        response = Response(
             content=html,
             media_type="text/html; charset=utf-8"
         )
+        # Set HttpOnly session cookie (replaces localStorage API key injection)
+        response.set_cookie(
+            key="waggle_session",
+            value=session_id,
+            httponly=True,
+            samesite="strict",
+            max_age=3600,
+            path="/",
+        )
+        return response
 
     @app.post("/api/chat")
     async def chat(request: Request):

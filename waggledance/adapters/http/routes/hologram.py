@@ -59,7 +59,7 @@ def _load_html() -> str:
 
 @router.get("/hologram", response_class=HTMLResponse)
 async def hologram_view():
-    """Serve the hologram brain visualization page. No auth required. No key injection."""
+    """Serve hologram page. No secrets. No injection."""
     return HTMLResponse(_load_html())
 
 

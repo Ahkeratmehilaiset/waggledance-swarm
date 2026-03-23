@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from waggledance.adapters.http.middleware.auth import BearerAuthMiddleware
 from waggledance.adapters.http.middleware.rate_limit import RateLimitMiddleware
+from waggledance.adapters.http.routes.auth_session import router as auth_router
 from waggledance.adapters.http.routes.autonomy import router as autonomy_router
 from waggledance.adapters.http.routes.chat import router as chat_router
 from waggledance.adapters.http.routes.compat_dashboard import router as compat_router
@@ -114,6 +115,8 @@ def create_app(container) -> FastAPI:
     app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
 
     # ---- Routes ----
+    # Auth session routes (/api/auth/session, /api/auth/check)
+    app.include_router(auth_router)
     # Status routes at root level (/health, /ready)
     app.include_router(status_router)
     # Chat route under /api prefix (/api/chat)

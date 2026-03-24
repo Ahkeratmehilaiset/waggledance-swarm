@@ -1,6 +1,9 @@
 """Dependency injection container -- wires everything together."""
 
+import logging
 from functools import cached_property
+
+log = logging.getLogger(__name__)
 
 
 class Container:
@@ -176,6 +179,28 @@ class Container:
         from waggledance.core.learning.night_learning_pipeline import NightLearningPipeline
         return NightLearningPipeline(profile=self._settings.get_profile())
 
+    # --- Infrastructure (HW detection, throttle, OOM guard) ---
+
+    @cached_property
+    def elastic_scaler(self):
+        """ElasticScaler — single source of truth for hardware detection."""
+        from core.elastic_scaler import ElasticScaler
+        scaler = ElasticScaler()
+        scaler.detect()
+        return scaler
+
+    @cached_property
+    def adaptive_throttle(self):
+        """AdaptiveThrottle — dynamic load management."""
+        from core.adaptive_throttle import AdaptiveThrottle
+        return AdaptiveThrottle()
+
+    @cached_property
+    def resource_guard(self):
+        """ResourceGuard — OOM protection."""
+        from core.resource_guard import ResourceGuard
+        return ResourceGuard()
+
     @cached_property
     def autonomy_service(self):
         """AutonomyService — wires runtime mode from settings."""
@@ -187,10 +212,20 @@ class Container:
 
         profile = self._settings.get_profile()
 
-        # Build ResourceKernel with tier from settings — single instance shared
-        # across runtime and service to avoid split-brain limit tracking
-        tier = self._settings.get_hardware_tier()
-        resource_kernel = ResourceKernel(tier=tier)
+        # Tier: use ElasticScaler as single source of truth when "auto",
+        # otherwise use the explicitly configured tier.
+        tier_setting = self._settings.get_hardware_tier()
+        if tier_setting == "auto":
+            tier = self.elastic_scaler.tier.tier
+        else:
+            tier = tier_setting
+
+        resource_kernel = ResourceKernel(
+            tier=tier,
+            elastic_scaler=self.elastic_scaler,
+            adaptive_throttle=self.adaptive_throttle,
+        )
+        resource_kernel.resource_guard = self.resource_guard
 
         runtime = AutonomyRuntime(profile=profile, resource_kernel=resource_kernel)
         lifecycle = AutonomyLifecycle(

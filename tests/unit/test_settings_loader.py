@@ -1,6 +1,5 @@
 """Unit tests for WaggleSettings — configuration loading via monkeypatch."""
 
-import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -105,17 +104,19 @@ class TestWaggleSettingsFromEnv:
 
 
 class TestWaggleSettingsHardwareTier:
-    """Hardware tier detection."""
+    """Hardware tier — returns setting value, delegates detection to ElasticScaler."""
 
-    def test_hardware_tier_detection_runs_without_crashing(self) -> None:
+    def test_auto_tier_returns_auto(self) -> None:
         settings = WaggleSettings(hardware_tier="auto")
-        # _detect_hardware_tier handles all exceptions gracefully
-        tier = settings.get_hardware_tier()
-        assert tier in ("enterprise", "professional", "standard", "light", "minimal")
+        # Container resolves "auto" via ElasticScaler; settings just returns "auto"
+        assert settings.get_hardware_tier() == "auto"
 
-    def test_explicit_hardware_tier_skips_detection(self) -> None:
+    def test_explicit_hardware_tier_returned_directly(self) -> None:
         settings = WaggleSettings(hardware_tier="professional")
         assert settings.get_hardware_tier() == "professional"
+
+    def test_settings_no_longer_has_detect_method(self) -> None:
+        assert not hasattr(WaggleSettings, "_detect_hardware_tier")
 
 
 class TestWaggleSettingsConfigPort:

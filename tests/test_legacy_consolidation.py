@@ -1,0 +1,281 @@
+"""Phase 1 — Legacy Consolidation tests.
+
+Verifies:
+- Container wires ElasticScaler, AdaptiveThrottle, ResourceGuard
+- /api/ops returns flexhw + throttle sections
+- FlexHW tier matches ElasticScaler (no split-brain)
+- /api/settings GET returns YAML content
+- /api/settings/toggle POST requires auth
+- ResourceGuard wired and callable
+- SettingsLoader no longer has _detect_hardware_tier
+"""
+
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from waggledance.adapters.config.settings_loader import WaggleSettings
+from waggledance.bootstrap.container import Container
+from waggledance.core.autonomy.resource_kernel import ResourceKernel
+
+
+# ── Helpers ──────────────────────────────────────────────
+
+def _make_container(tier="standard"):
+    """Create a stub Container with explicit tier (avoids nvidia-smi)."""
+    s = WaggleSettings(profile="HOME", hardware_tier=tier, api_key="test-key-123")
+    return Container(settings=s, stub=True)
+
+
+# Patch ElasticScaler.detect() to avoid real hardware calls in tests
+_FAKE_HARDWARE = MagicMock(
+    gpu_name="NVIDIA RTX A2000",
+    gpu_vram_gb=8.0,
+    cpu_name="Intel i7-1270P",
+    cpu_cores=12,
+    cpu_threads=16,
+    ram_gb=16.0,
+    disk_free_gb=45.0,
+    os_name="Windows",
+)
+
+
+def _patch_scaler(container):
+    """Replace elastic_scaler with a mocked version."""
+    from core.elastic_scaler import TierConfig
+
+    mock_scaler = MagicMock()
+    mock_scaler.hardware = _FAKE_HARDWARE
+    mock_scaler.tier = TierConfig(
+        tier="standard",
+        chat_model="phi4-mini",
+        bg_model="llama3.2:1b",
+        max_agents=6,
+        vision=False,
+        micro_tier="V1+V2+V3",
+        hardware=_FAKE_HARDWARE,
+        reason="VRAM=8.0GB>=4GB, RAM=16GB>=16GB",
+    )
+    mock_scaler.get_vram_usage_pct.return_value = 62.5
+    mock_scaler.detect.return_value = mock_scaler.tier
+
+    # Override the cached_property
+    container.__dict__["elastic_scaler"] = mock_scaler
+    return mock_scaler
+
+
+# ── Container wiring ─────────────────────────────────────
+
+class TestContainerInfrastructureWiring:
+    """Verify Container wires ElasticScaler, AdaptiveThrottle, ResourceGuard."""
+
+    def test_container_has_elastic_scaler(self):
+        c = _make_container()
+        _patch_scaler(c)
+        assert c.elastic_scaler is not None
+
+    def test_container_has_adaptive_throttle(self):
+        c = _make_container()
+        _patch_scaler(c)
+        from core.adaptive_throttle import AdaptiveThrottle
+        assert isinstance(c.adaptive_throttle, AdaptiveThrottle)
+
+    def test_container_has_resource_guard(self):
+        c = _make_container()
+        _patch_scaler(c)
+        from core.resource_guard import ResourceGuard
+        assert isinstance(c.resource_guard, ResourceGuard)
+
+    def test_resource_kernel_receives_elastic_scaler(self):
+        c = _make_container()
+        mock = _patch_scaler(c)
+        svc = c.autonomy_service
+        rk = svc._resource_kernel
+        assert rk._elastic_scaler is mock
+
+    def test_resource_kernel_receives_adaptive_throttle(self):
+        c = _make_container()
+        _patch_scaler(c)
+        svc = c.autonomy_service
+        rk = svc._resource_kernel
+        assert rk._adaptive_throttle is c.adaptive_throttle
+
+    def test_resource_kernel_receives_resource_guard(self):
+        c = _make_container()
+        _patch_scaler(c)
+        svc = c.autonomy_service
+        rk = svc._resource_kernel
+        assert hasattr(rk, "resource_guard")
+        from core.resource_guard import ResourceGuard
+        assert isinstance(rk.resource_guard, ResourceGuard)
+
+
+# ── Tier detection (no split-brain) ──────────────────────
+
+class TestNoSplitBrain:
+    """Verify single source of truth for hardware tier."""
+
+    def test_settings_loader_no_detect_method(self):
+        """SettingsLoader must NOT have _detect_hardware_tier."""
+        assert not hasattr(WaggleSettings, "_detect_hardware_tier")
+
+    def test_auto_tier_returns_auto(self):
+        """get_hardware_tier() returns 'auto' string for container to resolve."""
+        s = WaggleSettings(hardware_tier="auto")
+        assert s.get_hardware_tier() == "auto"
+
+    def test_container_resolves_auto_via_elastic_scaler(self):
+        """Container resolves 'auto' tier via ElasticScaler.detect()."""
+        c = _make_container("auto")
+        _patch_scaler(c)
+        svc = c.autonomy_service
+        # Should get tier from ElasticScaler, not from settings
+        assert svc._resource_kernel.tier.value == "standard"
+
+    def test_container_uses_explicit_tier_when_set(self):
+        """Container uses explicit tier when not 'auto'."""
+        c = _make_container("professional")
+        _patch_scaler(c)
+        svc = c.autonomy_service
+        assert svc._resource_kernel.tier.value == "professional"
+
+
+# ── /api/ops FlexHW + Throttle ───────────────────────────
+
+class TestApiOpsExtended:
+    """Verify /api/ops returns flexhw and throttle sections."""
+
+    @classmethod
+    def _get_client(cls):
+        from starlette.testclient import TestClient
+        c = _make_container()
+        _patch_scaler(c)
+        app = c.build_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        return client, c._settings.api_key
+
+    def test_ops_returns_flexhw_section(self):
+        client, key = self._get_client()
+        r = client.get("/api/ops", headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "flexhw" in data
+        fhw = data["flexhw"]
+        assert fhw.get("tier") == "standard"
+        assert fhw.get("gpu_name") == "NVIDIA RTX A2000"
+        assert fhw.get("gpu_vram_gb") == 8.0
+        assert fhw.get("cpu_cores") == 12
+        assert fhw.get("ram_gb") == 16.0
+
+    def test_ops_flexhw_has_tiers_list(self):
+        client, key = self._get_client()
+        r = client.get("/api/ops", headers={"Authorization": f"Bearer {key}"})
+        data = r.json()
+        tiers = data["flexhw"].get("tiers", [])
+        assert len(tiers) == 5
+        names = [t["name"] for t in tiers]
+        assert names == ["minimal", "light", "standard", "professional", "enterprise"]
+
+    def test_ops_flexhw_active_tier_index(self):
+        client, key = self._get_client()
+        r = client.get("/api/ops", headers={"Authorization": f"Bearer {key}"})
+        data = r.json()
+        assert data["flexhw"]["active_tier_index"] == 2  # standard
+
+    def test_ops_returns_throttle_section(self):
+        client, key = self._get_client()
+        r = client.get("/api/ops", headers={"Authorization": f"Bearer {key}"})
+        data = r.json()
+        assert "throttle" in data
+        throttle = data["throttle"]
+        assert "machine_class" in throttle
+        assert "max_concurrent" in throttle
+
+    def test_ops_still_has_status_and_recommendation(self):
+        """Existing fields must not break."""
+        client, key = self._get_client()
+        r = client.get("/api/ops", headers={"Authorization": f"Bearer {key}"})
+        data = r.json()
+        assert "status" in data
+        assert "recommendation" in data
+        assert "load" in data["status"]
+        assert "tier" in data["status"]
+
+
+# ── /api/settings ─────────────────────────────────────────
+
+class TestApiSettings:
+    """Verify /api/settings GET and /api/settings/toggle POST."""
+
+    @classmethod
+    def _get_client(cls):
+        from starlette.testclient import TestClient
+        c = _make_container()
+        _patch_scaler(c)
+        app = c.build_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        return client, c._settings.api_key
+
+    def test_get_settings_returns_toggles(self):
+        client, key = self._get_client()
+        r = client.get("/api/settings", headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "toggles" in data
+        assert isinstance(data["toggles"], dict)
+
+    def test_get_settings_includes_known_keys(self):
+        client, key = self._get_client()
+        r = client.get("/api/settings", headers={"Authorization": f"Bearer {key}"})
+        data = r.json()
+        toggles = data["toggles"]
+        assert "feeds.enabled" in toggles
+        assert "mqtt.enabled" in toggles
+
+    def test_toggle_rejects_unknown_key(self):
+        client, key = self._get_client()
+        r = client.post(
+            "/api/settings/toggle",
+            json={"key": "nonexistent.key", "value": True},
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert "error" in data
+        assert "not toggleable" in data["error"]
+
+    def test_toggle_requires_auth(self):
+        client, _ = self._get_client()
+        r = client.post(
+            "/api/settings/toggle",
+            json={"key": "feeds.enabled", "value": True},
+            # No auth header
+        )
+        # Should be rejected by auth middleware (401 or 403)
+        assert r.status_code in (401, 403)
+
+
+# ── ResourceGuard integration ────────────────────────────
+
+class TestResourceGuardWired:
+    """Verify ResourceGuard is wired into ResourceKernel."""
+
+    def test_guard_callable(self):
+        c = _make_container()
+        _patch_scaler(c)
+        guard = c.resource_guard
+        # should_throttle() runs without error
+        result = guard.should_throttle()
+        assert isinstance(result, bool)
+
+    def test_guard_stats_available(self):
+        c = _make_container()
+        _patch_scaler(c)
+        guard = c.resource_guard
+        stats = guard.stats
+        assert "memory_percent" in stats
+        assert "gc_runs" in stats

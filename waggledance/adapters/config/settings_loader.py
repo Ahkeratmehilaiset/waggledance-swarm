@@ -8,7 +8,6 @@ when env vars are not set, providing a single source of truth for cutover config
 import logging
 import os
 import secrets
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -200,75 +199,13 @@ class WaggleSettings:
         return self.profile.upper()
 
     def get_hardware_tier(self) -> str:
-        """Return hardware tier.  Auto-detects via nvidia-smi if 'auto'."""
-        if self.hardware_tier != "auto":
-            return self.hardware_tier
-        return self._detect_hardware_tier()
+        """Return hardware tier setting.
 
-    # ------------------------------------------------------------------ #
-    #  Hardware detection                                                 #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _detect_hardware_tier() -> str:
-        """Detect GPU VRAM via nvidia-smi and classify tier.
-
-        Tiers:
-          enterprise     -- >=24 GB VRAM
-          professional   -- >=16 GB
-          standard       -- >=6 GB
-          light          -- >=2 GB (or GPU present but small)
-          minimal        -- no GPU / detection failed
+        Returns "auto" when auto-detection is requested — the Container
+        resolves the actual tier via ElasticScaler (single source of truth).
+        Returns the explicit tier string otherwise.
         """
-        try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=memory.total",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                return "minimal"
-
-            lines = result.stdout.strip().splitlines()
-            if not lines:
-                return "minimal"
-
-            # Take the max VRAM across all GPUs (MiB)
-            max_vram_mib = 0
-            for line in lines:
-                line = line.strip()
-                if line:
-                    try:
-                        max_vram_mib = max(max_vram_mib, int(float(line)))
-                    except ValueError:
-                        continue
-
-            vram_gb = max_vram_mib / 1024.0
-
-            if vram_gb >= 24:
-                return "enterprise"
-            if vram_gb >= 16:
-                return "professional"
-            if vram_gb >= 6:
-                return "standard"
-            if vram_gb >= 2:
-                return "light"
-            return "minimal"
-
-        except FileNotFoundError:
-            # nvidia-smi not installed
-            return "minimal"
-        except subprocess.TimeoutExpired:
-            logger.warning("nvidia-smi timed out during hardware detection")
-            return "minimal"
-        except Exception as exc:
-            logger.warning("Hardware tier detection failed: %s", exc)
-            return "minimal"
+        return self.hardware_tier
 
 
 # ------------------------------------------------------------------ #

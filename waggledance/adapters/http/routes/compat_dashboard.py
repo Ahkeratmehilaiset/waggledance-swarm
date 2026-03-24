@@ -211,8 +211,58 @@ def api_micro_model(service=Depends(get_autonomy_service)):
 
 # ── /api/ops ──────────────────────────────────────────────
 
+def _flexhw_section(container) -> dict:
+    """Build FlexHW hardware detection section from ElasticScaler."""
+    try:
+        scaler = container.elastic_scaler
+        hw = scaler.hardware
+        tier_cfg = scaler.tier
+        tier_name = tier_cfg.tier
+
+        from core.elastic_scaler import TIERS
+        tier_order = ["minimal", "light", "standard", "professional", "enterprise"]
+        tiers_list = []
+        for i, t in enumerate(tier_order):
+            spec = TIERS[t]
+            tiers_list.append({
+                "name": t,
+                "vram_gb": spec["min_vram_gb"],
+                "model": spec["chat_model"] or "none",
+            })
+
+        active_idx = tier_order.index(tier_name) if tier_name in tier_order else 0
+
+        return {
+            "tier": tier_name,
+            "reason": tier_cfg.reason,
+            "gpu_name": hw.gpu_name or "none",
+            "gpu_vram_gb": round(hw.gpu_vram_gb, 1),
+            "gpu_vram_used_pct": round(scaler.get_vram_usage_pct(), 1),
+            "cpu_name": hw.cpu_name,
+            "cpu_cores": hw.cpu_cores,
+            "ram_gb": round(hw.ram_gb, 1),
+            "disk_free_gb": round(hw.disk_free_gb, 1),
+            "tiers": tiers_list,
+            "active_tier_index": active_idx,
+        }
+    except Exception as exc:
+        logger.debug("FlexHW section failed: %s", exc)
+        return {}
+
+
+def _throttle_section(container) -> dict:
+    """Build throttle section from AdaptiveThrottle."""
+    try:
+        throttle = container.adaptive_throttle
+        return throttle.get_status()
+    except Exception as exc:
+        logger.debug("Throttle section failed: %s", exc)
+        return {}
+
+
 @router.get("/api/ops")
-def api_ops(service=Depends(get_autonomy_service)):
+def api_ops(service=Depends(get_autonomy_service),
+            container=Depends(get_container)):
     """Ops status for hologram ops menu."""
     st = service.get_status()
     rk = st.get("resource_kernel", {})
@@ -231,6 +281,8 @@ def api_ops(service=Depends(get_autonomy_service)):
             "confidence": kpis.get("route_accuracy", {}).get("value", 0),
             "health": 1.0 if rk.get("load_level") != "critical" else 0.5,
         },
+        "flexhw": _flexhw_section(container),
+        "throttle": _throttle_section(container),
         "recommendation": {
             "throttle": "none" if rk.get("load_level") in ("idle", "light") else "active",
             "night_mode": rk.get("night_mode", False),
@@ -790,3 +842,109 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         _ws_clients.discard(websocket)
         logger.info("Hologram WebSocket disconnected (%d clients)", len(_ws_clients))
+
+
+# ── /api/settings ────────────────────────────────────────
+
+from pathlib import Path
+
+_SETTINGS_YAML_PATH = Path("configs/settings.yaml")
+
+# Feature keys that can be toggled via POST /api/settings/toggle
+_TOGGLEABLE = {
+    "feeds.enabled", "feeds.weather.enabled", "feeds.electricity.enabled",
+    "feeds.rss.enabled", "mqtt.enabled", "home_assistant.enabled",
+    "frigate.enabled", "alerts.enabled", "voice.enabled", "audio.enabled",
+    "micro_model.v2.enabled", "micro_model.v3.enabled",
+}
+
+
+def _load_settings_yaml() -> dict:
+    if not _SETTINGS_YAML_PATH.exists():
+        return {}
+    try:
+        import yaml
+        return yaml.safe_load(_SETTINGS_YAML_PATH.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def _get_nested(d: dict, path: str):
+    for k in path.split("."):
+        if isinstance(d, dict):
+            d = d.get(k)
+        else:
+            return None
+    return d
+
+
+def _set_nested(d: dict, path: str, value):
+    keys = path.split(".")
+    for k in keys[:-1]:
+        if k not in d or not isinstance(d[k], dict):
+            d[k] = {}
+        d = d[k]
+    d[keys[-1]] = value
+
+
+@router.get("/api/settings")
+def api_settings():
+    """Return current feature toggles from settings.yaml."""
+    cfg = _load_settings_yaml()
+    toggles = {}
+    for path in sorted(_TOGGLEABLE):
+        val = _get_nested(cfg, path)
+        toggles[path] = bool(val) if val is not None else False
+    return {
+        "toggles": toggles,
+        "elastic_scaling": cfg.get("elastic_scaling", {}),
+        "heartbeat_interval": cfg.get("hivemind", {}).get("heartbeat_interval", 30),
+    }
+
+
+from pydantic import BaseModel
+
+
+class _SettingsToggleBody(BaseModel):
+    key: str
+    value: bool
+
+
+@router.post("/api/settings/toggle")
+def api_settings_toggle(body: _SettingsToggleBody,
+                         request: Request):
+    """Toggle a feature on/off. Requires authentication."""
+    if not _is_request_authenticated(request):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    key = body.key
+    value = body.value
+
+    if key not in _TOGGLEABLE:
+        return {"error": f"Key '{key}' is not toggleable", "allowed": sorted(_TOGGLEABLE)}
+
+    import os
+    import tempfile
+    import yaml
+
+    cfg = _load_settings_yaml()
+    _set_nested(cfg, key, value)
+
+    # Atomic write
+    fd, tmp = tempfile.mkstemp(dir=str(_SETTINGS_YAML_PATH.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True,
+                      sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, str(_SETTINGS_YAML_PATH))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    return {"ok": True, "key": key, "value": value}

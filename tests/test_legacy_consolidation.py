@@ -321,3 +321,199 @@ class TestHologramOpsFlexHW:
         assert "fhw.tiers" in html or "tiers.forEach" in html
         assert "flexhw-tier-active" in html
         assert "active_tier_index" in html
+
+
+# ═══════════════════════════════════════════════════════════
+# Phase 3 — Introspection API endpoints
+# ═══════════════════════════════════════════════════════════
+
+def _get_phase3_client():
+    """Shared client for Phase 3 endpoint tests."""
+    from starlette.testclient import TestClient
+    c = _make_container()
+    _patch_scaler(c)
+    app = c.build_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    return client, c._settings.api_key
+
+
+class TestMagmaEndpoints:
+    """MAGMA introspection endpoints."""
+
+    def test_magma_stats_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/magma/stats",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "audit_wired" in data
+        assert "replay_wired" in data
+
+    def test_magma_audit_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/magma/audit",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "entries" in data
+        assert "total" in data
+
+    def test_magma_audit_agent_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/magma/audit/agent/test_agent",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "entries" in r.json()
+
+    def test_magma_overlays_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/magma/overlays",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "overlays" in data
+        assert data["available"] is False
+
+    def test_magma_branches_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/magma/branches",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "branches" in data
+        assert data["available"] is False
+
+    def test_magma_replay_manifest_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/magma/replay/manifest",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+
+    def test_magma_branch_activate_requires_auth(self):
+        client, _ = _get_phase3_client()
+        r = client.post("/api/magma/branches/test/activate")
+        assert r.status_code in (401, 403)
+
+    def test_magma_rollback_requires_auth(self):
+        client, _ = _get_phase3_client()
+        r = client.post("/api/magma/rollback/test_agent")
+        assert r.status_code in (401, 403)
+
+
+class TestGraphEndpoints:
+    """Cognitive graph endpoints."""
+
+    def test_graph_node_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/graph/node/test_node",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "node" in data
+        assert "edges" in data
+
+    def test_graph_path_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/graph/path/src/tgt",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "path" in r.json()
+
+    def test_graph_stats_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/graph/stats",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "nodes" in data
+        assert "edges" in data
+
+
+class TestTrustEndpoints:
+    """Trust engine endpoints."""
+
+    def test_trust_ranking_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/trust/ranking",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "ranking" in r.json()
+
+    def test_trust_agent_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/trust/agent/test_agent",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "reputation" in r.json()
+
+    def test_trust_domain_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/trust/domain/capability",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "experts" in r.json()
+
+    def test_trust_signals_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/trust/signals/test_agent",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "signals" in r.json()
+
+
+class TestCrossAgentEndpoints:
+    """Cross-agent endpoints."""
+
+    def test_cross_channels_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/cross/channels",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "channels" in r.json()
+
+    def test_cross_provenance_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/cross/provenance/fact_123",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "chain" in r.json()
+
+    def test_cross_consensus_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/cross/consensus",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "facts" in r.json()
+
+
+class TestAnalyticsEndpoints:
+    """Analytics endpoints (file-based)."""
+
+    def test_analytics_trends_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/analytics/trends",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "days" in data
+
+    def test_analytics_routes_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/analytics/routes",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "routes" in r.json()
+
+    def test_analytics_models_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/analytics/models",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "models" in r.json()
+
+    def test_analytics_facts_endpoint(self):
+        client, key = _get_phase3_client()
+        r = client.get("/api/analytics/facts",
+                       headers={"Authorization": f"Bearer {key}"})
+        assert r.status_code == 200
+        assert "days" in r.json()

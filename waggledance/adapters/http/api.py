@@ -12,9 +12,13 @@ from waggledance.adapters.http.routes.auth_session import router as auth_router
 from waggledance.adapters.http.routes.autonomy import router as autonomy_router
 from waggledance.adapters.http.routes.chat import router as chat_router
 from waggledance.adapters.http.routes.compat_dashboard import router as compat_router
+from waggledance.adapters.http.routes.cross_agent import router as cross_agent_router
+from waggledance.adapters.http.routes.graph import router as graph_router
 from waggledance.adapters.http.routes.hologram import router as hologram_router
+from waggledance.adapters.http.routes.magma import router as magma_router
 from waggledance.adapters.http.routes.memory import router as memory_router
 from waggledance.adapters.http.routes.status import router as status_router
+from waggledance.adapters.http.routes.trust import router as trust_router
 from waggledance.core.domain.events import DomainEvent, EventType
 
 logger = logging.getLogger(__name__)
@@ -128,5 +132,13 @@ def create_app(container) -> FastAPI:
     app.include_router(hologram_router)
     # Legacy dashboard compat endpoints for hologram menus + /ws
     app.include_router(compat_router)
+    # MAGMA introspection (/api/magma/*)
+    app.include_router(magma_router)
+    # Cognitive graph (/api/graph/*)
+    app.include_router(graph_router)
+    # Trust engine (/api/trust/*)
+    app.include_router(trust_router)
+    # Cross-agent memory (/api/cross/*)
+    app.include_router(cross_agent_router)
 
     return app

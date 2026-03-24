@@ -294,10 +294,10 @@ def step_smoke_test(result: RestoreResult) -> None:
         "app=c.build_app(); "
         "print('NEW_ARCH_OK', app.title)"
     )
+    # Legacy backend archived; old-arch smoke test will always fail gracefully
     smoke_old = (
         "import sys; sys.path.insert(0,'.'); "
-        "from backend.main import app; "
-        "print('OLD_ARCH_OK')"
+        "print('OLD_ARCH_UNAVAILABLE')"
     )
 
     # Try new architecture

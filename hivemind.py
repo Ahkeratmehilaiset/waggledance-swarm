@@ -1282,11 +1282,8 @@ DELEGATION RULES (IMPORTANT):
 
     def _warm_caches(self):
         """Warm hot cache and micro-model V1 from YAML Q&A pairs at startup."""
-        try:
-            from backend.routes.chat import _YAML_QA
-        except ImportError:
-            log.debug("Cannot import _YAML_QA for cache warming")
-            return
+        # Legacy backend archived; YAML Q&A cache warming no longer available
+        _YAML_QA = None
 
         if not _YAML_QA:
             return

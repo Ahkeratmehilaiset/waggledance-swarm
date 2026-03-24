@@ -755,19 +755,9 @@ loadFeeds();
         if not message_id or rating not in (1, 2):
             return JSONResponse({"error": "Invalid feedback"}, status_code=400)
         fb_id = _chat_history.add_feedback(message_id, rating, correction)
-        # If thumbs-down with correction, feed into confusion memory
+        # Confusion memory recording (legacy backend removed; no-op)
         if rating == 1 and correction:
-            try:
-                from backend.routes.chat import record_confusion
-                # Get the original message to find wrong agent
-                conv = _chat_history.get_recent_messages(limit=100)
-                for m in conv:
-                    if m.get("id") == message_id and m.get("agent_name"):
-                        record_confusion(
-                            correction, m["agent_name"], correction)
-                        break
-            except Exception:
-                pass
+            log.debug("Thumbs-down correction received; confusion memory not available")
         return {"status": "recorded", "feedback_id": fb_id}
 
     @app.post("/api/language")
@@ -784,17 +774,9 @@ loadFeeds();
     @app.post("/api/confusion")
     async def report_confusion(data: dict):
         """Record a routing mistake so confusion memory can learn from it."""
-        try:
-            from backend.routes.chat import record_confusion
-            q = data.get("question", "")
-            wrong = data.get("wrong_agent", "")
-            correct = data.get("correct_agent", "")
-            if q and wrong and correct:
-                record_confusion(q, wrong, correct)
-            return {"status": "ok"}
-        except Exception as e:
-            log.error("API error: %s", e)
-            return {"error": "Internal error"}
+        # Legacy backend removed; endpoint preserved for API compatibility
+        log.debug("Confusion report received; confusion memory not available")
+        return {"status": "ok"}
 
     @app.get("/api/status")
     async def status():

@@ -285,12 +285,12 @@ class TestBackendStub(unittest.TestCase):
     """Group 6: Backend stub routes."""
 
     def test_audio_route_syntax(self):
-        """backend/routes/audio.py parses without errors."""
-        fpath = os.path.join(_project_root, "backend", "routes", "audio.py")
-        self.assertTrue(os.path.exists(fpath), "Missing: backend/routes/audio.py")
+        """_archive/backend-legacy/routes/audio.py parses without errors."""
+        fpath = os.path.join(_project_root, "_archive", "backend-legacy", "routes", "audio.py")
+        self.assertTrue(os.path.exists(fpath), "Missing: _archive/backend-legacy/routes/audio.py")
         with open(fpath, encoding="utf-8") as f:
             source = f.read()
-        ast.parse(source, filename="backend/routes/audio.py")
+        ast.parse(source, filename="_archive/backend-legacy/routes/audio.py")
 
 
 class TestDashboard(unittest.TestCase):

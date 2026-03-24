@@ -1,4 +1,5 @@
 """Tests for tools/migrate_db.py — schema migration + auth + training tools."""
+import importlib.util
 import json
 import sqlite3
 import sys
@@ -156,8 +157,12 @@ class TestSchemaVersion(unittest.TestCase):
         conn.close()
 
 
+@unittest.skipUnless(
+    importlib.util.find_spec("backend") is not None,
+    "backend/ archived — legacy auth tests skipped",
+)
 class TestBearerAuth(unittest.TestCase):
-    """Tests for backend/auth.py."""
+    """Tests for backend/auth.py (skipped after backend archival)."""
 
     def test_20_import(self):
         from backend.auth import BearerAuthMiddleware, get_or_create_api_key, PUBLIC_PATHS

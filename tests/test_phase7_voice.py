@@ -232,8 +232,8 @@ class TestVoiceIntegration(unittest.TestCase):
         self.assertFalse(result)
 
     def test_backend_voice_route_parseable(self):
-        """backend/routes/voice.py parses without error."""
-        path = _root / "backend" / "routes" / "voice.py"
+        """_archive/backend-legacy/routes/voice.py parses without error."""
+        path = _root / "_archive" / "backend-legacy" / "routes" / "voice.py"
         self.assertTrue(path.exists(), f"Missing: {path}")
         source = path.read_text(encoding="utf-8")
         ast.parse(source)

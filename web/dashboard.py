@@ -127,8 +127,9 @@ def create_app(hivemind):
     )
 
     # ── Auth middleware (Bearer token) ────────────────────
-    from backend.auth import get_or_create_api_key, BearerAuthMiddleware
-    _api_key = get_or_create_api_key()
+    from waggledance.adapters.http.middleware.auth import BearerAuthMiddleware
+    from waggledance.adapters.config.settings_loader import WaggleSettings
+    _api_key = WaggleSettings.from_env().api_key
     app.add_middleware(BearerAuthMiddleware, api_key=_api_key)
 
     # ── Session cookie helper (replaces localStorage injection) ──
@@ -1695,48 +1696,6 @@ loadFeeds();
                 hivemind.monitor.unregister_callback(monitor_ws_callback)
             if hivemind.ops_agent:
                 hivemind.ops_agent.unregister_decision_callback(ws_callback)
-
-    # MAGMA Layer 3 routes
-    try:
-        from backend.routes.magma import register_magma_routes
-        register_magma_routes(app, hivemind)
-    except Exception as e:
-        log.warning(f"MAGMA route not loaded: {e}")
-
-    # MAGMA Layer 4: Cross-agent routes
-    try:
-        from backend.routes.cross_agent import register_cross_agent_routes
-        register_cross_agent_routes(app, hivemind)
-    except Exception as e:
-        log.warning(f"MAGMA route not loaded: {e}")
-
-    # MAGMA Layer 5: Trust & Reputation routes
-    try:
-        from backend.routes.trust import register_trust_routes
-        register_trust_routes(app, hivemind)
-    except Exception as e:
-        log.warning(f"MAGMA route not loaded: {e}")
-
-    # MAGMA: Cognitive Graph routes
-    try:
-        from backend.routes.graph import register_graph_routes
-        register_graph_routes(app, hivemind)
-    except Exception as e:
-        log.warning(f"MAGMA route not loaded: {e}")
-
-    # Analytics routes (file-based, no hivemind dependency)
-    try:
-        from backend.routes.analytics import router as analytics_router
-        app.include_router(analytics_router)
-    except Exception as e:
-        log.warning(f"Analytics routes not loaded: {e}")
-
-    # Settings routes (reads configs/settings.yaml)
-    try:
-        from backend.routes.settings import router as settings_router
-        app.include_router(settings_router)
-    except Exception as e:
-        log.warning(f"Settings routes not loaded: {e}")
 
     # Round Table recent discussions (production: from audit log)
     try:

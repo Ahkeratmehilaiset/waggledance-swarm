@@ -1,13 +1,9 @@
-"""Phase 1 — Legacy Consolidation tests.
+"""Legacy Consolidation tests — Phases 1-4.
 
-Verifies:
-- Container wires ElasticScaler, AdaptiveThrottle, ResourceGuard
-- /api/ops returns flexhw + throttle sections
-- FlexHW tier matches ElasticScaler (no split-brain)
-- /api/settings GET returns YAML content
-- /api/settings/toggle POST requires auth
-- ResourceGuard wired and callable
-- SettingsLoader no longer has _detect_hardware_tier
+Phase 1: Container wiring, /api/ops, /api/settings, no split-brain
+Phase 2: Hologram Ops tab FlexHW + AutoThrottle rendering
+Phase 3: MAGMA/graph/trust/cross-agent/analytics endpoints
+Phase 4: Backend archival verification
 """
 
 import sys
@@ -517,3 +513,60 @@ class TestAnalyticsEndpoints:
                        headers={"Authorization": f"Bearer {key}"})
         assert r.status_code == 200
         assert "days" in r.json()
+
+
+# ═══════════════════════════════════════════════════════════
+# Phase 4 — Legacy backend archival verification
+# ═══════════════════════════════════════════════════════════
+
+class TestLegacyArchive:
+    """Verify backend archived and forward line is clean."""
+
+    def test_backend_archived_to_archive_backend_legacy(self):
+        archive = Path(__file__).resolve().parents[1] / "_archive" / "backend-legacy"
+        assert archive.is_dir(), "_archive/backend-legacy/ must exist"
+        assert (archive / "main.py").is_file()
+        assert (archive / "auth.py").is_file()
+        assert (archive / "routes").is_dir()
+        # Original backend/ must not exist
+        original = Path(__file__).resolve().parents[1] / "backend"
+        assert not original.is_dir(), "backend/ must be archived, not present"
+
+    def test_no_backend_imports_in_hexagonal(self):
+        """waggledance/ must not import from backend/."""
+        import ast
+        hexagonal = Path(__file__).resolve().parents[1] / "waggledance"
+        violations = []
+        for py in hexagonal.rglob("*.py"):
+            try:
+                tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ImportFrom) and node.module:
+                        if node.module.startswith("backend"):
+                            violations.append(f"{py.name}: {node.module}")
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            if alias.name.startswith("backend"):
+                                violations.append(f"{py.name}: {alias.name}")
+            except SyntaxError:
+                continue
+        assert not violations, f"Backend imports in hexagonal: {violations}"
+
+    def test_dashboard_has_no_legacy_register_routes(self):
+        """dashboard.py must not have register_*_routes calls to backend."""
+        dashboard = Path(__file__).resolve().parents[1] / "web" / "dashboard.py"
+        if not dashboard.exists():
+            pytest.skip("dashboard.py not found")
+        content = dashboard.read_text(encoding="utf-8")
+        assert "register_magma_routes" not in content
+        assert "register_cross_agent_routes" not in content
+        assert "register_trust_routes" not in content
+        assert "register_graph_routes" not in content
+
+    def test_dashboard_does_not_import_backend_auth(self):
+        """dashboard.py must not import from backend.auth."""
+        dashboard = Path(__file__).resolve().parents[1] / "web" / "dashboard.py"
+        if not dashboard.exists():
+            pytest.skip("dashboard.py not found")
+        content = dashboard.read_text(encoding="utf-8")
+        assert "from backend.auth import" not in content

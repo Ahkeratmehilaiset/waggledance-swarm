@@ -279,3 +279,45 @@ class TestResourceGuardWired:
         stats = guard.stats
         assert "memory_percent" in stats
         assert "gc_runs" in stats
+
+
+# ═══════════════════════════════════════════════════════════
+# Phase 2 — Hologram Ops tab: FlexHW + AutoThrottle rendering
+# ═══════════════════════════════════════════════════════════
+
+_V6_HTML_PATH = Path(__file__).resolve().parents[1] / "web" / "hologram-brain-v6.html"
+
+
+def _read_html():
+    return _V6_HTML_PATH.read_text(encoding="utf-8")
+
+
+class TestHologramOpsFlexHW:
+    """Verify hologram-brain-v6.html Ops tab renders FlexHW and AutoThrottle."""
+
+    def test_hologram_ops_renders_flexhw_section(self):
+        html = _read_html()
+        assert "ops.flexhw" in html or "fhw.tiers" in html
+        assert "flexhw-tier" in html
+
+    def test_hologram_ops_renders_throttle_section(self):
+        html = _read_html()
+        assert "ops.throttle" in html or "thr.machine_class" in html
+        assert "thr.avg_latency_ms" in html
+
+    def test_hologram_ops_has_flexhw_en_labels(self):
+        html = _read_html()
+        assert "ops_flexhw" in html
+        assert '"FlexHW Tier"' in html
+
+    def test_hologram_ops_has_flexhw_fi_labels(self):
+        html = _read_html()
+        assert '"FlexHW-taso"' in html
+        assert '"Automaattisaato"' in html
+
+    def test_hologram_ops_renders_five_tiers(self):
+        """The tier ladder iterates fhw.tiers and marks the active one."""
+        html = _read_html()
+        assert "fhw.tiers" in html or "tiers.forEach" in html
+        assert "flexhw-tier-active" in html
+        assert "active_tier_index" in html

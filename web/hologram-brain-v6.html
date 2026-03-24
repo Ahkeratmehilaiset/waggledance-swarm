@@ -363,6 +363,7 @@ const LANG = {
       feeds_sources: "Sources", feeds_health: "Feed Health",
       ops_cpu: "CPU", ops_gpu: "GPU", ops_memory: "Memory",
       ops_auth: "Auth", ops_ws: "WebSocket", ops_queues: "Queues",
+      ops_flexhw: "FlexHW Tier", ops_throttle: "AutoThrottle",
       chat_route: "Route", chat_explain: "Explainability"
     },
     chat: {
@@ -422,6 +423,7 @@ const LANG = {
       feeds_sources: "Lahteet", feeds_health: "Syotteiden terveys",
       ops_cpu: "CPU", ops_gpu: "GPU", ops_memory: "Muisti",
       ops_auth: "Tunnistautuminen", ops_ws: "WebSocket", ops_queues: "Jonot",
+      ops_flexhw: "FlexHW-taso", ops_throttle: "Automaattisaato",
       chat_route: "Reitti", chat_explain: "Selitettavyys"
     },
     chat: {
@@ -1330,6 +1332,8 @@ function buildOpsPanel(el) {
   const sys = dashboardState.system || {};
   const ops = dashboardState.ops || {};
   const st = ops.status || {};
+  const fhw = ops.flexhw || {};
+  const thr = ops.throttle || {};
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.ops_cpu')} / ${t('sections.ops_gpu')}</div>`;
   html += `<div class="p-grid">`;
   html += card('CPU %', sys.cpu_percent);
@@ -1343,6 +1347,42 @@ function buildOpsPanel(el) {
   html += card('Accepted', st.accepted);
   html += card('Deferred', st.deferred);
   html += card('Rejected', st.rejected);
+  html += `</div></div>`;
+  // ── FlexHW tier section ──
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.ops_flexhw')}</div>`;
+  const tiers = fhw.tiers || [];
+  const activeIdx = fhw.active_tier_index != null ? fhw.active_tier_index : -1;
+  if (tiers.length) {
+    html += `<div style="display:flex;gap:4px;margin:6px 0 8px">`;
+    tiers.forEach((ti, i) => {
+      const active = i === activeIdx;
+      const bg = active ? 'rgba(90,220,255,0.25)' : 'rgba(255,255,255,0.04)';
+      const border = active ? '1px solid rgba(90,220,255,0.5)' : '1px solid rgba(255,255,255,0.08)';
+      const weight = active ? '700' : '400';
+      html += `<div class="flexhw-tier${active ? ' flexhw-tier-active' : ''}" style="flex:1;text-align:center;padding:4px 2px;border-radius:4px;background:${bg};border:${border};font-size:10px;font-weight:${weight}">${ti.name}</div>`;
+    });
+    html += `</div>`;
+  }
+  html += `<div class="p-grid">`;
+  html += card('GPU', fhw.gpu_name || '\u2014');
+  html += card('VRAM', fhw.gpu_vram_gb != null ? `${fhw.gpu_vram_gb} GB` : '\u2014');
+  html += card('VRAM %', fhw.gpu_vram_used_pct != null ? `${fhw.gpu_vram_used_pct.toFixed(1)}%` : '\u2014');
+  html += card('CPU', fhw.cpu_name || '\u2014');
+  html += card('Cores', fhw.cpu_cores != null ? fhw.cpu_cores : '\u2014');
+  html += card('RAM', fhw.ram_gb != null ? `${fhw.ram_gb} GB` : '\u2014');
+  html += card('Disk Free', fhw.disk_free_gb != null ? `${fhw.disk_free_gb.toFixed(1)} GB` : '\u2014');
+  html += card('Reason', fhw.reason || '\u2014');
+  html += `</div></div>`;
+  // ── AutoThrottle section ──
+  html += `<div class="p-section"><div class="p-section-title">${t('sections.ops_throttle')}</div>`;
+  html += `<div class="p-grid">`;
+  html += card('Class', thr.machine_class || '\u2014');
+  html += card('Latency', thr.avg_latency_ms != null ? `${thr.avg_latency_ms.toFixed(0)} ms` : '\u2014');
+  html += card('Error Rate', thr.error_rate != null ? `${(thr.error_rate * 100).toFixed(1)}%` : '\u2014');
+  html += card('Heartbeat', thr.heartbeat_interval_s != null ? `${thr.heartbeat_interval_s}s` : '\u2014');
+  html += card('Max Concurrent', thr.max_concurrent != null ? thr.max_concurrent : '\u2014');
+  const scaleEvts = thr.scale_events || [];
+  html += card('Scale Events', scaleEvts.length > 0 ? scaleEvts.length : '0');
   html += `</div></div>`;
   el.innerHTML = html;
 }

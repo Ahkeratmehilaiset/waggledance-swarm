@@ -774,9 +774,9 @@ loadFeeds();
     @app.post("/api/confusion")
     async def report_confusion(data: dict):
         """Record a routing mistake so confusion memory can learn from it."""
-        # Legacy backend removed; endpoint preserved for API compatibility
-        log.debug("Confusion report received; confusion memory not available")
-        return {"status": "ok"}
+        # Legacy backend removed; confusion memory not available
+        log.debug("Confusion report received; backend archived")
+        return {"error": "confusion memory not available"}
 
     @app.get("/api/status")
     async def status():

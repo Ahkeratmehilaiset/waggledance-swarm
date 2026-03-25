@@ -32,7 +32,7 @@
 
 #### Metadata
 - Bumped `pyproject.toml` and `waggledance/__init__.py` to 3.3.5
-- **4565+ pytest tests, 0 failures**
+- **4649 pytest tests, 0 failures**
 
 ---
 

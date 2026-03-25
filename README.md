@@ -76,7 +76,12 @@ waggledance/
     projections/     Narrative, introspection, autobiographical (read-only)
     magma/           Audit, provenance, replay, trust, confidence decay
     domain/          CaseTrajectory, Goal, WorldSnapshot dataclasses
-  adapters/          LLM (Ollama), memory (ChromaDB), sensors, HTTP, config
+  adapters/
+    http/routes/     Hexagonal routes — chat, auth, hologram, magma, graph, trust, ops
+    llm/             Ollama adapter
+    memory/          ChromaDB, FAISS
+    sensors/         MQTT, camera, audio
+    config/          YAML bridge, settings loader
   application/       Services, DTOs
   bootstrap/         DI container, capability loader
 ```
@@ -147,32 +152,37 @@ The `/hologram` page renders a real-time 3D visualization with 32 nodes across 4
 | Learning | 9 | Lifecycle activity |
 
 Each node carries `node_meta`: state (7-value enum), device, freshness, source class, quality.
-Docked panel with 8 tabs + Chat. Bilingual FI/EN. No fake activation floors.
+Docked panel with 8 tabs + Chat. Bilingual FI/EN.
+
+- **Chat** — focus guard prevents input reset during polling refresh
+- **Profile selector** — shows the `configured` profile from `settings.yaml`; restart-only behavior with persistent hint when runtime differs
+- **Feeds** — per-source freshness with separate stale thresholds (30 s telemetry, 1800 s feeds), truthful source visibility
+- **Ops tab** — live FlexHW tier and AutoThrottle telemetry from `/api/ops`
 
 ## Current Status
 
 | Metric | Value |
 |--------|-------|
 | Version | v3.3.5 |
-| Pytest tests | 4649 passing |
-| Legacy test suites | 87 suites, 2754 tests |
-| Autonomy modules | 42 validated |
-| Specialist models | 14 (real sklearn training) |
-| Gold routing rate | 76% |
-| Production validated | 10h overnight, 99.6% uptime |
+| Architecture | Hexagonal — DI container, port/adapter, single-product |
+| Runtime | ElasticScaler + AdaptiveThrottle + ResourceGuard via DI |
+| Specialist models | 14 (real sklearn training, canary lifecycle) |
+| Production validated | 10 h overnight run, 99.6 % uptime |
 | Cutover | Full autonomy mode enabled |
 
 ## API
 
-70+ REST endpoints on port 8000. Key groups:
+REST + WebSocket on port 8000. Key groups:
 
 | Group | Examples |
 |-------|----------|
 | Core | `POST /api/chat`, `GET /api/status`, `GET /api/heartbeat` |
+| Ops | `GET /api/ops` — live FlexHW tier + AutoThrottle telemetry |
 | Autonomy | `/api/autonomy/status`, `/api/autonomy/kpis`, `/api/autonomy/learning/run` |
 | Hologram | `GET /api/hologram/state` (32 nodes + node_meta), `GET /hologram` |
-| MAGMA | `/api/magma/stats`, `/api/magma/audit`, `/api/magma/overlays` |
-| Trust | `/api/trust/ranking`, `/api/trust/agent/{id}` |
+| Introspection | `/api/magma/*`, `/api/graph/*`, `/api/trust/*`, `/api/cross-agent/*`, `/api/analytics/*` |
+| Profiles | `GET /api/profiles` — `{active, configured, restart_required}` |
+| Feeds | `GET /api/feeds` — config-based sources with per-source freshness |
 | Learning | `/api/learning/state-machine`, `/api/capabilities/state` |
 | Sensors | `/api/sensors`, `/api/sensors/home`, `/api/sensors/camera/events` |
 
@@ -182,20 +192,23 @@ See [`docs/API.md`](docs/API.md) for full reference.
 
 ## Security
 
+- **Auth** — HttpOnly session cookie (SameSite=Strict, 1 h TTL) for the browser; Bearer token for cURL/scripts/CI. API key auto-generated on first start
+- **No browser-visible secrets** — master key never appears in served HTML, inline JS, localStorage, or sessionStorage
+- **No frontend Bearer construction** — all browser fetches use `credentials: 'same-origin'`
+- **No `?token=` in frontend WebSocket** — browser WS connects clean; token parameter is accepted server-side for scripts only
 - **No eval()** — AST-based whitelist expression evaluator (`core/safe_eval.py`)
-- **Safe Action Bus** — All write operations go through policy -> risk -> approval chain
-- **MQTT TLS** — Enabled by default (port 8883)
-- **OOM protection** — ResourceGuard with throttling and emergency GC
-- **Auth** — HttpOnly session cookie for browser; Bearer token for cURL/scripts/CI. API key auto-generated on first start, never reaches the browser
+- **Safe Action Bus** — all write operations go through policy → risk → approval chain
+- **OOM protection** — ResourceGuard with adaptive throttling and emergency GC
+- **MQTT TLS** — enabled by default (port 8883)
 
 ## Testing
 
 ```bash
-python -m pytest -q                            # 4649 tests
-python -m pytest tests/autonomy/ -v            # Autonomy tests (1600+)
+python -m pytest -q                            # Full suite
+python -m pytest tests/autonomy/ -v            # Autonomy runtime
 python -m pytest tests/contracts/ -v           # Port contract tests
-python -m pytest tests/continuity/ -v          # v3.2 continuity tests
-python tools/waggle_backup.py --tests-only     # Legacy suite (87 suites)
+python -m pytest tests/continuity/ -v          # Continuity regression
+python tools/waggle_backup.py --tests-only     # Legacy component suites
 ```
 
 ## License

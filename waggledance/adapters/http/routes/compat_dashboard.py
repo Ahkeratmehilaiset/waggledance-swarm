@@ -8,9 +8,11 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 
 import psutil
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from waggledance.adapters.http.deps import get_autonomy_service, get_container
 from waggledance.adapters.http.routes._capability_state import derive_capability_state
@@ -638,6 +640,72 @@ _PROFILE_TARGETS = {
     "FACTORY": "industrial",
 }
 
+_SUPPORTED_PROFILES = ["gadget", "cottage", "home", "factory"]
+
+
+@router.get("/api/profiles")
+def api_profiles(service=Depends(get_autonomy_service)):
+    """List supported profiles, the running runtime profile, and the saved config profile."""
+    st = service.get_status()
+    active = (st.get("profile") or "home").lower()
+    cfg = _load_settings_yaml()
+    configured = (cfg.get("profile") or "home").lower()
+    return {
+        "profiles": _SUPPORTED_PROFILES,
+        "active": active,
+        "configured": configured,
+        "restart_required": active != configured,
+    }
+
+
+class _ProfileSwitchBody(BaseModel):
+    profile: str
+
+
+@router.post("/api/profiles/active")
+def api_profiles_switch(body: _ProfileSwitchBody, request: Request):
+    """Persist profile selection to settings.yaml. Takes effect on next restart.
+
+    The runtime profile is set once at construction and cannot be hot-reloaded.
+    This endpoint only persists the choice for the next service start.
+    """
+    if not _is_request_authenticated(request):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    profile = body.profile.lower()
+    if profile not in _SUPPORTED_PROFILES:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unknown profile: {profile}",
+                      "allowed": _SUPPORTED_PROFILES},
+        )
+
+    import os
+    import tempfile
+    import yaml
+
+    cfg = _load_settings_yaml()
+    cfg["profile"] = profile
+
+    fd, tmp = tempfile.mkstemp(dir=str(_SETTINGS_YAML_PATH.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True,
+                      sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, str(_SETTINGS_YAML_PATH))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    return {"ok": True, "profile": profile, "restart_required": True}
+
 
 def _derive_protocols(rk: dict) -> list:
     """Derive active protocols from resource kernel stats."""
@@ -846,8 +914,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # ── /api/settings ────────────────────────────────────────
 
-from pathlib import Path
-
 _SETTINGS_YAML_PATH = Path("configs/settings.yaml")
 
 # Feature keys that can be toggled via POST /api/settings/toggle
@@ -900,9 +966,6 @@ def api_settings():
         "elastic_scaling": cfg.get("elastic_scaling", {}),
         "heartbeat_interval": cfg.get("hivemind", {}).get("heartbeat_interval", 30),
     }
-
-
-from pydantic import BaseModel
 
 
 class _SettingsToggleBody(BaseModel):

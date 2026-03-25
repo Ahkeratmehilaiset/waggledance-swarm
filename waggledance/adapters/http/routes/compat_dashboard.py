@@ -645,12 +645,16 @@ _SUPPORTED_PROFILES = ["gadget", "cottage", "home", "factory"]
 
 @router.get("/api/profiles")
 def api_profiles(service=Depends(get_autonomy_service)):
-    """List supported profiles and the currently active one."""
+    """List supported profiles, the running runtime profile, and the saved config profile."""
     st = service.get_status()
     active = (st.get("profile") or "home").lower()
+    cfg = _load_settings_yaml()
+    configured = (cfg.get("profile") or "home").lower()
     return {
         "profiles": _SUPPORTED_PROFILES,
         "active": active,
+        "configured": configured,
+        "restart_required": active != configured,
     }
 
 

@@ -138,14 +138,34 @@ class TestProfileSelector:
         )
         assert set(api_profiles) == set(_SUPPORTED_PROFILES)
 
-    def test_profile_api_returns_active_profile(self):
-        """GET /api/profiles returns lowercased active profile from service."""
+    def test_profile_api_returns_active_and_configured(self):
+        """GET /api/profiles returns both runtime active and saved configured profile."""
         from waggledance.adapters.http.routes.compat_dashboard import api_profiles
         service = MagicMock()
-        service.get_status.return_value = {"profile": "COTTAGE"}
-        result = api_profiles(service=service)
-        assert result["active"] == "cottage"
+        service.get_status.return_value = {"profile": "HOME"}
+        with patch(
+            "waggledance.adapters.http.routes.compat_dashboard._load_settings_yaml",
+            return_value={"profile": "factory"},
+        ):
+            result = api_profiles(service=service)
+        assert result["active"] == "home", "active must reflect runtime profile"
+        assert result["configured"] == "factory", "configured must reflect settings.yaml"
+        assert result["restart_required"] is True
         assert len(result["profiles"]) == 4
+
+    def test_profile_api_no_restart_when_matching(self):
+        """GET /api/profiles: restart_required=False when runtime matches config."""
+        from waggledance.adapters.http.routes.compat_dashboard import api_profiles
+        service = MagicMock()
+        service.get_status.return_value = {"profile": "HOME"}
+        with patch(
+            "waggledance.adapters.http.routes.compat_dashboard._load_settings_yaml",
+            return_value={"profile": "home"},
+        ):
+            result = api_profiles(service=service)
+        assert result["active"] == "home"
+        assert result["configured"] == "home"
+        assert result["restart_required"] is False
 
     def test_profile_switch_returns_restart_required(self):
         """POST /api/profiles/active must return restart_required=True.
@@ -223,27 +243,39 @@ class TestProfileSelector:
         assert not hasattr(AutonomyService, "update_profile"), \
             "AutonomyService must not have an update_profile method"
 
-    def test_profile_header_syncs_with_backend(self):
-        """updateHeaderBadges() syncs profileSelect.value with backend profile."""
-        html = _read_html()
-        assert re.search(r'sel\.value', html), \
-            "updateHeaderBadges must sync profile selector value from status"
+    def test_profile_selector_driven_by_configured_not_runtime(self):
+        """Selector syncs from dashboardState.profiles.configured, not status.profile.
 
-    def test_profile_selector_not_reset_while_pending_restart(self):
-        """After user changes profile, polling must NOT reset selector back.
-
-        profilePendingRestart flag prevents updateHeaderBadges from
-        overwriting the user's selection with the runtime (old) profile.
+        This ensures the selector stays stable after save — it shows what's
+        saved in settings.yaml, not the immutable runtime profile.
         """
         html = _read_html()
-        assert "profilePendingRestart" in html, \
-            "Must track profilePendingRestart flag"
-        # The flag must be set to true on successful POST
-        assert re.search(r'profilePendingRestart\s*=\s*true', html), \
-            "profilePendingRestart must be set true after successful profile switch"
-        # updateHeaderBadges must check the flag before overwriting
-        assert re.search(r'!profilePendingRestart', html), \
-            "updateHeaderBadges must skip selector sync when profilePendingRestart is true"
+        assert "pf.configured" in html, \
+            "Selector must sync from profiles.configured (saved), not status.profile (runtime)"
+        assert "profileRestartHint" in html, \
+            "Must have persistent restart hint element"
+        # The volatile flag must NOT be present — server state replaces it
+        assert "profilePendingRestart" not in html, \
+            "Volatile profilePendingRestart must be replaced by server-derived state"
+
+    def test_profile_restart_hint_appears_when_mismatch(self):
+        """When configured ≠ active, the UI shows a persistent restart hint."""
+        html = _read_html()
+        assert 'id="profileRestartHint"' in html, \
+            "Must have profileRestartHint element in header"
+        assert "pf.restart_required" in html, \
+            "Hint visibility must be driven by restart_required from server"
+        # i18n keys for the hint
+        assert "restart_hint" in html
+        assert "running_label" in html
+
+    def test_profile_change_handler_updates_local_profiles_state(self):
+        """After POST success, handler updates dashboardState.profiles locally."""
+        html = _read_html()
+        assert re.search(r'dashboardState\.profiles\.configured\s*=', html), \
+            "Change handler must update local profiles.configured after POST"
+        assert re.search(r'dashboardState\.profiles\.restart_required\s*=', html), \
+            "Change handler must update local profiles.restart_required after POST"
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -68,6 +68,10 @@
       cursor: pointer;
     }
     .profile-select option { background: #0a1628; color: #dff8ff; }
+    .profile-restart-hint {
+      font-size: 10px; color: rgba(250,204,21,0.8);
+      white-space: nowrap; cursor: default;
+    }
 
     /* ── Tab bar ──────────────────────────────────── */
     .tab-bar {
@@ -289,6 +293,7 @@
         <option value="home" selected>Home</option>
         <option value="factory">Factory</option>
       </select>
+      <span class="profile-restart-hint" id="profileRestartHint"></span>
       <span class="badge" id="badgeCompute"><span class="bdot" style="background:#60a5fa"></span><span id="badgeComputeText">—</span></span>
       <span class="badge" id="badgeRuntime"><span class="bdot" style="background:#a78bfa"></span><span id="badgeRuntimeText">—</span></span>
       <button class="lang-toggle" id="langToggle">FI</button>
@@ -388,7 +393,9 @@ const LANG = {
     },
     profile: {
       restart_notice: "Saved — applies after restart",
-      switch_failed: "Switch failed"
+      switch_failed: "Switch failed",
+      restart_hint: "\u21bb restart needed",
+      running_label: "Running"
     },
     feeds: {
       title: "Data Feeds", enabled_label: "Feeds Enabled", yes: "Yes", no: "No",
@@ -452,7 +459,9 @@ const LANG = {
     },
     profile: {
       restart_notice: "Tallennettu — kayttoon uudelleenkaynn. jalkeen",
-      switch_failed: "Vaihto epaonnistui"
+      switch_failed: "Vaihto epaonnistui",
+      restart_hint: "\u21bb uudelleenkaynn.",
+      running_label: "Ajossa"
     },
     feeds: {
       title: "Datasyotteet", enabled_label: "Syotteet kaytossa", yes: "Kylla", no: "Ei",
@@ -1002,12 +1011,11 @@ const dashboardState = {
   micro_model: null, ops: null, feeds: null, agent_levels: null,
   swarm_scores: null, monitor_history: null,
   profile_impact: null, capabilities_state: null, learning_state: null,
-  hologram: null,
+  hologram: null, profiles: null,
   ws: { connected: false, lastMessageAt: 0 }
 };
 
 let isAuthenticated = false;
-let profilePendingRestart = false;  // Set after user changes profile; prevents polling from resetting selector
 
 async function checkAuth() {
   try {
@@ -1054,18 +1062,32 @@ async function refreshDashboardData() {
 function updateHeaderBadges() {
   const st = dashboardState.status;
   if (st) {
-    // Sync profile selector with backend state (skip if user has a pending change)
-    const sel = document.getElementById('profileSelect');
-    const activeProfile = (st.profile || 'home').toLowerCase();
-    if (sel && !profilePendingRestart && sel.value !== activeProfile) sel.value = activeProfile;
-    // Localize option labels
-    if (sel) {
-      for (const opt of sel.options) {
-        opt.textContent = localizeProfile(opt.value);
-      }
-    }
     const rtText = st.status === 'running' ? (st.uptime_s > 0 ? `${Math.floor(st.uptime_s/60)}m` : 'OK') : st.status;
     document.getElementById('badgeRuntimeText').textContent = rtText;
+  }
+  // Profile selector — driven by /api/profiles (configured vs active), not /api/status
+  const sel = document.getElementById('profileSelect');
+  const hint = document.getElementById('profileRestartHint');
+  const pf = dashboardState.profiles;
+  if (sel) {
+    if (pf) {
+      // Selector shows the saved (configured) profile, not the runtime one
+      if (sel.value !== pf.configured) sel.value = pf.configured;
+      // Persistent restart hint when configured ≠ runtime
+      if (hint) {
+        if (pf.restart_required) {
+          hint.textContent = t('profile.restart_hint');
+          hint.title = `${t('profile.running_label')}: ${localizeProfile(pf.active)}`;
+        } else {
+          hint.textContent = '';
+          hint.title = '';
+        }
+      }
+    }
+    // Localize option labels
+    for (const opt of sel.options) {
+      opt.textContent = localizeProfile(opt.value);
+    }
   }
   // Compute badge from hologram node_meta
   const holo = dashboardState.hologram;
@@ -1116,8 +1138,13 @@ document.getElementById('profileSelect').addEventListener('change', async (e) =>
       body: JSON.stringify({ profile }),
     });
     if (res.ok) {
-      // Profile is persisted but runtime uses it only after restart
-      profilePendingRestart = true;
+      const data = await res.json();
+      // Update local profiles state so hint appears immediately
+      if (dashboardState.profiles) {
+        dashboardState.profiles.configured = data.profile;
+        dashboardState.profiles.restart_required = data.restart_required;
+      }
+      updateHeaderBadges();
       if (status) status.textContent = t('profile.restart_notice');
     } else {
       if (status) status.textContent = t('profile.switch_failed');
@@ -1768,8 +1795,15 @@ function animate(now) {
 }
 requestAnimationFrame(animate);
 
-// Initial auth check, then data fetch + WS connect
+async function fetchProfiles() {
+  const data = await fetchPublicJson('/api/profiles');
+  if (data) dashboardState.profiles = data;
+  updateHeaderBadges();
+}
+
+// Initial auth check, then profiles + data fetch + WS connect
 checkAuth().then(() => {
+  fetchProfiles();
   refreshDashboardData();
   connectWebSocket();
 });

@@ -61,6 +61,13 @@
       padding: 3px 8px; border-radius: 999px; font-size: 11px;
       cursor: pointer;
     }
+    .profile-select {
+      appearance: none; border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.06); color: #dff8ff;
+      padding: 3px 8px; border-radius: 999px; font-size: 11px;
+      cursor: pointer;
+    }
+    .profile-select option { background: #0a1628; color: #dff8ff; }
 
     /* ── Tab bar ──────────────────────────────────── */
     .tab-bar {
@@ -276,7 +283,12 @@
       <span class="brand" id="brandTitle">WaggleDance Swarm AI</span>
       <span class="subtitle" id="brandSubtitle">Hologram Brain: Waggle + LLM + Micromodels</span>
       <span class="spacer"></span>
-      <span class="badge" id="badgeProfile"><span class="bdot" style="background:#4ade80"></span><span id="badgeProfileText">—</span></span>
+      <select class="profile-select" id="profileSelect">
+        <option value="gadget">Gadget</option>
+        <option value="cottage">Cottage</option>
+        <option value="home" selected>Home</option>
+        <option value="factory">Factory</option>
+      </select>
       <span class="badge" id="badgeCompute"><span class="bdot" style="background:#60a5fa"></span><span id="badgeComputeText">—</span></span>
       <span class="badge" id="badgeRuntime"><span class="bdot" style="background:#a78bfa"></span><span id="badgeRuntimeText">—</span></span>
       <button class="lang-toggle" id="langToggle">FI</button>
@@ -1032,7 +1044,16 @@ async function refreshDashboardData() {
 function updateHeaderBadges() {
   const st = dashboardState.status;
   if (st) {
-    document.getElementById('badgeProfileText').textContent = localizeProfile(st.profile);
+    // Sync profile selector with backend state
+    const sel = document.getElementById('profileSelect');
+    const activeProfile = (st.profile || 'home').toLowerCase();
+    if (sel && sel.value !== activeProfile) sel.value = activeProfile;
+    // Localize option labels
+    if (sel) {
+      for (const opt of sel.options) {
+        opt.textContent = localizeProfile(opt.value);
+      }
+    }
     const rtText = st.status === 'running' ? (st.uptime_s > 0 ? `${Math.floor(st.uptime_s/60)}m` : 'OK') : st.status;
     document.getElementById('badgeRuntimeText').textContent = rtText;
   }
@@ -1072,6 +1093,21 @@ function applyLanguage() {
 document.getElementById('langToggle').addEventListener('click', () => {
   currentLang = currentLang === 'en' ? 'fi' : 'en';
   applyLanguage();
+});
+
+document.getElementById('profileSelect').addEventListener('change', async (e) => {
+  const profile = e.target.value;
+  try {
+    const res = await fetch('/api/profiles/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ profile }),
+    });
+    if (res.ok) {
+      refreshDashboardData();
+    }
+  } catch {}
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -1267,17 +1303,37 @@ function buildLearningPanel(el) {
   el.innerHTML = html;
 }
 
+function _feedTypeLabel(type) {
+  const map = { weather: '\u2601 Weather', electricity: '\u26a1 Electricity', rss: '\ud83d\udcf0 News/RSS' };
+  return map[type] || type;
+}
+
+function _freshnessLabel(s) {
+  if (s == null) return null;
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}min ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
 function buildFeedsPanel(el) {
   const f = dashboardState.feeds || {};
+  const sources = f.sources || [];
   let html = '';
+
+  // Summary with type breakdown
+  const byType = {};
+  sources.forEach(s => { byType[s.type] = (byType[s.type] || 0) + 1; });
+  const withData = sources.filter(s => s.items_count > 0).length;
 
   html += `<div class="p-section"><div class="p-section-title">${t('feeds.title')}</div>`;
   html += `<div class="p-grid">`;
   html += card(t('feeds.enabled_label'), f.enabled ? t('feeds.yes') : t('feeds.no'));
-  html += card(t('feeds.source_count'), f.source_count || 0);
+  html += card(t('feeds.source_count'), `${sources.length} (${withData} with data)`);
+  for (const [type, count] of Object.entries(byType)) {
+    html += card(_feedTypeLabel(type), count);
+  }
   html += `</div></div>`;
 
-  const sources = f.sources || [];
   if (sources.length) {
     html += `<div class="p-section"><div class="p-section-title">${t('feeds.sources_title')}</div>`;
     html += `<div class="p-list">`;
@@ -1291,27 +1347,57 @@ function buildFeedsPanel(el) {
       html += `<span style="width:8px;height:8px;border-radius:50%;background:${stateColor};flex-shrink:0"></span>`;
       html += `<div style="flex:1">`;
       html += `<strong>${escapeHtml(s.name)}</strong>`;
-      html += ` <span style="opacity:0.5;font-size:0.85em">${s.protocol}</span>`;
+      html += ` <span style="opacity:0.5;font-size:0.85em">${escapeHtml(s.protocol)}</span>`;
+      if (s.provider) html += ` <span style="opacity:0.4;font-size:0.8em">(${escapeHtml(s.provider)})</span>`;
       html += `<div style="opacity:0.6;font-size:0.85em">`;
       html += `${t('node_states.' + s.state)}`;
-      html += ` \u00b7 ${s.interval_min}min`;
+      html += ` \u00b7 ${s.interval_min}min interval`;
       if (s.critical) html += ` \u00b7 <span style="color:#f87171">${t('feeds.critical')}</span>`;
-      if (s.items_count > 0) html += ` \u00b7 ${s.items_count} items`;
-      if (s.freshness_s != null) html += ` \u00b7 ${Math.round(s.freshness_s/60)}min ago`;
-      if (s.last_error) html += `<br><span style="color:#f87171">${escapeHtml(s.last_error)}</span>`;
       html += `</div>`;
+
+      // Data section — always show, truthful about what's available
+      html += `<div style="margin-top:4px;font-size:0.85em">`;
+      if (s.items_count > 0) {
+        html += `<span style="color:#4ade80">${s.items_count} items</span>`;
+        const fresh = _freshnessLabel(s.freshness_s);
+        if (fresh) {
+          const stale = s.freshness_s > STALE_THRESHOLD_S * 60;
+          html += ` \u00b7 <span style="color:${stale ? '#facc15' : 'rgba(220,244,255,0.7)'}">`;
+          html += `${fresh}${stale ? ' \u26a0' : ''}</span>`;
+        }
+      } else {
+        html += `<span style="opacity:0.4">${t('no_data')}</span>`;
+      }
+      html += `</div>`;
+
+      // Latest items (RSS)
       if (s.latest_items && s.latest_items.length) {
         html += `<div style="margin-top:4px;font-size:0.8em;opacity:0.7">`;
-        s.latest_items.slice(0,3).forEach(item => {
+        s.latest_items.slice(0, 3).forEach(item => {
           html += `<div>\u00b7 ${escapeHtml(item.title || item.text || '')}</div>`;
         });
         html += `</div>`;
       }
+
+      // Latest value (weather, electricity)
       if (s.latest_value) {
-        html += `<div style="margin-top:4px;font-size:0.85em">`;
-        if (s.type==='weather') html += `${s.latest_value.temp_c}\u00b0C, ${s.latest_value.wind_ms} m/s`;
-        if (s.type==='electricity') html += `${s.latest_value.price_c_kwh} c/kWh`;
+        html += `<div style="margin-top:4px;font-size:0.85em;color:#a8efff">`;
+        if (s.type === 'weather') {
+          const v = s.latest_value;
+          if (v.temp_c != null) html += `${v.temp_c}\u00b0C`;
+          if (v.wind_ms != null) html += `, ${v.wind_ms} m/s`;
+          if (v.humidity_pct != null) html += `, ${v.humidity_pct}% RH`;
+        }
+        if (s.type === 'electricity') {
+          const v = s.latest_value;
+          if (v.price_c_kwh != null) html += `${v.price_c_kwh} c/kWh`;
+          if (v.type) html += ` (${v.type})`;
+        }
         html += `</div>`;
+      }
+
+      if (s.last_error) {
+        html += `<div style="margin-top:2px;font-size:0.8em;color:#f87171">${escapeHtml(s.last_error)}</div>`;
       }
       html += `</div></div>`;
     });
@@ -1393,8 +1479,32 @@ function buildOpsPanel(el) {
 let chatMessages = [];
 let chatRouteInfo = null;
 
+function _renderChatMessages(container, hasAuth) {
+  let html = '';
+  if (!hasAuth) {
+    html += `<div class="chat-msg system">${t('chat.no_auth')}</div>`;
+  }
+  chatMessages.forEach(m => {
+    html += `<div class="chat-msg ${m.role}">${escapeHtml(m.text)}</div>`;
+  });
+  container.innerHTML = html;
+  container.scrollTop = container.scrollHeight;
+}
+
 function buildChatPanel(el) {
   const hasAuth = isAuthenticated;
+  const existingInput = el.querySelector('#chatInput');
+  const inputHasFocus = existingInput && document.activeElement === existingInput;
+
+  // If user is actively typing, only update messages — never destroy the input
+  if (inputHasFocus) {
+    const messagesEl = el.querySelector('#chatMessages');
+    if (messagesEl) {
+      _renderChatMessages(messagesEl, hasAuth);
+      return;
+    }
+  }
+
   let html = '';
 
   // Route explainability section
@@ -1406,14 +1516,7 @@ function buildChatPanel(el) {
     html += `</div></div>`;
   }
 
-  html += `<div class="chat-messages" id="chatMessages">`;
-  if (!hasAuth) {
-    html += `<div class="chat-msg system">${t('chat.no_auth')}</div>`;
-  }
-  chatMessages.forEach(m => {
-    html += `<div class="chat-msg ${m.role}">${escapeHtml(m.text)}</div>`;
-  });
-  html += `</div>`;
+  html += `<div class="chat-messages" id="chatMessages"></div>`;
   html += `<div class="chat-input-row">`;
   html += `<input class="chat-input" id="chatInput" type="text"
     placeholder="${hasAuth ? t('chat.placeholder') : t('chat.placeholder_disabled')}"
@@ -1422,8 +1525,16 @@ function buildChatPanel(el) {
   html += `</div>`;
   el.innerHTML = html;
 
-  // Attach event handlers
+  // Render messages into their container
+  _renderChatMessages(document.getElementById('chatMessages'), hasAuth);
+
+  // Restore saved input value if there was one
   const input = document.getElementById('chatInput');
+  if (input && existingInput && existingInput.value) {
+    input.value = existingInput.value;
+  }
+
+  // Attach event handlers
   const sendBtn = document.getElementById('chatSend');
   if (input && hasAuth) {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });

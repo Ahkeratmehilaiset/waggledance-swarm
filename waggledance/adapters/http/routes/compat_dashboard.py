@@ -660,7 +660,11 @@ class _ProfileSwitchBody(BaseModel):
 
 @router.post("/api/profiles/active")
 def api_profiles_switch(body: _ProfileSwitchBody, request: Request):
-    """Switch the active profile by writing to settings.yaml. Requires auth."""
+    """Persist profile selection to settings.yaml. Takes effect on next restart.
+
+    The runtime profile is set once at construction and cannot be hot-reloaded.
+    This endpoint only persists the choice for the next service start.
+    """
     if not _is_request_authenticated(request):
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=401, content={"error": "Unauthorized"})
@@ -696,7 +700,7 @@ def api_profiles_switch(body: _ProfileSwitchBody, request: Request):
             pass
         raise
 
-    return {"ok": True, "profile": profile}
+    return {"ok": True, "profile": profile, "restart_required": True}
 
 
 def _derive_protocols(rk: dict) -> list:

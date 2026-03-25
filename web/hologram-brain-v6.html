@@ -386,6 +386,10 @@ const LANG = {
       route_label: "Route",
       confidence_label: "Confidence"
     },
+    profile: {
+      restart_notice: "Saved — applies after restart",
+      switch_failed: "Switch failed"
+    },
     feeds: {
       title: "Data Feeds", enabled_label: "Feeds Enabled", yes: "Yes", no: "No",
       source_count: "Sources", sources_title: "Configured Sources", critical: "Critical"
@@ -446,6 +450,10 @@ const LANG = {
       route_label: "Reitti",
       confidence_label: "Luottamus"
     },
+    profile: {
+      restart_notice: "Tallennettu — kayttoon uudelleenkaynn. jalkeen",
+      switch_failed: "Vaihto epaonnistui"
+    },
     feeds: {
       title: "Datasyotteet", enabled_label: "Syotteet kaytossa", yes: "Kylla", no: "Ei",
       source_count: "Lahteet", sources_title: "Konfiguroidut lahteet", critical: "Kriittinen"
@@ -460,7 +468,8 @@ const LANG = {
 };
 
 let currentLang = 'en';
-const STALE_THRESHOLD_S = 30;
+const STALE_THRESHOLD_S = 30;          // Node telemetry staleness (seconds)
+const FEED_STALE_THRESHOLD_S = 1800;   // Data feed staleness (30 min, matches typical feed intervals)
 
 function t(path) {
   const parts = path.split('.');
@@ -1097,6 +1106,7 @@ document.getElementById('langToggle').addEventListener('click', () => {
 
 document.getElementById('profileSelect').addEventListener('change', async (e) => {
   const profile = e.target.value;
+  const status = document.getElementById('panelStatus');
   try {
     const res = await fetch('/api/profiles/active', {
       method: 'POST',
@@ -1105,9 +1115,14 @@ document.getElementById('profileSelect').addEventListener('change', async (e) =>
       body: JSON.stringify({ profile }),
     });
     if (res.ok) {
-      refreshDashboardData();
+      // Profile is persisted but runtime uses it only after restart
+      if (status) status.textContent = t('profile.restart_notice');
+    } else {
+      if (status) status.textContent = t('profile.switch_failed');
     }
-  } catch {}
+  } catch {
+    if (status) status.textContent = t('profile.switch_failed');
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -1361,7 +1376,7 @@ function buildFeedsPanel(el) {
         html += `<span style="color:#4ade80">${s.items_count} items</span>`;
         const fresh = _freshnessLabel(s.freshness_s);
         if (fresh) {
-          const stale = s.freshness_s > STALE_THRESHOLD_S * 60;
+          const stale = s.freshness_s > FEED_STALE_THRESHOLD_S;
           html += ` \u00b7 <span style="color:${stale ? '#facc15' : 'rgba(220,244,255,0.7)'}">`;
           html += `${fresh}${stale ? ' \u26a0' : ''}</span>`;
         }

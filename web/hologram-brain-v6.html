@@ -1007,6 +1007,7 @@ const dashboardState = {
 };
 
 let isAuthenticated = false;
+let profilePendingRestart = false;  // Set after user changes profile; prevents polling from resetting selector
 
 async function checkAuth() {
   try {
@@ -1053,10 +1054,10 @@ async function refreshDashboardData() {
 function updateHeaderBadges() {
   const st = dashboardState.status;
   if (st) {
-    // Sync profile selector with backend state
+    // Sync profile selector with backend state (skip if user has a pending change)
     const sel = document.getElementById('profileSelect');
     const activeProfile = (st.profile || 'home').toLowerCase();
-    if (sel && sel.value !== activeProfile) sel.value = activeProfile;
+    if (sel && !profilePendingRestart && sel.value !== activeProfile) sel.value = activeProfile;
     // Localize option labels
     if (sel) {
       for (const opt of sel.options) {
@@ -1116,6 +1117,7 @@ document.getElementById('profileSelect').addEventListener('change', async (e) =>
     });
     if (res.ok) {
       // Profile is persisted but runtime uses it only after restart
+      profilePendingRestart = true;
       if (status) status.textContent = t('profile.restart_notice');
     } else {
       if (status) status.textContent = t('profile.switch_failed');

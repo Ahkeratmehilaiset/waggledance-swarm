@@ -229,6 +229,22 @@ class TestProfileSelector:
         assert re.search(r'sel\.value', html), \
             "updateHeaderBadges must sync profile selector value from status"
 
+    def test_profile_selector_not_reset_while_pending_restart(self):
+        """After user changes profile, polling must NOT reset selector back.
+
+        profilePendingRestart flag prevents updateHeaderBadges from
+        overwriting the user's selection with the runtime (old) profile.
+        """
+        html = _read_html()
+        assert "profilePendingRestart" in html, \
+            "Must track profilePendingRestart flag"
+        # The flag must be set to true on successful POST
+        assert re.search(r'profilePendingRestart\s*=\s*true', html), \
+            "profilePendingRestart must be set true after successful profile switch"
+        # updateHeaderBadges must check the flag before overwriting
+        assert re.search(r'!profilePendingRestart', html), \
+            "updateHeaderBadges must skip selector sync when profilePendingRestart is true"
+
 
 # ═══════════════════════════════════════════════════════════════
 # C. Feeds tab visibility + stale logic

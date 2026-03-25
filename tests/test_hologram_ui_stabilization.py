@@ -279,6 +279,189 @@ class TestProfileSelector:
 
 
 # ═══════════════════════════════════════════════════════════════
+# B2. Profile selector snap-back regression
+# ═══════════════════════════════════════════════════════════════
+
+def _extract_js_function(html, name):
+    """Extract a top-level JS function body from HTML by name."""
+    start = re.search(rf'function {name}\s*\(', html)
+    if not start:
+        return None
+    # Find the next top-level section marker (// ═══) after the function start
+    end = re.search(r'\n// ═+', html[start.start():])
+    if end:
+        return html[start.start():start.start() + end.start()]
+    return html[start.start():]
+
+
+class TestProfileSelectorSnapBackRegression:
+    """Regression tests for the profile-selector-resets-on-polling bug.
+
+    The original bug: updateHeaderBadges() read the runtime profile from
+    /api/status (immutable, e.g. "home") and overwrote the selector every
+    10s, undoing the user's pending save to "factory".
+
+    The fix: selector syncs from /api/profiles { configured } (settings.yaml),
+    not /api/status { profile } (runtime). A persistent restart hint appears
+    when configured ≠ active.
+    """
+
+    def test_profile_selector_does_not_snap_back_during_polling_after_save(self):
+        """updateHeaderBadges must sync selector from configured, not runtime.
+
+        Simulates the exact regression: /api/status returns runtime="home"
+        every 10s. If updateHeaderBadges reads st.profile for the selector,
+        any pending save to "factory" gets undone. The function must ONLY
+        use pf.configured for sel.value assignment.
+        """
+        html = _read_html()
+        fn_body = _extract_js_function(html, "updateHeaderBadges")
+        assert fn_body is not None, "updateHeaderBadges function must exist"
+
+        # Selector value MUST be set from pf.configured (saved profile)
+        assert re.search(r'sel\.value\s*!==?\s*pf\.configured', fn_body), \
+            "Selector guard must compare against pf.configured"
+        assert re.search(r'sel\.value\s*=\s*pf\.configured', fn_body), \
+            "Selector must be assigned pf.configured"
+
+        # Selector value MUST NOT be set from activeProfile / st.profile (the old bug)
+        assert not re.search(r'sel\.value\s*=\s*activeProfile', fn_body), \
+            "REGRESSION: sel.value must not read from activeProfile (runtime)"
+        assert "st.profile" not in fn_body, \
+            "REGRESSION: updateHeaderBadges must not read st.profile for selector"
+
+    def test_profile_ui_distinguishes_runtime_profile_vs_saved_profile(self):
+        """The UI has separate data paths for runtime (active) and saved (configured).
+
+        - pf.configured → selector value (what will run after restart)
+        - pf.active → hint tooltip (what is running now)
+        - pf.restart_required → hint visibility (do they differ?)
+        """
+        html = _read_html()
+        fn_body = _extract_js_function(html, "updateHeaderBadges")
+        assert fn_body is not None
+
+        # Both fields must be used — for different purposes
+        assert "pf.configured" in fn_body, \
+            "configured (saved) must drive selector"
+        assert "pf.active" in fn_body, \
+            "active (runtime) must appear in hint tooltip"
+        assert "pf.restart_required" in fn_body, \
+            "restart_required must drive hint visibility"
+
+        # Backend must return both fields
+        from waggledance.adapters.http.routes.compat_dashboard import api_profiles
+        service = MagicMock()
+        service.get_status.return_value = {"profile": "HOME"}
+        with patch(
+            "waggledance.adapters.http.routes.compat_dashboard._load_settings_yaml",
+            return_value={"profile": "factory"},
+        ):
+            result = api_profiles(service=service)
+        assert "active" in result and "configured" in result, \
+            "API must return both active and configured fields"
+        assert result["active"] != result["configured"], \
+            "Test setup: runtime and saved must differ"
+
+    def test_profile_switch_restart_only_behavior_is_truthful(self):
+        """Full cycle: save changes yaml, runtime stays same, API reflects divergence.
+
+        1. Before save: active=home, configured=home, restart_required=False
+        2. POST switches to factory → restart_required=True
+        3. After save: active still home (immutable), configured=factory
+        """
+        from waggledance.adapters.http.routes.compat_dashboard import (
+            api_profiles, api_profiles_switch, _ProfileSwitchBody,
+        )
+        service = MagicMock()
+        service.get_status.return_value = {"profile": "HOME"}
+
+        # Step 1: before save — everything matches
+        with patch(
+            "waggledance.adapters.http.routes.compat_dashboard._load_settings_yaml",
+            return_value={"profile": "home"},
+        ):
+            before = api_profiles(service=service)
+        assert before["active"] == "home"
+        assert before["configured"] == "home"
+        assert before["restart_required"] is False
+
+        # Step 2: POST save — writes yaml, returns restart_required
+        request = MagicMock()
+        with patch(
+            "waggledance.adapters.http.routes.compat_dashboard._is_request_authenticated",
+            return_value=True,
+        ), patch(
+            "waggledance.adapters.http.routes.compat_dashboard._load_settings_yaml",
+            return_value={"profile": "home"},
+        ), patch(
+            "waggledance.adapters.http.routes.compat_dashboard._SETTINGS_YAML_PATH",
+        ) as mock_path:
+            mock_path.parent = Path("/tmp")
+            import tempfile, os
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".yaml", dir=None, delete=False,
+            ) as tf:
+                tmp_name = tf.name
+            try:
+                with patch("tempfile.mkstemp",
+                           return_value=(os.open(tmp_name, os.O_WRONLY), tmp_name)):
+                    with patch("os.replace"):
+                        post_result = api_profiles_switch(
+                            body=_ProfileSwitchBody(profile="factory"),
+                            request=request,
+                        )
+            finally:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+        assert post_result["restart_required"] is True
+
+        # Step 3: after save — runtime unchanged, configured diverged
+        with patch(
+            "waggledance.adapters.http.routes.compat_dashboard._load_settings_yaml",
+            return_value={"profile": "factory"},
+        ):
+            after = api_profiles(service=service)
+        assert after["active"] == "home", \
+            "Runtime must NOT change — it's immutable"
+        assert after["configured"] == "factory", \
+            "Configured must reflect the saved value"
+        assert after["restart_required"] is True
+
+        # Runtime service was never asked to change profile
+        assert not service.set_profile.called if hasattr(service, "set_profile") else True
+
+    @pytest.mark.parametrize("active,configured", [
+        ("home", "home"),
+        ("home", "factory"),
+        ("cottage", "gadget"),
+        ("factory", "cottage"),
+    ])
+    def test_profile_selector_lists_all_profiles_after_refresh(
+        self, active, configured,
+    ):
+        """GET /api/profiles always returns all 4 profiles regardless of state.
+
+        No profile must vanish from the list when a different one is active
+        or configured. The selector must always offer all 4 choices.
+        """
+        from waggledance.adapters.http.routes.compat_dashboard import api_profiles
+        service = MagicMock()
+        service.get_status.return_value = {"profile": active.upper()}
+        with patch(
+            "waggledance.adapters.http.routes.compat_dashboard._load_settings_yaml",
+            return_value={"profile": configured},
+        ):
+            result = api_profiles(service=service)
+        assert set(result["profiles"]) == set(_SUPPORTED_PROFILES), \
+            f"All 4 profiles must be returned (active={active}, configured={configured})"
+        assert result["active"] == active
+        assert result["configured"] == configured
+
+
+# ═══════════════════════════════════════════════════════════════
 # C. Feeds tab visibility + stale logic
 # ═══════════════════════════════════════════════════════════════
 

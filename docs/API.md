@@ -6,7 +6,7 @@
 
 WaggleDance exposes a REST API via FastAPI. Two modes:
 - **Production** (`python start_waggledance.py`) — full runtime, real data
-- **Stub** (`start.py --stub`) — mock backend for dashboard development, no Ollama needed
+- **Stub** (`start_waggledance.py --stub`) — mock backend for dashboard development, no Ollama needed
 
 ### Authentication
 

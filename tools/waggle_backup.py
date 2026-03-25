@@ -5,7 +5,7 @@ WaggleDance Backup & Test Tool v8.1
 Runs full component tests, generates AI report, creates backup.
 Supports 76-agent profile system (gadget/cottage/home/factory).
 Supports incremental backups (only changed files since last backup).
-v8.1: Updated for v3.3 architecture (production-ready, 4350 pytest tests).
+v8.1: Updated for v3.3 architecture (production-ready, 4649 pytest tests).
 v8.0: Adds pytest directory runners for autonomy, unit, contract,
       integration, and app test suites (v3.2 architecture).
 

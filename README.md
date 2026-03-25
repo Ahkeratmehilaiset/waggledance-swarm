@@ -2,7 +2,7 @@
 
 > Local-first AI runtime with solver-first routing, self-training specialists, overnight dream learning, and full MAGMA audit trail.
 
-[![Tests](https://img.shields.io/badge/tests-4512%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-4649%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 
@@ -153,8 +153,8 @@ Docked panel with 8 tabs + Chat. Bilingual FI/EN. No fake activation floors.
 
 | Metric | Value |
 |--------|-------|
-| Version | v3.3.3 |
-| Pytest tests | 4512 passing |
+| Version | v3.3.5 |
+| Pytest tests | 4649 passing |
 | Legacy test suites | 87 suites, 2754 tests |
 | Autonomy modules | 42 validated |
 | Specialist models | 14 (real sklearn training) |
@@ -186,12 +186,12 @@ See [`docs/API.md`](docs/API.md) for full reference.
 - **Safe Action Bus** — All write operations go through policy -> risk -> approval chain
 - **MQTT TLS** — Enabled by default (port 8883)
 - **OOM protection** — ResourceGuard with throttling and emergency GC
-- **Auth** — Bearer token on all `/api/*` endpoints, auto-generated on first start
+- **Auth** — HttpOnly session cookie for browser; Bearer token for cURL/scripts/CI. API key auto-generated on first start, never reaches the browser
 
 ## Testing
 
 ```bash
-python -m pytest -q                            # 4512 tests
+python -m pytest -q                            # 4649 tests
 python -m pytest tests/autonomy/ -v            # Autonomy tests (1600+)
 python -m pytest tests/contracts/ -v           # Port contract tests
 python -m pytest tests/continuity/ -v          # v3.2 continuity tests

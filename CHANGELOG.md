@@ -1,5 +1,29 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.3.5] — 2026-03-25
+
+### Legacy Consolidation + Hologram UI Stabilization
+
+#### FlexHW & Hexagonal Consolidation
+- ElasticScaler wired as single HW detection source (no split-brain with SettingsLoader)
+- ResourceKernel receives ElasticScaler + AdaptiveThrottle + ResourceGuard via DI container
+- `/api/ops` returns `flexhw` + `throttle` sections for Ops tab
+- MAGMA, graph, trust, cross-agent, and analytics APIs ported to hexagonal routes
+- React dashboard archived to `_archive/dashboard-react-v0/`
+- Legacy backend archived to `_archive/backend-legacy/`
+- `/api/auth/token` endpoint removed (session cookie only)
+
+#### Hologram UI Stabilization (PR #31)
+- **Chat input stability**: polling rebuilds skip focused input — `_renderChatMessages()` updates messages only, value restored on full rebuild
+- **Truthful profile selector**: `GET /api/profiles` returns `{ active, configured, restart_required }` — selector syncs from `configured` (settings.yaml), persistent restart hint when configured ≠ runtime, no fake live switching
+- **Feeds tab**: type breakdown, provider display, freshness labels, explicit `FEED_STALE_THRESHOLD_S = 1800` constant, truthful "no data" indicator for empty sources
+
+#### Tests
+- 56 new tests in `test_hologram_ui_stabilization.py` (chat, profiles, feeds, snap-back regression)
+- **4649 pytest tests total, 0 failures**
+
+---
+
 ## [3.3.4] — 2026-03-23
 
 ### Secure Session Auth + Real Feeds for Unified Hologram View

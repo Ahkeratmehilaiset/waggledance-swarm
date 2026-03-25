@@ -1,5 +1,41 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.3.5] — 2026-03-25
+
+### FlexHW Runtime + Hologram UI Stabilization + Legacy Consolidation
+
+#### FlexHW / Autoscaler / Throttle — Hexagonal Runtime
+- Wired ElasticScaler, AdaptiveThrottle, and ResourceGuard into hexagonal runtime via DI container
+- `/api/ops` returns truthful `flexhw` + `throttle` telemetry from live runtime state
+- Hologram Ops tab shows FlexHW tier and AutoThrottle sections (Phase 2)
+
+#### Introspection APIs — Hexagonal Port
+- Ported MAGMA, graph, trust, cross-agent, and analytics APIs to hexagonal routes (`waggledance/adapters/http/routes/`)
+
+#### Hologram UI Stabilization
+- Chat input no longer resets while typing — focus guard skips innerHTML rebuild during active input
+- Profile selector is truthful: shows `configured` profile from settings.yaml, not volatile runtime state; restart-only behavior with persistent hint when runtime ≠ configured
+- `GET /api/profiles` returns `{active, configured, restart_required}` — server-derived, no frontend guessing
+- Feeds tab shows truthful source visibility with separate stale thresholds (30s telemetry, 1800s feeds)
+- 56 regression tests added (`test_hologram_ui_stabilization.py`)
+
+#### Security Posture Preserved
+- No browser-visible master key paths
+- No localStorage token handling in hologram frontend
+- No frontend Bearer header construction
+- No `?token=` in frontend WebSocket connection
+
+#### Legacy Archival
+- Archived React dashboard to `_archive/dashboard-react-v0/`; removed `/api/auth/token` endpoints
+- Archived legacy backend product line to `_archive/backend-legacy/` after hexagonal migration
+- Removed residual live backend import paths and legacy auth leftovers
+
+#### Metadata
+- Bumped `pyproject.toml` and `waggledance/__init__.py` to 3.3.5
+- **4565+ pytest tests, 0 failures**
+
+---
+
 ## [3.3.4] — 2026-03-23
 
 ### Secure Session Auth + Real Feeds for Unified Hologram View

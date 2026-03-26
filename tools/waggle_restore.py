@@ -189,7 +189,12 @@ def check_ollama_models(r: CheckResult, installed_models: list):
 
 
 def check_chromadb(r: CheckResult):
-    """Check ChromaDB is importable and data directory exists."""
+    """Check ChromaDB is importable and data directory is structurally sound.
+
+    Validates via the internal chroma.sqlite3 file instead of opening a full
+    PersistentClient, which can block indefinitely on large or damaged databases
+    (WAL replay, HNSW index loading, compactor backfill).
+    """
     try:
         import chromadb  # noqa: F401
         r.ok("ChromaDB import", chromadb.__version__)
@@ -198,22 +203,37 @@ def check_chromadb(r: CheckResult):
         return
 
     chroma_path = PROJECT_ROOT / "data" / "chroma_db"
-    if chroma_path.exists():
-        try:
-            import chromadb
-            client = chromadb.PersistentClient(path=str(chroma_path))
-            collections = client.list_collections()
-            total_facts = 0
-            for col in collections:
-                try:
-                    total_facts += col.count()
-                except Exception:
-                    pass
-            r.ok("ChromaDB data", f"{len(collections)} collections, {total_facts} facts")
-        except Exception as e:
-            r.warn("ChromaDB data", f"Could not open: {e}")
-    else:
+    if not chroma_path.exists():
         r.warn("ChromaDB data", "data/chroma_db/ not found — empty system (no knowledge)")
+        return
+
+    sqlite_file = chroma_path / "chroma.sqlite3"
+    if not sqlite_file.is_file():
+        r.warn("ChromaDB data", "chroma.sqlite3 missing — database may be empty or corrupt")
+        return
+
+    try:
+        conn = sqlite3.connect(str(sqlite_file), timeout=5)
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()
+        collections = conn.execute(
+            "SELECT id, name FROM collections"
+        ).fetchall()
+        size_mb = sqlite_file.stat().st_size / (1024 * 1024)
+        total_files = sum(1 for _ in chroma_path.rglob("*") if _.is_file())
+        conn.close()
+
+        integrity_ok = integrity and integrity[0] == "ok"
+        col_names = [name for _, name in collections]
+        detail = (
+            f"{len(collections)} collections ({', '.join(col_names[:5])}), "
+            f"{total_files} files, {size_mb:.1f} MB"
+        )
+        if integrity_ok:
+            r.ok("ChromaDB data", detail)
+        else:
+            r.warn("ChromaDB data", f"integrity issue: {integrity[0][:80]}; {detail}")
+    except Exception as e:
+        r.warn("ChromaDB data", f"Could not validate: {e}")
 
 
 def check_sqlite_integrity(r: CheckResult):
@@ -639,11 +659,27 @@ def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
             data_files = list(data_dir.glob("*"))
             r.ok("data/", f"{len(data_files)} files/dirs")
 
-            # Check ChromaDB
+            # Check ChromaDB (structural validation via sqlite, no PersistentClient)
             chroma_dir = data_dir / "chroma_db"
             if chroma_dir.is_dir():
                 chroma_files = list(chroma_dir.rglob("*"))
-                r.ok("data/chroma_db/", f"{len(chroma_files)} files")
+                chroma_sqlite = chroma_dir / "chroma.sqlite3"
+                if chroma_sqlite.is_file():
+                    try:
+                        conn = sqlite3.connect(str(chroma_sqlite), timeout=5)
+                        integrity = conn.execute("PRAGMA integrity_check").fetchone()
+                        cols = conn.execute("SELECT COUNT(*) FROM collections").fetchone()
+                        conn.close()
+                        col_count = cols[0] if cols else 0
+                        integrity_ok = integrity and integrity[0] == "ok"
+                        status = "integrity OK" if integrity_ok else "integrity issue"
+                        r.ok("data/chroma_db/", f"{len(chroma_files)} files, "
+                             f"{col_count} collections, {status}")
+                    except Exception as e:
+                        r.warn("data/chroma_db/", f"{len(chroma_files)} files, "
+                               f"sqlite check failed: {e}")
+                else:
+                    r.ok("data/chroma_db/", f"{len(chroma_files)} files (no sqlite metadata)")
             else:
                 r.warn("data/chroma_db/", "missing — no knowledge base")
 

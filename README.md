@@ -20,8 +20,11 @@ data, canary for 48h, then promote or rollback automatically. A meta-optimizer t
 hyperparameters from canary results. Dream Mode runs counterfactual simulations on
 failed missions — "what if we had routed differently?" — and feeds better strategies back.
 
-Every action produces a **CaseTrajectory** — a structured record of goal, world snapshot,
-action taken, and outcome — stored in MAGMA, a 5-layer audit/replay/provenance architecture.
+Every query — whether answered by a solver, specialist, or LLM — produces a
+**CaseTrajectory** recording the goal, selected route, response, and quality grade.
+Chat traffic feeds cases via `build_from_legacy()`; autonomy missions record the full
+lifecycle including world snapshots and verifier outcomes. All cases are stored in MAGMA,
+a 5-layer audit/replay/provenance architecture.
 MAGMA provides append-only audit logging, mission-level replay, memory overlays, 9-tier
 provenance tracking, and multi-dimensional trust scoring. The Hologram Brain page visualizes
 all 32 system nodes in real-time across 4 concentric rings with per-node state metadata.
@@ -41,6 +44,11 @@ Query → Language Detection → Solver Router
                             Verifier
                             (checks against world model)
                                   │
+                   ┌──────────────┤
+                   ▼              ▼
+             Chat Funnel    Autonomy Funnel
+             (Q&A cases)    (full lifecycle)
+                   └──────────────┤
                                   ▼
                         CaseTrajectory → MAGMA Audit Trail
                                               │

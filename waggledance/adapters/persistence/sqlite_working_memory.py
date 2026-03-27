@@ -143,8 +143,10 @@ class SQLiteWorkingMemory:
 
     def stats(self) -> Dict[str, Any]:
         now = time.time()
-        total = self._conn.execute("SELECT COUNT(*) FROM context_items").fetchone()[0]
-        active = self._conn.execute(
+        row = self._conn.execute("SELECT COUNT(*) FROM context_items").fetchone()
+        total = row[0] if row else 0
+        row = self._conn.execute(
             "SELECT COUNT(*) FROM context_items WHERE expires_at > ?", (now,)
-        ).fetchone()[0]
+        ).fetchone()
+        active = row[0] if row else 0
         return {"total_items": total, "active_items": active, "db_path": self._db_path}

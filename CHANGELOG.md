@@ -1,5 +1,20 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.3.6] — 2026-03-27
+
+### Chat-to-Case Funnel + Baseline Store Hardening
+
+#### Chat Learning Funnel (fix)
+- ChatService now records CaseTrajectory rows via `build_from_legacy()` for every non-cached chat response (solver + LLM routes)
+- DI container shares case_builder/case_store/verifier_store from AutonomyRuntime to ChatService
+- Hot-cache hits excluded; case recording errors caught silently to avoid breaking chat flow
+- Root cause: ChatService used Orchestrator (lightweight) and bypassed AutonomyRuntime, so 100% of chat traffic skipped the learning funnel
+
+#### Baseline Store Crash (fix)
+- Hardened `fetchone()[0]` patterns across all SQLite persistence stores to return 0 when fetchone() returns None
+- Affected: baseline_store, sqlite_world_store, sqlite_case_store, sqlite_verifier_store, sqlite_procedural_store, sqlite_working_memory
+- Eliminates NoneType crash in `/api/status`, `/api/ops`, `/api/profile_impact`
+
 ## [3.3.5] — 2026-03-25
 
 ### FlexHW Runtime + Hologram UI Stabilization + Legacy Consolidation

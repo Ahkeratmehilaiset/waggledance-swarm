@@ -49,6 +49,19 @@ class CaseTrajectory:
     created_at: datetime
 ```
 
+### Chat-to-Case Funnel
+
+Chat traffic (`/api/chat`) feeds into the learning funnel via
+`CaseTrajectoryBuilder.build_from_legacy()`. This records the Q&A exchange
+truthfully without fabricating autonomy execution data:
+
+- **Source:** ChatService records every non-cached chat response (solver + LLM routes)
+- **Fields:** query, response, confidence, source, route_type
+- **Grade:** Auto-graded; high-confidence responses without corrections earn silver/gold
+- **Persistence:** Cases are saved to `sqlite_case_store` with intent and latency metadata
+- **Hot-cache hits** are excluded (already counted, not new reasoning)
+- **Verified:** Soak test (120 queries, 100% OK) produced +93 new cases (solver + LLM routes)
+
 ## Quality Gate
 
 The `QualityGate` evaluates each case trajectory:

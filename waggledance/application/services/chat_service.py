@@ -42,6 +42,9 @@ class ChatService:
         hot_cache: HotCachePort,
         routing_policy_fn: object,
         config: ConfigPort,
+        case_builder: "CaseTrajectoryBuilder | None" = None,  # noqa: F821
+        case_store: object | None = None,
+        verifier_store: object | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._memory_service = memory_service
@@ -50,6 +53,10 @@ class ChatService:
         self._config = config
         self._escalation = EscalationPolicy()
         self._query_frequency: dict[str, int] = {}
+        # Case recording: connects chat traffic to the learning funnel
+        self._case_builder = case_builder
+        self._case_store = case_store
+        self._verifier_store = verifier_store
         # v1.18.0: telemetry + ledger (lazy-init)
         self._telemetry = None
         self._ledger = None
@@ -126,6 +133,8 @@ class ChatService:
                 if should_cache_result_simple(solver_result, self._query_frequency.get(cache_key, 0)):
                     self._hot_cache.set(cache_key, solver_result, ttl=3600)
                 self._record_telemetry("solver", 0.95, elapsed, True, req.query)
+                self._record_case(req.query, solver_result, 0.95,
+                                  "solver", "solver", elapsed)
                 return ChatResult(
                     response=solver_result,
                     language=language,
@@ -177,6 +186,11 @@ class ChatService:
         self._record_telemetry(
             route.route_type, result.confidence, elapsed, True, req.query)
 
+        # Record case trajectory for learning funnel
+        self._record_case(
+            req.query, result.response, result.confidence,
+            result.source, route.route_type, elapsed)
+
         return ChatResult(
             response=result.response,
             language=language,
@@ -212,6 +226,35 @@ class ChatService:
                 )
         except Exception:
             pass
+
+    def _record_case(self, query: str, response: str, confidence: float,
+                      source: str, route_type: str, elapsed_ms: float):
+        """Record a CaseTrajectory from chat traffic via build_from_legacy.
+
+        Chat traffic doesn't go through the full autonomy pipeline, so we use
+        build_from_legacy() which truthfully records the Q&A without fabricating
+        execution/verifier data that didn't happen.
+        """
+        if self._case_builder is None:
+            return
+        try:
+            case = self._case_builder.build_from_legacy(
+                question=query,
+                answer=response,
+                confidence=confidence,
+                source=source,
+                route_type=route_type,
+            )
+            if self._case_store is not None:
+                self._case_store.save_case(
+                    case.to_dict(),
+                    intent=route_type,
+                    elapsed_ms=elapsed_ms,
+                )
+            log.debug("Chat case recorded: %s grade=%s",
+                      case.trajectory_id, case.quality_grade.value)
+        except Exception:
+            log.debug("Failed to record chat case", exc_info=True)
 
     @staticmethod
     def _try_solver(query: str, intent: str) -> str | None:

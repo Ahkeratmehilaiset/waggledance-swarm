@@ -182,6 +182,8 @@ class SQLiteProceduralStore:
         self.close()
 
     def stats(self) -> Dict[str, Any]:
-        procs = self._conn.execute("SELECT COUNT(*) FROM procedures").fetchone()[0]
-        antis = self._conn.execute("SELECT COUNT(*) FROM anti_patterns").fetchone()[0]
+        row = self._conn.execute("SELECT COUNT(*) FROM procedures").fetchone()
+        procs = row[0] if row else 0
+        row = self._conn.execute("SELECT COUNT(*) FROM anti_patterns").fetchone()
+        antis = row[0] if row else 0
         return {"procedures": procs, "anti_patterns": antis, "db_path": self._db_path}

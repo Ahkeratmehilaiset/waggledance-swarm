@@ -1,6 +1,6 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Unreleased]
+## [3.3.6] — 2026-03-27
 
 ### Chat-to-Case Funnel + Baseline Store Hardening
 

@@ -41,6 +41,11 @@ Query → Language Detection → Solver Router
                             Verifier
                             (checks against world model)
                                   │
+                   ┌──────────────┤
+                   ▼              ▼
+             Chat Funnel    Autonomy Funnel
+             (Q&A cases)    (full lifecycle)
+                   └──────────────┤
                                   ▼
                         CaseTrajectory → MAGMA Audit Trail
                                               │

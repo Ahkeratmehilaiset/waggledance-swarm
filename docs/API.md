@@ -82,6 +82,10 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 }
 ```
 
+Every non-cached chat response (solver and LLM routes) creates a `CaseTrajectory`
+row in the learning funnel. Hot-cache hits are excluded. The case records the
+query, response, confidence, source, and route type for downstream night learning.
+
 ---
 
 ## Autonomy Runtime (v3.3)

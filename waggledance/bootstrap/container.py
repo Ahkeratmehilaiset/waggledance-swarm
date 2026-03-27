@@ -140,15 +140,25 @@ class Container:
 
     @cached_property
     def chat_service(self):
-        """ChatService from application layer."""
+        """ChatService from application layer.
+
+        Shares case_builder/case_store/verifier_store from AutonomyRuntime
+        so chat traffic feeds into the learning funnel.
+        """
         from waggledance.application.services.chat_service import ChatService
         from waggledance.core.orchestration.routing_policy import select_route
+
+        # Get learning stores from autonomy runtime (shared instances)
+        rt = self.autonomy_service.runtime
         return ChatService(
             orchestrator=self.orchestrator,
             memory_service=self.memory_service,
             hot_cache=self.hot_cache,
             routing_policy_fn=select_route,
             config=self.config,
+            case_builder=rt.case_builder,
+            case_store=rt.case_store,
+            verifier_store=rt.verifier_store,
         )
 
     @cached_property

@@ -149,7 +149,7 @@ class Container:
         from waggledance.core.orchestration.routing_policy import select_route
 
         # Get learning stores from autonomy runtime (shared instances)
-        rt = self.autonomy_service.runtime
+        rt = self.autonomy_service._runtime
         return ChatService(
             orchestrator=self.orchestrator,
             memory_service=self.memory_service,

@@ -60,6 +60,7 @@ truthfully without fabricating autonomy execution data:
 - **Grade:** Auto-graded; high-confidence responses without corrections earn silver/gold
 - **Persistence:** Cases are saved to `sqlite_case_store` with intent and latency metadata
 - **Hot-cache hits** are excluded (already counted, not new reasoning)
+- **Verified:** Soak test (120 queries, 100% OK) produced +93 new cases (solver + LLM routes)
 
 ## Quality Gate
 

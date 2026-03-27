@@ -236,18 +236,22 @@ class SQLiteVerifierStore:
         self.close()
 
     def stats(self) -> Dict[str, Any]:
-        total = self._conn.execute(
+        row = self._conn.execute(
             "SELECT COUNT(*) FROM verifier_results"
-        ).fetchone()[0]
-        passed = self._conn.execute(
+        ).fetchone()
+        total = row[0] if row else 0
+        row = self._conn.execute(
             "SELECT COUNT(*) FROM verifier_results WHERE passed = 1"
-        ).fetchone()[0]
-        conflicts = self._conn.execute(
+        ).fetchone()
+        passed = row[0] if row else 0
+        row = self._conn.execute(
             "SELECT COUNT(*) FROM verifier_results WHERE conflict = 1"
-        ).fetchone()[0]
-        hallucinations = self._conn.execute(
+        ).fetchone()
+        conflicts = row[0] if row else 0
+        row = self._conn.execute(
             "SELECT COUNT(*) FROM verifier_results WHERE hallucination = 1"
-        ).fetchone()[0]
+        ).fetchone()
+        hallucinations = row[0] if row else 0
         return {
             "total": total,
             "passed": passed,

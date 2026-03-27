@@ -242,9 +242,10 @@ class SQLiteCaseStore:
         self.close()
 
     def stats(self) -> Dict[str, Any]:
-        total = self._conn.execute(
+        row = self._conn.execute(
             "SELECT COUNT(*) FROM case_trajectories"
-        ).fetchone()[0]
+        ).fetchone()
+        total = row[0] if row else 0
         grades = self.grade_distribution()
         gold = grades.get("gold", 0)
         return {

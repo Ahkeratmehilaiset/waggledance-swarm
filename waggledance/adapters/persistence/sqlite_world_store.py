@@ -241,9 +241,12 @@ class SQLiteWorldStore:
         self.close()
 
     def stats(self) -> Dict[str, Any]:
-        baselines = self._conn.execute("SELECT COUNT(*) FROM baselines").fetchone()[0]
-        entities = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-        snapshots = self._conn.execute("SELECT COUNT(*) FROM world_snapshots").fetchone()[0]
+        row = self._conn.execute("SELECT COUNT(*) FROM baselines").fetchone()
+        baselines = row[0] if row else 0
+        row = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
+        entities = row[0] if row else 0
+        row = self._conn.execute("SELECT COUNT(*) FROM world_snapshots").fetchone()
+        snapshots = row[0] if row else 0
         return {
             "baselines": baselines,
             "entities": entities,

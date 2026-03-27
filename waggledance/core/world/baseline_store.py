@@ -144,7 +144,8 @@ class BaselineStore:
         return {b.key: b.baseline_value for b in self.get_all()}
 
     def count(self) -> int:
-        return self._conn.execute("SELECT COUNT(*) FROM baselines").fetchone()[0]
+        row = self._conn.execute("SELECT COUNT(*) FROM baselines").fetchone()
+        return row[0] if row else 0
 
     def close(self):
         self._conn.close()

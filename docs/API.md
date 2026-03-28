@@ -94,8 +94,8 @@ query, response, confidence, source, and route type for downstream night learnin
 |----------|--------|-------------|
 | `GET /api/autonomy/status` | GET | Full autonomy runtime status, KPIs, resource kernel |
 | `GET /api/autonomy/kpis` | GET | 13 autonomy KPIs with targets and current values |
-| `POST /api/autonomy/learning/run` | POST | Trigger night learning cycle (optional day_cases, legacy_records) |
-| `GET /api/autonomy/learning/status` | GET | Night learning pipeline status and history |
+| `POST /api/autonomy/learning/run` | POST | Trigger night learning cycle. Auto-loads pending cases from store when day_cases not provided. Watermark prevents reprocessing. |
+| `GET /api/autonomy/learning/status` | GET | Night learning pipeline status: cycles, pending_cases, scheduler state, last result |
 | `POST /api/autonomy/goals/check-proactive` | POST | Check world model for proactive goal opportunities |
 | `GET /api/autonomy/safety-cases` | GET | Recent safety cases (optional `?limit=N`) |
 | `GET /api/autonomy/capability-confidence` | GET | Per-solver capability confidence scores, trends |

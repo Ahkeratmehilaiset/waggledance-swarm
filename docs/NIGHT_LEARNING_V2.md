@@ -62,6 +62,31 @@ truthfully without fabricating autonomy execution data:
 - **Hot-cache hits** are excluded (already counted, not new reasoning)
 - **Verified:** Soak test (120 queries, 100% OK) produced +93 new cases (solver + LLM routes)
 
+### Case Store → Night Pipeline Ingestion
+
+When the night learning pipeline runs (manually or via scheduler), it automatically
+loads pending (unprocessed) cases from `SQLiteCaseStore`:
+
+1. **Watermark:** A `learning_watermark` table tracks the `created_at` timestamp
+   up to which cases have been processed
+2. **Fetch:** `case_store.fetch_pending(limit=5000)` returns cases after the watermark
+3. **Reconstruct:** `CaseTrajectory.from_stored_dict()` converts stored JSON back to
+   domain objects for the pipeline
+4. **Advance:** After a successful cycle, the watermark is advanced so those cases
+   are never reprocessed
+
+This ensures idempotent, auditable learning — repeated triggers process only new cases.
+
+### Learning Scheduler
+
+A background thread (`learning-scheduler`) automatically triggers learning cycles:
+
+- **Interval:** Every 10 minutes
+- **Conditions:** pending_cases >= 10 AND resource kernel is idle/light AND pipeline not running
+- **Auto-start:** Starts when WaggleDance boots (if night pipeline is configured)
+- **Observable:** `/api/autonomy/learning/status` shows scheduler state and pending count
+- **Manual trigger:** `POST /api/autonomy/learning/run` always works regardless of scheduler
+
 ## Quality Gate
 
 The `QualityGate` evaluates each case trajectory:
@@ -132,3 +157,5 @@ cases = converter.convert_training_pairs(qa_pairs)
 | `waggledance/core/learning/morning_report.py` | Report generator |
 | `waggledance/core/specialist_models/specialist_trainer.py` | Model training |
 | `waggledance/core/specialist_models/model_store.py` | Model persistence |
+| `waggledance/adapters/persistence/sqlite_case_store.py` | Case store + watermark |
+| `waggledance/application/services/autonomy_service.py` | Pipeline trigger + scheduler |

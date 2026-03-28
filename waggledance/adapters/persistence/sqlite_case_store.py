@@ -61,6 +61,12 @@ class SQLiteCaseStore:
                 ON case_trajectories(profile);
             CREATE INDEX IF NOT EXISTS idx_cases_time
                 ON case_trajectories(created_at);
+
+            CREATE TABLE IF NOT EXISTS learning_watermark (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                processed_before REAL NOT NULL DEFAULT 0.0,
+                updated_at  REAL NOT NULL DEFAULT 0.0
+            );
         """)
         self._conn.commit()
 
@@ -218,6 +224,54 @@ class SQLiteCaseStore:
             "SELECT quality_grade, COUNT(*) FROM case_trajectories GROUP BY quality_grade"
         ).fetchall()
         return {r[0]: r[1] for r in rows}
+
+    # ── Learning watermark ────────────────────────────────
+
+    def get_watermark(self) -> float:
+        """Get the timestamp up to which cases have been processed."""
+        row = self._conn.execute(
+            "SELECT processed_before FROM learning_watermark WHERE id = 1"
+        ).fetchone()
+        return row[0] if row else 0.0
+
+    def set_watermark(self, ts: float) -> None:
+        """Update the learning watermark to mark cases as processed."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO learning_watermark (id, processed_before, updated_at) "
+                "VALUES (1, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET processed_before = ?, updated_at = ?",
+                (ts, time.time(), ts, time.time()),
+            )
+            self._conn.commit()
+
+    def fetch_pending(self, limit: int = 5000) -> List[Dict[str, Any]]:
+        """Fetch cases created after the learning watermark.
+
+        Returns full case dicts (JSON deserialized) for cases that
+        have not yet been processed by the night learning pipeline.
+        """
+        watermark = self.get_watermark()
+        rows = self._conn.execute(
+            "SELECT data, created_at FROM case_trajectories "
+            "WHERE created_at > ? ORDER BY created_at ASC LIMIT ?",
+            (watermark, limit),
+        ).fetchall()
+        results = []
+        for r in rows:
+            d = json.loads(r[0])
+            d["_stored_at"] = r[1]
+            results.append(d)
+        return results
+
+    def pending_count(self) -> int:
+        """Count cases created after the learning watermark."""
+        watermark = self.get_watermark()
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM case_trajectories WHERE created_at > ?",
+            (watermark,),
+        ).fetchone()
+        return row[0] if row else 0
 
     def close(self) -> None:
         """Close the database connection."""

@@ -380,10 +380,37 @@ class AutonomyService:
     ) -> Dict[str, Any]:
         """Run a night learning cycle through the hexagonal pipeline.
 
+        If day_cases is not provided, loads pending (unprocessed) cases
+        from the case_store using the learning watermark. After a
+        successful cycle, advances the watermark so those cases are not
+        reprocessed.
+
         Emits specialist accuracy metrics (Priority 2) from canary results.
         """
         if self._night_pipeline is None:
             return {"error": "Night learning pipeline not configured"}
+
+        # Auto-load pending cases from store when none provided
+        case_store = getattr(self._runtime, "case_store", None)
+        watermark_before = 0.0
+        if day_cases is None and case_store is not None:
+            try:
+                from waggledance.core.domain.autonomy import CaseTrajectory
+                pending_dicts = case_store.fetch_pending(limit=5000)
+                if pending_dicts:
+                    day_cases = [
+                        CaseTrajectory.from_stored_dict(d)
+                        for d in pending_dicts
+                    ]
+                    watermark_before = max(
+                        d.get("_stored_at", 0.0) for d in pending_dicts
+                    )
+                    log.info(
+                        "Loaded %d pending cases from store (watermark %.1f)",
+                        len(day_cases), watermark_before,
+                    )
+            except Exception as e:
+                log.warning("Failed to load pending cases: %s", e)
 
         try:
             result = self._night_pipeline.run_cycle(
@@ -412,6 +439,14 @@ class AutonomyService:
                     for _ in range(result.quarantine_count):
                         self._metrics.record_case_grade("quarantine")
 
+            # Advance watermark after successful cycle
+            if watermark_before > 0 and case_store is not None and result.success:
+                try:
+                    case_store.set_watermark(watermark_before)
+                    log.info("Advanced learning watermark to %.1f", watermark_before)
+                except Exception as e:
+                    log.warning("Failed to advance watermark: %s", e)
+
             return result.to_dict()
 
         except Exception as e:
@@ -424,10 +459,21 @@ class AutonomyService:
         if self._night_pipeline is None:
             return {"configured": False}
         last = self._night_pipeline.last_result()
+
+        # Include pending case count for observability
+        pending = 0
+        case_store = getattr(self._runtime, "case_store", None)
+        if case_store is not None:
+            try:
+                pending = case_store.pending_count()
+            except Exception:
+                pass
+
         return {
             "configured": True,
             "running": self._night_pipeline.is_running,
             "total_cycles": len(self._night_pipeline._history),
+            "pending_cases": pending,
             "last_result": last.to_dict() if last else None,
             "pipeline_stats": self._night_pipeline.stats(),
         }

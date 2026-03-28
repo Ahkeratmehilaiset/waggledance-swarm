@@ -465,6 +465,58 @@ class CaseTrajectory:
             "created_at": self.created_at.isoformat(),
         }
 
+    @classmethod
+    def from_stored_dict(cls, d: Dict[str, Any]) -> "CaseTrajectory":
+        """Reconstruct a CaseTrajectory from a stored dict (case_store JSON).
+
+        Restores the fields that the night learning pipeline needs for
+        quality grading, specialist training, and procedural memory.
+        """
+        # Reconstruct capabilities (needed for quality grading logic)
+        caps = []
+        for c in (d.get("selected_capabilities") or []):
+            if isinstance(c, dict):
+                cat_val = c.get("category", "retrieve")
+                try:
+                    cat = CapabilityCategory(cat_val)
+                except ValueError:
+                    cat = CapabilityCategory.RETRIEVE
+                caps.append(CapabilityContract(
+                    capability_id=c.get("capability_id", ""),
+                    category=cat,
+                    description=c.get("description", ""),
+                    trust_score=c.get("trust_score", 0.5),
+                ))
+
+        # Parse quality grade
+        grade_val = d.get("quality_grade", "bronze")
+        try:
+            grade = QualityGrade(grade_val)
+        except ValueError:
+            grade = QualityGrade.BRONZE
+
+        # Parse created_at
+        created = d.get("created_at", "")
+        if isinstance(created, str) and created:
+            try:
+                dt = datetime.fromisoformat(created)
+            except ValueError:
+                dt = _now()
+        else:
+            dt = _now()
+
+        return cls(
+            trajectory_id=d.get("trajectory_id", _uuid()),
+            quality_grade=grade,
+            selected_capabilities=caps,
+            verifier_result=d.get("verifier_result") or {},
+            canonical_id=d.get("canonical_id", ""),
+            profile=d.get("profile", ""),
+            trajectory_origin=d.get("trajectory_origin", "observed"),
+            synthetic=d.get("synthetic", False),
+            created_at=dt,
+        )
+
 
 @dataclass
 class MotiveActivation:

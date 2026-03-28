@@ -1,6 +1,6 @@
 # Night Pipeline Ingestion Blocker
 
-**Status:** Identified 2026-03-28, fix in progress
+**Status:** Fixed in Phase 2 — case ingestion wired, watermark added
 **Branch:** `fix/night-pipeline-case-ingest-and-scheduler`
 
 ## Problem

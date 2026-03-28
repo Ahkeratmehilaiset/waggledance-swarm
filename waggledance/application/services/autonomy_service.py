@@ -15,6 +15,7 @@ error handling, and response formatting.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -78,6 +79,16 @@ class AutonomyService:
         # Seed KPI metrics with historical data from persistent stores
         self._seed_historical_metrics()
 
+        # Learning scheduler — checks for pending cases periodically
+        self._learning_scheduler_interval = 600  # 10 minutes
+        self._learning_min_pending = 10  # minimum cases before triggering
+        self._learning_scheduler_stop = threading.Event()
+        self._learning_scheduler_thread: Optional[threading.Thread] = None
+        self._last_auto_trigger_time = 0.0
+        # Auto-start scheduler if night pipeline is configured
+        if self._night_pipeline is not None:
+            self.start_learning_scheduler()
+
     def _seed_historical_metrics(self) -> None:
         """Seed KPI counters with historical data from persistent stores.
 
@@ -104,6 +115,86 @@ class AutonomyService:
                     )
             except Exception as exc:
                 log.warning("Failed to seed case grade metrics: %s", exc)
+
+    # ── Learning scheduler ────────────────────────────────
+
+    def start_learning_scheduler(self) -> None:
+        """Start the background learning scheduler.
+
+        Periodically checks for pending cases and triggers a learning
+        cycle when conditions are met:
+        - pending_cases >= min_pending (default 10)
+        - resource kernel allows learning (idle/light load)
+        - night pipeline is not already running
+        - at least interval seconds since last auto-trigger
+        """
+        if self._learning_scheduler_thread is not None:
+            return  # already running
+        self._learning_scheduler_stop.clear()
+        self._learning_scheduler_thread = threading.Thread(
+            target=self._learning_scheduler_loop,
+            name="learning-scheduler",
+            daemon=True,
+        )
+        self._learning_scheduler_thread.start()
+        log.info(
+            "Learning scheduler started (interval=%ds, min_pending=%d)",
+            self._learning_scheduler_interval,
+            self._learning_min_pending,
+        )
+
+    def stop_learning_scheduler(self) -> None:
+        """Stop the background learning scheduler."""
+        self._learning_scheduler_stop.set()
+        t = self._learning_scheduler_thread
+        if t is not None:
+            t.join(timeout=5)
+            self._learning_scheduler_thread = None
+        log.info("Learning scheduler stopped")
+
+    def _learning_scheduler_loop(self) -> None:
+        """Background loop that checks for pending cases."""
+        while not self._learning_scheduler_stop.is_set():
+            self._learning_scheduler_stop.wait(self._learning_scheduler_interval)
+            if self._learning_scheduler_stop.is_set():
+                break
+            try:
+                self._maybe_trigger_learning()
+            except Exception as e:
+                log.warning("Learning scheduler tick error: %s", e)
+
+    def _maybe_trigger_learning(self) -> None:
+        """Check conditions and trigger learning if appropriate."""
+        if self._night_pipeline is None:
+            return
+        if self._night_pipeline.is_running:
+            return
+        if not self._resource_kernel.can_accept_learning():
+            return
+
+        case_store = getattr(self._runtime, "case_store", None)
+        if case_store is None:
+            return
+
+        pending = case_store.pending_count()
+        if pending < self._learning_min_pending:
+            return
+
+        elapsed = time.time() - self._last_auto_trigger_time
+        if elapsed < self._learning_scheduler_interval:
+            return
+
+        log.info(
+            "Learning scheduler: %d pending cases, triggering cycle",
+            pending,
+        )
+        self._last_auto_trigger_time = time.time()
+        result = self.run_learning_cycle()
+        log.info(
+            "Learning scheduler cycle result: cases_built=%s, models_trained=%s",
+            result.get("cases_built", 0),
+            result.get("models_trained", 0),
+        )
 
     # ── Lifecycle ──────────────────────────────────────────
 
@@ -474,6 +565,13 @@ class AutonomyService:
             "running": self._night_pipeline.is_running,
             "total_cycles": len(self._night_pipeline._history),
             "pending_cases": pending,
+            "scheduler": {
+                "active": self._learning_scheduler_thread is not None
+                    and self._learning_scheduler_thread.is_alive(),
+                "interval_s": self._learning_scheduler_interval,
+                "min_pending": self._learning_min_pending,
+                "last_auto_trigger": self._last_auto_trigger_time,
+            },
             "last_result": last.to_dict() if last else None,
             "pipeline_stats": self._night_pipeline.stats(),
         }

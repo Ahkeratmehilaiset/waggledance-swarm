@@ -1,5 +1,32 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.3.7] — 2026-03-28
+
+### Night Pipeline Ingestion + Learning Scheduler
+
+#### Night Pipeline Case Ingestion (fix)
+- `run_learning_cycle()` now auto-loads pending cases from `SQLiteCaseStore` when
+  `day_cases` is not explicitly provided
+- Added `learning_watermark` table to track processed cases — prevents reprocessing
+  on repeated triggers
+- Added `CaseTrajectory.from_stored_dict()` for reconstructing domain objects from
+  stored JSON
+- Added `fetch_pending()`, `pending_count()`, `get/set_watermark()` to case store
+- Root cause: trigger ran successfully but received `day_cases=None` because nobody
+  read accumulated cases from the store
+
+#### Learning Scheduler (feat)
+- Background scheduler checks every 10 minutes for pending cases
+- Triggers learning cycle when: pending >= 10, runtime idle/light, pipeline not running
+- Auto-starts when WaggleDance boots
+- `GET /api/autonomy/learning/status` now shows `pending_cases` and `scheduler` state
+- Manual trigger via `POST /api/autonomy/learning/run` still works
+
+#### Verified
+- 2h bounded soak: 5000+ cases ingested, 10+ models trained per cycle
+- Scheduler auto-fires after manual triggers, processing new cases continuously
+- Watermark prevents case reprocessing across triggers
+
 ## [3.3.6] — 2026-03-27
 
 ### Chat-to-Case Funnel + Baseline Store Hardening

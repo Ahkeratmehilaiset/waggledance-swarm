@@ -23,7 +23,10 @@ failed missions — "what if we had routed differently?" — and feeds better st
 Every query — whether answered by a solver, specialist, or LLM — produces a
 **CaseTrajectory** recording the goal, selected route, response, and quality grade.
 Chat traffic feeds cases via `build_from_legacy()`; autonomy missions record the full
-lifecycle including world snapshots and verifier outcomes. All cases are stored in MAGMA,
+lifecycle including world snapshots and verifier outcomes. The night learning pipeline
+automatically ingests pending cases from the SQLite store using a watermark to prevent
+reprocessing. A background scheduler triggers learning every 10 minutes when pending
+cases accumulate and the runtime is idle. All cases are stored in MAGMA,
 a 5-layer audit/replay/provenance architecture.
 MAGMA provides append-only audit logging, mission-level replay, memory overlays, 9-tier
 provenance tracking, and multi-dimensional trust scoring. The Hologram Brain page visualizes

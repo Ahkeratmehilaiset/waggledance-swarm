@@ -1,5 +1,23 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.3.8] — 2026-03-29 (pending)
+
+### Windows Soak Hardening + Noise Reduction
+
+#### Windows Runtime Hardening (fix)
+- Asyncio ProactorEventLoop filter suppresses benign WinError 10054 shutdown noise
+- Only ConnectionResetError with "10054" is filtered; all other errors pass through
+- Ollama embed timeout now logs at WARNING (not ERROR) for expected startup timeouts
+- Specialist trainer guards R² scoring with `len(X_test) < 2` check — eliminates
+  sklearn UndefinedMetricWarning on tiny sample sets
+
+#### Soak Harness (feat)
+- New `tools/soak_harness.py` with monotonic hard deadline enforcement
+- Query cutoff 2 minutes before deadline — no more overshoot
+- WD launched with CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS on Windows
+- Always writes final report, even on crash/interrupt
+- Configurable: --hours, --output, --api-key, --max-restarts
+
 ## [3.3.7] — 2026-03-28
 
 ### Night Pipeline Ingestion + Learning Scheduler

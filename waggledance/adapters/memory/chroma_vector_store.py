@@ -190,7 +190,12 @@ class ChromaVectorStore:
                 self._embed_cache.popitem(last=False)
             return embedding
         except Exception as exc:
-            log.error("Ollama embed error: %s", exc)
+            # Timeouts during startup/load are expected — log at warning, not error
+            exc_str = str(exc)
+            if "timed out" in exc_str.lower() or "timeout" in exc_str.lower():
+                log.warning("Ollama embed timeout (model=%s): %s", self._embedding_model, exc)
+            else:
+                log.error("Ollama embed error: %s", exc)
             return None
 
     async def upsert(

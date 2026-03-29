@@ -111,7 +111,7 @@ class TestTinySampleGuard:
     def trainer(self, tmp_path):
         from waggledance.core.specialist_models.specialist_trainer import SpecialistTrainer
         from waggledance.core.specialist_models.model_store import ModelStore
-        store = ModelStore(base_dir=str(tmp_path / "models"))
+        store = ModelStore(store_path=str(tmp_path / "models.json"))
         return SpecialistTrainer(model_store=store, min_samples=3)
 
     def test_thermal_tiny_sample_no_warning(self, trainer):

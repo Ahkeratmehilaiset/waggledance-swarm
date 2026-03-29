@@ -1,12 +1,15 @@
 """Tests for Windows runtime hardening fixes.
 
 Covers:
-- Asyncio ProactorEventLoop WinError 10054 filter
+- Asyncio WinError 10054 logging filter
 - Ollama embed timeout graceful degradation
 - Specialist trainer tiny-sample R² guard
+- Specialist trainer _safe_cv_splits guard
+- Rate limiter localhost exemption
 - Soak harness monotonic deadline enforcement
 """
 
+import logging
 import sys
 import time
 import warnings
@@ -15,53 +18,74 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ── Asyncio WinError 10054 filter ───────────────────────
+# ── Asyncio WinError 10054 logging filter ─────────────
 
-class TestProactorFilter:
-    """Test that WinError 10054 is silenced but other errors pass through."""
+class TestWin10054Filter:
+    """Test that WinError 10054 is silenced via logging filter."""
 
     def test_filter_installed_on_windows(self):
         """Filter installs without error on any platform."""
         from waggledance.adapters.cli.start_runtime import _install_windows_proactor_filter
-        # Should not raise even on non-Windows
         _install_windows_proactor_filter()
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
-    def test_filter_suppresses_10054(self):
-        """On Windows, WinError 10054 should be silenced."""
-        import asyncio
+    def test_filter_suppresses_10054_message(self):
+        """WinError 10054 log records should be suppressed."""
         from waggledance.adapters.cli.start_runtime import _install_windows_proactor_filter
         _install_windows_proactor_filter()
 
-        loop = asyncio.new_event_loop()
-        handler_called = []
+        asyncio_logger = logging.getLogger("asyncio")
+        record = logging.LogRecord(
+            name="asyncio", level=logging.ERROR,
+            pathname="", lineno=0, msg="ConnectionResetError: [WinError 10054] forcibly closed",
+            args=(), exc_info=None,
+        )
+        # Filter should reject this record
+        assert asyncio_logger.filter(record) is False
 
-        # The filter should suppress this
-        exc = ConnectionResetError("[WinError 10054] connection forcibly closed")
-        loop.call_exception_handler({"exception": exc, "message": "test"})
-        # If filter works, default handler (which logs) is not called
-        loop.close()
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_filter_suppresses_10054_exc_info(self):
+        """WinError 10054 in exc_info should also be suppressed."""
+        from waggledance.adapters.cli.start_runtime import _install_windows_proactor_filter
+        _install_windows_proactor_filter()
+
+        asyncio_logger = logging.getLogger("asyncio")
+        exc = ConnectionResetError("[WinError 10054] forcibly closed")
+        record = logging.LogRecord(
+            name="asyncio", level=logging.ERROR,
+            pathname="", lineno=0, msg="Exception in callback",
+            args=(), exc_info=(type(exc), exc, None),
+        )
+        assert asyncio_logger.filter(record) is False
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
     def test_filter_passes_other_errors(self):
-        """Non-10054 errors should still propagate."""
-        import asyncio
+        """Non-10054 errors must pass through the filter."""
         from waggledance.adapters.cli.start_runtime import _install_windows_proactor_filter
         _install_windows_proactor_filter()
 
-        loop = asyncio.new_event_loop()
-        errors_seen = []
+        asyncio_logger = logging.getLogger("asyncio")
+        record = logging.LogRecord(
+            name="asyncio", level=logging.ERROR,
+            pathname="", lineno=0, msg="RuntimeError: something else",
+            args=(), exc_info=None,
+        )
+        assert asyncio_logger.filter(record)  # truthy = passes through
 
-        def capture_handler(loop, context):
-            errors_seen.append(context)
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_filter_passes_non_connection_reset(self):
+        """Non-ConnectionResetError exceptions should pass through."""
+        from waggledance.adapters.cli.start_runtime import _install_windows_proactor_filter
+        _install_windows_proactor_filter()
 
-        # Install our filter, then verify non-10054 errors still go through
-        # by checking that the default handler processes them
-        loop.set_exception_handler(capture_handler)
-        exc = RuntimeError("real error")
-        loop.call_exception_handler({"exception": exc, "message": "test"})
-        assert len(errors_seen) == 1
-        loop.close()
+        asyncio_logger = logging.getLogger("asyncio")
+        exc = OSError("some other OS error")
+        record = logging.LogRecord(
+            name="asyncio", level=logging.ERROR,
+            pathname="", lineno=0, msg="Exception in callback",
+            args=(), exc_info=(type(exc), exc, None),
+        )
+        assert asyncio_logger.filter(record)  # truthy = passes through
 
 
 # ── Ollama embed timeout graceful degradation ───────────
@@ -71,7 +95,6 @@ class TestEmbedTimeoutDegradation:
 
     def test_timeout_logs_warning_not_error(self):
         from waggledance.adapters.memory.chroma_vector_store import ChromaVectorStore
-        import logging
 
         with patch("waggledance.adapters.memory.chroma_vector_store.chromadb", create=True):
             store = MagicMock(spec=ChromaVectorStore)
@@ -81,7 +104,6 @@ class TestEmbedTimeoutDegradation:
             store._embed_cache = {}
             store._embed_cache_max = 500
 
-            # Call the real _embed_text with a timeout exception
             import requests.exceptions
             with patch("requests.post", side_effect=requests.exceptions.ReadTimeout("Read timed out")):
                 result = ChromaVectorStore._embed_text(store, "test text")
@@ -102,6 +124,59 @@ class TestEmbedTimeoutDegradation:
         assert result is None
 
 
+# ── Specialist trainer _safe_cv_splits ──────────────────
+
+class TestSafeCvSplits:
+    """Test _safe_cv_splits guards against class-count < n_splits."""
+
+    @pytest.fixture
+    def trainer(self, tmp_path):
+        from waggledance.core.specialist_models.specialist_trainer import SpecialistTrainer
+        from waggledance.core.specialist_models.model_store import ModelStore
+        store = ModelStore(store_path=str(tmp_path / "models.json"))
+        return SpecialistTrainer(model_store=store, min_samples=3)
+
+    def test_single_class_returns_zero(self, trainer):
+        """Labels with only 1 unique class → 0 (skip cross-val)."""
+        assert trainer._safe_cv_splits(["a", "a", "a"]) == 0
+
+    def test_two_classes_one_member_returns_zero(self, trainer):
+        """One class has 1 member, less than default max_splits=3 → 0."""
+        assert trainer._safe_cv_splits(["a", "a", "a", "b"]) == 0
+
+    def test_two_classes_two_members_each(self, trainer):
+        """Each class has 2 members → n_splits=2."""
+        assert trainer._safe_cv_splits(["a", "a", "b", "b"]) == 2
+
+    def test_balanced_three_each(self, trainer):
+        """Each class has 3+ members → n_splits=3 (max)."""
+        assert trainer._safe_cv_splits(["a", "a", "a", "b", "b", "b"]) == 3
+
+    def test_many_classes_few_members(self, trainer):
+        """Multiple classes with min 2 members → n_splits=2."""
+        labels = ["a", "a", "b", "b", "c", "c"]
+        assert trainer._safe_cv_splits(labels) == 2
+
+    def test_empty_labels_returns_zero(self, trainer):
+        assert trainer._safe_cv_splits([]) == 0
+
+    def test_cross_val_no_sklearn_warning(self, trainer):
+        """Route classifier with small single-class should not warn."""
+        features = [
+            {"goal_type": "thermal", "profile": "HOME", "grade": "gold"},
+            {"goal_type": "thermal", "profile": "HOME", "grade": "gold"},
+            {"goal_type": "energy", "profile": "HOME", "grade": "gold"},
+        ]
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            trainer._train_route_classifier(features)
+            sklearn_warns = [
+                x for x in w
+                if "least populated class" in str(x.message)
+            ]
+            assert len(sklearn_warns) == 0
+
+
 # ── Specialist trainer tiny-sample R² guard ─────────────
 
 class TestTinySampleGuard:
@@ -115,7 +190,6 @@ class TestTinySampleGuard:
         return SpecialistTrainer(model_store=store, min_samples=3)
 
     def test_thermal_tiny_sample_no_warning(self, trainer):
-        """Training with exactly min_samples should not emit sklearn warnings."""
         features = [
             {"target": 1.0, "features": [0.1], "grade_num": 0.5, "n_capabilities": 1},
             {"target": 2.0, "features": [0.2], "grade_num": 0.6, "n_capabilities": 2},
@@ -125,7 +199,7 @@ class TestTinySampleGuard:
             warnings.simplefilter("always")
             acc, wp = trainer._train_thermal_predictor(features)
             sklearn_warns = [x for x in w if "UndefinedMetric" in str(x.category.__name__)]
-            assert len(sklearn_warns) == 0, f"Got sklearn warnings: {sklearn_warns}"
+            assert len(sklearn_warns) == 0
         assert acc >= 0.0
 
     def test_energy_tiny_sample_no_warning(self, trainer):
@@ -155,7 +229,6 @@ class TestTinySampleGuard:
         assert acc >= 0.0
 
     def test_below_min_samples_returns_zero(self, trainer):
-        """With fewer than min_samples, should return 0.0 without training."""
         features = [
             {"target": 1.0, "features": [0.1], "grade_num": 0.5, "n_capabilities": 1},
         ]
@@ -164,27 +237,85 @@ class TestTinySampleGuard:
         assert wp is None
 
 
+# ── Rate limiter localhost exemption ────────────────────
+
+class TestRateLimiterLocalhostExempt:
+    """Test that localhost is exempt from rate limiting."""
+
+    def test_localhost_ips_defined(self):
+        from waggledance.adapters.http.middleware.rate_limit import RateLimitMiddleware
+        assert "127.0.0.1" in RateLimitMiddleware._LOCALHOST_IPS
+        assert "::1" in RateLimitMiddleware._LOCALHOST_IPS
+
+    @pytest.mark.asyncio
+    async def test_localhost_bypasses_rate_limit(self):
+        """Rapid localhost requests should never get 429."""
+        from waggledance.adapters.http.middleware.rate_limit import RateLimitMiddleware
+
+        calls = []
+
+        async def mock_app(scope, receive, send):
+            pass
+
+        async def mock_call_next(request):
+            calls.append(1)
+            return MagicMock(status_code=200)
+
+        mw = RateLimitMiddleware(mock_app, requests_per_minute=2)  # very low limit
+
+        mock_request = MagicMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+
+        # Fire 10 requests rapidly — all should pass
+        for _ in range(10):
+            resp = await mw.dispatch(mock_request, mock_call_next)
+            assert resp.status_code == 200
+
+        assert len(calls) == 10
+
+    @pytest.mark.asyncio
+    async def test_external_ip_gets_rate_limited(self):
+        """External IPs should still be rate-limited."""
+        from waggledance.adapters.http.middleware.rate_limit import RateLimitMiddleware
+
+        async def mock_app(scope, receive, send):
+            pass
+
+        async def mock_call_next(request):
+            return MagicMock(status_code=200)
+
+        mw = RateLimitMiddleware(mock_app, requests_per_minute=2)
+
+        mock_request = MagicMock()
+        mock_request.client.host = "192.168.1.100"
+        mock_request.headers = {}
+
+        # First 2 should pass, 3rd should be 429
+        results = []
+        for _ in range(5):
+            resp = await mw.dispatch(mock_request, mock_call_next)
+            results.append(resp.status_code)
+
+        assert 429 in results
+
+
 # ── Soak harness monotonic deadline ─────────────────────
 
 class TestSoakHarnessDesign:
     """Test soak harness design properties (no actual WD needed)."""
 
     def test_query_cutoff_before_deadline(self):
-        """Query cutoff must be before the hard deadline."""
         from tools.soak_harness import QUERY_CUTOFF_MARGIN
-        assert QUERY_CUTOFF_MARGIN >= 60, "Cutoff margin must be >= 60s"
+        assert QUERY_CUTOFF_MARGIN >= 60
 
     def test_query_timeout_less_than_cutoff(self):
-        """Individual query timeout must be less than cutoff margin."""
         from tools.soak_harness import QUERY_CUTOFF_MARGIN
-        # api_post_chat uses timeout=60, cutoff margin is 120
         assert 60 < QUERY_CUTOFF_MARGIN
 
     def test_wd_launch_uses_process_group_on_windows(self):
-        """On Windows, WD must be launched with CREATE_NEW_PROCESS_GROUP."""
         if sys.platform != "win32":
             pytest.skip("Windows only")
-        # Verify the constants are correct
         from tools.soak_harness import start_wd
         import inspect
         src = inspect.getsource(start_wd)
@@ -192,7 +323,6 @@ class TestSoakHarnessDesign:
         assert "DETACHED_PROCESS" in src
 
     def test_funnel_counts_returns_dict(self):
-        """funnel_counts should return dict even if DBs don't exist."""
         from tools.soak_harness import funnel_counts
         result = funnel_counts()
         assert "case_trajectories" in result

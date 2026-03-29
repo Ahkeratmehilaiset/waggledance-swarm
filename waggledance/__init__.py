@@ -1,3 +1,3 @@
-__version__ = "3.3.6"
+__version__ = "3.3.7"
 __description__ = "Local-first AI runtime"
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -237,6 +238,22 @@ class SpecialistTrainer:
         return joblib.load(path)
 
     @staticmethod
+    def _safe_cv_splits(labels, max_splits: int = 3) -> int:
+        """Compute safe n_splits for cross_val_score to avoid sklearn warnings.
+
+        StratifiedKFold requires each class to have at least n_splits members.
+        Returns n_splits clamped to [2, min(max_splits, min_class_count)],
+        or 0 if cross-validation is not feasible.
+        """
+        from collections import Counter
+        counts = Counter(labels)
+        if len(counts) < 2:
+            return 0
+        min_class = min(counts.values())
+        n = min(max_splits, min_class, len(labels))
+        return n if n >= 2 else 0
+
+    @staticmethod
     def _holdout_split(X, y, test_fraction: float = 0.2):
         """Simple deterministic holdout split (no sklearn dependency for split)."""
         n = len(X) if hasattr(X, '__len__') else X.shape[0]
@@ -437,16 +454,17 @@ class SpecialistTrainer:
 
         vectorizer = TfidfVectorizer(max_features=50)
         X = vectorizer.fit_transform(texts)
-        n_splits = min(3, len(texts))
-        if n_splits < 2:
-            n_splits = 2
+        n_splits = self._safe_cv_splits(labels)
 
         model = LogisticRegression(max_iter=200, solver="lbfgs")
-        try:
-            scores = cross_val_score(model, X, labels, cv=n_splits)
-            accuracy = float(scores.mean())
-        except ValueError:
-            # Too few samples for cross-val — just fit and report
+        if n_splits >= 2:
+            try:
+                scores = cross_val_score(model, X, labels, cv=n_splits)
+                accuracy = float(scores.mean())
+            except ValueError:
+                model.fit(X, labels)
+                accuracy = float(model.score(X, labels))
+        else:
             model.fit(X, labels)
             accuracy = float(model.score(X, labels))
 
@@ -471,13 +489,17 @@ class SpecialistTrainer:
 
         X_enc, _ = self._encode_categorical(goal_types)
         X = [[v] for v in X_enc]
-        n_splits = max(2, min(3, len(X)))
+        n_splits = self._safe_cv_splits(labels)
 
         model = LogisticRegression(max_iter=200, solver="lbfgs")
-        try:
-            scores = cross_val_score(model, X, labels, cv=n_splits)
-            accuracy = float(scores.mean())
-        except ValueError:
+        if n_splits >= 2:
+            try:
+                scores = cross_val_score(model, X, labels, cv=n_splits)
+                accuracy = float(scores.mean())
+            except ValueError:
+                model.fit(X, labels)
+                accuracy = float(model.score(X, labels))
+        else:
             model.fit(X, labels)
             accuracy = float(model.score(X, labels))
 
@@ -533,13 +555,17 @@ class SpecialistTrainer:
         gt_enc, _ = self._encode_categorical(goal_types)
         pr_enc, _ = self._encode_categorical(profiles)
         X = [[g, p] for g, p in zip(gt_enc, pr_enc)]
-        n_splits = max(2, min(3, len(X)))
+        n_splits = self._safe_cv_splits(labels)
 
         model = DecisionTreeClassifier(max_depth=5, random_state=42)
-        try:
-            scores = cross_val_score(model, X, labels, cv=n_splits)
-            accuracy = float(scores.mean())
-        except ValueError:
+        if n_splits >= 2:
+            try:
+                scores = cross_val_score(model, X, labels, cv=n_splits)
+                accuracy = float(scores.mean())
+            except ValueError:
+                model.fit(X, labels)
+                accuracy = float(model.score(X, labels))
+        else:
             model.fit(X, labels)
             accuracy = float(model.score(X, labels))
 
@@ -564,13 +590,17 @@ class SpecialistTrainer:
         gt_enc, _ = self._encode_categorical(goal_types)
         pr_enc, _ = self._encode_categorical(profiles)
         X = [[g, p] for g, p in zip(gt_enc, pr_enc)]
-        n_splits = max(2, min(3, len(X)))
+        n_splits = self._safe_cv_splits(labels)
 
         model = LogisticRegression(max_iter=200, solver="lbfgs")
-        try:
-            scores = cross_val_score(model, X, labels, cv=n_splits)
-            accuracy = float(scores.mean())
-        except ValueError:
+        if n_splits >= 2:
+            try:
+                scores = cross_val_score(model, X, labels, cv=n_splits)
+                accuracy = float(scores.mean())
+            except ValueError:
+                model.fit(X, labels)
+                accuracy = float(model.score(X, labels))
+        else:
             model.fit(X, labels)
             accuracy = float(model.score(X, labels))
 
@@ -595,13 +625,17 @@ class SpecialistTrainer:
         gt_enc, _ = self._encode_categorical(goal_types)
         pr_enc, _ = self._encode_categorical(profiles)
         X = [[g, p] for g, p in zip(gt_enc, pr_enc)]
-        n_splits = max(2, min(3, len(X)))
+        n_splits = self._safe_cv_splits(labels)
 
         model = DecisionTreeClassifier(max_depth=5, random_state=42)
-        try:
-            scores = cross_val_score(model, X, labels, cv=n_splits)
-            accuracy = float(scores.mean())
-        except ValueError:
+        if n_splits >= 2:
+            try:
+                scores = cross_val_score(model, X, labels, cv=n_splits)
+                accuracy = float(scores.mean())
+            except ValueError:
+                model.fit(X, labels)
+                accuracy = float(model.score(X, labels))
+        else:
             model.fit(X, labels)
             accuracy = float(model.score(X, labels))
 
@@ -628,13 +662,17 @@ class SpecialistTrainer:
 
         X_enc, _ = self._encode_categorical(cap_texts)
         X = [[v] for v in X_enc]
-        n_splits = max(2, min(3, len(X)))
+        n_splits = self._safe_cv_splits(labels)
 
         model = LogisticRegression(max_iter=200, solver="lbfgs")
-        try:
-            scores = cross_val_score(model, X, labels, cv=n_splits)
-            accuracy = float(scores.mean())
-        except ValueError:
+        if n_splits >= 2:
+            try:
+                scores = cross_val_score(model, X, labels, cv=n_splits)
+                accuracy = float(scores.mean())
+            except ValueError:
+                model.fit(X, labels)
+                accuracy = float(model.score(X, labels))
+        else:
             model.fit(X, labels)
             accuracy = float(model.score(X, labels))
 
@@ -657,13 +695,17 @@ class SpecialistTrainer:
 
         X_enc, _ = self._encode_categorical(profiles)
         X = [[v] for v in X_enc]
-        n_splits = max(2, min(3, len(X)))
+        n_splits = self._safe_cv_splits(labels)
 
         model = LogisticRegression(max_iter=200, solver="lbfgs")
-        try:
-            scores = cross_val_score(model, X, labels, cv=n_splits)
-            accuracy = float(scores.mean())
-        except ValueError:
+        if n_splits >= 2:
+            try:
+                scores = cross_val_score(model, X, labels, cv=n_splits)
+                accuracy = float(scores.mean())
+            except ValueError:
+                model.fit(X, labels)
+                accuracy = float(model.score(X, labels))
+        else:
             model.fit(X, labels)
             accuracy = float(model.score(X, labels))
 
@@ -796,8 +838,12 @@ class SpecialistTrainer:
         X_train, X_test, y_train, y_test = self._holdout_split(X, y)
         model = Ridge(alpha=1.0)
         model.fit(X_train, y_train)
-        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
-        accuracy = max(accuracy, 0.0)  # R² can be negative
+        if len(X_test) < 2:
+            accuracy = 0.0  # R² undefined with <2 test samples
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                accuracy = max(float(model.score(X_test, y_test)), 0.0)
 
         next_ver = len(self._store.list_versions("thermal_predictor")) + 1
         wp = self._save_weights("thermal_predictor", next_ver, model)
@@ -826,8 +872,12 @@ class SpecialistTrainer:
         X_train, X_test, y_train, y_test = self._holdout_split(X, y)
         model = Ridge(alpha=1.0)
         model.fit(X_train, y_train)
-        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
-        accuracy = max(accuracy, 0.0)
+        if len(X_test) < 2:
+            accuracy = 0.0  # R² undefined with <2 test samples
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                accuracy = max(float(model.score(X_test, y_test)), 0.0)
 
         next_ver = len(self._store.list_versions("energy_forecaster")) + 1
         wp = self._save_weights("energy_forecaster", next_ver, model)
@@ -856,8 +906,12 @@ class SpecialistTrainer:
         X_train, X_test, y_train, y_test = self._holdout_split(X, y)
         model = GradientBoostingRegressor(n_estimators=50, max_depth=3, random_state=42)
         model.fit(X_train, y_train)
-        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
-        accuracy = max(accuracy, 0.0)
+        if len(X_test) < 2:
+            accuracy = 0.0  # R² undefined with <2 test samples
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                accuracy = max(float(model.score(X_test, y_test)), 0.0)
 
         next_ver = len(self._store.list_versions("schedule_optimizer")) + 1
         wp = self._save_weights("schedule_optimizer", next_ver, model)

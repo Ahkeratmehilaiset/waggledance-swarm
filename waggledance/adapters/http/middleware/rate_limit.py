@@ -38,6 +38,10 @@ class _TokenBucket:
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Per-IP token bucket rate limiter.  No Redis dependency."""
 
+    # Localhost IPs are same-machine traffic (harness, dashboard, tests) and
+    # should never be rate-limited — the limiter protects against external abuse.
+    _LOCALHOST_IPS = frozenset({"127.0.0.1", "::1", "localhost"})
+
     def __init__(
         self,
         app,  # noqa: ANN001
@@ -57,6 +61,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # noqa: ANN001
         """Rate-limit incoming requests by client IP."""
         client_ip = self._get_client_ip(request)
+
+        # Localhost traffic is trusted — skip rate limiting
+        if client_ip in self._LOCALHOST_IPS:
+            return await call_next(request)
 
         # Periodic cleanup of stale buckets
         self._maybe_cleanup()

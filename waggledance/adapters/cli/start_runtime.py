@@ -141,9 +141,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _install_windows_proactor_filter() -> None:
+    """Suppress benign WinError 10054 noise from asyncio ProactorEventLoop.
+
+    On Windows, the Proactor event loop emits noisy ConnectionResetError
+    (WinError 10054) tracebacks during normal connection teardown.  These
+    are harmless but pollute stderr.
+
+    We use a logging.Filter on the 'asyncio' logger because uvicorn creates
+    its own event loop (bypassing custom event loop policies).
+    """
+    if sys.platform != "win32":
+        return
+
+    class _Win10054Filter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            if "10054" in msg and "ConnectionResetError" in msg:
+                return False  # suppress
+            exc = record.exc_info
+            if exc and exc[1] and isinstance(exc[1], ConnectionResetError):
+                if "10054" in str(exc[1]):
+                    return False
+            return True
+
+    logging.getLogger("asyncio").addFilter(_Win10054Filter())
+
+
 def main(argv: list[str] | None = None) -> None:
     """Build and run the WaggleDance application."""
     _setup_windows_utf8()
+    _install_windows_proactor_filter()
 
     args = parse_args(argv)
 

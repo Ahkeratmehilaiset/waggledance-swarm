@@ -141,9 +141,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _install_windows_proactor_filter() -> None:
+    """Suppress benign WinError 10054 noise from asyncio ProactorEventLoop.
+
+    On Windows, the Proactor event loop emits noisy ConnectionResetError
+    (WinError 10054) tracebacks during normal connection teardown.  These
+    are harmless but pollute stderr.  We install a narrow exception handler
+    that silences only this specific case and re-raises everything else.
+    """
+    if sys.platform != "win32":
+        return
+
+    import asyncio
+
+    _orig_handler = asyncio.get_event_loop_policy
+
+    class _QuietProactorPolicy(asyncio.DefaultEventLoopPolicy):
+        def new_event_loop(self):
+            loop = super().new_event_loop()
+            _orig_exc_handler = loop.get_exception_handler()
+
+            def _filter(loop, context):
+                exc = context.get("exception")
+                if isinstance(exc, ConnectionResetError) and "10054" in str(exc):
+                    return  # suppress benign WinError 10054
+                if _orig_exc_handler:
+                    _orig_exc_handler(loop, context)
+                else:
+                    loop.default_exception_handler(context)
+
+            loop.set_exception_handler(_filter)
+            return loop
+
+    asyncio.set_event_loop_policy(_QuietProactorPolicy())
+
+
 def main(argv: list[str] | None = None) -> None:
     """Build and run the WaggleDance application."""
     _setup_windows_utf8()
+    _install_windows_proactor_filter()
 
     args = parse_args(argv)
 

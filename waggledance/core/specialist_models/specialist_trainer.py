@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -796,8 +797,12 @@ class SpecialistTrainer:
         X_train, X_test, y_train, y_test = self._holdout_split(X, y)
         model = Ridge(alpha=1.0)
         model.fit(X_train, y_train)
-        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
-        accuracy = max(accuracy, 0.0)  # R² can be negative
+        if len(X_test) < 2:
+            accuracy = 0.0  # R² undefined with <2 test samples
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                accuracy = max(float(model.score(X_test, y_test)), 0.0)
 
         next_ver = len(self._store.list_versions("thermal_predictor")) + 1
         wp = self._save_weights("thermal_predictor", next_ver, model)
@@ -826,8 +831,12 @@ class SpecialistTrainer:
         X_train, X_test, y_train, y_test = self._holdout_split(X, y)
         model = Ridge(alpha=1.0)
         model.fit(X_train, y_train)
-        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
-        accuracy = max(accuracy, 0.0)
+        if len(X_test) < 2:
+            accuracy = 0.0  # R² undefined with <2 test samples
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                accuracy = max(float(model.score(X_test, y_test)), 0.0)
 
         next_ver = len(self._store.list_versions("energy_forecaster")) + 1
         wp = self._save_weights("energy_forecaster", next_ver, model)
@@ -856,8 +865,12 @@ class SpecialistTrainer:
         X_train, X_test, y_train, y_test = self._holdout_split(X, y)
         model = GradientBoostingRegressor(n_estimators=50, max_depth=3, random_state=42)
         model.fit(X_train, y_train)
-        accuracy = float(model.score(X_test, y_test)) if len(X_test) > 0 else float(model.score(X_train, y_train))
-        accuracy = max(accuracy, 0.0)
+        if len(X_test) < 2:
+            accuracy = 0.0  # R² undefined with <2 test samples
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                accuracy = max(float(model.score(X_test, y_test)), 0.0)
 
         next_ver = len(self._store.list_versions("schedule_optimizer")) + 1
         wp = self._save_weights("schedule_optimizer", next_ver, model)

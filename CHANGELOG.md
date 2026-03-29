@@ -1,15 +1,19 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [3.3.8] — 2026-03-29 (pending)
+## [3.3.8] — 2026-03-29
 
 ### Windows Soak Hardening + Noise Reduction
 
 #### Windows Runtime Hardening (fix)
-- Asyncio ProactorEventLoop filter suppresses benign WinError 10054 shutdown noise
+- WinError 10054 suppressed via logging.Filter on asyncio logger (replaces broken
+  event-loop policy that uvicorn bypasses)
 - Only ConnectionResetError with "10054" is filtered; all other errors pass through
-- Ollama embed timeout now logs at WARNING (not ERROR) for expected startup timeouts
+- All 7 cross_val_score callers guarded with `_safe_cv_splits()` — checks
+  min(Counter(labels).values()) >= n_splits before using StratifiedKFold
 - Specialist trainer guards R² scoring with `len(X_test) < 2` check — eliminates
   sklearn UndefinedMetricWarning on tiny sample sets
+- Ollama embed timeout now logs at WARNING (not ERROR) for expected startup timeouts
+- Rate limiter exempts localhost (127.0.0.1, ::1) — same-machine traffic is trusted
 
 #### Soak Harness (feat)
 - New `tools/soak_harness.py` with monotonic hard deadline enforcement
@@ -17,6 +21,11 @@
 - WD launched with CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS on Windows
 - Always writes final report, even on crash/interrupt
 - Configurable: --hours, --output, --api-key, --max-restarts
+
+#### Verified
+- Pre-merge soak: 206/206 OK, 0 stderr lines, 12 cycles, +180 cases
+- Post-merge soak: 200/200 OK, 0 stderr lines, 12 cycles, +179 cases
+- 25 targeted regression tests, 4717 full pytest (0 failures)
 
 ## [3.3.7] — 2026-03-28
 

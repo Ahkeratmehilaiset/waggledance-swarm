@@ -146,34 +146,26 @@ def _install_windows_proactor_filter() -> None:
 
     On Windows, the Proactor event loop emits noisy ConnectionResetError
     (WinError 10054) tracebacks during normal connection teardown.  These
-    are harmless but pollute stderr.  We install a narrow exception handler
-    that silences only this specific case and re-raises everything else.
+    are harmless but pollute stderr.
+
+    We use a logging.Filter on the 'asyncio' logger because uvicorn creates
+    its own event loop (bypassing custom event loop policies).
     """
     if sys.platform != "win32":
         return
 
-    import asyncio
+    class _Win10054Filter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            if "10054" in msg and "ConnectionResetError" in msg:
+                return False  # suppress
+            exc = record.exc_info
+            if exc and exc[1] and isinstance(exc[1], ConnectionResetError):
+                if "10054" in str(exc[1]):
+                    return False
+            return True
 
-    _orig_handler = asyncio.get_event_loop_policy
-
-    class _QuietProactorPolicy(asyncio.DefaultEventLoopPolicy):
-        def new_event_loop(self):
-            loop = super().new_event_loop()
-            _orig_exc_handler = loop.get_exception_handler()
-
-            def _filter(loop, context):
-                exc = context.get("exception")
-                if isinstance(exc, ConnectionResetError) and "10054" in str(exc):
-                    return  # suppress benign WinError 10054
-                if _orig_exc_handler:
-                    _orig_exc_handler(loop, context)
-                else:
-                    loop.default_exception_handler(context)
-
-            loop.set_exception_handler(_filter)
-            return loop
-
-    asyncio.set_event_loop_policy(_QuietProactorPolicy())
+    logging.getLogger("asyncio").addFilter(_Win10054Filter())
 
 
 def main(argv: list[str] | None = None) -> None:

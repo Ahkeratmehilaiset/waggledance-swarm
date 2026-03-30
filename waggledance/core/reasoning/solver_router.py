@@ -173,6 +173,9 @@ class SolverRouter:
         # Arithmetic: digit OP digit (excludes bare "-" which appears in "-5C")
         if re.search(r'\d\s*[+*/=]\s*\d', q):
             return "math"
+        # Subtraction with whitespace: "256 - 89" but not "-5C" (no left digit)
+        if re.search(r'\d\s+-\s+\d', q):
+            return "math"
 
         # Symbolic / formula
         formula_signals = {"formula", "kaava", "model", "malli", "axiom",

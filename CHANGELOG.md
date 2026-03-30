@@ -17,7 +17,11 @@
 - Solver/hotcache paths continue functioning when LLM is unavailable
 
 ### Windows Long-Run Reliability (fix)
-- *pending*
+- Soak harness defaults output to `C:\WaggleDance_Soak\<timestamp>` (not volatile U:)
+- PID validation before kill prevents stale-PID accidents on recycled process IDs
+- SIGTERM/SIGBREAK signal handlers for graceful shutdown on Windows
+- Stderr categorization in final SOAK_REPORT.md (WinError 10054, sklearn, Ollama, etc.)
+- Signal-based shutdown requested flag checked every loop iteration
 
 ## [3.3.8] — 2026-03-29
 

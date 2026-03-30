@@ -328,3 +328,43 @@ class TestSoakHarnessDesign:
         assert "case_trajectories" in result
         assert "verifier_results" in result
         assert "procedures" in result
+
+    def test_default_output_dir_on_c_drive(self):
+        """Default output should resolve to C: (durable), not U: (volatile)."""
+        from tools.soak_harness import main
+        import inspect
+        src = inspect.getsource(main)
+        assert "C:\\\\WaggleDance_Soak" in src or "C:/WaggleDance_Soak" in src
+
+    def test_pid_validation_before_kill(self):
+        """stop_wd must validate PID is still WD before killing."""
+        from tools.soak_harness import _is_wd_process
+        # Non-existent PID should return False (safe)
+        assert _is_wd_process(999999) is False
+
+    def test_signal_handler_registered(self):
+        """Harness should register SIGTERM handler."""
+        from tools.soak_harness import main
+        import inspect
+        src = inspect.getsource(main)
+        assert "signal.SIGTERM" in src
+
+    def test_stderr_categorizer_empty(self):
+        """Categorize stderr with non-existent file returns empty."""
+        from tools.soak_harness import _categorize_stderr
+        result = _categorize_stderr("/nonexistent/path/stderr.log")
+        assert result == {}
+
+    def test_stderr_categorizer_known_patterns(self, tmp_path):
+        """Categorize stderr identifies known noise patterns."""
+        from tools.soak_harness import _categorize_stderr
+        stderr = tmp_path / "wd_stderr.log"
+        stderr.write_text(
+            "2026 ERROR asyncio: ConnectionResetError [WinError 10054]\n"
+            "sklearn UserWarning: least populated class\n"
+            "Ollama embed error: Read timed out\n"
+        )
+        cats = _categorize_stderr(str(stderr))
+        assert "WinError_10054" in cats
+        assert "sklearn_warning" in cats
+        assert "ollama_timeout" in cats

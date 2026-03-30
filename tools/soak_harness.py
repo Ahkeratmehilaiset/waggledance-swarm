@@ -154,10 +154,29 @@ def start_wd(api_key, output_dir):
     return proc
 
 
+def _is_wd_process(pid):
+    """Check if PID is still a WaggleDance process (not recycled)."""
+    try:
+        if sys.platform == "win32":
+            r = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}",
+                 "get", "CommandLine", "/value"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return "start_waggledance" in r.stdout
+        else:
+            with open(f"/proc/{pid}/cmdline", "r") as f:
+                return "start_waggledance" in f.read()
+    except Exception:
+        return False
+
+
 def stop_wd(pid):
-    """Stop WD process."""
+    """Stop WD process after verifying it is still a WD instance."""
     if pid is None:
         return
+    if not _is_wd_process(pid):
+        return  # PID recycled — do not kill
     try:
         if sys.platform == "win32":
             subprocess.run(["taskkill", "/PID", str(pid), "/F"],
@@ -168,16 +187,36 @@ def stop_wd(pid):
         pass
 
 
+_shutdown_requested = False
+
+
 def main():
     parser = argparse.ArgumentParser(description="WaggleDance soak harness")
     parser.add_argument("--hours", type=float, default=2.0, help="Soak duration in hours")
-    parser.add_argument("--output", required=True, help="Output directory for artifacts")
+    parser.add_argument("--output", default=None,
+                        help="Output directory (default: C:\\WaggleDance_Soak\\<timestamp>)")
     parser.add_argument("--api-key", default="waggle-soak-verify", help="API key")
     parser.add_argument("--max-restarts", type=int, default=2, help="Max WD restarts")
     args = parser.parse_args()
 
+    # Default output to C: (durable) instead of U: (volatile RAM disk)
+    if args.output is None:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        args.output = os.path.join("C:\\WaggleDance_Soak", ts)
+
     output_dir = args.output
     os.makedirs(output_dir, exist_ok=True)
+
+    # Register signal handlers for graceful shutdown
+    global _shutdown_requested
+
+    def _signal_handler(signum, frame):
+        global _shutdown_requested
+        _shutdown_requested = True
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    if sys.platform == "win32":
+        signal.signal(signal.SIGBREAK, _signal_handler)
 
     soak_log = os.path.join(output_dir, "soak.log")
     traffic_file = os.path.join(output_dir, "traffic.ndjson")
@@ -249,6 +288,12 @@ def main():
     try:
         while True:
             now_mono = time.monotonic()
+
+            # Signal-based graceful shutdown
+            if _shutdown_requested:
+                log(soak_log, "Shutdown signal received — stopping gracefully")
+                stats["stop_reason"] = "signal"
+                break
 
             # Hard deadline check (monotonic)
             if now_mono >= deadline_mono:
@@ -381,6 +426,56 @@ def main():
     return 0
 
 
+def _categorize_stderr(stderr_path):
+    """Categorize stderr lines into known categories.
+
+    Returns dict of category -> count. Traceback continuation lines
+    are attributed to the preceding error category.
+    """
+    if not os.path.exists(stderr_path):
+        return {}
+    cats = {}
+    try:
+        with open(stderr_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except Exception:
+        return {}
+
+    current_cat = None
+    for line in lines:
+        ls = line.strip()
+        if not ls:
+            continue
+        # Classify primary error lines
+        if "WinError 10054" in line or "ConnectionResetError" in line:
+            current_cat = "WinError_10054"
+        elif "sklearn" in line.lower() or "UserWarning" in line:
+            current_cat = "sklearn_warning"
+        elif "Ollama embed" in line or "Read timed out" in line:
+            current_cat = "ollama_timeout"
+        elif "Query embedding failed" in line:
+            current_cat = "embed_failed"
+        elif "UndefinedMetricWarning" in line or "R^2 score" in line:
+            current_cat = "r2_undefined"
+        elif "forrtl" in line or "window-CLOSE" in line.lower():
+            current_cat = "forrtl_abort"
+        elif "ERROR" in line and "asyncio" in line:
+            current_cat = "asyncio_error"
+        elif "Traceback" in line or "File \"" in line or "handle:" in line:
+            # Traceback continuation — attribute to current_cat
+            pass
+        elif line.startswith(" ") or line.startswith("\t"):
+            # Indented continuation
+            pass
+        else:
+            current_cat = "other"
+
+        if current_cat:
+            cats[current_cat] = cats.get(current_cat, 0) + 1
+
+    return cats
+
+
 def _write_report(path, stats, bl_f, bl, final=False,
                   final_funnel=None, final_ls=None):
     fc = final_funnel or funnel_counts()
@@ -449,6 +544,14 @@ def _write_report(path, stats, bl_f, bl, final=False,
             r += f"| {s['ts']} | {s['p']}/{s['t']} |\n"
 
     if final:
+        # Categorize stderr noise
+        stderr_path = os.path.join(os.path.dirname(path), "wd_stderr.log")
+        stderr_cats = _categorize_stderr(stderr_path)
+        if stderr_cats:
+            r += "\n## Stderr Categories\n\n| Category | Count |\n|----------|-------|\n"
+            for cat, cnt in sorted(stderr_cats.items(), key=lambda x: -x[1]):
+                r += f"| {cat} | {cnt} |\n"
+
         if stats["fail"] > stats["sent"] * 0.10:
             verdict = "HARNESS ISSUE — rerun needed"
         elif learning_flowing:

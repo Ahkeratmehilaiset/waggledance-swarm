@@ -10,7 +10,11 @@
 - Discovers both `.db` and nested `.sqlite3` (Chroma) databases under data directory
 
 ### Ollama Degraded Mode Hardening (fix)
-- *pending*
+- `/api/status` now includes `degraded` flag and `degraded_components` list derived from circuit breaker state
+- `/api/learning` includes `llm_degraded` flag when LLM circuit breaker is open
+- OllamaAdapter.ConnectError downgraded from ERROR to WARNING (expected during cold start)
+- New `is_degraded` property on OllamaAdapter for programmatic access to circuit state
+- Solver/hotcache paths continue functioning when LLM is unavailable
 
 ### Windows Long-Run Reliability (fix)
 - *pending*

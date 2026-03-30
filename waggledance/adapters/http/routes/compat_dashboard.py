@@ -32,6 +32,25 @@ def _safe(fn, default=None):
         return default
 
 
+def _detect_degraded(request: Request) -> list[str]:
+    """Detect degraded components from circuit breaker state."""
+    degraded = []
+    try:
+        container = request.app.state.container
+        llm = container.llm
+        # OllamaAdapter: circuit breaker is open if _circuit_open_since is set
+        if getattr(llm, "_circuit_open_since", None) is not None:
+            degraded.append("llm")
+        vs = container.vector_store
+        # ChromaVectorStore: circuit breaker state
+        breaker = getattr(vs, "_breaker", None)
+        if breaker and getattr(breaker, "state", "closed") != "closed":
+            degraded.append("embeddings")
+    except Exception:
+        pass
+    return degraded
+
+
 def _runtime_stats(service):
     """Get full runtime stats tree, or empty dict."""
     rt = getattr(service, "_runtime", None)
@@ -67,12 +86,18 @@ def _gpu_info():
 # ── /api/status ──────────────────────────────────────────
 
 @router.get("/api/status")
-def api_status(service=Depends(get_autonomy_service)):
+def api_status(
+    request: Request,
+    service=Depends(get_autonomy_service),
+):
     """Legacy status endpoint for hologram overview menu."""
     st = service.get_status()
     rk = st.get("resource_kernel", {})
     rt = st.get("runtime", {})
     lifecycle = st.get("lifecycle", {})
+
+    # Derive degraded-mode flags from adapter circuit breaker state
+    degraded_components = _detect_degraded(request)
 
     return {
         "status": "running" if lifecycle.get("state") == "running" else "initializing",
@@ -86,6 +111,8 @@ def api_status(service=Depends(get_autonomy_service)):
         "healthy_components": lifecycle.get("healthy_components", 0),
         "total_components": lifecycle.get("total_components", 0),
         "night_mode": rk.get("night_mode", False),
+        "degraded": len(degraded_components) > 0,
+        "degraded_components": degraded_components,
     }
 
 
@@ -154,7 +181,10 @@ def api_consciousness(service=Depends(get_autonomy_service)):
 # ── /api/learning ────────────────────────────────────────
 
 @router.get("/api/learning")
-def api_learning(service=Depends(get_autonomy_service)):
+def api_learning(
+    request: Request,
+    service=Depends(get_autonomy_service),
+):
     """Learning pipeline stats for hologram learning menu."""
     rs = _runtime_stats(service)
     cb = rs.get("cases", {})
@@ -171,6 +201,10 @@ def api_learning(service=Depends(get_autonomy_service)):
             "accuracy": round(conf, 3),
         })
 
+    # Derive LLM degraded flag for truthful learning status
+    degraded = _detect_degraded(request)
+    llm_degraded = "llm" in degraded
+
     return {
         "status": {
             "queue_size": grades.get("quarantine", 0),
@@ -180,6 +214,7 @@ def api_learning(service=Depends(get_autonomy_service)):
         "leaderboard": leaderboard,
         "gold_rate": cb.get("gold_rate", 0),
         "total_cases": cb.get("total", 0),
+        "llm_degraded": llm_degraded,
     }
 
 

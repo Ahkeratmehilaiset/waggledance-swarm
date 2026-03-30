@@ -10,6 +10,7 @@ Covers:
 """
 
 import logging
+import os
 import sys
 import time
 import warnings
@@ -368,3 +369,118 @@ class TestSoakHarnessDesign:
         assert "WinError_10054" in cats
         assert "sklearn_warning" in cats
         assert "ollama_timeout" in cats
+
+
+# ── Orphan WD detection & port verification ───────────
+
+class TestOrphanDetectionAndPortCheck:
+    """Tests for soak harness lifecycle tracking."""
+
+    def test_scan_wd_processes_returns_list(self):
+        """scan_wd_processes must return a list (possibly empty)."""
+        from tools.soak_harness import scan_wd_processes
+        result = scan_wd_processes()
+        assert isinstance(result, list)
+
+    def test_is_port_open_refuses_closed_port(self):
+        """Port check on a port known to be closed returns False."""
+        from tools.soak_harness import is_port_open
+        # Use an unlikely port
+        assert is_port_open(port=59999, timeout=1) is False
+
+    def test_stop_wd_returns_dict_for_none_pid(self):
+        """stop_wd(None) should return a dict with action=skip_none."""
+        from tools.soak_harness import stop_wd
+        result = stop_wd(None)
+        assert isinstance(result, dict)
+        assert result["action"] == "skip_none"
+
+    def test_stop_wd_returns_dict_for_recycled_pid(self):
+        """stop_wd(nonexistent PID) should detect recycled and skip."""
+        from tools.soak_harness import stop_wd
+        result = stop_wd(999999)
+        assert isinstance(result, dict)
+        assert result["action"] == "skip_recycled"
+
+    def test_lifecycle_fields_in_report(self, tmp_path):
+        """Final report must include WD Lifecycle section."""
+        from tools.soak_harness import _write_report
+        stats = {
+            "wd_pid": 12345,
+            "soak_pid": os.getpid(),
+            "start_time": time.time() - 3600,
+            "sent": 10, "ok": 10, "fail": 0, "errors_5xx": 0,
+            "routes": {"llm": 7, "solver": 3},
+            "latencies": [100, 200, 300],
+            "baseline_funnel": {"case_trajectories": 100, "verifier_results": 50},
+            "baseline": {"total_cycles": 0},
+            "restarts": 0,
+            "smokes": [],
+            "learning_checks": [{"ts": "2026-01-01T00:00:00", "pending": 0, "cycles": 2}],
+            "wd_started_by_us": True,
+            "lifecycle": {
+                "orphans_before": [],
+                "pids_started": [12345],
+                "pids_stopped": [{"pid": 12345, "result": {"action": "taskkill", "success": True}}],
+                "port_open_at_start": False,
+                "port_closed_at_end": True,
+                "lingering_owned": False,
+            },
+        }
+        bl_f = {"case_trajectories": 100, "verifier_results": 50}
+        report_path = str(tmp_path / "SOAK_REPORT.md")
+        _write_report(report_path, stats, bl_f, {"total_cycles": 0},
+                       final=True,
+                       final_funnel={"case_trajectories": 110, "verifier_results": 55},
+                       final_ls={"total_cycles": 2})
+        content = open(report_path).read()
+        assert "## WD Lifecycle" in content
+        assert "Orphans before run" in content
+        assert "Port 8000 closed at end" in content
+        assert "PIDs started" in content
+        assert "Lingering owned WD" in content
+
+    def test_report_without_lifecycle_still_works(self, tmp_path):
+        """Report generation should not crash if lifecycle is absent."""
+        from tools.soak_harness import _write_report
+        stats = {
+            "wd_pid": None,
+            "soak_pid": os.getpid(),
+            "start_time": time.time() - 60,
+            "sent": 5, "ok": 5, "fail": 0, "errors_5xx": 0,
+            "routes": {"llm": 5},
+            "latencies": [100],
+            "baseline_funnel": {"case_trajectories": 10, "verifier_results": 5},
+            "baseline": {"total_cycles": 0},
+            "restarts": 0,
+            "smokes": [],
+            "learning_checks": [{"ts": "2026-01-01T00:00:00", "pending": 0, "cycles": 1}],
+            "wd_started_by_us": False,
+        }
+        bl_f = {"case_trajectories": 10, "verifier_results": 5}
+        report_path = str(tmp_path / "SOAK_REPORT.md")
+        _write_report(report_path, stats, bl_f, {"total_cycles": 0},
+                       final=True,
+                       final_funnel={"case_trajectories": 15, "verifier_results": 5},
+                       final_ls={"total_cycles": 1})
+        content = open(report_path).read()
+        assert "SOAK CLEAN" in content
+
+
+# ── GitHub PR utility ─────────────────────────────────
+
+class TestGitHubPrUtility:
+    """Tests for the clean Python GitHub PR utility."""
+
+    def test_module_importable(self):
+        """github_pr module should import without error."""
+        import tools.github_pr as gpr
+        assert hasattr(gpr, "create_pr")
+        assert hasattr(gpr, "update_pr")
+        assert hasattr(gpr, "get_pr")
+        assert hasattr(gpr, "api_request")
+
+    def test_api_request_builds_correct_url(self):
+        """api_request should build correct URL from path."""
+        from tools.github_pr import API_BASE
+        assert "Ahkeratmehilaiset/waggledance-swarm" in API_BASE

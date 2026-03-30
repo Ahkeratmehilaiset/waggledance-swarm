@@ -6,6 +6,8 @@ Key improvements over ad-hoc soak scripts:
 - WD launched in new process group (Windows: immune to console-close)
 - Always writes final report, even on crash
 - Cleanly stops only child processes it started
+- Orphan WD detection at startup and port 8000 closure at end
+- Full lifecycle tracking in report (PIDs started/stopped, orphans, port)
 
 Usage:
     python tools/soak_harness.py --hours 2 --output C:/WaggleDance_Soak/run1
@@ -17,6 +19,7 @@ import json
 import os
 import random
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -171,20 +174,98 @@ def _is_wd_process(pid):
         return False
 
 
-def stop_wd(pid):
-    """Stop WD process after verifying it is still a WD instance."""
-    if pid is None:
-        return
-    if not _is_wd_process(pid):
-        return  # PID recycled — do not kill
+def scan_wd_processes():
+    """Find all running WaggleDance processes.
+
+    Returns list of dicts: [{"pid": int, "cmdline": str}, ...]
+    """
+    found = []
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                           capture_output=True, timeout=10)
+            r = subprocess.run(
+                ["wmic", "process", "where",
+                 "commandline like '%start_waggledance%' and not commandline like '%wmic%'",
+                 "get", "ProcessId,CommandLine", "/format:csv"],
+                capture_output=True, text=True, timeout=10,
+            )
+            for line in r.stdout.strip().splitlines():
+                parts = line.strip().split(",")
+                if len(parts) >= 3 and parts[-1].strip().isdigit():
+                    pid = int(parts[-1].strip())
+                    cmdline = ",".join(parts[1:-1]).strip()
+                    # Exclude ourselves
+                    if pid != os.getpid():
+                        found.append({"pid": pid, "cmdline": cmdline})
         else:
-            os.kill(pid, signal.SIGTERM)
+            import glob as _glob
+            for proc_dir in _glob.glob("/proc/[0-9]*"):
+                pid = int(os.path.basename(proc_dir))
+                if pid == os.getpid():
+                    continue
+                try:
+                    with open(f"{proc_dir}/cmdline", "r") as f:
+                        cmdline = f.read()
+                    if "start_waggledance" in cmdline:
+                        found.append({"pid": pid, "cmdline": cmdline})
+                except Exception:
+                    pass
     except Exception:
         pass
+    return found
+
+
+def is_port_open(port=8000, host="127.0.0.1", timeout=3):
+    """Check if a TCP port is accepting connections."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (ConnectionRefusedError, OSError, socket.timeout):
+        return False
+
+
+def stop_wd(pid, soak_log=None):
+    """Stop WD process after verifying it is still a WD instance.
+
+    Returns dict describing the outcome.
+    """
+    result = {"pid": pid, "action": None, "success": False}
+    if pid is None:
+        result["action"] = "skip_none"
+        return result
+    if not _is_wd_process(pid):
+        result["action"] = "skip_recycled"
+        if soak_log:
+            log(soak_log, f"PID {pid} is not WD (recycled or gone) — skipping kill")
+        return result
+    try:
+        if sys.platform == "win32":
+            r = subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                               capture_output=True, text=True, timeout=10)
+            result["action"] = "taskkill"
+            result["success"] = r.returncode == 0
+            if soak_log:
+                log(soak_log, f"taskkill PID {pid}: rc={r.returncode}")
+        else:
+            os.kill(pid, signal.SIGTERM)
+            result["action"] = "sigterm"
+            result["success"] = True
+            if soak_log:
+                log(soak_log, f"SIGTERM sent to PID {pid}")
+    except Exception as e:
+        result["action"] = "error"
+        result["error"] = str(e)
+        if soak_log:
+            log(soak_log, f"Failed to stop PID {pid}: {e}")
+    # Verify process is actually gone
+    time.sleep(2)
+    if _is_wd_process(pid):
+        result["success"] = False
+        result["lingering"] = True
+        if soak_log:
+            log(soak_log, f"WARNING: PID {pid} still alive after stop attempt")
+    else:
+        result["lingering"] = False
+    return result
 
 
 _shutdown_requested = False
@@ -228,6 +309,25 @@ def main():
     log(soak_log, f"PID: {os.getpid()}, Output: {output_dir}")
     log(soak_log, "=" * 60)
 
+    # Lifecycle tracking
+    lifecycle = {
+        "orphans_before": [],
+        "pids_started": [],
+        "pids_stopped": [],
+        "port_open_at_start": is_port_open(),
+        "port_closed_at_end": None,
+        "lingering_owned": False,
+    }
+
+    # Orphan WD detection at startup
+    pre_existing = scan_wd_processes()
+    if pre_existing:
+        lifecycle["orphans_before"] = [p["pid"] for p in pre_existing]
+        log(soak_log, f"Orphan WD processes found BEFORE run: {pre_existing}")
+        log(soak_log, "Action: NOT killing orphans (not owned by this run)")
+    else:
+        log(soak_log, "No orphan WD processes found before run")
+
     # Start WD if not already running
     wd_pid = None
     wd_started_by_us = False
@@ -236,6 +336,7 @@ def main():
         proc = start_wd(args.api_key, output_dir)
         wd_pid = proc.pid
         wd_started_by_us = True
+        lifecycle["pids_started"].append(wd_pid)
         for _ in range(60):
             time.sleep(1)
             if wd_alive():
@@ -246,7 +347,7 @@ def main():
             log(soak_log, f"FATAL: WD won't start (PID {wd_pid})")
             return 1
     else:
-        log(soak_log, "WD already running")
+        log(soak_log, "WD already running (not started by us)")
 
     # Baseline
     baseline_funnel = funnel_counts()
@@ -273,6 +374,7 @@ def main():
         "smokes": [],
         "learning_checks": [],
         "wd_started_by_us": wd_started_by_us,
+        "lifecycle": lifecycle,
     }
 
     duration_s = args.hours * 3600
@@ -357,13 +459,23 @@ def main():
                     log(soak_log, f"Health FAIL #{consecutive_health_fails}")
                     if consecutive_health_fails >= 3 and wd_started_by_us:
                         if stats["restarts"] < args.max_restarts:
+                            # Stop old PID before starting new
+                            log(soak_log, f"Stopping old WD PID {wd_pid} before restart...")
+                            sr = stop_wd(wd_pid, soak_log)
+                            lifecycle["pids_stopped"].append({"pid": wd_pid, "result": sr})
                             log(soak_log, "Restarting WD (detached)...")
                             proc = start_wd(args.api_key, output_dir)
                             wd_pid = proc.pid
                             stats["wd_pid"] = wd_pid
+                            lifecycle["pids_started"].append(wd_pid)
                             stats["restarts"] += 1
                             consecutive_health_fails = 0
+                            # Verify restart succeeded
                             time.sleep(30)
+                            if not wd_alive():
+                                log(soak_log, f"WARNING: Restart PID {wd_pid} failed health check")
+                            else:
+                                log(soak_log, f"Restart PID {wd_pid} healthy")
                         else:
                             stats["stop_reason"] = f"unrecoverable: >{args.max_restarts} restarts"
                             break
@@ -421,7 +533,24 @@ def main():
     # Stop WD only if we started it
     if wd_started_by_us and wd_pid:
         log(soak_log, f"Stopping WD PID {wd_pid}")
-        stop_wd(wd_pid)
+        sr = stop_wd(wd_pid, soak_log)
+        lifecycle["pids_stopped"].append({"pid": wd_pid, "result": sr})
+        lifecycle["lingering_owned"] = sr.get("lingering", False)
+    else:
+        log(soak_log, "WD not started by us — skipping stop")
+
+    # Verify port 8000 is closed
+    time.sleep(3)
+    port_still_open = is_port_open()
+    lifecycle["port_closed_at_end"] = not port_still_open
+    if port_still_open and wd_started_by_us:
+        log(soak_log, "WARNING: Port 8000 still open after WD stop")
+    else:
+        log(soak_log, f"Port 8000 closed: {not port_still_open}")
+
+    # Re-write final report with lifecycle data
+    _write_report(report_file, stats, baseline_funnel, baseline,
+                  final=True, final_funnel=final_funnel, final_ls=final_ls)
 
     return 0
 
@@ -551,6 +680,22 @@ def _write_report(path, stats, bl_f, bl, final=False,
             r += "\n## Stderr Categories\n\n| Category | Count |\n|----------|-------|\n"
             for cat, cnt in sorted(stderr_cats.items(), key=lambda x: -x[1]):
                 r += f"| {cat} | {cnt} |\n"
+
+        # Lifecycle section
+        lc = stats.get("lifecycle", {})
+        if lc:
+            r += "\n## WD Lifecycle\n\n"
+            r += f"| Field | Value |\n|-------|-------|\n"
+            orphans = lc.get("orphans_before", [])
+            r += f"| Orphans before run | {orphans if orphans else 'none'} |\n"
+            r += f"| Port 8000 open at start | {lc.get('port_open_at_start', '?')} |\n"
+            r += f"| PIDs started | {lc.get('pids_started', [])} |\n"
+            stopped = lc.get("pids_stopped", [])
+            stopped_pids = [s["pid"] for s in stopped] if stopped else []
+            r += f"| PIDs stopped | {stopped_pids} |\n"
+            r += f"| Lingering owned WD | {lc.get('lingering_owned', False)} |\n"
+            port_closed = lc.get("port_closed_at_end")
+            r += f"| Port 8000 closed at end | {port_closed if port_closed is not None else 'not checked'} |\n"
 
         if stats["fail"] > stats["sent"] * 0.10:
             verdict = "HARNESS ISSUE — rerun needed"

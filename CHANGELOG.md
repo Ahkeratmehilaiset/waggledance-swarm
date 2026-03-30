@@ -23,6 +23,19 @@
 - Stderr categorization in final SOAK_REPORT.md (WinError 10054, sklearn, Ollama, etc.)
 - Signal-based shutdown requested flag checked every loop iteration
 
+### Soak Harness Lifecycle Hardening (fix)
+- Orphan WD process detection at startup via `scan_wd_processes()` — reports but does not kill unowned processes
+- Port 8000 closure verification at end of run
+- Full lifecycle section in SOAK_REPORT.md: PIDs started/stopped, orphans, port status
+- `stop_wd()` now logs outcome and verifies process is actually gone after kill
+- Old WD PID explicitly stopped before restart to prevent zombie accumulation
+- Restart success validation (health check after 30s) with logged warning on failure
+
+### GitHub PR Utility (feat)
+- New `tools/github_pr.py` for clean PR creation/update via Python — no bash quoting artifacts
+- Uses git credential manager for PAT authentication
+- Supports create, update, and status commands with file-based body input
+
 ## [3.3.8] — 2026-03-29
 
 ### Windows Soak Hardening + Noise Reduction

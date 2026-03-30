@@ -1,5 +1,20 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Unreleased]
+
+### Storage Health Introspection (fix)
+- New `StorageHealthService` reports per-database sizes, WAL sizes, row counts, and growth warnings
+- New `/api/storage/health` endpoint returns full storage health snapshot (authenticated)
+- New `/api/storage/wal-checkpoint` POST triggers WAL checkpoint on all databases
+- Configurable size thresholds per database with WARNING-level logging when exceeded
+- Discovers both `.db` and nested `.sqlite3` (Chroma) databases under data directory
+
+### Ollama Degraded Mode Hardening (fix)
+- *pending*
+
+### Windows Long-Run Reliability (fix)
+- *pending*
+
 ## [3.3.8] — 2026-03-29
 
 ### Windows Soak Hardening + Noise Reduction

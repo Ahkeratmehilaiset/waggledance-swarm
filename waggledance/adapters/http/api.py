@@ -18,6 +18,7 @@ from waggledance.adapters.http.routes.hologram import router as hologram_router
 from waggledance.adapters.http.routes.magma import router as magma_router
 from waggledance.adapters.http.routes.memory import router as memory_router
 from waggledance.adapters.http.routes.status import router as status_router
+from waggledance.adapters.http.routes.storage import router as storage_router
 from waggledance.adapters.http.routes.trust import router as trust_router
 from waggledance.core.domain.events import DomainEvent, EventType
 
@@ -140,5 +141,7 @@ def create_app(container) -> FastAPI:
     app.include_router(trust_router)
     # Cross-agent memory (/api/cross/*)
     app.include_router(cross_agent_router)
+    # Storage health introspection (/api/storage/*)
+    app.include_router(storage_router)
 
     return app

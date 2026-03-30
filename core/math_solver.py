@@ -32,9 +32,14 @@ class MathSolver:
         (r'(\d+)\s*miinus\s*(\d+)', r'\1-\2'),
     ]
     UNIT_CONVERSIONS = {
-        r'(\d+\.?\d*)\s*°?[cC]\s*(fahrenheit|fahrenheitiksi|to\s*f)':
+        r'(\d+\.?\d*)\s*°?\s*(?:celsius|c)\s+(?:fahrenheit|fahrenheitiksi|to\s*f)':
             lambda m: f"{float(m.group(1)) * 9/5 + 32:.1f}°F",
-        r'(\d+\.?\d*)\s*°?[fF]\s*(celsius|celsiukseksi|to\s*c)':
+        r'(\d+\.?\d*)\s*°?\s*(?:fahrenheit|f)\s+(?:celsius|celsiukseksi|celsiuksina|to\s*c)':
+            lambda m: f"{(float(m.group(1)) - 32) * 5/9:.1f}°C",
+        # Legacy short form: "100C to F", "100F to C"
+        r'(\d+\.?\d*)\s*°?[cC]\s+(to\s*f|fahrenheitiksi)':
+            lambda m: f"{float(m.group(1)) * 9/5 + 32:.1f}°F",
+        r'(\d+\.?\d*)\s*°?[fF]\s+(to\s*c|celsiukseksi|celsiuksina)':
             lambda m: f"{(float(m.group(1)) - 32) * 5/9:.1f}°C",
         r'(\d+\.?\d*)\s*kg\s*(lbs?|paunoiksi|to\s*lbs?)':
             lambda m: f"{float(m.group(1)) * 2.20462:.1f} lbs",

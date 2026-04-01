@@ -116,7 +116,7 @@ def run_benchmark(base_url: str, api_key: str, mode: str) -> dict:
         t0 = time.perf_counter()
         try:
             resp = _request(base_url, "/api/chat", method="POST",
-                           body={"message": q["query"]}, api_key=api_key)
+                           body={"query": q["query"]}, api_key=api_key)
             elapsed_ms = (time.perf_counter() - t0) * 1000
 
             # Extract route info
@@ -246,7 +246,7 @@ def main():
     api_key = args.api_key or _api_key(args.base_url)
 
     # Verify server is reachable
-    status = _request(args.base_url, "/api/heartbeat", api_key=api_key)
+    status = _request(args.base_url, "/api/status", api_key=api_key)
     if "error" in status:
         print(f"Server not reachable at {args.base_url}: {status['error']}")
         sys.exit(1)

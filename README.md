@@ -6,31 +6,21 @@
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 
-## What It Does
+## What is this?
 
-WaggleDance routes every query through **specialized solver engines first** — thermal,
-causal, anomaly detection, scheduling, energy forecasting — before falling back to an LLM.
-A solver router scores each engine's fit, runs the best match, then a verifier checks the
-result against the world model. The LLM is the last resort, not the first.
+Most AI systems make the same mistake: they ask a language model first and hope the answer sounds right.
 
-The runtime **trains its own specialist models overnight**. 14 sklearn-based models
-(route classifier, anomaly detector, baseline scorer, approval predictor, etc.) promote
-through a canary lifecycle: train on accumulated case trajectories, validate on holdout
-data, canary for 48h, then promote or rollback automatically. A meta-optimizer tunes
-hyperparameters from canary results. Dream Mode runs counterfactual simulations on
-failed missions — "what if we had routed differently?" — and feeds better strategies back.
+Nature solved this problem millions of years ago.
 
-Every query — whether answered by a solver, specialist, or LLM — produces a
-**CaseTrajectory** recording the goal, selected route, response, and quality grade.
-Chat traffic feeds cases via `build_from_legacy()`; autonomy missions record the full
-lifecycle including world snapshots and verifier outcomes. The night learning pipeline
-automatically ingests pending cases from the SQLite store using a watermark to prevent
-reprocessing. A background scheduler triggers learning every 10 minutes when pending
-cases accumulate and the runtime is idle. All cases are stored in MAGMA,
-a 5-layer audit/replay/provenance architecture.
-MAGMA provides append-only audit logging, mission-level replay, memory overlays, 9-tier
-provenance tracking, and multi-dimensional trust scoring. The Hologram Brain page visualizes
-all 32 system nodes in real-time across 4 concentric rings with per-node state metadata.
+In a beehive, a discovery doesn't become a decision because one individual says so. A scout returns to the hive and dances a figure-eight pattern on the vertical surface of the honeycomb — the angle of the straight run encodes direction, duration encodes distance, vigor encodes quality. But the dance is not a monologue. Experienced nestmates follow the dancer closely, touch her with their antennae, and provide feedback in real time. A stop signal can shut the dance down entirely. Only when the message survives collective scrutiny does it become a route worth committing to.
+
+WaggleDance is built on this logic.
+
+It doesn't hand the problem straight to an LLM. It routes it to the right solver first, cross-checks the result through multiple agents, and uses a language model only when it genuinely adds value. Every step leaves an auditable trace. Every decision is justifiable. Every cycle grows the system's own competence.
+
+The figure-eight dance became algorithmic routing. The honeycomb became the MAGMA memory architecture. And the bees' overnight rest became Dream Mode — a safe simulation where the system reviews the day's failures, tests thousands of alternative paths, and returns in the morning sharper than before.
+
+This is not a metaphor. This is an architecture for collective machine intelligence.
 
 ## Architecture
 

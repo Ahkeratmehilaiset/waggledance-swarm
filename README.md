@@ -76,6 +76,7 @@ waggledance/
     capabilities/    Registry, selector
     projections/     Narrative, introspection, autobiographical (read-only)
     magma/           Audit, provenance, replay, trust, confidence decay
+    hex_cell_topology  Logical cell overlay for hybrid FAISS retrieval
     domain/          CaseTrajectory, Goal, WorldSnapshot dataclasses
   adapters/
     http/routes/     Hexagonal routes — chat, auth, hologram, magma, graph, trust, ops
@@ -187,6 +188,7 @@ REST + WebSocket on port 8000. Key groups:
 | Feeds | `GET /api/feeds` — config-based sources with per-source freshness |
 | Learning | `/api/learning/state-machine`, `/api/capabilities/state` |
 | Sensors | `/api/sensors`, `/api/sensors/home`, `/api/sensors/camera/events` |
+| Hybrid | `/api/hybrid/status`, `/api/hybrid/topology`, `/api/hybrid/cells` — hex-cell FAISS retrieval |
 
 WebSocket at `ws://localhost:8000/ws` for real-time brain updates, chat streaming, alerts.
 

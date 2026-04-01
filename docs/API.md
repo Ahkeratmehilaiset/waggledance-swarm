@@ -191,6 +191,22 @@ query, response, confidence, source, and route type for downstream night learnin
 
 ---
 
+## Hybrid Retrieval (v3.4)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/hybrid/status` | GET | Hybrid retrieval enabled/disabled, mode, hit/miss rates, FAISS stats |
+| `GET /api/hybrid/topology` | GET | Hex-cell topology: all 8 cells, ring-1 neighbors, per-cell document counts |
+| `GET /api/hybrid/cells` | GET | Per-cell FAISS collection sizes |
+| `GET /api/hybrid/test-assign` | GET | Debug: test cell assignment for a query+intent (`?query=...&intent=...`) |
+
+**Feature flag:** `hybrid_retrieval.enabled` in `configs/settings.yaml` (default: `false`).
+
+When hybrid is enabled, `/api/status` and `/api/ops` include `hybrid_retrieval` section with hit counters.
+`/api/hologram/state` includes additive `hybrid` overlay section.
+
+---
+
 ## Analytics
 
 | Endpoint | Method | Description |

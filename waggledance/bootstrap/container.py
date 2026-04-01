@@ -136,6 +136,7 @@ class Container:
             vector_store=self.vector_store,
             memory=self.memory_repository,
             event_bus=self.event_bus,
+            hybrid_retrieval=self.hybrid_retrieval,
         )
 
     @cached_property

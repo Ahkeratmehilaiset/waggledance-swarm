@@ -24,11 +24,13 @@ class MemoryService:
         vector_store: VectorStorePort,
         memory: MemoryRepositoryPort,
         event_bus: EventBusPort,
+        hybrid_retrieval=None,
     ) -> None:
         assert memory is not None, "MemoryRepositoryPort must not be None"
         self._vector_store = vector_store
         self._memory = memory
         self._event_bus = event_bus
+        self._hybrid_retrieval = hybrid_retrieval
 
     async def ingest(
         self,
@@ -36,8 +38,14 @@ class MemoryService:
         source: str,
         tags: list[str] | None = None,
         agent_id: str | None = None,
+        intent: str = "chat",
     ) -> MemoryRecord:
-        """Store a new fact in persistent memory and vector store."""
+        """Store a new fact in persistent memory and vector store.
+
+        When hybrid retrieval is enabled, additionally mirrors to
+        the correct cell-local FAISS index. Failure does not block
+        the global ChromaDB path.
+        """
         record = MemoryRecord(
             id=str(uuid.uuid4()),
             content=content,
@@ -62,6 +70,26 @@ class MemoryService:
             },
             collection="waggle_memory",
         )
+
+        # v3.4: Mirror to cell-local FAISS when hybrid is enabled
+        if self._hybrid_retrieval and self._hybrid_retrieval.enabled:
+            try:
+                embed_fn = getattr(self._hybrid_retrieval, '_embed_fn', None)
+                if embed_fn:
+                    vec = embed_fn(record.content)
+                    if vec is not None:
+                        await self._hybrid_retrieval.ingest(
+                            doc_id=record.id,
+                            text=record.content,
+                            vector=vec,
+                            intent=intent,
+                            metadata={
+                                "source": record.source,
+                                "agent_id": record.agent_id or "",
+                            },
+                        )
+            except Exception as e:
+                log.debug("Hybrid FAISS mirror failed (non-blocking): %s", e)
 
         await self._event_bus.publish(DomainEvent(
             type=EventType.MEMORY_STORED,

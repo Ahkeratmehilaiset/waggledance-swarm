@@ -1,6 +1,6 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Unreleased] — Hybrid FAISS + Hex-Cell Retrieval
+## [3.4.0] — 2026-04-01 — Hybrid FAISS + Hex-Cell Retrieval
 
 ### Added
 - **Hybrid retrieval architecture**: cell-local FAISS indices + logical hex-cell overlay before global ChromaDB

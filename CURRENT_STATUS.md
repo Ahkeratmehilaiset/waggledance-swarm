@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-04-01
-**Version:** v3.3.9 (main), v3.4.0-rc on feat/hybrid-faiss-hex-cells
+**Version:** v3.4.0 (main)
 
 ---
 

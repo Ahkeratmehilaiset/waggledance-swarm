@@ -536,7 +536,41 @@ def build_hologram_state(service) -> Dict[str, Any]:
         src, dst = edge_key.split("->")
         events.append({"from": src, "to": dst})
 
-    return {"nodes": nodes, "node_meta": node_meta, "edges": edges, "events": events}
+    # v3.4: Add hybrid retrieval overlay info (additive, no node changes)
+    hybrid_info = _hybrid_overlay(service)
+
+    return {
+        "nodes": nodes,
+        "node_meta": node_meta,
+        "edges": edges,
+        "events": events,
+        "hybrid": hybrid_info,
+    }
+
+
+def _hybrid_overlay(service) -> dict:
+    """Build hybrid retrieval overlay for hologram state (additive only)."""
+    try:
+        container = getattr(service, "_container", None)
+        if container is None:
+            # Try to get container from service attributes
+            runtime = getattr(service, "_runtime", None)
+            if runtime:
+                container = getattr(runtime, "_container", None)
+        if container is None:
+            return {"enabled": False}
+
+        hr = container.hybrid_retrieval
+        return {
+            "enabled": hr.enabled,
+            "total_queries": hr._total_queries,
+            "local_hits": hr._local_hits,
+            "neighbor_hits": hr._neighbor_hits,
+            "global_hits": hr._global_hits,
+            "llm_fallbacks": hr._llm_fallbacks,
+        }
+    except Exception:
+        return {"enabled": False}
 
 
 @router.get("/api/hologram/state")

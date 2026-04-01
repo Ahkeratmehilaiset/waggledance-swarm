@@ -165,7 +165,7 @@ Docked panel with 8 tabs + Chat. Bilingual FI/EN.
 
 | Metric | Value |
 |--------|-------|
-| Version | v3.4.0 |
+| Version | v3.4.1 |
 | Architecture | Hexagonal — DI container, port/adapter, single-product |
 | Runtime | ElasticScaler + AdaptiveThrottle + ResourceGuard via DI |
 | Specialist models | 14 (real sklearn training, canary lifecycle) |

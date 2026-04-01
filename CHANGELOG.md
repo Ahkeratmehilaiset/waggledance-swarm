@@ -1,5 +1,21 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.4.1] — 2026-04-02 — Hybrid Auth Hardening + Doc Corrections
+
+### Security
+- **Hybrid endpoint authentication**: Added `require_auth` to all 4 `/api/hybrid/*` routes (status, topology, cells, test-assign) — previously accessible without authentication
+
+### Fixed
+- `docs/API.md`: Chat request body field corrected from `message` to `query`
+- `docs/API.md`: Added auth requirement note to hybrid retrieval section
+- `CURRENT_STATUS.md`: Test count updated 4772→4813, legacy stack marked as archived
+- `README.md`: Test badge count corrected to 4813 (v3.4.0 post-release fix)
+
+### Verified
+- 4h hybrid soak: 100 cycles, 400/400 OK, 0 5xx, 0 restarts — PASS
+- Baseline vs hybrid benchmark: 0 errors, no regression, route distribution identical
+- Full pytest: 4813 passed, 3 skipped, 0 failures
+
 ## [3.4.0] — 2026-04-01 — Hybrid FAISS + Hex-Cell Retrieval
 
 ### Added

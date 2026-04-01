@@ -51,6 +51,23 @@ def _detect_degraded(request: Request) -> list[str]:
     return degraded
 
 
+def _hybrid_status(request: Request) -> dict:
+    """Get hybrid retrieval status from container."""
+    try:
+        container = request.app.state.container
+        hr = container.hybrid_retrieval
+        return {
+            "enabled": hr.enabled,
+            "total_queries": hr._total_queries,
+            "local_hits": hr._local_hits,
+            "neighbor_hits": hr._neighbor_hits,
+            "global_hits": hr._global_hits,
+            "llm_fallbacks": hr._llm_fallbacks,
+        }
+    except Exception:
+        return {"enabled": False}
+
+
 def _runtime_stats(service):
     """Get full runtime stats tree, or empty dict."""
     rt = getattr(service, "_runtime", None)
@@ -99,6 +116,9 @@ def api_status(
     # Derive degraded-mode flags from adapter circuit breaker state
     degraded_components = _detect_degraded(request)
 
+    # v3.4: hybrid retrieval status
+    hybrid_info = _hybrid_status(request)
+
     return {
         "status": "running" if lifecycle.get("state") == "running" else "initializing",
         "profile": st.get("profile", "HOME"),
@@ -113,6 +133,7 @@ def api_status(
         "night_mode": rk.get("night_mode", False),
         "degraded": len(degraded_components) > 0,
         "degraded_components": degraded_components,
+        "hybrid_retrieval": hybrid_info,
     }
 
 
@@ -306,6 +327,9 @@ def api_ops(service=Depends(get_autonomy_service),
     adm = st.get("admission", {})
     kpis = _safe(lambda: service.get_kpis(), {})
 
+    # v3.4: hybrid retrieval metrics
+    hybrid_stats = _safe(lambda: container.hybrid_retrieval.stats(), {})
+
     return {
         "status": {
             "load": rk.get("load_level", "idle"),
@@ -320,6 +344,7 @@ def api_ops(service=Depends(get_autonomy_service),
         },
         "flexhw": _flexhw_section(container),
         "throttle": _throttle_section(container),
+        "hybrid_retrieval": hybrid_stats,
         "recommendation": {
             "throttle": "none" if rk.get("load_level") in ("idle", "light") else "active",
             "night_mode": rk.get("night_mode", False),

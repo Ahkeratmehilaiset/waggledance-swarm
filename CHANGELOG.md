@@ -1,6 +1,6 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Unreleased]
+## [3.3.9] — 2026-04-01
 
 ### Storage Health Introspection (fix)
 - New `StorageHealthService` reports per-database sizes, WAL sizes, row counts, and growth warnings
@@ -35,6 +35,12 @@
 - New `tools/github_pr.py` for clean PR creation/update via Python — no bash quoting artifacts
 - Uses git credential manager for PAT authentication
 - Supports create, update, and status commands with file-based body input
+
+### Verified
+- Pre-merge soak: 209/209 OK, 0 restarts, 12 learning cycles, +167 cases
+- 30h long soak: 3181/3181 OK, 0 restarts, 175 learning cycles, +2349 cases, 0 stderr
+- Post-merge verify soak on merged main
+- 61 targeted tests, 4772 full pytest (0 failures)
 
 ## [3.3.8] — 2026-03-29
 

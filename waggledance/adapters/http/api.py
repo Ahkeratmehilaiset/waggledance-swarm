@@ -15,6 +15,7 @@ from waggledance.adapters.http.routes.compat_dashboard import router as compat_r
 from waggledance.adapters.http.routes.cross_agent import router as cross_agent_router
 from waggledance.adapters.http.routes.graph import router as graph_router
 from waggledance.adapters.http.routes.hologram import router as hologram_router
+from waggledance.adapters.http.routes.hybrid import router as hybrid_router
 from waggledance.adapters.http.routes.magma import router as magma_router
 from waggledance.adapters.http.routes.memory import router as memory_router
 from waggledance.adapters.http.routes.status import router as status_router
@@ -143,5 +144,7 @@ def create_app(container) -> FastAPI:
     app.include_router(cross_agent_router)
     # Storage health introspection (/api/storage/*)
     app.include_router(storage_router)
+    # Hybrid retrieval (/api/hybrid/*)
+    app.include_router(hybrid_router)
 
     return app

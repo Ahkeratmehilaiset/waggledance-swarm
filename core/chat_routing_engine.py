@@ -252,7 +252,11 @@ class ChatRoutingEngine:
     async def try_retrieval(self, message: str, route,
                             original_message: str,
                             detected_lang: str, chat_t0: float) -> Optional[str]:
-        """Try FAISS retrieval route. Returns response or None."""
+        """Try FAISS retrieval route. Returns response or None.
+
+        When hybrid retrieval is enabled, uses cell-local FAISS first,
+        then neighbor cells, then falls back to global collections.
+        """
         hive = self._hive
         if not (route and getattr(hive, 'faiss_registry', None)):
             return None
@@ -269,13 +273,37 @@ class ChatRoutingEngine:
                 return None
 
             _ret_hits = []
-            for _col_name in ("bee_knowledge", "axioms", "agent_knowledge", "training_pairs"):
+            _answered_by = "faiss_retrieval"
+            _hybrid_trace = None
+
+            # v3.4: Try hybrid cell-local retrieval first when enabled
+            _hybrid_svc = getattr(hive, '_hybrid_retrieval_service', None)
+            if _hybrid_svc and _hybrid_svc.enabled and _q_vec is not None:
                 try:
-                    _col = hive.faiss_registry.get_or_create(_col_name)
-                    if _col.count > 0:
-                        _ret_hits.extend(_col.search(_q_vec, k=5))
-                except Exception:
-                    pass
+                    import asyncio
+                    _intent = getattr(route, 'decision_id', 'retrieval') or 'retrieval'
+                    _trace = await _hybrid_svc.retrieve(
+                        query=message, intent=_intent, k=5)
+                    _hybrid_trace = _trace.to_dict()
+                    if _trace.hits and not _trace.llm_fallback:
+                        _ret_hits = [type('H', (), {
+                            'doc_id': h.doc_id, 'text': h.text,
+                            'score': h.score, 'metadata': h.metadata,
+                        })() for h in _trace.hits]
+                        _answered_by = f"hybrid_{_trace.answered_by_layer}"
+                except Exception as _he:
+                    log.debug("Hybrid retrieval in legacy path failed: %s", _he)
+
+            # Fall back to global FAISS collections if hybrid didn't produce results
+            if not _ret_hits:
+                for _col_name in ("bee_knowledge", "axioms", "agent_knowledge", "training_pairs"):
+                    try:
+                        _col = hive.faiss_registry.get_or_create(_col_name)
+                        if _col.count > 0:
+                            _ret_hits.extend(_col.search(_q_vec, k=5))
+                    except Exception:
+                        pass
+
             _good = sorted(
                 [h for h in _ret_hits if h.score > 0.35],
                 key=lambda x: x.score, reverse=True)[:5]
@@ -289,16 +317,18 @@ class ChatRoutingEngine:
             hive._last_chat_message = message
             hive._last_chat_response = response
             hive._last_chat_method = "retrieval"
-            hive._last_chat_agent_id = "faiss_retrieval"
+            hive._last_chat_agent_id = _answered_by
             hive._last_model_result = None
             hive._last_explanation = {
-                "method": "faiss_retrieval",
+                "method": _answered_by,
                 "hits": [{"doc_id": h.doc_id, "score": round(h.score, 4),
                           "text": h.text[:120]} for h in _good],
             }
+            if _hybrid_trace:
+                hive._last_explanation["hybrid_trace"] = _hybrid_trace
             hive.metrics.log_chat(
                 query=original_message, method="retrieval",
-                agent_id="faiss_retrieval", model_used="faiss",
+                agent_id=_answered_by, model_used="faiss",
                 confidence=_good[0].score,
                 response_time_ms=(time.perf_counter() - chat_t0) * 1000,
                 route="retrieval", language=detected_lang)
@@ -428,7 +458,11 @@ class ChatRoutingEngine:
         return delegate_to, best_score
 
     async def enrich_with_faiss(self, message: str, en_message: str, context: str) -> str:
-        """Enrich context with FAISS semantic search results."""
+        """Enrich context with FAISS semantic search results.
+
+        When hybrid retrieval is enabled, searches cell-local FAISS first,
+        then neighbors, before falling back to global collections.
+        """
         hive = self._hive
         _faiss_reg = getattr(hive, 'faiss_registry', None)
         if not (_faiss_reg and hasattr(hive, 'consciousness') and hive.consciousness):
@@ -439,13 +473,30 @@ class ChatRoutingEngine:
             if _q_vec is not None:
                 _vec = np.array(_q_vec, dtype=np.float32)
                 _faiss_hits = []
-                for _col_name in ("bee_knowledge", "axioms", "agent_knowledge"):
+
+                # v3.4: Try hybrid cell-local enrichment first
+                _hybrid_svc = getattr(hive, '_hybrid_retrieval_service', None)
+                if _hybrid_svc and _hybrid_svc.enabled:
                     try:
-                        _col = _faiss_reg.get_or_create(_col_name)
-                        if _col.count > 0:
-                            _faiss_hits.extend(_col.search(_vec, k=3))
+                        _trace = await _hybrid_svc.retrieve(
+                            query=en_message or message, intent="retrieval", k=3)
+                        if _trace.hits:
+                            _faiss_hits = [type('H', (), {
+                                'text': h.text, 'score': h.score,
+                            })() for h in _trace.hits]
                     except Exception:
                         pass
+
+                # Fall back to global collections if no hybrid hits
+                if not _faiss_hits:
+                    for _col_name in ("bee_knowledge", "axioms", "agent_knowledge"):
+                        try:
+                            _col = _faiss_reg.get_or_create(_col_name)
+                            if _col.count > 0:
+                                _faiss_hits.extend(_col.search(_vec, k=3))
+                        except Exception:
+                            pass
+
                 _good_hits = sorted(
                     [h for h in _faiss_hits if h.score > 0.35],
                     key=lambda x: x.score, reverse=True)[:5]

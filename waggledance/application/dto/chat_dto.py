@@ -1,6 +1,7 @@
 """Chat request/response DTOs."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -27,3 +28,4 @@ class ChatResult:
     agent_id: str | None
     round_table: bool
     cached: bool
+    hybrid_trace: dict[str, Any] | None = None

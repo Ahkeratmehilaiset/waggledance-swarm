@@ -1,5 +1,25 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Unreleased] — Hybrid FAISS + Hex-Cell Retrieval
+
+### Added
+- **Hybrid retrieval architecture**: cell-local FAISS indices + logical hex-cell overlay before global ChromaDB
+- **HexCellTopology**: 8 logical cells (general, thermal, energy, safety, seasonal, math, system, learning) with deterministic intent/keyword-based assignment and bounded ring-1/ring-2 neighbor adjacency
+- **HybridRetrievalService**: orchestrates local → neighbor → global retrieval with full telemetry trace
+- **Feature flag**: `hybrid_retrieval.enabled` in `configs/settings.yaml` (default OFF)
+- **API endpoints**: `/api/hybrid/status`, `/api/hybrid/topology`, `/api/hybrid/cells`, `/api/hybrid/test-assign`
+- **Hologram overlay**: additive `hybrid` section in `/api/hologram/state`
+- **41 focused regression tests** for cell assignment, neighbor correctness, feature flags, graceful fallback, telemetry
+- **Benchmark harness**: `tools/hybrid_benchmark.py` for baseline vs hybrid comparison
+- **Documentation**: `docs/HYBRID_RETRIEVAL.md` with full architecture reference
+
+### Changed
+- `ChatService.handle()`: hybrid retrieval step between solver and LLM when enabled
+- `ChatRoutingEngine.try_retrieval()`: cell-local FAISS first when hybrid enabled
+- `ChatRoutingEngine.enrich_with_faiss()`: cell-local enrichment before global
+- `MemoryService.ingest()`: mirrors to cell-local FAISS when hybrid enabled
+- `/api/status` and `/api/ops`: include hybrid_retrieval section
+
 ## [3.3.9] — 2026-04-01
 
 ### Storage Health Introspection (fix)

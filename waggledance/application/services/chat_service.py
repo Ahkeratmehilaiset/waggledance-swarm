@@ -45,6 +45,7 @@ class ChatService:
         case_builder: "CaseTrajectoryBuilder | None" = None,  # noqa: F821
         case_store: object | None = None,
         verifier_store: object | None = None,
+        hybrid_retrieval: object | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._memory_service = memory_service
@@ -57,6 +58,8 @@ class ChatService:
         self._case_builder = case_builder
         self._case_store = case_store
         self._verifier_store = verifier_store
+        # v3.4: hybrid FAISS + hex-cell retrieval
+        self._hybrid_retrieval = hybrid_retrieval
         # v1.18.0: telemetry + ledger (lazy-init)
         self._telemetry = None
         self._ledger = None
@@ -145,11 +148,19 @@ class ChatService:
                     round_table=False,
                     cached=False,
                 )
-            # Solver miss — fall through to LLM
+            # Solver miss — fall through to hybrid retrieval or LLM
             route = route.__class__(
                 route_type="llm", confidence=0.6,
                 routing_latency_ms=route.routing_latency_ms,
             )
+
+        # v3.4: Hybrid FAISS retrieval — after solver, before LLM
+        hybrid_trace = None
+        if self._hybrid_retrieval and self._hybrid_retrieval.enabled:
+            hybrid_trace = await self._try_hybrid_retrieval(
+                req.query, features.solver_intent, language, cache_key, start)
+            if hybrid_trace and hybrid_trace.get("answered"):
+                return hybrid_trace["result"]
 
         task = TaskRequest(
             id=str(uuid.uuid4()),
@@ -200,6 +211,7 @@ class ChatService:
             agent_id=result.agent_id,
             round_table=round_table_used,
             cached=False,
+            hybrid_trace=hybrid_trace,
         )
 
     def _record_telemetry(self, route_type: str, confidence: float,
@@ -255,6 +267,55 @@ class ChatService:
                       case.trajectory_id, case.quality_grade.value)
         except Exception:
             log.debug("Failed to record chat case", exc_info=True)
+
+    async def _try_hybrid_retrieval(
+        self, query: str, intent: str, language: str,
+        cache_key: str, start: float,
+    ) -> dict | None:
+        """Try hybrid FAISS + hex-cell retrieval. Returns dict with trace and optional result."""
+        try:
+            trace_result = await self._hybrid_retrieval.retrieve(
+                query=query, intent=intent, k=5)
+            trace_dict = trace_result.to_dict()
+
+            if trace_result.hits and not trace_result.llm_fallback:
+                # Format hits into a response
+                _lang = language
+                _header = ("Löysin seuraavat tiedot:\n\n" if _lang == "fi"
+                           else "Here is what I found:\n\n")
+                response = _header + "\n\n".join(
+                    f"{i}. {h.text[:300]}"
+                    for i, h in enumerate(trace_result.hits[:5], 1)
+                )
+                confidence = trace_result.hits[0].score
+                elapsed = (time.monotonic() - start) * 1000
+
+                source = trace_result.answered_by_layer
+                if should_cache_result_simple(response, self._query_frequency.get(cache_key, 0)):
+                    self._hot_cache.set(cache_key, response, ttl=3600)
+
+                self._record_telemetry(source, confidence, elapsed, True, query)
+                self._record_case(query, response, confidence, source, source, elapsed)
+
+                result = ChatResult(
+                    response=response,
+                    language=language,
+                    source=source,
+                    confidence=confidence,
+                    latency_ms=elapsed,
+                    agent_id="hybrid_retrieval",
+                    round_table=False,
+                    cached=False,
+                    hybrid_trace=trace_dict,
+                )
+                return {"answered": True, "result": result, **trace_dict}
+
+            # Not enough hits — return trace but let LLM handle it
+            return trace_dict
+
+        except Exception as e:
+            log.debug("Hybrid retrieval failed: %s", e)
+            return None
 
     @staticmethod
     def _try_solver(query: str, intent: str) -> str | None:

@@ -136,6 +136,7 @@ class Container:
             vector_store=self.vector_store,
             memory=self.memory_repository,
             event_bus=self.event_bus,
+            hybrid_retrieval=self.hybrid_retrieval,
         )
 
     @cached_property
@@ -159,6 +160,7 @@ class Container:
             case_builder=rt.case_builder,
             case_store=rt.case_store,
             verifier_store=rt.verifier_store,
+            hybrid_retrieval=self.hybrid_retrieval,
         )
 
     @cached_property
@@ -255,6 +257,55 @@ class Container:
             compatibility=compatibility,
             profile=profile,
             night_pipeline=self.night_pipeline,
+        )
+
+    @cached_property
+    def faiss_registry(self):
+        """FaissRegistry — named FAISS collections for cell-local retrieval."""
+        from core.faiss_store import FaissRegistry
+        return FaissRegistry()
+
+    @cached_property
+    def hex_cell_topology(self):
+        """HexCellTopology — logical cell assignment and neighbor mapping."""
+        from waggledance.core.hex_cell_topology import HexCellTopology
+        return HexCellTopology()
+
+    @cached_property
+    def hybrid_retrieval(self):
+        """HybridRetrievalService — cell-local FAISS + global ChromaDB orchestration.
+
+        Feature-flagged via hybrid_retrieval.enabled in settings.yaml.
+        """
+        from waggledance.application.services.hybrid_retrieval_service import (
+            HybridRetrievalService,
+        )
+
+        enabled = bool(self._settings.get("hybrid_retrieval.enabled", False))
+        ring2 = bool(self._settings.get("hybrid_retrieval.ring2_enabled", False))
+
+        # Embedding function: reuse Ollama embed via vector_store's _embed_text if available
+        embed_fn = None
+        try:
+            vs = self.vector_store
+            if hasattr(vs, "_embed_text"):
+                import numpy as np
+
+                def _embed(text: str):
+                    raw = vs._embed_text(text, prefix="search_query: ")
+                    return np.array(raw, dtype=np.float32) if raw else None
+
+                embed_fn = _embed
+        except Exception:
+            pass
+
+        return HybridRetrievalService(
+            faiss_registry=self.faiss_registry,
+            topology=self.hex_cell_topology,
+            vector_store=self.vector_store,
+            embed_fn=embed_fn,
+            enabled=enabled,
+            ring2_enabled=ring2,
         )
 
     @cached_property

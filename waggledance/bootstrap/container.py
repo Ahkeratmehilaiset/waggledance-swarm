@@ -257,6 +257,14 @@ class Container:
             night_pipeline=self.night_pipeline,
         )
 
+    @cached_property
+    def storage_health(self):
+        """StorageHealthService — DB size/WAL introspection."""
+        from waggledance.application.services.storage_health_service import StorageHealthService
+        import os
+        data_dir = os.path.dirname(self._settings.db_path) or "data"
+        return StorageHealthService(data_dir=data_dir)
+
     def build_app(self):
         """Build FastAPI application."""
         from waggledance.adapters.http.api import create_app

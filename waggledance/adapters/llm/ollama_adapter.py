@@ -82,7 +82,7 @@ class OllamaAdapter:
                 return content
 
             except httpx.ConnectError as e:
-                logger.error("Ollama connect error: %s: %s", type(e).__name__, e)
+                logger.warning("Ollama unavailable: %s", type(e).__name__)
                 self._record_failure()
                 return ""
 
@@ -119,6 +119,11 @@ class OllamaAdapter:
 
     def get_active_model(self) -> str:
         return self._active_model
+
+    @property
+    def is_degraded(self) -> bool:
+        """True when the circuit breaker is open (LLM unavailable)."""
+        return self._circuit_open_since is not None
 
     def _is_circuit_open(self) -> bool:
         if self._circuit_open_since is None:

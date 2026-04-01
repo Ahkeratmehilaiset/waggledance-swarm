@@ -245,12 +245,12 @@ class TestFeatureFlag:
     """Test hybrid retrieval behavior with flag ON and OFF."""
 
     def test_disabled_returns_global_only(self, hybrid_service_disabled):
-        trace = asyncio.get_event_loop().run_until_complete(
+        trace = asyncio.run(
             hybrid_service_disabled.retrieve("test query"))
         assert trace.retrieval_mode == "global_only"
 
     def test_enabled_returns_hybrid(self, hybrid_service):
-        trace = asyncio.get_event_loop().run_until_complete(
+        trace = asyncio.run(
             hybrid_service.retrieve("calculate sum"))
         assert trace.retrieval_mode == "hybrid"
 
@@ -258,7 +258,7 @@ class TestFeatureFlag:
         assert hybrid_service.enabled is True
         hybrid_service.enabled = False
         assert hybrid_service.enabled is False
-        trace = asyncio.get_event_loop().run_until_complete(
+        trace = asyncio.run(
             hybrid_service.retrieve("test"))
         assert trace.retrieval_mode == "global_only"
 
@@ -270,7 +270,7 @@ class TestFaissLocalHit:
     """Test cell-local FAISS retrieval behavior."""
 
     def test_empty_cell_returns_no_local_hits(self, hybrid_service):
-        trace = asyncio.get_event_loop().run_until_complete(
+        trace = asyncio.run(
             hybrid_service.retrieve("calculate 5+3", intent="math"))
         assert trace.local_candidates == 0
 
@@ -281,7 +281,7 @@ class TestFaissLocalHit:
         col.add("doc1", "addition formula: a + b = sum", vec, {"source": "test"})
         col.add("doc2", "subtraction formula: a - b = diff", embed_fn("subtraction"), {})
 
-        trace = asyncio.get_event_loop().run_until_complete(
+        trace = asyncio.run(
             hybrid_service.retrieve("addition formula", intent="math"))
         assert trace.cell_id == "math"
         # Should have attempted local search
@@ -289,7 +289,7 @@ class TestFaissLocalHit:
 
     def test_ingest_adds_to_correct_cell(self, hybrid_service, embed_fn):
         vec = embed_fn("test document")
-        cell_id = asyncio.get_event_loop().run_until_complete(
+        cell_id = asyncio.run(
             hybrid_service.ingest("doc1", "test document", vec, intent="math"))
         assert cell_id == "math"
 
@@ -299,7 +299,7 @@ class TestFaissLocalHit:
 
     def test_ingest_disabled_returns_none(self, hybrid_service_disabled, embed_fn):
         vec = embed_fn("test")
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             hybrid_service_disabled.ingest("doc1", "test", vec))
         assert result is None
 
@@ -317,7 +317,7 @@ class TestGracefulFallback:
             embed_fn=None,
             enabled=True,
         )
-        trace = asyncio.get_event_loop().run_until_complete(
+        trace = asyncio.run(
             svc.retrieve("test"))
         assert trace.embeddings_degraded is True
 
@@ -330,13 +330,13 @@ class TestGracefulFallback:
             embed_fn=bad_embed,
             enabled=True,
         )
-        trace = asyncio.get_event_loop().run_until_complete(
+        trace = asyncio.run(
             svc.retrieve("test"))
         assert trace.embeddings_degraded is True
 
     def test_no_vector_store_degrades_chroma(self, hybrid_service):
         """When vector_store is None, global chroma search is degraded."""
-        trace = asyncio.get_event_loop().run_until_complete(
+        trace = asyncio.run(
             hybrid_service.retrieve("test"))
         assert trace.chroma_degraded is True
 
@@ -348,9 +348,9 @@ class TestStats:
     """Test stats reporting."""
 
     def test_stats_after_queries(self, hybrid_service):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             hybrid_service.retrieve("test1"))
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             hybrid_service.retrieve("test2"))
         s = hybrid_service.stats()
         assert s["enabled"] is True

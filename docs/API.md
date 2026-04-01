@@ -69,7 +69,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 ```json
 // POST /api/chat
 // Request
-{"message": "Miten optimoin energiankulutusta?"}
+{"query": "Miten optimoin energiankulutusta?"}
 
 // Response
 {
@@ -199,6 +199,8 @@ query, response, confidence, source, and route type for downstream night learnin
 | `GET /api/hybrid/topology` | GET | Hex-cell topology: all 8 cells, ring-1 neighbors, per-cell document counts |
 | `GET /api/hybrid/cells` | GET | Per-cell FAISS collection sizes |
 | `GET /api/hybrid/test-assign` | GET | Debug: test cell assignment for a query+intent (`?query=...&intent=...`) |
+
+All hybrid endpoints require authentication (Bearer token or session cookie).
 
 **Feature flag:** `hybrid_retrieval.enabled` in `configs/settings.yaml` (default: `false`).
 

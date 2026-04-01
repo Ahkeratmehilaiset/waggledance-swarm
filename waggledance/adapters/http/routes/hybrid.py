@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from waggledance.adapters.http.deps import get_container
+from waggledance.adapters.http.deps import get_container, require_auth
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ router = APIRouter(tags=["hybrid"])
 
 
 @router.get("/api/hybrid/status")
-def hybrid_status(container=Depends(get_container)):
+def hybrid_status(container=Depends(get_container), _auth=Depends(require_auth)):
     """Return hybrid retrieval status and metrics."""
     try:
         hr = container.hybrid_retrieval
@@ -33,7 +33,7 @@ def hybrid_status(container=Depends(get_container)):
 
 
 @router.get("/api/hybrid/topology")
-def hybrid_topology(container=Depends(get_container)):
+def hybrid_topology(container=Depends(get_container), _auth=Depends(require_auth)):
     """Return hex-cell topology: all cells, their neighbors, and assignment stats."""
     try:
         from waggledance.core.hex_cell_topology import ALL_CELLS, _ADJACENCY
@@ -63,7 +63,7 @@ def hybrid_topology(container=Depends(get_container)):
 
 
 @router.get("/api/hybrid/cells")
-def hybrid_cells(container=Depends(get_container)):
+def hybrid_cells(container=Depends(get_container), _auth=Depends(require_auth)):
     """Return per-cell FAISS collection sizes."""
     try:
         from waggledance.core.hex_cell_topology import ALL_CELLS
@@ -86,6 +86,7 @@ def hybrid_test_assign(
     query: str = "test",
     intent: str = "chat",
     container=Depends(get_container),
+    _auth=Depends(require_auth),
 ):
     """Test cell assignment for a given query and intent. Debug endpoint."""
     try:

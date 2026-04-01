@@ -88,6 +88,18 @@ query, response, confidence, source, and route type for downstream night learnin
 
 ---
 
+## Storage Health (v3.3.9)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/storage/health` | GET | Per-database sizes, WAL sizes, row counts, growth warnings |
+| `POST /api/storage/wal-checkpoint` | POST | Trigger WAL checkpoint on all SQLite databases |
+
+`/api/status` also returns `degraded` (bool) and `degraded_components` (list) when circuit breakers are open.
+`/api/learning` returns `llm_degraded` (bool) when the LLM circuit breaker is open.
+
+---
+
 ## Autonomy Runtime (v3.3)
 
 | Endpoint | Method | Description |

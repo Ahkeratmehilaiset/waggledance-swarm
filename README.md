@@ -2,7 +2,7 @@
 
 > Local-first AI runtime with solver-first routing, self-training specialists, overnight dream learning, and full MAGMA audit trail.
 
-[![Tests](https://img.shields.io/badge/tests-4649%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-4772%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 
@@ -174,11 +174,11 @@ Docked panel with 8 tabs + Chat. Bilingual FI/EN.
 
 | Metric | Value |
 |--------|-------|
-| Version | v3.3.5 |
+| Version | v3.3.8 |
 | Architecture | Hexagonal — DI container, port/adapter, single-product |
 | Runtime | ElasticScaler + AdaptiveThrottle + ResourceGuard via DI |
 | Specialist models | 14 (real sklearn training, canary lifecycle) |
-| Production validated | 10 h overnight run, 99.6 % uptime |
+| Production validated | 30 h soak — 3181/3181 OK, 0 restarts, 175 learning cycles |
 | Cutover | Full autonomy mode enabled |
 
 ## API
@@ -191,6 +191,7 @@ REST + WebSocket on port 8000. Key groups:
 | Ops | `GET /api/ops` — live FlexHW tier + AutoThrottle telemetry |
 | Autonomy | `/api/autonomy/status`, `/api/autonomy/kpis`, `/api/autonomy/learning/run` |
 | Hologram | `GET /api/hologram/state` (32 nodes + node_meta), `GET /hologram` |
+| Storage | `GET /api/storage/health`, `POST /api/storage/wal-checkpoint` |
 | Introspection | `/api/magma/*`, `/api/graph/*`, `/api/trust/*`, `/api/cross-agent/*`, `/api/analytics/*` |
 | Profiles | `GET /api/profiles` — `{active, configured, restart_required}` |
 | Feeds | `GET /api/feeds` — config-based sources with per-source freshness |

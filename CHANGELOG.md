@@ -22,6 +22,8 @@
 ### Verified
 - Full pytest: 4898 passed, 3 skipped, 0 failures
 - All new tests pass independently (85/85)
+- 4h soak (hybrid ON, cells populated): 100 cycles, 400/400 OK, 0 5xx, 0 restarts — PASS
+- Benchmark: p50 latency 9055ms → 4231ms (−53%), LLM fallback 75% → 0% after backfill
 
 ## [3.4.1] — 2026-04-02 — Hybrid Auth Hardening + Doc Corrections
 

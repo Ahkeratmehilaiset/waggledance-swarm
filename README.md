@@ -2,7 +2,7 @@
 
 > Local-first AI runtime with solver-first routing, self-training specialists, overnight dream learning, and full MAGMA audit trail.
 
-[![Tests](https://img.shields.io/badge/tests-4813%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-4898%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 
@@ -165,7 +165,7 @@ Docked panel with 8 tabs + Chat. Bilingual FI/EN.
 
 | Metric | Value |
 |--------|-------|
-| Version | v3.4.1 |
+| Version | v3.5.0 |
 | Architecture | Hexagonal — DI container, port/adapter, single-product |
 | Runtime | ElasticScaler + AdaptiveThrottle + ResourceGuard via DI |
 | Specialist models | 14 (real sklearn training, canary lifecycle) |

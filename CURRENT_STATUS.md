@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-04-02
-**Version:** v3.5.0 (feature branch, pending merge)
+**Version:** v3.5.0
 
 ---
 

@@ -332,6 +332,19 @@ class Container:
         )
 
     @cached_property
+    def solver_candidate_lab(self):
+        """SolverCandidateLab — safe solver candidate generation (isolated from production)."""
+        from waggledance.application.services.solver_candidate_lab import SolverCandidateLab
+        return SolverCandidateLab(llm=self.llm if not self._stub else None)
+
+    @cached_property
+    def synthetic_accelerator(self):
+        """SyntheticTrainingAccelerator — deterministic synthetic data augmentation."""
+        from waggledance.core.learning.synthetic_accelerator import SyntheticTrainingAccelerator
+        gpu_enabled = bool(self._settings.get("learning.gpu_enabled", False))
+        return SyntheticTrainingAccelerator(gpu_enabled=gpu_enabled)
+
+    @cached_property
     def storage_health(self):
         """StorageHealthService — DB size/WAL introspection."""
         from waggledance.application.services.storage_health_service import StorageHealthService

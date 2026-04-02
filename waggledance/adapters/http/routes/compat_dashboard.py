@@ -119,6 +119,17 @@ def api_status(
     # v3.4: hybrid retrieval status
     hybrid_info = _hybrid_status(request)
 
+    # v3.5: backfill + candidate lab summary
+    container = request.app.state.container
+    backfill_summary = _safe(lambda: {
+        "indexed_ids": container.hybrid_backfill.status().get("indexed_ids_count", 0),
+        "total_runs": container.hybrid_backfill.status().get("total_runs", 0),
+    }, {"indexed_ids": 0, "total_runs": 0})
+    candidate_lab_summary = _safe(lambda: {
+        "total_candidates": container.solver_candidate_lab.registry.count(),
+        "total_analyses": container.solver_candidate_lab.status().get("total_analyses", 0),
+    }, {"total_candidates": 0, "total_analyses": 0})
+
     return {
         "status": "running" if lifecycle.get("state") == "running" else "initializing",
         "profile": st.get("profile", "HOME"),
@@ -134,6 +145,8 @@ def api_status(
         "degraded": len(degraded_components) > 0,
         "degraded_components": degraded_components,
         "hybrid_retrieval": hybrid_info,
+        "backfill": backfill_summary,
+        "candidate_lab": candidate_lab_summary,
     }
 
 
@@ -330,6 +343,10 @@ def api_ops(service=Depends(get_autonomy_service),
     # v3.4: hybrid retrieval metrics
     hybrid_stats = _safe(lambda: container.hybrid_retrieval.stats(), {})
 
+    # v3.5: backfill + accelerator metrics
+    backfill_metrics = _safe(lambda: container.hybrid_backfill.status(), {})
+    accelerator_metrics = _safe(lambda: container.synthetic_accelerator.status(), {})
+
     return {
         "status": {
             "load": rk.get("load_level", "idle"),
@@ -345,6 +362,8 @@ def api_ops(service=Depends(get_autonomy_service),
         "flexhw": _flexhw_section(container),
         "throttle": _throttle_section(container),
         "hybrid_retrieval": hybrid_stats,
+        "backfill": backfill_metrics,
+        "accelerator": accelerator_metrics,
         "recommendation": {
             "throttle": "none" if rk.get("load_level") in ("idle", "light") else "active",
             "night_mode": rk.get("night_mode", False),

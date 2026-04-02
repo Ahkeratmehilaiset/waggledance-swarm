@@ -92,7 +92,7 @@ Interactive menu with 4 options:
 | Dashboard API | 40+ endpoints | 12 endpoints (health, ready, chat, memory, autonomy) |
 | Night learning | Yes | Yes (NightLearningPipeline v2) |
 | Autonomy runtime | No | Yes (solver-first, 29 capabilities) |
-| Test coverage | 1468 tests (79 suites) | 3836 pytest tests |
+| Test coverage | 1468 tests (79 suites) | 4898 pytest tests |
 
 ---
 

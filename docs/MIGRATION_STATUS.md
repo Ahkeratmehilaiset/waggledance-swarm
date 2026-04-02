@@ -32,9 +32,9 @@ All 4 phases of WAGGLEDANCE_REFACTOR_MASTER_v2.3.md are finished:
 | `tests/specialist_models/` + `tests/resource_kernel/` | 41 | PASS |
 | `tests/continuity/` (v3.2: self-entity, uncertainty, attention, projections, MAGMA) | 171 | PASS |
 | `tests/night_learning_v2/` (consolidator, dream mode) | 60+ | PASS |
-| **Pytest total** | **4129** | **ALL PASS** |
+| **Pytest total** | **4898** | **ALL PASS** |
 | `tools/waggle_backup.py --tests-only` (legacy) | 1468 (79 suites) | PASS |
-| **Grand total** | **~5600** | **ALL PASS** |
+| **Grand total** | **~6400** | **ALL PASS** |
 
 > **Note:** The `route_classifier` uses real sklearn training (TF-IDF + LogisticRegression).
 > The remaining 7 specialists use simulated training (grade-based accuracy estimation).

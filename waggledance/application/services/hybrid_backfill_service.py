@@ -156,16 +156,8 @@ class HybridBackfillService:
                 continue
 
             # Determine cell assignment
-            intent = case.get("intent", "chat")
-            data = case.get("data")
-            query = ""
-            if isinstance(data, str):
-                try:
-                    data = json.loads(data)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            if isinstance(data, dict):
-                query = data.get("query", data.get("message", ""))
+            intent = self._extract_intent(case)
+            query = self._extract_query(case)
             if not query:
                 query = content[:200]
 
@@ -226,23 +218,81 @@ class HybridBackfillService:
         h = hashlib.sha256((content or "").encode()).hexdigest()[:16]
         return f"backfill_hash_{h}"
 
+    def _extract_intent(self, case: dict) -> str:
+        """Extract intent from a case dict.
+
+        Handles both simple format (intent key) and CaseTrajectory format
+        (goal.type).
+        """
+        intent = case.get("intent", "")
+        if intent:
+            return intent
+        goal = case.get("goal")
+        if isinstance(goal, dict):
+            return goal.get("type", "chat")
+        return "chat"
+
+    def _extract_query(self, case: dict) -> str:
+        """Extract query text from a case dict.
+
+        Handles both simple format (data.query) and CaseTrajectory format
+        (goal.description).
+        """
+        # Simple format: top-level or nested data.query
+        data = case.get("data")
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                data = None
+        if isinstance(data, dict):
+            q = data.get("query", data.get("message", ""))
+            if q:
+                return q
+
+        # CaseTrajectory format: goal.description
+        goal = case.get("goal")
+        if isinstance(goal, dict):
+            return goal.get("description", "")
+        return ""
+
     def _extract_content(self, case: dict) -> str:
-        """Extract indexable text content from a case trajectory."""
+        """Extract indexable text content from a case trajectory.
+
+        Handles both simple {data: {query, response}} format and full
+        CaseTrajectory format (goal.description + action results).
+        list_full() returns parsed CaseTrajectory dicts directly.
+        """
+        parts = []
+
+        # Try simple format first: case has a "data" wrapper
         data = case.get("data")
         if isinstance(data, str):
             try:
                 data = json.loads(data)
             except (json.JSONDecodeError, TypeError):
                 return data if data else ""
-
         if isinstance(data, dict):
-            parts = []
             query = data.get("query", data.get("message", ""))
             response = data.get("response", "")
             if query:
                 parts.append(query)
             if response:
                 parts.append(response)
-            return " ".join(parts)
+            if parts:
+                return " ".join(parts)
 
-        return ""
+        # CaseTrajectory format: goal.description + action results
+        goal = case.get("goal")
+        if isinstance(goal, dict):
+            desc = goal.get("description", "")
+            if desc:
+                parts.append(desc)
+        actions = case.get("actions", [])
+        for action in actions[:5]:
+            if isinstance(action, dict):
+                result = action.get("result", "")
+                if isinstance(result, str) and result and result != "{}":
+                    parts.append(result)
+
+        return " ".join(parts)

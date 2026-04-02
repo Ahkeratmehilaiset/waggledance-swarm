@@ -207,6 +207,35 @@ All hybrid endpoints require authentication (Bearer token or session cookie).
 When hybrid is enabled, `/api/status` and `/api/ops` include `hybrid_retrieval` section with hit counters.
 `/api/hologram/state` includes additive `hybrid` overlay section.
 
+## Hybrid Backfill (v3.5)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/hybrid/backfill/status` | GET | Backfill service status: running, total_runs, indexed_ids_count, last_result |
+| `POST /api/hybrid/backfill/run` | POST | Trigger idempotent backfill run. Body: `{"dry_run": true, "limit": 5000}` |
+
+All backfill endpoints require authentication. Backfill is NOT auto-run on boot — must be triggered manually via admin API.
+
+## Solver Candidate Lab (v3.5)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/candidate_lab/status` | GET | Lab status: total_analyses, llm_available, registry stats |
+| `GET /api/candidate_lab/recent` | GET | Recent solver candidates (`?limit=10`). Returns candidate_id, domain, state, confidence |
+
+All candidate lab endpoints require authentication. The candidate lab does **NOT** auto-modify production routing. Candidates are structured specs for review only.
+
+## Learning Accelerator (v3.5)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/learning/accelerator` | GET | Synthetic training accelerator status: total_runs, gpu_available, device_used, last_metrics |
+
+Requires authentication. GPU acceleration is optional and off by default. CPU fallback is always safe.
+
+`/api/status` includes additive `backfill` and `candidate_lab` summary sections.
+`/api/ops` includes additive `backfill` and `accelerator` metrics sections.
+
 ---
 
 ## Analytics

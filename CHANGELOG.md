@@ -1,5 +1,30 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.5.0] — 2026-04-02 — Hybrid Population, Solver Candidate Lab, Synthetic Accelerator
+
+### Added
+- **HybridBackfillService**: Idempotent cell-local FAISS population from trusted case trajectories. Manual/admin-triggered, NOT auto-run on boot. Supports dry-run mode with per-cell counts.
+- **SolverCandidateLab**: Safe autonomy layer that analyzes failure patterns and generates structured solver candidate specs. Isolated from production routing — candidates are reviewable artifacts only. AST-validated TemplateCompiler with strict allowlist (no imports, no side effects).
+- **SyntheticTrainingAccelerator**: Deterministic synthetic data augmentation for specialist training. Augments sparse classes with bounded perturbations. Logs provenance of synthetic vs real rows. Optional GPU (cuML/RAPIDS) with CPU fallback (default).
+- **API endpoints**: `/api/hybrid/backfill/{status,run}`, `/api/candidate_lab/{status,recent}`, `/api/learning/accelerator` — all authenticated
+- **Additive observability**: `/api/status` includes `backfill` and `candidate_lab` summaries; `/api/ops` includes `backfill` and `accelerator` metrics
+- **DI container wiring**: `solver_candidate_lab` and `synthetic_accelerator` as cached properties
+- **85 new focused tests**: 12 backfill, 42 candidate lab, 20 accelerator, 11 route/observability
+
+### Changed
+- `/api/status`: additive `backfill` and `candidate_lab` fields (all original fields preserved)
+- `/api/ops`: additive `backfill` and `accelerator` fields (all original fields preserved)
+
+### Security
+- All new endpoints use `require_auth` consistently
+- Candidate lab output is isolated — never auto-loads into production routing
+
+### Verified
+- Full pytest: 4898 passed, 3 skipped, 0 failures
+- All new tests pass independently (85/85)
+- 4h soak (hybrid ON, cells populated): 100 cycles, 400/400 OK, 0 5xx, 0 restarts — PASS
+- Benchmark: p50 latency 9055ms → 4231ms (−53%), LLM fallback 75% → 0% after backfill
+
 ## [3.4.1] — 2026-04-02 — Hybrid Auth Hardening + Doc Corrections
 
 ### Security

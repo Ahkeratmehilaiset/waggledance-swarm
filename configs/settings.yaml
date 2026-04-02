@@ -290,7 +290,7 @@ elastic_scaling:
   vram_unload_threshold_pct: 90
   queue_spawn_threshold: 10
 hybrid_retrieval:
-  enabled: false              # v3.4: hybrid FAISS + hex-cell retrieval (default OFF until benchmarked)
+  enabled: false              # default OFF; enable per-deployment after backfill
   ring2_enabled: false        # search ring-2 neighbors (neighbor-of-neighbor)
   min_score: 0.35             # minimum similarity score for a hit
   sufficient_score: 0.70      # score above which we stop searching further layers

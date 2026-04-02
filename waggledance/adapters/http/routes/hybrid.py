@@ -101,3 +101,36 @@ def hybrid_test_assign(
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.get("/api/hybrid/backfill/status")
+def backfill_status(container=Depends(get_container), _auth=Depends(require_auth)):
+    """Return backfill service status."""
+    try:
+        bf = container.hybrid_backfill
+        return bf.status()
+    except Exception as e:
+        logger.debug("Backfill status error: %s", e)
+        return {"running": False, "total_runs": 0, "indexed_ids_count": 0, "last_result": None}
+
+
+@router.post("/api/hybrid/backfill/run")
+async def backfill_run(
+    request: Request,
+    container=Depends(get_container),
+    _auth=Depends(require_auth),
+):
+    """Trigger a backfill run. Optional body: {"dry_run": true, "limit": 5000}."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    dry_run = body.get("dry_run", False)
+    limit = body.get("limit", 5000)
+
+    bf = container.hybrid_backfill
+    if bf.is_running:
+        return {"error": "Backfill already in progress", "running": True}
+
+    result = await bf.run(dry_run=bool(dry_run), limit=int(limit))
+    return result.to_dict()

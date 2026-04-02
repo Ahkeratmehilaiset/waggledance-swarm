@@ -309,6 +309,42 @@ class Container:
         )
 
     @cached_property
+    def hybrid_backfill(self):
+        """HybridBackfillService — idempotent cell-local FAISS population."""
+        from waggledance.application.services.hybrid_backfill_service import (
+            HybridBackfillService,
+        )
+        # Get case store from autonomy runtime if available
+        case_store = None
+        try:
+            rt = self.autonomy_service._runtime
+            case_store = rt.case_store
+        except Exception:
+            pass
+
+        # Reuse same embed_fn as hybrid_retrieval
+        embed_fn = getattr(self.hybrid_retrieval, '_embed_fn', None)
+
+        return HybridBackfillService(
+            hybrid_retrieval=self.hybrid_retrieval,
+            case_store=case_store,
+            embed_fn=embed_fn,
+        )
+
+    @cached_property
+    def solver_candidate_lab(self):
+        """SolverCandidateLab — safe solver candidate generation (isolated from production)."""
+        from waggledance.application.services.solver_candidate_lab import SolverCandidateLab
+        return SolverCandidateLab(llm=self.llm if not self._stub else None)
+
+    @cached_property
+    def synthetic_accelerator(self):
+        """SyntheticTrainingAccelerator — deterministic synthetic data augmentation."""
+        from waggledance.core.learning.synthetic_accelerator import SyntheticTrainingAccelerator
+        gpu_enabled = bool(self._settings.get("learning.gpu_enabled", False))
+        return SyntheticTrainingAccelerator(gpu_enabled=gpu_enabled)
+
+    @cached_property
     def storage_health(self):
         """StorageHealthService — DB size/WAL introspection."""
         from waggledance.application.services.storage_health_service import StorageHealthService

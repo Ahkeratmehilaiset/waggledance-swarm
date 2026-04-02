@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-WaggleDance Restore & Environment Validator v3.3
+WaggleDance Restore & Environment Validator v3.5
 =================================================
 Validates the environment and restores from a backup zip if needed.
 Supports restore to any target directory via --target flag.
-v3.3: Updated agent count, entry point references for production-ready arch.
+v3.5: Updated for v3.5.0 architecture (4898 pytest tests, hybrid retrieval).
 
 Usage:
     python tools/waggle_restore.py                          # Validate only
@@ -51,6 +51,7 @@ REQUIRED_DATA_DIRS = [
     "data",
     "data/chroma_db",
     "data/micromodel_v1",
+    "data/faiss",
 ]
 
 G = "\033[92m"; R = "\033[91m"; Y = "\033[93m"; B = "\033[94m"
@@ -617,7 +618,7 @@ def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
 
         # Check key directories
         for d in ["agents", "configs", "core", "data", "integrations",
-                   "backend", "web", "tests", "tools", "voikko"]:
+                   "waggledance", "web", "tests", "tools", "voikko"]:
             if (tmp / d).is_dir():
                 r.ok(f"Dir {d}/", "present")
             else:
@@ -734,7 +735,7 @@ def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
 
 # ── Main ──────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v3.3")
+    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v3.5")
     parser.add_argument("--restore", metavar="ZIPFILE", help="Restore from backup zip file")
     parser.add_argument("--target", metavar="DIR", help="Target directory for restore (default: project root)")
     parser.add_argument("--test-restore", metavar="ZIPFILE", help="Test restore to temp dir (non-destructive)")
@@ -748,7 +749,7 @@ def main():
         REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
 
     print(f"\n{B}{'='*55}")
-    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v3.3")
+    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v3.5")
     print(f"  Project: {PROJECT_ROOT}")
     print(f"{'='*55}{W}\n")
 

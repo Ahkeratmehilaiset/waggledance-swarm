@@ -29,6 +29,12 @@ class Container:
         )
 
     @cached_property
+    def gemma_router(self):
+        """GemmaProfileRouter — optional dual-tier Gemma 4 model routing."""
+        from waggledance.application.services.gemma_profile_router import GemmaProfileRouter
+        return GemmaProfileRouter(settings=self._settings, default_llm=self.llm)
+
+    @cached_property
     def vector_store(self):
         """VectorStorePort implementation."""
         if self._stub:

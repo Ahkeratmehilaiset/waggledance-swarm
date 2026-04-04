@@ -40,6 +40,14 @@ class WaggleSettings:
     learning_model: str = "llama3.2:1b"
     embed_model: str = "nomic-embed-text"
 
+    # Gemma 4 dual-tier (optional, OFF by default)
+    gemma_enabled: bool = False
+    gemma_fast_model: str = "gemma4:e4b"
+    gemma_heavy_model: str = "gemma4:26b"
+    gemma_active_profile: str = "disabled"  # disabled|fast_only|heavy_only|dual_tier
+    gemma_heavy_reasoning_only: bool = True
+    gemma_degrade_to_default: bool = True
+
     # Hardware tier (auto-detected if not set)
     hardware_tier: str = "auto"
 
@@ -90,6 +98,9 @@ class WaggleSettings:
         yaml_base = _load_yaml_settings(yaml_path)
         yaml_runtime = yaml_base.get("runtime", {})
 
+        # Gemma profiles from YAML
+        gemma_cfg = yaml_base.get("gemma_profiles", {})
+
         settings = cls(
             profile=os.environ.get(
                 "WAGGLE_PROFILE",
@@ -100,6 +111,24 @@ class WaggleSettings:
             chat_model=os.environ.get("WAGGLE_CHAT_MODEL", "phi4-mini"),
             learning_model=os.environ.get("WAGGLE_LEARNING_MODEL", "llama3.2:1b"),
             embed_model=os.environ.get("WAGGLE_EMBED_MODEL", "nomic-embed-text"),
+            gemma_enabled=_parse_bool(os.environ.get(
+                "WAGGLE_GEMMA_ENABLED",
+                str(gemma_cfg.get("enabled", False)))),
+            gemma_fast_model=os.environ.get(
+                "WAGGLE_GEMMA_FAST_MODEL",
+                gemma_cfg.get("fast_model", "gemma4:e4b")),
+            gemma_heavy_model=os.environ.get(
+                "WAGGLE_GEMMA_HEAVY_MODEL",
+                gemma_cfg.get("heavy_model", "gemma4:26b")),
+            gemma_active_profile=os.environ.get(
+                "WAGGLE_GEMMA_PROFILE",
+                gemma_cfg.get("active_profile", "disabled")),
+            gemma_heavy_reasoning_only=_parse_bool(os.environ.get(
+                "WAGGLE_GEMMA_HEAVY_REASONING_ONLY",
+                str(gemma_cfg.get("heavy_reasoning_only", True)))),
+            gemma_degrade_to_default=_parse_bool(os.environ.get(
+                "WAGGLE_GEMMA_DEGRADE_TO_DEFAULT",
+                str(gemma_cfg.get("degrade_to_default", True)))),
             hardware_tier=os.environ.get("WAGGLE_HW_TIER", "auto"),
             api_key=os.environ.get("WAGGLE_API_KEY", "").strip(),
             max_agents=int(os.environ.get("WAGGLE_MAX_AGENTS", "75")),

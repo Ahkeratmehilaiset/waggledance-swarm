@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-04-02
-**Version:** v3.5.0
+**Updated:** 2026-04-04
+**Version:** v3.5.0 (proof run complete)
 
 ---
 
@@ -159,3 +159,27 @@ These test suites are the gatekeepers — all must pass before any change is mer
 
 **Tools Added:**
 - `tools/night_monitor.py` — 10h sync HTTP-based production monitor
+
+---
+
+## v3.5.0 Proof Run (2026-04-02 to 2026-04-04)
+
+Full autonomous proof run validating hybrid retrieval, candidate lab, and synthetic accelerator.
+
+| Phase | Result | Detail |
+|-------|--------|--------|
+| P7A | PASS | Baseline benchmark (hybrid OFF), p50=9055ms |
+| P7B | PASS | Hybrid ON before backfill, cells empty |
+| P7C | PASS | Backfill: 4890/5000 indexed, 8/8 hex-cells |
+| P7D | PASS | After backfill: p50=4231ms (-53%), LLM fallback 0% |
+| P7E | PASS | Candidate lab: 2 compiled, 0 routed, AST 5/5 |
+| P7F | PASS | Accelerator: 200->568 rows, perfect class balance |
+| P7G | PASS | 30h soak: 750/750 cycles, 4500 req, 0 fail |
+| P7H | PASS | Report finalized |
+
+**Key metrics:**
+- p50 latency: 9055ms -> 4231ms (-53%) after backfill
+- LLM fallback: 75% -> 0%
+- Local FAISS hits: 0% -> 75%
+- Fix cycles: 1/3 used (backfill content extraction)
+- Full report: `docs/PROOF_RUN_REPORT_v350.md`

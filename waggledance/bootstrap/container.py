@@ -341,7 +341,16 @@ class Container:
     def solver_candidate_lab(self):
         """SolverCandidateLab — safe solver candidate generation (isolated from production)."""
         from waggledance.application.services.solver_candidate_lab import SolverCandidateLab
-        return SolverCandidateLab(llm=self.llm if not self._stub else None)
+        return SolverCandidateLab(
+            llm=self.llm if not self._stub else None,
+            gemma_router=self.gemma_router,
+        )
+
+    @cached_property
+    def gemma_verifier_advisor(self):
+        """GemmaVerifierAdvisor — optional advisory for deterministic verifier."""
+        from waggledance.application.services.solver_candidate_lab import GemmaVerifierAdvisor
+        return GemmaVerifierAdvisor(gemma_router=self.gemma_router)
 
     @cached_property
     def synthetic_accelerator(self):

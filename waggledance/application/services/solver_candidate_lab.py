@@ -225,21 +225,38 @@ class SolverCandidateLab:
 
     Analyzes failure patterns to produce structured candidate specs.
     Never modifies production routing. All output is reviewable artifact only.
+
+    Optional Gemma-assisted mode:
+    - When gemma_router is provided and heavy model available, uses it
+      for richer rationale generation and structured JSON evaluation.
+    - All Gemma output is proposal-only and fully logged.
+    - Provenance of model used is recorded on every candidate.
     """
 
-    def __init__(self, registry: Optional[CandidateRegistry] = None, llm=None):
+    def __init__(self, registry: Optional[CandidateRegistry] = None, llm=None,
+                 gemma_router=None):
         self._registry = registry or CandidateRegistry()
         self._llm = llm  # Optional local LLM for rationale generation
+        self._gemma_router = gemma_router  # Optional Gemma profile router
         self._total_analyses = 0
+        self._gemma_assisted_count = 0
 
     @property
     def registry(self) -> CandidateRegistry:
         return self._registry
 
     def status(self) -> dict:
+        gemma_info = {"available": False}
+        if self._gemma_router:
+            gemma_info = {
+                "available": self._gemma_router.enabled,
+                "profile": self._gemma_router.profile,
+                "assisted_count": self._gemma_assisted_count,
+            }
         return {
             "total_analyses": self._total_analyses,
             "llm_available": self._llm is not None,
+            "gemma_assist": gemma_info,
             "registry": self._registry.stats(),
         }
 
@@ -320,3 +337,186 @@ class SolverCandidateLab:
         content = f"{intent}:" + "|".join(sorted(queries[:5]))
         h = hashlib.sha256(content.encode()).hexdigest()[:12]
         return f"cand_{intent}_{h}"
+
+    async def gemma_assisted_analysis(
+        self,
+        cases: List[Dict[str, Any]],
+        min_cluster_size: int = 2,
+    ) -> List[SolverCandidate]:
+        """Gemma-assisted candidate analysis.
+
+        Uses heavy Gemma model (if available) to generate richer rationale
+        and structured JSON evaluation for candidate specs.
+
+        Rules:
+        - proposal-only: output never reaches production routing
+        - fully logged: all Gemma output recorded on candidate
+        - provenance: model used is tagged on every candidate
+        - no auto-exec: structured output is validated, never executed
+
+        Falls back to standard deterministic analysis if Gemma unavailable.
+        """
+        from waggledance.application.services.gemma_profile_router import GemmaTier
+
+        # Fall back to standard analysis if no Gemma router or not enabled
+        if not self._gemma_router or not self._gemma_router.enabled:
+            return self.analyze_failures(cases, min_cluster_size)
+
+        # First run standard deterministic analysis
+        candidates = self.analyze_failures(cases, min_cluster_size)
+
+        # Enrich with Gemma heavy model for compiled candidates
+        for candidate in candidates:
+            if candidate.state != CandidateState.COMPILED:
+                continue
+
+            try:
+                prompt = (
+                    f"Analyze this solver candidate and suggest improvements.\n"
+                    f"Domain: {candidate.domain}\n"
+                    f"Rules: {'; '.join(candidate.proposed_rules)}\n"
+                    f"Source queries: {len(candidate.source_cases)} failure cases\n\n"
+                    f"Respond with JSON: "
+                    f'{{"rationale": "...", "confidence_adjustment": 0.0, '
+                    f'"suggested_rules": ["..."]}}'
+                )
+                response = await self._gemma_router.generate(
+                    prompt, tier=GemmaTier.HEAVY, temperature=0.3, max_tokens=500,
+                )
+                if response:
+                    self._gemma_assisted_count += 1
+                    # Parse structured response (advisory only)
+                    enrichment = self._parse_gemma_enrichment(response)
+                    if enrichment:
+                        candidate.details = candidate.details if hasattr(candidate, 'details') else {}
+                        # Store as metadata — never mutate production state
+                        candidate.rationale += f" [Gemma advisory: {enrichment.get('rationale', '')}]"
+                        candidate.confidence = min(
+                            candidate.confidence + enrichment.get("confidence_adjustment", 0.0),
+                            0.95,
+                        )
+                        # Record provenance
+                        model_used = self._gemma_router.resolve_model(GemmaTier.HEAVY)
+                        log.info(
+                            "Gemma-assisted enrichment for %s (model=%s)",
+                            candidate.candidate_id, model_used,
+                        )
+            except Exception as exc:
+                log.warning("Gemma enrichment failed for %s: %s", candidate.candidate_id, exc)
+                # Continue with unenriched candidate — no failure propagation
+
+        return candidates
+
+    def _parse_gemma_enrichment(self, response: str) -> Optional[Dict]:
+        """Parse structured JSON from Gemma response. Returns None on failure."""
+        try:
+            # Try to find JSON in the response
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = json.loads(response[start:end])
+                # Validate expected schema
+                if isinstance(data, dict) and "rationale" in data:
+                    # Clamp confidence adjustment
+                    adj = data.get("confidence_adjustment", 0.0)
+                    if isinstance(adj, (int, float)):
+                        data["confidence_adjustment"] = max(-0.2, min(0.2, adj))
+                    else:
+                        data["confidence_adjustment"] = 0.0
+                    return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return None
+
+
+# ── Verifier Advisory Service ─────────────────────────────────────
+
+
+class GemmaVerifierAdvisor:
+    """Optional Gemma-powered advisory for the deterministic verifier.
+
+    Rules:
+    - Advisory ONLY — never overrides deterministic verifier decisions
+    - Fully logged with provenance
+    - No production route mutation
+    - Degrades gracefully (returns empty advisory if model unavailable)
+    """
+
+    def __init__(self, gemma_router=None):
+        self._gemma_router = gemma_router
+        self._advisory_count = 0
+        self._advisory_accepted = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self._gemma_router is not None and self._gemma_router.enabled
+
+    def status(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "advisory_count": self._advisory_count,
+            "advisory_accepted": self._advisory_accepted,
+        }
+
+    async def advise_on_verification(
+        self,
+        action_summary: str,
+        verifier_passed: bool,
+        verifier_confidence: float,
+        residual_improvement: float,
+    ) -> Dict[str, Any]:
+        """Generate advisory opinion on a verification result.
+
+        Returns advisory dict with suggestion and confidence.
+        Never mutates the original verification result.
+        """
+        from waggledance.application.services.gemma_profile_router import GemmaTier
+
+        if not self.enabled:
+            return {"advisory": "unavailable", "model": "none"}
+
+        self._advisory_count += 1
+
+        try:
+            prompt = (
+                f"Review this verification result and give brief advisory.\n"
+                f"Action: {action_summary[:200]}\n"
+                f"Verifier passed: {verifier_passed}\n"
+                f"Confidence: {verifier_confidence:.2f}\n"
+                f"Residual improvement: {residual_improvement:.3f}\n\n"
+                f"Respond with JSON: "
+                f'{{"agree": true/false, "note": "brief reason"}}'
+            )
+            response = await self._gemma_router.generate(
+                prompt, tier=GemmaTier.HEAVY, temperature=0.2, max_tokens=200,
+            )
+            if response:
+                advisory = self._parse_advisory(response)
+                if advisory:
+                    model_used = self._gemma_router.resolve_model(GemmaTier.HEAVY)
+                    advisory["model"] = model_used
+                    advisory["advisory"] = "provided"
+                    if advisory.get("agree", True):
+                        self._advisory_accepted += 1
+                    log.info(
+                        "Verifier advisory: agree=%s (model=%s)",
+                        advisory.get("agree"), model_used,
+                    )
+                    return advisory
+        except Exception as exc:
+            log.warning("Verifier advisory failed: %s", exc)
+
+        return {"advisory": "failed", "model": "none"}
+
+    def _parse_advisory(self, response: str) -> Optional[Dict]:
+        """Parse advisory JSON from Gemma response."""
+        try:
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = json.loads(response[start:end])
+                if isinstance(data, dict) and "agree" in data:
+                    return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return None

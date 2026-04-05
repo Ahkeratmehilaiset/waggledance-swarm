@@ -48,6 +48,17 @@ class WaggleSettings:
     gemma_heavy_reasoning_only: bool = True
     gemma_degrade_to_default: bool = True
 
+    # Parallel LLM dispatch (optional, OFF by default)
+    llm_parallel_enabled: bool = False
+    llm_parallel_max_concurrent: int = 4
+    llm_parallel_max_inflight_per_model: int = 2
+    llm_parallel_request_timeout_s: int = 120
+    llm_parallel_round_table_first_pass: bool = False
+    llm_parallel_dream_batch: int = 1
+    llm_parallel_candidate_lab: int = 1
+    llm_parallel_verifier_advisory: int = 1
+    llm_parallel_dedupe: bool = True
+
     # Hardware tier (auto-detected if not set)
     hardware_tier: str = "auto"
 
@@ -101,6 +112,9 @@ class WaggleSettings:
         # Gemma profiles from YAML
         gemma_cfg = yaml_base.get("gemma_profiles", {})
 
+        # Parallel LLM dispatch from YAML
+        par_cfg = yaml_base.get("llm_parallel", {})
+
         settings = cls(
             profile=os.environ.get(
                 "WAGGLE_PROFILE",
@@ -129,6 +143,33 @@ class WaggleSettings:
             gemma_degrade_to_default=_parse_bool(os.environ.get(
                 "WAGGLE_GEMMA_DEGRADE_TO_DEFAULT",
                 str(gemma_cfg.get("degrade_to_default", True)))),
+            llm_parallel_enabled=_parse_bool(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_ENABLED",
+                str(par_cfg.get("enabled", False)))),
+            llm_parallel_max_concurrent=int(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_MAX_CONCURRENT",
+                par_cfg.get("max_concurrent", 4))),
+            llm_parallel_max_inflight_per_model=int(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_MAX_INFLIGHT",
+                par_cfg.get("max_inflight_per_model", 2))),
+            llm_parallel_request_timeout_s=int(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_TIMEOUT",
+                par_cfg.get("request_timeout_s", 120))),
+            llm_parallel_round_table_first_pass=_parse_bool(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_RT_FIRST",
+                str(par_cfg.get("round_table_parallel_first_pass", False)))),
+            llm_parallel_dream_batch=int(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_DREAM",
+                par_cfg.get("dream_batch_parallelism", 1))),
+            llm_parallel_candidate_lab=int(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_CANDIDATE",
+                par_cfg.get("candidate_lab_parallelism", 1))),
+            llm_parallel_verifier_advisory=int(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_VERIFIER",
+                par_cfg.get("verifier_advisory_parallelism", 1))),
+            llm_parallel_dedupe=_parse_bool(os.environ.get(
+                "WAGGLE_LLM_PARALLEL_DEDUPE",
+                str(par_cfg.get("dedupe_identical_prompts", True)))),
             hardware_tier=os.environ.get("WAGGLE_HW_TIER", "auto"),
             api_key=os.environ.get("WAGGLE_API_KEY", "").strip(),
             max_agents=int(os.environ.get("WAGGLE_MAX_AGENTS", "75")),

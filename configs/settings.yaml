@@ -289,6 +289,17 @@ elastic_scaling:
   auto_detect: true
   vram_unload_threshold_pct: 90
   queue_spawn_threshold: 10
+llm_parallel:
+  enabled: false              # OFF by default — enable for parallel LLM dispatch
+  max_concurrent: 4           # Global asyncio semaphore limit
+  max_inflight_per_model: 2   # Per-model (fast/heavy/default) inflight cap
+  request_timeout_s: 120      # Per-request timeout for parallel dispatch
+  round_table_parallel_first_pass: false  # Parallelize first round-table pass
+  dream_batch_parallelism: 1  # Max parallel dream/counterfactual simulations (1=sequential)
+  candidate_lab_parallelism: 1  # Max parallel candidate-lab enrichments (1=sequential)
+  verifier_advisory_parallelism: 1  # Max parallel verifier advisory calls (1=sequential)
+  dedupe_identical_prompts: true  # Deduplicate identical concurrent prompts
+
 gemma_profiles:
   enabled: false              # OFF by default — enable for Gemma 4 evaluation
   fast_model: "gemma4:e4b"    # Fast Gemma 4 for tool/agent/fallback work

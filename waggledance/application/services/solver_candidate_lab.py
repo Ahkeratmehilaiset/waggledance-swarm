@@ -234,10 +234,11 @@ class SolverCandidateLab:
     """
 
     def __init__(self, registry: Optional[CandidateRegistry] = None, llm=None,
-                 gemma_router=None):
+                 gemma_router=None, parallel_dispatcher=None):
         self._registry = registry or CandidateRegistry()
         self._llm = llm  # Optional local LLM for rationale generation
         self._gemma_router = gemma_router  # Optional Gemma profile router
+        self._parallel_dispatcher = parallel_dispatcher
         self._total_analyses = 0
         self._gemma_assisted_count = 0
 
@@ -366,36 +367,64 @@ class SolverCandidateLab:
         candidates = self.analyze_failures(cases, min_cluster_size)
 
         # Enrich with Gemma heavy model for compiled candidates
-        for candidate in candidates:
-            if candidate.state != CandidateState.COMPILED:
-                continue
+        compiled = [c for c in candidates if c.state == CandidateState.COMPILED]
 
+        if not compiled:
+            return candidates
+
+        # Build prompts for all compiled candidates
+        prompts = []
+        for candidate in compiled:
+            prompt = (
+                f"Analyze this solver candidate and suggest improvements.\n"
+                f"Domain: {candidate.domain}\n"
+                f"Rules: {'; '.join(candidate.proposed_rules)}\n"
+                f"Source queries: {len(candidate.source_cases)} failure cases\n\n"
+                f"Respond with JSON: "
+                f'{{"rationale": "...", "confidence_adjustment": 0.0, '
+                f'"suggested_rules": ["..."]}}'
+            )
+            prompts.append(prompt)
+
+        # Parallel dispatch when available — enrichments are independent
+        use_parallel = (
+            self._parallel_dispatcher
+            and self._parallel_dispatcher.enabled
+            and getattr(self._parallel_dispatcher._settings,
+                        'llm_parallel_candidate_lab', 1) > 1
+        )
+
+        if use_parallel:
+            batch = [(p, "heavy", 0.3, 500) for p in prompts]
+            responses = await self._parallel_dispatcher.dispatch_batch(
+                batch, tier="heavy",
+            )
+        else:
+            # Sequential (old behavior)
+            responses = []
+            for prompt in prompts:
+                try:
+                    r = await self._gemma_router.generate(
+                        prompt, tier=GemmaTier.HEAVY, temperature=0.3, max_tokens=500,
+                    )
+                    responses.append(r)
+                except Exception as exc:
+                    log.warning("Gemma enrichment failed: %s", exc)
+                    responses.append("")
+
+        # Apply enrichments
+        for candidate, response in zip(compiled, responses):
             try:
-                prompt = (
-                    f"Analyze this solver candidate and suggest improvements.\n"
-                    f"Domain: {candidate.domain}\n"
-                    f"Rules: {'; '.join(candidate.proposed_rules)}\n"
-                    f"Source queries: {len(candidate.source_cases)} failure cases\n\n"
-                    f"Respond with JSON: "
-                    f'{{"rationale": "...", "confidence_adjustment": 0.0, '
-                    f'"suggested_rules": ["..."]}}'
-                )
-                response = await self._gemma_router.generate(
-                    prompt, tier=GemmaTier.HEAVY, temperature=0.3, max_tokens=500,
-                )
                 if response:
                     self._gemma_assisted_count += 1
-                    # Parse structured response (advisory only)
                     enrichment = self._parse_gemma_enrichment(response)
                     if enrichment:
                         candidate.details = candidate.details if hasattr(candidate, 'details') else {}
-                        # Store as metadata — never mutate production state
                         candidate.rationale += f" [Gemma advisory: {enrichment.get('rationale', '')}]"
                         candidate.confidence = min(
                             candidate.confidence + enrichment.get("confidence_adjustment", 0.0),
                             0.95,
                         )
-                        # Record provenance
                         model_used = self._gemma_router.resolve_model(GemmaTier.HEAVY)
                         log.info(
                             "Gemma-assisted enrichment for %s (model=%s)",
@@ -403,7 +432,6 @@ class SolverCandidateLab:
                         )
             except Exception as exc:
                 log.warning("Gemma enrichment failed for %s: %s", candidate.candidate_id, exc)
-                # Continue with unenriched candidate — no failure propagation
 
         return candidates
 

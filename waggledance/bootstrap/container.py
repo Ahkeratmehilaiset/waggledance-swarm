@@ -119,7 +119,10 @@ class Container:
         """Orchestrator from core orchestration."""
         from waggledance.core.orchestration.orchestrator import Orchestrator
         from waggledance.core.orchestration.round_table import RoundTableEngine
-        rt = RoundTableEngine(llm=self.llm, event_bus=self.event_bus)
+        rt = RoundTableEngine(
+            llm=self.llm, event_bus=self.event_bus,
+            parallel_dispatcher=self.parallel_dispatcher,
+        )
         return Orchestrator(
             scheduler=self.scheduler,
             round_table=rt,
@@ -130,6 +133,7 @@ class Container:
             event_bus=self.event_bus,
             config=self.config,
             agents=[],
+            parallel_dispatcher=self.parallel_dispatcher,
         )
 
     # --- Application Services (lazy imports) ---
@@ -338,12 +342,29 @@ class Container:
         )
 
     @cached_property
+    def parallel_dispatcher(self):
+        """ParallelLLMDispatcher — bounded concurrent LLM dispatch.
+
+        Feature-flagged via llm_parallel.enabled in settings.yaml.
+        When disabled, dispatch() is a zero-overhead passthrough.
+        """
+        from waggledance.application.services.parallel_llm_dispatcher import (
+            ParallelLLMDispatcher,
+        )
+        return ParallelLLMDispatcher(
+            settings=self._settings,
+            llm=self.llm,
+            gemma_router=self.gemma_router,
+        )
+
+    @cached_property
     def solver_candidate_lab(self):
         """SolverCandidateLab — safe solver candidate generation (isolated from production)."""
         from waggledance.application.services.solver_candidate_lab import SolverCandidateLab
         return SolverCandidateLab(
             llm=self.llm if not self._stub else None,
             gemma_router=self.gemma_router,
+            parallel_dispatcher=self.parallel_dispatcher,
         )
 
     @cached_property

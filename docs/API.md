@@ -269,6 +269,52 @@ When disabled: `{"gemma_profiles": {"enabled": false}}`.
 
 ---
 
+## Parallel LLM Dispatch (v3.5.2+)
+
+Optional bounded concurrent LLM dispatch with per-model inflight limits. No new endpoints — metrics exposed through existing `/api/status` and `/api/ops`.
+
+**Feature flag:** `llm_parallel.enabled` in `configs/settings.yaml` (default: `false`).
+
+When enabled, `/api/status` and `/api/ops` include an `llm_parallel` section:
+
+```json
+{
+  "llm_parallel": {
+    "enabled": true,
+    "queue_depth": 0,
+    "inflight_total": 0,
+    "inflight_fast": 0,
+    "inflight_heavy": 0,
+    "inflight_default": 0,
+    "completed_parallel_batches": 12,
+    "total_dispatched": 48,
+    "total_completed": 48,
+    "timeout_count": 0,
+    "cancelled_count": 0,
+    "deduped_requests": 2,
+    "degrade_to_sequential_count": 0
+  }
+}
+```
+
+When disabled: `{"llm_parallel": {"enabled": false}}`.
+
+**Configuration keys** (in `configs/settings.yaml` under `llm_parallel`):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Master switch |
+| `max_concurrent` | `4` | Global asyncio semaphore limit |
+| `max_inflight_per_model` | `2` | Per-model-line semaphore (fast/heavy/default) |
+| `request_timeout_s` | `120` | Timeout per LLM call |
+| `round_table_parallel_first_pass` | `false` | Parallel agent first pass in round table |
+| `dream_batch_parallelism` | `1` | Dream mode batch size (1 = sequential) |
+| `candidate_lab_parallelism` | `1` | Candidate enrichment batch size |
+| `verifier_advisory_parallelism` | `1` | Verifier advisory batch size |
+| `dedupe_identical_prompts` | `true` | SHA-256 dedup of identical concurrent requests |
+
+---
+
 ## Analytics
 
 | Endpoint | Method | Description |

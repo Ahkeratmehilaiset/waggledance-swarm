@@ -39,6 +39,7 @@ class Orchestrator:
         event_bus: EventBusPort,
         config: ConfigPort,
         agents: list[AgentDefinition],
+        parallel_dispatcher=None,
     ) -> None:
         self._scheduler = scheduler
         self._round_table = round_table
@@ -49,6 +50,7 @@ class Orchestrator:
         self._event_bus = event_bus
         self._config = config
         self._agents = list(agents)
+        self._parallel_dispatcher = parallel_dispatcher
         self._scheduler_state = SchedulerState()
         self._background_tasks: set[asyncio.Task] = set()
 
@@ -143,16 +145,28 @@ class Orchestrator:
             n=6,
         )
 
-        responses: list[AgentResult] = []
-        for agent in selected:
-            response = await self._llm.generate(
-                prompt=(
-                    f"You are {agent.name} ({agent.domain}). "
-                    f"Answer briefly: {task.query}"
-                ),
-                max_tokens=150,
-                temperature=0.7,
+        # Build prompts for all agents
+        prompts = [
+            (
+                f"You are {agent.name} ({agent.domain}). "
+                f"Answer briefly: {task.query}"
             )
+            for agent in selected
+        ]
+
+        # Parallel dispatch when enabled — agents are independent at this stage
+        if (self._parallel_dispatcher
+                and self._parallel_dispatcher.enabled):
+            batch = [(p, "default", 0.7, 150) for p in prompts]
+            raw = await self._parallel_dispatcher.dispatch_batch(batch)
+        else:
+            raw = []
+            for p in prompts:
+                r = await self._llm.generate(prompt=p, max_tokens=150, temperature=0.7)
+                raw.append(r)
+
+        responses: list[AgentResult] = []
+        for agent, response in zip(selected, raw):
             responses.append(AgentResult(
                 agent_id=agent.id,
                 response=response,
@@ -205,10 +219,23 @@ class Orchestrator:
     async def _execute_agents(
         self, task: TaskRequest, agents: list[AgentDefinition], route: TaskRoute
     ) -> AgentResult:
-        """Execute task with selected agents, return best result."""
+        """Execute task with selected agents, return best result.
+
+        When parallel_dispatcher is enabled, all agent LLM calls run concurrently
+        (they are independent — each agent answers the same query).
+        """
         start = time.monotonic()
 
-        best: AgentResult | None = None
+        # Build prompts
+        prompts = [
+            (
+                f"You are {agent.name}, expert in {agent.domain}. "
+                f"Answer: {task.query}"
+            )
+            for agent in agents
+        ]
+
+        # Publish AGENT_STARTED for all
         for agent in agents:
             await self._event_bus.publish(DomainEvent(
                 type=EventType.AGENT_STARTED,
@@ -217,16 +244,21 @@ class Orchestrator:
                 source="orchestrator",
             ))
 
-            response = await self._llm.generate(
-                prompt=(
-                    f"You are {agent.name}, expert in {agent.domain}. "
-                    f"Answer: {task.query}"
-                ),
-                max_tokens=500,
-                temperature=0.7,
-            )
-            elapsed = (time.monotonic() - start) * 1000
+        # Dispatch: parallel or sequential
+        if (self._parallel_dispatcher
+                and self._parallel_dispatcher.enabled):
+            batch = [(p, "default", 0.7, 500) for p in prompts]
+            raw_responses = await self._parallel_dispatcher.dispatch_batch(batch)
+        else:
+            raw_responses = []
+            for p in prompts:
+                r = await self._llm.generate(prompt=p, max_tokens=500, temperature=0.7)
+                raw_responses.append(r)
 
+        # Build results and find best
+        best: AgentResult | None = None
+        for agent, response in zip(agents, raw_responses):
+            elapsed = (time.monotonic() - start) * 1000
             result = AgentResult(
                 agent_id=agent.id,
                 response=response,

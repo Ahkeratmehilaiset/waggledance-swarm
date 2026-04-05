@@ -2,7 +2,7 @@
 
 > Local-first AI runtime with solver-first routing, self-training specialists, overnight dream learning, and full MAGMA audit trail.
 
-[![Tests](https://img.shields.io/badge/tests-4898%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-4968%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 
@@ -58,6 +58,7 @@ Query → Language Detection → Solver Router
 | **3 — Authoritative** | Decides | Solver engines, World Model, Policy Engine, Verifier |
 | **2 — Learned** | Adapts | 14 specialist models with canary lifecycle |
 | **1 — Fallback** | Explains | LLM — only when solvers and specialists cannot handle it |
+| **1b — Optional** | Gemma 4 | Optional dual-tier Gemma 4 profiles: fast (e4b) for general fallback, heavy (26b) for hard reasoning |
 
 ### Source Layout
 
@@ -165,7 +166,7 @@ Docked panel with 8 tabs + Chat. Bilingual FI/EN.
 
 | Metric | Value |
 |--------|-------|
-| Version | v3.5.0 |
+| Version | v3.5.1 |
 | Architecture | Hexagonal — DI container, port/adapter, single-product |
 | Runtime | ElasticScaler + AdaptiveThrottle + ResourceGuard via DI |
 | Specialist models | 14 (real sklearn training, canary lifecycle) |

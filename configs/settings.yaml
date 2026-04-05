@@ -290,7 +290,7 @@ elastic_scaling:
   vram_unload_threshold_pct: 90
   queue_spawn_threshold: 10
 gemma_profiles:
-  enabled: false              # OFF by default; enable to use Gemma 4 models
+  enabled: false              # OFF by default — enable for Gemma 4 evaluation
   fast_model: "gemma4:e4b"    # Fast Gemma 4 for tool/agent/fallback work
   heavy_model: "gemma4:26b"   # Heavy Gemma 4 for reasoning/candidate-lab/verifier
   active_profile: "disabled"  # disabled | fast_only | heavy_only | dual_tier

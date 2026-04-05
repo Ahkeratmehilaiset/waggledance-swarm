@@ -31,9 +31,11 @@ class ConsensusResult:
 class RoundTableEngine:
     """Multi-agent consensus through sequential discussion and synthesis."""
 
-    def __init__(self, llm: LLMPort, event_bus: EventBusPort) -> None:
+    def __init__(self, llm: LLMPort, event_bus: EventBusPort,
+                 parallel_dispatcher=None) -> None:
         self._llm = llm
         self._event_bus = event_bus
+        self._parallel_dispatcher = parallel_dispatcher
 
     async def deliberate(
         self,
@@ -55,34 +57,73 @@ class RoundTableEngine:
             source="round_table",
         ))
 
+        # Phase 1: Agent reviews
+        # When parallel_dispatcher enabled with round_table_parallel_first_pass,
+        # agents see all initial responses but not each other's reviews (parallel).
+        # Otherwise, sequential with sliding window of previous 3 reviews.
+        use_parallel = (
+            self._parallel_dispatcher
+            and self._parallel_dispatcher.enabled
+            and hasattr(self._parallel_dispatcher, '_settings')
+            and getattr(self._parallel_dispatcher._settings,
+                        'llm_parallel_round_table_first_pass', False)
+        )
+
         discussion: list[dict[str, str]] = []
-        for agent, result in zip(agents, agent_responses):
-            prev_text = ""
-            if discussion:
-                recent = discussion[-3:]
-                prev_text = "\n".join(
-                    f"[{d['agent']}]: {d['response']}" for d in recent
+
+        if use_parallel:
+            # Parallel first pass: build all prompts with initial responses as context
+            all_initial = "\n".join(
+                f"[{a.name}]: {r.response[:200]}"
+                for a, r in zip(agents, agent_responses) if r.response
+            )
+            batch = []
+            for agent, result in zip(agents, agent_responses):
+                review_prompt = (
+                    f"ROUND TABLE DISCUSSION\n"
+                    f"Topic: {task.query}\n"
+                    f"Initial responses from all agents:\n{all_initial}\n\n"
+                    f"You are {agent.name} ({agent.domain}). "
+                    f"Your initial answer was: {result.response[:200]}\n"
+                    f"Do you agree with the group? Refine your view. 2 sentences max."
+                )
+                batch.append((review_prompt, "default", 0.6, 150))
+            raw = await self._parallel_dispatcher.dispatch_batch(batch)
+            for agent, refined in zip(agents, raw):
+                if refined:
+                    discussion.append({
+                        "agent": agent.name,
+                        "response": refined,
+                    })
+        else:
+            # Sequential: each agent sees previous 3 reviews
+            for agent, result in zip(agents, agent_responses):
+                prev_text = ""
+                if discussion:
+                    recent = discussion[-3:]
+                    prev_text = "\n".join(
+                        f"[{d['agent']}]: {d['response']}" for d in recent
+                    )
+
+                review_prompt = (
+                    f"ROUND TABLE DISCUSSION\n"
+                    f"Topic: {task.query}\n"
+                    + (f"Previous speakers:\n{prev_text}\n\n" if prev_text else "")
+                    + f"You are {agent.name} ({agent.domain}). "
+                    f"Your initial answer was: {result.response[:200]}\n"
+                    f"Do you agree with the group? Refine your view. 2 sentences max."
                 )
 
-            review_prompt = (
-                f"ROUND TABLE DISCUSSION\n"
-                f"Topic: {task.query}\n"
-                + (f"Previous speakers:\n{prev_text}\n\n" if prev_text else "")
-                + f"You are {agent.name} ({agent.domain}). "
-                f"Your initial answer was: {result.response[:200]}\n"
-                f"Do you agree with the group? Refine your view. 2 sentences max."
-            )
-
-            refined = await self._llm.generate(
-                prompt=review_prompt,
-                max_tokens=150,
-                temperature=0.6,
-            )
-            if refined:
-                discussion.append({
-                    "agent": agent.name,
-                    "response": refined,
-                })
+                refined = await self._llm.generate(
+                    prompt=review_prompt,
+                    max_tokens=150,
+                    temperature=0.6,
+                )
+                if refined:
+                    discussion.append({
+                        "agent": agent.name,
+                        "response": refined,
+                    })
 
         if not discussion:
             return ConsensusResult(

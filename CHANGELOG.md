@@ -1,5 +1,34 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.5.2] — 2026-04-05 — Bounded Parallel LLM Dispatch
+
+### Added
+- **ParallelLLMDispatcher**: Feature-flagged bounded concurrent LLM dispatch with global + per-model asyncio semaphores, SHA-256 prompt deduplication, timeout/cancellation, and runtime metrics
+- **3 model lines**: fast (gemma4:e4b), heavy (gemma4:26b), default (phi4-mini) with independent inflight limits
+- **Orchestrator parallel integration**: `run_round_table()` and `_execute_agents()` dispatch agent LLM calls concurrently when enabled
+- **RoundTableEngine parallel first pass**: Optional parallel first-pass mode where all agents see initial responses instead of sequential sliding window
+- **SolverCandidateLab batch dispatch**: Candidate enrichments dispatched in parallel when `candidate_lab_parallelism > 1`
+- **Additive observability**: `/api/status` and `/api/ops` include `llm_parallel` metrics section (queue_depth, inflight counts, timeout/cancel/dedup counters)
+- **28 new focused tests**: dispatcher unit tests, semaphore limits, timeout, dedup, fallback, settings, container wiring, orchestrator integration
+
+### Changed
+- `configs/settings.yaml`: additive `llm_parallel` section (default: disabled)
+- `waggledance/bootstrap/container.py`: `parallel_dispatcher` cached property, wired to orchestrator/round_table/candidate_lab
+- `waggledance/core/orchestration/orchestrator.py`: accepts `parallel_dispatcher` for batch dispatch
+- `waggledance/core/orchestration/round_table.py`: accepts `parallel_dispatcher` for optional parallel first pass
+- `waggledance/application/services/solver_candidate_lab.py`: accepts `parallel_dispatcher` for batch enrichment
+
+### Security
+- No new public endpoints — parallel metrics exposed through existing status/ops endpoints
+- Feature-flagged OFF by default — no behavior change unless explicitly enabled
+- Security audit: no secrets exposed, no auth bypass, bounded concurrency prevents resource exhaustion
+
+### Verified
+- Full pytest: 4996 passed, 3 skipped, 0 failures (28 new tests)
+- Benchmark: 6 modes tested (A-F), all OK; +50-77% wall-time improvement with OLLAMA_NUM_PARALLEL=4
+- Soak (dual_tier + parallel ON): 264 cycles, 1,320 queries, 0 fail, 0 5xx — PASS
+- Default behavior unchanged when flag OFF: verified in unit tests
+
 ## [3.5.1] — 2026-04-05 — Gemma 4 Dual-Tier Fallback Evaluation
 
 ### Added

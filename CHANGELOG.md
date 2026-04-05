@@ -26,7 +26,7 @@
 ### Verified
 - Full pytest: 4996 passed, 3 skipped, 0 failures (28 new tests)
 - Benchmark: 6 modes tested (A-F), all 8/8 OK
-- Soak (dual_tier + parallel ON): 20+ cycles, 100+ queries, 0 fail, 0 5xx
+- Soak (dual_tier + parallel ON): 264 cycles, 1,320 queries, 0 fail, 0 5xx — PASS
 - Default behavior unchanged when flag OFF: verified in unit tests
 
 ## [3.5.1] — 2026-04-05 — Gemma 4 Dual-Tier Fallback Evaluation

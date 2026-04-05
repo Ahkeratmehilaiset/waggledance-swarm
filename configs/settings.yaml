@@ -283,6 +283,7 @@ elastic_scaling:
   vram_unload_threshold_pct: 90
   queue_spawn_threshold: 10
 llm_parallel:
+  # When enabling, also set OLLAMA_NUM_PARALLEL=4 for actual concurrent inference
   enabled: false
   max_concurrent: 4
   max_inflight_per_model: 2

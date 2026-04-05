@@ -25,7 +25,7 @@
 
 ### Verified
 - Full pytest: 4996 passed, 3 skipped, 0 failures (28 new tests)
-- Benchmark: 6 modes tested (A-F), all 8/8 OK
+- Benchmark: 6 modes tested (A-F), all OK; +50-77% wall-time improvement with OLLAMA_NUM_PARALLEL=4
 - Soak (dual_tier + parallel ON): 264 cycles, 1,320 queries, 0 fail, 0 5xx — PASS
 - Default behavior unchanged when flag OFF: verified in unit tests
 

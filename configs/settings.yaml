@@ -1,4 +1,4 @@
-profile: home  # gadget | cottage | home | factory
+profile: home
 facts:
   business_name: JKH Service
   owner: Jani Korpi
@@ -18,7 +18,6 @@ learning:
   prompt_apply_min_samples_per_arm: 3
   prompt_live_apply: false
   prompt_rollback_on_regression: true
-  # v3.2 autonomy learning
   primary_unit: case_trajectory
   llm_max_grade: bronze
   specialist_canary_hours: 48
@@ -43,9 +42,8 @@ llm_heartbeat:
   timeout: 15
 memory:
   db_path: data/waggle_dance.db
-  # v3.2 consolidation
   consolidation_enabled: true
-  consolidation_evict_enabled: false   # start safe; enable later in rollout
+  consolidation_evict_enabled: false
   consolidation_min_age_days: 90
   consolidation_retention_threshold: 0.1
   episodic_max_active_count: 10000
@@ -103,12 +101,12 @@ advanced_learning:
   hot_cache_size: 500
   fi_fast_enabled: true
   enrichment_enabled: true
-  enrichment_confidence: 0.80
+  enrichment_confidence: 0.8
   web_learning_enabled: true
   web_learning_daily_budget: 50
   distillation_enabled: false
-  distillation_api_key: ""
-  distillation_model: "claude-haiku-4-5-20251001"
+  distillation_api_key: ''
+  distillation_model: claude-haiku-4-5-20251001
   distillation_weekly_budget_eur: 5.0
   meta_learning_enabled: true
   code_review_enabled: true
@@ -121,13 +119,13 @@ advanced_learning:
   micro_model_min_pairs: 100
   enrichment_temporal_check: true
   failure_twin_enabled: true
-  failure_twin_threshold: 0.60
+  failure_twin_threshold: 0.6
   micro_model_promotion_enabled: true
   micro_model_promotion_min_pairs: 200
   micro_model_promotion_max_error: 0.03
   micro_model_holdout_ratio: 0.2
   micro_model_min_eval_examples: 25
-  micro_model_min_accuracy: 0.70
+  micro_model_min_accuracy: 0.7
   micro_model_promotion_margin: 0.02
   micro_model_eval_enabled: true
   agent_overlap_detection: true
@@ -137,22 +135,20 @@ advanced_learning:
     rss_feed_enabled: true
     benchmark_count: 2
     rebalance_every: 50
-    burst_threshold: 0.80
-    burst_max_share: 0.80
+    burst_threshold: 0.8
+    burst_max_share: 0.8
     throttle_pass_rate: 0.08
     throttle_window: 30
     throttle_pause_seconds: 300
     gap_high_threshold: 20
     gap_medium_threshold: 50
     gap_normal_threshold: 100
-    novelty_score_threshold: 0.80
+    novelty_score_threshold: 0.8
     dedup_score_threshold: 0.93
-    # D1: External source cycle frequencies (0 = disabled)
     ext_web_every_cycles: 10
     ext_distill_every_cycles: 20
     ext_rss_every_cycles: 10
-    # D2: Convergence detection
-    convergence_novelty_threshold: 0.10
+    convergence_novelty_threshold: 0.1
     convergence_patience: 5
     convergence_pause_s: 900
     convergence_window: 20
@@ -162,39 +158,37 @@ advanced_learning:
     eviction_check_every_n_flushes: 10
     eviction_batch_size: 500
     ttl_rules:
-      weather: 1           # hours
+      weather: 1
       electricity: 1
       electricity_optimization: 6
-      camera_event: 168    # 7 days
+      camera_event: 168
       audio_event: 168
       home_state: 1
       sensor_reading: 1
-      news: 720            # 30 days
-      self_enrichment: 2160  # 90 days
+      news: 720
+      self_enrichment: 2160
       web_learning: 2160
     protected_sources:
-      - user_teaching
-      - user_correction
-      - yaml_scan
-      - conversation
-      - round_table
-      - distillation
+    - user_teaching
+    - user_correction
+    - yaml_scan
+    - conversation
+    - round_table
+    - distillation
 feeds:
   enabled: true
-  # Weather locations per profile — device fetches weather for where it physically is
   profile_locations:
-    gadget: []          # too small for feeds
+    gadget: []
     cottage:
-      - Kouvola
+    - Kouvola
     home:
-      - Helsinki
+    - Helsinki
     factory:
-      - Helsinki
-      - Espoo
+    - Helsinki
+    - Espoo
   weather:
     enabled: true
     provider: fmi
-    # locations resolved from profile_locations + active profile at runtime
     interval_min: 30
   electricity:
     enabled: true
@@ -204,72 +198,71 @@ feeds:
     enabled: true
     interval_min: 60
     feeds:
-      - url: "https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_UUTISET"
-        name: Yle-uutiset
-        critical: true
-      - url: "https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_NEWS"
-        name: Yle-news-en
-        critical: false
-      - url: "https://blog.home-assistant.io/atom.xml"
-        name: HA-blog
-        critical: false
+    - url: https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_UUTISET
+      name: Yle-uutiset
+      critical: true
+    - url: https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_NEWS
+      name: Yle-news-en
+      critical: false
+    - url: https://blog.home-assistant.io/atom.xml
+      name: HA-blog
+      critical: false
 mqtt:
   enabled: false
-  host: "192.168.1.100"
+  host: 192.168.1.100
   mqtt_tls: true
   port: 8883
-  # mqtt_tls_insecure: false    # uncomment for self-signed certs
-  username: ""
-  password: ""
-  client_id: "waggledance"
+  username: ''
+  password: ''
+  client_id: waggledance
 home_assistant:
   enabled: false
-  url: "http://homeassistant.local:8123"
-  token: ""
+  url: http://homeassistant.local:8123
+  token: ''
   poll_interval_s: 60
   auto_discover: true
 frigate:
   enabled: false
-  mqtt_topic_prefix: "frigate"
+  mqtt_topic_prefix: frigate
   cameras: []
   min_score: 0.6
   dedup_window_s: 60
   severity_rules:
     critical:
-      - bear
-      - wolf
+    - bear
+    - wolf
     high:
-      - person_night
+    - person_night
     medium:
-      - dog
-      - cat
+    - dog
+    - cat
     info:
-      - person
-      - car
-      - bird
+    - person
+    - car
+    - bird
 alerts:
   enabled: false
   telegram:
     enabled: false
-    bot_token: ""
-    chat_id: ""
+    bot_token: ''
+    chat_id: ''
   webhook:
     enabled: false
-    url: ""
+    url: ''
     headers: {}
   rate_limit:
     max_per_minute: 5
 voice:
   enabled: false
   stt:
-    model: "small"
-    device: "cpu"
-    language: "fi"
+    model: small
+    device: cpu
+    language: fi
     wake_word: true
     vad_silence_s: 1.5
   tts:
-    voice: "fi_FI-harri-medium"
-    data_dir: "data/piper_models"
+    voice: fi_FI-harri-medium
+    data_dir: data/piper_models
     speed: 1.0
 audio:
   enabled: false
@@ -279,55 +272,48 @@ audio:
     alert_amplitude_threshold: 0.7
   bird_monitor:
     enabled: false
-    model: "BirdNET-Lite"
+    model: BirdNET-Lite
   mqtt_topics:
-    spectrum: "waggledance/audio/+/spectrum"
-    event: "waggledance/audio/+/event"
-    status: "waggledance/audio/+/status"
+    spectrum: waggledance/audio/+/spectrum
+    event: waggledance/audio/+/event
+    status: waggledance/audio/+/status
 elastic_scaling:
   enabled: true
   auto_detect: true
   vram_unload_threshold_pct: 90
   queue_spawn_threshold: 10
 llm_parallel:
-  enabled: false              # OFF by default — enable for parallel LLM dispatch
-  max_concurrent: 4           # Global asyncio semaphore limit
-  max_inflight_per_model: 2   # Per-model (fast/heavy/default) inflight cap
-  request_timeout_s: 120      # Per-request timeout for parallel dispatch
-  round_table_parallel_first_pass: false  # Parallelize first round-table pass
-  dream_batch_parallelism: 1  # Max parallel dream/counterfactual simulations (1=sequential)
-  candidate_lab_parallelism: 1  # Max parallel candidate-lab enrichments (1=sequential)
-  verifier_advisory_parallelism: 1  # Max parallel verifier advisory calls (1=sequential)
-  dedupe_identical_prompts: true  # Deduplicate identical concurrent prompts
-
+  enabled: false
+  max_concurrent: 4
+  max_inflight_per_model: 2
+  request_timeout_s: 120
+  round_table_parallel_first_pass: false
+  dream_batch_parallelism: 1
+  candidate_lab_parallelism: 1
+  verifier_advisory_parallelism: 1
+  dedupe_identical_prompts: true
 gemma_profiles:
-  enabled: false              # OFF by default — enable for Gemma 4 evaluation
-  fast_model: "gemma4:e4b"    # Fast Gemma 4 for tool/agent/fallback work
-  heavy_model: "gemma4:26b"   # Heavy Gemma 4 for reasoning/candidate-lab/verifier
-  active_profile: "disabled"  # disabled | fast_only | heavy_only | dual_tier
-  heavy_reasoning_only: true  # If true, heavy model only for hard reasoning paths
-  degrade_to_default: true    # If Gemma unavailable, fall back to default model
-
+  enabled: false
+  fast_model: gemma4:e4b
+  heavy_model: gemma4:26b
+  active_profile: dual_tier
+  heavy_reasoning_only: true
+  degrade_to_default: true
 hybrid_retrieval:
-  enabled: false              # OFF by default; was ON for proof run validation
-  ring2_enabled: false        # search ring-2 neighbors (neighbor-of-neighbor)
-  min_score: 0.35             # minimum similarity score for a hit
-  sufficient_score: 0.70      # score above which we stop searching further layers
-
+  enabled: false
+  ring2_enabled: false
+  min_score: 0.35
+  sufficient_score: 0.7
 runtime:
-  primary: waggledance        # "hivemind" during transition, "waggledance" after cutover
-  compatibility_mode: false   # true = legacy primary, false = autonomy primary
-  shadow_mode: true           # v3.2: shadow mode for safe rollout
-  canary_enabled: true        # v3.2: canary rollout for new features
-
-# ── v3.2 config additions ────────────────────────────────────
-
+  primary: waggledance
+  compatibility_mode: false
+  shadow_mode: true
+  canary_enabled: true
 continuity:
   heartbeat_seconds: 120
   continuity_floor_enabled: true
   epistemic_uncertainty_threshold: 0.4
   curiosity_goal_max_priority: 35
-
 curiosity:
   max_active:
     GADGET: 3
@@ -335,16 +321,14 @@ curiosity:
     HOME: 10
     FACTORY: 20
     DOMAIN: 10
-
 attention:
   critical_pct: 40
   normal_pct: 35
   background_pct: 15
   reflection_pct: 10
-  high_load_threshold: 0.80
+  high_load_threshold: 0.8
   emergency_load_threshold: 0.95
   reflection_min_pct: 2
-
 motives:
   conflict_resolution:
     strategy: minimize_harm_always

@@ -289,8 +289,16 @@ elastic_scaling:
   auto_detect: true
   vram_unload_threshold_pct: 90
   queue_spawn_threshold: 10
+gemma_profiles:
+  enabled: false              # OFF by default — enable for Gemma 4 evaluation
+  fast_model: "gemma4:e4b"    # Fast Gemma 4 for tool/agent/fallback work
+  heavy_model: "gemma4:26b"   # Heavy Gemma 4 for reasoning/candidate-lab/verifier
+  active_profile: "disabled"  # disabled | fast_only | heavy_only | dual_tier
+  heavy_reasoning_only: true  # If true, heavy model only for hard reasoning paths
+  degrade_to_default: true    # If Gemma unavailable, fall back to default model
+
 hybrid_retrieval:
-  enabled: false              # default OFF; enable per-deployment after backfill
+  enabled: false              # OFF by default; was ON for proof run validation
   ring2_enabled: false        # search ring-2 neighbors (neighbor-of-neighbor)
   min_score: 0.35             # minimum similarity score for a hit
   sufficient_score: 0.70      # score above which we stop searching further layers

@@ -1,5 +1,31 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.5.1] — 2026-04-05 — Gemma 4 Dual-Tier Fallback Evaluation
+
+### Added
+- **Gemma 4 dual-tier model profiles**: Optional fast (gemma4:e4b) and heavy (gemma4:26b) model support alongside existing phi4-mini default
+- **GemmaProfileRouter**: Configurable dual-tier routing — fast model for general fallback, heavy model restricted to hard reasoning / candidate lab / verifier assist
+- **Gemma-assisted candidate lab**: SolverCandidateLab enriches failure analysis via Gemma heavy model (proposal-only, never auto-modifies production routing)
+- **GemmaVerifierAdvisor**: Advisory-only Gemma integration for deterministic verifier — provides opinions, never overrides
+- **Benchmark harness**: 4-mode apples-to-apples comparison (baseline, gemma fast, gemma heavy, dual-tier)
+- **Additive observability**: `/api/status` and `/api/ops` include `gemma_profiles` metrics section
+- **70 new focused tests**: 34 router, 23 lab/verifier, 13 benchmark harness
+
+### Changed
+- `configs/settings.yaml`: additive `gemma_profiles` section (default: disabled)
+- `/api/status`: additive `gemma_profiles` field (all original fields preserved)
+- `/api/ops`: additive `gemma_profiles` field (all original fields preserved)
+
+### Security
+- No new public endpoints — Gemma metrics exposed through existing authenticated endpoints
+- Feature-flagged OFF by default — no behavior change unless explicitly enabled
+
+### Verified
+- Full pytest: 4968 passed, 3 skipped, 0 failures
+- Benchmark: Gemma fast -32% p50 latency, dual-tier -42% p50 vs baseline
+- 2h soak (dual_tier): 120 cycles, 600/600 OK, 0 5xx, 0 restarts — PASS
+- Model verification: gemma4:e4b (9.6GB, 20 tok/s) and gemma4:26b (17GB, 5-10 tok/s) both verified on RTX A2000 8GB
+
 ## [3.5.0] — 2026-04-02 — Hybrid Population, Solver Candidate Lab, Synthetic Accelerator
 
 ### Added

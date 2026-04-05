@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-04-02
-**Version:** v3.5.0
+**Updated:** 2026-04-05
+**Version:** v3.5.1 (Gemma 4 dual-tier evaluation complete)
 
 ---
 
@@ -51,7 +51,8 @@ Dependency rule: inner layers never import outer layers. `core/` has zero extern
 | Legacy test suite | 87 suites, 2754 tests, 0 failures, Health 84/100 |
 | Big Sprint modules (v1.17.0) | 15 new core modules, 25 new test files |
 | Production bug fixes (BUG 1-3) | Regression tests in place |
-| **Autonomy runtime (v3.5)** | **4898 pytest tests (phases 1-9 + continuity + regression + user-model + hologram-v6 + hybrid + backfill + candidate-lab + accelerator + e2e), all pass** |
+| **Autonomy runtime (v3.5.1)** | **4968 pytest tests (phases 1-9 + continuity + regression + user-model + hologram-v6 + hybrid + backfill + candidate-lab + accelerator + gemma + e2e), all pass** |
+| **Gemma 4 dual-tier (v3.5.1)** | **Optional fast/heavy model profiles, 70 tests, 2h soak PASS, feature-flagged OFF by default** |
 | **Cutover validation** | **"FULL AUTONOMY MODE ENABLED" — 42/42 modules** |
 | **Regression gates** | **migration, night_learning_v2, resource_kernel, specialist_models — 41 tests** |
 | **v3.2 self-entity** | **Epistemic uncertainty, motives, attention budget, dream mode, consolidator, meta-optimizer** |
@@ -159,3 +160,27 @@ These test suites are the gatekeepers — all must pass before any change is mer
 
 **Tools Added:**
 - `tools/night_monitor.py` — 10h sync HTTP-based production monitor
+
+---
+
+## v3.5.0 Proof Run (2026-04-02 to 2026-04-04)
+
+Full autonomous proof run validating hybrid retrieval, candidate lab, and synthetic accelerator.
+
+| Phase | Result | Detail |
+|-------|--------|--------|
+| P7A | PASS | Baseline benchmark (hybrid OFF), p50=9055ms |
+| P7B | PASS | Hybrid ON before backfill, cells empty |
+| P7C | PASS | Backfill: 4890/5000 indexed, 8/8 hex-cells |
+| P7D | PASS | After backfill: p50=4231ms (-53%), LLM fallback 0% |
+| P7E | PASS | Candidate lab: 2 compiled, 0 routed, AST 5/5 |
+| P7F | PASS | Accelerator: 200->568 rows, perfect class balance |
+| P7G | PASS | 30h soak: 750/750 cycles, 4500 req, 0 fail |
+| P7H | PASS | Report finalized |
+
+**Key metrics:**
+- p50 latency: 9055ms -> 4231ms (-53%) after backfill
+- LLM fallback: 75% -> 0%
+- Local FAISS hits: 0% -> 75%
+- Fix cycles: 1/3 used (backfill content extraction)
+- Full report: `docs/PROOF_RUN_REPORT_v350.md`

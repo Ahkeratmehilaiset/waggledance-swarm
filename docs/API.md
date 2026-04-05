@@ -236,6 +236,37 @@ Requires authentication. GPU acceleration is optional and off by default. CPU fa
 `/api/status` includes additive `backfill` and `candidate_lab` summary sections.
 `/api/ops` includes additive `backfill` and `accelerator` metrics sections.
 
+## Gemma 4 Profiles (v3.5.1)
+
+Optional dual-tier Gemma 4 model profiles. No new endpoints — metrics exposed through existing `/api/status` and `/api/ops`.
+
+**Feature flag:** `gemma_profiles.enabled` in `configs/settings.yaml` (default: `false`).
+
+When enabled, `/api/status` and `/api/ops` include a `gemma_profiles` section:
+
+```json
+{
+  "gemma_profiles": {
+    "enabled": true,
+    "active_profile": "dual_tier",
+    "active_fast_model": "gemma4:e4b",
+    "active_heavy_model": "gemma4:26b",
+    "fast_model_calls": 42,
+    "heavy_model_calls": 3,
+    "heavy_reasoning_calls": 3,
+    "default_fallback_calls": 0,
+    "gemma_fast_degraded": false,
+    "gemma_heavy_degraded": false
+  }
+}
+```
+
+When disabled: `{"gemma_profiles": {"enabled": false}}`.
+
+**Profiles:** `disabled` (default), `fast_only`, `heavy_only`, `dual_tier`.
+
+**Degradation:** If a Gemma model is unavailable, falls back to the default model (phi4-mini) when `degrade_to_default: true`.
+
 ---
 
 ## Analytics

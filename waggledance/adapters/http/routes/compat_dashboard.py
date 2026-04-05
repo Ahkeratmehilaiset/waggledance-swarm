@@ -130,6 +130,9 @@ def api_status(
         "total_analyses": container.solver_candidate_lab.status().get("total_analyses", 0),
     }, {"total_candidates": 0, "total_analyses": 0})
 
+    # v3.5.1: gemma profile metrics
+    gemma_metrics = _safe(lambda: container.gemma_router.get_metrics(), {"enabled": False})
+
     return {
         "status": "running" if lifecycle.get("state") == "running" else "initializing",
         "profile": st.get("profile", "HOME"),
@@ -147,6 +150,7 @@ def api_status(
         "hybrid_retrieval": hybrid_info,
         "backfill": backfill_summary,
         "candidate_lab": candidate_lab_summary,
+        "gemma_profiles": gemma_metrics,
     }
 
 
@@ -347,6 +351,9 @@ def api_ops(service=Depends(get_autonomy_service),
     backfill_metrics = _safe(lambda: container.hybrid_backfill.status(), {})
     accelerator_metrics = _safe(lambda: container.synthetic_accelerator.status(), {})
 
+    # v3.5.1: gemma profile metrics
+    gemma_metrics = _safe(lambda: container.gemma_router.get_metrics(), {"enabled": False})
+
     return {
         "status": {
             "load": rk.get("load_level", "idle"),
@@ -364,6 +371,7 @@ def api_ops(service=Depends(get_autonomy_service),
         "hybrid_retrieval": hybrid_stats,
         "backfill": backfill_metrics,
         "accelerator": accelerator_metrics,
+        "gemma_profiles": gemma_metrics,
         "recommendation": {
             "throttle": "none" if rk.get("load_level") in ("idle", "light") else "active",
             "night_mode": rk.get("night_mode", False),

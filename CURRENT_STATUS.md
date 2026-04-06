@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-04-05
-**Version:** v3.5.1 (Gemma 4 dual-tier evaluation complete)
+**Updated:** 2026-04-06
+**Version:** v3.5.3 (Diamond polish — parallel dispatch fix + proof)
 
 ---
 

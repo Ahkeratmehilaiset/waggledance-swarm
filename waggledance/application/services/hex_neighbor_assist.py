@@ -6,6 +6,7 @@ Feature-flagged: does nothing when hex_mesh.enabled=false.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import time
 import uuid
@@ -89,6 +90,9 @@ class HexNeighborAssist:
 
         self._lock = threading.Lock()
         self._metrics = HexMeshMetrics()
+        # Trace ring buffer — last N completed traces for hologram
+        self._trace_buffer: collections.deque[dict] = collections.deque(maxlen=20)
+        self._last_trace: dict | None = None
 
     # ── Main entry point ─────────────────────────────────────────
 
@@ -135,6 +139,9 @@ class HexNeighborAssist:
                 self._metrics.origin_cell_resolutions += 1
                 if self._magma_trace:
                     self._metrics.magma_traces_written += 1
+                trace_dict = trace.to_dict()
+                self._trace_buffer.append(trace_dict)
+                self._last_trace = trace_dict
 
             return result
 
@@ -332,9 +339,13 @@ class HexNeighborAssist:
                 log.warning("Parallel neighbor dispatch failed: %s", e)
 
         else:
-            # Sequential fallback — limit to 1 neighbor to avoid excessive latency
+            # Sequential fallback — limit to 1 neighbor, budget 10s max
             selected = selected[:1]
+            seq_budget_s = 10.0
             for cell in selected:
+                if (time.time() - t0) > seq_budget_s:
+                    log.debug("Hex neighbor sequential budget exhausted")
+                    break
                 self._emit_magma(
                     "HEX_NEIGHBOR_REQUESTED",
                     trace_id=trace.trace_id,
@@ -503,3 +514,39 @@ class HexNeighborAssist:
                 "magma_traces_written": m.magma_traces_written,
                 "ttl_exhaustions": m.ttl_exhaustions,
             }
+
+    def get_last_trace(self) -> dict | None:
+        """Return the most recent resolution trace (for hologram)."""
+        with self._lock:
+            return self._last_trace
+
+    def get_trace_buffer(self) -> list[dict]:
+        """Return the trace ring buffer (last N traces for hologram)."""
+        with self._lock:
+            return list(self._trace_buffer)
+
+    def get_cell_states(self) -> list[dict]:
+        """Return cell states for hologram mesh view."""
+        cells = []
+        for cell_id, cell_def in self._registry.cells.items():
+            health = self._health.get_health(cell_id)
+            agents = self._registry.get_cell_agents(cell_id)
+            cells.append({
+                "id": cell_id,
+                "coord": {"q": cell_def.coord.q, "r": cell_def.coord.r},
+                "domain": ", ".join(cell_def.domain_selectors[:3]),
+                "state": "quarantined" if health.is_quarantined else (
+                    "active" if health.recent_success_count > 0 else "idle"),
+                "health_score": round(health.health_score, 2),
+                "load": health.total_queries,
+                "quarantined": health.is_quarantined,
+                "quarantine_until": health.quarantine_until,
+                "self_heal_pending": health.cooldown_probe_pending,
+                "last_confidence": 0.0,
+                "recent_errors": health.recent_error_count,
+                "recent_timeouts": health.recent_timeout_count,
+                "recent_successes": health.recent_success_count,
+                "agent_count": len(agents),
+                "enabled": cell_def.enabled,
+            })
+        return cells

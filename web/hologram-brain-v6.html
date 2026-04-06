@@ -278,6 +278,48 @@
       }
       .panel { border-left: none; border-top: 1px solid rgba(110,220,255,0.12); }
     }
+
+    /* ── Mesh tab ────────────────────────────────── */
+    .hex-grid { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 12px 0; }
+    .hex-row { display: flex; gap: 4px; }
+    .hex-cell {
+      width: 80px; height: 70px; border-radius: 12px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 10px; cursor: pointer; border: 2px solid rgba(110,220,255,0.15);
+      background: rgba(255,255,255,0.04); transition: border-color 200ms, background 200ms;
+    }
+    .hex-cell:hover { border-color: rgba(110,220,255,0.4); }
+    .hex-cell.state-idle { border-color: rgba(110,220,255,0.2); }
+    .hex-cell.state-active { border-color: #4ade80; background: rgba(74,222,128,0.08); }
+    .hex-cell.state-quarantined { border-color: #ef4444; background: rgba(239,68,68,0.1); }
+    .hex-cell.state-probe { border-color: #f59e0b; background: rgba(245,158,11,0.08); }
+    .hex-cell.selected { border-color: #60a5fa; background: rgba(96,165,250,0.12); box-shadow: 0 0 8px rgba(96,165,250,0.3); }
+    .hex-cell .hex-label { font-weight: 600; color: #d7f6ff; font-size: 11px; }
+    .hex-cell .hex-health { font-size: 9px; color: rgba(200,230,244,0.6); }
+    .cell-inspector { margin-top: 12px; padding: 10px; border-radius: 8px; background: rgba(255,255,255,0.04); border: 1px solid rgba(110,220,255,0.1); }
+
+    /* ── Trace tab ───────────────────────────────── */
+    .trace-pipeline { display: flex; align-items: center; gap: 2px; margin: 12px 0; flex-wrap: wrap; }
+    .trace-stage {
+      padding: 6px 10px; border-radius: 8px; font-size: 11px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(110,220,255,0.1);
+      color: rgba(200,230,244,0.7);
+    }
+    .trace-stage.active { border-color: #4ade80; color: #4ade80; background: rgba(74,222,128,0.1); }
+    .trace-stage.skipped { opacity: 0.4; }
+    .trace-arrow { color: rgba(110,220,255,0.3); font-size: 14px; }
+
+    /* ── MAGMA tab ───────────────────────────────── */
+    .magma-entry {
+      padding: 6px 8px; margin: 4px 0; border-radius: 6px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(110,220,255,0.06);
+      cursor: pointer; font-size: 11px;
+    }
+    .magma-entry:hover { background: rgba(255,255,255,0.06); }
+    .magma-entry .me-type { font-weight: 600; color: #a8efff; }
+    .magma-entry .me-time { color: rgba(200,230,244,0.5); font-size: 10px; margin-left: 8px; }
+    .magma-detail { display: none; margin-top: 4px; padding: 4px 8px; font-size: 10px; color: rgba(200,230,244,0.6); white-space: pre-wrap; }
+    .magma-entry.expanded .magma-detail { display: block; }
   </style>
 </head>
 <body>
@@ -308,6 +350,9 @@
       <button class="tab-btn" data-tab="learning" id="tabLearning">Learning</button>
       <button class="tab-btn" data-tab="feeds" id="tabFeeds">Feeds</button>
       <button class="tab-btn" data-tab="ops" id="tabOps">Ops</button>
+      <button class="tab-btn" data-tab="mesh" id="tabMesh">Mesh</button>
+      <button class="tab-btn" data-tab="trace" id="tabTrace">Trace</button>
+      <button class="tab-btn" data-tab="magma" id="tabMagma">MAGMA</button>
       <button class="tab-btn" data-tab="chat" id="tabChat">Chat</button>
     </div>
 
@@ -347,7 +392,8 @@ const LANG = {
     subtitle: "Hologram Brain: Waggle + LLM + Micromodels",
     tabs: { overview: "Overview", memory: "Memory", reasoning: "Reasoning",
             micro: "Micromodels", learning: "Learning", feeds: "Feeds",
-            ops: "Ops", chat: "Chat" },
+            ops: "Ops", mesh: "Mesh", trace: "Trace", magma: "MAGMA",
+            chat: "Chat" },
     profiles: {
       gadget: "Gadget", cottage: "Cottage", home: "Home",
       factory: "Factory", custom: "Custom"
@@ -413,7 +459,8 @@ const LANG = {
     subtitle: "Hologrammi-aivot: Waggle + LLM + Mikromallit",
     tabs: { overview: "Yleiskatsaus", memory: "Muisti", reasoning: "Paattely",
             micro: "Mikromallit", learning: "Oppiminen", feeds: "Syotteet",
-            ops: "Operaatiot", chat: "Keskustelu" },
+            ops: "Operaatiot", mesh: "Verkko", trace: "Jaljitys", magma: "MAGMA",
+            chat: "Keskustelu" },
     profiles: {
       gadget: "Laite", cottage: "Mokki", home: "Koti",
       factory: "Tehdas", custom: "Mukautettu"
@@ -1115,6 +1162,9 @@ function applyLanguage() {
   document.getElementById('tabLearning').textContent = tabs.learning;
   document.getElementById('tabFeeds').textContent = tabs.feeds;
   document.getElementById('tabOps').textContent = tabs.ops;
+  document.getElementById('tabMesh').textContent = tabs.mesh || 'Mesh';
+  document.getElementById('tabTrace').textContent = tabs.trace || 'Trace';
+  document.getElementById('tabMagma').textContent = tabs.magma || 'MAGMA';
   document.getElementById('tabChat').textContent = tabs.chat;
   document.getElementById('langToggle').textContent = currentLang === 'en' ? 'FI' : 'EN';
   document.getElementById('panelRefresh').textContent = t('refresh');
@@ -1228,6 +1278,9 @@ function buildActivePanel() {
     learning: buildLearningPanel,
     feeds: buildFeedsPanel,
     ops: buildOpsPanel,
+    mesh: buildMeshPanel,
+    trace: buildTracePanel,
+    magma: buildMagmaPanel,
     chat: buildChatPanel,
   };
   (builders[activeTab] || buildOverviewPanel)(body);
@@ -1519,6 +1572,198 @@ function buildOpsPanel(el) {
 
 // ═══════════════════════════════════════════════════════════════
 // Chat panel — session cookie auth
+// ═══════════════════════════════════════════════════════════════
+// Mesh panel — honeycomb topology view
+// ═══════════════════════════════════════════════════════════════
+let selectedMeshCell = null;
+
+function buildMeshPanel(el) {
+  const holo = dashboardState.hologram || {};
+  const hm = holo.hex_mesh || {};
+
+  if (!hm.enabled) {
+    el.innerHTML = `<div class="p-section"><div class="p-section-title">Hex Mesh</div>
+      <p style="color:rgba(200,230,244,0.5)">Hex mesh is disabled. Enable <code>hex_mesh.enabled</code> in settings.</p></div>`;
+    return;
+  }
+
+  const cells = hm.cells || [];
+  const counters = hm.counters || {};
+  let html = `<div class="p-section"><div class="p-section-title">Honeycomb Topology</div>`;
+
+  // Render hex grid — center hub + ring-1
+  const hub = cells.find(c => c.coord && c.coord.q === 0 && c.coord.r === 0);
+  const ring = cells.filter(c => c.coord && !(c.coord.q === 0 && c.coord.r === 0));
+
+  html += `<div class="hex-grid">`;
+  // Top row (2 cells)
+  html += `<div class="hex-row">`;
+  const topCells = ring.filter(c => c.coord.r < 0);
+  topCells.forEach(c => { html += _hexCellHtml(c); });
+  if (topCells.length < 2) html += `<div style="width:80px"></div>`;
+  html += `</div>`;
+  // Middle row (hub + sides)
+  html += `<div class="hex-row">`;
+  const leftCells = ring.filter(c => c.coord.q < 0);
+  leftCells.forEach(c => { html += _hexCellHtml(c); });
+  if (hub) html += _hexCellHtml(hub);
+  const rightCells = ring.filter(c => c.coord.q > 0);
+  rightCells.forEach(c => { html += _hexCellHtml(c); });
+  html += `</div>`;
+  // Bottom row
+  html += `<div class="hex-row">`;
+  const bottomCells = ring.filter(c => c.coord.r > 0);
+  bottomCells.forEach(c => { html += _hexCellHtml(c); });
+  if (bottomCells.length < 2) html += `<div style="width:80px"></div>`;
+  html += `</div>`;
+  html += `</div></div>`;
+
+  // Counters
+  html += `<div class="p-section"><div class="p-section-title">Mesh Counters</div><div class="p-grid">`;
+  html += card('Origin', counters.origin_cell_resolutions);
+  html += card('Local Only', counters.local_only_resolutions);
+  html += card('Neighbor', counters.neighbor_assist_resolutions);
+  html += card('Global', counters.global_escalations);
+  html += card('LLM Last', counters.llm_last_resolutions);
+  html += card('Batches', counters.completed_hex_neighbor_batches);
+  html += card('Quarantined', counters.quarantined_cells);
+  html += card('Self-heal', counters.self_heal_events);
+  html += `</div></div>`;
+
+  // Selected cell inspector
+  if (selectedMeshCell) {
+    const sc = cells.find(c => c.id === selectedMeshCell);
+    if (sc) {
+      html += `<div class="cell-inspector"><div class="p-section-title">${sc.id}</div>`;
+      html += `<div class="p-grid">`;
+      html += card('Domain', sc.domain || '\u2014');
+      html += card('Health', sc.health_score);
+      html += card('Load', sc.load);
+      html += card('Errors', sc.recent_errors);
+      html += card('Timeouts', sc.recent_timeouts);
+      html += card('Successes', sc.recent_successes);
+      html += card('Agents', sc.agent_count);
+      html += card('Quarantined', sc.quarantined ? 'Yes' : 'No');
+      if (sc.self_heal_pending) html += card('Self-heal', 'Pending');
+      html += `</div></div>`;
+    }
+  }
+
+  el.innerHTML = html;
+  // Attach cell click handlers
+  el.querySelectorAll('.hex-cell').forEach(cell => {
+    cell.addEventListener('click', () => {
+      selectedMeshCell = cell.dataset.cellId;
+      buildActivePanel();
+    });
+  });
+}
+
+function _hexCellHtml(c) {
+  const stateClass = c.quarantined ? 'state-quarantined' :
+    (c.self_heal_pending ? 'state-probe' :
+    (c.state === 'active' ? 'state-active' : 'state-idle'));
+  const selected = selectedMeshCell === c.id ? ' selected' : '';
+  return `<div class="hex-cell ${stateClass}${selected}" data-cell-id="${c.id}">
+    <span class="hex-label">${c.id}</span>
+    <span class="hex-health">${(c.health_score * 100).toFixed(0)}%</span>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Trace panel — query resolution path
+// ═══════════════════════════════════════════════════════════════
+function buildTracePanel(el) {
+  const holo = dashboardState.hologram || {};
+  const hm = holo.hex_mesh || {};
+  const trace = hm.active_trace;
+
+  let html = `<div class="p-section"><div class="p-section-title">Resolution Pipeline</div>`;
+
+  // Pipeline stages
+  const stages = ['cache', 'solver', 'local', 'neighbor', 'global', 'llm'];
+  const activeStage = trace ? trace.final_source : null;
+  const cacheHit = trace ? trace.cache_hit : false;
+
+  html += `<div class="trace-pipeline">`;
+  stages.forEach((s, i) => {
+    const isActive = (s === 'cache' && cacheHit) ||
+                     (s === activeStage) ||
+                     (s === 'local' && activeStage === 'hex_local') ||
+                     (s === 'neighbor' && activeStage === 'hex_neighbor') ||
+                     (s === 'global' && (trace && trace.escalated_global)) ||
+                     (s === 'llm' && (trace && trace.escalated_llm));
+    const cls = isActive ? 'active' : (trace ? 'skipped' : '');
+    html += `<span class="trace-stage ${cls}">${s}</span>`;
+    if (i < stages.length - 1) html += `<span class="trace-arrow">\u2192</span>`;
+  });
+  html += `</div></div>`;
+
+  // Trace details
+  if (trace) {
+    html += `<div class="p-section"><div class="p-section-title">Last Trace</div><div class="p-grid">`;
+    html += card('Trace ID', trace.trace_id ? trace.trace_id.slice(0, 8) : '\u2014');
+    html += card('Origin', trace.origin_cell_id || '\u2014');
+    html += card('Source', trace.final_source || '\u2014');
+    html += card('Confidence', trace.final_confidence);
+    html += card('Local Conf.', trace.local_confidence);
+    html += card('Merged Conf.', trace.merged_confidence);
+    html += card('Total ms', trace.total_latency_ms ? trace.total_latency_ms.toFixed(0) : '\u2014');
+    html += card('Local ms', trace.local_latency_ms ? trace.local_latency_ms.toFixed(0) : '\u2014');
+    html += card('Neighbor ms', trace.neighbor_latency_ms ? trace.neighbor_latency_ms.toFixed(0) : '\u2014');
+    html += card('Cache Hit', trace.cache_hit ? 'Yes' : 'No');
+    html += card('Escalated', trace.escalated_global ? 'Global' : (trace.escalated_llm ? 'LLM' : 'No'));
+    if (trace.neighbor_cells && trace.neighbor_cells.length) {
+      html += card('Helpers', trace.neighbor_cells.join(', '));
+    }
+    html += card('TTL Path', (trace.ttl_path || []).join(' \u2192 '));
+    html += `</div></div>`;
+  } else {
+    html += `<div class="p-section"><p style="color:rgba(200,230,244,0.5)">No trace available. Send a query with hex mesh enabled.</p></div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAGMA panel — timeline summary + detail
+// ═══════════════════════════════════════════════════════════════
+function buildMagmaPanel(el) {
+  const holo = dashboardState.hologram || {};
+  const timeline = holo.magma_timeline || [];
+
+  let html = `<div class="p-section"><div class="p-section-title">MAGMA Timeline</div>`;
+
+  if (!timeline.length) {
+    html += `<p style="color:rgba(200,230,244,0.5)">No MAGMA events recorded yet.</p>`;
+  } else {
+    html += `<div style="font-size:11px;color:rgba(200,230,244,0.6);margin-bottom:8px">${timeline.length} events (click to expand)</div>`;
+    timeline.forEach((e, i) => {
+      const type = e.event_type || e.type || 'unknown';
+      const src = e.source || '';
+      const ts = e.timestamp ? new Date(e.timestamp * 1000).toLocaleTimeString() : '';
+      const detail = JSON.stringify(e, null, 2);
+      html += `<div class="magma-entry" data-idx="${i}">
+        <span class="me-type">${type}</span>
+        <span class="me-time">${src} ${ts}</span>
+        <div class="magma-detail"><pre>${detail}</pre></div>
+      </div>`;
+    });
+  }
+
+  html += `</div>`;
+  el.innerHTML = html;
+
+  // Toggle detail on click
+  el.querySelectorAll('.magma-entry').forEach(entry => {
+    entry.addEventListener('click', () => {
+      entry.classList.toggle('expanded');
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Chat
 // ═══════════════════════════════════════════════════════════════
 let chatMessages = [];
 let chatRouteInfo = null;

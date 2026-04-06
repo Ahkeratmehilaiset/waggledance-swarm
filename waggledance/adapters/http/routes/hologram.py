@@ -14,7 +14,7 @@ import psutil
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
-from waggledance.adapters.http.deps import get_autonomy_service
+from waggledance.adapters.http.deps import get_autonomy_service, get_container
 from waggledance.adapters.http.routes._capability_state import (
     CAPABILITY_NODE_IDS,
     CapabilityInfo,
@@ -294,7 +294,7 @@ def _derive_node_meta(
     return meta
 
 
-def build_hologram_state(service) -> Dict[str, Any]:
+def build_hologram_state(service, *, container=None) -> Dict[str, Any]:
     """Synthesize hologram payload from AutonomyRuntime stats.
 
     Returns 32 nodes, 32 node_meta entries, edges, and events.
@@ -537,7 +537,12 @@ def build_hologram_state(service) -> Dict[str, Any]:
         events.append({"from": src, "to": dst})
 
     # v3.4: Add hybrid retrieval overlay info (additive, no node changes)
-    hybrid_info = _hybrid_overlay(service)
+    hybrid_info = _hybrid_overlay(service, container)
+
+    # v3.5.5: Hex mesh observatory — additive sections
+    hex_mesh_state = _hex_mesh_overlay(service, container)
+    magma_timeline = _magma_timeline(service, container)
+    ops_state = _ops_overlay(service, rs, container)
 
     return {
         "nodes": nodes,
@@ -545,18 +550,15 @@ def build_hologram_state(service) -> Dict[str, Any]:
         "edges": edges,
         "events": events,
         "hybrid": hybrid_info,
+        "hex_mesh": hex_mesh_state,
+        "magma_timeline": magma_timeline,
+        "ops": ops_state,
     }
 
 
-def _hybrid_overlay(service) -> dict:
+def _hybrid_overlay(service, container=None) -> dict:
     """Build hybrid retrieval overlay for hologram state (additive only)."""
     try:
-        container = getattr(service, "_container", None)
-        if container is None:
-            # Try to get container from service attributes
-            runtime = getattr(service, "_runtime", None)
-            if runtime:
-                container = getattr(runtime, "_container", None)
         if container is None:
             return {"enabled": False}
 
@@ -573,7 +575,130 @@ def _hybrid_overlay(service) -> dict:
         return {"enabled": False}
 
 
+def _hex_mesh_overlay(service, container=None) -> dict:
+    """Build hex mesh state for hologram (additive)."""
+    try:
+        if container is None:
+            return {"enabled": False}
+
+        ha = container.hex_neighbor_assist
+        if not ha:
+            return {"enabled": False}
+
+        cells = ha.get_cell_states() if ha.enabled else []
+        active_trace = ha.get_last_trace()
+        counters = ha.get_metrics()
+        health_stats = ha._health.stats() if ha.enabled else {}
+
+        # Build link list from topology
+        links = []
+        if ha.enabled:
+            registry = ha._registry
+            for cell_id, cell_def in registry.cells.items():
+                for neighbor in registry.get_neighbor_cells(cell_id):
+                    pair = tuple(sorted([cell_id, neighbor.id]))
+                    link = {"source": pair[0], "target": pair[1]}
+                    if link not in links:
+                        links.append(link)
+
+        return {
+            "enabled": ha.enabled,
+            "cells": cells,
+            "links": links,
+            "active_trace": active_trace,
+            "counters": counters,
+            "health": health_stats,
+        }
+    except Exception:
+        return {"enabled": False}
+
+
+def _magma_timeline(service, container=None) -> list:
+    """Build MAGMA timeline for hologram (last N events, summary form)."""
+    try:
+        if container is None:
+            return []
+
+        magma = getattr(container, "magma_audit", None)
+        if magma is None:
+            return []
+
+        # Get recent entries — limit to last 20
+        entries = []
+        try:
+            recent = magma.recent(limit=20) if hasattr(magma, "recent") else []
+            for e in recent:
+                entry = e if isinstance(e, dict) else (
+                    e.to_dict() if hasattr(e, "to_dict") else
+                    {"event_type": getattr(e, "event_type", "unknown"),
+                     "source": getattr(e, "source", ""),
+                     "timestamp": getattr(e, "timestamp", 0)}
+                )
+                # Sanitize — no secrets
+                entry.pop("api_key", None)
+                entry.pop("token", None)
+                entries.append(entry)
+        except Exception:
+            pass
+
+        return entries
+    except Exception:
+        return []
+
+
+def _ops_overlay(service, rs: dict, container=None) -> dict:
+    """Build ops overlay for hologram."""
+    try:
+
+        # LLM parallel stats
+        parallel = {}
+        try:
+            pd = container.parallel_dispatcher if container else None
+            if pd and hasattr(pd, "stats"):
+                parallel = pd.stats()
+        except Exception:
+            pass
+
+        # Hex mesh counters
+        hex_counters = {}
+        try:
+            ha = container.hex_neighbor_assist if container else None
+            if ha:
+                hex_counters = ha.get_metrics()
+        except Exception:
+            pass
+
+        # Cache stats from hot cache
+        cache = {}
+        try:
+            hc = container.hot_cache if container else None
+            if hc and hasattr(hc, "stats"):
+                cache = hc.stats()
+            elif hc:
+                cache = {
+                    "size": len(hc) if hasattr(hc, "__len__") else 0,
+                }
+        except Exception:
+            pass
+
+        # Request counters from runtime stats
+        request_counters = {
+            "total_queries": rs.get("total_queries", 0),
+            "solver_hits": rs.get("solver_router", {}).get("total_solved", 0),
+            "llm_calls": rs.get("ollama", {}).get("total_requests", 0),
+        }
+
+        return {
+            "llm_parallel": parallel,
+            "hex_mesh": hex_counters,
+            "cache": cache,
+            "request_counters": request_counters,
+        }
+    except Exception:
+        return {}
+
+
 @router.get("/api/hologram/state")
-def hologram_state(service=Depends(get_autonomy_service)):
+def hologram_state(service=Depends(get_autonomy_service), container=Depends(get_container)):
     """Return hologram brain state synthesized from runtime stats."""
-    return build_hologram_state(service)
+    return build_hologram_state(service, container=container)

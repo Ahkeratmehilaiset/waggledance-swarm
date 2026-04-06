@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-04-06
-**Version:** v3.5.4 (Hex Neighbor Mesh — honeycomb cooperative resolution)
+**Version:** v3.5.5 (Hologram Mesh Observatory — hex visibility in hologram UI)
 
 ---
 

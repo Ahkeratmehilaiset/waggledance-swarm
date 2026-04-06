@@ -52,12 +52,33 @@ def api_post(path: str, body: dict, timeout: int = 180) -> dict | None:
         return None
 
 
-CYCLE_QUERIES = [
-    ("solver", "What is 23 * 17 + 5?"),
-    ("short_llm", "What is the capital of Finland?"),
-    ("multi_domain", "How does weather affect my home heating and what should I set the thermostat to?"),
-    ("degraded_cell", "What maintenance tasks are needed for the factory production line?"),
+CYCLE_QUERY_TEMPLATES = [
+    ("solver", "What is {a} * {b} + {c}?"),
+    ("short_llm", "Tell me about {topic} in one sentence."),
+    ("multi_domain", "How does {factor} affect home {system} and what should I adjust?"),
+    ("degraded_cell", "What {task_type} tasks are needed for the {area}?"),
 ]
+
+_TOPICS = ["Finland", "Python", "electricity", "solar panels", "insulation", "bees", "recycling",
+           "Nordic weather", "heat pumps", "smart home", "energy storage", "wind power"]
+_FACTORS = ["weather", "electricity price", "outdoor temperature", "humidity", "wind speed", "season"]
+_SYSTEMS = ["heating", "cooling", "ventilation", "lighting", "energy use", "comfort"]
+_TASK_TYPES = ["maintenance", "inspection", "cleaning", "optimization", "safety", "repair"]
+_AREAS = ["factory production line", "home HVAC system", "solar panel array", "bee hives",
+          "security cameras", "garden irrigation"]
+
+
+def _build_queries(cycle_num: int) -> list[tuple[str, str]]:
+    """Build unique queries per cycle to avoid hot-cache hits."""
+    import random
+    rng = random.Random(cycle_num)
+    a, b, c = rng.randint(2, 50), rng.randint(2, 50), rng.randint(1, 20)
+    return [
+        ("solver", f"What is {a} * {b} + {c}?"),
+        ("short_llm", f"Tell me about {rng.choice(_TOPICS)} in one sentence."),
+        ("multi_domain", f"How does {rng.choice(_FACTORS)} affect home {rng.choice(_SYSTEMS)} and what should I adjust?"),
+        ("degraded_cell", f"What {rng.choice(_TASK_TYPES)} tasks are needed for the {rng.choice(_AREAS)}?"),
+    ]
 
 
 def run_cycle(cycle_num: int) -> dict:
@@ -67,8 +88,9 @@ def run_cycle(cycle_num: int) -> dict:
     status_5xx = 0
     latencies = []
     sources = []
+    queries = _build_queries(cycle_num)
 
-    for cat, query in CYCLE_QUERIES:
+    for cat, query in queries:
         t0 = time.monotonic()
         resp = api_post("/api/chat", {"query": query, "language": "en"})
         elapsed = (time.monotonic() - t0) * 1000
@@ -96,7 +118,7 @@ def run_cycle(cycle_num: int) -> dict:
         "cycle_ms": round(cycle_ms, 1),
         "errors": errors,
         "status_5xx": status_5xx,
-        "queries": len(CYCLE_QUERIES),
+        "queries": len(queries),
         "sources": sources,
         "latency_min": round(min(latencies), 1) if latencies else 0,
         "latency_max": round(max(latencies), 1) if latencies else 0,
@@ -175,7 +197,7 @@ def run_soak(hours: float, interval_s: int, out_dir: str):
         "duration_hours": hours,
         "interval_s": interval_s,
         "total_cycles": cycle,
-        "total_queries": cycle * len(CYCLE_QUERIES),
+        "total_queries": cycle * 4,  # 4 queries per cycle
         "total_errors": total_errors,
         "total_5xx": total_5xx,
         "latency_p50": round(statistics.median(all_latencies), 1) if all_latencies else 0,

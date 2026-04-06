@@ -336,7 +336,7 @@ motives:
     log_all_conflicts: true
     escalate_to_user_if_unresolvable: true
 hex_mesh:
-  enabled: true
+  enabled: false
   cell_config_path: "configs/hex_cells.yaml"
   local_confidence_threshold: 0.72
   neighbor_confidence_threshold: 0.82

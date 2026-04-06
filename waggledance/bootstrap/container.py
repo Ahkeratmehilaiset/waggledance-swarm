@@ -2,6 +2,7 @@
 
 import logging
 from functools import cached_property
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -114,6 +115,58 @@ class Container:
         from waggledance.core.orchestration.scheduler import Scheduler
         return Scheduler(config=self.config)
 
+    def _load_agents(self) -> list:
+        """Load agent definitions from YAML files for the current profile.
+
+        Synchronous — called once during orchestrator construction.
+        Returns activated AgentDefinition list (empty on error).
+        """
+        try:
+            import yaml
+            from waggledance.core.domain.agent import AgentDefinition
+
+            agents_dir = Path("agents")
+            if not agents_dir.exists():
+                log.warning("Agents directory not found: %s", agents_dir)
+                return []
+
+            profile = self._settings.get_profile().upper()
+            agents = []
+            for yaml_file in sorted(agents_dir.rglob("*.yaml")):
+                try:
+                    with open(yaml_file, encoding="utf-8") as f:
+                        data = yaml.safe_load(f)
+                    if not data or not isinstance(data, dict):
+                        continue
+                    header = data.get("header", {})
+                    if not header.get("agent_id"):
+                        continue
+                    profiles = [p.upper() for p in data.get("profiles", ["ALL"])]
+                    if profile not in profiles and "ALL" not in profiles:
+                        continue
+                    agent = AgentDefinition(
+                        id=header["agent_id"],
+                        name=header.get("agent_name", header["agent_id"]),
+                        domain=header.get("domain", "general"),
+                        tags=data.get("tags", []),
+                        skills=list(
+                            data.get("DECISION_METRICS_AND_THRESHOLDS", {}).keys()
+                        ),
+                        trust_level=0,
+                        specialization_score=0.0,
+                        active=True,
+                        profile=profiles[0] if profiles else "ALL",
+                    )
+                    agents.append(agent)
+                except Exception as e:
+                    log.warning("Failed to load agent %s: %s", yaml_file, e)
+
+            log.info("Loaded %d agents for profile %s", len(agents), profile)
+            return agents
+        except Exception as e:
+            log.warning("Agent loading failed, orchestrator will run with 0 agents: %s", e)
+            return []
+
     @cached_property
     def orchestrator(self):
         """Orchestrator from core orchestration."""
@@ -132,7 +185,7 @@ class Container:
             trust_store=self.trust_store,
             event_bus=self.event_bus,
             config=self.config,
-            agents=[],
+            agents=self._load_agents(),
             parallel_dispatcher=self.parallel_dispatcher,
         )
 

@@ -177,9 +177,10 @@ class HexNeighborAssist:
                 "trace": trace.to_dict(),
             }
 
-        # Step 3: Neighbor assist
+        # Step 3: Neighbor assist (only if parallel dispatch available or sequential fallback)
         self._emit_magma("HEX_NEIGHBOR_ASSIST_STARTED", trace_id=trace.trace_id, cell_id=origin_id)
         neighbor_results = await self._try_neighbors(origin_id, query, trace)
+        log.debug("Hex neighbor results: %d responses", len(neighbor_results))
 
         if neighbor_results:
             merged = self._merge_responses(local_result, neighbor_results, trace)
@@ -331,7 +332,8 @@ class HexNeighborAssist:
                 log.warning("Parallel neighbor dispatch failed: %s", e)
 
         else:
-            # Sequential fallback
+            # Sequential fallback — limit to 1 neighbor to avoid excessive latency
+            selected = selected[:1]
             for cell in selected:
                 self._emit_magma(
                     "HEX_NEIGHBOR_REQUESTED",

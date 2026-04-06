@@ -315,6 +315,59 @@ When disabled: `{"llm_parallel": {"enabled": false}}`.
 
 ---
 
+## Hex Neighbor Mesh (v3.5.4+)
+
+Honeycomb topology for domain-aware cooperative resolution. Queries route: local cell → ring-1 neighbor assist → global/swarm → LLM. No new endpoints — metrics exposed through existing `/api/status` and `/api/ops`.
+
+**Feature flag:** `hex_mesh.enabled` in `configs/settings.yaml` (default: `false`).
+
+When enabled, `/api/status` and `/api/ops` include a `hex_mesh` section:
+
+```json
+{
+  "hex_mesh": {
+    "enabled": true,
+    "cells_loaded": 7,
+    "origin_cell_resolutions": 0,
+    "local_only_resolutions": 0,
+    "neighbor_assist_resolutions": 0,
+    "global_escalations": 0,
+    "llm_last_resolutions": 0,
+    "completed_hex_neighbor_batches": 0,
+    "neighbors_consulted_total": 0,
+    "avg_neighbors_per_assist": 0.0,
+    "quarantined_cells": 0,
+    "self_heal_events": 0,
+    "magma_traces_written": 0,
+    "ttl_exhaustions": 0
+  }
+}
+```
+
+When disabled: `{"hex_mesh": {"enabled": false, "cells_loaded": 7, ...}}` (counters stay 0).
+
+**Configuration keys** (in `configs/settings.yaml` under `hex_mesh`):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Master switch |
+| `cell_config_path` | `configs/hex_cells.yaml` | Topology definition file |
+| `local_confidence_threshold` | `0.72` | Min confidence for local-only resolution |
+| `neighbor_confidence_threshold` | `0.82` | Min confidence for neighbor-merged resolution |
+| `global_escalation_threshold` | `0.90` | Min confidence to avoid global escalation |
+| `ttl_default` | `2` | Hop limit to prevent loops |
+| `max_neighbors_per_hop` | `2` | Max ring-1 neighbors consulted per hop |
+| `parallel_neighbor_assist` | `true` | Use ParallelLLMDispatcher for neighbor queries |
+| `self_heal_probe_enabled` | `true` | Probe quarantined cells for recovery |
+| `magma_trace_enabled` | `true` | Record MAGMA events for hex resolution |
+| `neighbor_merge_policy` | `weighted_confidence` | Merge policy for neighbor responses |
+
+**Topology** (defined in `configs/hex_cells.yaml`):
+
+7 cells in axial coordinates: hub (0,0), bee_ops (1,0), environment (0,-1), home_comfort (-1,0), safety_security (-1,1), production (0,1), logistics (1,-1).
+
+---
+
 ## Analytics
 
 | Endpoint | Method | Description |

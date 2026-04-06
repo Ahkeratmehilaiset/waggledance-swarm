@@ -1,5 +1,37 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.5.4] — 2026-04-06 — Hex Neighbor Mesh
+
+### Added
+- **Hex Neighbor Mesh**: Honeycomb topology (7 cells) for domain-aware cooperative resolution. Queries route: local cell → ring-1 neighbor assist → global/swarm → LLM.
+- **HexCoord axial math**: `waggledance/core/domain/hex_mesh.py` — frozen dataclass with `neighbors()`, `distance()`, `ring()`, `is_adjacent()`.
+- **HexTopologyRegistry**: Loads `configs/hex_cells.yaml`, maps agents to domain cells (hub, bee_ops, environment, home_comfort, safety_security, production, logistics).
+- **HexHealthMonitor**: Per-cell health tracking, quarantine (error/timeout thresholds), cooldown probes, self-heal recovery.
+- **HexNeighborAssist**: Resolution coordinator with weighted confidence merge, MAGMA event provenance, parallel neighbor dispatch.
+- **63 new tests** (`tests/test_hex_mesh.py`): topology math, config loading, local-first, neighbor assist, MAGMA, health/self-heal, API regression, safe defaults, domain types.
+- **Benchmark + soak harness**: `tools/hex_benchmark.py` (8-query suite), `tools/hex_soak.py` (continuous N-hour soak with per-cycle metrics).
+- **Additive `/api/status` and `/api/ops` sections**: `hex_mesh` metrics (origin_cell_resolutions, local_only, neighbor_assist, global_escalations, etc.).
+- **15 MAGMA event types**: HEX_QUERY_STARTED through HEX_QUERY_COMPLETED for full resolution provenance.
+
+### Fixed
+- **RLock deadlock**: `HexHealthMonitor.stats()` called `get_quarantined_cells()` which re-acquired the same lock. Changed `threading.Lock()` to `threading.RLock()`.
+
+### Changed
+- `configs/settings.yaml`: additive `hex_mesh` section (default: `enabled: false`)
+- `configs/hex_cells.yaml`: 7-cell honeycomb topology with domain/tag selectors
+- `waggledance/bootstrap/container.py`: `hex_topology_registry`, `hex_health_monitor`, `hex_neighbor_assist` as cached properties
+- `waggledance/application/services/chat_service.py`: hex mesh resolution between hybrid retrieval and orchestrator (feature-flagged)
+
+### Verified
+- Full pytest: 5085 passed, 3 skipped, 0 failures (63 new tests)
+- Benchmark: origin_cell_resolutions correctly increment, solver-first path unaffected
+- Safe defaults: hex_mesh.enabled=false, llm_parallel.enabled=false, gemma_profiles.enabled=false
+
+### Honest Notes
+- With phi4-mini and llm_parallel=false, local_only_resolutions=0 and neighbor_assist_resolutions=0 (confidence estimator conservative)
+- All non-solver queries escalate to global/swarm (same as v3.5.3 behavior)
+- Hex mesh infrastructure proven operational; full benefit requires parallel dispatch or stronger model
+
 ## [3.5.3] — 2026-04-06 — Diamond Polish (Parallel Dispatch Fix)
 
 ### Fixed

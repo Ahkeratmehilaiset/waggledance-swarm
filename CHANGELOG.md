@@ -1,5 +1,29 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.5.3] — 2026-04-06 — Diamond Polish (Parallel Dispatch Fix)
+
+### Fixed
+- **Container agent loading**: Orchestrator was created with `agents=[]`, making all batch dispatch paths dead code. Added `_load_agents()` to Container that loads agent YAMLs for the current profile (41 agents for HOME).
+- **Round table escalation now works end-to-end**: `completed_parallel_batches` correctly increments when complex queries trigger round table consensus via `dispatch_batch()`.
+- **Test query length**: Two integration tests used queries that triggered unintended round table escalation after agents were loaded.
+
+### Added
+- **26 new tests** (`tests/test_diamond_parallel.py`): Flag on/off, batch counter increments, auth regression, secret leak checks, safe defaults, timeout/cancel, dedup, container agent loading, escalation policy, metrics structure.
+- **Parallel proof harness** (`tools/parallel_proof_harness.py`): Direct internal benchmark of dispatch_batch, run_round_table, sequential vs parallel comparison.
+- **Live benchmark** (`tools/diamond_live_benchmark.py`): HTTP API benchmark with short/complex/concurrent query modes.
+- **Soak harness** (`tools/diamond_soak.py`): Per-cycle metrics with solver + LLM + round table queries, NDJSON output.
+
+### Verified
+- Full pytest: 5022 passed, 3 skipped, 0 failures (26 new tests)
+- Internal benchmark: completed_parallel_batches=12, total_dispatched=72, +9.7% wall-time (parallel vs sequential, 6 prompts)
+- Live HTTP benchmark: completed_parallel_batches=8, all round table queries trigger correctly
+- Safe defaults unchanged: llm_parallel.enabled=false, gemma_profiles.enabled=false
+
+### Clarification (vs v3.5.2 reports)
+- v3.5.2 reported `completed_parallel_batches=0` in all data — this was because agents were never loaded
+- v3.5.2 Gate #5 was met via OLLAMA_NUM_PARALLEL=4 (Ollama runtime config), not WD-native dispatch
+- v3.5.3 proves WD-native dispatch works independently (counters increment, wall-time improvement)
+
 ## [3.5.2] — 2026-04-05 — Bounded Parallel LLM Dispatch
 
 ### Added
@@ -26,7 +50,7 @@
 ### Verified
 - Full pytest: 4996 passed, 3 skipped, 0 failures (28 new tests)
 - Benchmark: 6 modes tested (A-F), all OK; +50-77% wall-time improvement with OLLAMA_NUM_PARALLEL=4
-- Soak (dual_tier + parallel ON): 264 cycles, 1,320 queries, 0 fail, 0 5xx — PASS
+- Soak (dual_tier + parallel ON): 264 aggregate clean cycles across 3 interrupted runs (~2h), 1,320 queries, 0 fail, 0 5xx — PASS (note: completed_parallel_batches=0, see v3.5.3 fix)
 - Default behavior unchanged when flag OFF: verified in unit tests
 
 ## [3.5.1] — 2026-04-05 — Gemma 4 Dual-Tier Fallback Evaluation

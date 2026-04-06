@@ -14,7 +14,7 @@ import psutil
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
-from waggledance.adapters.http.deps import get_autonomy_service
+from waggledance.adapters.http.deps import get_autonomy_service, get_container
 from waggledance.adapters.http.routes._capability_state import (
     CAPABILITY_NODE_IDS,
     CapabilityInfo,
@@ -294,7 +294,7 @@ def _derive_node_meta(
     return meta
 
 
-def build_hologram_state(service) -> Dict[str, Any]:
+def build_hologram_state(service, *, container=None) -> Dict[str, Any]:
     """Synthesize hologram payload from AutonomyRuntime stats.
 
     Returns 32 nodes, 32 node_meta entries, edges, and events.
@@ -537,12 +537,12 @@ def build_hologram_state(service) -> Dict[str, Any]:
         events.append({"from": src, "to": dst})
 
     # v3.4: Add hybrid retrieval overlay info (additive, no node changes)
-    hybrid_info = _hybrid_overlay(service)
+    hybrid_info = _hybrid_overlay(service, container)
 
     # v3.5.5: Hex mesh observatory — additive sections
-    hex_mesh_state = _hex_mesh_overlay(service)
-    magma_timeline = _magma_timeline(service)
-    ops_state = _ops_overlay(service, rs)
+    hex_mesh_state = _hex_mesh_overlay(service, container)
+    magma_timeline = _magma_timeline(service, container)
+    ops_state = _ops_overlay(service, rs, container)
 
     return {
         "nodes": nodes,
@@ -556,15 +556,9 @@ def build_hologram_state(service) -> Dict[str, Any]:
     }
 
 
-def _hybrid_overlay(service) -> dict:
+def _hybrid_overlay(service, container=None) -> dict:
     """Build hybrid retrieval overlay for hologram state (additive only)."""
     try:
-        container = getattr(service, "_container", None)
-        if container is None:
-            # Try to get container from service attributes
-            runtime = getattr(service, "_runtime", None)
-            if runtime:
-                container = getattr(runtime, "_container", None)
         if container is None:
             return {"enabled": False}
 
@@ -581,14 +575,9 @@ def _hybrid_overlay(service) -> dict:
         return {"enabled": False}
 
 
-def _hex_mesh_overlay(service) -> dict:
+def _hex_mesh_overlay(service, container=None) -> dict:
     """Build hex mesh state for hologram (additive)."""
     try:
-        container = getattr(service, "_container", None)
-        if container is None:
-            runtime = getattr(service, "_runtime", None)
-            if runtime:
-                container = getattr(runtime, "_container", None)
         if container is None:
             return {"enabled": False}
 
@@ -624,14 +613,9 @@ def _hex_mesh_overlay(service) -> dict:
         return {"enabled": False}
 
 
-def _magma_timeline(service) -> list:
+def _magma_timeline(service, container=None) -> list:
     """Build MAGMA timeline for hologram (last N events, summary form)."""
     try:
-        container = getattr(service, "_container", None)
-        if container is None:
-            runtime = getattr(service, "_runtime", None)
-            if runtime:
-                container = getattr(runtime, "_container", None)
         if container is None:
             return []
 
@@ -662,14 +646,9 @@ def _magma_timeline(service) -> list:
         return []
 
 
-def _ops_overlay(service, rs: dict) -> dict:
+def _ops_overlay(service, rs: dict, container=None) -> dict:
     """Build ops overlay for hologram."""
     try:
-        container = getattr(service, "_container", None)
-        if container is None:
-            runtime = getattr(service, "_runtime", None)
-            if runtime:
-                container = getattr(runtime, "_container", None)
 
         # LLM parallel stats
         parallel = {}
@@ -720,6 +699,6 @@ def _ops_overlay(service, rs: dict) -> dict:
 
 
 @router.get("/api/hologram/state")
-def hologram_state(service=Depends(get_autonomy_service)):
+def hologram_state(service=Depends(get_autonomy_service), container=Depends(get_container)):
     """Return hologram brain state synthesized from runtime stats."""
-    return build_hologram_state(service)
+    return build_hologram_state(service, container=container)

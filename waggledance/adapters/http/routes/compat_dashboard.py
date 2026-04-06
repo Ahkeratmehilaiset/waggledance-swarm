@@ -137,6 +137,10 @@ def api_status(
     parallel_metrics = _safe(
         lambda: container.parallel_dispatcher.get_metrics(), {"enabled": False})
 
+    # v3.5.4: hex neighbor mesh metrics
+    hex_mesh_metrics = _safe(
+        lambda: container.hex_neighbor_assist.get_metrics(), {"enabled": False})
+
     return {
         "status": "running" if lifecycle.get("state") == "running" else "initializing",
         "profile": st.get("profile", "HOME"),
@@ -156,6 +160,7 @@ def api_status(
         "candidate_lab": candidate_lab_summary,
         "gemma_profiles": gemma_metrics,
         "llm_parallel": parallel_metrics,
+        "hex_mesh": hex_mesh_metrics,
     }
 
 
@@ -382,6 +387,8 @@ def api_ops(service=Depends(get_autonomy_service),
         "accelerator": accelerator_metrics,
         "gemma_profiles": gemma_metrics,
         "llm_parallel": parallel_metrics,
+        "hex_mesh": _safe(
+            lambda: container.hex_neighbor_assist.get_metrics(), {"enabled": False}),
         "recommendation": {
             "throttle": "none" if rk.get("load_level") in ("idle", "light") else "active",
             "night_mode": rk.get("night_mode", False),

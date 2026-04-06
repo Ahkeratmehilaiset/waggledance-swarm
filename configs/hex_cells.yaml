@@ -1,0 +1,60 @@
+# Hex Neighbor Mesh — Cell Topology
+# 7 cells: 1 center hub + 6 ring-1 domain clusters
+# Axial coordinates (q, r)
+
+cells:
+  - id: hub
+    coord: {q: 0, r: 0}
+    description: "Central dispatch hub — general queries, cross-domain routing"
+    domain_selectors: [general, dispatch, core]
+    tag_selectors: [core_dispatcher]
+    enabled: true
+    neighbor_policy: default
+
+  - id: bee_ops
+    coord: {q: 1, r: 0}
+    description: "Apiary operations — bee health, hive management, swarm monitoring"
+    domain_selectors: [bee, hive, apiary, swarm, honey, varroa, pollinator]
+    tag_selectors: [beekeeper, swarm_watcher, hive_temperature, hive_security, nectar_scout, phenologist, disease_monitor]
+    enabled: true
+    neighbor_policy: default
+
+  - id: environment
+    coord: {q: 0, r: -1}
+    description: "Environmental monitoring — weather, climate, soil, water"
+    domain_selectors: [weather, climate, soil, water, frost, storm, meteorolog, limnolog]
+    tag_selectors: [meteorologist, flight_weather, frost_soil, limnologist, air_quality, storm_alert, microclimate]
+    enabled: true
+    neighbor_policy: default
+
+  - id: home_comfort
+    coord: {q: -1, r: 0}
+    description: "Home comfort — energy, HVAC, lighting, indoor environment"
+    domain_selectors: [energy, hvac, lighting, indoor, comfort, home, smart, garden]
+    tag_selectors: [energy_advisor, smart_home, hvac, lighting_master, indoor_garden, pet_care, noise_monitor]
+    enabled: true
+    neighbor_policy: default
+
+  - id: safety_security
+    coord: {q: -1, r: 1}
+    description: "Safety and security — physical, cyber, fire, child safety"
+    domain_selectors: [safety, security, fire, cyber, guard, alarm, lock]
+    tag_selectors: [cyber_guard, fire_officer, child_safety, locksmith, yard_guard, safety_officer, shore_guard]
+    enabled: true
+    neighbor_policy: default
+
+  - id: production
+    coord: {q: 0, r: 1}
+    description: "Production and quality — factory, lab, inspection, maintenance"
+    domain_selectors: [production, factory, quality, maintenance, lab, inspection, industrial]
+    tag_selectors: [production_line, quality_inspector, shift_manager, maintenance_planner, lab_analyst, equipment_tech, hvac_industrial]
+    enabled: true
+    neighbor_policy: default
+
+  - id: logistics
+    coord: {q: 1, r: -1}
+    description: "Logistics and property — supply chain, carpentry, waste, budget"
+    domain_selectors: [logistics, supply, delivery, budget, property, waste, carpenter, well]
+    tag_selectors: [supply_chain, delivery_tracker, budget_tracker, carpenter, waste_handler, well_water, commute_planner]
+    enabled: true
+    neighbor_policy: default

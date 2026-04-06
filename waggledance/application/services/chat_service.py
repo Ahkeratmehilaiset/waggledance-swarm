@@ -88,6 +88,7 @@ class ChatService:
         cached = self._hot_cache.get(cache_key)
         if cached is not None:
             elapsed = (time.monotonic() - start) * 1000
+            self._record_telemetry("hotcache", 1.0, elapsed, True, req.query)
             return ChatResult(
                 response=cached,
                 language=language,

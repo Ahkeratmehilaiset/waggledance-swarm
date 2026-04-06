@@ -124,6 +124,12 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
     )
 
 
+def _normalize_tokens(text: str) -> set[str]:
+    """Tokenize and strip punctuation so 'status?' matches 'status'."""
+    import re
+    return {re.sub(r'[^\w]', '', w) for w in text.lower().split()} - {""}
+
+
 def extract_features(
     query: str,
     hot_cache_hit: bool,
@@ -138,8 +144,7 @@ def extract_features(
     """Extract routing features from a query."""
     from waggledance.core.reasoning.solver_router import SolverRouter
 
-    query_lower = query.lower()
-    words = set(query_lower.split())
+    words = _normalize_tokens(query)
 
     return RoutingFeatures(
         query_length=len(query),

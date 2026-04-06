@@ -224,6 +224,7 @@ class Container:
             case_store=rt.case_store,
             verifier_store=rt.verifier_store,
             hybrid_retrieval=self.hybrid_retrieval,
+            hex_neighbor_assist=self.hex_neighbor_assist,
         )
 
     @cached_property
@@ -408,6 +409,61 @@ class Container:
             settings=self._settings,
             llm=self.llm,
             gemma_router=self.gemma_router,
+        )
+
+    @cached_property
+    def hex_topology_registry(self):
+        """HexTopologyRegistry — loads hex cell topology and maps cells to agents."""
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        config_path = self._settings.get("hex_mesh.cell_config_path", "configs/hex_cells.yaml")
+        return HexTopologyRegistry(
+            config_path=config_path,
+            agents=self._load_agents(),
+        )
+
+    @cached_property
+    def hex_health_monitor(self):
+        """HexHealthMonitor — cell quarantine, cooldown, self-heal."""
+        from waggledance.application.services.hex_health_monitor import HexHealthMonitor
+        return HexHealthMonitor(
+            error_threshold=int(self._settings.get("hex_mesh.health_quarantine_error_threshold", 3)),
+            timeout_threshold=int(self._settings.get("hex_mesh.health_quarantine_timeout_threshold", 2)),
+            cooldown_s=float(self._settings.get("hex_mesh.health_cooldown_s", 300)),
+            self_heal_probe_enabled=bool(self._settings.get("hex_mesh.self_heal_probe_enabled", True)),
+        )
+
+    @cached_property
+    def hex_neighbor_assist(self):
+        """HexNeighborAssist — local->neighbor->global resolution coordinator.
+
+        Feature-flagged via hex_mesh.enabled in settings.yaml.
+        """
+        from waggledance.application.services.hex_neighbor_assist import HexNeighborAssist
+        enabled = bool(self._settings.get("hex_mesh.enabled", False))
+
+        magma_audit = None
+        try:
+            rt = self.autonomy_service._runtime
+            magma_audit = rt.audit
+        except Exception:
+            pass
+
+        return HexNeighborAssist(
+            topology_registry=self.hex_topology_registry,
+            health_monitor=self.hex_health_monitor,
+            llm_service=self.llm,
+            parallel_dispatcher=self.parallel_dispatcher,
+            magma_audit=magma_audit,
+            enabled=enabled,
+            local_threshold=float(self._settings.get("hex_mesh.local_confidence_threshold", 0.72)),
+            neighbor_threshold=float(self._settings.get("hex_mesh.neighbor_confidence_threshold", 0.82)),
+            global_threshold=float(self._settings.get("hex_mesh.global_escalation_threshold", 0.90)),
+            ttl_default=int(self._settings.get("hex_mesh.ttl_default", 2)),
+            max_neighbors_per_hop=int(self._settings.get("hex_mesh.max_neighbors_per_hop", 2)),
+            parallel_neighbor=bool(self._settings.get("hex_mesh.parallel_neighbor_assist", True)),
+            merge_policy=str(self._settings.get("hex_mesh.neighbor_merge_policy", "weighted_confidence")),
+            magma_trace_enabled=bool(self._settings.get("hex_mesh.magma_trace_enabled", True)),
+            allow_neighbor_llm=bool(self._settings.get("hex_mesh.allow_neighbor_llm", True)),
         )
 
     @cached_property

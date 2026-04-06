@@ -335,3 +335,23 @@ motives:
     strategy: minimize_harm_always
     log_all_conflicts: true
     escalate_to_user_if_unresolvable: true
+hex_mesh:
+  enabled: false
+  cell_config_path: "configs/hex_cells.yaml"
+  local_confidence_threshold: 0.72
+  neighbor_confidence_threshold: 0.82
+  global_escalation_threshold: 0.90
+  ttl_default: 2
+  max_neighbors_per_hop: 2
+  max_ring: 2
+  parallel_neighbor_assist: true
+  prefer_same_domain: true
+  health_quarantine_error_threshold: 3
+  health_quarantine_timeout_threshold: 2
+  health_cooldown_s: 300
+  self_heal_probe_enabled: true
+  magma_trace_enabled: true
+  neighbor_merge_policy: "weighted_confidence"
+  allow_neighbor_llm: true
+  allow_candidate_lab_neighbor_assist: false
+  allow_round_table_neighbor_assist: true

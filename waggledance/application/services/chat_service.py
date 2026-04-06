@@ -46,6 +46,7 @@ class ChatService:
         case_store: object | None = None,
         verifier_store: object | None = None,
         hybrid_retrieval: object | None = None,
+        hex_neighbor_assist: object | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._memory_service = memory_service
@@ -60,6 +61,8 @@ class ChatService:
         self._verifier_store = verifier_store
         # v3.4: hybrid FAISS + hex-cell retrieval
         self._hybrid_retrieval = hybrid_retrieval
+        # v3.5.4: hex neighbor mesh
+        self._hex_neighbor_assist = hex_neighbor_assist
         # v1.18.0: telemetry + ledger (lazy-init)
         self._telemetry = None
         self._ledger = None
@@ -161,6 +164,38 @@ class ChatService:
                 req.query, features.solver_intent, language, cache_key, start)
             if hybrid_trace and hybrid_trace.get("answered"):
                 return hybrid_trace["result"]
+
+        # v3.5.4: Hex neighbor mesh — after solver/hybrid, before orchestrator
+        hex_trace = None
+        if self._hex_neighbor_assist and self._hex_neighbor_assist.enabled:
+            try:
+                hex_result = await self._hex_neighbor_assist.resolve(
+                    query=req.query,
+                    intent=features.solver_intent,
+                    context={"language": language, "profile": req.profile},
+                )
+                if hex_result and hex_result.get("confidence", 0) >= 0.72:
+                    elapsed = (time.monotonic() - start) * 1000
+                    hex_trace = hex_result.get("trace")
+                    self._record_telemetry(
+                        "hex_mesh", hex_result["confidence"], elapsed, True, req.query)
+                    self._record_case(
+                        req.query, hex_result["response"],
+                        hex_result["confidence"], hex_result["source"],
+                        "hex_mesh", elapsed)
+                    return ChatResult(
+                        response=hex_result["response"],
+                        language=language,
+                        source=hex_result["source"],
+                        confidence=hex_result["confidence"],
+                        latency_ms=elapsed,
+                        agent_id=None,
+                        round_table=False,
+                        cached=False,
+                        hybrid_trace=hybrid_trace,
+                    )
+            except Exception as e:
+                log.debug("Hex mesh resolve failed: %s", e)
 
         task = TaskRequest(
             id=str(uuid.uuid4()),

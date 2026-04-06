@@ -1,5 +1,44 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.5.5] — 2026-04-06 — Hologram Mesh Observatory
+
+### Added
+- **Hologram Mesh Tabs**: New Mesh, Trace, MAGMA tabs in hologram UI (Brain + 3 new views).
+- **Mesh Tab**: Honeycomb topology visualization — 7-cell grid with state colors (idle/active/quarantined/self-heal), cell click inspector, counter display.
+- **Trace Tab**: Pipeline visualization (cache → solver → local → neighbor → global → LLM) with active stage highlighting and last trace data.
+- **MAGMA Tab**: Expandable timeline with summary-first, detail-on-click progressive disclosure.
+- **Backend hex_mesh payload**: `hex_mesh.cells[]`, `hex_mesh.links[]`, `hex_mesh.active_trace`, `hex_mesh.counters`, `hex_mesh.health` in `/api/hologram/state`.
+- **Ops overlay**: `ops.llm_parallel`, `ops.hex_mesh`, `ops.cache`, `ops.request_counters` in hologram state.
+- **MAGMA timeline overlay**: Last 20 MAGMA events (sanitized, no secrets) in hologram state.
+- **Trace ring buffer**: `collections.deque(maxlen=20)` in HexNeighborAssist for recent trace history.
+- **Sequential neighbor budget guard**: 10s max budget for sequential neighbor dispatch (llm_parallel=false).
+- **49 new tests** (`tests/test_hologram_mesh_observatory.py`): 16 test classes covering payload, trace, auth, cache, health, routing, safe defaults.
+
+### Fixed
+- **Routing tokenization**: `_normalize_tokens()` with `re.sub(r'[^\w]', '', w)` stripping — `"status?"` now matches `"status"` keyword.
+- **Cache-aware telemetry**: Hotcache hits now recorded in route telemetry (`_record_telemetry("hotcache", ...)`).
+- **Hologram container injection**: Overlay functions now receive DI container via `Depends(get_container)` instead of broken `service._container` lookup.
+
+### Changed
+- `waggledance/adapters/http/routes/hologram.py`: Added `_hex_mesh_overlay()`, `_magma_timeline()`, `_ops_overlay()` functions; `build_hologram_state()` returns hex_mesh, magma_timeline, ops sections.
+- `waggledance/core/orchestration/routing_policy.py`: Added `_normalize_tokens()`, replaced `query.split()` with punctuation-stripped tokenization.
+- `waggledance/application/services/hex_neighbor_assist.py`: Added trace ring buffer, `get_last_trace()`, `get_trace_buffer()`, `get_cell_states()` methods.
+- `waggledance/application/services/chat_service.py`: Hotcache telemetry recording in cache-hit path.
+- `web/hologram-brain-v6.html`: Mesh/Trace/MAGMA tabs, i18n keys (EN/FI), CSS for hex-grid/trace-pipeline/magma-entry.
+
+### Verified
+- Full pytest: 5134 passed, 3 skipped, 0 failures (49 new tests)
+- Benchmark: hex OFF avg 31,588ms, hex ON avg 37,782ms (+19.6% overhead)
+- Hologram payload: 9.8KB (46.5% overhead from new sections, acceptable for polling)
+- Cache-aware trace: hotcache source correctly identified, no false hex/swarm attribution
+- Safe defaults: hex_mesh.enabled=false, llm_parallel.enabled=false, gemma_profiles.enabled=false
+
+### Honest Notes
+- neighbor_assist_resolutions=0 on phi4-mini with llm_parallel=false (local model too slow for neighbor value)
+- All non-solver queries escalate local→global (same behavior as v3.5.4)
+- Hex mesh observatory provides genuine live visibility into resolution pipeline
+- Primary value is observability, not acceleration (on this hardware)
+
 ## [3.5.4] — 2026-04-06 — Hex Neighbor Mesh
 
 ### Added

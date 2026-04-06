@@ -179,7 +179,7 @@ query, response, confidence, source, and route type for downstream night learnin
 | `GET /api/agents/levels` | GET | All agents with level/trust/hallucination rate |
 | `GET /api/agents/leaderboard` | GET | Top agents by trust, queries, reliability |
 | `GET /api/consciousness` | GET | Memory engine state + user model summary (v3.3: interaction count, corrections, promises) |
-| `GET /api/hologram/state` | GET | Hologram brain state: 32 nodes (4 rings), node_meta (state/device/freshness/source_class/quality), edges, events |
+| `GET /api/hologram/state` | GET | Hologram brain state: 32 nodes (4 rings), node_meta, edges, events, hex_mesh overlay, magma_timeline, ops overlay |
 | `GET /hologram` | GET | Hologram brain v6 HTML page (32 nodes, docked panels, FI/EN i18n) |
 | `GET /api/profile/impact` | GET | Profile impact: target environment, enabled/disabled capabilities, risk mode, learning permissions |
 | `GET /api/capabilities/state` | GET | Per-family capability state: state/device/quality/source_class (shared derivation with hologram) |
@@ -206,6 +206,33 @@ All hybrid endpoints require authentication (Bearer token or session cookie).
 
 When hybrid is enabled, `/api/status` and `/api/ops` include `hybrid_retrieval` section with hit counters.
 `/api/hologram/state` includes additive `hybrid` overlay section.
+
+### Hologram Mesh Observatory (v3.5.5)
+
+`/api/hologram/state` now includes three additional sections when hex_mesh is enabled:
+
+```json
+{
+  "hex_mesh": {
+    "enabled": true,
+    "cells": [{"id": "hub", "coord": {"q": 0, "r": 0}, "domain": "...", "state": "idle", "health_score": 1.0, "load": 0, "quarantined": false, "self_heal_pending": false, "agent_count": 41}],
+    "links": [{"source": "hub", "target": "bee_ops"}],
+    "active_trace": {"trace_id": "...", "origin_cell_id": "hub", "local_confidence": 0.65, "neighbor_cells": ["bee_ops"], "escalated_global": true},
+    "counters": {"origin_cell_resolutions": 7, "global_escalations": 7, "neighbor_assist_resolutions": 0},
+    "health": {"tracked_cells": 7, "quarantined_cells": 0}
+  },
+  "magma_timeline": [{"event_type": "HEX_QUERY_COMPLETED", "source": "hub", "timestamp": 1712345678}],
+  "ops": {
+    "llm_parallel": {},
+    "hex_mesh": {"origin_cell_resolutions": 7, "global_escalations": 7},
+    "cache": {"size": 1, "hits": 1, "misses": 11},
+    "request_counters": {"total_queries": 0, "solver_hits": 0, "llm_calls": 0}
+  }
+}
+```
+
+When `hex_mesh.enabled=false`, `hex_mesh` returns `{"enabled": false}`, and other sections return empty defaults.
+MAGMA timeline sanitizes entries: `api_key` and `token` fields are stripped.
 
 ## Hybrid Backfill (v3.5)
 

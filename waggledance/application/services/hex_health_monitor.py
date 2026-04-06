@@ -26,7 +26,7 @@ class HexHealthMonitor:
         self._timeout_threshold = timeout_threshold
         self._cooldown_s = cooldown_s
         self._probe_enabled = self_heal_probe_enabled
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._cells: dict[str, HexCellHealth] = {}
 
         # Counters

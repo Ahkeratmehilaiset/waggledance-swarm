@@ -167,6 +167,7 @@ class ChatService:
                 return hybrid_trace["result"]
 
         # v3.5.4: Hex neighbor mesh — after solver/hybrid, before orchestrator
+        # v3.5.6: hex_trace only populated when hex actually ran (trace alignment)
         hex_trace = None
         if self._hex_neighbor_assist and self._hex_neighbor_assist.enabled:
             try:
@@ -195,6 +196,10 @@ class ChatService:
                         cached=False,
                         hybrid_trace=hybrid_trace,
                     )
+                # v3.5.6: if hex ran but didn't resolve, record the trace for
+                # telemetry (skipped/escalated) — but don't attribute to hex
+                if hex_result and hex_result.get("trace"):
+                    hex_trace = hex_result.get("trace")
             except Exception as e:
                 log.debug("Hex mesh resolve failed: %s", e)
 

@@ -464,6 +464,13 @@ class Container:
             merge_policy=str(self._settings.get("hex_mesh.neighbor_merge_policy", "weighted_confidence")),
             magma_trace_enabled=bool(self._settings.get("hex_mesh.magma_trace_enabled", True)),
             allow_neighbor_llm=bool(self._settings.get("hex_mesh.allow_neighbor_llm", True)),
+            # v3.5.6: efficiency settings
+            local_budget_ms=float(self._settings.get("hex_mesh.local_budget_ms", 15000)),
+            neighbor_budget_ms=float(self._settings.get("hex_mesh.neighbor_budget_ms", 10000)),
+            total_hex_budget_ms=float(self._settings.get("hex_mesh.total_hex_budget_ms", 25000)),
+            skip_low_value_neighbor_when_sequential=bool(
+                self._settings.get("hex_mesh.skip_low_value_neighbor_when_sequential", True)),
+            preflight_min_score=float(self._settings.get("hex_mesh.preflight_min_score", 0.3)),
         )
 
     @cached_property

@@ -355,3 +355,9 @@ hex_mesh:
   allow_neighbor_llm: true
   allow_candidate_lab_neighbor_assist: false
   allow_round_table_neighbor_assist: true
+  # v3.5.6: Adaptive Runtime Efficiency
+  local_budget_ms: 15000
+  neighbor_budget_ms: 10000
+  total_hex_budget_ms: 25000
+  skip_low_value_neighbor_when_sequential: true
+  preflight_min_score: 0.3

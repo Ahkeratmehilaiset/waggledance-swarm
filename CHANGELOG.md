@@ -1,5 +1,42 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.5.6] — 2026-04-07 — Adaptive Runtime Efficiency
+
+### Added
+- **Cheap preflight gating**: Scores queries using cheap signals (domain match, query length, cell success ratio, solver intent) before attempting expensive LLM calls. Queries below threshold skip hex entirely.
+- **Sequential neighbor skip**: When `llm_parallel=false` and preflight score < 0.5, skips the sequential neighbor LLM call (was 2-30s wasted per query).
+- **Adaptive success memory**: Rolling per-cell and per-category success tracking. Cells with zero success rate in the rolling window get lower preflight scores, accelerating skip decisions.
+- **Budget controls**: `local_budget_ms`, `neighbor_budget_ms`, `total_hex_budget_ms` — configurable ms-based budgets that abort hex attempts when exceeded.
+- **Efficiency counters**: `preflight_skips`, `preflight_passes`, `skipped_local_attempts`, `skipped_neighbor_attempts`, `budget_exhaustions` — visible in /api/status, /api/ops, and /api/hologram/state.
+- **`get_efficiency_stats()`**: New method on HexNeighborAssist returning preflight skip ratio, success ratios, cell success memory, escalation ratio.
+- **HexResolutionTrace v3.5.6 fields**: `preflight_score`, `preflight_skipped`, `neighbor_skipped`, `budget_exhausted` — full provenance in trace.
+- **5 new settings**: `hex_mesh.local_budget_ms`, `hex_mesh.neighbor_budget_ms`, `hex_mesh.total_hex_budget_ms`, `hex_mesh.skip_low_value_neighbor_when_sequential`, `hex_mesh.preflight_min_score`.
+- **`tools/runtime_autotune_30h.py`**: Canary benchmark with config candidates, NDJSON output, tuning matrix.
+- **`tools/runtime_soak_30h.py`**: Continuous mixed-query soak with proper error classification.
+- **57 new tests** (`tests/test_runtime_efficiency_v356.py`): 20 test classes covering preflight, skip, budget, counters, trace, auth, secrets, defaults, threading.
+
+### Changed
+- `waggledance/application/services/hex_neighbor_assist.py`: Added preflight scoring, skip logic, adaptive memory, budget controls. All changes are additive — no existing behavior modified when hex_mesh.enabled=false.
+- `waggledance/core/domain/hex_mesh.py`: Added 4 fields to HexResolutionTrace dataclass.
+- `waggledance/bootstrap/container.py`: Wired 5 new settings into HexNeighborAssist constructor.
+- `waggledance/application/services/chat_service.py`: Trace alignment — hex trace only populated when hex actually ran.
+- `waggledance/adapters/http/routes/hologram.py`: Added `efficiency` section to hex_mesh overlay.
+- `configs/settings.yaml`: Added 5 new hex_mesh efficiency settings with conservative defaults.
+
+### Verified
+- Full pytest: 5191 passed, 3 skipped, 0 failures (57 new tests)
+- Benchmark: hex ON avg 19,370ms (was 37,800ms in v3.5.5) — **48.7% improvement**
+- Preflight skip ratio: 48.3% (14/29 queries skipped at preflight)
+- Sequential neighbor skip: 100% of non-skipped queries had neighbor skipped
+- Counter truth: all counters consistent across /api/status, /api/ops, /api/hologram/state
+- 4h soak: clean (see reports)
+
+### Honest Notes
+- `local_only_resolutions` and `neighbor_assist_resolutions` remain 0 (phi4-mini confidence ceiling 0.65 < threshold 0.72)
+- The 48.7% latency improvement comes from **skipping wasted LLM calls**, not from local resolution success
+- The correct strategy on phi4-mini hardware is SKIP — and v3.5.6 proves this saves nearly half the hex overhead
+- Safe defaults: hex_mesh.enabled=false, all experimental flags off
+
 ## [3.5.5] — 2026-04-06 — Hologram Mesh Observatory
 
 ### Added

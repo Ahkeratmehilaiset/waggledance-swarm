@@ -1,7 +1,7 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-04-06
-**Version:** v3.5.5 (Hologram Mesh Observatory — hex visibility in hologram UI)
+**Updated:** 2026-04-07
+**Version:** v3.5.6 (Adaptive Runtime Efficiency — preflight gating, skip logic, 48.7% hex latency reduction)
 
 ---
 

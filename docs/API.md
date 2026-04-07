@@ -234,6 +234,43 @@ When hybrid is enabled, `/api/status` and `/api/ops` include `hybrid_retrieval` 
 When `hex_mesh.enabled=false`, `hex_mesh` returns `{"enabled": false}`, and other sections return empty defaults.
 MAGMA timeline sanitizes entries: `api_key` and `token` fields are stripped.
 
+### Adaptive Runtime Efficiency (v3.5.6)
+
+`hex_mesh` now includes an `efficiency` section with preflight/skip metrics:
+
+```json
+{
+  "hex_mesh": {
+    "counters": {
+      "preflight_skips": 14,
+      "preflight_passes": 1,
+      "skipped_local_attempts": 14,
+      "skipped_neighbor_attempts": 15,
+      "budget_exhaustions": 0
+    },
+    "efficiency": {
+      "total_hex_queries": 29,
+      "preflight_skip_ratio": 0.48,
+      "skipped_local_attempts": 14,
+      "skipped_neighbor_attempts": 15,
+      "local_success_ratio": 0.0,
+      "neighbor_success_ratio": 0.0,
+      "escalation_ratio": 0.52,
+      "cell_success_memory": {"hub": 0.0, "environment": 0.0}
+    }
+  }
+}
+```
+
+`HexResolutionTrace.to_dict()` now includes: `preflight_score`, `preflight_skipped`, `neighbor_skipped`, `budget_exhausted`.
+
+New settings in `configs/settings.yaml` under `hex_mesh`:
+- `local_budget_ms` (default: 15000) — max ms for local LLM attempt
+- `neighbor_budget_ms` (default: 10000) — max ms for neighbor LLM attempt
+- `total_hex_budget_ms` (default: 25000) — max total hex time
+- `skip_low_value_neighbor_when_sequential` (default: true) — skip sequential neighbor for low-value queries
+- `preflight_min_score` (default: 0.3) — minimum preflight score to attempt local
+
 ## Hybrid Backfill (v3.5)
 
 | Endpoint | Method | Description |

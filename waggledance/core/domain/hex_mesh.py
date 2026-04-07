@@ -181,8 +181,14 @@ class HexResolutionTrace:
     # TTL path
     ttl_path: list[str] = field(default_factory=list)
 
+    # v3.5.6: preflight / efficiency
+    preflight_score: float = -1.0  # -1 = not computed
+    preflight_skipped: bool = False
+    neighbor_skipped: bool = False
+    budget_exhausted: bool = False
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "trace_id": self.trace_id,
             "origin_cell_id": self.origin_cell_id,
             "query_len": len(self.query),
@@ -199,4 +205,9 @@ class HexResolutionTrace:
             "ttl_path": self.ttl_path,
             "models_used": self.models_used,
             "cache_hit": self.cache_hit,
+            "preflight_score": self.preflight_score,
+            "preflight_skipped": self.preflight_skipped,
+            "neighbor_skipped": self.neighbor_skipped,
+            "budget_exhausted": self.budget_exhausted,
         }
+        return d

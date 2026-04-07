@@ -38,6 +38,57 @@ class HexMeshMetrics:
     self_heal_events: int = 0
     magma_traces_written: int = 0
     ttl_exhaustions: int = 0
+    # v3.5.6: efficiency counters
+    skipped_local_attempts: int = 0
+    skipped_neighbor_attempts: int = 0
+    budget_exhaustions: int = 0
+    preflight_skips: int = 0
+    preflight_passes: int = 0
+
+
+@dataclass
+class _AdaptiveSuccessMemory:
+    """Rolling per-cell and per-category success tracking."""
+
+    # Per cell: deque of (timestamp, succeeded: bool)
+    cell_history: dict = field(default_factory=dict)
+    # Per query category: deque of (timestamp, succeeded: bool)
+    category_history: dict = field(default_factory=dict)
+    window_s: float = 3600.0  # 1-hour rolling window
+
+    def record(self, cell_id: str, category: str, succeeded: bool) -> None:
+        import time as _t
+        now = _t.time()
+        if cell_id not in self.cell_history:
+            self.cell_history[cell_id] = collections.deque(maxlen=100)
+        self.cell_history[cell_id].append((now, succeeded))
+        if category not in self.category_history:
+            self.category_history[category] = collections.deque(maxlen=100)
+        self.category_history[category].append((now, succeeded))
+
+    def cell_success_ratio(self, cell_id: str) -> float | None:
+        """Return success ratio for cell in rolling window, or None if no data."""
+        import time as _t
+        hist = self.cell_history.get(cell_id)
+        if not hist:
+            return None
+        cutoff = _t.time() - self.window_s
+        recent = [(t, s) for t, s in hist if t > cutoff]
+        if not recent:
+            return None
+        return sum(1 for _, s in recent if s) / len(recent)
+
+    def category_success_ratio(self, category: str) -> float | None:
+        """Return success ratio for category in rolling window."""
+        import time as _t
+        hist = self.category_history.get(category)
+        if not hist:
+            return None
+        cutoff = _t.time() - self.window_s
+        recent = [(t, s) for t, s in hist if t > cutoff]
+        if not recent:
+            return None
+        return sum(1 for _, s in recent if s) / len(recent)
 
 
 class HexNeighborAssist:
@@ -70,6 +121,12 @@ class HexNeighborAssist:
         merge_policy: str = "weighted_confidence",
         magma_trace_enabled: bool = True,
         allow_neighbor_llm: bool = True,
+        # v3.5.6: efficiency settings
+        local_budget_ms: float = 15000.0,
+        neighbor_budget_ms: float = 10000.0,
+        total_hex_budget_ms: float = 25000.0,
+        skip_low_value_neighbor_when_sequential: bool = True,
+        preflight_min_score: float = 0.3,
     ):
         self._registry = topology_registry
         self._health = health_monitor
@@ -88,8 +145,16 @@ class HexNeighborAssist:
         self._magma_trace = magma_trace_enabled
         self._allow_neighbor_llm = allow_neighbor_llm
 
+        # v3.5.6: efficiency controls
+        self._local_budget_ms = local_budget_ms
+        self._neighbor_budget_ms = neighbor_budget_ms
+        self._total_hex_budget_ms = total_hex_budget_ms
+        self._skip_low_neighbor_seq = skip_low_value_neighbor_when_sequential
+        self._preflight_min_score = preflight_min_score
+
         self._lock = threading.Lock()
         self._metrics = HexMeshMetrics()
+        self._success_memory = _AdaptiveSuccessMemory()
         # Trace ring buffer — last N completed traces for hologram
         self._trace_buffer: collections.deque[dict] = collections.deque(maxlen=20)
         self._last_trace: dict | None = None
@@ -149,6 +214,70 @@ class HexNeighborAssist:
             log.warning("Hex resolve failed: %s", e)
             return None
 
+    def _preflight_score(
+        self, query: str, intent: str, origin_id: str,
+    ) -> float:
+        """Cheap preflight scoring — no LLM calls, pure heuristics.
+
+        Returns 0.0–1.0. Higher = more likely to resolve locally.
+        Uses only cheap signals: tokens, domain match, query length,
+        recent success ratio per cell, known solver intent.
+        """
+        score = 0.0
+
+        # 1. Domain match: do any cell domain selectors appear in the query?
+        cell_def = self._registry.cells.get(origin_id)
+        if cell_def:
+            query_lower = query.lower()
+            for selector in cell_def.domain_selectors:
+                if selector.lower() in query_lower:
+                    score += 0.3
+                    break
+
+        # 2. Query length: very short queries rarely resolve locally
+        if len(query) > 80:
+            score += 0.1
+        elif len(query) < 20:
+            score -= 0.1
+
+        # 3. Recent cell success ratio from adaptive memory
+        cell_ratio = self._success_memory.cell_success_ratio(origin_id)
+        if cell_ratio is not None:
+            if cell_ratio > 0.3:
+                score += 0.3
+            elif cell_ratio == 0.0:
+                score -= 0.3  # Cell has never succeeded — strong skip signal
+
+        # 4. Known solver intent → skip hex, solver handles it deterministically
+        solver_intents = {"math", "thermal", "stats", "symbolic", "constraint"}
+        if intent in solver_intents:
+            score -= 0.5  # Solver path is better
+
+        # 5. Category success ratio
+        category = self._classify_query_category(query)
+        cat_ratio = self._success_memory.category_success_ratio(category)
+        if cat_ratio is not None:
+            if cat_ratio == 0.0:
+                score -= 0.2
+
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _classify_query_category(query: str) -> str:
+        """Cheap query classification for adaptive memory tracking."""
+        q = query.lower()
+        if any(w in q for w in ("sähkö", "electric", "price", "hinta", "kwh")):
+            return "electricity"
+        if any(w in q for w in ("sää", "weather", "lämpö", "temp", "frost")):
+            return "weather"
+        if any(w in q for w in ("math", "laske", "calculate", "+", "*", "=")):
+            return "math"
+        if any(w in q for w in ("status", "tila", "health")):
+            return "system"
+        if any(w in q for w in ("koti", "home", "turva", "safety", "security")):
+            return "home"
+        return "general"
+
     async def _do_resolve(
         self,
         query: str,
@@ -156,7 +285,9 @@ class HexNeighborAssist:
         trace: HexResolutionTrace,
         context: dict,
     ) -> dict[str, Any] | None:
-        """Core resolution logic."""
+        """Core resolution logic with preflight gating and budget controls."""
+
+        resolve_start = time.time()
 
         # Step 1: Select origin cell
         origin_id = self._registry.select_origin_cell(query, intent)
@@ -166,9 +297,44 @@ class HexNeighborAssist:
         trace.ttl_path.append(origin_id)
         self._emit_magma("HEX_ORIGIN_CELL_SELECTED", trace_id=trace.trace_id, cell_id=origin_id)
 
-        # Step 2: Local attempt
+        # v3.5.6: Preflight scoring — cheap check before expensive LLM call
+        preflight = self._preflight_score(query, intent, origin_id)
+        category = self._classify_query_category(query)
+        trace.preflight_score = preflight
+
+        if preflight < self._preflight_min_score:
+            # Skip local + neighbor entirely — go straight to global
+            self._emit_magma(
+                "HEX_PREFLIGHT_SKIP",
+                trace_id=trace.trace_id,
+                preflight_score=preflight,
+                cell_id=origin_id,
+            )
+            trace.escalated_global = True
+            trace.preflight_skipped = True
+            trace.neighbor_skipped = True
+            with self._lock:
+                self._metrics.preflight_skips += 1
+                self._metrics.skipped_local_attempts += 1
+                self._metrics.skipped_neighbor_attempts += 1
+                self._metrics.global_escalations += 1
+            self._success_memory.record(origin_id, category, False)
+            return None
+
+        with self._lock:
+            self._metrics.preflight_passes += 1
+
+        # Step 2: Local attempt (with budget)
         self._emit_magma("HEX_LOCAL_ATTEMPT", trace_id=trace.trace_id, cell_id=origin_id)
         local_result = await self._try_local(origin_id, query, trace)
+
+        # Check local budget
+        elapsed_ms = (time.time() - resolve_start) * 1000
+        if elapsed_ms > self._local_budget_ms:
+            trace.budget_exhausted = True
+            self._emit_magma("HEX_LOCAL_BUDGET_EXHAUSTED", trace_id=trace.trace_id, elapsed_ms=elapsed_ms)
+            with self._lock:
+                self._metrics.budget_exhaustions += 1
 
         if local_result and local_result["confidence"] >= self._local_threshold:
             trace.final_response = local_result["response"]
@@ -177,12 +343,44 @@ class HexNeighborAssist:
             self._emit_magma("HEX_LOCAL_SUCCESS", trace_id=trace.trace_id, confidence=local_result["confidence"])
             with self._lock:
                 self._metrics.local_only_resolutions += 1
+            self._success_memory.record(origin_id, category, True)
             return {
                 "response": trace.final_response,
                 "confidence": trace.final_confidence,
                 "source": "hex_local",
                 "trace": trace.to_dict(),
             }
+
+        # Check total hex budget before neighbor attempt
+        elapsed_ms = (time.time() - resolve_start) * 1000
+        if elapsed_ms > self._total_hex_budget_ms:
+            trace.escalated_global = True
+            trace.budget_exhausted = True
+            trace.neighbor_skipped = True
+            self._emit_magma("HEX_TOTAL_BUDGET_EXHAUSTED", trace_id=trace.trace_id, elapsed_ms=elapsed_ms)
+            with self._lock:
+                self._metrics.budget_exhaustions += 1
+                self._metrics.skipped_neighbor_attempts += 1
+                self._metrics.global_escalations += 1
+            self._success_memory.record(origin_id, category, False)
+            return None
+
+        # v3.5.6: Skip sequential neighbor for low-value queries
+        is_sequential = not (self._parallel_neighbor and self._dispatcher and self._dispatcher.enabled)
+        if is_sequential and self._skip_low_neighbor_seq and preflight < 0.5:
+            # Not worth the sequential LLM call
+            trace.escalated_global = True
+            trace.neighbor_skipped = True
+            self._emit_magma(
+                "HEX_NEIGHBOR_SKIPPED_SEQUENTIAL",
+                trace_id=trace.trace_id,
+                preflight_score=preflight,
+            )
+            with self._lock:
+                self._metrics.skipped_neighbor_attempts += 1
+                self._metrics.global_escalations += 1
+            self._success_memory.record(origin_id, category, False)
+            return None
 
         # Step 3: Neighbor assist (only if parallel dispatch available or sequential fallback)
         self._emit_magma("HEX_NEIGHBOR_ASSIST_STARTED", trace_id=trace.trace_id, cell_id=origin_id)
@@ -204,6 +402,7 @@ class HexNeighborAssist:
                 )
                 with self._lock:
                     self._metrics.neighbor_assist_resolutions += 1
+                self._success_memory.record(origin_id, category, True)
                 return {
                     "response": trace.final_response,
                     "confidence": trace.final_confidence,
@@ -216,6 +415,7 @@ class HexNeighborAssist:
         self._emit_magma("HEX_ESCALATED_GLOBAL", trace_id=trace.trace_id)
         with self._lock:
             self._metrics.global_escalations += 1
+        self._success_memory.record(origin_id, category, False)
 
         return None  # Caller (chat_service) will continue to swarm/LLM path
 
@@ -513,6 +713,42 @@ class HexNeighborAssist:
                 "self_heal_events": m.self_heal_events,
                 "magma_traces_written": m.magma_traces_written,
                 "ttl_exhaustions": m.ttl_exhaustions,
+                # v3.5.6: efficiency counters
+                "skipped_local_attempts": m.skipped_local_attempts,
+                "skipped_neighbor_attempts": m.skipped_neighbor_attempts,
+                "budget_exhaustions": m.budget_exhaustions,
+                "preflight_skips": m.preflight_skips,
+                "preflight_passes": m.preflight_passes,
+            }
+
+    def get_efficiency_stats(self) -> dict[str, Any]:
+        """Return v3.5.6 efficiency statistics for /api/ops and hologram."""
+        with self._lock:
+            m = self._metrics
+            total_queries = m.origin_cell_resolutions + m.preflight_skips
+            return {
+                "total_hex_queries": total_queries,
+                "preflight_skips": m.preflight_skips,
+                "preflight_passes": m.preflight_passes,
+                "preflight_skip_ratio": (
+                    m.preflight_skips / max(total_queries, 1)
+                ),
+                "skipped_local_attempts": m.skipped_local_attempts,
+                "skipped_neighbor_attempts": m.skipped_neighbor_attempts,
+                "budget_exhaustions": m.budget_exhaustions,
+                "local_success_ratio": (
+                    m.local_only_resolutions / max(m.origin_cell_resolutions, 1)
+                ),
+                "neighbor_success_ratio": (
+                    m.neighbor_assist_resolutions / max(m.origin_cell_resolutions, 1)
+                ),
+                "escalation_ratio": (
+                    m.global_escalations / max(total_queries, 1)
+                ),
+                "cell_success_memory": {
+                    cell_id: self._success_memory.cell_success_ratio(cell_id)
+                    for cell_id in list(self._success_memory.cell_history.keys())
+                },
             }
 
     def get_last_trace(self) -> dict | None:

@@ -601,6 +601,11 @@ def _hex_mesh_overlay(service, container=None) -> dict:
                     if link not in links:
                         links.append(link)
 
+        # v3.5.6: add efficiency stats
+        efficiency = {}
+        if ha.enabled and hasattr(ha, "get_efficiency_stats"):
+            efficiency = ha.get_efficiency_stats()
+
         return {
             "enabled": ha.enabled,
             "cells": cells,
@@ -608,6 +613,7 @@ def _hex_mesh_overlay(service, container=None) -> dict:
             "active_trace": active_trace,
             "counters": counters,
             "health": health_stats,
+            "efficiency": efficiency,
         }
     except Exception:
         return {"enabled": False}

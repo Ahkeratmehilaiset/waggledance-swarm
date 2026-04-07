@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 BASE_URL = os.environ.get("WAGGLE_BASE_URL", "http://localhost:8000")
-API_KEY = os.environ.get("WAGGLE_API_KEY", "")
+API_KEY = os.environ.get("WAGGLE_API_KEY", "benchkey356")
 
 # Fixed queries (some will repeat for cache testing)
 SOLVER_QUERIES = [
@@ -210,6 +210,8 @@ def write_soak_report(cycles: list[dict], duration_h: float, path: Path,
 
 
 def main():
+    global API_KEY  # noqa: PLW0603
+
     parser = argparse.ArgumentParser(description="v3.5.6 Runtime Soak")
     parser.add_argument("--api-key", default=API_KEY)
     parser.add_argument("--hours", type=float, default=30.0, help="Target soak duration")
@@ -218,8 +220,8 @@ def main():
     parser.add_argument("--seed", type=int, default=356, help="Random seed")
     args = parser.parse_args()
 
-    global API_KEY
-    API_KEY = args.api_key
+    if args.api_key:
+        API_KEY = args.api_key
 
     out = Path(args.output_dir)
     (out / "reports").mkdir(parents=True, exist_ok=True)

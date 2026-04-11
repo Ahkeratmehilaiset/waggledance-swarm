@@ -1,5 +1,22 @@
 # AGENTS.md
 
+## Source-of-truth rules (added after the 2026-04-11 recovery incident)
+- The persistent C-drive repo (`C:\Python\project2`) is the ONLY source of truth.
+- Never develop in U:, RAM-disk, temp, or zip-extract folders. RAM-disks
+  disappear at shutdown and take your uncommitted work with them.
+- Every green checkpoint MUST be committed and pushed to GitHub immediately.
+- Backups are SECONDARY. GitHub is the primary history.
+- If your working tree has no `.git`, STOP. Do NOT `git init` a backup snapshot.
+  Instead: clone the GitHub repo fresh into a persistent C-drive folder, then
+  overlay the current working files on top of the clone so the real history
+  is preserved. See `docs/RECOVERY_POLICY.md`.
+- If work is reconstructed from reports (because the originals were lost),
+  say so explicitly in the commit message — include the report paths and
+  the known-good RC commit SHA the reconstruction targets.
+- Use `tools/savepoint.ps1 -Message "..."` to checkpoint. It refuses to run
+  off the C: drive, refuses to run from a RAM-disk, shows git status, runs
+  the tests you pass, commits, and pushes in a single safe step.
+
 ## Task rules
 - Reproduce failures before changing code.
 - Prefer the smallest safe patch.

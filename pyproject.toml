@@ -72,6 +72,27 @@ waggledance = "waggledance.adapters.cli.start_runtime:main"
 Homepage = "https://github.com/Ahkeratmehilaiset/waggledance-swarm"
 Issues = "https://github.com/Ahkeratmehilaiset/waggledance-swarm/issues"
 
+[tool.setuptools.packages.find]
+# Explicit include list — the project root contains many sibling top-level
+# directories (data/, models/, chroma_data/, etc.) that setuptools flat-layout
+# auto-discovery would refuse to ingest. Only ship the hexagonal runtime plus
+# the feed integration adapters that the runtime imports lazily.
+include = ["waggledance*", "integrations*"]
+exclude = [
+    "tests*",
+    "configs*",
+    "docs*",
+    "reports*",
+    "output*",
+    "memory*",
+    "models*",
+    "chroma_data*",
+    "data*",
+    "_archive*",
+    "legacy*",
+    "overnight_run*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"

@@ -40,6 +40,10 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 |----------|--------|-------------|
 | `GET /health` | GET | Liveness probe. Returns `{"status": "ok"}` |
 | `GET /ready` | GET | Readiness probe. Checks runtime running state |
+| `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
+| `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
+| `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes the v3.5.6 hex-mesh efficiency counters (15 counters + 2 gauges) plus a `waggledance_up` liveness gauge. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -47,6 +51,25 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 
 // GET /ready
 {"status": "ready", "hivemind": true}
+
+// GET /version
+{
+  "name": "waggledance-swarm",
+  "version": "3.5.6",
+  "python": "3.13.0",
+  "platform": "Windows-11-..."
+}
+```
+
+```
+# GET /metrics (text/plain; version=0.0.4)
+# HELP waggledance_up Liveness gauge (1 = metrics source healthy).
+# TYPE waggledance_up gauge
+waggledance_up 1.0
+# HELP waggledance_hex_preflight_skips_total Queries skipped via cheap preflight gating.
+# TYPE waggledance_hex_preflight_skips_total counter
+waggledance_hex_preflight_skips_total 0.0
+...
 ```
 
 ---

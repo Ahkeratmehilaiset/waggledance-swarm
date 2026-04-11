@@ -624,6 +624,10 @@ def _get_chroma_collection(container):
     """Get ChromaDB collection for feed enrichment."""
     try:
         vs = container.vector_store
+        # ChromaVectorStore owns a dict of named collections; prefer that.
+        collections = getattr(vs, "_collections", None)
+        if isinstance(collections, dict):
+            return collections.get("waggle_memory")
         if hasattr(vs, "_collection"):
             return vs._collection
         if hasattr(vs, "collection"):

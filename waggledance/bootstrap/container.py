@@ -504,6 +504,35 @@ class Container:
         data_dir = os.path.dirname(self._settings.db_path) or "data"
         return StorageHealthService(data_dir=data_dir)
 
+    # --- Data feeds (weather / electricity / RSS) ---
+
+    @cached_property
+    def priority_lock(self):
+        """PriorityLock — async gate used by background feeds."""
+        from waggledance.core.priority_lock import PriorityLock
+        return PriorityLock()
+
+    @cached_property
+    def feed_ingest_sink(self):
+        """FeedIngestSink — bridges legacy learn(...) into VectorStorePort.upsert."""
+        from waggledance.adapters.feeds.feed_ingest_sink import FeedIngestSink
+        return FeedIngestSink(vector_store=self.vector_store)
+
+    @cached_property
+    def data_feed_scheduler(self):
+        """DataFeedScheduler — returns None when feeds.enabled is false."""
+        feeds_cfg = self._settings.get("feeds", {}) or {}
+        if not feeds_cfg.get("enabled", False):
+            return None
+        # integrations.* is deliberate: legacy feed modules live there and
+        # the legacy-import-freeze guard only blocks ``core.*`` imports.
+        from integrations.data_scheduler import DataFeedScheduler
+        return DataFeedScheduler(
+            config=feeds_cfg,
+            consciousness=self.feed_ingest_sink,
+            priority_lock=self.priority_lock,
+        )
+
     def build_app(self):
         """Build FastAPI application."""
         from waggledance.adapters.http.api import create_app

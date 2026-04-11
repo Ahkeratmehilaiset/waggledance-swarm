@@ -1,4 +1,4 @@
-# WaggleDance pip freeze — 2026-03-21T13:30:49.446413+00:00Z
+# WaggleDance pip freeze — 2026-04-10T00:13:05.175380+00:00Z
 # Python 3.13.7
 # Restore: pip install -r requirements.lock.txt
 
@@ -51,6 +51,7 @@ deep-translator==1.11.4
 defusedxml==0.7.1
 diffusers==0.37.0
 dill==0.4.0
+dirigera==1.2.7
 distro==1.9.0
 docopt==0.6.2
 docstring_parser==0.17.0
@@ -106,6 +107,7 @@ immutables==0.21
 importlib_metadata==8.7.1
 importlib_resources==6.5.2
 iniconfig==2.3.0
+invoke==2.2.1
 Jinja2==3.1.6
 jiter==0.10.0
 joblib==1.5.3
@@ -170,6 +172,7 @@ packageurl-python==0.17.6
 packaging==25.0
 paho-mqtt==2.1.0
 pandas==2.3.1
+paramiko==4.0.0
 pathspec==1.0.4
 pdfminer.six==20251230
 pdfplumber==0.11.9
@@ -209,8 +212,10 @@ pyee==13.0.0
 PyGetWindow==0.0.9
 Pygments==2.19.2
 pyjsparser==2.7.1
+pymelcloud==2.11.0
 PyMsgBox==2.0.1
 PyMuPDF==1.27.1
+PyNaCl==1.6.2
 pyparsing==3.3.2
 pypdf==6.9.1
 pypdfium2==5.5.0

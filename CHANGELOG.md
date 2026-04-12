@@ -1,5 +1,24 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## Unreleased — Post-v3.5.7 Hardening (docs/test only, no runtime changes)
+
+- **UI Gauntlet:** 477 Playwright-driven chat queries across 7 buckets
+  (normal, ambiguous, structured, multilingual, adversarial, edge_case, burst).
+  466/466 active queries: 100% sent, 100% responded, 0 XSS, 0 DOM breaks,
+  0 session losses. Avg latency 3.4 s.
+- **Viewport/tab fidelity:** 33/33 checks pass (11 tabs x 3 viewports), 0
+  console errors, 0 failed requests.
+- **Fault drills:** 6/7 pass (wrong token, session clear, no-auth POST,
+  invalid body, Ollama check, feed resilience). 1 inconclusive (Playwright
+  test infra, not a server bug).
+- **30-min mixed soak:** 36 cycles, backend 200 OK on every cycle, 0 error
+  accumulation, auth maintained throughout.
+- **Harness code:** `tests/e2e/ui_gauntlet_harness.py`, `tests/e2e/conftest.py`,
+  `tests/e2e/_phase_c_fast.py`.
+- **Tool updates:** `waggle_backup.py` v9.0, `waggle_restore.py` v3.5.7,
+  `restore.py` v4.2 (version strings only).
+- See `docs/runs/ui_gauntlet_20260412/summary.md` for the full report.
+
 ## [3.5.7] — 2026-04-12 — Honest Hologram Release
 
 > Feed Runtime Wiring + Release Polish + Phase 7 Hologram Fixes.

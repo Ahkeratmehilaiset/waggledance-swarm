@@ -24,6 +24,7 @@ Protected `/api/*` endpoints accept two auth methods:
 - Token auto-generated on first startup and saved to `.env` as `WAGGLE_API_KEY`
 - **Public (no auth):** `/health`, `/ready`, `/api/status`, `/api/auth/check`, `/api/feeds`, `/api/hologram/state`, `/api/capabilities/state`, `/api/learning/state-machine`
 - **Session endpoints:** `POST /api/auth/session` (create, requires Bearer), `GET /api/auth/check` (public), `DELETE /api/auth/session` (logout)
+- **Hologram cookie bootstrap (v3.5.7):** `GET /hologram?token=<api_key>` mints an HttpOnly session cookie via 303 redirect to `/hologram`. The token is consumed and does not appear in the redirected URL. Wrong or missing token serves the page unchanged (no cookie, chat disabled). This is the standard way for browsers to establish a session for the hologram dashboard.
 - **WebSocket:** session cookie (browser) or `?token=` query parameter (scripts)
 - The API key value never appears in served HTML, inline JS, or browser storage
 
@@ -43,7 +44,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 | `GET /healthz` | GET | Kubernetes-convention alias of `/health` |
 | `GET /readyz` | GET | Kubernetes-convention alias of `/ready` |
 | `GET /version` | GET | Build identification (auth-exempt). Returns `{name, version, python, platform}` — stable shape for rolling-restart detection. No secrets, no filesystem paths. |
-| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes the v3.5.6 hex-mesh efficiency counters (15 counters + 2 gauges) plus a `waggledance_up` liveness gauge. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
+| `GET /metrics` | GET | Prometheus text-format exposition (auth-exempt). Exposes hex-mesh efficiency counters (15 counters + 2 gauges) plus a `waggledance_up` liveness gauge. Private `CollectorRegistry` — no default `python_gc_*` / `process_*` collector leakage. Content-Type `text/plain; version=0.0.4`. |
 
 ```json
 // GET /health
@@ -55,7 +56,7 @@ Input limits: chat message 10,000 chars, voice text 5,000 chars, voice audio 10M
 // GET /version
 {
   "name": "waggledance-swarm",
-  "version": "3.5.6",
+  "version": "3.5.7",
   "python": "3.13.0",
   "platform": "Windows-11-..."
 }
@@ -104,6 +105,11 @@ waggledance_hex_preflight_skips_total 0.0
   "response_time_ms": 142
 }
 ```
+
+**Auth behavior (v3.5.7):**
+- Without auth: returns `401 Unauthorized` with `WWW-Authenticate: Bearer` header and JSON body containing `reason` (`missing_credentials` or `invalid_credentials`) plus `hint`.
+- With auth but invalid body (no `query` or `message` field): returns `422 Unprocessable Entity`.
+- The `message` field is accepted as an alias for `query` (OpenAI-compatible clients).
 
 Every non-cached chat response (solver and LLM routes) creates a `CaseTrajectory`
 row in the learning funnel. Hot-cache hits are excluded. The case records the
@@ -511,8 +517,13 @@ When disabled: `{"hex_mesh": {"enabled": false, "cells_loaded": 7, ...}}` (count
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `GET /api/feeds` | GET | Data feed status (weather, electricity, RSS) |
-| `POST /api/feeds/{feed_name}/refresh` | POST | Force refresh a specific feed |
+| `GET /api/feeds` | GET | Data feed status — public, no auth required |
+| `POST /api/feeds/{feed_name}/refresh` | POST | Force refresh a specific feed (auth required) |
+
+`GET /api/feeds` returns per-source status (v3.5.7 semantics):
+- `sources[]`: each entry has `name`, `type`, `state` (`active`/`stale`/`idle`/`error`), `items_count`, `latest_value` or `latest_items`.
+- `state` reflects honest freshness: sources that exceed their publishing cadence show `stale`, not `active`. DNS-blocked sources show `error`. Idle sources that have never fetched show `idle`.
+- Config-driven: sources defined in `configs/settings.yaml` under `feeds.sources`.
 
 ---
 

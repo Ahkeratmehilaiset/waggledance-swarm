@@ -1,11 +1,11 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [3.5.7] — UNRELEASED — Feed Runtime Wiring + Release Polish
+## [3.5.7] — 2026-04-12 — Honest Hologram Release
 
-> Draft. This release has NOT been tagged, pushed, or published.
-> Cut from branch ``feat/v357-feed-runtime-wiring``. See
-> ``C:/WaggleDance_ReleasePolishRun/20260409_054702/`` for the full
-> audit trail.
+> Feed Runtime Wiring + Release Polish + Phase 7 Hologram Fixes.
+> Cut from branch ``recovery/v3.5.7-hologram-reconstructed``.
+> See ``C:/WaggleDance_ReleaseFinalRun/20260410_031819/reports/``
+> for the full audit trail.
 
 ### Added
 - **`--preset=<name>` actually configures the runtime now.** The
@@ -110,7 +110,33 @@
   succeed; previously setuptools flat-layout auto-discovery refused
   because of ~15 sibling top-level directories at the project root.
 
-### Fixed
+### Fixed — Phase 7: Honest Hologram (HOLO-001, NEWS-001/002/003, WIRE-001)
+- **HOLO-001** — 22 of 32 hologram nodes (`sys_auth`, `sys_api`,
+  `sys_policy`, `sys_feeds`, `sys_queues`, `sys_storage`, `micro_*`)
+  were reporting `unwired` / `failed` / `unavailable` on a healthy hex
+  server because `_derive_node_meta` read legacy hivemind stats keys
+  that the hex runtime never emits. Added `_legacy_view()` helper in
+  `routes/hologram.py` that synthesises the legacy-expected keys from
+  the hex runtime data that IS present, without touching the hex
+  runtime itself. Strictly additive — never overrides keys the runtime
+  already emits.
+- **NEWS-001 / NEWS-002 / NEWS-003** — `_enrich_from_chroma` in
+  `compat_dashboard.py` used `Collection.get(limit=5)` which returns
+  documents in insertion order, so "latest items" were the five oldest
+  entries, `items_count` was capped at 5, and state never left `idle`.
+  Rewrote to fetch a 500-entry window, sort by timestamp descending,
+  use the true total count, and promote state `idle → active` (fresh)
+  or `idle → stale` (old) from real freshness. Terminal upstream states
+  (`unwired`, `framework`, `failed`) are preserved.
+- **WIRE-001** — Fresh browser visits to `/hologram` landed on a
+  permanently-disabled chat panel because the page served raw HTML
+  without minting a session cookie. Added query-string bootstrap:
+  `/hologram?token=<api_key>` now mints an `HttpOnly`
+  `waggle_session` cookie via the existing `auth_session` helper and
+  303-redirects to `/hologram` with the token stripped from the URL.
+  Wrong or missing tokens silently serve the normal page — no leak.
+
+### Fixed — Pre-existing (from Release Polish)
 - **`_setup_windows_utf8()` no longer shells out to `cmd.exe`.**
   Replaced `os.system("chcp 65001 > nul 2>&1")` with a direct
   `subprocess.run(["chcp.com", "65001"], shell=False)` call so Git
@@ -170,7 +196,17 @@
   scope for v3.5.7. Workaround: use `pip wheel .` (works because
   pip runs the build in a subprocess with its own cwd).
 
-### Verified
+### Tests — Phase 7
+- `tests/test_phase7_hologram_news_wire.py`: **20/20 pass**
+  (10 HOLO-001 + 6 NEWS-001/002/003 + 4 WIRE-001).
+- Full suite at release: **5581 passed, 14 failed (pre-existing
+  baseline), 3 skipped** in 648 s.
+- 12 h overnight soak: **358/358 ticks green**, items 357 → 482
+  (+125), 0 regressions, 0 tracebacks, 0 queue-full, 0 uvicorn
+  restarts, zero host-suspend gaps. SetThreadExecutionState wrapper
+  prevented the sleep that truncated the 2026-04-10 soak.
+
+### Tests — Release Polish (pre-Phase 7)
 - `pytest` full suite: 5358 passing, 3 skipped, 0 failures
   (up from 5191 in v3.5.6, a strict +167 with zero pre-existing
   tests touched; gate-time baseline was 5234).
@@ -183,8 +219,16 @@
 - `tests/integration/test_e2e_chat_200.py` regression: 205/205 pass.
 - `tests/autonomy/test_runtime_cutover_config.py` regression: 51/51 pass.
 - Wheel build: `pip wheel --no-deps .` produces
-  `waggledance_swarm-3.5.6-py3-none-any.whl` (237 files: waggledance/,
+  `waggledance_swarm-3.5.7-py3-none-any.whl` (237 files: waggledance/,
   integrations/, dist-info only).
+
+### Known carries (Phase 2)
+- `llm_core` / `reason_layer` / `decision` / `learn_*` / `micro_*`
+  node activation stays at 0.0 because the hex runtime does not track
+  the counters those nodes derive from. The honest-idle behaviour is
+  intentional; net-new hex instrumentation is deferred.
+- `rss_ha_blog` feed stays `idle` because DNS is environmentally
+  blocked for that upstream.
 
 ## [3.5.6] — 2026-04-07 — Adaptive Runtime Efficiency
 

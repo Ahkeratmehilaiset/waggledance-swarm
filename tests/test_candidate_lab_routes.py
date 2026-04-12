@@ -1,8 +1,11 @@
 """Tests for candidate lab and accelerator API routes — P4 of v3.5.0."""
 
 import inspect
+from pathlib import Path
 
 import pytest
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from waggledance.adapters.http.routes.candidate_lab import (
     candidate_lab_recent,
@@ -90,15 +93,15 @@ class TestContainerWiring:
     """Verify new services are wired in the DI container."""
 
     def test_solver_candidate_lab_in_container(self):
-        src = open("U:/project2/waggledance/bootstrap/container.py").read()
+        src = (_PROJECT_ROOT / "waggledance/bootstrap/container.py").read_text()
         assert "solver_candidate_lab" in src
         assert "SolverCandidateLab" in src
 
     def test_synthetic_accelerator_in_container(self):
-        src = open("U:/project2/waggledance/bootstrap/container.py").read()
+        src = (_PROJECT_ROOT / "waggledance/bootstrap/container.py").read_text()
         assert "synthetic_accelerator" in src
         assert "SyntheticTrainingAccelerator" in src
 
     def test_candidate_lab_router_registered(self):
-        src = open("U:/project2/waggledance/adapters/http/api.py").read()
+        src = (_PROJECT_ROOT / "waggledance/adapters/http/api.py").read_text()
         assert "candidate_lab_router" in src

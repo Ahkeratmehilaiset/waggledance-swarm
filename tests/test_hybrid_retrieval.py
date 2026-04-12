@@ -36,7 +36,10 @@ from waggledance.application.services.hybrid_retrieval_service import (
     HybridHit,
     HybridTraceResult,
 )
-from core.faiss_store import FaissRegistry, FaissCollection, SearchResult
+try:
+    from core.faiss_store import FaissRegistry, FaissCollection, SearchResult
+except ImportError:
+    pytest.skip("faiss-cpu not installed", allow_module_level=True)
 
 
 # ── Fixtures ──────────────────────────────────────────────────

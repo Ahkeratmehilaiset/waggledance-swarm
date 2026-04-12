@@ -49,11 +49,19 @@ _WAGGLE_KEYS_TO_CLEAR = (
 
 
 @pytest.fixture
-def clean_waggle_env(monkeypatch):
+def clean_waggle_env(monkeypatch, tmp_path):
     """Strip every WAGGLE_* env var our loader reads so tests get a
-    deterministic baseline."""
+    deterministic baseline.  Also redirect the module-level default
+    dotenv path to a non-existent file so the real .env on disk cannot
+    re-inject values via ``_load_dotenv``."""
     for key in _WAGGLE_KEYS_TO_CLEAR:
         monkeypatch.delenv(key, raising=False)
+    # Redirect default .env lookup to a path that doesn't exist so
+    # _load_dotenv inside from_env() is a no-op.
+    monkeypatch.setattr(
+        "waggledance.adapters.config.settings_loader._DEFAULT_DOTENV_PATH",
+        tmp_path / ".env",
+    )
     # Fix an api_key so the sentinel-leak assertion has something to
     # look for.
     monkeypatch.setenv("WAGGLE_API_KEY", "f1006-preset-sentinel-DO-NOT-LEAK")
@@ -75,6 +83,7 @@ def empty_settings_yaml(tmp_path: Path) -> Path:
     p = tmp_path / "settings.yaml"
     p.write_text("{}\n", encoding="utf-8")
     return p
+
 
 
 # -------------------------------------------------------------------- #

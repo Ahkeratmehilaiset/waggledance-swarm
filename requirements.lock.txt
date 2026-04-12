@@ -258,7 +258,7 @@ ruamel.yaml==0.19.1
 safetensors==0.7.0
 schedule==1.2.2
 scikit-learn==1.8.0
-scipy==1.16.3
+scipy==1.17.1
 selenium==4.32.0
 sentence-transformers==5.2.3
 sentencepiece==0.2.1

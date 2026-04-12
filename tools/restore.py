@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-WaggleDance Restore & Environment Builder v4.1
+WaggleDance Restore & Environment Builder v4.2
 ================================================
 One-click restore: creates venv, installs dependencies, builds
 dashboard, creates runtime folders, and runs smoke test.
+v4.2: Updated for v3.5.7 Honest Hologram Release.
 v4.1: Updated for v3.3 architecture (start_waggledance.py entry point).
 
 Can be called by restore.bat or run directly.
@@ -342,7 +343,7 @@ def step_smoke_test(result: RestoreResult) -> None:
 # ── Main ──────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="WaggleDance Restore v4.1")
+    parser = argparse.ArgumentParser(description="WaggleDance Restore v4.2")
     parser.add_argument("--from-zip", type=str, help="Extract from zip before setup")
     parser.add_argument("--skip-dashboard", action="store_true")
     parser.add_argument("--skip-smoke", action="store_true")
@@ -361,7 +362,7 @@ def main() -> None:
             VENV_PIP = VENV_DIR / "bin" / "pip"
 
     print()
-    print(f"  {BOLD}WaggleDance Restore v4.1{W}")
+    print(f"  {BOLD}WaggleDance Restore v4.2{W}")
     print(f"  Target: {ROOT}")
     print()
 

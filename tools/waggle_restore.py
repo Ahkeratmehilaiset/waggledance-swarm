@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-WaggleDance Restore & Environment Validator v3.5
-=================================================
+WaggleDance Restore & Environment Validator v3.5.7
+===================================================
 Validates the environment and restores from a backup zip if needed.
 Supports restore to any target directory via --target flag.
+v3.5.7: Updated for v3.5.7 Honest Hologram Release (Phase 7 fixes).
 v3.5: Updated for v3.5.0 architecture (4898 pytest tests, hybrid retrieval).
 
 Usage:
@@ -735,7 +736,7 @@ def test_restore_to_temp(zip_path: Path, r: CheckResult) -> bool:
 
 # ── Main ──────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v3.5")
+    parser = argparse.ArgumentParser(description="WaggleDance Restore & Validator v3.5.7")
     parser.add_argument("--restore", metavar="ZIPFILE", help="Restore from backup zip file")
     parser.add_argument("--target", metavar="DIR", help="Target directory for restore (default: project root)")
     parser.add_argument("--test-restore", metavar="ZIPFILE", help="Test restore to temp dir (non-destructive)")
@@ -749,7 +750,7 @@ def main():
         REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
 
     print(f"\n{B}{'='*55}")
-    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v3.5")
+    print(f"  WAGGLEDANCE RESTORE & VALIDATOR v3.5.7")
     print(f"  Project: {PROJECT_ROOT}")
     print(f"{'='*55}{W}\n")
 

@@ -6,15 +6,17 @@ v6: 32 nodes (core 10 + MAGMA 5 + system 8 + learning 9),
 """
 
 import logging
+import secrets
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psutil
-from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from waggledance.adapters.http.deps import get_autonomy_service, get_container
+from waggledance.adapters.http.routes import auth_session
 from waggledance.adapters.http.routes._capability_state import (
     CAPABILITY_NODE_IDS,
     CapabilityInfo,
@@ -58,8 +60,40 @@ def _load_html() -> str:
 
 
 @router.get("/hologram", response_class=HTMLResponse)
-async def hologram_view():
-    """Serve hologram page. No secrets. No injection."""
+async def hologram_view(
+    request: Request,
+    token: str | None = None,
+    container=Depends(get_container),
+):
+    """Serve hologram page.
+
+    WIRE-001: if ?token=<api_key> matches the configured WAGGLE_API_KEY, mint
+    a waggle_session cookie and 303-redirect to /hologram so the browser never
+    sees the long-lived master key again. Wrong/missing token silently serves
+    the HTML normally — we never leak whether the token was right.
+
+    No secrets are injected into the HTML itself.
+    """
+    if token:
+        try:
+            configured = getattr(container._settings, "api_key", "") or ""
+        except Exception:
+            configured = ""
+        if configured and secrets.compare_digest(token, configured):
+            sid = auth_session.create_session()
+            response = RedirectResponse(url="/hologram", status_code=303)
+            response.set_cookie(
+                key="waggle_session",
+                value=sid,
+                httponly=True,
+                samesite="strict",
+                max_age=auth_session.SESSION_TTL,
+                path="/",
+            )
+            return response
+        # Wrong or missing token: fall through and serve HTML normally.
+        # Do NOT leak whether the token was wrong.
+
     return HTMLResponse(_load_html())
 
 
@@ -294,6 +328,117 @@ def _derive_node_meta(
     return meta
 
 
+def _legacy_view(rs: dict, container: Any, runtime: Any) -> dict:
+    """HOLO-001: synthesize legacy-shape keys the hologram UI expects.
+
+    The hex AutonomyRuntime stats() returns modern keys like ``policy``,
+    ``admission_control``, ``persist_world``/``persist_cases``/… but the
+    hologram's node-meta derivation (and the 32-node value derivation)
+    reads the older ``policy_engine``, ``admission``, ``persistence``,
+    ``lifecycle``, ``feeds``, ``api_key_configured``, and
+    ``auth_middleware_active`` keys. This helper produces a shallow-copied
+    view that carries *both* sets, so the node meta stays correct no matter
+    which shape the underlying runtime emits.
+
+    Contract from release-final reports (PHASE7_FIXES.md / HOLOGRAM_WIRING_AUDIT.md):
+      - api_key_configured     ← bool(container._settings.api_key)
+      - auth_middleware_active ← bool(container._settings.api_key)
+      - lifecycle.state        ← "RUNNING" if rs["running"] else "STOPPED"
+      - lifecycle.healthy_components / total_components
+                               ← count of present canonical hex blocks
+      - policy_engine          ← alias of rs["policy"]
+      - admission              ← alias of rs["admission_control"]
+      - persistence.{total_stores, healthy_stores, io_in_flight}
+                               ← derived from persist_* blocks
+      - feeds                  ← container.data_feed_scheduler.get_status()
+                                 if the scheduler is wired, else {}.
+    """
+    if not isinstance(rs, dict):
+        rs = {}
+    view: dict = dict(rs)  # shallow copy — do not mutate runtime's dict
+
+    # Rule: _legacy_view only FILLS IN legacy keys that are missing from the
+    # underlying stats. It never overrides values the runtime already
+    # exposes. That way both shapes work:
+    #   * modern hex stats → we synthesise the legacy view
+    #   * pre-hex stats (or tests that pass legacy keys directly) → untouched
+
+    # --- api_key / auth middleware ------------------------------------
+    if "api_key_configured" not in view or "auth_middleware_active" not in view:
+        api_key_set = False
+        try:
+            settings = getattr(container, "_settings", None)
+            api_key_set = bool(getattr(settings, "api_key", "") or "")
+        except Exception:
+            api_key_set = False
+        view.setdefault("api_key_configured", api_key_set)
+        view.setdefault("auth_middleware_active", api_key_set)
+
+    # --- lifecycle ----------------------------------------------------
+    if "lifecycle" not in view:
+        # Canonical hex blocks present in a healthy RUNNING runtime.
+        canonical_blocks = (
+            "action_bus", "goals", "solver_router", "verifier",
+            "working_memory", "world_model", "capabilities", "admission_control",
+        )
+        healthy_components = sum(1 for k in canonical_blocks if view.get(k))
+        total_components = len(canonical_blocks)
+        running = bool(view.get("running"))
+        view["lifecycle"] = {
+            "state": "RUNNING" if running else "STOPPED",
+            "healthy_components": healthy_components,
+            "total_components": total_components,
+        }
+
+    # --- policy_engine alias ------------------------------------------
+    if "policy_engine" not in view and view.get("policy"):
+        view["policy_engine"] = view["policy"]
+
+    # --- admission alias ----------------------------------------------
+    if "admission" not in view and view.get("admission_control"):
+        view["admission"] = view["admission_control"]
+
+    # --- persistence rollup -------------------------------------------
+    if "persistence" not in view:
+        persist_keys = (
+            "persist_world", "persist_procedural",
+            "persist_cases", "persist_verifier",
+        )
+        persist_blocks = [view.get(k) for k in persist_keys if view.get(k)]
+        total_stores = len(persist_blocks)
+        healthy_stores = sum(
+            1 for b in persist_blocks
+            if isinstance(b, dict) and not b.get("error") and b.get("ok", True)
+        )
+        io_in_flight = sum(
+            int(b.get("io_in_flight", 0)) for b in persist_blocks
+            if isinstance(b, dict)
+        )
+        view["persistence"] = {
+            "total_stores": total_stores,
+            "healthy_stores": healthy_stores,
+            "io_in_flight": io_in_flight,
+        }
+
+    # --- feeds --------------------------------------------------------
+    if "feeds" not in view:
+        feeds_view: dict = {}
+        try:
+            scheduler = getattr(container, "data_feed_scheduler", None) if container else None
+        except Exception:
+            scheduler = None
+        if scheduler is not None:
+            try:
+                status = scheduler.get_status()
+                if isinstance(status, dict):
+                    feeds_view = status
+            except Exception:
+                feeds_view = {}
+        view["feeds"] = feeds_view
+
+    return view
+
+
 def build_hologram_state(service, *, container=None) -> Dict[str, Any]:
     """Synthesize hologram payload from AutonomyRuntime stats.
 
@@ -325,8 +470,13 @@ def build_hologram_state(service, *, container=None) -> Dict[str, Any]:
     sr_stats = _stats("solver_router")
     vf_stats = _stats("verifier")
 
-    # Full runtime stats for system/learning nodes
+    # Full runtime stats for system/learning nodes.
+    # HOLO-001: pass through _legacy_view so the hex-shape stats get the
+    # legacy keys (api_key_configured, auth_middleware_active, lifecycle,
+    # policy_engine, admission, persistence, feeds) the node-meta
+    # derivation below reads.
     rs = runtime.stats() if runtime.is_running else {}
+    rs = _legacy_view(rs, container, runtime)
 
     # Capability confidence (for quality in node_meta, NOT for activation)
     cc = getattr(runtime, "capability_confidence", None)

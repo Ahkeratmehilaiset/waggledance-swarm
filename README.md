@@ -2,8 +2,8 @@
 
 > Local-first AI runtime with solver-first routing, self-training specialists, overnight dream learning, and full MAGMA audit trail.
 
-[![Tests](https://img.shields.io/badge/tests-5191%20passing-brightgreen)]()
-[![Python](https://img.shields.io/badge/python-3.13%2B-blue)]()
+[![Tests](https://img.shields.io/badge/tests-5358%20passing-brightgreen)]()
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 
 ## What is this?

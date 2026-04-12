@@ -19,6 +19,7 @@ from waggledance.adapters.http.routes.candidate_lab import router as candidate_l
 from waggledance.adapters.http.routes.hybrid import router as hybrid_router
 from waggledance.adapters.http.routes.magma import router as magma_router
 from waggledance.adapters.http.routes.memory import router as memory_router
+from waggledance.adapters.http.routes.metrics import router as metrics_router
 from waggledance.adapters.http.routes.status import router as status_router
 from waggledance.adapters.http.routes.storage import router as storage_router
 from waggledance.adapters.http.routes.trust import router as trust_router
@@ -54,11 +55,45 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("AutonomyService start failed: %s", exc)
 
+    # Start DataFeedScheduler (weather / electricity / RSS) if wired + enabled
+    scheduler = getattr(container, "data_feed_scheduler", None)
+    if scheduler is not None:
+        try:
+            ready = True
+            try:
+                ready = await container.vector_store.is_ready()
+            except Exception as exc:
+                logger.warning("vector_store readiness probe failed: %s", exc)
+                ready = False
+            if not ready:
+                logger.warning(
+                    "Skipping DataFeedScheduler start: vector_store not ready"
+                )
+            else:
+                await container.feed_ingest_sink.start()
+                await scheduler.start()
+                logger.info(
+                    "DataFeedScheduler started (%d feeds)",
+                    len(getattr(scheduler, "_feeds", {}) or {}),
+                )
+        except Exception as exc:
+            logger.warning("DataFeedScheduler start failed: %s", exc)
+
     logger.info("WaggleDance startup complete")
 
     yield  # application is running
 
     # ---- SHUTDOWN ----
+    # Stop DataFeedScheduler first so in-flight feed tasks can drain into the sink
+    scheduler = getattr(container, "data_feed_scheduler", None)
+    if scheduler is not None:
+        try:
+            await scheduler.stop()
+            await container.feed_ingest_sink.stop()
+            logger.info("DataFeedScheduler stopped")
+        except Exception as exc:
+            logger.warning("DataFeedScheduler stop failed: %s", exc)
+
     # Stop autonomy runtime
     if hasattr(container, "autonomy_service"):
         try:
@@ -123,8 +158,10 @@ def create_app(container) -> FastAPI:
     # ---- Routes ----
     # Auth session routes (/api/auth/session, /api/auth/check)
     app.include_router(auth_router)
-    # Status routes at root level (/health, /ready)
+    # Status routes at root level (/health, /ready, /version)
     app.include_router(status_router)
+    # Prometheus text-format metrics at /metrics (public, text/plain)
+    app.include_router(metrics_router)
     # Chat route under /api prefix (/api/chat)
     app.include_router(chat_router, prefix="/api")
     # Memory routes under /api prefix (/api/memory/ingest, /api/memory/search)

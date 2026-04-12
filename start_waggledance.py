@@ -8,6 +8,7 @@ Usage:
     python start_waggledance.py --preset=factory-production # factory
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -26,7 +27,9 @@ def main():
     args = parser.parse_args()
 
     if args.preset:
-        preset_path = Path("configs/presets") / f"{args.preset}.yaml"
+        # Resolve relative to this script so the command works from any cwd.
+        script_root = Path(__file__).resolve().parent
+        preset_path = script_root / "configs" / "presets" / f"{args.preset}.yaml"
         if not preset_path.exists():
             print(f"Preset not found: {preset_path}")
             sys.exit(1)
@@ -37,6 +40,26 @@ def main():
             preset = yaml.safe_load(f)
         print(f"WaggleDance starting with preset: {args.preset}")
         print(f"   Profile: {preset.get('profile')}, Agents: {preset.get('agents_max')}")
+        # F1-006 (Release Polish Run 20260409_054702): publish the
+        # resolved preset path via env var so WaggleSettings.from_env()
+        # can actually apply it. Previously the preset was loaded for
+        # the banner above and then thrown away — a documented-but-
+        # unwired operator promise. The env var is the cleanest way to
+        # hand the preset to the child runtime without plumbing a new
+        # argument through start_runtime.main().
+        os.environ["WAGGLE_PRESET_PATH"] = str(preset_path)
+
+    # Echo the effective CLI arguments so operators can tell at a glance
+    # which mode the process is running in. This is the F1-003 fix from
+    # the 20260409_054702 Release Polish Run — previously ``--stub`` and
+    # ``--port`` were silently forwarded and only visible in the child
+    # runtime logs many seconds later.
+    print(
+        "   CLI args: port={port}, stub={stub}".format(
+            port=args.port,
+            stub="on" if args.stub else "off",
+        )
+    )
 
     # Build argv for runtime, stripping --preset which it doesn't understand
     runtime_argv = []

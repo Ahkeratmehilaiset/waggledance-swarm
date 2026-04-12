@@ -11,7 +11,11 @@ logger = logging.getLogger(__name__)
 # Endpoints that do not require authentication
 PUBLIC_PATHS = frozenset({
     "/health",
+    "/healthz",
     "/ready",
+    "/readyz",
+    "/version",
+    "/metrics",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -31,6 +35,35 @@ PUBLIC_PATHS = frozenset({
     "/api/capabilities/state",
     "/api/learning/state-machine",
 })
+
+
+# RFC 6750 / RFC 7235: a 401 that requires Bearer auth MUST include
+# a ``WWW-Authenticate`` header naming the scheme. curl, httpie,
+# OAuth client libraries and many reverse proxies use this header to
+# decide how to prompt for credentials.
+_WWW_AUTH_BEARER = 'Bearer realm="waggledance", charset="UTF-8"'
+
+
+def _unauthorized(detail: str, *, missing: bool) -> JSONResponse:
+    """Build an RFC-compliant 401 response with an operator-friendly
+    hint body. ``missing`` differentiates "no Authorization header sent
+    at all" from "header sent but the token did not match" so clients
+    can log the right diagnostic without guessing."""
+    body = {
+        "error": "Unauthorized",
+        "detail": detail,
+        "hint": (
+            "Send an 'Authorization: Bearer <api_key>' header. "
+            "The api_key is printed to the startup banner and is "
+            "available in the .env file as WAGGLE_API_KEY."
+        ),
+        "reason": "missing_credentials" if missing else "invalid_credentials",
+    }
+    return JSONResponse(
+        body,
+        status_code=401,
+        headers={"WWW-Authenticate": _WWW_AUTH_BEARER},
+    )
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -67,16 +100,22 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             # non-WebSocket requests to /ws (e.g. plain GET).
             if path == "/ws":
                 token = request.query_params.get("token", "")
+                if not token:
+                    return _unauthorized(
+                        "WebSocket upgrade requires ?token=<api_key>",
+                        missing=True,
+                    )
                 if token != self._api_key:
-                    return JSONResponse(
-                        {"error": "Unauthorized"},
-                        status_code=401,
+                    return _unauthorized(
+                        "WebSocket token did not match api_key",
+                        missing=False,
                     )
                 return await call_next(request)
             return await call_next(request)
 
         # Extract Bearer token from Authorization header
         auth_header = request.headers.get("authorization", "")
+        header_present = bool(auth_header)
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
         else:
@@ -90,9 +129,19 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             if validate_session(session_id):
                 return await call_next(request)
 
-            return JSONResponse(
-                {"error": "Unauthorized", "detail": "Valid Bearer token required"},
-                status_code=401,
+            if not header_present:
+                return _unauthorized(
+                    "No Authorization header on a protected /api/ route",
+                    missing=True,
+                )
+            if not auth_header.startswith("Bearer "):
+                return _unauthorized(
+                    "Authorization header present but scheme is not 'Bearer'",
+                    missing=False,
+                )
+            return _unauthorized(
+                "Bearer token did not match the configured api_key",
+                missing=False,
             )
 
         return await call_next(request)

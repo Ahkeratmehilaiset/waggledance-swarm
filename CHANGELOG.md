@@ -1,5 +1,235 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.5.7] — 2026-04-12 — Honest Hologram Release
+
+> Feed Runtime Wiring + Release Polish + Phase 7 Hologram Fixes.
+> Cut from branch ``recovery/v3.5.7-hologram-reconstructed``.
+> See ``C:/WaggleDance_ReleaseFinalRun/20260410_031819/reports/``
+> for the full audit trail.
+
+### Added
+- **`--preset=<name>` actually configures the runtime now.** The
+  `start_waggledance.py --preset=raspberry-pi-iot|cottage-full|
+  factory-production` flag previously loaded the preset YAML only
+  to print a banner line and then threw the dict away — the child
+  runtime's `WaggleSettings.from_env()` never saw it, so `--preset`
+  was cosmetic. It is now plumbed through via a
+  `WAGGLE_PRESET_PATH` env-var hand-off and layered between explicit
+  `WAGGLE_*` env vars (still highest priority) and
+  `configs/settings.yaml` (lowest). Four preset keys are directly
+  wired: `profile` → `WaggleSettings.profile`, `ollama_model` →
+  `chat_model`, `embedding_model` → `embed_model`, `agents_max` →
+  `max_agents`. Other preset keys (`resource_guard.*`, `log_format`,
+  `mqtt_tls`, …) land in the dotted `ConfigPort` extras. Missing or
+  malformed preset files degrade gracefully with a log warning and
+  never crash startup. `runtime_diagnostics()` now reports
+  `preset_path`, `preset_requested`, and `preset_loaded` so
+  operators can see which preset took effect AND explicitly see
+  when a requested preset failed to load. Closes F1-006.
+- **Prometheus `/metrics` endpoint.** The `prometheus-client`
+  dependency was previously dead weight — installed but never
+  imported. It now has a real job: a public (`PUBLIC_PATHS`) `/metrics`
+  endpoint exposing the v3.5.6 hex-mesh efficiency counters
+  (`preflight_skips`, `preflight_passes`, `budget_exhaustions`,
+  `neighbor_assist_resolutions`, `self_heal_events`,
+  `magma_traces_written`, `ttl_exhaustions`, 15 counters total) plus
+  gauges (`cells_loaded`, `quarantined_cells`,
+  `waggledance_hex_mesh_enabled`) in standard Prometheus text
+  exposition format (`text/plain; version=0.0.4`). Implementation
+  uses a **private** `CollectorRegistry` — operators do not get the
+  default `python_gc_objects_*`, `process_open_fds`,
+  `process_cpu_seconds_total` collectors leaking into their scrape.
+  A `waggledance_up` gauge is set to `0` when
+  `hex_neighbor_assist` is missing or raises, so alerts can fire on
+  "metrics source unhealthy" without the endpoint itself returning
+  5xx. Closes F5-002 from the Release Polish Run.
+- **DataFeedScheduler wired into the hex runtime.** The hologram
+  News/Feeds panel previously showed everything as `idle` with
+  `items_count=0` because only the legacy `hivemind.py` ever built a
+  `DataFeedScheduler`. The hex runtime (production path) now
+  constructs one lazily via `Container.data_feed_scheduler`, gated on
+  `feeds.enabled` in `settings.yaml`.
+- **`waggledance/core/priority_lock.py`** (new, <25 lines) — minimal
+  local `PriorityLock` so the feed scheduler can yield to live chat
+  without importing legacy `core.hive_support`.
+- **`waggledance/adapters/feeds/feed_ingest_sink.py`** (new) — bounded
+  queue+consumer adapter bridging the legacy `consciousness.learn(...)`
+  signature to the hex `VectorStorePort.upsert` path. Validates text
+  (>=10 chars), confidence (>=0.2), derives `feed_id` from the `feed`
+  metadata hint, and drops with a warning on queue overflow (maxsize 500).
+- **`/healthz` and `/readyz` aliases.** Kubernetes / Nomad /
+  docker-compose conventional probes now work out of the box; zero
+  extra handler code, just `@router.get` stacking on the existing
+  `/health` and `/ready` endpoints.
+- **Public `/version` endpoint.** Returns a stable
+  `{name, version, python, platform}` shape for build identification
+  after rolling restarts. Auth-exempt, no secrets, no filesystem
+  paths. Version resolves via `importlib.metadata` with a
+  `pyproject.toml` fallback for source checkouts.
+- **RFC-compliant 401 responses with operator-friendly hint body.**
+  Every `BearerAuthMiddleware` 401 now carries a `WWW-Authenticate:
+  Bearer` header (RFC 6750 / 7235) plus an enriched JSON body with
+  a machine-readable `reason` field distinguishing
+  `missing_credentials` from `invalid_credentials`, and a `hint`
+  field that explicitly names the `Authorization` header and the
+  `WAGGLE_API_KEY` env var. The real api_key is never echoed into
+  the response.
+- **Ollama probe honesty (F1-004).** `_check_ollama()` in
+  `start_runtime.py` now returns `(ok, reason)` instead of a bare
+  `bool`. The reason is normalised into short operator-readable
+  strings (`"timed out"`, `"connection refused"`, `"HTTP 503"`,
+  …) and echoed in the startup banner — operators can tell apart
+  "Ollama down" / "wrong port" / "slow WAN link" at a glance. The
+  probe timeout bumped from 3 s to 5 s (warm local Ollama responds
+  in ~15 ms, so 5 s gives 300x headroom locally and a usable
+  margin on WAN deployments). New env var
+  **`WAGGLE_OLLAMA_PROBE_TIMEOUT`** overrides the default, with
+  guard rails: `<= 0`, `> 60`, or non-numeric all fall back to 5 s
+  so a typo cannot mask a real outage. 23 new tests in
+  `tests/test_ollama_probe.py` lock in the contract (default,
+  env override, 60-boundary, normalisation, tuple shape,
+  regression guard against plain `bool`). Closes F1-004.
+- **`start_waggledance.py` echoes `--stub` and `--port` at startup.**
+  Previously these were silently forwarded to the child runtime,
+  making copy-pasted commands opaque until uvicorn logs appeared.
+  The new `CLI args: port=..., stub=...` line is printed
+  unconditionally, with AND without `--preset`.
+- **`message` alias for `/api/chat`.** OpenAI-compatible clients
+  sending `{"message": "..."}` now succeed instead of hitting a
+  cryptic 422. Canonical `query` still wins when both are present.
+- **Cwd-independent config loading.** `WaggleSettings.from_env()` now
+  anchors `.env` and `configs/settings.yaml` at the project root,
+  determined by walking up from `settings_loader.py` to find a marker
+  (`requirements.txt`, `pyproject.toml`, or `configs/`). Running
+  `start_waggledance.py` from any cwd now behaves identically.
+- **`runtime_diagnostics()` expanded.** Now exposes `project_root`,
+  `dotenv_path`, `dotenv_present`, `settings_yaml_path`,
+  `settings_yaml_present`, and `api_key_set` (bool only — the key
+  itself is never logged).
+- **Explicit package discovery in `pyproject.toml`.** Wheel builds now
+  succeed; previously setuptools flat-layout auto-discovery refused
+  because of ~15 sibling top-level directories at the project root.
+
+### Fixed — Phase 7: Honest Hologram (HOLO-001, NEWS-001/002/003, WIRE-001)
+- **HOLO-001** — 22 of 32 hologram nodes (`sys_auth`, `sys_api`,
+  `sys_policy`, `sys_feeds`, `sys_queues`, `sys_storage`, `micro_*`)
+  were reporting `unwired` / `failed` / `unavailable` on a healthy hex
+  server because `_derive_node_meta` read legacy hivemind stats keys
+  that the hex runtime never emits. Added `_legacy_view()` helper in
+  `routes/hologram.py` that synthesises the legacy-expected keys from
+  the hex runtime data that IS present, without touching the hex
+  runtime itself. Strictly additive — never overrides keys the runtime
+  already emits.
+- **NEWS-001 / NEWS-002 / NEWS-003** — `_enrich_from_chroma` in
+  `compat_dashboard.py` used `Collection.get(limit=5)` which returns
+  documents in insertion order, so "latest items" were the five oldest
+  entries, `items_count` was capped at 5, and state never left `idle`.
+  Rewrote to fetch a 500-entry window, sort by timestamp descending,
+  use the true total count, and promote state `idle → active` (fresh)
+  or `idle → stale` (old) from real freshness. Terminal upstream states
+  (`unwired`, `framework`, `failed`) are preserved.
+- **WIRE-001** — Fresh browser visits to `/hologram` landed on a
+  permanently-disabled chat panel because the page served raw HTML
+  without minting a session cookie. Added query-string bootstrap:
+  `/hologram?token=<api_key>` now mints an `HttpOnly`
+  `waggle_session` cookie via the existing `auth_session` helper and
+  303-redirects to `/hologram` with the token stripped from the URL.
+  Wrong or missing tokens silently serve the normal page — no leak.
+
+### Fixed — Pre-existing (from Release Polish)
+- **`_setup_windows_utf8()` no longer shells out to `cmd.exe`.**
+  Replaced `os.system("chcp 65001 > nul 2>&1")` with a direct
+  `subprocess.run(["chcp.com", "65001"], shell=False)` call so Git
+  Bash and PowerShell users don't fork a cmd subprocess on every
+  startup. Gracefully degrades if `chcp.com` is absent.
+- **`.env` parser rewrite.** Four real bugs in the old 8-line
+  parser are fixed: unbalanced-quote stripping (`KEY="half` used
+  to silently become `half`), missing inline `# comment` support
+  (trailing comments were stored as part of the value), missing
+  `export KEY=val` shell-prefix support, and UTF-8 BOM on the
+  first line silently contaminating the first key (Windows
+  Notepad writes BOM by default). Shell env still wins over
+  `.env` by design. Escape sequences and variable expansion are
+  deliberately NOT implemented.
+- **HIGH: `repr(WaggleSettings)` silently leaked the API key** into
+  every log line that formatted a settings object. Fixed by marking
+  the field `repr=False`. 8 new tests lock in the no-leak invariant
+  across `repr`, `str`, and `runtime_diagnostics`.
+- **`_get_chroma_collection()` was blind to the `_collections` dict
+  shape** in `ChromaVectorStore`, so `/api/feeds` enrichment never ran
+  even when data existed. Pre-existing bug from v3.5.5; fixed as part
+  of the feed wiring to avoid shipping invisible output.
+- **`/api/chat` empty/whitespace `query` now returns a clear 422**
+  naming both accepted field names in the error body instead of
+  passing an empty string to `ChatService`.
+
+### Audits (no functional change)
+- P1 Install/Bootstrap UX Audit — 6 findings, 2 FIXED, 4 DEFERRED
+- P2 API Contract + Error Ergonomics Audit — 4 findings, 1 FIXED,
+  3 DEFERRED
+- P3 Config/Auth/Secrets Audit — 6 findings, 1 HIGH FIXED,
+  precedence locked in
+- P4 Cross-Platform + Packaging Audit — 6 findings, 1 HIGH FIXED,
+  1 HIGH documented (stray `build.py` shadowing `python -m build`)
+- P5/P6 Observability + Performance Audit — 6 findings, 1 MEDIUM
+  FIXED, 1 HIGH DEFERRED (needs live-server soak)
+- P7 Doc Truth + Release Notes Audit — README badges updated (test
+  count, Python floor)
+
+### Deferred
+- **Long soak — full 12-18 h unattended target.** A reduced
+  continuous mixed-workload soak WAS run in this polish pass
+  against a live hot-Ollama server on `127.0.0.1:8001`; see
+  `reports/LONG_SOAK_FINAL.md` and `soak/soak_metrics.ndjson` in
+  the Release Polish Run directory for actual cycle count,
+  query total, and per-route p50/p95/p99. The full overnight
+  12-18 h window remains future work; it is the only way to
+  prove zero RSS drift across a full work-shift.
+- **Stray `build.py` at project root.** Shadows `python -m build` but
+  is tracked in git from the v3.5.6 backup. Post-gate read-only
+  audit found it is the entry point of an embedded OpenClaw v1.4
+  subproject that also includes 13 helper scripts under `tools/`
+  (`gen_batch1.py` … `gen_finetuning.py`) and 81 agent definitions
+  under `agents/`. The F4-001 wheel filter already excludes all of
+  it from the shipped wheel (zero impact on installers). Atomic
+  removal needs explicit owner sign-off and is intentionally out of
+  scope for v3.5.7. Workaround: use `pip wheel .` (works because
+  pip runs the build in a subprocess with its own cwd).
+
+### Tests — Phase 7
+- `tests/test_phase7_hologram_news_wire.py`: **20/20 pass**
+  (10 HOLO-001 + 6 NEWS-001/002/003 + 4 WIRE-001).
+- Full suite at release: **5581 passed, 14 failed (pre-existing
+  baseline), 3 skipped** in 648 s.
+- 12 h overnight soak: **358/358 ticks green**, items 357 → 482
+  (+125), 0 regressions, 0 tracebacks, 0 queue-full, 0 uvicorn
+  restarts, zero host-suspend gaps. SetThreadExecutionState wrapper
+  prevented the sleep that truncated the 2026-04-10 soak.
+
+### Tests — Release Polish (pre-Phase 7)
+- `pytest` full suite: 5358 passing, 3 skipped, 0 failures
+  (up from 5191 in v3.5.6, a strict +167 with zero pre-existing
+  tests touched; gate-time baseline was 5234).
+- `tests/test_feed_scheduler_wiring.py`: 12/12 new pass.
+- `tests/test_settings_cwd_independence.py`: 5/5 new pass.
+- `tests/integration/test_chat_api_contract.py`: 9/9 new pass.
+- `tests/test_config_auth_precedence.py`: 8/8 new pass.
+- `tests/test_packaging_metadata.py`: 5/5 new pass.
+- `tests/test_health_aliases.py`: 4/4 new pass.
+- `tests/integration/test_e2e_chat_200.py` regression: 205/205 pass.
+- `tests/autonomy/test_runtime_cutover_config.py` regression: 51/51 pass.
+- Wheel build: `pip wheel --no-deps .` produces
+  `waggledance_swarm-3.5.7-py3-none-any.whl` (237 files: waggledance/,
+  integrations/, dist-info only).
+
+### Known carries (Phase 2)
+- `llm_core` / `reason_layer` / `decision` / `learn_*` / `micro_*`
+  node activation stays at 0.0 because the hex runtime does not track
+  the counters those nodes derive from. The honest-idle behaviour is
+  intentional; net-new hex instrumentation is deferred.
+- `rss_ha_blog` feed stays `idle` because DNS is environmentally
+  blocked for that upstream.
+
 ## [3.5.6] — 2026-04-07 — Adaptive Runtime Efficiency
 
 ### Added

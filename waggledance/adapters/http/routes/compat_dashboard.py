@@ -562,60 +562,130 @@ def _parse_latest_value(feed_type: str, doc: str, meta: dict) -> dict | None:
     return None
 
 
-def _enrich_from_chroma(source: dict, chroma_collection) -> None:
-    """Add latest_items/latest_value from ChromaDB. Truthful: empty if no data.
+#: Terminal upstream states that must NOT be downgraded by ChromaDB enrichment.
+#: If the feed is already reported as unwired/framework/failed by the feed
+#: plumbing, real rows in Chroma never override that truth.
+_TERMINAL_FEED_STATES = frozenset({"unwired", "framework", "failed"})
 
-    Uses BOTH agent_id (feed type) AND feed_id (source-specific) to ensure
-    each RSS source gets only its own entries — not a shared pool.
+#: Per-source fetch window for enrichment. Much larger than 5 so that
+#: items_count, freshness_s, and latest_items reflect the full tail of the
+#: source instead of the first-5-insertion-order window. (NEWS-001/002)
+_ENRICH_FETCH_LIMIT = 500
+
+#: How many latest items to return in latest_items[] for RSS sources.
+_LATEST_ITEMS_RETURN = 5
+
+
+def _enrich_from_chroma(source: dict, chroma_collection) -> None:
+    """Enrich a feed source with live data from ChromaDB.
+
+    NEWS-001: fetch a much larger per-source window (``_ENRICH_FETCH_LIMIT``)
+    and sort by timestamp descending, so items_count / freshness_s /
+    latest_items reflect the true tail of the feed instead of the
+    insertion-order-capped first-5 window.
+
+    NEWS-002: compute ``items_count`` from the full sorted result set, not
+    from a capped slice. Compute ``freshness_s`` from the newest item
+    (``timestamps[0]`` after descending sort) — not from ``max(...)`` of a
+    stale window.
+
+    NEWS-003: promote the source state from ``idle`` to ``active`` when the
+    newest item is fresher than 2× interval_s, or to ``stale`` when it's
+    older. Terminal upstream states (``unwired``, ``framework``, ``failed``)
+    are never overwritten — those are the plumbing's truth about whether
+    this source is wired at all, and real rows must not mask that.
+
+    Truthful empty state: if there are no rows, leave the defaults
+    (``items_count=0``, ``freshness_s=None``, ``latest_items=[]``,
+    ``latest_value=None``) untouched.
     """
     agent_id = FEED_AGENT_IDS.get(source["type"])
     if not agent_id:
         return
     feed_id = source["id"]
+    terminal_state = source.get("state") in _TERMINAL_FEED_STATES
+
     try:
-        # Query with source-level filter: agent_id + feed_id
+        # Query with source-level filter: agent_id + feed_id.
         where_filter = {"$and": [
             {"agent_id": agent_id},
             {"feed_id": feed_id},
         ]}
         results = chroma_collection.get(
             where=where_filter,
-            limit=5,
+            limit=_ENRICH_FETCH_LIMIT,
             include=["documents", "metadatas"],
         )
-        docs = results.get("documents", [])
-        metas = results.get("metadatas", [])
+        docs = results.get("documents", []) or []
+        metas = results.get("metadatas", []) or []
 
-        # Fallback: if no feed_id-tagged entries, try agent_id only
-        # (backwards compat with data stored before feed_id was added)
-        # NOT for RSS — prevents cross-contamination between sources
+        # Fallback for non-RSS: entries written before feed_id was added
+        # used only agent_id. RSS is excluded to prevent cross-source bleed.
         if not docs and source["type"] not in ("rss",):
             results = chroma_collection.get(
                 where={"agent_id": agent_id},
-                limit=5,
+                limit=_ENRICH_FETCH_LIMIT,
                 include=["documents", "metadatas"],
             )
-            docs = results.get("documents", [])
-            metas = results.get("metadatas", [])
+            docs = results.get("documents", []) or []
+            metas = results.get("metadatas", []) or []
 
-        source["items_count"] = len(docs)
-        if docs:
-            # Derive freshness from most recent timestamp
-            timestamps = [m.get("timestamp") for m in metas if m.get("timestamp")]
-            if timestamps:
-                latest_ts = max(timestamps)
-                source["last_success_at"] = latest_ts
-                source["freshness_s"] = int(time.time() - _parse_ts(latest_ts))
-            # Type-specific enrichment
-            if source["type"] == "rss":
-                source["latest_items"] = [
-                    {"title": d[:120], "published": m.get("timestamp")}
-                    for d, m in zip(docs[:5], metas[:5])
-                ]
-            elif source["type"] in ("weather", "electricity"):
-                source["latest_value"] = _parse_latest_value(
-                    source["type"], docs[0], metas[0]
+        if not docs:
+            return  # truthful empty state — do not touch defaults
+
+        # NEWS-001: pair docs with metas and sort by parsed timestamp DESC.
+        pairs = list(zip(docs, metas))
+        pairs.sort(
+            key=lambda dm: _parse_ts((dm[1] or {}).get("timestamp", "") or ""),
+            reverse=True,
+        )
+        sorted_docs = [d for d, _ in pairs]
+        sorted_metas = [m for _, m in pairs]
+
+        # NEWS-002: real items_count from the full sorted set.
+        source["items_count"] = len(sorted_docs)
+
+        # NEWS-002: freshness_s from the newest item (top of desc sort).
+        newest_ts = ""
+        for m in sorted_metas:
+            ts = (m or {}).get("timestamp")
+            if ts:
+                newest_ts = ts
+                break
+        if newest_ts:
+            source["last_success_at"] = newest_ts
+            newest_epoch = _parse_ts(newest_ts)
+            if newest_epoch > 0:
+                source["freshness_s"] = max(0, int(time.time() - newest_epoch))
+
+        # Type-specific enrichment — built from newest-first slice.
+        if source["type"] == "rss":
+            source["latest_items"] = [
+                {"title": (d or "")[:120], "published": (m or {}).get("timestamp")}
+                for d, m in zip(
+                    sorted_docs[:_LATEST_ITEMS_RETURN],
+                    sorted_metas[:_LATEST_ITEMS_RETURN],
                 )
+            ]
+        elif source["type"] in ("weather", "electricity"):
+            source["latest_value"] = _parse_latest_value(
+                source["type"], sorted_docs[0], sorted_metas[0] or {}
+            )
+
+        # NEWS-003: state promotion. Never downgrade terminal states.
+        if not terminal_state:
+            freshness_s = source.get("freshness_s")
+            interval_min = source.get("interval_min") or 0
+            interval_s = int(interval_min) * 60 if interval_min else 0
+            if freshness_s is not None and interval_s > 0:
+                if freshness_s <= interval_s * 2:
+                    source["state"] = "active"
+                else:
+                    source["state"] = "stale"
+            elif freshness_s is not None:
+                # Unknown interval: treat any live row as active.
+                source["state"] = "active"
+
     except Exception:
         pass  # Leave defaults (truthful empty state)
 
@@ -624,6 +694,10 @@ def _get_chroma_collection(container):
     """Get ChromaDB collection for feed enrichment."""
     try:
         vs = container.vector_store
+        # ChromaVectorStore owns a dict of named collections; prefer that.
+        collections = getattr(vs, "_collections", None)
+        if isinstance(collections, dict):
+            return collections.get("waggle_memory")
         if hasattr(vs, "_collection"):
             return vs._collection
         if hasattr(vs, "collection"):

@@ -1,7 +1,7 @@
 """Chat HTTP route -- thin wrapper around ChatService."""
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from waggledance.adapters.http.deps import get_chat_service
 
@@ -52,6 +52,31 @@ class ChatHttpRequest(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     context_turns: int = 5
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_message_alias(cls, data):
+        """Accept ``message`` as a backwards-compat alias for ``query``.
+
+        Many OpenAI-compatible clients send ``{"message": "..."}``. Rather
+        than returning a cryptic 422, we silently rename it to ``query`` so
+        the endpoint is ergonomic for those clients. If both fields are
+        present, the explicit ``query`` wins.
+        """
+        if isinstance(data, dict):
+            if "query" not in data and "message" in data:
+                data = {**data, "query": data["message"]}
+        return data
+
+    @field_validator("query")
+    @classmethod
+    def query_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError(
+                "query must be a non-empty string "
+                "(hint: send {'query': '...'} or {'message': '...'})"
+            )
+        return v
 
     @field_validator("query")
     @classmethod

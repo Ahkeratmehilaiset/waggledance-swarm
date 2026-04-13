@@ -164,6 +164,8 @@ def open_authenticated_hologram(
 
     ctx = browser.new_context(viewport=vp)
     page = ctx.new_page()
+    page.set_default_timeout(30_000)       # 30 s max for any Playwright action
+    page.set_default_navigation_timeout(60_000)
 
     # Install XSS override
     page.add_init_script(XSS_INIT_SCRIPT)
@@ -198,7 +200,11 @@ def wait_for_auth_ready(page, timeout_s: int = 10) -> bool:
             authed = page.evaluate("""
                 async () => {
                     try {
-                        const r = await fetch('/api/auth/check', {credentials: 'same-origin'});
+                        const c = new AbortController();
+                        const t = setTimeout(() => c.abort(), 5000);
+                        const r = await fetch('/api/auth/check',
+                            {credentials: 'same-origin', signal: c.signal});
+                        clearTimeout(t);
                         const d = await r.json();
                         return d.authenticated === true;
                     } catch { return false; }
@@ -288,7 +294,11 @@ def wait_for_chat_ready(page, max_retries: int = 2) -> bool:
         authed = page.evaluate("""
             async () => {
                 try {
-                    const r = await fetch('/api/auth/check', {credentials: 'same-origin'});
+                    const c = new AbortController();
+                    const t = setTimeout(() => c.abort(), 5000);
+                    const r = await fetch('/api/auth/check',
+                        {credentials: 'same-origin', signal: c.signal});
+                    clearTimeout(t);
                     const d = await r.json();
                     return d.authenticated === true;
                 } catch { return false; }
@@ -363,10 +373,17 @@ def send_chat_safe(page, query: str, timeout_s: int = 10) -> dict:
 
         # Session check
         try:
-            authed = page.evaluate(
-                "async()=>{const r=await fetch('/api/auth/check',{credentials:'same-origin'});"
-                "const d=await r.json();return d.authenticated}"
-            )
+            authed = page.evaluate("""async () => {
+                try {
+                    const c = new AbortController();
+                    const t = setTimeout(() => c.abort(), 5000);
+                    const r = await fetch('/api/auth/check',
+                        {credentials: 'same-origin', signal: c.signal});
+                    clearTimeout(t);
+                    const d = await r.json();
+                    return d.authenticated;
+                } catch { return false; }
+            }""")
             result["session_ok"] = bool(authed)
         except Exception:
             result["session_ok"] = False

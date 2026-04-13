@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-WaggleDance Restore & Environment Validator v3.5.7
-===================================================
+WaggleDance Restore & Environment Validator v3.5.7.1
+=====================================================
 Validates the environment and restores from a backup zip if needed.
 Supports restore to any target directory via --target flag.
+v3.5.7.1: Added 400h gauntlet harness awareness (harness_helpers.py, ui_gauntlet_400h.py).
 v3.5.7: Updated for v3.5.7 Honest Hologram Release (Phase 7 fixes).
 v3.5: Updated for v3.5.0 architecture (4898 pytest tests, hybrid retrieval).
 

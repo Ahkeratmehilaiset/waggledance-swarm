@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-WaggleDance Restore & Environment Builder v4.2
+WaggleDance Restore & Environment Builder v4.3
 ================================================
 One-click restore: creates venv, installs dependencies, builds
 dashboard, creates runtime folders, and runs smoke test.
+v4.3: Added 400h gauntlet harness awareness (tests/e2e/ helpers + campaign runner).
 v4.2: Updated for v3.5.7 Honest Hologram Release.
 v4.1: Updated for v3.3 architecture (start_waggledance.py entry point).
 

@@ -90,8 +90,8 @@ def main():
                 window.confirm = function() { window.__xss_detected = true; return false; };
                 window.prompt = function() { window.__xss_detected = true; return null; };
             """)
-            pg.goto(f"{BASE_URL}/hologram?token={API_KEY}", wait_until="networkidle")
-            pg.wait_for_timeout(1500)
+            pg.goto(f"{BASE_URL}/hologram?token={API_KEY}", wait_until="domcontentloaded")
+            pg.wait_for_timeout(2000)
             tabs = pg.locator("button, [role=tab]")
             for i in range(tabs.count()):
                 txt = tabs.nth(i).inner_text(timeout=1000).strip().lower()

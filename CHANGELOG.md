@@ -13,10 +13,22 @@
   test infra, not a server bug).
 - **30-min mixed soak:** 36 cycles, backend 200 OK on every cycle, 0 error
   accumulation, auth maintained throughout.
+- **400h Gauntlet Harness (Phase 1):** Hardened for resumable 400h campaign.
+  - New `tests/e2e/harness_helpers.py`: shared reusable helpers
+    (`ConsoleCapture`, `backend_health_snapshot`, `open_authenticated_hologram`,
+    `wait_for_auth_ready`, `ensure_tab_selected`, `wait_for_chat_ready`,
+    `send_chat_safe`, `log_incident`, `controlled_server_restart`).
+  - New `tests/e2e/ui_gauntlet_400h.py`: 5-mode campaign runner
+    (DRYRUN, BASELINE, HOT, WARM, COLD) with CLI, green-time accounting,
+    JSONL incident logging, segment management, and query resume.
+  - Fixed `_phase_c_fast.py` `networkidle` bug → `domcontentloaded` + 2s wait.
+  - Separate tracking: tab_switch_failures vs chat_send_failures vs chat_response_failures.
+  - Real `controlled_server_restart` drill (psutil PID find → kill → relaunch → health verify).
 - **Harness code:** `tests/e2e/ui_gauntlet_harness.py`, `tests/e2e/conftest.py`,
-  `tests/e2e/_phase_c_fast.py`.
-- **Tool updates:** `waggle_backup.py` v9.0, `waggle_restore.py` v3.5.7,
-  `restore.py` v4.2 (version strings only).
+  `tests/e2e/_phase_c_fast.py`, `tests/e2e/harness_helpers.py`,
+  `tests/e2e/ui_gauntlet_400h.py`.
+- **Tool updates:** `waggle_backup.py` v9.1, `waggle_restore.py` v3.5.7.1,
+  `restore.py` v4.3.
 - See `docs/runs/ui_gauntlet_20260412/summary.md` for the full report.
 
 ## [3.5.7] — 2026-04-12 — Honest Hologram Release

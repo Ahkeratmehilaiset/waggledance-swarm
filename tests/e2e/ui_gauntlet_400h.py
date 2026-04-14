@@ -56,8 +56,13 @@ from harness_helpers import (
 def _load_campaign_state(campaign_dir: Path) -> dict:
     state_file = campaign_dir / "campaign_state.json"
     if state_file.exists():
-        return json.loads(state_file.read_text(encoding="utf-8"))
-    return {"segments": [], "total_green_s": 0.0}
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    else:
+        state = {}
+    # Ensure required keys exist (backwards-compat with Phase 0 format)
+    state.setdefault("segments", [])
+    state.setdefault("total_green_s", 0.0)
+    return state
 
 
 def _save_campaign_state(campaign_dir: Path, state: dict) -> None:
@@ -792,7 +797,18 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
         batch = 0
         query_idx = 0
 
-        while gt.elapsed_h < segment_hours and query_idx < len(remaining):
+        corpus_cycle = 0
+        while gt.elapsed_h < segment_hours:
+            if query_idx >= len(remaining):
+                # Wrap around: re-cycle corpus with incremented cycle prefix
+                corpus_cycle += 1
+                remaining = [
+                    {**e, "query_id": f"{e['query_id']}_c{corpus_cycle}"}
+                    for e in corpus
+                ]
+                query_idx = 0
+                print(f"  HOT corpus wrap: cycle {corpus_cycle}, green={gt.elapsed_h:.2f}h")
+
             entry = remaining[query_idx]
             query_idx += 1
             batch += 1
@@ -815,7 +831,22 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
                     ctx.close()
                 except Exception:
                     pass
-                ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                for _attempt in range(3):
+                    try:
+                        ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                        break
+                    except Exception as e:
+                        if _attempt == 2:
+                            log_incident(campaign_dir, {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "segment_id": seg_id, "mode": "HOT",
+                                "category": "context_recycle_failure",
+                                "short_code": "CTX_RECYCLE_FAIL",
+                                "summary": f"Context recycle failed at query #{stats['total']}: {e}",
+                                "backend_health_snapshot": backend_health_snapshot(),
+                                "fresh_context_retry_result": None,
+                            })
+                        import time; time.sleep(5)
                 gt.start()
                 batch = 0
 
@@ -854,7 +885,12 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
                     ctx.close()
                 except Exception:
                     pass
-                ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                for _attempt in range(3):
+                    try:
+                        ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                        break
+                    except Exception:
+                        import time; time.sleep(5)
                 retry_cr = send_chat_safe(page, entry["query"], timeout_s=10)
                 log_incident(campaign_dir, {
                     "ts": datetime.now(timezone.utc).isoformat(),
@@ -1030,7 +1066,22 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
                     ctx.close()
                 except Exception:
                     pass
-                ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                for _attempt in range(3):
+                    try:
+                        ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                        break
+                    except Exception as e:
+                        if _attempt == 2:
+                            log_incident(campaign_dir, {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "segment_id": seg_id, "mode": "WARM",
+                                "category": "context_recycle_failure",
+                                "short_code": "CTX_RECYCLE_FAIL",
+                                "summary": f"Context recycle failed at cycle {cycle}: {e}",
+                                "backend_health_snapshot": backend_health_snapshot(),
+                                "fresh_context_retry_result": None,
+                            })
+                        import time; time.sleep(5)
                 gt.start()
 
             # Every 30th cycle: fresh auth bootstrap
@@ -1040,7 +1091,22 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
                     ctx.close()
                 except Exception:
                     pass
-                ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                for _attempt in range(3):
+                    try:
+                        ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                        break
+                    except Exception as e:
+                        if _attempt == 2:
+                            log_incident(campaign_dir, {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "segment_id": seg_id, "mode": "WARM",
+                                "category": "auth_bootstrap_failure",
+                                "short_code": "AUTH_BOOT_FAIL",
+                                "summary": f"Auth bootstrap failed at cycle {cycle}: {e}",
+                                "backend_health_snapshot": backend_health_snapshot(),
+                                "fresh_context_retry_result": None,
+                            })
+                        import time; time.sleep(5)
                 authed = wait_for_auth_ready(page, timeout_s=10)
                 if not authed:
                     stats["auth_failures"] += 1

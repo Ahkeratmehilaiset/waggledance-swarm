@@ -991,6 +991,7 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
         gt.start()
 
         while gt.elapsed_h < segment_hours:
+          try:
             cycle = stats["cycles"] + 1
             stats["cycles"] = cycle
             cycle_metric: dict[str, Any] = {
@@ -1023,7 +1024,22 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
                     ctx.close()
                 except Exception:
                     pass
-                ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                for _attempt in range(3):
+                    try:
+                        ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                        break
+                    except Exception as e:
+                        if _attempt == 2:
+                            log_incident(campaign_dir, {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "segment_id": seg_id, "mode": "WARM",
+                                "category": "auth_recovery_failure",
+                                "short_code": "AUTH_RECOVER_FAIL",
+                                "summary": f"Auth recovery failed at cycle {cycle}: {e}",
+                                "backend_health_snapshot": backend_health_snapshot(),
+                                "fresh_context_retry_result": None,
+                            })
+                        import time; time.sleep(5)
                 gt.start()
 
             # Every 3rd cycle: send one chat
@@ -1128,6 +1144,30 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
                       f"chat_resp={stats['chat_response_failures']}")
 
             page.wait_for_timeout(int(cycle_interval * 1000))
+          except Exception as _cycle_err:
+            # Safety net: log and recover instead of crashing the segment
+            log_incident(campaign_dir, {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "segment_id": seg_id, "mode": "WARM",
+                "category": "cycle_crash_recovery",
+                "short_code": "CYCLE_CRASH",
+                "summary": f"Cycle {cycle} crashed, recovering: {_cycle_err}",
+                "backend_health_snapshot": backend_health_snapshot(),
+                "fresh_context_retry_result": None,
+            })
+            gt.pause()
+            try:
+                ctx.close()
+            except Exception:
+                pass
+            import time; time.sleep(10)
+            for _attempt in range(3):
+                try:
+                    ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
+                    break
+                except Exception:
+                    time.sleep(5)
+            gt.start()
 
         try:
             ctx.close()

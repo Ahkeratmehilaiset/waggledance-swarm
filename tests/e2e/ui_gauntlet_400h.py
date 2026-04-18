@@ -763,6 +763,14 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
     from playwright.sync_api import sync_playwright
 
     campaign_dir.mkdir(parents=True, exist_ok=True)
+    pidfile = campaign_dir / "hot.pid"
+    if pidfile.exists():
+        existing_pid = pidfile.read_text().strip()
+        import psutil
+        if existing_pid.isdigit() and psutil.pid_exists(int(existing_pid)):
+            print(f"HOT already running (pid={existing_pid}), exiting.")
+            return {}
+    pidfile.write_text(str(os.getpid()))
     state = _load_campaign_state(campaign_dir)
     seg_id = _next_segment_id(state)
     key = load_api_key()
@@ -1000,6 +1008,7 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
 
     total_h = state["total_green_s"] / 3600
     print(f"\n=== HOT segment {seg_id} done. green={gt.elapsed_h:.2f}h  campaign_total={total_h:.2f}h")
+    (campaign_dir / "hot.pid").unlink(missing_ok=True)
     return segment_info
 
 
@@ -1012,6 +1021,14 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
     from playwright.sync_api import sync_playwright
 
     campaign_dir.mkdir(parents=True, exist_ok=True)
+    pidfile = campaign_dir / "warm.pid"
+    if pidfile.exists():
+        existing_pid = pidfile.read_text().strip()
+        import psutil
+        if existing_pid.isdigit() and psutil.pid_exists(int(existing_pid)):
+            print(f"WARM already running (pid={existing_pid}), exiting.")
+            return {}
+    pidfile.write_text(str(os.getpid()))
     state = _load_campaign_state(campaign_dir)
     seg_id = _next_segment_id(state)
     key = load_api_key()
@@ -1252,6 +1269,7 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
 
     total_h = state["total_green_s"] / 3600
     print(f"\n=== WARM segment {seg_id} done. green={gt.elapsed_h:.2f}h  campaign_total={total_h:.2f}h")
+    (campaign_dir / "warm.pid").unlink(missing_ok=True)
     return segment_info
 
 
@@ -1264,6 +1282,14 @@ def run_cold(campaign_dir: Path, segment_hours: float) -> dict:
     import httpx
 
     campaign_dir.mkdir(parents=True, exist_ok=True)
+    pidfile = campaign_dir / "cold.pid"
+    if pidfile.exists():
+        existing_pid = pidfile.read_text().strip()
+        import psutil
+        if existing_pid.isdigit() and psutil.pid_exists(int(existing_pid)):
+            print(f"COLD already running (pid={existing_pid}), exiting.")
+            return {}
+    pidfile.write_text(str(os.getpid()))
     state = _load_campaign_state(campaign_dir)
     seg_id = _next_segment_id(state)
     key = load_api_key()
@@ -1444,6 +1470,7 @@ def run_cold(campaign_dir: Path, segment_hours: float) -> dict:
 
     total_h = state["total_green_s"] / 3600
     print(f"\n=== COLD segment {seg_id} done. green={gt.elapsed_h:.2f}h  campaign_total={total_h:.2f}h")
+    (campaign_dir / "cold.pid").unlink(missing_ok=True)
     return segment_info
 
 

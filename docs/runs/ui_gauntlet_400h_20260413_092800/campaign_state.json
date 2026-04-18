@@ -4,10 +4,10 @@
   "phase": "0_truth_intake",
   "status": "initializing",
   "cumulative_hours": {
-    "hot": 53.25,
-    "warm": 43.64,
-    "cold": 48.02,
-    "total": 144.92
+    "hot": 77.25,
+    "warm": 67.69,
+    "cold": 72.02,
+    "total": 216.95
   },
   "target_hours": {
     "hot": 80,
@@ -15,7 +15,7 @@
     "cold": 200,
     "total": 400
   },
-  "segments_completed": 20,
+  "segments_completed": 29,
   "segments_target": 50,
   "queries": {
     "total": 0,
@@ -593,7 +593,128 @@
       "cookie_checks": 16,
       "cookie_ok": 16,
       "note": "originally seg 18 (race)"
+    },
+    {
+      "segment_id": 21,
+      "mode": "HOT",
+      "green_hours": 8.0,
+      "ts_start": "2026-04-16T03:43:00+00:00",
+      "total": 1826,
+      "sent": 1826,
+      "responded": 1185,
+      "errors": 0,
+      "xss": 0,
+      "session_lost": 0,
+      "dom_broken": 0,
+      "note": "race: renumbered from parallel seg 21"
+    },
+    {
+      "segment_id": 22,
+      "mode": "WARM",
+      "green_hours": 8.0154,
+      "ts_start": "2026-04-16T03:43:00+00:00",
+      "cycles": 414,
+      "tab_switch_failures": 0,
+      "chat_send_failures": 1,
+      "chat_response_failures": 131,
+      "auth_failures": 9,
+      "note": "race: renumbered from parallel seg 21"
+    },
+    {
+      "segment_id": 23,
+      "mode": "COLD",
+      "green_hours": 8.0,
+      "ts_start": "2026-04-16T03:43:00+00:00",
+      "health_checks": 230,
+      "health_ok": 225,
+      "cookie_checks": 16,
+      "cookie_ok": 16,
+      "auth_chats": 8,
+      "auth_chat_ok": 3,
+      "note": "race: renumbered from parallel seg 21"
+    },
+    {
+      "segment_id": 24,
+      "mode": "HOT",
+      "green_hours": 8.0,
+      "ts_start": "2026-04-16T12:14:00+00:00",
+      "total": 1472,
+      "sent": 1472,
+      "responded": 1047,
+      "errors": 0,
+      "xss": 0,
+      "session_lost": 0,
+      "dom_broken": 0,
+      "backpressure_pauses": 1321,
+      "avg_response_ms": 8272,
+      "note": "first batch with timeout=18s + backpressure(3s threshold)"
+    },
+    {
+      "segment_id": 25,
+      "mode": "WARM",
+      "green_hours": 8.0061,
+      "ts_start": "2026-04-16T12:14:00+00:00",
+      "cycles": 395,
+      "tab_switch_failures": 0,
+      "chat_send_failures": 0,
+      "chat_response_failures": 116,
+      "auth_failures": 9,
+      "note": "race: renumbered from parallel seg 24, first batch with timeout=12s"
+    },
+    {
+      "segment_id": 26,
+      "mode": "COLD",
+      "green_hours": 8.0,
+      "ts_start": "2026-04-16T12:14:00+00:00",
+      "health_checks": 230,
+      "health_ok": 220,
+      "cookie_checks": 16,
+      "cookie_ok": 14,
+      "auth_chats": 8,
+      "auth_chat_ok": 1,
+      "note": "race: renumbered from parallel seg 24"
+    },
+    {
+      "segment_id": 27,
+      "mode": "HOT",
+      "green_hours": 8.0,
+      "ts_start": "2026-04-17T16:46:00+00:00",
+      "total": 1822,
+      "sent": 1822,
+      "responded": 1452,
+      "errors": 0,
+      "xss": 0,
+      "session_lost": 0,
+      "dom_broken": 0,
+      "backpressure_pauses": 664,
+      "avg_response_ms": 6460,
+      "note": "first batch with backpressure 8s threshold, resp 80%"
+    },
+    {
+      "segment_id": 28,
+      "mode": "WARM",
+      "green_hours": 8.0162,
+      "ts_start": "2026-04-17T16:46:00+00:00",
+      "cycles": 411,
+      "tab_switch_failures": 0,
+      "chat_send_failures": 0,
+      "chat_response_failures": 75,
+      "auth_failures": 13,
+      "note": "race: renumbered, resp_rate=45%"
+    },
+    {
+      "segment_id": 29,
+      "mode": "COLD",
+      "green_hours": 8.0,
+      "ts_start": "2026-04-17T16:46:00+00:00",
+      "health_checks": 230,
+      "health_ok": 219,
+      "cookie_checks": 16,
+      "cookie_ok": 16,
+      "auth_chats": 8,
+      "auth_chat_ok": 5,
+      "note": "race: renumbered"
     }
   ],
-  "total_green_s": 521702.28
+  "total_green_s": 721510.55
 }

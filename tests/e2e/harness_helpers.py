@@ -142,9 +142,12 @@ def backend_health_snapshot(base_url: str | None = None) -> dict:
             latency = round((time.monotonic() - t0) * 1000)
             endpoints[name] = {"status": 0, "latency_ms": latency, "ok": False, "error": str(exc)[:120]}
             all_ok = False
+    latencies = [ep["latency_ms"] for ep in endpoints.values() if ep.get("ok")]
+    avg_lat = round(sum(latencies) / len(latencies)) if latencies else 0
     return {
         "healthy": all_ok,
         "endpoints": endpoints,
+        "avg_latency_ms": avg_lat,
         "ts": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -315,7 +318,7 @@ def wait_for_chat_ready(page, max_retries: int = 2) -> bool:
 # send_chat_safe
 # ---------------------------------------------------------------------------
 
-def send_chat_safe(page, query: str, timeout_s: int = 10) -> dict:
+def send_chat_safe(page, query: str, timeout_s: int = 18) -> dict:
     """Fill chat input, send, poll for response, classify result.
 
     Returns dict with keys:

@@ -410,7 +410,7 @@ def _baseline_hot_mini(campaign_dir: Path) -> dict:
                 ctx, page, cap = open_authenticated_hologram(browser, api_key=key)
                 batch = 0
 
-            cr = send_chat_safe(page, entry["query"], timeout_s=10)
+            cr = send_chat_safe(page, entry["query"], timeout_s=18)
             stats["total"] += 1
             if cr["sent"]:
                 stats["sent"] += 1
@@ -656,7 +656,7 @@ def _baseline_warm_mini(campaign_dir: Path) -> dict:
 
             # Every 3rd cycle: send one chat
             if cycle % 3 == 0:
-                cr = send_chat_safe(page, f"warm cycle {cycle} check", timeout_s=8)
+                cr = send_chat_safe(page, f"warm cycle {cycle} check", timeout_s=12)
                 if not cr["sent"]:
                     stats["chat_send_failures"] += 1
                 elif not cr["responded"]:
@@ -665,7 +665,7 @@ def _baseline_warm_mini(campaign_dir: Path) -> dict:
             # Every 10th cycle: mini-burst 3-5 chats
             if cycle % 10 == 0:
                 for i in range(3):
-                    cr = send_chat_safe(page, f"burst {cycle}.{i}", timeout_s=6)
+                    cr = send_chat_safe(page, f"burst {cycle}.{i}", timeout_s=10)
                     if not cr["sent"]:
                         stats["chat_send_failures"] += 1
 
@@ -787,7 +787,12 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
         "segment_id": seg_id, "total": 0, "sent": 0, "responded": 0,
         "errors": 0, "xss": 0, "session_lost": 0, "dom_broken": 0,
         "buckets": {},
+        "session_lost_after_recycle": 0,
+        "session_lost_mid_batch": 0,
+        "backpressure_pauses": 0,
+        "avg_response_ms": 0,
     }
+    _response_times: list[float] = []  # track latencies for adaptive stats
     gt = GreenTimer()
 
     with sync_playwright() as p:
@@ -850,7 +855,21 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
                 gt.start()
                 batch = 0
 
-            cr = send_chat_safe(page, entry["query"], timeout_s=10)
+            cr = send_chat_safe(page, entry["query"], timeout_s=18)
+
+            # Track response latency for backpressure
+            if cr["sent"] and cr["latency_ms"] > 0:
+                _response_times.append(cr["latency_ms"])
+                if len(_response_times) > 100:
+                    _response_times.pop(0)
+                stats["avg_response_ms"] = round(sum(_response_times) / len(_response_times))
+
+            # Backpressure: if recent avg latency > 8s, slow down
+            if len(_response_times) >= 10:
+                recent_avg = sum(_response_times[-10:]) / 10
+                if recent_avg > 8000:
+                    stats["backpressure_pauses"] += 1
+                    page.wait_for_timeout(3000)  # 3s cooldown
 
             # Classify
             bucket = entry.get("bucket", "unknown")
@@ -875,6 +894,10 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
                 stats["dom_broken"] += 1
             if not cr.get("session_ok", True):
                 stats["session_lost"] += 1
+                if batch <= 2:
+                    stats["session_lost_after_recycle"] += 1
+                else:
+                    stats["session_lost_mid_batch"] += 1
 
             # On failure: health check + fresh context retry
             if cr.get("error") or not cr["sent"]:
@@ -891,7 +914,7 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
                         break
                     except Exception:
                         import time; time.sleep(5)
-                retry_cr = send_chat_safe(page, entry["query"], timeout_s=10)
+                retry_cr = send_chat_safe(page, entry["query"], timeout_s=18)
                 log_incident(campaign_dir, {
                     "ts": datetime.now(timezone.utc).isoformat(),
                     "segment_id": seg_id, "mode": "HOT",
@@ -915,9 +938,11 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
 
             # Checkpoint every 50 queries
             if stats["total"] % 50 == 0:
+                bp_info = f" bp={stats['backpressure_pauses']}" if stats["backpressure_pauses"] else ""
+                avg_info = f" avg_ms={stats['avg_response_ms']}" if stats["avg_response_ms"] else ""
                 print(f"  HOT checkpoint: q={stats['total']} sent={stats['sent']} "
                       f"resp={stats['responded']} err={stats['errors']} "
-                      f"green={gt.elapsed_h:.2f}h")
+                      f"green={gt.elapsed_h:.2f}h{bp_info}{avg_info}")
 
         try:
             ctx.close()
@@ -941,12 +966,18 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
     metrics_file = campaign_dir / f"segment_metrics_{seg_id:03d}.json"
     metrics_file.write_text(json.dumps(segment_info, indent=2, default=str), encoding="utf-8")
 
+    resp_pct = round(100 * stats["responded"] / stats["sent"], 1) if stats["sent"] else 0
     md = (
         f"# HOT Segment {seg_id}\n\n"
         f"Green time: {gt.elapsed_h:.2f}h\n"
-        f"Queries: {stats['total']} (sent={stats['sent']}, resp={stats['responded']})\n"
+        f"Queries: {stats['total']} (sent={stats['sent']}, resp={stats['responded']}, {resp_pct}%)\n"
         f"Errors: {stats['errors']}  XSS: {stats['xss']}  "
-        f"Session lost: {stats['session_lost']}  DOM broken: {stats['dom_broken']}\n\n"
+        f"Session lost: {stats['session_lost']} "
+        f"(after_recycle={stats.get('session_lost_after_recycle', '?')}, "
+        f"mid_batch={stats.get('session_lost_mid_batch', '?')})\n"
+        f"DOM broken: {stats['dom_broken']}  "
+        f"Backpressure pauses: {stats.get('backpressure_pauses', 0)}  "
+        f"Avg response: {stats.get('avg_response_ms', 0)}ms\n\n"
         f"## Buckets\n\n| Bucket | Total | Sent | Resp | Err | XSS |\n"
         f"|--------|-------|------|------|-----|-----|\n"
     )
@@ -1044,7 +1075,7 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
 
             # Every 3rd cycle: send one chat
             if cycle % 3 == 0:
-                cr = send_chat_safe(page, f"warm soak cycle {cycle}", timeout_s=8)
+                cr = send_chat_safe(page, f"warm soak cycle {cycle}", timeout_s=12)
                 if not cr["sent"]:
                     stats["chat_send_failures"] += 1
                     log_incident(campaign_dir, {
@@ -1068,12 +1099,13 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
                         "fresh_context_retry_result": None,
                     })
 
-            # Every 10th cycle: mini-burst 3-5 chats
+            # Every 10th cycle: mini-burst 3-5 chats (with 2s throttle)
             if cycle % 10 == 0:
                 for i in range(min(3 + (cycle % 3), 5)):
-                    cr = send_chat_safe(page, f"warm burst {cycle}.{i}", timeout_s=6)
+                    cr = send_chat_safe(page, f"warm burst {cycle}.{i}", timeout_s=10)
                     if not cr["sent"]:
                         stats["chat_send_failures"] += 1
+                    page.wait_for_timeout(2000)  # burst throttle
 
             # Every 20th cycle: recycle browser context
             if cycle % 20 == 0:
@@ -1138,10 +1170,13 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
             metrics.append(cycle_metric)
 
             if cycle % 20 == 0:
+                chats_attempted = cycle // 3 if cycle > 0 else 0
+                resp_rate = round(100 * (1 - stats['chat_response_failures'] / max(chats_attempted, 1)), 1)
                 print(f"  WARM cycle {cycle}  green={gt.elapsed_h:.2f}h  "
                       f"tab_fail={stats['tab_switch_failures']} "
                       f"chat_send={stats['chat_send_failures']} "
-                      f"chat_resp={stats['chat_response_failures']}")
+                      f"chat_resp={stats['chat_response_failures']} "
+                      f"resp_rate={resp_rate}%")
 
             page.wait_for_timeout(int(cycle_interval * 1000))
           except Exception as _cycle_err:

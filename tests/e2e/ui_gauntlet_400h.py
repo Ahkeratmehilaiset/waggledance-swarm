@@ -775,11 +775,17 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
     # Build cycling queue from corpus (repeat if needed for long runs)
     remaining = [e for e in corpus if e["query_id"] not in done_ids]
     if not remaining:
-        # Cycle: re-use corpus with new IDs
-        remaining = [
-            {**e, "query_id": f"{e['query_id']}_r{seg_id}"}
-            for e in corpus
-        ]
+        # Cycle: re-use corpus with new IDs, skip already done ones
+        corpus_cycle = 0
+        while not remaining:
+            corpus_cycle += 1
+            candidate = [
+                {**e, "query_id": f"{e['query_id']}_r{seg_id}" if corpus_cycle == 1 else f"{e['query_id']}_c{corpus_cycle}"}
+                for e in corpus
+            ]
+            remaining = [e for e in candidate if e["query_id"] not in done_ids]
+            if corpus_cycle > 9999:
+                break  # safety
 
     print(f"=== HOT segment={seg_id}  target={segment_hours}h  remaining={len(remaining)}")
 
@@ -802,15 +808,19 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
         batch = 0
         query_idx = 0
 
-        corpus_cycle = 0
+        # corpus_cycle was set during resume pre-scan above (or 0 if first run)
         while gt.elapsed_h < segment_hours:
             if query_idx >= len(remaining):
-                # Wrap around: re-cycle corpus with incremented cycle prefix
-                corpus_cycle += 1
-                remaining = [
-                    {**e, "query_id": f"{e['query_id']}_c{corpus_cycle}"}
-                    for e in corpus
-                ]
+                # Wrap around: re-cycle corpus with incremented cycle prefix, skip already done
+                while True:
+                    corpus_cycle += 1
+                    candidate = [
+                        {**e, "query_id": f"{e['query_id']}_r{seg_id}" if corpus_cycle == 1 else f"{e['query_id']}_c{corpus_cycle}"}
+                        for e in corpus
+                    ]
+                    remaining = [e for e in candidate if e["query_id"] not in done_ids]
+                    if remaining or corpus_cycle > 9999:
+                        break
                 query_idx = 0
                 print(f"  HOT corpus wrap: cycle {corpus_cycle}, green={gt.elapsed_h:.2f}h")
 
@@ -869,7 +879,10 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
                 recent_avg = sum(_response_times[-10:]) / 10
                 if recent_avg > 8000:
                     stats["backpressure_pauses"] += 1
-                    page.wait_for_timeout(3000)  # 3s cooldown
+                    try:
+                        page.wait_for_timeout(3000)  # 3s cooldown
+                    except Exception:
+                        pass
 
             # Classify
             bucket = entry.get("bucket", "unknown")

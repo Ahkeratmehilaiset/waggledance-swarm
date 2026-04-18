@@ -290,7 +290,10 @@ def wait_for_chat_ready(page, max_retries: int = 2) -> bool:
             pass
 
         if attempt < max_retries:
-            page.wait_for_timeout(2000)
+            try:
+                page.wait_for_timeout(2000)
+            except Exception:
+                return False
 
     # Chat input still missing — check if auth is lost
     try:

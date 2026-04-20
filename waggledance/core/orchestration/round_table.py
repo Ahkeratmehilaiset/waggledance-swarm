@@ -48,7 +48,7 @@ class RoundTableEngine:
         Phase 1: Each agent reviews others' responses (sequential, last 3 visible)
         Phase 2: Synthesize consensus from all perspectives
         """
-        start = time.monotonic()
+        start = time.perf_counter()
 
         await self._event_bus.publish(DomainEvent(
             type=EventType.ROUND_TABLE_STARTED,
@@ -129,7 +129,7 @@ class RoundTableEngine:
             return ConsensusResult(
                 consensus="No agents participated",
                 confidence=0.0,
-                latency_ms=(time.monotonic() - start) * 1000,
+                latency_ms=(time.perf_counter() - start) * 1000,
             )
 
         all_views = "\n".join(
@@ -154,7 +154,7 @@ class RoundTableEngine:
 
         confidence = min(0.9, 0.5 + len(discussion) * 0.1)
 
-        elapsed_ms = (time.monotonic() - start) * 1000
+        elapsed_ms = (time.perf_counter() - start) * 1000
 
         await self._event_bus.publish(DomainEvent(
             type=EventType.ROUND_TABLE_COMPLETED,

@@ -57,10 +57,10 @@ class BenchmarkHarness:
         """Run all queries through the handler and collect results."""
         report = BenchmarkReport(total=len(self.queries))
         for q in self.queries:
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             try:
                 resp = await handler(q.query)
-                ms = (time.monotonic() - t0) * 1000
+                ms = (time.perf_counter() - t0) * 1000
                 route = resp.get("route_type", "")
                 confidence = resp.get("confidence", 0.0)
                 matched = route == q.expected_route if q.expected_route else True
@@ -73,7 +73,7 @@ class BenchmarkHarness:
                 else:
                     report.failed += 1
             except Exception as e:
-                ms = (time.monotonic() - t0) * 1000
+                ms = (time.perf_counter() - t0) * 1000
                 result = BenchmarkResult(query_id=q.id, latency_ms=ms, error=str(e))
                 report.errors += 1
             report.results.append(result)

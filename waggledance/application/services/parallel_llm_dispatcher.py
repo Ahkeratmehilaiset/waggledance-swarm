@@ -192,9 +192,17 @@ class ParallelLLMDispatcher:
 
         self._metrics.total_dispatched += 1
 
-        # Dedup check
+        line = self._resolve_line(model_hint)
+
+        # Dedup: register future synchronously BEFORE any await, so concurrent
+        # dispatches from asyncio.gather() can see each other's entry. Earlier
+        # versions registered the future inside _guarded_call (after multiple
+        # awaits), producing a race where Python 3.11's asyncio scheduling ran
+        # both tasks past the dedup check before either registered.
+        own_future: Optional[asyncio.Future] = None
+        own_dedup_key: Optional[str] = None
         if self._dedupe:
-            dedup_key = self._dedup_key(prompt, model_hint, temperature, max_tokens)
+            dedup_key = self._dedup_key(prompt, line.name, temperature, max_tokens)
             existing = self._pending_dedup.get(dedup_key)
             if existing is not None and not existing.done():
                 self._metrics.deduped_requests += 1
@@ -204,13 +212,16 @@ class ParallelLLMDispatcher:
                 except (asyncio.CancelledError, Exception):
                     # If the original was cancelled/failed, fall through to new call
                     pass
+            # First caller: register our future so a concurrent dispatch can see it
+            own_future = asyncio.get_event_loop().create_future()
+            own_dedup_key = dedup_key
+            self._pending_dedup[dedup_key] = own_future
 
-        line = self._resolve_line(model_hint)
         self._metrics.queue_depth += 1
 
         try:
             result = await asyncio.wait_for(
-                self._guarded_call(prompt, line, temperature, max_tokens, tier),
+                self._guarded_call(prompt, line, temperature, max_tokens, tier, own_future),
                 timeout=self._timeout_s,
             )
             self._metrics.total_completed += 1
@@ -240,16 +251,14 @@ class ParallelLLMDispatcher:
         temperature: float,
         max_tokens: int,
         tier: str,
+        future: Optional[asyncio.Future] = None,
     ) -> str:
-        """Execute an LLM call guarded by global + per-model semaphores."""
-        dedup_key = None
-        future: Optional[asyncio.Future] = None
+        """Execute an LLM call guarded by global + per-model semaphores.
 
-        if self._dedupe:
-            dedup_key = self._dedup_key(prompt, line.name, temperature, max_tokens)
-            future = asyncio.get_event_loop().create_future()
-            self._pending_dedup[dedup_key] = future
-
+        The `future` (if any) was registered in dispatch() before any await,
+        so concurrent dispatches can observe it for dedup. We resolve it here
+        and remove it from the pending map when done.
+        """
         try:
             await self._global_semaphore.acquire()
             try:
@@ -276,8 +285,12 @@ class ParallelLLMDispatcher:
             finally:
                 self._global_semaphore.release()
         finally:
-            if dedup_key and dedup_key in self._pending_dedup:
-                self._pending_dedup.pop(dedup_key, None)
+            if future is not None:
+                # Remove from pending map (owner cleanup)
+                for k, v in list(self._pending_dedup.items()):
+                    if v is future:
+                        self._pending_dedup.pop(k, None)
+                        break
 
     # ------------------------------------------------------------------ #
     #  Batch dispatch                                                      #

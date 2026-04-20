@@ -98,7 +98,7 @@ class AutonomyLifecycle:
     def uptime_s(self) -> float:
         if self._started_at is None:
             return 0.0
-        return time.time() - self._started_at
+        return time.perf_counter() - self._started_at
 
     # ── Lifecycle ──────────────────────────────────────────
 
@@ -109,7 +109,7 @@ class AutonomyLifecycle:
             return False
 
         self._state = RuntimeState.STARTING
-        self._started_at = time.time()
+        self._started_at = time.perf_counter()
 
         # Check all registered components
         all_healthy = self._check_components()

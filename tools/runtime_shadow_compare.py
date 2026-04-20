@@ -72,9 +72,9 @@ class RuntimeShadowCompare:
         result = CompareResult(query=request.query)
 
         try:
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             old_resp = await old_handler(request.query)
-            result.old_latency_ms = (time.monotonic() - t0) * 1000
+            result.old_latency_ms = (time.perf_counter() - t0) * 1000
             result.old_response = old_resp.get("response", "")
             result.old_route = old_resp.get("route_type", "")
             result.old_confidence = old_resp.get("confidence", 0.0)
@@ -82,9 +82,9 @@ class RuntimeShadowCompare:
             result.error = f"old_handler: {e}"
 
         try:
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             new_resp = await new_handler(request.query)
-            result.new_latency_ms = (time.monotonic() - t0) * 1000
+            result.new_latency_ms = (time.perf_counter() - t0) * 1000
             result.new_response = new_resp.get("response", "")
             result.new_route = new_resp.get("route_type", "")
             result.new_confidence = new_resp.get("confidence", 0.0)

@@ -981,6 +981,12 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
     }
     state["segments"].append(segment_info)
     state["total_green_s"] = state.get("total_green_s", 0) + gt.elapsed_s
+    _ch = state.setdefault("cumulative_hours", {"hot": 0, "warm": 0, "cold": 0, "total": 0})
+    _mk = segment_info["mode"].lower()
+    _ch[_mk] = round(_ch.get(_mk, 0) + segment_info["green_hours"], 4)
+    _ch["total"] = round(_ch.get("hot", 0) + _ch.get("warm", 0) + _ch.get("cold", 0), 4)
+    state["segments_completed"] = max(s["segment_id"] for s in state["segments"])
+    state["last_checkpoint_ts"] = datetime.now(timezone.utc).isoformat()
     _save_campaign_state(campaign_dir, state)
 
     # Write segment artifacts
@@ -1249,6 +1255,12 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
     }
     state["segments"].append(segment_info)
     state["total_green_s"] = state.get("total_green_s", 0) + gt.elapsed_s
+    _ch = state.setdefault("cumulative_hours", {"hot": 0, "warm": 0, "cold": 0, "total": 0})
+    _mk = segment_info["mode"].lower()
+    _ch[_mk] = round(_ch.get(_mk, 0) + segment_info["green_hours"], 4)
+    _ch["total"] = round(_ch.get("hot", 0) + _ch.get("warm", 0) + _ch.get("cold", 0), 4)
+    state["segments_completed"] = max(s["segment_id"] for s in state["segments"])
+    state["last_checkpoint_ts"] = datetime.now(timezone.utc).isoformat()
     _save_campaign_state(campaign_dir, state)
 
     (campaign_dir / f"segment_metrics_{seg_id:03d}.json").write_text(
@@ -1448,6 +1460,12 @@ def run_cold(campaign_dir: Path, segment_hours: float) -> dict:
     }
     state["segments"].append(segment_info)
     state["total_green_s"] = state.get("total_green_s", 0) + gt.elapsed_s
+    _ch = state.setdefault("cumulative_hours", {"hot": 0, "warm": 0, "cold": 0, "total": 0})
+    _mk = segment_info["mode"].lower()
+    _ch[_mk] = round(_ch.get(_mk, 0) + segment_info["green_hours"], 4)
+    _ch["total"] = round(_ch.get("hot", 0) + _ch.get("warm", 0) + _ch.get("cold", 0), 4)
+    state["segments_completed"] = max(s["segment_id"] for s in state["segments"])
+    state["last_checkpoint_ts"] = datetime.now(timezone.utc).isoformat()
     _save_campaign_state(campaign_dir, state)
 
     (campaign_dir / f"segment_metrics_{seg_id:03d}.json").write_text(
@@ -1496,6 +1514,14 @@ def main() -> None:
         choices=["fidelity", "hot_mini", "drills", "warm_mini", "ci"],
         help="Sub-mode for BASELINE",
     )
+    parser.add_argument(
+        "--loop", action="store_true",
+        help="For HOT/WARM/COLD: run segments back-to-back until --target-hours reached.",
+    )
+    parser.add_argument(
+        "--target-hours", type=float, default=None,
+        help="With --loop: stop when mode cumulative_hours >= this value.",
+    )
 
     args = parser.parse_args()
     mode = args.mode.upper()
@@ -1517,12 +1543,29 @@ def main() -> None:
             print("ERROR: --sub required for BASELINE mode")
             sys.exit(1)
         result = run_baseline(cdir, args.sub)
-    elif mode == "HOT":
-        result = run_hot(cdir, args.segment_hours)
-    elif mode == "WARM":
-        result = run_warm(cdir, args.segment_hours)
-    elif mode == "COLD":
-        result = run_cold(cdir, args.segment_hours)
+    elif mode in ("HOT", "WARM", "COLD"):
+        runner = {"HOT": run_hot, "WARM": run_warm, "COLD": run_cold}[mode]
+        mode_key = mode.lower()
+        if args.loop:
+            target = args.target_hours
+            if target is None:
+                # Default to phase 3 targets
+                target = {"hot": 80, "warm": 120, "cold": 200}[mode_key]
+            loop_n = 0
+            while True:
+                state = _load_campaign_state(cdir)
+                cur_h = state.get("cumulative_hours", {}).get(mode_key, 0.0)
+                if cur_h >= target:
+                    print(f"\n=== {mode} loop reached target {cur_h:.2f}h >= {target}h. Done. ===")
+                    break
+                loop_n += 1
+                print(f"\n=== {mode} loop iter {loop_n}: cur={cur_h:.2f}h target={target}h ===")
+                result = runner(cdir, args.segment_hours)
+                if not result:
+                    # pidfile said "already running" or segment crashed — sleep, retry
+                    time.sleep(30)
+        else:
+            result = runner(cdir, args.segment_hours)
     else:
         print(f"Unknown mode: {mode}")
         sys.exit(1)

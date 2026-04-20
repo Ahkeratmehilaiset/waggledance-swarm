@@ -325,8 +325,16 @@ class Container:
 
     @cached_property
     def faiss_registry(self):
-        """FaissRegistry — named FAISS collections for cell-local retrieval."""
-        from core.faiss_store import FaissRegistry
+        """FaissRegistry — named FAISS collections for cell-local retrieval.
+
+        Returns None if faiss-cpu is not installed (optional dependency).
+        HybridRetrievalService treats None as "disabled" and falls back to
+        ChromaDB-only retrieval.
+        """
+        try:
+            from core.faiss_store import FaissRegistry
+        except ImportError:
+            return None
         return FaissRegistry()
 
     @cached_property

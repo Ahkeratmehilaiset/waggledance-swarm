@@ -77,6 +77,91 @@ def _next_segment_id(state: dict) -> int:
     return max(s.get("segment_id", 0) for s in state["segments"]) + 1
 
 
+def _reserve_segment_id(campaign_dir: Path, mode: str) -> int:
+    """Atomically reserve next segment_id across concurrent HOT/WARM/COLD.
+
+    Uses exclusive-create lock file. Writes a placeholder entry to state
+    immediately so subsequent reservations see it. Returns the reserved id.
+    """
+    lock_path = campaign_dir / ".segment_id.lock"
+    # Acquire lock (try up to ~10s with 100ms backoff)
+    for _ in range(100):
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            break
+        except FileExistsError:
+            time.sleep(0.1)
+    else:
+        # Stale lock? Remove and try once more
+        try:
+            lock_path.unlink(missing_ok=True)
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except Exception as e:
+            raise RuntimeError(f"Could not acquire segment_id lock: {e}")
+
+    try:
+        state = _load_campaign_state(campaign_dir)
+        seg_id = _next_segment_id(state)
+        state["segments"].append({
+            "segment_id": seg_id,
+            "mode": mode,
+            "status": "reserved",
+            "green_hours": 0.0,
+            "ts_reserved": datetime.now(timezone.utc).isoformat(),
+        })
+        _save_campaign_state(campaign_dir, state)
+        return seg_id
+    finally:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _finalize_segment(campaign_dir: Path, seg_id: int, mode: str, segment_info: dict) -> None:
+    """Replace the reserved placeholder with full segment_info atomically."""
+    lock_path = campaign_dir / ".segment_id.lock"
+    for _ in range(100):
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            time.sleep(0.1)
+    try:
+        state = _load_campaign_state(campaign_dir)
+        # Remove placeholder if exists, then append final
+        state["segments"] = [
+            s for s in state["segments"]
+            if not (s.get("segment_id") == seg_id
+                    and s.get("mode") == mode
+                    and s.get("status") == "reserved")
+        ]
+        state["segments"].append(segment_info)
+        # Recompute cumulative
+        _ch = state.setdefault("cumulative_hours", {"hot": 0, "warm": 0, "cold": 0, "total": 0})
+        # Recalculate from segments (not incremental, to stay consistent)
+        _ch["hot"] = round(sum(s.get("green_hours", 0) for s in state["segments"] if s.get("mode") == "HOT" and s.get("status") != "reserved"), 4)
+        _ch["warm"] = round(sum(s.get("green_hours", 0) for s in state["segments"] if s.get("mode") == "WARM" and s.get("status") != "reserved"), 4)
+        _ch["cold"] = round(sum(s.get("green_hours", 0) for s in state["segments"] if s.get("mode") == "COLD" and s.get("status") != "reserved"), 4)
+        _ch["total"] = round(_ch["hot"] + _ch["warm"] + _ch["cold"], 4)
+        state["total_green_s"] = round(_ch["total"] * 3600, 2)
+        state["segments_completed"] = max(
+            (s["segment_id"] for s in state["segments"] if s.get("status") != "reserved"),
+            default=0,
+        )
+        state["last_checkpoint_ts"] = datetime.now(timezone.utc).isoformat()
+        _save_campaign_state(campaign_dir, state)
+    finally:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def _load_jsonl(path: Path) -> list[dict]:
     """Read all JSONL entries from *path*, returning list of dicts."""
     if not path.exists():
@@ -771,8 +856,8 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
             print(f"HOT already running (pid={existing_pid}), exiting.")
             return {}
     pidfile.write_text(str(os.getpid()))
+    seg_id = _reserve_segment_id(campaign_dir, "HOT")
     state = _load_campaign_state(campaign_dir)
-    seg_id = _next_segment_id(state)
     key = load_api_key()
     corpus = _load_or_build_corpus(campaign_dir)
 
@@ -979,15 +1064,8 @@ def run_hot(campaign_dir: Path, segment_hours: float) -> dict:
         "ts_start": datetime.now(timezone.utc).isoformat(),
         **stats,
     }
-    state["segments"].append(segment_info)
-    state["total_green_s"] = state.get("total_green_s", 0) + gt.elapsed_s
-    _ch = state.setdefault("cumulative_hours", {"hot": 0, "warm": 0, "cold": 0, "total": 0})
-    _mk = segment_info["mode"].lower()
-    _ch[_mk] = round(_ch.get(_mk, 0) + segment_info["green_hours"], 4)
-    _ch["total"] = round(_ch.get("hot", 0) + _ch.get("warm", 0) + _ch.get("cold", 0), 4)
-    state["segments_completed"] = max(s["segment_id"] for s in state["segments"])
-    state["last_checkpoint_ts"] = datetime.now(timezone.utc).isoformat()
-    _save_campaign_state(campaign_dir, state)
+    _finalize_segment(campaign_dir, seg_id, segment_info["mode"], segment_info)
+    state = _load_campaign_state(campaign_dir)
 
     # Write segment artifacts
     metrics_file = campaign_dir / f"segment_metrics_{seg_id:03d}.json"
@@ -1035,8 +1113,8 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
             print(f"WARM already running (pid={existing_pid}), exiting.")
             return {}
     pidfile.write_text(str(os.getpid()))
+    seg_id = _reserve_segment_id(campaign_dir, "WARM")
     state = _load_campaign_state(campaign_dir)
-    seg_id = _next_segment_id(state)
     key = load_api_key()
 
     cycle_interval = 50  # seconds
@@ -1253,15 +1331,8 @@ def run_warm(campaign_dir: Path, segment_hours: float) -> dict:
         "green_hours": round(gt.elapsed_h, 4),
         **stats,
     }
-    state["segments"].append(segment_info)
-    state["total_green_s"] = state.get("total_green_s", 0) + gt.elapsed_s
-    _ch = state.setdefault("cumulative_hours", {"hot": 0, "warm": 0, "cold": 0, "total": 0})
-    _mk = segment_info["mode"].lower()
-    _ch[_mk] = round(_ch.get(_mk, 0) + segment_info["green_hours"], 4)
-    _ch["total"] = round(_ch.get("hot", 0) + _ch.get("warm", 0) + _ch.get("cold", 0), 4)
-    state["segments_completed"] = max(s["segment_id"] for s in state["segments"])
-    state["last_checkpoint_ts"] = datetime.now(timezone.utc).isoformat()
-    _save_campaign_state(campaign_dir, state)
+    _finalize_segment(campaign_dir, seg_id, segment_info["mode"], segment_info)
+    state = _load_campaign_state(campaign_dir)
 
     (campaign_dir / f"segment_metrics_{seg_id:03d}.json").write_text(
         json.dumps({"segment": segment_info, "cycles": metrics}, indent=2, default=str),
@@ -1302,8 +1373,8 @@ def run_cold(campaign_dir: Path, segment_hours: float) -> dict:
             print(f"COLD already running (pid={existing_pid}), exiting.")
             return {}
     pidfile.write_text(str(os.getpid()))
+    seg_id = _reserve_segment_id(campaign_dir, "COLD")
     state = _load_campaign_state(campaign_dir)
-    seg_id = _next_segment_id(state)
     key = load_api_key()
 
     print(f"=== COLD segment={seg_id}  target={segment_hours}h")
@@ -1458,15 +1529,8 @@ def run_cold(campaign_dir: Path, segment_hours: float) -> dict:
         "green_hours": round(gt.elapsed_h, 4),
         **stats,
     }
-    state["segments"].append(segment_info)
-    state["total_green_s"] = state.get("total_green_s", 0) + gt.elapsed_s
-    _ch = state.setdefault("cumulative_hours", {"hot": 0, "warm": 0, "cold": 0, "total": 0})
-    _mk = segment_info["mode"].lower()
-    _ch[_mk] = round(_ch.get(_mk, 0) + segment_info["green_hours"], 4)
-    _ch["total"] = round(_ch.get("hot", 0) + _ch.get("warm", 0) + _ch.get("cold", 0), 4)
-    state["segments_completed"] = max(s["segment_id"] for s in state["segments"])
-    state["last_checkpoint_ts"] = datetime.now(timezone.utc).isoformat()
-    _save_campaign_state(campaign_dir, state)
+    _finalize_segment(campaign_dir, seg_id, segment_info["mode"], segment_info)
+    state = _load_campaign_state(campaign_dir)
 
     (campaign_dir / f"segment_metrics_{seg_id:03d}.json").write_text(
         json.dumps({"segment": segment_info, "metrics": metrics}, indent=2, default=str),

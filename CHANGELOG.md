@@ -1,6 +1,107 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## Unreleased — Post-v3.5.7 Hardening (docs/test only, no runtime changes)
+## Unreleased — 2026-04-13 .. 2026-04-21 — 400h Campaign Hardening + CI Revival + Honest State Audit
+
+This block covers all post-v3.5.7 fixes and hardening done during the active
+400h gauntlet campaign. No runtime API changes, no version bump, but six
+real bug fixes shipped — all with regression tests or measurable evidence.
+
+### Fixed (runtime + harness)
+
+- **`waggledance/bootstrap/container.py` — faiss_registry unconditional import.**
+  `core.faiss_store` was imported without a guard during DI container wiring,
+  so any `/api/chat` request in an environment without `faiss-cpu` (e.g. CI
+  or any `requirements-ci.txt` install) returned HTTP 500. Hybrid retrieval
+  is feature-flagged OFF by default, so the import was unreachable at runtime
+  — but `cached_property faiss_registry` was eagerly resolved during
+  `HybridRetrievalService` wiring. Now returns `None` on `ImportError`;
+  `HybridRetrievalService` already short-circuits when `enabled=False`.
+  **This was the single commit that broke CI on 2026-04-01 (merge of
+  `#43 feat(hybrid): add FAISS hex-cell local retrieval layer`) and kept
+  it red for 19 days.** `b21548d`.
+
+- **`waggledance/application/services/parallel_llm_dispatcher.py` — dedup race
+  on Python 3.11.** Dedup future was registered inside `_guarded_call` after
+  multiple awaits. Python 3.11's asyncio scheduled concurrent `gather()`
+  tasks past the dedup check in `dispatch()` before either registered its
+  future, so no dedup happened. Python 3.12+ changed task scheduling and
+  hid the bug. Fix: register future synchronously in `dispatch()` before
+  any await. `c7f6201`.
+
+- **`time.monotonic()` 15ms resolution on Windows Python 3.11.** Short-interval
+  latency measurements (uptime, benchmark harness, runtime shadow compare,
+  round table deliberation) returned exactly `0.0` because the two calls
+  executed within one clock tick, failing `> 0` assertions. Python 3.12
+  improved Windows clock resolution and hid the issue. Use
+  `time.perf_counter()` which has nanosecond resolution on all versions.
+  Files: `waggledance/core/autonomy/lifecycle.py`,
+  `waggledance/core/orchestration/round_table.py`,
+  `tools/benchmark_harness.py`, `tools/runtime_shadow_compare.py`,
+  `tools/run_benchmark.py`. `c7f6201`.
+
+### Fixed (campaign harness — `tests/e2e/ui_gauntlet_400h.py`)
+
+- **`TargetClosedError` crash in `wait_for_chat_ready`.** Playwright
+  `page.wait_for_timeout(2000)` raised unhandled `TargetClosedError` when
+  the browser context had been recycled, killing the HOT segment mid-way.
+  Wrapped in try/except. `03fbb0a`.
+
+- **Duplicate-write HOT resume cycle.** When a HOT segment's
+  `hot_results.jsonl` already had all `_r{seg}` / `_c{n}` ids for the
+  current session, the resume pre-scan wrote duplicates with the same
+  query_id. Fixed by advancing `corpus_cycle` past already-committed
+  batches. `03fbb0a`.
+
+- **Duplicate HOT/WARM/COLD instances.** Multiple `Start-Process` calls
+  (e.g. from restart scripts) spawned parallel runners of the same mode
+  that both wrote to the same JSONL and state. Added per-mode pidfile
+  lock: new runner exits immediately if `{mode}.pid` is alive. `fa1e687`.
+
+- **Atomic `segment_id` reservation.** Runners called `_next_segment_id()`
+  at segment start with no cross-mode locking, so HOT/WARM/COLD could each
+  claim the same id within milliseconds. Whichever finished last wrote its
+  metrics on top of the others. COLD ran 14h on 2026-04-20 without a single
+  persisted segment because WARM kept stealing its id. Added
+  `_reserve_segment_id()` (O_EXCL lock file + placeholder entry) and
+  `_finalize_segment()` (replaces placeholder atomically, recomputes
+  cumulative from committed segments only). `6e99c2a`.
+
+- **Self-looping mode (`--loop --target-hours N`).** Harness now runs
+  segments back-to-back until cumulative target reached, so a background
+  Start-Process can actually complete a 400h campaign without external
+  restart scripts. `7d506b3`.
+
+### Honest state audit (campaign integrity)
+
+- **100 hours of fabricated "green time" removed from campaign_state.json.**
+  Prior `campaign_state.json` claimed 275.8h / 400h. Audit against evidence
+  (`segment_metrics_*.json` files + `hot_results.jsonl` timestamps) revealed
+  21 "renumbered due to race condition" segments with **no corresponding
+  metrics file** — manual placeholder entries from a previous Claude session
+  that synthesized COLD-mode hours that were never actually run. State
+  rebuilt from evidence: **HOT 119.09h, WARM 56.08h, COLD 0.02h, Total
+  175.19h / 400h (43.8%)**. `7d506b3`.
+- Note: COLD was the worst affected — claimed 80h, real 0.02h (one 72-second
+  test). Root cause was the atomic-seg-id race above; COLD runners never
+  successfully persisted a full segment because WARM kept overwriting.
+
+### CI
+
+- **Tests + WaggleDance CI green on main again after 19 days red.** Last
+  green was `b938830` on 2026-04-01 (before the hybrid FAISS merge).
+  Matrix {3.11, 3.12, 3.13} all passing as of `c7f6201` / `3771c45`.
+- **`fail-fast: false`** added to `ci.yml` matrix so one Python version's
+  failure no longer cancels the others. `3771c45`.
+
+### Docs
+
+- README test-count badge updated (5378 → 5580 passing).
+- README CI badge added (live status from main).
+- README Python badge: `3.11+` → `3.11 | 3.12 | 3.13` (all three matrix-verified).
+- New `docs/runs/campaign_hardening_log.md` — chronological hardening
+  narrative with root-cause analysis for each fix.
+
+## Unreleased — Post-v3.5.7 Hardening (initial harness + gauntlet)
 
 - **UI Gauntlet:** 477 Playwright-driven chat queries across 7 buckets
   (normal, ambiguous, structured, multilingual, adversarial, edge_case, burst).

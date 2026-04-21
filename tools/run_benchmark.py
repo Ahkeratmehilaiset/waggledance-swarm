@@ -41,10 +41,10 @@ def _run_benchmark(yaml_path: str):
     latencies = []
 
     for q in harness.queries:
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         try:
             route_result = router.route(q.query)
-            ms = (time.monotonic() - t0) * 1000
+            ms = (time.perf_counter() - t0) * 1000
             route_type = route_result.layer if hasattr(route_result, 'layer') else str(route_result)
             confidence = getattr(route_result, 'confidence', 0.0)
             matched_kw = getattr(route_result, 'matched_keywords', []) or []
@@ -78,7 +78,7 @@ def _run_benchmark(yaml_path: str):
                   f"actual={route_type:16s} {ms:6.1f}ms")
 
         except Exception as e:
-            ms = (time.monotonic() - t0) * 1000
+            ms = (time.perf_counter() - t0) * 1000
             errors += 1
             latencies.append(ms)
             results.append({

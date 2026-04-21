@@ -2,8 +2,9 @@
 
 > Local-first AI runtime with solver-first routing, self-training specialists, overnight dream learning, and full MAGMA audit trail.
 
-[![Tests](https://img.shields.io/badge/tests-5378%20passing-brightgreen)]()
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
+[![Tests](https://img.shields.io/badge/tests-5580%20passing-brightgreen)]()
+[![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 [![Version](https://img.shields.io/badge/version-3.5.7-blue)]()
 

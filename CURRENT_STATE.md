@@ -1,7 +1,7 @@
 # WaggleDance Swarm — Project State (auto-generated)
 
-**Generated**: 2026-03-22T12:02:40+0200
-**Commit**: `dadc5d2` on `master`
+**Generated**: 2026-04-21T07:47:05+0300
+**Commit**: `ddd13e7` on `main`
 **Generator**: `python tools/generate_state.py`
 
 > This file is auto-generated from actual code. Do not edit manually.
@@ -9,10 +9,10 @@
 
 ## Summary
 
-- **Hexagonal runtime** (`waggledance/`): 80 core modules, 26,322 lines
-- **Legacy core** (`core/`): 85 modules, 27,252 lines
-- **Tests**: 202 files, 3435 test functions
-- **Licensing**: 24 BUSL-protected files, 32 Apache files
+- **Hexagonal runtime** (`waggledance/`): 84 core modules, 34,336 lines
+- **Legacy core** (`core/`): 85 modules, 27,304 lines
+- **Tests**: 255 files, 4512 test functions
+- **Licensing**: 41 BUSL-protected files, 132 Apache files
 
 ## Security Invariants
 
@@ -45,14 +45,16 @@
 | `waggledance/core/capabilities/registry.py` | 429 | CapabilityRegistry | Complete |
 | `waggledance/core/capabilities/selector.py` | 313 | SelectionResult, CapabilitySelector | Complete |
 | `waggledance/core/domain/agent.py` | 30 | AgentDefinition, AgentResult | Complete |
-| `waggledance/core/domain/autonomy.py` | 493 | GoalType, GoalStatus, ActionStatus +13 | Complete |
+| `waggledance/core/domain/autonomy.py` | 545 | GoalType, GoalStatus, ActionStatus +13 | Complete |
 | `waggledance/core/domain/events.py` | 55 | EventType, DomainEvent | Complete |
+| `waggledance/core/domain/hex_mesh.py` | 213 | HexCoord, HexCellDefinition, HexCellHealth +4 | Complete |
 | `waggledance/core/domain/memory_record.py` | 18 | MemoryRecord | Stub |
 | `waggledance/core/domain/task.py` | 26 | TaskRequest, TaskRoute | Complete |
 | `waggledance/core/domain/trust_score.py` | 25 | TrustSignals, AgentTrust | Complete |
 | `waggledance/core/goals/goal_engine.py` | 276 | GoalEngine | Complete |
 | `waggledance/core/goals/mission_store.py` | 99 | MissionStore | Complete |
 | `waggledance/core/goals/motives.py` | 162 | MotiveConfig, ConflictResult, MotiveRegistry | Complete |
+| `waggledance/core/hex_cell_topology.py` | 242 | CellAssignment, HexCellTopology | Complete |
 | `waggledance/core/learning/capability_confidence.py` | 178 | ConfidenceEntry, CapabilityConfidenceTracker | Complete |
 | `waggledance/core/learning/case_builder.py` | 254 | CaseTrajectoryBuilder | Complete |
 | `waggledance/core/learning/consolidator.py` | 169 | EpisodeRecord, ConsolidationResult | Complete |
@@ -63,6 +65,7 @@
 | `waggledance/core/learning/prediction_error_ledger.py` | 277 | PredictionError, SolverErrorProfile, LedgerAnalysis +1 | Complete |
 | `waggledance/core/learning/procedural_memory.py` | 204 | Procedure, ProceduralMemory | Complete |
 | `waggledance/core/learning/quality_gate.py` | 170 | PromotionDecision, QualityGate | Complete |
+| `waggledance/core/learning/synthetic_accelerator.py` | 267 | AcceleratorMetrics, AcceleratorStatus, SyntheticTrainingAccelerator | Complete |
 | `waggledance/core/magma/audit_projector.py` | 233 | AuditEntry, AuditProjector | Projection (read-only) |
 | `waggledance/core/magma/confidence_decay.py` | 52 |  | Complete |
 | `waggledance/core/magma/event_log_adapter.py` | 189 | EventLogEntry, EventLogAdapter | Complete |
@@ -71,9 +74,9 @@
 | `waggledance/core/magma/trust_adapter.py` | 202 | TrustRecord, TrustAdapter | Complete |
 | `waggledance/core/memory/working_memory.py` | 204 | MemorySlot, WorkingMemory | Complete |
 | `waggledance/core/orchestration/lifecycle.py` | 52 | AgentLifecycleManager | Complete |
-| `waggledance/core/orchestration/orchestrator.py` | 268 | Orchestrator | Complete |
-| `waggledance/core/orchestration/round_table.py` | 150 | ConsensusResult, RoundTableEngine | Complete |
-| `waggledance/core/orchestration/routing_policy.py` | 157 | RoutingFeatures | Complete |
+| `waggledance/core/orchestration/orchestrator.py` | 300 | Orchestrator | Complete |
+| `waggledance/core/orchestration/round_table.py` | 191 | ConsensusResult, RoundTableEngine | Complete |
+| `waggledance/core/orchestration/routing_policy.py` | 162 | RoutingFeatures | Complete |
 | `waggledance/core/orchestration/scheduler.py` | 173 | SchedulerState, Scheduler | Complete |
 | `waggledance/core/planning/planner.py` | 174 | Planner | Complete |
 | `waggledance/core/policies/confidence_policy.py` | 22 |  | Complete |
@@ -92,6 +95,7 @@
 | `waggledance/core/ports/sensor_port.py` | 11 | SensorPort | Stub |
 | `waggledance/core/ports/trust_store_port.py` | 19 | TrustStorePort | Stub |
 | `waggledance/core/ports/vector_store_port.py` | 25 | VectorStorePort | Complete |
+| `waggledance/core/priority_lock.py` | 23 | PriorityLock | Complete |
 | `waggledance/core/projections/autobiographical_index.py` | 152 | EpisodeEntry, AutobiographicalSummary | Projection (read-only) |
 | `waggledance/core/projections/introspection_view.py` | 127 | IntrospectionSnapshot | Projection (read-only) |
 | `waggledance/core/projections/narrative_projector.py` | 266 | _CacheEntry | Projection (read-only) |
@@ -102,14 +106,14 @@
 | `waggledance/core/reasoning/optimization_engine.py` | 234 | OptimizationResult, OptimizationEngine | Complete |
 | `waggledance/core/reasoning/route_engine.py` | 223 | RouteMetrics, RouteDecision, RouteEngine | Complete |
 | `waggledance/core/reasoning/seasonal_engine.py` | 159 | SeasonalEngine | Complete |
-| `waggledance/core/reasoning/solver_router.py` | 370 | SolverRouteResult, SolverRouter | Complete |
+| `waggledance/core/reasoning/solver_router.py` | 373 | SolverRouteResult, SolverRouter | Complete |
 | `waggledance/core/reasoning/stats_engine.py` | 205 | StatsResult, StatsEngine | Complete |
 | `waggledance/core/reasoning/thermal_solver.py` | 256 | ThermalResult, ThermalSolver | Complete |
 | `waggledance/core/reasoning/verifier.py` | 288 | VerifierResult, Verifier | Complete |
 | `waggledance/core/specialist_models/meta_optimizer.py` | 166 | CanaryRecord, HyperparameterProposal, MetaOptimizerState | Complete |
 | `waggledance/core/specialist_models/model_store.py` | 236 | ModelStatus, ModelVersion, ModelStore | Complete |
-| `waggledance/core/specialist_models/specialist_trainer.py` | 890 | TrainingResult, SpecialistTrainer | Complete |
-| `waggledance/core/world/baseline_store.py` | 162 | Baseline, BaselineStore | Complete |
+| `waggledance/core/specialist_models/specialist_trainer.py` | 944 | TrainingResult, SpecialistTrainer | Complete |
+| `waggledance/core/world/baseline_store.py` | 163 | Baseline, BaselineStore | Complete |
 | `waggledance/core/world/entity_registry.py` | 103 | Entity, EntityRegistry | Complete |
 | `waggledance/core/world/epistemic_uncertainty.py` | 362 | BaselineProvider, EntityProvider, GoalProvider +2 | Complete |
 | `waggledance/core/world/graph_builder.py` | 192 | GraphBuilder | Complete |
@@ -133,7 +137,7 @@
 | `core/chat_history.py` | 199 | ChatHistory | Complete |
 | `core/chat_preprocessing.py` | 210 | PreprocessResult, ChatPreprocessor | Complete |
 | `core/chat_router.py` | 112 | ChatResult, ChatRouter | Complete |
-| `core/chat_routing_engine.py` | 458 | ChatRoutingEngine | Complete |
+| `core/chat_routing_engine.py` | 509 | ChatRoutingEngine | Complete |
 | `core/chat_telemetry.py` | 96 | ChatTelemetry | Complete |
 | `core/chromadb_adapter.py` | 187 | StoreAdapter, ChromaDBAdapter | Complete |
 | `core/circuit_breaker.py` | 90 | CircuitBreaker | Complete |
@@ -164,12 +168,12 @@
 | `core/live_monitor.py` | 143 | EventCategory, MonitorEvent, LiveMonitor | Complete |
 | `core/llm_provider.py` | 260 | LLMCircuitBreaker, LLMResponse, LLMProvider | Complete |
 | `core/lora_readiness.py` | 109 | ReadinessCheck, ReadinessManifest, LoRAReadinessChecker | Complete |
-| `core/math_solver.py` | 113 | MathSolver | Complete |
+| `core/math_solver.py` | 118 | MathSolver | Complete |
 | `core/memory_engine.py` | 1345 | MemoryMatch, PreFilterResult, MemoryStore +1 | Complete |
 | `core/memory_eviction.py` | 166 | MemoryEviction | Complete |
 | `core/memory_overlay.py` | 327 | MemoryOverlay, OverlayRegistry, OverlayBranch +3 | Complete |
 | `core/memory_proxy.py` | 167 | Role, WriteMode, MemoryWriteProxy | Complete |
-| `core/meta_learning.py` | 609 | MetaLearningEngine, AgentOverlapDetector | Complete |
+| `core/meta_learning.py` | 605 | MetaLearningEngine, AgentOverlapDetector | Complete |
 | `core/micro_model.py` | 1218 | PatternMatchEngine, ClassifierModel, LoRAModel +2 | Complete |
 | `core/model_interface.py` | 142 | ModelResult, BaseModel | Complete |
 | `core/mqtt_sensor_ingest.py` | 107 | SensorReading, MQTTSensorIngest | Complete |
@@ -211,12 +215,12 @@
 # Clone and verify:
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-git checkout dadc5d2
+git checkout ddd13e7
 
 # Count core modules (expect 40+):
 find waggledance/core -name "*.py" -not -name "__init__.py" | wc -l
 
 # Run tests:
 pip install -r requirements.txt
-pytest tests/ --collect-only -q | tail -1              # expect 3435+
+pytest tests/ --collect-only -q | tail -1              # expect 4512+
 ```

@@ -1,6 +1,17 @@
 # Hybrid FAISS + Hex-Cell Retrieval
 
 > Added in v3.4.0. Feature-flagged — default OFF.
+>
+> **Dependency note (post-2026-04-20):** `faiss-cpu` is an **optional**
+> dependency. Full-install via `requirements.lock.txt` (and the Docker
+> image) installs it. CI (`requirements-ci.txt`) does not. Since
+> 2026-04-20 (`b21548d`), `waggledance/bootstrap/container.py` returns
+> `None` from `faiss_registry` on `ImportError`, and
+> `HybridRetrievalService` short-circuits when `enabled=False`. Prior
+> to that fix, any `/api/chat` request without `faiss-cpu` installed
+> returned HTTP 500 — this was the single cause of the 19-day red CI
+> window. Enable the feature via `hybrid_retrieval.enabled=true` in
+> `configs/settings.yaml` only on hosts where `faiss-cpu` is installed.
 
 ## Overview
 

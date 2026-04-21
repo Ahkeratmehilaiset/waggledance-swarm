@@ -93,6 +93,18 @@ real bug fixes shipped — all with regression tests or measurable evidence.
 - **`fail-fast: false`** added to `ci.yml` matrix so one Python version's
   failure no longer cancels the others. `3771c45`.
 
+### Docker
+
+- **Dockerfile: removed broken `dashboard/` build stage.** The React dashboard
+  was archived in commit `c15349d` (2026-03-23, `_archive/dashboard-react-v0/`)
+  but the Dockerfile still referenced it, so `docker build .` failed at
+  `COPY dashboard/package.json` with *"No such file or directory"*. Dropped
+  the Node stage and the `COPY --from=dashboard-build` line. The live UI is
+  served as static HTML (`web/hologram-brain-v6.html`) by
+  `waggledance/adapters/http/routes/hologram.py` — no frontend build needed.
+- docker-compose.yml verified: `command:
+  ["python", "-m", "waggledance.adapters.cli.start_runtime"]` imports cleanly.
+
 ### Docs
 
 - README test-count badge updated (5378 → 5580 passing).
@@ -100,6 +112,12 @@ real bug fixes shipped — all with regression tests or measurable evidence.
 - README Python badge: `3.11+` → `3.11 | 3.12 | 3.13` (all three matrix-verified).
 - New `docs/runs/campaign_hardening_log.md` — chronological hardening
   narrative with root-cause analysis for each fix.
+- `CURRENT_STATUS.md` — bumped from 2026-04-07/v3.5.6 to 2026-04-21/v3.5.7
+  with active-campaign status and hardening commit list.
+- `CURRENT_STATE.md` — regenerated via `tools/generate_state.py` (was on
+  old commit `dadc5d2`, now reflects `main`).
+- `docs/HYBRID_RETRIEVAL.md` — prepended dependency note: `faiss-cpu` is
+  optional, how the CI guard works, when to enable hybrid retrieval.
 
 ## Unreleased — Post-v3.5.7 Hardening (initial harness + gauntlet)
 

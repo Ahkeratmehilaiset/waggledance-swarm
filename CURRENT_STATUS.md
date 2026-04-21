@@ -1,7 +1,31 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-04-07
-**Version:** v3.5.6 (Adaptive Runtime Efficiency — preflight gating, skip logic, 48.7% hex latency reduction)
+**Updated:** 2026-04-21
+**Version:** v3.5.7 (Honest Hologram Release, 2026-04-12) + post-release hardening
+**Shipped branch:** `main` at `ddd13e7`
+**CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
+
+### Active work — 400h UI Gauntlet Campaign
+
+Ongoing campaign since 2026-04-13 (`docs/runs/ui_gauntlet_400h_20260413_092800/`):
+
+| Mode | Cumulative | Target | Status |
+|---|---|---|---|
+| HOT | 119.09h | 80h | ✅ target exceeded |
+| WARM | 72.11h | 120h | 60%, loop mode active |
+| COLD | 0.02h | 200h | first real segment running after 2026-04-21 race fix |
+| **Total** | **175.19h** | **400h** | **43.8% evidence-backed** |
+
+**Hardening commits since v3.5.7 ship** (see `CHANGELOG.md [Unreleased]`):
+- `b21548d` faiss_registry CI guard — fixed 19-day red CI
+- `c7f6201` Python 3.11 `perf_counter` + dedup race
+- `3771c45` ci.yml `fail-fast: false`
+- `7d506b3` honest state audit (100h fabricated entries removed)
+- `fa1e687` pidfile lock per mode
+- `03fbb0a` `TargetClosedError` + HOT resume duplicate fix
+- `6e99c2a` atomic segment_id reservation
+
+No runtime API changes. No version bump planned until campaign completes.
 
 ---
 

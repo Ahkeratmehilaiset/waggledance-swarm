@@ -1,13 +1,11 @@
-# ── Stage 1: Build React dashboard ─────────────────────────────
-FROM node:20-slim AS dashboard-build
+# WaggleDance Swarm AI — single-stage Python image.
+#
+# The React dashboard (dashboard/) was archived in commit c15349d
+# ("chore: archive React dashboard and remove /api/auth/token endpoints");
+# the live UI is now served as a static HTML file (web/hologram-brain-v6.html)
+# rendered by waggledance/adapters/http/routes/hologram.py. No node build
+# stage needed.
 
-WORKDIR /dashboard
-COPY dashboard/package.json dashboard/package-lock.json* ./
-RUN npm ci --ignore-scripts
-COPY dashboard/ ./
-RUN npm run build
-
-# ── Stage 2: Python runtime ───────────────────────────────────
 FROM python:3.13-slim
 
 WORKDIR /app
@@ -18,15 +16,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvoikko1 voikko-fi && \
     rm -rf /var/lib/apt/lists/*
 
-# Python deps (pinned versions for reproducible builds)
+# Python deps (pinned versions for reproducible builds). Full lock file,
+# includes faiss-cpu and playwright — use requirements-ci.txt instead for a
+# minimal deployment without hybrid retrieval or e2e browser testing.
 COPY requirements.lock.txt .
 RUN pip install --no-cache-dir -r requirements.lock.txt
 
 # App code
 COPY . .
-
-# Copy pre-built dashboard (overwrites source)
-COPY --from=dashboard-build /dashboard/dist /app/dashboard/dist
 
 # Create data dirs
 RUN mkdir -p data/chroma_db logs

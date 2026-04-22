@@ -81,6 +81,10 @@ class InsightHistory:
 
     def add(self, score: float):
         self.scores.append(score)
+        # Only the recent `window` entries matter for should_reduce/increase.
+        # Bound to avoid unbounded growth over months of nightly scores.
+        if len(self.scores) > 365:
+            self.scores = self.scores[-180:]
 
     def should_reduce(self, window: int = DEFAULT_INSIGHT_BACKOFF_WINDOW) -> bool:
         """Reduce if negative for `window` consecutive nights."""

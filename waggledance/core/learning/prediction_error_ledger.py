@@ -112,6 +112,10 @@ class PredictionErrorLedger:
             intent=intent,
         )
         self._buffer.append(entry)
+        # Bound in-memory buffer to prevent unbounded growth during long runs.
+        # Disk JSONL is the authoritative record; buffer is a recency cache.
+        if len(self._buffer) > 5000:
+            self._buffer = self._buffer[-2500:]
         self._append_to_file(entry)
         return entry
 

@@ -205,6 +205,10 @@ class CaseTrajectoryBuilder:
         case.grade()
 
         self._cases.append(case)
+        # Match the bound applied at line 132 so both append paths stay safe
+        # during long campaigns where drain_cases() isn't called frequently.
+        if len(self._cases) > 5000:
+            self._cases = self._cases[-2500:]
         return case
 
     # ── Drain ──────────────────────────────────────────────

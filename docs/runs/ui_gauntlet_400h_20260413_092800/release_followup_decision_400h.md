@@ -1,15 +1,14 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-22T22:53:08+00:00
+**Generated:** 2026-04-22T23:03:36+00:00
 **Main ref:** `main~30`
 **Total green:** 215.24h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (35 files)
+### PRODUCT (31 files)
 
-- `configs/settings.yaml`
 - `waggledance/adapters/cli/start_runtime.py`
 - `waggledance/adapters/config/settings_loader.py`
 - `waggledance/adapters/feeds/__init__.py`
@@ -21,12 +20,9 @@
 - `waggledance/adapters/http/routes/hologram.py`
 - `waggledance/adapters/http/routes/metrics.py`
 - `waggledance/adapters/http/routes/status.py`
-- `waggledance/application/services/chat_service.py`
-- `waggledance/application/services/hex_neighbor_assist.py`
 - `waggledance/application/services/parallel_llm_dispatcher.py`
 - `waggledance/bootstrap/container.py`
 - `waggledance/core/autonomy/lifecycle.py`
-- `waggledance/core/domain/hex_mesh.py`
 - `waggledance/core/learning/case_builder.py`
 - `waggledance/core/learning/dream_mode.py`
 - `waggledance/core/learning/prediction_error_ledger.py`
@@ -39,9 +35,13 @@
 - `waggledance/observatory/mama_events/consolidation.py`
 - `waggledance/observatory/mama_events/contamination.py`
 - `waggledance/observatory/mama_events/gate.py`
-- … and 5 more
+- `waggledance/observatory/mama_events/observer.py`
+- `waggledance/observatory/mama_events/reports.py`
+- `waggledance/observatory/mama_events/scoring.py`
+- `waggledance/observatory/mama_events/self_state.py`
+- … and 1 more
 
-### TEST_HARNESS (118 files)
+### TEST_HARNESS (131 files)
 
 - `docs/runs/campaign_hardening_log.md`
 - `docs/runs/mama_event_overnight_closeout_20260410.md`
@@ -73,7 +73,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/dryrun_results.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/fault_drills.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_incident_matrix.md`
-- … and 88 more
+- … and 101 more
 
 ### DOCS_NARRATIVE (18 files)
 
@@ -106,7 +106,7 @@
 - `pyproject.toml`
 - `waggledance/__init__.py`
 
-### OTHER (21 files)
+### OTHER (19 files)
 
 - `.gitignore`
 - `manifest.json`
@@ -123,9 +123,7 @@
 - `tools/mama_event_report.py`
 - `tools/restore.py`
 - `tools/run_benchmark.py`
-- `tools/runtime_autotune_30h.py`
 - `tools/runtime_shadow_compare.py`
-- `tools/runtime_soak_30h.py`
 - `tools/savepoint.ps1`
 - `tools/waggle_backup.py`
 - `tools/waggle_restore.py`

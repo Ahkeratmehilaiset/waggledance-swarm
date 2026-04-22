@@ -1,0 +1,52 @@
+{
+  "segment": {
+    "segment_id": 38,
+    "mode": "COLD",
+    "green_hours": 0.022,
+    "health_checks": 1,
+    "health_ok": 1,
+    "feeds_checks": 1,
+    "feeds_monotonic": true,
+    "hologram_checks": 1,
+    "hologram_honest": false,
+    "cookie_checks": 1,
+    "cookie_ok": 1,
+    "auth_chats": 1,
+    "auth_chat_ok": 0
+  },
+  "metrics": [
+    {
+      "cycle": 1,
+      "ts": "2026-04-20T05:27:26.564564+00:00",
+      "green_h": 0.0021,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 687,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 987,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 609,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 625,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1472,
+          "ok": true
+        }
+      }
+    }
+  ]
+}

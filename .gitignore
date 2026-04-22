@@ -282,3 +282,15 @@ desktop.ini
 .DS_Store
 nul
 chroma_data/
+
+# Campaign runtime artifacts (per x.txt rule 6: no screenshot floods, pid files, etc.)
+docs/runs/ui_gauntlet_*/screenshots/
+docs/runs/ui_gauntlet_400h_*/\*.pid
+docs/runs/ui_gauntlet_400h_*/.watchdog.pid
+docs/runs/ui_gauntlet_400h_*/.segment_id.lock
+
+# Temp/misc
+R.txt
+/tmp_*.txt
+soak/
+

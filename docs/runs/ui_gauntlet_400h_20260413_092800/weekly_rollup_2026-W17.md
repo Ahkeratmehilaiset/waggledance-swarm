@@ -1,16 +1,16 @@
 # Weekly Rollup — 2026-W17
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T22:05:13+00:00
+**Generated:** 2026-04-23T22:35:19+00:00
 
 ## Trend metrics this week
 
 - Green hours: 25.19h
 - Segments committed: 4
-- HOT queries: 13607 (11185 responded)
-- Avg latency (responded, >100ms): 3904.0 ms
-- p95 latency: 11874 ms
-- Incidents: 715
+- HOT queries: 13757 (11323 responded)
+- Avg latency (responded, >100ms): 3897.0 ms
+- p95 latency: 11851 ms
+- Incidents: 720
 - COLD health: no checks
 - Feeds monotonic: yes
 - Hologram honest: yes
@@ -19,8 +19,8 @@
 
 | category | count |
 |---|---|
-| chat_response_failure | 560 |
-| health_failure | 72 |
+| chat_response_failure | 561 |
+| health_failure | 75 |
 | chat_failure | 40 |
 | cycle_crash_recovery | 13 |
 | backend_unhealthy | 8 |
@@ -28,8 +28,8 @@
 | auth_recovery_failure | 6 |
 | tab_switch_failure | 6 |
 | context_recycle_failure | 2 |
+| cookie_failure | 2 |
 | auth_bootstrap_failure | 1 |
-| cookie_failure | 1 |
 
 ## Safety gates (zero tolerance)
 

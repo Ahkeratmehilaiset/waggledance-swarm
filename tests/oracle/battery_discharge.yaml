@@ -1,0 +1,38 @@
+solver: battery_discharge
+domain: gadget
+cell: energy
+description: "Calculate expected battery life for IoT devices"
+
+positive:
+  - "kauanko akku kestää sensorissa"
+  - "how long battery lasts in sensor"
+  - "akun käyttöikä iot-laitteessa"
+  - "battery life iot device"
+  - "100 mAh akku kuinka monta tuntia"
+  - "100 mAh battery hours"
+  - "akun purkautumisaika"
+  - "battery discharge time"
+  - "kuinka monta tuntia 5 mA virralla"
+  - "how many hours at 5mA draw"
+  - "akun kapasiteetti ja kesto"
+  - "battery capacity and runtime"
+  - "lithium-akun käyttöikä"
+  - "lithium battery runtime"
+  - "kuinka usein akku vaihdetaan"
+  - "battery replacement frequency"
+  - "iot-sensorin akkutuntit"
+  - "iot sensor battery hours"
+  - "akku kestää montako vuorokautta"
+  - "battery lasts how many days"
+
+negative:
+  - "lämmityskustannus"
+  - "honey yield"
+  - "varroa hoito"
+  - "swarm probability"
+  - "heat pump COP"
+  - "solar panel kWh"
+  - "OEE production line"
+  - "MTBF compressor"
+  - "pipe freezing"
+  - "signal strength dB"

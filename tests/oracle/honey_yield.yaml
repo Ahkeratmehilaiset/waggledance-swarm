@@ -1,0 +1,38 @@
+solver: honey_yield
+domain: cottage
+cell: math
+description: "Estimate seasonal honey yield based on colony strength and nectar flow"
+
+positive:
+  - "paljonko hunajaa pesä tuottaa kesässä"
+  - "what is seasonal honey yield"
+  - "hunajansadon arvio"
+  - "honey harvest estimate"
+  - "kuinka paljon hunajaa 40000 mehiläistä tekee"
+  - "how much honey from 40000 bees"
+  - "kausituotto hunajalle"
+  - "seasonal honey production"
+  - "hunajamäärä kesäkaudessa"
+  - "honey kilos per season"
+  - "estimate honey yield"
+  - "arvioi hunajan tuotto"
+  - "kuinka monta kiloa hunajaa pesästä"
+  - "kg of honey per hive"
+  - "hunajantuotto vahvalla pesällä"
+  - "yield from strong colony"
+  - "kuinka paljon ylijäämä-hunajaa"
+  - "surplus honey amount"
+  - "kausi-hunajantuoto laskenta"
+  - "yearly honey calculation"
+
+negative:
+  - "milloin putket jäätyvät"
+  - "lämpöpumpun hyötysuhde"
+  - "heating cost monthly"
+  - "battery life sensor"
+  - "swarming probability"
+  - "MTBF compressor"
+  - "varroa treatment"
+  - "OEE production"
+  - "signal strength"
+  - "solar panel kWh"

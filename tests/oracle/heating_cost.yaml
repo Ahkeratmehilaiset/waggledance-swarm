@@ -1,0 +1,38 @@
+solver: heating_cost
+domain: cottage
+cell: thermal
+description: "Cottage heating cost — daily and monthly EUR estimate"
+
+positive:
+  - "paljonko lämmitys maksaa kuussa"
+  - "what is monthly heating cost"
+  - "laske mökin lämmityskulut"
+  - "lämmityskustannus 100 m2 talossa"
+  - "how much does heating cost for 120 kWh per day"
+  - "calculate heating expense for January"
+  - "kuukauden sähkölämmitys hinta"
+  - "monthly electric heating bill estimate"
+  - "lämmityskustannukset R-arvolla 2.5"
+  - "heating cost with insulation R-2.5"
+  - "paljonko lämmitys vie sähköä"
+  - "how much electricity does heating use"
+  - "lämmityskulut 50 m2 mökki -10C"
+  - "heating expense for 50 m2 cottage at -10C"
+  - "talven lämmityskustannukset"
+  - "winter heating cost prediction"
+  - "energiakustannukset lämmittämiseen"
+  - "energy cost of heating"
+  - "kuukausi-arvio lämmityksestä"
+  - "monthly heating estimate"
+
+negative:
+  - "miksi lämpöpumppu pitää kovaa ääntä"
+  - "what is honey yield this season"
+  - "kannattaako asentaa aurinkopaneeli"
+  - "varroa treatment dosage"
+  - "is the colony big enough for winter"
+  - "battery life for outdoor sensor"
+  - "OEE for production line"
+  - "MTBF prediction for pump"
+  - "signal strength at 100m"
+  - "swarming probability"

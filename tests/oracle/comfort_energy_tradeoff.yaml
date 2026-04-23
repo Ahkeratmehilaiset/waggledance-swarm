@@ -1,0 +1,38 @@
+solver: comfort_energy_tradeoff
+domain: home
+cell: energy
+description: "Night setback energy saving — comfort vs energy tradeoff"
+
+positive:
+  - "yöalennus lämpötilassa säästää energiaa"
+  - "night setback temperature saves energy"
+  - "kannattaako pudottaa yöllä lämpötilaa"
+  - "is night temperature drop worth it"
+  - "yöllä viilennys energiansäästö"
+  - "night cooling energy savings"
+  - "lämpötilan lasku yöksi 18 asteeseen"
+  - "drop temperature to 18C at night"
+  - "comfort vs energy night setback"
+  - "mukavuus vs energian säästö yöllä"
+  - "yön energiansäästö"
+  - "overnight energy savings"
+  - "kuinka paljon säästää yöllä viilentämällä"
+  - "how much saved by cooling at night"
+  - "night setback efficiency"
+  - "yöalennuksen tehokkuus"
+  - "viileämmäksi yöksi rahoituksesta"
+  - "cooler night for cost savings"
+  - "lämmityksen yöoptimointi"
+  - "heating night optimization"
+
+negative:
+  - "varroa annos"
+  - "honey kg per hive"
+  - "swarm probability"
+  - "battery sensor hours"
+  - "solar daily kWh"
+  - "OEE breakdown"
+  - "MTBF pump"
+  - "signal at 100m"
+  - "pipe freeze"
+  - "lämpöpumpun teoriahyötysuhde"

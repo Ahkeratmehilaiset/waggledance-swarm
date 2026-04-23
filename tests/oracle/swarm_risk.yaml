@@ -1,0 +1,38 @@
+solver: swarm_risk
+domain: cottage
+cell: safety
+description: "Estimate probability of swarming based on hive conditions"
+
+positive:
+  - "parveutumisen riski mehiläispesässä"
+  - "swarming risk for hive"
+  - "kuinka todennäköisesti pesä parveilee"
+  - "how likely is the colony to swarm"
+  - "parvi vaaravyöhyke kesäkuussa"
+  - "swarm risk in june"
+  - "vahva pesä parvii"
+  - "strong hive swarming probability"
+  - "miten estän parveutumisen"
+  - "how do I prevent swarming"
+  - "kuningataromu ja parveutuminen"
+  - "queen cells and swarming"
+  - "tilanahtaus parveutumisriski"
+  - "congestion swarm risk"
+  - "ennustaako pesä parveilua"
+  - "predict swarming behavior"
+  - "parven todennäköisyys prosenteissa"
+  - "swarm probability percent"
+  - "kevätparveutumisen ennuste"
+  - "spring swarm prediction"
+
+negative:
+  - "honey yield kg"
+  - "lämpöpumpun COP"
+  - "kannattaako paneeli"
+  - "varroa lääke annos"
+  - "MTBF analyysi"
+  - "OEE breakdown"
+  - "battery hours"
+  - "pipe freeze risk"
+  - "heating cost monthly"
+  - "signal at 200m"

@@ -1,0 +1,38 @@
+solver: pipe_freezing
+domain: cottage
+cell: thermal
+description: "Time until water pipes freeze at sub-zero temperatures"
+
+positive:
+  - "milloin vesiputket jäätyvät"
+  - "when will water pipes freeze"
+  - "kauanko kestää että putki jäätyy -15C"
+  - "how long until pipe freezes at -15C"
+  - "putken jäätymisaika pakkasessa"
+  - "pipe freezing time in frost"
+  - "vesijohto jäätymisriski"
+  - "water pipe freezing risk"
+  - "kestääkö putki yön ilman lämmitystä"
+  - "will the pipe survive overnight without heating"
+  - "milloin kannattaa tyhjentää putket"
+  - "when should pipes be drained"
+  - "putken jäätyminen 50mm halkaisijalla"
+  - "freezing time for 50mm diameter pipe"
+  - "frost protection time estimate"
+  - "ehtiikö vesi jäätyä 8 tunnissa"
+  - "will water freeze in 8 hours"
+  - "putken pakkasen kesto"
+  - "pipe frost endurance time"
+  - "mökki ilman lämmitystä putki vaarassa"
+
+negative:
+  - "paljonko hunajaa saadaan kesässä"
+  - "what is monthly electricity cost"
+  - "battery life expectancy"
+  - "akku kestää montako tuntia"
+  - "miten varroa hoidetaan"
+  - "swarming risk colony"
+  - "OEE breakdown analysis"
+  - "MTBF for compressor"
+  - "WiFi range outdoor"
+  - "solar panel angle optimization"

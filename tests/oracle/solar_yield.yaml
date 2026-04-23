@@ -1,0 +1,38 @@
+solver: solar_yield
+domain: cottage
+cell: energy
+description: "Daily solar energy production estimate"
+
+positive:
+  - "kuinka paljon aurinkopaneeli tuottaa päivässä"
+  - "how much solar panel produces daily"
+  - "aurinkopaneelin energian tuotto"
+  - "solar panel energy production"
+  - "10 kW paneelin päivätuotto"
+  - "10 kW panel daily yield"
+  - "kannattaako aurinkokenno mökkiin"
+  - "is solar worth it for cottage"
+  - "aurinkoenergian päiväarvio"
+  - "daily solar energy estimate"
+  - "kWh aurinkopaneelista"
+  - "kWh from solar panel"
+  - "panelin tuotto syksyllä"
+  - "panel yield in autumn"
+  - "aurinkopaneelin sähkösato"
+  - "solar electricity harvest"
+  - "auringonvalon energiatuotto"
+  - "sunlight energy output"
+  - "kuinka monta wattia paneeli antaa"
+  - "watts from solar panel"
+
+negative:
+  - "lämpöpumppu COP -15C"
+  - "battery life expectancy"
+  - "honey yield this season"
+  - "swarming risk"
+  - "varroa treatment"
+  - "OEE breakdown"
+  - "MTBF prediction"
+  - "signal propagation"
+  - "pipe freeze time"
+  - "heating cost monthly"

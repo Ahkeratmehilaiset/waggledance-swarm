@@ -1,0 +1,38 @@
+solver: hive_thermal_balance
+domain: cottage
+cell: thermal
+description: "Hive temperature steady state and bee survival risk"
+
+positive:
+  - "mikä on pesän lämpötila pakkasessa"
+  - "what is hive temperature in cold weather"
+  - "selviääkö pesä -20 asteessa"
+  - "will the hive survive at -20C"
+  - "bee cluster temperature -15C outside"
+  - "mehiläispesän lämpötasapaino"
+  - "hive thermal balance calculation"
+  - "kuinka monta mehiläistä tarvitaan lämpenemään"
+  - "how many bees needed to maintain warmth"
+  - "pesän sisälämpötila 30000 mehiläisellä"
+  - "hive interior temperature with 30000 bees"
+  - "mehiläispesän lämpöhukka talvella"
+  - "winter heat loss from beehive"
+  - "talvipesän lämpötila pakkasella"
+  - "winter cluster temperature in frost"
+  - "mehiläiset jäätyvät -25C"
+  - "do bees freeze at -25C"
+  - "pesän eristys ja lämpötila"
+  - "hive insulation and temperature"
+  - "bee colony thermal regulation winter"
+
+negative:
+  - "paljonko hunajaa pesä tuottaa"
+  - "what is heating cost"
+  - "kannattaako lämpöpumppu mökkiin"
+  - "battery discharge rate"
+  - "solar panel yield estimate"
+  - "miksi auto ei käynnisty"
+  - "OEE production"
+  - "swarm risk probability"
+  - "varroa mite count"
+  - "WiFi signal strength"

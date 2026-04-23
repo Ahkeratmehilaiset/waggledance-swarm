@@ -1,0 +1,38 @@
+solver: varroa_treatment
+domain: cottage
+cell: safety
+description: "Oxalic acid varroa treatment dosage and reinfestation"
+
+positive:
+  - "varroa-käsittelyn annostus"
+  - "varroa treatment dosage"
+  - "oksaalihappokäsittely mehiläisille"
+  - "oxalic acid treatment for bees"
+  - "kuinka paljon oksaalihappoa pesälle"
+  - "how much oxalic acid per hive"
+  - "varroapunkin lääkeannos"
+  - "varroa mite medication amount"
+  - "millon hoidetaan varroa"
+  - "when to treat varroa"
+  - "varroapunkin tartunta"
+  - "varroa mite infestation level"
+  - "uudelleenpunkitusriski hoidon jälkeen"
+  - "reinfestation risk after treatment"
+  - "varroa-arvon mittaus pesälle"
+  - "varroa count per hive"
+  - "syksyn varroa-hoito"
+  - "autumn varroa treatment"
+  - "milloin varroa-tason rajan ylittyy"
+  - "when does mite threshold get exceeded"
+
+negative:
+  - "honey production estimate"
+  - "lämmityskustannus mökki"
+  - "heat pump COP"
+  - "swarming probability"
+  - "battery discharge sensor"
+  - "OEE manufacturing"
+  - "MTBF for valve"
+  - "signal strength outdoor"
+  - "solar yield May"
+  - "pipe freezing -10C"

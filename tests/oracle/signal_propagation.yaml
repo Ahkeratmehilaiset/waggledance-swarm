@@ -1,0 +1,38 @@
+solver: signal_propagation
+domain: gadget
+cell: system
+description: "Free-space path loss and link budget calculation"
+
+positive:
+  - "kuinka kauas WiFi-signaali kantaa"
+  - "how far does WiFi signal reach"
+  - "signaalin vaimeneminen etäisyydellä"
+  - "signal attenuation over distance"
+  - "free space path loss"
+  - "vapaan tilan vaimennus"
+  - "link budget calculation"
+  - "yhteyden budjetti"
+  - "vastaanotettu signaalin teho"
+  - "received signal power"
+  - "RSSI etäisyyden funktiona"
+  - "RSSI as function of distance"
+  - "antennien välinen vaimeneminen"
+  - "antenna to antenna path loss"
+  - "signaalin teho 100m päässä"
+  - "signal power at 100m"
+  - "kuinka monta dB häviö 1km matkalla"
+  - "how many dB loss over 1km"
+  - "radioaaltojen kantama"
+  - "radio wave propagation range"
+
+negative:
+  - "varroa treatment"
+  - "honey production season"
+  - "swarm risk percent"
+  - "lämmityskustannus mökki"
+  - "battery discharge curve"
+  - "solar panel angle"
+  - "OEE breakdown"
+  - "MTBF prediction"
+  - "heat pump COP"
+  - "pipe freeze time"

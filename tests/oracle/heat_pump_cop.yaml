@@ -1,0 +1,38 @@
+solver: heat_pump_cop
+domain: home
+cell: thermal
+description: "Heat pump COP (efficiency) and hourly heating cost calculation"
+
+positive:
+  - "lämpöpumpun hyötysuhde -10C"
+  - "heat pump COP at -10C"
+  - "lämpöpumpun teho pakkasella"
+  - "heat pump efficiency in frost"
+  - "ilmalämpöpumpun COP"
+  - "air source heat pump COP"
+  - "lämpöpumpun tuntikustannus"
+  - "heat pump hourly cost"
+  - "kannattaako lämpöpumppu -20 pakkasessa"
+  - "is heat pump worth it at -20C"
+  - "miten lämpöpumpun hyötysuhde laskee pakkasella"
+  - "how does heat pump COP degrade in cold"
+  - "heat pump electricity consumption"
+  - "lämpöpumppu sähkönkulutus"
+  - "carnot COP estimate"
+  - "carnot-hyötysuhde lämpöpumpulle"
+  - "lämpöpumpun teho 50 m2 talo"
+  - "heat pump capacity for 50 m2 house"
+  - "real COP vs theoretical"
+  - "todellinen vs teoreettinen hyötysuhde"
+
+negative:
+  - "kannattaako asentaa varaava takka"
+  - "honey yield estimate"
+  - "mehiläispesän lämpötila"
+  - "pipe freezing time"
+  - "battery discharge curve"
+  - "solar yield kWh"
+  - "OEE production"
+  - "MTBF compressor"
+  - "swarm risk"
+  - "varroa dosage"

@@ -1,0 +1,38 @@
+solver: colony_food_reserves
+domain: cottage
+cell: math
+description: "Check if the colony has sufficient honey reserves for winter"
+
+positive:
+  - "onko pesässä tarpeeksi ruokaa talveen"
+  - "does the colony have enough food for winter"
+  - "talviruokavarat mehiläispesässä"
+  - "winter food reserves in colony"
+  - "kuinka paljon hunajaa talvi vie"
+  - "how much honey for overwintering"
+  - "tarvitseeko pesä lisäruokintaa"
+  - "does the hive need supplemental feeding"
+  - "ruokavarat 5 kuukautta talvi"
+  - "food reserves for 5 month winter"
+  - "selviääkö pesä talvesta ruokineen"
+  - "will the colony survive winter on stores"
+  - "ruoka-aineiden riittävyys mehiläisille"
+  - "food sufficiency for bees"
+  - "minimi hunajavarat talveen"
+  - "minimum honey reserve for winter"
+  - "tarvitseeko ruokita sokeria"
+  - "should I feed sugar syrup"
+  - "talvitähde pesässä"
+  - "winter stores remaining"
+
+negative:
+  - "lämpöpumpun teho"
+  - "heating cost calculation"
+  - "varroa treatment dosage"
+  - "honey yield estimate this season"
+  - "swarming risk april"
+  - "battery discharge"
+  - "signal strength wifi"
+  - "OEE for line 3"
+  - "solar yield winter"
+  - "pipe freeze time"

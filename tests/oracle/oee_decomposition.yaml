@@ -1,0 +1,38 @@
+solver: oee_decomposition
+domain: factory
+cell: system
+description: "Overall Equipment Effectiveness — availability × performance × quality"
+
+positive:
+  - "OEE arvio tuotantolinjalle"
+  - "OEE estimate for production line"
+  - "kokonaislaitetehokkuus laskenta"
+  - "overall equipment effectiveness calculation"
+  - "tuotantotehokkuus prosenteissa"
+  - "production effectiveness percentage"
+  - "OEE breakdown availability performance quality"
+  - "OEE jaottelu saatavuus suorituskyky laatu"
+  - "linjan tehokkuus arvio"
+  - "line efficiency estimate"
+  - "tuotantokäytön tehokkuus"
+  - "production utilization efficiency"
+  - "OEE benchmark"
+  - "OEE vertailu standardiin"
+  - "miksi OEE on alhainen"
+  - "why is OEE low"
+  - "tuotannon tehottomuus analyysi"
+  - "production inefficiency analysis"
+  - "OEE komponentit"
+  - "OEE components breakdown"
+
+negative:
+  - "honey yield estimate"
+  - "varroa annostus"
+  - "lämmityskustannus"
+  - "swarm risk percent"
+  - "battery hours iot"
+  - "solar panel daily"
+  - "MTBF for valve"
+  - "signal strength dBm"
+  - "heat pump COP"
+  - "pipe freeze time"

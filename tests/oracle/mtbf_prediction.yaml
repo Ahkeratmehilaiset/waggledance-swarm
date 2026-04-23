@@ -1,0 +1,38 @@
+solver: mtbf_prediction
+domain: factory
+cell: system
+description: "Mean Time Between Failures and maintenance scheduling"
+
+positive:
+  - "MTBF arvio pumpulle"
+  - "MTBF estimate for pump"
+  - "ennakoiva huolto-ohje"
+  - "preventive maintenance schedule"
+  - "milloin pumppu hajoaa seuraavan kerran"
+  - "when will the pump fail next"
+  - "huoltoväli laitteelle"
+  - "maintenance interval for equipment"
+  - "kuinka usein huolletaan kompressori"
+  - "compressor service frequency"
+  - "vikaantumisaikojen ennuste"
+  - "failure time prediction"
+  - "MTBF historiasta"
+  - "MTBF from history"
+  - "ennustettu seuraava vika"
+  - "predicted next failure"
+  - "huoltovälin optimointi"
+  - "maintenance interval optimization"
+  - "mean time between failures laskenta"
+  - "calculate mean time between failures"
+
+negative:
+  - "honey yield calculation"
+  - "lämmityskustannus mökki"
+  - "varroa hoito"
+  - "swarm risk"
+  - "battery sensor life"
+  - "solar yield kWh"
+  - "heat pump COP"
+  - "signal propagation"
+  - "pipe freezing"
+  - "OEE breakdown"

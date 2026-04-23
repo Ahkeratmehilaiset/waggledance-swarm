@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T15:34:07+00:00
+**Generated:** 2026-04-23T16:04:11+00:00
 **Main ref:** `main~30`
 **Total green:** 263.28h / 400h (MID-CAMPAIGN)
 
@@ -75,13 +75,8 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - … and 37 more
 
-### DOCS_NARRATIVE (13 files)
+### DOCS_NARRATIVE (8 files)
 
-- `docs/plans/GPT_response2.txt`
-- `docs/plans/GPT_response3.txt`
-- `docs/plans/GPT_review_round3_prompt.md`
-- `docs/plans/hybrid_retrieval_activation_v3_1_amendments_2026-04-23.md`
-- `docs/plans/hybrid_retrieval_activation_v3_2026-04-23.md`
 - `docs/plans/phase_A6_determinism_results.json`
 - `docs/plans/phase_A_preflight_report_2026-04-23.md`
 - `docs/plans/phase_A_preflight_results.json`
@@ -97,12 +92,13 @@
 ### VERSION (0 files)
 
 
-### OTHER (9 files)
+### OTHER (10 files)
 
 - `backup/2026-04-23/faiss_pre-hybrid.tar.gz`
 - `backup/2026-04-23/settings.yaml.pre-hybrid`
 - `tools/analyze_hybrid_candidate_trace.py`
 - `tools/backfill_axioms_to_hex.py`
+- `tools/campaign_watchdog.py`
 - `tools/compute_cell_centroids.py`
 - `tools/hex_manifest.py`
 - `tools/migrate_embedding_model.py`

@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T03:02:29+00:00
+**Generated:** 2026-04-23T03:32:43+00:00
 **Main ref:** `main~30`
 **Total green:** 219.24h / 400h (MID-CAMPAIGN)
 
@@ -33,7 +33,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_008.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_009.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_010.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/dryrun_results.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_011.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/fault_drills.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_incident_matrix.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_reliability.md`
@@ -86,7 +86,7 @@
 
 - `Dockerfile`
 
-### OTHER (11 files)
+### OTHER (8 files)
 
 - `.gitignore`
 - `tools/benchmark_harness.py`
@@ -94,11 +94,8 @@
 - `tools/campaign_reports.py`
 - `tools/campaign_watchdog.py`
 - `tools/cell_manifest.py`
-- `tools/restore.py`
 - `tools/run_benchmark.py`
 - `tools/runtime_shadow_compare.py`
-- `tools/waggle_backup.py`
-- `tools/waggle_restore.py`
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 

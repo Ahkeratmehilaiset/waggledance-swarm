@@ -1,47 +1,31 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T18:34:37+00:00
+**Generated:** 2026-04-23T19:04:43+00:00
 **Main ref:** `main~30`
 **Total green:** 263.28h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (31 files)
+### PRODUCT (15 files)
 
 - `configs/axioms/cottage/autumn_preparation.yaml`
-- `configs/axioms/cottage/colony_food_reserves.yaml`
 - `configs/axioms/cottage/colony_growth_rate.yaml`
-- `configs/axioms/cottage/heating_cost.yaml`
-- `configs/axioms/cottage/hive_thermal.yaml`
-- `configs/axioms/cottage/honey_yield.yaml`
 - `configs/axioms/cottage/nectar_flow_timing.yaml`
-- `configs/axioms/cottage/pipe_freezing.yaml`
 - `configs/axioms/cottage/queen_age_replacement.yaml`
-- `configs/axioms/cottage/solar_yield.yaml`
 - `configs/axioms/cottage/spring_inspection_timing.yaml`
-- `configs/axioms/cottage/swarm_risk.yaml`
-- `configs/axioms/cottage/varroa_treatment.yaml`
 - `configs/axioms/cottage/varroa_treatment_calendar.yaml`
 - `configs/axioms/cottage/winter_feeding_decision.yaml`
-- `configs/axioms/factory/mtbf.yaml`
-- `configs/axioms/factory/oee.yaml`
-- `configs/axioms/gadget/battery.yaml`
-- `configs/axioms/gadget/signal_strength.yaml`
-- `configs/axioms/home/comfort_energy.yaml`
-- `configs/axioms/home/heat_pump_cop.yaml`
 - `configs/axioms/home/indoor_air_quality.yaml`
 - `configs/settings.yaml`
 - `core/chat_routing_engine.py`
 - `waggledance/application/services/chat_service.py`
 - `waggledance/application/services/hybrid_retrieval_service.py`
 - `waggledance/bootstrap/container.py`
-- `waggledance/core/learning/embedding_cache.py`
 - `waggledance/core/reasoning/hybrid_observer.py`
 - `waggledance/core/reasoning/hybrid_router.py`
-- … and 1 more
 
-### TEST_HARNESS (60 files)
+### TEST_HARNESS (55 files)
 
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.json`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.md`
@@ -73,11 +57,10 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
-- … and 30 more
+- … and 25 more
 
-### DOCS_NARRATIVE (5 files)
+### DOCS_NARRATIVE (4 files)
 
-- `docs/plans/phase_B6_disaster_recovery_results.json`
 - `docs/plans/phase_B_completion_report_2026-04-23.md`
 - `docs/plans/phase_C_analysis_and_DEF_handoff_2026-04-23.md`
 - `docs/plans/phase_D_decision_2026-04-23.md`
@@ -89,16 +72,12 @@
 ### VERSION (0 files)
 
 
-### OTHER (8 files)
+### OTHER (4 files)
 
 - `tools/analyze_hybrid_candidate_trace.py`
 - `tools/backfill_axioms_to_hex.py`
 - `tools/campaign_watchdog.py`
-- `tools/compute_cell_centroids.py`
-- `tools/hex_manifest.py`
-- `tools/migrate_embedding_model.py`
 - `tools/shadow_route_three_way.py`
-- `tools/upgrade_axioms_for_v3.py`
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 

@@ -1,0 +1,340 @@
+Osa aiemmista liitteistä on vanhentunut, mutta sain luettua nykyiset ladatut tiedostot: `GPT_review_round2_prompt.md` ja `hybrid_retrieval_activation_refined_2026-04-23.md`. Alla on vastaukseni sellaisessa muodossa, että voit liittää sen suoraan Claude Codelle synteesiä varten.
+
+# GPT-5 Review Round 2 — Response
+
+## Executive verdict
+
+**Approve with minor amendments — do not proceed past Phase A until the amendments are written into the plan and tests.**
+
+The refined plan captures the main architectural corrections well: shadow/candidate/authoritative activation, keyword + centroid cell-assignment honesty, multi-view embeddings, independent oracle sources, negation/question-frame parsing, FAISS staging/RCU, and MAGMA retrieval tracing are all materially present. The plan is no longer “flip hybrid on and hope”; it is now a measurement-first activation plan with real rollback gates. 
+
+However, three issues should be added before implementation begins in earnest:
+
+1. **Determinism and rebuildability:** embedding determinism, query embedding cache semantics, and disaster recovery from axioms/deltas must be explicit gates.
+2. **Concurrency protocol:** Dream Mode, axiom backfill, staging writes, and live manifest swaps need one coherent append-only ledger + per-query snapshot rule.
+3. **Metric semantics:** Capability Surface Index should be split into a strict safety-gated index and a progress/trend index so one zero term does not hide useful movement elsewhere.
+
+Phase A may begin if Phase A is expanded to include these checks. Phase B should not begin until the concurrency/rebuild amendments are committed.
+
+---
+
+## PART A — Coverage check on the earlier GPT recommendations
+
+### 1. Activation-mode design: **captured**
+
+Yes. The refined plan correctly separates “hybrid layer loaded” from “hybrid route authoritative,” and defines the three modes I wanted: `shadow`, `candidate`, and `authoritative`. In `shadow`, hybrid computes candidates while production stays on the old route; in `candidate`, hybrid becomes visible to the verifier but can still be overridden; in `authoritative`, hybrid chooses the production solver path. 
+
+One wording nuance: `enabled: true` plus `mode: shadow` is technically fine, but operationally easy to misread. Consider renaming or documenting it as:
+
+```yaml
+hybrid_retrieval:
+  loaded: true        # service loaded and traces available
+  mode: shadow        # production authority level
+```
+
+or keep `enabled` but add a comment: **“enabled does not mean authoritative.”**
+
+### 2. Cell-assignment honesty: **mostly captured, with one remaining weakness**
+
+The refined plan captures the core fix: compute both `keyword_cell` and `centroid_cell_top3`, search the union of keyword cell, centroid top-3, ring1 of keyword cell, and ring1 of centroid top-1, and log `keyword_centroid_disagreement`. That is the right architectural correction. 
+
+Remaining weakness: **query-side cell honesty is fixed, but source-side axiom placement is still fragile.** In Phase B.0, the plan still assigns an axiom to a cell using:
+
+```python
+cell = topology.assign_cell(intent="symbolic", query=axiom["model_name"]).cell_id
+```
+
+That means the solver document itself can still be placed in the wrong cell by keyword/model-name heuristics.  Add one of these before Phase B:
+
+```yaml
+# preferred
+axiom:
+  cell_id: thermal
+  affinity_cells: [energy]
+```
+
+or a backfill audit step:
+
+```text
+For each axiom:
+  keyword_cell
+  declared_cell if present
+  centroid_cell after initial embedding
+  reviewer_override if disagreement
+```
+
+Do not let “wrong axiom placement” become the new hidden failure mode after fixing query routing.
+
+### 3. Three independent ground truth sources: **captured**
+
+Yes. The plan correctly rejects keyword agreement as correctness and adds three independent truth sources: axiom oracle set, verified GOLD/SILVER CaseTrajectory subset, and blind adjudication set. This addresses the original shadow-validation bias problem. 
+
+One addition: for the GOLD/SILVER trajectory truth set, record `original_router_version` and `verifier_version`. Otherwise old trajectories can become misleading after verifier/router changes.
+
+### 4. Multi-view embedding pattern: **captured**
+
+Yes. The refined plan captures canonical English, canonical Finnish, mixed synonyms, unit/variable view, and example-query view, all under the same `canonical_solver_id`, with top-k deduplication by canonical solver. 
+
+This is the right fix for Finnish/English asymmetry. Add one test that proves a solver with five views cannot occupy all top-5 slots.
+
+### 5. Negation/question-type parser: **captured, but needs solver-output contract**
+
+The refined plan captures the need for a deterministic question-frame parser: desired output type, comparator, threshold, unit, and negation scope. It also adds tests for Finnish/English positive/negative cases, thresholds, unit conversion, and ambiguity. 
+
+Missing nuance: the parser is only useful if solvers expose typed output fields. Add a minimal solver output contract:
+
+```yaml
+solver_output_schema:
+  primary_value:
+    name: cost_eur
+    type: number
+    unit: EUR
+  comparable_fields:
+    - cost_eur
+    - kwh
+    - cop
+```
+
+Without this, the parser can detect “is cost > 50 EUR?” but the postprocessor may not know which numeric field to compare.
+
+### 6. FAISS RCU + atomic swap pattern: **partially captured**
+
+The plan captures the key rule: backfill writes staging, validation reads staging, production reads live immutable snapshot, and approval swaps staging into live using `os.replace`. It also records FAISS version in retrieval traces and includes per-cell manifests. 
+
+Two missing concurrency rules must be added:
+
+```text
+1. Every query captures one coherent manifest snapshot at query entry.
+2. Dream Mode and axiom backfill never write the same staging index directly; they write append-only deltas into a ledger that a single manifest builder consumes.
+```
+
+Without these, RCU protects individual reads but not multi-cell query consistency or concurrent staging writes.
+
+### 7. MAGMA retrieval trace schema: **captured strongly**
+
+Yes. The trace schema is detailed and includes route mode, embedding model/dim/latency, keyword cell, centroid top-3, searched cells with ring depth and FAISS version, candidate doc IDs, chosen canonical solver, fallback stage, manifest version, empty-cell miss, disagreement, question frame, verifier result, quality tier, and total latency. This is exactly the kind of trace required so hybrid retrieval strengthens MAGMA instead of weakening it. 
+
+Add three fields:
+
+```yaml
+query_embedding_cache_hit: bool
+query_embedding_hash: string|null
+retrieval_snapshot_manifest_version: string
+```
+
+The first two make cache behavior auditable; the third makes in-flight manifest consistency explicit.
+
+### 8. Metrics doc integration: **partially captured**
+
+The plan captures the most important activation metrics: precision@1, recall@5, false solver activation, false LLM fallback, latency, ring-expansion useful rate, FI/EN symmetry, mixed-language recall, kill signals, and MAGMA trace completeness.
+
+But the full metrics spec is broader than the activation plan. The plan does not yet fully operationalize the dashboard/Prometheus layer, composite-intelligence metrics, CSI semantics, and long-run 400h segmentation. That is acceptable for activation, but Phase F should explicitly say:
+
+```text
+Implement the minimal activation metrics now.
+Prometheus/dashboard expansion follows after Phase C decision.
+```
+
+Do not block Phase A on the full dashboard.
+
+---
+
+## PART B — Seven blind spots
+
+### 1. Embedding determinism
+
+**Recommendation: must add before Phase A.**
+
+Do not assume `nomic-embed-text` is bitwise deterministic. Add Phase A test `A.6 embedding determinism`: embed 50 fixed strings 30 times each using batch=1, batch=16, and batch=32; restart Ollama once and repeat. Compute `max_abs_diff`, cosine drift, and rounded-vector hash drift. If raw float bytes differ but cosine drift is < `1e-6`, treat vectors as semantically deterministic but do **not** use raw vector bytes for manifest checksums.
+
+Contingency: manifest checksums should be based on source material and metadata, not raw vector bytes:
+
+```text
+manifest_checksum =
+  sha256(sorted(canonical_solver_id, view_type, text_hash, embedding_model, embedding_dim))
+```
+
+Store vector hashes separately as diagnostic evidence:
+
+```yaml
+vector_hash_policy:
+  raw_hash: diagnostic_only
+  rounded_hash_decimals: 6
+  semantic_drift_threshold_cosine: 1e-6
+```
+
+### 2. Dream Mode + FAISS staging interaction
+
+**Recommendation: must add before Phase A.**
+
+The current “Dream Mode writes to staging only” rule is not enough. Use an append-only delta ledger:
+
+```text
+data/faiss_delta_ledger/
+  thermal/
+    000001_axon_backfill.jsonl
+    000002_dream_mode.jsonl
+```
+
+Protocol:
+
+```text
+1. Axiom backfill builds base staging from axioms.
+2. Dream Mode never writes the staging FAISS index directly.
+3. Dream Mode appends candidate docs to delta ledger with sequence number.
+4. Manifest builder freezes a high-water mark H.
+5. Staging = axioms + all deltas <= H.
+6. Validate staging.
+7. Promote to live manifest if gates pass.
+8. Deltas > H remain pending for next manifest.
+```
+
+This prevents Dream Mode and backfill from interleaving writes into the same index.
+
+### 3. In-flight query during manifest swap
+
+**Recommendation: must add before Phase A.**
+
+Use entry-time coherent snapshot, not per-cell live reads. At query start:
+
+```python
+snapshot = faiss_registry.current_snapshot()
+trace.faiss_manifest_version = snapshot.manifest_version
+```
+
+Then every cell search uses `snapshot.cells[cell_id]`, never a fresh registry lookup mid-query. The RCU swap publishes a new snapshot only after all cells are coherent; old snapshots are refcounted or kept alive until in-flight queries finish. This prevents `thermal@v3 + energy@v4` mixed queries.
+
+### 3.5. Concurrent-write-to-cell ordering
+
+**Recommendation: must add before Phase A.**
+
+Use an append-only ledger with monotonic sequence numbers, not first-writer-wins. Every staging input should have:
+
+```yaml
+cell_id: thermal
+source: axiom_backfill | dream_mode | manual_patch
+canonical_solver_id: heating_cost
+canonical_hash: ...
+parent_manifest_version: ...
+seq: 1842
+created_at: ...
+```
+
+Conflict resolution:
+
+```text
+same canonical_hash -> duplicate, no-op
+same canonical_solver_id + new hash -> new revision, requires validation
+different source same seq -> impossible; allocator bug
+manual_patch > axiom_backfill > dream_mode only for conflict adjudication, not silent overwrite
+```
+
+Promotion should be deterministic by `(seq, source, canonical_solver_id)`.
+
+### 4. Phase C compute cost on edge hardware
+
+**Recommendation: must add before Phase A, but as execution-scope clarification.**
+
+Phase C should run on the workstation, not Raspberry Pi. Phase C is a validation experiment, not the edge runtime path. On edge, run only a reduced microbench:
+
+```text
+edge_phase_c_smoke:
+  queries: 50-100
+  architectures: keyword + hex only
+  assert embedding_hot_path=false
+  assert keyword-fast-path rate >= configured threshold
+  assert p95 route latency stays within edge SLA
+```
+
+The real 1000-query three-way oracle run belongs on the development workstation where repeated embedding calls will not distort the edge deployment promise.
+
+### 5. Disaster recovery from axioms alone
+
+**Recommendation: must add before Phase A.**
+
+Add explicit gate:
+
+```text
+B.6 Disaster recovery dry run:
+  delete temp faiss_live copy
+  rebuild from configs/axioms/*.yaml + delta ledger <= manifest_hwm + embedding model
+  compare canonical_solver_ids, source text hashes, view counts, manifest checksum
+  run oracle smoke
+```
+
+Important nuance: if live FAISS includes Dream Mode case trajectories, then **axioms alone are not enough**. Either define live solver index as axioms-only, or include the Dream delta ledger in the disaster-recovery source of truth. The accurate invariant should be:
+
+```text
+FAISS live can be rebuilt from:
+  configs/axioms/*.yaml
+  + faiss_delta_ledger up to manifest high-water mark
+  + embedding model/version
+  + backfill config
+```
+
+### 6. Embedding cache for repeated queries
+
+**Recommendation: add before Phase C.**
+
+This is cheap and high-leverage. Cache embeddings, not routing decisions:
+
+```text
+cache_key = sha256(embedding_model + normalized_query_text)
+value = vector
+```
+
+Do **not** cache final solver route unless the key also includes `faiss_manifest_version`; otherwise a manifest update would make cached routes stale. For the 400h gauntlet, a query embedding cache will reduce repeated embedding load without changing correctness.
+
+Minimal implementation:
+
+```yaml
+embedding_cache:
+  enabled: true
+  backend: sqlite | disk_jsonl | in_memory_lru
+  max_entries: 100_000
+  key_fields: [embedding_model, normalized_query_hash]
+  trace_field: query_embedding_cache_hit
+```
+
+### 7. Capability Surface Index formula
+
+**Recommendation: add but defer to follow-up plan; do not block Phase A.**
+
+The multiplicative formula is useful as a **strict safety-gated score**: if trace completeness is zero, or false solver activation is catastrophic, the whole index should collapse. That is a feature, not a bug.
+
+But the current formula should not be the only dashboard score because a single zero hides progress elsewhere. Use two scores:
+
+```text
+CSI_strict =
+  multiplicative formula
+```
+
+and
+
+```text
+CSI_progress =
+  weighted/geometric trend score with bounded components
+```
+
+Also bound the composite-path term:
+
+```text
+bounded_composite =
+  min(1.0, log1p(useful_composite_paths_total) / log1p(target_useful_composite_paths))
+```
+
+Activation gates should rely on individual metrics, not CSI.
+
+---
+
+## PART C — Implementation order opinion
+
+**Verdict: Approve with minor amendments.**
+
+Proceed only after these three amendments are written into the plan:
+
+1. **Add determinism/rebuild/cache gates:** embedding determinism test, embedding cache keyed by model + normalized query hash, and disaster recovery from axioms + delta ledger.
+2. **Add concurrency protocol:** append-only staging delta ledger, single manifest builder, per-query coherent snapshot, and explicit concurrent-write ordering.
+3. **Clarify execution scope and metric semantics:** Phase C full run on workstation, edge gets reduced smoke; CSI split into `CSI_strict` and `CSI_progress`.
+
+After those are committed, begin Phase A. The refined plan is fundamentally sound; the remaining risks are protocol details, not architectural showstoppers.

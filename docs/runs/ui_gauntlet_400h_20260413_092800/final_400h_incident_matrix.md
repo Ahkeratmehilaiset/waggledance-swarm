@@ -1,15 +1,15 @@
 # 400h Campaign — Incident Matrix (MID-CAMPAIGN (TBD on completion))
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T09:10:15+00:00
+**Generated:** 2026-04-23T09:40:20+00:00
 
 ## By (category, mode)
 
 | Category | Mode | Count |
 |---|---|---|
-| chat_response_failure | WARM | 1917 |
+| chat_response_failure | WARM | 1925 |
 | health_failure | COLD | 155 |
-| chat_failure | COLD | 120 |
+| chat_failure | COLD | 121 |
 | backend_unhealthy | HOT | 13 |
 | cycle_crash_recovery | WARM | 10 |
 | chat_send_failure | WARM | 6 |

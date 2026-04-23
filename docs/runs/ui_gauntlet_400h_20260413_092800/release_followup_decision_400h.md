@@ -1,13 +1,13 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T09:10:15+00:00
+**Generated:** 2026-04-23T09:40:20+00:00
 **Main ref:** `main~30`
 **Total green:** 243.27h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (23 files)
+### PRODUCT (20 files)
 
 - `configs/axioms/cottage/colony_food_reserves.yaml`
 - `configs/axioms/cottage/heating_cost.yaml`
@@ -23,22 +23,21 @@
 - `configs/axioms/gadget/signal_strength.yaml`
 - `configs/axioms/home/comfort_energy.yaml`
 - `configs/axioms/home/heat_pump_cop.yaml`
-- `waggledance/application/services/parallel_llm_dispatcher.py`
-- `waggledance/core/autonomy/lifecycle.py`
 - `waggledance/core/learning/case_builder.py`
 - `waggledance/core/learning/dream_mode.py`
 - `waggledance/core/learning/embedding_cache.py`
 - `waggledance/core/learning/prediction_error_ledger.py`
 - `waggledance/core/learning/solver_hash.py`
-- `waggledance/core/orchestration/round_table.py`
 - `waggledance/core/reasoning/question_frame.py`
 
-### TEST_HARNESS (58 files)
+### TEST_HARNESS (74 files)
 
 - `docs/runs/RESUME_HERE.md`
 - `docs/runs/campaign_hardening_log.md`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.json`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.md`
+- `docs/runs/hybrid_shadow_three_way_2026-04-23T093413Z.json`
+- `docs/runs/hybrid_shadow_three_way_2026-04-23T093413Z.md`
 - `docs/runs/release_followup_final_400h.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/campaign_state.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_001.md`
@@ -63,11 +62,9 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_039.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_040.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_041.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_042.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_043.json`
-- … and 28 more
+- … and 44 more
 
-### DOCS_NARRATIVE (40 files)
+### DOCS_NARRATIVE (41 files)
 
 - `CHANGELOG.md`
 - `CURRENT_STATE.md`
@@ -99,23 +96,21 @@
 - `docs/plans/gemini.txt`
 - `docs/plans/grock.txt`
 - `docs/plans/hex_topology_performance_metrics_2026-04-23.md`
-- … and 10 more
+- … and 11 more
 
-### CI_WORKFLOW (1 files)
+### CI_WORKFLOW (0 files)
 
-- `.github/workflows/ci.yml`
 
 ### VERSION (1 files)
 
 - `Dockerfile`
 
-### OTHER (16 files)
+### OTHER (14 files)
 
 - `.gitignore`
 - `backup/2026-04-23/faiss_pre-hybrid.tar.gz`
 - `backup/2026-04-23/settings.yaml.pre-hybrid`
 - `tools/backfill_axioms_to_hex.py`
-- `tools/benchmark_harness.py`
 - `tools/campaign_auto_commit.py`
 - `tools/campaign_reports.py`
 - `tools/campaign_watchdog.py`
@@ -124,7 +119,6 @@
 - `tools/hex_manifest.py`
 - `tools/migrate_embedding_model.py`
 - `tools/run_benchmark.py`
-- `tools/runtime_shadow_compare.py`
 - `tools/shadow_route_three_way.py`
 - `tools/upgrade_axioms_for_v3.py`
 

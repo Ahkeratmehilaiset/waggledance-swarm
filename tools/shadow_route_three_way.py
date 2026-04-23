@@ -46,8 +46,24 @@ from waggledance.core.learning.embedding_cache import (  # noqa: E402
 STAGING_DIR = ROOT / "data" / "faiss_staging"
 CAMPAIGN_DIR = ROOT / "docs" / "runs" / "ui_gauntlet_400h_20260413_092800"
 OUTPUT_DIR = ROOT / "docs" / "runs"
+AXIOMS_DIR = ROOT / "configs" / "axioms"
 OLLAMA_URL = "http://localhost:11434/api/embed"
 EMBEDDING_MODEL = "nomic-embed-text"
+
+
+def _load_solver_specs() -> dict:
+    """Load solver_output_schema for each axiom."""
+    import yaml
+    specs = {}
+    for axiom_path in AXIOMS_DIR.rglob("*.yaml"):
+        with open(axiom_path, encoding="utf-8") as f:
+            axiom = yaml.safe_load(f)
+        if axiom and axiom.get("model_id"):
+            specs[axiom["model_id"]] = axiom.get("solver_output_schema", {})
+    return specs
+
+
+SOLVER_SPECS = _load_solver_specs()
 
 
 def _load_cell_indices() -> dict:
@@ -210,29 +226,28 @@ def route_hex(query_vec: np.ndarray, query: str, cells: dict, centroids: dict, k
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--queries", type=int, default=200)
-    ap.add_argument("--source", choices=["hot_results", "oracle"], default="hot_results")
+    ap.add_argument("--source", choices=["hot_results", "oracle", "query_corpus"], default="query_corpus")
     ap.add_argument("--oracle-dir", default="tests/oracle")
+    ap.add_argument("--with-question-frame", action="store_true",
+                    help="Add 4th architecture: hex+question_frame filter (Path B)")
     args = ap.parse_args()
 
     # Load queries
     queries = []
-    if args.source == "hot_results":
-        hot_path = CAMPAIGN_DIR / "hot_results.jsonl"
-        if not hot_path.exists():
-            print(f"ERROR: {hot_path} not found")
+    if args.source == "query_corpus" or args.source == "hot_results":
+        # query_corpus.json has the actual query text; hot_results.jsonl has only query_id
+        corpus_path = CAMPAIGN_DIR / "query_corpus.json"
+        if not corpus_path.exists():
+            print(f"ERROR: {corpus_path} not found")
             return 1
-        with open(hot_path, encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                    queries.append(row.get("query") or row.get("query_id"))
-                except json.JSONDecodeError:
-                    continue
-                if len(queries) >= args.queries:
-                    break
-        queries = [q for q in queries if q and len(q) > 2]
+        with open(corpus_path, encoding="utf-8") as f:
+            corpus = json.load(f)
+        for row in corpus:
+            q = row.get("query")
+            if q and isinstance(q, str) and len(q) > 2:
+                queries.append(q)
+            if len(queries) >= args.queries:
+                break
     else:
         oracle_dir = ROOT / args.oracle_dir
         if not oracle_dir.exists():
@@ -296,6 +311,30 @@ def main() -> int:
             "flat": {**a_flat, "latency_ms": round(t_flat, 3)},
             "hex": {**a_hex, "latency_ms": round(t_hex, 3)},
         }
+
+        # Path B: hex + question_frame filter
+        if args.with_question_frame:
+            from waggledance.core.reasoning.question_frame import parse as qf_parse
+            from waggledance.core.reasoning.hybrid_router import filter_by_question_frame
+            t0 = time.perf_counter()
+            frame = qf_parse(query_text)
+            hex_candidates = a_hex.get("top_k", [])
+            filtered = filter_by_question_frame(hex_candidates, SOLVER_SPECS, frame)
+            t_qf = (time.perf_counter() - t0) * 1000
+            chosen = filtered[0] if filtered else None
+            row["hex_qf"] = {
+                "route_type": "hex_with_question_frame",
+                "frame": frame.to_dict(),
+                "top_k": filtered,
+                "chosen_solver": chosen.get("canonical_solver_id") if chosen else None,
+                "chosen_cell": chosen.get("cell") if chosen else None,
+                "score": chosen.get("score") if chosen else 0.0,
+                "rejected_off_domain": not bool(filtered),
+                "candidates_before_filter": len(hex_candidates),
+                "candidates_after_filter": len(filtered),
+                "latency_ms": round(t_hex + t_qf, 3),
+            }
+
         results.append(row)
         if (i + 1) % 50 == 0:
             print(f"  {i+1}/{len(queries)} processed...")
@@ -335,12 +374,39 @@ def main() -> int:
                 return route.get("chosen_solver") is None or route.get("score", 0) < 0.35
             return route.get("chosen_solver") == expected
 
-        for arch_key in ("keyword", "flat", "hex"):
+        archs_present = ["keyword", "flat", "hex"]
+        if args.with_question_frame:
+            archs_present.append("hex_qf")
+        for arch_key in archs_present:
             correct = sum(
                 1 for r in results
-                if is_correct(r[arch_key], r.get("expected_solver"), r.get("expected_kind"))
+                if arch_key in r
+                and is_correct(r[arch_key], r.get("expected_solver"), r.get("expected_kind"))
             )
             agg.setdefault("oracle_precision_at_1", {})[arch_key] = round(correct / max(1, len(results)), 4)
+
+        # Negative rejection rate (critical for Path B)
+        neg_results = [r for r in results if r.get("expected_kind") == "negative"]
+        for arch_key in archs_present:
+            if not neg_results:
+                continue
+            correct_neg = sum(
+                1 for r in neg_results
+                if arch_key in r
+                and (r[arch_key].get("chosen_solver") is None
+                     or r[arch_key].get("score", 0) < 0.35)
+            )
+            agg.setdefault("negative_rejection_rate", {})[arch_key] = round(correct_neg / len(neg_results), 4)
+
+        pos_results = [r for r in results if r.get("expected_kind") == "positive"]
+        for arch_key in archs_present:
+            if not pos_results:
+                continue
+            correct_pos = sum(
+                1 for r in pos_results
+                if arch_key in r and r[arch_key].get("chosen_solver") == r.get("expected_solver")
+            )
+            agg.setdefault("positive_precision_at_1", {})[arch_key] = round(correct_pos / len(pos_results), 4)
 
     # Write results
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
@@ -371,13 +437,16 @@ def main() -> int:
     ]
     if "oracle_precision_at_1" in agg:
         md += [
-            "## Oracle precision@1",
+            "## Oracle metrics",
             "",
-            "| Architecture | Precision |",
-            "|---|---:|",
+            "| Architecture | Overall precision@1 | Positive precision | Negative rejection |",
+            "|---|---:|---:|---:|",
         ]
-        for arch, p in agg["oracle_precision_at_1"].items():
-            md.append(f"| {arch} | {p:.1%} |")
+        for arch in agg["oracle_precision_at_1"].keys():
+            overall = agg["oracle_precision_at_1"].get(arch, 0)
+            pos = agg.get("positive_precision_at_1", {}).get(arch, 0)
+            neg = agg.get("negative_rejection_rate", {}).get(arch, 0)
+            md.append(f"| {arch} | {overall:.1%} | {pos:.1%} | {neg:.1%} |")
         md.append("")
     md += [
         "## Decision gates (v3 §1.5)",

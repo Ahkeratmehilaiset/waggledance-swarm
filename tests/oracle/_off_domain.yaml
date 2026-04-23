@@ -1,0 +1,42 @@
+solver: NONE_off_domain
+domain: out_of_scope
+description: "True off-domain queries — no solver in current library should answer these"
+
+# These queries are out of scope of all 14 current solvers (cottage/factory/gadget/home).
+# A correctly behaving hybrid retrieval should REJECT these (return null solver).
+
+positive: []   # by definition, no positive routes exist for these
+
+negative:
+  - "Mikä on sään ennuste tänään?"
+  - "What is the weather forecast"
+  - "Kerro vitsi"
+  - "Tell me a joke"
+  - "Miten teen kahvia"
+  - "How do I make coffee"
+  - "Mitä on viiden kertotaulu"
+  - "What is 5 times 5"
+  - "Kuka oli Mannerheim"
+  - "Who was Napoleon"
+  - "Suosittele kirjaa"
+  - "Recommend a book to read"
+  - "Mikä on Suomen pinta-ala"
+  - "What is the population of France"
+  - "Käännä englanniksi terve"
+  - "Translate hello to Spanish"
+  - "Mikä on tänään päivä"
+  - "What time is it"
+  - "Soita musiikkia"
+  - "Play some music"
+  - "Lähetä sähköposti äidille"
+  - "Send an email to mom"
+  - "Mikä on maailman suurin valas"
+  - "What is the largest mammal"
+  - "Kerro mehiläisten elinkaaresta"  # general knowledge, not a solver query
+  - "Explain photosynthesis"
+  - "Mikä on Pythagoraan lause"
+  - "What is the speed of light"
+  - "Suomen vanhin kaupunki"
+  - "Which city has best public transport"
+  - "Tee minulle ostoslista"
+  - "Generate a shopping list"

@@ -1,0 +1,4946 @@
+{
+  "aggregate": {
+    "n_queries": 30,
+    "latency_ms": {
+      "keyword": {
+        "p50": 0.01,
+        "p95": 0.01
+      },
+      "flat": {
+        "p50": 0.07,
+        "p95": 0.08
+      },
+      "hex": {
+        "p50": 0.27,
+        "p95": 0.3
+      }
+    },
+    "agreement": {
+      "flat_vs_hex_solver": 1.0,
+      "keyword_vs_hex_cell": 0.43333333333333335,
+      "keyword_centroid_disagreement_rate": 0.23333333333333334
+    },
+    "oracle_precision_at_1": {
+      "keyword": 0.3333,
+      "flat": 0.5333,
+      "hex": 0.5333,
+      "hex_qf": 0.5333
+    },
+    "negative_rejection_rate": {
+      "keyword": 1.0,
+      "flat": 0.0,
+      "hex": 0.0,
+      "hex_qf": 0.0
+    },
+    "positive_precision_at_1": {
+      "keyword": 0.0,
+      "flat": 0.8,
+      "hex": 0.8,
+      "hex_qf": 0.8
+    }
+  },
+  "per_query": [
+    {
+      "query": "kauanko akku kestää sensorissa",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.938
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5840519070625305,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5523954629898071,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.5317091941833496,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "swarm_risk#example_queries",
+            "score": 0.528022289276123,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5191385746002197,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.5840519070625305,
+        "latency_ms": 0.151
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.6020480990409851
+          },
+          {
+            "cell": "energy",
+            "score": 0.5933147668838501
+          },
+          {
+            "cell": "system",
+            "score": 0.5710933208465576
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5840519070625305,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5523954629898071,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.5317091941833496,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "swarm_risk#example_queries",
+            "score": 0.528022289276123,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5191385746002197,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.5840519070625305,
+        "latency_ms": 2.491
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "kauanko akku kestää sensorissa",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5840519070625305,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5523954629898071,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.5317091941833496,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "swarm_risk#example_queries",
+            "score": 0.528022289276123,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5191385746002197,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.5840519070625305,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 2.81
+      }
+    },
+    {
+      "query": "how long battery lasts in sensor",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.013
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6298139095306396,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.6013427376747131,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.5634501576423645,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.5355453491210938,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5114628076553345,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6298139095306396,
+        "latency_ms": 0.074
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.5962883234024048
+          },
+          {
+            "cell": "system",
+            "score": 0.5333359241485596
+          },
+          {
+            "cell": "math",
+            "score": 0.4967633783817291
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6298139095306396,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5114628076553345,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.47295114398002625,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.46596208214759827,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_en",
+            "score": 0.45975461602211,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6298139095306396,
+        "latency_ms": 0.272
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "how long battery lasts in sensor",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6298139095306396,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5114628076553345,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.47295114398002625,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.46596208214759827,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_en",
+            "score": 0.45975461602211,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6298139095306396,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.321
+      }
+    },
+    {
+      "query": "akun käyttöikä iot-laitteessa",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.012
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.628951907157898,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5788431763648987,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5674313306808472,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5659889578819275,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5546300411224365,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.628951907157898,
+        "latency_ms": 0.071
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.6447989344596863
+          },
+          {
+            "cell": "system",
+            "score": 0.6296395659446716
+          },
+          {
+            "cell": "thermal",
+            "score": 0.6247845888137817
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": true,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.628951907157898,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5788431763648987,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5674313306808472,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5659889578819275,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5546300411224365,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.628951907157898,
+        "latency_ms": 0.282
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "akun käyttöikä iot-laitteessa",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.628951907157898,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5788431763648987,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5674313306808472,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5659889578819275,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5546300411224365,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.628951907157898,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.327
+      }
+    },
+    {
+      "query": "battery life iot device",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.7151652574539185,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.645557165145874,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.6452310085296631,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.510719358921051,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.4731971025466919,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.7151652574539185,
+        "latency_ms": 0.074
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.6009378433227539
+          },
+          {
+            "cell": "system",
+            "score": 0.5527951121330261
+          },
+          {
+            "cell": "thermal",
+            "score": 0.4715965986251831
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.7151652574539185,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.4731971025466919,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.4647652506828308,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.4589864909648895,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.44243866205215454,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.7151652574539185,
+        "latency_ms": 0.273
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "battery life iot device",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.7151652574539185,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.4731971025466919,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.4647652506828308,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.4589864909648895,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.44243866205215454,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.7151652574539185,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.313
+      }
+    },
+    {
+      "query": "100 mAh akku kuinka monta tuntia",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.011
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.587236762046814,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5670144557952881,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.540288507938385,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_fi",
+            "score": 0.5182955861091614,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_fi",
+            "score": 0.511886477470398,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.587236762046814,
+        "latency_ms": 0.071
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.6110374927520752
+          },
+          {
+            "cell": "system",
+            "score": 0.5945614576339722
+          },
+          {
+            "cell": "energy",
+            "score": 0.5921458005905151
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.587236762046814,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5670144557952881,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.540288507938385,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_fi",
+            "score": 0.511886477470398,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.51128751039505,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.587236762046814,
+        "latency_ms": 0.251
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "100 mAh akku kuinka monta tuntia",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.587236762046814,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5670144557952881,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.540288507938385,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_fi",
+            "score": 0.511886477470398,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.51128751039505,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.587236762046814,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.296
+      }
+    },
+    {
+      "query": "100 mAh battery hours",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.011
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6895780563354492,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.6630463004112244,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.6560556888580322,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#synonym_mixed",
+            "score": 0.6095681190490723,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.6026530265808105,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6895780563354492,
+        "latency_ms": 0.069
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.688157856464386
+          },
+          {
+            "cell": "system",
+            "score": 0.6046711206436157
+          },
+          {
+            "cell": "thermal",
+            "score": 0.5394148826599121
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6895780563354492,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#synonym_mixed",
+            "score": 0.6095681190490723,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.5746911764144897,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5249335169792175,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#synonym_mixed",
+            "score": 0.4915476441383362,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6895780563354492,
+        "latency_ms": 0.272
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "100 mAh battery hours",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6895780563354492,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#synonym_mixed",
+            "score": 0.6095681190490723,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.5746911764144897,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5249335169792175,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#synonym_mixed",
+            "score": 0.4915476441383362,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6895780563354492,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.309
+      }
+    },
+    {
+      "query": "akun purkautumisaika",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5392458438873291,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5354529619216919,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5250831842422485,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5176315307617188,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.5174157619476318,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5392458438873291,
+        "latency_ms": 0.07
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.5791712999343872
+          },
+          {
+            "cell": "energy",
+            "score": 0.5502532720565796
+          },
+          {
+            "cell": "system",
+            "score": 0.547698974609375
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5392458438873291,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5354529619216919,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5250831842422485,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5176315307617188,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.5174157619476318,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5392458438873291,
+        "latency_ms": 0.255
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "akun purkautumisaika",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5392458438873291,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5354529619216919,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5250831842422485,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5176315307617188,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.5174157619476318,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5392458438873291,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.292
+      }
+    },
+    {
+      "query": "battery discharge time",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.7462382912635803,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.5997011065483093,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.5961835384368896,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5720740556716919,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5554492473602295,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.7462382912635803,
+        "latency_ms": 0.083
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.6422902345657349
+          },
+          {
+            "cell": "system",
+            "score": 0.6073854565620422
+          },
+          {
+            "cell": "thermal",
+            "score": 0.4795799255371094
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.7462382912635803,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5554492473602295,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "solar_yield#unit_variable",
+            "score": 0.5090379118919373,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "oee_decomposition#unit_variable",
+            "score": 0.49823975563049316,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.4509085416793823,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.7462382912635803,
+        "latency_ms": 0.278
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "battery discharge time",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.7462382912635803,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5554492473602295,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "solar_yield#unit_variable",
+            "score": 0.5090379118919373,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "oee_decomposition#unit_variable",
+            "score": 0.49823975563049316,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.4509085416793823,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.7462382912635803,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.315
+      }
+    },
+    {
+      "query": "kuinka monta tuntia 5 mA virralla",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5356816649436951,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_fi",
+            "score": 0.5237326622009277,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5001441240310669,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.4893571734428406,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.48648351430892944,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5356816649436951,
+        "latency_ms": 0.074
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.5541237592697144
+          },
+          {
+            "cell": "system",
+            "score": 0.5494989156723022
+          },
+          {
+            "cell": "energy",
+            "score": 0.5457768440246582
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5356816649436951,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5001441240310669,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.4893571734428406,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.48648351430892944,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.4759542942047119,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5356816649436951,
+        "latency_ms": 0.262
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "kuinka monta tuntia 5 mA virralla",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5356816649436951,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5001441240310669,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.4893571734428406,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.48648351430892944,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.4759542942047119,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5356816649436951,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.305
+      }
+    },
+    {
+      "query": "how many hours at 5mA draw",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "mtbf_prediction#synonym_mixed",
+            "score": 0.6471782922744751,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5740004777908325,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "solar_yield#unit_variable",
+            "score": 0.5280345678329468,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "honey_yield#synonym_mixed",
+            "score": 0.5202460289001465,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.5170825719833374,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "mtbf_prediction",
+        "chosen_cell": "system",
+        "score": 0.6471782922744751,
+        "latency_ms": 0.067
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "system",
+            "score": 0.592647910118103
+          },
+          {
+            "cell": "energy",
+            "score": 0.5908516645431519
+          },
+          {
+            "cell": "safety",
+            "score": 0.538600742816925
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "learning",
+          "math",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": true,
+        "top_k": [
+          {
+            "doc_id": "mtbf_prediction#synonym_mixed",
+            "score": 0.6471782922744751,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "solar_yield#unit_variable",
+            "score": 0.5280345678329468,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "honey_yield#synonym_mixed",
+            "score": 0.5202460289001465,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.5170825719833374,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#unit_variable",
+            "score": 0.5110421776771545,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "mtbf_prediction",
+        "chosen_cell": "system",
+        "score": 0.6471782922744751,
+        "latency_ms": 0.277
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "how many hours at 5mA draw",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "mtbf_prediction#synonym_mixed",
+            "score": 0.6471782922744751,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "solar_yield#unit_variable",
+            "score": 0.5280345678329468,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "honey_yield#synonym_mixed",
+            "score": 0.5202460289001465,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.5170825719833374,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#unit_variable",
+            "score": 0.5110421776771545,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "mtbf_prediction",
+        "chosen_cell": "system",
+        "score": 0.6471782922744751,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.318
+      }
+    },
+    {
+      "query": "akun kapasiteetti ja kesto",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5328195095062256,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5115063190460205,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.4999636709690094,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.4991075396537781,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "oee_decomposition#example_queries",
+            "score": 0.4924110174179077,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5328195095062256,
+        "latency_ms": 0.071
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.5477730631828308
+          },
+          {
+            "cell": "system",
+            "score": 0.5302572250366211
+          },
+          {
+            "cell": "energy",
+            "score": 0.522711992263794
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5328195095062256,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5115063190460205,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.4999636709690094,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.4991075396537781,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "oee_decomposition#example_queries",
+            "score": 0.4924110174179077,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5328195095062256,
+        "latency_ms": 0.255
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "akun kapasiteetti ja kesto",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5328195095062256,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5115063190460205,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.4999636709690094,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.4991075396537781,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "oee_decomposition#example_queries",
+            "score": 0.4924110174179077,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "heating_cost",
+        "chosen_cell": "thermal",
+        "score": 0.5328195095062256,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.293
+      }
+    },
+    {
+      "query": "battery capacity and runtime",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#unit_variable",
+            "score": 0.6333485245704651,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.6324645280838013,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.62102210521698,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5937049388885498,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.5860333442687988,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6333485245704651,
+        "latency_ms": 0.072
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.6708452701568604
+          },
+          {
+            "cell": "system",
+            "score": 0.630063533782959
+          },
+          {
+            "cell": "thermal",
+            "score": 0.5517964363098145
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#unit_variable",
+            "score": 0.6333485245704651,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5419478416442871,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "oee_decomposition#unit_variable",
+            "score": 0.5397152304649353,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5262038111686707,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5048415064811707,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6333485245704651,
+        "latency_ms": 0.284
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "battery capacity and runtime",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#unit_variable",
+            "score": 0.6333485245704651,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5419478416442871,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "oee_decomposition#unit_variable",
+            "score": 0.5397152304649353,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5262038111686707,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5048415064811707,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6333485245704651,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.323
+      }
+    },
+    {
+      "query": "lithium-akun käyttöikä",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.621821403503418,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.5387659072875977,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.5382537841796875,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5339571833610535,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5273873805999756,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.621821403503418,
+        "latency_ms": 0.072
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.6276171207427979
+          },
+          {
+            "cell": "system",
+            "score": 0.5663049817085266
+          },
+          {
+            "cell": "thermal",
+            "score": 0.5622243881225586
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": true,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.621821403503418,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5339571833610535,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5273873805999756,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5141925811767578,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.48471271991729736,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.621821403503418,
+        "latency_ms": 0.261
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "lithium-akun käyttöikä",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.621821403503418,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5339571833610535,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5273873805999756,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5141925811767578,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.48471271991729736,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.621821403503418,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.302
+      }
+    },
+    {
+      "query": "lithium battery runtime",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.011
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.6025694012641907,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.586856484413147,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.5837694406509399,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5359453558921814,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#unit_variable",
+            "score": 0.47531968355178833,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6025694012641907,
+        "latency_ms": 0.071
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.5802098512649536
+          },
+          {
+            "cell": "system",
+            "score": 0.5386875867843628
+          },
+          {
+            "cell": "thermal",
+            "score": 0.4423826038837433
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.6025694012641907,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.47402623295783997,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "oee_decomposition#unit_variable",
+            "score": 0.43897736072540283,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.4155713617801666,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.40812012553215027,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6025694012641907,
+        "latency_ms": 0.29
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "lithium battery runtime",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.6025694012641907,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.47402623295783997,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "oee_decomposition#unit_variable",
+            "score": 0.43897736072540283,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.4155713617801666,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.40812012553215027,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6025694012641907,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.329
+      }
+    },
+    {
+      "query": "kuinka usein akku vaihdetaan",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.011
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.538735032081604,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5314383506774902,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5290387868881226,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.514860987663269,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.4869377017021179,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.538735032081604,
+        "latency_ms": 0.078
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.5576372146606445
+          },
+          {
+            "cell": "system",
+            "score": 0.5512142181396484
+          },
+          {
+            "cell": "energy",
+            "score": 0.5464857816696167
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.538735032081604,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5314383506774902,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5290387868881226,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.514860987663269,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.4869377017021179,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.538735032081604,
+        "latency_ms": 0.293
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "kuinka usein akku vaihdetaan",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.538735032081604,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.5314383506774902,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5290387868881226,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.514860987663269,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.4869377017021179,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.538735032081604,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.341
+      }
+    },
+    {
+      "query": "battery replacement frequency",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.013
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.6275197863578796,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.5786126852035522,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.5691287517547607,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5553766489028931,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.5256971716880798,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6275197863578796,
+        "latency_ms": 0.067
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "system",
+            "score": 0.6127869486808777
+          },
+          {
+            "cell": "energy",
+            "score": 0.6097460985183716
+          },
+          {
+            "cell": "safety",
+            "score": 0.498212993144989
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "learning",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": true,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.6275197863578796,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.5786126852035522,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "signal_propagation#unit_variable",
+            "score": 0.5225726962089539,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "oee_decomposition#unit_variable",
+            "score": 0.49890002608299255,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.49606138467788696,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6275197863578796,
+        "latency_ms": 0.268
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "battery replacement frequency",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.6275197863578796,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.5786126852035522,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "signal_propagation#unit_variable",
+            "score": 0.5225726962089539,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "oee_decomposition#unit_variable",
+            "score": 0.49890002608299255,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.49606138467788696,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6275197863578796,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.304
+      }
+    },
+    {
+      "query": "iot-sensorin akkutuntit",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.009
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5324171781539917,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.5131018161773682,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5097193717956543,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.48147517442703247,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.4799019992351532,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.5324171781539917,
+        "latency_ms": 0.072
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.5774471759796143
+          },
+          {
+            "cell": "energy",
+            "score": 0.5653572082519531
+          },
+          {
+            "cell": "system",
+            "score": 0.5623241662979126
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5324171781539917,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.5131018161773682,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5097193717956543,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.48147517442703247,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.4799019992351532,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.5324171781539917,
+        "latency_ms": 0.259
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "iot-sensorin akkutuntit",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5324171781539917,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.5131018161773682,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5097193717956543,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.48147517442703247,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.4799019992351532,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.5324171781539917,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.296
+      }
+    },
+    {
+      "query": "iot sensor battery hours",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.636785626411438,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5730702877044678,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.5707341432571411,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.5540982484817505,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#synonym_mixed",
+            "score": 0.5419625043869019,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.636785626411438,
+        "latency_ms": 0.052
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.6020097732543945
+          },
+          {
+            "cell": "system",
+            "score": 0.5493863821029663
+          },
+          {
+            "cell": "safety",
+            "score": 0.4690195918083191
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.636785626411438,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5730702877044678,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "solar_yield#unit_variable",
+            "score": 0.5056543946266174,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.4782588481903076,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.4385242462158203,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.636785626411438,
+        "latency_ms": 0.288
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "iot sensor battery hours",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.636785626411438,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.5730702877044678,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "solar_yield#unit_variable",
+            "score": 0.5056543946266174,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.4782588481903076,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.4385242462158203,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.636785626411438,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.324
+      }
+    },
+    {
+      "query": "akku kestää montako vuorokautta",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.011
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.566633939743042,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.5425320863723755,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5291405916213989,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5245945453643799,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#example_queries",
+            "score": 0.5174417495727539,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.566633939743042,
+        "latency_ms": 0.075
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.5923877954483032
+          },
+          {
+            "cell": "energy",
+            "score": 0.5890622138977051
+          },
+          {
+            "cell": "system",
+            "score": 0.5679324865341187
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.566633939743042,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.5425320863723755,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5291405916213989,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5245945453643799,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#example_queries",
+            "score": 0.5174417495727539,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.566633939743042,
+        "latency_ms": 0.257
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "akku kestää montako vuorokautta",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.566633939743042,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.5425320863723755,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "heating_cost#canonical_fi",
+            "score": 0.5291405916213989,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5245945453643799,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#example_queries",
+            "score": 0.5174417495727539,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.566633939743042,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.299
+      }
+    },
+    {
+      "query": "battery lasts how many days",
+      "expected_solver": "battery_discharge",
+      "expected_kind": "positive",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6214301586151123,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#canonical_fi",
+            "score": 0.6088390350341797,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#example_queries",
+            "score": 0.5690094232559204,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.5678476095199585,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5381630063056946,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6214301586151123,
+        "latency_ms": 0.07
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.6011863946914673
+          },
+          {
+            "cell": "system",
+            "score": 0.5455849766731262
+          },
+          {
+            "cell": "safety",
+            "score": 0.5013117790222168
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6214301586151123,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5381630063056946,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.4804704487323761,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.4786389470100403,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "swarm_risk#unit_variable",
+            "score": 0.47620514035224915,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6214301586151123,
+        "latency_ms": 0.272
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "battery lasts how many days",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "battery_discharge#canonical_en",
+            "score": 0.6214301586151123,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5381630063056946,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "mtbf_prediction#unit_variable",
+            "score": 0.4804704487323761,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.4786389470100403,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "swarm_risk#unit_variable",
+            "score": 0.47620514035224915,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "battery_discharge",
+        "chosen_cell": "energy",
+        "score": 0.6214301586151123,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.313
+      }
+    },
+    {
+      "query": "lämmityskustannus",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.6685901284217834,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "oee_decomposition#canonical_en",
+            "score": 0.6660708785057068,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.65995854139328,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_fi",
+            "score": 0.6526485681533813,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.6296319365501404,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "pipe_freezing",
+        "chosen_cell": "thermal",
+        "score": 0.6685901284217834,
+        "latency_ms": 0.071
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.6573220491409302
+          },
+          {
+            "cell": "system",
+            "score": 0.654340922832489
+          },
+          {
+            "cell": "energy",
+            "score": 0.6537525653839111
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.6685901284217834,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "oee_decomposition#canonical_en",
+            "score": 0.6660708785057068,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.65995854139328,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_en",
+            "score": 0.6036150455474854,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.5998140573501587,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "pipe_freezing",
+        "chosen_cell": "thermal",
+        "score": 0.6685901284217834,
+        "latency_ms": 0.276
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "lämmityskustannus",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.6685901284217834,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "oee_decomposition#canonical_en",
+            "score": 0.6660708785057068,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.65995854139328,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_en",
+            "score": 0.6036150455474854,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.5998140573501587,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "pipe_freezing",
+        "chosen_cell": "thermal",
+        "score": 0.6685901284217834,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.311
+      }
+    },
+    {
+      "query": "honey yield",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "math",
+        "score": 2,
+        "doc_id": null,
+        "latency_ms": 0.009
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "honey_yield#canonical_en",
+            "score": 0.8121666312217712,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "honey_yield#example_queries",
+            "score": 0.8065770268440247,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "honey_yield#synonym_mixed",
+            "score": 0.8062595129013062,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "honey_yield#canonical_fi",
+            "score": 0.7406129240989685,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_en",
+            "score": 0.6668746471405029,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "honey_yield",
+        "chosen_cell": "math",
+        "score": 0.8121666312217712,
+        "latency_ms": 0.072
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "math",
+        "top3_centroid": [
+          {
+            "cell": "math",
+            "score": 0.7628138065338135
+          },
+          {
+            "cell": "safety",
+            "score": 0.6067459583282471
+          },
+          {
+            "cell": "energy",
+            "score": 0.5571633577346802
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "general",
+          "math",
+          "safety",
+          "system"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "honey_yield#canonical_en",
+            "score": 0.8121666312217712,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_en",
+            "score": 0.6668746471405029,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          },
+          {
+            "doc_id": "solar_yield#synonym_mixed",
+            "score": 0.623363733291626,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "swarm_risk#canonical_fi",
+            "score": 0.5786066651344299,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "varroa_treatment#unit_variable",
+            "score": 0.5691900253295898,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "honey_yield",
+        "chosen_cell": "math",
+        "score": 0.8121666312217712,
+        "latency_ms": 0.254
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "honey yield",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "honey_yield#canonical_en",
+            "score": 0.8121666312217712,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_en",
+            "score": 0.6668746471405029,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          },
+          {
+            "doc_id": "solar_yield#synonym_mixed",
+            "score": 0.623363733291626,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "swarm_risk#canonical_fi",
+            "score": 0.5786066651344299,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "varroa_treatment#unit_variable",
+            "score": 0.5691900253295898,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "honey_yield",
+        "chosen_cell": "math",
+        "score": 0.8121666312217712,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.289
+      }
+    },
+    {
+      "query": "varroa hoito",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "safety",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.6512652039527893,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "varroa_treatment#synonym_mixed",
+            "score": 0.6208906173706055,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "varroa_treatment#canonical_en",
+            "score": 0.6013196110725403,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "varroa_treatment#canonical_fi",
+            "score": 0.5898653268814087,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_fi",
+            "score": 0.504296064376831,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "varroa_treatment",
+        "chosen_cell": "safety",
+        "score": 0.6512652039527893,
+        "latency_ms": 0.067
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "safety",
+        "top3_centroid": [
+          {
+            "cell": "safety",
+            "score": 0.5991783142089844
+          },
+          {
+            "cell": "math",
+            "score": 0.518612802028656
+          },
+          {
+            "cell": "thermal",
+            "score": 0.5036004185676575
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "general",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.6512652039527893,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_fi",
+            "score": 0.504296064376831,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          },
+          {
+            "doc_id": "honey_yield#canonical_fi",
+            "score": 0.48694106936454773,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.4678160548210144,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#example_queries",
+            "score": 0.45811498165130615,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "varroa_treatment",
+        "chosen_cell": "safety",
+        "score": 0.6512652039527893,
+        "latency_ms": 0.303
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "varroa hoito",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.6512652039527893,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_fi",
+            "score": 0.504296064376831,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          },
+          {
+            "doc_id": "honey_yield#canonical_fi",
+            "score": 0.48694106936454773,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.4678160548210144,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#example_queries",
+            "score": 0.45811498165130615,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "varroa_treatment",
+        "chosen_cell": "safety",
+        "score": 0.6512652039527893,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.338
+      }
+    },
+    {
+      "query": "swarm probability",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "math",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "swarm_risk#canonical_en",
+            "score": 0.862654447555542,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "swarm_risk#canonical_fi",
+            "score": 0.826227605342865,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "swarm_risk#synonym_mixed",
+            "score": 0.7486714124679565,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "swarm_risk#example_queries",
+            "score": 0.7121818661689758,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "hive_thermal_balance#canonical_en",
+            "score": 0.5979669094085693,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "swarm_risk",
+        "chosen_cell": "safety",
+        "score": 0.862654447555542,
+        "latency_ms": 0.069
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "math",
+        "top3_centroid": [
+          {
+            "cell": "safety",
+            "score": 0.7395603656768799
+          },
+          {
+            "cell": "math",
+            "score": 0.6105883121490479
+          },
+          {
+            "cell": "system",
+            "score": 0.5537397861480713
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "general",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": true,
+        "top_k": [
+          {
+            "doc_id": "swarm_risk#canonical_en",
+            "score": 0.862654447555542,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "hive_thermal_balance#canonical_en",
+            "score": 0.5979669094085693,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5801935195922852,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "varroa_treatment#unit_variable",
+            "score": 0.573223352432251,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "colony_food_reserves#unit_variable",
+            "score": 0.5605334043502808,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "swarm_risk",
+        "chosen_cell": "safety",
+        "score": 0.862654447555542,
+        "latency_ms": 0.271
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "swarm probability",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "swarm_risk#canonical_en",
+            "score": 0.862654447555542,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "hive_thermal_balance#canonical_en",
+            "score": 0.5979669094085693,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5801935195922852,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "varroa_treatment#unit_variable",
+            "score": 0.573223352432251,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "colony_food_reserves#unit_variable",
+            "score": 0.5605334043502808,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "swarm_risk",
+        "chosen_cell": "safety",
+        "score": 0.862654447555542,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.303
+      }
+    },
+    {
+      "query": "heat pump COP",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.009
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "heat_pump_cop#synonym_mixed",
+            "score": 0.7141774892807007,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_en",
+            "score": 0.7072229385375977,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#canonical_fi",
+            "score": 0.6887638568878174,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heat_pump_cop#example_queries",
+            "score": 0.6884405016899109,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_en",
+            "score": 0.5951035618782043,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "heat_pump_cop",
+        "chosen_cell": "thermal",
+        "score": 0.7141774892807007,
+        "latency_ms": 0.092
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.7250686883926392
+          },
+          {
+            "cell": "energy",
+            "score": 0.637356162071228
+          },
+          {
+            "cell": "system",
+            "score": 0.5859357118606567
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "heat_pump_cop#synonym_mixed",
+            "score": 0.7141774892807007,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_en",
+            "score": 0.5951035618782043,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5828516483306885,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5564335584640503,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#example_queries",
+            "score": 0.48506319522857666,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "heat_pump_cop",
+        "chosen_cell": "thermal",
+        "score": 0.7141774892807007,
+        "latency_ms": 0.273
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "heat pump COP",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "heat_pump_cop#synonym_mixed",
+            "score": 0.7141774892807007,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "heating_cost#canonical_en",
+            "score": 0.5951035618782043,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5828516483306885,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5564335584640503,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "mtbf_prediction#example_queries",
+            "score": 0.48506319522857666,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "heat_pump_cop",
+        "chosen_cell": "thermal",
+        "score": 0.7141774892807007,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.312
+      }
+    },
+    {
+      "query": "solar panel kWh",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "energy",
+        "score": 2,
+        "doc_id": null,
+        "latency_ms": 0.011
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "solar_yield#canonical_en",
+            "score": 0.7181475162506104,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#unit_variable",
+            "score": 0.7092511057853699,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#example_queries",
+            "score": 0.6847690343856812,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.6651839017868042,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#synonym_mixed",
+            "score": 0.6310802102088928,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "solar_yield",
+        "chosen_cell": "energy",
+        "score": 0.7181475162506104,
+        "latency_ms": 0.073
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "energy",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.728219211101532
+          },
+          {
+            "cell": "thermal",
+            "score": 0.6180224418640137
+          },
+          {
+            "cell": "system",
+            "score": 0.594421923160553
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "solar_yield#canonical_en",
+            "score": 0.7181475162506104,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_en",
+            "score": 0.5407829284667969,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_fi",
+            "score": 0.5331836938858032,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5244960188865662,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_fi",
+            "score": 0.5223835110664368,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "solar_yield",
+        "chosen_cell": "energy",
+        "score": 0.7181475162506104,
+        "latency_ms": 0.267
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "solar panel kWh",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "solar_yield#canonical_en",
+            "score": 0.7181475162506104,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heating_cost#canonical_en",
+            "score": 0.5407829284667969,
+            "canonical_solver_id": "heating_cost",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_fi",
+            "score": 0.5331836938858032,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5244960188865662,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "colony_food_reserves#canonical_fi",
+            "score": 0.5223835110664368,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          }
+        ],
+        "chosen_solver": "solar_yield",
+        "chosen_cell": "energy",
+        "score": 0.7181475162506104,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.308
+      }
+    },
+    {
+      "query": "OEE production line",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "system",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.01
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "solar_yield#canonical_en",
+            "score": 0.5553042888641357,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5300368666648865,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "oee_decomposition#canonical_en",
+            "score": 0.5240330696105957,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "signal_propagation#canonical_en",
+            "score": 0.5020922422409058,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.4955010712146759,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          }
+        ],
+        "chosen_solver": "solar_yield",
+        "chosen_cell": "energy",
+        "score": 0.5553042888641357,
+        "latency_ms": 0.072
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "system",
+        "top3_centroid": [
+          {
+            "cell": "system",
+            "score": 0.5862553119659424
+          },
+          {
+            "cell": "energy",
+            "score": 0.5571106672286987
+          },
+          {
+            "cell": "thermal",
+            "score": 0.5509920120239258
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "learning",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "solar_yield#canonical_en",
+            "score": 0.5553042888641357,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "oee_decomposition#canonical_en",
+            "score": 0.5240330696105957,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "signal_propagation#canonical_en",
+            "score": 0.5020922422409058,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.4955010712146759,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.48847490549087524,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "solar_yield",
+        "chosen_cell": "energy",
+        "score": 0.5553042888641357,
+        "latency_ms": 0.266
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "OEE production line",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "solar_yield#canonical_en",
+            "score": 0.5553042888641357,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "oee_decomposition#canonical_en",
+            "score": 0.5240330696105957,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "signal_propagation#canonical_en",
+            "score": 0.5020922422409058,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#canonical_en",
+            "score": 0.4955010712146759,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.48847490549087524,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "solar_yield",
+        "chosen_cell": "energy",
+        "score": 0.5553042888641357,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.308
+      }
+    },
+    {
+      "query": "MTBF compressor",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "system",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.011
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5786845684051514,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_en",
+            "score": 0.575317919254303,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#synonym_mixed",
+            "score": 0.5697048902511597,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.5531373620033264,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_fi",
+            "score": 0.5484376549720764,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "comfort_energy_tradeoff",
+        "chosen_cell": "energy",
+        "score": 0.5786845684051514,
+        "latency_ms": 0.072
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "system",
+        "top3_centroid": [
+          {
+            "cell": "energy",
+            "score": 0.6209527254104614
+          },
+          {
+            "cell": "thermal",
+            "score": 0.6176677942276001
+          },
+          {
+            "cell": "system",
+            "score": 0.6038312911987305
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "learning",
+          "math",
+          "safety",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": true,
+        "top_k": [
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5786845684051514,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#synonym_mixed",
+            "score": 0.5697048902511597,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.5531373620033264,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "battery_discharge#unit_variable",
+            "score": 0.5163159370422363,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5121418237686157,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "comfort_energy_tradeoff",
+        "chosen_cell": "energy",
+        "score": 0.5786845684051514,
+        "latency_ms": 0.313
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "MTBF compressor",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "comfort_energy_tradeoff#canonical_fi",
+            "score": 0.5786845684051514,
+            "canonical_solver_id": "comfort_energy_tradeoff",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "heat_pump_cop#synonym_mixed",
+            "score": 0.5697048902511597,
+            "canonical_solver_id": "heat_pump_cop",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.5531373620033264,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "battery_discharge#unit_variable",
+            "score": 0.5163159370422363,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          },
+          {
+            "doc_id": "solar_yield#canonical_fi",
+            "score": 0.5121418237686157,
+            "canonical_solver_id": "solar_yield",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "comfort_energy_tradeoff",
+        "chosen_cell": "energy",
+        "score": 0.5786845684051514,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.351
+      }
+    },
+    {
+      "query": "pipe freezing",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": "thermal",
+        "score": 1,
+        "doc_id": null,
+        "latency_ms": 0.009
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "pipe_freezing#synonym_mixed",
+            "score": 0.8884071111679077,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#example_queries",
+            "score": 0.7783046364784241,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_en",
+            "score": 0.6534185409545898,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#canonical_fi",
+            "score": 0.6412484049797058,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "pipe_freezing#unit_variable",
+            "score": 0.6021629571914673,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "pipe_freezing",
+        "chosen_cell": "thermal",
+        "score": 0.8884071111679077,
+        "latency_ms": 0.071
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "thermal",
+            "score": 0.6350611448287964
+          },
+          {
+            "cell": "system",
+            "score": 0.4721689224243164
+          },
+          {
+            "cell": "math",
+            "score": 0.4531043469905853
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "math",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": false,
+        "top_k": [
+          {
+            "doc_id": "pipe_freezing#synonym_mixed",
+            "score": 0.8884071111679077,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "colony_food_reserves#example_queries",
+            "score": 0.4820680618286133,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          },
+          {
+            "doc_id": "oee_decomposition#example_queries",
+            "score": 0.42106395959854126,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#example_queries",
+            "score": 0.4054940938949585,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.40441006422042847,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "pipe_freezing",
+        "chosen_cell": "thermal",
+        "score": 0.8884071111679077,
+        "latency_ms": 0.276
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "pipe freezing",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "pipe_freezing#synonym_mixed",
+            "score": 0.8884071111679077,
+            "canonical_solver_id": "pipe_freezing",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "colony_food_reserves#example_queries",
+            "score": 0.4820680618286133,
+            "canonical_solver_id": "colony_food_reserves",
+            "cell": "math"
+          },
+          {
+            "doc_id": "oee_decomposition#example_queries",
+            "score": 0.42106395959854126,
+            "canonical_solver_id": "oee_decomposition",
+            "cell": "system"
+          },
+          {
+            "doc_id": "mtbf_prediction#example_queries",
+            "score": 0.4054940938949585,
+            "canonical_solver_id": "mtbf_prediction",
+            "cell": "system"
+          },
+          {
+            "doc_id": "varroa_treatment#example_queries",
+            "score": 0.40441006422042847,
+            "canonical_solver_id": "varroa_treatment",
+            "cell": "safety"
+          }
+        ],
+        "chosen_solver": "pipe_freezing",
+        "chosen_cell": "thermal",
+        "score": 0.8884071111679077,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.311
+      }
+    },
+    {
+      "query": "signal strength dB",
+      "expected_solver": null,
+      "expected_kind": "negative",
+      "keyword": {
+        "route_type": "keyword",
+        "cell": null,
+        "score": 0,
+        "doc_id": null,
+        "latency_ms": 0.013
+      },
+      "flat": {
+        "route_type": "flat",
+        "top_k": [
+          {
+            "doc_id": "signal_propagation#synonym_mixed",
+            "score": 0.7541934847831726,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "signal_propagation#example_queries",
+            "score": 0.6998188495635986,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "signal_propagation#unit_variable",
+            "score": 0.5900480151176453,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "swarm_risk#canonical_en",
+            "score": 0.5541973114013672,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5480349659919739,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          }
+        ],
+        "chosen_solver": "signal_propagation",
+        "chosen_cell": "system",
+        "score": 0.7541934847831726,
+        "latency_ms": 0.054
+      },
+      "hex": {
+        "route_type": "hex",
+        "keyword_cell": "thermal",
+        "top3_centroid": [
+          {
+            "cell": "system",
+            "score": 0.698115348815918
+          },
+          {
+            "cell": "energy",
+            "score": 0.6206193566322327
+          },
+          {
+            "cell": "thermal",
+            "score": 0.5916990637779236
+          }
+        ],
+        "candidate_cells": [
+          "energy",
+          "learning",
+          "math",
+          "safety",
+          "seasonal",
+          "system",
+          "thermal"
+        ],
+        "keyword_centroid_disagreement": true,
+        "top_k": [
+          {
+            "doc_id": "signal_propagation#synonym_mixed",
+            "score": 0.7541934847831726,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "swarm_risk#canonical_en",
+            "score": 0.5541973114013672,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5480349659919739,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5478689670562744,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.5318273305892944,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "signal_propagation",
+        "chosen_cell": "system",
+        "score": 0.7541934847831726,
+        "latency_ms": 0.277
+      },
+      "hex_qf": {
+        "route_type": "hex_with_question_frame",
+        "frame": {
+          "desired_output": "numeric",
+          "raw_query": "signal strength dB",
+          "negation": {
+            "present": false,
+            "scope": null
+          }
+        },
+        "top_k": [
+          {
+            "doc_id": "signal_propagation#synonym_mixed",
+            "score": 0.7541934847831726,
+            "canonical_solver_id": "signal_propagation",
+            "cell": "system"
+          },
+          {
+            "doc_id": "swarm_risk#canonical_en",
+            "score": 0.5541973114013672,
+            "canonical_solver_id": "swarm_risk",
+            "cell": "safety"
+          },
+          {
+            "doc_id": "hive_thermal_balance#unit_variable",
+            "score": 0.5480349659919739,
+            "canonical_solver_id": "hive_thermal_balance",
+            "cell": "thermal"
+          },
+          {
+            "doc_id": "honey_yield#unit_variable",
+            "score": 0.5478689670562744,
+            "canonical_solver_id": "honey_yield",
+            "cell": "math"
+          },
+          {
+            "doc_id": "battery_discharge#synonym_mixed",
+            "score": 0.5318273305892944,
+            "canonical_solver_id": "battery_discharge",
+            "cell": "energy"
+          }
+        ],
+        "chosen_solver": "signal_propagation",
+        "chosen_cell": "system",
+        "score": 0.7541934847831726,
+        "rejected_off_domain": false,
+        "candidates_before_filter": 5,
+        "candidates_after_filter": 5,
+        "latency_ms": 0.308
+      }
+    }
+  ]
+}

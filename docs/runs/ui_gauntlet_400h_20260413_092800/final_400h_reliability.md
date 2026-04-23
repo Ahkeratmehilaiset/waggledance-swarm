@@ -1,21 +1,21 @@
 # 400h Campaign — Reliability Analysis (MID-CAMPAIGN (TBD on completion))
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T23:05:24+00:00
+**Generated:** 2026-04-23T23:35:30+00:00
 
 ## Query-level reliability
 
-- Active queries sent: 39038
-- Response rate: 73.02%
+- Active queries sent: 39197
+- Response rate: 73.11%
 
 ## Latency distribution
 
 | Bucket | Count | % |
 |---|---|---|
 | <1s | 0 | 0.0% |
-| 1-2.5s | 17803 | 62.5% |
-| 2.5-5s | 6795 | 23.8% |
-| 5-10s | 2269 | 8.0% |
+| 1-2.5s | 17821 | 62.2% |
+| 2.5-5s | 6922 | 24.2% |
+| 5-10s | 2272 | 7.9% |
 | 10-20s | 1638 | 5.7% |
 | >20s | 1 | 0.0% |
 

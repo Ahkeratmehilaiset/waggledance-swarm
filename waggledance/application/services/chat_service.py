@@ -319,6 +319,39 @@ class ChatService:
                 query=query, intent=intent, k=5)
             trace_dict = trace_result.to_dict()
 
+            # Phase D-2 observer — record hybrid's would-be solver decision
+            # alongside what keyword routing chose (intent here = layer hint).
+            # Fire-and-forget — never blocks the chat response.
+            try:
+                if not hasattr(self, "_hybrid_observer"):
+                    from waggledance.core.reasoning.hybrid_observer import HybridObserver
+                    from pathlib import Path as _Path
+                    import yaml as _yaml
+                    _specs = {}
+                    _ax_dir = _Path("configs/axioms")
+                    if _ax_dir.exists():
+                        for _ax_path in _ax_dir.rglob("*.yaml"):
+                            try:
+                                _ax = _yaml.safe_load(open(_ax_path, encoding="utf-8")) or {}
+                                if _ax.get("model_id"):
+                                    _specs[_ax["model_id"]] = _ax.get("solver_output_schema", {})
+                            except Exception:
+                                pass
+                    self._hybrid_observer = HybridObserver(
+                        self._hybrid_retrieval, solver_specs=_specs,
+                    )
+                _kw_decision = {
+                    "layer": intent or "chat",
+                    "confidence": 0.5,
+                    "reason": f"intent={intent}",
+                }
+                import asyncio as _asyncio
+                _asyncio.create_task(self._hybrid_observer.record_candidate(
+                    query=query, keyword_decision=_kw_decision, intent=intent or "chat",
+                ))
+            except Exception:
+                pass
+
             if trace_result.hits and not trace_result.llm_fallback:
                 # Format hits into a response
                 _lang = language

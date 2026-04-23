@@ -385,6 +385,36 @@ class Container:
         )
 
     @cached_property
+    def hybrid_observer(self):
+        """Phase D-2 — observer that records hybrid's would-be solver decision
+        alongside keyword's actual decision in MAGMA trace.
+
+        Per v3 §1.1 candidate mode: hybrid traces both, production uses keyword.
+        Output: docs/runs/magma_hybrid_candidate_trace.jsonl
+        """
+        from waggledance.core.reasoning.hybrid_observer import HybridObserver
+        from pathlib import Path
+        import yaml
+
+        # Load all axiom solver_output_schemas
+        specs = {}
+        axioms_dir = Path("configs/axioms")
+        if axioms_dir.exists():
+            for axiom_path in axioms_dir.rglob("*.yaml"):
+                try:
+                    with open(axiom_path, encoding="utf-8") as f:
+                        axiom = yaml.safe_load(f) or {}
+                    if axiom.get("model_id"):
+                        specs[axiom["model_id"]] = axiom.get("solver_output_schema", {})
+                except Exception:
+                    pass
+
+        return HybridObserver(
+            hybrid_retrieval_service=self.hybrid_retrieval,
+            solver_specs=specs,
+        )
+
+    @cached_property
     def hybrid_backfill(self):
         """HybridBackfillService — idempotent cell-local FAISS population."""
         from waggledance.application.services.hybrid_backfill_service import (

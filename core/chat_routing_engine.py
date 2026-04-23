@@ -294,6 +294,34 @@ class ChatRoutingEngine:
                 except Exception as _he:
                     log.debug("Hybrid retrieval in legacy path failed: %s", _he)
 
+            # Phase D-2 observer — record hybrid's would-be solver decision
+            # alongside keyword's actual route. Fire-and-forget; never blocks.
+            if _hybrid_svc and _hybrid_svc.enabled and getattr(_hybrid_svc, 'mode', 'shadow') in ('candidate', 'shadow'):
+                try:
+                    if not hasattr(hive, '_hybrid_observer'):
+                        from waggledance.core.reasoning.hybrid_observer import HybridObserver
+                        from pathlib import Path as _Path
+                        import yaml as _yaml
+                        _specs = {}
+                        for _ax_path in _Path("configs/axioms").rglob("*.yaml") if _Path("configs/axioms").exists() else []:
+                            try:
+                                _ax = _yaml.safe_load(open(_ax_path, encoding="utf-8")) or {}
+                                if _ax.get("model_id"):
+                                    _specs[_ax["model_id"]] = _ax.get("solver_output_schema", {})
+                            except Exception:
+                                pass
+                        hive._hybrid_observer = HybridObserver(_hybrid_svc, _specs)
+                    _kw_decision = {
+                        "layer": getattr(route, "layer", ""),
+                        "confidence": getattr(route, "confidence", 0.0),
+                        "reason": getattr(route, "reason", ""),
+                    }
+                    asyncio.create_task(hive._hybrid_observer.record_candidate(
+                        query=message, keyword_decision=_kw_decision, intent=_intent,
+                    ))
+                except Exception as _oe:
+                    log.debug("Hybrid observer record failed: %s", _oe)
+
             # Fall back to global FAISS collections if hybrid didn't produce results
             if not _ret_hits:
                 for _col_name in ("bee_knowledge", "axioms", "agent_knowledge", "training_pairs"):

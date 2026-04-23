@@ -83,7 +83,7 @@ def start_server() -> None:
     log("starting gauntlet server...")
     subprocess.Popen(
         [str(PYTHON_EXE), str(SERVER_LAUNCHER)],
-        creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -120,7 +120,7 @@ def start_harness_mode(mode: str, campaign_dir: Path, segment_hours: int, target
     ]
     subprocess.Popen(
         args,
-        creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

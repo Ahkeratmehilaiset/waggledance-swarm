@@ -1,0 +1,93 @@
+Tämä on erinomaisesti jäsennelty suunnitelma. WaggleDance-arkkitehtuurin skaalaaminen on selvästi mietitty huolella, ja siirtyminen avainsanapohjaisesta reitityksestä upotuksiin (embeddings) on kriittinen askel kohti 10 000+ ratkaisijan tavoitetta.
+
+Tässä ovat suorat, kirjastojen toimintaan ja implementaatioon perustuvat vastaukset minulle osoitettuihin kysymyksiin.
+
+### 1. FAISS-indeksityyppi tässä skaalassa
+
+Pysy `IndexFlatL2`:ssa (tai `IndexFlatIP`:ssä, jos normalisoit vektorit kosinisamankaltaisuutta varten) pitkään. 
+
+Niin kauan kuin yhdessä solussa on alle 10 000 – 50 000 vektoria, tarkan haun (brute-force litteä indeksi) suorituskyky on mikrosekuntien luokkaa ja muistinkulutus täysin marginaalinen. `IndexIVFFlat` (joka klusteroi dataa nopeuttaakseen hakua) tai `IndexHNSWFlat` (graafipohjainen) tuovat mukanaan merkittävää ylläpidollista monimutkaisuutta, treenausvaatimuksia (IVF vaatii `train()`-kutsun riittävällä datamäärällä ennen käyttöä) ja muisti-overheadia, jota et tässä mittakaavassa tarvitse. Vaihto HNSW- tai IVF-indeksiin on ajankohtainen vasta, kun kaikkien solujen yhteenlaskettu vektorimäärä lähestyy miljoonaa tai kun huomaat profiilauksessa hakuaikojen ylittävän 5 millisekuntia.
+
+### 2. Ollaman nomic-embed-eräkoko
+
+Ollaman uudemmat versiot tukevat suoraan taulukoiden lähettämistä `/api/embed`-päätepisteeseen (huom: ei vanha `/api/embeddings`). 
+
+Suositeltu eräkoko (batch size) tyypillisellä kuluttajatason näytönohjaimella (esim. RTX 3060/4070 tai jopa pelkkä CPU-laskenta) on 16–32. Yli 64:n eräkoot eivät usein tuo merkittävää nopeushyötyä `nomic-embed-text`-mallilla paikallisessa Ollama-instanssissa ja saattavat aiheuttaa VRAM-piikkejä. Axiom-backfill-työkalussa kannattaa ehdottomasti käyttää eräajoa, sillä 1000 aksiooman yksittäinen prosessointi on verkon ja HTTP-overheadin takia huomattavasti hitaampaa kuin niiden lähettäminen 32 vektorin erissä.
+
+### 3. Vektorien ulottuvuudet ja PQ (Product Quantization)
+
+Et tarvitse PQ-kvantisointia (`IndexIVFPQ`) vielä pitkään aikaan. 
+
+Kuten itsekin laskit, 8 solua × 1000 ratkaisijaa = 8000 vektoria vie alle 25 megatavua keskusmuistia. Vaikka Dream Mode lisäisi 5000 tapauspolkua (case trajectory) per solu, kokonaisvektorimäärä on noin 40 000. Tämä vie muistia noin 120 MB. Nykyaikaisessa Windows-koneessa tämä on täysin huomaamaton määrä. PQ:n käyttöönotto heikentää aina haun tarkkuutta (recall), ja se kannattaa ottaa käyttöön vasta, kun RAM-muistin kulutus alkaa oikeasti rajoittaa järjestelmän toimintaa (tyypillisesti > 1–5 miljoonan vektorin skaalassa).
+
+### 4. FAISS-persistenssi Windowsilla
+
+Tämä on kriittinen riskipiste. Linuxilla tiedostojärjestelmä sallii avattujen tiedostojen korvaamisen tai poistamisen joustavammin (inode-viittaukset säilyvät lukuoperaatioilla). Windowsilla tiedostolukitukset ovat ehdottomia.
+
+Jos yrität kirjoittaa `write_index`-komennolla olemassa olevan indeksitiedoston päälle samalla kun HTTP-säie lukee sitä, Windows heittää erittäin todennäköisesti `PermissionError`-poikkeuksen (Error 32: The process cannot access the file because it is being used by another process). 
+
+**Ratkaisu:** Älä koskaan ylikirjoita aktiivista indeksitiedostoa suoraan. Kirjoita päivitetty indeksi aina väliaikaistiedostoon (esim. `cell_1.index.tmp`) ja käytä sen jälkeen `os.replace('cell_1.index.tmp', 'cell_1.index')` -komentoa. Pythonin `os.replace` pyrkii olemaan atominen myös Windowsilla, mikä minimoi luku- ja kirjoitusoperaatioiden väliset kilpatilanteet.
+
+### 5. HybridRetrievalService.retrieve() -konkurrenssi
+
+Vaikka FAISSin C++ -ydin vapauttaa Pythonin Global Interpreter Lockin (GIL) `search()`-operaation ajaksi, täysi asynkronisuus on turvallisempaa. 
+
+FastAPI:n event loop ei pysähdy C++-tason suoritukseen, mutta Python-tason esikäsittely, muistiosoittimien siirtely ja FAISSin Python-wrapperin ylärakenne vievät aikaa. Koska tavoitteena on pitää latenssi alle 30 millisekunnissa ja järjestelmän tulee kestää kymmeniä kyselyitä sekunnissa (QPS), `search()`-kutsun kääriminen `asyncio.to_thread()` -sisään on erinomainen ennaltaehkäisevä käytäntö. Se takaa, että pidentyneet haut (esim. ring2-laajennuksen aikana) eivät blokkaa samanaikaisia reitityspyyntöjä.
+
+### 6. Vertailu SOTA-ratkaisuihin (State-of-the-Art)
+
+Hex-solut (ja ring1/ring2-laajennus) ovat arkkitehtuurina uniikkeja, kokeellisia ja biologisesti inspiroituneita. Teollisuuden standardi 1000–10 000 dokumentin reitityksessä ei kuitenkaan tyypillisesti käytä kovia rajapintoja (kuten eristettyjä soluja). 
+
+Alan standardi (esim. Anthropicin sisäiset työkalut tai LangChain/LlamaIndex-tuotantototeutukset) on yksinkertaisempi: 
+1. **Bi-encoder (karkea haku):** Yksi globaali HNSW- tai Flat-indeksi, josta haetaan kerralla top-20 kandidaattia.
+2. **Cross-encoder (uudelleenjärjestely):** Pieni ja nopea reranker-malli (esim. `bge-reranker-base`), joka pisteyttää nämä 20 kandidaattia uudelleen suhteessa alkuperäiseen kyselyyn, koska Cross-Encoder ymmärtää kontekstin huomattavasti paremmin kuin upotusten kosinietäisyys.
+
+Hex-arkkitehtuurin riski on se, että se pakottaa kovia raja-aitoja sinne, missä semanttinen avaruus on jatkuva. Suunnittelemasi ring1/ring2-malli kiertää tätä ongelmaa, mutta käytännössä simuloit monimutkaisella tavalla sitä, mitä standardi kNN-haku yhdestä isosta indeksistä tekisi luonnostaan. Pidä tämä mielessä skaalautumissuunnitelmassa.
+
+### 7. Idempotenssi ja duplikaatit
+
+FAISS `IndexFlatL2` ei ymmärrä dokumenttien ID:tä alkuunkaan. Jos lisäät vektorin kahdesti, sinulla on kaksi identtistä vektoria. Vaikka käyttäisit `IndexIDMap`-käärettä, se vain yhdistää vektorit ja kokonaisluku-ID:t (integer IDs); se **ei** poista vanhaa vektoria, jos lisäät uuden samalla ID:llä. 
+
+**Ratkaisu:** Tarvitset ehdottomasti oman deduplikointilogiikan sovellustasolla. `solver_hash.canonical_hash` on juuri oikea työkalu tähän. Ennen kuin lisäät aksiooman FAISSiin backfill-työkalussa, tarkista paikallisesta metadata-rekisteristä tai avain-arvo-varastosta, onko kyseinen `model_id` ja sitä vastaava hash jo olemassa ja muuttumaton. Vain muuttuneet tai uudet aksioomat lisätään.
+
+---
+
+Vaikuttaako tämän teknisen arvion pohjalta siltä, että Phase C:n "Shadow validation" -vaiheessa kannattaisi suoraan mitata Hex-solu-arkkitehtuurin tarkkuutta vertaamalla sitä yhden suuren, kaiken kattavan "Flat" FAISS-indeksin tuottamiin tuloksiin, jotta näkisit oikeuttaako solurakenne oman monimutkaisuutensa?
+
+Tässä on analyysi WaggleDance v3.5.7:n (2026-04-23) Hex-solutopologian ja hybridireitityksen suorituskykymetriikoista ja niihin liittyvistä hypoteeseista.
+
+### Nykytila: Avainsanareitityksen (Keyword Routing) peruslinja
+
+Tällä hetkellä järjestelmän suorituskyky nojaa deterministiseen, avainsanapohjaiseen heuristiikkaan:
+* **Reitityslatenssi:** Erittäin matala, noin **0.001 ms – 0.17 ms** per kysely.
+* **Skaalautuvuusraja:** Arkkitehtuuri rikkoutuu 500–1000 ratkaisijan (solver) kohdalla avainsanojen päällekkäisyyksien vuoksi.
+* **Luotettavuus:** Tuotannossa ei ole tällä hetkellä virheitä (0 product defects) 400 tunnin UI-testikampanjan aikana.
+
+### Aiempien testien tulokset (v3.5.0 Proof Run)
+
+Aiemmassa 30 tunnin rasitustestissä (case-trajectory backfill -skenaariossa) saatiin seuraavat tulokset:
+* **p50-latenssin muutos:** **9055 ms $\rightarrow$ 4231 ms** (-53 %).
+
+**Kriittinen havainto tästä metriikasta:** Reititys itsessään ei voi viedä yhdeksää sekuntia. Tämä 9055 ms on koko järjestelmän *päästä päähän -latenssi*, johon sisältyy hidas LLM-fallback (Ollama/Gemma). Hybridi-reitityksen valtava latenssivoitto ei siis johdu siitä, että se tekisi *reitityksestä* nopeampaa (se on itse asiassa hitaampaa kuin avainsanahaku), vaan siitä, että se **vähentää raskaiden LLM-kutsujen tarvetta** löytämällä nopean deterministisen ratkaisijan useammin.
+
+### Tulevat tavoitemetriikat (Phase E: 24h Validation)
+
+Jotta hybridireititys voidaan jättää tuotantoon, sen on läpäistävä seuraavat tiukat kriteerit suhteessa avainsanareititykseen:
+
+| Metriikka | Hyväksymisraja (Hypoteesi) | Analyysi |
+| :--- | :--- | :--- |
+| **Mediaanilatenssi (reititys)** | Hybridi $\le$ Avainsana + 5 ms | Hyväksytään kompromissina. Ollaman `nomic-embed-text` ja FAISS-haku tuovat väistämättä muutaman millisekunnin lisän, mutta alle 5 ms:n hidastuminen on merkityksetön hyötyihin nähden. |
+| **LLM-fallback-aste** | Laskee $\ge$ 5 %-yksikköä | Tämä on järjestelmän kokonaisnopeuden kannalta kriittisin mittari. Jokainen vältetty LLM-kutsu säästää sekunteja. |
+| **Solver hit rate** | Nousee $\ge$ 10 %-yksikköä | Määrittää arkkitehtuurin kyvyn ymmärtää semanttista intentiota paremmin kuin jäykät avainsanat. |
+| **p95 Latenssipiikit** | $\le$ 50 ms (Alert-raja) | Varmistaa, että raskaammat ring1/ring2-haut tai solujen samanaikaiset lataukset eivät aiheuta merkittäviä pullonkauloja kyselypiikkien aikana. |
+| **Muistin kasvu** | Max +10 % peruslinjasta | FAISS-indeksien ja upotusmallin vaatima muisti-overhead on pysyttävä kurissa, erityisesti luvatussa IoT-kohdeympäristössä (Raspberry Pi). |
+
+### Arkkitehtuurin sisäiset riskit ja pullonkaulat
+
+1.  **Metriikoiden vääristymä (Shadow Validation Bias):** Phase C:n validointi vertaa uutta hybridimallia vanhoihin kyselyihin, joissa avainsanareitityksen päätös on jo leimattu "oikeaksi" (ground truth). Tämä rankaisee hybridimallia epäreilusti tilanteissa, joissa se tekisi *paremman* mutta erilaisen reitityspäätöksen kuin alkuperäinen heuristiikka.
+2.  **Solu-abstraktion ylläpitokulut:** Hex-topologian (8 solua, 6 naapuria) ja renkaiden (ring1/ring2) latenssihyöty on vielä todistamatta verrattuna yhteen litteään FAISS-indeksiin 14 aksiooman mittakaavassa. Riskinä on, että solujen rajojen yli tapahtuva haku (ring1/ring2) nostaa p95-latenssin yli sallitun 50 ms:n rajan ilman merkittävää parannusta osumatarkkuudessa.
+
+---
+
+
+

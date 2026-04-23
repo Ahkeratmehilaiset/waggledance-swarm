@@ -1,0 +1,596 @@
+Huom: osa vanhoista aiemmin ladatuista tiedostoista on vanhentunut, mutta luin tämän uuden liitteen `hybrid_retrieval_activation_review_2026-04-23.md` onnistuneesti. Alla on vastaukseni nimenomaan **GPT-5 / architecture-correctness reviewer** -osioon sekä tiivis suositus siitä, miten suunnitelmaa kannattaa muuttaa ennen toteutusta.
+
+## Tiivis johtopäätös
+
+**Älä vielä tee “flip `enabled: true` ja katso mitä tapahtuu” -tyyppistä tuotantoaktivointia.** Tee ensin axiom-backfill, shadow-ajot ja muutama arkkitehtuurinen turvaportti. Suunnitelma on vahva, mutta nykyinen suurin riski on tämä: hybridikerros kuulostaa embedding-pohjaiselta, mutta **ensimmäinen cell assignment on edelleen keyword-pohjainen**, joten väärä alkusolu voi estää embeddingin hyödyn juuri niissä tapauksissa, joissa sitä eniten tarvitaan. Suunnitelmassa tämä on jo tunnistettu riskiksi, mutta mitigation pitää tehdä ennen tuotantoaktivointia, ei vasta fallbackina. Nykytilan mukaan `assign_cell()` käyttää intent/keyword-logiikkaa, kun taas `HybridRetrievalService.retrieve()` tekee enabled-tilassa local cell FAISS → ring-neighbor FAISS → global Chroma → LLM -polun; samalla axiom-backfill puuttuu vielä, koska nykyinen backfill perustuu CASE-trajectoreihin eikä `configs/axioms/*.yaml` -solverikirjastoon. 
+
+Minun suositus on: **ota hybrid retrieval käyttöön ensin “shadow + candidate routing” -tilassa, ei heti authoritative routing -tilassa.** Aja 24–48 h mittaus, jossa hybrid saa ehdottaa, mutta tuotanto käyttää vielä nykyistä reittiä. Vasta kun oracle-setti, shadow-setti ja live-mittarit täyttyvät, vaihda hybrid authoritativeksi.
+
+---
+
+## 1. Cell assignment honesty
+
+Nykyinen arkkitehtuuri on **koherentti siirtymävaiheena**, mutta ei vielä riittävä 10k solverin roadmapille. Se on käytännössä kaksivaiheinen router: keyword-pohjainen coarse cell router ja embedding-pohjainen intra-cell ranker. Tämä on järkevä, jos coarse router on lähes aina oikeassa. Mutta jos coarse router tekee virheen, embedding-haku tapahtuu väärässä solussa ja hyöty katoaa, ellei ring1/ring2 tai global fallback pelasta tilannetta.
+
+Eli vastaus: **se ei täysin mitätöi embedding-hyötyä, mutta se rajaa sen väärään paikkaan**. Hybridin tärkein hyöty pitäisi olla juuri semanttinen “lämpöpumpun sähkönkulutus pakkasella” → thermal/energy-silta, ei vain parempi järjestys jo valitun keyword-solun sisällä.
+
+Minimaalinen korjaus:
+
+1. Axiom-backfillin jälkeen laske jokaiselle ei-tyhjälle solulle **cell centroid**: kaikkien kyseisen solun solver/alias-embeddingien keskiarvo.
+2. Tee shadow-ajossa rinnakkain:
+
+   * `keyword_cell = assign_cell(intent, query)`
+   * `embedding_cell_top3 = nearest cell centroids`
+3. Tuotannon candidate-setti ei saa olla vain keyword-cell. Sen pitää olla:
+
+   * keyword_cell
+   * top-1 tai top-3 centroid cell
+   * keyword_cellin non-empty ring1-naapurit
+   * centroid top-1:n non-empty ring1-naapurit
+4. Jos keyword ja centroid ovat eri mieltä, merkitse reitti `cell_disagreement=true` MAGMA/audit-traceen.
+5. Jos local score < `sufficient_score`, laajenna automaattisesti ring1:een. Jos edelleen alle `min_score`, vasta sitten Chroma/LLM.
+
+Tämä säilyttää hex-topologian, mutta estää sen, että keyword-router lukitsee haun väärään soluun. Suunnitelman nykyinen Phase C mittaa keyword vs hybrid -agreementia, mutta lisäisin siihen myös **keyword-cell vs centroid-cell disagreement rate** -mittarin. 
+
+---
+
+## 2. Empty-cell failure mode
+
+Tyhjät solut ovat vaarallinen mutta hyödyllinen signaali. Suunnitelmassa todetaan, että `seasonal` ja `learning` ovat tyhjiä, vaikka 14 solveria on jo jaettu kahdeksaan soluun. 
+
+Minun vastaus: **älä kiellä reititystä tyhjään soluun, mutta älä koskaan hae tyhjästä solusta ikään kuin se olisi normaali solu.** Tyhjä solu tarkoittaa “tämä domain on roadmapissa, mutta solverikirjasto ei kata sitä vielä”. Se on arvokas gap-sensori.
+
+Turvallinen policy:
+
+```text
+if target_cell.is_empty:
+    record empty_cell_miss(cell_id, query_hash, intent, centroid_score)
+    search non-empty ring1 neighbors
+    if no candidates above threshold:
+        search global solver FAISS
+    if still no candidate:
+        fallback to LLM
+```
+
+En suosittele auto-mergeä suurimpaan naapuriin, koska se peittää tiedonpuutteen. Esimerkiksi `learning`-solun tyhjyys on eri asia kuin `general`-soluun kuuluva kysely. Auto-merge saisi mittarit näyttämään paremmilta, mutta tekisi roadmapista epärehellisemmän.
+
+Lisäisin manifestiin ja status-API:in:
+
+```yaml
+cell_status:
+  seasonal:
+    solver_count: 0
+    routing_allowed: true
+    search_allowed: false
+    fallback_policy: ring1_then_global_then_llm
+```
+
+Tuotantogate: hybrid saa olla authoritative vain, jos empty-cell-missit eivät nosta LLM fallbackia yli rollback-rajan.
+
+---
+
+## 3. Finnish/English symmetry
+
+Tämä on erittäin tärkeä kohta WD:lle, koska projekti käyttää suomea ja englantia sekaisin. Jos solverin teksti on englanniksi ja kysely suomeksi, yhden embeddingin varaan ei kannata laskea, ellei käytössä oleva embedding-malli ole todistetusti hyvä cross-lingual juuri näille domaineille.
+
+Suunnitelmassa käytetään Ollama `nomic-embed-text` -embeddingiä paikallisesti.  Nomicin uudempi v2-malli on kuvattu multilingual-malliksi, mutta tämä ei automaattisesti todista, että juuri käytössä oleva Ollama `nomic-embed-text` -tagi toimii hyvin suomi–englanti-symmetriassa, joten tämä pitää mitata eikä olettaa. ([home.nomic.ai][1])
+
+Suositus: tee solverille **multi-view embeddings**:
+
+```text
+canonical solver id: heating_cost
+embedding docs:
+  heating_cost#en
+  heating_cost#fi
+  heating_cost#synonyms
+  heating_cost#variables_units
+  heating_cost#examples
+```
+
+Kaikilla on sama `canonical_model_id=heating_cost`, mutta eri `view_lang` ja `view_type`.
+
+Backfill-tekstin ei pidä olla vain:
+
+```text
+model_id + name + description + formula names + variable keys
+```
+
+vaan esimerkiksi:
+
+```yaml
+canonical_model_id: heating_cost
+views:
+  - lang: en
+    text: "Cottage heating cost estimate. Calculate electricity cost..."
+  - lang: fi
+    text: "Mökin lämmityskustannus. Paljonko lämmitys maksaa..."
+  - lang: mixed
+    text: "heating lämmitys cost kustannus electricity sähkö kWh euro..."
+  - type: examples
+    text: "paljonko lämmitys maksaa; what does heating cost; sähkön hinta..."
+```
+
+Haussa top-k pitää deduplikoida `canonical_model_id`:n mukaan, muuten yksi solver voi täyttää kaikki top-5 osumat omilla kielialiasteillaan.
+
+Lisää myös **language-balance shadow set**:
+
+* 100 suomenkielistä kyselyä
+* 100 englanninkielistä kyselyä
+* 100 mixed-language kyselyä
+* 100 typo/puhekieli-kyselyä
+
+Pass criterion ei saa olla vain aggregate. Tarvitaan:
+
+```text
+fi recall@5 >= en recall@5 - 5 percentage points
+mixed recall@5 >= 80%
+```
+
+---
+
+## 4. Shadow validation correctness
+
+Nykyinen Phase C on hyvä alku, mutta siinä on juuri se bias, jonka kysymys tunnistaa: jos “ground truth” on nykyisen keyword-routerin päätös, hybrid saa rangaistuksen aina kun se löytää paremman mutta eri reitin. Suunnitelma ehdottaa ≥80% agreementia keyword-reitityksen kanssa ja ≥5% uusia oikeita reittejä, mutta “oikea” pitää määritellä muuten kuin keywordin perusteella. 
+
+Ehdotan kolmea kolmannen osapuolen truth sourcea:
+
+### A. Axiom oracle set
+
+Jokaiselle solverille generoidaan käsin tai automaattisesti 20–50 positiivista ja 20 negatiivista kyselyä.
+
+Esimerkki:
+
+```yaml
+solver: heating_cost
+positive:
+  - "paljonko lämmitys maksaa"
+  - "what is heating cost for 120 kWh at 0.18 €/kWh"
+  - "laske mökin lämmityskulut"
+negative:
+  - "onko lämpöpumppu rikki"
+  - "milloin kannattaa sulkea ilmanvaihto"
+  - "mikä on hunajan tuotto"
+```
+
+Tämä on paras truth source solver-routingiin, koska se ei riipu keyword-routerin historiasta.
+
+### B. Verified CaseTrajectory truth
+
+Historiasta vain ne tapaukset, joissa:
+
+```text
+route_type = solver
+verifier_pass = true
+quality_tier in GOLD/SILVER
+```
+
+Jos keyword-router teki päätöksen mutta verifier hylkäsi tai quality tier oli BRONZE/QUARANTINE, sitä ei saa käyttää truthina.
+
+### C. Blind adjudication set
+
+Ota 200–500 queryä 400h-gauntletista ja anna Claude/GPT/Gemini tai ihminen merkitä “expected solver / expected no-solver” ilman tietoa siitä, mitä keyword-router teki. Tämä on kallis, mutta se ratkaisee biasin.
+
+Uudet mittarit:
+
+```text
+oracle_recall_at_1
+oracle_recall_at_5
+oracle_precision_at_1
+false_solver_activation_rate
+false_llm_fallback_rate
+keyword_agreement_rate        # migration risk only, not correctness
+hybrid_unique_correct_rate
+```
+
+Muuta Phase C pass criterion näin:
+
+```text
+MUST:
+- oracle precision@1 >= keyword precision@1 - 2pp
+- oracle recall@5 >= keyword recall@5 + 5pp
+- false solver activation <= 1%
+- no-auth/security/UI metrics unchanged
+- routing p95 <= keyword p95 + 10ms, excluding embedding cold-start
+
+SHOULD:
+- LLM fallback decreases >= 5pp on oracle/verified cases
+- keyword disagreement explained by better oracle hit, not random drift
+```
+
+---
+
+## 5. FAISS read/write race
+
+Lyhyt vastaus: **älä salli read-during-writeä samaan FAISS-indeksiin.**
+
+FAISS-dokumentaatio sanoo suoraan, että CPU-indeksien samanaikaiset haut ovat tuettuja, mutta samanaikainen search/add tai add/add ei ole tuettu ilman kutsuvan koodin lukitusta. GPU-indeksit eivät ole thread-safe edes read-only-käyttöön samalla tavalla. ([GitHub][2])
+
+Turvallinen WD-malli:
+
+### Vaihtoehto 1: RW-lock per cell
+
+```python
+class CellIndex:
+    lock: ReaderWriterLock
+    index: FaissCollection
+    version: int
+
+    def search(...):
+        with lock.read_lock():
+            return index.search(...)
+
+    def add_or_replace(...):
+        with lock.write_lock():
+            index.add(...)
+            persist()
+            version += 1
+```
+
+Tämä on yksinkertainen, mutta write voi hetkellisesti blokata searchin.
+
+### Vaihtoehto 2: RCU / copy-on-write snapshot
+
+Parempi tuotantoon:
+
+```text
+readers use immutable current_index pointer
+writer builds new index copy in background
+writer persists temp file
+writer atomically renames temp → final
+writer swaps pointer under tiny lock
+old readers finish on old index
+new readers use new index
+```
+
+Tämä sopii WD:n tyyliin paremmin, koska Dream Mode voi päivittää indeksejä batchina ilman että HTTP-reititys pysähtyy.
+
+Käytännön sääntö:
+
+* Axiom-backfill ei saa kirjoittaa live-indeksiä suoraan.
+* Se kirjoittaa `data/faiss_staging/`.
+* Validation ajaa staging-indeksiä vasten.
+* Enable/swap siirtää stagingin liveksi atomisesti.
+* Jokainen retrieval trace sisältää `faiss_index_version`.
+
+Lisää MAGMA/audit-kentät:
+
+```yaml
+retrieval_trace:
+  query_hash:
+  embedding_model:
+  embedding_dim:
+  keyword_cell:
+  centroid_cells_top3:
+  searched_cells:
+  candidate_doc_ids:
+  chosen_doc_id:
+  chosen_score:
+  faiss_index_version:
+  fallback_stage:
+```
+
+Ilman tätä hybrid retrieval heikentää WD:n tärkeintä kilpailuetua eli auditoitavuutta.
+
+---
+
+## 6. Negation problem
+
+Embedding ei ratkaise negointia eikä kysymystyyppiä. Se löytää “heating_cost”-solverin sekä kysymykselle “paljonko lämmitys maksaa” että “onko lämmityskustannus yli 50 €”. Tämä ei ole välttämättä virhe, koska sama solver voi laskea kustannuksen, mutta vastausmuoto on eri.
+
+Ratkaisu: **ennen solver selectionia tarvitaan kevyt semantic frame / question type -kerros.**
+
+Ei raskasta LLM:ää. Aloita deterministisellä parserilla:
+
+```yaml
+question_frame:
+  domain: thermal/energy
+  desired_output:
+    type: numeric | boolean_comparison | explanation | diagnosis | optimization
+  comparator:
+    op: ">" | "<" | ">=" | "<=" | "=" | null
+    threshold: 50
+    unit: EUR
+  negation:
+    present: true/false
+    scope: cost/heating/device/etc
+```
+
+Silloin kysymys:
+
+```text
+"onko lämmityskustannus yli 50 €?"
+```
+
+reitittyy:
+
+```text
+solver = heating_cost
+postprocessor = compare(output.cost_eur > 50)
+answer_type = boolean_with_explanation
+```
+
+Mutta kysymys:
+
+```text
+"älä laske sähkölämmitystä, vaan puulämmitys"
+```
+
+ei saa mennä samaan constraintiin ilman että negation scope ymmärretään.
+
+Tarvittavat lisäykset solver schemaan:
+
+```yaml
+outputs:
+  cost_eur:
+    type: number
+    unit: EUR
+    comparable: true
+
+postprocessors:
+  - threshold_compare
+  - unit_convert
+  - explain_numeric_result
+```
+
+Tarvittavat testit:
+
+* boolean threshold suomi/englanti
+* “not / ei / älä” -negation
+* unit conversion: kWh, €, €/kWh
+* query asks explanation but solver returns numeric
+* query asks optimization: “mikä halvin asetus”
+* false activation: semanttisesti lähellä mutta eri domain
+
+Tärkeä periaate: retrieval valitsee **mikä tieto/solver tarvitaan**, mutta response composer päättää **minkä muotoinen vastaus annetaan**.
+
+---
+
+## Suunnitelmaan tekemäni muutokset ennen toteutusta
+
+Pitäisin alkuperäisen A–F-rungon, mutta muuttaisin järjestystä ja gateja näin:
+
+### Phase B.0 — Axiom multi-view backfill
+
+Ennen tavallista backfilliä:
+
+* luo per solver monikieliset/multi-view dokumentit
+* dedupe `canonical_model_id`:llä
+* lisää solver_hash metadataan
+* merkitse `view_type`
+* älä vielä kirjoita live-indeksiin, vaan stagingiin
+
+### Phase B.1 — Cell centroid assignment
+
+* laske centroidit vain ei-tyhjille soluille
+* tallenna `cell_centroids.json`
+* lisää `assign_cell_embedding(query_vec)` shadow-käyttöön
+
+### Phase B.2 — Empty-cell policy
+
+* empty cell = valid target, invalid local search source
+* loggaa `empty_cell_miss`
+* ring1/global fallback
+* älä auto-mergeä
+
+### Phase C — Oracle-first shadow validation
+
+Älä käytä keyword-agreementia pääasiallisena correctness-mittarina. Käytä:
+
+* axiom oracle set
+* verified CaseTrajectory set
+* blind adjudication set
+* keyword agreement vain migration-risk-mittarina
+
+### Phase D — Candidate mode
+
+Ennen `enabled=true` authoritativeksi:
+
+```yaml
+hybrid_retrieval:
+  enabled: true
+  mode: shadow  # shadow | candidate | authoritative
+```
+
+Candidate mode:
+
+* hybrid laskee ehdotuksen
+* tuotanto käyttää vielä vanhaa routea
+* audit kirjaa molemmat
+
+Authoritative vasta passin jälkeen.
+
+### Phase E — Kill signals tarkemmiksi
+
+Rollback heti, jos jokin seuraavista täyttyy 100 queryn sliding windowissa:
+
+```text
+false_solver_activation_rate > 1%
+LLM fallback rate rises > 3pp for 3 consecutive windows
+p95 routing latency > keyword_p95 + 25ms for 3 consecutive windows
+embedding endpoint timeout rate > 2%
+backend 5xx > baseline + 0.5pp
+auth/XSS/DOM metrics regress from zero
+memory growth > baseline + 15%
+FAISS index version mismatch or read/write race detected
+```
+
+---
+
+## Päätökseni: aktivoidaanko nyt?
+
+**Kyllä, mutta ei heti authoritative-tuotantoreitityksenä.**
+
+Tarkka päätös:
+
+```text
+Proceed with implementation of axiom backfill + centroid shadow routing + oracle validation.
+Do NOT flip production authoritative routing yet.
+Enable only shadow/candidate mode first.
+Promote to authoritative only after oracle + 24h live metrics pass.
+```
+
+Tämä antaa sinulle parhaat puolet molemmista:
+
+* hybrid alkaa tuottaa todistettavia mittareita
+* 400h kampanjaa voidaan käyttää datana
+* MAGMA säilyy totuuden lähteenä
+* tuotantovakaus ei vaarannu
+* scaling story muuttuu hype-puheesta mitattavaksi insinöörityöksi
+
+---
+
+## Claude Codelle annettava lisäprompti suunnitelman päivittämiseen
+
+```text
+Update the hybrid_retrieval activation plan before implementation.
+
+Use the existing plan:
+docs/plans/hybrid_retrieval_activation_review_2026-04-23.md
+
+Apply these GPT architecture review resolutions:
+
+1. Do not enable hybrid retrieval as authoritative immediately.
+   Add modes:
+   - shadow
+   - candidate
+   - authoritative
+
+2. Add embedding-based cell centroid assignment.
+   Keep keyword assignment, but compute centroid top-k in parallel.
+   Retrieval candidate cells must be:
+   - keyword cell
+   - top-3 centroid cells
+   - non-empty ring1 neighbors of both
+   Log keyword/centroid disagreement.
+
+3. Add empty-cell policy:
+   - empty cells are valid semantic targets
+   - empty cells are not searched locally
+   - record empty_cell_miss
+   - fallback to non-empty ring1, then global, then LLM
+   - do not auto-merge empty cells
+
+4. Change axiom backfill to multi-view embeddings:
+   - canonical solver id
+   - English view
+   - Finnish view
+   - mixed synonym/unit view
+   - example-query view
+   - dedupe top-k by canonical_model_id
+
+5. Replace Phase C correctness methodology.
+   Keyword agreement is not ground truth.
+   Add three truth sources:
+   - axiom oracle set
+   - verified GOLD/SILVER CaseTrajectory set
+   - blind adjudication set
+   Metrics:
+   - precision@1
+   - recall@5
+   - false_solver_activation_rate
+   - false_llm_fallback_rate
+   - keyword_agreement_rate as migration risk only
+
+6. Add FAISS concurrency safety.
+   Read-during-write is not allowed.
+   Implement either:
+   - per-cell reader/writer lock, or
+   - preferred: copy-on-write / RCU index snapshots
+   Backfill must write staging index first.
+   Swap live index atomically.
+   Every retrieval trace must include faiss_index_version.
+
+7. Add negation/question-type parser before final solver activation.
+   Retrieval may select heating_cost, but response composition must know whether the user asked:
+   - numeric answer
+   - boolean threshold comparison
+   - explanation
+   - diagnosis
+   - optimization
+   Add tests for Finnish and English negation/thresholds.
+
+8. Add MAGMA retrieval trace fields:
+   - query_hash
+   - embedding_model
+   - embedding_dim
+   - keyword_cell
+   - centroid_cells_top3
+   - searched_cells
+   - candidate_doc_ids
+   - chosen_doc_id
+   - chosen_score
+   - fallback_stage
+   - faiss_index_version
+   - empty_cell_miss
+   - keyword_centroid_disagreement
+
+9. Tighten rollback kill signals:
+   - false_solver_activation_rate > 1%
+   - LLM fallback rises > 3pp for 3 consecutive windows
+   - p95 routing latency > keyword_p95 + 25ms for 3 consecutive windows
+   - embedding timeout rate > 2%
+   - backend 5xx > baseline + 0.5pp
+   - auth/XSS/DOM metrics regress
+   - memory growth > baseline + 15%
+   - FAISS index version mismatch
+
+10. Produce updated plan:
+docs/plans/hybrid_retrieval_activation_refined_2026-04-23.md
+
+Do not modify runtime yet.
+Do not flip configs/settings.yaml.
+Do not change version/tag/release.
+Commit only the refined plan.
+```
+
+Tällä tavalla suunnitelmasta tulee huomattavasti vahvempi: se ei vain “ota hybridin käyttöön”, vaan tekee WD:stä todistettavasti skaalautuvan solver-hunajakennon ilman, että nykyinen v3.5.7:n vakaus ja MAGMA-audit vaarantuvat.
+
+[1]: https://home.nomic.ai/blog/posts/nomic-embed-text-v2?utm_source=chatgpt.com "Nomic Blog: Nomic Embed Text V2: An Open Source, Multilingual, Mixture-of-Experts Embedding Model"
+[2]: https://github.com/facebookresearch/faiss/wiki/FAQ?utm_source=chatgpt.com "FAQ · facebookresearch/faiss Wiki · GitHub"
+
+Tein valmiin markdown-dokumentin: **Hex Topology Performance Metrics — WaggleDance v3.5.7, 2026-04-23**.
+
+Lataa se tästä: [hex_topology_performance_metrics_2026-04-23.md](sandbox:/mnt/data/hex_topology_performance_metrics_2026-04-23.md)
+
+Huomio: osa aiemmista liitteistä on vanhentunut, joten dokumentti nojaa tässä keskustelussa annettuun tilanteeseen ja viimeisimpään hybrid retrieval -suunnitelman kontekstiin. Jos haluat, että teen tästä vielä täysin repo-synkatun version tiedostopolku- ja koodiviittauksilla, lataa tarvittavat nykyiset tiedostot uudelleen tai pyydä Claude Codea lukemaan repo suoraan.
+
+Sisältö kattaa muun muassa:
+
+* hex-cell coverage ja occupancy
+* keyword vs centroid routing -rehellisyys
+* empty-cell failure policy
+* oracle precision@1 / recall@5
+* ring1/ring2/global/LLM fallback -mittarit
+* composite intelligence / bridge solver -mittarit
+* MAGMA retrieval trace -kentät
+* FAISS index safety ja atomic swap -mittarit
+* multilingual Finnish/English symmetry
+* negation ja question-type parser -mittarit
+* 24h/400h campaign gates
+* Prometheus-metriikkanimet
+* rollback / kill signals
+* dashboard-layout
+* shadow → candidate → authoritative activation gate
+
+Tämä on tarkoitettu suoraan lisättäväksi esimerkiksi:
+
+```text
+docs/plans/hex_topology_performance_metrics_2026-04-23.md
+```
+
+Claude Codelle voi antaa tämän lyhyen jatkokomennon:
+
+```text
+Add the downloaded document as:
+docs/plans/hex_topology_performance_metrics_2026-04-23.md
+
+Then update:
+- docs/plans/hybrid_retrieval_activation_refined_2026-04-23.md
+- docs/runs/release_followup_index.md
+- README.md, only if appropriate
+
+Do not change runtime code yet.
+Do not flip hybrid_retrieval enabled/authoritative.
+Commit docs only with message:
+docs: add hex topology performance metrics for v3.5.7
+```

@@ -1,9 +1,9 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T12:40:49+00:00
+**Generated:** 2026-04-23T13:10:54+00:00
 **Main ref:** `main~30`
-**Total green:** 247.27h / 400h (MID-CAMPAIGN)
+**Total green:** 263.28h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
@@ -33,7 +33,7 @@
 - `waggledance/core/reasoning/hybrid_router.py`
 - `waggledance/core/reasoning/question_frame.py`
 
-### TEST_HARNESS (63 files)
+### TEST_HARNESS (65 files)
 
 - `docs/runs/RESUME_HERE.md`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.json`
@@ -65,9 +65,9 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_045.json`
-- … and 33 more
+- … and 35 more
 
-### DOCS_NARRATIVE (20 files)
+### DOCS_NARRATIVE (19 files)
 
 - `docs/plans/GPT.txt`
 - `docs/plans/GPT_response2.txt`
@@ -78,7 +78,6 @@
 - `docs/plans/grock.txt`
 - `docs/plans/hex_topology_performance_metrics_2026-04-23.md`
 - `docs/plans/hybrid_retrieval_activation_refined_2026-04-23.md`
-- `docs/plans/hybrid_retrieval_activation_review_2026-04-23.md`
 - `docs/plans/hybrid_retrieval_activation_v3_1_amendments_2026-04-23.md`
 - `docs/plans/hybrid_retrieval_activation_v3_2026-04-23.md`
 - `docs/plans/phase_A6_determinism_results.json`
@@ -109,7 +108,7 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (247.3h)
+- Campaign complete (>= 400h): no (263.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

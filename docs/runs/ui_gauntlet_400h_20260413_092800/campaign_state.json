@@ -4,10 +4,10 @@
   "phase": "0_truth_intake",
   "status": "initializing",
   "cumulative_hours": {
-    "hot": 135.0958,
-    "warm": 88.1411,
+    "hot": 143.0969,
+    "warm": 96.1534,
     "cold": 24.03,
-    "total": 247.2669
+    "total": 263.2803
   },
   "target_hours": {
     "hot": 80,
@@ -34,7 +34,7 @@
     "operator": 0
   },
   "last_segment": 38,
-  "last_checkpoint_ts": "2026-04-23T12:29:00.289168+00:00",
+  "last_checkpoint_ts": "2026-04-23T12:48:39.810572+00:00",
   "git_head_at_start": "145ab60",
   "tag": "v3.5.7",
   "version": "3.5.7",
@@ -1057,13 +1057,6 @@
       "avg_response_ms": 7344
     },
     {
-      "segment_id": 50,
-      "mode": "HOT",
-      "status": "reserved",
-      "green_hours": 0.0,
-      "ts_reserved": "2026-04-23T04:40:51.112031+00:00"
-    },
-    {
       "segment_id": 47,
       "mode": "WARM",
       "green_hours": 8.0175,
@@ -1072,13 +1065,6 @@
       "chat_send_failures": 3,
       "chat_response_failures": 96,
       "auth_failures": 6
-    },
-    {
-      "segment_id": 51,
-      "mode": "WARM",
-      "status": "reserved",
-      "green_hours": 0.0,
-      "ts_reserved": "2026-04-23T04:43:17.913171+00:00"
     },
     {
       "segment_id": 49,
@@ -1116,7 +1102,99 @@
       "status": "reserved",
       "green_hours": 0.0,
       "ts_reserved": "2026-04-23T12:29:00.316714+00:00"
+    },
+    {
+      "segment_id": 50,
+      "mode": "HOT",
+      "green_hours": 8.0011,
+      "ts_start": "2026-04-23T12:46:26.095198+00:00",
+      "total": 1991,
+      "sent": 1991,
+      "responded": 1659,
+      "errors": 0,
+      "xss": 0,
+      "session_lost": 893,
+      "dom_broken": 0,
+      "buckets": {
+        "normal": {
+          "total": 508,
+          "sent": 508,
+          "responded": 464,
+          "errors": 0,
+          "xss": 0
+        },
+        "ambiguous": {
+          "total": 276,
+          "sent": 276,
+          "responded": 196,
+          "errors": 0,
+          "xss": 0
+        },
+        "structured": {
+          "total": 240,
+          "sent": 240,
+          "responded": 212,
+          "errors": 0,
+          "xss": 0
+        },
+        "multilingual": {
+          "total": 256,
+          "sent": 256,
+          "responded": 193,
+          "errors": 0,
+          "xss": 0
+        },
+        "adversarial": {
+          "total": 324,
+          "sent": 324,
+          "responded": 301,
+          "errors": 0,
+          "xss": 0
+        },
+        "edge_case": {
+          "total": 177,
+          "sent": 177,
+          "responded": 129,
+          "errors": 0,
+          "xss": 0
+        },
+        "burst": {
+          "total": 210,
+          "sent": 210,
+          "responded": 164,
+          "errors": 0,
+          "xss": 0
+        }
+      },
+      "session_lost_after_recycle": 0,
+      "session_lost_mid_batch": 893,
+      "backpressure_pauses": 543,
+      "avg_response_ms": 3522
+    },
+    {
+      "segment_id": 54,
+      "mode": "HOT",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-23T12:46:26.107700+00:00"
+    },
+    {
+      "segment_id": 51,
+      "mode": "WARM",
+      "green_hours": 8.0123,
+      "cycles": 423,
+      "tab_switch_failures": 0,
+      "chat_send_failures": 2,
+      "chat_response_failures": 82,
+      "auth_failures": 9
+    },
+    {
+      "segment_id": 55,
+      "mode": "WARM",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-23T12:48:39.823053+00:00"
     }
   ],
-  "total_green_s": 890160.84
+  "total_green_s": 947809.08
 }

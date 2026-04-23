@@ -1,13 +1,13 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T22:35:20+00:00
+**Generated:** 2026-04-23T23:05:25+00:00
 **Main ref:** `main~30`
 **Total green:** 267.28h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (15 files)
+### PRODUCT (14 files)
 
 - `configs/axioms/cottage/autumn_preparation.yaml`
 - `configs/axioms/cottage/colony_growth_rate.yaml`
@@ -23,14 +23,9 @@
 - `waggledance/application/services/hybrid_retrieval_service.py`
 - `waggledance/bootstrap/container.py`
 - `waggledance/core/reasoning/hybrid_observer.py`
-- `waggledance/core/reasoning/hybrid_router.py`
 
-### TEST_HARNESS (39 files)
+### TEST_HARNESS (33 files)
 
-- `docs/runs/hybrid_shadow_three_way_2026-04-23T102734Z.json`
-- `docs/runs/hybrid_shadow_three_way_2026-04-23T102734Z.md`
-- `docs/runs/hybrid_shadow_three_way_2026-04-23T102843Z.json`
-- `docs/runs/hybrid_shadow_three_way_2026-04-23T102843Z.md`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T133253Z.json`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T133253Z.md`
 - `docs/runs/magma_hybrid_candidate_trace.jsonl`
@@ -57,11 +52,14 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_051.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_052.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_061.json`
-- … and 9 more
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_050.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_051.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_052.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_061.md`
+- … and 3 more
 
-### DOCS_NARRATIVE (1 files)
+### DOCS_NARRATIVE (0 files)
 
-- `docs/plans/phase_D_decision_v2_2026-04-23.md`
 
 ### CI_WORKFLOW (0 files)
 
@@ -69,12 +67,11 @@
 ### VERSION (0 files)
 
 
-### OTHER (4 files)
+### OTHER (3 files)
 
 - `tools/analyze_hybrid_candidate_trace.py`
 - `tools/backfill_axioms_to_hex.py`
 - `tools/campaign_watchdog.py`
-- `tools/shadow_route_three_way.py`
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 

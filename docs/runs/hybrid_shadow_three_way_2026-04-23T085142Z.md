@@ -1,0 +1,26 @@
+# Phase C three-way shadow — 2026-04-23T085142Z
+
+**Queries:** 200
+**Source:** query_corpus
+
+## Latency (ms)
+
+| Architecture | p50 | p95 |
+|---|---:|---:|
+| keyword | 0.01 | 0.02 |
+| flat | 0.08 | 0.11 |
+| hex | 0.28 | 0.48 |
+
+## Agreement
+
+- Flat vs hex solver agreement: 93.0%
+- Keyword vs hex cell agreement: 5.0%
+- Keyword/centroid disagreement rate: 54.0%
+
+## Decision gates (v3 §1.5)
+
+- If `hex` precision@1 ≥ `keyword` - 2pp AND `hex` recall@5 ≥ `keyword` + 5pp → proceed to Phase D-1
+- If `flat` ties or beats `hex` → abandon hex topology, refactor to flat-only
+- If both lose to `keyword` → do not enable
+
+**Full per-query data:** `docs\runs\hybrid_shadow_three_way_2026-04-23T085142Z.json`

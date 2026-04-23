@@ -1,0 +1,268 @@
+Vanhemmat liitteet ovat osin vanhentuneet, mutta sain luettua nykyiset kaksi tiedostoa: `GPT_review_round3_prompt.md` ja `hybrid_retrieval_activation_v3_2026-04-23.md`.
+
+Alla on kopioitava Round 3 -vastaus Claude Codelle.
+
+---
+
+# GPT-5 Review Round 3 — Final Accountability Pass
+
+## QUESTION 1 — Did v3 correctly land all round-2 amendments?
+
+The prompt says “12 amendments,” but the checklist contains **14 verification points**. I checked all 14.
+
+|  # | Amendment                                                        | Verdict  | Notes                                                                                                                                                                                                                                                                         |
+| -: | ---------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|  1 | `enabled` → `loaded` rename or clear documentation               | **PASS** | §1.1 cleanly renames `enabled` to `loaded` and documents that loading is not authority. Good.                                                                                                                                                                                 |
+|  2 | Source-side axiom cell honesty                                   | **WEAK** | v3 adds required `cell_id`, optional `affinity_cells`, and an audit. Good core fix. Weak point: `WARN_REQUIRES_REVIEW(...)` is only a warning when declared cell disagrees with both keyword and centroid. This should block promotion or require explicit review resolution. |
+|  3 | GOLD/SILVER trajectory router/verifier version filter            | **PASS** | §1.6 adds `original_router_version >= MIN_TRUSTED_ROUTER_VERSION` and `verifier_version >= MIN_TRUSTED_VERIFIER_VERSION`. Good. Implementation must parse versions correctly, not compare raw strings.                                                                        |
+|  4 | Multi-view top-k dedup test                                      | **PASS** | §1.7 and B.0 explicitly require `test_multi_view_dedup_top_k`. Good.                                                                                                                                                                                                          |
+|  5 | Solver output schema                                             | **PASS** | §1.8 adds required `solver_output_schema`. Phase D-2 blocks authoritative mode without it. Good. Minor note: the prompt says §1.8 + §1.18, but schema is really §1.8; §1.18 is Phase C scope.                                                                                 |
+|  6 | Per-query coherent snapshot                                      | **PASS** | §1.14 correctly states snapshot captured once at query entry and reused across searched cells. Good.                                                                                                                                                                          |
+|  7 | Append-only delta ledger for Dream Mode + backfill               | **WEAK** | §1.13 lands the ledger and conflict rules, but there is an ambiguity: B.0 says axiom backfill writes to the ledger, while §1.13 says staging = base axioms + all deltas. That can double-index axioms unless clarified.                                                       |
+|  8 | MAGMA trace +3 fields                                            | **PASS** | §3 includes `query_embedding_cache_hit`, `query_embedding_hash`, and `retrieval_snapshot_manifest_version`. Good.                                                                                                                                                             |
+|  9 | Defer Prometheus/dashboard expansion                             | **PASS** | §7 explicitly defers Prometheus/dashboard/full CSI dashboard work. Good.                                                                                                                                                                                                      |
+| 10 | Embedding determinism Phase A.6 + source-based manifest checksum | **PASS** | §1.12 and Phase A.6 land the determinism gate and source-based checksum policy. Good. Implementation needs Windows-safe restart handling.                                                                                                                                     |
+| 11 | Embedding cache with model-keyed invalidation                    | **PASS** | §1.15 includes `embedding_model` in the key and avoids caching routing decisions. Good. Query normalization needs tightening; see Q2.                                                                                                                                         |
+| 12 | Disaster recovery extended invariant                             | **PASS** | §1.16 correctly says rebuild from axioms + ledger + embedding model/version + backfill config. Good, subject to the ledger/base-axiom clarification above.                                                                                                                    |
+| 13 | CSI split into strict + progress                                 | **PASS** | §1.17 splits `CSI_strict` and `CSI_progress`, and correctly says gates use individual metrics, not CSI. Good. Formula needs epsilon clamps; see Q2.                                                                                                                           |
+| 14 | Phase C scope split                                              | **PASS** | §1.18 correctly splits workstation full run from edge smoke. Good.                                                                                                                                                                                                            |
+
+### Summary of Q1
+
+**12 PASS, 2 WEAK, 0 MISSING.**
+
+No missing round-2 amendment. The two weak areas are implementation-precision issues, not architectural failures.
+
+---
+
+## QUESTION 2 — Any new issue introduced in v3?
+
+Yes, but all are small enough to fix during Phase A/B implementation. No v4 is needed.
+
+### 1. Source-side disagreement must be a gate, not only warning
+
+Current v3 text:
+
+```python
+if declared != keyword and declared != centroid:
+    WARN_REQUIRES_REVIEW(axiom["model_id"], declared, keyword, centroid)
+```
+
+Problem: this is only a warning. If humans declare a wrong cell and both independent heuristics disagree, that axiom can still be indexed incorrectly.
+
+Correction:
+
+```python
+if declared != keyword and declared != centroid:
+    BLOCK_BACKFILL_UNTIL_REVIEW(
+        axiom_id=axiom["model_id"],
+        declared=declared,
+        keyword=keyword,
+        centroid=centroid,
+    )
+```
+
+Add required metadata after review:
+
+```yaml
+placement_review:
+  status: approved
+  reviewed_by: Jani | Claude | GPT | human
+  reason: "Declared thermal is correct because..."
+```
+
+### 2. Ledger/base-axiom double-count ambiguity
+
+v3 says:
+
+```text
+Backfill writes to delta ledger
+```
+
+but also:
+
+```text
+Build staging index = base axioms + all deltas with seq ≤ H
+```
+
+If `axiom_backfill` ledger entries are generated from `configs/axioms`, then “base axioms + axiom_backfill deltas” can duplicate the same solver views.
+
+Correction: choose one of these two patterns.
+
+Preferred:
+
+```text
+configs/axioms/*.yaml = source material
+backfill generates deterministic axiom_backfill ledger entries
+manifest builder consumes ledger entries only
+```
+
+So staging becomes:
+
+```text
+staging = all valid ledger entries with seq ≤ H
+```
+
+Alternative:
+
+```text
+staging = generated docs from configs/axioms + non-axiom deltas
+ledger contains only dream_mode/manual_patch entries
+```
+
+Do not mix both.
+
+### 3. Embedding cache normalization is unsafe as written
+
+v3 uses:
+
+```python
+normalized = query.strip().lower()
+```
+
+This can alias semantically distinct inputs, especially abbreviations, casing-sensitive identifiers, codes, or Finnish/English mixed strings. If the system embeds the original query but caches under lowercased text, then `"USA"` and `"usa"` can share the wrong vector.
+
+Correction:
+
+```python
+def normalized_for_cache(query: str) -> str:
+    return unicodedata.normalize("NFC", query).strip()
+```
+
+Use `casefold()` or lowercasing only if the system also embeds the same normalized string. Otherwise key the exact embedding input.
+
+Better key:
+
+```python
+embedding_input = canonicalize_for_embedding(query)
+key = sha256(f"{embedding_model}|{embedding_input_hash}".encode()).hexdigest()
+```
+
+And trace:
+
+```yaml
+query_embedding_cache_hit: true
+query_embedding_hash: sha256(embedding_input)
+embedding_input_normalization_version: v1
+```
+
+### 4. `CSI_progress` must clamp zeros before `log()`
+
+Current formula uses `log(component)`. If any metric is exactly 0, Python raises a math-domain error. If false solver activation is 1.0, then `log(1 - false_solver_activation_rate)` is also invalid.
+
+Correction:
+
+```python
+EPS = 1e-6
+
+def clamp01(x: float) -> float:
+    return max(EPS, min(1.0, x))
+
+CSI_progress = exp(
+    0.20 * log(clamp01(cell_occupancy_ratio))
+  + 0.20 * log(clamp01(oracle_recall_at_5))
+  + 0.15 * log(clamp01(verifier_pass_rate))
+  + 0.15 * log(clamp01(1 - false_solver_activation_rate))
+  + 0.15 * log(clamp01(1 - llm_fallback_rate))
+  + 0.10 * log(clamp01(bounded_composite))
+  + 0.05 * log(clamp01(magma_trace_completeness))
+)
+```
+
+Also record unclamped components separately.
+
+### 5. Version comparisons must not use raw string `>=`
+
+v3 pseudocode:
+
+```python
+t.original_router_version >= MIN_TRUSTED_ROUTER_VERSION
+```
+
+If these are strings, `"3.10"` can compare incorrectly against `"3.9"`.
+
+Correction: use explicit schema integers or parsed semver:
+
+```python
+from packaging.version import Version
+
+Version(t.original_router_version) >= Version(MIN_TRUSTED_ROUTER_VERSION)
+```
+
+Even better:
+
+```yaml
+router_schema_version: 7
+verifier_schema_version: 4
+```
+
+Then compare integers.
+
+### 6. A.6 restart step is not Windows-safe
+
+v3 says:
+
+```python
+restart_ollama_via_systemd()
+```
+
+WaggleDance’s current evidence and dev environment are strongly Windows-oriented. This exact step will fail on Windows.
+
+Correction:
+
+```python
+if platform.system() == "Linux" and systemd_available():
+    restart_ollama_via_systemd()
+elif platform.system() == "Windows":
+    restart_ollama_via_task_or_skip_with_reason()
+else:
+    record_restart_not_available()
+```
+
+The determinism gate should include two sub-results:
+
+```yaml
+same_process_determinism: pass
+post_restart_determinism: pass | skipped_with_reason
+```
+
+Do not let a platform-control limitation block Phase A if same-process determinism is stable and restart is unavailable.
+
+### 7. Snapshot refcounting needs a leak-safe API
+
+v3 says old snapshots stay alive until in-flight queries finish. Correct, but implementation should force release even on exceptions.
+
+Use context manager:
+
+```python
+with faiss_registry.snapshot() as snapshot:
+    trace.retrieval_snapshot_manifest_version = snapshot.manifest_version
+    ...
+```
+
+And add a watchdog metric:
+
+```yaml
+faiss_snapshot_live_count
+faiss_snapshot_oldest_age_s
+```
+
+Otherwise a thrown exception in a query path can pin old FAISS snapshots forever.
+
+---
+
+## QUESTION 3 — Single-sentence final verdict
+
+**Begin Phase A.1 with 7 implementation tweaks; no v4 needed.**
+
+The 7 tweaks are:
+
+1. Make source-side cell disagreement block backfill/promotion until reviewed.
+2. Resolve ledger/base-axiom double-count ambiguity before B.0.
+3. Fix embedding cache normalization so the cache key matches the actual embedding input.
+4. Add epsilon clamps to `CSI_progress`.
+5. Use parsed semver or integer schema versions for router/verifier version filters.
+6. Make A.6 Ollama restart step platform-safe.
+7. Implement snapshot acquisition as a context manager with leak metrics.
+
+These are implementation-level corrections. The v3 architecture is sound, and Phase A can start now.

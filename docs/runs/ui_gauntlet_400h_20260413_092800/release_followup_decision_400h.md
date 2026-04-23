@@ -1,9 +1,9 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T04:33:05+00:00
+**Generated:** 2026-04-23T05:06:15+00:00
 **Main ref:** `main~30`
-**Total green:** 223.24h / 400h (MID-CAMPAIGN)
+**Total green:** 239.26h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
@@ -18,7 +18,7 @@
 - `waggledance/core/learning/solver_hash.py`
 - `waggledance/core/orchestration/round_table.py`
 
-### TEST_HARNESS (68 files)
+### TEST_HARNESS (64 files)
 
 - `docs/runs/campaign_hardening_log.md`
 - `docs/runs/release_followup_final_400h.md`
@@ -42,17 +42,17 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_009.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_012.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_015.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_018.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_021.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_024.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_027.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_030.json`
-- … and 38 more
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_033.json`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_035.json`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_036.json`
+- … and 34 more
 
-### DOCS_NARRATIVE (29 files)
+### DOCS_NARRATIVE (34 files)
 
 - `CHANGELOG.md`
 - `CURRENT_STATE.md`
@@ -77,12 +77,14 @@
 - `docs/cells/thermal/MANIFEST.md`
 - `docs/cells/thermal/manifest.json`
 - `docs/plans/GPT.txt`
+- `docs/plans/GPT_response2.txt`
+- `docs/plans/GPT_response3.txt`
 - `docs/plans/GPT_review_round2_prompt.md`
+- `docs/plans/GPT_review_round3_prompt.md`
 - `docs/plans/gemini.txt`
 - `docs/plans/grock.txt`
 - `docs/plans/hex_topology_performance_metrics_2026-04-23.md`
-- `docs/plans/hybrid_retrieval_activation_refined_2026-04-23.md`
-- `docs/plans/hybrid_retrieval_activation_review_2026-04-23.md`
+- … and 4 more
 
 ### CI_WORKFLOW (1 files)
 
@@ -105,7 +107,7 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (223.2h)
+- Campaign complete (>= 400h): no (239.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

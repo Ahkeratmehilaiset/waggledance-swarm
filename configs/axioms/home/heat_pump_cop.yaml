@@ -1,59 +1,88 @@
 model_id: heat_pump_cop
-model_name: "Heat Pump COP & Cost"
-description: "Heat pump efficiency and hourly heating cost"
-
-formulas:
+model_name: Heat Pump COP & Cost
+description: Heat pump efficiency and hourly heating cost
+cell_id: thermal
+placement_review:
+  status: auto_heuristic
+  reviewed_by: tools/upgrade_axioms_for_v3.py
+  reason: initial heuristic classification by keyword overlap
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: hourly_cost_eur
+    type: number
+    unit: €/h
+  comparable_fields:
   - name: carnot_cop
-    formula: "(T_indoor + 273.15) / (T_indoor - T_outdoor)"
-    output_unit: "ratio"
+    unit: ratio
   - name: real_cop
-    formula: "carnot_cop * efficiency_factor"
-    output_unit: "ratio"
+    unit: ratio
   - name: heating_power_w
-    formula: "(T_indoor - T_outdoor) * building_ua"
-    output_unit: "W"
+    unit: W
   - name: electrical_power_w
-    formula: "heating_power_w / real_cop"
-    output_unit: "W"
+    unit: W
   - name: hourly_cost_eur
-    formula: "electrical_power_w / 1000 * spot_price_ckwh / 100"
-    output_unit: "€/h"
-
+    unit: €/h
+  output_mode: numeric
+formulas:
+- name: carnot_cop
+  formula: (T_indoor + 273.15) / (T_indoor - T_outdoor)
+  output_unit: ratio
+- name: real_cop
+  formula: carnot_cop * efficiency_factor
+  output_unit: ratio
+- name: heating_power_w
+  formula: (T_indoor - T_outdoor) * building_ua
+  output_unit: W
+- name: electrical_power_w
+  formula: heating_power_w / real_cop
+  output_unit: W
+- name: hourly_cost_eur
+  formula: electrical_power_w / 1000 * spot_price_ckwh / 100
+  output_unit: €/h
 variables:
   T_indoor:
-    description: "Indoor setpoint temperature"
-    unit: "°C"
-    range: [15, 28]
+    description: Indoor setpoint temperature
+    unit: °C
+    range:
+    - 15
+    - 28
     default: 21
   T_outdoor:
-    description: "Outdoor temperature"
-    unit: "°C"
-    range: [-35, 35]
-    source: "fmi_weather"
+    description: Outdoor temperature
+    unit: °C
+    range:
+    - -35
+    - 35
+    source: fmi_weather
     default: -10
   efficiency_factor:
-    description: "Real vs Carnot COP ratio"
-    unit: "ratio"
-    range: [0.2, 0.6]
-    default: 0.40
+    description: Real vs Carnot COP ratio
+    unit: ratio
+    range:
+    - 0.2
+    - 0.6
+    default: 0.4
   building_ua:
-    description: "Building heat loss coefficient"
-    unit: "W/K"
-    range: [50, 500]
+    description: Building heat loss coefficient
+    unit: W/K
+    range:
+    - 50
+    - 500
     default: 150
   spot_price_ckwh:
-    description: "Electricity spot price"
-    unit: "c/kWh"
-    range: [0, 100]
-    source: "porssisahko"
+    description: Electricity spot price
+    unit: c/kWh
+    range:
+    - 0
+    - 100
+    source: porssisahko
     default: 8
-
 validation:
-  - check: "real_cop > 1.0"
-    message: "COP below 1 means direct heating is better"
-  - check: "T_indoor > T_outdoor"
-    message: "Indoor must be warmer than outdoor for heating"
-
+- check: real_cop > 1.0
+  message: COP below 1 means direct heating is better
+- check: T_indoor > T_outdoor
+  message: Indoor must be warmer than outdoor for heating
 risk_levels:
-  warning: "real_cop < 2.0"
-  normal: "real_cop >= 2.0"
+  warning: real_cop < 2.0
+  normal: real_cop >= 2.0

@@ -1,77 +1,111 @@
 model_id: varroa_treatment
-model_name: "Varroa Treatment Dosage"
-description: "Calculate oxalic acid treatment dosage and varroa reinfestation risk"
-
-formulas:
+model_name: Varroa Treatment Dosage
+description: Calculate oxalic acid treatment dosage and varroa reinfestation risk
+cell_id: safety
+placement_review:
+  status: auto_heuristic
+  reviewed_by: tools/upgrade_axioms_for_v3.py
+  reason: initial heuristic classification by keyword overlap
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: mite_load_pct
+    type: number
+    unit: '%'
+  comparable_fields:
   - name: oxalic_acid_dose_ml
-    formula: "combs_with_bees * dose_per_comb_ml"
-    description: "Oxalic acid solution volume needed"
-    output_unit: "ml"
-  - name: varroa_after_treatment
-    formula: "varroa_before * (1 - treatment_efficacy)"
-    description: "Estimated mites remaining after treatment"
-    output_unit: "count"
+    unit: ml
   - name: days_to_reinfestation
-    formula: "threshold_mites / reinfestation_rate_per_day"
-    description: "Days until mite level reaches threshold again"
-    output_unit: "days"
+    unit: days
   - name: mite_load_pct
-    formula: "(varroa_before / colony_strength) * 100"
-    description: "Mite infestation percentage"
-    output_unit: "%"
-
+    unit: '%'
+  output_mode: numeric
+formulas:
+- name: oxalic_acid_dose_ml
+  formula: combs_with_bees * dose_per_comb_ml
+  description: Oxalic acid solution volume needed
+  output_unit: ml
+- name: varroa_after_treatment
+  formula: varroa_before * (1 - treatment_efficacy)
+  description: Estimated mites remaining after treatment
+  output_unit: count
+- name: days_to_reinfestation
+  formula: threshold_mites / reinfestation_rate_per_day
+  description: Days until mite level reaches threshold again
+  output_unit: days
+- name: mite_load_pct
+  formula: (varroa_before / colony_strength) * 100
+  description: Mite infestation percentage
+  output_unit: '%'
 variables:
   combs_with_bees:
-    description: "Number of combs covered with bees"
-    unit: "combs"
-    range: [2, 20]
+    description: Number of combs covered with bees
+    unit: combs
+    range:
+    - 2
+    - 20
     default: 8
   dose_per_comb_ml:
-    description: "OA solution per comb (trickle method)"
-    unit: "ml"
-    range: [3, 6]
+    description: OA solution per comb (trickle method)
+    unit: ml
+    range:
+    - 3
+    - 6
     default: 5
   varroa_before:
-    description: "Varroa mites before treatment (natural drop count × 30)"
-    unit: "count"
-    range: [100, 10000]
+    description: Varroa mites before treatment (natural drop count × 30)
+    unit: count
+    range:
+    - 100
+    - 10000
     default: 1500
   colony_strength:
-    description: "Total bee population"
-    unit: "count"
-    range: [5000, 80000]
+    description: Total bee population
+    unit: count
+    range:
+    - 5000
+    - 80000
     default: 30000
   treatment_efficacy:
-    description: "OA trickle efficacy (broodless colony)"
-    unit: "ratio"
-    range: [0.7, 0.98]
+    description: OA trickle efficacy (broodless colony)
+    unit: ratio
+    range:
+    - 0.7
+    - 0.98
     default: 0.93
   threshold_mites:
-    description: "Action threshold (mite count)"
-    unit: "count"
-    range: [100, 1000]
+    description: Action threshold (mite count)
+    unit: count
+    range:
+    - 100
+    - 1000
     default: 300
   reinfestation_rate_per_day:
-    description: "Daily reinfestation from neighbouring hives"
-    unit: "count/day"
-    range: [1, 30]
+    description: Daily reinfestation from neighbouring hives
+    unit: count/day
+    range:
+    - 1
+    - 30
     default: 8
-
 validation:
-  - check: "oxalic_acid_dose_ml <= 50"
-    message: "Total dose exceeds safe limit — check comb count"
-  - check: "mite_load_pct <= 3"
-    message: "Mite load critical — treat immediately"
-
+- check: oxalic_acid_dose_ml <= 50
+  message: Total dose exceeds safe limit — check comb count
+- check: mite_load_pct <= 3
+  message: Mite load critical — treat immediately
 risk_levels:
-  critical: "mite_load_pct > 3"
-  warning: "mite_load_pct > 1"
-  normal: "mite_load_pct <= 1"
-
+  critical: mite_load_pct > 3
+  warning: mite_load_pct > 1
+  normal: mite_load_pct <= 1
 examples:
-  - description: "Broodless colony, moderate infestation (mite load %)"
-    inputs: {combs_with_bees: 8, varroa_before: 1200, colony_strength: 25000}
-    expected: 4.8
-  - description: "Heavy infestation before winter (mite load %)"
-    inputs: {combs_with_bees: 6, varroa_before: 3000, colony_strength: 20000}
-    expected: 15.0
+- description: Broodless colony, moderate infestation (mite load %)
+  inputs:
+    combs_with_bees: 8
+    varroa_before: 1200
+    colony_strength: 25000
+  expected: 4.8
+- description: Heavy infestation before winter (mite load %)
+  inputs:
+    combs_with_bees: 6
+    varroa_before: 3000
+    colony_strength: 20000
+  expected: 15.0

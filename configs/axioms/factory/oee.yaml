@@ -1,56 +1,85 @@
 model_id: oee_decomposition
-model_name: "OEE Decomposition"
-description: "Overall Equipment Effectiveness breakdown"
-
-formulas:
+model_name: OEE Decomposition
+description: Overall Equipment Effectiveness breakdown
+cell_id: system
+placement_review:
+  status: auto_heuristic
+  reviewed_by: tools/upgrade_axioms_for_v3.py
+  reason: initial heuristic classification by keyword overlap
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: oee
+    type: number
+    unit: ratio
+  comparable_fields:
   - name: availability
-    formula: "(planned_time - downtime) / planned_time"
-    output_unit: "ratio"
+    unit: ratio
   - name: performance
-    formula: "actual_output / (planned_time * ideal_cycle_rate)"
-    output_unit: "ratio"
+    unit: ratio
   - name: quality
-    formula: "good_units / total_units"
-    output_unit: "ratio"
+    unit: ratio
   - name: oee
-    formula: "availability * performance * quality"
-    output_unit: "ratio"
-
+    unit: ratio
+  output_mode: numeric
+formulas:
+- name: availability
+  formula: (planned_time - downtime) / planned_time
+  output_unit: ratio
+- name: performance
+  formula: actual_output / (planned_time * ideal_cycle_rate)
+  output_unit: ratio
+- name: quality
+  formula: good_units / total_units
+  output_unit: ratio
+- name: oee
+  formula: availability * performance * quality
+  output_unit: ratio
 variables:
   planned_time:
-    description: "Planned production time"
-    unit: "min"
-    range: [1, 14400]
+    description: Planned production time
+    unit: min
+    range:
+    - 1
+    - 14400
   downtime:
-    description: "Total downtime"
-    unit: "min"
-    range: [0, 14400]
+    description: Total downtime
+    unit: min
+    range:
+    - 0
+    - 14400
   actual_output:
-    description: "Actual units produced"
-    unit: "pcs"
-    range: [0, 1000000]
+    description: Actual units produced
+    unit: pcs
+    range:
+    - 0
+    - 1000000
   ideal_cycle_rate:
-    description: "Ideal production rate"
-    unit: "pcs/min"
-    range: [0.01, 1000]
+    description: Ideal production rate
+    unit: pcs/min
+    range:
+    - 0.01
+    - 1000
   good_units:
-    description: "Units passing quality"
-    unit: "pcs"
-    range: [0, 1000000]
+    description: Units passing quality
+    unit: pcs
+    range:
+    - 0
+    - 1000000
   total_units:
-    description: "Total units produced"
-    unit: "pcs"
-    range: [1, 1000000]
-
+    description: Total units produced
+    unit: pcs
+    range:
+    - 1
+    - 1000000
 validation:
-  - check: "0 <= oee <= 1"
-    message: "OEE must be 0-1"
-  - check: "good_units <= total_units"
-    message: "Good cannot exceed total"
-  - check: "downtime <= planned_time"
-    message: "Downtime cannot exceed planned"
-
+- check: 0 <= oee <= 1
+  message: OEE must be 0-1
+- check: good_units <= total_units
+  message: Good cannot exceed total
+- check: downtime <= planned_time
+  message: Downtime cannot exceed planned
 risk_levels:
-  critical: "oee < 0.40"
-  warning: "oee < 0.65"
-  normal: "oee >= 0.65"
+  critical: oee < 0.40
+  warning: oee < 0.65
+  normal: oee >= 0.65

@@ -1,9 +1,9 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T06:07:18+00:00
+**Generated:** 2026-04-23T08:34:47+00:00
 **Main ref:** `main~30`
-**Total green:** 239.26h / 400h (MID-CAMPAIGN)
+**Total green:** 243.27h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
@@ -18,7 +18,7 @@
 - `waggledance/core/learning/solver_hash.py`
 - `waggledance/core/orchestration/round_table.py`
 
-### TEST_HARNESS (59 files)
+### TEST_HARNESS (61 files)
 
 - `docs/runs/RESUME_HERE.md`
 - `docs/runs/campaign_hardening_log.md`
@@ -50,9 +50,9 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_038.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_039.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_040.json`
-- … and 29 more
+- … and 31 more
 
-### DOCS_NARRATIVE (34 files)
+### DOCS_NARRATIVE (37 files)
 
 - `CHANGELOG.md`
 - `CURRENT_STATE.md`
@@ -84,7 +84,7 @@
 - `docs/plans/gemini.txt`
 - `docs/plans/grock.txt`
 - `docs/plans/hex_topology_performance_metrics_2026-04-23.md`
-- … and 4 more
+- … and 7 more
 
 ### CI_WORKFLOW (1 files)
 
@@ -94,9 +94,11 @@
 
 - `Dockerfile`
 
-### OTHER (8 files)
+### OTHER (10 files)
 
 - `.gitignore`
+- `backup/2026-04-23/faiss_pre-hybrid.tar.gz`
+- `backup/2026-04-23/settings.yaml.pre-hybrid`
 - `tools/benchmark_harness.py`
 - `tools/campaign_auto_commit.py`
 - `tools/campaign_reports.py`
@@ -107,7 +109,7 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (239.3h)
+- Campaign complete (>= 400h): no (243.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

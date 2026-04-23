@@ -1,43 +1,66 @@
 model_id: mtbf_prediction
-model_name: "MTBF / Reliability"
-description: "Mean Time Between Failures and maintenance scheduling"
-
-formulas:
+model_name: MTBF / Reliability
+description: Mean Time Between Failures and maintenance scheduling
+cell_id: system
+placement_review:
+  status: auto_heuristic
+  reviewed_by: tools/upgrade_axioms_for_v3.py
+  reason: initial heuristic classification by keyword overlap
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: recommended_pm_interval
+    type: number
+    unit: hours
+  comparable_fields:
   - name: mtbf
-    formula: "total_operating_hours / number_of_failures"
-    output_unit: "hours"
+    unit: hours
   - name: failure_rate
-    formula: "1 / mtbf"
-    output_unit: "1/h"
+    unit: 1/h
   - name: reliability_at_time
-    formula: "exp(-failure_rate * mission_time)"
-    output_unit: "probability"
+    unit: probability
   - name: recommended_pm_interval
-    formula: "mtbf * 0.7"
-    output_unit: "hours"
-
+    unit: hours
+  output_mode: numeric
+formulas:
+- name: mtbf
+  formula: total_operating_hours / number_of_failures
+  output_unit: hours
+- name: failure_rate
+  formula: 1 / mtbf
+  output_unit: 1/h
+- name: reliability_at_time
+  formula: exp(-failure_rate * mission_time)
+  output_unit: probability
+- name: recommended_pm_interval
+  formula: mtbf * 0.7
+  output_unit: hours
 variables:
   total_operating_hours:
-    description: "Total equipment operating hours"
-    unit: "hours"
-    range: [100, 1000000]
+    description: Total equipment operating hours
+    unit: hours
+    range:
+    - 100
+    - 1000000
   number_of_failures:
-    description: "Number of failures observed"
-    unit: "count"
-    range: [1, 10000]
+    description: Number of failures observed
+    unit: count
+    range:
+    - 1
+    - 10000
   mission_time:
-    description: "Mission duration to evaluate reliability"
-    unit: "hours"
-    range: [1, 100000]
+    description: Mission duration to evaluate reliability
+    unit: hours
+    range:
+    - 1
+    - 100000
     default: 720
-
 validation:
-  - check: "mtbf > 0"
-    message: "MTBF must be positive"
-  - check: "0 <= reliability_at_time <= 1"
-    message: "Reliability must be 0-1"
-
+- check: mtbf > 0
+  message: MTBF must be positive
+- check: 0 <= reliability_at_time <= 1
+  message: Reliability must be 0-1
 risk_levels:
-  critical: "reliability_at_time < 0.5"
-  warning: "reliability_at_time < 0.8"
-  normal: "reliability_at_time >= 0.8"
+  critical: reliability_at_time < 0.5
+  warning: reliability_at_time < 0.8
+  normal: reliability_at_time >= 0.8

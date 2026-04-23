@@ -1,0 +1,21 @@
+{
+  "gate": "phase_B.6_disaster_recovery",
+  "verdict": "pass",
+  "orig_cells": [
+    "energy",
+    "math",
+    "safety",
+    "system",
+    "thermal"
+  ],
+  "rebuilt_cells": [
+    "energy",
+    "math",
+    "safety",
+    "system",
+    "thermal"
+  ],
+  "orig_solver_count": 14,
+  "diffs": [],
+  "invariant": "staging rebuild from configs/axioms + ledger + embedding model must produce identical source checksums"
+}

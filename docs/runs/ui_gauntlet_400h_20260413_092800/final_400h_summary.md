@@ -1,7 +1,7 @@
 # 400h Campaign — Final Summary (MID-CAMPAIGN (TBD on completion))
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T06:07:17+00:00
+**Generated:** 2026-04-23T08:34:47+00:00
 
 ## Cumulative hours (evidence-backed)
 
@@ -9,37 +9,37 @@
 |---|---|---|---|
 | HOT  | 135.10h  | 80h  | 168.9% |
 | WARM | 88.14h | 120h | 73.5% |
-| COLD | 16.03h | 200h | 8.0% |
-| **TOTAL** | **239.26h** | **400h** | **59.8%** |
+| COLD | 20.03h | 200h | 10.0% |
+| **TOTAL** | **243.27h** | **400h** | **60.8%** |
 
 ## Queries
 
-- Total: 33660
-- Sent: 33657
-- Responded: 23466
+- Total: 34164
+- Sent: 34161
+- Responded: 23848
 - Skipped empty: 0
 - XSS hits: **0** (zero-tolerance target: 0)
 - DOM breaks: **0** (zero-tolerance target: 0)
-- Session losses: 21630
-- Avg latency: 3831.0 ms
+- Session losses: 21916
+- Avg latency: 3843.0 ms
 - Median latency: 2445.0 ms
-- p95 latency: 11072 ms
+- p95 latency: 11563 ms
 
 ## Backend truth (from COLD mode)
 
-- Health pass rate: 438/455
+- Health pass rate: 551/568
 - Feeds monotonic: True
 - Hologram honest: False
-- Auth chat pass rate: 5/17
-- Cookie bootstrap pass rate: 33/33
+- Auth chat pass rate: 6/21
+- Cookie bootstrap pass rate: 41/41
 
 ## Incidents classified
 
 | Category | Count |
 |---|---|
-| chat_response_failure | 1873 |
+| chat_response_failure | 1907 |
 | health_failure | 155 |
-| chat_failure | 121 |
+| chat_failure | 123 |
 | backend_unhealthy | 13 |
 | cycle_crash_recovery | 10 |
 | chat_send_failure | 6 |
@@ -58,5 +58,5 @@
 
 ## Verdict per x.txt Phase 7 questions
 
-- Campaign incomplete (239.3h / 400h). Verdict fields will be filled
+- Campaign incomplete (243.3h / 400h). Verdict fields will be filled
   by rerunning `python tools/campaign_reports.py aggregate` once total ≥ 400h.

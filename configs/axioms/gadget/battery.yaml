@@ -1,50 +1,76 @@
 model_id: battery_discharge
-model_name: "Battery Life Calculator"
-description: "Calculate expected battery life for IoT devices"
-
-formulas:
+model_name: Battery Life Calculator
+description: Calculate expected battery life for IoT devices
+cell_id: energy
+placement_review:
+  status: auto_heuristic
+  reviewed_by: tools/upgrade_axioms_for_v3.py
+  reason: initial heuristic classification by keyword overlap
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: battery_life_hours
+    type: number
+    unit: hours
+  comparable_fields:
   - name: battery_life_hours
-    formula: "capacity_mah / (I_active * duty_cycle + I_sleep * (1 - duty_cycle))"
-    description: "Time until battery depletion"
-    output_unit: "hours"
-
+    unit: hours
+  output_mode: numeric
+formulas:
+- name: battery_life_hours
+  formula: capacity_mah / (I_active * duty_cycle + I_sleep * (1 - duty_cycle))
+  description: Time until battery depletion
+  output_unit: hours
 variables:
   capacity_mah:
-    description: "Battery capacity"
-    unit: "mAh"
-    range: [50, 50000]
+    description: Battery capacity
+    unit: mAh
+    range:
+    - 50
+    - 50000
     default: 3000
   I_active:
-    description: "Current draw in active mode"
-    unit: "mA"
-    range: [0.1, 5000]
+    description: Current draw in active mode
+    unit: mA
+    range:
+    - 0.1
+    - 5000
     default: 80
   I_sleep:
-    description: "Current draw in sleep mode"
-    unit: "mA"
-    range: [0.001, 10]
+    description: Current draw in sleep mode
+    unit: mA
+    range:
+    - 0.001
+    - 10
     default: 0.01
   duty_cycle:
-    description: "Fraction of time in active mode (0-1)"
-    unit: "ratio"
-    range: [0.0001, 1.0]
+    description: Fraction of time in active mode (0-1)
+    unit: ratio
+    range:
+    - 0.0001
+    - 1.0
     default: 0.01
-
 validation:
-  - check: "battery_life_hours > 0"
-    message: "Battery life must be positive"
-  - check: "battery_life_hours < 87600"
-    message: "Over 10 years is unrealistic"
-
+- check: battery_life_hours > 0
+  message: Battery life must be positive
+- check: battery_life_hours < 87600
+  message: Over 10 years is unrealistic
 risk_levels:
-  critical: "battery_life_hours < 24"
-  warning: "battery_life_hours < 168"
-  normal: "battery_life_hours >= 168"
-
+  critical: battery_life_hours < 24
+  warning: battery_life_hours < 168
+  normal: battery_life_hours >= 168
 examples:
-  - description: "ESP32 LoRa, 1% duty"
-    inputs: {capacity_mah: 3000, I_active: 80, I_sleep: 0.01, duty_cycle: 0.01}
-    expected: 3704
-  - description: "Raspberry Pi always on"
-    inputs: {capacity_mah: 10000, I_active: 500, I_sleep: 500, duty_cycle: 1.0}
-    expected: 20
+- description: ESP32 LoRa, 1% duty
+  inputs:
+    capacity_mah: 3000
+    I_active: 80
+    I_sleep: 0.01
+    duty_cycle: 0.01
+  expected: 3704
+- description: Raspberry Pi always on
+  inputs:
+    capacity_mah: 10000
+    I_active: 500
+    I_sleep: 500
+    duty_cycle: 1.0
+  expected: 20

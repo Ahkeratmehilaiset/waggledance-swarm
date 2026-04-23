@@ -1,62 +1,92 @@
 model_id: colony_food_reserves
-model_name: "Colony Winter Food Reserves"
-description: "Check if the colony has sufficient honey reserves for winter survival"
-
-formulas:
+model_name: Colony Winter Food Reserves
+description: Check if the colony has sufficient honey reserves for winter survival
+cell_id: math
+placement_review:
+  status: auto_heuristic
+  reviewed_by: tools/upgrade_axioms_for_v3.py
+  reason: initial heuristic classification by keyword overlap
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: feeding_needed_kg
+    type: number
+    unit: kg
+  comparable_fields:
   - name: food_needed_kg
-    formula: "bee_cluster_kg * food_per_kg_bees * winter_months"
-    description: "Total food needed for winter"
-    output_unit: "kg"
+    unit: kg
   - name: food_deficit_kg
-    formula: "food_needed_kg - food_available_kg"
-    description: "Food deficit (negative = surplus)"
-    output_unit: "kg"
+    unit: kg
   - name: survival_weeks
-    formula: "food_available_kg / (bee_cluster_kg * food_per_kg_bees / 4.33)"
-    description: "Estimated survival weeks without supplemental feeding"
-    output_unit: "weeks"
+    unit: weeks
   - name: feeding_needed_kg
-    formula: "max(food_deficit_kg, 0)"
-    description: "Additional sugar syrup or fondant needed"
-    output_unit: "kg"
-
+    unit: kg
+  output_mode: numeric
+formulas:
+- name: food_needed_kg
+  formula: bee_cluster_kg * food_per_kg_bees * winter_months
+  description: Total food needed for winter
+  output_unit: kg
+- name: food_deficit_kg
+  formula: food_needed_kg - food_available_kg
+  description: Food deficit (negative = surplus)
+  output_unit: kg
+- name: survival_weeks
+  formula: food_available_kg / (bee_cluster_kg * food_per_kg_bees / 4.33)
+  description: Estimated survival weeks without supplemental feeding
+  output_unit: weeks
+- name: feeding_needed_kg
+  formula: max(food_deficit_kg, 0)
+  description: Additional sugar syrup or fondant needed
+  output_unit: kg
 variables:
   bee_cluster_kg:
-    description: "Winter cluster weight (kg bees)"
-    unit: "kg"
-    range: [0.5, 6.0]
+    description: Winter cluster weight (kg bees)
+    unit: kg
+    range:
+    - 0.5
+    - 6.0
     default: 2.0
   food_per_kg_bees:
-    description: "Monthly food consumption per kg bees"
-    unit: "kg/month"
-    range: [0.4, 1.2]
+    description: Monthly food consumption per kg bees
+    unit: kg/month
+    range:
+    - 0.4
+    - 1.2
     default: 0.7
   winter_months:
-    description: "Winter duration (months without forage)"
-    unit: "months"
-    range: [3, 7]
+    description: Winter duration (months without forage)
+    unit: months
+    range:
+    - 3
+    - 7
     default: 5
   food_available_kg:
-    description: "Current honey/stores in hive"
-    unit: "kg"
-    range: [0, 30]
+    description: Current honey/stores in hive
+    unit: kg
+    range:
+    - 0
+    - 30
     default: 8
-
 validation:
-  - check: "food_available_kg >= 0"
-    message: "Food available cannot be negative"
-  - check: "bee_cluster_kg > 0"
-    message: "Cluster weight must be positive"
-
+- check: food_available_kg >= 0
+  message: Food available cannot be negative
+- check: bee_cluster_kg > 0
+  message: Cluster weight must be positive
 risk_levels:
-  critical: "feeding_needed_kg > 5"
-  warning: "feeding_needed_kg > 0"
-  normal: "feeding_needed_kg <= 0"
-
+  critical: feeding_needed_kg > 5
+  warning: feeding_needed_kg > 0
+  normal: feeding_needed_kg <= 0
 examples:
-  - description: "Strong cluster, adequate stores"
-    inputs: {bee_cluster_kg: 2.5, food_available_kg: 15, winter_months: 5}
-    expected: 0.0
-  - description: "Weak cluster, insufficient stores"
-    inputs: {bee_cluster_kg: 1.5, food_available_kg: 5, winter_months: 5}
-    expected: 0.25
+- description: Strong cluster, adequate stores
+  inputs:
+    bee_cluster_kg: 2.5
+    food_available_kg: 15
+    winter_months: 5
+  expected: 0.0
+- description: Weak cluster, insufficient stores
+  inputs:
+    bee_cluster_kg: 1.5
+    food_available_kg: 5
+    winter_months: 5
+  expected: 0.25

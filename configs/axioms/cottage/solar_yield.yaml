@@ -1,40 +1,64 @@
 model_id: solar_yield
-model_name: "Solar Panel Yield"
-description: "Daily solar energy production estimate"
-
-formulas:
+model_name: Solar Panel Yield
+description: Daily solar energy production estimate
+cell_id: energy
+placement_review:
+  status: auto_heuristic
+  reviewed_by: tools/upgrade_axioms_for_v3.py
+  reason: initial heuristic classification by keyword overlap
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: daily_yield_kwh
+    type: number
+    unit: kWh
+  comparable_fields:
   - name: temperature_derating
-    formula: "1 - 0.004 * max(0, cell_temp - 25)"
-    output_unit: "ratio"
+    unit: ratio
   - name: peak_power_w
-    formula: "panel_area_m2 * panel_efficiency * 1000"
-    output_unit: "W"
+    unit: W
   - name: daily_yield_kwh
-    formula: "peak_power_w * sun_hours * temperature_derating * 0.85 / 1000"
-    output_unit: "kWh"
-
+    unit: kWh
+  output_mode: numeric
+formulas:
+- name: temperature_derating
+  formula: 1 - 0.004 * max(0, cell_temp - 25)
+  output_unit: ratio
+- name: peak_power_w
+  formula: panel_area_m2 * panel_efficiency * 1000
+  output_unit: W
+- name: daily_yield_kwh
+  formula: peak_power_w * sun_hours * temperature_derating * 0.85 / 1000
+  output_unit: kWh
 variables:
   panel_area_m2:
-    description: "Total panel area"
-    unit: "m²"
-    range: [1, 100]
+    description: Total panel area
+    unit: m²
+    range:
+    - 1
+    - 100
     default: 10
   panel_efficiency:
-    description: "Panel efficiency"
-    unit: "ratio"
-    range: [0.10, 0.25]
-    default: 0.20
+    description: Panel efficiency
+    unit: ratio
+    range:
+    - 0.1
+    - 0.25
+    default: 0.2
   sun_hours:
-    description: "Peak sun hours per day"
-    unit: "h"
-    range: [0, 14]
+    description: Peak sun hours per day
+    unit: h
+    range:
+    - 0
+    - 14
     default: 4
   cell_temp:
-    description: "Cell temperature"
-    unit: "°C"
-    range: [-10, 80]
+    description: Cell temperature
+    unit: °C
+    range:
+    - -10
+    - 80
     default: 35
-
 risk_levels:
-  warning: "daily_yield_kwh < 5"
-  normal: "daily_yield_kwh >= 5"
+  warning: daily_yield_kwh < 5
+  normal: daily_yield_kwh >= 5

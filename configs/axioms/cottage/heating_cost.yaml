@@ -1,57 +1,84 @@
 model_id: heating_cost
-model_name: "Heating Cost Calculator"
-description: "Daily and monthly heating cost"
-
-formulas:
+model_name: Heating Cost Calculator
+description: Daily and monthly heating cost
+cell_id: thermal
+placement_review:
+  status: auto_heuristic
+  reviewed_by: tools/upgrade_axioms_for_v3.py
+  reason: initial heuristic classification by keyword overlap
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: monthly_cost
+    type: number
+    unit: €
+  comparable_fields:
   - name: heat_loss_rate
-    formula: "(T_indoor - T_outdoor) * area_m2 / R_value"
-    output_unit: "W"
+    unit: W
   - name: daily_energy_kwh
-    formula: "heat_loss_rate * 24 / 1000"
-    output_unit: "kWh"
+    unit: kWh
   - name: daily_cost
-    formula: "daily_energy_kwh * spot_price_ckwh / 100"
-    output_unit: "€"
+    unit: €
   - name: monthly_cost
-    formula: "daily_cost * 30"
-    output_unit: "€"
-
+    unit: €
+  output_mode: numeric
+formulas:
+- name: heat_loss_rate
+  formula: (T_indoor - T_outdoor) * area_m2 / R_value
+  output_unit: W
+- name: daily_energy_kwh
+  formula: heat_loss_rate * 24 / 1000
+  output_unit: kWh
+- name: daily_cost
+  formula: daily_energy_kwh * spot_price_ckwh / 100
+  output_unit: €
+- name: monthly_cost
+  formula: daily_cost * 30
+  output_unit: €
 variables:
   T_indoor:
-    description: "Indoor temperature"
-    unit: "°C"
-    range: [15, 28]
+    description: Indoor temperature
+    unit: °C
+    range:
+    - 15
+    - 28
     default: 21
   T_outdoor:
-    description: "Outdoor temperature"
-    unit: "°C"
-    range: [-40, 40]
-    source: "fmi_weather"
+    description: Outdoor temperature
+    unit: °C
+    range:
+    - -40
+    - 40
+    source: fmi_weather
     default: -10
   area_m2:
-    description: "Building area"
-    unit: "m²"
-    range: [10, 500]
+    description: Building area
+    unit: m²
+    range:
+    - 10
+    - 500
     default: 80
   R_value:
-    description: "Thermal resistance"
-    unit: "m²·K/W"
-    range: [0.5, 10.0]
+    description: Thermal resistance
+    unit: m²·K/W
+    range:
+    - 0.5
+    - 10.0
     default: 3.0
   spot_price_ckwh:
-    description: "Electricity spot price"
-    unit: "c/kWh"
-    range: [0, 100]
-    source: "porssisahko"
+    description: Electricity spot price
+    unit: c/kWh
+    range:
+    - 0
+    - 100
+    source: porssisahko
     default: 8
-
 validation:
-  - check: "heat_loss_rate >= 0"
-    message: "Heat loss cannot be negative"
-  - check: "daily_cost < 100"
-    message: "Over 100€/day unrealistic"
-
+- check: heat_loss_rate >= 0
+  message: Heat loss cannot be negative
+- check: daily_cost < 100
+  message: Over 100€/day unrealistic
 risk_levels:
-  critical: "daily_cost > 30"
-  warning: "daily_cost > 15"
-  normal: "daily_cost <= 15"
+  critical: daily_cost > 30
+  warning: daily_cost > 15
+  normal: daily_cost <= 15

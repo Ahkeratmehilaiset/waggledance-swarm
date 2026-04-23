@@ -1,15 +1,15 @@
 # Daily Summary — Day 011 (2026-04-23)
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T06:07:17+00:00
+**Generated:** 2026-04-23T08:34:46+00:00
 
 ## Totals this day
 
 - Green hours: 8.01h
 - Cumulative: 135.10h / 400h
 - Segments completed: 1
-- HOT queries: 1106
-- Incidents: 100
+- HOT queries: 1610
+- Incidents: 136
 
 ## Segments completed
 
@@ -19,28 +19,28 @@
 
 ## HOT query latency
 
-- Responded: 751 / 1106
-- Avg latency (responded >100ms): 4189.0 ms
-- p95: 15900 ms
+- Responded: 1133 / 1610
+- Avg latency (responded >100ms): 4308.0 ms
+- p95: 15835 ms
 
 ### Per-bucket send/respond
 
 | bucket | total | responded | rate |
 |---|---|---|---|
-| adversarial | 162 | 139 | 86% |
-| ambiguous | 207 | 88 | 43% |
-| burst | 42 | 17 | 40% |
-| edge_case | 75 | 42 | 56% |
-| multilingual | 138 | 81 | 59% |
-| normal | 302 | 245 | 81% |
-| structured | 180 | 139 | 77% |
+| adversarial | 243 | 208 | 86% |
+| ambiguous | 276 | 138 | 50% |
+| burst | 126 | 76 | 60% |
+| edge_case | 126 | 80 | 63% |
+| multilingual | 192 | 104 | 54% |
+| normal | 421 | 348 | 83% |
+| structured | 226 | 179 | 79% |
 
 ## Incidents by category
 
 | category | count |
 |---|---|
-| chat_response_failure | 93 |
-| chat_failure | 5 |
+| chat_response_failure | 127 |
+| chat_failure | 7 |
 | health_failure | 2 |
 
 ## Safety gates (zero tolerance per x.txt)

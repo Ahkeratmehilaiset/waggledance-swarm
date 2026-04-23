@@ -1,0 +1,81 @@
+model_id: winter_feeding_decision
+model_name: Winter Feeding Decision
+description: Calculate whether a colony needs supplemental winter feeding based on food reserves, colony size, and winter
+  duration
+cell_id: seasonal
+affinity_cells:
+- math
+placement_review:
+  status: approved
+  reviewed_by: Claude (human-authored axiom, legitimate cell override)
+  reason: Primary question type matches declared cell (seasonal for timing/calendar, learning for predictive models, general
+    for cross-domain scoring). Keyword heuristic over-fits on single word overlaps.
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: feeding_needed_kg
+    type: number
+    unit: kg
+  comparable_fields:
+  - name: current_reserves_kg
+    unit: kg
+  - name: estimated_consumption_kg
+    unit: kg
+  - name: feeding_needed_kg
+    unit: kg
+  - name: deficit_margin_kg
+    unit: kg
+  output_mode: numeric
+formulas:
+- name: estimated_consumption_kg
+  formula: colony_size_k * daily_consumption_g_per_1000_bees * winter_days / 1000
+  description: Total estimated winter food consumption
+  output_unit: kg
+- name: deficit_margin_kg
+  formula: estimated_consumption_kg + safety_reserve_kg - current_reserves_kg
+  description: How much more food needed (positive = feed, negative = sufficient)
+  output_unit: kg
+- name: feeding_needed_kg
+  formula: max(0, deficit_margin_kg)
+  description: Supplemental feeding amount
+  output_unit: kg
+- name: feeding_urgency_score
+  formula: clip(deficit_margin_kg / safety_reserve_kg, 0, 3)
+  description: Urgency 0 (none) to 3 (critical)
+  output_unit: score
+variables:
+  colony_size_k:
+    description: Colony population in thousands
+    unit: count
+    range:
+    - 5
+    - 80
+    default: 30
+  daily_consumption_g_per_1000_bees:
+    description: Average daily honey consumption per 1000 bees in winter
+    unit: g
+    range:
+    - 0.5
+    - 2.0
+    default: 1.0
+  winter_days:
+    description: Duration of winter cluster period
+    unit: days
+    range:
+    - 90
+    - 180
+    default: 150
+  current_reserves_kg:
+    description: Current honey reserves in hive
+    unit: kg
+    range:
+    - 0
+    - 50
+    default: 15
+  safety_reserve_kg:
+    description: Safety margin on top of consumption estimate
+    unit: kg
+    range:
+    - 2
+    - 8
+    default: 5

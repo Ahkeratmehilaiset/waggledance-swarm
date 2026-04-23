@@ -1,0 +1,71 @@
+model_id: queen_age_replacement
+model_name: Queen Age Replacement Decision
+description: Assess whether a queen should be replaced based on age, egg-laying rate, and colony performance indicators
+cell_id: learning
+affinity_cells:
+- safety
+placement_review:
+  status: approved
+  reviewed_by: Claude (human-authored axiom, legitimate cell override)
+  reason: Primary question type matches declared cell (seasonal for timing/calendar, learning for predictive models, general
+    for cross-domain scoring). Keyword heuristic over-fits on single word overlaps.
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: replacement_priority
+    type: number
+    unit: score
+  comparable_fields:
+  - name: replacement_priority
+    unit: score
+  - name: queen_age_months
+    unit: months
+  - name: laying_rate_fraction
+    unit: ratio
+  output_mode: numeric
+formulas:
+- name: age_factor
+  formula: clip(queen_age_months / 24, 0, 2)
+  description: Age-based replacement urgency (ages 24 mo = factor 1.0)
+  output_unit: multiplier
+- name: performance_deficit
+  formula: max(0, 1 - laying_rate_fraction)
+  description: How far below optimal laying rate
+  output_unit: ratio
+- name: replacement_priority
+  formula: age_factor * (1 + performance_deficit * 2) + 2 * drone_layer_observed + 3 * supersedure_cells
+  description: Replacement urgency score (0=keep, 5+=replace now)
+  output_unit: score
+- name: days_until_urgent
+  formula: max(0, (4 - replacement_priority) * 30)
+  description: Grace period in days before action needed
+  output_unit: days
+variables:
+  queen_age_months:
+    description: Queen age in months since installation
+    unit: months
+    range:
+    - 0
+    - 60
+    default: 12
+  laying_rate_fraction:
+    description: Current laying rate as fraction of peak (1.0 = excellent, 0.3 = poor)
+    unit: ratio
+    range:
+    - 0.0
+    - 1.0
+    default: 0.8
+  drone_layer_observed:
+    description: Evidence of drone-laying queen (1=yes, 0=no)
+    unit: boolean
+    range:
+    - 0
+    - 1
+    default: 0
+  supersedure_cells:
+    description: Number of active supersedure queen cells observed
+    unit: count
+    range:
+    - 0
+    - 10
+    default: 0

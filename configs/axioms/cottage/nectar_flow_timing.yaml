@@ -1,0 +1,93 @@
+model_id: nectar_flow_timing
+model_name: Nectar Flow Timing
+description: Predict peak nectar flow dates and recommended honey super installation timing based on regional climate and
+  plant phenology
+cell_id: seasonal
+affinity_cells:
+- math
+placement_review:
+  status: approved
+  reviewed_by: Claude (human-authored axiom, legitimate cell override)
+  reason: Primary question type matches declared cell (seasonal for timing/calendar, learning for predictive models, general
+    for cross-domain scoring). Keyword heuristic over-fits on single word overlaps.
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: days_until_peak_flow
+    type: number
+    unit: days
+  comparable_fields:
+  - name: days_until_peak_flow
+    unit: days
+  - name: expected_flow_duration_days
+    unit: days
+  - name: super_install_day
+    unit: days
+  output_mode: numeric
+formulas:
+- name: growing_degree_days_accumulated
+  formula: max(0, (current_gdd - base_temp_gdd))
+  description: Heat units accumulated since base temperature threshold
+  output_unit: gdd
+- name: days_until_peak_flow
+  formula: max(0, (peak_gdd_threshold - growing_degree_days_accumulated) / avg_daily_gdd_rate)
+  description: Days until peak nectar flow based on phenology
+  output_unit: days
+- name: super_install_day
+  formula: max(0, days_until_peak_flow - lead_time_days)
+  description: Install honey super this many days before peak
+  output_unit: days
+- name: expected_flow_duration_days
+  formula: flow_duration_baseline * (1 + weather_variability * 0.3)
+  description: Duration of usable nectar flow window
+  output_unit: days
+variables:
+  current_gdd:
+    description: Cumulative growing degree days this season
+    unit: gdd
+    range:
+    - 0
+    - 3000
+    default: 500
+  base_temp_gdd:
+    description: GDD threshold at which calculation starts
+    unit: gdd
+    range:
+    - 0
+    - 500
+    default: 100
+  peak_gdd_threshold:
+    description: GDD accumulation required for peak flow
+    unit: gdd
+    range:
+    - 500
+    - 2000
+    default: 1200
+  avg_daily_gdd_rate:
+    description: Average daily GDD accumulation at this point in season
+    unit: gdd
+    range:
+    - 2
+    - 25
+    default: 10
+  lead_time_days:
+    description: Days before peak to install honey super (comb-drawing buffer)
+    unit: days
+    range:
+    - 3
+    - 14
+    default: 7
+  flow_duration_baseline:
+    description: Typical nectar flow duration in this region
+    unit: days
+    range:
+    - 7
+    - 60
+    default: 28
+  weather_variability:
+    description: Weather instability factor 0=stable, 1=chaotic
+    unit: ratio
+    range:
+    - 0.0
+    - 1.0
+    default: 0.3

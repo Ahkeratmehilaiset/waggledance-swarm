@@ -1,0 +1,71 @@
+model_id: varroa_treatment_calendar
+model_name: Varroa Treatment Calendar
+description: Recommend varroa treatment schedule based on mite counts, brood status, and season
+cell_id: seasonal
+affinity_cells:
+- safety
+placement_review:
+  status: approved
+  reviewed_by: Claude (human-authored axiom, legitimate cell override)
+  reason: Primary question type matches declared cell (seasonal for timing/calendar, learning for predictive models, general
+    for cross-domain scoring). Keyword heuristic over-fits on single word overlaps.
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: days_until_next_treatment
+    type: number
+    unit: days
+  comparable_fields:
+  - name: days_until_next_treatment
+    unit: days
+  - name: treatment_window_days
+    unit: days
+  - name: urgency_score
+    unit: score
+  output_mode: numeric
+formulas:
+- name: mite_growth_factor
+  formula: 1 + (mite_count_per_100_bees / 20)
+  description: Treatment urgency multiplier based on infestation level
+  output_unit: multiplier
+- name: urgency_score
+  formula: clip(mite_count_per_100_bees / 5, 0, 5)
+  description: 0 (none) to 5 (critical) treatment urgency
+  output_unit: score
+- name: days_until_next_treatment
+  formula: max(0, (standard_interval_days / mite_growth_factor) - days_since_last_treatment)
+  description: Days until next treatment based on infestation and timing
+  output_unit: days
+- name: treatment_window_days
+  formula: max(3, 14 - urgency_score * 2)
+  description: Length of acceptable treatment window
+  output_unit: days
+variables:
+  mite_count_per_100_bees:
+    description: Mites per 100 bees (from sugar shake or alcohol wash)
+    unit: count
+    range:
+    - 0
+    - 30
+    default: 3
+  days_since_last_treatment:
+    description: Days since most recent varroa treatment
+    unit: days
+    range:
+    - 0
+    - 365
+    default: 60
+  standard_interval_days:
+    description: Standard treatment interval for this method
+    unit: days
+    range:
+    - 21
+    - 120
+    default: 60
+  brood_present:
+    description: Is capped brood present (affects treatment efficacy)
+    unit: boolean
+    range:
+    - 0
+    - 1
+    default: 1

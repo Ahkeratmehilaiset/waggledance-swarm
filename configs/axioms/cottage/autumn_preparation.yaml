@@ -1,0 +1,82 @@
+model_id: autumn_preparation
+model_name: "Autumn Colony Preparation Checklist"
+description: "Calculate progress score for winter preparation tasks: mite treatment, food reserves, insulation, entrance reducer"
+cell_id: seasonal
+affinity_cells:
+  - safety
+  - thermal
+placement_review:
+  status: auto_heuristic
+  reviewed_by: Claude (library expansion)
+  reason: "Seasonal primary; safety+thermal affinity"
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: readiness_score
+    type: number
+    unit: percent
+  comparable_fields:
+    - name: readiness_score
+      unit: percent
+    - name: days_until_first_frost
+      unit: days
+    - name: critical_gaps_count
+      unit: count
+  output_mode: numeric
+formulas:
+  - name: mite_score
+    formula: "1 if mite_treatment_done else 0"
+    description: "Mite treatment completion (1=done, 0=pending)"
+    output_unit: binary
+  - name: food_score
+    formula: "min(1, current_reserves_kg / required_reserves_kg)"
+    description: "Food reserves adequacy ratio"
+    output_unit: ratio
+  - name: insulation_score
+    formula: "0.5 * roof_insulated + 0.3 * mouse_guard_installed + 0.2 * wind_break"
+    description: "Physical preparation score"
+    output_unit: score
+  - name: readiness_score
+    formula: "100 * (0.4 * mite_score + 0.4 * food_score + 0.2 * insulation_score)"
+    description: "Overall readiness 0-100%"
+    output_unit: percent
+  - name: critical_gaps_count
+    formula: "(1 if not mite_treatment_done else 0) + (1 if food_score < 0.8 else 0)"
+    description: "Number of critical items still missing"
+    output_unit: count
+variables:
+  mite_treatment_done:
+    description: "Varroa treatment completed this autumn"
+    unit: boolean
+    range: [0, 1]
+    default: 0
+  current_reserves_kg:
+    description: "Current honey/syrup reserves"
+    unit: kg
+    range: [0, 30]
+    default: 10
+  required_reserves_kg:
+    description: "Required reserves for this colony size and climate"
+    unit: kg
+    range: [10, 30]
+    default: 18
+  roof_insulated:
+    description: "Hive roof has winter insulation"
+    unit: boolean
+    range: [0, 1]
+    default: 0
+  mouse_guard_installed:
+    description: "Mouse guard at entrance"
+    unit: boolean
+    range: [0, 1]
+    default: 0
+  wind_break:
+    description: "Windbreak or sheltered location"
+    unit: boolean
+    range: [0, 1]
+    default: 0
+  days_until_first_frost:
+    description: "Days until expected first hard frost"
+    unit: days
+    range: [0, 120]
+    default: 30

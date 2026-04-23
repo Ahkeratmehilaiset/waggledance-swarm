@@ -1,0 +1,87 @@
+model_id: colony_growth_rate
+model_name: Colony Growth Rate Predictor
+description: Predict colony population growth over coming weeks based on current size, egg-laying rate, and season
+cell_id: learning
+affinity_cells:
+- math
+- seasonal
+placement_review:
+  status: approved
+  reviewed_by: Claude (human-authored axiom, legitimate cell override)
+  reason: Primary question type matches declared cell (seasonal for timing/calendar, learning for predictive models, general
+    for cross-domain scoring). Keyword heuristic over-fits on single word overlaps.
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: projected_population_30d
+    type: number
+    unit: count
+  comparable_fields:
+  - name: projected_population_30d
+    unit: count
+  - name: projected_population_60d
+    unit: count
+  - name: weekly_growth_rate
+    unit: percent
+  output_mode: numeric
+formulas:
+- name: daily_birth_rate
+  formula: eggs_per_day * worker_survival_fraction
+  description: Net daily population increase
+  output_unit: count
+- name: daily_death_rate
+  formula: population * daily_mortality_fraction
+  description: Daily worker bee deaths
+  output_unit: count
+- name: net_daily_growth
+  formula: daily_birth_rate - daily_death_rate
+  description: Net population change per day
+  output_unit: count
+- name: projected_population_30d
+  formula: population + net_daily_growth * 30 * season_factor
+  description: Projected population 30 days out
+  output_unit: count
+- name: projected_population_60d
+  formula: population + net_daily_growth * 60 * season_factor
+  description: Projected population 60 days out
+  output_unit: count
+- name: weekly_growth_rate
+  formula: (net_daily_growth * 7 / population) * 100
+  description: Weekly growth percentage
+  output_unit: percent
+variables:
+  population:
+    description: Current worker bee population
+    unit: count
+    range:
+    - 1000
+    - 80000
+    default: 25000
+  eggs_per_day:
+    description: Queen's current laying rate (eggs/day)
+    unit: count
+    range:
+    - 0
+    - 3000
+    default: 1500
+  worker_survival_fraction:
+    description: Fraction of eggs that become adult workers
+    unit: ratio
+    range:
+    - 0.6
+    - 0.98
+    default: 0.85
+  daily_mortality_fraction:
+    description: Daily fraction of workers dying
+    unit: ratio
+    range:
+    - 0.005
+    - 0.05
+    default: 0.015
+  season_factor:
+    description: 'Seasonal modifier: 1.0 spring/summer growth, 0.3 autumn, 0.05 winter'
+    unit: multiplier
+    range:
+    - 0.05
+    - 1.2
+    default: 1.0

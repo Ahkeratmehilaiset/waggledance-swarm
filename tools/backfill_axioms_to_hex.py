@@ -137,10 +137,22 @@ def compute_centroid_cell_top1(query_vec, centroids: dict) -> Optional[str]:
     if not centroids:
         return None
     import numpy as np
+    # Support both flat {cell: [vec]} and nested {cell: {"centroid": [vec], ...}}
+    cells_data = centroids.get("cells", centroids) if isinstance(centroids, dict) else {}
     best_cell, best_score = None, -1.0
-    for cell, centroid in centroids.items():
-        c = np.array(centroid)
-        sim = float(np.dot(query_vec, c) / (np.linalg.norm(query_vec) * np.linalg.norm(c) + 1e-12))
+    for cell, entry in cells_data.items():
+        if isinstance(entry, dict):
+            vec = entry.get("centroid")
+        else:
+            vec = entry
+        if not vec or not isinstance(vec, list):
+            continue
+        try:
+            c = np.array(vec, dtype=np.float64)
+        except (ValueError, TypeError):
+            continue
+        denom = (np.linalg.norm(query_vec) * np.linalg.norm(c)) + 1e-12
+        sim = float(np.dot(query_vec, c) / denom)
         if sim > best_score:
             best_cell, best_score = cell, sim
     return best_cell

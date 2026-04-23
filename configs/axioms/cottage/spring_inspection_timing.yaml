@@ -1,0 +1,55 @@
+model_id: spring_inspection_timing
+model_name: "Spring Inspection Timing"
+description: "Determine the earliest safe date for first spring hive inspection based on weather and colony state"
+cell_id: seasonal
+affinity_cells:
+  - thermal
+placement_review:
+  status: auto_heuristic
+  reviewed_by: Claude (library expansion)
+  reason: "Primary concern is timing in season cycle; temperature is secondary gate"
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: days_until_safe
+    type: number
+    unit: days
+  comparable_fields:
+    - name: days_until_safe
+      unit: days
+    - name: min_inspection_temperature_c
+      unit: C
+  output_mode: numeric
+formulas:
+  - name: min_inspection_temperature_c
+    formula: "12 + (2 if colony_strength_fraction < 0.5 else 0)"
+    description: "Minimum outdoor temperature for safe inspection"
+    output_unit: C
+  - name: temperature_gap
+    formula: "min_inspection_temperature_c - current_outdoor_c"
+    description: "How much warmer we need it"
+    output_unit: C
+  - name: days_until_safe
+    formula: "max(0, temperature_gap / avg_daily_warming_rate_c)"
+    description: "Days until the required temperature is reached"
+    output_unit: days
+  - name: can_inspect_today
+    formula: "1 if current_outdoor_c >= min_inspection_temperature_c else 0"
+    description: "Binary safe-to-inspect flag"
+    output_unit: boolean
+variables:
+  current_outdoor_c:
+    description: "Current outdoor temperature"
+    unit: C
+    range: [-20, 25]
+    default: 5
+  avg_daily_warming_rate_c:
+    description: "Average daily temperature rise in early spring"
+    unit: C
+    range: [0.1, 1.5]
+    default: 0.3
+  colony_strength_fraction:
+    description: "Estimated colony strength (1.0 = full, 0.5 = half, 0.0 = failed)"
+    unit: ratio
+    range: [0.0, 1.0]
+    default: 0.7

@@ -1,0 +1,76 @@
+model_id: indoor_air_quality
+model_name: Indoor Air Quality Score
+description: Calculate indoor air quality index from CO2, VOC, humidity, and temperature measurements
+cell_id: general
+affinity_cells:
+- safety
+- thermal
+placement_review:
+  status: approved
+  reviewed_by: Claude (human-authored axiom, legitimate cell override)
+  reason: Primary question type matches declared cell (seasonal for timing/calendar, learning for predictive models, general
+    for cross-domain scoring). Keyword heuristic over-fits on single word overlaps.
+  reviewed_at: '2026-04-23'
+solver_output_schema:
+  primary_value:
+    name: iaq_score
+    type: number
+    unit: score
+  comparable_fields:
+  - name: iaq_score
+    unit: score
+  - name: co2_ppm
+    unit: ppm
+  - name: ventilation_needed
+    unit: boolean
+  output_mode: numeric
+formulas:
+- name: co2_score
+  formula: clip(1.0 - (co2_ppm - 400) / 1600, 0, 1)
+  description: CO2 quality 1.0 (ideal 400ppm) to 0 (poor 2000+ppm)
+  output_unit: ratio
+- name: voc_score
+  formula: clip(1.0 - voc_ppb / 1000, 0, 1)
+  description: VOC quality 1.0 (ideal <100ppb) to 0 (poor >1000ppb)
+  output_unit: ratio
+- name: humidity_score
+  formula: 1.0 - abs(humidity_pct - 45) / 35
+  description: Humidity comfort 1.0 (45% ideal) to 0 (<10% or >80%)
+  output_unit: ratio
+- name: iaq_score
+  formula: 100 * (0.4 * co2_score + 0.3 * voc_score + 0.3 * humidity_score)
+  description: Overall indoor air quality index 0-100
+  output_unit: score
+- name: ventilation_needed
+  formula: 1 if co2_ppm > 1000 else 0
+  description: Is active ventilation recommended
+  output_unit: boolean
+variables:
+  co2_ppm:
+    description: Carbon dioxide concentration
+    unit: ppm
+    range:
+    - 400
+    - 5000
+    default: 800
+  voc_ppb:
+    description: Volatile organic compounds
+    unit: ppb
+    range:
+    - 0
+    - 5000
+    default: 200
+  humidity_pct:
+    description: Relative humidity
+    unit: percent
+    range:
+    - 0
+    - 100
+    default: 45
+  temperature_c:
+    description: Indoor air temperature
+    unit: C
+    range:
+    - 0
+    - 40
+    default: 21

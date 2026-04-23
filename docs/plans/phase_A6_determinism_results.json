@@ -1,0 +1,45 @@
+{
+  "gate": "phase_A.6_embedding_determinism",
+  "model": "nomic-embed-text",
+  "n_strings": 50,
+  "platform": "Windows",
+  "same_process_determinism": "pass",
+  "post_restart_determinism": "skipped_with_reason",
+  "same_process_metrics": {
+    "batch_1": {
+      "n_runs_compared": 5,
+      "max_abs_diff_p95": 0.0,
+      "cosine_drift_p95": 1.0001999228848035e-12,
+      "cosine_drift_max": 1.0001999228848035e-12,
+      "rounded_hash_unique_count": 1,
+      "rounded_hash_drift_detected": false
+    },
+    "batch_16": {
+      "n_runs_compared": 10,
+      "max_abs_diff_p95": 0.0,
+      "cosine_drift_p95": 1.0001999228848035e-12,
+      "cosine_drift_max": 1.0001999228848035e-12,
+      "rounded_hash_unique_count": 1,
+      "rounded_hash_drift_detected": false
+    },
+    "batch_32": {
+      "n_runs_compared": 10,
+      "max_abs_diff_p95": 0.0,
+      "cosine_drift_p95": 1.0001999228848035e-12,
+      "cosine_drift_max": 1.0001999228848035e-12,
+      "rounded_hash_unique_count": 1,
+      "rounded_hash_drift_detected": false
+    }
+  },
+  "post_restart_metrics": null,
+  "restart_attempt": {
+    "restarted": false,
+    "method": "windows_service",
+    "skip_reason": "Ollama runs as user process, not installed as service",
+    "error": "Command '['sc', 'stop', 'Ollama']' returned non-zero exit status 1060."
+  },
+  "worst_cosine_drift_p95": 1.0001999228848035e-12,
+  "threshold": 1e-06,
+  "overall_pass": true,
+  "implication_for_manifest": "Safe to use source-based manifest checksum per v3 \u00a71.12. Raw-vector bytes as checksum key may still drift minutely (see worst_cosine_drift_p95)."
+}

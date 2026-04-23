@@ -1,0 +1,37 @@
+{
+  "endpoint": "localhost:11434/api/embed",
+  "model": "nomic-embed-text",
+  "ollama_version": "0.21.0",
+  "embedding_dim": 768,
+  "batch_results": {
+    "1": {
+      "p50_total_ms": 3165.7,
+      "p95_total_ms": 3225.2,
+      "per_item_p50_ms": 3165.7,
+      "per_item_p95_ms": 3225.2,
+      "samples": 20
+    },
+    "16": {
+      "p50_total_ms": 3358.1,
+      "p95_total_ms": 3602.2,
+      "per_item_p50_ms": 209.9,
+      "per_item_p95_ms": 225.1,
+      "samples": 10
+    },
+    "32": {
+      "p50_total_ms": 3617.9,
+      "p95_total_ms": 3656.9,
+      "per_item_p50_ms": 113.1,
+      "per_item_p95_ms": 114.3,
+      "samples": 10
+    }
+  },
+  "single_embed_p95_ms": 3225.2,
+  "embedding_hot_path_mandatory_false": true,
+  "recommended_batch_size": 32,
+  "notes": [
+    "Single-embed 3s+ suggests CPU-only or slow GPU. Grok was right: NO GPU on hot path.",
+    "embedding_hot_path must be false — keyword routing stays as hot path.",
+    "Batch processing for backfill: use batch_size=32 if axiom list >32, else 16."
+  ]
+}

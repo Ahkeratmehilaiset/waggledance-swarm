@@ -1,0 +1,363 @@
+profile: home
+facts:
+  business_name: JKH Service
+  owner: Jani Korpi
+  y_tunnus: 2828492-2
+hivemind:
+  heartbeat_interval: 30
+  idle_research_enabled: true
+  max_concurrent_agents: 30
+learning:
+  auto_evolve: false
+  distill_interval_min: 15
+  eval_queue_size: 20
+  evolve_interval_min: 30
+  min_finetune_score: 7.0
+  auto_apply_prompt_wins: false
+  prompt_apply_min_delta: 0.5
+  prompt_apply_min_samples_per_arm: 3
+  prompt_live_apply: false
+  prompt_rollback_on_regression: true
+  primary_unit: case_trajectory
+  llm_max_grade: bronze
+  specialist_canary_hours: 48
+  specialist_min_accuracy: 0.85
+  meta_optimizer_enabled: true
+  meta_optimizer_min_canary_cycles: 3
+  dream_mode_enabled: true
+  dream_mode_max_simulations_per_night: 20
+  dream_mode_min_simulations_per_night: 4
+  dream_mode_insight_backoff_window_nights: 3
+llm:
+  base_url: http://localhost:11434
+  model: phi4-mini
+  num_gpu: 99
+  temperature: 0.4
+  timeout: 30
+llm_heartbeat:
+  base_url: http://localhost:11434
+  model: llama3.2:1b
+  num_gpu: 99
+  temperature: 0.6
+  timeout: 15
+memory:
+  db_path: data/waggle_dance.db
+  consolidation_enabled: true
+  consolidation_evict_enabled: false
+  consolidation_min_age_days: 90
+  consolidation_retention_threshold: 0.1
+  episodic_max_active_count: 10000
+  significance_never_consolidate_threshold: 0.7
+ops_agent:
+  auto_model_switch: false
+  error_rate_critical: 0.25
+  error_rate_warning: 0.1
+  gpu_memory_critical: 95
+  latency_critical_ms: 30000
+  latency_warning_ms: 12000
+  monitor_interval: 15
+  quality_eval_every: 30
+  queue_critical: 4
+swarm:
+  cooldown_max: 5
+  enabled: true
+  exploration_rate: 0.2
+  load_penalty: 0.15
+  low_usage_bonus: 0.15
+  min_bids_per_day: 3
+  min_tasks_per_day: 2
+  newcomer_boost: 0.2
+  top_k: 8
+token_economy:
+  welcome_bonus: 5
+yaml_bridge:
+  agents_dir: knowledge
+agent_levels:
+  enabled: true
+routing:
+  confusion_memory: true
+  topic_fingerprints: true
+round_table:
+  enabled: true
+  every_n_heartbeat: 20
+  agent_count: 6
+  min_agents: 3
+  version: 2
+night_mode:
+  enabled: true
+  idle_threshold_min: 15
+  max_hours: 8
+  interval_s: 10
+advanced_learning:
+  corrections_enabled: true
+  active_learning_enabled: true
+  active_learning_min_memory: 100
+  embedding_augmentation: true
+  multi_hop_enabled: true
+  multi_hop_max_hops: 2
+  episodic_memory: true
+  seasonal_boost: 1.2
+  bilingual_index: true
+  hot_cache_size: 500
+  fi_fast_enabled: true
+  enrichment_enabled: true
+  enrichment_confidence: 0.8
+  web_learning_enabled: true
+  web_learning_daily_budget: 50
+  distillation_enabled: false
+  distillation_api_key: ''
+  distillation_model: claude-haiku-4-5-20251001
+  distillation_weekly_budget_eur: 5.0
+  meta_learning_enabled: true
+  code_review_enabled: true
+  micro_model_enabled: true
+  micro_model_v2_enabled: true
+  micro_model_v3_enabled: true
+  micro_model_v3_path: models/micromodel_v3/lora_adapter
+  micro_model_v3_base: HuggingFaceTB/SmolLM2-135M-Instruct
+  micro_model_training_interval: 50
+  micro_model_min_pairs: 100
+  enrichment_temporal_check: true
+  failure_twin_enabled: true
+  failure_twin_threshold: 0.6
+  micro_model_promotion_enabled: true
+  micro_model_promotion_min_pairs: 200
+  micro_model_promotion_max_error: 0.03
+  micro_model_holdout_ratio: 0.2
+  micro_model_min_eval_examples: 25
+  micro_model_min_accuracy: 0.7
+  micro_model_promotion_margin: 0.02
+  micro_model_eval_enabled: true
+  agent_overlap_detection: true
+  night_enricher:
+    enabled: true
+    chat_history_enabled: false
+    rss_feed_enabled: true
+    benchmark_count: 2
+    rebalance_every: 50
+    burst_threshold: 0.8
+    burst_max_share: 0.8
+    throttle_pass_rate: 0.08
+    throttle_window: 30
+    throttle_pause_seconds: 300
+    gap_high_threshold: 20
+    gap_medium_threshold: 50
+    gap_normal_threshold: 100
+    novelty_score_threshold: 0.8
+    dedup_score_threshold: 0.93
+    ext_web_every_cycles: 10
+    ext_distill_every_cycles: 20
+    ext_rss_every_cycles: 10
+    convergence_novelty_threshold: 0.1
+    convergence_patience: 5
+    convergence_pause_s: 900
+    convergence_window: 20
+  memory_limits:
+    enabled: true
+    max_facts: 200000
+    eviction_check_every_n_flushes: 10
+    eviction_batch_size: 500
+    ttl_rules:
+      weather: 1
+      electricity: 1
+      electricity_optimization: 6
+      camera_event: 168
+      audio_event: 168
+      home_state: 1
+      sensor_reading: 1
+      news: 720
+      self_enrichment: 2160
+      web_learning: 2160
+    protected_sources:
+    - user_teaching
+    - user_correction
+    - yaml_scan
+    - conversation
+    - round_table
+    - distillation
+feeds:
+  enabled: true
+  profile_locations:
+    gadget: []
+    cottage:
+    - Kouvola
+    home:
+    - Helsinki
+    factory:
+    - Helsinki
+    - Espoo
+  weather:
+    enabled: true
+    provider: fmi
+    interval_min: 30
+  electricity:
+    enabled: true
+    provider: porssisahko
+    interval_min: 15
+  rss:
+    enabled: true
+    interval_min: 60
+    feeds:
+    - url: https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_UUTISET
+      name: Yle-uutiset
+      critical: true
+    - url: https://feeds.yle.fi/uutiset/v1/recent.rss?publisherIds=YLE_NEWS
+      name: Yle-news-en
+      critical: false
+    - url: https://blog.home-assistant.io/atom.xml
+      name: HA-blog
+      critical: false
+mqtt:
+  enabled: false
+  host: 192.168.1.100
+  mqtt_tls: true
+  port: 8883
+  username: ''
+  password: ''
+  client_id: waggledance
+home_assistant:
+  enabled: false
+  url: http://homeassistant.local:8123
+  token: ''
+  poll_interval_s: 60
+  auto_discover: true
+frigate:
+  enabled: false
+  mqtt_topic_prefix: frigate
+  cameras: []
+  min_score: 0.6
+  dedup_window_s: 60
+  severity_rules:
+    critical:
+    - bear
+    - wolf
+    high:
+    - person_night
+    medium:
+    - dog
+    - cat
+    info:
+    - person
+    - car
+    - bird
+alerts:
+  enabled: false
+  telegram:
+    enabled: false
+    bot_token: ''
+    chat_id: ''
+  webhook:
+    enabled: false
+    url: ''
+    headers: {}
+  rate_limit:
+    max_per_minute: 5
+voice:
+  enabled: false
+  stt:
+    model: small
+    device: cpu
+    language: fi
+    wake_word: true
+    vad_silence_s: 1.5
+  tts:
+    voice: fi_FI-harri-medium
+    data_dir: data/piper_models
+    speed: 1.0
+audio:
+  enabled: false
+  audio_analyzer:
+    baseline_days: 7
+    anomaly_threshold_hz_shift: 30
+    alert_amplitude_threshold: 0.7
+  bird_monitor:
+    enabled: false
+    model: BirdNET-Lite
+  mqtt_topics:
+    spectrum: waggledance/audio/+/spectrum
+    event: waggledance/audio/+/event
+    status: waggledance/audio/+/status
+elastic_scaling:
+  enabled: true
+  auto_detect: true
+  vram_unload_threshold_pct: 90
+  queue_spawn_threshold: 10
+llm_parallel:
+  # When enabling, also set OLLAMA_NUM_PARALLEL=4 for actual concurrent inference
+  enabled: false
+  max_concurrent: 4
+  max_inflight_per_model: 2
+  request_timeout_s: 120
+  round_table_parallel_first_pass: false
+  dream_batch_parallelism: 1
+  candidate_lab_parallelism: 1
+  verifier_advisory_parallelism: 1
+  dedupe_identical_prompts: true
+gemma_profiles:
+  enabled: false
+  fast_model: gemma4:e4b
+  heavy_model: gemma4:26b
+  active_profile: dual_tier
+  heavy_reasoning_only: true
+  degrade_to_default: true
+hybrid_retrieval:
+  enabled: false
+  ring2_enabled: false
+  min_score: 0.35
+  sufficient_score: 0.7
+runtime:
+  primary: waggledance
+  compatibility_mode: false
+  shadow_mode: true
+  canary_enabled: true
+continuity:
+  heartbeat_seconds: 120
+  continuity_floor_enabled: true
+  epistemic_uncertainty_threshold: 0.4
+  curiosity_goal_max_priority: 35
+curiosity:
+  max_active:
+    GADGET: 3
+    COTTAGE: 5
+    HOME: 10
+    FACTORY: 20
+    DOMAIN: 10
+attention:
+  critical_pct: 40
+  normal_pct: 35
+  background_pct: 15
+  reflection_pct: 10
+  high_load_threshold: 0.8
+  emergency_load_threshold: 0.95
+  reflection_min_pct: 2
+motives:
+  conflict_resolution:
+    strategy: minimize_harm_always
+    log_all_conflicts: true
+    escalate_to_user_if_unresolvable: true
+hex_mesh:
+  enabled: false
+  cell_config_path: "configs/hex_cells.yaml"
+  local_confidence_threshold: 0.72
+  neighbor_confidence_threshold: 0.82
+  global_escalation_threshold: 0.90
+  ttl_default: 2
+  max_neighbors_per_hop: 2
+  max_ring: 2
+  parallel_neighbor_assist: true
+  prefer_same_domain: true
+  health_quarantine_error_threshold: 3
+  health_quarantine_timeout_threshold: 2
+  health_cooldown_s: 300
+  self_heal_probe_enabled: true
+  magma_trace_enabled: true
+  neighbor_merge_policy: "weighted_confidence"
+  allow_neighbor_llm: true
+  allow_candidate_lab_neighbor_assist: false
+  allow_round_table_neighbor_assist: true
+  # v3.5.6: Adaptive Runtime Efficiency
+  local_budget_ms: 15000
+  neighbor_budget_ms: 10000
+  total_hex_budget_ms: 25000
+  skip_low_value_neighbor_when_sequential: true
+  preflight_min_score: 0.3

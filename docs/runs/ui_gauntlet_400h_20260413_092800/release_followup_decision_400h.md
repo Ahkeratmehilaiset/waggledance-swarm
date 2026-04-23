@@ -1,9 +1,9 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T19:34:48+00:00
+**Generated:** 2026-04-23T20:04:53+00:00
 **Main ref:** `main~30`
-**Total green:** 263.28h / 400h (MID-CAMPAIGN)
+**Total green:** 267.28h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
@@ -25,10 +25,8 @@
 - `waggledance/core/reasoning/hybrid_observer.py`
 - `waggledance/core/reasoning/hybrid_router.py`
 
-### TEST_HARNESS (55 files)
+### TEST_HARNESS (53 files)
 
-- `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.json`
-- `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.md`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T093413Z.json`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T093413Z.md`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T102734Z.json`
@@ -57,11 +55,12 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
-- … and 25 more
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_050.json`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_051.json`
+- … and 23 more
 
-### DOCS_NARRATIVE (3 files)
+### DOCS_NARRATIVE (2 files)
 
-- `docs/plans/phase_C_analysis_and_DEF_handoff_2026-04-23.md`
 - `docs/plans/phase_D_decision_2026-04-23.md`
 - `docs/plans/phase_D_decision_v2_2026-04-23.md`
 
@@ -80,7 +79,7 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (263.3h)
+- Campaign complete (>= 400h): no (267.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

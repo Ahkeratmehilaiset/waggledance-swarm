@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T05:06:15+00:00
+**Generated:** 2026-04-23T05:36:26+00:00
 **Main ref:** `main~30`
 **Total green:** 239.26h / 400h (MID-CAMPAIGN)
 
@@ -18,8 +18,9 @@
 - `waggledance/core/learning/solver_hash.py`
 - `waggledance/core/orchestration/round_table.py`
 
-### TEST_HARNESS (64 files)
+### TEST_HARNESS (60 files)
 
+- `docs/runs/RESUME_HERE.md`
 - `docs/runs/campaign_hardening_log.md`
 - `docs/runs/release_followup_final_400h.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/campaign_state.json`
@@ -38,19 +39,18 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_reliability.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_summary.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_findings.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/harness_changelog.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_018.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_021.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_024.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_027.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_030.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_033.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_035.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_036.json`
-- … and 34 more
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_037.json`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_038.json`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_039.json`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_040.json`
+- … and 30 more
 
 ### DOCS_NARRATIVE (34 files)
 

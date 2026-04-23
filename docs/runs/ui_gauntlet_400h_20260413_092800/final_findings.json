@@ -1,6 +1,6 @@
 {
   "status": "MID-CAMPAIGN (TBD on completion)",
-  "generated_at": "2026-04-23T05:06:15+00:00",
+  "generated_at": "2026-04-23T05:36:26+00:00",
   "campaign_id": "ui_gauntlet_400h_20260413_092800",
   "cumulative_hours": {
     "hot": 135.0958,
@@ -17,16 +17,16 @@
   "segments_committed": 34,
   "segments_target": 50,
   "queries": {
-    "total": 33499,
-    "sent": 33496,
-    "responded": 23379,
+    "total": 33569,
+    "sent": 33566,
+    "responded": 23408,
     "skipped_empty": 0,
     "xss": 0,
     "dom_breaks": 0,
-    "session_losses": 21493,
-    "avg_latency_ms": 3830.0,
-    "median_latency_ms": 2445,
-    "p95_latency_ms": 11042
+    "session_losses": 21551,
+    "avg_latency_ms": 3833.0,
+    "median_latency_ms": 2445.0,
+    "p95_latency_ms": 11072
   },
   "cold_backend_truth": {
     "health_pass_rate": "438/455",
@@ -36,8 +36,8 @@
     "cookie_pass_rate": "33/33"
   },
   "incidents_by_category": {
-    "chat_failure": 120,
-    "chat_response_failure": 1856,
+    "chat_failure": 121,
+    "chat_response_failure": 1865,
     "health_failure": 155,
     "backend_unhealthy": 13,
     "chat_send_failure": 6,

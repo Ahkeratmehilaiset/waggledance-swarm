@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T14:41:08+00:00
+**Generated:** 2026-04-23T15:11:13+00:00
 **Main ref:** `main~30`
 **Total green:** 263.28h / 400h (MID-CAMPAIGN)
 
@@ -75,11 +75,10 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - … and 39 more
 
-### DOCS_NARRATIVE (14 files)
+### DOCS_NARRATIVE (13 files)
 
 - `docs/plans/GPT_response2.txt`
 - `docs/plans/GPT_response3.txt`
-- `docs/plans/GPT_review_round2_prompt.md`
 - `docs/plans/GPT_review_round3_prompt.md`
 - `docs/plans/hybrid_retrieval_activation_v3_1_amendments_2026-04-23.md`
 - `docs/plans/hybrid_retrieval_activation_v3_2026-04-23.md`

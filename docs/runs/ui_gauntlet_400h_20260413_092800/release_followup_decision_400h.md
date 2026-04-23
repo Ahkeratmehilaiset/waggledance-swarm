@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T18:04:32+00:00
+**Generated:** 2026-04-23T18:34:37+00:00
 **Main ref:** `main~30`
 **Total green:** 263.28h / 400h (MID-CAMPAIGN)
 
@@ -41,7 +41,7 @@
 - `waggledance/core/reasoning/hybrid_router.py`
 - … and 1 more
 
-### TEST_HARNESS (62 files)
+### TEST_HARNESS (60 files)
 
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.json`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.md`
@@ -73,13 +73,10 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
-- … and 32 more
+- … and 30 more
 
-### DOCS_NARRATIVE (8 files)
+### DOCS_NARRATIVE (5 files)
 
-- `docs/plans/phase_A6_determinism_results.json`
-- `docs/plans/phase_A_preflight_report_2026-04-23.md`
-- `docs/plans/phase_A_preflight_results.json`
 - `docs/plans/phase_B6_disaster_recovery_results.json`
 - `docs/plans/phase_B_completion_report_2026-04-23.md`
 - `docs/plans/phase_C_analysis_and_DEF_handoff_2026-04-23.md`
@@ -92,10 +89,8 @@
 ### VERSION (0 files)
 
 
-### OTHER (10 files)
+### OTHER (8 files)
 
-- `backup/2026-04-23/faiss_pre-hybrid.tar.gz`
-- `backup/2026-04-23/settings.yaml.pre-hybrid`
 - `tools/analyze_hybrid_candidate_trace.py`
 - `tools/backfill_axioms_to_hex.py`
 - `tools/campaign_watchdog.py`

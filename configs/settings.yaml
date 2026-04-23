@@ -301,9 +301,15 @@ gemma_profiles:
   heavy_reasoning_only: true
   degrade_to_default: true
 hybrid_retrieval:
-  enabled: false
+  # Phase D-1 candidate mode (2026-04-23) — see docs/plans/phase_D_decision_v2_2026-04-23.md
+  # enabled: true loads the service and emits MAGMA traces
+  # mode: candidate ⇒ hybrid suggestion visible to verifier, production keeps using keyword
+  # mode: authoritative ⇒ hybrid drives production (Phase D-2, after 24h candidate validation passes)
+  # min_score 0.60 chosen from Phase D v2 measurement: 84% off-domain rejection, 47% positive precision
+  enabled: true
+  mode: candidate
   ring2_enabled: false
-  min_score: 0.35
+  min_score: 0.60
   sufficient_score: 0.7
 runtime:
   primary: waggledance

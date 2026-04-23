@@ -355,6 +355,8 @@ class Container:
 
         enabled = bool(self._settings.get("hybrid_retrieval.enabled", False))
         ring2 = bool(self._settings.get("hybrid_retrieval.ring2_enabled", False))
+        mode = str(self._settings.get("hybrid_retrieval.mode", "shadow"))
+        min_score = float(self._settings.get("hybrid_retrieval.min_score", 0.35))
 
         # Embedding function: reuse Ollama embed via vector_store's _embed_text if available
         embed_fn = None
@@ -378,6 +380,8 @@ class Container:
             embed_fn=embed_fn,
             enabled=enabled,
             ring2_enabled=ring2,
+            mode=mode,
+            min_score=min_score,
         )
 
     @cached_property

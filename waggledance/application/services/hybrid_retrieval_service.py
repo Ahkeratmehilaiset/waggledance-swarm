@@ -119,6 +119,8 @@ class HybridRetrievalService:
         embed_fn=None,
         enabled: bool = False,
         ring2_enabled: bool = False,
+        mode: str = "shadow",          # v3 §1.1 — shadow | candidate | authoritative
+        min_score: float = 0.35,       # v3 +Phase D v2 — score threshold for off-domain rejection
     ):
         self._faiss_registry = faiss_registry
         self._topology = topology
@@ -126,6 +128,8 @@ class HybridRetrievalService:
         self._embed_fn = embed_fn
         self._enabled = enabled
         self._ring2_enabled = ring2_enabled
+        self._mode = mode if mode in ("shadow", "candidate", "authoritative") else "shadow"
+        self._min_score = float(min_score)
 
         # Counters
         self._total_queries = 0
@@ -133,6 +137,8 @@ class HybridRetrievalService:
         self._neighbor_hits = 0
         self._global_hits = 0
         self._llm_fallbacks = 0
+        self._candidates_logged = 0     # v3 §1.1 — candidate-mode trace count
+        self._off_domain_rejections = 0 # Phase D v2 — score < min_score events
 
     @property
     def enabled(self) -> bool:
@@ -141,6 +147,23 @@ class HybridRetrievalService:
     @enabled.setter
     def enabled(self, value: bool) -> None:
         self._enabled = value
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def min_score(self) -> float:
+        return self._min_score
+
+    @property
+    def is_authoritative(self) -> bool:
+        """Whether this retrieval should drive production routing decisions.
+
+        Per v3 §1.1: authoritative ⇒ chooses production solver path.
+        shadow + candidate ⇒ trace only; production uses old route.
+        """
+        return self._enabled and self._mode == "authoritative"
 
     async def retrieve(
         self,
@@ -165,8 +188,11 @@ class HybridRetrievalService:
             trace.total_ms = (time.perf_counter() - t0) * 1000
             return trace
 
-        # Hybrid mode
-        trace.retrieval_mode = "hybrid"
+        # Hybrid mode — branch on activation mode (v3 §1.1)
+        # shadow:        compute candidates, never drives production
+        # candidate:     compute candidates, visible to verifier, may be overridden
+        # authoritative: chosen as production solver path
+        trace.retrieval_mode = f"hybrid:{self._mode}"
 
         # Assign cell
         assignment = self._topology.assign_cell(intent, query)
@@ -345,7 +371,7 @@ class HybridRetrievalService:
                     metadata=r.metadata,
                 )
                 for r in results
-                if r.score >= _MIN_SCORE
+                if r.score >= self._min_score   # Phase D v2 — instance threshold (was hardcoded _MIN_SCORE)
             ]
         except Exception as e:
             log.debug("FAISS cell %s search failed: %s", cell_id, e)
@@ -369,7 +395,7 @@ class HybridRetrievalService:
 
             for r in results:
                 score = r.get("score", 0.0)
-                if score >= _MIN_SCORE:
+                if score >= self._min_score:   # Phase D v2 — instance threshold
                     trace.hits.append(HybridHit(
                         doc_id=r.get("id", ""),
                         text=r.get("text", ""),

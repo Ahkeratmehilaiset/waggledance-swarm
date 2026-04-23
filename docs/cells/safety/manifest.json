@@ -1,0 +1,66 @@
+{
+  "cell": "safety",
+  "generated_at": "2026-04-23T02:35:43+00:00",
+  "solver_count": 2,
+  "gap_score": 0.0,
+  "siblings": [
+    "energy",
+    "general",
+    "system",
+    "thermal"
+  ],
+  "existing_solvers": [
+    {
+      "model_id": "swarm_risk",
+      "model_name": "Swarm Risk Assessment",
+      "description": "Estimate probability of swarming based on hive conditions",
+      "cell": "safety",
+      "domain": "cottage",
+      "axiom_file": "configs\\axioms\\cottage\\swarm_risk.yaml",
+      "inputs": [
+        "empty_combs",
+        "total_combs",
+        "queen_age_years",
+        "queen_cells",
+        "season_factor"
+      ],
+      "outputs": [
+        "space_pressure",
+        "queen_age_factor",
+        "base_swarm_score",
+        "swarm_probability_pct"
+      ],
+      "n_formulas": 4
+    },
+    {
+      "model_id": "varroa_treatment",
+      "model_name": "Varroa Treatment Dosage",
+      "description": "Calculate oxalic acid treatment dosage and varroa reinfestation risk",
+      "cell": "safety",
+      "domain": "cottage",
+      "axiom_file": "configs\\axioms\\cottage\\varroa_treatment.yaml",
+      "inputs": [
+        "combs_with_bees",
+        "dose_per_comb_ml",
+        "varroa_before",
+        "colony_strength",
+        "treatment_efficacy",
+        "threshold_mites",
+        "reinfestation_rate_per_day"
+      ],
+      "outputs": [
+        "oxalic_acid_dose_ml",
+        "varroa_after_treatment",
+        "days_to_reinfestation",
+        "mite_load_pct"
+      ],
+      "n_formulas": 4
+    }
+  ],
+  "open_gaps": {
+    "unresolved_examples": [],
+    "unresolved_count": 0
+  },
+  "training_pairs_from_production": 33001,
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+}

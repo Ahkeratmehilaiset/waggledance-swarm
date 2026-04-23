@@ -1,0 +1,78 @@
+{
+  "cell": "energy",
+  "generated_at": "2026-04-23T02:35:43+00:00",
+  "solver_count": 3,
+  "gap_score": 0.0,
+  "siblings": [
+    "math",
+    "safety",
+    "thermal"
+  ],
+  "existing_solvers": [
+    {
+      "model_id": "solar_yield",
+      "model_name": "Solar Panel Yield",
+      "description": "Daily solar energy production estimate",
+      "cell": "energy",
+      "domain": "cottage",
+      "axiom_file": "configs\\axioms\\cottage\\solar_yield.yaml",
+      "inputs": [
+        "panel_area_m2",
+        "panel_efficiency",
+        "sun_hours",
+        "cell_temp"
+      ],
+      "outputs": [
+        "temperature_derating",
+        "peak_power_w",
+        "daily_yield_kwh"
+      ],
+      "n_formulas": 3
+    },
+    {
+      "model_id": "battery_discharge",
+      "model_name": "Battery Life Calculator",
+      "description": "Calculate expected battery life for IoT devices",
+      "cell": "energy",
+      "domain": "gadget",
+      "axiom_file": "configs\\axioms\\gadget\\battery.yaml",
+      "inputs": [
+        "capacity_mah",
+        "I_active",
+        "I_sleep",
+        "duty_cycle"
+      ],
+      "outputs": [
+        "battery_life_hours"
+      ],
+      "n_formulas": 1
+    },
+    {
+      "model_id": "comfort_energy_tradeoff",
+      "model_name": "Comfort vs Energy Cost",
+      "description": "Night setback energy saving",
+      "cell": "energy",
+      "domain": "home",
+      "axiom_file": "configs\\axioms\\home\\comfort_energy.yaml",
+      "inputs": [
+        "T_day",
+        "T_night",
+        "T_outdoor",
+        "building_ua",
+        "night_hours",
+        "avg_night_price"
+      ],
+      "outputs": [
+        "energy_saved_percent",
+        "cost_saved_per_night"
+      ],
+      "n_formulas": 2
+    }
+  ],
+  "open_gaps": {
+    "unresolved_examples": [],
+    "unresolved_count": 0
+  },
+  "training_pairs_from_production": 33001,
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+}

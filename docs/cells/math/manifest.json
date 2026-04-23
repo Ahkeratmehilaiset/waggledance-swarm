@@ -1,0 +1,64 @@
+{
+  "cell": "math",
+  "generated_at": "2026-04-23T02:35:44+00:00",
+  "solver_count": 2,
+  "gap_score": 0.0,
+  "siblings": [
+    "energy",
+    "general",
+    "system"
+  ],
+  "existing_solvers": [
+    {
+      "model_id": "colony_food_reserves",
+      "model_name": "Colony Winter Food Reserves",
+      "description": "Check if the colony has sufficient honey reserves for winter survival",
+      "cell": "math",
+      "domain": "cottage",
+      "axiom_file": "configs\\axioms\\cottage\\colony_food_reserves.yaml",
+      "inputs": [
+        "bee_cluster_kg",
+        "food_per_kg_bees",
+        "winter_months",
+        "food_available_kg"
+      ],
+      "outputs": [
+        "food_needed_kg",
+        "food_deficit_kg",
+        "survival_weeks",
+        "feeding_needed_kg"
+      ],
+      "n_formulas": 4
+    },
+    {
+      "model_id": "honey_yield",
+      "model_name": "Honey Yield Estimate",
+      "description": "Estimate seasonal honey yield based on colony strength and nectar flow",
+      "cell": "math",
+      "domain": "cottage",
+      "axiom_file": "configs\\axioms\\cottage\\honey_yield.yaml",
+      "inputs": [
+        "colony_strength",
+        "forager_ratio",
+        "nectar_load_mg",
+        "flights_per_day",
+        "nectar_to_honey_ratio",
+        "flow_days",
+        "surplus_fraction"
+      ],
+      "outputs": [
+        "daily_foragers",
+        "daily_nectar_kg",
+        "daily_honey_kg",
+        "season_honey_kg"
+      ],
+      "n_formulas": 4
+    }
+  ],
+  "open_gaps": {
+    "unresolved_examples": [],
+    "unresolved_count": 0
+  },
+  "training_pairs_from_production": 33001,
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+}

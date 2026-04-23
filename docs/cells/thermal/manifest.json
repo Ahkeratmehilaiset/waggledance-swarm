@@ -1,0 +1,109 @@
+{
+  "cell": "thermal",
+  "generated_at": "2026-04-23T02:35:43+00:00",
+  "solver_count": 4,
+  "gap_score": 0.0,
+  "siblings": [
+    "energy",
+    "safety",
+    "seasonal"
+  ],
+  "existing_solvers": [
+    {
+      "model_id": "heating_cost",
+      "model_name": "Heating Cost Calculator",
+      "description": "Daily and monthly heating cost",
+      "cell": "thermal",
+      "domain": "cottage",
+      "axiom_file": "configs\\axioms\\cottage\\heating_cost.yaml",
+      "inputs": [
+        "T_indoor",
+        "T_outdoor",
+        "area_m2",
+        "R_value",
+        "spot_price_ckwh"
+      ],
+      "outputs": [
+        "heat_loss_rate",
+        "daily_energy_kwh",
+        "daily_cost",
+        "monthly_cost"
+      ],
+      "n_formulas": 4
+    },
+    {
+      "model_id": "hive_thermal_balance",
+      "model_name": "Hive Thermal Balance",
+      "description": "Calculate hive temperature and survival risk",
+      "cell": "thermal",
+      "domain": "cottage",
+      "axiom_file": "configs\\axioms\\cottage\\hive_thermal.yaml",
+      "inputs": [
+        "N_bees",
+        "q_per_bee",
+        "activity_factor",
+        "T_outside",
+        "T_inside",
+        "surface_area",
+        "R_insulation"
+      ],
+      "outputs": [
+        "Q_bees",
+        "Q_loss",
+        "steady_state_temp",
+        "survival"
+      ],
+      "n_formulas": 4
+    },
+    {
+      "model_id": "pipe_freezing",
+      "model_name": "Pipe Freezing Risk",
+      "description": "Time until water reaches freezing point",
+      "cell": "thermal",
+      "domain": "cottage",
+      "axiom_file": "configs\\axioms\\cottage\\pipe_freezing.yaml",
+      "inputs": [
+        "T_outdoor",
+        "T_water",
+        "pipe_length_m",
+        "pipe_diameter_m",
+        "pipe_volume_liters",
+        "R_insulation"
+      ],
+      "outputs": [
+        "heat_loss_rate",
+        "time_to_freeze_hours"
+      ],
+      "n_formulas": 2
+    },
+    {
+      "model_id": "heat_pump_cop",
+      "model_name": "Heat Pump COP & Cost",
+      "description": "Heat pump efficiency and hourly heating cost",
+      "cell": "thermal",
+      "domain": "home",
+      "axiom_file": "configs\\axioms\\home\\heat_pump_cop.yaml",
+      "inputs": [
+        "T_indoor",
+        "T_outdoor",
+        "efficiency_factor",
+        "building_ua",
+        "spot_price_ckwh"
+      ],
+      "outputs": [
+        "carnot_cop",
+        "real_cop",
+        "heating_power_w",
+        "electrical_power_w",
+        "hourly_cost_eur"
+      ],
+      "n_formulas": 5
+    }
+  ],
+  "open_gaps": {
+    "unresolved_examples": [],
+    "unresolved_count": 0
+  },
+  "training_pairs_from_production": 33001,
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+}

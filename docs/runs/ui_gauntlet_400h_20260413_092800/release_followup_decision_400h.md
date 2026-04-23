@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T15:11:13+00:00
+**Generated:** 2026-04-23T15:34:07+00:00
 **Main ref:** `main~30`
 **Total green:** 263.28h / 400h (MID-CAMPAIGN)
 
@@ -41,7 +41,7 @@
 - `waggledance/core/reasoning/hybrid_router.py`
 - … and 1 more
 
-### TEST_HARNESS (69 files)
+### TEST_HARNESS (67 files)
 
 - `docs/runs/RESUME_HERE.md`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.json`
@@ -73,7 +73,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_findings.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
-- … and 39 more
+- … and 37 more
 
 ### DOCS_NARRATIVE (13 files)
 

@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T03:32:43+00:00
+**Generated:** 2026-04-23T04:02:54+00:00
 **Main ref:** `main~30`
 **Total green:** 219.24h / 400h (MID-CAMPAIGN)
 
@@ -18,7 +18,7 @@
 - `waggledance/core/learning/solver_hash.py`
 - `waggledance/core/orchestration/round_table.py`
 
-### TEST_HARNESS (85 files)
+### TEST_HARNESS (83 files)
 
 - `docs/runs/campaign_hardening_log.md`
 - `docs/runs/release_followup_final_400h.md`
@@ -34,7 +34,6 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_009.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_010.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_011.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/fault_drills.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_incident_matrix.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_reliability.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_summary.md`
@@ -43,14 +42,15 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/phase_c_baseline.jsonl`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/phase_c_baseline.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/plan.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/query_corpus.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/runbook.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_001.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_002.json`
-- … and 55 more
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_003.json`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_006.json`
+- … and 53 more
 
 ### DOCS_NARRATIVE (23 files)
 

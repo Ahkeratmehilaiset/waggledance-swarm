@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T10:40:30+00:00
+**Generated:** 2026-04-23T11:10:35+00:00
 **Main ref:** `main~30`
 **Total green:** 243.27h / 400h (MID-CAMPAIGN)
 
@@ -23,15 +23,15 @@
 - `configs/axioms/gadget/signal_strength.yaml`
 - `configs/axioms/home/comfort_energy.yaml`
 - `configs/axioms/home/heat_pump_cop.yaml`
-- `waggledance/core/learning/case_builder.py`
-- `waggledance/core/learning/dream_mode.py`
+- `configs/settings.yaml`
+- `waggledance/application/services/hybrid_retrieval_service.py`
+- `waggledance/bootstrap/container.py`
 - `waggledance/core/learning/embedding_cache.py`
-- `waggledance/core/learning/prediction_error_ledger.py`
 - `waggledance/core/learning/solver_hash.py`
 - `waggledance/core/reasoning/hybrid_router.py`
 - `waggledance/core/reasoning/question_frame.py`
 
-### TEST_HARNESS (77 files)
+### TEST_HARNESS (76 files)
 
 - `docs/runs/RESUME_HERE.md`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T085142Z.json`
@@ -42,7 +42,6 @@
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T102734Z.md`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T102843Z.json`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T102843Z.md`
-- `docs/runs/release_followup_final_400h.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/campaign_state.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_001.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_002.md`
@@ -63,7 +62,8 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_038.json`
-- … and 47 more
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_039.json`
+- … and 46 more
 
 ### DOCS_NARRATIVE (37 files)
 
@@ -105,15 +105,13 @@
 ### VERSION (0 files)
 
 
-### OTHER (13 files)
+### OTHER (11 files)
 
 - `.gitignore`
 - `backup/2026-04-23/faiss_pre-hybrid.tar.gz`
 - `backup/2026-04-23/settings.yaml.pre-hybrid`
 - `tools/backfill_axioms_to_hex.py`
 - `tools/campaign_auto_commit.py`
-- `tools/campaign_reports.py`
-- `tools/campaign_watchdog.py`
 - `tools/cell_manifest.py`
 - `tools/compute_cell_centroids.py`
 - `tools/hex_manifest.py`

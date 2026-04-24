@@ -127,6 +127,12 @@ def reap_server_zombies() -> int:
     Runs every tick as a safety net. Self-heals historical zombies from earlier
     buggy restart cycles. The one process actually LISTENing on 8002 is kept;
     every other match is zombie (stuck pre-bind, orphaned from prior launcher).
+
+    Safety gates (in order):
+    1. If no process is LISTENing on 8002 yet, skip — server may be mid-startup.
+    2. If psutil returned listener_pid=None (Windows permissions quirk), skip —
+       we can't tell zombie from live, so prefer leaving everything alone.
+    3. If there is only 1 start_waggledance process, nothing to reap.
     """
     try:
         import psutil
@@ -136,18 +142,37 @@ def reap_server_zombies() -> int:
                 listener_pid = c.pid
                 break
 
-        killed = 0
+        # Gate 1 + 2: bail if we can't identify the listener
+        if listener_pid is None:
+            return 0
+
+        # Collect server processes first, decide after
+        server_procs = []
         for p in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
                 if not (p.info["name"] and "python" in p.info["name"].lower()):
                     continue
                 cmd = " ".join(p.info.get("cmdline") or [])
-                # Only reap the real server process pattern, not launcher stubs
-                # (launcher stubs die quickly on their own once real server is gone)
-                if not ("start_waggledance" in cmd and "8002" in cmd):
-                    continue
-                if p.info["pid"] == listener_pid:
-                    continue
+                if "start_waggledance" in cmd and "8002" in cmd:
+                    server_procs.append(p)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # Gate 3: nothing to reap if only one server exists
+        if len(server_procs) <= 1:
+            return 0
+
+        # Double-check that listener_pid is actually in our list — otherwise
+        # we don't know which is the live one and shouldn't kill any.
+        if not any(p.info["pid"] == listener_pid for p in server_procs):
+            log(f"reap skipped: listener pid {listener_pid} not in server list")
+            return 0
+
+        killed = 0
+        for p in server_procs:
+            if p.info["pid"] == listener_pid:
+                continue
+            try:
                 p.kill()
                 killed += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied):

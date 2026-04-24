@@ -1,13 +1,13 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-23T23:35:30+00:00
+**Generated:** 2026-04-24T00:05:35+00:00
 **Main ref:** `main~30`
-**Total green:** 267.28h / 400h (MID-CAMPAIGN)
+**Total green:** 287.30h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (14 files)
+### PRODUCT (12 files)
 
 - `configs/axioms/cottage/autumn_preparation.yaml`
 - `configs/axioms/cottage/colony_growth_rate.yaml`
@@ -17,10 +17,8 @@
 - `configs/axioms/cottage/varroa_treatment_calendar.yaml`
 - `configs/axioms/cottage/winter_feeding_decision.yaml`
 - `configs/axioms/home/indoor_air_quality.yaml`
-- `configs/settings.yaml`
 - `core/chat_routing_engine.py`
 - `waggledance/application/services/chat_service.py`
-- `waggledance/application/services/hybrid_retrieval_service.py`
 - `waggledance/bootstrap/container.py`
 - `waggledance/core/reasoning/hybrid_observer.py`
 
@@ -75,7 +73,7 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (267.3h)
+- Campaign complete (>= 400h): no (287.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

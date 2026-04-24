@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T08:36:47+00:00
+**Generated:** 2026-04-24T09:06:50+00:00
 **Main ref:** `main~30`
 **Total green:** 291.30h / 400h (MID-CAMPAIGN)
 
@@ -13,7 +13,7 @@
 - `waggledance/core/learning/solver_hash.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (51 files)
+### TEST_HARNESS (52 files)
 
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
@@ -45,14 +45,15 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_059.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_060.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_061.json`
-- … and 21 more
+- … and 22 more
 
-### DOCS_NARRATIVE (25 files)
+### DOCS_NARRATIVE (27 files)
 
 - `CHANGELOG.md`
 - `README.md`
 - `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`
 - `docs/architecture/MAGMA_FAISS_SCALING.md`
+- `docs/architecture/MAGMA_VECTOR_STAGE2.md`
 - `docs/architecture/PHASE8_METRICS.md`
 - `docs/cells/INDEX.md`
 - `docs/cells/energy/MANIFEST.md`
@@ -73,6 +74,7 @@
 - `docs/cells/thermal/manifest.json`
 - `docs/plans/GPT_response4.txt`
 - `docs/plans/GPT_response5.txt`
+- `docs/plans/GPT_response6.txt`
 - `docs/prompts/cell_teacher_prompt.md`
 
 ### CI_WORKFLOW (0 files)

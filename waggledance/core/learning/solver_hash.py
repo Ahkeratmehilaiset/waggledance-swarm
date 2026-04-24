@@ -1,36 +1,40 @@
 """Canonical solver hash for deduplication.
 
-When the Claude-teacher pipeline proposes new solvers, we hash each proposal
-to detect duplicates before running expensive quality-gate checks. Two
-solvers with the same set of (formulas, variables, conditions) are
-semantically identical and should be rejected without further evaluation.
+Two public hash functions:
 
-The hash is deliberately insensitive to:
-  - model_id / model_name / description (cosmetic)
-  - YAML key order (normalized via sort)
-  - whitespace in formula strings
-  - range/default value choices (parameterization, not structure)
+- `canonical_hash(spec)` — core-semantic hash. Covers formulas, variables,
+  and conditions. Insensitive to model_id, description, whitespace, key
+  order, and parameter defaults/ranges. Preserved for backward-compat
+  with existing callers.
 
-The hash IS sensitive to:
-  - Set of formulas (name + normalized expression)
-  - Set of variables (name + unit)
-  - Conditional guards (order-independent)
+- `solver_hash(spec)` — strict hash added for Phase 8 proposal dedup.
+  Extends the core hash with primary output name + unit, domain tags,
+  and invariants (validation checks). Matches the x.txt Phase 3 spec:
+  "Hash must include formula, inputs, outputs, units, conditions,
+  domain tags, invariants."
 
-Separate from the cell's registry — this is specifically for
-proposal-time dedup during scaling.
+Supporting public helpers (Phase 3):
+- `canonicalize_solver_spec(spec)` — pure projection into a normalized
+  dict (useful for debugging and round-tripping).
+- `normalize_formula(text)` — whitespace-collapsing helper.
+- `normalize_variables(vars)` — stable (name, unit) pair list.
+
+Both hashes use stable JSON serialization so byte-output is portable
+across Python versions and platforms.
 
 Usage:
-    from waggledance.core.learning.solver_hash import canonical_hash
-    h = canonical_hash(proposal_dict)
-    if h in registry.known_hashes:
+    from waggledance.core.learning.solver_hash import solver_hash
+    h = solver_hash(proposal_dict)
+    if h in registry:
         return DUPLICATE
-    registry.known_hashes.add(h)
+    registry.add(h)
 
 Tested via tests/test_solver_hash.py.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -43,6 +47,12 @@ def _normalize_expr(expr: str) -> str:
     if not expr:
         return ""
     return _WS.sub("", str(expr).strip())
+
+
+# Public aliases required by x.txt Phase 3.
+def normalize_formula(text: str) -> str:
+    """Public whitespace-collapsing helper for formula / algorithm strings."""
+    return _normalize_expr(text)
 
 
 def _normalize_formulas(formulas: list[Any]) -> list[tuple[str, str]]:
@@ -73,6 +83,68 @@ def _normalize_variables(variables: Any) -> list[tuple[str, str]]:
     return sorted(out)
 
 
+def normalize_variables(variables: Any) -> list[list[str]]:
+    """Public stable `[name, unit]` list form of the variable spec."""
+    # Return lists (not tuples) so the result is JSON-serializable.
+    return [[n, u] for (n, u) in _normalize_variables(variables)]
+
+
+def _normalize_outputs(spec: dict) -> list[tuple[str, str]]:
+    """Primary output name + unit from `solver_output_schema`, plus any
+    formula with a declared output_unit. Order-independent."""
+    out: set[tuple[str, str]] = set()
+    schema = spec.get("solver_output_schema") or {}
+    primary = schema.get("primary_value") or {}
+    if primary.get("name"):
+        out.add((str(primary["name"]).strip(), str(primary.get("unit") or "").strip()))
+    for f in spec.get("formulas", []) or []:
+        if not isinstance(f, dict):
+            continue
+        u = (f.get("output_unit") or "").strip()
+        n = (f.get("name") or "").strip()
+        if n and u:
+            out.add((n, u))
+    return sorted(out)
+
+
+def _normalize_tags(spec: dict) -> list[str]:
+    """Domain / category tags contributing to semantic identity."""
+    tags: set[str] = set()
+    for t in spec.get("tags", []) or []:
+        s = str(t).strip().lower()
+        if s:
+            tags.add(s)
+    cell = spec.get("cell_id")
+    if cell:
+        tags.add(f"cell:{str(cell).strip().lower()}")
+    domain = spec.get("domain")
+    if domain:
+        tags.add(f"domain:{str(domain).strip().lower()}")
+    return sorted(tags)
+
+
+def _normalize_invariants(spec: dict) -> list[str]:
+    """Invariants from `validation` list (each entry may have `check` or
+    `condition` key) plus any top-level `invariants` list. Whitespace-
+    collapsed and order-independent."""
+    out: set[str] = set()
+    for item in spec.get("validation", []) or []:
+        if isinstance(item, dict):
+            c = item.get("check") or item.get("condition") or ""
+            c = _normalize_expr(c)
+            if c:
+                out.add(c)
+        elif isinstance(item, str):
+            c = _normalize_expr(item)
+            if c:
+                out.add(c)
+    for item in spec.get("invariants", []) or []:
+        c = _normalize_expr(str(item))
+        if c:
+            out.add(c)
+    return sorted(out)
+
+
 def _normalize_conditions(conditions: Any) -> list[str]:
     """Conditional guards — any list of expressions that gate applicability."""
     if not conditions:
@@ -83,7 +155,12 @@ def _normalize_conditions(conditions: Any) -> list[str]:
 
 
 def canonical_hash(proposal: dict) -> str:
-    """Return a 64-char hex SHA256 of the proposal's structural shape."""
+    """Return a 64-char hex SHA256 of the core structural shape.
+
+    Kept for backward compatibility with existing call sites. Covers
+    formulas, variables, and conditions only. For new code prefer
+    `solver_hash`, which also covers outputs, tags, and invariants.
+    """
     parts = {
         "formulas": _normalize_formulas(proposal.get("formulas", [])),
         "variables": _normalize_variables(proposal.get("variables", {})),
@@ -93,8 +170,49 @@ def canonical_hash(proposal: dict) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+def canonicalize_solver_spec(spec: dict) -> dict:
+    """Return a normalized projection of the solver spec.
+
+    Deterministic and JSON-serializable: same semantic spec always
+    projects to byte-identical JSON regardless of YAML key order,
+    whitespace in expressions, or parameter default/range choices.
+    Used both for hashing and for human inspection.
+    """
+    return {
+        "formulas": [
+            [name, expr] for (name, expr) in _normalize_formulas(spec.get("formulas", []))
+        ],
+        "variables": [[n, u] for (n, u) in _normalize_variables(spec.get("variables", {}))],
+        "outputs": [[n, u] for (n, u) in _normalize_outputs(spec)],
+        "conditions": _normalize_conditions(spec.get("conditions")),
+        "tags": _normalize_tags(spec),
+        "invariants": _normalize_invariants(spec),
+    }
+
+
+def _stable_json(obj) -> str:
+    """JSON with sorted keys + compact separators. Byte-stable across
+    Python versions and platforms."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def solver_hash(spec: dict) -> str:
+    """Phase 8 strict hash.
+
+    Covers: formulas, inputs (variables + units), outputs (name + unit),
+    conditions, domain tags, and invariants — i.e. every semantic
+    dimension the x.txt Phase 3 spec calls out. Stable JSON
+    serialization, so output is portable.
+    """
+    payload = canonicalize_solver_spec(spec)
+    return hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
+
+
 def short_hash(proposal: dict) -> str:
-    """12-char prefix — human-loggable without sacrificing practical uniqueness."""
+    """12-char prefix of `canonical_hash` — human-loggable.
+
+    Kept for compatibility. For new code use `solver_hash(spec)[:12]`.
+    """
     return canonical_hash(proposal)[:12]
 
 
@@ -124,17 +242,24 @@ class HashRegistry:
         return len(self._seen)
 
     @classmethod
-    def from_axioms_dir(cls, axioms_dir) -> "HashRegistry":
-        """Pre-populate from existing axiom files on disk. Prevents Claude
-        from proposing something already in production."""
+    def from_axioms_dir(cls, axioms_dir, use_strict: bool = False) -> "HashRegistry":
+        """Pre-populate from existing axiom files on disk. Prevents a
+        teacher from proposing something already in production.
+
+        If `use_strict=True`, use the Phase 8 `solver_hash` (covers
+        outputs/tags/invariants in addition to core formula shape).
+        Default stays on `canonical_hash` for backward-compat with
+        existing callers.
+        """
         import yaml
         from pathlib import Path
+        hashfn = solver_hash if use_strict else canonical_hash
         reg = cls()
         for path in Path(axioms_dir).rglob("*.yaml"):
             try:
                 with open(path, encoding="utf-8") as f:
                     axiom = yaml.safe_load(f) or {}
-                reg.add(canonical_hash(axiom))
+                reg.add(hashfn(axiom))
             except Exception:
                 pass  # skip unparseable
         return reg

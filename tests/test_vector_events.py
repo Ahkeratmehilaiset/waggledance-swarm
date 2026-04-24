@@ -177,3 +177,92 @@ def test_event_is_frozen():
     e = solver_upserted("thermal", "x", "sig", "path")
     with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
         e.cell_id = "energy"
+
+
+# ── Event log writer / reader ─────────────────────────────────────
+
+def test_emit_appends_canonical_jsonl(tmp_path):
+    from waggledance.core.magma.vector_events import emit, read_events
+    log = tmp_path / "events.jsonl"
+    e1 = solver_upserted("thermal", "a", "sig1", "configs/axioms/a.yaml")
+    e2 = vector_upsert_requested("thermal", "a", "sig1", reason="test")
+    emit(e1, log)
+    emit(e2, log)
+
+    lines = log.read_text("utf-8").splitlines()
+    assert len(lines) == 2
+    # Both lines must be standalone valid JSON
+    d1 = json.loads(lines[0])
+    d2 = json.loads(lines[1])
+    assert d1["event"] == "solver.upserted"
+    assert d2["event"] == "vector.upsert_requested"
+
+
+def test_emit_creates_parent_dir(tmp_path):
+    from waggledance.core.magma.vector_events import emit
+    deep = tmp_path / "not" / "yet" / "created" / "events.jsonl"
+    assert not deep.parent.exists()
+    emit(solver_upserted("thermal", "a", "sig", "p"), deep)
+    assert deep.exists()
+
+
+def test_emit_many_batches_into_one_file(tmp_path):
+    from waggledance.core.magma.vector_events import emit_many, read_events
+    log = tmp_path / "events.jsonl"
+    events = [
+        solver_upserted("thermal", f"m{i}", f"s{i}", f"p{i}")
+        for i in range(5)
+    ]
+    emit_many(events, log)
+    read_back = list(read_events(log))
+    assert len(read_back) == 5
+    assert [e.payload["model_id"] for e in read_back] == [f"m{i}" for i in range(5)]
+
+
+def test_read_events_skips_malformed_lines(tmp_path):
+    from waggledance.core.magma.vector_events import emit, read_events
+    log = tmp_path / "events.jsonl"
+    # One valid event, one garbage line, one unknown event-type line
+    emit(solver_upserted("thermal", "a", "sig", "p"), log)
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("{ this is not valid json\n")
+        f.write(json.dumps({"event": "nope.unknown", "cell_id": "thermal"}) + "\n")
+
+    events = list(read_events(log))
+    # Only the valid known-event line survives
+    assert len(events) == 1
+    assert events[0].event == "solver.upserted"
+
+
+def test_read_events_missing_file_yields_empty(tmp_path):
+    from waggledance.core.magma.vector_events import read_events
+    missing = tmp_path / "nonexistent.jsonl"
+    events = list(read_events(missing))
+    assert events == []
+
+
+def test_emit_uses_env_var_when_no_path(tmp_path, monkeypatch):
+    from waggledance.core.magma.vector_events import emit, read_events
+    target = tmp_path / "from_env.jsonl"
+    monkeypatch.setenv("WAGGLE_VECTOR_EVENT_LOG", str(target))
+    emit(solver_upserted("thermal", "a", "sig", "p"))
+    assert target.exists()
+    assert len(list(read_events())) == 1
+
+
+def test_round_trip_emit_read_preserves_event_id(tmp_path):
+    """The consumer must be able to dedup by event_id across a
+    restart. Emit, read, and confirm the same id comes back."""
+    from waggledance.core.magma.vector_events import emit, read_events
+    log = tmp_path / "events.jsonl"
+    e = vector_commit_applied(
+        cell_id="thermal",
+        faiss_commit_id="faiss_abcd",
+        artifact_path="data/vector/thermal/index.faiss",
+        vector_count=20,
+        checksum="sha256:deadbeef",
+    )
+    original_id = e.event_id()
+    emit(e, log)
+    [reparsed] = list(read_events(log))
+    assert reparsed.event_id() == original_id

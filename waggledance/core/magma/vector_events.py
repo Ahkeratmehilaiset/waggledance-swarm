@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterator
 
 
 # Event name constants. Kept as module-level strings so consumers can
@@ -192,3 +194,85 @@ def vector_commit_applied(cell_id: str, faiss_commit_id: str,
         cell_id=cell_id,
         payload=payload,
     )
+
+
+# ── Event log writer + reader ─────────────────────────────────────
+#
+# Until JetStream lands in Stage 2, the event log is an append-only
+# JSONL file. Producers call `emit(event)`; consumers iterate with
+# `read_events(path)`. Both functions are module-level helpers so
+# existing tools can import them without pulling in the whole MAGMA
+# runtime.
+
+DEFAULT_EVENT_LOG = Path("data") / "vector" / "events.jsonl"
+
+
+def _resolve_event_log(path: Path | str | None) -> Path:
+    """Resolve the target path. Explicit argument wins; env var
+    `WAGGLE_VECTOR_EVENT_LOG` is next (useful for tests); default is
+    `data/vector/events.jsonl` relative to the current working dir."""
+    if path is not None:
+        return Path(path)
+    env = os.environ.get("WAGGLE_VECTOR_EVENT_LOG")
+    if env:
+        return Path(env)
+    return DEFAULT_EVENT_LOG
+
+
+def emit(event: VectorEvent, path: Path | str | None = None) -> Path:
+    """Append `event` to the event log as a single canonical JSON line.
+    Returns the resolved path (for logging / test assertions).
+
+    The writer creates parent directories on first use so Stage 1 tools
+    can emit before the data/vector/ directory exists."""
+    target = _resolve_event_log(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a", encoding="utf-8") as f:
+        f.write(event.to_json())
+        f.write("\n")
+    return target
+
+
+def emit_many(events: list[VectorEvent],
+              path: Path | str | None = None) -> Path:
+    """Append a batch of events atomically-per-line. Not a true
+    multi-event atomic transaction (Stage 2 gets that via JetStream);
+    this just saves the open/close overhead when a producer writes
+    many events in one pass."""
+    target = _resolve_event_log(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a", encoding="utf-8") as f:
+        for event in events:
+            f.write(event.to_json())
+            f.write("\n")
+    return target
+
+
+def read_events(path: Path | str | None = None) -> Iterator[VectorEvent]:
+    """Yield every VectorEvent from the log file in write order. Skips
+    unparseable lines silently (they'll show up as a warning once a
+    real consumer lands in Stage 2)."""
+    target = _resolve_event_log(path)
+    if not target.exists():
+        return
+    with open(target, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            try:
+                yield VectorEvent(
+                    event=d["event"],
+                    cell_id=d["cell_id"],
+                    solver_id=d.get("solver_id"),
+                    ts=d.get("ts") or _utc_now_iso(),
+                    payload=d.get("payload") or {},
+                    schema_version=d.get("schema_version", VECTOR_EVENT_SCHEMA_VERSION),
+                )
+            except (KeyError, ValueError):
+                # Unknown / malformed event — skip
+                continue

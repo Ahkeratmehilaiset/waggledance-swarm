@@ -51,10 +51,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from waggledance.core.learning.solver_hash import canonical_hash  # noqa: E402
+from waggledance.core.magma import vector_events  # noqa: E402
 
 
 AXIOMS_DIR = ROOT / "configs" / "axioms"
 LEDGER_DIR = ROOT / "data" / "faiss_delta_ledger"
+VECTOR_EVENT_LOG = ROOT / "data" / "vector" / "events.jsonl"
 CENTROIDS_FILE = ROOT / "data" / "faiss_staging" / "cell_centroids.json"
 OLLAMA_URL = "http://localhost:11434/api/embed"
 EMBEDDING_MODEL = "nomic-embed-text"
@@ -429,6 +431,7 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
 
     # Write ledger files per cell
     ledger_paths = []
+    events_emitted: list[str] = []
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if not dry_run:
         for cell, bundle in per_cell_entries.items():
@@ -436,6 +439,40 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
                 path = write_ledger_entries(cell, bundle["entries"], "axiom_backfill", ts)
                 ledger_paths.append(path)
                 print(f"  wrote {len(bundle['entries'])} entries to {path.relative_to(ROOT)}")
+
+        # Emit vector events per unique (cell, solver) so the MAGMA
+        # event log mirrors the ledger mutations. Each solver gets one
+        # solver.upserted (YAML→ledger) plus one
+        # vector.upsert_requested (ledger→re-embed). No vector.
+        # commit_applied is emitted here — that's the vector-indexer's
+        # job (Stage 2). Emit to the event log specified by
+        # WAGGLE_VECTOR_EVENT_LOG env var; fall back to the default
+        # path under data/vector/.
+        batch: list[vector_events.VectorEvent] = []
+        for cell, bundle in per_cell_entries.items():
+            seen: set[str] = set()
+            for entry in bundle["entries"]:
+                mid = entry["canonical_solver_id"]
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                batch.append(vector_events.solver_upserted(
+                    cell_id=cell,
+                    model_id=mid,
+                    signature=entry["canonical_hash"][:16],
+                    source_path=entry["source_file"],
+                ))
+                batch.append(vector_events.vector_upsert_requested(
+                    cell_id=cell,
+                    model_id=mid,
+                    signature=entry["canonical_hash"][:16],
+                    reason="axiom_backfill",
+                ))
+        if batch:
+            event_log_path = vector_events.emit_many(batch)
+            events_emitted = [e.event_id() for e in batch]
+            print(f"  emitted {len(batch)} vector events to "
+                  f"{event_log_path}")
     else:
         for cell, bundle in per_cell_entries.items():
             print(f"  WOULD write {len(bundle['entries'])} entries for cell={cell}")
@@ -446,6 +483,7 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
         "ledger_files_written": len(ledger_paths),
         "errors": errors,
         "per_cell_counts": {c: len(b["entries"]) for c, b in per_cell_entries.items()},
+        "vector_events_emitted": len(events_emitted),
         "timestamp": ts,
     }
 

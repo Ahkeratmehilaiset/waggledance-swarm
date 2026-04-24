@@ -79,6 +79,87 @@ def kill_python_matching(pattern: str) -> int:
         return 0
 
 
+def _is_server_process(cmdline: str) -> bool:
+    """Match both the launcher stub and the actual start_waggledance server on 8002."""
+    if "_launch_gauntlet_server" in cmdline:
+        return True
+    if "start_waggledance" in cmdline and "8002" in cmdline:
+        return True
+    return False
+
+
+def kill_server_tree() -> int:
+    """Kill launcher + start_waggledance --port 8002 + all their children.
+
+    Fixes the original bug where kill_python_matching("_launch_gauntlet_server")
+    only killed the launcher stub and orphaned the real server (which kept
+    ~790 MB RAM as a zombie).
+    """
+    try:
+        import psutil
+        killed = 0
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if not (p.info["name"] and "python" in p.info["name"].lower()):
+                    continue
+                cmd = " ".join(p.info.get("cmdline") or [])
+                if not _is_server_process(cmd):
+                    continue
+                for c in psutil.Process(p.info["pid"]).children(recursive=True):
+                    try:
+                        c.kill()
+                        killed += 1
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                p.kill()
+                killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return killed
+    except Exception as e:
+        log(f"kill_server_tree error: {e}")
+        return 0
+
+
+def reap_server_zombies() -> int:
+    """Kill any start_waggledance --port 8002 process that is NOT bound to port 8002.
+
+    Runs every tick as a safety net. Self-heals historical zombies from earlier
+    buggy restart cycles. The one process actually LISTENing on 8002 is kept;
+    every other match is zombie (stuck pre-bind, orphaned from prior launcher).
+    """
+    try:
+        import psutil
+        listener_pid = None
+        for c in psutil.net_connections(kind="tcp"):
+            if c.laddr and c.laddr.port == 8002 and c.status == psutil.CONN_LISTEN:
+                listener_pid = c.pid
+                break
+
+        killed = 0
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if not (p.info["name"] and "python" in p.info["name"].lower()):
+                    continue
+                cmd = " ".join(p.info.get("cmdline") or [])
+                # Only reap the real server process pattern, not launcher stubs
+                # (launcher stubs die quickly on their own once real server is gone)
+                if not ("start_waggledance" in cmd and "8002" in cmd):
+                    continue
+                if p.info["pid"] == listener_pid:
+                    continue
+                p.kill()
+                killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if killed:
+            log(f"reaped {killed} zombie server process(es)")
+        return killed
+    except Exception as e:
+        log(f"reap_server_zombies error: {e}")
+        return 0
+
+
 def start_server() -> None:
     log("starting gauntlet server...")
     subprocess.Popen(
@@ -156,10 +237,15 @@ def main() -> int:
 
     try:
         while True:
+            # 0. Zombie sweep — kill any start_waggledance --port 8002 that is NOT
+            #    the one listening on the port. Self-heals orphans from prior
+            #    restart cycles so RAM doesn't accumulate (~790 MB per zombie).
+            reap_server_zombies()
+
             # 1. Server health check
             if not server_healthy():
                 log("server unhealthy, killing any stale server processes and restarting")
-                kill_python_matching("_launch_gauntlet_server")
+                kill_server_tree()
                 time.sleep(3)
                 start_server()
                 server_started_at = time.time()
@@ -174,7 +260,7 @@ def main() -> int:
                     for mode in MODES:
                         kill_python_matching(f"--mode {mode}")
                     time.sleep(2)
-                    kill_python_matching("_launch_gauntlet_server")
+                    kill_server_tree()
                     for pf in campaign_dir.glob("*.pid"):
                         if pf.name != ".watchdog.pid":
                             pf.unlink(missing_ok=True)

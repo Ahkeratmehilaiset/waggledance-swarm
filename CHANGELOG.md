@@ -1,5 +1,79 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## Unreleased — 2026-04-24 — Phase 8 Honeycomb Solver Scaling Foundation (scaffolding)
+
+Branch: `phase8/honeycomb-solver-scaling-foundation`.
+
+Additive scaffolding for safe solver-library growth. No runtime flip, no
+auto-start, no topology mutation. All new code is additive under `tools/`,
+`schemas/`, `waggledance/core/learning/`, `docs/architecture/`,
+`docs/cells/`, `docs/prompts/`, and `docs/runs/`.
+
+### Added
+
+- **Architecture doc** — `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`
+  (honest state capture, measurable capability-growth definitions,
+  subdivision plan, teacher protocol, durable-bus framing, vLLM scope,
+  online-learning boundary).
+- **Cell manifest generator** — `tools/cell_manifest.py` +
+  `tests/test_cell_manifest.py` (11 tests). Deterministic per-cell
+  `MANIFEST.md` + `manifest.json` with `manifest_hash` stable across runs.
+  Generated for all 8 cells under `docs/cells/<cell>/`.
+- **Strict solver hash + dedupe** — extended
+  `waggledance/core/learning/solver_hash.py` with `solver_hash`,
+  `canonicalize_solver_spec`, `normalize_formula`, `normalize_variables`
+  (legacy `canonical_hash` preserved). New `tools/solver_dedupe.py` and
+  `tests/test_solver_dedupe.py` (6 tests). Initial scan: 22 axioms,
+  0 duplicates.
+- **Teacher proposal schema + prompt** —
+  `schemas/solver_proposal.schema.json`,
+  `docs/prompts/cell_teacher_prompt.md`,
+  `tests/test_solver_proposal_schema.py` (33 tests).
+- **Proposal quality gate** — `tools/propose_solver.py` with 12 gates and
+  six verdicts (`REJECT_SCHEMA`, `REJECT_DUPLICATE`, `REJECT_CONTRADICTION`,
+  `REJECT_LOW_VALUE`, `ACCEPT_SHADOW_ONLY`, `ACCEPT_CANDIDATE`). 
+  `tests/test_propose_solver_gate.py` (36 tests). Never auto-merges;
+  never mutates `configs/axioms/`.
+- **Typed composition graph** —
+  `waggledance/core/learning/composition_graph.py` +
+  `tools/solver_composition_report.py` +
+  `tests/test_composition_graph.py` (16 tests). Initial run: 22 nodes,
+  22 typed edges, 38 bridge candidates across ring-1 neighbors.
+- **Hex subdivision planner** — `tools/hex_subdivision_plan.py` +
+  `tests/test_hex_subdivision_plan.py` (11 tests). Advisory only —
+  tested that the planner does NOT mutate
+  `waggledance/core/hex_cell_topology.py`.
+- **Phase 8 capability-growth reporter** — 
+  `tools/phase8_capability_report.py` +
+  `docs/architecture/PHASE8_METRICS.md`. Offline surface for the 13
+  signals; live Prometheus counters deferred until ui_gauntlet campaign
+  settles.
+- **Honeycomb 400h campaign harness** —
+  `tools/run_honeycomb_400h_campaign.py` +
+  `tests/test_run_honeycomb_400h_campaign.py` (9 tests). Dry-run +
+  shakedown modes; `--confirm-start` reserved for the real drive.
+  8-segment layout matches x.txt Phase 9 spec.
+- **CI baseline + validation pack** —
+  `docs/runs/phase8_ci_baseline.md` (5 666 / 5 670 passed at branch
+  creation), `docs/runs/phase8_validation.md` (171 targeted tests pass
+  in 4.77 s; 6/6 live endpoints HTTP 200 during campaign).
+
+### Contracts held
+
+- No runtime axiom mutation.
+- No topology mutation.
+- No `/metrics` surface change.
+- No `start_waggledance.py` change, no LLM adapter change.
+- Running `ui_gauntlet_400h` campaign continued without interruption during
+  Phase 8 work.
+
+### Known carries
+
+- `tests/test_hybrid_retrieval.py::TestFeatureFlag::test_enabled_returns_hybrid`
+  remains failing (pre-existing; `"hybrid:shadow"` label introduced in Phase
+  D-1 does not match the old test expectation). Out of Phase 8 scope;
+  documented in `docs/runs/phase8_ci_baseline.md`.
+
 ## Unreleased — 2026-04-13 .. 2026-04-21 — 400h Campaign Hardening + CI Revival + Honest State Audit
 
 This block covers all post-v3.5.7 fixes and hardening done during the active

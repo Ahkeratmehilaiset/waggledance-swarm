@@ -172,10 +172,35 @@ Docked panel with 8 tabs + Chat. Bilingual FI/EN.
 | Architecture | Hexagonal — DI container, port/adapter, single-product |
 | Runtime | ElasticScaler + AdaptiveThrottle + ResourceGuard via DI |
 | Specialist models | 14 (real sklearn training, canary lifecycle) |
-| Tests | 5378 passing, 0 failing |
+| Tests | 5817 passing, 1 pre-existing failure (documented) |
 | Production validated | 12 h soak — 358/358 ticks green, 0 restarts |
 | UI hardening | 477 Playwright queries (7 buckets), 0 XSS, 0 DOM breaks, 30 min soak stable |
 | Cutover | Full autonomy mode enabled |
+
+### Phase 8 — Honeycomb Solver Scaling *(planned / scaffolding / experimental)*
+
+Phase 8 is the scaffolding layer for safe solver-library growth. It adds
+planning, hashing, and gating tools; it does **not** flip any runtime switch.
+Active work happens on branch `phase8/honeycomb-solver-scaling-foundation`.
+
+- `tools/cell_manifest.py` — deterministic per-cell state cards for the
+  teacher pipeline (one cell per session, never the global library).
+- `waggledance/core/learning/solver_hash.py` — strict `solver_hash()` + legacy
+  `canonical_hash()` with a dedup scanner (`tools/solver_dedupe.py`).
+- `schemas/solver_proposal.schema.json` + `docs/prompts/cell_teacher_prompt.md`
+  — machine-checkable contract for any teacher proposal.
+- `tools/propose_solver.py` — 12-gate quality review, never auto-merges.
+- `waggledance/core/learning/composition_graph.py` — typed DAG over the
+  existing library with typed `useful_composite_paths` and `BridgeCandidate`.
+- `tools/hex_subdivision_plan.py` — candidate subdivisions (document, not code change).
+- `tools/phase8_capability_report.py` — offline capability-growth metrics
+  computed from existing artifacts, matching the documented 13-signal
+  surface (see `docs/architecture/PHASE8_METRICS.md`).
+- `tools/run_honeycomb_400h_campaign.py` — segment-aware campaign
+  scaffolding; never auto-starts without `--confirm-start`.
+
+Design document: [`docs/architecture/HONEYCOMB_SOLVER_SCALING.md`](docs/architecture/HONEYCOMB_SOLVER_SCALING.md).
+Validation: [`docs/runs/phase8_validation.md`](docs/runs/phase8_validation.md).
 
 ## API
 

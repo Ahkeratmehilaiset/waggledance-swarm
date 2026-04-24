@@ -1,29 +1,29 @@
 # 400h Campaign — Final Summary (MID-CAMPAIGN (TBD on completion))
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T20:08:09+00:00
+**Generated:** 2026-04-24T20:38:13+00:00
 
 ## Cumulative hours (evidence-backed)
 
 | Mode | Cumulative | Target | % |
 |---|---|---|---|
-| HOT  | 159.10h  | 80h  | 198.9% |
-| WARM | 112.17h | 120h | 93.5% |
+| HOT  | 167.10h  | 80h  | 208.9% |
+| WARM | 120.18h | 120h | 100.1% |
 | COLD | 48.04h | 200h | 24.0% |
-| **TOTAL** | **319.31h** | **400h** | **79.8%** |
+| **TOTAL** | **335.32h** | **400h** | **83.8%** |
 
 ## Queries
 
-- Total: 46440
-- Sent: 46436
-- Responded: 35653
+- Total: 46632
+- Sent: 46628
+- Responded: 35845
 - Skipped empty: 0
 - XSS hits: **0** (zero-tolerance target: 0)
 - DOM breaks: **0** (zero-tolerance target: 0)
 - Session losses: 23267
-- Avg latency: 3577.0 ms
+- Avg latency: 3574.0 ms
 - Median latency: 2490 ms
-- p95 latency: 9795 ms
+- p95 latency: 9783 ms
 
 ## Backend truth (from COLD mode)
 
@@ -58,5 +58,5 @@
 
 ## Verdict per x.txt Phase 7 questions
 
-- Campaign incomplete (319.3h / 400h). Verdict fields will be filled
+- Campaign incomplete (335.3h / 400h). Verdict fields will be filled
   by rerunning `python tools/campaign_reports.py aggregate` once total ≥ 400h.

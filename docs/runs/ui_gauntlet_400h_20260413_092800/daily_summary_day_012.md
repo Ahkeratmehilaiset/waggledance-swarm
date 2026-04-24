@@ -1,14 +1,14 @@
 # Daily Summary — Day 012 (2026-04-24)
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T17:37:50+00:00
+**Generated:** 2026-04-24T18:07:54+00:00
 
 ## Totals this day
 
 - Green hours: 8.00h
 - Cumulative: 159.10h / 400h
 - Segments completed: 1
-- HOT queries: 6249
+- HOT queries: 6436
 - Incidents: 80
 
 ## Segments completed
@@ -19,8 +19,8 @@
 
 ## HOT query latency
 
-- Responded: 6039 / 6249
-- Avg latency (responded >100ms): 2998.0 ms
+- Responded: 6226 / 6436
+- Avg latency (responded >100ms): 3004.0 ms
 - p95: 3670 ms
 
 ### Per-bucket send/respond
@@ -28,12 +28,12 @@
 | bucket | total | responded | rate |
 |---|---|---|---|
 | adversarial | 1053 | 1028 | 98% |
-| ambiguous | 897 | 897 | 100% |
+| ambiguous | 966 | 966 | 100% |
 | burst | 546 | 542 | 99% |
 | edge_case | 546 | 365 | 67% |
-| multilingual | 832 | 832 | 100% |
-| normal | 1595 | 1595 | 100% |
-| structured | 780 | 780 | 100% |
+| multilingual | 853 | 853 | 100% |
+| normal | 1632 | 1632 | 100% |
+| structured | 840 | 840 | 100% |
 
 ## Incidents by category
 

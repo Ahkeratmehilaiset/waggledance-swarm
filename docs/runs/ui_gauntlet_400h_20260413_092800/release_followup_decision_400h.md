@@ -1,27 +1,17 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T03:36:10+00:00
+**Generated:** 2026-04-24T04:06:15+00:00
 **Main ref:** `main~30`
 **Total green:** 287.30h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (8 files)
+### PRODUCT (0 files)
 
-- `configs/axioms/cottage/autumn_preparation.yaml`
-- `configs/axioms/cottage/colony_growth_rate.yaml`
-- `configs/axioms/cottage/nectar_flow_timing.yaml`
-- `configs/axioms/cottage/queen_age_replacement.yaml`
-- `configs/axioms/cottage/spring_inspection_timing.yaml`
-- `configs/axioms/cottage/varroa_treatment_calendar.yaml`
-- `configs/axioms/cottage/winter_feeding_decision.yaml`
-- `configs/axioms/home/indoor_air_quality.yaml`
 
-### TEST_HARNESS (32 files)
+### TEST_HARNESS (30 files)
 
-- `docs/runs/hybrid_shadow_three_way_2026-04-23T133253Z.json`
-- `docs/runs/hybrid_shadow_three_way_2026-04-23T133253Z.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/campaign_state.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_001.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_002.md`
@@ -50,7 +40,8 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_060.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_061.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_062.md`
-- … and 2 more
+- `docs/runs/ui_gauntlet_400h_20260413_092800/weekly_rollup_2026-W16.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/weekly_rollup_2026-W17.md`
 
 ### DOCS_NARRATIVE (0 files)
 
@@ -61,10 +52,8 @@
 ### VERSION (0 files)
 
 
-### OTHER (3 files)
+### OTHER (1 files)
 
-- `tools/analyze_hybrid_candidate_trace.py`
-- `tools/backfill_axioms_to_hex.py`
 - `tools/campaign_watchdog.py`
 
 ## Gate checks (x.txt rule 5 + Phase 9)
@@ -72,13 +61,15 @@
 - Campaign complete (>= 400h): no (287.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
-- PRODUCT diff: non-empty
+- PRODUCT diff: empty
 
 ## Proposed PATH
 
-**NO_RELEASE_FAILURE_REPORT**
+**DOC_SYNC_ONLY**
 
-PRODUCT diff is non-empty but gates are not green. Per x.txt Phase 9:
-- no bump, no tag, no release
-- write failure handoff
-- still sync docs truthfully
+PRODUCT diff is empty. Per x.txt Phase 9:
+- commit docs/harness/ci truth
+- merge campaign branch → main (already on main here)
+- push main
+- update existing GitHub release body if possible
+- DO NOT bump version, DO NOT tag, DO NOT create new release

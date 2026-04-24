@@ -1344,6 +1344,69 @@
       "status": "reserved",
       "green_hours": 0.0,
       "ts_reserved": "2026-04-24T00:01:59.960562+00:00"
+    },
+    {
+      "segment_id": 66,
+      "mode": "HOT",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:40:29.754888+00:00"
+    },
+    {
+      "segment_id": 67,
+      "mode": "WARM",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:40:31.851850+00:00"
+    },
+    {
+      "segment_id": 68,
+      "mode": "COLD",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:40:38.872321+00:00"
+    },
+    {
+      "segment_id": 69,
+      "mode": "HOT",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:42:00.653678+00:00"
+    },
+    {
+      "segment_id": 70,
+      "mode": "WARM",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:42:02.788691+00:00"
+    },
+    {
+      "segment_id": 71,
+      "mode": "COLD",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:42:09.745470+00:00"
+    },
+    {
+      "segment_id": 72,
+      "mode": "HOT",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:45:12.878354+00:00"
+    },
+    {
+      "segment_id": 73,
+      "mode": "WARM",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:45:17.029712+00:00"
+    },
+    {
+      "segment_id": 74,
+      "mode": "COLD",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-24T03:45:19.988288+00:00"
     }
   ],
   "total_green_s": 1034270.64

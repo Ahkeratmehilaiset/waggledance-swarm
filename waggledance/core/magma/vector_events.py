@@ -61,6 +61,17 @@ class VectorEvent:
 
     The dataclass is frozen so one event cannot be mutated after
     construction — matching the append-only nature of the audit log.
+
+    Schema evolution:
+    - v1 (Stage 1): event, cell_id, solver_id, ts, payload, schema_version
+    - v1 + source (Stage 2, additive): `source` identifies the emitting
+      component ("backfill", "indexer", etc). Old v1 events without
+      source still parse — the field defaults to None and consumers
+      tolerate its absence.
+    - commit_ref linkage for vector.commit_applied lives in the event's
+      payload as `faiss_commit_id` (see validate_payload below). Other
+      events may carry payload["commit_ref"] when they relate to a
+      specific commit; this is informational and not enforced.
     """
     event: str
     cell_id: str
@@ -68,6 +79,10 @@ class VectorEvent:
     ts: str = field(default_factory=_utc_now_iso)
     payload: dict[str, Any] = field(default_factory=dict)
     schema_version: int = VECTOR_EVENT_SCHEMA_VERSION
+    # Optional provenance: which producer emitted this event. Backward-
+    # compatible — old v1 events without this field read back with
+    # source=None.
+    source: str | None = None
 
     def __post_init__(self) -> None:
         if self.event not in ALL_VECTOR_EVENT_NAMES:
@@ -180,7 +195,23 @@ def vector_delete_requested(cell_id: str, model_id: str,
 def vector_commit_applied(cell_id: str, faiss_commit_id: str,
                            artifact_path: str, vector_count: int,
                            checksum: str,
-                           source_events: list[str] | None = None) -> VectorEvent:
+                           source_events: list[str] | None = None,
+                           source: str | None = "indexer",
+                           input_event_range: tuple[str, str] | None = None,
+                           ) -> VectorEvent:
+    """Build a vector.commit_applied event.
+
+    Per R6 §5 the event must carry enough to audit the apply. Fields:
+    - faiss_commit_id: deterministic id of the applied projection
+    - artifact_path: where the committed files live (relative)
+    - vector_count: number of vectors in the committed set
+    - checksum: manifest checksum for integrity
+    - source_events: optional list of event_ids consumed to produce
+      this commit (idempotency audit)
+    - input_event_range: optional [first_event_id, last_event_id]
+      tuple describing the apply window
+    - source: component that emitted this event (default "indexer")
+    """
     payload: dict[str, Any] = {
         "faiss_commit_id": faiss_commit_id,
         "artifact_path": artifact_path,
@@ -189,10 +220,13 @@ def vector_commit_applied(cell_id: str, faiss_commit_id: str,
     }
     if source_events is not None:
         payload["source_events"] = list(source_events)
+    if input_event_range is not None:
+        payload["input_event_range"] = list(input_event_range)
     return VectorEvent(
         event=EVT_VECTOR_COMMIT_APPLIED,
         cell_id=cell_id,
         payload=payload,
+        source=source,
     )
 
 
@@ -272,6 +306,9 @@ def read_events(path: Path | str | None = None) -> Iterator[VectorEvent]:
                     ts=d.get("ts") or _utc_now_iso(),
                     payload=d.get("payload") or {},
                     schema_version=d.get("schema_version", VECTOR_EVENT_SCHEMA_VERSION),
+                    # source is optional, defaults to None for old v1
+                    # events that predate the field.
+                    source=d.get("source"),
                 )
             except (KeyError, ValueError):
                 # Unknown / malformed event — skip

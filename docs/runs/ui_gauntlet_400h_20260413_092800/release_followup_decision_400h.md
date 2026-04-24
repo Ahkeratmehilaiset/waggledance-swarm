@@ -1,19 +1,25 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T04:36:18+00:00
+**Generated:** 2026-04-24T05:06:22+00:00
 **Main ref:** `main~30`
 **Total green:** 287.30h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (1 files)
+### PRODUCT (2 files)
 
+- `waggledance/core/learning/composition_graph.py`
 - `waggledance/core/learning/solver_hash.py`
 
-### TEST_HARNESS (36 files)
+### TEST_HARNESS (45 files)
 
+- `docs/runs/hex_subdivision_plan.md`
+- `docs/runs/honeycomb_400h/plan.md`
+- `docs/runs/phase8_capability_report.md`
 - `docs/runs/phase8_ci_baseline.md`
+- `docs/runs/phase8_validation.md`
+- `docs/runs/solver_composition_report.md`
 - `docs/runs/solver_dedupe_report.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/campaign_state.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_001.md`
@@ -38,16 +44,14 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_059.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_060.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_061.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_062.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_059.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_060.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_061.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_062.md`
-- … and 6 more
+- … and 15 more
 
-### DOCS_NARRATIVE (19 files)
+### DOCS_NARRATIVE (22 files)
 
+- `CHANGELOG.md`
+- `README.md`
 - `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`
+- `docs/architecture/PHASE8_METRICS.md`
 - `docs/cells/INDEX.md`
 - `docs/cells/energy/MANIFEST.md`
 - `docs/cells/energy/manifest.json`
@@ -73,11 +77,16 @@
 ### VERSION (0 files)
 
 
-### OTHER (4 files)
+### OTHER (9 files)
 
 - `schemas/solver_proposal.schema.json`
 - `tools/campaign_watchdog.py`
 - `tools/cell_manifest.py`
+- `tools/hex_subdivision_plan.py`
+- `tools/phase8_capability_report.py`
+- `tools/propose_solver.py`
+- `tools/run_honeycomb_400h_campaign.py`
+- `tools/solver_composition_report.py`
 - `tools/solver_dedupe.py`
 
 ## Gate checks (x.txt rule 5 + Phase 9)

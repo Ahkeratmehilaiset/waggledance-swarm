@@ -1,51 +1,51 @@
 # 400h Campaign — Final Summary (MID-CAMPAIGN (TBD on completion))
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T11:37:07+00:00
+**Generated:** 2026-04-24T12:07:11+00:00
 
 ## Cumulative hours (evidence-backed)
 
 | Mode | Cumulative | Target | % |
 |---|---|---|---|
-| HOT  | 151.10h  | 80h  | 188.9% |
-| WARM | 104.16h | 120h | 86.8% |
-| COLD | 36.04h | 200h | 18.0% |
-| **TOTAL** | **291.30h** | **400h** | **72.8%** |
+| HOT  | 159.10h  | 80h  | 198.9% |
+| WARM | 112.17h | 120h | 93.5% |
+| COLD | 40.04h | 200h | 20.0% |
+| **TOTAL** | **311.31h** | **400h** | **77.8%** |
 
 ## Queries
 
-- Total: 43457
-- Sent: 43454
-- Responded: 32785
+- Total: 43610
+- Sent: 43606
+- Responded: 32922
 - Skipped empty: 0
 - XSS hits: **0** (zero-tolerance target: 0)
 - DOM breaks: **0** (zero-tolerance target: 0)
-- Session losses: 22885
-- Avg latency: 3624.0 ms
-- Median latency: 2476 ms
-- p95 latency: 10327 ms
+- Session losses: 22922
+- Avg latency: 3621.0 ms
+- Median latency: 2477.0 ms
+- p95 latency: 10300 ms
 
 ## Backend truth (from COLD mode)
 
-- Health pass rate: 975/1033
+- Health pass rate: 1087/1151
 - Feeds monotonic: True
 - Hologram honest: False
-- Auth chat pass rate: 19/37
-- Cookie bootstrap pass rate: 69/73
+- Auth chat pass rate: 23/41
+- Cookie bootstrap pass rate: 77/81
 
 ## Incidents classified
 
 | Category | Count |
 |---|---|
 | chat_response_failure | 1944 |
-| health_failure | 216 |
-| chat_failure | 124 |
-| cycle_crash_recovery | 22 |
-| backend_unhealthy | 20 |
-| auth_recovery_failure | 14 |
+| health_failure | 218 |
+| chat_failure | 125 |
+| cycle_crash_recovery | 23 |
+| backend_unhealthy | 21 |
+| auth_recovery_failure | 15 |
 | chat_send_failure | 13 |
 | tab_switch_failure | 6 |
-| context_recycle_failure | 3 |
+| context_recycle_failure | 4 |
 | cookie_failure | 3 |
 | auth_bootstrap_failure | 1 |
 
@@ -58,5 +58,5 @@
 
 ## Verdict per x.txt Phase 7 questions
 
-- Campaign incomplete (291.3h / 400h). Verdict fields will be filled
+- Campaign incomplete (311.3h / 400h). Verdict fields will be filled
   by rerunning `python tools/campaign_reports.py aggregate` once total ≥ 400h.

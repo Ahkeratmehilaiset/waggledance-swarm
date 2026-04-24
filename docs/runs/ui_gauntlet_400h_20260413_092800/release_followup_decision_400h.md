@@ -1,13 +1,13 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T00:35:40+00:00
+**Generated:** 2026-04-24T01:05:45+00:00
 **Main ref:** `main~30`
 **Total green:** 287.30h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (12 files)
+### PRODUCT (11 files)
 
 - `configs/axioms/cottage/autumn_preparation.yaml`
 - `configs/axioms/cottage/colony_growth_rate.yaml`
@@ -20,9 +20,8 @@
 - `core/chat_routing_engine.py`
 - `waggledance/application/services/chat_service.py`
 - `waggledance/bootstrap/container.py`
-- `waggledance/core/reasoning/hybrid_observer.py`
 
-### TEST_HARNESS (40 files)
+### TEST_HARNESS (39 files)
 
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T133253Z.json`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T133253Z.md`
@@ -54,7 +53,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_060.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_061.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_062.json`
-- … and 10 more
+- … and 9 more
 
 ### DOCS_NARRATIVE (0 files)
 

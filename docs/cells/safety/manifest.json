@@ -1,22 +1,36 @@
 {
-  "cell": "safety",
-  "generated_at": "2026-04-23T02:35:43+00:00",
-  "solver_count": 2,
-  "gap_score": 0.0,
+  "candidate_bridge_edges": [],
+  "cell_id": "safety",
+  "contradiction_count": 0,
+  "gap_score": 0.17,
+  "generated_at": "2026-04-24T04:27:31+00:00",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "level": 0,
+  "llm_fallback_rate": null,
+  "manifest_hash": "sha256:ce912a9d222ddafa46d013fe150f7759b9f46df028fea8b1d06003328226e882",
+  "neighbors": [
+    "learning",
+    "math",
+    "seasonal"
+  ],
+  "parent": null,
+  "recent_rejections": [],
+  "schema_version": 1,
   "siblings": [
     "energy",
     "general",
     "system",
     "thermal"
   ],
-  "existing_solvers": [
+  "solver_count": 2,
+  "solvers": [
     {
-      "model_id": "swarm_risk",
-      "model_name": "Swarm Risk Assessment",
-      "description": "Estimate probability of swarming based on hive conditions",
+      "axiom_file": "configs/axioms/cottage/swarm_risk.yaml",
       "cell": "safety",
+      "description": "Estimate probability of swarming based on hive conditions",
       "domain": "cottage",
-      "axiom_file": "configs\\axioms\\cottage\\swarm_risk.yaml",
+      "id": "swarm_risk",
       "inputs": [
         "empty_combs",
         "total_combs",
@@ -24,21 +38,30 @@
         "queen_cells",
         "season_factor"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Swarm Risk Assessment",
       "outputs": [
+        "swarm_probability_pct",
         "space_pressure",
         "queen_age_factor",
-        "base_swarm_score",
-        "swarm_probability_pct"
+        "base_swarm_score"
       ],
-      "n_formulas": 4
+      "quality_tier": "SILVER",
+      "signature": "069b1bd6e09d6001",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:%",
+        "unit:ratio",
+        "unit:score"
+      ]
     },
     {
-      "model_id": "varroa_treatment",
-      "model_name": "Varroa Treatment Dosage",
-      "description": "Calculate oxalic acid treatment dosage and varroa reinfestation risk",
+      "axiom_file": "configs/axioms/cottage/varroa_treatment.yaml",
       "cell": "safety",
+      "description": "Calculate oxalic acid treatment dosage and varroa reinfestation risk",
       "domain": "cottage",
-      "axiom_file": "configs\\axioms\\cottage\\varroa_treatment.yaml",
+      "id": "varroa_treatment",
       "inputs": [
         "combs_with_bees",
         "dose_per_comb_ml",
@@ -48,19 +71,28 @@
         "threshold_mites",
         "reinfestation_rate_per_day"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Varroa Treatment Dosage",
       "outputs": [
+        "mite_load_pct",
         "oxalic_acid_dose_ml",
         "varroa_after_treatment",
-        "days_to_reinfestation",
-        "mite_load_pct"
+        "days_to_reinfestation"
       ],
-      "n_formulas": 4
+      "quality_tier": "SILVER",
+      "signature": "82b5676474833d8e",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:%",
+        "unit:count",
+        "unit:days",
+        "unit:ml"
+      ]
     }
   ],
-  "open_gaps": {
-    "unresolved_examples": [],
-    "unresolved_count": 0
-  },
-  "training_pairs_from_production": 33001,
-  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.",
+  "top_fallback_queries": [],
+  "top_open_gaps": [],
+  "training_pair_count": 0
 }

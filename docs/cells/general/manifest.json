@@ -1,40 +1,64 @@
 {
-  "cell": "general",
-  "generated_at": "2026-04-23T02:35:42+00:00",
-  "solver_count": 1,
-  "gap_score": 0.268,
+  "candidate_bridge_edges": [],
+  "cell_id": "general",
+  "contradiction_count": 0,
+  "gap_score": 0.398,
+  "generated_at": "2026-04-24T04:27:31+00:00",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "level": 0,
+  "llm_fallback_rate": null,
+  "manifest_hash": "sha256:5666f949fba8bb6a5578bb51066c644af05db5d7818b5c75354233cc87756b3f",
+  "neighbors": [
+    "energy",
+    "system",
+    "thermal"
+  ],
+  "parent": null,
+  "recent_rejections": [],
+  "schema_version": 1,
   "siblings": [
     "learning",
     "math",
     "safety",
     "seasonal"
   ],
-  "existing_solvers": [
+  "solver_count": 1,
+  "solvers": [
     {
-      "model_id": "signal_propagation",
-      "model_name": "Signal Strength Calculator",
-      "description": "Free-space path loss and link budget",
+      "axiom_file": "configs/axioms/home/indoor_air_quality.yaml",
       "cell": "general",
-      "domain": "gadget",
-      "axiom_file": "configs\\axioms\\gadget\\signal_strength.yaml",
+      "description": "Calculate indoor air quality index from CO2, VOC, humidity, and temperature measurements",
+      "domain": "home",
+      "id": "indoor_air_quality",
       "inputs": [
-        "distance_m",
-        "frequency_mhz",
-        "tx_power_dbm",
-        "tx_gain_dbi",
-        "rx_gain_dbi"
+        "co2_ppm",
+        "voc_ppb",
+        "humidity_pct",
+        "temperature_c"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 5,
+      "name": "Indoor Air Quality Score",
       "outputs": [
-        "fspl_db",
-        "received_power_dbm"
+        "iaq_score",
+        "co2_score",
+        "voc_score",
+        "humidity_score",
+        "ventilation_needed"
       ],
-      "n_formulas": 2
+      "quality_tier": "GOLD",
+      "signature": "fe09d1697927d366",
+      "tags": [
+        "placement:approved",
+        "unit:boolean",
+        "unit:ratio",
+        "unit:score"
+      ]
     }
   ],
-  "open_gaps": {
-    "unresolved_examples": [],
-    "unresolved_count": 0
-  },
-  "training_pairs_from_production": 33001,
-  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.",
+  "top_fallback_queries": [],
+  "top_open_gaps": [],
+  "training_pair_count": 0
 }

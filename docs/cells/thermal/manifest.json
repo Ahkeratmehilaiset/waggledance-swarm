@@ -1,21 +1,68 @@
 {
-  "cell": "thermal",
-  "generated_at": "2026-04-23T02:35:43+00:00",
-  "solver_count": 4,
+  "candidate_bridge_edges": [],
+  "cell_id": "thermal",
+  "contradiction_count": 0,
   "gap_score": 0.0,
+  "generated_at": "2026-04-24T04:27:31+00:00",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "level": 0,
+  "llm_fallback_rate": null,
+  "manifest_hash": "sha256:7848bb48a09b70ae934f887e0a20a9fb8156c8471150b656e0ec7517cf43a318",
+  "neighbors": [
+    "general",
+    "learning",
+    "math",
+    "system"
+  ],
+  "parent": null,
+  "recent_rejections": [],
+  "schema_version": 1,
   "siblings": [
     "energy",
     "safety",
     "seasonal"
   ],
-  "existing_solvers": [
+  "solver_count": 4,
+  "solvers": [
     {
-      "model_id": "heating_cost",
-      "model_name": "Heating Cost Calculator",
-      "description": "Daily and monthly heating cost",
+      "axiom_file": "configs/axioms/home/heat_pump_cop.yaml",
       "cell": "thermal",
+      "description": "Heat pump efficiency and hourly heating cost",
+      "domain": "home",
+      "id": "heat_pump_cop",
+      "inputs": [
+        "T_indoor",
+        "T_outdoor",
+        "efficiency_factor",
+        "building_ua",
+        "spot_price_ckwh"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 5,
+      "name": "Heat Pump COP & Cost",
+      "outputs": [
+        "hourly_cost_eur",
+        "carnot_cop",
+        "real_cop",
+        "heating_power_w",
+        "electrical_power_w"
+      ],
+      "quality_tier": "SILVER",
+      "signature": "0bd346ca32f26b85",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:W",
+        "unit:ratio",
+        "unit:\u20ac/h"
+      ]
+    },
+    {
+      "axiom_file": "configs/axioms/cottage/heating_cost.yaml",
+      "cell": "thermal",
+      "description": "Daily and monthly heating cost",
       "domain": "cottage",
-      "axiom_file": "configs\\axioms\\cottage\\heating_cost.yaml",
+      "id": "heating_cost",
       "inputs": [
         "T_indoor",
         "T_outdoor",
@@ -23,21 +70,30 @@
         "R_value",
         "spot_price_ckwh"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Heating Cost Calculator",
       "outputs": [
+        "monthly_cost",
         "heat_loss_rate",
         "daily_energy_kwh",
-        "daily_cost",
-        "monthly_cost"
+        "daily_cost"
       ],
-      "n_formulas": 4
+      "quality_tier": "SILVER",
+      "signature": "c8889bc1642b7bc7",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:W",
+        "unit:kWh",
+        "unit:\u20ac"
+      ]
     },
     {
-      "model_id": "hive_thermal_balance",
-      "model_name": "Hive Thermal Balance",
-      "description": "Calculate hive temperature and survival risk",
+      "axiom_file": "configs/axioms/cottage/hive_thermal.yaml",
       "cell": "thermal",
+      "description": "Calculate hive temperature and survival risk",
       "domain": "cottage",
-      "axiom_file": "configs\\axioms\\cottage\\hive_thermal.yaml",
+      "id": "hive_thermal_balance",
       "inputs": [
         "N_bees",
         "q_per_bee",
@@ -47,21 +103,30 @@
         "surface_area",
         "R_insulation"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Hive Thermal Balance",
       "outputs": [
+        "survival",
         "Q_bees",
         "Q_loss",
-        "steady_state_temp",
-        "survival"
+        "steady_state_temp"
       ],
-      "n_formulas": 4
+      "quality_tier": "SILVER",
+      "signature": "4c7c5e6f436559e6",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:W",
+        "unit:bool",
+        "unit:\u00b0C"
+      ]
     },
     {
-      "model_id": "pipe_freezing",
-      "model_name": "Pipe Freezing Risk",
-      "description": "Time until water reaches freezing point",
+      "axiom_file": "configs/axioms/cottage/pipe_freezing.yaml",
       "cell": "thermal",
+      "description": "Time until water reaches freezing point",
       "domain": "cottage",
-      "axiom_file": "configs\\axioms\\cottage\\pipe_freezing.yaml",
+      "id": "pipe_freezing",
       "inputs": [
         "T_outdoor",
         "T_water",
@@ -70,40 +135,24 @@
         "pipe_volume_liters",
         "R_insulation"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 2,
+      "name": "Pipe Freezing Risk",
       "outputs": [
-        "heat_loss_rate",
-        "time_to_freeze_hours"
+        "time_to_freeze_hours",
+        "heat_loss_rate"
       ],
-      "n_formulas": 2
-    },
-    {
-      "model_id": "heat_pump_cop",
-      "model_name": "Heat Pump COP & Cost",
-      "description": "Heat pump efficiency and hourly heating cost",
-      "cell": "thermal",
-      "domain": "home",
-      "axiom_file": "configs\\axioms\\home\\heat_pump_cop.yaml",
-      "inputs": [
-        "T_indoor",
-        "T_outdoor",
-        "efficiency_factor",
-        "building_ua",
-        "spot_price_ckwh"
-      ],
-      "outputs": [
-        "carnot_cop",
-        "real_cop",
-        "heating_power_w",
-        "electrical_power_w",
-        "hourly_cost_eur"
-      ],
-      "n_formulas": 5
+      "quality_tier": "SILVER",
+      "signature": "4241a763541181d8",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:W",
+        "unit:hours"
+      ]
     }
   ],
-  "open_gaps": {
-    "unresolved_examples": [],
-    "unresolved_count": 0
-  },
-  "training_pairs_from_production": 33001,
-  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.",
+  "top_fallback_queries": [],
+  "top_open_gaps": [],
+  "training_pair_count": 0
 }

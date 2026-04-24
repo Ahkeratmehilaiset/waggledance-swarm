@@ -1,44 +1,31 @@
 # Cell manifest — `math`
 
-**Generated:** 2026-04-23T02:35:44+00:00
-**Solver count:** 2
-**Gap score:** 0.000  *(0 = cell saturated, 1 = cell mostly empty or failing)*
-**Siblings (ring-1):** energy, general, system
+- **Schema version:** 1
+- **Generated:** 2026-04-24T04:27:31+00:00
+- **Manifest hash:** `sha256:3aa39f0d04a552c9f9608ed2d9a2416e3c7e1859815b0c49525f0acf373a2b4b`
+- **Level:** 0   **Parent:** —
+- **Solver count:** 2
+- **Gap score:** 0.170  *(0 = saturated, 1 = empty/failing)*
+- **Siblings (ring-1):** energy, general, system
+- **Neighbors (ring-2):** learning, safety, seasonal, thermal
+- **Latency p50/p95:** None / None ms
+- **LLM fallback rate:** None
 
 ## Existing solvers
 
-| model_id | domain | inputs | outputs | formulas |
-|---|---|---|---|---|
-| `colony_food_reserves` | cottage | bee_cluster_kg, food_per_kg_bees, winter_months, food_available_kg | food_needed_kg, food_deficit_kg, survival_weeks… | 4 |
-| `honey_yield` | cottage | colony_strength, forager_ratio, nectar_load_mg, flights_per_day… | daily_foragers, daily_nectar_kg, daily_honey_kg… | 4 |
+| id | signature | domain | inputs | outputs | formulas | tier |
+|---|---|---|---|---|---|---|
+| `colony_food_reserves` | `baab261488f56e2f` | cottage | bee_cluster_kg, food_per_kg_bees, winter_months, food_available_kg | feeding_needed_kg, food_needed_kg, food_deficit_kg… | 4 | SILVER |
+| `honey_yield` | `81de2d9eb1af86cd` | cottage | colony_strength, forager_ratio, nectar_load_mg, flights_per_day… | season_honey_kg, daily_foragers, daily_nectar_kg… | 4 | SILVER |
 
 ## Open gaps from production
 
-- Unresolved queries matching this cell's vocabulary: **0**
-- Total HOT queries in campaign: 33001
+- Unresolved queries matching cell vocabulary: **0** (shown) / total **0** matched
 
-## Teaching protocol reminder
+## Top LLM-fallback queries
 
-This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash.
+*(none in scanned campaign data)*
 
-## Schema reference
+## Teaching protocol
 
-New solvers must be YAML matching this shape (see
-`configs/axioms/cottage/honey_yield.yaml` for a complete example):
-
-```yaml
-model_id: <unique_snake_case>
-model_name: "<Human Readable Name>"
-description: "<one sentence>"
-formulas:
-  - name: <formula_name>
-    formula: "<python-expression>"
-    description: "<what it computes>"
-    output_unit: "<unit>"
-variables:
-  <var_name>:
-    description: "<description>"
-    unit: "<unit>"
-    range: [<min>, <max>]
-    default: <default>
-```
+This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.

@@ -1,18 +1,95 @@
 {
-  "cell": "learning",
-  "generated_at": "2026-04-23T02:35:45+00:00",
-  "solver_count": 0,
-  "gap_score": 0.625,
+  "candidate_bridge_edges": [],
+  "cell_id": "learning",
+  "contradiction_count": 0,
+  "gap_score": 0.17,
+  "generated_at": "2026-04-24T04:27:31+00:00",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "level": 0,
+  "llm_fallback_rate": null,
+  "manifest_hash": "sha256:a7328947e8b9810e9662143eb1d3fb24113d74eba9de2b7ad7f0051c4836b5ee",
+  "neighbors": [
+    "math",
+    "safety",
+    "thermal"
+  ],
+  "parent": null,
+  "recent_rejections": [],
+  "schema_version": 1,
   "siblings": [
     "general",
     "seasonal",
     "system"
   ],
-  "existing_solvers": [],
-  "open_gaps": {
-    "unresolved_examples": [],
-    "unresolved_count": 0
-  },
-  "training_pairs_from_production": 33001,
-  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+  "solver_count": 2,
+  "solvers": [
+    {
+      "axiom_file": "configs/axioms/cottage/colony_growth_rate.yaml",
+      "cell": "learning",
+      "description": "Predict colony population growth over coming weeks based on current size, egg-laying rate, and season",
+      "domain": "cottage",
+      "id": "colony_growth_rate",
+      "inputs": [
+        "population",
+        "eggs_per_day",
+        "worker_survival_fraction",
+        "daily_mortality_fraction",
+        "season_factor"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 6,
+      "name": "Colony Growth Rate Predictor",
+      "outputs": [
+        "projected_population_30d",
+        "daily_birth_rate",
+        "daily_death_rate",
+        "net_daily_growth",
+        "projected_population_60d",
+        "weekly_growth_rate"
+      ],
+      "quality_tier": "GOLD",
+      "signature": "19c5272cb18f8fa7",
+      "tags": [
+        "placement:approved",
+        "unit:count",
+        "unit:percent"
+      ]
+    },
+    {
+      "axiom_file": "configs/axioms/cottage/queen_age_replacement.yaml",
+      "cell": "learning",
+      "description": "Assess whether a queen should be replaced based on age, egg-laying rate, and colony performance indicators",
+      "domain": "cottage",
+      "id": "queen_age_replacement",
+      "inputs": [
+        "queen_age_months",
+        "laying_rate_fraction",
+        "drone_layer_observed",
+        "supersedure_cells"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Queen Age Replacement Decision",
+      "outputs": [
+        "replacement_priority",
+        "age_factor",
+        "performance_deficit",
+        "days_until_urgent"
+      ],
+      "quality_tier": "GOLD",
+      "signature": "a21b90e3290fada3",
+      "tags": [
+        "placement:approved",
+        "unit:days",
+        "unit:multiplier",
+        "unit:ratio",
+        "unit:score"
+      ]
+    }
+  ],
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.",
+  "top_fallback_queries": [],
+  "top_open_gaps": [],
+  "training_pair_count": 0
 }

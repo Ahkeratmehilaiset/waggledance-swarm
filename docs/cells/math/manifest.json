@@ -1,42 +1,65 @@
 {
-  "cell": "math",
-  "generated_at": "2026-04-23T02:35:44+00:00",
-  "solver_count": 2,
-  "gap_score": 0.0,
+  "candidate_bridge_edges": [],
+  "cell_id": "math",
+  "contradiction_count": 0,
+  "gap_score": 0.17,
+  "generated_at": "2026-04-24T04:27:31+00:00",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "level": 0,
+  "llm_fallback_rate": null,
+  "manifest_hash": "sha256:3aa39f0d04a552c9f9608ed2d9a2416e3c7e1859815b0c49525f0acf373a2b4b",
+  "neighbors": [
+    "learning",
+    "safety",
+    "seasonal",
+    "thermal"
+  ],
+  "parent": null,
+  "recent_rejections": [],
+  "schema_version": 1,
   "siblings": [
     "energy",
     "general",
     "system"
   ],
-  "existing_solvers": [
+  "solver_count": 2,
+  "solvers": [
     {
-      "model_id": "colony_food_reserves",
-      "model_name": "Colony Winter Food Reserves",
-      "description": "Check if the colony has sufficient honey reserves for winter survival",
+      "axiom_file": "configs/axioms/cottage/colony_food_reserves.yaml",
       "cell": "math",
+      "description": "Check if the colony has sufficient honey reserves for winter survival",
       "domain": "cottage",
-      "axiom_file": "configs\\axioms\\cottage\\colony_food_reserves.yaml",
+      "id": "colony_food_reserves",
       "inputs": [
         "bee_cluster_kg",
         "food_per_kg_bees",
         "winter_months",
         "food_available_kg"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Colony Winter Food Reserves",
       "outputs": [
+        "feeding_needed_kg",
         "food_needed_kg",
         "food_deficit_kg",
-        "survival_weeks",
-        "feeding_needed_kg"
+        "survival_weeks"
       ],
-      "n_formulas": 4
+      "quality_tier": "SILVER",
+      "signature": "baab261488f56e2f",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:kg",
+        "unit:weeks"
+      ]
     },
     {
-      "model_id": "honey_yield",
-      "model_name": "Honey Yield Estimate",
-      "description": "Estimate seasonal honey yield based on colony strength and nectar flow",
+      "axiom_file": "configs/axioms/cottage/honey_yield.yaml",
       "cell": "math",
+      "description": "Estimate seasonal honey yield based on colony strength and nectar flow",
       "domain": "cottage",
-      "axiom_file": "configs\\axioms\\cottage\\honey_yield.yaml",
+      "id": "honey_yield",
       "inputs": [
         "colony_strength",
         "forager_ratio",
@@ -46,19 +69,26 @@
         "flow_days",
         "surplus_fraction"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Honey Yield Estimate",
       "outputs": [
+        "season_honey_kg",
         "daily_foragers",
         "daily_nectar_kg",
-        "daily_honey_kg",
-        "season_honey_kg"
+        "daily_honey_kg"
       ],
-      "n_formulas": 4
+      "quality_tier": "SILVER",
+      "signature": "81de2d9eb1af86cd",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:count",
+        "unit:kg"
+      ]
     }
   ],
-  "open_gaps": {
-    "unresolved_examples": [],
-    "unresolved_count": 0
-  },
-  "training_pairs_from_production": 33001,
-  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.",
+  "top_fallback_queries": [],
+  "top_open_gaps": [],
+  "training_pair_count": 0
 }

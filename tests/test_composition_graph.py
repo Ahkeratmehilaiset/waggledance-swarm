@@ -60,6 +60,62 @@ def test_build_nodes_drops_incomplete_entries():
     assert len(build_nodes(bad)) == 1
 
 
+def test_primary_output_respects_explicit_flag():
+    """GPT R4: build_nodes must prefer the output marked primary=True
+    over the first output in the list."""
+    s = {
+        "id": "s", "cell": "thermal",
+        "inputs": [{"name": "x", "unit": "m"}],
+        "outputs": [
+            {"name": "aux", "unit": "ratio"},
+            {"name": "main", "unit": "W", "primary": True},
+            {"name": "other", "unit": "degC"},
+        ],
+    }
+    nodes = build_nodes([s])
+    assert nodes[0].primary_output.name == "main"
+    assert nodes[0].primary_output.unit == "W"
+
+
+def test_primary_output_falls_back_to_first_when_no_flag():
+    """When no output carries primary=True, the first output is used as
+    a legacy compatibility fallback."""
+    s = {
+        "id": "s", "cell": "thermal",
+        "inputs": [{"name": "x", "unit": "m"}],
+        "outputs": [
+            {"name": "first", "unit": "W"},
+            {"name": "second", "unit": "kWh"},
+        ],
+    }
+    nodes = build_nodes([s])
+    assert nodes[0].primary_output.name == "first"
+
+
+def test_primary_output_stable_under_output_order_change():
+    """Order of outputs must not silently change graph primary when the
+    same one carries primary=True."""
+    s_a = {
+        "id": "s", "cell": "thermal",
+        "inputs": [{"name": "x", "unit": "m"}],
+        "outputs": [
+            {"name": "main", "unit": "W", "primary": True},
+            {"name": "aux", "unit": "ratio"},
+        ],
+    }
+    s_b = {
+        "id": "s", "cell": "thermal",
+        "inputs": [{"name": "x", "unit": "m"}],
+        "outputs": [
+            {"name": "aux", "unit": "ratio"},
+            {"name": "main", "unit": "W", "primary": True},
+        ],
+    }
+    na = build_nodes([s_a])[0]
+    nb = build_nodes([s_b])[0]
+    assert na.primary_output.name == nb.primary_output.name == "main"
+
+
 # ── Edges: unit rule ──────────────────────────────────────────────
 
 def test_edge_emitted_when_output_unit_matches_input_unit():

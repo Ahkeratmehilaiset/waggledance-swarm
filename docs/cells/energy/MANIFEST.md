@@ -1,7 +1,7 @@
 # Cell manifest — `energy`
 
 - **Schema version:** 1
-- **Generated:** 2026-04-24T04:27:31+00:00
+- **Generated:** 2026-04-24T05:51:14+00:00
 - **Manifest hash:** `sha256:5d70ea20a8e1a73ec8b17ba9e61996f156c68e36416d2321b39ae38dbda4d1bc`
 - **Level:** 0   **Parent:** —
 - **Solver count:** 3

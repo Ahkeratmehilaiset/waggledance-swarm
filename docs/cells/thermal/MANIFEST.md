@@ -1,7 +1,7 @@
 # Cell manifest — `thermal`
 
 - **Schema version:** 1
-- **Generated:** 2026-04-24T04:27:31+00:00
+- **Generated:** 2026-04-24T05:51:14+00:00
 - **Manifest hash:** `sha256:7848bb48a09b70ae934f887e0a20a9fb8156c8471150b656e0ec7517cf43a318`
 - **Level:** 0   **Parent:** —
 - **Solver count:** 4

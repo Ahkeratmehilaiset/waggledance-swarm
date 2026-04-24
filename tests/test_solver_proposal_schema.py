@@ -111,6 +111,7 @@ def test_good_proposal_validates(validator):
     "invariants", "units", "tests", "expected_failure_modes",
     "examples", "provenance_note", "estimated_latency_ms",
     "expected_coverage_lift", "risk_level",
+    "uncertainty_declaration",
 ])
 def test_missing_required_field_rejected(validator, missing):
     bad = _good_proposal()

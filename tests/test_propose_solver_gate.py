@@ -301,12 +301,22 @@ def test_verdict_accept_candidate_for_high_lift(tmp_path, monkeypatch):
     assert result["verdict"] == mod.V_ACCEPT_CANDIDATE
 
 
-def test_verdict_accept_shadow_for_low_lift(tmp_path):
+def test_verdict_accept_shadow_for_mid_lift(tmp_path):
+    # Between reject threshold (0.005) and accept threshold (0.02)
+    p = _proposal()
+    p["expected_coverage_lift"]["value"] = 0.01
+    axioms = tmp_path / "axioms"; axioms.mkdir()
+    result = mod.evaluate_proposal(p, axioms_dir=axioms)
+    assert result["verdict"] == mod.V_ACCEPT_SHADOW_ONLY
+
+
+def test_verdict_reject_low_value_for_tiny_lift(tmp_path):
+    # Below reject threshold (0.005) → REJECT_LOW_VALUE per GPT R4 fix
     p = _proposal()
     p["expected_coverage_lift"]["value"] = 0.001
     axioms = tmp_path / "axioms"; axioms.mkdir()
     result = mod.evaluate_proposal(p, axioms_dir=axioms)
-    assert result["verdict"] == mod.V_ACCEPT_SHADOW_ONLY
+    assert result["verdict"] == mod.V_REJECT_LOW_VALUE
 
 
 def test_verdict_reject_schema_when_missing_required(tmp_path):
@@ -342,7 +352,7 @@ def test_run_writes_report_file(tmp_path):
     assert "C:\\Users" not in text
 
 
-def test_all_12_gates_run_and_reported(tmp_path):
+def test_all_13_gates_run_and_reported(tmp_path):
     axioms = tmp_path / "axioms"; axioms.mkdir()
     result = mod.evaluate_proposal(_proposal(), axioms_dir=axioms)
     gate_names = {g["gate"] for g in result["gates"]}
@@ -350,7 +360,7 @@ def test_all_12_gates_run_and_reported(tmp_path):
         "schema", "cell_exists", "hash_duplicate", "io_types",
         "deterministic_replay", "unit_consistency", "contradiction",
         "invariants_present", "tests_present", "latency_budget",
-        "no_secrets_no_paths", "llm_dependency",
+        "no_secrets_no_paths", "llm_dependency", "closed_world",
     }
     assert gate_names == expected, f"missing: {expected - gate_names}"
 
@@ -363,3 +373,163 @@ def test_auto_merge_is_not_performed(tmp_path):
     mod.evaluate_proposal(_proposal(), axioms_dir=axioms)
     after = sorted(p.name for p in axioms.rglob("*"))
     assert before == after
+
+
+# ── GPT R4: uncertainty_declaration enforced as schema-required ───
+
+def test_missing_uncertainty_declaration_rejected_as_schema(tmp_path):
+    p = _proposal(); p.pop("uncertainty_declaration")
+    axioms = tmp_path / "axioms"; axioms.mkdir()
+    result = mod.evaluate_proposal(p, axioms_dir=axioms)
+    assert result["verdict"] == mod.V_REJECT_SCHEMA
+
+
+# ── GPT R4: Gate 13 closed-world ──────────────────────────────────
+
+def _algorithm_proposal(description: str) -> dict:
+    p = _proposal()
+    p["formula_or_algorithm"] = {
+        "kind": "algorithm",
+        "description": description,
+    }
+    return p
+
+
+def test_closed_world_formula_chain_is_skipped():
+    r = mod.gate_closed_world(_proposal())
+    assert r["ok"] and r.get("skipped")
+
+
+def test_closed_world_rejects_network_token():
+    p = _algorithm_proposal("fetch via https: then parse")
+    assert not mod.gate_closed_world(p)["ok"]
+
+
+def test_closed_world_rejects_subprocess():
+    p = _algorithm_proposal("call subprocess.Popen on an external binary")
+    assert not mod.gate_closed_world(p)["ok"]
+
+
+def test_closed_world_rejects_filesystem():
+    p = _algorithm_proposal("read_text from the config file on disk")
+    assert not mod.gate_closed_world(p)["ok"]
+
+
+def test_closed_world_rejects_env_read():
+    p = _algorithm_proposal("read os.environ to get the region setting")
+    assert not mod.gate_closed_world(p)["ok"]
+
+
+def test_closed_world_rejects_wall_clock():
+    p = _algorithm_proposal("use time.time to branch on current epoch")
+    assert not mod.gate_closed_world(p)["ok"]
+
+
+def test_closed_world_rejects_randomness():
+    p = _algorithm_proposal("generate a uuid.uuid4 for the lookup key")
+    assert not mod.gate_closed_world(p)["ok"]
+
+
+def test_closed_world_allows_declared_llm_but_still_blocks_fs():
+    p = _algorithm_proposal("call openai.chat completion then open( local cache")
+    p["llm_dependency"] = {"required": True, "reason": "test"}
+    r = mod.gate_closed_world(p)
+    # openai./completion allowed (LLM declared) but open( still blocks
+    assert not r["ok"]
+    tokens = {e["token"] for e in r["errors"]}
+    assert "open(" in tokens
+
+
+def test_closed_world_passes_clean_algorithm():
+    p = _algorithm_proposal(
+        "multiply input_a by scalar k and threshold at value T, "
+        "constants embedded."
+    )
+    assert mod.gate_closed_world(p)["ok"]
+
+
+# ── GPT R4: wider secret scan covers dict keys ────────────────────
+
+def test_secrets_gate_finds_in_dict_keys():
+    p = _proposal()
+    p["tags"] = ["normal-tag"]
+    # Inject a dangerous path as a dict KEY in examples[].inputs
+    p["examples"][0]["inputs"] = {"C:\\Users\\x": 1}
+    assert not mod.gate_no_secrets_no_paths(p)["ok"]
+
+
+# ── GPT R4: wider LLM scan covers inputs.description, outputs.description,
+#           expected_failure_modes.behavior, examples.source ────────
+
+def test_llm_gate_finds_hidden_token_in_input_description():
+    p = _proposal()
+    p["inputs"][0]["description"] = "use an openai. completion then parse"
+    assert not mod.gate_llm_dependency(p)["ok"]
+
+
+def test_llm_gate_finds_hidden_token_in_output_description():
+    p = _proposal()
+    p["outputs"][0]["description"] = "anthropic. result after summarization"
+    assert not mod.gate_llm_dependency(p)["ok"]
+
+
+def test_llm_gate_finds_hidden_token_in_failure_modes():
+    p = _proposal()
+    p["expected_failure_modes"][0]["behavior"] = "fall back to chatgpt"
+    assert not mod.gate_llm_dependency(p)["ok"]
+
+
+def test_llm_gate_provenance_note_still_exempt():
+    """provenance_note legitimately names the teacher; must NOT flag."""
+    p = _proposal()
+    p["provenance_note"] = "teacher: claude-opus-4.7 with chat completion"
+    assert mod.gate_llm_dependency(p)["ok"]
+
+
+# ── GPT R4: hash projection includes domain, all outputs, failure modes ──
+
+def test_hash_projection_moves_with_domain_change(tmp_path):
+    a = _proposal()
+    b = _proposal()
+    b["domain"] = "cottage"
+    a["domain"] = "greenhouse"
+    import hashlib as _h
+    from waggledance.core.learning.solver_hash import solver_hash
+    ha = solver_hash(mod._proposal_to_axiom_shape(a))
+    hb = solver_hash(mod._proposal_to_axiom_shape(b))
+    assert ha != hb
+
+
+def test_hash_projection_moves_with_secondary_output_change():
+    a = _proposal()
+    b = _proposal()
+    b["outputs"].append({
+        "name": "secondary_metric", "unit": "ratio",
+        "description": "extra", "type": "ratio",
+    })
+    from waggledance.core.learning.solver_hash import solver_hash
+    ha = solver_hash(mod._proposal_to_axiom_shape(a))
+    hb = solver_hash(mod._proposal_to_axiom_shape(b))
+    assert ha != hb
+
+
+def test_hash_projection_moves_with_failure_mode_change():
+    a = _proposal()
+    b = _proposal()
+    b["expected_failure_modes"] = [
+        {"condition": "input > 9999", "behavior": "raises overflow"},
+    ]
+    from waggledance.core.learning.solver_hash import solver_hash
+    ha = solver_hash(mod._proposal_to_axiom_shape(a))
+    hb = solver_hash(mod._proposal_to_axiom_shape(b))
+    assert ha != hb
+
+
+def test_hash_projection_moves_with_assumption_change():
+    a = _proposal()
+    b = _proposal()
+    b["assumptions"] = ["inputs measured in CENTImeters, not meters"]
+    from waggledance.core.learning.solver_hash import solver_hash
+    ha = solver_hash(mod._proposal_to_axiom_shape(a))
+    hb = solver_hash(mod._proposal_to_axiom_shape(b))
+    assert ha != hb

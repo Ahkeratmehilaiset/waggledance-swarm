@@ -1,7 +1,7 @@
 # Cell manifest — `seasonal`
 
 - **Schema version:** 1
-- **Generated:** 2026-04-24T04:27:31+00:00
+- **Generated:** 2026-04-24T05:51:14+00:00
 - **Manifest hash:** `sha256:5ca3ef4c1fb68f5c39dd82db83213b320329cc6bfd867f74fcf2dafd4a368618`
 - **Level:** 0   **Parent:** —
 - **Solver count:** 5

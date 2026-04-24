@@ -1,7 +1,7 @@
 # Cell manifest — `safety`
 
 - **Schema version:** 1
-- **Generated:** 2026-04-24T04:27:31+00:00
+- **Generated:** 2026-04-24T05:51:14+00:00
 - **Manifest hash:** `sha256:ce912a9d222ddafa46d013fe150f7759b9f46df028fea8b1d06003328226e882`
 - **Level:** 0   **Parent:** —
 - **Solver count:** 2

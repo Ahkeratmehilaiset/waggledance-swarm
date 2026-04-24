@@ -151,20 +151,31 @@ def build_nodes(solvers: Iterable[dict]) -> list[SolverNode]:
 
         raw_outputs = s.get("outputs", [])
         outputs: list[IOSig] = []
+        primary_candidate: IOSig | None = None
         if isinstance(raw_outputs, list):
             for o in raw_outputs:
                 if isinstance(o, dict):
-                    outputs.append(IOSig(
+                    sig = IOSig(
                         name=o.get("name", ""),
                         unit=str(o.get("unit", "") or "").strip(),
-                    ))
+                    )
+                    outputs.append(sig)
+                    # Respect explicit primary=True flag when present.
+                    # Multiple primaries → first one wins (gate_io_types
+                    # rejects multi-primary proposals upstream).
+                    if o.get("primary") and primary_candidate is None:
+                        primary_candidate = sig
                 else:
-                    # plain names — unit unknown
+                    # plain names — unit unknown, no primary flag possible
                     outputs.append(IOSig(name=str(o), unit=""))
 
-        primary: IOSig | None = None
-        if outputs:
-            primary = outputs[0]
+        # Fallback: if no primary flag was set anywhere, use outputs[0]
+        # (legacy shape). In the canonical axiom YAML + proposal schema
+        # the primary value is always tagged, so this branch is a
+        # compatibility path for older data only.
+        primary = primary_candidate if primary_candidate is not None else (
+            outputs[0] if outputs else None
+        )
         latency = s.get("latency_ms")
         if latency is not None:
             try:

@@ -21,7 +21,8 @@
     "provenance_note",
     "estimated_latency_ms",
     "expected_coverage_lift",
-    "risk_level"
+    "risk_level",
+    "uncertainty_declaration"
   ],
   "additionalProperties": false,
   "properties": {

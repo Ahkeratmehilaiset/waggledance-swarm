@@ -1,7 +1,7 @@
 # Cell manifest — `learning`
 
 - **Schema version:** 1
-- **Generated:** 2026-04-24T04:27:31+00:00
+- **Generated:** 2026-04-24T05:51:14+00:00
 - **Manifest hash:** `sha256:a7328947e8b9810e9662143eb1d3fb24113d74eba9de2b7ad7f0051c4836b5ee`
 - **Level:** 0   **Parent:** —
 - **Solver count:** 2

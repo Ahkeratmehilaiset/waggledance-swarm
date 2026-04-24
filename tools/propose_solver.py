@@ -11,7 +11,7 @@ Output:
     docs/runs/proposal_gate_<proposal_id>_<utc>.md
     + machine-readable JSON summary
 
-The 12 gates and their verdicts:
+The 13 gates and their verdicts:
   1. Schema validation (solver_proposal.schema.json, Draft-07)
   2. Cell exists (one of 8 hex-topology cells)
   3. Hash duplicate check (strict solver_hash against existing axioms)
@@ -22,8 +22,13 @@ The 12 gates and their verdicts:
   8. Invariants present
   9. Tests present and runnable (or clearly declarative)
  10. Estimated latency below budget (default 100 ms)
- 11. No secrets, no absolute local paths
- 12. No hidden LLM dependency (must be explicitly declared)
+ 11. No secrets, no absolute local paths (walks keys + values +
+      canonical JSON serialization)
+ 12. No hidden LLM dependency (whole-body scan; only provenance_note
+      and llm_dependency itself are excluded)
+ 13. Closed-world runtime dependency for algorithm / table_lookup
+      (no network, subprocess, filesystem, env, clock, randomness, or
+      LLM tokens unless llm_dependency.required=true)
 
 Verdict (the overall result):
   REJECT_SCHEMA | REJECT_DUPLICATE | REJECT_CONTRADICTION |
@@ -73,9 +78,12 @@ VALID_CELLS = {
     "seasonal", "math", "system", "learning",
 }
 
-# Coverage-lift threshold. A passing proposal below this goes to
-# ACCEPT_SHADOW_ONLY; at or above, ACCEPT_CANDIDATE.
+# Coverage-lift thresholds. Three-tier verdict:
+#   lift <  reject_threshold       → REJECT_LOW_VALUE
+#   lift <  accept_threshold       → ACCEPT_SHADOW_ONLY (worth observing)
+#   lift >= accept_threshold       → ACCEPT_CANDIDATE  (worth promoting)
 DEFAULT_COVERAGE_ACCEPT_THRESHOLD = 0.02
+DEFAULT_COVERAGE_REJECT_THRESHOLD = 0.005
 
 # Latency budget in ms above which gate #10 fails.
 DEFAULT_LATENCY_BUDGET_MS = 100
@@ -355,20 +363,29 @@ def gate_latency_budget(proposal: dict, budget_ms: float) -> dict:
     return {"gate": "latency_budget", "ok": ok, "errors": errors, "budget_ms": budget_ms}
 
 
+def _walk_strings(obj):
+    """Yield every string found anywhere in `obj`, covering both dict
+    keys and dict values, recursively."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str):
+                yield k
+            yield from _walk_strings(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _walk_strings(v)
+
+
 def gate_no_secrets_no_paths(proposal: dict) -> dict:
     errors = []
-
-    def _walk(obj):
-        if isinstance(obj, str):
-            yield obj
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                yield from _walk(v)
-        elif isinstance(obj, (list, tuple)):
-            for v in obj:
-                yield from _walk(v)
-
-    for text in _walk(proposal):
+    # Two scan surfaces: every string recursively (catches dict keys
+    # too) AND the canonical JSON serialization of the whole proposal
+    # (catches structures that become dangerous only after joining).
+    canonical = json.dumps(proposal, sort_keys=True, default=str)
+    surfaces = list(_walk_strings(proposal)) + [canonical]
+    for text in surfaces:
         for rx in _SECRET_RES:
             if rx.search(text):
                 errors.append({"pattern": rx.pattern,
@@ -377,37 +394,44 @@ def gate_no_secrets_no_paths(proposal: dict) -> dict:
             if rx.search(text):
                 errors.append({"pattern": rx.pattern,
                                "message": "local absolute path detected"})
-    return {"gate": "no_secrets_no_paths", "ok": not errors, "errors": errors}
+    # Dedup by (pattern, message)
+    seen: set[tuple[str, str]] = set()
+    dedup: list[dict] = []
+    for e in errors:
+        key = (e["pattern"], e["message"])
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(e)
+    return {"gate": "no_secrets_no_paths", "ok": not dedup, "errors": dedup}
 
 
 def gate_llm_dependency(proposal: dict) -> dict:
     """LLM dependency is allowed but must be explicitly declared. We detect
-    an undeclared dependency by scanning free-text fields for LLM vocabulary
-    when llm_dependency.required is missing or false."""
+    an undeclared dependency by scanning the *whole* proposal body — minus
+    provenance_note and llm_dependency itself — for LLM vocabulary when
+    `llm_dependency.required` is missing or false.
+
+    Scan surface expanded per GPT round 4 review: previously only purpose
+    + formula_or_algorithm + assumptions were checked; now inputs[].description,
+    outputs[].description, expected_failure_modes[].behavior, examples[].source,
+    uncertainty_declaration, and tags are all included.
+    """
     decl = proposal.get("llm_dependency") or {}
     declared_required = bool(decl.get("required"))
     if declared_required:
         return {"gate": "llm_dependency", "ok": True, "errors": []}
 
     suspicious_tokens = ("llm", "chatgpt", "ollama", "gpt-4", "gpt-5",
-                         "claude", "anthropic", "prompt", "generate text",
-                         "language model")
-    haystack = " ".join([
-        str(proposal.get("purpose", "")),
-        str(proposal.get("provenance_note", "")),
-        json.dumps(proposal.get("formula_or_algorithm") or {}, default=str),
-        " ".join(proposal.get("assumptions") or []),
-    ]).lower()
+                         "claude", "anthropic", "language model",
+                         "prompt", "generate text", "completion",
+                         "model.generate", "chat completion")
 
-    # provenance_note almost always names the teacher ("claude-opus-…") →
-    # exclude it from detection. We only flag the formula_or_algorithm +
-    # purpose + assumptions surface.
-    haystack_strict = " ".join([
-        str(proposal.get("purpose", "")),
-        json.dumps(proposal.get("formula_or_algorithm") or {}, default=str),
-        " ".join(proposal.get("assumptions") or []),
-    ]).lower()
-    hits = [t for t in suspicious_tokens if t in haystack_strict]
+    # Build scan copy: everything except provenance_note and llm_dependency
+    scan_copy = {k: v for k, v in proposal.items()
+                 if k not in ("provenance_note", "llm_dependency")}
+    haystack = " ".join(_walk_strings(scan_copy)).lower()
+    hits = [t for t in suspicious_tokens if t in haystack]
     if hits:
         return {
             "gate": "llm_dependency",
@@ -420,11 +444,91 @@ def gate_llm_dependency(proposal: dict) -> dict:
     return {"gate": "llm_dependency", "ok": True, "errors": []}
 
 
+# Closed-world dependency tokens forbidden in algorithm / table_lookup
+# bodies unless llm_dependency.required=true (in which case they're
+# part of a declared fallback). Pattern matches word-ish boundaries.
+_CLOSED_WORLD_FORBIDDEN = (
+    # Network
+    "http:", "https:", "socket", "requests.", "urllib", "httpx",
+    "fetch(", "curl ",
+    # Subprocess / shell
+    "subprocess", "popen", "os.system", "os.exec", "shell=",
+    # Filesystem beyond declared inputs
+    "open(", "read_text", "write_text", "with open ", "pathlib.path(",
+    # Env / config state
+    "os.environ", "getenv(",
+    # Non-determinism
+    "time.time", "datetime.now", "time.monotonic", "time.perf_counter",
+    "random.", "secrets.", "uuid.uuid",
+    # Hidden LLM calls
+    "prompt", "completion", "model.generate", "chat completion",
+    "openai.", "anthropic.",
+)
+
+
+def gate_closed_world(proposal: dict) -> dict:
+    """For algorithm / table_lookup bodies, forbid tokens that imply
+    any side-channel input at runtime (network, subprocess, filesystem
+    beyond declared inputs, env reads, clocks, randomness, or LLM
+    calls). Skipped for formula_chain — those are already statically
+    constrained by the AST whitelist in gate_deterministic_replay.
+
+    llm_dependency.required=true acts as an escape hatch for the LLM
+    subset of tokens, but never for filesystem/env/random/clock — those
+    remain forbidden regardless.
+    """
+    fa = proposal.get("formula_or_algorithm") or {}
+    kind = fa.get("kind")
+    if kind == "formula_chain":
+        return {"gate": "closed_world", "ok": True, "skipped": True,
+                "reason": "formula_chain is AST-checked in gate_deterministic_replay",
+                "errors": []}
+
+    llm_declared = bool((proposal.get("llm_dependency") or {}).get("required"))
+
+    # Scan the algorithm/table_lookup body prose only
+    body = " ".join([
+        str(fa.get("description", "")),
+        str(fa.get("pseudo_code", "")),
+        str(fa.get("lookup_key", "")),
+        str(fa.get("source", "")),
+    ]).lower()
+
+    # LLM-like tokens may be legitimate if llm_dependency.required=true.
+    # Everything else must be absent regardless.
+    llm_like = {"prompt", "completion", "model.generate", "chat completion",
+                "openai.", "anthropic."}
+    errors: list[dict] = []
+    for token in _CLOSED_WORLD_FORBIDDEN:
+        if token not in body:
+            continue
+        if llm_declared and token in llm_like:
+            continue
+        errors.append({
+            "token": token,
+            "message": f"forbidden runtime dependency '{token}' in algorithm/table_lookup body",
+        })
+    return {"gate": "closed_world", "ok": not errors, "errors": errors,
+            "skipped": False}
+
+
 # ── Supporting helpers ─────────────────────────────────────────────
 
 def _proposal_to_axiom_shape(proposal: dict) -> dict:
     """Project a proposal into the dict shape expected by solver_hash and
-    the legacy canonical_hash (same shape as a YAML axiom file)."""
+    the legacy canonical_hash (same shape as a YAML axiom file).
+
+    Extended per GPT round 4 review to carry more semantic dimensions so
+    proposals that differ only in applicability, declared failure
+    behavior, type surface, domain, or secondary outputs no longer
+    collide on hash:
+    - `domain` pass-through from the proposal
+    - all outputs (not just the primary value) via extra synthetic
+      formulas carrying output_unit
+    - assumptions + expected_failure_modes folded into validation so
+      they contribute to the strict invariant block
+    - input `type` in addition to `unit`
+    """
     fa = proposal.get("formula_or_algorithm") or {}
     formulas: list[dict] = []
     if fa.get("kind") == "formula_chain":
@@ -442,23 +546,64 @@ def _proposal_to_axiom_shape(proposal: dict) -> dict:
             "formula": json.dumps(fa, sort_keys=True),
             "output_unit": "",
         }]
+
+    # All declared outputs contribute, not just primary. Use synthetic
+    # formula entries with output_unit so solver_hash picks them up via
+    # _normalize_outputs. Primary still recorded in solver_output_schema.
+    outputs = proposal.get("outputs", []) or []
+    primary: dict | None = None
+    for o in outputs:
+        name = o.get("name")
+        unit = o.get("unit", "")
+        if name:
+            formulas.append({
+                "name": f"output_{name}",
+                "formula": f"declared_output:{name}",
+                "output_unit": unit,
+            })
+        if o.get("primary") or primary is None:
+            primary = {"name": name, "unit": unit}
+
     variables = {
-        i["name"]: {"unit": i.get("unit", "")}
+        i["name"]: {
+            "unit": i.get("unit", ""),
+            # Type included so W ↔ ratio ↔ count differences move the hash
+            # even when units happen to coincide accidentally.
+            "type": i.get("type", ""),
+        }
         for i in proposal.get("inputs", []) or []
     }
-    primary = None
-    for o in proposal.get("outputs", []) or []:
-        if o.get("primary") or primary is None:
-            primary = {"name": o["name"], "unit": o.get("unit", "")}
+
+    # Validation block combines explicit invariants with assumptions and
+    # expected failure modes — all three are semantic dimensions, so
+    # changing any of them should move the hash.
     validation = [{"check": inv} for inv in proposal.get("invariants") or []]
+    for assumption in proposal.get("assumptions") or []:
+        if isinstance(assumption, str) and assumption.strip():
+            validation.append({"check": f"assume: {assumption.strip()}"})
+    for fm in proposal.get("expected_failure_modes") or []:
+        if isinstance(fm, dict):
+            cond = (fm.get("condition") or "").strip()
+            beh = (fm.get("behavior") or "").strip()
+            if cond or beh:
+                validation.append({"check": f"failure_mode: when({cond}) -> {beh}"})
+
+    # Tags carry domain so two proposals differing only in stated domain
+    # produce different hashes.
+    tags = list(proposal.get("tags", []) or [])
+    domain = proposal.get("domain")
+    if domain:
+        tags.append(f"domain:{domain}")
+
     return {
         "model_id": proposal.get("solver_name"),
         "formulas": formulas,
         "variables": variables,
         "solver_output_schema": {"primary_value": primary or {}},
         "validation": validation,
-        "tags": proposal.get("tags", []),
+        "tags": tags,
         "cell_id": proposal.get("cell_id"),
+        "domain": domain,
     }
 
 
@@ -546,7 +691,8 @@ def _inv_contradicts(a, b) -> bool:
 # ── Verdict composition ────────────────────────────────────────────
 
 def decide_verdict(gate_results: list[dict], proposal: dict,
-                   coverage_threshold: float) -> str:
+                   coverage_threshold: float,
+                   reject_low_value_threshold: float = DEFAULT_COVERAGE_REJECT_THRESHOLD) -> str:
     by_gate = {g["gate"]: g for g in gate_results}
 
     if not by_gate["schema"]["ok"]:
@@ -562,12 +708,18 @@ def decide_verdict(gate_results: list[dict], proposal: dict,
     # Any other remaining failure is a "shape" reject → treat as schema-ish
     for g in ("io_types", "deterministic_replay", "unit_consistency",
               "invariants_present", "tests_present", "latency_budget",
-              "no_secrets_no_paths", "llm_dependency"):
-        if not by_gate[g]["ok"]:
+              "no_secrets_no_paths", "llm_dependency",
+              "closed_world"):
+        if g in by_gate and not by_gate[g]["ok"]:
             return V_REJECT_SCHEMA
 
-    # All gates pass → decide between ACCEPT_* by coverage_lift
+    # All gates pass → three-tier verdict by coverage_lift:
+    #   < reject_low_value_threshold → REJECT_LOW_VALUE
+    #   < coverage_threshold         → ACCEPT_SHADOW_ONLY
+    #   >= coverage_threshold        → ACCEPT_CANDIDATE
     lift = (proposal.get("expected_coverage_lift") or {}).get("value", 0.0)
+    if lift < reject_low_value_threshold:
+        return V_REJECT_LOW_VALUE
     if lift < coverage_threshold:
         return V_ACCEPT_SHADOW_ONLY
     return V_ACCEPT_CANDIDATE
@@ -580,6 +732,7 @@ def evaluate_proposal(
     axioms_dir: Path = AXIOMS_DIR,
     coverage_threshold: float = DEFAULT_COVERAGE_ACCEPT_THRESHOLD,
     latency_budget_ms: float = DEFAULT_LATENCY_BUDGET_MS,
+    reject_low_value_threshold: float = DEFAULT_COVERAGE_REJECT_THRESHOLD,
 ) -> dict:
     """Run all 12 gates + compute overall verdict. Returns a dict with
     `gates`, `verdict`, and proposal metadata."""
@@ -602,18 +755,21 @@ def evaluate_proposal(
         ordered_gates.append(gate_latency_budget(proposal, latency_budget_ms))
         ordered_gates.append(gate_no_secrets_no_paths(proposal))
         ordered_gates.append(gate_llm_dependency(proposal))
+        ordered_gates.append(gate_closed_world(proposal))
     else:
-        # Synthesize skipped entries so callers always see all 12 gate names
+        # Synthesize skipped entries so callers always see all 13 gate names
         for name in ("cell_exists", "hash_duplicate", "io_types",
                      "deterministic_replay", "unit_consistency",
                      "contradiction", "invariants_present",
                      "tests_present", "latency_budget",
-                     "no_secrets_no_paths", "llm_dependency"):
+                     "no_secrets_no_paths", "llm_dependency",
+                     "closed_world"):
             ordered_gates.append({"gate": name, "ok": False,
                                   "skipped": True,
                                   "errors": [{"message": "skipped due to schema failure"}]})
 
-    verdict = decide_verdict(ordered_gates, proposal, coverage_threshold)
+    verdict = decide_verdict(ordered_gates, proposal, coverage_threshold,
+                              reject_low_value_threshold=reject_low_value_threshold)
     return {
         "proposal_id": proposal.get("proposal_id"),
         "solver_name": proposal.get("solver_name"),
@@ -661,12 +817,14 @@ def _short(s: str, n: int = 80) -> str:
 
 def run(proposal_path: Path, report_dir: Path = REPORT_DIR,
         coverage_threshold: float = DEFAULT_COVERAGE_ACCEPT_THRESHOLD,
-        latency_budget_ms: float = DEFAULT_LATENCY_BUDGET_MS) -> dict:
+        latency_budget_ms: float = DEFAULT_LATENCY_BUDGET_MS,
+        reject_low_value_threshold: float = DEFAULT_COVERAGE_REJECT_THRESHOLD) -> dict:
     proposal = load_proposal(proposal_path)
     result = evaluate_proposal(
         proposal,
         coverage_threshold=coverage_threshold,
         latency_budget_ms=latency_budget_ms,
+        reject_low_value_threshold=reject_low_value_threshold,
     )
 
     pid = str(result.get("proposal_id") or "unknown").replace("/", "_")
@@ -685,7 +843,11 @@ def main() -> int:
     ap.add_argument("proposal", type=Path)
     ap.add_argument("--report-dir", type=Path, default=REPORT_DIR)
     ap.add_argument("--coverage-threshold", type=float,
-                    default=DEFAULT_COVERAGE_ACCEPT_THRESHOLD)
+                    default=DEFAULT_COVERAGE_ACCEPT_THRESHOLD,
+                    help="lift >= this → ACCEPT_CANDIDATE")
+    ap.add_argument("--reject-low-value-threshold", type=float,
+                    default=DEFAULT_COVERAGE_REJECT_THRESHOLD,
+                    help="lift < this → REJECT_LOW_VALUE")
     ap.add_argument("--latency-budget-ms", type=float,
                     default=DEFAULT_LATENCY_BUDGET_MS)
     ap.add_argument("--json", action="store_true",
@@ -693,7 +855,8 @@ def main() -> int:
     args = ap.parse_args()
 
     out = run(args.proposal, args.report_dir,
-              args.coverage_threshold, args.latency_budget_ms)
+              args.coverage_threshold, args.latency_budget_ms,
+              reject_low_value_threshold=args.reject_low_value_threshold)
     r = out["result"]
     if args.json:
         print(json.dumps(out, indent=2, default=str))

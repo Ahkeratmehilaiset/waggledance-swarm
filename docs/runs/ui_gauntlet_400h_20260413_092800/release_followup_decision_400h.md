@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T03:06:05+00:00
+**Generated:** 2026-04-24T03:36:10+00:00
 **Main ref:** `main~30`
 **Total green:** 287.30h / 400h (MID-CAMPAIGN)
 
@@ -18,7 +18,7 @@
 - `configs/axioms/cottage/winter_feeding_decision.yaml`
 - `configs/axioms/home/indoor_air_quality.yaml`
 
-### TEST_HARNESS (36 files)
+### TEST_HARNESS (32 files)
 
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T133253Z.json`
 - `docs/runs/hybrid_shadow_three_way_2026-04-23T133253Z.md`
@@ -42,15 +42,15 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_050.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_051.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_059.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_060.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_061.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_062.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_050.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_051.md`
-- … and 6 more
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_059.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_060.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_061.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_report_062.md`
+- … and 2 more
 
 ### DOCS_NARRATIVE (0 files)
 

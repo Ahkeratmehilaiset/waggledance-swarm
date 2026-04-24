@@ -138,6 +138,57 @@ def test_is_live_campaign_busy_false_for_dead_pid(tmp_path):
     assert mod.is_live_campaign_busy(p) is False
 
 
+def test_is_live_campaign_busy_default_recomputes_pidfile(tmp_path, monkeypatch):
+    """GPT R5 §3: default path is recomputed on each call so a
+    watchdog that started after import is still discovered."""
+    monkeypatch.setattr(mod, "_current_live_watchdog_pidfile", lambda: None)
+    assert mod.is_live_campaign_busy() is False
+    # Now flip the lookup to a tmp pidfile
+    target = tmp_path / ".watchdog.pid"
+    target.write_text("99999998", encoding="utf-8")
+    monkeypatch.setattr(mod, "_current_live_watchdog_pidfile", lambda: target)
+    # dead pid → still not busy, but the function must have noticed the
+    # pidfile appeared (proven by test_is_live_campaign_busy_false_for_dead_pid)
+    assert mod.is_live_campaign_busy() is False
+
+
+def test_is_live_campaign_busy_new_format_matches_create_time(tmp_path):
+    """New pidfile format 'pid:create_time' must verify create_time to
+    close the PID-reuse hole."""
+    import os as _os
+    import psutil as _ps
+    self_pid = _os.getpid()
+    self_ct = _ps.Process(self_pid).create_time()
+    p = tmp_path / ".watchdog.pid"
+    p.write_text(f"{self_pid}:{self_ct}", encoding="utf-8")
+    # Our own process satisfies pid_exists + create_time guard
+    assert mod.is_live_campaign_busy(p) is True
+
+
+def test_is_live_campaign_busy_new_format_mismatched_create_time(tmp_path):
+    """If create_time in the pidfile does not match the live process,
+    the function must return False (stale pid reuse)."""
+    import os as _os
+    self_pid = _os.getpid()
+    # Deliberately wrong create_time
+    p = tmp_path / ".watchdog.pid"
+    p.write_text(f"{self_pid}:1.0", encoding="utf-8")
+    assert mod.is_live_campaign_busy(p) is False
+
+
+def test_is_live_campaign_busy_legacy_format_falls_back_to_cmdline(tmp_path, monkeypatch):
+    """Legacy pidfile with no create_time: function falls back to
+    cmdline containing 'campaign_watchdog'."""
+    import os as _os
+    self_pid = _os.getpid()
+    p = tmp_path / ".watchdog.pid"
+    p.write_text(str(self_pid), encoding="utf-8")
+    # Our cmdline won't include "campaign_watchdog" (it's pytest), so
+    # legacy detection returns False. That's the correct behavior:
+    # legacy format falls back to cmdline check.
+    assert mod.is_live_campaign_busy(p) is False
+
+
 def test_ci_segment_skipped_when_busy(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "is_live_campaign_busy", lambda *_a, **_k: True)
     r = mod._seg_ci()
@@ -167,6 +218,65 @@ def test_ci_segment_runs_when_busy_but_override_given(tmp_path, monkeypatch):
     assert called["env_extra"]["WAGGLE_HONEYCOMB_SEGMENT"] == "CI"
     # xdist explicitly disabled to avoid sqlite lock fights
     assert "no:xdist" in called["env_extra"]["PYTEST_ADDOPTS"]
+
+
+def test_shakedown_metrics_reports_skipped_outcome(tmp_path, monkeypatch):
+    """GPT R5 §2: busy-skipped segments must NOT be labeled ok=True in
+    the metrics.jsonl. The `outcome` field must be `skipped`."""
+    cdir = tmp_path / "cdir"
+    monkeypatch.setattr(mod, "CAMPAIGN_DIR", cdir)
+    monkeypatch.setattr(mod, "CHECKPOINTS_DIR", cdir / "checkpoints")
+    monkeypatch.setattr(mod, "METRICS_PATH", cdir / "metrics.jsonl")
+    monkeypatch.setattr(mod, "FAILURES_PATH", cdir / "failures.jsonl")
+    monkeypatch.setattr(mod, "PLAN_PATH", cdir / "plan.md")
+    monkeypatch.setattr(mod, "SUMMARY_PATH", cdir / "final_summary.md")
+    monkeypatch.setattr(mod, "OPEN_QUESTIONS_PATH", cdir / "open_questions.md")
+    monkeypatch.setattr(mod, "RECOMMENDED_PATH", cdir / "recommended_next_commits.md")
+    monkeypatch.setattr(mod, "STATE_PATH", cdir / "state.json")
+    # Live watchdog reported up → CI/FULL auto-skip
+    monkeypatch.setattr(mod, "is_live_campaign_busy", lambda *_a, **_k: True)
+    # Stub non-skippable segments so the test stays fast
+    monkeypatch.setattr(mod, "_seg_solver",
+                         lambda: {"segment": "SOLVER", "runs": [{"returncode": 0}]})
+    monkeypatch.setattr(mod, "_seg_composition",
+                         lambda: {"segment": "COMPOSITION", "runs": [{"returncode": 0}]})
+    monkeypatch.setattr(mod, "_seg_learning",
+                         lambda: {"segment": "LEARNING", "status": "import_ok"})
+
+    mod.shakedown(400)
+    metrics = [line for line in (cdir / "metrics.jsonl").read_text("utf-8").splitlines()
+               if line.strip()]
+    import json as _json
+    by_segment = {_json.loads(line)["segment"]: _json.loads(line) for line in metrics}
+    # CI and FULL must carry outcome=skipped, ok=False
+    assert by_segment["CI"]["outcome"] == "skipped"
+    assert by_segment["CI"]["ok"] is False
+    assert by_segment["FULL"]["outcome"] == "skipped"
+    assert by_segment["FULL"]["ok"] is False
+
+
+def test_shakedown_summary_md_shows_skipped(tmp_path, monkeypatch):
+    cdir = tmp_path / "cdir"
+    monkeypatch.setattr(mod, "CAMPAIGN_DIR", cdir)
+    monkeypatch.setattr(mod, "CHECKPOINTS_DIR", cdir / "checkpoints")
+    monkeypatch.setattr(mod, "METRICS_PATH", cdir / "metrics.jsonl")
+    monkeypatch.setattr(mod, "FAILURES_PATH", cdir / "failures.jsonl")
+    monkeypatch.setattr(mod, "PLAN_PATH", cdir / "plan.md")
+    monkeypatch.setattr(mod, "SUMMARY_PATH", cdir / "final_summary.md")
+    monkeypatch.setattr(mod, "OPEN_QUESTIONS_PATH", cdir / "open_questions.md")
+    monkeypatch.setattr(mod, "RECOMMENDED_PATH", cdir / "recommended_next_commits.md")
+    monkeypatch.setattr(mod, "STATE_PATH", cdir / "state.json")
+    monkeypatch.setattr(mod, "is_live_campaign_busy", lambda *_a, **_k: True)
+    monkeypatch.setattr(mod, "_seg_solver",
+                         lambda: {"segment": "SOLVER", "runs": [{"returncode": 0}]})
+    monkeypatch.setattr(mod, "_seg_composition",
+                         lambda: {"segment": "COMPOSITION", "runs": [{"returncode": 0}]})
+    monkeypatch.setattr(mod, "_seg_learning",
+                         lambda: {"segment": "LEARNING", "status": "import_ok"})
+
+    mod.shakedown(400)
+    summary = (cdir / "final_summary.md").read_text("utf-8")
+    assert "skipped:" in summary
 
 
 def test_lower_priority_is_best_effort(monkeypatch):

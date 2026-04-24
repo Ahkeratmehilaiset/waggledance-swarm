@@ -77,6 +77,61 @@ def test_primary_output_respects_explicit_flag():
     assert nodes[0].primary_output.unit == "W"
 
 
+def test_multi_primary_fails_closed_to_no_primary():
+    """GPT R5 §4 / Q6: multi-primary library data must fail closed —
+    no primary_output → no outgoing runtime or advisory edges."""
+    s = {
+        "id": "s", "cell": "thermal",
+        "inputs": [{"name": "x", "unit": "m"}],
+        "outputs": [
+            {"name": "first", "unit": "W", "primary": True},
+            {"name": "second", "unit": "kWh", "primary": True},  # INVALID
+        ],
+    }
+    nodes = build_nodes([s])
+    assert nodes[0].primary_output is None
+
+
+def test_multi_primary_produces_no_runtime_edges():
+    """A multi-primary node must not anchor any outgoing SolverEdge."""
+    bad = {
+        "id": "bad", "cell": "thermal",
+        "inputs": [{"name": "x", "unit": "m"}],
+        "outputs": [
+            {"name": "a", "unit": "W", "primary": True},
+            {"name": "b", "unit": "W", "primary": True},
+        ],
+    }
+    consumer = {
+        "id": "ok", "cell": "thermal",
+        "inputs": [{"name": "p", "unit": "W"}],
+        "outputs": [{"name": "out", "unit": "ratio", "primary": True}],
+    }
+    nodes = build_nodes([bad, consumer])
+    edges, _ = build_edges(nodes)
+    # bad has no primary → no edge bad→ok even though W would match
+    assert not any(e.src == "bad" for e in edges)
+
+
+def test_multi_primary_produces_no_rescale_edges():
+    bad = {
+        "id": "bad", "cell": "thermal",
+        "inputs": [{"name": "x", "unit": "m"}],
+        "outputs": [
+            {"name": "a", "unit": "W", "primary": True},
+            {"name": "b", "unit": "W", "primary": True},
+        ],
+    }
+    consumer = {
+        "id": "ok", "cell": "thermal",
+        "inputs": [{"name": "p", "unit": "kW"}],  # unit-family match
+        "outputs": [{"name": "out", "unit": "ratio", "primary": True}],
+    }
+    nodes = build_nodes([bad, consumer])
+    rescales = find_rescale_edges(nodes)
+    assert not any(r.src == "bad" for r in rescales)
+
+
 def test_primary_output_falls_back_to_first_when_no_flag():
     """When no output carries primary=True, the first output is used as
     a legacy compatibility fallback."""

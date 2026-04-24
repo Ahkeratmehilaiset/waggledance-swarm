@@ -474,7 +474,10 @@ _CLOSED_WORLD_FORBIDDEN = (
 _MACHINE_INV_SAFE_NODES = (
     ast.Expression, ast.BoolOp, ast.BinOp, ast.UnaryOp, ast.Compare,
     ast.Name, ast.Constant, ast.Load,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    # Arithmetic: only the four operations SMT solvers handle cleanly
+    # on linear integer / real theories. Pow, FloorDiv, Mod deliberately
+    # excluded per GPT R5 §1 — they push expressions out of QF_LRA/QF_LIA.
+    ast.Add, ast.Sub, ast.Mult, ast.Div,
     ast.USub, ast.UAdd, ast.Not, ast.And, ast.Or,
     ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
 )
@@ -482,14 +485,33 @@ _MACHINE_INV_SAFE_NODES = (
 
 def _machine_inv_shape_ok(expr: str) -> tuple[bool, str]:
     """Return (ok, reason) validating that `expr` is in the machine-
-    checkable subset: booleans over declared names, numeric literals,
-    arithmetic, comparisons, and/or/not. No calls, no attribute access,
-    no subscripts — this keeps the door open for a future Z3 pass over
-    exactly this structure."""
+    checkable subset AND its root is a boolean expression.
+
+    Root must be a Compare, a BoolOp (and/or), or a UnaryOp(Not). This
+    rules out bare arithmetic like `a + b` or bare identifiers like
+    `out` which were previously accepted even though they're not
+    invariants. Per GPT R5 §1.
+
+    Body must also avoid calls, attribute access, subscripts, and the
+    excluded arithmetic operators so a future SMT layer can consume it.
+    """
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
         return False, f"parse error: {e.msg}"
+
+    root = tree.body
+    root_is_boolean = (
+        isinstance(root, ast.Compare)
+        or isinstance(root, ast.BoolOp)
+        or (isinstance(root, ast.UnaryOp) and isinstance(root.op, ast.Not))
+    )
+    if not root_is_boolean:
+        return False, (
+            f"root must be a boolean (Compare / BoolOp / Not); "
+            f"got {type(root).__name__}"
+        )
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             return False, "function call forbidden"
@@ -575,6 +597,13 @@ def gate_closed_world(proposal: dict) -> dict:
     llm_dependency.required=true acts as an escape hatch for the LLM
     subset of tokens, but never for filesystem/env/random/clock — those
     remain forbidden regardless.
+
+    Two scan surfaces per GPT R5 Q2:
+    - `body` — the raw lowercased body text
+    - `body_compact` — punctuation stripped, alphanumerics only
+    The compact surface defeats splitting tricks like
+    `subp` + `rocess` which collapse to `subprocess` once whitespace
+    and punctuation are removed.
     """
     fa = proposal.get("formula_or_algorithm") or {}
     kind = fa.get("kind")
@@ -592,14 +621,29 @@ def gate_closed_world(proposal: dict) -> dict:
         str(fa.get("lookup_key", "")),
         str(fa.get("source", "")),
     ]).lower()
+    # Compact surface: strip every non-alphanumeric so "subp + rocess"
+    # collapses to "subprocess". Only alphabetics matter for the token
+    # patterns in _CLOSED_WORLD_FORBIDDEN that don't carry punctuation.
+    body_compact = re.sub(r"[^a-z0-9]", "", body)
 
     # LLM-like tokens may be legitimate if llm_dependency.required=true.
     # Everything else must be absent regardless.
     llm_like = {"prompt", "completion", "model.generate", "chat completion",
                 "openai.", "anthropic."}
+
+    def _token_in_any_surface(token: str) -> bool:
+        if token in body:
+            return True
+        # Compact-surface check only makes sense for alphanumeric-only
+        # tokens; tokens that carry mandatory punctuation (e.g. "http:",
+        # "os.environ") would not survive the strip.
+        if re.fullmatch(r"[a-z0-9]+", token):
+            return token in body_compact
+        return False
+
     errors: list[dict] = []
     for token in _CLOSED_WORLD_FORBIDDEN:
-        if token not in body:
+        if not _token_in_any_surface(token):
             continue
         if llm_declared and token in llm_like:
             continue
@@ -812,12 +856,24 @@ def decide_verdict(gate_results: list[dict], proposal: dict,
         if g in by_gate and not by_gate[g]["ok"]:
             return V_REJECT_SCHEMA
 
-    # All gates pass → three-tier verdict by coverage_lift:
-    #   < reject_low_value_threshold → REJECT_LOW_VALUE
-    #   < coverage_threshold         → ACCEPT_SHADOW_ONLY
-    #   >= coverage_threshold        → ACCEPT_CANDIDATE
-    lift = (proposal.get("expected_coverage_lift") or {}).get("value", 0.0)
+    # All gates pass → three-tier verdict by coverage_lift with an
+    # uncertainty-aware escape hatch (GPT R5 Q1):
+    #   lift >= coverage_threshold                     → ACCEPT_CANDIDATE
+    #   reject_threshold <= lift < coverage_threshold  → ACCEPT_SHADOW_ONLY
+    #   lift < reject_threshold  AND  uncertainty is   → ACCEPT_SHADOW_ONLY
+    #                            "high" or "unknown"      (teacher
+    #                                                       underselling)
+    #   lift < reject_threshold  AND  uncertainty is   → REJECT_LOW_VALUE
+    #                            "low" or "medium"
+    lift_block = proposal.get("expected_coverage_lift") or {}
+    lift = lift_block.get("value", 0.0)
+    uncertainty = (lift_block.get("uncertainty") or "").lower()
+
     if lift < reject_low_value_threshold:
+        if uncertainty in ("high", "unknown"):
+            # Teacher may be underselling; give it a shadow slot so the
+            # real data decides.
+            return V_ACCEPT_SHADOW_ONLY
         return V_REJECT_LOW_VALUE
     if lift < coverage_threshold:
         return V_ACCEPT_SHADOW_ONLY

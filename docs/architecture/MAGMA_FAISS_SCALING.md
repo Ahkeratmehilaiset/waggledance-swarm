@@ -1,0 +1,191 @@
+# MAGMA / FAISS storage layer — staged scaling plan
+
+- **Status:** design document. Nothing in the production runtime changes as a result of this document landing. Each stage lands through its own reviewed commit and its own migration commit.
+- **Source of advice:** GPT R5 architectural review (see `docs/plans/GPT_response5.txt`).
+- **Companion docs:** `HONEYCOMB_SOLVER_SCALING.md` (why solver scaling needs this), `PHASE8_METRICS.md` (what we measure).
+
+## 0. Current state (2026-04-24)
+
+Captured to keep this doc honest.
+
+| Layer | Today |
+|---|---|
+| MAGMA hot store | Single SQLite file `data/audit_log.db` in WAL mode (`core/audit_log.py`). 28 autonomy event types (`audit_projector.py`). Append-only. Capability/goal-level granularity, not per-solver-call. |
+| FAISS indices | Per-cell, staged under `data/faiss_staging/`. Delta ledger under `data/faiss_delta_ledger/` — 107 entries / 8 non-empty cells after Phase D library expansion. Nightly rebuild consumes the ledger. |
+| Embedding cache | `data/embedding_cache.sqlite` — LRU for query embeddings, pure cache. |
+| Chroma | News feeds, facts with TTL — separate from FAISS, retrieval-only. |
+| EventBus | `InMemoryEventBus` only. No durable bus. Events lost on shutdown. |
+| MAGMA write rate | Not measured. Inferable upper bound is "tens per second" during burst; campaign sustained rate is lower. |
+
+Solver library count: 22 (post-Phase-D expansion). Hex topology: 8 flat cells.
+
+## 1. Scaling trajectory the storage layer must absorb
+
+| Milestone | Solvers | Hex cells | Indicative FAISS RAM (f32, 768-dim) |
+|---|---|---|---|
+| Today | 22 | 8 flat | ~ 65 KB raw |
+| 3 mo | ~400 | 8 flat | ~ 1.2 MB |
+| 6 mo | ~2 400 | 48 (subdivided) | ~ 7 MB |
+| 12 mo | ~8 640 | 288 | ~ 26 MB |
+| 24 mo | ~34 000 | 1 728 | ~ 104 MB |
+
+These are raw vector sizes, pre-index overhead. FAISS IVF / PQ indices typically take 2-4× more. Even at 24 months the whole vector store fits in hundreds of MB — **quantization is a RAM-budget optimization, not a necessity, for anything under the 100 k-solver line.**
+
+## 2. Staged migration — GPT R5 recommendation, adopted
+
+Three stages. Each stage ships in its own reviewed commit with its own tests. Do not jump stages.
+
+### Stage 1 — land on this branch (or immediately after) · no data-model break
+
+**What changes in code:**
+- Move FAISS artifacts to a separate root: `data/vector/` (today lives under `data/faiss_staging/` + `data/faiss_delta_ledger/`). Same content, just separated physically from the audit store.
+- Introduce a small manifest per per-cell index: `data/vector/<cell>/index.faiss`, `manifest.json`, `commit.json`.
+- Keep MAGMA on SQLite/WAL — **do not migrate yet**.
+- Introduce four MAGMA event names for the vector layer (emitted by existing code paths, consumed by a new indexer in Stage 2):
+  - `solver.upserted` — axiom YAML was added or updated
+  - `vector.upsert_requested` — re-embed + upsert the vector for solver X
+  - `vector.delete_requested` — remove vector for solver X
+  - `vector.commit_applied` — index committed, carries `faiss_commit_id`, artifact path, vector count, checksum
+- Document the conversion path from the current delta ledger to the new event schema so Stage 2 is mechanical.
+
+**What does NOT change:**
+- Port 8002 runtime behavior
+- The audit SQLite schema
+- The existing FAISS rebuild job (still nightly)
+- The EventBus (still in-process)
+
+**Why first:** GPT R5: "make FAISS state derivable from MAGMA-style delta events" + "add per-cell projections before you add a distributed bus". Stage 1 costs are low: a rename and a documented event contract. Everything after Stage 1 flows from this separation.
+
+### Stage 2 — durable write path · NATS JetStream
+
+**Triggers to start Stage 2:**
+- Campaign `ui_gauntlet_400h` completes its 400 h budget
+- One clean 12 h preventive-restart cycle under the current zombie-reap code
+- MAGMA sustained write rate crosses ~50 events/s or p95 SQLite commit latency crosses ~20 ms
+
+**What changes in code:**
+- Introduce `waggledance/adapters/bus/jetstream.py` alongside the existing in-memory bus. Interface stays identical; runtime decides which to use by config.
+- JetStream subjects: `magma.events.<cell>`, publishers are the existing code paths that write to MAGMA.
+- Durable consumers:
+  - `audit-projector` → writes to `data/magma/hot/<cell>.sqlite`
+  - `vector-indexer` → reads `vector.*` events, writes `data/vector/<cell>/index.faiss`, emits `vector.commit_applied`
+  - `cold-archiver` → streams into `data/cold/parquet/YYYY/MM/DD/`
+- SQLite hot projections shrink to "recent events + operator views", not the permanent record.
+
+**What does NOT change:**
+- FAISS files still live under `data/vector/`
+- Audit semantics
+- Per-cell boundaries
+
+**Why second:** GPT R5 explicitly: "JetStream gives you persisted streams, replay, durable consumers, subject partitioning, and replication, which is exactly what you want if MAGMA events need to drive multiple materializers." Redis Pub/Sub deliberately not chosen because fire-and-forget violates audit-completeness.
+
+### Stage 3 — analytics + multi-writer · conditional
+
+**Triggers to start Stage 3 (any one):**
+- Multiple concurrent writer processes
+- Analytics workload heavier than DuckDB-over-Parquet comfortably handles
+- Need for multi-region replication
+
+**What changes in code:**
+- Postgres for control-plane SQL (not for hot MAGMA writes — those stay on JetStream + local SQLite projection)
+- ClickHouse or keep DuckDB-over-Parquet for cold analytics
+- Nothing else moves
+
+**What does NOT change:**
+- MAGMA write path (still JetStream)
+- FAISS layout (still per-cell files)
+- Event-sourcing semantics
+
+**Why last:** GPT R5 is explicit that Postgres/ClickHouse only belong in the picture when the actual pressure arrives. Adopting them earlier creates operational weight the project cannot afford.
+
+## 3. Physical layout — canonical target
+
+This is the layout Stage 2 should end up with. Stage 1 gets us partway (the `data/vector/` root).
+
+```
+data/
+├── magma/
+│   ├── hot/
+│   │   └── <cell>.sqlite          # recent events, operator views
+│   └── snapshot/
+│       └── YYYY-MM-DD.parquet     # periodic dumps
+├── vector/
+│   └── <leaf-cell>/
+│       ├── index.faiss
+│       ├── manifest.json          # dim, count, index_type, training_id
+│       └── commit.json            # faiss_commit_id, produced_at, source_events[]
+├── cold/
+│   └── parquet/
+│       └── YYYY/MM/DD/
+│           └── events_<cell>_<segment>.parquet
+└── audit_log.db                   # legacy during Stage 1; retired in Stage 2
+```
+
+Subdivision to leaf cells is straightforward under this layout: each new leaf gets its own directory, its own FAISS file, its own commit history.
+
+Parent-summary indices (Phase 7 roadmap) go under `data/vector/_parents/<cell>/index.faiss` so they don't collide with leaf names.
+
+## 4. FAISS index choice by library size — runnable heuristics
+
+Ordered rules; apply in order, stop at the first that applies:
+
+1. **< 10 k vectors per leaf:** flat `IndexFlatL2` (float32). Memory fine, build time negligible, recall is 1.0.
+2. **10 k – 100 k:** `IndexIVFFlat` with `nlist = sqrt(N)` lists, `nprobe` tuned so recall@10 ≥ 0.95 on the cell oracle set.
+3. **100 k – 1 M:** `IndexIVFPQ` with `m` = dim/4 subquantizers and `nlist = sqrt(N)`. Validate PQ error per cell — the lossy compression only fires where RAM actually needs it.
+4. **> 1 M per leaf:** the leaf is too large. Phase 7 subdivision should fire before we get here. If it doesn't, that's a topology bug, not a vector-store bug.
+
+Binary vectors (e.g. `IndexBinaryFlat`, `IndexBinaryHNSW`) enter the picture only when:
+- Embeddings themselves are binary-trained (we don't produce those today), OR
+- RAM budget hits the edge of the class (~ < 1 GB total), not for "intelligence at scale" reasons
+
+Per GPT R5 §3 on quantization: **don't cut over just because the roadmap says 34 k solvers. Cut over when leaf counts or parent summaries actually multiply memory.**
+
+## 5. Event sourcing with materialized projections — the pattern
+
+GPT R5: "The pattern you are asking about at the end is called event sourcing with materialized projections."
+
+In this architecture:
+- **Source of truth:** MAGMA events in JetStream (Stage 2) or SQLite WAL (Stage 1)
+- **Projection A:** FAISS per-cell indices under `data/vector/`
+- **Projection B:** SQLite hot views for operator reads
+- **Projection C:** Parquet/DuckDB cold analytics
+- **Projection D (future):** graph export to Neo4j / similar for topology analysis
+
+Each projection tracks its own position in the stream. Rebuilding any projection is a matter of replaying from an offset — the FAISS files become disposable derived state, which is exactly what they should be.
+
+This pattern explicitly avoids:
+- "Audit trail that ALSO stores vectors inline" (makes MAGMA a blob store)
+- "Vectors as the system of record" (vectors are derived, not authoritative)
+- "Global index with payload filters at scale" (couples cells, rebuilds, and corruption domains)
+
+## 6. What is NOT in this plan
+
+- CRDTs. GPT R5: "not yet. I would keep MAGMA single-writer per cell with idempotent event IDs and async backup/replication. CRDT-shaping the whole audit layer is overkill unless you truly need concurrent disconnected writers into the same cell's authoritative stream."
+- External vector DB (Milvus / Qdrant / Weaviate / pgvector). Local-first design with plain FAISS files stays simpler at the current and projected scale.
+- Replacing the Chroma news-feed store. That's a separate retrieval-context layer and does not scale with the solver library; leave it alone.
+- Real-time streaming to clients. Out of scope for the audit/vector scaling question.
+
+## 7. Concrete first commit (Stage 1, ready to land)
+
+Independent PR, no runtime-behavior change:
+
+1. `mkdir data/vector`
+2. Move `data/faiss_staging/*` and `data/faiss_delta_ledger/*` into `data/vector/<cell>/`
+3. Add `manifest.json` + `commit.json` per cell (generated from existing ledger content)
+4. Emit the four vector events into MAGMA on the existing write paths (no consumer yet — just source them)
+5. Update `docs/architecture/HONEYCOMB_SOLVER_SCALING.md` section "Current state" to reflect the new layout
+6. Add a single migration test: given a Stage-0 `data/faiss_staging/` tree, the migration tool produces a byte-identical search result against the resulting `data/vector/` tree
+
+That commit is small, reversible, and gates everything else.
+
+## 8. Decision log (for future readers)
+
+| Date | Decision | Reason |
+|---|---|---|
+| 2026-04-24 | Keep SQLite/WAL for MAGMA through Stage 1 | GPT R5: no current pressure; single-writer WAL handles present volume |
+| 2026-04-24 | Separate FAISS root to `data/vector/` in Stage 1 | GPT R5: rebuild blast radius must be cell-local |
+| 2026-04-24 | Make FAISS state derivable from MAGMA events | Event-sourced projections pattern; vector files become disposable |
+| 2026-04-24 | Pick JetStream for Stage 2 durable bus | GPT R5: persisted streams + replay + durable consumers; Redis Pub/Sub fire-and-forget disqualified |
+| 2026-04-24 | Defer quantization (PQ/IVFPQ) until actual RAM pressure | GPT R5: 104 MiB raw at 34k @ 768-dim is not a memory problem yet |
+| 2026-04-24 | No CRDTs | GPT R5: single-writer per cell + idempotent event IDs is enough |
+| 2026-04-24 | No external vector DB | Local-first design + plain FAISS stays simpler at projected scale |

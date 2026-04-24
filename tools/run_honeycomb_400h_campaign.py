@@ -42,17 +42,15 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Paths used by the live ui_gauntlet campaign watchdog. When its
-# pidfile points to a live process, the honeycomb harness refuses to
-# run resource-heavy segments (CI, FULL) so the two campaigns don't
-# fight for CPU / disk / Ollama on the same host.
-_LIVE_CAMPAIGN_DIRS = sorted(
-    (ROOT / "docs" / "runs").glob("ui_gauntlet_400h_*"),
-)
-_LIVE_WATCHDOG_PIDFILE = (
-    (_LIVE_CAMPAIGN_DIRS[-1] / ".watchdog.pid")
-    if _LIVE_CAMPAIGN_DIRS else None
-)
+def _current_live_watchdog_pidfile() -> Path | None:
+    """Latest `ui_gauntlet_400h_*/.watchdog.pid`. Recomputed on each
+    call so a watchdog that starts after this module imported is still
+    discovered (GPT R5 §3)."""
+    candidates = sorted((ROOT / "docs" / "runs").glob("ui_gauntlet_400h_*"))
+    if not candidates:
+        return None
+    return candidates[-1] / ".watchdog.pid"
+
 
 CAMPAIGN_DIR = ROOT / "docs" / "runs" / "honeycomb_400h"
 CHECKPOINTS_DIR = CAMPAIGN_DIR / "checkpoints"
@@ -173,24 +171,71 @@ def render_plan_md(plan: list[SegmentPlan], target_hours: float) -> str:
 
 # ── Segment bodies (small / runtime-safe by default) ──────────────
 
-def is_live_campaign_busy(pidfile: Path | None = _LIVE_WATCHDOG_PIDFILE) -> bool:
+def is_live_campaign_busy(pidfile: Path | None = None) -> bool:
     """True iff the ui_gauntlet campaign watchdog is live and owns the
     port-8002 server right now.
+
+    Per GPT R5 §3 + Q5:
+    - `pidfile=None` (the default) recomputes the latest ui_gauntlet
+      watchdog pidfile on each call, so a watchdog that starts after
+      this module imported is still discovered.
+    - Pidfile format is `pid` (legacy) or `pid:create_time` (new).
+      The create_time guard closes the stale-PID-reuse hole: if a
+      recycled PID happens to belong to a different process, the
+      create_time will not match and we report "not busy".
+    - Fallback to "cmdline contains campaign_watchdog" for legacy
+      pidfiles that predate the create_time addition.
 
     Rules of thumb:
     - Pidfile missing → not busy (no live campaign)
     - Pidfile present but PID dead → not busy
-    - Pidfile present and process matching "campaign_watchdog" alive → busy
+    - Pidfile present, PID alive, create_time matches → busy
+    - Pidfile present, PID alive, legacy format, cmdline verifies → busy
     """
+    if pidfile is None:
+        pidfile = _current_live_watchdog_pidfile()
     if pidfile is None or not pidfile.exists():
         return False
     try:
         import psutil
-        pid = int(pidfile.read_text().strip())
+        raw = pidfile.read_text().strip()
+        if not raw:
+            return False
+        # New format: "pid:create_time" (float seconds since epoch)
+        # Legacy format: "pid"
+        if ":" in raw:
+            pid_s, ct_s = raw.split(":", 1)
+            expected_create_time: float | None = None
+            try:
+                expected_create_time = float(ct_s)
+            except ValueError:
+                expected_create_time = None
+            pid = int(pid_s)
+        else:
+            pid = int(raw)
+            expected_create_time = None
+
         if not psutil.pid_exists(pid):
             return False
         try:
             proc = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+
+        # Create_time guard (new format): closes PID-reuse hole.
+        if expected_create_time is not None:
+            try:
+                actual_ct = proc.create_time()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return False
+            # psutil returns float seconds; allow 1s slop for clock
+            if abs(actual_ct - expected_create_time) > 1.0:
+                return False
+            # create_time matches — we trust it's the watchdog process
+            return True
+
+        # Legacy format: fall back to cmdline verification
+        try:
             cmd = " ".join(proc.cmdline() or [])
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return False
@@ -390,16 +435,31 @@ def shakedown(target_hours: float, allow_when_busy: bool = False) -> dict:
         r["completed_at"] = _utc_now_iso()
         r["duration_s"] = round(time.time() - t0, 2)
         results.append(r)
+
+        # Classify segment outcome: skipped (busy-lock fired), error
+        # (exception in wiring), fail (any subprocess non-zero), ok
+        # (all subprocess calls returned 0 AND segment has no error).
+        if r.get("skipped"):
+            outcome = "skipped"
+        elif "error" in r:
+            outcome = "error"
+        elif r.get("runs") and any(
+            run.get("returncode") not in (0, None) for run in r["runs"]
+        ):
+            outcome = "fail"
+        else:
+            outcome = "ok"
+
         _append_jsonl(METRICS_PATH, {
             "ts": r["completed_at"],
             "segment": name,
             "duration_s": r["duration_s"],
-            "ok": "error" not in r and all(
-                run.get("returncode", 0) == 0 for run in r.get("runs", [])
-            ),
+            "outcome": outcome,
+            # Keep `ok` for backward compat with existing consumers,
+            # but it is now strictly "outcome == ok".
+            "ok": outcome == "ok",
         })
-        if "error" in r or any(run.get("returncode") not in (0, None)
-                                for run in r.get("runs", [])):
+        if outcome in ("error", "fail"):
             state.incidents += 1
             _append_jsonl(FAILURES_PATH, {"ts": r["completed_at"], "segment": name,
                                            "detail": r})
@@ -434,7 +494,11 @@ def _shakedown_summary(results: list[dict],
         "|---|---|---|",
     ]
     for r in results:
-        if "error" in r:
+        # Explicit branch on skipped FIRST so busy-lock skips never get
+        # reported as ok (GPT R5 §2).
+        if r.get("skipped"):
+            status = f"skipped: {r.get('reason', '(no reason)')[:60]}"
+        elif "error" in r:
             status = f"ERROR: {r['error'][:60]}"
         elif r.get("delegated_to"):
             status = f"delegated → {r['delegated_to']}"

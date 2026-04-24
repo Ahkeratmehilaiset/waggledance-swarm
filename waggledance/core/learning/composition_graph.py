@@ -211,6 +211,7 @@ def build_nodes(solvers: Iterable[dict]) -> list[SolverNode]:
         raw_outputs = s.get("outputs", [])
         outputs: list[IOSig] = []
         primary_candidate: IOSig | None = None
+        primary_count = 0
         if isinstance(raw_outputs, list):
             for o in raw_outputs:
                 if isinstance(o, dict):
@@ -220,21 +221,30 @@ def build_nodes(solvers: Iterable[dict]) -> list[SolverNode]:
                     )
                     outputs.append(sig)
                     # Respect explicit primary=True flag when present.
-                    # Multiple primaries → first one wins (gate_io_types
-                    # rejects multi-primary proposals upstream).
-                    if o.get("primary") and primary_candidate is None:
-                        primary_candidate = sig
+                    if o.get("primary"):
+                        primary_count += 1
+                        if primary_candidate is None:
+                            primary_candidate = sig
                 else:
                     # plain names — unit unknown, no primary flag possible
                     outputs.append(IOSig(name=str(o), unit=""))
 
-        # Fallback: if no primary flag was set anywhere, use outputs[0]
-        # (legacy shape). In the canonical axiom YAML + proposal schema
-        # the primary value is always tagged, so this branch is a
-        # compatibility path for older data only.
-        primary = primary_candidate if primary_candidate is not None else (
-            outputs[0] if outputs else None
-        )
+        # Fail closed on multi-primary library data (GPT R5 §4 / Q6).
+        # gate_io_types rejects this upstream for proposals, but direct
+        # axiom YAML edits or hand-crafted manifests can bypass that
+        # gate. Silent "first wins" is the wrong fallback here: produce
+        # no primary, which means the node contributes no outgoing
+        # runtime or advisory edges.
+        if primary_count > 1:
+            primary = None
+        elif primary_candidate is not None:
+            primary = primary_candidate
+        else:
+            # Legacy compatibility: use outputs[0] when no primary flag
+            # is set anywhere. Canonical axiom YAML + proposal schema
+            # always tag primary, so this branch only fires for older
+            # data.
+            primary = outputs[0] if outputs else None
         latency = s.get("latency_ms")
         if latency is not None:
             try:

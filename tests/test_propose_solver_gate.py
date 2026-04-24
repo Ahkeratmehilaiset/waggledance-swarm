@@ -311,9 +311,40 @@ def test_verdict_accept_shadow_for_mid_lift(tmp_path):
 
 
 def test_verdict_reject_low_value_for_tiny_lift(tmp_path):
-    # Below reject threshold (0.005) → REJECT_LOW_VALUE per GPT R4 fix
+    # Below reject threshold (0.005) + uncertainty low → REJECT_LOW_VALUE
     p = _proposal()
     p["expected_coverage_lift"]["value"] = 0.001
+    p["expected_coverage_lift"]["uncertainty"] = "low"
+    axioms = tmp_path / "axioms"; axioms.mkdir()
+    result = mod.evaluate_proposal(p, axioms_dir=axioms)
+    assert result["verdict"] == mod.V_REJECT_LOW_VALUE
+
+
+def test_verdict_uncertainty_high_escapes_reject(tmp_path):
+    """GPT R5 Q1: tiny lift but uncertainty=high → ACCEPT_SHADOW_ONLY,
+    not REJECT_LOW_VALUE. The shadow run decides."""
+    p = _proposal()
+    p["expected_coverage_lift"]["value"] = 0.001
+    p["expected_coverage_lift"]["uncertainty"] = "high"
+    axioms = tmp_path / "axioms"; axioms.mkdir()
+    result = mod.evaluate_proposal(p, axioms_dir=axioms)
+    assert result["verdict"] == mod.V_ACCEPT_SHADOW_ONLY
+
+
+def test_verdict_uncertainty_unknown_escapes_reject(tmp_path):
+    p = _proposal()
+    p["expected_coverage_lift"]["value"] = 0.001
+    p["expected_coverage_lift"]["uncertainty"] = "unknown"
+    axioms = tmp_path / "axioms"; axioms.mkdir()
+    result = mod.evaluate_proposal(p, axioms_dir=axioms)
+    assert result["verdict"] == mod.V_ACCEPT_SHADOW_ONLY
+
+
+def test_verdict_uncertainty_medium_still_rejects_tiny_lift(tmp_path):
+    """Uncertainty 'medium' does not unlock the shadow escape hatch."""
+    p = _proposal()
+    p["expected_coverage_lift"]["value"] = 0.001
+    p["expected_coverage_lift"]["uncertainty"] = "medium"
     axioms = tmp_path / "axioms"; axioms.mkdir()
     result = mod.evaluate_proposal(p, axioms_dir=axioms)
     assert result["verdict"] == mod.V_REJECT_LOW_VALUE
@@ -445,6 +476,43 @@ def test_closed_world_passes_clean_algorithm():
     p = _algorithm_proposal(
         "multiply input_a by scalar k and threshold at value T, "
         "constants embedded."
+    )
+    assert mod.gate_closed_world(p)["ok"]
+
+
+# ── GPT R5 Q2: compact-prose scan surface ─────────────────────────
+
+def test_closed_world_defeats_punctuation_splitting():
+    """'subp + rocess' should collapse to 'subprocess' in the compact
+    surface and trigger a reject. Defeats the obvious splitting trick."""
+    p = _algorithm_proposal("use subp + rocess to run an external tool")
+    r = mod.gate_closed_world(p)
+    assert not r["ok"]
+    tokens = {e["token"] for e in r["errors"]}
+    assert "subprocess" in tokens
+
+
+def test_closed_world_defeats_whitespace_splitting():
+    p = _algorithm_proposal("sub process call on an external binary")
+    assert not mod.gate_closed_world(p)["ok"]
+
+
+def test_closed_world_punctuation_token_still_works_in_raw_scan():
+    """Tokens with required punctuation (http:, os.environ) are NOT
+    auto-triggered by the compact surface — they must still be present
+    in the raw body. Verify raw scan still catches them."""
+    p = _algorithm_proposal("issue an http: request to fetch data")
+    assert not mod.gate_closed_world(p)["ok"]
+
+
+def test_closed_world_compact_surface_does_not_over_match():
+    """The compact surface must not flag innocent prose. 'This solver
+    computes a sub-total and a process overview' should NOT hit
+    subprocess: 'sub total' and 'process' do collapse to 'subtotalandprocess'
+    which does not contain 'subprocess'."""
+    p = _algorithm_proposal(
+        "This solver computes a sub total and a process overview given "
+        "declared inputs."
     )
     assert mod.gate_closed_world(p)["ok"]
 
@@ -590,6 +658,55 @@ def test_machine_invariants_boolean_ops_allowed():
         {"id": "conj", "expr": "a >= 0 and b <= 100"},
         {"id": "disj", "expr": "a > 0 or b > 0"},
         {"id": "neg", "expr": "not (a < 0)"},
+    ]
+    r = mod.gate_machine_invariants_shape(p)
+    assert r["ok"]
+
+
+# ── GPT R5 §1: tighten boolean-root + drop Pow/FloorDiv/Mod ───────
+
+def test_machine_invariants_rejects_non_boolean_root_arithmetic():
+    p = _proposal()
+    p["machine_invariants"] = [{"id": "bad", "expr": "a + b"}]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+    assert "boolean" in r["errors"][0]["message"].lower()
+
+
+def test_machine_invariants_rejects_bare_identifier_root():
+    p = _proposal()
+    p["machine_invariants"] = [{"id": "bad", "expr": "a"}]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+
+
+def test_machine_invariants_rejects_power_op():
+    p = _proposal()
+    p["machine_invariants"] = [{"id": "bad", "expr": "a ** 2 >= 0"}]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+
+
+def test_machine_invariants_rejects_floor_div():
+    p = _proposal()
+    p["machine_invariants"] = [{"id": "bad", "expr": "a // 2 >= 0"}]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+
+
+def test_machine_invariants_rejects_modulo():
+    p = _proposal()
+    p["machine_invariants"] = [{"id": "bad", "expr": "a % 2 == 0"}]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+
+
+def test_machine_invariants_allows_and_or_not_as_root():
+    p = _proposal()
+    p["machine_invariants"] = [
+        {"id": "and_root", "expr": "a > 0 and b < 10"},
+        {"id": "or_root", "expr": "a < 0 or a > 1000"},
+        {"id": "not_root", "expr": "not (a < 0)"},
     ]
     r = mod.gate_machine_invariants_shape(p)
     assert r["ok"]

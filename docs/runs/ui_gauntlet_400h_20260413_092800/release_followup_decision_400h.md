@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T05:36:25+00:00
+**Generated:** 2026-04-24T06:06:29+00:00
 **Main ref:** `main~30`
 **Total green:** 287.30h / 400h (MID-CAMPAIGN)
 
@@ -46,7 +46,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_061.json`
 - … and 15 more
 
-### DOCS_NARRATIVE (22 files)
+### DOCS_NARRATIVE (23 files)
 
 - `CHANGELOG.md`
 - `README.md`
@@ -69,6 +69,7 @@
 - `docs/cells/system/manifest.json`
 - `docs/cells/thermal/MANIFEST.md`
 - `docs/cells/thermal/manifest.json`
+- `docs/plans/GPT_response4.txt`
 - `docs/prompts/cell_teacher_prompt.md`
 
 ### CI_WORKFLOW (0 files)

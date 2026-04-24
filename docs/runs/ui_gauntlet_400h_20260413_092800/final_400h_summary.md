@@ -1,7 +1,7 @@
 # 400h Campaign — Final Summary (MID-CAMPAIGN (TBD on completion))
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T07:36:39+00:00
+**Generated:** 2026-04-24T08:06:43+00:00
 
 ## Cumulative hours (evidence-backed)
 
@@ -9,41 +9,41 @@
 |---|---|---|---|
 | HOT  | 151.10h  | 80h  | 188.9% |
 | WARM | 104.16h | 120h | 86.8% |
-| COLD | 32.04h | 200h | 16.0% |
-| **TOTAL** | **287.30h** | **400h** | **71.8%** |
+| COLD | 36.04h | 200h | 18.0% |
+| **TOTAL** | **291.30h** | **400h** | **72.8%** |
 
 ## Queries
 
-- Total: 42019
-- Sent: 42016
-- Responded: 31393
+- Total: 42176
+- Sent: 42173
+- Responded: 31536
 - Skipped empty: 0
 - XSS hits: **0** (zero-tolerance target: 0)
 - DOM breaks: **0** (zero-tolerance target: 0)
-- Session losses: 22700
-- Avg latency: 3651.0 ms
-- Median latency: 2471 ms
-- p95 latency: 10685 ms
+- Session losses: 22773
+- Avg latency: 3648.0 ms
+- Median latency: 2472.0 ms
+- p95 latency: 10679 ms
 
 ## Backend truth (from COLD mode)
 
-- Health pass rate: 865/915
+- Health pass rate: 975/1033
 - Feeds monotonic: True
 - Hologram honest: False
-- Auth chat pass rate: 16/33
-- Cookie bootstrap pass rate: 62/65
+- Auth chat pass rate: 19/37
+- Cookie bootstrap pass rate: 69/73
 
 ## Incidents classified
 
 | Category | Count |
 |---|---|
-| chat_response_failure | 1942 |
-| health_failure | 210 |
+| chat_response_failure | 1943 |
+| health_failure | 213 |
 | chat_failure | 124 |
+| cycle_crash_recovery | 20 |
 | backend_unhealthy | 19 |
-| cycle_crash_recovery | 19 |
-| chat_send_failure | 11 |
-| auth_recovery_failure | 11 |
+| chat_send_failure | 12 |
+| auth_recovery_failure | 12 |
 | tab_switch_failure | 6 |
 | context_recycle_failure | 3 |
 | cookie_failure | 3 |
@@ -58,5 +58,5 @@
 
 ## Verdict per x.txt Phase 7 questions
 
-- Campaign incomplete (287.3h / 400h). Verdict fields will be filled
+- Campaign incomplete (291.3h / 400h). Verdict fields will be filled
   by rerunning `python tools/campaign_reports.py aggregate` once total ≥ 400h.

@@ -1,18 +1,19 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T07:36:39+00:00
+**Generated:** 2026-04-24T08:06:43+00:00
 **Main ref:** `main~30`
-**Total green:** 287.30h / 400h (MID-CAMPAIGN)
+**Total green:** 291.30h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (2 files)
+### PRODUCT (3 files)
 
 - `waggledance/core/learning/composition_graph.py`
 - `waggledance/core/learning/solver_hash.py`
+- `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (46 files)
+### TEST_HARNESS (49 files)
 
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
@@ -44,7 +45,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_059.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_060.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_061.json`
-- … and 16 more
+- … and 19 more
 
 ### DOCS_NARRATIVE (25 files)
 
@@ -80,21 +81,24 @@
 ### VERSION (0 files)
 
 
-### OTHER (9 files)
+### OTHER (12 files)
 
 - `schemas/solver_proposal.schema.json`
+- `tools/backfill_axioms_to_hex.py`
 - `tools/campaign_watchdog.py`
 - `tools/cell_manifest.py`
 - `tools/hex_subdivision_plan.py`
+- `tools/migrate_to_vector_root.py`
 - `tools/phase8_capability_report.py`
 - `tools/propose_solver.py`
 - `tools/run_honeycomb_400h_campaign.py`
 - `tools/solver_composition_report.py`
 - `tools/solver_dedupe.py`
+- `tools/vector_indexer.py`
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (287.3h)
+- Campaign complete (>= 400h): no (291.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

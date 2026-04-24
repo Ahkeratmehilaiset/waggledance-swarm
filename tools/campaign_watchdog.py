@@ -168,9 +168,29 @@ def reap_server_zombies() -> int:
             log(f"reap skipped: listener pid {listener_pid} not in server list")
             return 0
 
+        # Preserve the listener AND its ancestor chain. On Windows,
+        # "python script.py" creates a launcher stub + real interpreter;
+        # both show the same commandline. Killing the stub can cascade-kill
+        # the interpreter via the Python launcher's job object. Walk up from
+        # listener collecting pids until we leave the python process tree.
+        preserve = {listener_pid}
+        try:
+            cur = psutil.Process(listener_pid)
+            for _ in range(6):  # bounded walk
+                parent = cur.parent()
+                if parent is None:
+                    break
+                pname = (parent.name() or "").lower()
+                if "python" not in pname:
+                    break
+                preserve.add(parent.pid)
+                cur = parent
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
         killed = 0
         for p in server_procs:
-            if p.info["pid"] == listener_pid:
+            if p.info["pid"] in preserve:
                 continue
             try:
                 p.kill()

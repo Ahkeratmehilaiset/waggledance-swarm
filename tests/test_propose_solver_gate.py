@@ -352,7 +352,7 @@ def test_run_writes_report_file(tmp_path):
     assert "C:\\Users" not in text
 
 
-def test_all_13_gates_run_and_reported(tmp_path):
+def test_all_14_gates_run_and_reported(tmp_path):
     axioms = tmp_path / "axioms"; axioms.mkdir()
     result = mod.evaluate_proposal(_proposal(), axioms_dir=axioms)
     gate_names = {g["gate"] for g in result["gates"]}
@@ -361,6 +361,7 @@ def test_all_13_gates_run_and_reported(tmp_path):
         "deterministic_replay", "unit_consistency", "contradiction",
         "invariants_present", "tests_present", "latency_budget",
         "no_secrets_no_paths", "llm_dependency", "closed_world",
+        "machine_invariants_shape",
     }
     assert gate_names == expected, f"missing: {expected - gate_names}"
 
@@ -523,6 +524,75 @@ def test_hash_projection_moves_with_failure_mode_change():
     ha = solver_hash(mod._proposal_to_axiom_shape(a))
     hb = solver_hash(mod._proposal_to_axiom_shape(b))
     assert ha != hb
+
+
+# ── GPT R4 advisory: machine_invariants shape gate ────────────────
+
+def test_machine_invariants_absent_is_noop():
+    p = _proposal()
+    r = mod.gate_machine_invariants_shape(p)
+    assert r["ok"] and r.get("skipped")
+
+
+def test_machine_invariants_valid_shape_passes():
+    p = _proposal()
+    p["machine_invariants"] = [
+        {"id": "nonneg_out", "expr": "out >= 0"},
+        {"id": "bounded", "expr": "a + b <= 1000"},
+    ]
+    r = mod.gate_machine_invariants_shape(p)
+    assert r["ok"], r
+
+
+def test_machine_invariants_rejects_function_call():
+    p = _proposal()
+    p["machine_invariants"] = [
+        {"id": "bad", "expr": "abs(out) < 10"},
+    ]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+
+
+def test_machine_invariants_rejects_attribute():
+    p = _proposal()
+    p["machine_invariants"] = [
+        {"id": "bad", "expr": "os.environ >= 0"},
+    ]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+
+
+def test_machine_invariants_rejects_undeclared_identifier():
+    p = _proposal()
+    p["machine_invariants"] = [
+        {"id": "bad", "expr": "unknown_var >= 0"},
+    ]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+    # Error carries the free variable
+    err = r["errors"][0]
+    assert "unknown_var" in err.get("free", [])
+
+
+def test_machine_invariants_rejects_duplicate_id():
+    p = _proposal()
+    p["machine_invariants"] = [
+        {"id": "same", "expr": "a >= 0"},
+        {"id": "same", "expr": "b >= 0"},
+    ]
+    r = mod.gate_machine_invariants_shape(p)
+    assert not r["ok"]
+
+
+def test_machine_invariants_boolean_ops_allowed():
+    p = _proposal()
+    p["machine_invariants"] = [
+        {"id": "conj", "expr": "a >= 0 and b <= 100"},
+        {"id": "disj", "expr": "a > 0 or b > 0"},
+        {"id": "neg", "expr": "not (a < 0)"},
+    ]
+    r = mod.gate_machine_invariants_shape(p)
+    assert r["ok"]
 
 
 def test_hash_projection_moves_with_assumption_change():

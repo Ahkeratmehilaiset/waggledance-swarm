@@ -40,6 +40,45 @@ _ADJACENCY: dict[str, frozenset[str]] = {
 }
 
 
+# Unit families — scalar-only conversions. Each family maps unit
+# symbol → factor to the family's canonical base. Temperature is
+# deliberately absent because Celsius ↔ Kelvin is affine (+273.15),
+# not a pure scalar, and rescaling would change semantics. kWh stays
+# in the energy family via its exact Joule factor.
+_UNIT_FAMILIES: dict[str, dict[str, float]] = {
+    "power":    {"W": 1.0, "kW": 1e3, "MW": 1e6, "mW": 1e-3},
+    "energy":   {"J": 1.0, "kJ": 1e3, "MJ": 1e6, "Wh": 3600.0, "kWh": 3.6e6},
+    "length":   {"m": 1.0, "km": 1e3, "cm": 1e-2, "mm": 1e-3},
+    "mass":     {"kg": 1.0, "g": 1e-3, "mg": 1e-6, "t": 1e3},
+    "time_s":   {"s": 1.0, "ms": 1e-3, "us": 1e-6, "min": 60.0, "h": 3600.0},
+    "pressure": {"Pa": 1.0, "kPa": 1e3, "MPa": 1e6, "bar": 1e5},
+    "area":     {"m2": 1.0, "cm2": 1e-4, "km2": 1e6},
+    "volume":   {"m3": 1.0, "L": 1e-3, "mL": 1e-6},
+}
+
+
+def _unit_family(unit: str) -> str | None:
+    """Return the family name of `unit` if it appears in `_UNIT_FAMILIES`."""
+    if not unit:
+        return None
+    for fam, table in _UNIT_FAMILIES.items():
+        if unit in table:
+            return fam
+    return None
+
+
+def _rescale_factor(src_unit: str, dst_unit: str) -> float | None:
+    """Scalar that converts a value in `src_unit` to one in `dst_unit`,
+    or None if the units are in different families or unknown."""
+    fam_s = _unit_family(src_unit)
+    fam_d = _unit_family(dst_unit)
+    if fam_s is None or fam_s != fam_d:
+        return None
+    table = _UNIT_FAMILIES[fam_s]
+    # factor * src_value = dst_value
+    return table[src_unit] / table[dst_unit]
+
+
 @dataclass(frozen=True)
 class IOSig:
     """Canonical (name, unit) pair for input or output declarations."""
@@ -105,6 +144,24 @@ class BridgeCandidate:
     score: float   # heuristic value: longer paths in adjacent cells score higher
 
 
+@dataclass(frozen=True)
+class RescaleEdge:
+    """Advisory-only edge: src output and dst input share a unit family
+    but are in different units (e.g. W → kW, factor 0.001). These are
+    NOT runtime-valid edges — they are suggestions for a human reviewer
+    that two solvers could chain if a rescale step were introduced.
+
+    Runtime SolverEdges remain exact-unit-match; see `build_edges`.
+    """
+    src: str
+    dst: str
+    src_unit: str
+    dst_unit: str
+    family: str
+    factor: float        # factor * src_value = dst_value
+    same_cell: bool
+
+
 @dataclass
 class GraphStats:
     """Summary of graph construction — fields are surfaceable as
@@ -119,6 +176,8 @@ class GraphStats:
     bridges: int = 0
     cells_with_bridges: dict[str, int] = field(default_factory=dict)
     cells_with_high_entropy: list[str] = field(default_factory=list)
+    advisory_rescale_edges: int = 0
+    advisory_rescale_by_family: dict[str, int] = field(default_factory=dict)
 
 
 # ── Construction ───────────────────────────────────────────────────
@@ -366,6 +425,49 @@ def summarize(
     return stats
 
 
+def find_rescale_edges(nodes: list[SolverNode]) -> list[RescaleEdge]:
+    """Advisory rescale edges: src.primary_output and some dst.input
+    share a unit family but differ in unit (e.g. W → kW, factor 0.001).
+
+    These are NOT runtime-valid and never enter `enumerate_paths`. They
+    are reported as suggestions to the human reviewer.
+
+    Same cell-reachability rule as SolverEdge (self or ring-1 neighbor)
+    to keep the advisory list scoped to the same topology slice.
+    """
+    edges: list[RescaleEdge] = []
+    for src in nodes:
+        if src.primary_output is None or not src.primary_output.unit:
+            continue
+        src_unit = src.primary_output.unit
+        src_family = _unit_family(src_unit)
+        if src_family is None:
+            continue
+        for dst in nodes:
+            if dst.solver_id == src.solver_id:
+                continue
+            if dst.cell_id not in _cells_reachable(src.cell_id):
+                continue
+            for iu in dst.input_units():
+                if iu == src_unit:
+                    # Exact match — covered by SolverEdge already
+                    continue
+                if _unit_family(iu) != src_family:
+                    continue
+                factor = _rescale_factor(src_unit, iu)
+                if factor is None or factor == 1.0:
+                    continue
+                edges.append(RescaleEdge(
+                    src=src.solver_id, dst=dst.solver_id,
+                    src_unit=src_unit, dst_unit=iu,
+                    family=src_family, factor=factor,
+                    same_cell=(src.cell_id == dst.cell_id),
+                ))
+    # Deterministic order
+    edges.sort(key=lambda e: (e.family, e.src, e.dst, e.src_unit, e.dst_unit))
+    return edges
+
+
 def build_graph(
     solvers: Iterable[dict],
     max_depth: int = 4,
@@ -378,15 +480,23 @@ def build_graph(
     edges, build_stats = build_edges(nodes)
     paths = enumerate_paths(nodes, edges, max_depth=max_depth)
     bridges = find_bridges(paths, nodes)
+    rescales = find_rescale_edges(nodes)
     stats = summarize(nodes, edges, paths, bridges,
                       entropy_threshold=entropy_threshold)
     # Merge rejected-edge counts from construction
     stats.rejected_edges = build_stats.rejected_edges
     stats.rejected_reasons = dict(build_stats.rejected_reasons)
+    # Advisory rescale stats
+    stats.advisory_rescale_edges = len(rescales)
+    by_family: dict[str, int] = {}
+    for r in rescales:
+        by_family[r.family] = by_family.get(r.family, 0) + 1
+    stats.advisory_rescale_by_family = dict(sorted(by_family.items()))
     return {
         "nodes": nodes,
         "edges": edges,
         "paths": paths,
         "bridges": bridges,
+        "rescale_edges": rescales,
         "stats": stats,
     }

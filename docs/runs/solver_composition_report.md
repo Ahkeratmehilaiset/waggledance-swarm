@@ -1,6 +1,6 @@
 # Solver composition report
 
-- **Generated:** 2026-04-24T05:51:15+00:00
+- **Generated:** 2026-04-24T06:03:35+00:00
 - **Axiom dir:** `configs/axioms`
 - **Axioms scanned:** 22
 - **Solver nodes:** 22
@@ -59,3 +59,18 @@ enough to warrant subdivision (Phase 7 input).
 - `seasonal`
 - `system`
 - `thermal`
+
+## Advisory rescale-possible edges (NOT runtime-valid)
+
+These edges share a unit family (power, energy, length, …)
+but differ in unit (e.g. W ↔ kW, factor 0.001). They would
+chain if an explicit rescale step were inserted. The runtime
+router never follows these. They are suggestions only.
+
+- **Total:** 1
+- By family:
+  - `mass`: 1
+
+| family | src | src_unit | dst | dst_unit | factor |
+|---|---|---|---|---|---|
+| `mass` | `colony_food_reserves` | `kg` | `honey_yield` | `mg` | 1e+06 |

@@ -21,10 +21,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 from waggledance.core.learning.composition_graph import (
-    IOSig, SolverNode, SolverEdge,
+    IOSig, SolverNode, SolverEdge, RescaleEdge,
     build_nodes, build_edges, enumerate_paths,
-    find_bridges, summarize, build_graph,
-    _ADJACENCY,
+    find_bridges, find_rescale_edges, summarize, build_graph,
+    _ADJACENCY, _UNIT_FAMILIES, _unit_family, _rescale_factor,
 )
 
 
@@ -90,6 +90,123 @@ def test_primary_output_falls_back_to_first_when_no_flag():
     }
     nodes = build_nodes([s])
     assert nodes[0].primary_output.name == "first"
+
+
+# ── Advisory rescale edges (GPT R4 advisory) ──────────────────────
+
+def test_unit_family_lookup():
+    assert _unit_family("W") == "power"
+    assert _unit_family("kW") == "power"
+    assert _unit_family("m") == "length"
+    assert _unit_family("not-a-unit") is None
+    assert _unit_family("") is None
+
+
+def test_rescale_factor_power():
+    # 1 kW = 1000 W, so factor converting a W-value to kW is 1/1000
+    assert _rescale_factor("W", "kW") == 1e-3
+    assert _rescale_factor("kW", "W") == 1e3
+
+
+def test_rescale_factor_none_for_cross_family():
+    assert _rescale_factor("W", "m") is None
+    assert _rescale_factor("degC", "W") is None  # degC not in any family
+
+
+def test_rescale_factor_same_unit_is_one():
+    assert _rescale_factor("W", "W") == 1.0
+
+
+def test_find_rescale_edge_detects_cross_unit_same_family():
+    solvers = [
+        _solver("a", "thermal", [("x", "m")], [("y", "W")]),
+        _solver("b", "thermal", [("p", "kW")], [("q", "ratio")]),
+    ]
+    nodes = build_nodes(solvers)
+    rescales = find_rescale_edges(nodes)
+    assert rescales, "expected at least one W→kW rescale edge"
+    r = rescales[0]
+    assert r.src == "a" and r.dst == "b"
+    assert r.src_unit == "W" and r.dst_unit == "kW"
+    assert r.family == "power"
+    assert r.factor == 1e-3
+
+
+def test_find_rescale_edge_not_between_different_families():
+    solvers = [
+        _solver("a", "thermal", [("x", "m")], [("y", "W")]),
+        _solver("b", "thermal", [("p", "m")], [("q", "ratio")]),
+    ]
+    nodes = build_nodes(solvers)
+    rescales = find_rescale_edges(nodes)
+    assert not rescales  # output W vs input m — different families
+
+
+def test_find_rescale_edge_skips_exact_match():
+    """Exact-unit chains are already SolverEdges, not rescale edges."""
+    solvers = [
+        _solver("a", "thermal", [("x", "m")], [("y", "W")]),
+        _solver("b", "thermal", [("p", "W")], [("q", "ratio")]),
+    ]
+    nodes = build_nodes(solvers)
+    rescales = find_rescale_edges(nodes)
+    assert not rescales  # exact match → SolverEdge, not RescaleEdge
+
+
+def test_rescale_edges_do_not_enter_runtime_paths():
+    """The key advisory guarantee: enumerate_paths MUST NOT pick up
+    rescale edges. Runtime graph is exact-unit-match only."""
+    solvers = [
+        _solver("a", "thermal", [("x", "m")], [("y", "W")]),
+        _solver("b", "thermal", [("p", "kW")], [("q", "ratio")]),
+    ]
+    nodes = build_nodes(solvers)
+    edges, _ = build_edges(nodes)
+    paths = enumerate_paths(nodes, edges, max_depth=3)
+    # No runtime edge a→b exists (W ≠ kW)
+    assert not edges
+    # But rescale advice exists
+    assert find_rescale_edges(nodes)
+    # And paths do not include the rescale edge
+    for p in paths:
+        assert len(p.nodes) == 1 or edges
+
+
+def test_build_graph_returns_rescale_edges():
+    solvers = [
+        _solver("a", "thermal", [("x", "m")], [("y", "W")]),
+        _solver("b", "thermal", [("p", "kW")], [("q", "ratio")]),
+    ]
+    result = build_graph(solvers)
+    assert "rescale_edges" in result
+    assert len(result["rescale_edges"]) >= 1
+    assert result["stats"].advisory_rescale_edges >= 1
+    assert "power" in result["stats"].advisory_rescale_by_family
+
+
+def test_rescale_edges_deterministic_order():
+    solvers = []
+    for i, u in enumerate(["W", "kW", "mW", "MW"]):
+        solvers.append(_solver(f"s{i}", "thermal", [("in", u)], [("out", u)]))
+    # Between these nodes many rescale edges will form
+    nodes = build_nodes(solvers)
+    r1 = find_rescale_edges(nodes)
+    r2 = find_rescale_edges(nodes)
+    assert r1 == r2
+    # Sort key: (family, src, dst, src_unit, dst_unit)
+    for a, b in zip(r1, r1[1:]):
+        assert (a.family, a.src, a.dst, a.src_unit, a.dst_unit) <= \
+               (b.family, b.src, b.dst, b.src_unit, b.dst_unit)
+
+
+def test_rescale_edge_respects_cell_adjacency():
+    # math ↮ thermal → no rescale edges across non-adjacent cells
+    solvers = [
+        _solver("m", "math", [("x", "m")], [("y", "W")]),
+        _solver("t", "thermal", [("p", "kW")], [("q", "ratio")]),
+    ]
+    nodes = build_nodes(solvers)
+    assert not find_rescale_edges(nodes)
 
 
 def test_primary_output_stable_under_output_order_change():

@@ -50,6 +50,7 @@ Each proposal must cover, at minimum:
 | `expected_coverage_lift` | `{value, uncertainty, rationale?}` |
 | `risk_level` | `low` / `medium` / `high` |
 | `uncertainty_declaration` | what you are *not* sure about. Absence is itself a red flag |
+| `machine_invariants` *(optional)* | list of `{id, expr}` entries for SMT-ready invariants. Today only shape-checked; future gate runs Z3 over these |
 
 If the proposal requires an LLM at runtime, declare it in `llm_dependency.required: true`. A hidden LLM dependency is an automatic reject.
 
@@ -96,6 +97,7 @@ Embedded constants are fine. Cited immutable lookup tables (e.g. ISO standards, 
 11. No secrets / no local absolute paths in the proposal (scans keys + values + canonical JSON)
 12. No hidden LLM dependency (must be declared; whole-body scan)
 13. **Closed-world runtime** for algorithm / table_lookup (no filesystem, network, subprocess, env, clock, randomness, or undeclared LLM)
+14. **Optional `machine_invariants` shape check** — when you provide the optional `machine_invariants` array, each entry's `expr` must be a boolean expression in a small machine-checkable subset: identifiers, numeric literals, comparisons (`<`, `<=`, `==`, `!=`, `>`, `>=`), arithmetic (`+`, `-`, `*`, `/`), `and`/`or`/`not`. No function calls, no attribute access, no subscripts. All identifiers must be declared as `inputs` or `outputs`. Human-readable `invariants` must still accompany any machine form.
 
 Verdicts:
 

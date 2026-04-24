@@ -125,6 +125,60 @@ def test_stop_conditions_cover_x_txt_list():
     assert expected.issubset(set(mod.STOP_CONDITIONS.keys()))
 
 
+# ── GPT R4 advisory: busy-lock + priority ─────────────────────────
+
+def test_is_live_campaign_busy_false_without_pidfile(tmp_path):
+    missing = tmp_path / "no_such_pidfile"
+    assert mod.is_live_campaign_busy(missing) is False
+
+
+def test_is_live_campaign_busy_false_for_dead_pid(tmp_path):
+    p = tmp_path / ".watchdog.pid"
+    p.write_text("99999999", encoding="utf-8")  # vanishingly unlikely to exist
+    assert mod.is_live_campaign_busy(p) is False
+
+
+def test_ci_segment_skipped_when_busy(tmp_path, monkeypatch):
+    monkeypatch.setattr(mod, "is_live_campaign_busy", lambda *_a, **_k: True)
+    r = mod._seg_ci()
+    assert r.get("skipped")
+    assert r["segment"] == "CI"
+    assert "reason" in r
+
+
+def test_full_segment_skipped_when_busy(tmp_path, monkeypatch):
+    monkeypatch.setattr(mod, "is_live_campaign_busy", lambda *_a, **_k: True)
+    r = mod._seg_full()
+    assert r.get("skipped")
+    assert r["segment"] == "FULL"
+
+
+def test_ci_segment_runs_when_busy_but_override_given(tmp_path, monkeypatch):
+    monkeypatch.setattr(mod, "is_live_campaign_busy", lambda *_a, **_k: True)
+    # Stub the heavy pytest call so the test stays fast
+    called = {}
+    def fake_run(argv, **kw):
+        called["argv"] = argv
+        called["env_extra"] = kw.get("env_extra")
+        return {"argv": argv, "returncode": 0, "duration_s": 0.01}
+    monkeypatch.setattr(mod, "_run_subprocess", fake_run)
+    r = mod._seg_ci(allow_when_busy=True)
+    assert not r.get("skipped")
+    assert called["env_extra"]["WAGGLE_HONEYCOMB_SEGMENT"] == "CI"
+    # xdist explicitly disabled to avoid sqlite lock fights
+    assert "no:xdist" in called["env_extra"]["PYTEST_ADDOPTS"]
+
+
+def test_lower_priority_is_best_effort(monkeypatch):
+    # Even if psutil raises, _lower_priority must NOT propagate
+    import psutil
+    class _BadProcess:
+        def nice(self, *args, **kwargs):
+            raise psutil.AccessDenied(99)
+    monkeypatch.setattr(psutil, "Process", lambda *_: _BadProcess())
+    mod._lower_priority()  # must not raise
+
+
 def test_summary_and_open_questions_have_no_secrets(tmp_path, monkeypatch):
     cdir = tmp_path / "cdir"
     monkeypatch.setattr(mod, "CAMPAIGN_DIR", cdir)

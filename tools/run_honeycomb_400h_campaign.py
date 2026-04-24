@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -40,6 +41,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Paths used by the live ui_gauntlet campaign watchdog. When its
+# pidfile points to a live process, the honeycomb harness refuses to
+# run resource-heavy segments (CI, FULL) so the two campaigns don't
+# fight for CPU / disk / Ollama on the same host.
+_LIVE_CAMPAIGN_DIRS = sorted(
+    (ROOT / "docs" / "runs").glob("ui_gauntlet_400h_*"),
+)
+_LIVE_WATCHDOG_PIDFILE = (
+    (_LIVE_CAMPAIGN_DIRS[-1] / ".watchdog.pid")
+    if _LIVE_CAMPAIGN_DIRS else None
+)
 
 CAMPAIGN_DIR = ROOT / "docs" / "runs" / "honeycomb_400h"
 CHECKPOINTS_DIR = CAMPAIGN_DIR / "checkpoints"
@@ -160,16 +173,62 @@ def render_plan_md(plan: list[SegmentPlan], target_hours: float) -> str:
 
 # ── Segment bodies (small / runtime-safe by default) ──────────────
 
-def _run_subprocess(args: list[str], timeout_s: float = 600) -> dict:
+def is_live_campaign_busy(pidfile: Path | None = _LIVE_WATCHDOG_PIDFILE) -> bool:
+    """True iff the ui_gauntlet campaign watchdog is live and owns the
+    port-8002 server right now.
+
+    Rules of thumb:
+    - Pidfile missing → not busy (no live campaign)
+    - Pidfile present but PID dead → not busy
+    - Pidfile present and process matching "campaign_watchdog" alive → busy
+    """
+    if pidfile is None or not pidfile.exists():
+        return False
+    try:
+        import psutil
+        pid = int(pidfile.read_text().strip())
+        if not psutil.pid_exists(pid):
+            return False
+        try:
+            proc = psutil.Process(pid)
+            cmd = " ".join(proc.cmdline() or [])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+        return "campaign_watchdog" in cmd
+    except Exception:
+        return False
+
+
+def _lower_priority() -> None:
+    """Best-effort: lower the honeycomb process's scheduling priority
+    so the live ui_gauntlet campaign gets CPU first. No-op if psutil
+    or the OS refuses."""
+    try:
+        import psutil
+        p = psutil.Process()
+        if os.name == "nt":
+            p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            p.nice(10)
+    except Exception:
+        pass
+
+
+def _run_subprocess(args: list[str], timeout_s: float = 600,
+                    env_extra: dict | None = None) -> dict:
     """Thin wrapper that captures exit status + tail of output. Runs
     one of the Phase 2-8 tools."""
     t0 = time.time()
+    env = os.environ.copy()
+    if env_extra:
+        env.update({k: str(v) for k, v in env_extra.items()})
     try:
         proc = subprocess.run(
             args,
             cwd=str(ROOT),
             capture_output=True, text=True,
             timeout=timeout_s,
+            env=env,
         )
         duration = time.time() - t0
         return {
@@ -214,8 +273,18 @@ def _seg_learning() -> dict:
     return {"segment": "LEARNING", "status": status}
 
 
-def _seg_ci() -> dict:
-    # Fast subset: phase7 + phase8 tests only
+def _seg_ci(allow_when_busy: bool = False) -> dict:
+    # Fast subset: phase7 + phase8 tests only. Refuses to run if the
+    # live ui_gauntlet watchdog is up — the two campaigns would fight
+    # for Ollama, embedding cache, and sqlite locks.
+    if is_live_campaign_busy() and not allow_when_busy:
+        return {
+            "segment": "CI",
+            "skipped": True,
+            "reason": "live ui_gauntlet watchdog is up; refuse to run pytest subset",
+        }
+    # Explicit tmp dir and a marker env var so any test that checks
+    # shared state can see this is a honeycomb-driven run.
     r = _run_subprocess([
         sys.executable, "-m", "pytest", "-q", "--tb=line", "-p", "no:warnings",
         "tests/test_phase7_hologram_news_wire.py",
@@ -226,16 +295,27 @@ def _seg_ci() -> dict:
         "tests/test_propose_solver_gate.py",
         "tests/test_composition_graph.py",
         "tests/test_hex_subdivision_plan.py",
-    ])
+    ], env_extra={"WAGGLE_HONEYCOMB_SEGMENT": "CI",
+                   "PYTEST_ADDOPTS": "-p no:xdist"})
     return {"segment": "CI", "runs": [r]}
 
 
-def _seg_full() -> dict:
-    # Whole suite excluding e2e (port conflict with campaign)
+def _seg_full(allow_when_busy: bool = False) -> dict:
+    # Whole suite excluding e2e (port conflict with campaign). FULL is
+    # heavier than CI and must NEVER run concurrently with the live
+    # campaign unless the operator explicitly allows it.
+    if is_live_campaign_busy() and not allow_when_busy:
+        return {
+            "segment": "FULL",
+            "skipped": True,
+            "reason": "live ui_gauntlet watchdog is up; refuse to run full pytest",
+        }
     r = _run_subprocess([
         sys.executable, "-m", "pytest", "-q", "--tb=line", "-p", "no:warnings",
         "--ignore=tests/e2e",
-    ], timeout_s=1800)
+    ], timeout_s=1800,
+       env_extra={"WAGGLE_HONEYCOMB_SEGMENT": "FULL",
+                   "PYTEST_ADDOPTS": "-p no:xdist"})
     return {"segment": "FULL", "runs": [r]}
 
 
@@ -250,7 +330,7 @@ def _seg_hot_warm_cold(name: str) -> dict:
     }
 
 
-def _run_one_segment(name: str) -> dict:
+def _run_one_segment(name: str, allow_when_busy: bool = False) -> dict:
     try:
         if name == "SOLVER":
             return _seg_solver()
@@ -259,9 +339,9 @@ def _run_one_segment(name: str) -> dict:
         if name == "LEARNING":
             return _seg_learning()
         if name == "CI":
-            return _seg_ci()
+            return _seg_ci(allow_when_busy=allow_when_busy)
         if name == "FULL":
-            return _seg_full()
+            return _seg_full(allow_when_busy=allow_when_busy)
         if name in {"HOT", "WARM", "COLD"}:
             return _seg_hot_warm_cold(name)
         return {"segment": name, "error": "unknown segment"}
@@ -285,18 +365,28 @@ def _append_jsonl(path: Path, obj: dict):
         f.write(json.dumps(obj, default=str) + "\n")
 
 
-def shakedown(target_hours: float) -> dict:
+def shakedown(target_hours: float, allow_when_busy: bool = False) -> dict:
     """Run each in-process segment ONCE to prove wiring. HOT/WARM/COLD
-    are recorded as delegated (not driven). Returns aggregate report."""
+    are recorded as delegated (not driven). Returns aggregate report.
+
+    If the live ui_gauntlet watchdog is up, CI and FULL are skipped
+    unless `allow_when_busy=True`. Priority is lowered for the whole
+    process so the live campaign gets the CPU first.
+    """
     CAMPAIGN_DIR.mkdir(parents=True, exist_ok=True)
     CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
     write_plan(target_hours)
+    _lower_priority()
 
     state = CampaignState(started_at=_utc_now_iso())
+    state.started_at = _utc_now_iso()
+    if is_live_campaign_busy():
+        state.stop_reason = "ui_gauntlet watchdog live; CI/FULL skipped"
+
     results: list[dict] = []
     for name in SEGMENTS:
         t0 = time.time()
-        r = _run_one_segment(name)
+        r = _run_one_segment(name, allow_when_busy=allow_when_busy)
         r["completed_at"] = _utc_now_iso()
         r["duration_s"] = round(time.time() - t0, 2)
         results.append(r)
@@ -404,21 +494,27 @@ def main() -> int:
     ap.add_argument("--confirm-start", action="store_true",
                     help="Required to perform any run that consumes the campaign budget. Without it, only the plan is written.")
     ap.add_argument("--shakedown", action="store_true",
-                    help="Run each segment once in shakedown mode (in-process, no budget). Safe to run alongside the ui_gauntlet campaign.")
+                    help="Run each segment once in shakedown mode (in-process, no budget). CI and FULL are auto-skipped when the live ui_gauntlet watchdog is up.")
+    ap.add_argument("--allow-when-busy", action="store_true",
+                    help="Ignore the live-campaign busy-lock and run CI/FULL anyway. Use only when you've confirmed the host has spare budget.")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     if args.shakedown:
         # Shakedown never touches port 8002 directly; HOT/WARM/COLD are
         # recorded as delegated markers only.
-        out = shakedown(args.target_hours)
+        out = shakedown(args.target_hours, allow_when_busy=args.allow_when_busy)
         if args.json:
             print(json.dumps(out, indent=2, default=str))
         else:
             print(f"shakedown complete — summary: {SUMMARY_PATH.as_posix()}")
             for r in out["results"]:
-                ok = "error" not in r
-                print(f"  {'ok  ' if ok else 'FAIL'}  {r['segment']}")
+                if r.get("skipped"):
+                    print(f"  skip  {r['segment']} ({r.get('reason', '')})")
+                elif "error" in r:
+                    print(f"  FAIL  {r['segment']}")
+                else:
+                    print(f"  ok    {r['segment']}")
         return 0
 
     # No shakedown, no confirm-start → dry-run plan only

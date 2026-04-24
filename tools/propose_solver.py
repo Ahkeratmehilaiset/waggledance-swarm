@@ -11,7 +11,7 @@ Output:
     docs/runs/proposal_gate_<proposal_id>_<utc>.md
     + machine-readable JSON summary
 
-The 13 gates and their verdicts:
+The 14 gates and their verdicts:
   1. Schema validation (solver_proposal.schema.json, Draft-07)
   2. Cell exists (one of 8 hex-topology cells)
   3. Hash duplicate check (strict solver_hash against existing axioms)
@@ -29,6 +29,11 @@ The 13 gates and their verdicts:
  13. Closed-world runtime dependency for algorithm / table_lookup
       (no network, subprocess, filesystem, env, clock, randomness, or
       LLM tokens unless llm_dependency.required=true)
+ 14. machine_invariants shape check (optional). When the optional
+      `machine_invariants` field is present, validate each entry's
+      expr as a boolean in the machine-checkable subset (no calls,
+      no attr, no subscript; all identifiers declared as inputs or
+      outputs). Future SMT gate will run Z3 over exactly this field.
 
 Verdict (the overall result):
   REJECT_SCHEMA | REJECT_DUPLICATE | REJECT_CONTRADICTION |
@@ -466,6 +471,100 @@ _CLOSED_WORLD_FORBIDDEN = (
 )
 
 
+_MACHINE_INV_SAFE_NODES = (
+    ast.Expression, ast.BoolOp, ast.BinOp, ast.UnaryOp, ast.Compare,
+    ast.Name, ast.Constant, ast.Load,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.USub, ast.UAdd, ast.Not, ast.And, ast.Or,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+)
+
+
+def _machine_inv_shape_ok(expr: str) -> tuple[bool, str]:
+    """Return (ok, reason) validating that `expr` is in the machine-
+    checkable subset: booleans over declared names, numeric literals,
+    arithmetic, comparisons, and/or/not. No calls, no attribute access,
+    no subscripts — this keeps the door open for a future Z3 pass over
+    exactly this structure."""
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError as e:
+        return False, f"parse error: {e.msg}"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            return False, "function call forbidden"
+        if isinstance(node, ast.Attribute):
+            return False, "attribute access forbidden"
+        if isinstance(node, ast.Subscript):
+            return False, "subscript forbidden"
+        if not isinstance(node, _MACHINE_INV_SAFE_NODES):
+            return False, f"disallowed AST node: {type(node).__name__}"
+    return True, ""
+
+
+def gate_machine_invariants_shape(proposal: dict) -> dict:
+    """Optional shape check for `machine_invariants`. When present the
+    gate verifies:
+      - each entry's id is unique within the proposal
+      - each entry's expr parses cleanly as a boolean in the
+        machine-checkable subset (no calls, no attrs, no subscripts)
+      - every identifier referenced in expr is in the declared input
+        or output names (no free variables)
+
+    A future SMT-based gate will run Z3 over exactly these expressions;
+    today this check just prevents invariants that couldn't be handed
+    to an SMT layer later.
+
+    If `machine_invariants` is missing or empty, the gate is a no-op.
+    """
+    items = proposal.get("machine_invariants") or []
+    if not items:
+        return {"gate": "machine_invariants_shape", "ok": True,
+                "skipped": True, "errors": []}
+
+    declared_names: set[str] = set()
+    for i in proposal.get("inputs", []) or []:
+        n = i.get("name")
+        if n:
+            declared_names.add(n)
+    for o in proposal.get("outputs", []) or []:
+        n = o.get("name")
+        if n:
+            declared_names.add(n)
+
+    seen_ids: set[str] = set()
+    errors: list[dict] = []
+    for inv in items:
+        inv_id = inv.get("id", "")
+        expr = inv.get("expr", "")
+        if not inv_id or not expr:
+            errors.append({"id": inv_id, "message": "id and expr required"})
+            continue
+        if inv_id in seen_ids:
+            errors.append({"id": inv_id, "message": "duplicate id"})
+            continue
+        seen_ids.add(inv_id)
+        ok, reason = _machine_inv_shape_ok(expr)
+        if not ok:
+            errors.append({"id": inv_id, "expr": expr, "message": reason})
+            continue
+        # Check every identifier in expr is declared
+        try:
+            tree = ast.parse(expr, mode="eval")
+            used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        except Exception:
+            used = set()
+        free = used - declared_names
+        if free:
+            errors.append({
+                "id": inv_id, "expr": expr,
+                "message": "undeclared identifiers",
+                "free": sorted(free),
+            })
+    return {"gate": "machine_invariants_shape", "ok": not errors,
+            "errors": errors, "skipped": False}
+
+
 def gate_closed_world(proposal: dict) -> dict:
     """For algorithm / table_lookup bodies, forbid tokens that imply
     any side-channel input at runtime (network, subprocess, filesystem
@@ -709,7 +808,7 @@ def decide_verdict(gate_results: list[dict], proposal: dict,
     for g in ("io_types", "deterministic_replay", "unit_consistency",
               "invariants_present", "tests_present", "latency_budget",
               "no_secrets_no_paths", "llm_dependency",
-              "closed_world"):
+              "closed_world", "machine_invariants_shape"):
         if g in by_gate and not by_gate[g]["ok"]:
             return V_REJECT_SCHEMA
 
@@ -756,14 +855,15 @@ def evaluate_proposal(
         ordered_gates.append(gate_no_secrets_no_paths(proposal))
         ordered_gates.append(gate_llm_dependency(proposal))
         ordered_gates.append(gate_closed_world(proposal))
+        ordered_gates.append(gate_machine_invariants_shape(proposal))
     else:
-        # Synthesize skipped entries so callers always see all 13 gate names
+        # Synthesize skipped entries so callers always see all 14 gate names
         for name in ("cell_exists", "hash_duplicate", "io_types",
                      "deterministic_replay", "unit_consistency",
                      "contradiction", "invariants_present",
                      "tests_present", "latency_budget",
                      "no_secrets_no_paths", "llm_dependency",
-                     "closed_world"):
+                     "closed_world", "machine_invariants_shape"):
             ordered_gates.append({"gate": name, "ok": False,
                                   "skipped": True,
                                   "errors": [{"message": "skipped due to schema failure"}]})

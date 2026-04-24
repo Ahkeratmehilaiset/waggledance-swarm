@@ -137,6 +137,38 @@ def _rendered_report(graph: dict, scan_info: dict) -> str:
     else:
         lines.append("*(none)*")
 
+    # Advisory rescale edges — NOT runtime-valid. Surfaced only as
+    # suggestions to the human reviewer.
+    rescales = graph.get("rescale_edges") or []
+    lines.extend([
+        "",
+        "## Advisory rescale-possible edges (NOT runtime-valid)",
+        "",
+        "These edges share a unit family (power, energy, length, …)",
+        "but differ in unit (e.g. W ↔ kW, factor 0.001). They would",
+        "chain if an explicit rescale step were inserted. The runtime",
+        "router never follows these. They are suggestions only.",
+        "",
+        f"- **Total:** {stats.advisory_rescale_edges}",
+    ])
+    if stats.advisory_rescale_by_family:
+        lines.append("- By family:")
+        for fam, n in stats.advisory_rescale_by_family.items():
+            lines.append(f"  - `{fam}`: {n}")
+    lines.append("")
+    if rescales:
+        lines.extend([
+            "| family | src | src_unit | dst | dst_unit | factor |",
+            "|---|---|---|---|---|---|",
+        ])
+        for r in rescales[:20]:
+            lines.append(
+                f"| `{r.family}` | `{r.src}` | `{r.src_unit}` | "
+                f"`{r.dst}` | `{r.dst_unit}` | {r.factor:g} |"
+            )
+        if len(rescales) > 20:
+            lines.append(f"| *… {len(rescales) - 20} more* | | | | | |")
+
     lines.append("")
     return "\n".join(lines)
 
@@ -164,6 +196,8 @@ def run(axioms_dir: Path = AXIOMS_DIR,
             "paths_depth2": stats.paths_depth2,
             "paths_depth3": stats.paths_depth3,
             "paths_depth4": stats.paths_depth4,
+            "advisory_rescale_edges": stats.advisory_rescale_edges,
+            "advisory_rescale_by_family": stats.advisory_rescale_by_family,
         },
     }
 

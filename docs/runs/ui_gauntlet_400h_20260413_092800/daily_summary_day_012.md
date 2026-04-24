@@ -1,31 +1,31 @@
 # Daily Summary — Day 012 (2026-04-24)
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-24T06:06:28+00:00
+**Generated:** 2026-04-24T06:36:32+00:00
 
 ## Totals this day
 
 - Green hours: 0.00h
 - Cumulative: 151.10h / 400h
 - Segments completed: 0
-- HOT queries: 2171
-- Incidents: 30
+- HOT queries: 2325
+- Incidents: 38
 
 ## HOT query latency
 
-- Responded: 2109 / 2171
-- Avg latency (responded >100ms): 2954.0 ms
-- p95: 3666 ms
+- Responded: 2245 / 2325
+- Avg latency (responded >100ms): 2949.0 ms
+- p95: 3665 ms
 
 ### Per-bucket send/respond
 
 | bucket | total | responded | rate |
 |---|---|---|---|
-| adversarial | 324 | 314 | 97% |
+| adversarial | 405 | 394 | 97% |
 | ambiguous | 345 | 345 | 100% |
-| burst | 168 | 164 | 98% |
-| edge_case | 168 | 120 | 71% |
-| multilingual | 305 | 305 | 100% |
+| burst | 184 | 180 | 98% |
+| edge_case | 210 | 145 | 69% |
+| multilingual | 320 | 320 | 100% |
 | normal | 561 | 561 | 100% |
 | structured | 300 | 300 | 100% |
 
@@ -33,13 +33,13 @@
 
 | category | count |
 |---|---|
-| health_failure | 16 |
-| cycle_crash_recovery | 4 |
+| health_failure | 18 |
+| cycle_crash_recovery | 6 |
+| auth_recovery_failure | 5 |
 | chat_response_failure | 3 |
-| auth_recovery_failure | 3 |
+| chat_send_failure | 3 |
 | backend_unhealthy | 1 |
 | cookie_failure | 1 |
-| chat_send_failure | 1 |
 | context_recycle_failure | 1 |
 
 ## Safety gates (zero tolerance per x.txt)

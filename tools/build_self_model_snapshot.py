@@ -49,6 +49,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from waggledance.core.magma import self_model as sm  # noqa: E402
+from waggledance.core.magma import reflective_workspace as rw  # noqa: E402
 
 DEFAULT_OUT_ROOT = ROOT / "docs" / "runs" / "self_model"
 DEFAULT_HISTORY = DEFAULT_OUT_ROOT / "HISTORY.jsonl"
@@ -192,21 +193,60 @@ def build_snapshot(
         for c in sorted_log[:3]
     )
 
-    # Blind spots — placeholder list here; full detector in
-    # reflective_workspace.py (Commit 3). For Commit 2 we surface
-    # the meta_curiosity / scorecard / attention_focus contract;
-    # blind_spots will populate from the workspace integration in
-    # Commit 3.
-    blind_spots: tuple[sm.BlindSpot, ...] = ()
+    # Blind spots: detector-grounded via reflective_workspace.
+    expected_domains = rw.default_expected_domains(list(_CELLS))
+    cell_states = {c.cell_id: c.state for c in cells}
+    artifact_signals = {
+        cell_id: cell_id in cell_manifests for cell_id in _CELLS
+    }
+    curiosity_per_cell = {
+        c: cell_stats[c]["all_clusters"] for c in _CELLS
+    }
+    blind_spots = tuple(rw.build_blind_spots(
+        expected_domains=expected_domains,
+        cell_states=cell_states,
+        artifact_signals=artifact_signals,
+        curiosity_per_domain=curiosity_per_cell,
+    ))
 
-    # Workspace tensions — same as blind_spots; full surface in Commit 3.
+    # Workspace tensions — mechanical heuristic over scorecard + cells.
+    # Previous tensions (if available) feed lifecycle resolution.
+    prev_tensions: list[sm.WorkspaceTension] = []
+    if previous_snapshot:
+        for t in previous_snapshot.get("workspace_tensions") or []:
+            prev_tensions.append(sm.WorkspaceTension(
+                tension_id=t.get("tension_id", ""),
+                type=t.get("type", ""),
+                claim=t.get("claim", ""),
+                observation=t.get("observation", ""),
+                severity=t.get("severity", "low"),
+                resolution_path=t.get("resolution_path", "requires_human_review"),
+                lifecycle_status=t.get("lifecycle_status", "new"),
+                evidence_refs=tuple(t.get("evidence_refs") or []),
+            ))
+
+    # Scorecard — v0.1 formulas per spec §B7. tensions still empty
+    # at this point so the workspace_readiness factor can be honest.
     workspace_tensions: tuple[sm.WorkspaceTension, ...] = ()
-
-    # Scorecard — v0.1 formulas per spec §B7.
     scorecard = _build_scorecard(
         curiosity_log, cells, blind_spots, workspace_tensions,
         attention_focus, previous_snapshot, history,
     )
+
+    # Now that scorecard exists, detect tensions mechanically and
+    # apply lifecycle resolution against the previous snapshot.
+    raw_tensions = rw.detect_tensions(
+        scorecard=list(scorecard),
+        cells=cells,
+        previous_tensions=prev_tensions,
+    )
+    if prev_tensions:
+        tagged_tensions, _resolved_ids = rw.resolve_tensions_lifecycle(
+            current=raw_tensions, previous=prev_tensions,
+        )
+        workspace_tensions = tuple(tagged_tensions)
+    else:
+        workspace_tensions = tuple(raw_tensions)
 
     # Meta-curiosity — stronger derivation when data permits.
     meta_curiosity = _derive_meta_curiosity(

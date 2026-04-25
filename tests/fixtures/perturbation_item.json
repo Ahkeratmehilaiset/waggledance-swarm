@@ -1,0 +1,10 @@
+{
+  "curiosity_id": "perturb_test_001",
+  "cluster_id": "perturb_test",
+  "candidate_cell": "thermal",
+  "expected_value": 0.5,
+  "suspected_gap_type": "improvement_opportunity",
+  "count": 1,
+  "fallback_rate": 0.5,
+  "evidence_strength": "medium"
+}

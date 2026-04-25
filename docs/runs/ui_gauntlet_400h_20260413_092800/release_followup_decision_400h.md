@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-25T16:12:09+00:00
+**Generated:** 2026-04-25T16:42:13+00:00
 **Main ref:** `main~30`
 **Total green:** 371.33h / 400h (MID-CAMPAIGN)
 
@@ -15,11 +15,12 @@
 - `waggledance/core/magma/self_model.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (88 files)
+### TEST_HARNESS (91 files)
 
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
 - `docs/runs/phase8_5_curiosity_session_state.json`
+- `docs/runs/phase8_5_dream_session_state.json`
 - `docs/runs/phase8_5_self_model_session_state.json`
 - `docs/runs/phase8_capability_report.md`
 - `docs/runs/phase8_ci_baseline.md`
@@ -46,8 +47,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_findings.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
-- … and 58 more
+- … and 61 more
 
 ### DOCS_NARRATIVE (33 files)
 

@@ -34,10 +34,10 @@
   "replay_manifest_sha256": null,
   "completed_subparts": [
     "C.1: branch + state.json bootstrap + consumed_hook_contracts + proposal_gate_capabilities",
-    "C.2: dream_curriculum.py planner + 18 tests"
+    "C.2: dream_curriculum.py planner + 18 tests",
+    "C.3: dream request packs + proposal ingestion + collapse + 18 tests"
   ],
   "remaining_subparts": [
-    "C.3: dream request packs + proposal ingestion + collapse + 18 tests",
     "C.4: shadow graph + replay harness + 14 tests",
     "C.5: dream_meta_proposal + docs + 9 tests + license update",
     "C.6: 4 architecture markdowns",
@@ -59,7 +59,7 @@
   ],
   "blocked": false,
   "blocked_reason": null,
-  "next_recommended_action": "C.3: implement dream request packs + proposal ingestion + collapse + 18 tests",
+  "next_recommended_action": "C.4: implement shadow graph + replay harness + 14 tests",
   "real_data_attempt_status": "Session B outputs available at docs/runs/self_model/c6b181835621/ — will pin those plus Session A curiosity outputs",
   "fixture_fallback_status": "not used as primary",
   "self_learning_demonstration": "real_plus_fixture",

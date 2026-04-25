@@ -8,7 +8,9 @@
     "B.1: branch + state.json bootstrap",
     "B.2: snapshot core + 17 tests (feat) \u2014 landed",
     "B.3: workspace + tensions + 19 tests (feat) \u2014 landed (spec min 16)",
-    "B.4: calibration + continuity + 21 tests (feat) \u2014 landed (spec min 12)"
+    "B.4: calibration + continuity + 21 tests (feat) \u2014 landed (spec min 12)",
+    "B.5: 4 architecture markdowns (docs) \u2014 landed",
+    "B.6: BUSL Change Date 2030-03-18 \u2192 2030-03-19 \u2014 landed in B.2 amend per spec same-commit rule"
   ],
   "constraints": {
     "campaign_safe": true,
@@ -22,8 +24,8 @@
   },
   "consumed_hook_contracts": [],
   "fixture_fallback_status": "not used",
-  "latest_green_commit": "pending B.2 commit",
-  "next_recommended_action": "B.5: 4 architecture markdown docs",
+  "latest_green_commit": "pending B.5 commit",
+  "next_recommended_action": "Session C (dream curriculum) or R7.5 chaos. Both wait for campaign end.",
   "open_decisions": [
     "Filename for snapshot module: chose waggledance/core/magma/self_model.py (no collision detected).",
     "Whether to read live campaign hot_results directly: NO. Self-model reads only digested upstream artifacts (curiosity outputs, manifests, reports) per spec, not raw campaign rows."
@@ -208,10 +210,7 @@
     }
   ],
   "real_data_attempt_status": "session A outputs found at docs/runs/curiosity/6b766421f410/ \u2014 attempting real-data first",
-  "remaining_subparts": [
-    "B.5: docs (4 markdowns)",
-    "B.6: BUSL Change Date 2030-03-18 \u2192 2030-03-19"
-  ],
+  "remaining_subparts": [],
   "schema_version": 1,
   "scope_excluded": [
     "gap_miner work (Session A scope)",

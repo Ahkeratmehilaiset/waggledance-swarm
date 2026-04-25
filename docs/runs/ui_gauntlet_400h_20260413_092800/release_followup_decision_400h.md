@@ -1,9 +1,9 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-25T04:10:41+00:00
+**Generated:** 2026-04-25T04:40:45+00:00
 **Main ref:** `main~30`
-**Total green:** 343.32h / 400h (MID-CAMPAIGN)
+**Total green:** 351.32h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
@@ -13,10 +13,11 @@
 - `waggledance/core/learning/solver_hash.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (69 files)
+### TEST_HARNESS (75 files)
 
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
+- `docs/runs/phase8_5_curiosity_session_state.json`
 - `docs/runs/phase8_capability_report.md`
 - `docs/runs/phase8_ci_baseline.md`
 - `docs/runs/phase8_validation.md`
@@ -44,13 +45,13 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_059.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/segment_metrics_060.json`
-- … and 39 more
+- … and 45 more
 
-### DOCS_NARRATIVE (27 files)
+### DOCS_NARRATIVE (28 files)
 
 - `CHANGELOG.md`
 - `README.md`
+- `docs/architecture/GAP_MINER_VISION.md`
 - `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`
 - `docs/architecture/MAGMA_FAISS_SCALING.md`
 - `docs/architecture/MAGMA_VECTOR_STAGE2.md`
@@ -83,12 +84,13 @@
 ### VERSION (0 files)
 
 
-### OTHER (12 files)
+### OTHER (13 files)
 
 - `schemas/solver_proposal.schema.json`
 - `tools/backfill_axioms_to_hex.py`
 - `tools/campaign_watchdog.py`
 - `tools/cell_manifest.py`
+- `tools/gap_miner.py`
 - `tools/hex_subdivision_plan.py`
 - `tools/migrate_to_vector_root.py`
 - `tools/phase8_capability_report.py`
@@ -100,7 +102,7 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (343.3h)
+- Campaign complete (>= 400h): no (351.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

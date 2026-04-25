@@ -119,11 +119,28 @@ EVIDENCE_MEDIUM_MIN = 3
 class PinnedArtifact:
     """One artifact captured at session start. `bytes` and `lines`
     are byte-counts/line-counts read at pin time so two runs against
-    the same pin produce byte-identical output."""
+    the same pin produce byte-identical output.
+
+    Per x.txt §ARTIFACT PINNING (mandatory fields):
+      - sha256_first_4096 — sha256 over the first 4096 bytes
+      - sha256_last_4096  — sha256 over the last 4096 bytes within
+                            the pinned size window
+      - sha256_full       — emitted in addition for files smaller
+                            than 8192 bytes (whole-file hash)
+      - mtime_epoch       — file's mtime at pin time (informational)
+
+    The legacy `sha256` field is kept as an alias for
+    sha256_full / first+last combined so older state.json files
+    can still be reloaded.
+    """
     relpath: str
     bytes: int
     lines: int | None = None
     sha256: str | None = None
+    sha256_first_4096: str | None = None
+    sha256_last_4096: str | None = None
+    sha256_full: str | None = None
+    mtime_epoch: float | None = None
 
 
 @dataclass(frozen=True)
@@ -192,6 +209,26 @@ def _sha256_file(path: Path, max_bytes: int | None = None) -> str:
                     break
                 h.update(chunk)
                 remaining -= len(chunk)
+    return h.hexdigest()
+
+
+def _sha256_first_n(path: Path, n: int) -> str:
+    """sha256 over the first n bytes."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read(n))
+    return h.hexdigest()
+
+
+def _sha256_last_n_within(path: Path, n: int, pinned_size: int) -> str:
+    """sha256 over the last n bytes WITHIN the pinned size window.
+    Critical for the integrity check: even if the file grew, we
+    re-hash exactly the bytes that were originally pinned."""
+    start = max(0, pinned_size - n)
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        f.seek(start)
+        h.update(f.read(min(n, pinned_size - start)))
     return h.hexdigest()
 
 
@@ -356,7 +393,9 @@ def pin_artifacts(campaign_dir: Path | None,
     pinned: list[PinnedArtifact] = []
     for p in paths:
         try:
-            sz = p.stat().st_size
+            stat = p.stat()
+            sz = stat.st_size
+            mtime = stat.st_mtime
         except OSError:
             continue
         line_count: int | None = None
@@ -365,18 +404,39 @@ def pin_artifacts(campaign_dir: Path | None,
             with open(p, "rb") as f:
                 for _ in f:
                     line_count += 1
-        sha = _sha256_file(p, max_bytes=sz)
+
+        # Per x.txt §ARTIFACT PINNING: chunked hashes for speed +
+        # tamper-detection. Full hash kept too for back-compat and
+        # so existing state.json readers still get a single sha to
+        # check.
+        if sz < 8192:
+            full = _sha256_file(p, max_bytes=sz)
+            first = full
+            last = full
+        else:
+            first = _sha256_first_n(p, 4096)
+            last = _sha256_last_n_within(p, 4096, sz)
+            full = _sha256_file(p, max_bytes=sz)
+
         try:
             relpath = p.relative_to(root).as_posix()
         except ValueError:
             relpath = p.as_posix()
         pinned.append(PinnedArtifact(
-            relpath=relpath, bytes=sz, lines=line_count, sha256=sha,
+            relpath=relpath, bytes=sz, lines=line_count,
+            sha256=full,                      # legacy alias
+            sha256_first_4096=first,
+            sha256_last_4096=last,
+            sha256_full=full,
+            mtime_epoch=mtime,
         ))
 
     payload = [
-        {"path": a.relpath, "bytes": a.bytes,
-         "lines": a.lines, "sha256": a.sha256}
+        {"path": a.relpath, "bytes": a.bytes, "lines": a.lines,
+         "sha256_first_4096": a.sha256_first_4096,
+         "sha256_last_4096": a.sha256_last_4096,
+         "sha256_full": a.sha256_full,
+         "mtime_epoch": a.mtime_epoch}
         for a in pinned
     ]
     pin_hash = "sha256:" + hashlib.sha256(
@@ -395,6 +455,89 @@ def pin_artifacts(campaign_dir: Path | None,
         pinned_at=pinned_at,
         pin_hash=pin_hash,
     )
+
+
+def verify_pin_integrity(pinned: PinnedSet,
+                            root: Path = ROOT) -> dict:
+    """Per x.txt §PINNED ARTIFACT INTEGRITY CHECK: re-hash the
+    pinned window for each artifact and compare with the recorded
+    digests. Append-only growth past the pinned size is OK; mutation
+    of the pinned bytes is a critical failure.
+
+    Returns:
+      {
+        "ok": bool,
+        "checked_at": iso8601,
+        "artifacts": [
+          {"path": ..., "status": "ok"|"missing"|"shrunk"|"first_drift"|"last_drift",
+           "old_bytes": ..., "new_bytes": ...},
+          ...
+        ],
+        "critical_failure": str | null,
+      }
+    """
+    results: list[dict] = []
+    critical: str | None = None
+    for a in pinned.artifacts:
+        ap = root / a.relpath
+        if not ap.exists():
+            results.append({"path": a.relpath, "status": "missing"})
+            critical = critical or f"missing: {a.relpath}"
+            continue
+        try:
+            new_size = ap.stat().st_size
+        except OSError:
+            results.append({"path": a.relpath, "status": "missing"})
+            critical = critical or f"stat-failed: {a.relpath}"
+            continue
+        if new_size < a.bytes:
+            results.append({
+                "path": a.relpath, "status": "shrunk",
+                "old_bytes": a.bytes, "new_bytes": new_size,
+            })
+            critical = critical or f"shrunk: {a.relpath}"
+            continue
+
+        # Re-hash the pinned window
+        if a.bytes < 8192:
+            full_now = _sha256_file(ap, max_bytes=a.bytes)
+            first_now = full_now
+            last_now = full_now
+        else:
+            first_now = _sha256_first_n(ap, 4096)
+            last_now = _sha256_last_n_within(ap, 4096, a.bytes)
+            full_now = None  # full hash is expensive; skip unless needed
+
+        if a.sha256_first_4096 and first_now != a.sha256_first_4096:
+            results.append({
+                "path": a.relpath, "status": "first_drift",
+                "old_first_sha": a.sha256_first_4096,
+                "new_first_sha": first_now,
+            })
+            critical = critical or f"first-4KB-drift: {a.relpath}"
+            continue
+        if a.sha256_last_4096 and last_now != a.sha256_last_4096:
+            results.append({
+                "path": a.relpath, "status": "last_drift",
+                "old_last_sha": a.sha256_last_4096,
+                "new_last_sha": last_now,
+            })
+            critical = critical or f"last-4KB-drift: {a.relpath}"
+            continue
+
+        results.append({
+            "path": a.relpath, "status": "ok",
+            "old_bytes": a.bytes, "new_bytes": new_size,
+            "growth_bytes": new_size - a.bytes,
+        })
+
+    return {
+        "ok": critical is None,
+        "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "artifacts": results,
+        "critical_failure": critical,
+        "pinned_artifact_manifest_sha256": pinned.pin_hash,
+    }
 
 
 # ── Artifact reading (under pin) ───────────────────────────────────

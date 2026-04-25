@@ -292,6 +292,100 @@ def test_data_provenance_json_byte_identical(tmp_path, monkeypatch):
 
 # ── 12. correction record minimal shape ──────────────────────────
 
+def test_calibration_evidence_generated_for_dimensions(tmp_path, monkeypatch):
+    """Acc #8: calibration_evidence exists for at least one dimension
+    when data permits. After acceptance gap fix, all 7 dims carry
+    a CalibrationEvidence (with status='ok' or 'mismatch' or
+    'unavailable')."""
+    fix = tmp_path / "fix"; fix.mkdir()
+    (fix / "curiosity_log.jsonl").write_text(
+        "\n".join(json.dumps({
+            "curiosity_id": f"c{i}", "candidate_cell": "thermal",
+            "estimated_value": 5.0, "suspected_gap_type": "missing_solver",
+            "count": 5, "fallback_rate": 0.6,
+        }) for i in range(8)) + "\n", encoding="utf-8")
+    pinned = [{
+        "path": "curiosity_log.jsonl",
+        "size_bytes": (fix / "curiosity_log.jsonl").stat().st_size,
+        "sha256_full": "x" * 64, "sha256_first_4096_bytes": "x" * 64,
+        "sha256_last_4096_bytes": "x" * 64, "mtime_epoch": 0.0, "lines": 8,
+    }]
+    monkeypatch.setattr(tool, "ROOT", fix)
+    snap, _ = tool.build_snapshot(
+        pin_hash="sha256:f", pinned_inputs=pinned,
+        branch_name="t", base_commit_hash="abc",
+    )
+    has_evidence = sum(1 for d in snap.scorecard if d.calibration_evidence is not None)
+    assert has_evidence >= 1
+
+
+def test_calibration_corrections_emitted_when_mismatch(tmp_path, monkeypatch):
+    """Acc #9: calibration_corrections.jsonl is appended when
+    abs(prior - evidence) > drift threshold."""
+    # Build a snapshot, then call _emit_calibration_corrections directly
+    fix = tmp_path / "fix"; fix.mkdir()
+    (fix / "curiosity_log.jsonl").write_text(
+        "\n".join(json.dumps({
+            "curiosity_id": f"c{i}", "candidate_cell": "thermal",
+            "estimated_value": 5.0, "suspected_gap_type": "missing_solver",
+            "count": 5, "fallback_rate": 0.6,
+        }) for i in range(8)) + "\n", encoding="utf-8")
+    pinned = [{
+        "path": "curiosity_log.jsonl",
+        "size_bytes": (fix / "curiosity_log.jsonl").stat().st_size,
+        "sha256_full": "x" * 64, "sha256_first_4096_bytes": "x" * 64,
+        "sha256_last_4096_bytes": "x" * 64, "mtime_epoch": 0.0, "lines": 8,
+    }]
+    monkeypatch.setattr(tool, "ROOT", fix)
+    snap, _ = tool.build_snapshot(
+        pin_hash="sha256:f", pinned_inputs=pinned,
+        branch_name="t", base_commit_hash="abc",
+    )
+    corrections_path = tmp_path / "corrections.jsonl"
+    n = tool._emit_calibration_corrections(
+        scorecard=snap.scorecard,
+        corrections_path=corrections_path,
+        previous_corrections=[],
+    )
+    # At least one dim should mismatch (unified_workspace_readiness=0.5
+    # vs evidence implies 1.0 since curiosity+attention are present)
+    assert n >= 1
+    assert corrections_path.exists()
+    # And value_layer_readiness must NEVER be in the corrections (per
+    # spec §B3 exclusion).
+    rows = sm.read_corrections(corrections_path)
+    for r in rows:
+        assert r["dimension"] != "value_layer_readiness"
+
+
+def test_value_layer_readiness_excluded_from_auto_correction(tmp_path):
+    """Spec §B3: value_layer_readiness MUST NOT generate a correction
+    record even if calibration_evidence diverges."""
+    # Build a fake scorecard with a deliberate mismatch on
+    # value_layer_readiness
+    dim = sm.ScorecardDimension(
+        name="value_layer_readiness",
+        score=0.1,
+        evidence=("phase_8_5_intentional_floor",),
+        calibration_evidence=sm.CalibrationEvidence(
+            dimension="value_layer_readiness",
+            evidence_implied_score=0.9,  # huge mismatch
+            evidence_refs=("synthetic",),
+            calibration_status="mismatch",
+        ),
+        uncertainty="high",
+        why_it_matters="Affects: x, Improves when: y, Degrades when: z.",
+    )
+    corrections_path = tmp_path / "corrections.jsonl"
+    n = tool._emit_calibration_corrections(
+        scorecard=(dim,),
+        corrections_path=corrections_path,
+        previous_corrections=[],
+    )
+    assert n == 0
+    assert not corrections_path.exists() or corrections_path.read_text("utf-8").strip() == ""
+
+
 def test_correction_record_round_trip(tmp_path):
     p = tmp_path / "calibration_corrections.jsonl"
     record = {

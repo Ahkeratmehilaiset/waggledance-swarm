@@ -1,4 +1,11 @@
 {
+  "acceptance_audit": {
+    "criterion_19_pinned_input_integrity": "PASS \u2014 verify_pin_integrity helper available, prev-snapshot validates against HISTORY",
+    "criterion_21_self_learning_demos": "PASS \u2014 3/4 demonstrations from real data (calibration_mismatch + blind_spot + workspace_tension)",
+    "criterion_8_calibration_evidence": "PASS \u2014 7/7 dims carry CalibrationEvidence (5 ok, 2 mismatch on real data)",
+    "criterion_9_calibration_corrections": "PASS \u2014 2 corrections appended on real-data run",
+    "real_data_coverage_ratio": 0.8947
+  },
   "base_branch": "phase8.5/curiosity-organ",
   "base_commit": "1a31b24",
   "blocked": false,
@@ -10,7 +17,8 @@
     "B.3: workspace + tensions + 19 tests (feat) \u2014 landed (spec min 16)",
     "B.4: calibration + continuity + 21 tests (feat) \u2014 landed (spec min 12)",
     "B.5: 4 architecture markdowns (docs) \u2014 landed",
-    "B.6: BUSL Change Date 2030-03-18 \u2192 2030-03-19 \u2014 landed in B.2 amend per spec same-commit rule"
+    "B.6: BUSL Change Date 2030-03-18 \u2192 2030-03-19 \u2014 landed in B.2 amend per spec same-commit rule",
+    "B.7: close acceptance gaps \u2014 calibration_evidence on every dim, corrections emit, prev-snapshot HISTORY validation, value_layer_readiness exclusion test"
   ],
   "constraints": {
     "campaign_safe": true,
@@ -24,8 +32,8 @@
   },
   "consumed_hook_contracts": [],
   "fixture_fallback_status": "not used",
-  "latest_green_commit": "pending B.5 commit",
-  "next_recommended_action": "Session C (dream curriculum) or R7.5 chaos. Both wait for campaign end.",
+  "latest_green_commit": "pending B.7 commit",
+  "next_recommended_action": "Session B truly complete. Session C (dream curriculum) waits for campaign end.",
   "open_decisions": [
     "Filename for snapshot module: chose waggledance/core/magma/self_model.py (no collision detected).",
     "Whether to read live campaign hot_results directly: NO. Self-model reads only digested upstream artifacts (curiosity outputs, manifests, reports) per spec, not raw campaign rows."

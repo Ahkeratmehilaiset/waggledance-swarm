@@ -232,6 +232,12 @@ def build_snapshot(
         curiosity_log, cells, blind_spots, workspace_tensions,
         attention_focus, previous_snapshot, history,
     )
+    # Derive calibration evidence for each dimension where artifact
+    # data implies a score different enough to surface (acc #8, #9).
+    scorecard = _attach_calibration_evidence(
+        scorecard, curiosity_log, cells, blind_spots, attention_focus,
+        previous_snapshot, history,
+    )
 
     # Now that scorecard exists, detect tensions mechanically and
     # apply lifecycle resolution against the previous snapshot.
@@ -546,6 +552,170 @@ def _build_scorecard(
             calibration_status="unavailable",
         ),
     ])
+
+
+# ── Calibration evidence ──────────────────────────────────────────
+
+def _attach_calibration_evidence(
+    scorecard: tuple[sm.ScorecardDimension, ...],
+    curiosity_log: list[dict],
+    cells: list[sm.CellClassification],
+    blind_spots: tuple[sm.BlindSpot, ...],
+    attention_focus: tuple[sm.AttentionItem, ...],
+    previous_snapshot: dict | None,
+    history: list[dict] | None,
+) -> tuple[sm.ScorecardDimension, ...]:
+    """For each dimension, compute an evidence-implied score from
+    artifact data when possible. value_layer_readiness is excluded
+    from auto-correction per spec §B3."""
+    n_curiosity = len(curiosity_log)
+    n_blind_spots = len(blind_spots)
+    n_attention = len(attention_focus)
+    n_history = len(history) if history else 0
+    expected_domains = max(8, 1)  # 8 hex cells
+
+    out: list[sm.ScorecardDimension] = []
+    for dim in scorecard:
+        ev_score, refs, status, notes = _evidence_for_dim(
+            dim.name, n_curiosity, n_blind_spots, n_attention,
+            n_history, expected_domains, cells, previous_snapshot,
+        )
+        if ev_score is None:
+            cal = sm.CalibrationEvidence(
+                dimension=dim.name,
+                evidence_implied_score=None,
+                evidence_refs=tuple(refs),
+                calibration_status="unavailable",
+                notes=notes,
+            )
+        else:
+            mismatch = abs(dim.score - ev_score) >= sm.CALIBRATION_DRIFT_THRESHOLD
+            cal = sm.CalibrationEvidence(
+                dimension=dim.name,
+                evidence_implied_score=round(ev_score, 4),
+                evidence_refs=tuple(refs),
+                calibration_status="mismatch" if mismatch else "ok",
+                notes=notes,
+            )
+        out.append(sm.ScorecardDimension(
+            name=dim.name, score=dim.score, evidence=dim.evidence,
+            calibration_evidence=cal,
+            uncertainty=dim.uncertainty,
+            why_it_matters=dim.why_it_matters,
+            calibration_status=cal.calibration_status,
+        ))
+    return tuple(out)
+
+
+def _evidence_for_dim(name: str, n_curiosity: int, n_blind_spots: int,
+                        n_attention: int, n_history: int,
+                        expected_domains: int,
+                        cells: list[sm.CellClassification],
+                        previous_snapshot: dict | None,
+                       ) -> tuple[float | None, list[str], str, str]:
+    """Per-dimension evidence-implied score derivation. Returns
+    (evidence_score | None, refs, status, notes)."""
+    refs: list[str] = []
+    if name == "metacognition_maturity":
+        refs.append(f"blind_spots={n_blind_spots}")
+        refs.append(f"expected_domains={expected_domains}")
+        return (n_blind_spots / expected_domains, refs, "ok",
+                "ratio of detected blind spots to expected domains")
+    if name == "unified_workspace_readiness":
+        # Evidence implies HIGH workspace readiness when both curiosity
+        # AND attention exist with non-trivial volume.
+        if n_curiosity >= 5 and n_attention >= 1:
+            refs.append(f"curiosity_count={n_curiosity}")
+            refs.append(f"attention_count={n_attention}")
+            return (1.0, refs, "ok",
+                    "curiosity log and attention focus both populated")
+        if n_curiosity == 0:
+            return (0.0, [f"curiosity_count={n_curiosity}"], "ok",
+                    "no curiosity input → no integration possible")
+        return (None, refs, "unavailable",
+                "evidence not strong enough to imply a score")
+    if name == "dream_consolidation_readiness":
+        if n_attention >= 1 and previous_snapshot is not None:
+            return (1.0, [f"attention={n_attention}",
+                           f"previous_snapshot=true"], "ok",
+                    "both attention and prior snapshot available")
+        return (None, [], "unavailable",
+                "needs both attention and prior snapshot")
+    if name == "identity_continuity_strength":
+        # Evidence: history length tells how well identity is anchored
+        if n_history >= 1:
+            return (min(1.0, 0.5 + 0.1 * n_history),
+                    [f"history_length={n_history}"], "ok",
+                    "history chain present")
+        return (0.0, [], "ok",
+                "no prior snapshots — bootstrap state")
+    if name == "autonomous_self_improvement_readiness":
+        # Evidence implies high when attention exists + non-canonical
+        # meta_curiosity is achievable. Approximate via curiosity
+        # presence.
+        if n_curiosity >= 5 and n_blind_spots >= 1:
+            return (1.0, [f"curiosity={n_curiosity}",
+                           f"blind_spots={n_blind_spots}"], "ok",
+                    "curiosity + at least one blind spot")
+        if n_curiosity == 0:
+            return (0.0, [], "ok",
+                    "no curiosity → cannot self-improve")
+        return (None, [], "unavailable",
+                "weak signal")
+    if name == "self_model_maturity":
+        # Evidence: how many real (not default) sources backed scoring
+        # is captured by data_provenance — but provenance is computed
+        # AFTER this. Use n_curiosity + n_history as a proxy.
+        proxy = min(1.0, (n_curiosity + n_history) / 50.0)
+        return (proxy, [f"curiosity={n_curiosity}", f"history={n_history}"],
+                "ok", "approximation via signal volume")
+    if name == "value_layer_readiness":
+        # Spec §B3: explicitly excluded from auto-correction.
+        return (None, [], "unavailable",
+                "phase_8_5_intentional_floor — not learnable in this session")
+    return (None, [], "unavailable", "unknown dimension")
+
+
+def _emit_calibration_corrections(
+    scorecard: tuple[sm.ScorecardDimension, ...],
+    corrections_path: Path,
+    previous_corrections: list[dict] | None = None,
+) -> int:
+    """For each dimension whose calibration mismatch exceeds the
+    drift threshold, append a correction record. Skips
+    value_layer_readiness per spec §B3.
+
+    Returns the number of corrections appended.
+    """
+    if previous_corrections is None:
+        previous_corrections = []
+    n_appended = 0
+    for dim in scorecard:
+        if dim.name == "value_layer_readiness":
+            continue
+        if dim.calibration_evidence is None:
+            continue
+        ev = dim.calibration_evidence
+        if ev.evidence_implied_score is None:
+            continue
+        if ev.calibration_status != "mismatch":
+            continue
+        magnitude = abs(dim.score - ev.evidence_implied_score)
+        cnt = sm.correction_count_for_dimension(
+            previous_corrections, dim.name, window=sm.HISTORY_WINDOW,
+        )
+        record = {
+            "dimension": dim.name,
+            "prior_score": dim.score,
+            "evidence_implied_score": ev.evidence_implied_score,
+            "correction_magnitude": round(magnitude, 4),
+            "confidence": 0.7,
+            "source_refs": list(ev.evidence_refs),
+            "correction_count_in_window": cnt,
+        }
+        sm.append_calibration_correction(corrections_path, record)
+        n_appended += 1
+    return n_appended
 
 
 # ── Meta-curiosity ────────────────────────────────────────────────
@@ -999,15 +1169,40 @@ def main() -> int:
     branch = _detect_branch() or "phase8.5/self-model-layer"
     base_commit = _detect_base_commit() or ""
 
-    # Optional previous-snapshot
+    # Optional previous-snapshot — validate per spec CLI rules:
+    # file must exist; its snapshot_id must appear in HISTORY.jsonl;
+    # chain from that snapshot to current must be unbroken.
     previous_snap: dict | None = None
-    if args.previous_snapshot is not None and args.previous_snapshot.exists():
+    if args.previous_snapshot is not None:
+        if not args.previous_snapshot.exists():
+            print(f"previous-snapshot missing: {args.previous_snapshot}",
+                   file=sys.stderr)
+            return 2
         try:
             previous_snap = json.loads(
                 args.previous_snapshot.read_text(encoding="utf-8")
             )
-        except Exception:
-            previous_snap = None
+        except Exception as e:
+            print(f"previous-snapshot parse error: {e}", file=sys.stderr)
+            return 2
+        prev_id = previous_snap.get("snapshot_id")
+        # Resolve effective history path BEFORE we use it for validation
+        if args.history_path is not None:
+            _hp = args.history_path
+        elif args.output_dir is not None:
+            _hp = args.output_dir / "HISTORY.jsonl"
+        else:
+            _hp = DEFAULT_HISTORY
+        history_entries = sm.read_history(_hp)
+        ok, reason = sm.validate_history_chain(history_entries)
+        if not ok:
+            print(f"history chain invalid: {reason}", file=sys.stderr)
+            return 2
+        known_ids = {e.get("snapshot_id") for e in history_entries}
+        if prev_id and prev_id not in known_ids:
+            print(f"previous-snapshot id {prev_id!r} not in HISTORY.jsonl",
+                   file=sys.stderr)
+            return 2
 
     snap, provenance = build_snapshot(
         pin_hash=pin_hash,
@@ -1054,6 +1249,19 @@ def main() -> int:
         }
         sm.append_history_entry(history_path, history_entry)
         paths["history"] = history_path
+
+        # Emit calibration corrections when mismatches cross the drift
+        # threshold (acc #9). Skipped for value_layer_readiness.
+        corrections_path = out_dir / "calibration_corrections.jsonl"
+        prev_corrections = sm.read_corrections(corrections_path)
+        n_corr = _emit_calibration_corrections(
+            scorecard=snap.scorecard,
+            corrections_path=corrections_path,
+            previous_corrections=prev_corrections,
+        )
+        paths["calibration_corrections"] = corrections_path
+        if not args.json:
+            print(f"calibration corrections appended: {n_corr}")
         if args.json:
             print(json.dumps({k: p.as_posix() for k, p in paths.items()},
                               indent=2))

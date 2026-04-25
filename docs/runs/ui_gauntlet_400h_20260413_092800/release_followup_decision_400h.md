@@ -1,21 +1,28 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-25T16:42:13+00:00
+**Generated:** 2026-04-25T17:12:16+00:00
 **Main ref:** `main~30`
 **Total green:** 371.33h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (5 files)
+### PRODUCT (12 files)
 
+- `waggledance/core/dreaming/__init__.py`
+- `waggledance/core/dreaming/collapse.py`
+- `waggledance/core/dreaming/curriculum.py`
+- `waggledance/core/dreaming/meta_proposal.py`
+- `waggledance/core/dreaming/replay.py`
+- `waggledance/core/dreaming/request_pack.py`
+- `waggledance/core/dreaming/shadow_graph.py`
 - `waggledance/core/learning/composition_graph.py`
 - `waggledance/core/learning/solver_hash.py`
 - `waggledance/core/magma/reflective_workspace.py`
 - `waggledance/core/magma/self_model.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (91 files)
+### TEST_HARNESS (95 files)
 
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
@@ -47,15 +54,19 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_findings.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
-- … and 61 more
+- … and 65 more
 
-### DOCS_NARRATIVE (33 files)
+### DOCS_NARRATIVE (38 files)
 
 - `CHANGELOG.md`
 - `README.md`
+- `docs/architecture/DREAM_MODE_2_0.md`
+- `docs/architecture/DREAM_PROVENANCE.md`
+- `docs/architecture/DREAM_REPLAY_FORMULAS.md`
 - `docs/architecture/GAP_MINER_VISION.md`
 - `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`
 - `docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md`
+- `docs/architecture/HOOKS_FOR_META_LEARNER.md`
 - `docs/architecture/MAGMA_FAISS_SCALING.md`
 - `docs/architecture/MAGMA_VECTOR_STAGE2.md`
 - `docs/architecture/PHASE8_METRICS.md`
@@ -77,11 +88,7 @@
 - `docs/cells/seasonal/manifest.json`
 - `docs/cells/system/MANIFEST.md`
 - `docs/cells/system/manifest.json`
-- `docs/cells/thermal/MANIFEST.md`
-- `docs/cells/thermal/manifest.json`
-- `docs/plans/GPT_response4.txt`
-- `docs/plans/GPT_response5.txt`
-- … and 3 more
+- … and 8 more
 
 ### CI_WORKFLOW (0 files)
 
@@ -89,7 +96,7 @@
 ### VERSION (0 files)
 
 
-### OTHER (15 files)
+### OTHER (17 files)
 
 - `LICENSE-BUSL.txt`
 - `schemas/solver_proposal.schema.json`
@@ -97,11 +104,13 @@
 - `tools/build_self_model_snapshot.py`
 - `tools/campaign_watchdog.py`
 - `tools/cell_manifest.py`
+- `tools/dream_curriculum.py`
 - `tools/gap_miner.py`
 - `tools/hex_subdivision_plan.py`
 - `tools/migrate_to_vector_root.py`
 - `tools/phase8_capability_report.py`
 - `tools/propose_solver.py`
+- `tools/run_dream_cycle.py`
 - `tools/run_honeycomb_400h_campaign.py`
 - `tools/solver_composition_report.py`
 - `tools/solver_dedupe.py`

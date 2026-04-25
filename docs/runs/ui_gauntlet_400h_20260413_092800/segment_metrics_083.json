@@ -1,0 +1,3931 @@
+{
+  "segment": {
+    "segment_id": 83,
+    "mode": "COLD",
+    "green_hours": 4.002,
+    "health_checks": 118,
+    "health_ok": 111,
+    "feeds_checks": 115,
+    "feeds_monotonic": true,
+    "hologram_checks": 115,
+    "hologram_honest": false,
+    "cookie_checks": 8,
+    "cookie_ok": 6,
+    "auth_chats": 4,
+    "auth_chat_ok": 3
+  },
+  "metrics": [
+    {
+      "cycle": 1,
+      "ts": "2026-04-25T03:45:58.707656+00:00",
+      "green_h": 0.0034,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1620,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1755,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1798,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1535,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2035,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 11,
+      "ts": "2026-04-25T03:48:02.015004+00:00",
+      "green_h": 0.0376,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1514,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1781,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1612,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1708,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1808,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 22,
+      "ts": "2026-04-25T03:50:03.833663+00:00",
+      "green_h": 0.0715,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1554,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1735,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1687,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1627,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1828,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 33,
+      "ts": "2026-04-25T03:52:05.492258+00:00",
+      "green_h": 0.1053,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1472,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1817,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1571,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1610,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1790,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 44,
+      "ts": "2026-04-25T03:54:08.129339+00:00",
+      "green_h": 0.1393,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1631,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2003,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1625,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1678,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1803,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 55,
+      "ts": "2026-04-25T03:56:10.347270+00:00",
+      "green_h": 0.1733,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1550,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1785,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1734,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1685,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1908,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 66,
+      "ts": "2026-04-25T03:58:12.335511+00:00",
+      "green_h": 0.2072,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1356,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1967,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1693,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1635,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1782,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 77,
+      "ts": "2026-04-25T04:00:14.262015+00:00",
+      "green_h": 0.241,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1546,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1769,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1636,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1613,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1812,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 88,
+      "ts": "2026-04-25T04:02:16.335605+00:00",
+      "green_h": 0.2749,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1601,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1766,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1742,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1583,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1936,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 99,
+      "ts": "2026-04-25T04:04:18.439533+00:00",
+      "green_h": 0.3089,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1476,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2092,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1621,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1676,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1700,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 110,
+      "ts": "2026-04-25T04:06:21.103266+00:00",
+      "green_h": 0.3429,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1587,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2163,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1740,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1840,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1780,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 121,
+      "ts": "2026-04-25T04:08:23.069722+00:00",
+      "green_h": 0.3768,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1529,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1837,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1654,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1676,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1806,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 132,
+      "ts": "2026-04-25T04:10:25.074328+00:00",
+      "green_h": 0.4107,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1620,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1751,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1640,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1621,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1711,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 143,
+      "ts": "2026-04-25T04:12:27.601842+00:00",
+      "green_h": 0.4447,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1825,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1697,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 2065,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1709,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1750,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 154,
+      "ts": "2026-04-25T04:14:29.597564+00:00",
+      "green_h": 0.4786,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1568,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1797,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1647,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1661,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1857,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 165,
+      "ts": "2026-04-25T04:16:34.382923+00:00",
+      "green_h": 0.5133,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1579,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1782,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1677,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1605,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1802,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 176,
+      "ts": "2026-04-25T04:18:36.158620+00:00",
+      "green_h": 0.5471,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1554,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1757,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1622,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1694,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1707,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 187,
+      "ts": "2026-04-25T04:20:38.629110+00:00",
+      "green_h": 0.5811,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1169,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1735,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1660,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1902,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2245,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 198,
+      "ts": "2026-04-25T04:22:40.643272+00:00",
+      "green_h": 0.615,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1524,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1854,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1697,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1609,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1825,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 209,
+      "ts": "2026-04-25T04:24:42.847984+00:00",
+      "green_h": 0.649,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1543,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1838,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1635,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1639,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1813,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 220,
+      "ts": "2026-04-25T04:26:45.005511+00:00",
+      "green_h": 0.6829,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1578,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1758,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1642,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1718,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1902,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 231,
+      "ts": "2026-04-25T04:28:47.386313+00:00",
+      "green_h": 0.7169,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1599,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1771,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1784,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1656,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1912,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 242,
+      "ts": "2026-04-25T04:30:50.290104+00:00",
+      "green_h": 0.751,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1566,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1874,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1660,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1677,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2301,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 253,
+      "ts": "2026-04-25T04:32:52.187747+00:00",
+      "green_h": 0.7849,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1572,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1739,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1693,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1657,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1830,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 264,
+      "ts": "2026-04-25T04:34:54.401794+00:00",
+      "green_h": 0.8188,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1680,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1769,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1828,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1620,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1971,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 275,
+      "ts": "2026-04-25T04:36:56.180606+00:00",
+      "green_h": 0.8527,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1571,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1751,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1453,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1644,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1746,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 286,
+      "ts": "2026-04-25T04:38:58.180910+00:00",
+      "green_h": 0.8866,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1655,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1728,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1658,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1684,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1820,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 297,
+      "ts": "2026-04-25T04:41:00.025543+00:00",
+      "green_h": 0.9204,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1547,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1800,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1588,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1686,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1843,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 308,
+      "ts": "2026-04-25T04:43:01.984460+00:00",
+      "green_h": 0.9543,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1609,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1828,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1656,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1691,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1761,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 319,
+      "ts": "2026-04-25T04:45:03.852886+00:00",
+      "green_h": 0.9881,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1494,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1729,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1690,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1637,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1750,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 329,
+      "ts": "2026-04-25T04:47:08.327259+00:00",
+      "green_h": 1.0227,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1621,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1779,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1664,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1640,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1424,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 340,
+      "ts": "2026-04-25T04:49:10.871480+00:00",
+      "green_h": 1.0568,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1817,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1915,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1775,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1690,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1802,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 351,
+      "ts": "2026-04-25T04:51:13.048451+00:00",
+      "green_h": 1.0907,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1566,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1716,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1889,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1606,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1921,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 362,
+      "ts": "2026-04-25T04:53:14.808132+00:00",
+      "green_h": 1.1245,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1528,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1693,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1586,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1712,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1763,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 373,
+      "ts": "2026-04-25T04:55:16.649055+00:00",
+      "green_h": 1.1584,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1570,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1782,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1672,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1600,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1790,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 384,
+      "ts": "2026-04-25T04:57:18.519422+00:00",
+      "green_h": 1.1922,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1488,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1735,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1699,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1678,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1783,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 395,
+      "ts": "2026-04-25T04:59:21.204845+00:00",
+      "green_h": 1.2263,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1684,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1807,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1756,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1596,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2001,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 406,
+      "ts": "2026-04-25T05:01:22.689342+00:00",
+      "green_h": 1.26,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1451,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1647,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1640,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1634,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1746,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 417,
+      "ts": "2026-04-25T05:03:25.555194+00:00",
+      "green_h": 1.2942,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1548,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1995,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1788,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1800,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2017,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 428,
+      "ts": "2026-04-25T05:05:27.439659+00:00",
+      "green_h": 1.328,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1571,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1882,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1657,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1551,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1781,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 439,
+      "ts": "2026-04-25T05:07:29.302608+00:00",
+      "green_h": 1.3619,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1563,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1753,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1634,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1710,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1796,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 450,
+      "ts": "2026-04-25T05:09:30.841956+00:00",
+      "green_h": 1.3956,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1518,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1654,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1665,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1661,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1721,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 461,
+      "ts": "2026-04-25T05:11:32.814975+00:00",
+      "green_h": 1.4295,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1492,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1813,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1557,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1568,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2057,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 472,
+      "ts": "2026-04-25T05:13:35.025356+00:00",
+      "green_h": 1.4635,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1579,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1742,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1822,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1743,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1798,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 483,
+      "ts": "2026-04-25T05:15:37.295900+00:00",
+      "green_h": 1.4974,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1622,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1947,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1672,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1709,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1912,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 486,
+      "ts": "2026-04-25T05:17:53.562170+00:00",
+      "green_h": 1.5353,
+      "health_ok": false,
+      "endpoints": {
+        "health": {
+          "status": 0,
+          "latency_ms": 3593,
+          "ok": false,
+          "error": "[WinError 10061] No connection could be made because the target machine actively refused it"
+        },
+        "ready": {
+          "status": 0,
+          "latency_ms": 3524,
+          "ok": false,
+          "error": "[WinError 10061] No connection could be made because the target machine actively refused it"
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 6544,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1795,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1824,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 496,
+      "ts": "2026-04-25T05:19:49.124494+00:00",
+      "green_h": 1.5674,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1514,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 5542,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1657,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1655,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1749,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 507,
+      "ts": "2026-04-25T05:21:51.657574+00:00",
+      "green_h": 1.6014,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1550,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2155,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1692,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1910,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1782,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 518,
+      "ts": "2026-04-25T05:24:17.357048+00:00",
+      "green_h": 1.6419,
+      "health_ok": false,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1753,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1767,
+          "ok": true
+        },
+        "status": {
+          "status": 0,
+          "latency_ms": 6441,
+          "ok": false,
+          "error": "timed out"
+        },
+        "feeds": {
+          "status": 0,
+          "latency_ms": 6429,
+          "ok": false,
+          "error": "timed out"
+        },
+        "hologram_state": {
+          "status": 0,
+          "latency_ms": 6458,
+          "ok": false,
+          "error": "timed out"
+        }
+      }
+    },
+    {
+      "cycle": 527,
+      "ts": "2026-04-25T05:26:05.777342+00:00",
+      "green_h": 1.672,
+      "health_ok": false,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1576,
+          "ok": true
+        },
+        "ready": {
+          "status": 0,
+          "latency_ms": 6507,
+          "ok": false,
+          "error": "timed out"
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 2749,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 2311,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1856,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 538,
+      "ts": "2026-04-25T05:28:07.659427+00:00",
+      "green_h": 1.7059,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1517,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1866,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1594,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1675,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1786,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 549,
+      "ts": "2026-04-25T05:30:09.822912+00:00",
+      "green_h": 1.7398,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1533,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1758,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1670,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1769,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1825,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 560,
+      "ts": "2026-04-25T05:32:11.877699+00:00",
+      "green_h": 1.7737,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1587,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1788,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1694,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1658,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1837,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 571,
+      "ts": "2026-04-25T05:34:14.130863+00:00",
+      "green_h": 1.8077,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1581,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2169,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1614,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1676,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1790,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 582,
+      "ts": "2026-04-25T05:36:16.022860+00:00",
+      "green_h": 1.8415,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1518,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1818,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1584,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1731,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1833,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 593,
+      "ts": "2026-04-25T05:38:51.080657+00:00",
+      "green_h": 1.8846,
+      "health_ok": false,
+      "endpoints": {
+        "health": {
+          "status": 0,
+          "latency_ms": 6471,
+          "ok": false,
+          "error": "timed out"
+        },
+        "ready": {
+          "status": 0,
+          "latency_ms": 6433,
+          "ok": false,
+          "error": "timed out"
+        },
+        "status": {
+          "status": 0,
+          "latency_ms": 6433,
+          "ok": false,
+          "error": "timed out"
+        },
+        "feeds": {
+          "status": 0,
+          "latency_ms": 6455,
+          "ok": false,
+          "error": "timed out"
+        },
+        "hologram_state": {
+          "status": 0,
+          "latency_ms": 6421,
+          "ok": false,
+          "error": "timed out"
+        }
+      }
+    },
+    {
+      "cycle": 601,
+      "ts": "2026-04-25T05:40:26.884778+00:00",
+      "green_h": 1.9112,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1589,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 5334,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1780,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1698,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1848,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 612,
+      "ts": "2026-04-25T05:42:28.905832+00:00",
+      "green_h": 1.9451,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1564,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1893,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1555,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1882,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1816,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 623,
+      "ts": "2026-04-25T05:44:30.939525+00:00",
+      "green_h": 1.979,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1529,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1800,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1619,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1758,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1831,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 633,
+      "ts": "2026-04-25T05:46:57.334148+00:00",
+      "green_h": 2.0197,
+      "health_ok": false,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1365,
+          "ok": true
+        },
+        "ready": {
+          "status": 0,
+          "latency_ms": 6369,
+          "ok": false,
+          "error": "timed out"
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1563,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1557,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1791,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 644,
+      "ts": "2026-04-25T05:48:59.460406+00:00",
+      "green_h": 2.0536,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1589,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1775,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1680,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1722,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1824,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 655,
+      "ts": "2026-04-25T05:51:00.331980+00:00",
+      "green_h": 2.0871,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1523,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1636,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1583,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1439,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1558,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 666,
+      "ts": "2026-04-25T05:53:02.263008+00:00",
+      "green_h": 2.121,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1528,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1688,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1682,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1880,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1838,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 677,
+      "ts": "2026-04-25T05:55:05.304792+00:00",
+      "green_h": 2.1552,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1492,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1772,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1808,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1813,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1940,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 688,
+      "ts": "2026-04-25T05:57:07.047382+00:00",
+      "green_h": 2.189,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1519,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1738,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1654,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1673,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1802,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 699,
+      "ts": "2026-04-25T05:59:11.374237+00:00",
+      "green_h": 2.2236,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1660,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2442,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1731,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 2251,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2158,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 710,
+      "ts": "2026-04-25T06:01:13.443045+00:00",
+      "green_h": 2.2575,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1539,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1891,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1701,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1660,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1751,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 721,
+      "ts": "2026-04-25T06:03:16.003786+00:00",
+      "green_h": 2.2915,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1862,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1757,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1800,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1695,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1900,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 732,
+      "ts": "2026-04-25T06:05:17.985390+00:00",
+      "green_h": 2.3254,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1604,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1834,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1439,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1766,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1801,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 743,
+      "ts": "2026-04-25T06:07:20.299277+00:00",
+      "green_h": 2.3594,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1626,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1742,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1863,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1697,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1891,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 754,
+      "ts": "2026-04-25T06:09:22.411674+00:00",
+      "green_h": 2.3933,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1616,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1769,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1649,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1700,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1811,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 765,
+      "ts": "2026-04-25T06:11:24.300681+00:00",
+      "green_h": 2.4271,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1288,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1602,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1740,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1904,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1840,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 776,
+      "ts": "2026-04-25T06:13:26.259672+00:00",
+      "green_h": 2.461,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1547,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1848,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1575,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1677,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1696,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 787,
+      "ts": "2026-04-25T06:15:27.981622+00:00",
+      "green_h": 2.4948,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1528,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1723,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1606,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1650,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1824,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 798,
+      "ts": "2026-04-25T06:17:32.918011+00:00",
+      "green_h": 2.5295,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1513,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1767,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1783,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1708,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1848,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 809,
+      "ts": "2026-04-25T06:19:34.754517+00:00",
+      "green_h": 2.5634,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1460,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1826,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1699,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1595,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1732,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 820,
+      "ts": "2026-04-25T06:21:36.848788+00:00",
+      "green_h": 2.5973,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1628,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1784,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1658,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1545,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1822,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 831,
+      "ts": "2026-04-25T06:23:39.405140+00:00",
+      "green_h": 2.6313,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1470,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2030,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1698,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1988,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1924,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 842,
+      "ts": "2026-04-25T06:25:42.011703+00:00",
+      "green_h": 2.6654,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1519,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2060,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1674,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 2004,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1828,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 853,
+      "ts": "2026-04-25T06:27:43.969921+00:00",
+      "green_h": 2.6993,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1505,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1794,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1611,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1583,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1951,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 864,
+      "ts": "2026-04-25T06:29:44.629189+00:00",
+      "green_h": 2.7328,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 685,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1418,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1630,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1697,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1801,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 875,
+      "ts": "2026-04-25T06:31:46.907429+00:00",
+      "green_h": 2.7668,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1693,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1738,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1850,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1678,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1875,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 886,
+      "ts": "2026-04-25T06:33:48.551150+00:00",
+      "green_h": 2.8005,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1568,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1878,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1586,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1682,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1629,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 897,
+      "ts": "2026-04-25T06:35:50.890781+00:00",
+      "green_h": 2.8345,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1590,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2133,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1669,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1692,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1839,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 908,
+      "ts": "2026-04-25T06:37:52.682564+00:00",
+      "green_h": 2.8684,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1551,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1773,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1642,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1639,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1817,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 919,
+      "ts": "2026-04-25T06:39:55.020595+00:00",
+      "green_h": 2.9023,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1603,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1909,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1713,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1926,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1729,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 930,
+      "ts": "2026-04-25T06:41:56.976578+00:00",
+      "green_h": 2.9362,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1556,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1710,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1645,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1569,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1975,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 941,
+      "ts": "2026-04-25T06:43:59.273392+00:00",
+      "green_h": 2.9702,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1592,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1764,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1818,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1630,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2036,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 952,
+      "ts": "2026-04-25T06:46:01.367560+00:00",
+      "green_h": 3.0041,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1586,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1785,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1632,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1770,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1827,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 962,
+      "ts": "2026-04-25T06:48:04.281754+00:00",
+      "green_h": 3.0382,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1590,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1843,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1729,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1659,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1939,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 973,
+      "ts": "2026-04-25T06:50:06.439225+00:00",
+      "green_h": 3.0722,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1550,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1763,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1655,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1651,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1823,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 984,
+      "ts": "2026-04-25T06:52:08.868261+00:00",
+      "green_h": 3.1062,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1594,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1977,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1718,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1818,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1824,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 995,
+      "ts": "2026-04-25T06:54:10.506937+00:00",
+      "green_h": 3.14,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1590,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1735,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1526,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1713,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1723,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1006,
+      "ts": "2026-04-25T06:56:13.364657+00:00",
+      "green_h": 3.1741,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1561,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1884,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1992,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1647,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2124,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1017,
+      "ts": "2026-04-25T06:58:15.639400+00:00",
+      "green_h": 3.2081,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1582,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1859,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1670,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1681,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1906,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1028,
+      "ts": "2026-04-25T07:00:26.866564+00:00",
+      "green_h": 3.2445,
+      "health_ok": false,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1542,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 5219,
+          "ok": true
+        },
+        "status": {
+          "status": 0,
+          "latency_ms": 6558,
+          "ok": false,
+          "error": "timed out"
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1983,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2410,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1038,
+      "ts": "2026-04-25T07:02:18.651523+00:00",
+      "green_h": 3.2756,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1489,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1695,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1608,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1698,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1794,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1049,
+      "ts": "2026-04-25T07:04:20.294608+00:00",
+      "green_h": 3.3094,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1522,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1564,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1653,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1628,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1754,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1060,
+      "ts": "2026-04-25T07:06:22.241217+00:00",
+      "green_h": 3.3432,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1548,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1718,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1637,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1681,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1795,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1071,
+      "ts": "2026-04-25T07:08:24.277633+00:00",
+      "green_h": 3.3771,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1620,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1753,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1614,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1482,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1820,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1082,
+      "ts": "2026-04-25T07:10:26.181598+00:00",
+      "green_h": 3.411,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1510,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1860,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1640,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1754,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1716,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1093,
+      "ts": "2026-04-25T07:13:00.906118+00:00",
+      "green_h": 3.454,
+      "health_ok": false,
+      "endpoints": {
+        "health": {
+          "status": 0,
+          "latency_ms": 6482,
+          "ok": false,
+          "error": "timed out"
+        },
+        "ready": {
+          "status": 0,
+          "latency_ms": 6356,
+          "ok": false,
+          "error": "timed out"
+        },
+        "status": {
+          "status": 0,
+          "latency_ms": 6209,
+          "ok": false,
+          "error": "timed out"
+        },
+        "feeds": {
+          "status": 0,
+          "latency_ms": 6394,
+          "ok": false,
+          "error": "timed out"
+        },
+        "hologram_state": {
+          "status": 0,
+          "latency_ms": 6412,
+          "ok": false,
+          "error": "timed out"
+        }
+      }
+    },
+    {
+      "cycle": 1101,
+      "ts": "2026-04-25T07:14:36.537123+00:00",
+      "green_h": 3.4805,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1531,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 5745,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1705,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1742,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1574,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1112,
+      "ts": "2026-04-25T07:16:41.511513+00:00",
+      "green_h": 3.5152,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1515,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1847,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1677,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1752,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1800,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1123,
+      "ts": "2026-04-25T07:18:43.252247+00:00",
+      "green_h": 3.5491,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1548,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1770,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1669,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1518,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1765,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1134,
+      "ts": "2026-04-25T07:20:45.124298+00:00",
+      "green_h": 3.5829,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1500,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1766,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1640,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1710,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1805,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1145,
+      "ts": "2026-04-25T07:22:47.413216+00:00",
+      "green_h": 3.6169,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1718,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1731,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1845,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1672,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1898,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1156,
+      "ts": "2026-04-25T07:24:49.917535+00:00",
+      "green_h": 3.6509,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1594,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1710,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1937,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1654,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2061,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1167,
+      "ts": "2026-04-25T07:26:52.349929+00:00",
+      "green_h": 3.6849,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1869,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1751,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1809,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1652,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1871,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1178,
+      "ts": "2026-04-25T07:28:55.052144+00:00",
+      "green_h": 3.719,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1549,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1825,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 2050,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1887,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1888,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1189,
+      "ts": "2026-04-25T07:30:56.900896+00:00",
+      "green_h": 3.7529,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1553,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1704,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1691,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1631,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1762,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1200,
+      "ts": "2026-04-25T07:32:59.070156+00:00",
+      "green_h": 3.7868,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1535,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 2019,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1717,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1687,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1719,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1211,
+      "ts": "2026-04-25T07:35:01.691328+00:00",
+      "green_h": 3.8209,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1606,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1945,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1689,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1881,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1661,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1222,
+      "ts": "2026-04-25T07:37:04.035928+00:00",
+      "green_h": 3.8548,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1789,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1781,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1861,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1744,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1839,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1233,
+      "ts": "2026-04-25T07:39:06.037711+00:00",
+      "green_h": 3.8887,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1546,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1839,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1746,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1653,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1775,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1244,
+      "ts": "2026-04-25T07:41:08.208307+00:00",
+      "green_h": 3.9227,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1621,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1688,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 1674,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1577,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1797,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1255,
+      "ts": "2026-04-25T07:43:11.008742+00:00",
+      "green_h": 3.9568,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1516,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1964,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 2133,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1522,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 1909,
+          "ok": true
+        }
+      }
+    },
+    {
+      "cycle": 1266,
+      "ts": "2026-04-25T07:45:13.743086+00:00",
+      "green_h": 3.9909,
+      "health_ok": true,
+      "endpoints": {
+        "health": {
+          "status": 200,
+          "latency_ms": 1590,
+          "ok": true
+        },
+        "ready": {
+          "status": 200,
+          "latency_ms": 1800,
+          "ok": true
+        },
+        "status": {
+          "status": 200,
+          "latency_ms": 2133,
+          "ok": true
+        },
+        "feeds": {
+          "status": 200,
+          "latency_ms": 1683,
+          "ok": true
+        },
+        "hologram_state": {
+          "status": 200,
+          "latency_ms": 2071,
+          "ok": true
+        }
+      }
+    }
+  ]
+}

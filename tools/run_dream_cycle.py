@@ -35,7 +35,9 @@ sys.path.insert(0, str(ROOT))
 
 from waggledance.core.dreaming import collapse as col  # noqa: E402
 from waggledance.core.dreaming import curriculum as cu  # noqa: E402
+from waggledance.core.dreaming import replay as rep  # noqa: E402
 from waggledance.core.dreaming import request_pack as rp  # noqa: E402
+from waggledance.core.dreaming import shadow_graph as sg  # noqa: E402
 
 DEFAULT_OUT_ROOT = ROOT / "docs" / "runs" / "dream"
 
@@ -83,16 +85,28 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--input-manifest", type=Path,
                     default=ROOT / "docs" / "runs" / "phase8_5_dream_session_state.json")
+    ap.add_argument("--replay-manifest", type=Path, default=None,
+                    help="Optional pinned replay_case_manifest.json")
     ap.add_argument("--output-dir", type=Path, default=None)
     ap.add_argument("--proposal", type=Path, default=None)
     ap.add_argument("--proposal-dir", type=Path, default=None)
     ap.add_argument("--max-proposals", type=int, default=col.DEFAULT_MAX_PROPOSALS)
     ap.add_argument("--top-nights", type=int, default=7)
+    ap.add_argument("--shadow-only", type=str, default="true",
+                    help="Session C ALWAYS runs shadow-only; --shadow-only=false is ignored with a warning")
+    ap.add_argument("--history-path", type=Path, default=None,
+                    help="Optional dream-history file (reserved for exploration_bonus)")
     ap.add_argument("--real-data-only", action="store_true")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+
+    if str(args.shadow_only).lower() in ("false", "0", "no"):
+        print(
+            "Session C ignores --shadow-only=false; runtime mutation is "
+            "out of scope until a later gated session.",
+        )
 
     if not args.input_manifest.exists():
         print(f"input manifest missing: {args.input_manifest}", file=sys.stderr)
@@ -111,7 +125,16 @@ def main() -> int:
     self_model = dc_tool._load_self_model(pinned) or {}
     curiosity_log = dc_tool._load_curiosity_log(pinned)
     calibration_corrections = dc_tool._load_calibration_corrections(pinned)
-    replay_case_manifest = _load_replay_case_manifest(pinned)
+    replay_case_manifest: dict | None = None
+    if args.replay_manifest is not None and args.replay_manifest.exists():
+        try:
+            replay_case_manifest = json.loads(
+                args.replay_manifest.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            replay_case_manifest = None
+    if replay_case_manifest is None:
+        replay_case_manifest = _load_replay_case_manifest(pinned)
 
     branch = dc_tool._detect_branch() or "phase8.5/dream-curriculum"
     base_commit = dc_tool._detect_base_commit() or ""
@@ -173,6 +196,48 @@ def main() -> int:
     if args.apply:
         collapse_paths = col.emit_report(report, out_dir)
 
+    # ── 3) Shadow graph + replay (structural counterfactual) ────
+    accepted_proposals: list[dict] = []
+    for evaluated in report.proposals_evaluated:
+        if evaluated.collapse_verdict == "ACCEPT_CANDIDATE":
+            try:
+                proposal_data = json.loads(
+                    Path(evaluated.proposal_path).read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError):
+                continue
+            accepted_proposals.append(proposal_data)
+
+    live_graph = sg.build_live_graph(library_solvers=[])
+    shadow = sg.add_shadow_proposals(live_graph, accepted_proposals)
+    diff = sg.diff_graphs(live_graph, shadow)
+
+    tension_ids = []
+    curiosity_ids = []
+    for night in curriculum.nights:
+        for it in night.target_items:
+            if it.source_kind == "tension":
+                tension_ids.append(it.source_id)
+            elif it.source_kind == "curiosity":
+                curiosity_ids.append(it.source_id)
+    cases = rep.select_replay_cases(replay_case_manifest,
+                                     tension_ids, curiosity_ids)
+    collapse_passed = any(
+        e.collapse_verdict == "ACCEPT_CANDIDATE"
+        for e in report.proposals_evaluated
+    )
+    replay_report = rep.build_report(
+        cases=cases, live=live_graph, shadow=shadow, diff=diff,
+        branch_name=branch, base_commit_hash=base_commit,
+        pinned_input_manifest_sha256=pin_hash,
+        replay_manifest_sha256=None,
+        tension_ids_targeted=tension_ids,
+        collapse_passed=collapse_passed,
+    )
+    replay_paths: dict[str, Path] = {}
+    if args.apply:
+        replay_paths = rep.emit_report(replay_report, out_dir)
+
     summary = {
         "pin_hash": pin_hash,
         "primary_source": curriculum.primary_source,
@@ -181,11 +246,16 @@ def main() -> int:
         "proposals_evaluated": len(report.proposals_evaluated),
         "truncated_proposals": len(report.truncated_proposals),
         "counts_by_verdict": report.counts_by_verdict,
+        "replay_case_count": replay_report.replay_case_count,
+        "structural_gain_count": replay_report.structural_gain_count,
+        "structurally_promising": replay_report.structurally_promising,
     }
     if args.apply:
         summary["out_dir"] = out_dir.as_posix()
         summary["collapse_report"] = {k: p.as_posix()
                                        for k, p in collapse_paths.items()}
+        summary["replay_report"] = {k: p.as_posix()
+                                     for k, p in replay_paths.items()}
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:

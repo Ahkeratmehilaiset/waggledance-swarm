@@ -51,12 +51,24 @@
   ],
   "completed_subparts": [
     "R7.5-A: writer/event capability inspection (first pass)",
-    "R7.5-D: 26 resilience tests + 1 skipped-pending-docs in tests/test_vector_writer_resilience.py (60 inherited + 26 new = 86 vector tests, 1 skipped)",
+    "R7.5-D: 26 resilience tests in tests/test_vector_writer_resilience.py (60 inherited + 26 new = 86 vector tests, all green)",
     "R7.5-F: no-op confirmed — all 26 chaos tests pass against current scaffold; no production bug found, no fix invented per CRITICAL NO-OP RULE",
-    "R7.5-H: multi-writer deterministic interleaving simulation lives in test 16 (test_multi_writer_deterministic_interleaving_simulation)"
+    "R7.5-H: multi-writer deterministic interleaving simulation lives in test 16 (test_multi_writer_deterministic_interleaving_simulation)",
+    "R7.5-B + R7.5-C + R7.5-G + R7.5-I: VECTOR_WRITER_RESILIENCE.md ships failure matrix + pointer durability + malformed-row policy + strict-mode cutover proposal in single doc"
   ],
-  "remaining_subparts": [
-    "R7.5-B + R7.5-C + R7.5-G + R7.5-I: ship VECTOR_WRITER_RESILIENCE.md (failure matrix, pointer durability, malformed-row policy, strict-mode cutover proposal)"
+  "remaining_subparts": [],
+  "session_complete": true,
+  "final_test_count": 62,
+  "final_test_breakdown": {
+    "test_vector_events.py": 22,
+    "test_vector_indexer.py": 14,
+    "test_vector_writer_resilience.py": 26
+  },
+  "session_commits": [
+    "9b9d360 chore(phase8.5): start vector-chaos session state and bootstrap writer capability inspection",
+    "29236ab test(phase8.5): add failure-matrix and convergence tests (26 resilience tests)",
+    "<no-op chore commit>",
+    "<docs commit>"
   ],
   "blocked": false,
   "blocked_reason": null,
@@ -67,7 +79,7 @@
   ],
   "test_distribution_overrides": [],
   "deferred_fixes": [],
-  "next_recommended_action": "R7.5-B: ship VECTOR_WRITER_RESILIENCE.md and unskip test 26",
+  "next_recommended_action": "Session R7.5 complete. Recommended next: Session D (or post-campaign runtime work). Strict-mode malformed-row cutover is documented for Stage 2.5 / runtime-flip window.",
   "key_observations_from_tests": {
     "duplicate_commit_applied_event_ids_differ": "When emit succeeds but checkpoint save crashes, the second-pass apply re-emits a commit_applied event for the same logical commit. The duplicate shares faiss_commit_id, checksum, vector_count, and source_events list, BUT input_event_range can shift because the first pass's just-emitted commit_applied is itself an event in the log when the second pass folds. Idempotency is therefore at the COMMIT-CONTENT level, not the EVENT-IDENTITY level. Will be documented in VECTOR_WRITER_RESILIENCE.md.",
     "convergence_after_three_simultaneous_failure_points_demonstrated": "test_writer_convergence_after_bounded_failure runs the same event log through (a) clean baseline and (b) chaos with fail-before-swap + mid-checksum + clean-rerun, and verifies both land on byte-identical commit_id and signatures.",

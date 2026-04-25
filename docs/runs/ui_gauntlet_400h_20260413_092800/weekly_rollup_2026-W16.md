@@ -1,7 +1,7 @@
 # Weekly Rollup — 2026-W16
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-25T00:08:40+00:00
+**Generated:** 2026-04-25T00:38:43+00:00
 
 ## Trend metrics this week
 

@@ -50,16 +50,16 @@
     "schemas/solver_proposal.schema.json (read-only context)"
   ],
   "completed_subparts": [
-    "R7.5-A: writer/event capability inspection (first pass)"
+    "R7.5-A: writer/event capability inspection (first pass)",
+    "R7.5-D: 26 resilience tests + 1 skipped-pending-docs in tests/test_vector_writer_resilience.py (60 inherited tests + 26 new = 86 vector tests green)"
   ],
   "remaining_subparts": [
     "R7.5-B: VECTOR_WRITER_RESILIENCE.md failure matrix doc",
-    "R7.5-C: optional VECTOR_EVENT_LOG_POLICY.md",
-    "R7.5-D: 26+ targeted resilience tests in test_vector_writer_resilience.py",
-    "R7.5-F: minimal hardening only if tests reveal real bug",
-    "R7.5-G: pointer durability documentation",
-    "R7.5-H: multi-writer hazard test or documented deferral",
-    "R7.5-I: malformed row policy documentation"
+    "R7.5-C: optional VECTOR_EVENT_LOG_POLICY.md (or fold into B)",
+    "R7.5-F: confirm no-op (tests passed without revealing a bug-needing-fix → CRITICAL NO-OP RULE: do not invent a fix)",
+    "R7.5-G: pointer durability documentation (in B)",
+    "R7.5-H: multi-writer deterministic interleaving simulation (DONE in test 16)",
+    "R7.5-I: malformed row policy documentation (in B)"
   ],
   "blocked": false,
   "blocked_reason": null,
@@ -70,7 +70,12 @@
   ],
   "test_distribution_overrides": [],
   "deferred_fixes": [],
-  "next_recommended_action": "R7.5-D: write tests/test_vector_writer_resilience.py with 26+ resilience tests covering each TESTING REQUIREMENTS category",
+  "next_recommended_action": "R7.5-F: chore(phase8.5) commit confirming no fix needed; then R7.5-B: VECTOR_WRITER_RESILIENCE.md doc",
+  "key_observations_from_tests": {
+    "duplicate_commit_applied_event_ids_differ": "When emit succeeds but checkpoint save crashes, the second-pass apply re-emits a commit_applied event for the same logical commit. The duplicate shares faiss_commit_id, checksum, vector_count, and source_events list, BUT input_event_range can shift because the first pass's just-emitted commit_applied is itself an event in the log when the second pass folds. Idempotency is therefore at the COMMIT-CONTENT level, not the EVENT-IDENTITY level. Will be documented in VECTOR_WRITER_RESILIENCE.md.",
+    "convergence_after_three_simultaneous_failure_points_demonstrated": "test_writer_convergence_after_bounded_failure runs the same event log through (a) clean baseline and (b) chaos with fail-before-swap + mid-checksum + clean-rerun, and verifies both land on byte-identical commit_id and signatures.",
+    "no_bug_requiring_fix_found": "All chaos paths converge cleanly. Per R7.5-F CRITICAL NO-OP RULE the next commit is documentary, not a fix."
+  },
   "constraints": {
     "fixture_first": true,
     "offline_safe": true,

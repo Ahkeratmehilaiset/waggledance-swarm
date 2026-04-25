@@ -1,19 +1,21 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-25T09:11:17+00:00
+**Generated:** 2026-04-25T09:41:21+00:00
 **Main ref:** `main~30`
 **Total green:** 355.32h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
-### PRODUCT (3 files)
+### PRODUCT (5 files)
 
 - `waggledance/core/learning/composition_graph.py`
 - `waggledance/core/learning/solver_hash.py`
+- `waggledance/core/magma/reflective_workspace.py`
+- `waggledance/core/magma/self_model.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (80 files)
+### TEST_HARNESS (84 files)
 
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
@@ -45,17 +47,21 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/release_followup_decision_400h.md`
-- … and 50 more
+- … and 54 more
 
-### DOCS_NARRATIVE (28 files)
+### DOCS_NARRATIVE (33 files)
 
 - `CHANGELOG.md`
 - `README.md`
 - `docs/architecture/GAP_MINER_VISION.md`
 - `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`
+- `docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md`
 - `docs/architecture/MAGMA_FAISS_SCALING.md`
 - `docs/architecture/MAGMA_VECTOR_STAGE2.md`
 - `docs/architecture/PHASE8_METRICS.md`
+- `docs/architecture/SELF_MODEL_FORMULAS.md`
+- `docs/architecture/SELF_MODEL_LAYER.md`
+- `docs/architecture/SELF_MODEL_PROVENANCE.md`
 - `docs/cells/INDEX.md`
 - `docs/cells/energy/MANIFEST.md`
 - `docs/cells/energy/manifest.json`
@@ -75,8 +81,7 @@
 - `docs/cells/thermal/manifest.json`
 - `docs/plans/GPT_response4.txt`
 - `docs/plans/GPT_response5.txt`
-- `docs/plans/GPT_response6.txt`
-- `docs/prompts/cell_teacher_prompt.md`
+- … and 3 more
 
 ### CI_WORKFLOW (0 files)
 
@@ -84,10 +89,12 @@
 ### VERSION (0 files)
 
 
-### OTHER (13 files)
+### OTHER (15 files)
 
+- `LICENSE-BUSL.txt`
 - `schemas/solver_proposal.schema.json`
 - `tools/backfill_axioms_to_hex.py`
+- `tools/build_self_model_snapshot.py`
 - `tools/campaign_watchdog.py`
 - `tools/cell_manifest.py`
 - `tools/gap_miner.py`

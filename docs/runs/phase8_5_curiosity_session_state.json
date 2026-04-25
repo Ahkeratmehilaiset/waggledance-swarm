@@ -5,50 +5,27 @@
   "branch": "phase8.5/curiosity-organ",
   "base_branch": "phase8/honeycomb-solver-scaling-foundation",
   "base_commit": "ddb0821",
-  "latest_green_commit": null,
+  "latest_green_commit": "86a6d08",
   "pinned_campaign_dir": "docs/runs/ui_gauntlet_400h_20260413_092800",
   "pinned_artifacts": {
-    "docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl": {
-      "bytes": null,
-      "lines": null,
-      "note": "filled in by gap_miner --pin at first run"
-    },
-    "docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl": {
-      "bytes": null,
-      "lines": null
-    },
-    "docs/runs/ui_gauntlet_400h_20260413_092800/campaign_state.json": {
-      "bytes": null
-    },
-    "docs/runs/magma_hybrid_candidate_trace.jsonl": {
-      "bytes": null,
-      "lines": null
-    },
-    "docs/runs/hex_subdivision_plan.md": {
-      "bytes": null
-    },
-    "docs/runs/solver_composition_report.md": {
-      "bytes": null
-    },
-    "docs/cells/INDEX.md": {
-      "bytes": null
-    }
+    "note": "Pin captured at first gap_miner --apply run. Bytes/lines under live data shift; for a stable repeatable run pin via tests/fixtures/gap_miner_sample/ instead.",
+    "live_run_pin_hash": "sha256:f88dc7014e2d89076156c00e9a511ff3b9bc183930d348b1d8662ae54cad06ab",
+    "fixture_path": "tests/fixtures/gap_miner_sample/"
   },
   "completed_subparts": [
-    "P85.1: branch + state.json bootstrap"
+    "P85.1: branch + state.json bootstrap (chore)",
+    "P85.2: gap_miner core (feat)",
+    "P85.3: curiosity contract + per-cell packs (feat) — landed in same commit as P85.2 since the contract is the type signature of the miner output",
+    "P85.4: deterministic tests + fixtures (test) — 26 cases, all pass",
+    "P85.5: vision doc (docs)"
   ],
-  "remaining_subparts": [
-    "P85.2: gap_miner core",
-    "P85.3: curiosity contract + per-cell packs",
-    "P85.4: deterministic tests + fixtures",
-    "P85.5: vision doc"
-  ],
+  "remaining_subparts": [],
   "blocked": false,
   "blocked_reason": null,
-  "next_recommended_action": "implement tools/gap_miner.py with curiosity contract",
+  "next_recommended_action": "wait for ui_gauntlet_400h campaign to complete (~50 h remaining), then do session B: embedding-based clustering + first real teacher-loop run feeding teacher_packs into tools/propose_solver.py",
   "open_decisions": [
-    "Whether to attempt embedding-based clustering (faiss-cpu present) or stay pure text/n-gram for determinism. Plan: pure n-gram + token-set hashing for byte-stable output; embeddings could be Session B.",
-    "How fine-grained to make the recommended_next_action enum. Plan: 6 values matching spec (propose_solver / improve_solver / propose_bridge / propose_subdivision / clarify_routing / do_nothing)."
+    "Whether the curiosity contract carries a free-text suspected_missing_capability or stays structured-only — currently emits a deterministic n-gram-derived hint string",
+    "When to schedule first real teacher-loop drive — depends on Phase D-3 decision (synth corpus vs scope-limited promotion), still open"
   ],
   "scope_excluded": [
     "self_model / reflective_workspace",
@@ -58,13 +35,28 @@
     "vector chaos tests",
     "runtime repoints",
     "JetStream/NATS",
-    "any runtime hot-path changes"
+    "any runtime hot-path changes",
+    "embedding-based clustering (Session B)",
+    "learned ranker (Session C)"
   ],
   "constraints": {
     "deterministic_artifacts": true,
     "offline_safe": true,
     "campaign_safe": true,
     "no_runtime_touch": true,
-    "fixture_path_required": "tests/fixtures/"
+    "fixture_path_required": "tests/fixtures/gap_miner_sample/"
+  },
+  "deliverables_summary": {
+    "tools": ["tools/gap_miner.py"],
+    "tests": ["tests/test_gap_miner.py (26 cases)"],
+    "fixtures": ["tests/fixtures/gap_miner_sample/hot_results.jsonl",
+                 "tests/fixtures/gap_miner_sample/query_corpus.json"],
+    "docs": ["docs/architecture/GAP_MINER_VISION.md"],
+    "artifact_layout_when_run": [
+      "docs/runs/gap_miner/curiosity_summary.json",
+      "docs/runs/gap_miner/curiosity_log.jsonl",
+      "docs/runs/gap_miner/curiosity_report.md",
+      "docs/runs/gap_miner/teacher_packs/<cell>.json"
+    ]
   }
 }

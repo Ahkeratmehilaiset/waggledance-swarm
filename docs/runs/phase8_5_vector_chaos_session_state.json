@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "session_id": "phase8.5_vector_chaos_R7.5",
+  "started_at": "2026-04-25T22:00:00Z",
+  "current_branch": "phase8.5/vector-chaos",
+  "base_branch": "phase8/honeycomb-solver-scaling-foundation",
+  "base_commit": "ddb08217d598927fa2e1bb6ffddd8e9a4f2de572",
+  "worktree_path": "C:/python/project2-r7_5",
+  "primary_repo_path": "C:/python/project2",
+  "worktree_rationale": "primary repo working tree has live 400h gauntlet writing to docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl; switching its HEAD would interrupt the campaign. R7.5 work goes in a sibling worktree on phase8.5/vector-chaos branch.",
+  "latest_green_commit": null,
+  "writer_capabilities": {
+    "atomic_pointer_swap": "tmp + os.replace in same dir (tools/vector_indexer.py:355 _swap_current_pointer)",
+    "atomic_checkpoint_save": "tmp + os.replace in same dir (tools/vector_indexer.py:225 save_checkpoint)",
+    "stage_commit_atomicity": "NOT atomic — manifest.json + vectors.jsonl + commit.json written sequentially with Path.write_text; mid-stage crash can leave partial dir, but content-addressed commit_id makes retry idempotent (overwrites same dir)",
+    "fsync_or_dir_sync": "none — relying on OS-level os.replace atomicity for the rename only; data buffers are not explicitly flushed to durable storage",
+    "file_lock": "none",
+    "concurrent_writer_assumption": "implicit single-writer; emit() opens in append mode without advisory lock",
+    "checksum": "sha256 over sorted (rel_path, content_sha256) pairs in commit dir, computed via _checksum_dir; commit.json itself is excluded from the input"
+  },
+  "event_log_capabilities": {
+    "format": "JSONL (one canonical event per line, sorted keys, compact separators)",
+    "writer": "vector_events.emit() opens 'a', writes line + newline, closes; vector_events.emit_many() batches in single open",
+    "reader": "vector_events.read_events() iterates lines, json.loads each, constructs VectorEvent; missing file → empty iterator",
+    "malformed_line_policy": "SILENT SKIP — read_events catches json.JSONDecodeError on parse and KeyError/ValueError on construction, continues",
+    "deduplication": "VectorEvent.event_id() excludes ts so same content yields same id — but writer does NOT dedup; consumer must dedup if needed",
+    "schema_version": "VECTOR_EVENT_SCHEMA_VERSION = 1; old v1 events without 'source' field still parse (defaults to None)"
+  },
+  "known_failure_surfaces": {
+    "F1_mid_stage_write": "manifest, vectors, or commit.json partial write — retry is idempotent because commit_id is content-addressed and stage path is deterministic",
+    "F2_mid_checksum": "_checksum_dir crashes mid-rglob — commit.json not written, prior current.json untouched, retry recomputes",
+    "F3_before_swap": "post-stage, pre-os.replace — staged dir exists with manifest + vectors + commit.json but pointer still points to prior commit; retry stages same content, swaps cleanly",
+    "F4_after_swap_before_emit": "pointer advanced to new commit but no vector.commit_applied event emitted; rerun re-stages (idempotent) + re-swaps (idempotent — same content) + emits event for the first time. NOTE: this means a successful first run plus a between-swap-and-emit crash can produce two emits if the crash happens between emit and checkpoint save (see F5)",
+    "F5_after_emit_before_checkpoint": "event row in log but checkpoint not advanced; rerun reads checkpoint (still points at prior id) → folds events including the just-emitted commit_applied → recomputes the same commit_id → re-emits a duplicate vector.commit_applied event. event_id is identical (excludes ts) — duplicate detection is the consumer's responsibility, but the duplicate is harmless because commit content is byte-identical",
+    "F6_malformed_row": "json.JSONDecodeError or KeyError/ValueError on construction → silently skipped by read_events; later events still applied; projection becomes a function of valid rows only",
+    "F7_pointer_swap_partial_on_windows": "os.replace is documented atomic on both POSIX and Windows; no known partial-replace failure mode in normal operation",
+    "F8_multi_writer_append_interleave": "POSIX append-mode write atomicity holds up to PIPE_BUF (~4096 bytes) for raw write; Python text-mode buffering can break this. On Windows, FILE_APPEND_DATA is single-write atomic. Best-effort either way; not portable to assume cross-platform atomic concurrent emit().",
+    "F9_truncation_or_shrink_of_temp_artifact": "if a tmp file in the same dir is truncated by another writer between Path.write_text and os.replace, the swap promotes a corrupt file. No protection in current code."
+  },
+  "current_event_semantics": "at_least_once_but_idempotent_per_commit (proven via inspection of apply() ordering — see chosen_event_semantics rationale)",
+  "current_checkpoint_semantics": "global checkpoint advances after at least one cell applied; per-cell checkpoint advances inline within the try-block before global save; checkpoint is durable via tmp + os.replace",
+  "chosen_event_semantics": "at_least_once_but_idempotent_per_commit",
+  "chosen_event_semantics_rationale": "exact_once_per_commit cannot be proven without either a two-phase commit journal or a transactional write+emit. Current design relies on (a) content-addressed commit_id from compute_commit_id (deterministic, hash of cell_state.signatures), (b) atomic pointer swap via os.replace, and (c) atomic checkpoint via os.replace. Failure between swap and emit, or between emit and checkpoint, leads to a redundant event on rerun — but the duplicate has the same event_id (event_id excludes ts) and the same commit content. So the contract is at-least-once with idempotent payload semantics. Consumers must dedup by event_id or commit_id if exact-once observable behavior is required.",
+  "consumed_files_inspected": [
+    "waggledance/core/magma/vector_events.py",
+    "tools/vector_indexer.py",
+    "tools/backfill_axioms_to_hex.py",
+    "tests/test_vector_events.py",
+    "tests/test_vector_indexer.py",
+    "schemas/solver_proposal.schema.json (read-only context)"
+  ],
+  "completed_subparts": [
+    "R7.5-A: writer/event capability inspection (first pass)"
+  ],
+  "remaining_subparts": [
+    "R7.5-B: VECTOR_WRITER_RESILIENCE.md failure matrix doc",
+    "R7.5-C: optional VECTOR_EVENT_LOG_POLICY.md",
+    "R7.5-D: 26+ targeted resilience tests in test_vector_writer_resilience.py",
+    "R7.5-F: minimal hardening only if tests reveal real bug",
+    "R7.5-G: pointer durability documentation",
+    "R7.5-H: multi-writer hazard test or documented deferral",
+    "R7.5-I: malformed row policy documentation"
+  ],
+  "blocked": false,
+  "blocked_reason": null,
+  "open_risks": [
+    "fsync omission means kernel-level disk loss between os.replace and physical commit could leave inconsistent on-disk state on power loss; documented as best-effort, not added in R7.5 to avoid Windows/POSIX abstraction debt",
+    "true OS-level concurrent-writer test would be flaky; will simulate deterministic interleaving via mock instead",
+    "skip-malformed-rows policy is acceptable for Stage 2 scaffolding but should switch to strict mode in Stage 2.5 when a real consumer lands"
+  ],
+  "test_distribution_overrides": [],
+  "deferred_fixes": [],
+  "next_recommended_action": "R7.5-D: write tests/test_vector_writer_resilience.py with 26+ resilience tests covering each TESTING REQUIREMENTS category",
+  "constraints": {
+    "fixture_first": true,
+    "offline_safe": true,
+    "campaign_safe": true,
+    "no_runtime_touch": true,
+    "no_full_suite": true,
+    "allowed_touch_surface": [
+      "waggledance/core/magma/vector_events.py",
+      "tools/vector_indexer.py",
+      "tools/backfill_axioms_to_hex.py",
+      "docs/architecture/VECTOR_WRITER_RESILIENCE.md",
+      "docs/architecture/VECTOR_EVENT_LOG_POLICY.md",
+      "tests/test_vector_events.py",
+      "tests/test_vector_indexer.py",
+      "tests/test_vector_writer_resilience.py",
+      "docs/runs/phase8_5_vector_chaos_session_state.json"
+    ]
+  }
+}

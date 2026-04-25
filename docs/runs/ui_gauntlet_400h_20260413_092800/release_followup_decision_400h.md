@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-25T13:11:47+00:00
+**Generated:** 2026-04-25T13:41:50+00:00
 **Main ref:** `main~30`
 **Total green:** 367.33h / 400h (MID-CAMPAIGN)
 

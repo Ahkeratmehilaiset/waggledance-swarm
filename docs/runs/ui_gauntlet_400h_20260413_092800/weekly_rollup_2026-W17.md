@@ -1,16 +1,16 @@
 # Weekly Rollup — 2026-W17
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-25T13:11:46+00:00
+**Generated:** 2026-04-25T13:41:50+00:00
 
 ## Trend metrics this week
 
 - Green hours: 65.20h
 - Segments committed: 9
-- HOT queries: 27263 (24367 responded)
-- Avg latency (responded, >100ms): 3422.0 ms
-- p95 latency: 6745 ms
-- Incidents: 847
+- HOT queries: 27417 (24504 responded)
+- Avg latency (responded, >100ms): 3420.0 ms
+- p95 latency: 6676 ms
+- Incidents: 849
 - COLD health: no checks
 - Feeds monotonic: yes
 - Hologram honest: yes
@@ -20,7 +20,7 @@
 | category | count |
 |---|---|
 | chat_response_failure | 568 |
-| health_failure | 147 |
+| health_failure | 149 |
 | chat_failure | 41 |
 | cycle_crash_recovery | 28 |
 | auth_recovery_failure | 20 |

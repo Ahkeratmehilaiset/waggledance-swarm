@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "session_id": "phase8.5_curiosity_organ_session_A",
+  "started_at": "2026-04-25T07:30:00Z",
+  "branch": "phase8.5/curiosity-organ",
+  "base_branch": "phase8/honeycomb-solver-scaling-foundation",
+  "base_commit": "ddb0821",
+  "latest_green_commit": null,
+  "pinned_campaign_dir": "docs/runs/ui_gauntlet_400h_20260413_092800",
+  "pinned_artifacts": {
+    "docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl": {
+      "bytes": null,
+      "lines": null,
+      "note": "filled in by gap_miner --pin at first run"
+    },
+    "docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl": {
+      "bytes": null,
+      "lines": null
+    },
+    "docs/runs/ui_gauntlet_400h_20260413_092800/campaign_state.json": {
+      "bytes": null
+    },
+    "docs/runs/magma_hybrid_candidate_trace.jsonl": {
+      "bytes": null,
+      "lines": null
+    },
+    "docs/runs/hex_subdivision_plan.md": {
+      "bytes": null
+    },
+    "docs/runs/solver_composition_report.md": {
+      "bytes": null
+    },
+    "docs/cells/INDEX.md": {
+      "bytes": null
+    }
+  },
+  "completed_subparts": [
+    "P85.1: branch + state.json bootstrap"
+  ],
+  "remaining_subparts": [
+    "P85.2: gap_miner core",
+    "P85.3: curiosity contract + per-cell packs",
+    "P85.4: deterministic tests + fixtures",
+    "P85.5: vision doc"
+  ],
+  "blocked": false,
+  "blocked_reason": null,
+  "next_recommended_action": "implement tools/gap_miner.py with curiosity contract",
+  "open_decisions": [
+    "Whether to attempt embedding-based clustering (faiss-cpu present) or stay pure text/n-gram for determinism. Plan: pure n-gram + token-set hashing for byte-stable output; embeddings could be Session B.",
+    "How fine-grained to make the recommended_next_action enum. Plan: 6 values matching spec (propose_solver / improve_solver / propose_bridge / propose_subdivision / clarify_routing / do_nothing)."
+  ],
+  "scope_excluded": [
+    "self_model / reflective_workspace",
+    "dream_curriculum",
+    "dream mode 2.0",
+    "meta_learner / hive_proposes",
+    "vector chaos tests",
+    "runtime repoints",
+    "JetStream/NATS",
+    "any runtime hot-path changes"
+  ],
+  "constraints": {
+    "deterministic_artifacts": true,
+    "offline_safe": true,
+    "campaign_safe": true,
+    "no_runtime_touch": true,
+    "fixture_path_required": "tests/fixtures/"
+  }
+}

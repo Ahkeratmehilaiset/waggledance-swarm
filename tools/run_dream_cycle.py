@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from waggledance.core.dreaming import collapse as col  # noqa: E402
 from waggledance.core.dreaming import curriculum as cu  # noqa: E402
+from waggledance.core.dreaming import meta_proposal as mp  # noqa: E402
 from waggledance.core.dreaming import replay as rep  # noqa: E402
 from waggledance.core.dreaming import request_pack as rp  # noqa: E402
 from waggledance.core.dreaming import shadow_graph as sg  # noqa: E402
@@ -238,6 +239,27 @@ def main() -> int:
     if args.apply:
         replay_paths = rep.emit_report(replay_report, out_dir)
 
+    # ── 4) Meta-proposal (shadow-only recommendation) ──────────-
+    consumed_hooks: list[dict] = []
+    try:
+        state = json.loads(args.input_manifest.read_text(encoding="utf-8"))
+        consumed_hooks = list(state.get("consumed_hook_contracts") or [])
+    except (OSError, json.JSONDecodeError):
+        consumed_hooks = []
+    hook_errors = mp.validate_hook_contracts(consumed_hooks, ROOT)
+    if hook_errors:
+        for err in hook_errors:
+            print(f"hook contract error: {err}", file=sys.stderr)
+
+    meta = mp.build_meta_proposal(
+        collapse=report, replay=replay_report,
+        self_model=self_model,
+        consumed_hook_contracts=consumed_hooks,
+    )
+    meta_paths: dict[str, Path] = {}
+    if meta is not None and args.apply and not hook_errors:
+        meta_paths = mp.emit_meta_proposal(meta, out_dir)
+
     summary = {
         "pin_hash": pin_hash,
         "primary_source": curriculum.primary_source,
@@ -250,12 +272,16 @@ def main() -> int:
         "structural_gain_count": replay_report.structural_gain_count,
         "structurally_promising": replay_report.structurally_promising,
     }
+    summary["meta_proposal_emitted"] = bool(meta_paths)
     if args.apply:
         summary["out_dir"] = out_dir.as_posix()
         summary["collapse_report"] = {k: p.as_posix()
                                        for k, p in collapse_paths.items()}
         summary["replay_report"] = {k: p.as_posix()
                                      for k, p in replay_paths.items()}
+        if meta_paths:
+            summary["meta_proposal"] = {k: p.as_posix()
+                                          for k, p in meta_paths.items()}
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:

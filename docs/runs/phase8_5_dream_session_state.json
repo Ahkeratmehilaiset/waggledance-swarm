@@ -36,12 +36,12 @@
     "C.1: branch + state.json bootstrap + consumed_hook_contracts + proposal_gate_capabilities",
     "C.2: dream_curriculum.py planner + 18 tests",
     "C.3: dream request packs + proposal ingestion + collapse + 18 tests",
-    "C.4: shadow graph + replay harness + 14 tests"
+    "C.4: shadow graph + replay harness + 14 tests",
+    "C.5: dream_meta_proposal + 9 tests (LICENSE Change Date already 2030-03-19 from Session B; no edit required)"
   ],
   "remaining_subparts": [
-    "C.5: dream_meta_proposal + docs + 9 tests + license update",
-    "C.6: 4 architecture markdowns",
-    "C.7: BUSL Change Date update (folded into C.5 per spec same-commit rule)"
+    "C.6: 4 architecture markdowns (DREAM_MODE_2_0 + DREAM_REPLAY_FORMULAS + DREAM_PROVENANCE + optional HOOKS_FOR_META_LEARNER)",
+    "C.7: explicit Change Date affirmation commit (optional; already at 2030-03-19)"
   ],
   "test_distribution_overrides": [
     {
@@ -59,7 +59,7 @@
   ],
   "blocked": false,
   "blocked_reason": null,
-  "next_recommended_action": "C.5: implement dream_meta_proposal + 4 architecture docs + 9 tests + LICENSE Change Date update",
+  "next_recommended_action": "C.6: write 4 architecture markdowns (DREAM_MODE_2_0, DREAM_REPLAY_FORMULAS, DREAM_PROVENANCE, optional HOOKS_FOR_META_LEARNER)",
   "real_data_attempt_status": "Session B outputs available at docs/runs/self_model/c6b181835621/ — will pin those plus Session A curiosity outputs",
   "fixture_fallback_status": "not used as primary",
   "self_learning_demonstration": "real_plus_fixture",

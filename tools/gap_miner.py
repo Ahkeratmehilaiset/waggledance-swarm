@@ -157,7 +157,9 @@ class CuriosityItem:
     teacher_input_payload: dict[str, Any]
     provenance: dict[str, Any]
     pinned_artifact_root: str
-    continuity_anchor: str | None = None
+    # continuity_anchor required by x.txt §A2:
+    #   {branch_name, base_commit_hash, pinned_artifact_manifest_sha256}
+    continuity_anchor: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,15 @@ def _token_signature(text: str, max_tokens: int = 6) -> str:
     if not tokens:
         return "_empty_"
     return "_".join(sorted(tokens))
+
+
+def _query_hash(query: str) -> str:
+    """Stable per-query hash used as a cluster member identity.
+    sha256 over the normalized query, truncated to 16 hex chars.
+    Same logical query always produces the same hash regardless of
+    whitespace or punctuation differences."""
+    norm = _normalize_query(query)
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
 
 
 def _percentile(xs: list[float], p: float) -> float | None:
@@ -555,12 +566,23 @@ class _Cluster:
     CuriosityItem. Mutable here; frozen CuriosityItem is built later."""
     signature: str
     queries: list[str] = field(default_factory=list)
+    member_query_hashes: set[str] = field(default_factory=set)
     buckets: Counter = field(default_factory=Counter)
     response_count: int = 0
     no_response_count: int = 0
     latencies: list[float] = field(default_factory=list)
     errors: Counter = field(default_factory=Counter)
     cells: Counter = field(default_factory=Counter)
+
+    def cluster_id(self) -> str:
+        """Content-derived cluster id per x.txt CLUSTERING DETERMINISM
+        RULE: sha256 over the sorted member query_hashes, truncated
+        to 12 hex chars. Two clusters with the same set of members
+        always get the same id; clustering iteration order does not
+        affect the id."""
+        sorted_members = sorted(self.member_query_hashes)
+        blob = "|".join(sorted_members).encode("utf-8")
+        return "cl_" + hashlib.sha256(blob).hexdigest()[:12]
 
 
 def _cluster_signals(signals: list[_CandidateSignal]) -> list[_Cluster]:
@@ -570,6 +592,7 @@ def _cluster_signals(signals: list[_CandidateSignal]) -> list[_Cluster]:
         if sig not in by_sig:
             by_sig[sig] = _Cluster(signature=sig)
         c = by_sig[sig]
+        c.member_query_hashes.add(_query_hash(s.query))
         if len(c.queries) < 5 and s.query not in c.queries:
             c.queries.append(s.query)
         c.buckets[s.bucket] += 1
@@ -584,22 +607,31 @@ def _cluster_signals(signals: list[_CandidateSignal]) -> list[_Cluster]:
         cell = _attribute_to_cell(s.query)
         if cell:
             c.cells[cell] += 1
-    # Deterministic ordering of clusters (stable signature)
-    return sorted(by_sig.values(), key=lambda c: c.signature)
+    # Deterministic ordering of clusters by content-derived cluster_id
+    return sorted(by_sig.values(), key=lambda c: c.cluster_id())
 
 
 # ── Curiosity item construction ───────────────────────────────────
 
-def _decide_gap_type(c: _Cluster, subdivision_pressure: dict[str, float]) -> str:
-    """Heuristic mapping from cluster shape to gap-type taxonomy."""
+def _decide_gap_type(c: _Cluster,
+                       subdivision_pressure: dict[str, float],
+                       cluster_sev_hint: float | None) -> str:
+    """Heuristic mapping from cluster shape to gap-type taxonomy.
+
+    `cluster_sev_hint` carries the subdivision-pressure signal that
+    accounts for both the offline planner's severity (from
+    hex_subdivision_plan.md) AND the cluster-density rule (>=3
+    missing-solver clusters share the same candidate_cell). When
+    that hint is set strongly enough, subdivision_pressure wins.
+    """
     n = c.response_count + c.no_response_count
     fallback_rate = c.no_response_count / n if n else 0.0
     p95 = _percentile(c.latencies, 0.95) or 0.0
     most_common_cell = c.cells.most_common(1)[0][0] if c.cells else None
-    sev = subdivision_pressure.get(most_common_cell or "", 0.0)
 
-    # Subdivision pressure dominates if strongly signalled
-    if most_common_cell and sev >= 5.0 and len(c.cells) >= 2:
+    # Subdivision pressure: either the planner says so OR the
+    # cluster-density rule fires.
+    if most_common_cell and cluster_sev_hint is not None and cluster_sev_hint >= 3.0:
         return "subdivision_pressure"
     # Mostly unresolved → missing solver
     if fallback_rate >= 0.5:
@@ -635,7 +667,7 @@ def _decide_next_action(gap_type: str) -> str:
     }.get(gap_type, "do_nothing")
 
 
-def _evidence_strength(count: int) -> str:
+def _evidence_strength_label(count: int) -> str:
     if count >= EVIDENCE_HIGH_MIN:
         return "high"
     if count >= EVIDENCE_MEDIUM_MIN:
@@ -643,29 +675,48 @@ def _evidence_strength(count: int) -> str:
     return "low"
 
 
+# Normalized evidence-strength weights for the expected_value formula.
+# These are the [0,1] scalars referenced by the spec.
+_EVIDENCE_WEIGHT = {"low": 0.3, "medium": 0.6, "high": 1.0}
+
+
+def _evidence_strength_value(label: str) -> float:
+    return _EVIDENCE_WEIGHT.get(label, 0.0)
+
+
 def _estimated_value(c: _Cluster, gap_type: str,
-                       subdivision_pressure: dict[str, float]) -> float:
-    """Ranking score. NOT just count — weights by gap-type and
-    structural signal so subdivision_pressure / bridge candidates
-    don't get drowned by frequent missing_solver clusters."""
+                       has_bridge_refs: bool) -> float:
+    """Spec-mandated ranking formula (x.txt EXPECTED VALUE FORMULA):
+
+        expected_value =
+            count
+            × fallback_rate
+            × evidence_strength
+            × (1 + bridge_candidate_bonus)
+
+    where:
+      count            = cluster case count
+      fallback_rate    = no_response / total in [0,1]
+      evidence_strength = normalized weight in [0,1]
+                          ({"low":0.3, "medium":0.6, "high":1.0})
+      bridge_candidate_bonus = 0.25 if any bridge refs else 0.0
+
+    Note: a cluster with fallback_rate=0 ranks at 0 under this
+    formula. That is intended — a cluster that always succeeds is
+    not a curiosity, no matter how big. Boosters for high-latency
+    or subdivision-pressure cases are applied via gap_type
+    classification (which routes to ACCEPT-class actions) rather
+    than by inflating the value here.
+    """
     n = c.response_count + c.no_response_count
-    fallback = c.no_response_count / n if n else 0.0
-    p95 = _percentile(c.latencies, 0.95) or 0.0
-    cell_diversity = len(c.cells)
-    most_common_cell = c.cells.most_common(1)[0][0] if c.cells else None
-    sev = subdivision_pressure.get(most_common_cell or "", 0.0)
-
-    base = min(1.0, n / 50.0)              # saturates at 50 cluster size
-    fallback_bonus = fallback * 0.6
-    latency_bonus = min(0.4, p95 / 25_000.0)
-    cell_bonus = 0.15 * (cell_diversity - 1) if cell_diversity > 1 else 0.0
-    sev_bonus = 0.0
-    if gap_type == "subdivision_pressure":
-        sev_bonus = min(0.5, sev / 10.0)
-    elif gap_type == "bridge_composition":
-        cell_bonus += 0.1
-
-    return round(base + fallback_bonus + latency_bonus + cell_bonus + sev_bonus, 4)
+    if n == 0:
+        return 0.0
+    fallback_rate = c.no_response_count / n
+    evidence_label = _evidence_strength_label(n)
+    evidence_value = _evidence_strength_value(evidence_label)
+    bridge_bonus = 0.25 if has_bridge_refs else 0.0
+    raw = float(n) * fallback_rate * evidence_value * (1.0 + bridge_bonus)
+    return round(raw, 4)
 
 
 def _curiosity_id(cluster_signature: str, gap_type: str,
@@ -678,13 +729,13 @@ def _build_curiosity_item(c: _Cluster,
                            subdivision_pressure: dict[str, float],
                            bridges: list[dict],
                            pinned: PinnedSet,
-                           cluster_index: int) -> CuriosityItem:
+                           clusters_per_cell: dict[str, int],
+                           continuity_anchor_template: dict) -> CuriosityItem:
     n = c.response_count + c.no_response_count
-    gap_type = _decide_gap_type(c, subdivision_pressure)
+    most_common_cell = c.cells.most_common(1)[0][0] if c.cells else None
     fallback_rate = (c.no_response_count / n) if n else None
     p50 = _percentile(c.latencies, 0.50)
     p95 = _percentile(c.latencies, 0.95)
-    most_common_cell = c.cells.most_common(1)[0][0] if c.cells else None
 
     # Bridge candidate refs: any bridges whose endpoints touch a cell
     # in this cluster.
@@ -694,26 +745,44 @@ def _build_curiosity_item(c: _Cluster,
         if b["from"] in cluster_cells or b["to"] in cluster_cells
     }))
 
+    # Subdivision-pressure hint per x.txt HIGHER-ORDER CURIOSITY RULE.
+    # Two sources contribute:
+    # (1) hex_subdivision_plan.md severity for this cell (offline
+    #     planner's verdict)
+    # (2) cluster-density rule: >= 3 missing-solver clusters share
+    #     the same candidate_cell → the cell may be too broad.
+    sev_severity = subdivision_pressure.get(most_common_cell or "")
+    cluster_density = clusters_per_cell.get(most_common_cell or "", 0)
+    sev_hint: float | None
+    if sev_severity is not None and sev_severity > 0:
+        sev_hint = sev_severity
+    elif cluster_density >= 3:
+        sev_hint = float(cluster_density)
+    else:
+        sev_hint = None
+
+    gap_type = _decide_gap_type(c, subdivision_pressure, sev_hint)
+
     contradiction_hints = tuple(
         sorted(err for err, _ in c.errors.most_common(3))
     )
-
-    sev_hint = subdivision_pressure.get(most_common_cell or "")
 
     teacher_payload = _build_teacher_input_payload(c, gap_type, most_common_cell)
 
     next_action = _decide_next_action(gap_type)
 
-    # Higher-order: do_nothing for very low evidence
-    evidence = _evidence_strength(n)
-    if evidence == "low" and gap_type != "subdivision_pressure":
+    evidence_label = _evidence_strength_label(n)
+    if evidence_label == "low" and gap_type != "subdivision_pressure":
         next_action = "do_nothing"
+
+    cluster_id = c.cluster_id()
+    has_bridge_refs = bool(bridge_refs)
 
     return CuriosityItem(
         curiosity_id=_curiosity_id(c.signature, gap_type, pinned.pin_hash),
-        cluster_id=f"cl_{cluster_index:05d}_{c.signature[:24]}",
+        cluster_id=cluster_id,
         candidate_cell=most_common_cell,
-        evidence_strength=evidence,
+        evidence_strength=evidence_label,
         suspected_gap_type=gap_type,
         suspected_missing_capability=_capability_hint(c, gap_type),
         query_examples=tuple(sorted(c.queries))[:5],
@@ -724,16 +793,17 @@ def _build_curiosity_item(c: _Cluster,
         contradiction_hints=contradiction_hints,
         bridge_candidate_refs=bridge_refs,
         subdivision_pressure_hint=sev_hint,
-        estimated_value=_estimated_value(c, gap_type, subdivision_pressure),
+        estimated_value=_estimated_value(c, gap_type, has_bridge_refs),
         recommended_next_action=next_action,
         teacher_input_payload=teacher_payload,
         provenance={
             "miner_version": GAP_MINER_SCHEMA_VERSION,
             "cluster_signature": c.signature,
             "buckets": dict(c.buckets),
+            "clusters_in_cell": cluster_density,
         },
         pinned_artifact_root=pinned.campaign_dir,
-        continuity_anchor=None,
+        continuity_anchor=dict(continuity_anchor_template),
     )
 
 
@@ -766,23 +836,108 @@ def _build_teacher_input_payload(c: _Cluster, gap_type: str,
 
 # ── Top-level mining ──────────────────────────────────────────────
 
+def _build_continuity_anchor(pinned: PinnedSet,
+                                branch_name: str | None = None,
+                                base_commit_hash: str | None = None) -> dict[str, str]:
+    """Per x.txt §A2: continuity_anchor must include branch_name,
+    base_commit_hash, and pinned_artifact_manifest_sha256."""
+    return {
+        "branch_name": branch_name or _detect_branch() or "",
+        "base_commit_hash": base_commit_hash or _detect_base_commit() or "",
+        "pinned_artifact_manifest_sha256": pinned.pin_hash,
+    }
+
+
+def _detect_branch() -> str | None:
+    """Best-effort: read git HEAD ref. Returns None if .git is
+    missing or unreadable."""
+    head = ROOT / ".git" / "HEAD"
+    if not head.exists():
+        return None
+    try:
+        text = head.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if text.startswith("ref: "):
+        return text[5:].strip().rsplit("/", 1)[-1]
+    return None
+
+
+def _detect_base_commit() -> str | None:
+    """Best-effort: resolve current HEAD commit. Returns None if
+    .git is missing or in a detached state we can't follow."""
+    head = ROOT / ".git" / "HEAD"
+    if not head.exists():
+        return None
+    try:
+        text = head.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if text.startswith("ref: "):
+        ref_path = ROOT / ".git" / text[5:].strip()
+        if ref_path.exists():
+            try:
+                return ref_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+        # Could be a packed ref; not worth resolving here
+        return None
+    # Detached HEAD
+    return text or None
+
+
 def mine(campaign_dir: Path | None = None,
          fixture_dir: Path | None = None,
-         max_clusters: int = 200) -> GapMinerReport:
-    """End-to-end mine pass. Pure function — does not write files."""
-    pinned = pin_artifacts(campaign_dir, fixture_dir=fixture_dir)
+         max_clusters: int = 200,
+         pinned: PinnedSet | None = None,
+         branch_name: str | None = None,
+         base_commit_hash: str | None = None,
+         min_evidence: float = 0.0,
+         cell_filter: str | None = None) -> GapMinerReport:
+    """End-to-end mine pass. Pure function — does not write files.
+
+    If `pinned` is supplied, the caller has already pinned artifacts
+    (e.g. from --artifact-manifest); the function honours that pin
+    instead of re-globbing. This is the preferred path for
+    reproducible runs.
+    """
+    if pinned is None:
+        pinned = pin_artifacts(campaign_dir, fixture_dir=fixture_dir)
     signals = _scan_hot_results(pinned)
     subdivision_pressure = _scan_subdivision_pressure(pinned)
     bridges = _scan_bridge_candidates(pinned)
     clusters = _cluster_signals(signals)
 
-    # Ranking pass: build items, sort by estimated_value desc, keep
-    # max_clusters; tie-break by cluster_id for determinism.
+    # Pre-pass: count missing-solver clusters per cell so the
+    # subdivision-pressure heuristic can fire (x.txt HIGHER-ORDER
+    # CURIOSITY RULE).
+    clusters_per_cell: dict[str, int] = {}
+    for c in clusters:
+        n = c.response_count + c.no_response_count
+        if not n:
+            continue
+        fr = c.no_response_count / n
+        cell = c.cells.most_common(1)[0][0] if c.cells else None
+        if fr >= 0.5 and cell:
+            clusters_per_cell[cell] = clusters_per_cell.get(cell, 0) + 1
+
+    anchor_template = _build_continuity_anchor(
+        pinned, branch_name=branch_name, base_commit_hash=base_commit_hash,
+    )
+
+    # Build items.
     items: list[CuriosityItem] = []
-    for idx, c in enumerate(clusters):
+    for c in clusters:
         items.append(_build_curiosity_item(
-            c, subdivision_pressure, bridges, pinned, idx,
+            c, subdivision_pressure, bridges, pinned,
+            clusters_per_cell, anchor_template,
         ))
+
+    # Apply CLI filters before ranking
+    if cell_filter is not None:
+        items = [i for i in items if i.candidate_cell == cell_filter]
+    if min_evidence > 0.0:
+        items = [i for i in items if i.estimated_value >= min_evidence]
 
     items.sort(key=lambda i: (-i.estimated_value, i.cluster_id))
     items = items[:max_clusters]

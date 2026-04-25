@@ -17,9 +17,16 @@
     "P85.2: gap_miner core (feat)",
     "P85.3: curiosity contract + per-cell packs (feat) — landed in same commit as P85.2 since the contract is the type signature of the miner output",
     "P85.4: deterministic tests + fixtures (test) — 26 cases, all pass",
-    "P85.5: vision doc (docs)"
+    "P85.5: vision doc (docs)",
+    "R75.1: cluster_id content-derived (sha256 of sorted member query_hashes) + spec expected_value formula (count × fallback × evidence × (1 + bridge_bonus))"
   ],
-  "remaining_subparts": [],
+  "remaining_subparts": [
+    "R75.2: --artifact-manifest enforcement + spec CLI flags (--cell, --min-evidence, --dry-run, --output-dir, default output path docs/runs/curiosity/<sha12>/)",
+    "R75.3: continuity_anchor on every item + spec pin-manifest fields (first/last 4KB hash + mtime) + integrity check at session end",
+    "R75.4: subdivision_pressure clusters-per-cell heuristic test coverage",
+    "R75.5: tests for the 4 newly required categories (artifact-manifest enforcement, content-derived cluster_id, real-data-first fallback, /home/ + /Users/ path leakage)",
+    "R75.6: vision doc + state.json updated with R7.5 fields"
+  ],
   "blocked": false,
   "blocked_reason": null,
   "next_recommended_action": "wait for ui_gauntlet_400h campaign to complete (~50 h remaining), then do session B: embedding-based clustering + first real teacher-loop run feeding teacher_packs into tools/propose_solver.py",

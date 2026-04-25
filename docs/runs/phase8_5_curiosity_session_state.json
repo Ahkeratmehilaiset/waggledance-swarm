@@ -20,11 +20,10 @@
     "P85.5: vision doc (docs)",
     "R75.1: cluster_id content-derived (sha256 of sorted member query_hashes) + spec expected_value formula (count × fallback × evidence × (1 + bridge_bonus))",
     "R75.2: --artifact-manifest enforcement + spec CLI flags (--cell, --min-evidence, --dry-run, --output-dir, default output path docs/runs/curiosity/<sha12>/)",
-    "R75.3: continuity_anchor on every item + spec pin-manifest fields (first/last 4KB hash + mtime) + verify_pin_integrity() at session end"
+    "R75.3: continuity_anchor on every item + spec pin-manifest fields (first/last 4KB hash + mtime) + verify_pin_integrity() at session end",
+    "R75.4 + R75.5: 16 new R7.5 tests landed (cluster_id format + content-derived stability, expected_value formula behaviour, --artifact-manifest enforcement + bounded read, real-data-first fallback path, integrity check clean/shrink/first-drift/append-only-growth, continuity_anchor required keys, subdivision_pressure cluster-density heuristic, extended path-leakage, pin-manifest first/last 4KB and mtime fields)"
   ],
   "remaining_subparts": [
-    "R75.4: subdivision_pressure clusters-per-cell heuristic test coverage",
-    "R75.5: tests for the 4 newly required categories (artifact-manifest enforcement, content-derived cluster_id, real-data-first fallback, /home/ + /Users/ path leakage)",
     "R75.6: vision doc + state.json updated with R7.5 fields"
   ],
   "blocked": false,

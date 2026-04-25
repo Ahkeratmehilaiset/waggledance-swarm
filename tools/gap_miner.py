@@ -1131,7 +1131,62 @@ def emit(report: GapMinerReport, out_dir: Path) -> dict[str, Path]:
 
 # ── CLI ────────────────────────────────────────────────────────────
 
-DEFAULT_OUT_DIR = ROOT / "docs" / "runs" / "gap_miner"
+DEFAULT_OUT_ROOT = ROOT / "docs" / "runs" / "curiosity"
+
+
+def _default_out_dir(pinned: PinnedSet) -> Path:
+    """Per x.txt §CLI REQUIREMENTS: default to
+    docs/runs/curiosity/<pinned_artifact_manifest_sha12>/. The hash
+    is derived from the pin, NOT wall-clock time, so the output
+    location is reproducible."""
+    sha12 = pinned.pin_hash.replace("sha256:", "")[:12]
+    return DEFAULT_OUT_ROOT / sha12
+
+
+def _load_manifest_pin(manifest_path: Path) -> PinnedSet:
+    """Reconstruct a PinnedSet from a state.json (or dedicated
+    manifest JSON) emitted by an earlier session. The file must
+    expose a top-level `pinned_artifact_manifest` (or `pinned_artifacts`
+    for backward compatibility) plus the `pinned_artifact_manifest_sha256`.
+    """
+    with open(manifest_path, encoding="utf-8") as f:
+        data = json.load(f)
+    raw = data.get("pinned_artifact_manifest") or data.get("pinned_artifacts")
+    if isinstance(raw, dict):
+        # state.json shape: {"path1": {bytes,lines,sha256,...}, ...}
+        items = []
+        for path, info in sorted(raw.items()):
+            if not isinstance(info, dict):
+                continue
+            if info.get("bytes") is None:
+                continue
+            items.append(PinnedArtifact(
+                relpath=path,
+                bytes=int(info["bytes"]),
+                lines=info.get("lines"),
+                sha256=info.get("sha256"),
+            ))
+    elif isinstance(raw, list):
+        items = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            items.append(PinnedArtifact(
+                relpath=entry.get("path") or entry.get("relpath", ""),
+                bytes=int(entry.get("bytes") or entry.get("size_bytes", 0)),
+                lines=entry.get("lines"),
+                sha256=entry.get("sha256") or entry.get("sha256_full"),
+            ))
+    else:
+        items = []
+    pin_hash = data.get("pinned_artifact_manifest_sha256") or "sha256:unknown"
+    cdir = data.get("pinned_campaign_dir", "")
+    return PinnedSet(
+        campaign_dir=cdir,
+        artifacts=tuple(items),
+        pinned_at=data.get("pinned_at", ""),
+        pin_hash=pin_hash,
+    )
 
 
 def main() -> int:
@@ -1141,21 +1196,64 @@ def main() -> int:
                          "ui_gauntlet_400h_*)")
     ap.add_argument("--fixture", type=Path, default=None,
                     help="run against a fixture tree under tests/fixtures/")
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    ap.add_argument("--artifact-manifest", type=Path, default=None,
+                    help="path to a JSON manifest of pinned artifacts. "
+                         "When supplied, gap_miner reads ONLY pinned files "
+                         "up to their pinned size_bytes and never re-globs.")
+    ap.add_argument("--output-dir", type=Path, default=None,
+                    help="default: docs/runs/curiosity/<pin_sha12>/")
+    ap.add_argument("--cell", type=str, default=None,
+                    help="restrict output to a single candidate_cell")
+    ap.add_argument("--min-evidence", type=float, default=0.0,
+                    help="filter out items with estimated_value below this")
     ap.add_argument("--max-clusters", type=int, default=200)
     ap.add_argument("--apply", action="store_true",
                     help="write artifacts (default: dry-run summary)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="validate inputs and exit without emitting "
+                         "or analyzing — overrides --apply")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+
+    # Pin: --artifact-manifest takes precedence and is the most
+    # reproducible input; fixture and live-discovery are fallbacks.
+    pinned: PinnedSet | None = None
+    if args.artifact_manifest is not None:
+        pinned = _load_manifest_pin(args.artifact_manifest)
+
+    if args.dry_run:
+        # Validate-only mode per x.txt §CLI REQUIREMENTS.
+        if pinned is None:
+            pinned = pin_artifacts(args.campaign_dir,
+                                   fixture_dir=args.fixture)
+        out = {
+            "mode": "dry-run",
+            "pin_hash": pinned.pin_hash,
+            "campaign_dir": pinned.campaign_dir,
+            "artifact_count": len(pinned.artifacts),
+            "ok": all(a.bytes >= 0 for a in pinned.artifacts),
+        }
+        if args.json:
+            print(json.dumps(out, indent=2, sort_keys=True))
+        else:
+            print(f"=== Gap miner dry-run (validate only) ===")
+            for k, v in out.items():
+                print(f"{k}: {v}")
+        return 0
 
     report = mine(
         campaign_dir=args.campaign_dir,
         fixture_dir=args.fixture,
         max_clusters=args.max_clusters,
+        pinned=pinned,
+        cell_filter=args.cell,
+        min_evidence=args.min_evidence,
     )
 
+    out_dir = args.output_dir or _default_out_dir(report.pinned_set)
+
     if args.apply:
-        out = emit(report, args.out_dir)
+        out = emit(report, out_dir)
         if args.json:
             print(json.dumps({
                 "summary": out["summary"].as_posix(),
@@ -1188,6 +1286,8 @@ def main() -> int:
             print(f"by action:       {report.counts_by_action}")
             print(f"by cell:         {report.counts_by_cell}")
             print()
+            print(f"(default output-dir would be: "
+                  f"{_default_out_dir(report.pinned_set).as_posix()})")
             print("(use --apply to write artifacts)")
     return 0
 

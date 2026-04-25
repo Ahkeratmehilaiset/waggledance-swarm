@@ -1,0 +1,237 @@
+{
+  "base_branch": "phase8.5/curiosity-organ",
+  "base_commit": "1a31b24",
+  "blocked": false,
+  "blocked_reason": null,
+  "branch": "phase8.5/self-model-layer",
+  "completed_subparts": [
+    "B.1: branch + state.json bootstrap"
+  ],
+  "constraints": {
+    "campaign_safe": true,
+    "crown_jewel_paths": [
+      "waggledance/core/magma/self_model*",
+      "waggledance/core/magma/reflective_workspace*"
+    ],
+    "deterministic_artifacts": true,
+    "no_runtime_touch": true,
+    "offline_safe": true
+  },
+  "consumed_hook_contracts": [],
+  "fixture_fallback_status": "not used",
+  "latest_green_commit": null,
+  "next_recommended_action": "implement tools/build_self_model_snapshot.py with curiosity-input join, scorecard, blind_spot stubs, self_entity_alignment",
+  "open_decisions": [
+    "Filename for snapshot module: chose waggledance/core/magma/self_model.py (no collision detected).",
+    "Whether to read live campaign hot_results directly: NO. Self-model reads only digested upstream artifacts (curiosity outputs, manifests, reports) per spec, not raw campaign rows."
+  ],
+  "pinned_input_integrity_check": {
+    "method": "verify_pin_integrity() will re-verify each pinned input against the start-of-session digests",
+    "rule": "shrunk / first_drift / last_drift / missing \u2192 critical; append-only growth \u2192 ok",
+    "status": "deferred to session-end CLI invocation"
+  },
+  "pinned_input_manifest_sha256": "sha256:c6b1818356213306d97132901f42e333357443dcb857b8c27123e9169cecf44e",
+  "pinned_inputs": [
+    {
+      "lines": null,
+      "mtime_epoch": 1777094389.9030125,
+      "path": "docs/runs/phase8_5_curiosity_session_state.json",
+      "sha256_first_4096_bytes": "bc28d709ea8c41c5e3e45a5331995c5c76a3596b0322468a05fd683d3d40551b",
+      "sha256_full": "bc28d709ea8c41c5e3e45a5331995c5c76a3596b0322468a05fd683d3d40551b",
+      "sha256_last_4096_bytes": "bc28d709ea8c41c5e3e45a5331995c5c76a3596b0322468a05fd683d3d40551b",
+      "size_bytes": 4782
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777094997.567415,
+      "path": "docs/runs/curiosity/6b766421f410/curiosity_summary.json",
+      "sha256_first_4096_bytes": "fa00472d2661a1cae06561efb387cec7688cdaea0c51fb605cf50ffc1c0ca8ec",
+      "sha256_full": "fa00472d2661a1cae06561efb387cec7688cdaea0c51fb605cf50ffc1c0ca8ec",
+      "sha256_last_4096_bytes": "fa00472d2661a1cae06561efb387cec7688cdaea0c51fb605cf50ffc1c0ca8ec",
+      "size_bytes": 6271
+    },
+    {
+      "lines": 100,
+      "mtime_epoch": 1777094997.5703123,
+      "path": "docs/runs/curiosity/6b766421f410/curiosity_log.jsonl",
+      "sha256_first_4096_bytes": "941febab532036085dcfba70b8c90795e8882fa03731b859bb845beb45f147b0",
+      "sha256_full": "fdbeaa6585f35456624c26dfa16b852358fc9c2e12feadbe64ce5eca94f643ff",
+      "sha256_last_4096_bytes": "3678cd72ccefdb9f6d50bbb48894f19076cb2efe13097ac3358fabd3a7c5c355",
+      "size_bytes": 115817
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777094997.5703123,
+      "path": "docs/runs/curiosity/6b766421f410/curiosity_report.md",
+      "sha256_first_4096_bytes": "6edcd1978bd917855e4e486dc532b13f7b1c5d6f3089f2e8c244539b1cfe07de",
+      "sha256_full": "6edcd1978bd917855e4e486dc532b13f7b1c5d6f3089f2e8c244539b1cfe07de",
+      "sha256_last_4096_bytes": "6edcd1978bd917855e4e486dc532b13f7b1c5d6f3089f2e8c244539b1cfe07de",
+      "size_bytes": 2991
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777010615.6577432,
+      "path": "docs/runs/solver_composition_report.md",
+      "sha256_first_4096_bytes": "7772b7a2b5980f869cac6ade68926fef8ab2b2304592a489471f1ede05480665",
+      "sha256_full": "7772b7a2b5980f869cac6ade68926fef8ab2b2304592a489471f1ede05480665",
+      "sha256_last_4096_bytes": "7772b7a2b5980f869cac6ade68926fef8ab2b2304592a489471f1ede05480665",
+      "size_bytes": 4173
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777005883.0172255,
+      "path": "docs/runs/hex_subdivision_plan.md",
+      "sha256_first_4096_bytes": "185c828ccc5fa4512fd2cee16efad4ffeb5bc5af20e1836e8c1a93d2bba81e00",
+      "sha256_full": "185c828ccc5fa4512fd2cee16efad4ffeb5bc5af20e1836e8c1a93d2bba81e00",
+      "sha256_last_4096_bytes": "185c828ccc5fa4512fd2cee16efad4ffeb5bc5af20e1836e8c1a93d2bba81e00",
+      "size_bytes": 8129
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777005999.0270524,
+      "path": "docs/runs/phase8_capability_report.md",
+      "sha256_first_4096_bytes": "3b81d7880d3d3ba8434266188b916fae75e23ad404199150d0a63c3fb602d711",
+      "sha256_full": "3b81d7880d3d3ba8434266188b916fae75e23ad404199150d0a63c3fb602d711",
+      "sha256_last_4096_bytes": "3b81d7880d3d3ba8434266188b916fae75e23ad404199150d0a63c3fb602d711",
+      "size_bytes": 1816
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777094997.5713177,
+      "path": "docs/runs/curiosity/6b766421f410/teacher_packs/_unattributed.json",
+      "sha256_first_4096_bytes": "a4567f4a530f900db9db0f71e10805afcd6ff1e9e03b5c6d203020229e157f89",
+      "sha256_full": "07b4f77e7479bbfb9c1ad1c758ae5772afeb46c55738396ea969d5258114f1c1",
+      "sha256_last_4096_bytes": "fa146c04b07a98452ada424c22bb67bddb22f4f239705efeb0b821f11d40399a",
+      "size_bytes": 78044
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777094997.5723133,
+      "path": "docs/runs/curiosity/6b766421f410/teacher_packs/safety.json",
+      "sha256_first_4096_bytes": "05766753081c084d8feaaa286778dfeaf9a56b5acaeaa6e48f67182025a6a8bc",
+      "sha256_full": "05766753081c084d8feaaa286778dfeaf9a56b5acaeaa6e48f67182025a6a8bc",
+      "sha256_last_4096_bytes": "05766753081c084d8feaaa286778dfeaf9a56b5acaeaa6e48f67182025a6a8bc",
+      "size_bytes": 934
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777094997.5723133,
+      "path": "docs/runs/curiosity/6b766421f410/teacher_packs/seasonal.json",
+      "sha256_first_4096_bytes": "c67f319ef73b97feb70c7c0389f2876ef91827ed5409bc14587d05a644c31e87",
+      "sha256_full": "c67f319ef73b97feb70c7c0389f2876ef91827ed5409bc14587d05a644c31e87",
+      "sha256_last_4096_bytes": "c67f319ef73b97feb70c7c0389f2876ef91827ed5409bc14587d05a644c31e87",
+      "size_bytes": 1113
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777094997.5723133,
+      "path": "docs/runs/curiosity/6b766421f410/teacher_packs/system.json",
+      "sha256_first_4096_bytes": "4d254aef5b7eaa88ec7fd56b5b6fdbe7b17ba84eb98dee838b69ccc1f32adaec",
+      "sha256_full": "4d254aef5b7eaa88ec7fd56b5b6fdbe7b17ba84eb98dee838b69ccc1f32adaec",
+      "sha256_last_4096_bytes": "4d254aef5b7eaa88ec7fd56b5b6fdbe7b17ba84eb98dee838b69ccc1f32adaec",
+      "size_bytes": 1926
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777009874.6145265,
+      "path": "docs/cells/energy/manifest.json",
+      "sha256_first_4096_bytes": "e6049922ffbdfb9f2b0593bb03a0735dcfbca4cfb65ce14cf45672c7cbd942d2",
+      "sha256_full": "e6049922ffbdfb9f2b0593bb03a0735dcfbca4cfb65ce14cf45672c7cbd942d2",
+      "sha256_last_4096_bytes": "e6049922ffbdfb9f2b0593bb03a0735dcfbca4cfb65ce14cf45672c7cbd942d2",
+      "size_bytes": 3341
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777009874.61253,
+      "path": "docs/cells/general/manifest.json",
+      "sha256_first_4096_bytes": "110bb76e8248b843c709c4fbcaf97b22b819575fccaace9a0659a1c3690229cc",
+      "sha256_full": "110bb76e8248b843c709c4fbcaf97b22b819575fccaace9a0659a1c3690229cc",
+      "sha256_last_4096_bytes": "110bb76e8248b843c709c4fbcaf97b22b819575fccaace9a0659a1c3690229cc",
+      "size_bytes": 2008
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777009874.6178803,
+      "path": "docs/cells/learning/manifest.json",
+      "sha256_first_4096_bytes": "f1d4918a1e91ae26237f8724a29ab302463a67b6acde55cfa72a1922d2f92fa4",
+      "sha256_full": "f1d4918a1e91ae26237f8724a29ab302463a67b6acde55cfa72a1922d2f92fa4",
+      "sha256_last_4096_bytes": "f1d4918a1e91ae26237f8724a29ab302463a67b6acde55cfa72a1922d2f92fa4",
+      "size_bytes": 3073
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777009874.616529,
+      "path": "docs/cells/math/manifest.json",
+      "sha256_first_4096_bytes": "098a9504b96ed3323260a20bd46918187466973fe0095a2700d0bb4d0917ed1e",
+      "sha256_full": "098a9504b96ed3323260a20bd46918187466973fe0095a2700d0bb4d0917ed1e",
+      "sha256_last_4096_bytes": "098a9504b96ed3323260a20bd46918187466973fe0095a2700d0bb4d0917ed1e",
+      "size_bytes": 2888
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777009874.6155307,
+      "path": "docs/cells/safety/manifest.json",
+      "sha256_first_4096_bytes": "33a2b4db26068c79f666542dc626f64ad0dde5253cc5dbdc8fc48488774396c5",
+      "sha256_full": "33a2b4db26068c79f666542dc626f64ad0dde5253cc5dbdc8fc48488774396c5",
+      "sha256_last_4096_bytes": "33a2b4db26068c79f666542dc626f64ad0dde5253cc5dbdc8fc48488774396c5",
+      "size_bytes": 2981
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777009874.6155307,
+      "path": "docs/cells/seasonal/manifest.json",
+      "sha256_first_4096_bytes": "4dc8ed20eaf659200c696b261d196a24e3a732b9f39c004623f5a23874e08f97",
+      "sha256_full": "4dc8ed20eaf659200c696b261d196a24e3a732b9f39c004623f5a23874e08f97",
+      "sha256_last_4096_bytes": "4dc8ed20eaf659200c696b261d196a24e3a732b9f39c004623f5a23874e08f97",
+      "size_bytes": 6051
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777009874.616529,
+      "path": "docs/cells/system/manifest.json",
+      "sha256_first_4096_bytes": "577eac90ae7ea30fa3c759ccd29c6d8fbb7e161ba3ac1e95f46f98680c2ecfb4",
+      "sha256_full": "577eac90ae7ea30fa3c759ccd29c6d8fbb7e161ba3ac1e95f46f98680c2ecfb4",
+      "sha256_last_4096_bytes": "577eac90ae7ea30fa3c759ccd29c6d8fbb7e161ba3ac1e95f46f98680c2ecfb4",
+      "size_bytes": 3477
+    },
+    {
+      "lines": null,
+      "mtime_epoch": 1777009874.6135285,
+      "path": "docs/cells/thermal/manifest.json",
+      "sha256_first_4096_bytes": "1578dab7a0bcf4db46e9c30555e0bf74e67fb6ef3abad6ccfead98bf5f424868",
+      "sha256_full": "1578dab7a0bcf4db46e9c30555e0bf74e67fb6ef3abad6ccfead98bf5f424868",
+      "sha256_last_4096_bytes": "1578dab7a0bcf4db46e9c30555e0bf74e67fb6ef3abad6ccfead98bf5f424868",
+      "size_bytes": 4435
+    }
+  ],
+  "real_data_attempt_status": "session A outputs found at docs/runs/curiosity/6b766421f410/ \u2014 attempting real-data first",
+  "remaining_subparts": [
+    "B.2: snapshot core + 17 tests",
+    "B.3: workspace + tensions + 16 tests",
+    "B.4: calibration + continuity + 12 tests",
+    "B.5: docs (4 markdowns)",
+    "B.6: BUSL Change Date 2030-03-18 \u2192 2030-03-19"
+  ],
+  "schema_version": 1,
+  "scope_excluded": [
+    "gap_miner work (Session A scope)",
+    "dream_curriculum runtime",
+    "Dream Mode execution",
+    "meta_learner / hive_proposes",
+    "vector writer chaos testing",
+    "runtime repoints",
+    "JetStream / NATS"
+  ],
+  "self_entity_collision_check": {
+    "existing_self_entity_module": null,
+    "note": "No file named self_model.py or self_entity.py exists. Free to use waggledance/core/magma/self_model.py without collision. Existing modules under autonomy/world/learning are unrelated semantically.",
+    "searched_paths": [
+      "waggledance/core/magma/",
+      "waggledance/core/learning/",
+      "waggledance/core/world/"
+    ]
+  },
+  "self_learning_demonstration": "real_plus_fixture",
+  "session_id": "phase8.5_self_model_session_B",
+  "started_at": "2026-04-25T12:30:00Z"
+}

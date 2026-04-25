@@ -53,19 +53,55 @@ A low-evidence cluster in any non-subdivision-pressure category is automatically
 
 ## 4. Ranking is deterministic and explainable
 
-The `estimated_value` formula is hand-tunable and visible:
+The miner uses the x.txt §EXPECTED VALUE FORMULA exactly as specified:
 
 ```
-base            = min(1.0, n / 50)
-fallback_bonus  = fallback_rate * 0.6
-latency_bonus   = min(0.4, p95 / 25000)
-cell_bonus      = 0.15 * (cell_diversity - 1)  if diversity > 1
-sev_bonus       = min(0.5, sev / 10)           if gap_type == subdivision_pressure
-                  + 0.1 cell_bonus extra       if gap_type == bridge_composition
-total           = base + fallback_bonus + latency_bonus + cell_bonus + sev_bonus
+expected_value =
+    count
+    × fallback_rate
+    × evidence_strength
+    × (1 + bridge_candidate_bonus)
 ```
 
-Reviewers can second-guess one weight at a time. The miner does not learn weights; this is intentional. A learned ranker is a separate Session B / C scope and would couple the curiosity organ to a feedback signal that does not yet exist.
+Where:
+- `count` = cluster case count (`response_count + no_response_count`)
+- `fallback_rate` = `no_response_count / count`, clamped to `[0, 1]`
+- `evidence_strength` = normalized weight from a fixed table:
+  - `low` (count < 3) → `0.3`
+  - `medium` (count 3–7) → `0.6`
+  - `high` (count ≥ 8) → `1.0`
+- `bridge_candidate_bonus` = `0.25` when the cluster has any
+  `bridge_candidate_refs`, else `0.0`
+
+A cluster that always succeeds ranks at exactly `0.0` and is filtered
+out of the curiosity stream — that is intentional. A working solver
+is not curious. Subdivision-pressure and improvement-opportunity
+boosters are surfaced via `gap_type` classification (which routes to
+ACCEPT-class actions like `propose_subdivision` or `improve_solver`)
+rather than by inflating the ranking score.
+
+Reviewers can second-guess one weight at a time. The miner does not
+learn weights; this is intentional. A learned ranker is a separate
+Session B / C scope and would couple the curiosity organ to a
+feedback signal that does not yet exist.
+
+### Cluster identity is content-derived, not positional
+
+Per x.txt §CLUSTERING DETERMINISM RULE, `cluster_id` is computed as:
+
+```
+cluster_id = "cl_" + sha256(
+    "|".join(sorted(member_query_hashes))
+)[:12]
+```
+
+Where `member_query_hashes` comes from `_query_hash(query)` —
+sha256 of the lowercased, alphanumeric-stripped query, truncated
+to 16 hex characters. **Sequential cluster numbering is forbidden.**
+This means: two runs that emit clusters in different iteration
+orders still produce the same `cluster_id` for the same logical
+member set, which lets downstream consumers (teacher loop,
+audit trail) carry the id forward across reruns.
 
 ## 5. How the output later feeds the teacher loop
 
@@ -85,8 +121,36 @@ Five guarantees, all enforced by code or test:
 - **Read-only.** No write to `data/faiss_staging/`, `data/faiss_delta_ledger/`, `data/audit_log.db`, or any campaign artifact. Only reads.
 - **No port 8002.** The miner does not import any runtime adapter or open any network socket.
 - **No Ollama dependency.** Clustering is pure n-gram / token-signature; tests run in <1 second on any machine.
-- **Pinned artifact set.** Live-growing `hot_results.jsonl` is bounded to the byte count captured at session start; new rows added during the run are ignored. `pin_hash` records this so an audit can verify byte-for-byte what the run saw.
+- **Pinned artifact set.** Live-growing `hot_results.jsonl` is bounded to the byte count captured at session start; new rows added during the run are ignored. The pin records, per artifact: `bytes`, `lines`, `mtime_epoch`, `sha256_first_4096`, `sha256_last_4096`, and `sha256_full`. The combined `pinned_artifact_manifest_sha256` is what every emitted curiosity carries in its `continuity_anchor`.
 - **Deterministic output.** Every emitted artifact family has a byte-identity test under the same pin (`tests/test_gap_miner.py`). If a future change accidentally introduces non-determinism, those tests fail before merge.
+
+### Pinned-artifact integrity check
+
+`verify_pin_integrity()` runs at session end (or on demand) and re-hashes the pinned window of every artifact:
+
+| Outcome | Status | Critical? |
+|---|---|---|
+| Same bytes, same first/last hashes | `ok` (with `growth_bytes` if file grew append-only) | no |
+| File missing | `missing` | yes |
+| File shrunk | `shrunk` | yes |
+| First 4 KB hash drifted | `first_drift` | yes |
+| Last 4 KB within pinned size drifted | `last_drift` | yes |
+
+Append-only growth past the pinned size is the expected case during a live campaign and is **not** flagged as critical. Mutation of any byte within the pinned window is a critical failure that aborts further trust in the run.
+
+### `continuity_anchor` on every emitted item
+
+Every `CuriosityItem` carries:
+
+```json
+"continuity_anchor": {
+  "branch_name": "phase8.5/curiosity-organ",
+  "base_commit_hash": "59966b0…",
+  "pinned_artifact_manifest_sha256": "sha256:abc…"
+}
+```
+
+This is what lets a Session B / Session C consumer (teacher loop, dream curriculum) prove "this proposal was generated in response to that exact data snapshot at that commit on that branch."
 
 ## 7. What is intentionally deferred
 
@@ -103,8 +167,16 @@ Five guarantees, all enforced by code or test:
 # Dry-run summary against the latest campaign
 python tools/gap_miner.py
 
-# Full apply against the latest campaign
+# Validate pin only (x.txt §CLI REQUIREMENTS --dry-run)
+python tools/gap_miner.py --dry-run
+
+# Full apply against the latest campaign — writes to
+# docs/runs/curiosity/<pin_sha12>/ by default
 python tools/gap_miner.py --apply
+
+# Reproduce a previous session's pin from its state.json
+python tools/gap_miner.py --artifact-manifest \
+    docs/runs/phase8_5_curiosity_session_state.json --apply
 
 # Specific campaign root
 python tools/gap_miner.py --campaign-dir docs/runs/ui_gauntlet_400h_20260413_092800 --apply
@@ -112,14 +184,17 @@ python tools/gap_miner.py --campaign-dir docs/runs/ui_gauntlet_400h_20260413_092
 # Fixture-backed run for testing / development
 python tools/gap_miner.py --fixture tests/fixtures/gap_miner_sample/ --apply
 
-# Limit the curiosity-item count
-python tools/gap_miner.py --apply --max-clusters 50
+# Filter to one cell + minimum value threshold
+python tools/gap_miner.py --apply --cell thermal --min-evidence 2.0
+
+# Custom output directory (overrides the pin-derived default)
+python tools/gap_miner.py --apply --output-dir /tmp/curiosity-run
 
 # Machine-readable
 python tools/gap_miner.py --json
 ```
 
-`--apply` is required for any disk write. The default posture is dry-run, matching the Stage-2 indexer convention.
+`--apply` is required for any disk write. The default posture is dry-run, matching the Stage-2 indexer convention. The default `--output-dir` is derived from `pin_hash` so two reproductions of the same input land in the same directory without operator intervention.
 
 ## 9. Sample real-data run
 

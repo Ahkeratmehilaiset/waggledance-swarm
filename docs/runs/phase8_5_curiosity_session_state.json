@@ -5,7 +5,15 @@
   "branch": "phase8.5/curiosity-organ",
   "base_branch": "phase8/honeycomb-solver-scaling-foundation",
   "base_commit": "ddb0821",
-  "latest_green_commit": "86a6d08",
+  "latest_green_commit": "59966b0",
+  "real_data_attempt_status": "success — 35 445 hot_results rows scanned at first --apply; 80 curiosity items emitted (capped). Live data returned at least one non-trivial cluster per of: thermal, safety, seasonal cells.",
+  "fixture_fallback_status": "not used as primary; tests/fixtures/gap_miner_sample/ exists for deterministic CI but session A used real campaign data first.",
+  "pinned_artifact_manifest_sha256": "sha256:f88dc7014e2d89076156c00e9a511ff3b9bc183930d348b1d8662ae54cad06ab",
+  "pinned_artifact_integrity_check": {
+    "status": "deferred to session-end CLI invocation",
+    "method": "tools/gap_miner.py invokes verify_pin_integrity() against the pin captured at session start; status reported in this file when run",
+    "rule": "shrunk / first_drift / last_drift / missing → critical; append-only growth → ok"
+  },
   "pinned_campaign_dir": "docs/runs/ui_gauntlet_400h_20260413_092800",
   "pinned_artifacts": {
     "note": "Pin captured at first gap_miner --apply run. Bytes/lines under live data shift; for a stable repeatable run pin via tests/fixtures/gap_miner_sample/ instead.",
@@ -21,11 +29,10 @@
     "R75.1: cluster_id content-derived (sha256 of sorted member query_hashes) + spec expected_value formula (count × fallback × evidence × (1 + bridge_bonus))",
     "R75.2: --artifact-manifest enforcement + spec CLI flags (--cell, --min-evidence, --dry-run, --output-dir, default output path docs/runs/curiosity/<sha12>/)",
     "R75.3: continuity_anchor on every item + spec pin-manifest fields (first/last 4KB hash + mtime) + verify_pin_integrity() at session end",
-    "R75.4 + R75.5: 16 new R7.5 tests landed (cluster_id format + content-derived stability, expected_value formula behaviour, --artifact-manifest enforcement + bounded read, real-data-first fallback path, integrity check clean/shrink/first-drift/append-only-growth, continuity_anchor required keys, subdivision_pressure cluster-density heuristic, extended path-leakage, pin-manifest first/last 4KB and mtime fields)"
+    "R75.4 + R75.5: 16 new R7.5 tests landed (cluster_id format + content-derived stability, expected_value formula behaviour, --artifact-manifest enforcement + bounded read, real-data-first fallback path, integrity check clean/shrink/first-drift/append-only-growth, continuity_anchor required keys, subdivision_pressure cluster-density heuristic, extended path-leakage, pin-manifest first/last 4KB and mtime fields)",
+    "R75.6: GAP_MINER_VISION.md updated with spec expected_value formula, content-derived cluster_id rule, integrity-check matrix, continuity_anchor format, full CLI surface; state.json carries R7.5 fields"
   ],
-  "remaining_subparts": [
-    "R75.6: vision doc + state.json updated with R7.5 fields"
-  ],
+  "remaining_subparts": [],
   "blocked": false,
   "blocked_reason": null,
   "next_recommended_action": "wait for ui_gauntlet_400h campaign to complete (~50 h remaining), then do session B: embedding-based clustering + first real teacher-loop run feeding teacher_packs into tools/propose_solver.py",

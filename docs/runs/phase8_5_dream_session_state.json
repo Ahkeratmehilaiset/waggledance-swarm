@@ -38,11 +38,31 @@
     "C.3: dream request packs + proposal ingestion + collapse + 18 tests",
     "C.4: shadow graph + replay harness + 14 tests",
     "C.5: dream_meta_proposal + 9 tests (LICENSE Change Date already 2030-03-19 from Session B)",
-    "C.6: 4 architecture markdowns (DREAM_MODE_2_0 + DREAM_REPLAY_FORMULAS + DREAM_PROVENANCE + HOOKS_FOR_META_LEARNER)"
+    "C.6: 4 architecture markdowns (DREAM_MODE_2_0 + DREAM_REPLAY_FORMULAS + DREAM_PROVENANCE + HOOKS_FOR_META_LEARNER)",
+    "C.7: explicit Change Date affirmation — LICENSE-BUSL.txt verified at 2030-03-19; no edit required"
   ],
-  "remaining_subparts": [
-    "C.7: explicit Change Date affirmation commit (optional; already at 2030-03-19)"
+  "remaining_subparts": [],
+  "session_complete": true,
+  "final_test_count": 176,
+  "final_test_breakdown": {
+    "test_dream_curriculum.py": 18,
+    "test_dream_request_pack_and_collapse.py": 18,
+    "test_dream_shadow_replay.py": 14,
+    "test_dream_meta_proposal.py": 9,
+    "test_self_model_snapshot.py": 17,
+    "test_self_model_calibration.py": 24,
+    "test_propose_solver_gate.py": 76
+  },
+  "session_commits": [
+    "9fb437b chore(phase8.5): start dream-curriculum session state and branch bootstrap",
+    "5a06008 feat(phase8.5): add dream curriculum planner + 18 tests",
+    "152a8bc feat(phase8.5): add dream request packs and deterministic proposal ingestion",
+    "57f1c89 feat(phase8.5): add shadow graph and replay harness",
+    "d297cdc feat(phase8.5): add dream meta-proposal artifacts",
+    "ea56456 docs(phase8.5): document Dream Mode 2.0, replay formulas, provenance, and meta-learner hooks"
   ],
+  "license_change_date_verified": "2030-03-19",
+  "license_change_date_source_commit": "e3479dd (Phase 8.5 Session B)",
   "test_distribution_overrides": [
     {
       "test_category": "replay_case_manifest generation logic",
@@ -59,7 +79,7 @@
   ],
   "blocked": false,
   "blocked_reason": null,
-  "next_recommended_action": "C.7: optional explicit Change Date affirmation commit, or close session (LICENSE-BUSL.txt is already at 2030-03-19)",
+  "next_recommended_action": "Session C complete; recommended next session is D (or R7.5 review) per c.txt §WHEN FINISHED",
   "real_data_attempt_status": "Session B outputs available at docs/runs/self_model/c6b181835621/ — will pin those plus Session A curiosity outputs",
   "fixture_fallback_status": "not used as primary",
   "self_learning_demonstration": "real_plus_fixture",

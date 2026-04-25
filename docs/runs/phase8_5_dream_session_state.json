@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "session_id": "phase8.5_dream_session_C",
+  "started_at": "2026-04-25T20:00:00Z",
+  "branch": "phase8.5/dream-curriculum",
+  "base_branch": "phase8.5/self-model-layer",
+  "base_commit": "e3479dd",
+  "latest_green_commit": null,
+  "consumed_hook_contracts": [
+    {
+      "file": "docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
+      "version": 1,
+      "file_sha256": "sha256:35d86259e150bc723f772b529552cdbeba114149eb6feea4f0ad97f0c830725f"
+    }
+  ],
+  "proposal_gate_capabilities": {
+    "schema": "native",
+    "cell_exists": "native",
+    "hash_duplicate": "native",
+    "io_types": "native",
+    "deterministic_replay": "native",
+    "unit_consistency": "native",
+    "contradiction": "native",
+    "invariants_present": "native",
+    "tests_present": "native",
+    "latency_budget": "native",
+    "no_secrets_no_paths": "native",
+    "llm_dependency": "native",
+    "closed_world": "native",
+    "machine_invariants_shape": "native"
+  },
+  "pinned_input_manifest_sha256": null,
+  "pinned_inputs": [],
+  "replay_manifest_sha256": null,
+  "completed_subparts": [
+    "C.1: branch + state.json bootstrap + consumed_hook_contracts + proposal_gate_capabilities"
+  ],
+  "remaining_subparts": [
+    "C.2: dream_curriculum.py planner + 18 tests",
+    "C.3: dream request packs + proposal ingestion + collapse + 18 tests",
+    "C.4: shadow graph + replay harness + 14 tests",
+    "C.5: dream_meta_proposal + docs + 9 tests + license update",
+    "C.6: 4 architecture markdowns",
+    "C.7: BUSL Change Date update (folded into C.5 per spec same-commit rule)"
+  ],
+  "blocked": false,
+  "blocked_reason": null,
+  "next_recommended_action": "C.2: implement tools/dream_curriculum.py + planner tests",
+  "real_data_attempt_status": "Session B outputs available at docs/runs/self_model/c6b181835621/ — will pin those plus Session A curiosity outputs",
+  "fixture_fallback_status": "not used as primary",
+  "self_learning_demonstration": "real_plus_fixture",
+  "scope_excluded": [
+    "gap_miner",
+    "self_model snapshot core",
+    "runtime Dream execution",
+    "meta_learner / hive_proposes",
+    "vector chaos testing",
+    "runtime repoints",
+    "JetStream / NATS",
+    "automatic runtime flip"
+  ],
+  "constraints": {
+    "deterministic_artifacts": true,
+    "offline_safe": true,
+    "campaign_safe": true,
+    "no_runtime_touch": true,
+    "shadow_only": true,
+    "stochastic_generation_external_only": true,
+    "crown_jewel_paths": ["waggledance/core/dreaming/*"]
+  },
+  "next_session_blockers": []
+}

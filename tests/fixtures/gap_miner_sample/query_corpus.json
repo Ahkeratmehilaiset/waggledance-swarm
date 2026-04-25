@@ -1,0 +1,8 @@
+[
+  {"query_id": 0, "bucket": "normal", "query": "What is the heating cost for 100 m2 with district heating in Finland this winter"},
+  {"query_id": 1, "bucket": "normal", "query": "Optimaalinen lampopumpun teho 150 m2 omakotitalolle pakkasella -25"},
+  {"query_id": 2, "bucket": "normal", "query": "Estimate solar yield for 5 kW system in Helsinki during March"},
+  {"query_id": 3, "bucket": "structured", "query": "Calculate winter feeding amount for a colony of 40000 bees"},
+  {"query_id": 4, "bucket": "edge_case", "query": "What thermal insulation thickness for 1980s house heat loss reduction"},
+  {"query_id": 5, "bucket": "multilingual", "query": "Saanko tiedon mehilaispesan terveydesta varroan torjunnan jalkeen"}
+]

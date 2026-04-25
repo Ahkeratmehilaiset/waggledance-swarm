@@ -1,0 +1,16 @@
+{"query_id": 0, "bucket": "normal", "responded": true, "latency_ms": 2400, "error": ""}
+{"query_id": 0, "bucket": "normal", "responded": true, "latency_ms": 2700, "error": ""}
+{"query_id": 1, "bucket": "normal", "responded": false, "latency_ms": 9000, "error": "timeout"}
+{"query_id": 1, "bucket": "normal", "responded": false, "latency_ms": 9500, "error": "timeout"}
+{"query_id": 1, "bucket": "normal", "responded": false, "latency_ms": 10000, "error": "timeout"}
+{"query_id": 1, "bucket": "ambiguous", "responded": false, "latency_ms": 12000, "error": "timeout"}
+{"query_id": 2, "bucket": "normal", "responded": true, "latency_ms": 9500, "error": ""}
+{"query_id": 2, "bucket": "normal", "responded": true, "latency_ms": 11000, "error": ""}
+{"query_id": 2, "bucket": "normal", "responded": true, "latency_ms": 9200, "error": ""}
+{"query_id": 3, "bucket": "structured", "responded": true, "latency_ms": 1800, "error": ""}
+not-valid-json
+{"query_id": 4, "bucket": "edge_case", "responded": false, "latency_ms": 18000, "error": "internal_error"}
+{"query_id": 4, "bucket": "edge_case", "responded": false, "latency_ms": 17500, "error": "internal_error"}
+{"query_id": 4, "bucket": "edge_case", "responded": false, "latency_ms": 17800, "error": "internal_error"}
+{"query_id": 4, "bucket": "edge_case", "responded": false, "latency_ms": 17400, "error": "internal_error"}
+{"query_id": 5, "bucket": "multilingual", "responded": true, "latency_ms": 3000, "error": ""}

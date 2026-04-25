@@ -1,8 +1,20 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## Unreleased — 2026-04-24 — Phase 8 Honeycomb Solver Scaling Foundation (scaffolding)
+## Unreleased — 2026-04-24 / 2026-04-25 — Phase 8 + R4/R5/R6 review cycle + Stage 1+2
 
-Branch: `phase8/honeycomb-solver-scaling-foundation`.
+Branch: `phase8/honeycomb-solver-scaling-foundation`. **18 commits**, **350 tests + 1 xfail**.
+
+### Review cycle summary
+
+| Round | Commit | What landed |
+|---|---|---|
+| Initial | `eda5d44`…`490d2da` | Phase 0-11 scaffolding (12 commits, 171 tests) |
+| GPT R4 fix | `cd6b425` | REJECT_LOW_VALUE real, uncertainty_declaration required, Gate 13 closed-world, wider scans, build_nodes primary fix, hash projection extended (+24 tests, total 195) |
+| GPT R4 advisory | `e9093b6` | Advisory rescale-edges, busy-lock + nice, optional machine_invariants schema (+24 tests, total 219) |
+| GPT R5 fix | `60c1ab9` | Gate-14 boolean root + drop Pow/FloorDiv/Mod, shakedown skip-label, pidfile pid+create_time, build_nodes fail-closed, uncertainty-aware verdict, prose normalization, hybrid:shadow xfail strict (+62 tests, total 281+1xfail) |
+| Stage 1 | `28dff51` | `data/vector/` snapshot via `tools/migrate_to_vector_root.py`, `vector_events.py` contract (+29 tests, total 310+1xfail) |
+| Stage 1 finish | `167702c` | event log writer + producer in backfill_axioms_to_hex + stub consumer (+18 tests, total 328+1xfail) |
+| GPT R6 / Stage 2 | `d03d5d2` | Stage-2 design doc, atomic writer skeleton, durable checkpoint, vector.commit_applied emission, replay/apply correctness tests (+22 tests, total **350+1xfail**) |
 
 Additive scaffolding for safe solver-library growth. No runtime flip, no
 auto-start, no topology mutation. All new code is additive under `tools/`,

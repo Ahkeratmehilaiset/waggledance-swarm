@@ -1,11 +1,23 @@
 # Phase 8 — validation pack
 
-- **Date:** 2026-04-24
+- **Date:** 2026-04-24 (initial) · **Revised:** 2026-04-24 after R5, R6, and Stage-2 landings
 - **Branch:** `phase8/honeycomb-solver-scaling-foundation`
 - **Runner:** local (Python 3.13.7, `.venv`)
-- **Running campaign:** `ui_gauntlet_400h_20260413_092800` continued to run during validation; no disruption observed
+- **Running campaign:** `ui_gauntlet_400h_20260413_092800` continued to run throughout; no disruption observed
 
-## Targeted tests
+## Revision history
+
+| Date | Event | Targeted tests |
+|---|---|---|
+| 2026-04-24 initial | Phase 2-9 scaffolding landed (`eda5d44`…`490d2da`) | 171 pass |
+| 2026-04-24 R4 fix (`cd6b425`) | GPT R4 required + advisory items | 195 pass |
+| 2026-04-24 R4 advisory (`e9093b6`) | rescale edges, busy-lock, machine_invariants stub | 219 pass |
+| 2026-04-24 R5 fix (`60c1ab9`) | Gate-14 tighten, shakedown-skip, pidfile create_time, build_nodes fail-closed, uncertainty-aware verdict, prose normalization, xfail label | 281 pass + 1 xfail |
+| 2026-04-24 Stage 1 (`28dff51`) | `data/vector/` snapshot + vector event contract | 310 pass + 1 xfail |
+| 2026-04-24 Stage 1 finish (`167702c`) | event log writer + backfill producer + stub consumer | 328 pass + 1 xfail |
+| 2026-04-24 Stage 2 (`d03d5d2`) | writer skeleton, checkpoint, atomic apply, commit_applied emission | **350 pass + 1 xfail** |
+
+## Targeted tests (current as of `d03d5d2`)
 
 ```
 .venv/Scripts/python.exe -m pytest \
@@ -18,23 +30,33 @@
   tests/test_composition_graph.py \
   tests/test_hex_subdivision_plan.py \
   tests/test_run_honeycomb_400h_campaign.py \
+  tests/test_vector_events.py \
+  tests/test_vector_indexer.py \
+  tests/test_vector_indexer_stage2.py \
+  tests/test_migrate_to_vector_root.py \
+  tests/test_hybrid_retrieval.py \
   -q --tb=line -p no:warnings
 ```
 
-Result: **171 passed in 4.77 s.**
+Result: **350 passed, 1 xfailed in 11.55 s.**
 
-| Module | Passed |
-|---|---|
-| `test_phase7_hologram_news_wire.py` | 20 |
-| `test_cell_manifest.py` | 11 |
-| `test_solver_hash.py` | 29 |
-| `test_solver_dedupe.py` | 6 |
-| `test_solver_proposal_schema.py` | 33 |
-| `test_propose_solver_gate.py` | 36 |
-| `test_composition_graph.py` | 16 |
-| `test_hex_subdivision_plan.py` | 11 |
-| `test_run_honeycomb_400h_campaign.py` | 9 |
-| **Total** | **171** |
+| Module | Passed | Δ vs original |
+|---|---|---|
+| `test_phase7_hologram_news_wire.py` | 20 | — |
+| `test_cell_manifest.py` | 11 | — |
+| `test_solver_hash.py` | 29 | — |
+| `test_solver_dedupe.py` | 6 | — |
+| `test_solver_proposal_schema.py` | 34 | +1 (uncertainty_declaration required) |
+| `test_propose_solver_gate.py` | 76 | +40 (R4 + R5 hardening) |
+| `test_composition_graph.py` | 33 | +17 (primary flag, rescale, multi-primary fail-closed) |
+| `test_hex_subdivision_plan.py` | 11 | — |
+| `test_run_honeycomb_400h_campaign.py` | 21 | +12 (busy-lock, create_time pidfile, skip-label) |
+| `test_vector_events.py` | 24 | +24 (new) |
+| `test_vector_indexer.py` | 11 | +11 (Stage 1 stub) |
+| `test_vector_indexer_stage2.py` | 22 | +22 (new — apply/checkpoint/idempotency) |
+| `test_migrate_to_vector_root.py` | 13 | +13 (new) |
+| `test_hybrid_retrieval.py` | 40 / 1 xfail | pre-existing, now xfail-labeled |
+| **Total** | **350 + 1 xfail** | +179 over initial 171 |
 
 ## Full suite status (reference)
 
@@ -75,11 +97,13 @@ persisted under `docs/runs/`:
 |---|---|
 | `tools/cell_manifest.py` | `docs/cells/<cell>/manifest.json` + `INDEX.md` for 8 cells |
 | `tools/solver_dedupe.py` | `docs/runs/solver_dedupe_report.md` |
-| `tools/propose_solver.py` | exercised in shakedown; schema reject and accept-candidate paths both reached |
-| `tools/solver_composition_report.py` | `docs/runs/solver_composition_report.md` |
+| `tools/propose_solver.py` | exercised in tests; schema reject, accept-candidate, and REJECT_LOW_VALUE paths reached |
+| `tools/solver_composition_report.py` | `docs/runs/solver_composition_report.md` — includes advisory rescale section |
 | `tools/hex_subdivision_plan.py` | `docs/runs/hex_subdivision_plan.md` |
 | `tools/phase8_capability_report.py` | `docs/runs/phase8_capability_report.md` |
 | `tools/run_honeycomb_400h_campaign.py` | `docs/runs/honeycomb_400h/plan.md` + one shakedown pass |
+| `tools/migrate_to_vector_root.py` (Stage 1) | `data/vector/<cell>/{index.faiss, meta.json, manifest.json, commit.json}` × 8 |
+| `tools/vector_indexer.py` (Stage 2 writer) | exercised in tests; stages commit, swaps pointer, emits `vector.commit_applied`, advances checkpoint |
 
 ## Runtime invariants preserved
 

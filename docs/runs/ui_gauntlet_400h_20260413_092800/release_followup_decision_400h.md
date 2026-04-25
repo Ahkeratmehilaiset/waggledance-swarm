@@ -1,9 +1,9 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-25T20:12:38+00:00
+**Generated:** 2026-04-25T20:42:41+00:00
 **Main ref:** `main~30`
-**Total green:** 375.33h / 400h (MID-CAMPAIGN)
+**Total green:** 383.33h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
@@ -22,7 +22,7 @@
 - `waggledance/core/magma/self_model.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (95 files)
+### TEST_HARNESS (97 files)
 
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
@@ -54,7 +54,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_findings.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
-- … and 65 more
+- … and 67 more
 
 ### DOCS_NARRATIVE (38 files)
 
@@ -118,7 +118,7 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (375.3h)
+- Campaign complete (>= 400h): no (383.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

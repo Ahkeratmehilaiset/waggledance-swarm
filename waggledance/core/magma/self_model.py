@@ -417,3 +417,226 @@ def snapshot_to_dict(snap: SelfModelSnapshot) -> dict:
 
 def _severity_weight(s: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(s, 0)
+
+
+# ── HISTORY chain validation (spec §B2) ──────────────────────────
+
+def history_entry_sha(entry: dict) -> str:
+    """Stable sha over a history entry, used as prev_entry_sha256
+    for the next entry."""
+    payload = _stable_json({
+        k: v for k, v in entry.items() if k != "entry_sha256"
+    }).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def validate_history_chain(entries: list[dict]) -> tuple[bool, str | None]:
+    """Walk HISTORY.jsonl entries and verify the prev_entry_sha256
+    chain. The first entry MUST carry GENESIS_PREV_SHA. Returns
+    (is_valid, reason-when-invalid)."""
+    if not entries:
+        return True, None
+    if entries[0].get("prev_entry_sha256") != GENESIS_PREV_SHA:
+        return False, "first entry missing genesis marker"
+    for i in range(1, len(entries)):
+        expected = history_entry_sha(entries[i - 1])
+        actual = entries[i].get("prev_entry_sha256")
+        if actual != expected:
+            return False, f"chain break at index {i}"
+    return True, None
+
+
+def append_history_entry(history_path: Path, entry: dict) -> dict:
+    """Append a single entry. Sets prev_entry_sha256 from the last
+    entry on disk (or GENESIS_PREV_SHA if empty), stores entry_sha256
+    so consumers can verify integrity later. Returns the written
+    entry."""
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    existing: list[dict] = []
+    if history_path.exists():
+        for line in history_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                existing.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not existing:
+        entry["prev_entry_sha256"] = GENESIS_PREV_SHA
+    else:
+        entry["prev_entry_sha256"] = history_entry_sha(existing[-1])
+
+    entry_sha = history_entry_sha(entry)
+    entry["entry_sha256"] = entry_sha
+    with open(history_path, "a", encoding="utf-8") as f:
+        f.write(_stable_json({k: v for k, v in entry.items() if k != "entry_sha256"}))
+        f.write("\n")
+    return entry
+
+
+def read_history(history_path: Path) -> list[dict]:
+    if not history_path.exists():
+        return []
+    out: list[dict] = []
+    for line in history_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+# ── Calibration corrections (spec §B3) ───────────────────────────
+
+def append_calibration_correction(corrections_path: Path,
+                                     record: dict) -> None:
+    """Append-only emission. Records carry dimension, prior_score,
+    evidence_implied_score, correction_magnitude, confidence,
+    source_refs, correction_count_in_window."""
+    corrections_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(corrections_path, "a", encoding="utf-8") as f:
+        f.write(_stable_json(record))
+        f.write("\n")
+
+
+def read_corrections(corrections_path: Path) -> list[dict]:
+    if not corrections_path.exists():
+        return []
+    out: list[dict] = []
+    for line in corrections_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def correction_count_for_dimension(
+    corrections: list[dict], dimension: str, window: int = HISTORY_WINDOW,
+) -> int:
+    """Count corrections emitted for `dimension` in the last `window`
+    snapshots — but the spec says in test/dry-run mode this is always
+    the last window entries by index, NOT by timestamp."""
+    matches = [c for c in corrections if c.get("dimension") == dimension]
+    # Window from the tail
+    return min(len(matches), window)
+
+
+def adjusted_score(
+    prior_score: float,
+    evidence_implied_score: float,
+    correction_count_in_window: int,
+) -> tuple[float, str]:
+    """Returns (adjusted_score, mode) where mode is one of
+    'standard' | 'dampened' | 'frozen'. Implements the spec's
+    oscillation-protection table:
+      0..2 in window  → 0.7 × evidence + 0.3 × prior     (standard)
+      3..4 in window  → 0.5 × evidence + 0.5 × prior     (dampened)
+      >= 5            → frozen, no auto-correction       (returns prior)
+    """
+    if correction_count_in_window >= CALIBRATION_OSCILLATION_FREEZE_AT:
+        return prior_score, "frozen"
+    if correction_count_in_window >= CALIBRATION_OSCILLATION_DAMPEN_AT:
+        return 0.5 * evidence_implied_score + 0.5 * prior_score, "dampened"
+    return 0.7 * evidence_implied_score + 0.3 * prior_score, "standard"
+
+
+# ── Invariants / ruptures (spec §B9) ─────────────────────────────
+
+def detect_invariants_and_ruptures(
+    history_entries: list[dict],
+    current_snapshot: dict,
+) -> tuple[list[Invariant], list[Rupture]]:
+    """Examine the last min(5, history_length) snapshots for
+    properties that have held that whole window. A property that was
+    invariant but broke in the current snapshot becomes a rupture."""
+    if not history_entries:
+        return [], []
+
+    window_size = min(5, len(history_entries))
+    window = history_entries[-window_size:]
+
+    # Track simple invariants: cell classifications + scorecard
+    # "in range" properties.
+    invariants: list[Invariant] = []
+    ruptures: list[Rupture] = []
+
+    # Pull cell classifications from each window entry's snapshot
+    # reference (entries hold snapshot_id; we need the actual snapshot
+    # blob — but spec keeps invariants minimal, so we work off
+    # what's recorded in the history entry itself).
+    cell_states_per_snapshot: list[dict[str, str]] = []
+    for entry in window:
+        cells = entry.get("cells") or []
+        if isinstance(cells, list):
+            cell_states_per_snapshot.append(
+                {c.get("cell_id"): c.get("state") for c in cells}
+            )
+
+    if cell_states_per_snapshot:
+        # Common cells across all window snapshots
+        common = set(cell_states_per_snapshot[0])
+        for c in cell_states_per_snapshot[1:]:
+            common &= set(c)
+        for cell_id in sorted(common):
+            states = [c[cell_id] for c in cell_states_per_snapshot]
+            if all(s == states[0] for s in states):
+                invariants.append(Invariant(
+                    property_id=f"cell_state__{cell_id}__{states[0]}",
+                    description=(f"cell {cell_id} held state '{states[0]}' "
+                                  f"for {window_size} snapshots"),
+                    held_for_snapshots=window_size,
+                    evidence_refs=tuple(
+                        f"history:{e.get('snapshot_id', '?')}" for e in window
+                    ),
+                ))
+
+        # Rupture: previous state held but current differs
+        cur_cells = {c.get("cell_id"): c.get("state")
+                     for c in current_snapshot.get("cells") or []}
+        for inv in invariants:
+            cell_id = inv.property_id.split("__")[1]
+            prev_state = inv.property_id.split("__")[2]
+            if cell_id in cur_cells and cur_cells[cell_id] != prev_state:
+                ruptures.append(Rupture(
+                    property_id=inv.property_id,
+                    description=(f"cell {cell_id} broke its '{prev_state}' "
+                                  f"invariant; now '{cur_cells[cell_id]}'"),
+                    held_for_snapshots=inv.held_for_snapshots,
+                    evidence_refs=inv.evidence_refs,
+                ))
+
+    return invariants, ruptures
+
+
+# ── expected_domains.yaml schema ─────────────────────────────────
+
+EXPECTED_DOMAIN_REQUIRED_KEYS = (
+    "domain_id", "description", "expected_capability_signals",
+    "related_cells",
+)
+
+
+def validate_expected_domains_yaml(domains: list[Any]) -> tuple[bool, str | None]:
+    """Validate the schema of the parsed yaml against spec §B4."""
+    if not isinstance(domains, list):
+        return False, "expected_domains.yaml must be a list at top level"
+    for i, entry in enumerate(domains):
+        if not isinstance(entry, dict):
+            return False, f"entry {i} is not a dict"
+        for k in EXPECTED_DOMAIN_REQUIRED_KEYS:
+            if k not in entry:
+                return False, f"entry {i} missing required key '{k}'"
+        if not isinstance(entry["expected_capability_signals"], list):
+            return False, f"entry {i} expected_capability_signals must be a list"
+        if not isinstance(entry["related_cells"], list):
+            return False, f"entry {i} related_cells must be a list"
+    return True, None

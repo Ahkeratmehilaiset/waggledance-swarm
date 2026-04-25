@@ -260,10 +260,18 @@ def build_snapshot(
     # Self-Entity alignment — none in repo today; spec-shaped placeholder.
     self_entity_alignment = sm.detect_self_entity(ROOT)
 
-    # Invariants and ruptures fully populate in Commit 4 (history
-    # rolling computations). Commit 2 emits empty tuples.
+    # Invariants and ruptures from rolling history (spec §B9).
     invariants: tuple[sm.Invariant, ...] = ()
     ruptures: tuple[sm.Rupture, ...] = ()
+    if history:
+        invs, rupts = sm.detect_invariants_and_ruptures(
+            history_entries=history,
+            current_snapshot={"cells": [
+                {"cell_id": c.cell_id, "state": c.state} for c in cells
+            ]},
+        )
+        invariants = tuple(invs)
+        ruptures = tuple(rupts)
 
     # Real-data coverage ratio: weighted across major fields.
     provenance, ratio = _build_provenance(
@@ -1022,9 +1030,30 @@ def main() -> int:
 
     out_dir = args.output_dir or _default_out_dir(pin_hash)
 
+    # History-path defaulting per spec.
+    if args.history_path is not None:
+        history_path = args.history_path
+    elif args.output_dir is not None:
+        history_path = args.output_dir / "HISTORY.jsonl"
+    else:
+        history_path = DEFAULT_HISTORY
+
     if args.apply:
         paths = emit_snapshot(snap, provenance, out_dir, previous_snap,
                                 delta_status)
+        # Append to HISTORY.jsonl per spec §B2 (genesis chain).
+        history_entry = {
+            "snapshot_id": snap.snapshot_id,
+            "base_commit_hash": base_commit,
+            "pinned_input_manifest_sha256": pin_hash,
+            "output_dir": out_dir.as_posix(),
+            "cells": [
+                {"cell_id": c.cell_id, "state": c.state}
+                for c in snap.cells
+            ],
+        }
+        sm.append_history_entry(history_path, history_entry)
+        paths["history"] = history_path
         if args.json:
             print(json.dumps({k: p.as_posix() for k, p in paths.items()},
                               indent=2))

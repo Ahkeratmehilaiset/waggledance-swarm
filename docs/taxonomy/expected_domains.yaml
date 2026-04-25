@@ -1,0 +1,66 @@
+- domain_id: thermal
+  description: Heating, cooling, HVAC, heat-loss, frost, and related thermal physics.
+  expected_capability_signals:
+    - docs/cells/thermal/manifest.json
+    - configs/axioms/cottage/heating_cost.yaml
+    - configs/axioms/cottage/hive_thermal.yaml
+    - configs/axioms/cottage/pipe_freezing.yaml
+  related_cells:
+    - thermal
+
+- domain_id: energy
+  description: Power, solar, battery, grid, electricity, and energy yield.
+  expected_capability_signals:
+    - docs/cells/energy/manifest.json
+    - configs/axioms/cottage/solar_yield.yaml
+  related_cells:
+    - energy
+
+- domain_id: safety
+  description: Risk, alarms, hazards, varroa control, swarm safety.
+  expected_capability_signals:
+    - docs/cells/safety/manifest.json
+    - configs/axioms/cottage/varroa_treatment_calendar.yaml
+  related_cells:
+    - safety
+
+- domain_id: seasonal
+  description: Calendar, harvest, seasonal phenology.
+  expected_capability_signals:
+    - docs/cells/seasonal/manifest.json
+    - configs/axioms/cottage/autumn_preparation.yaml
+    - configs/axioms/cottage/spring_inspection_timing.yaml
+    - configs/axioms/cottage/winter_feeding_decision.yaml
+  related_cells:
+    - seasonal
+
+- domain_id: math
+  description: Formula-driven calculations, yield estimates, colony math.
+  expected_capability_signals:
+    - docs/cells/math/manifest.json
+    - configs/axioms/cottage/honey_yield.yaml
+    - configs/axioms/cottage/colony_growth_rate.yaml
+  related_cells:
+    - math
+
+- domain_id: system
+  description: System health, MTBF, OEE, diagnosability, runtime status.
+  expected_capability_signals:
+    - docs/cells/system/manifest.json
+    - configs/axioms/home/indoor_air_quality.yaml
+  related_cells:
+    - system
+
+- domain_id: learning
+  description: Learning loop, dream mode, insight scoring, adaptation.
+  expected_capability_signals:
+    - docs/cells/learning/manifest.json
+  related_cells:
+    - learning
+
+- domain_id: general
+  description: Cross-cell utilities and fallback solvers.
+  expected_capability_signals:
+    - docs/cells/general/manifest.json
+  related_cells:
+    - general

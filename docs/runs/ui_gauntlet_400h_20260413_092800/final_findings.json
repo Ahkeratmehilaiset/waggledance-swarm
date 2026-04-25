@@ -1,12 +1,12 @@
 {
   "status": "MID-CAMPAIGN (TBD on completion)",
-  "generated_at": "2026-04-25T12:11:38+00:00",
+  "generated_at": "2026-04-25T12:41:42+00:00",
   "campaign_id": "ui_gauntlet_400h_20260413_092800",
   "cumulative_hours": {
-    "hot": 175.1013,
+    "hot": 183.1028,
     "warm": 120.1777,
     "cold": 64.046,
-    "total": 359.325
+    "total": 367.3265
   },
   "target_hours": {
     "hot": 80,
@@ -14,19 +14,19 @@
     "cold": 200,
     "total": 400
   },
-  "segments_committed": 55,
+  "segments_committed": 56,
   "segments_target": 50,
   "queries": {
-    "total": 51993,
-    "sent": 51989,
-    "responded": 41008,
+    "total": 52168,
+    "sent": 52164,
+    "responded": 41172,
     "skipped_empty": 0,
     "xss": 0,
     "dom_breaks": 0,
-    "session_losses": 24013,
-    "avg_latency_ms": 3499.0,
-    "median_latency_ms": 2511.0,
-    "p95_latency_ms": 9318
+    "session_losses": 24034,
+    "avg_latency_ms": 3496.0,
+    "median_latency_ms": 2512.0,
+    "p95_latency_ms": 9299
   },
   "cold_backend_truth": {
     "health_pass_rate": "1742/1842",
@@ -38,7 +38,7 @@
   "incidents_by_category": {
     "chat_failure": 125,
     "chat_response_failure": 1946,
-    "health_failure": 253,
+    "health_failure": 254,
     "backend_unhealthy": 23,
     "chat_send_failure": 14,
     "auth_bootstrap_failure": 1,

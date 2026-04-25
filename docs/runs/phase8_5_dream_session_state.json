@@ -33,19 +33,33 @@
   "pinned_inputs": [],
   "replay_manifest_sha256": null,
   "completed_subparts": [
-    "C.1: branch + state.json bootstrap + consumed_hook_contracts + proposal_gate_capabilities"
+    "C.1: branch + state.json bootstrap + consumed_hook_contracts + proposal_gate_capabilities",
+    "C.2: dream_curriculum.py planner + 18 tests"
   ],
   "remaining_subparts": [
-    "C.2: dream_curriculum.py planner + 18 tests",
     "C.3: dream request packs + proposal ingestion + collapse + 18 tests",
     "C.4: shadow graph + replay harness + 14 tests",
     "C.5: dream_meta_proposal + docs + 9 tests + license update",
     "C.6: 4 architecture markdowns",
     "C.7: BUSL Change Date update (folded into C.5 per spec same-commit rule)"
   ],
+  "test_distribution_overrides": [
+    {
+      "test_category": "replay_case_manifest generation logic",
+      "moved_from_commit": "C.2",
+      "moved_to_commit": "C.4",
+      "reason": "logic lives in shadow_graph + run_dream_cycle replay harness, not in the planner"
+    },
+    {
+      "test_category": "replay selection deterministic and bounded",
+      "moved_from_commit": "C.2",
+      "moved_to_commit": "C.4",
+      "reason": "logic lives in shadow_graph + run_dream_cycle replay harness, not in the planner"
+    }
+  ],
   "blocked": false,
   "blocked_reason": null,
-  "next_recommended_action": "C.2: implement tools/dream_curriculum.py + planner tests",
+  "next_recommended_action": "C.3: implement dream request packs + proposal ingestion + collapse + 18 tests",
   "real_data_attempt_status": "Session B outputs available at docs/runs/self_model/c6b181835621/ — will pin those plus Session A curiosity outputs",
   "fixture_fallback_status": "not used as primary",
   "self_learning_demonstration": "real_plus_fixture",

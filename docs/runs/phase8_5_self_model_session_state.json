@@ -5,7 +5,8 @@
   "blocked_reason": null,
   "branch": "phase8.5/self-model-layer",
   "completed_subparts": [
-    "B.1: branch + state.json bootstrap"
+    "B.1: branch + state.json bootstrap",
+    "B.2: snapshot core + 17 tests (feat) \u2014 landed"
   ],
   "constraints": {
     "campaign_safe": true,
@@ -19,8 +20,8 @@
   },
   "consumed_hook_contracts": [],
   "fixture_fallback_status": "not used",
-  "latest_green_commit": null,
-  "next_recommended_action": "implement tools/build_self_model_snapshot.py with curiosity-input join, scorecard, blind_spot stubs, self_entity_alignment",
+  "latest_green_commit": "pending B.2 commit",
+  "next_recommended_action": "B.3: reflective_workspace + tensions + 16 tests",
   "open_decisions": [
     "Filename for snapshot module: chose waggledance/core/magma/self_model.py (no collision detected).",
     "Whether to read live campaign hot_results directly: NO. Self-model reads only digested upstream artifacts (curiosity outputs, manifests, reports) per spec, not raw campaign rows."
@@ -206,7 +207,6 @@
   ],
   "real_data_attempt_status": "session A outputs found at docs/runs/curiosity/6b766421f410/ \u2014 attempting real-data first",
   "remaining_subparts": [
-    "B.2: snapshot core + 17 tests",
     "B.3: workspace + tensions + 16 tests",
     "B.4: calibration + continuity + 12 tests",
     "B.5: docs (4 markdowns)",

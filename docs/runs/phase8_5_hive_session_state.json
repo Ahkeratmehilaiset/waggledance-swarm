@@ -100,20 +100,22 @@
     }
   },
   "completed_subparts": [
-    "D0: branch + worktree + state.json bootstrap + pinned input manifest"
+    "D0: branch + worktree + state.json bootstrap + pinned input manifest",
+    "D1: schemas/meta_proposal.schema.json + schemas/review_bundle.schema.json",
+    "D2: waggledance/core/meta/__init__.py + inputs.py + meta_learner.py (core scoring + aggregation + lifecycle helpers)",
+    "D4: evidence-plane aggregation by canonical_target (deterministic join key)",
+    "D5: proposal_priority + confidence + cross_plane_support_factor + urgency_factor formulas",
+    "D6: meta_proposal_id (structural-only sha256[:12]) + lifecycle helpers",
+    "31 targeted tests in tests/test_meta_learner.py — covers categories 1, 2, 3, 4, 6, 8-22, 26, 27, 36, 38-41, 43"
   ],
   "remaining_subparts": [
-    "D1: meta_proposal.schema.json + review_bundle.schema.json",
-    "D2: waggledance/core/meta/meta_learner.py (scaffold)",
     "D3: tools/hive_proposes.py (CLI)",
-    "D4: evidence-plane aggregation (hive_proposes core scoring)",
-    "D5: proposal_priority/confidence formulas",
-    "D6: meta_proposal_id + lifecycle/HISTORY.jsonl",
-    "D7: hive_proposals.{json,md} + meta_evidence_map.json + review_bundle.{json,md}",
-    "D8: human-review handoff text + recommended_next_human_action",
+    "D7: hive_proposals.{json,md} + meta_evidence_map.json + review_bundle.{json,md} emission",
+    "D8: human-review boundary text wired into emission",
+    "D6 part 2: HISTORY.jsonl append/read with chain integrity",
     "D9: optional HOOKS_FOR_RUNTIME_REVIEW.md",
-    "D10: 3 architecture docs (THE_HIVE_PROPOSES, META_PROPOSAL_FORMULAS, META_PROPOSAL_PROVENANCE)",
-    "48+ targeted tests across multiple test files"
+    "D10: 3 architecture docs",
+    "remaining ~17 tests for categories 5, 7, 23, 24, 25, 28, 29, 30, 31, 32, 33, 34, 35, 37, 42, 44-48"
   ],
   "blocked": false,
   "blocked_reason": null,

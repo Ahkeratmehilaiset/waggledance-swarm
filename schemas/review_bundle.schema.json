@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/review_bundle.schema.json",
+  "title": "Review bundle",
+  "description": "Curated, human-reviewer-friendly summary of one hive_proposes cycle. References full proposal records by meta_proposal_id; adds reviewer context and lists weak-evidence candidates separately.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "human_review_boundary",
+    "provenance",
+    "consumed_hook_contracts",
+    "summary_text",
+    "proposals",
+    "insufficient_evidence",
+    "rejected_candidates",
+    "counts_by_recommended_next_human_action",
+    "why_human_review_required",
+    "why_no_runtime_mutation_occurred",
+    "fixture_fallback_used"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "human_review_boundary": {
+      "type": "string",
+      "minLength": 80,
+      "description": "Mandatory boundary text — present at the top of every artifact"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch_name", "base_commit_hash",
+                    "pinned_input_manifest_sha256"],
+      "properties": {
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"}
+      }
+    },
+    "consumed_hook_contracts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "version", "file_sha256"],
+        "properties": {
+          "file": {"type": "string"},
+          "version": {"type": "integer"},
+          "file_sha256": {"type": "string"}
+        }
+      }
+    },
+    "summary_text": {"type": "string"},
+    "proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "meta_proposal_id",
+          "proposal_type",
+          "scope_class",
+          "impacted_cells",
+          "proposal_priority",
+          "confidence",
+          "evidence_planes",
+          "why_now",
+          "why_human_review_required",
+          "recommended_next_human_action",
+          "lifecycle_status"
+        ],
+        "properties": {
+          "meta_proposal_id": {"type": "string", "pattern": "^[a-f0-9]{12}$"},
+          "proposal_type": {"type": "string"},
+          "scope_class": {"type": "string"},
+          "impacted_cells": {"type": "array", "items": {"type": "string"}},
+          "proposal_priority": {"type": "number", "minimum": 0},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "evidence_planes": {"type": "array", "items": {"type": "string"}},
+          "why_now": {"type": "string"},
+          "why_human_review_required": {"type": "string"},
+          "recommended_next_human_action": {
+            "type": "string",
+            "enum": [
+              "review_for_future_PR",
+              "archive_as_low_value",
+              "wait_for_more_evidence",
+              "post_campaign_runtime_review_candidate"
+            ]
+          },
+          "lifecycle_status": {"type": "string",
+            "enum": ["new", "persisting", "resolved"]}
+        }
+      }
+    },
+    "insufficient_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_target", "missing_planes", "evidence_strength_seen"],
+        "properties": {
+          "candidate_target": {"type": "string"},
+          "missing_planes": {"type": "array", "items": {"type": "string"}},
+          "evidence_strength_seen": {"type": "number"},
+          "why_below_threshold": {"type": "string"}
+        }
+      }
+    },
+    "rejected_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_target", "rejection_reason"],
+        "properties": {
+          "candidate_target": {"type": "string"},
+          "rejection_reason": {"type": "string"}
+        }
+      }
+    },
+    "counts_by_recommended_next_human_action": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "why_human_review_required": {"type": "string", "minLength": 30},
+    "why_no_runtime_mutation_occurred": {"type": "string", "minLength": 30},
+    "fixture_fallback_used": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Per-plane fallback status mirror of state.json"
+    },
+    "resolved_proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["meta_proposal_id", "resolution_reason"],
+        "properties": {
+          "meta_proposal_id": {"type": "string"},
+          "resolution_reason": {"type": "string",
+            "enum": ["evidence_weakened", "human_archived",
+                     "underlying_issue_resolved", "unknown"]}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/meta_proposal.schema.json",
+  "title": "Meta-proposal",
+  "description": "Bounded self-proposal record emitted by the WD meta-learner / hive_proposes session. Machine-readable. Shadow-only; never enacted by Session D code.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "meta_proposal_id",
+    "proposal_type",
+    "scope_class",
+    "impacted_cells",
+    "evidence_planes",
+    "evidence_strength",
+    "expected_value",
+    "confidence",
+    "proposal_priority",
+    "uncertainty",
+    "risk",
+    "why_now",
+    "why_human_review_required",
+    "no_mutation_in_session",
+    "source_curiosity_ids",
+    "source_tension_ids",
+    "source_dream_meta_proposal_ids",
+    "source_resilience_refs",
+    "provenance",
+    "lifecycle_status",
+    "resolution_reason"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "meta_proposal_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$",
+      "description": "12-char sha256 truncation of canonical structural identity"
+    },
+    "proposal_type": {
+      "type": "string",
+      "enum": [
+        "topology_subdivision",
+        "solver_family_growth",
+        "solver_family_consolidation",
+        "policy_gate_adjustment",
+        "introspection_gap",
+        "archival_cleanup",
+        "infrastructure_followup"
+      ]
+    },
+    "scope_class": {
+      "type": "string",
+      "enum": [
+        "topology",
+        "solver_library",
+        "policy",
+        "introspection",
+        "archival",
+        "infrastructure",
+        "review_only"
+      ]
+    },
+    "impacted_cells": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Sorted list of cell_ids the proposal would touch if enacted by a future human reviewer"
+    },
+    "evidence_planes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["curiosity", "self_model", "dream", "resilience"]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "evidence_strength": {"type": "number", "minimum": 0, "maximum": 1},
+    "expected_value": {"type": "number", "minimum": 0, "maximum": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "proposal_priority": {"type": "number", "minimum": 0,
+      "description": "Unclamped ranking score; may exceed 1.0"},
+    "uncertainty": {"type": "string", "enum": ["low", "medium", "high"]},
+    "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+    "why_now": {"type": "string", "minLength": 5, "maxLength": 500},
+    "why_human_review_required": {"type": "string", "minLength": 5, "maxLength": 500},
+    "no_mutation_in_session": {"type": "boolean", "const": true,
+      "description": "MUST be true. Session D code never enacts a proposal."},
+    "source_curiosity_ids": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "source_tension_ids": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "source_dream_meta_proposal_ids": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "source_resilience_refs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "branch_name",
+        "base_commit_hash",
+        "pinned_input_manifest_sha256"
+      ],
+      "properties": {
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"},
+        "consumed_hook_contracts": {
+          "type": "array",
+          "items": {"type": "object"}
+        },
+        "fixture_fallback_used": {"type": "boolean"}
+      }
+    },
+    "lifecycle_status": {
+      "type": "string",
+      "enum": ["new", "persisting", "resolved"]
+    },
+    "resolution_reason": {
+      "type": "string",
+      "enum": [
+        "evidence_weakened",
+        "human_archived",
+        "underlying_issue_resolved",
+        "unknown",
+        "n/a"
+      ]
+    },
+    "canonical_target": {
+      "type": "string",
+      "description": "Deterministic target identifier for join key purposes (cell_id, solver_family name, gate name, etc.)"
+    },
+    "cross_plane_support_factor": {"type": "number", "minimum": 1, "maximum": 1.75},
+    "urgency_factor": {"type": "number", "minimum": 1, "maximum": 1.5}
+  }
+}

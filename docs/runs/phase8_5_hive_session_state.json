@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "session_id": "phase8.5_hive_session_D",
+  "started_at": "2026-04-26T00:00:00Z",
+  "current_branch": "phase8.5/hive-proposes",
+  "base_branch": "phase8.5/dream-curriculum",
+  "base_commit": "ac23c4bd",
+  "session_c_tip_in_history": "623e90c",
+  "worktree_path": "C:/python/project2-d",
+  "primary_repo_path": "C:/python/project2",
+  "worktree_rationale": "primary repo working tree has live 400h gauntlet writing to docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl; switching its HEAD would interrupt the campaign. Session D work goes in a sibling worktree on phase8.5/hive-proposes branch.",
+  "latest_green_commit": null,
+  "consumed_hook_contracts": [
+    {
+      "file": "docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
+      "version": 1,
+      "file_sha256": "sha256:1ef5b2f92956322e616cc7a117b2112ccff49801e1f54ae9fca337769cbb5ea0"
+    }
+  ],
+  "pinned_input_manifest_sha256": "sha256:f3acc2a985b819b6b5ef985a4bf5528e3988ae5112dfca36e60d5878dcb17d2e",
+  "pinned_input_manifest_sha12": "f3acc2a985b8",
+  "pinned_inputs": [
+    {
+      "path": "C:/python/project2/docs/runs/self_model/c6b181835621/self_model_snapshot.json",
+      "size_bytes": 10339,
+      "mtime_epoch": 1777123243.73042,
+      "sha256_first_4096_bytes": "sha256:61ff0ce5dac669a90139d83be3e6ee13c5134d713d97c6fea6a36fe8c3565fe0",
+      "sha256_last_4096_bytes": "sha256:0f295b08e913e9bd39bd2514d9c37c906d46dee20cc082db2e941ddf6aa26dfb"
+    },
+    {
+      "path": "C:/python/project2/docs/runs/self_model/c6b181835621/self_model_delta.json",
+      "size_bytes": 352,
+      "mtime_epoch": 1777123243.7315075,
+      "sha256_full": "sha256:4475e0288317093158e2df37306c75e6793a0819a24eb43b9c938d9f8b968a79"
+    },
+    {
+      "path": "C:/python/project2/docs/runs/self_model/c6b181835621/scorecard.json",
+      "size_bytes": 4761,
+      "mtime_epoch": 1777123243.7315075,
+      "sha256_full": "sha256:400992cd69e52e9e7e31e0edc7b61503adb341f3dfd7224af470bd24083377c5"
+    },
+    {
+      "path": "C:/python/project2/docs/runs/self_model/c6b181835621/calibration_corrections.jsonl",
+      "size_bytes": 434,
+      "mtime_epoch": 1777123243.7325027,
+      "sha256_full": "sha256:f1f1ebb474ea2d06073ad3080e343775324597774d77b328069dd6c77f91119f"
+    },
+    {
+      "path": "C:/python/project2/docs/runs/self_model/c6b181835621/data_provenance.json",
+      "size_bytes": 4523,
+      "mtime_epoch": 1777123243.7315075,
+      "sha256_full": "sha256:65d7c5449aecf41532f6dae10d28dfb5927b33ef50ae4fdc9ec64c72b5e9820e"
+    },
+    {
+      "path": "C:/python/project2/docs/runs/self_model/c6b181835621/continuity_anchors.json",
+      "size_bytes": 318,
+      "mtime_epoch": 1777123243.7315075,
+      "sha256_full": "sha256:86aef531933f93e57c2754d651217efa5b519e49d9ecac35fad80d5e66665336"
+    },
+    {
+      "path": "C:/python/project2/docs/runs/curiosity/6b766421f410/curiosity_summary.json",
+      "size_bytes": 6271,
+      "mtime_epoch": 1777094997.567415,
+      "sha256_full": "sha256:fa00472d2661a1cae06561efb387cec7688cdaea0c51fb605cf50ffc1c0ca8ec"
+    },
+    {
+      "path": "C:/python/project2/docs/runs/curiosity/6b766421f410/curiosity_log.jsonl",
+      "size_bytes": 115817,
+      "mtime_epoch": 1777094997.5703123,
+      "sha256_first_4096_bytes": "sha256:941febab532036085dcfba70b8c90795e8882fa03731b859bb845beb45f147b0",
+      "sha256_last_4096_bytes": "sha256:3678cd72ccefdb9f6d50bbb48894f19076cb2efe13097ac3358fabd3a7c5c355"
+    },
+    {
+      "path": "C:/python/project2-d/docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
+      "size_bytes": 5579,
+      "mtime_epoch": 1777177617.4832852,
+      "sha256_full": "sha256:1ef5b2f92956322e616cc7a117b2112ccff49801e1f54ae9fca337769cbb5ea0"
+    }
+  ],
+  "real_data_attempt_status": {
+    "session_a_curiosity": "real (docs/runs/curiosity/6b766421f410/)",
+    "session_b_self_model": "real (docs/runs/self_model/c6b181835621/)",
+    "session_c_dream_meta_proposal": "fixture-fallback — no real dream_meta_proposal.json artifacts exist on disk. Session C shipped the capability layer (modules + CLI + tests) but no real run_dream_cycle --apply was executed against Session B outputs. Per D.txt §FIXTURE FALLBACK RULE this is documented as a blocker and fixture-backed dream evidence is acceptable.",
+    "r7_5_resilience": "unavailable on this branch — VECTOR_WRITER_RESILIENCE.md lives on phase8.5/vector-chaos branch (sibling worktree at C:/python/project2-r7_5). R7.5 plane is OPTIONAL per D.txt §D4; missing R7.5 must NOT penalize proposals."
+  },
+  "fixture_fallback_status": {
+    "dream_plane": {
+      "used": true,
+      "reason": "Session C's run_dream_cycle has not been executed with --apply against real Session B outputs, so docs/runs/dream/<sha12>/dream_meta_proposal.json artifacts do not exist on disk.",
+      "evidence": [
+        "find C:/python/project2/docs/runs/dream/ → does not exist",
+        "find C:/python/project2-d/docs/runs/dream/ → does not exist"
+      ],
+      "compatibility": "fixture dream_meta_proposal records will conform to the schema described in waggledance/core/dreaming/meta_proposal.py meta_proposal_to_dict() output (schema_version=1, continuity_anchor, structurally_promising, etc.)"
+    },
+    "r7_5_plane": {
+      "used": false,
+      "reason": "R7.5 evidence is OPTIONAL per D.txt §D4. Missing R7.5 must NOT penalize proposals (cross_plane_support_factor counts only contributing planes).",
+      "compatibility": "if R7.5 evidence becomes available later, pin VECTOR_WRITER_RESILIENCE.md and any best_effort/limitation evidence rows into pinned_inputs."
+    }
+  },
+  "completed_subparts": [
+    "D0: branch + worktree + state.json bootstrap + pinned input manifest"
+  ],
+  "remaining_subparts": [
+    "D1: meta_proposal.schema.json + review_bundle.schema.json",
+    "D2: waggledance/core/meta/meta_learner.py (scaffold)",
+    "D3: tools/hive_proposes.py (CLI)",
+    "D4: evidence-plane aggregation (hive_proposes core scoring)",
+    "D5: proposal_priority/confidence formulas",
+    "D6: meta_proposal_id + lifecycle/HISTORY.jsonl",
+    "D7: hive_proposals.{json,md} + meta_evidence_map.json + review_bundle.{json,md}",
+    "D8: human-review handoff text + recommended_next_human_action",
+    "D9: optional HOOKS_FOR_RUNTIME_REVIEW.md",
+    "D10: 3 architecture docs (THE_HIVE_PROPOSES, META_PROPOSAL_FORMULAS, META_PROPOSAL_PROVENANCE)",
+    "48+ targeted tests across multiple test files"
+  ],
+  "blocked": false,
+  "blocked_reason": null,
+  "open_decisions": [
+    "Whether to consume R7.5 outputs from sibling worktree (read-only) or skip entirely. Decision: skip for this initial session; if R7.5 evidence proves useful, a follow-up commit can pin it."
+  ],
+  "next_recommended_action": "D1+D2: ship schemas + meta_learner scaffold + initial test file in one combined commit (skipping the multi-step expansion)",
+  "scope_excluded": [
+    "gap_miner",
+    "self_model snapshot core",
+    "Dream Mode execution",
+    "vector chaos testing",
+    "runtime repoints",
+    "JetStream / NATS",
+    "automatic self-rewrite",
+    "automatic merge/apply of proposals"
+  ],
+  "constraints": {
+    "deterministic_artifacts": true,
+    "offline_safe": true,
+    "campaign_safe": true,
+    "no_runtime_touch": true,
+    "no_full_suite": true,
+    "crown_jewel_paths": ["waggledance/core/meta/*"]
+  },
+  "next_session_blockers": []
+}

@@ -103,18 +103,31 @@
     "D0: branch + worktree + state.json bootstrap + pinned input manifest",
     "D1: schemas/meta_proposal.schema.json + schemas/review_bundle.schema.json",
     "D2: waggledance/core/meta/__init__.py + inputs.py + meta_learner.py",
-    "D3: tools/hive_proposes.py (CLI) — runs real Session A/B pinned data, emits 3 proposals + 4 insufficient_evidence on real data",
-    "D4: evidence-plane aggregation by canonical_target (deterministic join key)",
+    "D3: tools/hive_proposes.py (CLI) — runs real Session A/B pinned data",
+    "D4: evidence-plane aggregation by canonical_target",
     "D5: proposal_priority + confidence + cross_plane_support_factor + urgency_factor formulas",
-    "D6: meta_proposal_id (structural-only sha256[:12]) + lifecycle helpers + history.py (HISTORY.jsonl chain)",
-    "D7: hive_proposals.{json,md} + meta_evidence_map.json + review_bundle.{json,md} all emitted from real run",
+    "D6: meta_proposal_id + lifecycle helpers + history.py (HISTORY.jsonl chain)",
+    "D7: hive_proposals.{json,md} + meta_evidence_map.json + review_bundle.{json,md} all emitted",
     "D8: human-review boundary text wired into every emission preamble",
-    "61 targeted tests across tests/test_meta_learner.py (31) + tests/test_hive_proposes.py (30)"
+    "D9: docs/architecture/HOOKS_FOR_RUNTIME_REVIEW.md (contract_version: 1)",
+    "D10: 3 architecture docs (THE_HIVE_PROPOSES.md + META_PROPOSAL_FORMULAS.md + META_PROPOSAL_PROVENANCE.md)",
+    "61 targeted tests across tests/test_meta_learner.py (31) + tests/test_hive_proposes.py (30) — exceeds D.txt §ACCEPTANCE CRITERIA #7 minimum of 48"
   ],
-  "remaining_subparts": [
-    "D9: optional HOOKS_FOR_RUNTIME_REVIEW.md",
-    "D10: 3 architecture docs (THE_HIVE_PROPOSES, META_PROPOSAL_FORMULAS, META_PROPOSAL_PROVENANCE)"
+  "remaining_subparts": [],
+  "session_complete": true,
+  "final_test_count": 61,
+  "final_test_breakdown": {
+    "test_meta_learner.py": 31,
+    "test_hive_proposes.py": 30
+  },
+  "session_commits": [
+    "<commit 1: bootstrap>",
+    "<commit 2: schemas + meta_learner core>",
+    "<commit 3: CLI + history + review_bundle + run on real data>",
+    "<commit 4: 4 architecture docs>"
   ],
+  "license_change_date_verified": "2030-03-19",
+  "license_change_date_source_commit": "e3479dd (Phase 8.5 Session B)",
   "first_real_run_evidence": {
     "out_dir": "docs/runs/hive/f3acc2a985b8",
     "proposals_emitted": 3,
@@ -131,7 +144,7 @@
   "open_decisions": [
     "Whether to consume R7.5 outputs from sibling worktree (read-only) or skip entirely. Decision: skip for this initial session; if R7.5 evidence proves useful, a follow-up commit can pin it."
   ],
-  "next_recommended_action": "D1+D2: ship schemas + meta_learner scaffold + initial test file in one combined commit (skipping the multi-step expansion)",
+  "next_recommended_action": "Session D complete. Recommended next: post-campaign Phase 9 runtime review session that consumes review_bundle.json under HOOKS_FOR_RUNTIME_REVIEW.md v1, OR a follow-up session that runs Session C run_dream_cycle --apply against real Session B outputs to lift the dream-plane fixture-fallback flag.",
   "scope_excluded": [
     "gap_miner",
     "self_model snapshot core",

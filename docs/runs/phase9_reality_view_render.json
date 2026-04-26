@@ -1,0 +1,178 @@
+{
+  "panels": [
+    {
+      "available": false,
+      "items": [],
+      "panel_id": "mission_queue_top",
+      "rationale_if_unavailable": "no mission_queue data supplied to view builder",
+      "title": "Mission queue (top 5 by priority)"
+    },
+    {
+      "available": true,
+      "items": [
+        {
+          "candidate_cell": null,
+          "curiosity_id": "cur_aad2aaead85bf32c",
+          "estimated_value": 1396.0,
+          "rank": null
+        },
+        {
+          "candidate_cell": null,
+          "curiosity_id": "cur_ace31e4c864f954a",
+          "estimated_value": 386.0,
+          "rank": null
+        },
+        {
+          "candidate_cell": null,
+          "curiosity_id": "cur_c891fa77624a3345",
+          "estimated_value": 336.0,
+          "rank": null
+        }
+      ],
+      "panel_id": "attention_focus",
+      "rationale_if_unavailable": "",
+      "title": "Attention focus (top 5)"
+    },
+    {
+      "available": true,
+      "items": [
+        {
+          "lifecycle_status": "new",
+          "severity": "high",
+          "tension_id": "1fc931e2d8b3",
+          "type": "scorecard_drift"
+        },
+        {
+          "lifecycle_status": "new",
+          "severity": "high",
+          "tension_id": "63f8a14965db",
+          "type": "scorecard_drift"
+        }
+      ],
+      "panel_id": "top_tensions",
+      "rationale_if_unavailable": "",
+      "title": "Top tensions"
+    },
+    {
+      "available": true,
+      "items": [
+        {
+          "detectors": [
+            "curiosity_silence"
+          ],
+          "domain": "math",
+          "severity": "medium"
+        }
+      ],
+      "panel_id": "top_blind_spots",
+      "rationale_if_unavailable": "",
+      "title": "Top blind spots"
+    },
+    {
+      "available": true,
+      "items": [
+        {
+          "blind_spots": 1,
+          "cells": 8,
+          "real_data_coverage_ratio": 0.8947,
+          "schema_version": 1,
+          "snapshot_id": "817249b4d510",
+          "tensions": 2
+        }
+      ],
+      "panel_id": "self_model_summary",
+      "rationale_if_unavailable": "",
+      "title": "Self-model summary"
+    },
+    {
+      "available": false,
+      "items": [],
+      "panel_id": "world_model_summary",
+      "rationale_if_unavailable": "world_model snapshot missing",
+      "title": "World-model summary"
+    },
+    {
+      "available": false,
+      "items": [],
+      "panel_id": "dream_queue",
+      "rationale_if_unavailable": "dream_curriculum missing",
+      "title": "Dream queue (top 5 nights)"
+    },
+    {
+      "available": false,
+      "items": [],
+      "panel_id": "meta_proposal_queue",
+      "rationale_if_unavailable": "hive review_bundle missing",
+      "title": "Meta-proposal review queue (top 5)"
+    },
+    {
+      "available": false,
+      "items": [],
+      "panel_id": "vector_tier_heat",
+      "rationale_if_unavailable": "vector_graph snapshot missing",
+      "title": "Vector graph heat (by anchor status)"
+    },
+    {
+      "available": true,
+      "items": [
+        {
+          "cell_id": "energy",
+          "scorecard": null,
+          "solver_count": null
+        },
+        {
+          "cell_id": "general",
+          "scorecard": null,
+          "solver_count": null
+        },
+        {
+          "cell_id": "learning",
+          "scorecard": null,
+          "solver_count": null
+        },
+        {
+          "cell_id": "math",
+          "scorecard": null,
+          "solver_count": null
+        },
+        {
+          "cell_id": "safety",
+          "scorecard": null,
+          "solver_count": null
+        },
+        {
+          "cell_id": "seasonal",
+          "scorecard": null,
+          "solver_count": null
+        },
+        {
+          "cell_id": "system",
+          "scorecard": null,
+          "solver_count": null
+        },
+        {
+          "cell_id": "thermal",
+          "scorecard": null,
+          "solver_count": null
+        }
+      ],
+      "panel_id": "cell_topology",
+      "rationale_if_unavailable": "",
+      "title": "Cell topology"
+    },
+    {
+      "available": false,
+      "items": [],
+      "panel_id": "builder_lane_status",
+      "rationale_if_unavailable": "builder_lane status not yet wired (Phase U2)",
+      "title": "Builder lane status"
+    }
+  ],
+  "produced_at_iso": "2026-04-26T00:00:00Z",
+  "provenance": {
+    "base_commit_hash": "f8c6fd9",
+    "branch_name": "phase9/autonomy-fabric",
+    "pinned_input_manifest_sha256": "5cd8ced05070000000000000000000000000000000000000000000000000000a"
+  },
+  "schema_version": 1
+}

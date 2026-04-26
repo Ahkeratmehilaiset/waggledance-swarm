@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waggledance.local/schemas/local_model_record.schema.json",
+  "title": "LocalModelRecord",
+  "description": "Phase 9 §N — Local model record. ALWAYS advisory_only. Local models are NEVER allowed to mutate foundational knowledge automatically.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "model_id",
+    "version",
+    "base_model_family",
+    "training_corpus_hash",
+    "fine_tune_job_id",
+    "lifecycle_status",
+    "advisory_only",
+    "no_runtime_auto_promotion",
+    "no_foundational_mutation"
+  ],
+  "properties": {
+    "model_id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "base_model_family": {"type": "string"},
+    "training_corpus_hash": {"type": "string"},
+    "fine_tune_job_id": {"type": "string"},
+    "lifecycle_status": {
+      "type": "string",
+      "enum": ["shadow_only", "advisory", "retired"]
+    },
+    "advisory_only": {"type": "boolean", "const": true},
+    "no_runtime_auto_promotion": {"type": "boolean", "const": true},
+    "no_foundational_mutation": {"type": "boolean", "const": true}
+  }
+}

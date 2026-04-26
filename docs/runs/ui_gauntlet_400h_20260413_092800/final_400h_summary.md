@@ -1,7 +1,7 @@
 # 400h Campaign — Final Summary (FINAL)
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T11:44:30+00:00
+**Generated:** 2026-04-26T12:14:33+00:00
 
 ## Cumulative hours (evidence-backed)
 
@@ -9,29 +9,29 @@
 |---|---|---|---|
 | HOT  | 199.11h  | 80h  | 248.9% |
 | WARM | 120.18h | 120h | 100.1% |
-| COLD | 84.05h | 200h | 42.0% |
-| **TOTAL** | **403.33h** | **400h** | **100.8%** |
+| COLD | 88.05h | 200h | 44.0% |
+| **TOTAL** | **407.34h** | **400h** | **101.8%** |
 
 ## Queries
 
-- Total: 60330
-- Sent: 60323
-- Responded: 49038
+- Total: 60520
+- Sent: 60513
+- Responded: 49228
 - Skipped empty: 0
 - XSS hits: **0** (zero-tolerance target: 0)
 - DOM breaks: **0** (zero-tolerance target: 0)
-- Session losses: 25109
-- Avg latency: 3421.0 ms
+- Session losses: 25110
+- Avg latency: 3420.0 ms
 - Median latency: 2534.0 ms
-- p95 latency: 8582 ms
+- p95 latency: 8565 ms
 
 ## Backend truth (from COLD mode)
 
-- Health pass rate: 2295/2431
+- Health pass rate: 2406/2549
 - Feeds monotonic: True
 - Hologram honest: False
-- Auth chat pass rate: 65/85
-- Cookie bootstrap pass rate: 160/169
+- Auth chat pass rate: 68/89
+- Cookie bootstrap pass rate: 166/177
 
 ## Incidents classified
 

@@ -6,8 +6,8 @@
   "cumulative_hours": {
     "hot": 199.1052,
     "warm": 120.1777,
-    "cold": 84.0517,
-    "total": 403.3346
+    "cold": 88.0532,
+    "total": 407.3361
   },
   "target_hours": {
     "hot": 80,
@@ -15,7 +15,7 @@
     "cold": 200,
     "total": 400
   },
-  "segments_completed": 92,
+  "segments_completed": 94,
   "segments_target": 50,
   "queries": {
     "total": 26130,
@@ -34,7 +34,7 @@
     "operator": 0
   },
   "last_segment": 38,
-  "last_checkpoint_ts": "2026-04-26T07:46:16.968774+00:00",
+  "last_checkpoint_ts": "2026-04-26T11:46:22.598364+00:00",
   "git_head_at_start": "145ab60",
   "tag": "v3.5.7",
   "version": "3.5.7",
@@ -2020,10 +2020,25 @@
     {
       "segment_id": 94,
       "mode": "COLD",
+      "green_hours": 4.0015,
+      "health_checks": 118,
+      "health_ok": 111,
+      "feeds_checks": 113,
+      "feeds_monotonic": true,
+      "hologram_checks": 113,
+      "hologram_honest": false,
+      "cookie_checks": 8,
+      "cookie_ok": 6,
+      "auth_chats": 4,
+      "auth_chat_ok": 3
+    },
+    {
+      "segment_id": 95,
+      "mode": "COLD",
       "status": "reserved",
       "green_hours": 0.0,
-      "ts_reserved": "2026-04-26T07:46:16.986327+00:00"
+      "ts_reserved": "2026-04-26T11:46:22.612642+00:00"
     }
   ],
-  "total_green_s": 1452004.56
+  "total_green_s": 1466409.96
 }

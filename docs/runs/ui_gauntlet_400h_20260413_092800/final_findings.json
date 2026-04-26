@@ -1,12 +1,12 @@
 {
   "status": "FINAL",
-  "generated_at": "2026-04-26T11:44:30+00:00",
+  "generated_at": "2026-04-26T12:14:33+00:00",
   "campaign_id": "ui_gauntlet_400h_20260413_092800",
   "cumulative_hours": {
     "hot": 199.1052,
     "warm": 120.1777,
-    "cold": 84.0517,
-    "total": 403.3346
+    "cold": 88.0532,
+    "total": 407.3361
   },
   "target_hours": {
     "hot": 80,
@@ -14,26 +14,26 @@
     "cold": 200,
     "total": 400
   },
-  "segments_committed": 63,
+  "segments_committed": 64,
   "segments_target": 50,
   "queries": {
-    "total": 60330,
-    "sent": 60323,
-    "responded": 49038,
+    "total": 60520,
+    "sent": 60513,
+    "responded": 49228,
     "skipped_empty": 0,
     "xss": 0,
     "dom_breaks": 0,
-    "session_losses": 25109,
-    "avg_latency_ms": 3421.0,
+    "session_losses": 25110,
+    "avg_latency_ms": 3420.0,
     "median_latency_ms": 2534.0,
-    "p95_latency_ms": 8582
+    "p95_latency_ms": 8565
   },
   "cold_backend_truth": {
-    "health_pass_rate": "2295/2431",
+    "health_pass_rate": "2406/2549",
     "feeds_monotonic": true,
     "hologram_honest": false,
-    "auth_chat_pass_rate": "65/85",
-    "cookie_pass_rate": "160/169"
+    "auth_chat_pass_rate": "68/89",
+    "cookie_pass_rate": "166/177"
   },
   "incidents_by_category": {
     "chat_failure": 128,

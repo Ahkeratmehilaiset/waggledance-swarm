@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Abstract pattern registry — Phase 9 §Q.
 
 Append-only registry of cross-capsule observations. Each record is

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Hot tier — Phase 9 §L. In-memory, fastest access."""
 from __future__ import annotations
 

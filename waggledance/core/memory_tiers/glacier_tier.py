@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Glacier tier — Phase 9 §L. Long-term archive; slowest access; never lossy."""
 from __future__ import annotations
 

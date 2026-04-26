@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """PR draft + bundle compiler — Phase 9 §O.
 
 Top-level entry: compile_meta_proposal_bundle pulls all the pieces

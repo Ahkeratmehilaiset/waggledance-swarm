@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """IR validator — Phase 9 §G.
 
 Schema-shape and invariant checks for IRObject without requiring the

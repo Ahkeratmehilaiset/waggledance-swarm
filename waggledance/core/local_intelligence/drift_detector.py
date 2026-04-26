@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Drift detector — Phase 9 §N.
 
 Scaffolding for detecting drift between a candidate local model and a

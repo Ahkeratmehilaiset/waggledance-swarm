@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Prediction engine — Phase 9 §I.
 
 Constructs Prediction objects from causal relations + observed

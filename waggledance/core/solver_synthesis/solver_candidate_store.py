@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Solver candidate store — Phase 9 §U3.
 
 Persistent registry of free-form solver candidates produced by U3.

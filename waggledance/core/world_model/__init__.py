@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """World model — Phase 9 §I.
 
 Strictly distinct from self_model (Session B). The world model

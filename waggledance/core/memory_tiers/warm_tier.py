@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Warm tier — Phase 9 §L. Local fast storage (in-memory + disk-spillable)."""
 from __future__ import annotations
 

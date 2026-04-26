@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Multi-provider communication plane — Phase 9 §J.
 
 Allows WD to autonomously communicate with Claude Code (priority 1),

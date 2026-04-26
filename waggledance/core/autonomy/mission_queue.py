@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy mission queue — Phase 9 §F.mission_queue.
 
 Persistent, append-only queue of work units the kernel schedules

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Conversation layer — Phase 9 §V.
 
 Surfaces memory, uncertainty, and continuity in WD's outputs. Reads

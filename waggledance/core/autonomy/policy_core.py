@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy policy core — Phase 9 §F.policy_core.
 
 Bounded adaptive policy that LAYERS ON TOP of the immutable

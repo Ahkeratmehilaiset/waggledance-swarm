@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """IR compatibility — Phase 9 §G.
 
 ir_compat_version semantics: consumers refuse unknown major versions.

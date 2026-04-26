@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Causal engine — Phase 9 §I.
 
 Represents and queries causal relations between external facts.

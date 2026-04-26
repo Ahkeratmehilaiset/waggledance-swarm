@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Adapter: Session A curiosity log → IR.curiosity objects."""
 from __future__ import annotations
 

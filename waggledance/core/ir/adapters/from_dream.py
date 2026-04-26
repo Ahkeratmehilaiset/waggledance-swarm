@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Adapter: Session C dream curriculum + meta proposals → IR.dream_target / IR.shadow_candidate / IR.meta_proposal."""
 from __future__ import annotations
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Provider registry — Phase 9 §J.
 
 Catalogs available providers + their capabilities, daily budgets,

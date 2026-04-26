@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Promotion ladder — Phase 9 §M.
 
 Owns stage transitions. NO automatic runtime promotion. NO bypasses.

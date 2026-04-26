@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Local model manager — Phase 9 §N.
 
 Manages the registry of local model artifacts (records only — never

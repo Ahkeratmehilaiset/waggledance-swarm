@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """API consultant — Phase 9 §J.
 
 Drives the 6-layer trust gate and produces ConsultationRecord entries.

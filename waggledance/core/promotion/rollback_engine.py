@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Rollback engine — Phase 9 §M.
 
 Records rollback transitions. Rollback to any earlier stage (or to

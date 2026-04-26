@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Prediction calibrator — Phase 9 §I.
 
 Aggregates prediction errors per dimension into a calibration record

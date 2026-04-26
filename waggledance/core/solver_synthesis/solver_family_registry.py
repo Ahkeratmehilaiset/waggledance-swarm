@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Solver family registry — Phase 9 §U1.
 
 Catalog of the 10 known solver families plus their required spec

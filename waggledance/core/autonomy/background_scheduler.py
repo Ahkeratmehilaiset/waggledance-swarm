@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy background scheduler — Phase 9 §F.background_scheduler.
 
 Orchestrates one background pass: select missions from the queue

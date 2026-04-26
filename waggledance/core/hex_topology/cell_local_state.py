@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Cell local state — Phase 9 §K.
 
 Per-cell shard placeholders. Each shard is a deterministic dict; no

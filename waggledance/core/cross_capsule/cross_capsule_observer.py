@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Cross-capsule observer — Phase 9 §Q.
 
 Observes ABSTRACT signal summaries from multiple capsules and detects

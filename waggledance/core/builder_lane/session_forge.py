@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Session forge — Phase 9 §U2.
 
 Pure orchestrator: given a BuilderRequest + an allocator + a router,

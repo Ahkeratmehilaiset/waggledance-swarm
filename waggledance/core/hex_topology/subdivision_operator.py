@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Subdivision operator — Phase 9 §K.
 
 Plans cell subdivisions deterministically. CRITICAL CONTRACT

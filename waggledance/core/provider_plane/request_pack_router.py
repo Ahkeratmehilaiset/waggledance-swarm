@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Request pack construction + routing — Phase 9 §J.
 
 Builds deterministic ProviderRequest packs from kernel

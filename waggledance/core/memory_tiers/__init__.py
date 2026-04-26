@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Memory tiering — Phase 9 §L.
 
 Continuously make memory faster while preserving foundational

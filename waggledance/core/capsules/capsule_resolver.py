@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Capsule resolver — Phase 9 §G.
 
 Resolves an IRObject (or any capsule_context-bearing artifact) into

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Stage validators — Phase 9 §M.
 
 Pure deterministic validators per stage transition. Each validator

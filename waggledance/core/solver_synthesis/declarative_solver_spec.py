@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Declarative solver spec — Phase 9 §U1.
 
 A SolverSpec is the declarative description of one concrete solver

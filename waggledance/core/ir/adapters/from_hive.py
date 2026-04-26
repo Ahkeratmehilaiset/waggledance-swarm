@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Adapter: Session D hive proposals + review bundle → IR.review_candidate / IR.meta_proposal."""
 from __future__ import annotations
 

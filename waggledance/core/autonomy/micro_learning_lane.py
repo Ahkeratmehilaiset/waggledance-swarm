@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy micro-learning lane — Phase 9 §F.micro_learning_lane.
 
 Fast reprioritization lane that DOES NOT mutate runtime or solver

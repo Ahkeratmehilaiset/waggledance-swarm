@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Bulk rule extractor — Phase 9 §U1.
 
 Inspects structured tables / vector clusters / mentor packs and

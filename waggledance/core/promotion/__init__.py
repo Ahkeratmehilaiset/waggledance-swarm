@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Promotion ladder — Phase 9 §M.
 
 Formal path from curiosity → tension → dream target → stochastic

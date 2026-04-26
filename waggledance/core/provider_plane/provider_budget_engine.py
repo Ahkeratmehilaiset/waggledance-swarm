@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Provider-plane budget engine — Phase 9 §J.
 
 Per-provider daily budget tracking. Distinct from the kernel

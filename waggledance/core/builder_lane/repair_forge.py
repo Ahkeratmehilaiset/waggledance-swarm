@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Repair forge — Phase 9 §U2.
 
 Specialization wrapper: builds BuilderRequests for repair-class tasks

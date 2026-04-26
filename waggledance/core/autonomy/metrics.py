@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy metrics — KPI tracking for route accuracy, LLM fallback, specialist accuracy.
 
 Tracks the exact metrics defined in the mega-spec §21:

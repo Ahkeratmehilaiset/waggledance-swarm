@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """IR adapters — Phase 9 §G.
 
 Convert per-session outputs (Session A curiosity, Session B

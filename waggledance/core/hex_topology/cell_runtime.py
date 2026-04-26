@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Cell runtime — Phase 9 §K.
 
 CellRuntime ties one cell_id to its local state + topology metadata.

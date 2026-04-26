@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy attention allocator — Phase 9 §F.attention_allocator.
 
 Routes attention across lanes/capsules. Attention allocation is

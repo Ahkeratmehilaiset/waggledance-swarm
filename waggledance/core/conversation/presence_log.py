@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Presence log — Phase 9 §V.
 
 Append-only chained log of WD's conversational presence events.

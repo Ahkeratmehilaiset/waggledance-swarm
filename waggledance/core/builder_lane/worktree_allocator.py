@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Worktree allocator — Phase 9 §U2.
 
 Manages deterministic isolated paths for builder lane invocations.

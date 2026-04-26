@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Universal ingestion — Phase 9 §H.
 
 Brings local files, folders, URLs, vector DBs, streams, and mentor

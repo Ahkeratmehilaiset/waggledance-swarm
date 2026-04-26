@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Phase 9 §Q — Cross-Capsule Observer + High-Risk Shadow Modes.
 
 This package extracts ABSTRACT structural patterns across capsules

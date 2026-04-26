@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Calibration drift detector — Phase 9 §I.
 
 Identifies SYSTEMIC shifts in calibration over time, not just local

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Link manager — Phase 9 §H.
 
 Tracks external sources ingested in link_mode (kept in place; not

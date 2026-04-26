@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Solver quarantine — Phase 9 §U3.
 
 Per-day quota enforcement for raw_candidate generation, shadow

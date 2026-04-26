@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """
 Compatibility Layer — wraps legacy HiveMind path for backward compatibility.
 

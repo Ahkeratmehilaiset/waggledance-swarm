@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Identity anchor validation — Phase 9 §H.
 
 Foundational vector additions enter `candidate` state first. Sampled

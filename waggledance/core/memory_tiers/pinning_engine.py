@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Pinning engine — Phase 9 §L.
 
 Foundational identity anchors are PINNED and may NEVER demote to

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Cognition IR core — Phase 9 §G.
 
 Defines the unified IRObject envelope for all 14 IR types

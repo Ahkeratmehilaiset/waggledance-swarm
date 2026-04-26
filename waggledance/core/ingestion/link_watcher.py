@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Link watcher — Phase 9 §H.
 
 Detects mutations on linked external sources. The R7.5 pinning rule

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Test spec generator — Phase 9 §O.
 
 Pure: from a meta-proposal, emit a test_spec describing what tests

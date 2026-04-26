@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Tier manager — Phase 9 §L.
 
 Owns tier transitions across hot/warm/cold/glacier. Pinned (foundational)

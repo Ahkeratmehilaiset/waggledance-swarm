@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Hex runtime topology — Phase 9 §K.
 
 Turns hex cells from taxonomy into real runtime topology. Each cell

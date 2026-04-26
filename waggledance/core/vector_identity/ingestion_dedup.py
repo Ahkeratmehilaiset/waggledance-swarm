@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Multi-level dedup for ingestion — Phase 9 §H.
 
 Per Prompt_1_Master §H, dedup must be 4-level:

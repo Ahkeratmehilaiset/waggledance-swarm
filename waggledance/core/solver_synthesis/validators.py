@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Solver validators — Phase 9 §U3.
 
 Combines syntactic + semantic + property + regression + shadow

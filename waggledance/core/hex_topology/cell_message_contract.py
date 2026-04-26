@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Cell message contract — Phase 9 §K.
 
 Validates messages between cells over the ring. Pure validation; no

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Deterministic solver compiler — Phase 9 §U1.
 
 Compiles SolverSpec → solver artifact (dict) byte-identically. No

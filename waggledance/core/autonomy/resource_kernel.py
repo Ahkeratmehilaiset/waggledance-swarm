@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """
 Resource Kernel — unified resource management for the autonomy runtime.
 

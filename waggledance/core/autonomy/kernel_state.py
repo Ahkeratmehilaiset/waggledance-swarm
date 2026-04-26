@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy kernel state — Phase 9 §F.
 
 Persistent in-memory state container for the always-on cognitive

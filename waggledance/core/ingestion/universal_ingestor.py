@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Universal ingestor — Phase 9 §H.
 
 Pure functions that turn input sources into VectorNode objects. The

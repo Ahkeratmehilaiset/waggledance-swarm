@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Claude Code Builder / Mentor Lane — Phase 9 §U2.
 
 Allows WD to autonomously delegate code-aware work to Claude Code

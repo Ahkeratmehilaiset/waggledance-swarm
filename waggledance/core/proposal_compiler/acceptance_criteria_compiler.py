@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Acceptance criteria compiler — Phase 9 §O."""
 from __future__ import annotations
 

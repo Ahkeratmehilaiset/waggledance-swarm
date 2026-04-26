@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Invariant extractor — Phase 9 §L.
 
 Pulls explicit invariants from a node BEFORE deep tiering /

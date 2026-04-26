@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Cold tier — Phase 9 §L. Disk-resident; cheap to keep, slower to access."""
 from __future__ import annotations
 

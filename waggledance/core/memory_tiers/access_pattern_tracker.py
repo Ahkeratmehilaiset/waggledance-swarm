@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Access-pattern tracker — Phase 9 §L.
 
 Records read/write accesses per node. CRITICAL invariant: tracking

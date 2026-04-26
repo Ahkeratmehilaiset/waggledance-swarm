@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """IR translator — Phase 9 §G.
 
 Round-trip dict ↔ IRObject. Preserves all fields under canonical

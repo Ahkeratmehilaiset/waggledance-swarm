@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Response normalizer — Phase 9 §J.
 
 Normalizes raw provider responses into a uniform ProviderResponse

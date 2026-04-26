@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy kernel governor — Phase 9 §F.
 
 Top-level orchestrator for the always-on cognitive kernel. Provides

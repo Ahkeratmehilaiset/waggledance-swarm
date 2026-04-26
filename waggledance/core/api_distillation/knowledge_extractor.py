@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Knowledge extractor — Phase 9 §J.
 
 Pulls structured fragments from a normalized provider response:

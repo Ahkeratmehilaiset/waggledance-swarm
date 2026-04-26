@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Agent pool registry — Phase 9 §J.
 
 Specialized mentor / builder agents (e.g. opus_factory_specialist_v1,

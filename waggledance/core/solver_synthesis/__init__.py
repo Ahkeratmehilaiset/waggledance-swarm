@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Solver synthesis — Phase 9 §U1 / §U2 / §U3.
 
 Phase U1 ships declarative solver families + bootstrap. Free-form

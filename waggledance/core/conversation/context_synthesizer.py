@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Context synthesizer — Phase 9 §V.
 
 Pure function: given current state slices + presence_log history,

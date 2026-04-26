@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Capsule registry — Phase 9 §G.
 
 A capsule represents one deployment context (factory_v1,

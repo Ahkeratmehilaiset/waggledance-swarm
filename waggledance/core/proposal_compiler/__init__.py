@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Proposal compiler — Phase 9 §O.
 
 Turns Session D meta-proposals into implementation-shaped artifacts:

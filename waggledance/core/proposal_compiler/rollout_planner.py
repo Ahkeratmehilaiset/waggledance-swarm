@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Rollout planner — Phase 9 §O.
 
 Pure: produces a deterministic rollout_plan dict from a meta-proposal.

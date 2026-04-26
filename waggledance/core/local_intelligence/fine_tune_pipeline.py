@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Fine-tune pipeline — Phase 9 §N.
 
 Pure scaffolding for offline fine-tune orchestration. This module:

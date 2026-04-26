@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Meta-dialogue — Phase 9 §V.
 
 Renders meta-conversational responses to questions like:

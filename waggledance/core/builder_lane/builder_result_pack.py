@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Builder result pack construction — Phase 9 §U2.
 
 Pure function. Builder result records what was produced (not what

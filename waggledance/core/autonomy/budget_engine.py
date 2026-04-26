@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy budget engine — Phase 9 §F.budget_engine.
 
 Owns reservation/consumption/reset semantics for kernel budgets. Hard

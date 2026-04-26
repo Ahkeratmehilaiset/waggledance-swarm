@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Autonomy circuit breaker — Phase 9 §F.circuit_breaker.
 
 Append-only, crash-convergent, tamper-evident state machine for

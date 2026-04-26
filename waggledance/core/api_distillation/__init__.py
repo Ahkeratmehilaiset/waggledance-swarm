@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """API distillation core — Phase 9 §J.
 
 Provider responses NEVER directly mutate self_model or world_model.

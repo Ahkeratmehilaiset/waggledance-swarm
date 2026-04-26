@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Ring messaging — Phase 9 §K.
 
 Deterministic ordered routing of CellMessage objects across the ring.

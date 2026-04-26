@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Offline replay engine — Phase 9 §J.
 
 Replays a directory of cached ConsultationRecord JSONL entries to

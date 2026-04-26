@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Action gate — Phase 9 §F.action_gate.
 
 The ONLY exit point from the autonomy kernel (constitution hard rule

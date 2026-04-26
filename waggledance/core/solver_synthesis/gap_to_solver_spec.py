@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Gap → solver spec router (U3 entrypoint) — Phase 9 §U3.
 
 Per Prompt_1_Master §U1 ROUTING RULES:

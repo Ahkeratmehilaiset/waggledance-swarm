@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Model evaluator — Phase 9 §N.
 
 Pure scoring of model outputs against shadow eval sets. The evaluator

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Parent / child / sibling / neighbor relations — Phase 9 §K.
 
 Pure deterministic queries over the topology dict.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """World model snapshot — Phase 9 §I.
 
 Frozen, deterministic snapshot of external knowledge at a point in

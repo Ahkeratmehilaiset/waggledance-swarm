@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Adapter: Session B self-model → IR.tension + IR.blind_spot."""
 from __future__ import annotations
 

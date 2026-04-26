@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """World model delta — Phase 9 §I.
 
 Diff between two consecutive WorldModelSnapshots: which external

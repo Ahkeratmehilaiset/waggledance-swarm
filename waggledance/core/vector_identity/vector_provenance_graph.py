@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Vector provenance graph — Phase 9 §H.
 
 In-memory graph of vector nodes + lineage edges. Nodes are

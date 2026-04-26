@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """
 Autonomy Lifecycle — manages runtime mode and component orchestration.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Identity / personality constants — Phase 9 §V.
 """
 

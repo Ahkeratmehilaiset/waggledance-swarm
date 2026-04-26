@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Capsule registry — Phase 9 §G.
 
 In-memory registry of capsule manifests. Manifests are pure data;

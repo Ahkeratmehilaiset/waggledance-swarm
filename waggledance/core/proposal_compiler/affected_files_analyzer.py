@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Affected files analyzer — Phase 9 §O.
 
 Pure analysis: from a meta-proposal's selected_proposal payload,

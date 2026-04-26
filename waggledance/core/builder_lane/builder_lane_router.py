@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Builder lane router — Phase 9 §U2.
 
 Decides which builder/mentor agent should receive a BuilderRequest.

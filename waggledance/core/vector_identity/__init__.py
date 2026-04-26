@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Vector identity & provenance — Phase 9 §H.
 
 The vector_provenance graph is the substrate for all of WD's local

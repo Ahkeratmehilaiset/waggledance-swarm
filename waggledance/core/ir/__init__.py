@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Cognition IR — Phase 9 §G.
 
 Common language for ALL cognitive objects across phases A-D and the

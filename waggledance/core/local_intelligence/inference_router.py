@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Inference router — Phase 9 §N.
 
 Routes inference requests between local-model candidates and the

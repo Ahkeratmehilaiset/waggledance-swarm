@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Phase 9 §N — Local Model Distillation (safe scaffold).
 
 This package is intentionally a scaffold. Outputs of any local model

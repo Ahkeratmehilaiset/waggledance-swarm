@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Provider router — Phase 9 §J.
 
 Routes a request_pack to a provider following:

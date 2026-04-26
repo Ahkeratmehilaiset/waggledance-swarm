@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """External evidence collector — Phase 9 §I.
 
 Reads pinned upstream artifacts (curiosity log, dream replay reports,

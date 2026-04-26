@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T00:13:07+00:00
+**Generated:** 2026-04-26T00:43:10+00:00
 **Main ref:** `main~30`
 **Total green:** 387.33h / 400h (MID-CAMPAIGN)
 
@@ -22,7 +22,7 @@
 - `waggledance/core/magma/self_model.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (99 files)
+### TEST_HARNESS (102 files)
 
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
@@ -48,13 +48,13 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_011.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_012.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_013.md`
+- `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_014.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_incident_matrix.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_reliability.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_summary.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/final_findings.json`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/incident_log.jsonl`
-- … and 69 more
+- … and 72 more
 
 ### DOCS_NARRATIVE (38 files)
 

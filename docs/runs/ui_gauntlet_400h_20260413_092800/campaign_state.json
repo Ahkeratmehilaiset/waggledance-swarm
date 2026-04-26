@@ -4,10 +4,10 @@
   "phase": "0_truth_intake",
   "status": "initializing",
   "cumulative_hours": {
-    "hot": 191.1052,
+    "hot": 199.1052,
     "warm": 120.1777,
     "cold": 80.0481,
-    "total": 391.331
+    "total": 399.331
   },
   "target_hours": {
     "hot": 80,
@@ -34,7 +34,7 @@
     "operator": 0
   },
   "last_segment": 38,
-  "last_checkpoint_ts": "2026-04-26T03:46:03.711365+00:00",
+  "last_checkpoint_ts": "2026-04-26T04:54:22.403659+00:00",
   "git_head_at_start": "145ab60",
   "tag": "v3.5.7",
   "version": "3.5.7",
@@ -1898,13 +1898,6 @@
       "avg_response_ms": 5502
     },
     {
-      "segment_id": 90,
-      "mode": "HOT",
-      "status": "reserved",
-      "green_hours": 0.0,
-      "ts_reserved": "2026-04-25T20:41:10.646635+00:00"
-    },
-    {
       "segment_id": 89,
       "mode": "COLD",
       "green_hours": 4.0004,
@@ -1940,7 +1933,82 @@
       "status": "reserved",
       "green_hours": 0.0,
       "ts_reserved": "2026-04-26T03:46:03.729913+00:00"
+    },
+    {
+      "segment_id": 90,
+      "mode": "HOT",
+      "green_hours": 8.0,
+      "ts_start": "2026-04-26T04:54:22.402497+00:00",
+      "total": 2918,
+      "sent": 2916,
+      "responded": 2818,
+      "errors": 2,
+      "xss": 0,
+      "session_lost": 311,
+      "dom_broken": 0,
+      "buckets": {
+        "normal": {
+          "total": 741,
+          "sent": 741,
+          "responded": 741,
+          "errors": 0,
+          "xss": 0
+        },
+        "ambiguous": {
+          "total": 414,
+          "sent": 414,
+          "responded": 414,
+          "errors": 0,
+          "xss": 0
+        },
+        "structured": {
+          "total": 360,
+          "sent": 360,
+          "responded": 360,
+          "errors": 0,
+          "xss": 0
+        },
+        "multilingual": {
+          "total": 384,
+          "sent": 384,
+          "responded": 384,
+          "errors": 0,
+          "xss": 0
+        },
+        "adversarial": {
+          "total": 486,
+          "sent": 485,
+          "responded": 476,
+          "errors": 1,
+          "xss": 0
+        },
+        "edge_case": {
+          "total": 252,
+          "sent": 251,
+          "responded": 164,
+          "errors": 1,
+          "xss": 0
+        },
+        "burst": {
+          "total": 281,
+          "sent": 281,
+          "responded": 279,
+          "errors": 0,
+          "xss": 0
+        }
+      },
+      "session_lost_after_recycle": 2,
+      "session_lost_mid_batch": 309,
+      "backpressure_pauses": 123,
+      "avg_response_ms": 4094
+    },
+    {
+      "segment_id": 93,
+      "mode": "HOT",
+      "status": "reserved",
+      "green_hours": 0.0,
+      "ts_reserved": "2026-04-26T04:54:22.407797+00:00"
     }
   ],
-  "total_green_s": 1408791.6
+  "total_green_s": 1437591.6
 }

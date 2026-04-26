@@ -1,0 +1,68 @@
+{
+  "segment_id": 90,
+  "mode": "HOT",
+  "green_hours": 8.0,
+  "ts_start": "2026-04-26T04:54:22.402497+00:00",
+  "total": 2918,
+  "sent": 2916,
+  "responded": 2818,
+  "errors": 2,
+  "xss": 0,
+  "session_lost": 311,
+  "dom_broken": 0,
+  "buckets": {
+    "normal": {
+      "total": 741,
+      "sent": 741,
+      "responded": 741,
+      "errors": 0,
+      "xss": 0
+    },
+    "ambiguous": {
+      "total": 414,
+      "sent": 414,
+      "responded": 414,
+      "errors": 0,
+      "xss": 0
+    },
+    "structured": {
+      "total": 360,
+      "sent": 360,
+      "responded": 360,
+      "errors": 0,
+      "xss": 0
+    },
+    "multilingual": {
+      "total": 384,
+      "sent": 384,
+      "responded": 384,
+      "errors": 0,
+      "xss": 0
+    },
+    "adversarial": {
+      "total": 486,
+      "sent": 485,
+      "responded": 476,
+      "errors": 1,
+      "xss": 0
+    },
+    "edge_case": {
+      "total": 252,
+      "sent": 251,
+      "responded": 164,
+      "errors": 1,
+      "xss": 0
+    },
+    "burst": {
+      "total": 281,
+      "sent": 281,
+      "responded": 279,
+      "errors": 0,
+      "xss": 0
+    }
+  },
+  "session_lost_after_recycle": 2,
+  "session_lost_mid_batch": 309,
+  "backpressure_pauses": 123,
+  "avg_response_ms": 4094
+}

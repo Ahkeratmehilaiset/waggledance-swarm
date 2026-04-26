@@ -1,7 +1,7 @@
 # 400h Campaign — Incident Matrix (FINAL)
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T09:14:12+00:00
+**Generated:** 2026-04-26T09:44:15+00:00
 
 ## By (category, mode)
 

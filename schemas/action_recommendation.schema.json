@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/action_recommendation.schema.json",
+  "title": "Action recommendation",
+  "description": "An action proposed by the autonomy kernel for action_gate.evaluate(). The kernel itself MUST NOT execute the action; this is purely a recommendation handed off via the action_gate exit point.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "recommendation_id",
+    "tick_id",
+    "kind",
+    "lane",
+    "intent",
+    "rationale",
+    "risk",
+    "reversibility",
+    "no_runtime_mutation",
+    "requires_human_review",
+    "produced_by"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "recommendation_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$",
+      "description": "Deterministic structural id; sha256[:12] of canonical (tick_id, kind, lane, intent)"
+    },
+    "tick_id": {"type": "integer", "minimum": 1},
+    "kind": {
+      "type": "string",
+      "enum": [
+        "ingest_request",
+        "consultation_request",
+        "builder_request",
+        "solver_synthesis_request",
+        "shadow_replay_request",
+        "promotion_review_request",
+        "memory_tier_move",
+        "calibration_check",
+        "noop"
+      ]
+    },
+    "lane": {
+      "type": "string",
+      "enum": [
+        "provider_plane",
+        "builder_lane",
+        "solver_synthesis",
+        "ingestion",
+        "memory_tiers",
+        "promotion",
+        "self_inspection",
+        "wait"
+      ]
+    },
+    "intent": {"type": "string", "minLength": 5, "maxLength": 500},
+    "rationale": {"type": "string", "minLength": 5, "maxLength": 1000},
+    "risk": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "reversibility": {
+      "type": "string",
+      "enum": ["fully_reversible", "shadow_only", "advisory_only"]
+    },
+    "no_runtime_mutation": {
+      "type": "boolean",
+      "const": true,
+      "description": "MUST be true. The kernel never produces runtime-mutating recommendations directly; only action_gate may downgrade and only under explicit human approval."
+    },
+    "requires_human_review": {"type": "boolean"},
+    "produced_by": {"type": "string"},
+    "capsule_context": {"type": "string"},
+    "evidence_refs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "budget_estimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider_calls": {"type": "number", "minimum": 0},
+        "builder_invocations": {"type": "number", "minimum": 0},
+        "estimated_latency_ms": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

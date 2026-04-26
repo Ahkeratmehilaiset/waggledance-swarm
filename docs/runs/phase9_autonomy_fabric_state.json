@@ -3,7 +3,8 @@
   "base_commit": "ddb08217d598927fa2e1bb6ffddd8e9a4f2de572",
   "blocked_phases": [],
   "completed_phases": [
-    "F.kernel_state (Phase F sub-component 2/10): kernel_state.py + 18 targeted tests; KernelState/TickIdentity/BudgetEntry/CircuitBreakerSnapshot frozen dataclasses; atomic tmp + os.replace persistence; pure with_tick/with_budgets/with_breakers/with_actions_recommended state transitions"
+    "F.kernel_state (Phase F sub-component 2/10): kernel_state.py + 18 targeted tests",
+    "F.governor (Phase F sub-component 1/10): governor.py + tools/wd_kernel_tick.py + schemas/action_recommendation.schema.json + 17 targeted tests; deterministic stateless tick() with constitution-sha mismatch fatal-path; ActionRecommendation always has no_runtime_mutation=True; ts excluded from recommendation_id hash"
   ],
   "constraints": {
     "campaign_safe": true,
@@ -26,7 +27,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "governor.py + wd_kernel_tick.py CLI + tests + commit",
+  "next_recommended_action": "mission_queue.py + schemas/mission.schema.json + tests + commit",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

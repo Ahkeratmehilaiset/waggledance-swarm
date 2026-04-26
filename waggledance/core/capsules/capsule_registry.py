@@ -3,9 +3,6 @@
 In-memory registry of capsule manifests. Manifests are pure data;
 the registry validates them against the capsule_manifest schema and
 enforces blast-radius isolation.
-
-Crown-jewel area waggledance/core/capsules/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

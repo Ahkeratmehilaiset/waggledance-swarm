@@ -14,9 +14,6 @@ The governor is stateless between calls; persistent state lives in
 kernel_state.py. Determinism contract (constitution.deterministic_tick):
 given identical input KernelState, tick() must produce identical
 recommendations.
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

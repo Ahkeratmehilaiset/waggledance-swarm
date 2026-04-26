@@ -4,9 +4,6 @@ Common language for ALL cognitive objects across phases A-D and the
 phase-9 autonomy fabric. Adapters convert per-session outputs into
 IR; consumers (action_gate, scheduler, promotion_ladder, etc.)
 operate on IR exclusively.
-
-Crown-jewel area waggledance/core/ir/*
-(BUSL Change Date 2030-03-19).
 """
 
 IR_SCHEMA_VERSION = 1

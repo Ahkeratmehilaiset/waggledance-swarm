@@ -4,9 +4,6 @@ The vector_provenance graph is the substrate for all of WD's local
 memory. Every ingested artifact (file, vector, mentor pack, URL,
 linked DB) becomes a vector_node with a content hash, lineage edges,
 identity-anchor status, and capsule_context.
-
-Crown-jewel area waggledance/core/vector_identity/*
-(BUSL Change Date 2030-03-19).
 """
 
 VECTOR_IDENTITY_SCHEMA_VERSION = 1

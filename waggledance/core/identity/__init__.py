@@ -1,7 +1,4 @@
 """Identity / personality constants — Phase 9 §V.
-
-Crown-jewel area waggledance/core/identity/*
-(BUSL Change Date 2030-03-19).
 """
 
 PERSONALITY_FILE = "personality.yaml"

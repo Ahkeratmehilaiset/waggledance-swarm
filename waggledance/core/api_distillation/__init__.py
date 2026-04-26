@@ -3,9 +3,6 @@
 Provider responses NEVER directly mutate self_model or world_model.
 All external answers go through normalize → extract → distill →
 6-layer trust gate → local store updates.
-
-Crown-jewel area waggledance/core/api_distillation/*
-(BUSL Change Date 2030-03-19).
 """
 
 API_DISTILLATION_SCHEMA_VERSION = 1

@@ -12,9 +12,6 @@ The policy MUST NOT:
 - lower a hard rule's severity
 - mutate the constitution file itself
 - be self-modifiable from inside tick()
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

@@ -10,9 +10,6 @@ CRITICAL SCOPE RULE (Prompt_1_Master §F):
 - circuit breaker state must be consulted before retries (handoff
   done in F.background_scheduler / F.circuit_breaker — this module
   exposes the consultation API)
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

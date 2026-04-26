@@ -16,9 +16,6 @@ runaway-loop prevention. States:
     │ probe failure
     ▼
   open  (or quarantined after M open-cycles)
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

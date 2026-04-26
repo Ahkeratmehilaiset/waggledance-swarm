@@ -8,9 +8,6 @@ CRITICAL SCOPE RULE (Prompt_1_Master §F):
 - no action execution in this phase
 - no runtime mutation
 - the kernel is a recommender + scheduler, never an actor
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

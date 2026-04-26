@@ -3,9 +3,6 @@
 Frozen, deterministic snapshot of external knowledge at a point in
 time. Strictly NOT self-model: facts here describe the world, not WD
 itself.
-
-Crown-jewel area waggledance/core/world_model/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

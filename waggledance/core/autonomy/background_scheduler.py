@@ -9,9 +9,6 @@ CRITICAL CONTRACT:
 - the scheduler does NOT execute missions
 - it only DECIDES which missions are admissible this tick and writes
   them as ActionRecommendations into a deterministic ordering
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

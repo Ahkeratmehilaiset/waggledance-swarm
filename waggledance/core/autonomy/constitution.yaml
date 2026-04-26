@@ -4,7 +4,6 @@
 # governor on every tick(). Adaptive policy (policy_core.py) may add
 # stricter rules above this floor; it MAY NEVER weaken anything below.
 #
-# Crown-jewel: waggledance/core/autonomy/* (BUSL Change Date 2030-03-19).
 
 schema_version: 1
 constitution_id: "wd_autonomy_constitution_v1"

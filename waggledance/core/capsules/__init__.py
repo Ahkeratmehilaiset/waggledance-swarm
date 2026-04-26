@@ -5,9 +5,6 @@ personal_v1, research_v1, home_v1, cottage_v1, gadget_v1, or
 neutral_v1). The core kernel treats capsules as DATA, not as
 hardcoded business logic — domain-specific semantics belong in
 capsule manifests, never in core modules.
-
-Crown-jewel area waggledance/core/capsules/*
-(BUSL Change Date 2030-03-19).
 """
 
 CAPSULE_KINDS = (

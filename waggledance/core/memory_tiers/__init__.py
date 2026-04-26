@@ -6,9 +6,6 @@ identity anchors are PINNED and never demote to cold/glacier.
 
 CRITICAL OUT-OF-SCOPE: generative memory compression is deferred to
 Phase 12+. This phase is mechanical tiering only.
-
-Crown-jewel area waggledance/core/memory_tiers/*
-(BUSL Change Date 2030-03-19).
 """
 
 MEMORY_TIERING_SCHEMA_VERSION = 1

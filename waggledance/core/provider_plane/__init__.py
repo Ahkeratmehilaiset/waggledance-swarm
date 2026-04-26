@@ -10,9 +10,6 @@ CRITICAL CONTRACT (Prompt_1_Master §J):
 - but is NOT WD's irreducible inner runtime cognition primitive
 - WD must remain operational if all providers go away
 - offline replay over consultation cache is always possible
-
-Crown-jewel area waggledance/core/provider_plane/*
-(BUSL Change Date 2030-03-19).
 """
 
 PROVIDER_PLANE_SCHEMA_VERSION = 1

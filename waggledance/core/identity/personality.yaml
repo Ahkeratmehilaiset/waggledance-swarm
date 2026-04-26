@@ -1,6 +1,5 @@
 # Phase 9 §V personality constants.
 #
-# Crown-jewel: waggledance/core/identity/* (BUSL Change Date 2030-03-19).
 #
 # These constants describe HOW WD speaks. They are NOT what WD knows
 # (self_model) and NOT what WD wants (goals/missions). They are the

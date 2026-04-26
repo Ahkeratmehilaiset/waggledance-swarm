@@ -10,9 +10,6 @@ CRITICAL CONTRACT (Prompt_1_Master §P):
 
 In legacy contexts this view is wired through `hologram_adapter`;
 new docs/comments refer to it as Reality View or Cognitive Matrix.
-
-Crown-jewel area waggledance/ui/hologram/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

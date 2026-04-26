@@ -3,9 +3,6 @@
 In-memory graph of vector nodes + lineage edges. Nodes are
 content-addressed (sha256 of content); duplicates collapse to the
 same node_id; lineage edges record explicit relations between nodes.
-
-Crown-jewel area waggledance/core/vector_identity/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

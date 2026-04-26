@@ -12,9 +12,6 @@ CRITICAL CONTRACT (Prompt_1_Master §U2):
   constitution, or finalize foundational identity
 - mentor notes are advisory-only IR objects; they cannot trigger
   architectural or runtime changes by themselves
-
-Crown-jewel area waggledance/core/builder_lane/*
-(BUSL Change Date 2030-03-19).
 """
 
 BUILDER_LANE_SCHEMA_VERSION = 1

@@ -4,9 +4,6 @@ Phase U1 ships declarative solver families + bootstrap. Free-form
 code generation is reserved for U3 (gap_to_solver_spec residual
 path). U1 always wins when match_confidence > 0.8 because it is
 faster, cheaper, more auditable, and less hallucination-prone.
-
-Crown-jewel area waggledance/core/solver_synthesis/*
-(BUSL Change Date 2030-03-19).
 """
 
 SOLVER_SYNTHESIS_SCHEMA_VERSION = 1

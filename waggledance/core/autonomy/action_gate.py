@@ -18,9 +18,6 @@ CRITICAL CONTRACT (Prompt_1_Master §GLOBAL NO-AUTO-ENACTMENT):
 - the action_gate itself executes nothing; it only authorizes
   hand-off to a lane queue
 - ADMIT_TO_LANE is NOT live execution; it is permission to enqueue
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

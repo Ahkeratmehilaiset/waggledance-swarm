@@ -11,9 +11,6 @@ CRITICAL FAIL-LOUD RULE (Prompt_1_Master §GLOBAL FAIL-LOUD):
 
 The engine is pure: every transition returns a new tuple of
 BudgetEntry instead of mutating the input.
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

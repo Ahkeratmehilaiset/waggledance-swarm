@@ -10,9 +10,6 @@ CRITICAL CONTRACT (Prompt_1_Master §M):
 - no automatic runtime promotion in this phase
 - no bypasses
 - every stage represented in IR promotion_state
-
-Crown-jewel area waggledance/core/promotion/*
-(BUSL Change Date 2030-03-19).
 """
 
 PROMOTION_SCHEMA_VERSION = 1

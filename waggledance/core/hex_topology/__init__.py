@@ -9,9 +9,6 @@ CRITICAL CONTRACT (Prompt_1_Master §K):
 - shadow-first before live usage
 - no runtime mutation in this session
 - cell topology remains domain-neutral
-
-Crown-jewel area waggledance/core/hex_topology/*
-(BUSL Change Date 2030-03-19).
 """
 
 HEX_RUNTIME_SCHEMA_VERSION = 1

@@ -3,9 +3,6 @@
 Fast reprioritization lane that DOES NOT mutate runtime or solver
 state. It only updates per-mission priority hints based on quick
 feedback signals: gate verdicts, deferral counts, breaker state.
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

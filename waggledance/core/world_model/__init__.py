@@ -7,9 +7,6 @@ what is uncertain externally, what belongs to the world vs the self.
 May later become a fifth evidence plane (Phase Q+); for Phase 9 it
 provides snapshot + delta + calibration-drift signals consumed by
 the autonomy kernel.
-
-Crown-jewel area waggledance/core/world_model/*
-(BUSL Change Date 2030-03-19).
 """
 
 WORLD_MODEL_SCHEMA_VERSION = 1

@@ -5,9 +5,6 @@ Defines the unified IRObject envelope for all 14 IR types
 envelope is a frozen dataclass with type-specific data carried in
 `payload`. Structural identity (ir_id) is sha256[:12] of canonical
 (ir_type, payload structural keys, capsule_context).
-
-Crown-jewel area waggledance/core/ir/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

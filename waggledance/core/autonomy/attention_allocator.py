@@ -4,9 +4,6 @@ Routes attention across lanes/capsules. Attention allocation is
 ROUTING ONLY — never mutation. The allocator computes per-lane
 weights from recent activity, breaker state, budget remaining, and
 capsule priority — and emits a deterministic weighted ordering.
-
-Crown-jewel area waggledance/core/autonomy/*
-(BUSL Change Date 2030-03-19).
 """
 from __future__ import annotations
 

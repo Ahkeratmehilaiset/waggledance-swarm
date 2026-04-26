@@ -6,9 +6,6 @@ context packs into the vector_provenance graph. Two modes:
 - copy_mode: vectorize-from / ingest a copy into the WD-managed store
 - link_mode: keep the source DB external and read it as a linked
   foundational/supportive source
-
-Crown-jewel area waggledance/core/ingestion/*
-(BUSL Change Date 2030-03-19).
 """
 
 INGESTION_SCHEMA_VERSION = 1

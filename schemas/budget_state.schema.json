@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/budget_state.schema.json",
+  "title": "Autonomy budget state",
+  "description": "Per-tick + cumulative budget book-keeping. Hard caps live in the constitution and KernelState.budgets[]; this schema is the audit-record shape after a reservation/consumption/reset cycle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tick_id",
+    "budgets",
+    "violations"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "tick_id": {"type": "integer", "minimum": 0},
+    "budgets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "hard_cap", "reserved", "consumed",
+                      "remaining"],
+        "properties": {
+          "name": {"type": "string"},
+          "hard_cap": {"type": "number", "minimum": 0},
+          "reserved": {"type": "number", "minimum": 0},
+          "consumed": {"type": "number", "minimum": 0},
+          "remaining": {"type": "number", "minimum": 0},
+          "reset_at_tick_boundary": {"type": "boolean"}
+        }
+      }
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["budget_name", "kind", "amount", "severity"],
+        "properties": {
+          "budget_name": {"type": "string"},
+          "kind": {"type": "string",
+            "enum": ["over_reserved", "over_consumed", "negative_amount"]},
+          "amount": {"type": "number"},
+          "severity": {"type": "string",
+            "enum": ["warning", "recoverable", "fatal"]}
+        }
+      }
+    }
+  }
+}

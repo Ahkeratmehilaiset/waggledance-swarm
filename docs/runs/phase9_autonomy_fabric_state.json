@@ -5,8 +5,17 @@
   "completed_phases": [
     "F.kernel_state (Phase F sub-component 2/10): kernel_state.py + 18 targeted tests",
     "F.governor (Phase F sub-component 1/10): governor.py + tools/wd_kernel_tick.py + schemas/action_recommendation.schema.json + 17 targeted tests",
-    "F.mission_queue (Phase F sub-component 3/10): mission_queue.py + schemas/mission.schema.json + 27 targeted tests; structural mission_id (sha256[:12] of kind/lane/intent/capsule_context); deterministic order (priority desc then id); circuit breaker filtering; lifecycle transitions; atomic tmp+replace persistence; malformed-line skip"
+    "F.mission_queue (Phase F sub-component 3/10): mission_queue.py + schemas/mission.schema.json + 27 targeted tests",
+    "F.budget_engine (Phase F sub-component 4/10): budget_engine.py + schemas/budget_state.schema.json + 21 targeted tests; reserve/consume/reset_for_new_tick/narrow_cap pure transitions; over-consumed = fatal; over-reserved = recoverable + no-op; negative = fatal; narrow_cap can tighten or add new budgets but NEVER widen existing caps"
   ],
+  "session_1_summary": {
+    "commits": 5,
+    "files_added": 14,
+    "tests_added": 83,
+    "tests_status": "83/83 passing in 0.75s",
+    "phase_f_components_done": "4/10 (kernel_state, governor, mission_queue, budget_engine)",
+    "phase_f_components_remaining": "6/10 (policy_core, action_gate, attention_allocator, background_scheduler, micro_learning_lane, circuit_breaker)"
+  },
   "constraints": {
     "campaign_safe": true,
     "deterministic_artifacts": true,
@@ -23,12 +32,12 @@
       "version": 1
     }
   ],
-  "continuation_instructions": "Session 1 in progress. Next: complete F sub-components 5-10 in subsequent sessions per Phase F preferred order.",
+  "continuation_instructions": "Session 1 COMPLETE (5 commits, 83 tests green, pushed to GitHub). Session 2 next: complete F sub-components 5-10 (policy_core → action_gate → attention_allocator → background_scheduler → micro_learning_lane → circuit_breaker). Each component commits separately per CRITICAL PHASE F SUB-COMMIT RULE. Update state.json before each commit. Worktree at C:/python/project2-master/. Pinned input manifest sha12 5cd8ced05070 already covers all 5 upstream sessions.",
   "current_branch": "phase9/autonomy-fabric",
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "budget_engine.py + tests + commit (last sub-component for session 1)",
+  "next_recommended_action": "Session 1 complete. Session 2 starts with policy_core.py + tests + commit; then action_gate, attention_allocator, background_scheduler, micro_learning_lane, circuit_breaker — completing Phase F.",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

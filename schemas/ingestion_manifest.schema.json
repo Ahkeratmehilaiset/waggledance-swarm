@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/ingestion_manifest.schema.json",
+  "title": "Universal ingestion manifest",
+  "description": "Records one ingestion run: which sources were consumed, in what mode, what nodes were produced, and what dedups occurred.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "ingested_at_iso",
+    "ingested_at_tick",
+    "mode",
+    "sources",
+    "nodes_added",
+    "nodes_deduped",
+    "anchors_promoted",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "manifest_id": {"type": "string"},
+    "ingested_at_iso": {"type": "string"},
+    "ingested_at_tick": {"type": "integer"},
+    "mode": {
+      "type": "string",
+      "enum": ["copy_mode", "link_mode", "stream_mode"]
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "source_kind"],
+        "properties": {
+          "source": {"type": "string"},
+          "source_kind": {"type": "string"},
+          "size_bytes": {"type": "integer"},
+          "sha256_full": {"type": "string"}
+        }
+      }
+    },
+    "nodes_added": {"type": "integer", "minimum": 0},
+    "nodes_deduped": {
+      "type": "object",
+      "additionalProperties": {"type": "integer"}
+    },
+    "anchors_promoted": {
+      "type": "object",
+      "additionalProperties": {"type": "integer"}
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch_name", "base_commit_hash",
+                    "pinned_input_manifest_sha256"],
+      "properties": {
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"}
+      }
+    }
+  }
+}

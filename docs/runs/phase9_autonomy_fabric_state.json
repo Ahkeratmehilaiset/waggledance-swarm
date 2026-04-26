@@ -13,7 +13,8 @@
     "F.background_scheduler (8): background_scheduler.py; one tick → ordered missions → breaker filter → action_gate batch evaluation → DispatchReport with selected/deferred/blocked",
     "F.micro_learning_lane (9): micro_learning_lane.py; fast reprioritization from gate verdicts (DEFER -0.05, REJECT_HARD -1.0, REJECT_SOFT -0.10); apply_hints clamps priority at 0; never mutates input lists",
     "F.circuit_breaker (10): circuit_breaker.py + schemas/circuit_breaker_state.schema.json; closed→open→half_open→closed transitions; quarantined after 3 open cycles; append-only chained event log with sha-validation",
-    "G.cognition_ir: schemas/cognition_ir.schema.json + schemas/capsule_manifest.schema.json + waggledance/core/ir/{__init__, cognition_ir, ir_validator, ir_translator, ir_compatibility}.py + 4 adapters (from_curiosity, from_self_model, from_dream, from_hive) + waggledance/core/capsules/{__init__, capsule_registry, capsule_resolver}.py + 33 tests; 14 IR types unified; structural ir_id from per-type identity-key whitelist; capsule blast-radius isolation enforced; domain-neutral core; adapters consume real Session A/B/C/D outputs"
+    "G.cognition_ir: schemas/cognition_ir + capsule_manifest + ir/{cognition_ir,ir_validator,ir_translator,ir_compatibility}.py + 4 adapters + capsules/{capsule_registry,capsule_resolver}.py + 33 tests",
+    "H.vector_identity_ingestion: schemas/{vector_node,ingestion_manifest,mentor_context_pack}.schema.json + waggledance/core/vector_identity/{vector_provenance_graph,identity_anchor,ingestion_dedup}.py + waggledance/core/ingestion/{universal_ingestor,link_manager,link_watcher}.py + tools/{wd_ingest,wd_link,wd_identity}.py + 37 tests; 4-level dedup pipeline (exact, semantic-stub, concept-event-sibling, contradiction); foundational anchor validation NEVER auto-promotes (constitution.no_foundational_auto_promotion); copy_mode vs link_mode both supported; link_watcher detects shrink/truncate/in-place-mutation as critical"
   ],
   "session_summary": {
     "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
@@ -43,7 +44,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Phase F + G COMPLETE (171/171 tests). Session 4 next: Phase H (Vector Provenance Graph + Universal Ingestion + Foundational Anchor Validation + Mentor Context Ingestion). Per dependency matrix H depends on G → ready.",
+  "next_recommended_action": "Phase F+G+H COMPLETE (208/208 tests). Session 5 next: Phase I (World Model + Calibration Drift Detection) and/or Phase P (Reality View / Hologram Upgrade). Per dependency matrix I depends on G+H; P depends on F+G+H+I.",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

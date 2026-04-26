@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/mentor_context_pack.schema.json",
+  "title": "Mentor context pack",
+  "description": "Long-lived context from prior Claude / Opus / GPT mentor collaboration. Ingested as supportive or foundational design memory; preserves provenance and never bypasses dedup or anchor validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pack_id",
+    "produced_by",
+    "ingested_as",
+    "items"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "pack_id": {"type": "string"},
+    "produced_by": {
+      "type": "string",
+      "description": "Mentor agent identity (e.g. opus_factory_specialist_v1)"
+    },
+    "ingested_as": {
+      "type": "string",
+      "enum": ["supportive", "candidate_foundational"]
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["item_id", "kind", "content"],
+        "properties": {
+          "item_id": {"type": "string"},
+          "kind": {
+            "type": "string",
+            "enum": ["design_note", "lesson_learned",
+                     "pattern", "anti_pattern", "constraint",
+                     "open_question"]
+          },
+          "content": {"type": "string", "minLength": 1, "maxLength": 8000},
+          "source_ref": {"type": "string"},
+          "tags": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "external_model_hint": {"type": "string"},
+    "produced_at_iso": {"type": "string"}
+  }
+}

@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T10:44:23+00:00
+**Generated:** 2026-04-26T11:14:26+00:00
 **Main ref:** `main~30`
 **Total green:** 403.33h / 400h (FINAL)
 
@@ -22,8 +22,16 @@
 - `waggledance/core/magma/self_model.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (108 files)
+### TEST_HARNESS (116 files)
 
+- `docs/runs/dream/0892a89517f2/dream_curriculum.json`
+- `docs/runs/dream/0892a89517f2/dream_curriculum.md`
+- `docs/runs/dream/0892a89517f2/proposal_collapse_report.json`
+- `docs/runs/dream/0892a89517f2/proposal_collapse_report.md`
+- `docs/runs/dream/0892a89517f2/request_packs/dream_request_pack_night_01.json`
+- `docs/runs/dream/0892a89517f2/request_packs/dream_request_pack_night_01.md`
+- `docs/runs/dream/0892a89517f2/shadow_replay_report.json`
+- `docs/runs/dream/0892a89517f2/shadow_replay_report.md`
 - `docs/runs/hex_subdivision_plan.md`
 - `docs/runs/honeycomb_400h/plan.md`
 - `docs/runs/phase8_5_curiosity_session_state.json`
@@ -46,15 +54,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_009.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_010.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_011.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_012.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_013.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_014.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_incident_matrix.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_reliability.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_summary.md`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/final_findings.json`
-- `docs/runs/ui_gauntlet_400h_20260413_092800/hot_results.jsonl`
-- … and 78 more
+- … and 86 more
 
 ### DOCS_NARRATIVE (38 files)
 

@@ -18,7 +18,8 @@
     "I.world_model: world_model_snapshot + delta + external_evidence + causal_engine + prediction_engine + calibrator + drift_detector + CLI + 31 tests",
     "P.reality_view: reality_view + hologram_adapter + hologram_snapshot + render_hologram_reality CLI + 21 tests; 11 panels; never-fabricate-values invariant",
     "V.conversation: presence_log + context_synthesizer + meta_dialogue + identity yamls + 5 meta question kinds + 28 tests",
-    "J.provider_plane_distillation: 4 schemas (provider_request/response/agent_pool/consultation_record) + provider_plane/{provider_registry,provider_router,agent_pool_registry,request_pack_router,response_normalizer,provider_budget_engine}.py + api_distillation/{knowledge_extractor,api_consultant,offline_replay_engine}.py + 40 tests; 4 providers with task-class-specific priority chains (Claude Code priority 1 for code/repair); 6-layer trust gate; raw responses NEVER directly mutate self/world (no_direct_mutation const True); offline replay survives all-providers-down; agent_pool capsule + specialization affinity; deterministic request_id"
+    "J.provider_plane_distillation: 4 schemas + provider_plane (registry/router/agent_pool/request_pack/response_normalizer/budget) + api_distillation (extractor/consultant/replay) + 40 tests",
+    "U1.solver_synthesis_declarative: schemas/{solver_family,solver_spec}.schema.json + waggledance/core/solver_synthesis/{solver_family_registry,declarative_solver_spec,bulk_rule_extractor,deterministic_solver_compiler}.py + tools/wd_bootstrap_solvers.py + 34 tests; 10 default families (scalar_unit_conversion, lookup_table, threshold_rule, interval_bucket_classifier, linear_arithmetic, weighted_aggregation, temporal_window_rule, bounded_interpolation, structured_field_extractor, deterministic_composition_wrapper); ALL 10 compile deterministically with byte-identical canonical_json; no exec/eval/compile in compiler source (free-form code path reserved for U3); table extractor detects unit conversion / linear / intervals / mappings / threshold rules; U1→U3 routing thresholds (>0.8 U1, <0.5 U3, mid try_U1_then_U3); end-to-end table → spec → artifact pipeline tested"
   ],
   "session_summary": {
     "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
@@ -48,7 +49,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Phase F+G+H+I+P+V+J COMPLETE (328/328 tests). Next: Phase U1 (Solver Families + Declarative Bootstrap), then U2 (Builder Lane / Repair Forge), U3 (Autonomous Solver Synthesis), L, K, M, O, N, Q.",
+  "next_recommended_action": "Phase F+G+H+I+P+V+J+U1 COMPLETE (362/362 tests). Next: Phase U2 (Claude Code Builder/Mentor Lane + Repair Forge), then U3 (Autonomous Solver Synthesis + Cold/Shadow Throttling), L, K, M, O, N, Q.",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

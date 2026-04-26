@@ -1,0 +1,767 @@
+{
+  "evidence_by_target": {
+    "1fc931e2d8b3": {
+      "items": [
+        {
+          "cell_id": null,
+          "plane": "self_model",
+          "rationale": "tension scorecard_drift",
+          "severity": 1.0,
+          "source_id": "1fc931e2d8b3"
+        }
+      ],
+      "proposal_id": "ee1e50d771a5"
+    },
+    "63f8a14965db": {
+      "items": [
+        {
+          "cell_id": null,
+          "plane": "self_model",
+          "rationale": "tension scorecard_drift",
+          "severity": 1.0,
+          "source_id": "63f8a14965db"
+        }
+      ],
+      "proposal_id": "4116420fed0a"
+    },
+    "_unattributed": {
+      "items": [
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity missing_solver",
+          "severity": 1.0,
+          "source_id": "cur_01eae00f40e8e7bd"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_0253e0a7ba1ec85a"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_06899882770b108b"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_06e6f864e91a17b0"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_08afb3be1a8929e0"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity missing_solver",
+          "severity": 1.0,
+          "source_id": "cur_11a98b08baf37d56"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_125e18e8d38241db"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_12fd7f0a93c5d708"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_1bff23024762bb5f"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_1db6202525fdde48"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_1f5182b5a2e55650"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_24a13d78e83ca99d"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_252308e148e91d16"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_25b6ca5e9abd52d0"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_26dc6db098bdd775"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_27837059a4ccf86d"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_2856bd9f6dcdaf80"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_298cd8ae4a9e8642"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_2b617b37cf4222be"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_2c1bf16e48eb59bc"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_2d54560c912cba69"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_2e4c70e322e1ccfe"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity improvement_opportunity",
+          "severity": 1.0,
+          "source_id": "cur_2e87e354ec61d8f5"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_31c29be9e43ca9bc"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_331a72ab25dcdcdf"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity missing_solver",
+          "severity": 1.0,
+          "source_id": "cur_34c520c1db27c902"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_34e64b40b53a8a19"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_34fb2a67c85322e7"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_3f945c2068c008a6"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_3f9879c064f8152c"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity missing_solver",
+          "severity": 1.0,
+          "source_id": "cur_4429bea4275027e8"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_44bd237bed6a5d8f"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_44d8e8e48246f83d"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_4712f059731f70e4"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_484e5ce6b1e26a07"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_49b3ea0957e9a05b"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_4c3b4d13d95282d3"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_4e3e719bd11dfb80"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_529864b3bb807364"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_52bf1374dbd08920"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_56d5eb4149bb1d0e"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_591c95c8ae84cea1"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_5cb97d7c50273ccb"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_5d0099d5a2872046"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_601b02942d91a5bb"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_665d79315c134194"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_6e79aeb0430efe91"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_726b0503271d62ff"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_744e30e9a822d1ed"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_76f84fb25126780c"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_7b4e663e20e65772"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_81a24e7bf7214c0a"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_8240746cf81978a6"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_840a03b5cf36bf0f"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_84240133f1417f3c"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_84810af13fe5a843"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_8af9109703dba490"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_978ff5add376248c"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity improvement_opportunity",
+          "severity": 1.0,
+          "source_id": "cur_987d8cc641c9d6ce"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_9af402f06bc526cb"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_9bc7d80b7611ee99"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_9ecbc8755466391b"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_a274b922bc1b3a8e"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_a35e42f2a74a3627"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_a685c5f297377d96"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_a769ca4c80886440"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_aad2aaead85bf32c"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_ab72c6f4ff3b1686"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity missing_solver",
+          "severity": 1.0,
+          "source_id": "cur_ace31e4c864f954a"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_b351776eb9d6b950"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_b3524949c001f2af"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_b5d529fa76def3e8"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_b6357d9e90e7d5fd"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_b67aea78407f597c"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_b995121dfc290117"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_baa058a706a0d457"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_bd77a29b06168624"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_be98d330651b87e2"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_c891fa77624a3345"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_c98f1429bf1f5424"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_cae054b4d6df4bf2"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_cb093e94fbe36128"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_cd8170dede64009d"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_cff8397aa1be3a21"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_d4479a0952558444"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_d4ae7ea01981e7a7"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_d65920a0eb151a05"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_da0e11052f4998d1"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_daec9d7a28f48113"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_dc2d5d500ee30135"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_e5f053868092b1ae"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_ea69932a8f3e1d80"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_ed0fec2a22f1c981"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_f547159c987820b1"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_f8be555cf02f4bc4"
+        },
+        {
+          "cell_id": "_unattributed",
+          "plane": "curiosity",
+          "rationale": "curiosity low_confidence_routing",
+          "severity": 1.0,
+          "source_id": "cur_ffb1878e52b56308"
+        }
+      ],
+      "proposal_id": null
+    },
+    "math": {
+      "items": [
+        {
+          "cell_id": "math",
+          "plane": "self_model",
+          "rationale": "blind_spot math",
+          "severity": 0.66,
+          "source_id": "blind_spot:math"
+        }
+      ],
+      "proposal_id": "ce1d9ac692bb"
+    },
+    "safety": {
+      "items": [
+        {
+          "cell_id": "safety",
+          "plane": "curiosity",
+          "rationale": "curiosity missing_solver",
+          "severity": 1.0,
+          "source_id": "cur_8d9ee30edec82939"
+        }
+      ],
+      "proposal_id": null
+    },
+    "seasonal": {
+      "items": [
+        {
+          "cell_id": "seasonal",
+          "plane": "curiosity",
+          "rationale": "curiosity subdivision_pressure",
+          "severity": 1.0,
+          "source_id": "cur_a56c94dcc6f40acd"
+        }
+      ],
+      "proposal_id": null
+    },
+    "system": {
+      "items": [
+        {
+          "cell_id": "system",
+          "plane": "curiosity",
+          "rationale": "curiosity subdivision_pressure",
+          "severity": 1.0,
+          "source_id": "cur_aac42f0e9f7873e8"
+        },
+        {
+          "cell_id": "system",
+          "plane": "curiosity",
+          "rationale": "curiosity subdivision_pressure",
+          "severity": 1.0,
+          "source_id": "cur_fc662b7bde6357a7"
+        }
+      ],
+      "proposal_id": null
+    }
+  },
+  "human_review_boundary": "This artifact is shadow-only. Every entry requires human review before any runtime promotion. No automatic merging is performed by Session D code. Runtime flip is out of scope until a later gated session with explicit permission.",
+  "provenance": {
+    "base_commit_hash": "",
+    "branch_name": "phase8.5/hive-proposes",
+    "pinned_input_manifest_sha256": "sha256:f3acc2a985b819b6b5ef985a4bf5528e3988ae5112dfca36e60d5878dcb17d2e"
+  },
+  "schema_version": 1
+}

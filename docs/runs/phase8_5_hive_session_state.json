@@ -102,21 +102,30 @@
   "completed_subparts": [
     "D0: branch + worktree + state.json bootstrap + pinned input manifest",
     "D1: schemas/meta_proposal.schema.json + schemas/review_bundle.schema.json",
-    "D2: waggledance/core/meta/__init__.py + inputs.py + meta_learner.py (core scoring + aggregation + lifecycle helpers)",
+    "D2: waggledance/core/meta/__init__.py + inputs.py + meta_learner.py",
+    "D3: tools/hive_proposes.py (CLI) — runs real Session A/B pinned data, emits 3 proposals + 4 insufficient_evidence on real data",
     "D4: evidence-plane aggregation by canonical_target (deterministic join key)",
     "D5: proposal_priority + confidence + cross_plane_support_factor + urgency_factor formulas",
-    "D6: meta_proposal_id (structural-only sha256[:12]) + lifecycle helpers",
-    "31 targeted tests in tests/test_meta_learner.py — covers categories 1, 2, 3, 4, 6, 8-22, 26, 27, 36, 38-41, 43"
+    "D6: meta_proposal_id (structural-only sha256[:12]) + lifecycle helpers + history.py (HISTORY.jsonl chain)",
+    "D7: hive_proposals.{json,md} + meta_evidence_map.json + review_bundle.{json,md} all emitted from real run",
+    "D8: human-review boundary text wired into every emission preamble",
+    "61 targeted tests across tests/test_meta_learner.py (31) + tests/test_hive_proposes.py (30)"
   ],
   "remaining_subparts": [
-    "D3: tools/hive_proposes.py (CLI)",
-    "D7: hive_proposals.{json,md} + meta_evidence_map.json + review_bundle.{json,md} emission",
-    "D8: human-review boundary text wired into emission",
-    "D6 part 2: HISTORY.jsonl append/read with chain integrity",
     "D9: optional HOOKS_FOR_RUNTIME_REVIEW.md",
-    "D10: 3 architecture docs",
-    "remaining ~17 tests for categories 5, 7, 23, 24, 25, 28, 29, 30, 31, 32, 33, 34, 35, 37, 42, 44-48"
+    "D10: 3 architecture docs (THE_HIVE_PROPOSES, META_PROPOSAL_FORMULAS, META_PROPOSAL_PROVENANCE)"
   ],
+  "first_real_run_evidence": {
+    "out_dir": "docs/runs/hive/f3acc2a985b8",
+    "proposals_emitted": 3,
+    "insufficient_evidence": 4,
+    "rejected": 0,
+    "fixture_fallback_used": true,
+    "fixture_fallback_planes": ["dream_plane"],
+    "hook_contract_errors": 0,
+    "acceptance_15a_satisfied": "3 introspection_gap proposals emitted from real Session B self-model data",
+    "acceptance_15b_satisfied": "4 weak-evidence candidates correctly logged under insufficient_evidence"
+  },
   "blocked": false,
   "blocked_reason": null,
   "open_decisions": [

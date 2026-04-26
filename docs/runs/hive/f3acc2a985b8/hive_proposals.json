@@ -1,0 +1,142 @@
+{
+  "human_review_boundary": "This artifact is shadow-only. Every entry requires human review before any runtime promotion. No automatic merging is performed by Session D code. Runtime flip is out of scope until a later gated session with explicit permission.",
+  "proposals": [
+    {
+      "canonical_target": "63f8a14965db",
+      "confidence": 0.6,
+      "cross_plane_support_factor": 1.0,
+      "evidence_planes": [
+        "self_model"
+      ],
+      "evidence_strength": 1.0,
+      "expected_value": 1.0,
+      "impacted_cells": [],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "4116420fed0a",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.6,
+      "proposal_type": "introspection_gap",
+      "provenance": {
+        "base_commit_hash": "",
+        "branch_name": "phase8.5/hive-proposes",
+        "consumed_hook_contracts": [
+          {
+            "file": "docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
+            "file_sha256": "sha256:1ef5b2f92956322e616cc7a117b2112ccff49801e1f54ae9fca337769cbb5ea0",
+            "version": 1
+          }
+        ],
+        "fixture_fallback_used": true,
+        "pinned_input_manifest_sha256": "sha256:f3acc2a985b819b6b5ef985a4bf5528e3988ae5112dfca36e60d5878dcb17d2e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "low",
+      "schema_version": 1,
+      "scope_class": "introspection",
+      "source_curiosity_ids": [],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "63f8a14965db"
+      ],
+      "uncertainty": "medium",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "1 evidence planes converged on target '63f8a14965db' with severity_max=1.00 (cps_factor=1.00, urgency=1.00)"
+    },
+    {
+      "canonical_target": "1fc931e2d8b3",
+      "confidence": 0.6,
+      "cross_plane_support_factor": 1.0,
+      "evidence_planes": [
+        "self_model"
+      ],
+      "evidence_strength": 1.0,
+      "expected_value": 1.0,
+      "impacted_cells": [],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "ee1e50d771a5",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.6,
+      "proposal_type": "introspection_gap",
+      "provenance": {
+        "base_commit_hash": "",
+        "branch_name": "phase8.5/hive-proposes",
+        "consumed_hook_contracts": [
+          {
+            "file": "docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
+            "file_sha256": "sha256:1ef5b2f92956322e616cc7a117b2112ccff49801e1f54ae9fca337769cbb5ea0",
+            "version": 1
+          }
+        ],
+        "fixture_fallback_used": true,
+        "pinned_input_manifest_sha256": "sha256:f3acc2a985b819b6b5ef985a4bf5528e3988ae5112dfca36e60d5878dcb17d2e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "low",
+      "schema_version": 1,
+      "scope_class": "introspection",
+      "source_curiosity_ids": [],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "1fc931e2d8b3"
+      ],
+      "uncertainty": "medium",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "1 evidence planes converged on target '1fc931e2d8b3' with severity_max=1.00 (cps_factor=1.00, urgency=1.00)"
+    },
+    {
+      "canonical_target": "math",
+      "confidence": 0.6,
+      "cross_plane_support_factor": 1.0,
+      "evidence_planes": [
+        "self_model"
+      ],
+      "evidence_strength": 0.66,
+      "expected_value": 0.66,
+      "impacted_cells": [
+        "math"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "ce1d9ac692bb",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.396,
+      "proposal_type": "introspection_gap",
+      "provenance": {
+        "base_commit_hash": "",
+        "branch_name": "phase8.5/hive-proposes",
+        "consumed_hook_contracts": [
+          {
+            "file": "docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
+            "file_sha256": "sha256:1ef5b2f92956322e616cc7a117b2112ccff49801e1f54ae9fca337769cbb5ea0",
+            "version": 1
+          }
+        ],
+        "fixture_fallback_used": true,
+        "pinned_input_manifest_sha256": "sha256:f3acc2a985b819b6b5ef985a4bf5528e3988ae5112dfca36e60d5878dcb17d2e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "low",
+      "schema_version": 1,
+      "scope_class": "introspection",
+      "source_curiosity_ids": [],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:math"
+      ],
+      "uncertainty": "medium",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "1 evidence planes converged on target 'math' with severity_max=0.66 (cps_factor=1.00, urgency=1.00)"
+    }
+  ],
+  "provenance": {
+    "base_commit_hash": "",
+    "branch_name": "phase8.5/hive-proposes",
+    "pinned_input_manifest_sha256": "sha256:f3acc2a985b819b6b5ef985a4bf5528e3988ae5112dfca36e60d5878dcb17d2e"
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,134 @@
+{
+  "consumed_hook_contracts": [
+    {
+      "file": "docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
+      "file_sha256": "sha256:1ef5b2f92956322e616cc7a117b2112ccff49801e1f54ae9fca337769cbb5ea0",
+      "version": 1
+    }
+  ],
+  "counts_by_recommended_next_human_action": {
+    "archive_as_low_value": 0,
+    "post_campaign_runtime_review_candidate": 0,
+    "review_for_future_PR": 3,
+    "wait_for_more_evidence": 0
+  },
+  "fixture_fallback_used": {
+    "dream_plane": {
+      "compatibility": "fixture dream_meta_proposal records will conform to the schema described in waggledance/core/dreaming/meta_proposal.py meta_proposal_to_dict() output (schema_version=1, continuity_anchor, structurally_promising, etc.)",
+      "evidence": [
+        "find C:/python/project2/docs/runs/dream/ \u2192 does not exist",
+        "find C:/python/project2-d/docs/runs/dream/ \u2192 does not exist"
+      ],
+      "reason": "Session C's run_dream_cycle has not been executed with --apply against real Session B outputs, so docs/runs/dream/<sha12>/dream_meta_proposal.json artifacts do not exist on disk.",
+      "used": true
+    },
+    "r7_5_plane": {
+      "compatibility": "if R7.5 evidence becomes available later, pin VECTOR_WRITER_RESILIENCE.md and any best_effort/limitation evidence rows into pinned_inputs.",
+      "reason": "R7.5 evidence is OPTIONAL per D.txt \u00a7D4. Missing R7.5 must NOT penalize proposals (cross_plane_support_factor counts only contributing planes).",
+      "used": false
+    }
+  },
+  "human_review_boundary": "This artifact is shadow-only. Every entry requires human review before any runtime promotion. No automatic merging is performed by Session D code. Runtime flip is out of scope until a later gated session with explicit permission.",
+  "insufficient_evidence": [
+    {
+      "candidate_target": "_unattributed",
+      "evidence_strength_seen": 1.0,
+      "missing_planes": [
+        "dream",
+        "resilience",
+        "self_model"
+      ],
+      "why_below_threshold": "no proposal_type rule fires for the planes present"
+    },
+    {
+      "candidate_target": "safety",
+      "evidence_strength_seen": 1.0,
+      "missing_planes": [
+        "dream",
+        "resilience",
+        "self_model"
+      ],
+      "why_below_threshold": "no proposal_type rule fires for the planes present"
+    },
+    {
+      "candidate_target": "seasonal",
+      "evidence_strength_seen": 1.0,
+      "missing_planes": [
+        "dream",
+        "resilience",
+        "self_model"
+      ],
+      "why_below_threshold": "no proposal_type rule fires for the planes present"
+    },
+    {
+      "candidate_target": "system",
+      "evidence_strength_seen": 1.0,
+      "missing_planes": [
+        "dream",
+        "resilience",
+        "self_model"
+      ],
+      "why_below_threshold": "no proposal_type rule fires for the planes present"
+    }
+  ],
+  "proposals": [
+    {
+      "confidence": 0.6,
+      "evidence_planes": [
+        "self_model"
+      ],
+      "impacted_cells": [],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "4116420fed0a",
+      "proposal_priority": 0.6,
+      "proposal_type": "introspection_gap",
+      "recommended_next_human_action": "review_for_future_PR",
+      "scope_class": "introspection",
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "1 evidence planes converged on target '63f8a14965db' with severity_max=1.00 (cps_factor=1.00, urgency=1.00)"
+    },
+    {
+      "confidence": 0.6,
+      "evidence_planes": [
+        "self_model"
+      ],
+      "impacted_cells": [],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "ee1e50d771a5",
+      "proposal_priority": 0.6,
+      "proposal_type": "introspection_gap",
+      "recommended_next_human_action": "review_for_future_PR",
+      "scope_class": "introspection",
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "1 evidence planes converged on target '1fc931e2d8b3' with severity_max=1.00 (cps_factor=1.00, urgency=1.00)"
+    },
+    {
+      "confidence": 0.6,
+      "evidence_planes": [
+        "self_model"
+      ],
+      "impacted_cells": [
+        "math"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "ce1d9ac692bb",
+      "proposal_priority": 0.396,
+      "proposal_type": "introspection_gap",
+      "recommended_next_human_action": "review_for_future_PR",
+      "scope_class": "introspection",
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "1 evidence planes converged on target 'math' with severity_max=0.66 (cps_factor=1.00, urgency=1.00)"
+    }
+  ],
+  "provenance": {
+    "base_commit_hash": "",
+    "branch_name": "phase8.5/hive-proposes",
+    "pinned_input_manifest_sha256": "sha256:f3acc2a985b819b6b5ef985a4bf5528e3988ae5112dfca36e60d5878dcb17d2e"
+  },
+  "rejected_candidates": [],
+  "resolved_proposals": [],
+  "schema_version": 1,
+  "summary_text": "3 bounded self-proposals; 4 insufficient-evidence candidates; 0 rejected; 0 resolved since last run.",
+  "why_human_review_required": "Session D code is a recommender, never an actor. Every proposal here is structurally suggestive evidence; the merge / apply decision rests with a human reviewer who can weigh schedule, downstream effects, and risk.",
+  "why_no_runtime_mutation_occurred": "Session D's allowed touch surface excludes runtime registries, axiom YAML, FAISS roots, and port 8002. No code path in waggledance/core/meta/* writes to those locations. Runtime flip is out of scope until a later gated session."
+}

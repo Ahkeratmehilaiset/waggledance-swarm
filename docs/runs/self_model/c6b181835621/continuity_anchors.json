@@ -1,0 +1,10 @@
+{
+  "anchor": {
+    "base_commit_hash": "d34367afcc0ece823978391594063d70c87c60fa",
+    "branch_name": "self-model-layer",
+    "pinned_input_manifest_sha256": "sha256:c6b1818356213306d97132901f42e333357443dcb857b8c27123e9169cecf44e"
+  },
+  "invariants": [],
+  "ruptures": [],
+  "snapshot_id": "817249b4d510"
+}

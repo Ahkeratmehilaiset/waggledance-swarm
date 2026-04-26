@@ -1,0 +1,167 @@
+{
+  "entries": [
+    {
+      "confidence": 1.0,
+      "field_path": "attention_focus.cur_aad2aaead85bf32c",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log.jsonl",
+      "weight": 2.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "attention_focus.cur_ace31e4c864f954a",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log.jsonl",
+      "weight": 2.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "attention_focus.cur_c891fa77624a3345",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log.jsonl",
+      "weight": 2.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "blind_spots.math",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_silence",
+      "weight": 2.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "cells.energy",
+      "is_real": false,
+      "source": "default",
+      "source_artifact": "cell aggregate from curiosity_log",
+      "weight": 1.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "cells.general",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "cell aggregate from curiosity_log",
+      "weight": 1.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "cells.learning",
+      "is_real": false,
+      "source": "default",
+      "source_artifact": "cell aggregate from curiosity_log",
+      "weight": 1.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "cells.math",
+      "is_real": false,
+      "source": "default",
+      "source_artifact": "cell aggregate from curiosity_log",
+      "weight": 1.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "cells.safety",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "cell aggregate from curiosity_log",
+      "weight": 1.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "cells.seasonal",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "cell aggregate from curiosity_log",
+      "weight": 1.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "cells.system",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "cell aggregate from curiosity_log",
+      "weight": 1.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "cells.thermal",
+      "is_real": false,
+      "source": "default",
+      "source_artifact": "cell aggregate from curiosity_log",
+      "weight": 1.0
+    },
+    {
+      "confidence": 1.0,
+      "field_path": "continuity_anchor",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "state.json pinned manifest",
+      "weight": 1.0
+    },
+    {
+      "confidence": 0.8,
+      "field_path": "scorecard.autonomous_self_improvement_readiness",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log + cells aggregate",
+      "weight": 3.0
+    },
+    {
+      "confidence": 0.8,
+      "field_path": "scorecard.dream_consolidation_readiness",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log + cells aggregate",
+      "weight": 3.0
+    },
+    {
+      "confidence": 0.8,
+      "field_path": "scorecard.identity_continuity_strength",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log + cells aggregate",
+      "weight": 3.0
+    },
+    {
+      "confidence": 0.8,
+      "field_path": "scorecard.metacognition_maturity",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log + cells aggregate",
+      "weight": 3.0
+    },
+    {
+      "confidence": 0.8,
+      "field_path": "scorecard.self_model_maturity",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log + cells aggregate",
+      "weight": 3.0
+    },
+    {
+      "confidence": 0.8,
+      "field_path": "scorecard.unified_workspace_readiness",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log + cells aggregate",
+      "weight": 3.0
+    },
+    {
+      "confidence": 0.8,
+      "field_path": "scorecard.value_layer_readiness",
+      "is_real": true,
+      "source": "real",
+      "source_artifact": "curiosity_log + cells aggregate",
+      "weight": 3.0
+    }
+  ],
+  "real_data_coverage_ratio": 0.8947,
+  "real_weight": 34.0,
+  "total_weight": 38.0
+}

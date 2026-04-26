@@ -1,0 +1,134 @@
+[
+  {
+    "calibration_evidence": {
+      "calibration_status": "ok",
+      "dimension": "autonomous_self_improvement_readiness",
+      "evidence_implied_score": 1.0,
+      "evidence_refs": [
+        "curiosity=100",
+        "blind_spots=1"
+      ],
+      "notes": "curiosity + at least one blind spot"
+    },
+    "calibration_status": "ok",
+    "evidence": [
+      "curiosity_log_size=100"
+    ],
+    "name": "autonomous_self_improvement_readiness",
+    "score": 1.0,
+    "uncertainty": "medium",
+    "why_it_matters": "Affects: capacity to act on its own curiosity findings, Improves when: curiosity \u2192 attention map is populated, Degrades when: meta_curiosity falls back to canonical."
+  },
+  {
+    "calibration_evidence": {
+      "calibration_status": "unavailable",
+      "dimension": "dream_consolidation_readiness",
+      "evidence_implied_score": null,
+      "evidence_refs": [],
+      "notes": "needs both attention and prior snapshot"
+    },
+    "calibration_status": "unavailable",
+    "evidence": [
+      "attention=3"
+    ],
+    "name": "dream_consolidation_readiness",
+    "score": 0.5,
+    "uncertainty": "medium",
+    "why_it_matters": "Affects: readiness for offline dream-mode consolidation, Improves when: attention focus and delta both available, Degrades when: no prior snapshot to diff against."
+  },
+  {
+    "calibration_evidence": {
+      "calibration_status": "ok",
+      "dimension": "identity_continuity_strength",
+      "evidence_implied_score": 0.0,
+      "evidence_refs": [],
+      "notes": "no prior snapshots \u2014 bootstrap state"
+    },
+    "calibration_status": "ok",
+    "evidence": [
+      "history_present=False"
+    ],
+    "name": "identity_continuity_strength",
+    "score": 0.0,
+    "uncertainty": "medium",
+    "why_it_matters": "Affects: ability to compare current self to prior selves, Improves when: history chain is intact, Degrades when: prev_entry chain breaks."
+  },
+  {
+    "calibration_evidence": {
+      "calibration_status": "ok",
+      "dimension": "metacognition_maturity",
+      "evidence_implied_score": 0.125,
+      "evidence_refs": [
+        "blind_spots=1",
+        "expected_domains=8"
+      ],
+      "notes": "ratio of detected blind spots to expected domains"
+    },
+    "calibration_status": "ok",
+    "evidence": [
+      "blind_spots_detected=1"
+    ],
+    "name": "metacognition_maturity",
+    "score": 0.125,
+    "uncertainty": "medium",
+    "why_it_matters": "Affects: WD's ability to detect what it does not know, Improves when: more domains have detector coverage, Degrades when: taxonomy expansion outpaces detection."
+  },
+  {
+    "calibration_evidence": {
+      "calibration_status": "mismatch",
+      "dimension": "self_model_maturity",
+      "evidence_implied_score": 1.0,
+      "evidence_refs": [
+        "curiosity=100",
+        "history=0"
+      ],
+      "notes": "approximation via signal volume"
+    },
+    "calibration_status": "mismatch",
+    "evidence": [
+      "artifact_grounded_field_ratio"
+    ],
+    "name": "self_model_maturity",
+    "score": 0.3906,
+    "uncertainty": "medium",
+    "why_it_matters": "Affects: WD's ability to describe itself accurately, Improves when: more real artifacts are pinned, Degrades when: fields fall back to defaults."
+  },
+  {
+    "calibration_evidence": {
+      "calibration_status": "mismatch",
+      "dimension": "unified_workspace_readiness",
+      "evidence_implied_score": 1.0,
+      "evidence_refs": [
+        "curiosity_count=100",
+        "attention_count=3"
+      ],
+      "notes": "curiosity log and attention focus both populated"
+    },
+    "calibration_status": "mismatch",
+    "evidence": [
+      "tensions=0",
+      "attention_focus=3"
+    ],
+    "name": "unified_workspace_readiness",
+    "score": 0.5,
+    "uncertainty": "medium",
+    "why_it_matters": "Affects: ability to integrate curiosity with reflection, Improves when: tensions and attention both exist, Degrades when: one of the two is empty."
+  },
+  {
+    "calibration_evidence": {
+      "calibration_status": "unavailable",
+      "dimension": "value_layer_readiness",
+      "evidence_implied_score": null,
+      "evidence_refs": [],
+      "notes": "phase_8_5_intentional_floor \u2014 not learnable in this session"
+    },
+    "calibration_status": "unavailable",
+    "evidence": [
+      "phase_8_5_intentional_floor"
+    ],
+    "name": "value_layer_readiness",
+    "score": 0.1,
+    "uncertainty": "high",
+    "why_it_matters": "Affects: alignment of capability growth with declared values, Improves when: value-layer formalisation lands in a future session, Degrades when: capability outpaces value-layer scaffolding."
+  }
+]

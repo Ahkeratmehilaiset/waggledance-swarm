@@ -1,0 +1,14 @@
+{
+  "capabilities_gained": [],
+  "capabilities_lost": [],
+  "cells_strengthened": [],
+  "cells_weakened": [],
+  "delta_status": "bootstrap",
+  "new_blind_spots": [],
+  "new_tensions": [],
+  "previous_snapshot_id": null,
+  "resolved_blind_spots": [],
+  "resolved_tensions": [],
+  "scorecard_movements": [],
+  "snapshot_id": "817249b4d510"
+}

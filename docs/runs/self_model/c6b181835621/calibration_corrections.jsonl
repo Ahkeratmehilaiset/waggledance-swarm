@@ -1,0 +1,2 @@
+{"confidence":0.7,"correction_count_in_window":0,"correction_magnitude":0.6094,"dimension":"self_model_maturity","evidence_implied_score":1.0,"prior_score":0.3906,"source_refs":["curiosity=100","history=0"]}
+{"confidence":0.7,"correction_count_in_window":0,"correction_magnitude":0.5,"dimension":"unified_workspace_readiness","evidence_implied_score":1.0,"prior_score":0.5,"source_refs":["curiosity_count=100","attention_count=3"]}

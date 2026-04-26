@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/consultation_record.schema.json",
+  "title": "Consultation record",
+  "description": "Persistent record of one (request, response, distillation) triple. Drives offline replay and 6-layer trust gating.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "consultation_id",
+    "request_id",
+    "response_id",
+    "trust_layer_reached",
+    "extracted_facts",
+    "extracted_solver_specs",
+    "extracted_lessons",
+    "ts_iso"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "consultation_id": {"type": "string"},
+    "request_id": {"type": "string"},
+    "response_id": {"type": "string"},
+    "trust_layer_reached": {
+      "type": "string",
+      "enum": ["raw_quarantine", "internal_consistency_passed",
+               "cross_check_passed", "corroborated",
+               "calibration_threshold_passed", "human_gated"]
+    },
+    "extracted_facts": {"type": "array"},
+    "extracted_solver_specs": {"type": "array"},
+    "extracted_lessons": {"type": "array"},
+    "ts_iso": {"type": "string"}
+  }
+}

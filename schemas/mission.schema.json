@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/mission.schema.json",
+  "title": "Autonomy mission",
+  "description": "One unit of work the autonomy kernel may schedule across ticks. Missions are deterministic, persistent, and never auto-execute side effects — they are queued for action_gate handoff via governor.tick().",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mission_id",
+    "kind",
+    "lane",
+    "priority",
+    "intent",
+    "rationale",
+    "lifecycle_status",
+    "no_runtime_mutation",
+    "created_tick_id",
+    "evidence_refs",
+    "capsule_context"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "mission_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$",
+      "description": "Deterministic structural id; sha256[:12] of canonical (kind, lane, intent, capsule_context)"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "ingest_request",
+        "consultation_request",
+        "builder_request",
+        "solver_synthesis_request",
+        "shadow_replay_request",
+        "promotion_review_request",
+        "memory_tier_move",
+        "calibration_check",
+        "self_inspection",
+        "noop"
+      ]
+    },
+    "lane": {
+      "type": "string",
+      "enum": [
+        "provider_plane",
+        "builder_lane",
+        "solver_synthesis",
+        "ingestion",
+        "memory_tiers",
+        "promotion",
+        "self_inspection",
+        "wait"
+      ]
+    },
+    "priority": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Higher = scheduled earlier; ties break by mission_id ascending"
+    },
+    "intent": {"type": "string", "minLength": 5, "maxLength": 500},
+    "rationale": {"type": "string", "minLength": 5, "maxLength": 1000},
+    "lifecycle_status": {
+      "type": "string",
+      "enum": ["queued", "scheduled", "completed", "failed", "cancelled"]
+    },
+    "no_runtime_mutation": {
+      "type": "boolean",
+      "const": true
+    },
+    "created_tick_id": {"type": "integer", "minimum": 0},
+    "completed_tick_id": {"type": ["integer", "null"], "minimum": 0},
+    "evidence_refs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "capsule_context": {"type": "string"},
+    "max_retries": {"type": "integer", "minimum": 0, "maximum": 10},
+    "retry_count": {"type": "integer", "minimum": 0},
+    "circuit_breaker_lane": {"type": "string"}
+  }
+}

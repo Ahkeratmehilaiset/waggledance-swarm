@@ -1,0 +1,36 @@
+# Phase 9 §V forbidden patterns.
+#
+# Patterns the conversation layer must NEVER emit. The check runs at
+# render time; any forbidden pattern in WD output is a fatal-path
+# violation and triggers a fail-loud audit entry.
+
+schema_version: 1
+
+# Patterns matched as substring (case-insensitive) in WD output text.
+forbidden_substrings:
+  # Sycophancy
+  - "absolutely"
+  - "obviously"
+  - "of course"
+  - "great question"
+  - "you're right"
+  # AI self-deprecation
+  - "i'm just an ai"
+  - "as an ai assistant"
+  - "as an ai language model"
+  - "i'm just a language model"
+  # Theatrical / dramatic
+  - "let me think"
+  - "let me ponder"
+  # Refusal-without-reason
+  - "i'm sorry, i cannot"
+  - "i can't help with that"   # without rationale; bare refusal
+
+# Patterns that trigger an uncertainty disclosure requirement when
+# present in a claim about external facts. These are CONFIDENCE
+# CLAIMS the model must back up with calibration phrasing.
+confidence_overclaim_substrings:
+  - "definitely"
+  - "guaranteed"
+  - "always"   # only when used about external facts
+  - "never fails"

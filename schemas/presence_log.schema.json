@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/presence_log.schema.json",
+  "title": "Presence log entry",
+  "description": "Append-only chained entry recording one WD conversational presence event (turn, observation, reflection). The presence log is tamper-evident; entries chain by prev_entry_sha256.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "entry_sha256",
+    "ts_iso",
+    "kind",
+    "summary",
+    "prev_entry_sha256",
+    "capsule_context"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "entry_sha256": {"type": "string", "pattern": "^[a-f0-9]{12}$"},
+    "ts_iso": {"type": "string"},
+    "kind": {
+      "type": "string",
+      "enum": ["turn", "observation", "reflection",
+               "uncertainty_surfaced", "blind_spot_surfaced",
+               "delta_since_last", "learning_intent"]
+    },
+    "summary": {"type": "string", "minLength": 5, "maxLength": 1000},
+    "prev_entry_sha256": {"type": "string"},
+    "capsule_context": {"type": "string"},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "user_turn_excerpt": {"type": ["string", "null"]},
+    "wd_turn_excerpt": {"type": ["string", "null"]}
+  }
+}

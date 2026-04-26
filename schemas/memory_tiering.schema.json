@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/memory_tiering.schema.json",
+  "title": "Memory tiering record",
+  "description": "Per-node tier assignment + access pattern + pin status. Foundational anchors must NEVER demote to cold/glacier.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "node_id",
+    "tier",
+    "access_count",
+    "pinned",
+    "last_access_iso"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "node_id": {"type": "string"},
+    "tier": {
+      "type": "string",
+      "enum": ["hot", "warm", "cold", "glacier"]
+    },
+    "access_count": {"type": "integer", "minimum": 0},
+    "last_access_iso": {"type": "string"},
+    "last_promoted_iso": {"type": ["string", "null"]},
+    "last_demoted_iso": {"type": ["string", "null"]},
+    "pinned": {"type": "boolean"},
+    "pin_reason": {"type": ["string", "null"]},
+    "anchor_status": {"type": ["string", "null"]},
+    "invariant_count": {"type": "integer", "minimum": 0}
+  }
+}

@@ -1,9 +1,9 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T03:43:32+00:00
+**Generated:** 2026-04-26T04:13:36+00:00
 **Main ref:** `main~30`
-**Total green:** 387.33h / 400h (MID-CAMPAIGN)
+**Total green:** 391.33h / 400h (MID-CAMPAIGN)
 
 ## Diff bucket classification
 
@@ -118,7 +118,7 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (387.3h)
+- Campaign complete (>= 400h): no (391.3h)
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty

@@ -1,7 +1,7 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T13:14:41+00:00
+**Generated:** 2026-04-26T13:44:52+00:00
 **Main ref:** `main~30`
 **Total green:** 415.34h / 400h (FINAL)
 
@@ -22,7 +22,7 @@
 - `waggledance/core/magma/self_model.py`
 - `waggledance/core/magma/vector_events.py`
 
-### TEST_HARNESS (118 files)
+### TEST_HARNESS (120 files)
 
 - `docs/runs/dream/0892a89517f2/dream_curriculum.json`
 - `docs/runs/dream/0892a89517f2/dream_curriculum.md`
@@ -54,7 +54,7 @@
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_009.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_010.md`
 - `docs/runs/ui_gauntlet_400h_20260413_092800/daily_summary_day_011.md`
-- … and 88 more
+- … and 90 more
 
 ### DOCS_NARRATIVE (38 files)
 

@@ -24,7 +24,8 @@
     "U3.autonomous_solver_synthesis: gap_to_solver_spec + candidate_store + quarantine + validators + CLI + 33 tests",
     "L.memory_tiering: 4 tiers + access_pattern_tracker + pinning_engine + invariant_extractor + tier_manager + CLI + 33 tests",
     "K.hex_runtime_topology: 7 modules (cell_local_state, cell_runtime, cell_message_contract, parent_child_relations, ring_messaging, subdivision_operator) + 4 live_states + 4 subdivision_states + 37 tests",
-    "M.promotion_ladder: schemas/promotion_ladder.schema.json + waggledance/core/promotion/{ladder,stage_validators,rollback_engine}.py + 30 tests; 14 stages (curiosity → tension → dream_target → stochastic_external_proposal → deterministic_collapse → shadow_graph → replay → meta_proposal → human_review → post_campaign_runtime_candidate → canary_cell → limited_runtime → full_runtime / archived); explicit STAGE_CRITERIA per target stage; ALL 4 RUNTIME_STAGES require human_approval_id (constitution.no_foundational_auto_promotion); detect_bypass flags multi-step skips; rollback to runtime stage requires human_approval_id; const True invariants no_runtime_auto_promotion + no_bypass enforced via source-grep test"
+    "M.promotion_ladder: 14 stages + STAGE_CRITERIA + stage_validators + rollback_engine + 30 tests; const True no_runtime_auto_promotion + no_bypass",
+    "O.proposal_compiler: schemas/proposal_compiler.schema.json + waggledance/core/proposal_compiler/{affected_files_analyzer,test_generator,rollout_planner,acceptance_criteria_compiler,patch_generator,pr_draft_compiler}.py + tools/compile_meta_proposal.py + 28 tests; ProposalBundle includes patch_skeleton + affected_files + test_spec + rollout_plan + rollback_plan + acceptance_criteria + review_checklist + pr_draft_md; const True no_main_branch_auto_merge + no_runtime_mutation enforced via source-grep test (no git push origin main / git apply / promote_to_runtime / auto_apply_patch / merge_to_main); compile_bundle deterministic and byte-stable; CLI emits bundle.json + pr_draft.md + patch_skeleton.diff + review_checklist.md to disk under --apply only"
   ],
   "session_summary": {
     "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
@@ -54,7 +55,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Phase F+G+H+I+P+V+J+U1+U2+U3+L+K+M COMPLETE (532/532 tests). Next: Phase O (Proposal Compiler), N (Local Model Distillation scaffold), Q (Cross-Capsule Observer).",
+  "next_recommended_action": "Phase F+G+H+I+P+V+J+U1+U2+U3+L+K+M+O COMPLETE (560/560 tests). Next: Phase N (Local Model Distillation scaffold), Q (Cross-Capsule Observer).",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

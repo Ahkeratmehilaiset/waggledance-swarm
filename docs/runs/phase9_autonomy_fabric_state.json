@@ -57,7 +57,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "ALL 16 PHASES COMPLETE + finalization docs — F+G+H+I+P+V+J+U1+U2+U3+L+K+M+O+N+Q (643/643 tests in 6.34s, +17 finalization-doc tests). Branch ready for human review. Prompt 2 inputs/contracts pinned at docs/architecture/PROMPT_2_INPUTS_AND_CONTRACTS.md; Phase 9 navigation surface at docs/architecture/PHASE_9_ROADMAP.md. Note: BUSL Change Date in LICENSE-BUSL.txt is 2030-03-18 (CLAUDE.md text says 2030-03-19 — one-day discrepancy, flagged for human; not unilaterally changed).",
+  "next_recommended_action": "ALL 16 PHASES + finalization docs + global property tests COMPLETE — F+G+H+I+P+V+J+U1+U2+U3+L+K+M+O+N+Q (657/657 tests in 6.35s). Per Prompt 1 §GLOBAL EXPLICIT VERIFICATION COMMANDS, all 11 Phase 9 CLI tools verified (--help): wd_kernel_tick, wd_ingest, wd_link, wd_identity, build_world_model_snapshot, render_hologram_reality, wd_conversation_probe, run_claude_builder_lane, wd_bootstrap_solvers, wd_synthesize_solver, compile_meta_proposal. Per §GLOBAL PROPERTY TESTS, 14 cross-phase property tests added (no silent failures / no auto-enactment / no constitution self-mutation / no foundational auto-promotion / no capsule blast radius leakage / deterministic ids / no absolute path leakage / no secret literals / domain-neutrality). Branch end-to-end review-ready. Note: BUSL Change Date in LICENSE-BUSL.txt is 2030-03-18 (CLAUDE.md text says 2030-03-19 — one-day discrepancy, flagged for human; not unilaterally changed).",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

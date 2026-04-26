@@ -1,0 +1,61 @@
+{
+  "acceptance_criteria": [
+    "all targeted tests pass",
+    "human review approval id is recorded",
+    "no live runtime path is touched",
+    "no main branch auto-merge occurs"
+  ],
+  "affected_files": [
+    "docs/runs/self_model/<sha12>/",
+    "tools/build_self_model_snapshot.py"
+  ],
+  "bundle_id": "bundle_9b273467f0",
+  "no_main_branch_auto_merge": true,
+  "no_runtime_mutation": true,
+  "patch_skeleton": "# Patch skeleton \u2014 introspection_gap \u2192 63f8a14965db\n# This is a SKELETON, not a real diff. A human reviewer or\n# Phase U2 builder lane fills in the concrete changes.\n\n# Affected files (TBD diffs):\n#   - docs/runs/self_model/<sha12>/\n#   - tools/build_self_model_snapshot.py\n\n# Required invariants:\n#   - no live runtime mutation\n#   - no main branch auto-merge\n#   - tests in test_spec must pass in isolated worktree\n#   - rollback plan must be ready before any runtime stage\n",
+  "pr_draft_md": "# Draft PR \u2014 introspection_gap\n\n**source meta-proposal:** 4116420fed0a\n**target:** 63f8a14965db\n**solver_name:** \u2014\n**no_runtime_mutation:** True\n**no_main_branch_auto_merge:** True\n\n## Affected files\n\n- `docs/runs/self_model/<sha12>/`\n- `tools/build_self_model_snapshot.py`\n\n## Rollout plan\n\n- shadow_first: True\n- stages: human_review \u2192 post_campaign_runtime_candidate \u2192 review_only \u2192 review_only \u2192 review_only\n\n## Notes\n\nHuman review required before any runtime promotion.\n",
+  "review_checklist": "[ ] human reviewer authenticated\n[ ] proposal artifact provenance verified\n[ ] no_runtime_mutation invariant held\n[ ] no_main_branch_auto_merge invariant held\n[ ] hook contracts re-hashed\n[ ] all tests in test_spec passed in isolated worktree\n[ ] rollback plan reviewed\n[ ] human_approval_id assigned to transition",
+  "rollback_plan": {
+    "rollback_artifacts_required": [
+      "previous_axiom_yaml_backup",
+      "vector_provenance_snapshot"
+    ],
+    "rollback_target_stage": "post_campaign_runtime_candidate",
+    "shadow_first": true,
+    "trigger_conditions": [
+      "critical_regression_detected",
+      "calibration_drift_overconfident",
+      "human_revoke_approval"
+    ]
+  },
+  "rollout_plan": {
+    "human_approval_gates": [
+      "human_review",
+      "post_campaign_runtime_candidate",
+      "canary_cell",
+      "limited_runtime",
+      "full_runtime"
+    ],
+    "min_canary_observation_window_seconds": 3600,
+    "min_limited_runtime_observation_window_seconds": 86400,
+    "shadow_first": true,
+    "stages": [
+      "human_review",
+      "post_campaign_runtime_candidate",
+      "review_only",
+      "review_only",
+      "review_only"
+    ]
+  },
+  "schema_version": 1,
+  "source_meta_proposal_id": "4116420fed0a",
+  "test_spec": {
+    "categories": [
+      "calibration_correction_emit",
+      "self_model_snapshot_round_trip"
+    ],
+    "min_tests_per_category": 1,
+    "must_run_in_isolated_worktree": true,
+    "target": "63f8a14965db"
+  }
+}

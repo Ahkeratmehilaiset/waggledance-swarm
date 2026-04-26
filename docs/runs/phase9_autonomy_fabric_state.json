@@ -15,7 +15,8 @@
     "F.circuit_breaker (10): circuit_breaker.py + schemas/circuit_breaker_state.schema.json; closed→open→half_open→closed transitions; quarantined after 3 open cycles; append-only chained event log with sha-validation",
     "G.cognition_ir: schemas/cognition_ir + capsule_manifest + ir/{cognition_ir,ir_validator,ir_translator,ir_compatibility}.py + 4 adapters + capsules/{capsule_registry,capsule_resolver}.py + 33 tests",
     "H.vector_identity_ingestion: vector_provenance_graph + identity_anchor + ingestion_dedup + universal_ingestor + link_manager + link_watcher + 3 CLI tools + 37 tests",
-    "I.world_model: schemas/world_model.schema.json + waggledance/core/world_model/{world_model_snapshot,world_model_delta,external_evidence_collector,causal_engine,prediction_engine,prediction_calibrator,calibration_drift_detector}.py + tools/build_world_model_snapshot.py + 31 tests; world_model strictly distinct from self_model (source-grep verified); ExternalFact/CausalRelation/Prediction frozen dataclasses; deterministic snapshot_id; delta diff covers added/removed/confidence-shifted/causes/evaluated; causal engine ancestors+descendants+cycles; prediction calibration parallels Session B style; drift detector flags overconfident/low-confidence systemic shifts at 0.20 threshold over 5-record windows"
+    "I.world_model: world_model_snapshot + delta + external_evidence + causal_engine + prediction_engine + calibrator + drift_detector + CLI + 31 tests",
+    "P.reality_view: waggledance/ui/hologram/{reality_view,hologram_adapter,hologram_snapshot}.py + tools/render_hologram_reality.py + 21 tests; 11 standard panels; CRITICAL never-fabricate-values invariant enforced (missing inputs yield explicit unavailable panels with rationale); legacy hologram path preserved for compatibility; atomic tmp+os.replace persistence"
   ],
   "session_summary": {
     "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
@@ -45,7 +46,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Phase F+G+H+I COMPLETE (239/239 tests). Next: Phase P (Reality View / Hologram Upgrade) — depends on F+G+H+I, all green. Then V (Conversation), J (Provider Plane + Distillation), U1+U2+U3, L, K, M, O, N, Q.",
+  "next_recommended_action": "Phase F+G+H+I+P COMPLETE (260/260 tests). Next: Phase V (Conversation Layer + Personality Constants), then J (Provider Plane + Distillation), then U1+U2+U3, L, K, M, O, N, Q.",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

@@ -1,29 +1,29 @@
 # 400h Campaign — Final Summary (FINAL)
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T12:44:37+00:00
+**Generated:** 2026-04-26T13:14:41+00:00
 
 ## Cumulative hours (evidence-backed)
 
 | Mode | Cumulative | Target | % |
 |---|---|---|---|
-| HOT  | 199.11h  | 80h  | 248.9% |
+| HOT  | 207.11h  | 80h  | 258.9% |
 | WARM | 120.18h | 120h | 100.1% |
 | COLD | 88.05h | 200h | 44.0% |
-| **TOTAL** | **407.34h** | **400h** | **101.8%** |
+| **TOTAL** | **415.34h** | **400h** | **103.8%** |
 
 ## Queries
 
-- Total: 60683
-- Sent: 60676
-- Responded: 49379
+- Total: 60807
+- Sent: 60800
+- Responded: 49499
 - Skipped empty: 0
 - XSS hits: **0** (zero-tolerance target: 0)
 - DOM breaks: **0** (zero-tolerance target: 0)
-- Session losses: 25128
-- Avg latency: 3418.0 ms
+- Session losses: 25154
+- Avg latency: 3417.0 ms
 - Median latency: 2535 ms
-- p95 latency: 8558 ms
+- p95 latency: 8539 ms
 
 ## Backend truth (from COLD mode)
 

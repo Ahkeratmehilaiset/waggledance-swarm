@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """compile_meta_proposal — Phase 9 §O CLI driver."""
 from __future__ import annotations

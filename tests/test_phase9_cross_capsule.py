@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Targeted tests for Phase 9 §Q Cross-Capsule Observer."""
 from __future__ import annotations
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Hologram adapter — Phase 9 §P.
 
 Bridges legacy hologram entrypoints (if any) to the new Reality View.

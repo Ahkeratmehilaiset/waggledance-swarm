@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Targeted tests for waggledance/core/autonomy/budget_engine.py
 (Phase 9 §F.budget_engine).
 """

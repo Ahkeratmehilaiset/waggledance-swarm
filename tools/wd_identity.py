@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """wd_identity — anchor validation driver (Phase 9 §H).
 

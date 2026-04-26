@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Targeted tests for waggledance/core/autonomy/kernel_state.py
 (Phase 9 §F.kernel_state).
 """

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """wd_conversation_probe — Phase 9 §V CLI driver.
 

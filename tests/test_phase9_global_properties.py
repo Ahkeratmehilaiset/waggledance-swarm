@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Phase 9 GLOBAL PROPERTY TESTS — cross-phase invariants enforced by source-grep.
 
 Per Prompt 1 §GLOBAL PROPERTY TESTS, these properties must hold across

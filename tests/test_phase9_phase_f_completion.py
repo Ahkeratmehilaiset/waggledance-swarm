@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Targeted tests for the final 4 Phase F sub-components:
 attention_allocator, background_scheduler, micro_learning_lane,
 circuit_breaker."""

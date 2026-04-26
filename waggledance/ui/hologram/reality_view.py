@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Reality View — Phase 9 §P.
 
 Replaces the legacy hologram's placeholder/static internals with a

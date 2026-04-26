@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """build_world_model_snapshot — Phase 9 §I CLI driver.
 

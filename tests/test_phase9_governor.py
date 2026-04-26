@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Targeted tests for waggledance/core/autonomy/governor.py
 (Phase 9 §F.governor).
 

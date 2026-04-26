@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Reality View — Phase 9 §P (legacy filename `hologram` preserved).
 
 In new docs/comments refer to this as the **Reality View** or

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """wd_link — manage external linked sources (Phase 9 §H link_mode)."""
 from __future__ import annotations

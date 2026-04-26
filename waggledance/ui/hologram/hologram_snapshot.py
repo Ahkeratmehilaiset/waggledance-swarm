@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Hologram snapshot persistence — Phase 9 §P.
 
 Atomic-write the rendered RealitySnapshot to disk. Same tmp+replace

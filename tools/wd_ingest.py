@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """wd_ingest — universal ingestion driver (Phase 9 §H).
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Targeted tests for waggledance/core/autonomy/mission_queue.py
 (Phase 9 §F.mission_queue).
 """

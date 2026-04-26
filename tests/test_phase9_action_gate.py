@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Targeted tests for waggledance/core/autonomy/action_gate.py."""
 from __future__ import annotations
 

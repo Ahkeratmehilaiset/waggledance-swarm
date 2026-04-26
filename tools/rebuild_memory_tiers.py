@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """rebuild_memory_tiers — Phase 9 §L CLI driver.
 

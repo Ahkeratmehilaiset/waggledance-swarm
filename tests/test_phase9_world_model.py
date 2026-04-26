@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Targeted tests for Phase 9 §I World Model + Calibration Drift."""
 from __future__ import annotations
 

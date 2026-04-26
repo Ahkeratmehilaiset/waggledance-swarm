@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """render_hologram_reality — Phase 9 §P CLI driver.
 

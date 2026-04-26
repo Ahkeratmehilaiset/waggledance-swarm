@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/hex_runtime.schema.json",
+  "title": "Hex runtime cell record",
+  "description": "Real runtime topology entry for one hex cell. Subdivision is a controlled primitive; shadow-first before live usage.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "cell_id",
+    "parent_cell_id",
+    "child_cell_ids",
+    "neighbor_cell_ids",
+    "shards",
+    "live_state",
+    "subdivision_state"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "cell_id": {"type": "string"},
+    "parent_cell_id": {"type": ["string", "null"]},
+    "child_cell_ids": {"type": "array", "items": {"type": "string"}},
+    "neighbor_cell_ids": {"type": "array", "items": {"type": "string"}},
+    "shards": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["curiosity", "self_model", "vector",
+                    "event_log", "proposal_queue", "dream_queue",
+                    "local_budget"],
+      "properties": {
+        "curiosity": {"type": "boolean"},
+        "self_model": {"type": "boolean"},
+        "vector": {"type": "boolean"},
+        "event_log": {"type": "boolean"},
+        "proposal_queue": {"type": "boolean"},
+        "dream_queue": {"type": "boolean"},
+        "local_budget": {"type": "boolean"},
+        "builder_lane_queue": {"type": "boolean"}
+      }
+    },
+    "live_state": {
+      "type": "string",
+      "enum": ["shadow_only", "canary", "live", "deprecated"]
+    },
+    "subdivision_state": {
+      "type": "string",
+      "enum": ["leaf", "subdivided", "subdivision_planned",
+               "subdivision_in_shadow"]
+    },
+    "capsule_context": {"type": "string"}
+  }
+}

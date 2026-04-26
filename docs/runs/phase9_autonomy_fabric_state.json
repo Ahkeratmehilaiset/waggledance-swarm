@@ -22,7 +22,8 @@
     "U1.solver_synthesis_declarative: 10 default families + family_registry + declarative_spec + bulk_rule_extractor + deterministic_compiler + bootstrap CLI + 34 tests",
     "U2.builder_lane: 7 modules (worktree_allocator, request_pack, result_pack, router, session_forge, repair_forge, mentor_forge) + 2 schemas + CLI + 37 tests",
     "U3.autonomous_solver_synthesis: gap_to_solver_spec + candidate_store + quarantine + validators + CLI + 33 tests",
-    "L.memory_tiering: schemas/memory_tiering.schema.json + waggledance/core/memory_tiers/{hot_tier,warm_tier,cold_tier,glacier_tier,access_pattern_tracker,pinning_engine,invariant_extractor,tier_manager}.py + tools/rebuild_memory_tiers.py + 33 tests; 4 tiers (hot/warm/cold/glacier); foundational anchors auto-pinned and CANNOT demote to cold/glacier (TierViolation raised); access tracker stores counts only (NEVER rewrites meaning); invariants extracted BEFORE deep tiering (constraint/schema/relation kinds, no LLM); tier_snapshot byte-stable; deterministic_rebuild produces identical layout; no data loss across promote/demote movements; OUT-OF-SCOPE generative memory compression source-grep verified absent"
+    "L.memory_tiering: 4 tiers + access_pattern_tracker + pinning_engine + invariant_extractor + tier_manager + CLI + 33 tests",
+    "K.hex_runtime_topology: schemas/hex_runtime.schema.json + waggledance/core/hex_topology/{cell_local_state,cell_runtime,cell_message_contract,parent_child_relations,ring_messaging,subdivision_operator}.py + 37 tests; 4 live_states (shadow_only/canary/live/deprecated) + 4 subdivision_states (leaf/subdivided/subdivision_planned/subdivision_in_shadow); 7 required shards (curiosity/self_model/vector/event_log/proposal_queue/dream_queue/local_budget) + optional builder_lane_queue; pure deterministic relations (parent/children/siblings/neighbors/ancestors/descendants); ring_messaging validates kind-specific topology constraints (ring_request needs neighbor, child_to_parent needs matching parent, parent_to_child needs matching child); subdivision_operator deterministic + shadow-first (new children always live_state=shadow_only); apply_plan_to_topology PURE (original unchanged)"
   ],
   "session_summary": {
     "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
@@ -52,7 +53,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Phase F+G+H+I+P+V+J+U1+U2+U3+L COMPLETE (465/465 tests). Next: Phase K (Hex Runtime Topology), M (Promotion Ladder), O (Proposal Compiler), N (Local Model Distillation scaffold), Q (Cross-Capsule Observer).",
+  "next_recommended_action": "Phase F+G+H+I+P+V+J+U1+U2+U3+L+K COMPLETE (502/502 tests). Next: Phase M (Promotion Ladder), O (Proposal Compiler), N (Local Model Distillation scaffold), Q (Cross-Capsule Observer).",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

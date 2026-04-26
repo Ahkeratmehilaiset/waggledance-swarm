@@ -3,18 +3,23 @@
   "base_commit": "ddb08217d598927fa2e1bb6ffddd8e9a4f2de572",
   "blocked_phases": [],
   "completed_phases": [
-    "F.kernel_state (Phase F sub-component 2/10): kernel_state.py + 18 targeted tests",
-    "F.governor (Phase F sub-component 1/10): governor.py + tools/wd_kernel_tick.py + schemas/action_recommendation.schema.json + 17 targeted tests",
-    "F.mission_queue (Phase F sub-component 3/10): mission_queue.py + schemas/mission.schema.json + 27 targeted tests",
-    "F.budget_engine (Phase F sub-component 4/10): budget_engine.py + schemas/budget_state.schema.json + 21 targeted tests; reserve/consume/reset_for_new_tick/narrow_cap pure transitions; over-consumed = fatal; over-reserved = recoverable + no-op; negative = fatal; narrow_cap can tighten or add new budgets but NEVER widen existing caps"
+    "F.kernel_state (1): kernel_state.py + 18 tests",
+    "F.governor (2): governor.py + tools/wd_kernel_tick.py + schemas/action_recommendation.schema.json + 17 tests",
+    "F.mission_queue (3): mission_queue.py + schemas/mission.schema.json + 27 tests",
+    "F.budget_engine (4): budget_engine.py + schemas/budget_state.schema.json + 21 tests",
+    "F.policy_core (5): policy_core.py + 13 tests; bounded adaptive policy that may tighten/narrow_scope/add_advisory_check but NEVER relax/remove/mutate hard rules; PolicyValidationError on forbidden verbs",
+    "F.action_gate (6): action_gate.py + 17 tests; the ONLY exit point from the kernel; runs breaker + policy + budget checks; admits/defers/rejects but NEVER executes",
+    "F.attention_allocator (7): attention_allocator.py; routes attention across 8 lanes; breaker open/quarantined → weight 0; budget low → ×0.3; deterministic + renormalized to sum=1.0",
+    "F.background_scheduler (8): background_scheduler.py; one tick → ordered missions → breaker filter → action_gate batch evaluation → DispatchReport with selected/deferred/blocked",
+    "F.micro_learning_lane (9): micro_learning_lane.py; fast reprioritization from gate verdicts (DEFER -0.05, REJECT_HARD -1.0, REJECT_SOFT -0.10); apply_hints clamps priority at 0; never mutates input lists",
+    "F.circuit_breaker (10): circuit_breaker.py + schemas/circuit_breaker_state.schema.json; closed→open→half_open→closed transitions; quarantined after 3 open cycles; append-only chained event log with sha-validation"
   ],
-  "session_1_summary": {
-    "commits": 5,
-    "files_added": 14,
-    "tests_added": 83,
-    "tests_status": "83/83 passing in 0.75s",
-    "phase_f_components_done": "4/10 (kernel_state, governor, mission_queue, budget_engine)",
-    "phase_f_components_remaining": "6/10 (policy_core, action_gate, attention_allocator, background_scheduler, micro_learning_lane, circuit_breaker)"
+  "session_summary": {
+    "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
+    "session_2": "3 commits (policy_core + action_gate + final-4-combined), 55 tests = total 138",
+    "phase_f_complete": true,
+    "phase_f_components_done": "10/10 — Phase F TÄYSIN VALMIS",
+    "tests_status": "138/138 passing in 1.03s"
   },
   "constraints": {
     "campaign_safe": true,
@@ -32,12 +37,12 @@
       "version": 1
     }
   ],
-  "continuation_instructions": "Session 1 COMPLETE (5 commits, 83 tests green, pushed to GitHub). Session 2 next: complete F sub-components 5-10 (policy_core → action_gate → attention_allocator → background_scheduler → micro_learning_lane → circuit_breaker). Each component commits separately per CRITICAL PHASE F SUB-COMMIT RULE. Update state.json before each commit. Worktree at C:/python/project2-master/. Pinned input manifest sha12 5cd8ced05070 already covers all 5 upstream sessions.",
+  "continuation_instructions": "Session 1 + 2 COMPLETE — Phase F shipped end-to-end (8 commits, 138 tests, pushed to GitHub). Session 3 next: Phase G (Cognition IR + Capsule Registry). Worktree at C:/python/project2-master/. Pinned input manifest sha12 5cd8ced05070 already covers all 5 upstream sessions; Phase G adapters will read pinned A/B/C/D outputs. Per dependency matrix: G depends on F → ready.",
   "current_branch": "phase9/autonomy-fabric",
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Session 1 complete. Session 2 starts with policy_core.py + tests + commit; then action_gate, attention_allocator, background_scheduler, micro_learning_lane, circuit_breaker — completing Phase F.",
+  "next_recommended_action": "Phase F COMPLETE (138/138 tests). Session 3 next: Phase G (Cognition IR + Capsule Registry) — schemas/cognition_ir.schema.json + ir_validator + ir_translator + adapters/* + capsule_registry + capsule_resolver + tests. Per phase dependency matrix G depends on F (now green).",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

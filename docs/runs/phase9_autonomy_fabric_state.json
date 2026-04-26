@@ -20,7 +20,8 @@
     "V.conversation: presence_log + context_synthesizer + meta_dialogue + identity yamls + 5 meta question kinds + 28 tests",
     "J.provider_plane_distillation: 4 schemas + provider_plane (registry/router/agent_pool/request_pack/response_normalizer/budget) + api_distillation (extractor/consultant/replay) + 40 tests",
     "U1.solver_synthesis_declarative: 10 default families + family_registry + declarative_spec + bulk_rule_extractor + deterministic_compiler + bootstrap CLI + 34 tests",
-    "U2.builder_lane: schemas/{builder_request,builder_result}.schema.json + waggledance/core/builder_lane/{worktree_allocator,builder_request_pack,builder_result_pack,builder_lane_router,session_forge,repair_forge,mentor_forge}.py + tools/run_claude_builder_lane.py + 37 tests; 8 task_kinds + 5 outcome_states + 6 artifact_kinds; deterministic worktree allocation (phase9-builder/<request_sha8> branch naming); builder router with agent_id_hint > capsule_affinity > specialization > Claude default; const True invariants no_runtime_mutation + no_main_branch_auto_merge enforced via source-grep test; mentor notes are advisory-only IR objects (lifecycle_status: advisory, is_advisory_only: True); CLI emits request+result packs scaffold-only (subprocess invocation gated for human review)"
+    "U2.builder_lane: 7 modules (worktree_allocator, request_pack, result_pack, router, session_forge, repair_forge, mentor_forge) + 2 schemas + CLI + 37 tests",
+    "U3.autonomous_solver_synthesis: schemas/{solver_candidate,solver_validation_report}.schema.json + waggledance/core/solver_synthesis/{gap_to_solver_spec,solver_candidate_store,solver_quarantine,validators}.py + tools/wd_synthesize_solver.py + 33 tests; 10 candidate states (raw_candidate→schema_valid→static_valid→test_valid→shadow_only→cold_solver→review_ready→approved); 4 daily quotas (1000 generated/200 shadow/50 review_ready/20 final_approvals); cold solver gates (min 50 use_count, min 3600 shadow_obs_seconds, 0 critical regressions); CRITICAL: final approval requires explicit human_approval_id (constitution.no_foundational_auto_promotion); validators emit deterministic 6-verdict report; gap router honors §U1 ROUTING RULES (>0.8 U1, <0.5 U3, mid try_U1_then_U3); no auto-promotion / no runtime mutation source-grep verified"
   ],
   "session_summary": {
     "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
@@ -50,7 +51,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Phase F+G+H+I+P+V+J+U1+U2 COMPLETE (399/399 tests). Next: Phase U3 (Autonomous Solver Synthesis + Cold/Shadow Throttling), then L, K, M, O, N, Q.",
+  "next_recommended_action": "Phase F+G+H+I+P+V+J+U1+U2+U3 COMPLETE (432/432 tests). Next: Phase L (Memory Tiering + Invariant Extraction), then K (Hex Runtime Topology), M (Promotion Ladder), O (Proposal Compiler), N (Local Model Distillation scaffold), Q (Cross-Capsule Observer).",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

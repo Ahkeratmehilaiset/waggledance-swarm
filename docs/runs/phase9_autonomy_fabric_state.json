@@ -12,7 +12,8 @@
     "F.attention_allocator (7): attention_allocator.py; routes attention across 8 lanes; breaker open/quarantined → weight 0; budget low → ×0.3; deterministic + renormalized to sum=1.0",
     "F.background_scheduler (8): background_scheduler.py; one tick → ordered missions → breaker filter → action_gate batch evaluation → DispatchReport with selected/deferred/blocked",
     "F.micro_learning_lane (9): micro_learning_lane.py; fast reprioritization from gate verdicts (DEFER -0.05, REJECT_HARD -1.0, REJECT_SOFT -0.10); apply_hints clamps priority at 0; never mutates input lists",
-    "F.circuit_breaker (10): circuit_breaker.py + schemas/circuit_breaker_state.schema.json; closed→open→half_open→closed transitions; quarantined after 3 open cycles; append-only chained event log with sha-validation"
+    "F.circuit_breaker (10): circuit_breaker.py + schemas/circuit_breaker_state.schema.json; closed→open→half_open→closed transitions; quarantined after 3 open cycles; append-only chained event log with sha-validation",
+    "G.cognition_ir: schemas/cognition_ir.schema.json + schemas/capsule_manifest.schema.json + waggledance/core/ir/{__init__, cognition_ir, ir_validator, ir_translator, ir_compatibility}.py + 4 adapters (from_curiosity, from_self_model, from_dream, from_hive) + waggledance/core/capsules/{__init__, capsule_registry, capsule_resolver}.py + 33 tests; 14 IR types unified; structural ir_id from per-type identity-key whitelist; capsule blast-radius isolation enforced; domain-neutral core; adapters consume real Session A/B/C/D outputs"
   ],
   "session_summary": {
     "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
@@ -37,12 +38,12 @@
       "version": 1
     }
   ],
-  "continuation_instructions": "Session 1 + 2 COMPLETE — Phase F shipped end-to-end (8 commits, 138 tests, pushed to GitHub). Session 3 next: Phase G (Cognition IR + Capsule Registry). Worktree at C:/python/project2-master/. Pinned input manifest sha12 5cd8ced05070 already covers all 5 upstream sessions; Phase G adapters will read pinned A/B/C/D outputs. Per dependency matrix: G depends on F → ready.",
+  "continuation_instructions": "Sessions 1-3 COMPLETE — Phase F + G shipped end-to-end (9+ commits, 171 tests). Session 4 next: Phase H (Vector Provenance Graph + Universal Ingestion + Foundational Anchor Validation + Mentor Context Ingestion). Worktree C:/python/project2-master/. Pinned input manifest sha12 5cd8ced05070. Phase H modules: waggledance/core/vector_identity/{vector_provenance_graph, identity_anchor, vector_lineage, cross_reference_engine, ingestion_dedup, mentor_context_ingestor}.py + waggledance/core/ingestion/{universal_ingestor, link_manager, link_watcher, adapters/*}.py + tools/{wd_ingest, wd_link, wd_identity}.py + 3 schemas. Multi-level dedup (exact, semantic, sibling, contradiction). Foundational anchors enter candidate state first. Link vs copy modes both supported.",
   "current_branch": "phase9/autonomy-fabric",
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Phase F COMPLETE (138/138 tests). Session 3 next: Phase G (Cognition IR + Capsule Registry) — schemas/cognition_ir.schema.json + ir_validator + ir_translator + adapters/* + capsule_registry + capsule_resolver + tests. Per phase dependency matrix G depends on F (now green).",
+  "next_recommended_action": "Phase F + G COMPLETE (171/171 tests). Session 4 next: Phase H (Vector Provenance Graph + Universal Ingestion + Foundational Anchor Validation + Mentor Context Ingestion). Per dependency matrix H depends on G → ready.",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

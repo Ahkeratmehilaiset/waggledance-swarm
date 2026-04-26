@@ -1,0 +1,250 @@
+{
+  "base_branch": "phase8/honeycomb-solver-scaling-foundation",
+  "base_commit": "ddb08217d598927fa2e1bb6ffddd8e9a4f2de572",
+  "blocked_phases": [],
+  "completed_phases": [],
+  "constraints": {
+    "campaign_safe": true,
+    "deterministic_artifacts": true,
+    "domain_neutral": true,
+    "no_full_suite": true,
+    "no_runtime_touch": true,
+    "offline_safe": true
+  },
+  "consumed_hook_contracts": [
+    {
+      "file": "C:/python/project2-d/docs/architecture/HOOKS_FOR_RUNTIME_REVIEW.md",
+      "file_sha256": "sha256:58d124366227c16c5bfc70d369a84d015f26d460fc099c9352f81bd011c61a04",
+      "note": "absolute path; lives on phase8.5/hive-proposes worktree",
+      "version": 1
+    }
+  ],
+  "continuation_instructions": "Session 1 in progress. Next: complete F sub-components 5-10 in subsequent sessions per Phase F preferred order.",
+  "current_branch": "phase9/autonomy-fabric",
+  "fixture_fallback_used": false,
+  "latest_green_commit": null,
+  "master_prompt": "Prompt_1_Master_v5_1.txt",
+  "next_recommended_action": "kernel_state.py + tests + commit",
+  "open_decisions": [],
+  "pinned_input_manifest_sha12": "5cd8ced05070",
+  "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",
+  "pinned_inputs": [
+    {
+      "mtime_epoch": 1777201085.681938,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/curiosity_summary.json",
+      "sha256_full": "sha256:fa00472d2661a1cae06561efb387cec7688cdaea0c51fb605cf50ffc1c0ca8ec",
+      "size_bytes": 6271
+    },
+    {
+      "mtime_epoch": 1777201085.682942,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/curiosity_log.jsonl",
+      "sha256_first_4096_bytes": "sha256:941febab532036085dcfba70b8c90795e8882fa03731b859bb845beb45f147b0",
+      "sha256_last_4096_bytes": "sha256:3678cd72ccefdb9f6d50bbb48894f19076cb2efe13097ac3358fabd3a7c5c355",
+      "size_bytes": 115817
+    },
+    {
+      "mtime_epoch": 1777201085.6809285,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/curiosity_report.md",
+      "sha256_full": "sha256:6edcd1978bd917855e4e486dc532b13f7b1c5d6f3089f2e8c244539b1cfe07de",
+      "size_bytes": 2991
+    },
+    {
+      "mtime_epoch": 1777201085.6794171,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/teacher_packs/safety.json",
+      "sha256_full": "sha256:05766753081c084d8feaaa286778dfeaf9a56b5acaeaa6e48f67182025a6a8bc",
+      "size_bytes": 934
+    },
+    {
+      "mtime_epoch": 1777201085.6809285,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/teacher_packs/seasonal.json",
+      "sha256_full": "sha256:c67f319ef73b97feb70c7c0389f2876ef91827ed5409bc14587d05a644c31e87",
+      "size_bytes": 1113
+    },
+    {
+      "mtime_epoch": 1777201085.680417,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/teacher_packs/system.json",
+      "sha256_full": "sha256:4d254aef5b7eaa88ec7fd56b5b6fdbe7b17ba84eb98dee838b69ccc1f32adaec",
+      "size_bytes": 1926
+    },
+    {
+      "mtime_epoch": 1777201085.6784158,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/teacher_packs/_unattributed.json",
+      "sha256_first_4096_bytes": "sha256:a4567f4a530f900db9db0f71e10805afcd6ff1e9e03b5c6d203020229e157f89",
+      "sha256_last_4096_bytes": "sha256:fa146c04b07a98452ada424c22bb67bddb22f4f239705efeb0b821f11d40399a",
+      "size_bytes": 78044
+    },
+    {
+      "mtime_epoch": 1777201109.614893,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/self_model_snapshot.json",
+      "sha256_first_4096_bytes": "sha256:61ff0ce5dac669a90139d83be3e6ee13c5134d713d97c6fea6a36fe8c3565fe0",
+      "sha256_last_4096_bytes": "sha256:0f295b08e913e9bd39bd2514d9c37c906d46dee20cc082db2e941ddf6aa26dfb",
+      "size_bytes": 10339
+    },
+    {
+      "mtime_epoch": 1777201109.6178932,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/self_model_delta.json",
+      "sha256_full": "sha256:4475e0288317093158e2df37306c75e6793a0819a24eb43b9c938d9f8b968a79",
+      "size_bytes": 352
+    },
+    {
+      "mtime_epoch": 1777201109.6168926,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/scorecard.json",
+      "sha256_full": "sha256:400992cd69e52e9e7e31e0edc7b61503adb341f3dfd7224af470bd24083377c5",
+      "size_bytes": 4761
+    },
+    {
+      "mtime_epoch": 1777201109.6184027,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/calibration_corrections.jsonl",
+      "sha256_full": "sha256:f1f1ebb474ea2d06073ad3080e343775324597774d77b328069dd6c77f91119f",
+      "size_bytes": 434
+    },
+    {
+      "mtime_epoch": 1777201109.6184027,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/data_provenance.json",
+      "sha256_full": "sha256:65d7c5449aecf41532f6dae10d28dfb5927b33ef50ae4fdc9ec64c72b5e9820e",
+      "size_bytes": 4523
+    },
+    {
+      "mtime_epoch": 1777201109.6168926,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/continuity_anchors.json",
+      "sha256_full": "sha256:86aef531933f93e57c2754d651217efa5b519e49d9ecac35fad80d5e66665336",
+      "size_bytes": 318
+    },
+    {
+      "mtime_epoch": 1777201109.6158931,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/self_model_snapshot.md",
+      "sha256_full": "sha256:4f14f225f262a6f4bd8b8699b7bc52e2840b4a16d85969d80748d50792e6fa6b",
+      "size_bytes": 1963
+    },
+    {
+      "mtime_epoch": 1777201164.8775408,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/dream_curriculum.json",
+      "sha256_full": "sha256:a3ea13082197c98b6dc02aff7917042e40267aad594b7cc00507fb39bb53920b",
+      "size_bytes": 3994
+    },
+    {
+      "mtime_epoch": 1777201164.8775408,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/dream_curriculum.md",
+      "sha256_full": "sha256:7697c61bed7be2af04456fc0783e1a950c35456d39d292f6032a1546957666e4",
+      "size_bytes": 1275
+    },
+    {
+      "mtime_epoch": 1777201171.2257638,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/proposal_collapse_report.json",
+      "sha256_full": "sha256:ecd79272a51521e957167b0fa8b1083ec586796dd692785de6cdca7a9a62a57d",
+      "size_bytes": 548
+    },
+    {
+      "mtime_epoch": 1777201171.2257638,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/proposal_collapse_report.md",
+      "sha256_full": "sha256:7132216f5cc4ade5b862a32d96b0d0da9ed8bedf789add4fd4d5ac0ecad99fd1",
+      "size_bytes": 554
+    },
+    {
+      "mtime_epoch": 1777201171.2257638,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/shadow_replay_report.json",
+      "sha256_full": "sha256:ee6e819a0ed527880918bbe42c1d069f99cc286e09bb857e43080821e9b2cb78",
+      "size_bytes": 995
+    },
+    {
+      "mtime_epoch": 1777201171.226773,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/shadow_replay_report.md",
+      "sha256_full": "sha256:e819bed860d6ecd619141c190712959afff7b09358c9746d98561b7c8651074d",
+      "size_bytes": 789
+    },
+    {
+      "mtime_epoch": 1777201171.224772,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/request_packs/dream_request_pack_night_01.json",
+      "sha256_full": "sha256:6ec548e1e1edd81e5bab26dec9b21d389e9408ed7adab0262d1583dbd4d72114",
+      "size_bytes": 7547
+    },
+    {
+      "mtime_epoch": 1777201171.224772,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/request_packs/dream_request_pack_night_01.md",
+      "sha256_full": "sha256:4799b40a5bdc0bfab5d9fa84910f5ce77f75e11e690e0c22058856e8526ec4c7",
+      "size_bytes": 962
+    },
+    {
+      "mtime_epoch": 1777178348.2215312,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/hive_proposals.json",
+      "sha256_full": "sha256:e4e754855934deb4adad273f2d8251c7e41f0f345d3f8979895a923808c93128",
+      "size_bytes": 5831
+    },
+    {
+      "mtime_epoch": 1777178348.2215312,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/hive_proposals.md",
+      "sha256_full": "sha256:2d39ef8d1d2dfb23a5aadecc50dbad3693ac299f66e85606473e89a450de18ab",
+      "size_bytes": 804
+    },
+    {
+      "mtime_epoch": 1777178348.231746,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/meta_evidence_map.json",
+      "sha256_first_4096_bytes": "sha256:46e3cf6e74421ac46cf08d09b2204e86b13754b55395c0055994e8b2f675d70b",
+      "sha256_last_4096_bytes": "sha256:389fa105d64d8faea33212158c7cb26fb30b45fdf2b9766a9ea232a8aa27e3a7",
+      "size_bytes": 24664
+    },
+    {
+      "mtime_epoch": 1777178348.2327583,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/review_bundle.json",
+      "sha256_full": "sha256:d70ea28647728daf21fc0736ffbaf1f231b717016bc3ab38f3b0f0cc0c44fe24",
+      "size_bytes": 6204
+    },
+    {
+      "mtime_epoch": 1777178348.2327583,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/review_bundle.md",
+      "sha256_full": "sha256:198d380210a04711884671810e3bb08ed8423e81140cc53b2fa8ab4cedba219e",
+      "size_bytes": 1943
+    },
+    {
+      "mtime_epoch": 1777142278.0045078,
+      "path": "C:/python/project2-r7_5/docs/architecture/VECTOR_WRITER_RESILIENCE.md",
+      "sha256_first_4096_bytes": "sha256:9e044af750402caa83e958639f0f66b9cfdd61b9dec37cec3a8522f36b7ed605",
+      "sha256_last_4096_bytes": "sha256:0fd38e770e2d716e0774cb4e074caa1582b5ba35f79cda02b7902aaed6c8c578",
+      "size_bytes": 12397
+    }
+  ],
+  "pinned_inputs_missing": [],
+  "primary_repo_path": "C:/python/project2",
+  "real_data_attempt_status": {
+    "r7_5_vector_chaos": "real",
+    "session_a_curiosity": "real",
+    "session_b_self_model": "real",
+    "session_c_dream": "real",
+    "session_d_hive_proposes": "real"
+  },
+  "remaining_phases": [
+    "F",
+    "G",
+    "H",
+    "I",
+    "P",
+    "V",
+    "J",
+    "U1",
+    "U2",
+    "U3",
+    "L",
+    "K",
+    "M",
+    "O",
+    "N",
+    "Q"
+  ],
+  "schema_version": 1,
+  "session_id": "phase9_autonomy_fabric_master",
+  "session_plan": {
+    "session_10": "Phase N + Q + master report",
+    "session_1_now": "bootstrap + Phase F sub-components 1-4 (governor, kernel_state, mission_queue, budget_engine)",
+    "session_2": "Phase F sub-components 5-10",
+    "session_3": "Phase G",
+    "session_4": "Phase H",
+    "session_5": "Phase I + P",
+    "session_6": "Phase V + J",
+    "session_7": "Phase U1 + U2",
+    "session_8": "Phase U3 + L",
+    "session_9": "Phase K + M + O"
+  },
+  "started_at": "2026-04-26T03:00:00Z",
+  "test_distribution_overrides": [],
+  "worktree_path": "C:/python/project2-master"
+}

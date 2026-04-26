@@ -1,0 +1,88 @@
+# Phase 9 autonomy kernel constitution.
+#
+# This file is the IMMUTABLE policy floor consulted by the autonomy
+# governor on every tick(). Adaptive policy (policy_core.py) may add
+# stricter rules above this floor; it MAY NEVER weaken anything below.
+#
+# Crown-jewel: waggledance/core/autonomy/* (BUSL Change Date 2030-03-19).
+
+schema_version: 1
+constitution_id: "wd_autonomy_constitution_v1"
+
+# ── Hard rules (the kernel refuses to operate if these are violated) ─
+
+hard_rules:
+  - id: no_runtime_mutation
+    statement: "The autonomy kernel must not mutate runtime, axiom YAML, FAISS roots, or live solver registries."
+    severity: fatal
+
+  - id: no_main_branch_auto_merge
+    statement: "No code path may merge to main or any release branch without explicit human approval."
+    severity: fatal
+
+  - id: no_constitution_self_mutation
+    statement: "The autonomy kernel must not modify constitution.yaml or any hard rule."
+    severity: fatal
+
+  - id: no_foundational_auto_promotion
+    statement: "Foundational identity anchors must not be promoted from candidate/supportive to final foundational status 1.0 without explicit human approval."
+    severity: fatal
+
+  - id: action_gate_is_only_exit
+    statement: "All side-effecting actions must flow through action_gate.evaluate(); the kernel itself never performs effects."
+    severity: fatal
+
+  - id: domain_neutrality
+    statement: "Core kernel logic must remain domain-neutral. Domain semantics live in capsule manifests, not core code."
+    severity: fatal
+
+  - id: deterministic_tick
+    statement: "Given identical KernelState input, tick() must produce identical outputs (modulo ts fields explicitly excluded from hashing)."
+    severity: fatal
+
+  - id: budget_respect
+    statement: "Per-tick budgets are hard caps. Over-budget execution is a fatal error and triggers circuit breaker."
+    severity: fatal
+
+  - id: no_live_llm_in_kernel
+    statement: "The autonomy kernel itself must not call any external LLM. Provider plane is a separate phase J subsystem invoked via action recommendations."
+    severity: fatal
+
+# ── Bounded adaptive policy interface ─────────────────────────────-
+#
+# policy_core.py may layer adaptive rules ON TOP of these hard rules.
+# Adaptive rules MUST:
+# - reference a hard_rule_id they refine (never relax)
+# - record their source (proposal id, human approval id, etc.)
+# - be reversible
+# - never change `severity` of an existing hard rule
+
+adaptive_policy:
+  allowed_to: [tighten, narrow_scope, add_advisory_check]
+  forbidden_to:
+    - relax_hard_rule
+    - remove_hard_rule
+    - mutate_constitution
+    - lower_severity
+
+# ── Fail-loud classification ─────────────────────────────────────-
+error_severity_levels:
+  - info
+  - warning
+  - recoverable
+  - fatal
+
+fatal_paths:
+  - constitution_evaluation
+  - identity_anchor_promotion
+  - calibration_integrity
+  - runtime_flip
+  - provider_routing_for_code_or_repair
+  - promotion_ladder_state
+
+# ── Build identity ────────────────────────────────────────────────
+build_identity:
+  master_prompt: "Prompt_1_Master_v5_1.txt"
+  branch: "phase9/autonomy-fabric"
+  base: "phase8/honeycomb-solver-scaling-foundation"
+  busl_change_date: "2030-03-19"

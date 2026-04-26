@@ -1,0 +1,125 @@
+{
+  "continuity_anchor": {
+    "base_commit_hash": "a7c353449fc9dab139b4e1e3d89ada36eafa20a3",
+    "branch_name": "dream-curriculum",
+    "pinned_input_manifest_sha256": "sha256:0892a89517f25097f57a77e3f52fcaf3e717d65aecf7e4f1c08421cb9d750402"
+  },
+  "counts_by_kind": {
+    "blind_spot": 1
+  },
+  "counts_by_mode": {
+    "base_solver_growth": 1,
+    "wait": 6
+  },
+  "nights": [
+    {
+      "dream_objective": "Resolve blind_spot 'math' in cell math",
+      "mode": "base_solver_growth",
+      "night_index": 1,
+      "primary_cells": [
+        "math"
+      ],
+      "primary_source": "secondary_fallback",
+      "secondary_cells": [],
+      "supporting_evidence": [
+        "curiosity_silence"
+      ],
+      "target_items": [
+        {
+          "blind_spot_bonus": 0.1,
+          "calibration_gap": 0.0,
+          "candidate_cell": "math",
+          "dream_priority": 0.023958,
+          "evidence_refs": [
+            "curiosity_silence"
+          ],
+          "expected_value": 0.66,
+          "exploration_bonus": 0.0,
+          "rationale": "blind_spot math (sev=medium)",
+          "recurrence": 0,
+          "severity": 0.66,
+          "source_id": "math",
+          "source_kind": "blind_spot",
+          "suggested_mode": "base_solver_growth"
+        }
+      ],
+      "uncertainty": "high",
+      "why_now": "dream_priority=0.0240; severity=0.66; recurrence=0"
+    },
+    {
+      "dream_objective": "No further dreamable items in this cycle.",
+      "mode": "wait",
+      "night_index": 2,
+      "primary_cells": [],
+      "primary_source": "secondary_fallback",
+      "secondary_cells": [],
+      "supporting_evidence": [],
+      "target_items": [],
+      "uncertainty": "high",
+      "why_now": "curriculum exhausted"
+    },
+    {
+      "dream_objective": "No further dreamable items in this cycle.",
+      "mode": "wait",
+      "night_index": 3,
+      "primary_cells": [],
+      "primary_source": "secondary_fallback",
+      "secondary_cells": [],
+      "supporting_evidence": [],
+      "target_items": [],
+      "uncertainty": "high",
+      "why_now": "curriculum exhausted"
+    },
+    {
+      "dream_objective": "No further dreamable items in this cycle.",
+      "mode": "wait",
+      "night_index": 4,
+      "primary_cells": [],
+      "primary_source": "secondary_fallback",
+      "secondary_cells": [],
+      "supporting_evidence": [],
+      "target_items": [],
+      "uncertainty": "high",
+      "why_now": "curriculum exhausted"
+    },
+    {
+      "dream_objective": "No further dreamable items in this cycle.",
+      "mode": "wait",
+      "night_index": 5,
+      "primary_cells": [],
+      "primary_source": "secondary_fallback",
+      "secondary_cells": [],
+      "supporting_evidence": [],
+      "target_items": [],
+      "uncertainty": "high",
+      "why_now": "curriculum exhausted"
+    },
+    {
+      "dream_objective": "No further dreamable items in this cycle.",
+      "mode": "wait",
+      "night_index": 6,
+      "primary_cells": [],
+      "primary_source": "secondary_fallback",
+      "secondary_cells": [],
+      "supporting_evidence": [],
+      "target_items": [],
+      "uncertainty": "high",
+      "why_now": "curriculum exhausted"
+    },
+    {
+      "dream_objective": "No further dreamable items in this cycle.",
+      "mode": "wait",
+      "night_index": 7,
+      "primary_cells": [],
+      "primary_source": "secondary_fallback",
+      "secondary_cells": [],
+      "supporting_evidence": [],
+      "target_items": [],
+      "uncertainty": "high",
+      "why_now": "curriculum exhausted"
+    }
+  ],
+  "primary_source": "secondary_fallback",
+  "schema_version": 1,
+  "secondary_fallback_reason": "No tensions with resolution_path == 'deferred_to_dream' were found in the pinned self-model snapshot. Curriculum fell back to high-severity blind spots and calibration_oscillation tensions per c.txt \u00a7C1 bootstrap fallback rule."
+}

@@ -1,37 +1,9 @@
 {
-  "schema_version": 1,
-  "session_id": "phase8.5_dream_session_C",
-  "started_at": "2026-04-25T20:00:00Z",
-  "branch": "phase8.5/dream-curriculum",
   "base_branch": "phase8.5/self-model-layer",
   "base_commit": "e3479dd",
-  "latest_green_commit": null,
-  "consumed_hook_contracts": [
-    {
-      "file": "docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
-      "version": 1,
-      "file_sha256": "sha256:35d86259e150bc723f772b529552cdbeba114149eb6feea4f0ad97f0c830725f"
-    }
-  ],
-  "proposal_gate_capabilities": {
-    "schema": "native",
-    "cell_exists": "native",
-    "hash_duplicate": "native",
-    "io_types": "native",
-    "deterministic_replay": "native",
-    "unit_consistency": "native",
-    "contradiction": "native",
-    "invariants_present": "native",
-    "tests_present": "native",
-    "latency_budget": "native",
-    "no_secrets_no_paths": "native",
-    "llm_dependency": "native",
-    "closed_world": "native",
-    "machine_invariants_shape": "native"
-  },
-  "pinned_input_manifest_sha256": null,
-  "pinned_inputs": [],
-  "replay_manifest_sha256": null,
+  "blocked": false,
+  "blocked_reason": null,
+  "branch": "phase8.5/dream-curriculum",
   "completed_subparts": [
     "C.1: branch + state.json bootstrap + consumed_hook_contracts + proposal_gate_capabilities",
     "C.2: dream_curriculum.py planner + 18 tests",
@@ -39,50 +11,85 @@
     "C.4: shadow graph + replay harness + 14 tests",
     "C.5: dream_meta_proposal + 9 tests (LICENSE Change Date already 2030-03-19 from Session B)",
     "C.6: 4 architecture markdowns (DREAM_MODE_2_0 + DREAM_REPLAY_FORMULAS + DREAM_PROVENANCE + HOOKS_FOR_META_LEARNER)",
-    "C.7: explicit Change Date affirmation — LICENSE-BUSL.txt verified at 2030-03-19; no edit required"
+    "C.7: explicit Change Date affirmation \u00e2\u20ac\u201d LICENSE-BUSL.txt verified at 2030-03-19; no edit required"
   ],
-  "remaining_subparts": [],
-  "session_complete": true,
-  "final_test_count": 176,
-  "final_test_breakdown": {
-    "test_dream_curriculum.py": 18,
-    "test_dream_request_pack_and_collapse.py": 18,
-    "test_dream_shadow_replay.py": 14,
-    "test_dream_meta_proposal.py": 9,
-    "test_self_model_snapshot.py": 17,
-    "test_self_model_calibration.py": 24,
-    "test_propose_solver_gate.py": 76
+  "constraints": {
+    "campaign_safe": true,
+    "crown_jewel_paths": [
+      "waggledance/core/dreaming/*"
+    ],
+    "deterministic_artifacts": true,
+    "no_runtime_touch": true,
+    "offline_safe": true,
+    "shadow_only": true,
+    "stochastic_generation_external_only": true
   },
-  "session_commits": [
-    "9fb437b chore(phase8.5): start dream-curriculum session state and branch bootstrap",
-    "5a06008 feat(phase8.5): add dream curriculum planner + 18 tests",
-    "152a8bc feat(phase8.5): add dream request packs and deterministic proposal ingestion",
-    "57f1c89 feat(phase8.5): add shadow graph and replay harness",
-    "d297cdc feat(phase8.5): add dream meta-proposal artifacts",
-    "ea56456 docs(phase8.5): document Dream Mode 2.0, replay formulas, provenance, and meta-learner hooks"
-  ],
-  "license_change_date_verified": "2030-03-19",
-  "license_change_date_source_commit": "e3479dd (Phase 8.5 Session B)",
-  "test_distribution_overrides": [
+  "consumed_hook_contracts": [
     {
-      "test_category": "replay_case_manifest generation logic",
-      "moved_from_commit": "C.2",
-      "moved_to_commit": "C.4",
-      "reason": "logic lives in shadow_graph + run_dream_cycle replay harness, not in the planner"
-    },
-    {
-      "test_category": "replay selection deterministic and bounded",
-      "moved_from_commit": "C.2",
-      "moved_to_commit": "C.4",
-      "reason": "logic lives in shadow_graph + run_dream_cycle replay harness, not in the planner"
+      "file": "docs/architecture/HOOKS_FOR_DREAM_CURRICULUM.md",
+      "file_sha256": "sha256:35d86259e150bc723f772b529552cdbeba114149eb6feea4f0ad97f0c830725f",
+      "version": 1
     }
   ],
-  "blocked": false,
-  "blocked_reason": null,
-  "next_recommended_action": "Session C complete; recommended next session is D (or R7.5 review) per c.txt §WHEN FINISHED",
-  "real_data_attempt_status": "Session B outputs available at docs/runs/self_model/c6b181835621/ — will pin those plus Session A curiosity outputs",
-  "fixture_fallback_status": "not used as primary",
-  "self_learning_demonstration": "real_plus_fixture",
+  "final_test_breakdown": {
+    "test_dream_curriculum.py": 18,
+    "test_dream_meta_proposal.py": 9,
+    "test_dream_request_pack_and_collapse.py": 18,
+    "test_dream_shadow_replay.py": 14,
+    "test_propose_solver_gate.py": 76,
+    "test_self_model_calibration.py": 24,
+    "test_self_model_snapshot.py": 17
+  },
+  "final_test_count": 176,
+  "fixture_fallback_status": "not used",
+  "latest_green_commit": null,
+  "license_change_date_source_commit": "e3479dd (Phase 8.5 Session B)",
+  "license_change_date_verified": "2030-03-19",
+  "next_recommended_action": "Session C complete; recommended next session is D (or R7.5 review) per c.txt \u00c2\u00a7WHEN FINISHED",
+  "next_session_blockers": [],
+  "pinned_input_manifest_sha256": "sha256:0892a89517f25097f57a77e3f52fcaf3e717d65aecf7e4f1c08421cb9d750402",
+  "pinned_inputs": [
+    {
+      "mtime_epoch": 1777123243.73042,
+      "path": "C:/python/project2/docs/runs/self_model/c6b181835621/self_model_snapshot.json",
+      "sha256_first_4096_bytes": "sha256:61ff0ce5dac669a90139d83be3e6ee13c5134d713d97c6fea6a36fe8c3565fe0",
+      "sha256_last_4096_bytes": "sha256:0f295b08e913e9bd39bd2514d9c37c906d46dee20cc082db2e941ddf6aa26dfb",
+      "size_bytes": 10339
+    },
+    {
+      "mtime_epoch": 1777123243.7325027,
+      "path": "C:/python/project2/docs/runs/self_model/c6b181835621/calibration_corrections.jsonl",
+      "sha256_full": "sha256:f1f1ebb474ea2d06073ad3080e343775324597774d77b328069dd6c77f91119f",
+      "size_bytes": 434
+    },
+    {
+      "mtime_epoch": 1777094997.5703123,
+      "path": "C:/python/project2/docs/runs/curiosity/6b766421f410/curiosity_log.jsonl",
+      "sha256_first_4096_bytes": "sha256:941febab532036085dcfba70b8c90795e8882fa03731b859bb845beb45f147b0",
+      "sha256_last_4096_bytes": "sha256:3678cd72ccefdb9f6d50bbb48894f19076cb2efe13097ac3358fabd3a7c5c355",
+      "size_bytes": 115817
+    }
+  ],
+  "proposal_gate_capabilities": {
+    "cell_exists": "native",
+    "closed_world": "native",
+    "contradiction": "native",
+    "deterministic_replay": "native",
+    "hash_duplicate": "native",
+    "invariants_present": "native",
+    "io_types": "native",
+    "latency_budget": "native",
+    "llm_dependency": "native",
+    "machine_invariants_shape": "native",
+    "no_secrets_no_paths": "native",
+    "schema": "native",
+    "tests_present": "native",
+    "unit_consistency": "native"
+  },
+  "real_data_attempt_status": "real (Session A curiosity + Session B self-model pinned for end-to-end --apply verification)",
+  "remaining_subparts": [],
+  "replay_manifest_sha256": null,
+  "schema_version": 1,
   "scope_excluded": [
     "gap_miner",
     "self_model snapshot core",
@@ -93,14 +100,30 @@
     "JetStream / NATS",
     "automatic runtime flip"
   ],
-  "constraints": {
-    "deterministic_artifacts": true,
-    "offline_safe": true,
-    "campaign_safe": true,
-    "no_runtime_touch": true,
-    "shadow_only": true,
-    "stochastic_generation_external_only": true,
-    "crown_jewel_paths": ["waggledance/core/dreaming/*"]
-  },
-  "next_session_blockers": []
+  "self_learning_demonstration": "real_plus_fixture",
+  "session_commits": [
+    "9fb437b chore(phase8.5): start dream-curriculum session state and branch bootstrap",
+    "5a06008 feat(phase8.5): add dream curriculum planner + 18 tests",
+    "152a8bc feat(phase8.5): add dream request packs and deterministic proposal ingestion",
+    "57f1c89 feat(phase8.5): add shadow graph and replay harness",
+    "d297cdc feat(phase8.5): add dream meta-proposal artifacts",
+    "ea56456 docs(phase8.5): document Dream Mode 2.0, replay formulas, provenance, and meta-learner hooks"
+  ],
+  "session_complete": true,
+  "session_id": "phase8.5_dream_session_C",
+  "started_at": "2026-04-25T20:00:00Z",
+  "test_distribution_overrides": [
+    {
+      "moved_from_commit": "C.2",
+      "moved_to_commit": "C.4",
+      "reason": "logic lives in shadow_graph + run_dream_cycle replay harness, not in the planner",
+      "test_category": "replay_case_manifest generation logic"
+    },
+    {
+      "moved_from_commit": "C.2",
+      "moved_to_commit": "C.4",
+      "reason": "logic lives in shadow_graph + run_dream_cycle replay harness, not in the planner",
+      "test_category": "replay selection deterministic and bounded"
+    }
+  ]
 }

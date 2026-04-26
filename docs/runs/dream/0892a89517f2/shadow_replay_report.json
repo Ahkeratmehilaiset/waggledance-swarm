@@ -1,0 +1,21 @@
+{
+  "case_evaluations": [],
+  "continuity_anchor": {
+    "base_commit_hash": "a7c353449fc9dab139b4e1e3d89ada36eafa20a3",
+    "branch_name": "dream-curriculum",
+    "pinned_input_manifest_sha256": "sha256:0892a89517f25097f57a77e3f52fcaf3e717d65aecf7e4f1c08421cb9d750402",
+    "replay_manifest_sha256": null
+  },
+  "estimated_fallback_delta": 0.0,
+  "estimated_fallback_delta_undefined_reason": "replay_case_count == 0; metric is undefined",
+  "protected_case_regression_count": 0,
+  "replay_case_count": 0,
+  "replay_methodology": "structural_proxy_v0.1",
+  "replay_methodology_disclaimer": "This is a STRUCTURAL counterfactual replay only. No live solvers were executed in shadow mode. Results indicate structural opportunity, not validated correctness. Human review is required before any merge.",
+  "schema_version": 1,
+  "structural_gain_count": 0,
+  "structurally_promising": false,
+  "targeted_case_count": 0,
+  "tension_ids_targeted": [],
+  "unresolved_case_count": 0
+}

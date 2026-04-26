@@ -1,0 +1,18 @@
+{
+  "continuity_anchor": {
+    "base_commit_hash": "a7c353449fc9dab139b4e1e3d89ada36eafa20a3",
+    "branch_name": "dream-curriculum",
+    "pinned_input_manifest_sha256": "sha256:0892a89517f25097f57a77e3f52fcaf3e717d65aecf7e4f1c08421cb9d750402",
+    "replay_manifest_sha256": null
+  },
+  "counts_by_verdict": {
+    "ACCEPT_CANDIDATE": 0,
+    "REJECT_HARD": 0,
+    "REJECT_SOFT": 0
+  },
+  "gate_provenance_summary": {},
+  "max_proposals_effective": 3,
+  "proposals_evaluated": [],
+  "schema_version": 1,
+  "truncated_proposals": []
+}

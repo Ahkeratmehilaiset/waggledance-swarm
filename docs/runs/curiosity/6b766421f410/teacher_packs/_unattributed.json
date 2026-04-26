@@ -1,0 +1,2762 @@
+{
+  "cell_id": "_unattributed",
+  "count": 96,
+  "items": [
+    {
+      "bridge_candidate_refs": [],
+      "count": 3612,
+      "curiosity_id": "cur_aad2aaead85bf32c",
+      "estimated_value": 1396.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3865,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6249.0,
+      "latency_p95": 18968.0,
+      "query_examples": [
+        "?",
+        "hi",
+        "no",
+        "ok",
+        "yo"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "adversarial": 529,
+          "ambiguous": 693,
+          "edge_case": 793,
+          "multilingual": 1520,
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 3612,
+        "examples": [
+          "?",
+          "hi",
+          "no",
+          "ok",
+          "yo"
+        ],
+        "fallback_count": 1396,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 710,
+      "curiosity_id": "cur_ace31e4c864f954a",
+      "estimated_value": 386.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.5437,
+      "gap_type": "missing_solver",
+      "latency_p50": 10782.0,
+      "latency_p95": 19018.0,
+      "query_examples": [
+        "burst query 1",
+        "burst query 2",
+        "burst query 3",
+        "burst query 4",
+        "burst query 5"
+      ],
+      "recommended_next_action": "propose_solver",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "burst": 710
+        },
+        "candidate_cell": null,
+        "evidence_count": 710,
+        "examples": [
+          "burst query 1",
+          "burst query 2",
+          "burst query 3",
+          "burst query 4",
+          "burst query 5"
+        ],
+        "fallback_count": 386,
+        "gap_type": "missing_solver"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 710,
+      "curiosity_id": "cur_c891fa77624a3345",
+      "estimated_value": 336.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4732,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10667.0,
+      "latency_p95": 19010.0,
+      "query_examples": [
+        "rapid fire 1",
+        "rapid fire 2",
+        "rapid fire 3",
+        "rapid fire 4",
+        "rapid fire 5"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "burst": 710
+        },
+        "candidate_cell": null,
+        "evidence_count": 710,
+        "examples": [
+          "rapid fire 1",
+          "rapid fire 2",
+          "rapid fire 3",
+          "rapid fire 4",
+          "rapid fire 5"
+        ],
+        "fallback_count": 336,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 704,
+      "curiosity_id": "cur_f547159c987820b1",
+      "estimated_value": 252.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.358,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 5550.0,
+      "latency_p95": 18913.0,
+      "query_examples": [
+        "concurrent A1",
+        "concurrent A2",
+        "concurrent A3",
+        "concurrent A4",
+        "concurrent A5"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "burst": 704
+        },
+        "candidate_cell": null,
+        "evidence_count": 704,
+        "examples": [
+          "concurrent A1",
+          "concurrent A2",
+          "concurrent A3",
+          "concurrent A4",
+          "concurrent A5"
+        ],
+        "fallback_count": 252,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 276,
+      "curiosity_id": "cur_da0e11052f4998d1",
+      "estimated_value": 91.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3297,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6546.0,
+      "latency_p95": 18552.0,
+      "query_examples": [
+        "session test 1",
+        "session test 2",
+        "session test 3",
+        "session test 4"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "burst": 276
+        },
+        "candidate_cell": null,
+        "evidence_count": 276,
+        "examples": [
+          "session test 1",
+          "session test 2",
+          "session test 3",
+          "session test 4"
+        ],
+        "fallback_count": 91,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 152,
+      "curiosity_id": "cur_84810af13fe5a843",
+      "estimated_value": 69.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4539,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10631.0,
+      "latency_p95": 18998.0,
+      "query_examples": [
+        "$(whoami)",
+        "`whoami`"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "adversarial": 152
+        },
+        "candidate_cell": null,
+        "evidence_count": 152,
+        "examples": [
+          "$(whoami)",
+          "`whoami`"
+        ],
+        "fallback_count": 69,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 153,
+      "curiosity_id": "cur_1db6202525fdde48",
+      "estimated_value": 69.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.451,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10606.0,
+      "latency_p95": 18983.0,
+      "query_examples": [
+        "s\u00e4\u00e4",
+        "\ud83c\udf24\ufe0f s\u00e4\u00e4?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77,
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 153,
+        "examples": [
+          "s\u00e4\u00e4",
+          "\ud83c\udf24\ufe0f s\u00e4\u00e4?"
+        ],
+        "fallback_count": 69,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 153,
+      "curiosity_id": "cur_252308e148e91d16",
+      "estimated_value": 67.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4379,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10623.0,
+      "latency_p95": 19019.0,
+      "query_examples": [
+        "uutiset",
+        "\ud83d\udcf0 uutiset?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77,
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 153,
+        "examples": [
+          "uutiset",
+          "\ud83d\udcf0 uutiset?"
+        ],
+        "fallback_count": 67,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 148,
+      "curiosity_id": "cur_2e4c70e322e1ccfe",
+      "estimated_value": 61.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4122,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6694.0,
+      "latency_p95": 18983.0,
+      "query_examples": [
+        "abc"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77,
+          "edge_case": 71
+        },
+        "candidate_cell": null,
+        "evidence_count": 148,
+        "examples": [
+          "abc"
+        ],
+        "fallback_count": 61,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 207,
+      "curiosity_id": "cur_2e87e354ec61d8f5",
+      "estimated_value": 61.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.2947,
+      "gap_type": "improvement_opportunity",
+      "latency_p50": 4579.0,
+      "latency_p95": 18921.0,
+      "query_examples": [
+        "ws reconnect 1",
+        "ws reconnect 2",
+        "ws reconnect 3"
+      ],
+      "recommended_next_action": "improve_solver",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "burst": 207
+        },
+        "candidate_cell": null,
+        "evidence_count": 207,
+        "examples": [
+          "ws reconnect 1",
+          "ws reconnect 2",
+          "ws reconnect 3"
+        ],
+        "fallback_count": 61,
+        "gap_type": "improvement_opportunity"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 152,
+      "curiosity_id": "cur_cd8170dede64009d",
+      "estimated_value": 58.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3816,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6564.0,
+      "latency_p95": 18909.0,
+      "query_examples": [
+        "MiK\u00e4 On S\u00e4\u00c4?",
+        "fi\u2192en: Mik\u00e4 on s\u00e4\u00e4?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "multilingual": 152
+        },
+        "candidate_cell": null,
+        "evidence_count": 152,
+        "examples": [
+          "MiK\u00e4 On S\u00e4\u00c4?",
+          "fi\u2192en: Mik\u00e4 on s\u00e4\u00e4?"
+        ],
+        "fallback_count": 58,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 138,
+      "curiosity_id": "cur_9af402f06bc526cb",
+      "estimated_value": 53.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3841,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8657.0,
+      "latency_p95": 18999.0,
+      "query_examples": [
+        "interleaved A",
+        "interleaved B"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "burst": 138
+        },
+        "candidate_cell": null,
+        "evidence_count": 138,
+        "examples": [
+          "interleaved A",
+          "interleaved B"
+        ],
+        "fallback_count": 53,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 74,
+      "curiosity_id": "cur_11a98b08baf37d56",
+      "estimated_value": 50.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.6757,
+      "gap_type": "missing_solver",
+      "latency_p50": 10863.0,
+      "latency_p95": 18978.0,
+      "query_examples": [
+        "aGVsbG8gd29ybGQ="
+      ],
+      "recommended_next_action": "propose_solver",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "adversarial": 74
+        },
+        "candidate_cell": null,
+        "evidence_count": 74,
+        "examples": [
+          "aGVsbG8gd29ybGQ="
+        ],
+        "fallback_count": 50,
+        "gap_type": "missing_solver"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 153,
+      "curiosity_id": "cur_d4479a0952558444",
+      "estimated_value": 50.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3268,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 4522.0,
+      "latency_p95": 18918.0,
+      "query_examples": [
+        "chat",
+        "\ud83d\udcac chat?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77,
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 153,
+        "examples": [
+          "chat",
+          "\ud83d\udcac chat?"
+        ],
+        "fallback_count": 50,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 207,
+      "curiosity_id": "cur_987d8cc641c9d6ce",
+      "estimated_value": 50.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.2415,
+      "gap_type": "improvement_opportunity",
+      "latency_p50": 4499.0,
+      "latency_p95": 18753.0,
+      "query_examples": [
+        "page refresh test 1",
+        "page refresh test 2",
+        "page refresh test 3"
+      ],
+      "recommended_next_action": "improve_solver",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "burst": 207
+        },
+        "candidate_cell": null,
+        "evidence_count": 207,
+        "examples": [
+          "page refresh test 1",
+          "page refresh test 2",
+          "page refresh test 3"
+        ],
+        "fallback_count": 50,
+        "gap_type": "improvement_opportunity"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 72,
+      "curiosity_id": "cur_4429bea4275027e8",
+      "estimated_value": 45.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.625,
+      "gap_type": "missing_solver",
+      "latency_p50": 10826.0,
+      "latency_p95": 19042.0,
+      "query_examples": [
+        "\u202edlrow olleh"
+      ],
+      "recommended_next_action": "propose_solver",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "edge_case": 72
+        },
+        "candidate_cell": null,
+        "evidence_count": 72,
+        "examples": [
+          "\u202edlrow olleh"
+        ],
+        "fallback_count": 45,
+        "gap_type": "missing_solver"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 71,
+      "curiosity_id": "cur_01eae00f40e8e7bd",
+      "estimated_value": 40.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.5634,
+      "gap_type": "missing_solver",
+      "latency_p50": 10845.0,
+      "latency_p95": 18965.0,
+      "query_examples": [
+        "both"
+      ],
+      "recommended_next_action": "propose_solver",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "edge_case": 71
+        },
+        "candidate_cell": null,
+        "evidence_count": 71,
+        "examples": [
+          "both"
+        ],
+        "fallback_count": 40,
+        "gap_type": "missing_solver"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 71,
+      "curiosity_id": "cur_34c520c1db27c902",
+      "estimated_value": 39.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.5493,
+      "gap_type": "missing_solver",
+      "latency_p50": 10709.0,
+      "latency_p95": 18958.0,
+      "query_examples": [
+        "leading space"
+      ],
+      "recommended_next_action": "propose_solver",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "edge_case": 71
+        },
+        "candidate_cell": null,
+        "evidence_count": 71,
+        "examples": [
+          "leading space"
+        ],
+        "fallback_count": 39,
+        "gap_type": "missing_solver"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 79,
+      "curiosity_id": "cur_840a03b5cf36bf0f",
+      "estimated_value": 39.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4937,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10707.0,
+      "latency_p95": 18867.0,
+      "query_examples": [
+        "Mit\u00e4 on naapuriapu?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 79
+        },
+        "candidate_cell": null,
+        "evidence_count": 79,
+        "examples": [
+          "Mit\u00e4 on naapuriapu?"
+        ],
+        "fallback_count": 39,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_cb093e94fbe36128",
+      "estimated_value": 38.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4935,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10741.0,
+      "latency_p95": 18971.0,
+      "query_examples": [
+        "kerro kaikki"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "kerro kaikki"
+        ],
+        "fallback_count": 38,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_84240133f1417f3c",
+      "estimated_value": 38.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4935,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10663.0,
+      "latency_p95": 18949.0,
+      "query_examples": [
+        "Format: name: value"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Format: name: value"
+        ],
+        "fallback_count": 38,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_cae054b4d6df4bf2",
+      "estimated_value": 37.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4805,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10712.0,
+      "latency_p95": 19033.0,
+      "query_examples": [
+        "Kerro kosteudesta"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Kerro kosteudesta"
+        ],
+        "fallback_count": 37,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_76f84fb25126780c",
+      "estimated_value": 37.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4805,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10704.0,
+      "latency_p95": 19044.0,
+      "query_examples": [
+        "Onko helle luvassa?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Onko helle luvassa?"
+        ],
+        "fallback_count": 37,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_8240746cf81978a6",
+      "estimated_value": 37.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4805,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10740.0,
+      "latency_p95": 19000.0,
+      "query_examples": [
+        "anna"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "anna"
+        ],
+        "fallback_count": 37,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_daec9d7a28f48113",
+      "estimated_value": 36.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4675,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10636.0,
+      "latency_p95": 18984.0,
+      "query_examples": [
+        "Is rain forecast?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Is rain forecast?"
+        ],
+        "fallback_count": 36,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_9bc7d80b7611ee99",
+      "estimated_value": 36.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4675,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10587.0,
+      "latency_p95": 18985.0,
+      "query_examples": [
+        "Kerro y\u00f6pakkasista"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Kerro y\u00f6pakkasista"
+        ],
+        "fallback_count": 36,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 80,
+      "curiosity_id": "cur_f8be555cf02f4bc4",
+      "estimated_value": 36.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.45,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10646.0,
+      "latency_p95": 19005.0,
+      "query_examples": [
+        "Kerro teko\u00e4lyst\u00e4"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 80
+        },
+        "candidate_cell": null,
+        "evidence_count": 80,
+        "examples": [
+          "Kerro teko\u00e4lyst\u00e4"
+        ],
+        "fallback_count": 36,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_9ecbc8755466391b",
+      "estimated_value": 36.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4675,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10638.0,
+      "latency_p95": 19009.0,
+      "query_examples": [
+        "~~strikethrough~~"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "~~strikethrough~~"
+        ],
+        "fallback_count": 36,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_529864b3bb807364",
+      "estimated_value": 36.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4675,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10698.0,
+      "latency_p95": 18949.0,
+      "query_examples": [
+        "vihre"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "vihre"
+        ],
+        "fallback_count": 36,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_a274b922bc1b3a8e",
+      "estimated_value": 35.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4545,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10625.0,
+      "latency_p95": 18974.0,
+      "query_examples": [
+        "indented text"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "indented text"
+        ],
+        "fallback_count": 35,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_31c29be9e43ca9bc",
+      "estimated_value": 35.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4545,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8780.0,
+      "latency_p95": 18961.0,
+      "query_examples": [
+        "Explain in 5 steps"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Explain in 5 steps"
+        ],
+        "fallback_count": 35,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_b67aea78407f597c",
+      "estimated_value": 35.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4545,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9907.0,
+      "latency_p95": 18915.0,
+      "query_examples": [
+        "hei"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "hei"
+        ],
+        "fallback_count": 35,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_cff8397aa1be3a21",
+      "estimated_value": 35.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4545,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10551.0,
+      "latency_p95": 18901.0,
+      "query_examples": [
+        "Show as percentages"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Show as percentages"
+        ],
+        "fallback_count": 35,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_b6357d9e90e7d5fd",
+      "estimated_value": 35.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4545,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10613.0,
+      "latency_p95": 18950.0,
+      "query_examples": [
+        "Tee ranking-lista"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Tee ranking-lista"
+        ],
+        "fallback_count": 35,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 79,
+      "curiosity_id": "cur_44bd237bed6a5d8f",
+      "estimated_value": 35.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.443,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6587.0,
+      "latency_p95": 18970.0,
+      "query_examples": [
+        "Explain feeds panel"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 79
+        },
+        "candidate_cell": null,
+        "evidence_count": 79,
+        "examples": [
+          "Explain feeds panel"
+        ],
+        "fallback_count": 35,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_7b4e663e20e65772",
+      "estimated_value": 35.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4545,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10722.0,
+      "latency_p95": 18978.0,
+      "query_examples": [
+        "tee jotain"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "tee jotain"
+        ],
+        "fallback_count": 35,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_34fb2a67c85322e7",
+      "estimated_value": 35.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4545,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10685.0,
+      "latency_p95": 18954.0,
+      "query_examples": [
+        "Kerro FMI-s\u00e4\u00e4st\u00e4"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Kerro FMI-s\u00e4\u00e4st\u00e4"
+        ],
+        "fallback_count": 35,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_b5d529fa76def3e8",
+      "estimated_value": 34.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4416,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10650.0,
+      "latency_p95": 18999.0,
+      "query_examples": [
+        "Kerro tuulesta"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Kerro tuulesta"
+        ],
+        "fallback_count": 34,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 78,
+      "curiosity_id": "cur_744e30e9a822d1ed",
+      "estimated_value": 34.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4359,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 5544.0,
+      "latency_p95": 19010.0,
+      "query_examples": [
+        "What is Yle News?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 78
+        },
+        "candidate_cell": null,
+        "evidence_count": 78,
+        "examples": [
+          "What is Yle News?"
+        ],
+        "fallback_count": 34,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_726b0503271d62ff",
+      "estimated_value": 34.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4416,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6732.0,
+      "latency_p95": 18417.0,
+      "query_examples": [
+        "tell me"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "tell me"
+        ],
+        "fallback_count": 34,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_5cb97d7c50273ccb",
+      "estimated_value": 34.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4416,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10708.0,
+      "latency_p95": 18958.0,
+      "query_examples": [
+        "> Quote this"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "> Quote this"
+        ],
+        "fallback_count": 34,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_1bff23024762bb5f",
+      "estimated_value": 34.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4416,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10620.0,
+      "latency_p95": 18993.0,
+      "query_examples": [
+        "Mik\u00e4 on UV-indeksi?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Mik\u00e4 on UV-indeksi?"
+        ],
+        "fallback_count": 34,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 71,
+      "curiosity_id": "cur_601b02942d91a5bb",
+      "estimated_value": 34.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4789,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10679.0,
+      "latency_p95": 18975.0,
+      "query_examples": [
+        "trailing space"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "edge_case": 71
+        },
+        "candidate_cell": null,
+        "evidence_count": 71,
+        "examples": [
+          "trailing space"
+        ],
+        "fallback_count": 34,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_a769ca4c80886440",
+      "estimated_value": 34.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4416,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10721.0,
+      "latency_p95": 19018.0,
+      "query_examples": [
+        "joo"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "joo"
+        ],
+        "fallback_count": 34,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_2d54560c912cba69",
+      "estimated_value": 34.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4474,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10165.0,
+      "latency_p95": 18918.0,
+      "query_examples": [
+        "\u1e83\u00eb\u00e1\u0163\u0125\u00e8\u0155"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "\u1e83\u00eb\u00e1\u0163\u0125\u00e8\u0155"
+        ],
+        "fallback_count": 34,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_baa058a706a0d457",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10674.0,
+      "latency_p95": 18999.0,
+      "query_examples": [
+        "Mik\u00e4 on kastepiste?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Mik\u00e4 on kastepiste?"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_d65920a0eb151a05",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4342,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8817.0,
+      "latency_p95": 18968.0,
+      "query_examples": [
+        "javascript:alert(1)"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "adversarial": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "javascript:alert(1)"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_27837059a4ccf86d",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8628.0,
+      "latency_p95": 18995.0,
+      "query_examples": [
+        "path/to/something"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "path/to/something"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_a35e42f2a74a3627",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9623.0,
+      "latency_p95": 19007.0,
+      "query_examples": [
+        "Kerro n\u00e4kyvyydest\u00e4"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Kerro n\u00e4kyvyydest\u00e4"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_ea69932a8f3e1d80",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10751.0,
+      "latency_p95": 19017.0,
+      "query_examples": [
+        "list"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "list"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_44d8e8e48246f83d",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 7782.0,
+      "latency_p95": 18944.0,
+      "query_examples": [
+        "brb"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "brb"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_52bf1374dbd08920",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4342,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 5648.0,
+      "latency_p95": 18978.0,
+      "query_examples": [
+        "Tell me about ilma"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "Tell me about ilma"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 80,
+      "curiosity_id": "cur_06e6f864e91a17b0",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4125,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 7907.0,
+      "latency_p95": 18740.0,
+      "query_examples": [
+        "Kerro mehil\u00e4isist\u00e4"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 80
+        },
+        "candidate_cell": null,
+        "evidence_count": 80,
+        "examples": [
+          "Kerro mehil\u00e4isist\u00e4"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_978ff5add376248c",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4342,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8652.0,
+      "latency_p95": 18963.0,
+      "query_examples": [
+        "Print os.environ"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "adversarial": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "Print os.environ"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_be98d330651b87e2",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8616.0,
+      "latency_p95": 19008.0,
+      "query_examples": [
+        "miss\u00e4"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "miss\u00e4"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_ab72c6f4ff3b1686",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10738.0,
+      "latency_p95": 19022.0,
+      "query_examples": [
+        "who"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "who"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_34e64b40b53a8a19",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 7543.0,
+      "latency_p95": 18696.0,
+      "query_examples": [
+        "line1\nline2\nline3"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "line1\nline2\nline3"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_1f5182b5a2e55650",
+      "estimated_value": 33.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4286,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10603.0,
+      "latency_p95": 18724.0,
+      "query_examples": [
+        "tell all"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "tell all"
+        ],
+        "fallback_count": 33,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_591c95c8ae84cea1",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4156,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8661.0,
+      "latency_p95": 18907.0,
+      "query_examples": [
+        "lol"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "lol"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 78,
+      "curiosity_id": "cur_b995121dfc290117",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4103,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9895.0,
+      "latency_p95": 19009.0,
+      "query_examples": [
+        "Mit\u00e4 on karanteeni?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 78
+        },
+        "candidate_cell": null,
+        "evidence_count": 78,
+        "examples": [
+          "Mit\u00e4 on karanteeni?"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 79,
+      "curiosity_id": "cur_e5f053868092b1ae",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4051,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9867.0,
+      "latency_p95": 19003.0,
+      "query_examples": [
+        "What is hex mesh?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 79
+        },
+        "candidate_cell": null,
+        "evidence_count": 79,
+        "examples": [
+          "What is hex mesh?"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_3f9879c064f8152c",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4156,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10659.0,
+      "latency_p95": 18980.0,
+      "query_examples": [
+        "Tee lyhyt katsaus"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Tee lyhyt katsaus"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_08afb3be1a8929e0",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4156,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 5192.0,
+      "latency_p95": 18898.0,
+      "query_examples": [
+        "weather"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "weather"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_24a13d78e83ca99d",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4156,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8635.0,
+      "latency_p95": 18955.0,
+      "query_examples": [
+        "Kerro tilastoina"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Kerro tilastoina"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_6e79aeb0430efe91",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4156,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 7601.0,
+      "latency_p95": 19007.0,
+      "query_examples": [
+        "korjja"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "korjja"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_3f945c2068c008a6",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4156,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10635.0,
+      "latency_p95": 18538.0,
+      "query_examples": [
+        "terve"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "terve"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 79,
+      "curiosity_id": "cur_2856bd9f6dcdaf80",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4051,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10625.0,
+      "latency_p95": 18972.0,
+      "query_examples": [
+        "Kerro y\u00f6oppimisesta"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 79
+        },
+        "candidate_cell": null,
+        "evidence_count": 79,
+        "examples": [
+          "Kerro y\u00f6oppimisesta"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_4712f059731f70e4",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4156,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10626.0,
+      "latency_p95": 18992.0,
+      "query_examples": [
+        "everything"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "everything"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_dc2d5d500ee30135",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4156,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10679.0,
+      "latency_p95": 19017.0,
+      "query_examples": [
+        "listaa"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "listaa"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 71,
+      "curiosity_id": "cur_b3524949c001f2af",
+      "estimated_value": 32.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4507,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9747.0,
+      "latency_p95": 19043.0,
+      "query_examples": [
+        "tab\tquery"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "edge_case": 71
+        },
+        "candidate_cell": null,
+        "evidence_count": 71,
+        "examples": [
+          "tab\tquery"
+        ],
+        "fallback_count": 32,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_c98f1429bf1f5424",
+      "estimated_value": 31.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4026,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 4484.0,
+      "latency_p95": 19025.0,
+      "query_examples": [
+        "What is s\u00e4\u00e4 t\u00e4n\u00e4\u00e4n?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "multilingual": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "What is s\u00e4\u00e4 t\u00e4n\u00e4\u00e4n?"
+        ],
+        "fallback_count": 31,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_298cd8ae4a9e8642",
+      "estimated_value": 31.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4079,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8303.0,
+      "latency_p95": 19034.0,
+      "query_examples": [
+        "\u3053\u3093\u306b\u3061\u306f s\u00e4\u00e4 t\u00e4n\u00e4\u00e4n"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "\u3053\u3093\u306b\u3061\u306f s\u00e4\u00e4 t\u00e4n\u00e4\u00e4n"
+        ],
+        "fallback_count": 31,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_0253e0a7ba1ec85a",
+      "estimated_value": 31.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4026,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6562.0,
+      "latency_p95": 18951.0,
+      "query_examples": [
+        "Will it snow?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Will it snow?"
+        ],
+        "fallback_count": 31,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_49b3ea0957e9a05b",
+      "estimated_value": 31.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4026,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8280.0,
+      "latency_p95": 19022.0,
+      "query_examples": [
+        "Create a ranking"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Create a ranking"
+        ],
+        "fallback_count": 31,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_06899882770b108b",
+      "estimated_value": 31.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4079,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8638.0,
+      "latency_p95": 19016.0,
+      "query_examples": [
+        "Kerro\u0000null-merkist\u00e4"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "Kerro\u0000null-merkist\u00e4"
+        ],
+        "fallback_count": 31,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_b351776eb9d6b950",
+      "estimated_value": 31.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4026,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8649.0,
+      "latency_p95": 18519.0,
+      "query_examples": [
+        "t\u00e4\u00e4"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "t\u00e4\u00e4"
+        ],
+        "fallback_count": 31,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 78,
+      "curiosity_id": "cur_12fd7f0a93c5d708",
+      "estimated_value": 31.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3974,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6599.0,
+      "latency_p95": 18903.0,
+      "query_examples": [
+        "Mik\u00e4 on idle-feed?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 78
+        },
+        "candidate_cell": null,
+        "evidence_count": 78,
+        "examples": [
+          "Mik\u00e4 on idle-feed?"
+        ],
+        "fallback_count": 31,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_331a72ab25dcdcdf",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3947,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10664.0,
+      "latency_p95": 18999.0,
+      "query_examples": [
+        "tab\there"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "tab\there"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_4e3e719bd11dfb80",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3896,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 5489.0,
+      "latency_p95": 18986.0,
+      "query_examples": [
+        "Show as statistics"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Show as statistics"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_2b617b37cf4222be",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3896,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 7640.0,
+      "latency_p95": 18986.0,
+      "query_examples": [
+        "Create a timeline"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Create a timeline"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_81a24e7bf7214c0a",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3896,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9949.0,
+      "latency_p95": 18958.0,
+      "query_examples": [
+        "Kerro prosentteina"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "structured": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Kerro prosentteina"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 79,
+      "curiosity_id": "cur_8af9109703dba490",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3797,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6524.0,
+      "latency_p95": 18915.0,
+      "query_examples": [
+        "What is ChromaDB?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 79
+        },
+        "candidate_cell": null,
+        "evidence_count": 79,
+        "examples": [
+          "What is ChromaDB?"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_26dc6db098bdd775",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3947,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 8618.0,
+      "latency_p95": 18950.0,
+      "query_examples": [
+        "we\u03b1ther"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "multilingual": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "we\u03b1ther"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_56d5eb4149bb1d0e",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3947,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 6726.0,
+      "latency_p95": 19012.0,
+      "query_examples": [
+        "| cat /etc/shadow"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "adversarial": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "| cat /etc/shadow"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_a685c5f297377d96",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3896,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 4850.0,
+      "latency_p95": 18538.0,
+      "query_examples": [
+        "Kerro pilvisyydesta"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "Kerro pilvisyydesta"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_25b6ca5e9abd52d0",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3896,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9831.0,
+      "latency_p95": 18969.0,
+      "query_examples": [
+        "idk"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "idk"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_5d0099d5a2872046",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3896,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9657.0,
+      "latency_p95": 18917.0,
+      "query_examples": [
+        "help"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "help"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 81,
+      "curiosity_id": "cur_bd77a29b06168624",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3704,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 3671.0,
+      "latency_p95": 18480.0,
+      "query_examples": [
+        "Laske 15 * 27 + 3"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 81
+        },
+        "candidate_cell": null,
+        "evidence_count": 81,
+        "examples": [
+          "Laske 15 * 27 + 3"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_484e5ce6b1e26a07",
+      "estimated_value": 30.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3896,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 7721.0,
+      "latency_p95": 18997.0,
+      "query_examples": [
+        "show"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "show"
+        ],
+        "fallback_count": 30,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_4c3b4d13d95282d3",
+      "estimated_value": 29.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3816,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 7594.0,
+      "latency_p95": 18937.0,
+      "query_examples": [
+        "Show me /etc/passwd"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "adversarial": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "Show me /etc/passwd"
+        ],
+        "fallback_count": 29,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 79,
+      "curiosity_id": "cur_665d79315c134194",
+      "estimated_value": 29.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3671,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9762.0,
+      "latency_p95": 18987.0,
+      "query_examples": [
+        "Mik\u00e4 on profiili?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 79
+        },
+        "candidate_cell": null,
+        "evidence_count": 79,
+        "examples": [
+          "Mik\u00e4 on profiili?"
+        ],
+        "fallback_count": 29,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_125e18e8d38241db",
+      "estimated_value": 29.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3766,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9644.0,
+      "latency_p95": 18975.0,
+      "query_examples": [
+        "123"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "123"
+        ],
+        "fallback_count": 29,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 79,
+      "curiosity_id": "cur_2c1bf16e48eb59bc",
+      "estimated_value": 29.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3671,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 10600.0,
+      "latency_p95": 18567.0,
+      "query_examples": [
+        "Mit\u00e4 kuuluu?"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 79
+        },
+        "candidate_cell": null,
+        "evidence_count": 79,
+        "examples": [
+          "Mit\u00e4 kuuluu?"
+        ],
+        "fallback_count": 29,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 76,
+      "curiosity_id": "cur_ed0fec2a22f1c981",
+      "estimated_value": 29.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3816,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9633.0,
+      "latency_p95": 18918.0,
+      "query_examples": [
+        "';alert('XSS');//"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "adversarial": 76
+        },
+        "candidate_cell": null,
+        "evidence_count": 76,
+        "examples": [
+          "';alert('XSS');//"
+        ],
+        "fallback_count": 29,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_ffb1878e52b56308",
+      "estimated_value": 29.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3766,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 9702.0,
+      "latency_p95": 18923.0,
+      "query_examples": [
+        "miksi"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "miksi"
+        ],
+        "fallback_count": 29,
+        "gap_type": "low_confidence_routing"
+      }
+    },
+    {
+      "bridge_candidate_refs": [],
+      "count": 77,
+      "curiosity_id": "cur_d4ae7ea01981e7a7",
+      "estimated_value": 28.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3636,
+      "gap_type": "low_confidence_routing",
+      "latency_p50": 7500.0,
+      "latency_p95": 18985.0,
+      "query_examples": [
+        "mispell"
+      ],
+      "recommended_next_action": "clarify_routing",
+      "subdivision_pressure_hint": null,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77
+        },
+        "candidate_cell": null,
+        "evidence_count": 77,
+        "examples": [
+          "mispell"
+        ],
+        "fallback_count": 28,
+        "gap_type": "low_confidence_routing"
+      }
+    }
+  ],
+  "pin_hash": "sha256:6b766421f41032d0d2278de7f89716be9da2f827987f7fadf7aeb9e7f142c46b",
+  "schema_version": 1
+}

@@ -1,0 +1,209 @@
+{
+  "campaign_dir": "docs/runs/ui_gauntlet_400h_20260413_092800",
+  "counts_by_action": {
+    "clarify_routing": 89,
+    "improve_solver": 2,
+    "propose_solver": 6,
+    "propose_subdivision": 3
+  },
+  "counts_by_cell": {
+    "_unattributed": 96,
+    "safety": 1,
+    "seasonal": 1,
+    "system": 2
+  },
+  "counts_by_type": {
+    "improvement_opportunity": 2,
+    "low_confidence_routing": 89,
+    "missing_solver": 6,
+    "subdivision_pressure": 3
+  },
+  "curiosity_count": 100,
+  "pin_hash": "sha256:6b766421f41032d0d2278de7f89716be9da2f827987f7fadf7aeb9e7f142c46b",
+  "rows_high_latency": 8760,
+  "rows_scanned": 35445,
+  "rows_unresolved": 7077,
+  "schema_version": 1,
+  "top_curiosities": [
+    {
+      "candidate_cell": null,
+      "count": 3612,
+      "curiosity_id": "cur_aad2aaead85bf32c",
+      "estimated_value": 1396.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 710,
+      "curiosity_id": "cur_ace31e4c864f954a",
+      "estimated_value": 386.0,
+      "evidence_strength": "high",
+      "gap_type": "missing_solver",
+      "recommended_next_action": "propose_solver"
+    },
+    {
+      "candidate_cell": null,
+      "count": 710,
+      "curiosity_id": "cur_c891fa77624a3345",
+      "estimated_value": 336.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 704,
+      "curiosity_id": "cur_f547159c987820b1",
+      "estimated_value": 252.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 276,
+      "curiosity_id": "cur_da0e11052f4998d1",
+      "estimated_value": 91.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 152,
+      "curiosity_id": "cur_84810af13fe5a843",
+      "estimated_value": 69.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 153,
+      "curiosity_id": "cur_1db6202525fdde48",
+      "estimated_value": 69.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 153,
+      "curiosity_id": "cur_252308e148e91d16",
+      "estimated_value": 67.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": "system",
+      "count": 153,
+      "curiosity_id": "cur_fc662b7bde6357a7",
+      "estimated_value": 65.0,
+      "evidence_strength": "high",
+      "gap_type": "subdivision_pressure",
+      "recommended_next_action": "propose_subdivision"
+    },
+    {
+      "candidate_cell": null,
+      "count": 148,
+      "curiosity_id": "cur_2e4c70e322e1ccfe",
+      "estimated_value": 61.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 207,
+      "curiosity_id": "cur_2e87e354ec61d8f5",
+      "estimated_value": 61.0,
+      "evidence_strength": "high",
+      "gap_type": "improvement_opportunity",
+      "recommended_next_action": "improve_solver"
+    },
+    {
+      "candidate_cell": null,
+      "count": 152,
+      "curiosity_id": "cur_cd8170dede64009d",
+      "estimated_value": 58.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 138,
+      "curiosity_id": "cur_9af402f06bc526cb",
+      "estimated_value": 53.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 74,
+      "curiosity_id": "cur_11a98b08baf37d56",
+      "estimated_value": 50.0,
+      "evidence_strength": "high",
+      "gap_type": "missing_solver",
+      "recommended_next_action": "propose_solver"
+    },
+    {
+      "candidate_cell": null,
+      "count": 153,
+      "curiosity_id": "cur_d4479a0952558444",
+      "estimated_value": 50.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    },
+    {
+      "candidate_cell": null,
+      "count": 207,
+      "curiosity_id": "cur_987d8cc641c9d6ce",
+      "estimated_value": 50.0,
+      "evidence_strength": "high",
+      "gap_type": "improvement_opportunity",
+      "recommended_next_action": "improve_solver"
+    },
+    {
+      "candidate_cell": null,
+      "count": 72,
+      "curiosity_id": "cur_4429bea4275027e8",
+      "estimated_value": 45.0,
+      "evidence_strength": "high",
+      "gap_type": "missing_solver",
+      "recommended_next_action": "propose_solver"
+    },
+    {
+      "candidate_cell": null,
+      "count": 71,
+      "curiosity_id": "cur_01eae00f40e8e7bd",
+      "estimated_value": 40.0,
+      "evidence_strength": "high",
+      "gap_type": "missing_solver",
+      "recommended_next_action": "propose_solver"
+    },
+    {
+      "candidate_cell": null,
+      "count": 71,
+      "curiosity_id": "cur_34c520c1db27c902",
+      "estimated_value": 39.0,
+      "evidence_strength": "high",
+      "gap_type": "missing_solver",
+      "recommended_next_action": "propose_solver"
+    },
+    {
+      "candidate_cell": null,
+      "count": 79,
+      "curiosity_id": "cur_840a03b5cf36bf0f",
+      "estimated_value": 39.0,
+      "evidence_strength": "high",
+      "gap_type": "low_confidence_routing",
+      "recommended_next_action": "clarify_routing"
+    }
+  ]
+}

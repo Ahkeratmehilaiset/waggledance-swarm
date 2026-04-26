@@ -1,0 +1,71 @@
+{
+  "cell_id": "system",
+  "count": 2,
+  "items": [
+    {
+      "bridge_candidate_refs": [
+        "system->seasonal"
+      ],
+      "count": 153,
+      "curiosity_id": "cur_fc662b7bde6357a7",
+      "estimated_value": 65.0,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3399,
+      "gap_type": "subdivision_pressure",
+      "latency_p50": 4612.0,
+      "latency_p95": 18539.0,
+      "query_examples": [
+        "status",
+        "\ud83e\udd16 status?"
+      ],
+      "recommended_next_action": "propose_subdivision",
+      "subdivision_pressure_hint": 3.5,
+      "teacher_input_payload": {
+        "buckets": {
+          "ambiguous": 77,
+          "multilingual": 76
+        },
+        "candidate_cell": "system",
+        "evidence_count": 153,
+        "examples": [
+          "status",
+          "\ud83e\udd16 status?"
+        ],
+        "fallback_count": 52,
+        "gap_type": "subdivision_pressure"
+      }
+    },
+    {
+      "bridge_candidate_refs": [
+        "system->seasonal"
+      ],
+      "count": 79,
+      "curiosity_id": "cur_aac42f0e9f7873e8",
+      "estimated_value": 33.75,
+      "evidence_strength": "high",
+      "fallback_rate": 0.3418,
+      "gap_type": "subdivision_pressure",
+      "latency_p50": 4582.0,
+      "latency_p95": 18938.0,
+      "query_examples": [
+        "What is the uptime?"
+      ],
+      "recommended_next_action": "propose_subdivision",
+      "subdivision_pressure_hint": 3.5,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 79
+        },
+        "candidate_cell": "system",
+        "evidence_count": 79,
+        "examples": [
+          "What is the uptime?"
+        ],
+        "fallback_count": 27,
+        "gap_type": "subdivision_pressure"
+      }
+    }
+  ],
+  "pin_hash": "sha256:6b766421f41032d0d2278de7f89716be9da2f827987f7fadf7aeb9e7f142c46b",
+  "schema_version": 1
+}

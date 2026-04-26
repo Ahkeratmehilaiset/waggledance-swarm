@@ -1,0 +1,40 @@
+{
+  "cell_id": "seasonal",
+  "count": 1,
+  "items": [
+    {
+      "bridge_candidate_refs": [
+        "learning->seasonal",
+        "seasonal->general",
+        "system->seasonal"
+      ],
+      "count": 77,
+      "curiosity_id": "cur_a56c94dcc6f40acd",
+      "estimated_value": 38.75,
+      "evidence_strength": "high",
+      "fallback_rate": 0.4026,
+      "gap_type": "subdivision_pressure",
+      "latency_p50": 5414.0,
+      "latency_p95": 18986.0,
+      "query_examples": [
+        "Kerro kev\u00e4ts\u00e4\u00e4st\u00e4"
+      ],
+      "recommended_next_action": "propose_subdivision",
+      "subdivision_pressure_hint": 5.5,
+      "teacher_input_payload": {
+        "buckets": {
+          "normal": 77
+        },
+        "candidate_cell": "seasonal",
+        "evidence_count": 77,
+        "examples": [
+          "Kerro kev\u00e4ts\u00e4\u00e4st\u00e4"
+        ],
+        "fallback_count": 31,
+        "gap_type": "subdivision_pressure"
+      }
+    }
+  ],
+  "pin_hash": "sha256:6b766421f41032d0d2278de7f89716be9da2f827987f7fadf7aeb9e7f142c46b",
+  "schema_version": 1
+}

@@ -1,7 +1,7 @@
 # 400h Campaign — Final Summary (MID-CAMPAIGN (TBD on completion))
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T05:13:43+00:00
+**Generated:** 2026-04-26T05:43:47+00:00
 
 ## Cumulative hours (evidence-backed)
 
@@ -14,16 +14,16 @@
 
 ## Queries
 
-- Total: 58036
-- Sent: 58029
-- Responded: 46831
+- Total: 58224
+- Sent: 58217
+- Responded: 47019
 - Skipped empty: 0
 - XSS hits: **0** (zero-tolerance target: 0)
 - DOM breaks: **0** (zero-tolerance target: 0)
 - Session losses: 24789
-- Avg latency: 3439.0 ms
-- Median latency: 2528 ms
-- p95 latency: 8653 ms
+- Avg latency: 3438.0 ms
+- Median latency: 2529 ms
+- p95 latency: 8649 ms
 
 ## Backend truth (from COLD mode)
 

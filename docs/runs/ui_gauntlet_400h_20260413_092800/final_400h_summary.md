@@ -1,7 +1,7 @@
-# 400h Campaign — Final Summary (MID-CAMPAIGN (TBD on completion))
+# 400h Campaign — Final Summary (FINAL)
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T07:44:01+00:00
+**Generated:** 2026-04-26T08:14:04+00:00
 
 ## Cumulative hours (evidence-backed)
 
@@ -9,29 +9,29 @@
 |---|---|---|---|
 | HOT  | 199.11h  | 80h  | 248.9% |
 | WARM | 120.18h | 120h | 100.1% |
-| COLD | 80.05h | 200h | 40.0% |
-| **TOTAL** | **399.33h** | **400h** | **99.8%** |
+| COLD | 84.05h | 200h | 42.0% |
+| **TOTAL** | **403.33h** | **400h** | **100.8%** |
 
 ## Queries
 
-- Total: 58909
-- Sent: 58902
-- Responded: 47667
+- Total: 59099
+- Sent: 59092
+- Responded: 47857
 - Skipped empty: 0
 - XSS hits: **0** (zero-tolerance target: 0)
 - DOM breaks: **0** (zero-tolerance target: 0)
 - Session losses: 24909
-- Avg latency: 3432.0 ms
+- Avg latency: 3431.0 ms
 - Median latency: 2531 ms
-- p95 latency: 8634 ms
+- p95 latency: 8629 ms
 
 ## Backend truth (from COLD mode)
 
-- Health pass rate: 2185/2313
+- Health pass rate: 2295/2431
 - Feeds monotonic: True
 - Hologram honest: False
-- Auth chat pass rate: 61/81
-- Cookie bootstrap pass rate: 152/161
+- Auth chat pass rate: 65/85
+- Cookie bootstrap pass rate: 160/169
 
 ## Incidents classified
 
@@ -58,5 +58,7 @@
 
 ## Verdict per x.txt Phase 7 questions
 
-- Campaign incomplete (399.3h / 400h). Verdict fields will be filled
-  by rerunning `python tools/campaign_reports.py aggregate` once total ≥ 400h.
+- **What definitely works:** TBD — to fill at campaign completion from segment analysis.
+- **What is fragile:** TBD — to fill from incident correlation.
+- **What actually breaks:** TBD — from any PRODUCT-category incidents.
+- **First clear break point:** TBD or 'not reached' if no product defect.

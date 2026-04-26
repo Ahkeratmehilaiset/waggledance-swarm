@@ -1,12 +1,12 @@
 {
-  "status": "MID-CAMPAIGN (TBD on completion)",
-  "generated_at": "2026-04-26T07:44:01+00:00",
+  "status": "FINAL",
+  "generated_at": "2026-04-26T08:14:04+00:00",
   "campaign_id": "ui_gauntlet_400h_20260413_092800",
   "cumulative_hours": {
     "hot": 199.1052,
     "warm": 120.1777,
-    "cold": 80.0481,
-    "total": 399.331
+    "cold": 84.0517,
+    "total": 403.3346
   },
   "target_hours": {
     "hot": 80,
@@ -14,26 +14,26 @@
     "cold": 200,
     "total": 400
   },
-  "segments_committed": 62,
+  "segments_committed": 63,
   "segments_target": 50,
   "queries": {
-    "total": 58909,
-    "sent": 58902,
-    "responded": 47667,
+    "total": 59099,
+    "sent": 59092,
+    "responded": 47857,
     "skipped_empty": 0,
     "xss": 0,
     "dom_breaks": 0,
     "session_losses": 24909,
-    "avg_latency_ms": 3432.0,
+    "avg_latency_ms": 3431.0,
     "median_latency_ms": 2531,
-    "p95_latency_ms": 8634
+    "p95_latency_ms": 8629
   },
   "cold_backend_truth": {
-    "health_pass_rate": "2185/2313",
+    "health_pass_rate": "2295/2431",
     "feeds_monotonic": true,
     "hologram_honest": false,
-    "auth_chat_pass_rate": "61/81",
-    "cookie_pass_rate": "152/161"
+    "auth_chat_pass_rate": "65/85",
+    "cookie_pass_rate": "160/169"
   },
   "incidents_by_category": {
     "chat_failure": 128,
@@ -54,10 +54,5 @@
     "ollama_embed_timeout_warnings",
     "github_actions_node20_deprecation"
   ],
-  "known_final_only_fields": [
-    "what_definitely_works",
-    "what_is_fragile",
-    "what_actually_breaks",
-    "first_clear_break_point"
-  ]
+  "known_final_only_fields": null
 }

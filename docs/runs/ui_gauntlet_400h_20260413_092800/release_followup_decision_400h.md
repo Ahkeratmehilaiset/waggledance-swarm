@@ -1,9 +1,9 @@
 # Release Decision — 400h Post-Campaign Classification
 
 **Campaign:** `ui_gauntlet_400h_20260413_092800`
-**Generated:** 2026-04-26T07:44:01+00:00
+**Generated:** 2026-04-26T08:14:05+00:00
 **Main ref:** `main~30`
-**Total green:** 399.33h / 400h (MID-CAMPAIGN)
+**Total green:** 403.33h / 400h (FINAL)
 
 ## Diff bucket classification
 
@@ -118,16 +118,22 @@
 
 ## Gate checks (x.txt rule 5 + Phase 9)
 
-- Campaign complete (>= 400h): no (399.3h)
+- Campaign complete (>= 400h): yes
 - XSS hits: 0 (target 0)
 - DOM breaks: 0 (target 0)
 - PRODUCT diff: non-empty
 
 ## Proposed PATH
 
-**NO_RELEASE_FAILURE_REPORT**
+**NEW_PATCH_RELEASE**
 
-PRODUCT diff is non-empty but gates are not green. Per x.txt Phase 9:
-- no bump, no tag, no release
-- write failure handoff
-- still sync docs truthfully
+PRODUCT diff is non-empty and all gates are green. Per x.txt Phase 9:
+- bump patch version
+- update changelog under new released version
+- commit release bump separately
+- tag annotated
+- merge to main with --no-ff
+- push branch + main + tag
+- create new GitHub release
+- run backup tool
+- write release handoff

@@ -14,7 +14,8 @@
     "F.micro_learning_lane (9): micro_learning_lane.py; fast reprioritization from gate verdicts (DEFER -0.05, REJECT_HARD -1.0, REJECT_SOFT -0.10); apply_hints clamps priority at 0; never mutates input lists",
     "F.circuit_breaker (10): circuit_breaker.py + schemas/circuit_breaker_state.schema.json; closed→open→half_open→closed transitions; quarantined after 3 open cycles; append-only chained event log with sha-validation",
     "G.cognition_ir: schemas/cognition_ir + capsule_manifest + ir/{cognition_ir,ir_validator,ir_translator,ir_compatibility}.py + 4 adapters + capsules/{capsule_registry,capsule_resolver}.py + 33 tests",
-    "H.vector_identity_ingestion: schemas/{vector_node,ingestion_manifest,mentor_context_pack}.schema.json + waggledance/core/vector_identity/{vector_provenance_graph,identity_anchor,ingestion_dedup}.py + waggledance/core/ingestion/{universal_ingestor,link_manager,link_watcher}.py + tools/{wd_ingest,wd_link,wd_identity}.py + 37 tests; 4-level dedup pipeline (exact, semantic-stub, concept-event-sibling, contradiction); foundational anchor validation NEVER auto-promotes (constitution.no_foundational_auto_promotion); copy_mode vs link_mode both supported; link_watcher detects shrink/truncate/in-place-mutation as critical"
+    "H.vector_identity_ingestion: vector_provenance_graph + identity_anchor + ingestion_dedup + universal_ingestor + link_manager + link_watcher + 3 CLI tools + 37 tests",
+    "I.world_model: schemas/world_model.schema.json + waggledance/core/world_model/{world_model_snapshot,world_model_delta,external_evidence_collector,causal_engine,prediction_engine,prediction_calibrator,calibration_drift_detector}.py + tools/build_world_model_snapshot.py + 31 tests; world_model strictly distinct from self_model (source-grep verified); ExternalFact/CausalRelation/Prediction frozen dataclasses; deterministic snapshot_id; delta diff covers added/removed/confidence-shifted/causes/evaluated; causal engine ancestors+descendants+cycles; prediction calibration parallels Session B style; drift detector flags overconfident/low-confidence systemic shifts at 0.20 threshold over 5-record windows"
   ],
   "session_summary": {
     "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
@@ -44,7 +45,7 @@
   "fixture_fallback_used": false,
   "latest_green_commit": null,
   "master_prompt": "Prompt_1_Master_v5_1.txt",
-  "next_recommended_action": "Phase F+G+H COMPLETE (208/208 tests). Session 5 next: Phase I (World Model + Calibration Drift Detection) and/or Phase P (Reality View / Hologram Upgrade). Per dependency matrix I depends on G+H; P depends on F+G+H+I.",
+  "next_recommended_action": "Phase F+G+H+I COMPLETE (239/239 tests). Next: Phase P (Reality View / Hologram Upgrade) — depends on F+G+H+I, all green. Then V (Conversation), J (Provider Plane + Distillation), U1+U2+U3, L, K, M, O, N, Q.",
   "open_decisions": [],
   "pinned_input_manifest_sha12": "5cd8ced05070",
   "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",

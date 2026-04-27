@@ -2,19 +2,21 @@
 
 All items must be `[x]` before the Prompt 2 session begins the flip. Any unchecked item aborts the flip cleanly.
 
-## State
+## State (post-2026-04-27 reality)
 
-- [ ] `phase9/autonomy-fabric` is on main as a squash-merge commit (or merge commit, see operator preference)
-- [ ] `main` tip is reachable from the release branch's expected SHA
-- [ ] All five Phase 8.5 follow-up PRs are merged on main, OR explicitly deferred with documented reason in the approval artifact
-- [ ] No new commits on the release branch after the approval was signed
-- [ ] Origin remote URL is verified (`git remote -v` matches `github.com/Ahkeratmehilaiset/waggledance-swarm`)
+- [x] `phase9/autonomy-fabric` is on main as squash-merge commit `a1c41528e4694094543be30ab641b362c968914d`
+- [x] `main` tip equals `a1c41528e4694094543be30ab641b362c968914d`
+- [ ] All five Phase 8.5 follow-up PRs are merged on main, OR explicitly accepted as deferred in the approval artifact
+- [ ] No new commits on `main` after the approval was signed (verify at flip time)
+- [x] Origin remote URL is `https://github.com/Ahkeratmehilaiset/waggledance-swarm.git`
+- [x] Tag `v3.6.0` exists (published 2026-04-27)
 
-## Campaign
+## Campaign (post-2026-04-26 reality)
 
-- [ ] 400h gauntlet campaign is finished OR explicitly frozen
-- [ ] `docs/runs/ui_gauntlet_400h_*/` directories show no active auto-commit pid files
-- [ ] No background daemons are writing to `hot_results.jsonl`, `warm_results.jsonl`, `cold_results.jsonl`
+- [x] 400h gauntlet campaign is FINAL (415.34h / 400h, 103.8%; `final_400h_summary.md` generated 2026-04-26T13:44:51Z)
+- [x] `docs/runs/ui_gauntlet_400h_20260413_092800/` pid files (`.auto_commit.pid` 19060, `.watchdog.pid` 41396, `cold.pid` 35788) are stale — no live processes
+- [x] No background daemons writing to `hot_results.jsonl` / `warm_results.jsonl` / `cold_results.jsonl` since 2026-04-26 16:05
+- [x] Only python process running on operator's machine (PID 59888 = `tools/_auto_fix_loop.py`) is unrelated to the campaign
 
 ## Approval
 

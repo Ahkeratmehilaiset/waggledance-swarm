@@ -2,18 +2,45 @@
 #
 # When ready to flip, the human reviewer:
 #   1. Copies this file to `HUMAN_APPROVAL.yaml`
-#   2. Fills in every field below
+#   2. Fills in every field below (placeholders are pre-filled with current
+#      known values where possible — verify and adjust before signing)
 #   3. Signs by adding their reviewer id + ISO timestamp to `human_approval_id`
+#      AND `approver_signature` (must start with "SIGNED_BY_")
 #   4. Pins the file's sha256 in the Prompt 2 state file before the flip runs
 #
 # All four `no_*` fields are STRUCTURAL INVARIANTS, not toggles. They MUST be true.
+#
+# Pre-filled SHAs as of 2026-04-27 by Phase 6 of unified release finalization:
+#   main_tip_sha_at_approval = a1c41528e4694094543be30ab641b362c968914d (current main)
+#   phase_9_merge_commit_sha = a1c41528e4694094543be30ab641b362c968914d (= squash-merge of PR #51)
+#   phase_8_5_merge_commits  = DEFERRED (none merged yet; 5 follow-up PRs pending)
 
 human_approval_id: "human:<reviewer-name>:<utc-iso-8601>"  # e.g. "human:janikorpi:2026-04-30T08:00:00Z"
+approver_signature: "UNSIGNED_DRAFT"  # MUST be replaced with "SIGNED_BY_<reviewer>" before flip
+signature_date_iso: "UNSIGNED"
 approval_kind: "phase9_atomic_flip"
+approval_id: "approval-phase9-2026-04-XX"  # operator picks the date when signing
+approval_date_iso: "2026-04-XX"  # operator fills date
+
+# Pre-flight booleans — ALL must be true for flip execution; default false in draft
+pre_flight:
+  release_on_main: false  # set true when verifying main tip = phase_9_merge_commit_sha
+  campaign_frozen: false  # set true when 400h gauntlet confirmed FINAL (already true 2026-04-26)
+  phase_8_5_handled: false  # set true when all 5 phase8.5 PRs are merged OR explicitly accepted as deferred
+  flip_worktree_ready: false  # set true when /c/python/project2-flip exists with origin/main
+  rollback_plan_reviewed: false  # set true when reviewer has read 06_rollback_procedure.md
 
 # What is being approved
 branch_under_review: "phase9/autonomy-fabric"
-commit_under_review: "<full 40-char sha of release branch tip at signature time>"
+commit_under_review: "fad731d59acded929584735f8e028fc97d8fab55"  # PR #51 head at squash-merge time
+main_tip_sha_at_approval: "a1c41528e4694094543be30ab641b362c968914d"  # current main tip
+phase_9_merge_commit_sha: "a1c41528e4694094543be30ab641b362c968914d"  # squash-merge result
+phase_8_5_merge_commits:
+  vector_chaos: "DEFERRED"  # follow-up PR pending
+  curiosity_organ: "DEFERRED"  # follow-up PR pending
+  self_model_layer: "DEFERRED"  # follow-up PR pending
+  dream_curriculum: "DEFERRED"  # follow-up PR pending
+  hive_proposes: "DEFERRED"  # follow-up PR pending
 phase_set_reviewed:
   - "F"
   - "G"

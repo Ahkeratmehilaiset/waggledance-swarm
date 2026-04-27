@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/solver_spec.schema.json",
+  "title": "Declarative solver spec",
+  "description": "Declarative description of one concrete solver instance. Compilers turn specs into solver artifacts with byte-identical determinism.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "spec_id",
+    "family_kind",
+    "solver_name",
+    "cell_id",
+    "spec",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "spec_id": {"type": "string", "pattern": "^[a-f0-9]{12}$"},
+    "family_kind": {"type": "string"},
+    "solver_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{2,63}$"
+    },
+    "cell_id": {
+      "type": "string",
+      "enum": ["general", "thermal", "energy", "safety",
+               "seasonal", "math", "system", "learning"]
+    },
+    "spec": {"type": "object"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "source_kind"],
+      "properties": {
+        "source": {"type": "string"},
+        "source_kind": {
+          "type": "string",
+          "enum": ["table", "vector_cluster", "document",
+                   "mentor_pack", "synthesized"]
+        },
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"}
+      }
+    }
+  }
+}

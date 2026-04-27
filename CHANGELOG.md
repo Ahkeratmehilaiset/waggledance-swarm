@@ -1,5 +1,205 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.6.0] — 2026-04-27 — Phase 9 Autonomy Fabric
+
+Branch: `phase9/autonomy-fabric`. **37 commits, 657 Phase 9 targeted tests passing in ~7 s.** PR #51.
+
+The autonomy fabric scaffold ships as a self-contained release. 16 phases (F–Q) build the always-on cognitive kernel and its review-only path from ingest to proposal compiler. The atomic runtime flip is intentionally deferred to a separate Prompt 2 session.
+
+### Architecture additions (16 phases)
+
+| Phase | Module | Purpose |
+|---|---|---|
+| F | `core/autonomy/` | Always-on cognitive kernel; 10 sub-components incl. action_gate (sole exit point), circuit_breaker, attention_allocator |
+| G | `core/ir/` + `core/capsules/` | Cognition IR + Capsule Registry with blast-radius enforcement |
+| H | `core/vector_identity/` + `core/ingestion/` | Vector provenance graph, identity anchors, 4-level dedup, universal ingestion (copy/link/stream) |
+| I | `core/world_model/` | World model + drift detection, separated from self_model |
+| P | `ui/hologram/` | Reality View — 11 panels, never-fabricate invariant |
+| V | `core/conversation/` + `core/identity/` | Presence log, meta-dialogue (5 question kinds), forbidden-pattern scanning |
+| J | `core/provider_plane/` + `core/api_distillation/` | Multi-provider routing + 6-layer distillation trust gate |
+| U1 | `core/solver_synthesis/` (declarative) | 10 default solver families + deterministic compiler |
+| U2 | `core/builder_lane/` | Builder lane, repair forge, mentor forge (advisory-only by default) |
+| U3 | `core/solver_synthesis/` (gap-driven) | Autonomous synthesis with cold/shadow throttling (50 use_count, 3600 s shadow, 0 critical regressions) |
+| L | `core/memory_tiers/` | Hot/warm/cold/glacier + pinning + invariant extractor + TierViolation |
+| K | `core/hex_topology/` | Real hex runtime topology; 4 live states, 4 subdivision states, shadow-first |
+| M | `core/promotion/` | 14-stage promotion ladder; 4 runtime stages require human_approval_id; bypass detection |
+| O | `core/proposal_compiler/` | Meta-proposal → engineering bundle (8 artifacts: patch_skeleton, affected_files, test_spec, rollout_plan, rollback_plan, acceptance_criteria, review_checklist, pr_draft_md) |
+| N | `core/local_intelligence/` | Local model distillation **safe scaffold**; advisory-only; 6 critical task kinds refused; lifecycle {shadow_only, advisory, retired} only |
+| Q | `core/cross_capsule/` | Cross-capsule observer; redacted summaries in, redacted observations out, no_raw_data_leakage |
+
+### Cross-phase guarantees (14 GLOBAL PROPERTY tests)
+
+`tests/test_phase9_global_properties.py` source-greps every Phase 9 module for:
+
+- no silent failures
+- no auto-enactment to main/live runtime (no `git push origin main`, no `promote_to_runtime()`, no `requests.post()`)
+- no constitution self-mutation
+- no foundational auto-promotion without human approval
+- no capsule blast-radius leakage
+- deterministic builder request/result IDs (no `uuid4`/`random` in core)
+- no absolute path leakage in generated bundles
+- no secret-shaped literals
+- domain-neutrality in non-adapter core
+
+All 14 properties pass on first run.
+
+### Real-data evidence artifacts
+
+Four committed evidence artifacts under `docs/runs/`:
+
+- `phase9_reality_view_render.json` — real Reality View render against Session B `self_model_snapshot.json`; 5/11 panels populated, 6/11 honestly unavailable
+- `phase9_pipeline_demo_compiled/` — real Session D `hive_proposals.json` (`meta_proposal_id=4116420fed0a`) → `bundle_9b273467f0` (4 artifacts)
+- `phase9_kernel_tick_dry_run.json` — `wd_kernel_tick.py` against real `constitution.yaml`; SHA-gate verified
+- `phase9_conversation_probe.json` — 4 META_QUESTION_KINDS against real Session B input; all `is_clean=true`, 0 pattern violations
+
+### CLI tools (11 verified with `--help`)
+
+`wd_kernel_tick`, `wd_ingest`, `wd_link`, `wd_identity`, `build_world_model_snapshot`, `render_hologram_reality`, `wd_conversation_probe`, `run_claude_builder_lane`, `wd_bootstrap_solvers`, `wd_synthesize_solver`, `compile_meta_proposal`.
+
+### Documentation
+
+- `docs/architecture/PHASE_9_ROADMAP.md` — 16-phase navigation surface, acceptance check table
+- `docs/architecture/PROMPT_2_INPUTS_AND_CONTRACTS.md` — atomic flip preconditions + approval artifact contract
+- `docs/architecture/LOCAL_MODEL_DISTILLATION.md` — Phase N safe routing contract
+- `docs/architecture/HIGH_RISK_VARIANTS_DEFERRED.md` — 6 deferred variants with explicit blockers
+- `docs/architecture/EXPERIMENTAL_AUTONOMY_PROFILE.md` — profile contract specification
+- `docs/runs/phase9_master_session_report.md` — canonical 9-section session report
+
+### License convention (this release)
+
+- LICENSE-BUSL.txt **Change Date harmonized to 2030-03-19** (matches phase8.5/3c67c95 intentional bump)
+- SPDX-only convention enforced; embedded `(BUSL Change Date 2030-03-19)` markers stripped from 33 source files; LICENSE-BUSL.txt is the single source of truth
+- Phase 9 SPDX coverage: 147/147 .py files tagged (107 BUSL-1.1 for crown-jewel + 40 Apache-2.0 for tools/tests/UI)
+
+### What is NOT in this release
+
+Per Strategy A minimal-scope rule, the following ride on follow-up PRs:
+
+- **Phase 8.5 producer subsystems** (`vector-chaos`, `curiosity-organ`, `self-model-layer`, `dream-curriculum`, `hive-proposes`) — 73 substantive commits across 5 branches. Phase 9 ships the IR adapter contracts (`from_curiosity.py`, `from_self_model.py`, `from_dream.py`, `from_hive.py`); the producers ship separately.
+- **Atomic runtime flip** — `Prompt 2` (separate session). The flip is a fast-forward `git push <release_branch>:main` with head-SHA protection, gated on a signed approval artifact.
+
+### What is intentionally deferred to Phase 12+
+
+Documented in `docs/architecture/HIGH_RISK_VARIANTS_DEFERRED.md`:
+
+1. Speculative parallel provider ensembles
+2. Predictive cache preheating
+3. Unbounded micro-learning expansions
+4. Limited canary auto-promotion under experimental profile
+5. Advanced local model escalation
+6. Generative memory compression
+
+Each item carries explicit blockers a future session must clear before introducing.
+
+### Acceptance check (from MASTER ACCEPTANCE CRITERIA)
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | Phases F, G, H, I, P, V fully implemented & green | ✓ |
+| 2 | Phases J, U1, U2, U3, L, M materially implemented & green | ✓ |
+| 3 | Phases K, O, N at minimum scaffolded; deeper if bandwidth | ✓ K/O fully implemented; N scaffold-first per spec |
+| 4 | Phase Q at minimum documented/scaffolded | ✓ scaffold + 2 deferred docs |
+| 5 | All emitted core artifacts deterministic | ✓ source-grep + behavioral tests |
+| 6 | Real pinned upstream outputs attempted first | ✓ pinned input manifest sha12 5cd8ced05070 |
+| 7 | Real-data success OR documented blocker + fixture fallback | ✓ no fixture fallback used |
+| 8 | No live runtime mutation in this master prompt | ✓ source-grep verified |
+| 9 | Campaign safety remained intact | ✓ worktree-isolated; primary repo untouched |
+| 10 | Crown-jewel modules have proper Change Date | ✓ harmonized to 2030-03-19 |
+| 11 | At least one real Reality View render uses actual artifacts | ✓ Phase P |
+| 12 | Provider plane day-1 multi-provider | ✓ Phase J |
+| 13 | Autonomous solver candidate generation, throttled promotion | ✓ Phases U1/U2/U3 + M |
+| 14 | Real path ingest → reflection → dream → synthesis → proposal → review | ✓ G→H→I→V→O |
+| 15 | Separate final atomic flip prompt prepared as later risk domain | ✓ PROMPT_2_INPUTS_AND_CONTRACTS.md |
+| 16 | continuation_instructions in state.json sufficient for next session | ✓ state.json complete |
+
+---
+
+## Unreleased — 2026-04-24 / 2026-04-25 — Phase 8 + R4/R5/R6 review cycle + Stage 1+2
+
+Branch: `phase8/honeycomb-solver-scaling-foundation`. **18 commits**, **350 tests + 1 xfail**.
+
+### Review cycle summary
+
+| Round | Commit | What landed |
+|---|---|---|
+| Initial | `eda5d44`…`490d2da` | Phase 0-11 scaffolding (12 commits, 171 tests) |
+| GPT R4 fix | `cd6b425` | REJECT_LOW_VALUE real, uncertainty_declaration required, Gate 13 closed-world, wider scans, build_nodes primary fix, hash projection extended (+24 tests, total 195) |
+| GPT R4 advisory | `e9093b6` | Advisory rescale-edges, busy-lock + nice, optional machine_invariants schema (+24 tests, total 219) |
+| GPT R5 fix | `60c1ab9` | Gate-14 boolean root + drop Pow/FloorDiv/Mod, shakedown skip-label, pidfile pid+create_time, build_nodes fail-closed, uncertainty-aware verdict, prose normalization, hybrid:shadow xfail strict (+62 tests, total 281+1xfail) |
+| Stage 1 | `28dff51` | `data/vector/` snapshot via `tools/migrate_to_vector_root.py`, `vector_events.py` contract (+29 tests, total 310+1xfail) |
+| Stage 1 finish | `167702c` | event log writer + producer in backfill_axioms_to_hex + stub consumer (+18 tests, total 328+1xfail) |
+| GPT R6 / Stage 2 | `d03d5d2` | Stage-2 design doc, atomic writer skeleton, durable checkpoint, vector.commit_applied emission, replay/apply correctness tests (+22 tests, total **350+1xfail**) |
+
+Additive scaffolding for safe solver-library growth. No runtime flip, no
+auto-start, no topology mutation. All new code is additive under `tools/`,
+`schemas/`, `waggledance/core/learning/`, `docs/architecture/`,
+`docs/cells/`, `docs/prompts/`, and `docs/runs/`.
+
+### Added
+
+- **Architecture doc** — `docs/architecture/HONEYCOMB_SOLVER_SCALING.md`
+  (honest state capture, measurable capability-growth definitions,
+  subdivision plan, teacher protocol, durable-bus framing, vLLM scope,
+  online-learning boundary).
+- **Cell manifest generator** — `tools/cell_manifest.py` +
+  `tests/test_cell_manifest.py` (11 tests). Deterministic per-cell
+  `MANIFEST.md` + `manifest.json` with `manifest_hash` stable across runs.
+  Generated for all 8 cells under `docs/cells/<cell>/`.
+- **Strict solver hash + dedupe** — extended
+  `waggledance/core/learning/solver_hash.py` with `solver_hash`,
+  `canonicalize_solver_spec`, `normalize_formula`, `normalize_variables`
+  (legacy `canonical_hash` preserved). New `tools/solver_dedupe.py` and
+  `tests/test_solver_dedupe.py` (6 tests). Initial scan: 22 axioms,
+  0 duplicates.
+- **Teacher proposal schema + prompt** —
+  `schemas/solver_proposal.schema.json`,
+  `docs/prompts/cell_teacher_prompt.md`,
+  `tests/test_solver_proposal_schema.py` (33 tests).
+- **Proposal quality gate** — `tools/propose_solver.py` with 12 gates and
+  six verdicts (`REJECT_SCHEMA`, `REJECT_DUPLICATE`, `REJECT_CONTRADICTION`,
+  `REJECT_LOW_VALUE`, `ACCEPT_SHADOW_ONLY`, `ACCEPT_CANDIDATE`). 
+  `tests/test_propose_solver_gate.py` (36 tests). Never auto-merges;
+  never mutates `configs/axioms/`.
+- **Typed composition graph** —
+  `waggledance/core/learning/composition_graph.py` +
+  `tools/solver_composition_report.py` +
+  `tests/test_composition_graph.py` (16 tests). Initial run: 22 nodes,
+  22 typed edges, 38 bridge candidates across ring-1 neighbors.
+- **Hex subdivision planner** — `tools/hex_subdivision_plan.py` +
+  `tests/test_hex_subdivision_plan.py` (11 tests). Advisory only —
+  tested that the planner does NOT mutate
+  `waggledance/core/hex_cell_topology.py`.
+- **Phase 8 capability-growth reporter** — 
+  `tools/phase8_capability_report.py` +
+  `docs/architecture/PHASE8_METRICS.md`. Offline surface for the 13
+  signals; live Prometheus counters deferred until ui_gauntlet campaign
+  settles.
+- **Honeycomb 400h campaign harness** —
+  `tools/run_honeycomb_400h_campaign.py` +
+  `tests/test_run_honeycomb_400h_campaign.py` (9 tests). Dry-run +
+  shakedown modes; `--confirm-start` reserved for the real drive.
+  8-segment layout matches x.txt Phase 9 spec.
+- **CI baseline + validation pack** —
+  `docs/runs/phase8_ci_baseline.md` (5 666 / 5 670 passed at branch
+  creation), `docs/runs/phase8_validation.md` (171 targeted tests pass
+  in 4.77 s; 6/6 live endpoints HTTP 200 during campaign).
+
+### Contracts held
+
+- No runtime axiom mutation.
+- No topology mutation.
+- No `/metrics` surface change.
+- No `start_waggledance.py` change, no LLM adapter change.
+- Running `ui_gauntlet_400h` campaign continued without interruption during
+  Phase 8 work.
+
+### Known carries
+
+- `tests/test_hybrid_retrieval.py::TestFeatureFlag::test_enabled_returns_hybrid`
+  remains failing (pre-existing; `"hybrid:shadow"` label introduced in Phase
+  D-1 does not match the old test expectation). Out of Phase 8 scope;
+  documented in `docs/runs/phase8_ci_baseline.md`.
+
 ## Unreleased — 2026-04-13 .. 2026-04-21 — 400h Campaign Hardening + CI Revival + Honest State Audit
 
 This block covers all post-v3.5.7 fixes and hardening done during the active

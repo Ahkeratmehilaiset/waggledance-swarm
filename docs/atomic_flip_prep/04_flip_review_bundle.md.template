@@ -1,0 +1,64 @@
+# Flip Review Bundle — Template
+
+A reviewer-facing summary. The Prompt 2 session emits a filled-in copy of this template at flip time, derived from the approval artifact and the release branch state.
+
+---
+
+## Flip identity
+
+- **Branch:** `phase9/autonomy-fabric`
+- **Commit:** `<full sha40>`
+- **Approved by:** `<human_approval_id from HUMAN_APPROVAL.yaml>`
+- **Approved at (UTC):** `<approved_at_utc>`
+- **Approval artifact sha256:** `<sha256 of HUMAN_APPROVAL.yaml at signature time>`
+
+## Pre-flip state
+
+- **main tip:** `<previous_main_tip_sha>` (will be the rollback target if needed)
+- **Active 400h campaign:** `<finished | frozen at sha ...>`
+- **Targeted Phase 9 tests:** `657 passed in <duration>` (rerun at flip-time)
+- **CI status:** `<all green | listed exceptions>`
+
+## What this flip changes
+
+`main` advances from `<previous_main_tip_sha>` to `<flip_target_sha>`. This is a fast-forward only; no merge commit; no rebase; no force-push.
+
+In code terms, the new main contains the entire 16-phase Phase 9 autonomy fabric scaffold. See `docs/architecture/PHASE_9_ROADMAP.md` for the navigation surface.
+
+## What this flip does NOT do
+
+- Does not repoint any live runtime read path
+- Does not start any background daemon
+- Does not run any migration
+- Does not modify any production database
+- Does not invoke any provider
+
+The runtime continues to consult the previous code path until a separate operational decision repoints it. **Main being at the new SHA does not equal the new code being live.** Live is a separate operational state.
+
+## Rollback target
+
+If post-flip verification fails:
+
+- **Rollback target SHA:** `<previous_main_tip_sha>`
+- **Rollback procedure:** see `06_rollback_procedure.md`
+- **Rollback authorization:** the same `human_approval_id` from this artifact, OR a fresh emergency approval
+
+## Deferred items the reviewer is accepting as out of scope
+
+- Phase 8.5 follow-up PRs (vector-chaos / curiosity-organ / self-model-layer / dream-curriculum / hive-proposes)
+- Phase 12+ deferred high-risk variants
+- Any future experimental autonomy profile
+
+## Post-flip immediate verification (within 5 minutes)
+
+Per `05_post_flip_verification.md`:
+
+1. `git fetch origin`
+2. `git rev-parse origin/main` matches `<flip_target_sha>`
+3. PR #51 shows MERGED state on GitHub
+4. `tests/test_phase9_*.py` passes against `origin/main` checkout
+5. CI on `main` runs and shows green
+
+## Reviewer signature
+
+Filled in by Prompt 2 from the YAML artifact. Verifier reads this bundle as the canonical record of "what flipped and why."

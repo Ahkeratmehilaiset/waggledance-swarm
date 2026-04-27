@@ -1,44 +1,32 @@
 # Cell manifest — `system`
 
-**Generated:** 2026-04-23T02:35:44+00:00
-**Solver count:** 2
-**Gap score:** 0.000  *(0 = cell saturated, 1 = cell mostly empty or failing)*
-**Siblings (ring-1):** learning, math, safety
+- **Schema version:** 1
+- **Generated:** 2026-04-24T05:51:14+00:00
+- **Manifest hash:** `sha256:9089a8cc18dd7b20804bea8bb21a80534cff350913dd847729fade459ae25666`
+- **Level:** 0   **Parent:** —
+- **Solver count:** 3
+- **Gap score:** 0.000  *(0 = saturated, 1 = empty/failing)*
+- **Siblings (ring-1):** learning, math, safety
+- **Neighbors (ring-2):** energy, general, seasonal, thermal
+- **Latency p50/p95:** None / None ms
+- **LLM fallback rate:** None
 
 ## Existing solvers
 
-| model_id | domain | inputs | outputs | formulas |
-|---|---|---|---|---|
-| `mtbf_prediction` | factory | total_operating_hours, number_of_failures, mission_time | mtbf, failure_rate, reliability_at_time… | 4 |
-| `oee_decomposition` | factory | planned_time, downtime, actual_output, ideal_cycle_rate… | availability, performance, quality… | 4 |
+| id | signature | domain | inputs | outputs | formulas | tier |
+|---|---|---|---|---|---|---|
+| `mtbf_prediction` | `a1a5097d9f7ed15d` | factory | total_operating_hours, number_of_failures, mission_time | recommended_pm_interval, mtbf, failure_rate… | 4 | SILVER |
+| `oee_decomposition` | `c37db7a8ff6a336f` | factory | planned_time, downtime, actual_output, ideal_cycle_rate… | oee, availability, performance… | 4 | SILVER |
+| `signal_propagation` | `60ca58fda041ad18` | gadget | distance_m, frequency_mhz, tx_power_dbm, tx_gain_dbi… | received_power_dbm, fspl_db | 2 | SILVER |
 
 ## Open gaps from production
 
-- Unresolved queries matching this cell's vocabulary: **0**
-- Total HOT queries in campaign: 33001
+- Unresolved queries matching cell vocabulary: **0** (shown) / total **0** matched
 
-## Teaching protocol reminder
+## Top LLM-fallback queries
 
-This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash.
+*(none in scanned campaign data)*
 
-## Schema reference
+## Teaching protocol
 
-New solvers must be YAML matching this shape (see
-`configs/axioms/cottage/honey_yield.yaml` for a complete example):
-
-```yaml
-model_id: <unique_snake_case>
-model_name: "<Human Readable Name>"
-description: "<one sentence>"
-formulas:
-  - name: <formula_name>
-    formula: "<python-expression>"
-    description: "<what it computes>"
-    output_unit: "<unit>"
-variables:
-  <var_name>:
-    description: "<description>"
-    unit: "<unit>"
-    range: [<min>, <max>]
-    default: <default>
-```
+This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.

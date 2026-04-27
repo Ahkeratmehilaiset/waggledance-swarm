@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/solver_validation_report.schema.json",
+  "title": "Solver validation report",
+  "description": "Aggregated validation results for a solver candidate. Deterministic across CPU and GPU backends.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "syntactic",
+    "semantic",
+    "property_tests",
+    "regression",
+    "shadow_evaluation",
+    "verdict",
+    "produced_at_iso"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "candidate_id": {"type": "string"},
+    "syntactic": {
+      "type": "object",
+      "required": ["passed"],
+      "properties": {
+        "passed": {"type": "boolean"},
+        "errors": {"type": "array"}
+      }
+    },
+    "semantic": {
+      "type": "object",
+      "required": ["passed"],
+      "properties": {
+        "passed": {"type": "boolean"},
+        "errors": {"type": "array"}
+      }
+    },
+    "property_tests": {
+      "type": "object",
+      "required": ["passed", "total"],
+      "properties": {
+        "passed": {"type": "integer"},
+        "total": {"type": "integer"},
+        "failures": {"type": "array"}
+      }
+    },
+    "regression": {
+      "type": "object",
+      "required": ["passed", "total"],
+      "properties": {
+        "passed": {"type": "integer"},
+        "total": {"type": "integer"},
+        "failures": {"type": "array"}
+      }
+    },
+    "shadow_evaluation": {
+      "type": "object",
+      "required": ["observations", "concordance_ratio"],
+      "properties": {
+        "observations": {"type": "integer"},
+        "concordance_ratio": {"type": "number", "minimum": 0,
+                                "maximum": 1}
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass_all_gates", "needs_more_shadow",
+               "regression_detected", "syntactic_invalid",
+               "semantic_invalid", "rejected_low_value"]
+    },
+    "produced_at_iso": {"type": "string"},
+    "execution_backend": {"type": "string",
+                            "enum": ["cpu", "gpu_jax", "gpu_cupy"]}
+  }
+}

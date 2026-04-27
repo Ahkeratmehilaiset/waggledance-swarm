@@ -1,43 +1,30 @@
 # Cell manifest — `general`
 
-**Generated:** 2026-04-23T02:35:42+00:00
-**Solver count:** 1
-**Gap score:** 0.268  *(0 = cell saturated, 1 = cell mostly empty or failing)*
-**Siblings (ring-1):** learning, math, safety, seasonal
+- **Schema version:** 1
+- **Generated:** 2026-04-24T05:51:14+00:00
+- **Manifest hash:** `sha256:5666f949fba8bb6a5578bb51066c644af05db5d7818b5c75354233cc87756b3f`
+- **Level:** 0   **Parent:** —
+- **Solver count:** 1
+- **Gap score:** 0.398  *(0 = saturated, 1 = empty/failing)*
+- **Siblings (ring-1):** learning, math, safety, seasonal
+- **Neighbors (ring-2):** energy, system, thermal
+- **Latency p50/p95:** None / None ms
+- **LLM fallback rate:** None
 
 ## Existing solvers
 
-| model_id | domain | inputs | outputs | formulas |
-|---|---|---|---|---|
-| `signal_propagation` | gadget | distance_m, frequency_mhz, tx_power_dbm, tx_gain_dbi… | fspl_db, received_power_dbm | 2 |
+| id | signature | domain | inputs | outputs | formulas | tier |
+|---|---|---|---|---|---|---|
+| `indoor_air_quality` | `fe09d1697927d366` | home | co2_ppm, voc_ppb, humidity_pct, temperature_c | iaq_score, co2_score, voc_score… | 5 | GOLD |
 
 ## Open gaps from production
 
-- Unresolved queries matching this cell's vocabulary: **0**
-- Total HOT queries in campaign: 33001
+- Unresolved queries matching cell vocabulary: **0** (shown) / total **0** matched
 
-## Teaching protocol reminder
+## Top LLM-fallback queries
 
-This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash.
+*(none in scanned campaign data)*
 
-## Schema reference
+## Teaching protocol
 
-New solvers must be YAML matching this shape (see
-`configs/axioms/cottage/honey_yield.yaml` for a complete example):
-
-```yaml
-model_id: <unique_snake_case>
-model_name: "<Human Readable Name>"
-description: "<one sentence>"
-formulas:
-  - name: <formula_name>
-    formula: "<python-expression>"
-    description: "<what it computes>"
-    output_unit: "<unit>"
-variables:
-  <var_name>:
-    description: "<description>"
-    unit: "<unit>"
-    range: [<min>, <max>]
-    default: <default>
-```
+This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.

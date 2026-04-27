@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/vector_node.schema.json",
+  "title": "Vector provenance graph node",
+  "description": "One node in the vector provenance graph. Represents an atomic piece of knowledge with content hash, provenance, identity-anchor status, and lineage edges into other nodes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "node_id",
+    "content_sha256",
+    "kind",
+    "anchor_status",
+    "capsule_context",
+    "provenance",
+    "ingested_at_tick",
+    "lineage"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "node_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$",
+      "description": "12-char sha256[:12] of (content_sha256, kind, capsule_context)"
+    },
+    "content_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "document_chunk",
+        "ingested_vector",
+        "linked_vector",
+        "concept",
+        "claim",
+        "event",
+        "mentor_context",
+        "code_snippet",
+        "table_row",
+        "external_url"
+      ]
+    },
+    "anchor_status": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "supportive",
+        "foundational",
+        "rejected",
+        "archived"
+      ]
+    },
+    "capsule_context": {"type": "string"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "ingested_via"],
+      "properties": {
+        "source": {"type": "string"},
+        "source_kind": {
+          "type": "string",
+          "enum": ["local_file", "folder", "url", "faiss_db",
+                   "stream", "mentor_context_pack", "synthesized"]
+        },
+        "ingested_via": {
+          "type": "string",
+          "enum": ["copy_mode", "link_mode"]
+        },
+        "external_path": {"type": "string"},
+        "fixture_fallback_used": {"type": "boolean"}
+      }
+    },
+    "ingested_at_tick": {"type": "integer", "minimum": 0},
+    "lineage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target_node_id", "relation"],
+        "properties": {
+          "target_node_id": {"type": "string"},
+          "relation": {
+            "type": "string",
+            "enum": [
+              "supports",
+              "contradicts",
+              "extends",
+              "specializes",
+              "generalizes",
+              "temporal_predecessor",
+              "causal_predecessor",
+              "translation"
+            ]
+          },
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

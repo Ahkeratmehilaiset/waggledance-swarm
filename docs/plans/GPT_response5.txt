@@ -1,0 +1,101 @@
+I see **four remaining code-level problems**.
+
+First, Gate 14 is still looser than its own contract. The schema and prompt describe `machine_invariants.expr` as a **boolean** subset with arithmetic/comparisons, but `_MACHINE_INV_SAFE_NODES` currently allows `Pow`, `FloorDiv`, and `Mod`, and `gate_machine_invariants_shape()` never checks that the root expression is boolean. So expressions like `a + b` or `out` can slip through as “valid” machine invariants even though they are not boolean invariants. Minimal diff: in `_machine_inv_shape_ok()`, require `tree.body` to be `ast.Compare`, `ast.BoolOp`, or `ast.UnaryOp` with `ast.Not`, and drop `ast.Pow`, `ast.FloorDiv`, and `ast.Mod` from `_MACHINE_INV_SAFE_NODES` unless you explicitly widen the schema/prompt.  
+
+Second, `run_honeycomb_400h_campaign.py` still misreports busy-skipped CI/FULL as success. `_seg_ci()` and `_seg_full()` return `{"skipped": True}`, but `shakedown()` computes `ok` as “no error and all returncodes == 0”, and `all([])` is `True`; `_shakedown_summary()` also never branches on `skipped`, so the markdown summary can show a skipped segment as `ok`. Minimal diff: in `shakedown()`, set `ok = None` or `False` when `r.get("skipped")`; in `_shakedown_summary()`, check `skipped` before `delegated_to` / `error` / `runs` and render `skipped: …`. 
+
+Third, the busy-lock is still a bit brittle. `is_live_campaign_busy(pidfile: Path | None = _LIVE_WATCHDOG_PIDFILE)` freezes the pidfile path at import time, so a watchdog that starts later in the process lifetime will not be discovered. And PID-only validation still has a stale-PID-reuse failure mode. Minimal diff: make the default `pidfile=None`, recompute the latest watchdog pidfile inside the function on each call, and if you can touch the watchdog side, write `pid + create_time` and verify both rather than PID alone. I would do that before adding mtime/heartbeat logic. 
+
+Fourth, `build_nodes()` still fails open on malformed multi-primary data that bypasses the proposal gate. Right now the first `primary: true` wins silently. That is okay for schema-validated proposals, but this function also reads library/manifests where a hand-edited axiom can bypass that gate. Minimal diff: count primaries in `build_nodes()`, and if `count > 1`, fail closed by setting `primary_output=None` so no outgoing runtime/advisory edges are produced for that node, or raise in the report-generation path. Silent “first wins” is the wrong fallback here. 
+
+On your specific questions:
+
+1. I would **not** make the reject threshold a function of library size or cell gap score yet. That couples a safety verdict to noisy external state. The thing you are still missing is not library-size awareness, it is **uncertainty awareness**: `decide_verdict()` is still value-only, even though the schema already carries `expected_coverage_lift.uncertainty`. Minimal diff: if `value < reject_threshold` and `uncertainty in {"high","unknown"}`, return `ACCEPT_SHADOW_ONLY` instead of `REJECT_LOW_VALUE`, or set a `manual_review` flag. That specifically addresses teacher underselling without making the threshold dynamic.  
+
+2. I would **not** do AST analysis on prose. That is overengineering for a field you never execute. The next layer should be cheaper: normalize the body harder before scanning. Minimal diff: build a second scan surface that strips punctuation and joins alphanumerics, so `subp` + `rocess` collapses to `subprocess`. If you later want stronger guarantees, the right move is not “AST of prose”; it is a structured `algorithm_steps` DSL. 
+
+3. Keep `kWh` in the energy family with `J`. That part is correct. `kWh ↔ J` is a valid scalar conversion because both are energy. The category error is **power ↔ energy** (`kW ↔ kWh`), and your families already keep those separate. I would not change this. 
+
+4. Yes, there is value in a stricter canonical second form for `machine_invariants`, but I would do it as a **second lane**, not by replacing the current field. The immediate fix is the boolean-root / operator-set tightening above. After that, add an optional templated form such as `kind: lower_bound | upper_bound | linear_bound` with structured operands. That will make a future SMT layer much cheaper than parsing arbitrary boolean algebra every time.  
+
+5. I would not use pidfile mtime as the main liveness check. The next best step is `pid + create_time`, not mtime. Heartbeat is fine later, but the first fix should be: recompute the current pidfile each call, then verify the process exists **and** its creation time matches what was recorded. That closes both the import-time freeze and PID-reuse holes. 
+
+6. Upstream rejection in `gate_io_types()` is **not enough**. `build_nodes()` should also fail closed on multi-primary library data, because that path can be fed by direct axiom/manifest edits. I would not silently keep “first wins”.  
+
+7. The pre-existing `hybrid:shadow` failure is **not a clean-merge blocker for this branch** as long as it is genuinely unchanged baseline behavior and this branch still does not touch hybrid retrieval runtime paths. But it is only defensible if CI makes that explicit: known-failing baseline, linked issue, and ideally quarantined/xfail’d. Otherwise you are normalizing red mainline builds.
+
+## MAGMA storage layer for FAISS at scale
+
+My recommendation is:
+
+**Do not replace SQLite/WAL yet.**
+Use this staged path instead:
+
+**Stage 1**
+
+* keep SQLite/WAL for the local MAGMA hot store
+* keep FAISS files on disk, but under a separate `data/vector/` root
+* make FAISS state derivable from MAGMA-style delta events
+* add per-cell projections before you add a distributed bus
+
+**Stage 2**
+
+* move the write path to a durable replayable stream such as **NATS JetStream**
+* keep SQLite or DuckDB as **materialized local projections**
+* keep FAISS as a derived projection, not as the source of truth
+
+**Stage 3**
+
+* only after you truly have multi-writer / multi-node pressure, consider Postgres for control-plane SQL or ClickHouse/Parquet for the cold analytics tail
+
+Why: SQLite WAL’s real cliff is not file size first; it is **single-writer behavior plus checkpoint interactions**. SQLite’s WAL mode allows readers and a writer to coexist, but there can still be only **one writer at a time**. Checkpoints happen automatically by default when the WAL reaches 1000 pages, and checkpoints can be blocked by active readers. WAL also relies on shared memory and is not meant for network filesystems. That makes SQLite/WAL a good single-node append store, but a poor long-term multi-process federation spine. ([SQLite][1])
+
+For your current scale, I would still leave MAGMA on SQLite/WAL. Based on your description, you are nowhere near the point where raw event volume alone forces a migration. I would plan the migration when one of these becomes true: you have multiple concurrent writer processes, checkpoint lag starts pushing p95 commit latency around, or you need durable replayable consumers rather than just local append/query. In practice, I would start building the new path before sustained insert rates get into the **few hundred events/sec** range, not because SQLite suddenly “breaks” there, but because that is where writer serialization and checkpoint tuning stop being a fun local optimization and start becoming your architecture.
+
+The next layer I would pick is **JetStream**, not Redis Pub/Sub and not DuckDB-as-write-path. JetStream gives you persisted streams, replay, durable consumers, subject partitioning, and replication, which is exactly what you want if MAGMA events need to drive multiple materializers like audit projections, per-cell query views, and FAISS delta application. Durable consumers are built to persist position and recover after restarts, which matches your “MAGMA is durable truth, EventBus is fire-and-forget” split much better than the current in-process bus. ([docs.nats.io][2])
+
+Concretely, I would evolve the storage layout like this:
+
+* `magma.events.<cell>` in JetStream as the durable event log
+* `data/magma/hot/<cell>.sqlite` as the local operational projection for recent events / operator reads
+* `data/vector/<leaf-cell>/index.faiss` plus `manifest.json` and `commit.json`
+* `data/cold/parquet/YYYY/MM/DD/...` for the cold audit tail, queryable with DuckDB or shipped to ClickHouse later
+
+That gives you the right split of responsibilities:
+
+* JetStream = write path + replay
+* SQLite = small hot local serving/projection
+* Parquet/DuckDB = cheap cold analytics
+* FAISS = derived retrieval artifact
+
+For FAISS itself, I would **not** colocate vectors inside MAGMA rows and I would **not** jump to Milvus/Qdrant/Weaviate/pgvector for this design. For a local-first single-cell install, the right answer is still **plain FAISS files on disk under a separate vector-store root**. Keep them under the same top-level storage root for ops, but separate from the audit store physically and logically. This avoids turning the audit trail into a blob store and keeps vector rebuild blast radius cell-local.
+
+With subdivision, the right physical layout is **one index file per leaf cell plus optional parent summary indices**, not one global index with `cell_id` payload filters. A global index is attractive early, but once you have thousands of leaf cells it couples training, rebuilds, corruption domains, and cache behavior far too tightly. Leaf-cell indices let you rebuild or quantize one subtree at a time. Parent summaries can be cheap centroid/coarse-routing indices.
+
+I would also keep FAISS index writes as a **MAGMA event consumer**, not as inline writes coupled to the audit row. In other words:
+
+1. MAGMA emits `solver.upserted`, `vector.upsert_requested`, `vector.delete_requested`
+2. a `vector-indexer` consumer advances its own durable position
+3. it writes/compacts the per-cell FAISS files
+4. it emits `vector.commit_applied` with `faiss_commit_id`, artifact path, vector count, checksum
+
+That gives you an **event-sourced projection**: MAGMA events are truth; FAISS files are derived state. If you lose an index file, you replay the delta log and rebuild.
+
+On quantization: at your stated 34k-solver target, quantization is probably **not** a memory necessity yet. By arithmetic, 34,000 vectors at 768 dimensions in `float32` are only about 104 MiB raw, before index overhead. Even 384-dim vectors are about half that. So I would not cut over to PQ/OPQ just because the roadmap says 34k solvers. I would cut over when **leaf-cell counts** or **replicated parent summaries** start multiplying memory, or when edge-class RAM budgets force it. FAISS’s PQ / IVFPQ family is exactly the right later-stage compression/search path, but it is a lossy approximation layer, not something I would add before the raw float32 path is actually hurting. ([GitHub][3])
+
+On CRDTs: not yet. I would keep MAGMA **single-writer per cell** with idempotent event IDs and async backup/replication. CRDT-shaping the whole audit layer is overkill unless you truly need concurrent disconnected writers into the **same** cell’s authoritative stream. Federation across cells does not require CRDTs first; it requires durable logs plus replayable consumers.
+
+The pattern you are asking about at the end is called **event sourcing with materialized projections**. In your version:
+
+* MAGMA events are the event log
+* FAISS indices are one projection
+* SQLite hot views are another
+* Parquet/ClickHouse cold analytics are another
+
+That is the right pattern here. It lets the vector store’s delta log and the audit log be the same logical truth without forcing you to store FAISS internals inside the audit database.
+
+If you want, I can turn the storage recommendation into a concrete target design with directory layout, event subjects, and the exact MAGMA event names I’d add for FAISS commit/apply/rebuild.
+
+[1]: https://www.sqlite.org/wal.html?utm_source=chatgpt.com "Write-Ahead Logging"
+[2]: https://docs.nats.io/nats-concepts/jetstream?utm_source=chatgpt.com "JetStream | NATS Docs"
+[3]: https://github.com/facebookresearch/faiss/wiki?utm_source=chatgpt.com "Home · facebookresearch/faiss Wiki · GitHub"

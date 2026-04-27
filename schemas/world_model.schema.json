@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/world_model.schema.json",
+  "title": "World model snapshot",
+  "description": "What changed externally, what is causal in the environment, what is uncertain externally. Strictly distinct from self_model. May later become a fifth evidence plane (Phase Q+).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "snapshot_id",
+    "produced_at_iso",
+    "external_facts",
+    "causal_relations",
+    "predictions",
+    "calibration_state",
+    "uncertainty_summary",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$",
+      "description": "12-char sha256 of canonical (external_facts + causal_relations + predictions identity keys)"
+    },
+    "produced_at_iso": {"type": "string"},
+    "external_facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fact_id", "kind", "claim", "confidence", "source_refs"],
+        "properties": {
+          "fact_id": {"type": "string"},
+          "kind": {
+            "type": "string",
+            "enum": ["observation", "measurement", "report",
+                     "external_event", "external_change"]
+          },
+          "claim": {"type": "string"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "source_refs": {"type": "array", "items": {"type": "string"}},
+          "ts_iso": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "causal_relations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cause_fact_id", "effect_fact_id", "strength"],
+        "properties": {
+          "cause_fact_id": {"type": "string"},
+          "effect_fact_id": {"type": "string"},
+          "strength": {"type": "number", "minimum": 0, "maximum": 1},
+          "evidence_refs": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "predictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["prediction_id", "claim", "predicted_value",
+                      "confidence", "horizon"],
+        "properties": {
+          "prediction_id": {"type": "string"},
+          "claim": {"type": "string"},
+          "predicted_value": {},
+          "predicted_unit": {"type": "string"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "horizon": {"type": "string"},
+          "based_on_facts": {"type": "array", "items": {"type": "string"}},
+          "evaluated_at_iso": {"type": ["string", "null"]},
+          "actual_value": {},
+          "calibration_error": {"type": ["number", "null"]}
+        }
+      }
+    },
+    "calibration_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["per_dimension"],
+      "properties": {
+        "per_dimension": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["prior_score", "evidence_implied_score",
+                          "abs_error"],
+            "properties": {
+              "prior_score": {"type": "number"},
+              "evidence_implied_score": {"type": "number"},
+              "abs_error": {"type": "number"},
+              "n_observations": {"type": "integer"}
+            }
+          }
+        }
+      }
+    },
+    "uncertainty_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "facts_with_low_confidence": {"type": "integer"},
+        "predictions_pending_eval": {"type": "integer"},
+        "drift_alerts_active": {"type": "integer"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch_name", "base_commit_hash",
+                    "pinned_input_manifest_sha256", "produced_by"],
+      "properties": {
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"},
+        "produced_by": {"type": "string"},
+        "fixture_fallback_used": {"type": "boolean"}
+      }
+    }
+  }
+}

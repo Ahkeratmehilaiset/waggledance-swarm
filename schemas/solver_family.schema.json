@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/solver_family.schema.json",
+  "title": "Solver family",
+  "description": "One declarative solver family. Compilers operate on family specs without free-form code generation; every known family compiles deterministically.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "family_id",
+    "name",
+    "kind",
+    "required_spec_keys",
+    "compiler_module"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "family_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$"},
+    "name": {"type": "string"},
+    "kind": {
+      "type": "string",
+      "enum": [
+        "scalar_unit_conversion",
+        "lookup_table",
+        "threshold_rule",
+        "interval_bucket_classifier",
+        "linear_arithmetic",
+        "weighted_aggregation",
+        "temporal_window_rule",
+        "bounded_interpolation",
+        "structured_field_extractor",
+        "deterministic_composition_wrapper"
+      ]
+    },
+    "required_spec_keys": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "compiler_module": {"type": "string"},
+    "description": {"type": "string"}
+  }
+}

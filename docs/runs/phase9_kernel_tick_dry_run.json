@@ -1,0 +1,14 @@
+{
+  "actions_recommended_total": 0,
+  "constitution_sha256": "sha256:f3bc565df314f551f4a417340b646a9a617da1d35a3591040c8425c1fbcd5481",
+  "dry_run": true,
+  "kernel_state_path": null,
+  "next_tick_id": 2,
+  "notes": [
+    "dry_run=True \u2014 state not persisted"
+  ],
+  "persisted_revision": 1,
+  "recommendations": 0,
+  "recommendations_detail": [],
+  "tick_id": 1
+}

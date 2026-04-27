@@ -1,0 +1,287 @@
+{
+  "base_branch": "phase8/honeycomb-solver-scaling-foundation",
+  "base_commit": "ddb08217d598927fa2e1bb6ffddd8e9a4f2de572",
+  "blocked_phases": [],
+  "completed_phases": [
+    "F.kernel_state (1): kernel_state.py + 18 tests",
+    "F.governor (2): governor.py + tools/wd_kernel_tick.py + schemas/action_recommendation.schema.json + 17 tests",
+    "F.mission_queue (3): mission_queue.py + schemas/mission.schema.json + 27 tests",
+    "F.budget_engine (4): budget_engine.py + schemas/budget_state.schema.json + 21 tests",
+    "F.policy_core (5): policy_core.py + 13 tests; bounded adaptive policy that may tighten/narrow_scope/add_advisory_check but NEVER relax/remove/mutate hard rules; PolicyValidationError on forbidden verbs",
+    "F.action_gate (6): action_gate.py + 17 tests; the ONLY exit point from the kernel; runs breaker + policy + budget checks; admits/defers/rejects but NEVER executes",
+    "F.attention_allocator (7): attention_allocator.py; routes attention across 8 lanes; breaker open/quarantined → weight 0; budget low → ×0.3; deterministic + renormalized to sum=1.0",
+    "F.background_scheduler (8): background_scheduler.py; one tick → ordered missions → breaker filter → action_gate batch evaluation → DispatchReport with selected/deferred/blocked",
+    "F.micro_learning_lane (9): micro_learning_lane.py; fast reprioritization from gate verdicts (DEFER -0.05, REJECT_HARD -1.0, REJECT_SOFT -0.10); apply_hints clamps priority at 0; never mutates input lists",
+    "F.circuit_breaker (10): circuit_breaker.py + schemas/circuit_breaker_state.schema.json; closed→open→half_open→closed transitions; quarantined after 3 open cycles; append-only chained event log with sha-validation",
+    "G.cognition_ir: schemas/cognition_ir + capsule_manifest + ir/{cognition_ir,ir_validator,ir_translator,ir_compatibility}.py + 4 adapters + capsules/{capsule_registry,capsule_resolver}.py + 33 tests",
+    "H.vector_identity_ingestion: vector_provenance_graph + identity_anchor + ingestion_dedup + universal_ingestor + link_manager + link_watcher + 3 CLI tools + 37 tests",
+    "I.world_model: world_model_snapshot + delta + external_evidence + causal_engine + prediction_engine + calibrator + drift_detector + CLI + 31 tests",
+    "P.reality_view: reality_view + hologram_adapter + hologram_snapshot + render_hologram_reality CLI + 21 tests; 11 panels; never-fabricate-values invariant",
+    "V.conversation: presence_log + context_synthesizer + meta_dialogue + identity yamls + 5 meta question kinds + 28 tests",
+    "J.provider_plane_distillation: 4 schemas + provider_plane (registry/router/agent_pool/request_pack/response_normalizer/budget) + api_distillation (extractor/consultant/replay) + 40 tests",
+    "U1.solver_synthesis_declarative: 10 default families + family_registry + declarative_spec + bulk_rule_extractor + deterministic_compiler + bootstrap CLI + 34 tests",
+    "U2.builder_lane: 7 modules (worktree_allocator, request_pack, result_pack, router, session_forge, repair_forge, mentor_forge) + 2 schemas + CLI + 37 tests",
+    "U3.autonomous_solver_synthesis: gap_to_solver_spec + candidate_store + quarantine + validators + CLI + 33 tests",
+    "L.memory_tiering: 4 tiers + access_pattern_tracker + pinning_engine + invariant_extractor + tier_manager + CLI + 33 tests",
+    "K.hex_runtime_topology: 7 modules (cell_local_state, cell_runtime, cell_message_contract, parent_child_relations, ring_messaging, subdivision_operator) + 4 live_states + 4 subdivision_states + 37 tests",
+    "M.promotion_ladder: 14 stages + STAGE_CRITERIA + stage_validators + rollback_engine + 30 tests; const True no_runtime_auto_promotion + no_bypass",
+    "O.proposal_compiler: schemas/proposal_compiler.schema.json + waggledance/core/proposal_compiler/{affected_files_analyzer,test_generator,rollout_planner,acceptance_criteria_compiler,patch_generator,pr_draft_compiler}.py + tools/compile_meta_proposal.py + 28 tests; ProposalBundle includes patch_skeleton + affected_files + test_spec + rollout_plan + rollback_plan + acceptance_criteria + review_checklist + pr_draft_md; const True no_main_branch_auto_merge + no_runtime_mutation enforced via source-grep test (no git push origin main / git apply / promote_to_runtime / auto_apply_patch / merge_to_main); compile_bundle deterministic and byte-stable; CLI emits bundle.json + pr_draft.md + patch_skeleton.diff + review_checklist.md to disk under --apply only",
+    "N.local_model_distillation: SAFE SCAFFOLD — schemas/local_model_record.schema.json + waggledance/core/local_intelligence/{local_model_manager,fine_tune_pipeline,inference_router,model_evaluator,drift_detector}.py + docs/architecture/LOCAL_MODEL_DISTILLATION.md + 39 tests. Hard rules: no torch/transformers/ollama/openai/anthropic/requests/httpx/subprocess imports; FineTunePipeline.execute() raises by design; InferenceRouter refuses 6 critical task_kinds (foundational_axiom_authoring/runtime_mutation_proposal/main_branch_merge_decision/human_facing_calibration_claim/self_model_promotion/world_model_promotion); local routing default-disabled and even when enabled returns local_model_shadow with external_provider fallback; DriftDetector emits 4-band advisory severity (nominal/watch/elevated/critical); all records carry const True advisory_only + no_runtime_auto_promotion + no_foundational_mutation; lifecycle_status enum {shadow_only, advisory, retired} — NO production status by design",
+    "Q.cross_capsule_observer: waggledance/core/cross_capsule/{cross_capsule_observer,abstract_pattern_registry}.py + docs/architecture/HIGH_RISK_VARIANTS_DEFERRED.md + docs/architecture/EXPERIMENTAL_AUTONOMY_PROFILE.md + 27 tests. Observer consumes only redacted CapsuleSignalSummary (redacted=True invariant) and emits CrossCapsuleObservation with const True redacted + advisory_only + no_raw_data_leakage. 4 OBSERVABLE_PATTERN_KINDS (recurring_oscillation / recurring_blind_spot_class / recurring_proposal_bottleneck / recurring_contradiction_pattern). AbstractPatternRegistry append-only with deterministic 12-char observation_id, by_kind() filter, byte-stable to_json(). HIGH_RISK_VARIANTS_DEFERRED.md documents 6 deferred topics with explicit blockers (parallel ensembles / predictive preheating / unbounded micro-learning / canary auto-promotion / local model escalation / generative memory compression). EXPERIMENTAL_AUTONOMY_PROFILE.md specifies named/pinned/approved/reversible/observed contract a future profile MUST satisfy before any introduction. Source-grep verifies no requests/httpx/subprocess/torch/transformers/openai/anthropic/ollama/promote_to_runtime imports and no =False on any invariant flag."
+  ],
+  "session_summary": {
+    "session_1": "5 commits (bootstrap + kernel_state + governor + mission_queue + budget_engine), 83 tests",
+    "session_2": "3 commits (policy_core + action_gate + final-4-combined), 55 tests = total 138",
+    "phase_f_complete": true,
+    "phase_f_components_done": "10/10 — Phase F TÄYSIN VALMIS",
+    "tests_status": "138/138 passing in 1.03s"
+  },
+  "constraints": {
+    "campaign_safe": true,
+    "deterministic_artifacts": true,
+    "domain_neutral": true,
+    "no_full_suite": true,
+    "no_runtime_touch": true,
+    "offline_safe": true
+  },
+  "consumed_hook_contracts": [
+    {
+      "file": "C:/python/project2-d/docs/architecture/HOOKS_FOR_RUNTIME_REVIEW.md",
+      "file_sha256": "sha256:58d124366227c16c5bfc70d369a84d015f26d460fc099c9352f81bd011c61a04",
+      "note": "absolute path; lives on phase8.5/hive-proposes worktree",
+      "version": 1
+    }
+  ],
+  "continuation_instructions": "Sessions 1-3 COMPLETE — Phase F + G shipped end-to-end (9+ commits, 171 tests). Session 4 next: Phase H (Vector Provenance Graph + Universal Ingestion + Foundational Anchor Validation + Mentor Context Ingestion). Worktree C:/python/project2-master/. Pinned input manifest sha12 5cd8ced05070. Phase H modules: waggledance/core/vector_identity/{vector_provenance_graph, identity_anchor, vector_lineage, cross_reference_engine, ingestion_dedup, mentor_context_ingestor}.py + waggledance/core/ingestion/{universal_ingestor, link_manager, link_watcher, adapters/*}.py + tools/{wd_ingest, wd_link, wd_identity}.py + 3 schemas. Multi-level dedup (exact, semantic, sibling, contradiction). Foundational anchors enter candidate state first. Link vs copy modes both supported.",
+  "current_branch": "phase9/autonomy-fabric",
+  "fixture_fallback_used": false,
+  "latest_green_commit": "c3112d9",
+  "latest_green_commit_hash": "c3112d9",
+  "license_busl_change_date": "2030-03-19",
+  "license_convention": "SPDX-only (BUSL-1.1 for crown-jewel, Apache-2.0 elsewhere); no embedded date markers in source",
+  "phase9_spdx_coverage": {"crown_jewel_busl_1_1": 107, "non_crown_jewel_apache_2_0": 40, "missing": 0, "total_phase9_py_files": 147},
+  "master_prompt": "Prompt_1_Master_v5_1.txt",
+  "next_recommended_action": "ALL 16 PHASES + finalization docs + global property tests COMPLETE — F+G+H+I+P+V+J+U1+U2+U3+L+K+M+O+N+Q (657/657 tests in 6.35s). Per Prompt 1 §GLOBAL EXPLICIT VERIFICATION COMMANDS, all 11 Phase 9 CLI tools verified (--help): wd_kernel_tick, wd_ingest, wd_link, wd_identity, build_world_model_snapshot, render_hologram_reality, wd_conversation_probe, run_claude_builder_lane, wd_bootstrap_solvers, wd_synthesize_solver, compile_meta_proposal. Per §GLOBAL PROPERTY TESTS, 14 cross-phase property tests added (no silent failures / no auto-enactment / no constitution self-mutation / no foundational auto-promotion / no capsule blast radius leakage / deterministic ids / no absolute path leakage / no secret literals / domain-neutrality). Branch end-to-end review-ready. Note: BUSL Change Date in LICENSE-BUSL.txt is 2030-03-18 (CLAUDE.md text says 2030-03-19 — one-day discrepancy, flagged for human; not unilaterally changed).",
+  "open_decisions": [],
+  "pinned_input_manifest_sha12": "5cd8ced05070",
+  "pinned_input_manifest_sha256": "sha256:5cd8ced050708c1777a4a70775952f374ff0a1d5bc8ad5fa4654b37c62dc46cb",
+  "pinned_inputs": [
+    {
+      "mtime_epoch": 1777201085.681938,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/curiosity_summary.json",
+      "sha256_full": "sha256:fa00472d2661a1cae06561efb387cec7688cdaea0c51fb605cf50ffc1c0ca8ec",
+      "size_bytes": 6271
+    },
+    {
+      "mtime_epoch": 1777201085.682942,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/curiosity_log.jsonl",
+      "sha256_first_4096_bytes": "sha256:941febab532036085dcfba70b8c90795e8882fa03731b859bb845beb45f147b0",
+      "sha256_last_4096_bytes": "sha256:3678cd72ccefdb9f6d50bbb48894f19076cb2efe13097ac3358fabd3a7c5c355",
+      "size_bytes": 115817
+    },
+    {
+      "mtime_epoch": 1777201085.6809285,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/curiosity_report.md",
+      "sha256_full": "sha256:6edcd1978bd917855e4e486dc532b13f7b1c5d6f3089f2e8c244539b1cfe07de",
+      "size_bytes": 2991
+    },
+    {
+      "mtime_epoch": 1777201085.6794171,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/teacher_packs/safety.json",
+      "sha256_full": "sha256:05766753081c084d8feaaa286778dfeaf9a56b5acaeaa6e48f67182025a6a8bc",
+      "size_bytes": 934
+    },
+    {
+      "mtime_epoch": 1777201085.6809285,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/teacher_packs/seasonal.json",
+      "sha256_full": "sha256:c67f319ef73b97feb70c7c0389f2876ef91827ed5409bc14587d05a644c31e87",
+      "size_bytes": 1113
+    },
+    {
+      "mtime_epoch": 1777201085.680417,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/teacher_packs/system.json",
+      "sha256_full": "sha256:4d254aef5b7eaa88ec7fd56b5b6fdbe7b17ba84eb98dee838b69ccc1f32adaec",
+      "size_bytes": 1926
+    },
+    {
+      "mtime_epoch": 1777201085.6784158,
+      "path": "C:/python/project2-a/docs/runs/curiosity/6b766421f410/teacher_packs/_unattributed.json",
+      "sha256_first_4096_bytes": "sha256:a4567f4a530f900db9db0f71e10805afcd6ff1e9e03b5c6d203020229e157f89",
+      "sha256_last_4096_bytes": "sha256:fa146c04b07a98452ada424c22bb67bddb22f4f239705efeb0b821f11d40399a",
+      "size_bytes": 78044
+    },
+    {
+      "mtime_epoch": 1777201109.614893,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/self_model_snapshot.json",
+      "sha256_first_4096_bytes": "sha256:61ff0ce5dac669a90139d83be3e6ee13c5134d713d97c6fea6a36fe8c3565fe0",
+      "sha256_last_4096_bytes": "sha256:0f295b08e913e9bd39bd2514d9c37c906d46dee20cc082db2e941ddf6aa26dfb",
+      "size_bytes": 10339
+    },
+    {
+      "mtime_epoch": 1777201109.6178932,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/self_model_delta.json",
+      "sha256_full": "sha256:4475e0288317093158e2df37306c75e6793a0819a24eb43b9c938d9f8b968a79",
+      "size_bytes": 352
+    },
+    {
+      "mtime_epoch": 1777201109.6168926,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/scorecard.json",
+      "sha256_full": "sha256:400992cd69e52e9e7e31e0edc7b61503adb341f3dfd7224af470bd24083377c5",
+      "size_bytes": 4761
+    },
+    {
+      "mtime_epoch": 1777201109.6184027,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/calibration_corrections.jsonl",
+      "sha256_full": "sha256:f1f1ebb474ea2d06073ad3080e343775324597774d77b328069dd6c77f91119f",
+      "size_bytes": 434
+    },
+    {
+      "mtime_epoch": 1777201109.6184027,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/data_provenance.json",
+      "sha256_full": "sha256:65d7c5449aecf41532f6dae10d28dfb5927b33ef50ae4fdc9ec64c72b5e9820e",
+      "size_bytes": 4523
+    },
+    {
+      "mtime_epoch": 1777201109.6168926,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/continuity_anchors.json",
+      "sha256_full": "sha256:86aef531933f93e57c2754d651217efa5b519e49d9ecac35fad80d5e66665336",
+      "size_bytes": 318
+    },
+    {
+      "mtime_epoch": 1777201109.6158931,
+      "path": "C:/python/project2-b/docs/runs/self_model/c6b181835621/self_model_snapshot.md",
+      "sha256_full": "sha256:4f14f225f262a6f4bd8b8699b7bc52e2840b4a16d85969d80748d50792e6fa6b",
+      "size_bytes": 1963
+    },
+    {
+      "mtime_epoch": 1777201164.8775408,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/dream_curriculum.json",
+      "sha256_full": "sha256:a3ea13082197c98b6dc02aff7917042e40267aad594b7cc00507fb39bb53920b",
+      "size_bytes": 3994
+    },
+    {
+      "mtime_epoch": 1777201164.8775408,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/dream_curriculum.md",
+      "sha256_full": "sha256:7697c61bed7be2af04456fc0783e1a950c35456d39d292f6032a1546957666e4",
+      "size_bytes": 1275
+    },
+    {
+      "mtime_epoch": 1777201171.2257638,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/proposal_collapse_report.json",
+      "sha256_full": "sha256:ecd79272a51521e957167b0fa8b1083ec586796dd692785de6cdca7a9a62a57d",
+      "size_bytes": 548
+    },
+    {
+      "mtime_epoch": 1777201171.2257638,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/proposal_collapse_report.md",
+      "sha256_full": "sha256:7132216f5cc4ade5b862a32d96b0d0da9ed8bedf789add4fd4d5ac0ecad99fd1",
+      "size_bytes": 554
+    },
+    {
+      "mtime_epoch": 1777201171.2257638,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/shadow_replay_report.json",
+      "sha256_full": "sha256:ee6e819a0ed527880918bbe42c1d069f99cc286e09bb857e43080821e9b2cb78",
+      "size_bytes": 995
+    },
+    {
+      "mtime_epoch": 1777201171.226773,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/shadow_replay_report.md",
+      "sha256_full": "sha256:e819bed860d6ecd619141c190712959afff7b09358c9746d98561b7c8651074d",
+      "size_bytes": 789
+    },
+    {
+      "mtime_epoch": 1777201171.224772,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/request_packs/dream_request_pack_night_01.json",
+      "sha256_full": "sha256:6ec548e1e1edd81e5bab26dec9b21d389e9408ed7adab0262d1583dbd4d72114",
+      "size_bytes": 7547
+    },
+    {
+      "mtime_epoch": 1777201171.224772,
+      "path": "C:/python/project2/docs/runs/dream/0892a89517f2/request_packs/dream_request_pack_night_01.md",
+      "sha256_full": "sha256:4799b40a5bdc0bfab5d9fa84910f5ce77f75e11e690e0c22058856e8526ec4c7",
+      "size_bytes": 962
+    },
+    {
+      "mtime_epoch": 1777178348.2215312,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/hive_proposals.json",
+      "sha256_full": "sha256:e4e754855934deb4adad273f2d8251c7e41f0f345d3f8979895a923808c93128",
+      "size_bytes": 5831
+    },
+    {
+      "mtime_epoch": 1777178348.2215312,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/hive_proposals.md",
+      "sha256_full": "sha256:2d39ef8d1d2dfb23a5aadecc50dbad3693ac299f66e85606473e89a450de18ab",
+      "size_bytes": 804
+    },
+    {
+      "mtime_epoch": 1777178348.231746,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/meta_evidence_map.json",
+      "sha256_first_4096_bytes": "sha256:46e3cf6e74421ac46cf08d09b2204e86b13754b55395c0055994e8b2f675d70b",
+      "sha256_last_4096_bytes": "sha256:389fa105d64d8faea33212158c7cb26fb30b45fdf2b9766a9ea232a8aa27e3a7",
+      "size_bytes": 24664
+    },
+    {
+      "mtime_epoch": 1777178348.2327583,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/review_bundle.json",
+      "sha256_full": "sha256:d70ea28647728daf21fc0736ffbaf1f231b717016bc3ab38f3b0f0cc0c44fe24",
+      "size_bytes": 6204
+    },
+    {
+      "mtime_epoch": 1777178348.2327583,
+      "path": "C:/python/project2-d/docs/runs/hive/f3acc2a985b8/review_bundle.md",
+      "sha256_full": "sha256:198d380210a04711884671810e3bb08ed8423e81140cc53b2fa8ab4cedba219e",
+      "size_bytes": 1943
+    },
+    {
+      "mtime_epoch": 1777142278.0045078,
+      "path": "C:/python/project2-r7_5/docs/architecture/VECTOR_WRITER_RESILIENCE.md",
+      "sha256_first_4096_bytes": "sha256:9e044af750402caa83e958639f0f66b9cfdd61b9dec37cec3a8522f36b7ed605",
+      "sha256_last_4096_bytes": "sha256:0fd38e770e2d716e0774cb4e074caa1582b5ba35f79cda02b7902aaed6c8c578",
+      "size_bytes": 12397
+    }
+  ],
+  "pinned_inputs_missing": [],
+  "primary_repo_path": "C:/python/project2",
+  "real_data_attempt_status": {
+    "r7_5_vector_chaos": "real",
+    "session_a_curiosity": "real",
+    "session_b_self_model": "real",
+    "session_c_dream": "real",
+    "session_d_hive_proposes": "real"
+  },
+  "remaining_phases": [
+    "F",
+    "G",
+    "H",
+    "I",
+    "P",
+    "V",
+    "J",
+    "U1",
+    "U2",
+    "U3",
+    "L",
+    "K",
+    "M",
+    "O",
+    "N",
+    "Q"
+  ],
+  "schema_version": 1,
+  "session_id": "phase9_autonomy_fabric_master",
+  "session_plan": {
+    "session_10": "Phase N + Q + master report",
+    "session_1_now": "bootstrap + Phase F sub-components 1-4 (governor, kernel_state, mission_queue, budget_engine)",
+    "session_2": "Phase F sub-components 5-10",
+    "session_3": "Phase G",
+    "session_4": "Phase H",
+    "session_5": "Phase I + P",
+    "session_6": "Phase V + J",
+    "session_7": "Phase U1 + U2",
+    "session_8": "Phase U3 + L",
+    "session_9": "Phase K + M + O"
+  },
+  "started_at": "2026-04-26T03:00:00Z",
+  "test_distribution_overrides": [],
+  "worktree_path": "C:/python/project2-master"
+}

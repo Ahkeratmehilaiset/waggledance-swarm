@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/solver_proposal.schema.json",
+  "title": "Solver Proposal",
+  "description": "Strict input contract for a teacher-Claude (or any model) proposing a new solver or improvement to the WaggleDance library. The proposal is machine-checkable and must pass tools/propose_solver.py gates before entering shadow deployment.",
+  "type": "object",
+  "required": [
+    "proposal_id",
+    "cell_id",
+    "solver_name",
+    "purpose",
+    "inputs",
+    "outputs",
+    "formula_or_algorithm",
+    "assumptions",
+    "invariants",
+    "units",
+    "tests",
+    "expected_failure_modes",
+    "examples",
+    "provenance_note",
+    "estimated_latency_ms",
+    "expected_coverage_lift",
+    "risk_level",
+    "uncertainty_declaration"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "proposal_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$",
+      "description": "Stable identifier for this proposal, lower snake/kebab case, 3-64 chars."
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Schema version the proposer wrote against. Optional; defaults to 1."
+    },
+    "cell_id": {
+      "type": "string",
+      "enum": [
+        "general",
+        "thermal",
+        "energy",
+        "safety",
+        "seasonal",
+        "math",
+        "system",
+        "learning"
+      ],
+      "description": "Hex cell this solver belongs to. Must match an existing top-level cell in waggledance/core/hex_cell_topology.py."
+    },
+    "solver_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{2,63}$",
+      "description": "Snake-case identifier, 3-64 chars, starts with a letter. Becomes the model_id in the axiom YAML if accepted."
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 500,
+      "description": "One or two sentences answering 'what user-visible question does this solver help decide'. Not a description of the formulas."
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "unit", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "unit": {"type": "string", "minLength": 1, "maxLength": 40},
+          "description": {"type": "string", "minLength": 1, "maxLength": 300},
+          "range": {
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Inclusive [min, max] when defined. Leave out when the input is unbounded."
+          },
+          "default": {"type": ["number", "string", "boolean", "null"]},
+          "type": {
+            "type": "string",
+            "enum": ["number", "integer", "ratio", "percentage", "boolean", "categorical", "timestamp"]
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "unit", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "unit": {"type": "string", "minLength": 1, "maxLength": 40},
+          "description": {"type": "string", "minLength": 1, "maxLength": 300},
+          "type": {
+            "type": "string",
+            "enum": ["number", "integer", "ratio", "percentage", "boolean", "categorical", "timestamp"]
+          },
+          "primary": {"type": "boolean", "description": "Exactly one output should be marked primary=true."}
+        }
+      }
+    },
+    "formula_or_algorithm": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "steps"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "formula_chain"},
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["name", "formula", "output_unit"],
+                "additionalProperties": false,
+                "properties": {
+                  "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+                  "formula": {"type": "string", "minLength": 1, "maxLength": 500},
+                  "output_unit": {"type": "string", "minLength": 1, "maxLength": 40},
+                  "description": {"type": "string", "maxLength": 300}
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "description"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "algorithm"},
+            "description": {"type": "string", "minLength": 20, "maxLength": 4000,
+              "description": "Step-by-step algorithm in prose. Must be deterministic given its inputs."},
+            "pseudo_code": {"type": "string", "maxLength": 4000}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "lookup_key", "source"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "table_lookup"},
+            "lookup_key": {"type": "string"},
+            "source": {"type": "string", "description": "Reference to the canonical source (standard, documented table)."},
+            "description": {"type": "string", "maxLength": 500}
+          }
+        }
+      ]
+    },
+    "assumptions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 5, "maxLength": 300}
+    },
+    "invariants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 3, "maxLength": 300,
+        "description": "Property that MUST hold for any valid execution. Checked by the quality gate."}
+    },
+    "units": {
+      "type": "object",
+      "required": ["system"],
+      "additionalProperties": false,
+      "properties": {
+        "system": {"type": "string", "enum": ["SI", "imperial", "mixed", "dimensionless"]},
+        "notes": {"type": "string", "maxLength": 500}
+      }
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "inputs", "expected"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 120},
+          "inputs": {"type": "object", "description": "Map of input name → value."},
+          "expected": {"description": "Expected primary output value, or object of output name → value."},
+          "tolerance": {"type": "number", "minimum": 0,
+            "description": "Relative tolerance for numeric comparison. Default 1e-6 when omitted."},
+          "description": {"type": "string", "maxLength": 300}
+        }
+      }
+    },
+    "expected_failure_modes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["condition", "behavior"],
+        "additionalProperties": false,
+        "properties": {
+          "condition": {"type": "string", "minLength": 3, "maxLength": 300,
+            "description": "When would this solver be wrong?"},
+          "behavior": {"type": "string", "minLength": 3, "maxLength": 300,
+            "description": "What does the solver do in that condition? (e.g., 'raises ValueError', 'falls back to neighbor', 'returns null')"}
+        }
+      }
+    },
+    "examples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["description", "inputs"],
+        "additionalProperties": false,
+        "properties": {
+          "description": {"type": "string", "minLength": 3, "maxLength": 300},
+          "inputs": {"type": "object"},
+          "expected": {},
+          "source": {"type": "string", "description": "Citation for this example's values (optional)."}
+        }
+      }
+    },
+    "provenance_note": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 1000,
+      "description": "Where did this solver come from? Model name / version / date, cell manifest hash, data sources the teacher relied on."
+    },
+    "estimated_latency_ms": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 60000,
+      "description": "Proposer's honest estimate of per-call latency when executed deterministically."
+    },
+    "expected_coverage_lift": {
+      "type": "object",
+      "required": ["value", "uncertainty"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {"type": "number", "minimum": 0, "maximum": 1,
+          "description": "Fraction of currently-failing or LLM-fallback queries in this cell expected to be answered deterministically by this solver."},
+        "uncertainty": {"type": "string", "enum": ["low", "medium", "high", "unknown"]},
+        "rationale": {"type": "string", "maxLength": 500}
+      }
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "llm_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {"type": "boolean",
+          "description": "False by default; true only if the solver cannot run without an LLM call at runtime. Must be explicitly declared — hidden LLM dependencies are rejected by the gate."},
+        "reason": {"type": "string", "maxLength": 500},
+        "fallback_only": {"type": "boolean",
+          "description": "If true, the LLM is only used as a fallback path, not on the happy path."}
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "maxLength": 40,
+        "pattern": "^[a-z0-9][a-z0-9_:-]*$"},
+      "maxItems": 20
+    },
+    "uncertainty_declaration": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 1000,
+      "description": "Required statement of what the proposer is uncertain about. Absence of uncertainty is itself a red flag."
+    },
+    "machine_invariants": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "Optional structured invariants in a machine-checkable subset. Each entry is a boolean expression over declared input and output names using only operators +, -, *, /, comparisons, and/or/not, and numeric literals. Used by a future SMT gate; for now the gate only validates shape. When present, `invariants` MUST still carry the human-readable form too.",
+      "items": {
+        "type": "object",
+        "required": ["id", "expr"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,63}$",
+            "description": "Stable identifier for cross-referencing in reports and gate output."
+          },
+          "expr": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 300,
+            "description": "Boolean expression: identifiers, comparisons, logical operators, arithmetic, numeric literals. No function calls. No imports. No dots."
+          },
+          "description": {"type": "string", "maxLength": 300}
+        }
+      }
+    }
+  }
+}

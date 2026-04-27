@@ -1,59 +1,60 @@
 {
-  "cell": "energy",
-  "generated_at": "2026-04-23T02:35:43+00:00",
-  "solver_count": 3,
+  "candidate_bridge_edges": [],
+  "cell_id": "energy",
+  "contradiction_count": 0,
   "gap_score": 0.0,
+  "generated_at": "2026-04-24T05:51:14+00:00",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "level": 0,
+  "llm_fallback_rate": null,
+  "manifest_hash": "sha256:5d70ea20a8e1a73ec8b17ba9e61996f156c68e36416d2321b39ae38dbda4d1bc",
+  "neighbors": [
+    "general",
+    "seasonal",
+    "system"
+  ],
+  "parent": null,
+  "recent_rejections": [],
+  "schema_version": 1,
   "siblings": [
     "math",
     "safety",
     "thermal"
   ],
-  "existing_solvers": [
+  "solver_count": 3,
+  "solvers": [
     {
-      "model_id": "solar_yield",
-      "model_name": "Solar Panel Yield",
-      "description": "Daily solar energy production estimate",
+      "axiom_file": "configs/axioms/gadget/battery.yaml",
       "cell": "energy",
-      "domain": "cottage",
-      "axiom_file": "configs\\axioms\\cottage\\solar_yield.yaml",
-      "inputs": [
-        "panel_area_m2",
-        "panel_efficiency",
-        "sun_hours",
-        "cell_temp"
-      ],
-      "outputs": [
-        "temperature_derating",
-        "peak_power_w",
-        "daily_yield_kwh"
-      ],
-      "n_formulas": 3
-    },
-    {
-      "model_id": "battery_discharge",
-      "model_name": "Battery Life Calculator",
       "description": "Calculate expected battery life for IoT devices",
-      "cell": "energy",
       "domain": "gadget",
-      "axiom_file": "configs\\axioms\\gadget\\battery.yaml",
+      "id": "battery_discharge",
       "inputs": [
         "capacity_mah",
         "I_active",
         "I_sleep",
         "duty_cycle"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 1,
+      "name": "Battery Life Calculator",
       "outputs": [
         "battery_life_hours"
       ],
-      "n_formulas": 1
+      "quality_tier": "SILVER",
+      "signature": "4edcb668d2cdc697",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:hours"
+      ]
     },
     {
-      "model_id": "comfort_energy_tradeoff",
-      "model_name": "Comfort vs Energy Cost",
-      "description": "Night setback energy saving",
+      "axiom_file": "configs/axioms/home/comfort_energy.yaml",
       "cell": "energy",
+      "description": "Night setback energy saving",
       "domain": "home",
-      "axiom_file": "configs\\axioms\\home\\comfort_energy.yaml",
+      "id": "comfort_energy_tradeoff",
       "inputs": [
         "T_day",
         "T_night",
@@ -62,17 +63,53 @@
         "night_hours",
         "avg_night_price"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 2,
+      "name": "Comfort vs Energy Cost",
       "outputs": [
-        "energy_saved_percent",
-        "cost_saved_per_night"
+        "cost_saved_per_night",
+        "energy_saved_percent"
       ],
-      "n_formulas": 2
+      "quality_tier": "SILVER",
+      "signature": "70190e926b1860af",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:%",
+        "unit:\u20ac"
+      ]
+    },
+    {
+      "axiom_file": "configs/axioms/cottage/solar_yield.yaml",
+      "cell": "energy",
+      "description": "Daily solar energy production estimate",
+      "domain": "cottage",
+      "id": "solar_yield",
+      "inputs": [
+        "panel_area_m2",
+        "panel_efficiency",
+        "sun_hours",
+        "cell_temp"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 3,
+      "name": "Solar Panel Yield",
+      "outputs": [
+        "daily_yield_kwh",
+        "temperature_derating",
+        "peak_power_w"
+      ],
+      "quality_tier": "SILVER",
+      "signature": "64667493ec6c2242",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:W",
+        "unit:kWh",
+        "unit:ratio"
+      ]
     }
   ],
-  "open_gaps": {
-    "unresolved_examples": [],
-    "unresolved_count": 0
-  },
-  "training_pairs_from_production": 33001,
-  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.",
+  "top_fallback_queries": [],
+  "top_open_gaps": [],
+  "training_pair_count": 0
 }

@@ -262,18 +262,29 @@ def main() -> int:
     campaign_dir: Path = args.campaign_dir
     campaign_dir.mkdir(parents=True, exist_ok=True)
 
-    # Single-watchdog pid file
+    # Single-watchdog pid file. Format: "pid:create_time" (seconds
+    # since epoch as a float). Consumers can verify create_time to
+    # close the stale-PID-reuse hole. Legacy format "pid" is still
+    # accepted by readers.
     wd_pid = campaign_dir / ".watchdog.pid"
     if wd_pid.exists():
         try:
             import psutil
-            old_pid = int(wd_pid.read_text().strip())
+            raw = wd_pid.read_text().strip()
+            old_pid_s = raw.split(":", 1)[0] if ":" in raw else raw
+            old_pid = int(old_pid_s)
             if psutil.pid_exists(old_pid):
                 log(f"another watchdog already running (pid={old_pid}), exiting")
                 return 1
         except Exception:
             pass
-    wd_pid.write_text(str(os.getpid()))
+    try:
+        import psutil
+        my_ct = psutil.Process().create_time()
+        wd_pid.write_text(f"{os.getpid()}:{my_ct}")
+    except Exception:
+        # psutil unavailable — fall back to legacy pid-only format
+        wd_pid.write_text(str(os.getpid()))
 
     log(f"watchdog starting, campaign_dir={campaign_dir}")
     log(f"preventive server restart every {args.server_restart_hours}h")

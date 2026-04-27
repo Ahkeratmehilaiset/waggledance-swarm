@@ -1,0 +1,43 @@
+{
+  "what_are_you_uncertain_about": {
+    "is_clean": true,
+    "pattern_violations": [],
+    "question_kind": "what_are_you_uncertain_about",
+    "references": [],
+    "rendered_text": "My current open uncertainty:\n- open tension: scorecard_drift (high)\n- open tension: scorecard_drift (high)",
+    "structured_lines": [
+      "open tension: scorecard_drift (high)",
+      "open tension: scorecard_drift (high)"
+    ]
+  },
+  "what_are_your_blind_spots": {
+    "is_clean": true,
+    "pattern_violations": [],
+    "question_kind": "what_are_your_blind_spots",
+    "references": [],
+    "rendered_text": "My current blind spots:\n- blind spot: math (medium)",
+    "structured_lines": [
+      "blind spot: math (medium)"
+    ]
+  },
+  "what_changed_since_last_time": {
+    "is_clean": true,
+    "pattern_violations": [],
+    "question_kind": "what_changed_since_last_time",
+    "references": [],
+    "rendered_text": "Since last time:\n- I don't see a structural change since our last turn.",
+    "structured_lines": [
+      "I don't see a structural change since our last turn."
+    ]
+  },
+  "what_would_you_learn_next": {
+    "is_clean": true,
+    "pattern_violations": [],
+    "question_kind": "what_would_you_learn_next",
+    "references": [],
+    "rendered_text": "I would want to learn next:\n- I don't currently have a strong learning intent.",
+    "structured_lines": [
+      "I don't currently have a strong learning intent."
+    ]
+  }
+}

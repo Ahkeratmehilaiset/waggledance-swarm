@@ -1,41 +1,65 @@
 {
-  "cell": "system",
-  "generated_at": "2026-04-23T02:35:44+00:00",
-  "solver_count": 2,
+  "candidate_bridge_edges": [],
+  "cell_id": "system",
+  "contradiction_count": 0,
   "gap_score": 0.0,
+  "generated_at": "2026-04-24T05:51:14+00:00",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "level": 0,
+  "llm_fallback_rate": null,
+  "manifest_hash": "sha256:9089a8cc18dd7b20804bea8bb21a80534cff350913dd847729fade459ae25666",
+  "neighbors": [
+    "energy",
+    "general",
+    "seasonal",
+    "thermal"
+  ],
+  "parent": null,
+  "recent_rejections": [],
+  "schema_version": 1,
   "siblings": [
     "learning",
     "math",
     "safety"
   ],
-  "existing_solvers": [
+  "solver_count": 3,
+  "solvers": [
     {
-      "model_id": "mtbf_prediction",
-      "model_name": "MTBF / Reliability",
-      "description": "Mean Time Between Failures and maintenance scheduling",
+      "axiom_file": "configs/axioms/factory/mtbf.yaml",
       "cell": "system",
+      "description": "Mean Time Between Failures and maintenance scheduling",
       "domain": "factory",
-      "axiom_file": "configs\\axioms\\factory\\mtbf.yaml",
+      "id": "mtbf_prediction",
       "inputs": [
         "total_operating_hours",
         "number_of_failures",
         "mission_time"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "MTBF / Reliability",
       "outputs": [
+        "recommended_pm_interval",
         "mtbf",
         "failure_rate",
-        "reliability_at_time",
-        "recommended_pm_interval"
+        "reliability_at_time"
       ],
-      "n_formulas": 4
+      "quality_tier": "SILVER",
+      "signature": "a1a5097d9f7ed15d",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:1/h",
+        "unit:hours",
+        "unit:probability"
+      ]
     },
     {
-      "model_id": "oee_decomposition",
-      "model_name": "OEE Decomposition",
-      "description": "Overall Equipment Effectiveness breakdown",
+      "axiom_file": "configs/axioms/factory/oee.yaml",
       "cell": "system",
+      "description": "Overall Equipment Effectiveness breakdown",
       "domain": "factory",
-      "axiom_file": "configs\\axioms\\factory\\oee.yaml",
+      "id": "oee_decomposition",
       "inputs": [
         "planned_time",
         "downtime",
@@ -44,19 +68,53 @@
         "good_units",
         "total_units"
       ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "OEE Decomposition",
       "outputs": [
+        "oee",
         "availability",
         "performance",
-        "quality",
-        "oee"
+        "quality"
       ],
-      "n_formulas": 4
+      "quality_tier": "SILVER",
+      "signature": "c37db7a8ff6a336f",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:ratio"
+      ]
+    },
+    {
+      "axiom_file": "configs/axioms/gadget/signal_strength.yaml",
+      "cell": "system",
+      "description": "Free-space path loss and link budget",
+      "domain": "gadget",
+      "id": "signal_propagation",
+      "inputs": [
+        "distance_m",
+        "frequency_mhz",
+        "tx_power_dbm",
+        "tx_gain_dbi",
+        "rx_gain_dbi"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 2,
+      "name": "Signal Strength Calculator",
+      "outputs": [
+        "received_power_dbm",
+        "fspl_db"
+      ],
+      "quality_tier": "SILVER",
+      "signature": "60ca58fda041ad18",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:dB",
+        "unit:dBm"
+      ]
     }
   ],
-  "open_gaps": {
-    "unresolved_examples": [],
-    "unresolved_count": 0
-  },
-  "training_pairs_from_production": 33001,
-  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.",
+  "top_fallback_queries": [],
+  "top_open_gaps": [],
+  "training_pair_count": 0
 }

@@ -1,0 +1,161 @@
+I went through the branch as scaffolding, not as a runtime-change review. My take: the structure is mostly sane, but I would not land it in main unchanged. The biggest problems are not the overall direction; they are a few contract mismatches and gaps in the adversarial surface that will matter once teachers start producing volume.
+
+The two most important concrete objections are these:
+
+First, the branch documents and prompts a REJECT_LOW_VALUE verdict, and the constant exists, but decide_verdict() never returns it. Low-coverage proposals currently become ACCEPT_SHADOW_ONLY instead. That is a real contract drift between docs, prompt, and implementation: tools/propose_solver.py:1-22, tools/propose_solver.py:1802-1814, tools/propose_solver.py:2546-2588, docs/prompts/cell_teacher_prompt.md:306-314.
+
+Second, uncertainty_declaration is treated as mandatory in the prompt and described in the schema as a required statement, but it is not in the schema’s top-level required list. So the gate cannot actually enforce the thing the prompt says reviewers depend on: schemas/solver_proposal.schema.json:820-828,1298-1306, docs/prompts/cell_teacher_prompt.md:280-281,286-290,322-324.
+
+1) solver_hash coverage
+
+It is good on the dimensions it explicitly claims: formulas, inputs/units, outputs, conditions, tags, invariants, with stable JSON normalization. solver_hash() itself and canonicalize_solver_spec() are coherent about that. solver_hash.py:897-924,927-953,1031-1062,1071-1087.
+
+What I think it still misses for a scaling library is not in solver_hash.py so much as in the proposal-to-hash projection. _proposal_to_axiom_shape() carries over formulas, inputs, primary output, invariants, tags, and cell_id, but it drops assumptions, expected_failure_modes, uncertainty_declaration, and all output/input type metadata. It also does not pass domain through from proposals at all, even though solver_hash.py is prepared to include domain in tags. That means semantically different proposals can hash as identical if they only differ in applicability semantics, declared failure behavior, type surface, or domain label: tools/propose_solver.py:2347-2419, waggledance/core/learning/solver_hash.py:927-953,1075-1079.
+
+The sharper edge case is algorithm / table_lookup: those are collapsed into one synthetic "algorithm_body" formula with output_unit: "", then only the proposal’s chosen primary output is kept. So two non-formula proposals that differ only in secondary outputs or in type-level output surface can collide. tools/propose_solver.py:2370-2419, waggledance/core/learning/solver_hash.py:897-924,1031-1062.
+
+My recommendation: keep the current strict hash, but add one more canonical block for proposal-time hashing:
+
+io_types for inputs/outputs
+failure_modes
+assumption_class
+explicit domain
+all declared outputs, not just primary, for non-formula proposals
+
+I would not hash free-form prose wholesale except for deterministic algorithm/table_lookup bodies, because that creates false distinctness on wording alone.
+
+2) 12-gate list vs adversarial teacher
+
+It is not tight enough yet against an adversarial teacher.
+
+The biggest gap is that algorithm and table_lookup proposals are much looser than the doc language implies. Non-formula_chain proposals skip deterministic replay, and unit consistency is skipped for them too. Meanwhile the schema allows algorithm.description and optional pseudo_code as prose blobs. So the branch says “deterministic first” and “no hidden LLM dependency”, but there is no explicit gate that forbids external I/O, subprocesses, clocks, randomness, filesystem reads, env reads, or network dependency inside algorithm prose. tools/propose_solver.py:1926-1940,2054-2063,2370-2384, schemas/solver_proposal.schema.json:989-1060, docs/prompts/cell_teacher_prompt.md:282-305.
+
+Gate 11 is also too narrow. gate_no_secrets_no_paths() only walks string values, not keys, and it does not scan a canonicalized full-object representation. So secrets or paths can hide in dict keys or in structures that become dangerous only after serialization. tools/propose_solver.py:2236-2258.
+
+Gate 12 is narrower than the prompt suggests. The effective scan surface is purpose, formula_or_algorithm, and assumptions; provenance_note is explicitly excluded, and the rest of the proposal body is not scanned. So an adversarial teacher can hide runtime LLM dependence in inputs.description, outputs.description, expected_failure_modes.behavior, examples.source, or uncertainty_declaration. tools/propose_solver.py:2280-2319, docs/prompts/cell_teacher_prompt.md:260-305,327-328.
+
+So my answer to your sub-question is: yes, include canonicalized nested/stringified values. In fact I would do two scans:
+
+a raw recursive walk over keys + values
+a scan over canonical JSON of the full proposal
+
+And I would add a new gate:
+
+Gate 13: closed-world runtime dependency
+
+forbid http, https, socket, requests, curl, subprocess, open(, read_text, os.environ, time.time, datetime.now, random, uuid, prompt, completion, model.generate, etc. in any algorithm/pseudocode/prose field unless explicitly allowlisted.
+
+That gate is more important than making the secret regexes fancier.
+
+3) Composition graph adjacency and unit families
+
+I would keep “same cell OR ring-1 neighbor” as the default graph rule. That is conservative and fits the stated “typed DAG, no blind combinations” goal. waggledance/core/learning/composition_graph.py:1323-1345.
+
+I would not silently change the runtime graph to treat W ↔ kW or J ↔ kJ as identical units. Right now the edge rule is exact equality on the source primary output unit against a downstream input unit. That is deterministic and explainable. waggledance/core/learning/composition_graph.py:1337-1345.
+
+But I do think you want an advisory rescale layer soon:
+
+keep exact-match edges as the only “runtime-valid” edges
+add optional “rescale-possible” advisory edges for same dimension with known scalar transforms
+surface those in reports, not in solver execution
+
+That keeps deterministic-first intact while avoiding obvious missed chains.
+
+There is one more structural issue here: build_nodes() chooses the primary output as outputs[0], not by an explicit primary flag. So graph edges and bridge counts can drift if manifest/output order changes. waggledance/core/learning/composition_graph.py:1232-1260.
+
+I would fix that before merge. Otherwise your composition stats become order-sensitive in exactly the place you want determinism most.
+
+4) Contradiction detection and SMT
+
+I would not add Z3 yet.
+
+Your current contradiction gate explicitly says it is a cheap syntactic single-variable check and does not attempt SMT. Given that invariants are free text today, adding Z3 now mostly buys complexity and a false sense of rigor. tools/propose_solver.py:2111-2117.
+
+What I would do instead is:
+
+keep the current cheap contradiction gate
+document more bluntly that it only covers a narrow machine-checkable subset
+add an optional future field like machine_invariants or guard_exprs
+only run SMT over that field later
+
+That gives you a clean migration path:
+
+prose invariants for humans
+optional structured invariants for machines
+SMT only on structured invariants
+
+That is much cleaner than trying to parse natural-language invariants into Z3 on day one.
+
+5) cell_teacher_prompt.md quality
+
+It is pretty good on the basics. It is explicit about:
+
+no fabricated metrics
+no cross-cell guessing
+declare uncertainty
+hidden runtime LLM dependency must be declared
+no code modifications
+tests required. docs/prompts/cell_teacher_prompt.md:260-305.
+
+But it still relies too much on the model’s goodwill for the algorithm path. It tells the teacher to prefer deterministic proposals, but it never explicitly says:
+
+no filesystem access
+no network access
+no clocks/time-of-day
+no random numbers
+no environment variables
+no subprocesses
+no hidden external tables unless embedded or cited as immutable lookup data
+
+That missing language matters because the schema currently allows prose algorithms. docs/prompts/cell_teacher_prompt.md:270-305, schemas/solver_proposal.schema.json:989-1060.
+
+I would add a short hard block to the prompt:
+
+For algorithm or table_lookup, the runtime must be closed-world and deterministic: it may use only declared inputs, embedded constants, and explicitly cited immutable tables. It must not read files, call services, inspect environment state, use wall-clock time, randomness, subprocesses, or any LLM unless llm_dependency.required: true.
+
+Also, because of the REJECT_LOW_VALUE mismatch and the non-required uncertainty_declaration, the prompt currently overstates what the gate actually enforces.
+
+6) Runtime safety of the offline reporters
+
+tools/phase8_capability_report.py looks genuinely low risk. It describes itself as pure/offline/runtime-safe, imports build_graph, reads manifests/axioms/hot_results, and does not spawn subprocesses or touch port 8002. tools/phase8_capability_report.py:988-994,1031-1033,1252-1307, docs/architecture/PHASE8_METRICS.md:267-275.
+
+tools/run_honeycomb_400h_campaign.py --shakedown is not equally inert. The help text says it is safe alongside the live campaign, and HOT/WARM/COLD are indeed only delegated markers, but shakedown still runs every segment once and the tool directly owns SOLVER / COMPOSITION / LEARNING / CI / FULL. CI invokes pytest on a test subset, and FULL invokes the full suite minus e2e. That can absolutely create CPU, disk, import-side-effect, and shared-state contention on the same host. tools/run_honeycomb_400h_campaign.py:1572-1594,1467-1500,1777-1790, plus the delegation note in the plan text.
+
+So the honest answer is:
+
+phase8_capability_report.py: probably safe
+run_honeycomb_400h_campaign.py --shakedown: safe-ish only if the host has spare budget and the tests are known read-only
+
+If you want this truly safe beside a live server, add:
+
+nice / ionice
+single-worker pytest
+explicit tmp dirs
+read-only environment guard
+optional cgroup/cpuset pinning
+a lock that refuses FULL/CI while production watchdog says “busy”
+7) Deferring live Prometheus counters
+
+I agree with the defer.
+
+The metrics doc’s reasoning is sound: you are mid-campaign, and changing the /metrics surface risks baseline invalidation and double-counting before producer wiring is sorted out. docs/architecture/PHASE8_METRICS.md:239-275.
+
+Could you ship some read-only counters today? Maybe, but only the very lowest-risk ones:
+
+projection-only from already-existing artifacts/events
+fixed low cardinality
+new metric names only
+no new instrumentation inside request paths
+
+Even then, I would still defer, because your doc is right about the real failure mode: not scrape parsing, but semantic baseline drift during an active measurement window.
+
+The three fixes I would require before main
+Resolve the contract mismatches
+either make REJECT_LOW_VALUE real, or remove it from docs/prompt/constants
+make uncertainty_declaration actually required if you mean it
+Harden non-formula proposals
+add a closed-world dependency gate for algorithm / table_lookup
+widen LLM/secrets/path scanning to the full canonicalized proposal surface
+Fix graph determinism
+stop using outputs[0] as implicit primary
+keep exact-unit runtime edges, but add advisory rescale candidates separately

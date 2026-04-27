@@ -228,6 +228,10 @@ patch_*.py
 hotfix_*.py
 *_mega_patch.py
 
+# Exception: legitimate Phase 9 §O source — patch_generator is a
+# package member, not a one-time patch script.
+!waggledance/core/proposal_compiler/patch_generator.py
+
 # Runtime SQLite databases and WAL artifacts
 *.db
 *.db-shm

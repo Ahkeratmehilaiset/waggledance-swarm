@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/provider_request.schema.json",
+  "title": "Provider request pack",
+  "description": "Request pack handed to an external provider (Claude Code Builder Lane, Anthropic API, GPT API, local model). The pack is request-driven, deterministic, and replayable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "task_class",
+    "provider_priority_list",
+    "intent",
+    "input_payload",
+    "budget",
+    "no_runtime_mutation",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "request_id": {"type": "string", "pattern": "^[a-f0-9]{12}$"},
+    "task_class": {
+      "type": "string",
+      "enum": ["code_or_repair", "spec_or_critique",
+               "bulk_classification"]
+    },
+    "provider_priority_list": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["claude_code_builder_lane", "anthropic_api",
+                 "gpt_api", "local_model_service"]
+      }
+    },
+    "intent": {"type": "string"},
+    "input_payload": {"type": "object"},
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_calls"],
+      "properties": {
+        "max_calls": {"type": "number", "minimum": 0},
+        "max_tokens": {"type": "number", "minimum": 0},
+        "max_latency_ms": {"type": "number", "minimum": 0}
+      }
+    },
+    "agent_id_hint": {"type": ["string", "null"]},
+    "capsule_context": {"type": "string"},
+    "no_runtime_mutation": {"type": "boolean", "const": true},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch_name", "base_commit_hash",
+                    "pinned_input_manifest_sha256"],
+      "properties": {
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"}
+      }
+    }
+  }
+}

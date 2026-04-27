@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/capsule_manifest.schema.json",
+  "title": "Capsule manifest",
+  "description": "Declares one deployment context (capsule). Core kernel treats capsule manifests as DATA, not as hardcoded business logic. Domain-specific semantics belong here, never in core modules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capsule_id",
+    "capsule_kind",
+    "version",
+    "domain_neutral_core_required",
+    "blast_radius_isolated",
+    "allowed_lanes",
+    "evidence_planes_subscribed",
+    "policy_overrides",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "capsule_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{2,63}$"
+    },
+    "capsule_kind": {
+      "type": "string",
+      "enum": [
+        "factory_v1",
+        "personal_v1",
+        "research_v1",
+        "home_v1",
+        "cottage_v1",
+        "gadget_v1",
+        "neutral_v1"
+      ]
+    },
+    "version": {"type": "integer", "minimum": 1},
+    "description": {"type": "string", "maxLength": 500},
+    "domain_neutral_core_required": {
+      "type": "boolean",
+      "const": true,
+      "description": "MUST be true. Capsules MUST NOT require domain-specific code in the core kernel."
+    },
+    "blast_radius_isolated": {
+      "type": "boolean",
+      "const": true,
+      "description": "MUST be true. Corruption in this capsule must not poison other capsules."
+    },
+    "allowed_lanes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["provider_plane", "builder_lane", "solver_synthesis",
+                 "ingestion", "memory_tiers", "promotion",
+                 "self_inspection", "wait"]
+      },
+      "uniqueItems": true
+    },
+    "evidence_planes_subscribed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["curiosity", "self_model", "dream", "resilience"]
+      },
+      "uniqueItems": true
+    },
+    "policy_overrides": {
+      "type": "array",
+      "description": "Adaptive policy rule ids that apply to this capsule",
+      "items": {"type": "string", "pattern": "^[a-f0-9]{12}$"}
+    },
+    "budget_caps": {
+      "type": "object",
+      "additionalProperties": {"type": "number", "minimum": 0}
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch_name", "base_commit_hash",
+                    "pinned_input_manifest_sha256"],
+      "properties": {
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"}
+      }
+    }
+  }
+}

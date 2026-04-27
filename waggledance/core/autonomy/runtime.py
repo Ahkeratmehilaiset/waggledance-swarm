@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """
 Autonomy Runtime — main entry point for the solver-first autonomy engine.
 

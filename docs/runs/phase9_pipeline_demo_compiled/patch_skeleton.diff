@@ -1,0 +1,13 @@
+# Patch skeleton — introspection_gap → 63f8a14965db
+# This is a SKELETON, not a real diff. A human reviewer or
+# Phase U2 builder lane fills in the concrete changes.
+
+# Affected files (TBD diffs):
+#   - docs/runs/self_model/<sha12>/
+#   - tools/build_self_model_snapshot.py
+
+# Required invariants:
+#   - no live runtime mutation
+#   - no main branch auto-merge
+#   - tests in test_spec must pass in isolated worktree
+#   - rollback plan must be ready before any runtime stage

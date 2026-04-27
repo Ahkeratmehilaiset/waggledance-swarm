@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/circuit_breaker_state.schema.json",
+  "title": "Circuit breaker state",
+  "description": "Append-only event entry recording one circuit breaker transition or observation. The breaker history is crash-convergent (R7.5 §C5) and tamper-evident; entries are chained by prev_entry_sha256.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "entry_sha256",
+    "ts",
+    "lane",
+    "from_state",
+    "to_state",
+    "tick_id",
+    "consecutive_failures",
+    "reason",
+    "prev_entry_sha256"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "entry_sha256": {
+      "type": "string",
+      "description": "sha256[:12] of canonical entry without this field"
+    },
+    "ts": {"type": "string", "description": "ISO 8601 UTC seconds"},
+    "lane": {"type": "string"},
+    "from_state": {
+      "type": "string",
+      "enum": ["closed", "half_open", "open", "quarantined"]
+    },
+    "to_state": {
+      "type": "string",
+      "enum": ["closed", "half_open", "open", "quarantined"]
+    },
+    "tick_id": {"type": "integer", "minimum": 0},
+    "consecutive_failures": {"type": "integer", "minimum": 0},
+    "reason": {"type": "string"},
+    "prev_entry_sha256": {
+      "type": "string",
+      "description": "Either '0'*64 (genesis) or prior entry's entry_sha256"
+    }
+  }
+}

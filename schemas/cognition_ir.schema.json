@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/cognition_ir.schema.json",
+  "title": "Cognition IR base envelope",
+  "description": "Common envelope for all 13 IR object types. Type-specific extension fields live under the 'payload' key. Every IR object carries: structural id, lifecycle, risk, evidence, dependencies, promotion_state, provenance, capsule_context.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ir_id",
+    "ir_type",
+    "lifecycle_status",
+    "risk",
+    "promotion_state",
+    "evidence_refs",
+    "dependencies",
+    "provenance",
+    "capsule_context",
+    "payload",
+    "ir_compat_version"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "ir_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$",
+      "description": "12-char sha256 truncation of canonical (ir_type, payload structural identity, capsule_context)"
+    },
+    "ir_type": {
+      "type": "string",
+      "enum": [
+        "curiosity",
+        "tension",
+        "blind_spot",
+        "dream_target",
+        "shadow_candidate",
+        "meta_proposal",
+        "capability",
+        "review_candidate",
+        "approved_change",
+        "repair_request",
+        "solver_candidate",
+        "builder_request",
+        "builder_result",
+        "learning_suggestion"
+      ]
+    },
+    "ir_compat_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Semantic compatibility version; consumers refuse unknown majors"
+    },
+    "lifecycle_status": {
+      "type": "string",
+      "enum": ["new", "active", "persisting", "resolved", "archived",
+                "advisory"]
+    },
+    "risk": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "promotion_state": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "supportive",
+        "shadow",
+        "review_ready",
+        "post_campaign_runtime_review_candidate",
+        "approved",
+        "rejected",
+        "archived"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["depends_on_ir_id", "relation"],
+        "properties": {
+          "depends_on_ir_id": {"type": "string"},
+          "relation": {
+            "type": "string",
+            "enum": ["supports", "extends", "specializes",
+                     "alternates_with", "contradicts", "refines",
+                     "composes_with", "blocks_until_resolved"]
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch_name", "base_commit_hash",
+                    "pinned_input_manifest_sha256",
+                    "produced_by"],
+      "properties": {
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"},
+        "produced_by": {"type": "string"},
+        "source_session": {
+          "type": "string",
+          "enum": ["A_curiosity", "B_self_model", "C_dream",
+                   "D_hive_proposes", "R7_5_vector_chaos",
+                   "phase9_kernel", "phase9_ir", "phase9_capsules",
+                   "external"]
+        },
+        "fixture_fallback_used": {"type": "boolean"}
+      }
+    },
+    "capsule_context": {
+      "type": "string",
+      "description": "Capsule scope; defaults to 'neutral_v1' for domain-neutral core logic"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Type-specific extension fields; per-type schemas live under schemas/ir_types/"
+    }
+  }
+}

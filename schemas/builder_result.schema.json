@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/builder_result.schema.json",
+  "title": "Builder lane result pack",
+  "description": "Output from a Claude Code builder/mentor lane invocation. Reviewable; never authorizes a merge to main.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result_id",
+    "request_id",
+    "outcome",
+    "artifacts",
+    "isolated_branch_name",
+    "isolated_worktree_path",
+    "no_main_branch_auto_merge",
+    "ts_iso"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "result_id": {"type": "string"},
+    "request_id": {"type": "string"},
+    "outcome": {
+      "type": "string",
+      "enum": ["success", "partial", "failed", "blocked",
+               "advisory_only"]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifact_kind", "relative_path"],
+        "properties": {
+          "artifact_kind": {
+            "type": "string",
+            "enum": ["solver_candidate", "test_file", "patch_diff",
+                     "schema_patch", "review_bundle_addendum",
+                     "mentor_note"]
+          },
+          "relative_path": {"type": "string"},
+          "sha256_full": {"type": "string"}
+        }
+      }
+    },
+    "isolated_branch_name": {"type": "string"},
+    "isolated_worktree_path": {"type": "string"},
+    "tests_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "passed": {"type": "integer"},
+        "failed": {"type": "integer"},
+        "skipped": {"type": "integer"}
+      }
+    },
+    "no_main_branch_auto_merge": {"type": "boolean", "const": true},
+    "human_review_required": {"type": "boolean"},
+    "ts_iso": {"type": "string"}
+  }
+}

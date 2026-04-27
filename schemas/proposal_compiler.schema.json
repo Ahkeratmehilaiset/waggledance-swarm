@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/proposal_compiler.schema.json",
+  "title": "Proposal compiler bundle",
+  "description": "Engineering-shaped artifacts compiled from a Session D meta-proposal. NEVER applied to live runtime or main; reviewability > automation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "source_meta_proposal_id",
+    "patch_skeleton",
+    "affected_files",
+    "test_spec",
+    "rollout_plan",
+    "rollback_plan",
+    "acceptance_criteria",
+    "review_checklist",
+    "pr_draft_md",
+    "no_main_branch_auto_merge",
+    "no_runtime_mutation"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "bundle_id": {"type": "string"},
+    "source_meta_proposal_id": {"type": "string"},
+    "patch_skeleton": {"type": "string"},
+    "affected_files": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "test_spec": {"type": "object"},
+    "rollout_plan": {"type": "object"},
+    "rollback_plan": {"type": "object"},
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "review_checklist": {"type": "string"},
+    "pr_draft_md": {"type": "string"},
+    "no_main_branch_auto_merge": {"type": "boolean", "const": true},
+    "no_runtime_mutation": {"type": "boolean", "const": true}
+  }
+}

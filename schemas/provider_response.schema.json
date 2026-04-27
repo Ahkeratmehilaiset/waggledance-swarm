@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/provider_response.schema.json",
+  "title": "Provider response (raw, pre-distillation)",
+  "description": "Raw provider output. NEVER directly mutates self/world model — must pass through 6-layer trust gate before any local store updates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "response_id",
+    "request_id",
+    "provider_used",
+    "raw_payload",
+    "ts_iso",
+    "trust_layer_state",
+    "no_direct_mutation"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "response_id": {"type": "string"},
+    "request_id": {"type": "string"},
+    "provider_used": {"type": "string"},
+    "raw_payload": {"type": "object"},
+    "ts_iso": {"type": "string"},
+    "latency_ms": {"type": "number"},
+    "trust_layer_state": {
+      "type": "string",
+      "enum": ["raw_quarantine", "internal_consistency_passed",
+               "cross_check_passed", "corroborated",
+               "calibration_threshold_passed", "human_gated"]
+    },
+    "no_direct_mutation": {"type": "boolean", "const": true}
+  }
+}

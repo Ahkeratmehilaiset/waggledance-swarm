@@ -1,0 +1,261 @@
+Work on branch: phase8/honeycomb-solver-scaling-foundation
+
+You are implementing the next reviewed step after Phase 8 Stage 1 event-log closure.
+
+Current intent:
+- Stage 1 is already additive only: producer -> event log -> stub consumer.
+- Do NOT flip runtime reads.
+- Do NOT repoint core/faiss_store to data/vector/.
+- Do NOT change live campaign behavior.
+- Do NOT add /metrics surface changes.
+- Do NOT make the new vector path authoritative.
+
+Your task is to implement the next safe step:
+STAGE 2 DESIGN DOC + ATOMIC WRITER SKELETON
+with tests strong enough that a later small runtime repoint can be reviewed separately.
+
+High-level goal:
+Make the vector side event-sourced and replayable enough that a real writer can build per-cell vector artifacts from the event log, checkpoint safely, survive retries, and emit commit events — while still staying off the runtime read path.
+
+Important working style:
+- Inspect the repo first and adapt to actual paths and naming; do not blindly trust this prompt if repo reality differs.
+- Prefer small additive changes over invasive refactors.
+- Keep backward compatibility for existing Stage 1 event readers/writers.
+- Avoid hand-wavy TODOs. Ship real code, real docs, real tests.
+- You are allowed to do non-trivial implementation work. Do not stop at a sketch unless the repo genuinely blocks a deeper change.
+- If a choice is ambiguous, choose the safer additive option that keeps runtime untouched.
+
+PRIMARY DELIVERABLES
+
+1) Create a design doc:
+   docs/architecture/MAGMA_VECTOR_STAGE2.md
+
+   It must be concrete, not aspirational fluff.
+   It must describe:
+   - the event contract used by vector indexing
+   - checkpoint format and advancement rules
+   - per-cell on-disk layout under data/vector/
+   - atomic write/apply flow
+   - rollback / failure behavior
+   - idempotency model
+   - relation between MAGMA events and vector commits
+   - what emits vector.commit_applied
+   - what remains explicitly out of scope for this commit
+   - why runtime is still not repointed here
+
+2) Freeze the vector event contract additively.
+   Inspect existing vector_events.py and related tools.
+   Extend only in a backward-compatible way.
+
+   I want an explicit event shape contract that can support replay and commit bookkeeping.
+   Add fields if they are missing, but keep old events readable.
+   Strong candidates:
+   - event_version
+   - event_type
+   - ts
+   - event_id
+   - cell_id
+   - solver_id
+   - source
+   - payload
+   - commit_ref or equivalent linkage when relevant
+
+   Requirements:
+   - old Stage 1 events still parse
+   - new events are canonical and deterministic
+   - readers tolerate missing new fields on old rows
+   - write-path stays additive
+
+3) Upgrade tools/vector_indexer.py from stub projection-only consumer into a Stage 2 writer skeleton.
+   This must still remain OFF the runtime read path.
+
+   Required behavior:
+   - read event log
+   - support replay from beginning
+   - support replay from --since / checkpoint
+   - build per-cell desired projection from events
+   - write per-cell staged vector artifact directories under data/vector/
+   - write commit metadata
+   - atomically apply staged output into the live data/vector tree
+   - emit vector.commit_applied only after successful apply
+   - be idempotent on rerun
+   - survive partial failure without corrupting previously applied state
+
+   If the repo already has safe FAISS-writing primitives you can reuse without touching runtime, use them.
+   If not, build a real skeleton with:
+   - artifact manifest
+   - commit record
+   - placeholder or minimal vector payload
+   - atomic directory/rename flow
+   The key is correctness of the event-sourcing + apply protocol, not runtime use.
+
+4) Add a durable checkpoint format for the indexer.
+   This can be JSON if that is the simplest safe path.
+   It must store enough information to resume safely.
+   Minimum:
+   - last_applied_event_id
+   - last_applied_ts if useful
+   - last_commit_id
+   - per-cell applied commit refs if needed
+
+   Rules:
+   - checkpoint advances only after successful apply
+   - failed apply must not advance checkpoint
+   - rerun after failure must produce the same final state as full replay
+
+5) Emit and support vector.commit_applied events.
+   This event must be clearly documented and tested.
+   It should contain enough data to audit what was applied.
+   Suggested fields:
+   - commit_id
+   - cell_id
+   - artifact path or relative root
+   - input event range
+   - solver_count or vector_count
+   - checksum / digest if cheap
+   - source=indexer
+
+   Make this event consumer-safe and replay-friendly.
+
+6) Add strong tests.
+   I care more about replay/apply correctness than raw coverage count.
+
+   Add or extend tests for at least:
+   - old event rows remain readable after schema extension
+   - full replay == checkpointed replay
+   - checkpoint does not advance on failed apply
+   - rerunning same event window is idempotent
+   - vector.commit_applied is emitted once per successful apply
+   - partial failure leaves previous committed artifact intact
+   - per-cell isolation
+   - unknown informational events do not corrupt projection
+   - atomic apply semantics
+   - event ordering assumptions are explicit and tested
+   - if using manifests/checksums, mismatch is caught
+   - if a cell has no changes, no bogus commit is emitted
+
+7) Keep runtime and live-campaign safety intact.
+   Specifically:
+   - do not repoint any runtime FAISS read path
+   - do not make data/vector authoritative
+   - do not change start_waggledance.py or runtime adapters unless absolutely necessary for import hygiene
+   - do not alter /metrics
+   - do not create background daemons
+   - do not require port 8002
+   - do not assume Ollama is available for tests
+
+SECONDARY CLEANUPS YOU SHOULD ALSO DO IF THEY ARE STILL PRESENT
+
+A) Tighten machine_invariants shape validation.
+   Current contract says machine_invariants.expr is a boolean subset.
+   Ensure the validator rejects non-boolean roots such as:
+   - "a + b"
+   - "out"
+   Also align allowed operators with the documented subset.
+   Unless docs explicitly say otherwise, do not allow power/floordiv/mod silently.
+
+B) Make build_nodes fail closed on malformed multi-primary library data.
+   Upstream proposal gate rejects multiple primary outputs, but library/manifests may still bypass that.
+   Do not silently let “first primary wins” drift graph semantics for malformed hand-edited data.
+   Safer options:
+   - set primary_output=None and exclude node from edge generation
+   - or raise in report-generation path
+   Choose the least disruptive additive option.
+
+C) Fix honeycomb shakedown reporting so busy-skipped CI/FULL are rendered as skipped, not ok.
+
+D) Make is_live_campaign_busy() avoid import-time pidfile freezing if that is still how it works.
+   Recompute the current pidfile path at call time if practical.
+
+IMPLEMENTATION CONSTRAINTS
+
+- Keep all changes additive and reviewed-looking.
+- Prefer explicit helper functions over giant monolithic functions.
+- Keep file formats deterministic.
+- Use atomic replace/rename patterns; never half-overwrite committed state.
+- Make the indexer safe to rerun many times.
+- Do not leave dead code branches without tests.
+- If you introduce a checkpoint file, make its path overridable by CLI/env for tests.
+- If you introduce new event helpers, make them easy to unit-test without FAISS or Ollama.
+
+EXPECTED ON-DISK SHAPE
+
+Adapt to repo conventions, but aim for something structurally like:
+
+data/vector/
+  <cell_id>/
+    current/
+      manifest.json
+      commit.json
+      ...
+    staging/
+      <commit_id>/
+        manifest.json
+        commit.json
+        ...
+  checkpoints/
+    vector_indexer.json
+
+If the repo already has a better convention, use that instead and document it.
+
+CLI EXPECTATIONS
+
+Extend tools/vector_indexer.py with a practical CLI.
+Good options include:
+- --event-log
+- --vector-root
+- --checkpoint-path
+- --since
+- --cell
+- --dry-run
+- --apply
+- --json
+
+Do not make it dangerous by default.
+Dry-run or report-only behavior is preferred unless --apply is explicitly given.
+
+TEST EXECUTION
+
+Run the smallest relevant packs first, then the broader Phase 7/8 pack.
+At the end, report:
+- exact files changed
+- exact tests added
+- exact commands run
+- pass/fail counts
+- whether any existing xfail/failure remains unchanged
+
+DELIVERABLE FORMAT
+
+When done, give me:
+1. a concise summary of what changed
+2. the exact file list
+3. the exact commands you ran
+4. test results
+5. a short note on what remains intentionally deferred until the later runtime repoint
+
+NON-GOALS FOR THIS COMMIT
+
+- no runtime repoint
+- no authoritative switch to data/vector
+- no JetStream/NATS implementation yet
+- no Prometheus additions
+- no multi-node federation work
+- no campaign flip
+- no broad FAISS architecture rewrite beyond what the writer skeleton strictly needs
+
+If you see a cleaner path than the exact structure above, you may take it — but only if all of these remain true:
+- runtime untouched
+- event sourcing strengthened
+- atomic apply implemented
+- checkpoint semantics tested
+- vector.commit_applied emitted
+- future small runtime repoint becomes easier, not harder
+
+Start by inspecting the current implementations of:
+- waggledance/core/magma/vector_events.py
+- tools/vector_indexer.py
+- tools/backfill_axioms_to_hex.py
+- any FAISS store/writer helpers already in repo
+- the relevant Phase 8 tests
+
+Then implement the full change set.

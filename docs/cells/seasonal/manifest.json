@@ -1,18 +1,190 @@
 {
-  "cell": "seasonal",
-  "generated_at": "2026-04-23T02:35:44+00:00",
-  "solver_count": 0,
-  "gap_score": 0.625,
+  "candidate_bridge_edges": [],
+  "cell_id": "seasonal",
+  "contradiction_count": 0,
+  "gap_score": 0.0,
+  "generated_at": "2026-04-24T05:51:14+00:00",
+  "latency_p50_ms": null,
+  "latency_p95_ms": null,
+  "level": 0,
+  "llm_fallback_rate": null,
+  "manifest_hash": "sha256:5ca3ef4c1fb68f5c39dd82db83213b320329cc6bfd867f74fcf2dafd4a368618",
+  "neighbors": [
+    "energy",
+    "math",
+    "safety",
+    "system"
+  ],
+  "parent": null,
+  "recent_rejections": [],
+  "schema_version": 1,
   "siblings": [
     "general",
     "learning",
     "thermal"
   ],
-  "existing_solvers": [],
-  "open_gaps": {
-    "unresolved_examples": [],
-    "unresolved_count": 0
-  },
-  "training_pairs_from_production": 33001,
-  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers OR 1 improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml. Tests REQUIRED. The quality gate (tools/propose_solver.py) will verify determinism, contradictions with existing solvers, and insight score before merging. Duplicates rejected by hash."
+  "solver_count": 5,
+  "solvers": [
+    {
+      "axiom_file": "configs/axioms/cottage/autumn_preparation.yaml",
+      "cell": "seasonal",
+      "description": "Calculate progress score for winter preparation tasks: mite treatment, food reserves, insulation, entrance reducer",
+      "domain": "cottage",
+      "id": "autumn_preparation",
+      "inputs": [
+        "mite_treatment_done",
+        "current_reserves_kg",
+        "required_reserves_kg",
+        "roof_insulated",
+        "mouse_guard_installed",
+        "wind_break",
+        "days_until_first_frost"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 5,
+      "name": "Autumn Colony Preparation Checklist",
+      "outputs": [
+        "readiness_score",
+        "mite_score",
+        "food_score",
+        "insulation_score",
+        "critical_gaps_count"
+      ],
+      "quality_tier": "SILVER",
+      "signature": "dc818f000be58cdf",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:binary",
+        "unit:count",
+        "unit:percent",
+        "unit:ratio",
+        "unit:score"
+      ]
+    },
+    {
+      "axiom_file": "configs/axioms/cottage/nectar_flow_timing.yaml",
+      "cell": "seasonal",
+      "description": "Predict peak nectar flow dates and recommended honey super installation timing based on regional climate and plant pheno",
+      "domain": "cottage",
+      "id": "nectar_flow_timing",
+      "inputs": [
+        "current_gdd",
+        "base_temp_gdd",
+        "peak_gdd_threshold",
+        "avg_daily_gdd_rate",
+        "lead_time_days",
+        "flow_duration_baseline",
+        "weather_variability"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Nectar Flow Timing",
+      "outputs": [
+        "days_until_peak_flow",
+        "growing_degree_days_accumulated",
+        "super_install_day",
+        "expected_flow_duration_days"
+      ],
+      "quality_tier": "GOLD",
+      "signature": "afb4f2fdf87ee4f3",
+      "tags": [
+        "placement:approved",
+        "unit:days",
+        "unit:gdd"
+      ]
+    },
+    {
+      "axiom_file": "configs/axioms/cottage/spring_inspection_timing.yaml",
+      "cell": "seasonal",
+      "description": "Determine the earliest safe date for first spring hive inspection based on weather and colony state",
+      "domain": "cottage",
+      "id": "spring_inspection_timing",
+      "inputs": [
+        "current_outdoor_c",
+        "avg_daily_warming_rate_c",
+        "colony_strength_fraction"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Spring Inspection Timing",
+      "outputs": [
+        "days_until_safe",
+        "min_inspection_temperature_c",
+        "temperature_gap",
+        "can_inspect_today"
+      ],
+      "quality_tier": "SILVER",
+      "signature": "b711e83df836dbff",
+      "tags": [
+        "placement:auto_heuristic",
+        "unit:C",
+        "unit:boolean",
+        "unit:days"
+      ]
+    },
+    {
+      "axiom_file": "configs/axioms/cottage/varroa_treatment_calendar.yaml",
+      "cell": "seasonal",
+      "description": "Recommend varroa treatment schedule based on mite counts, brood status, and season",
+      "domain": "cottage",
+      "id": "varroa_treatment_calendar",
+      "inputs": [
+        "mite_count_per_100_bees",
+        "days_since_last_treatment",
+        "standard_interval_days",
+        "brood_present"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Varroa Treatment Calendar",
+      "outputs": [
+        "days_until_next_treatment",
+        "mite_growth_factor",
+        "urgency_score",
+        "treatment_window_days"
+      ],
+      "quality_tier": "GOLD",
+      "signature": "8eb9247d1ecd9dda",
+      "tags": [
+        "placement:approved",
+        "unit:days",
+        "unit:multiplier",
+        "unit:score"
+      ]
+    },
+    {
+      "axiom_file": "configs/axioms/cottage/winter_feeding_decision.yaml",
+      "cell": "seasonal",
+      "description": "Calculate whether a colony needs supplemental winter feeding based on food reserves, colony size, and winter duration",
+      "domain": "cottage",
+      "id": "winter_feeding_decision",
+      "inputs": [
+        "colony_size_k",
+        "daily_consumption_g_per_1000_bees",
+        "winter_days",
+        "current_reserves_kg",
+        "safety_reserve_kg"
+      ],
+      "last_validation_time": "2026-04-23",
+      "n_formulas": 4,
+      "name": "Winter Feeding Decision",
+      "outputs": [
+        "feeding_needed_kg",
+        "estimated_consumption_kg",
+        "deficit_margin_kg",
+        "feeding_urgency_score"
+      ],
+      "quality_tier": "GOLD",
+      "signature": "67c6f1f6a5e3ce24",
+      "tags": [
+        "placement:approved",
+        "unit:kg",
+        "unit:score"
+      ]
+    }
+  ],
+  "teacher_protocol_reminder": "This is the ONLY context you see. Propose 1-3 new solvers or one improvement. Return YAML matching the schema of axiom files in configs/axioms/<domain>/*.yaml plus the proposal schema at schemas/solver_proposal.schema.json. Tests REQUIRED. The quality gate (tools/propose_solver.py) verifies schema, determinism, hash uniqueness, and in-cell contradictions before merging. Duplicates rejected by hash.",
+  "top_fallback_queries": [],
+  "top_open_gaps": [],
+  "training_pair_count": 0
 }

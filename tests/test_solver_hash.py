@@ -1,8 +1,16 @@
-"""Tests for canonical solver hash (deduplication of Claude proposals)."""
+"""Tests for canonical solver hash (deduplication of Claude proposals).
+
+Covers both the legacy `canonical_hash` and the Phase 8 strict
+`solver_hash` per x.txt Phase 3 requirements (changed output unit,
+tags, and invariants must all change the hash; reordered keys must
+not).
+"""
 from __future__ import annotations
 
 from waggledance.core.learning.solver_hash import (
     canonical_hash, short_hash, HashRegistry,
+    solver_hash, canonicalize_solver_spec,
+    normalize_formula, normalize_variables,
 )
 
 
@@ -172,3 +180,152 @@ def test_realistic_proposal_hashes():
     assert canonical_hash(honey) != canonical_hash(heating)
     # Self-consistency
     assert canonical_hash(honey) == canonical_hash(honey)
+
+
+# ── Phase 8 strict solver_hash ────────────────────────────────────
+
+def _strict_spec(formulas, variables=None, conditions=None,
+                 outputs=None, validation=None, tags=None,
+                 cell_id=None, domain=None, description="x"):
+    spec = {
+        "model_id": "t",
+        "model_name": "whatever",
+        "description": description,
+        "formulas": formulas,
+        "variables": variables or {},
+    }
+    if conditions is not None:
+        spec["conditions"] = conditions
+    if outputs is not None:
+        spec["solver_output_schema"] = {"primary_value": outputs}
+    if validation is not None:
+        spec["validation"] = validation
+    if tags is not None:
+        spec["tags"] = tags
+    if cell_id is not None:
+        spec["cell_id"] = cell_id
+    if domain is not None:
+        spec["domain"] = domain
+    return spec
+
+
+def test_solver_hash_is_64_hex():
+    h = solver_hash(_strict_spec([{"name": "f", "formula": "a"}]))
+    assert len(h) == 64
+    assert all(c in "0123456789abcdef" for c in h)
+
+
+def test_solver_hash_identical_for_reordered_yaml_keys():
+    """x.txt Phase 3: same solver with reordered keys hashes the same."""
+    a = {
+        "model_id": "m",
+        "description": "d",
+        "formulas": [{"name": "f", "formula": "a + b"}],
+        "variables": {"a": {"unit": "m"}, "b": {"unit": "m"}},
+        "solver_output_schema": {"primary_value": {"name": "out", "unit": "m"}},
+        "tags": ["thermal", "indoor"],
+        "validation": [{"check": "a > 0"}],
+    }
+    b = {
+        "tags": ["indoor", "thermal"],
+        "validation": [{"check": "a > 0"}],
+        "solver_output_schema": {"primary_value": {"unit": "m", "name": "out"}},
+        "variables": {"b": {"unit": "m"}, "a": {"unit": "m"}},
+        "formulas": [{"formula": "a + b", "name": "f"}],
+        "description": "d",
+        "model_id": "m",
+    }
+    assert solver_hash(a) == solver_hash(b)
+
+
+def test_solver_hash_changed_formula_differs():
+    """x.txt Phase 3: changed formula hashes differently."""
+    a = _strict_spec([{"name": "f", "formula": "a + b"}])
+    b = _strict_spec([{"name": "f", "formula": "a - b"}])
+    assert solver_hash(a) != solver_hash(b)
+
+
+def test_solver_hash_changed_output_unit_differs():
+    """x.txt Phase 3: changed output unit hashes differently."""
+    a = _strict_spec(
+        [{"name": "f", "formula": "a"}],
+        outputs={"name": "out", "unit": "m"},
+    )
+    b = _strict_spec(
+        [{"name": "f", "formula": "a"}],
+        outputs={"name": "out", "unit": "cm"},
+    )
+    assert solver_hash(a) != solver_hash(b)
+
+
+def test_solver_hash_formula_output_unit_differs():
+    """Changing a per-formula output_unit must also move the hash."""
+    a = _strict_spec([{"name": "f", "formula": "a", "output_unit": "W"}])
+    b = _strict_spec([{"name": "f", "formula": "a", "output_unit": "kW"}])
+    assert solver_hash(a) != solver_hash(b)
+
+
+def test_solver_hash_changed_tag_differs():
+    a = _strict_spec([{"name": "f", "formula": "a"}], tags=["thermal"])
+    b = _strict_spec([{"name": "f", "formula": "a"}], tags=["electrical"])
+    assert solver_hash(a) != solver_hash(b)
+
+
+def test_solver_hash_cell_id_contributes():
+    a = _strict_spec([{"name": "f", "formula": "a"}], cell_id="thermal")
+    b = _strict_spec([{"name": "f", "formula": "a"}], cell_id="energy")
+    assert solver_hash(a) != solver_hash(b)
+
+
+def test_solver_hash_changed_invariant_differs():
+    """x.txt Phase 3: invariants included in the hash."""
+    a = _strict_spec([{"name": "f", "formula": "a"}],
+                     validation=[{"check": "a > 0"}])
+    b = _strict_spec([{"name": "f", "formula": "a"}],
+                     validation=[{"check": "a >= 0"}])
+    assert solver_hash(a) != solver_hash(b)
+
+
+def test_solver_hash_invariant_order_does_not_matter():
+    a = _strict_spec([{"name": "f", "formula": "a"}],
+                     validation=[{"check": "a > 0"}, {"check": "b < 1"}])
+    b = _strict_spec([{"name": "f", "formula": "a"}],
+                     validation=[{"check": "b < 1"}, {"check": "a > 0"}])
+    assert solver_hash(a) == solver_hash(b)
+
+
+def test_canonicalize_solver_spec_is_json_serializable():
+    import json
+    spec = _strict_spec(
+        [{"name": "f", "formula": "a"}],
+        variables={"a": {"unit": "m"}},
+        outputs={"name": "out", "unit": "m"},
+        validation=[{"check": "a > 0"}],
+        tags=["thermal"],
+    )
+    canon = canonicalize_solver_spec(spec)
+    # Must round-trip through JSON — guarantees portability
+    dumped = json.dumps(canon, sort_keys=True)
+    assert json.loads(dumped) == canon
+
+
+def test_normalize_helpers_public():
+    assert normalize_formula("  a +  b  ") == "a+b"
+    assert normalize_variables({"a": {"unit": "m"}, "b": {"unit": "s"}}) == [["a", "m"], ["b", "s"]]
+
+
+def test_registry_strict_mode_detects_output_unit_change(tmp_path):
+    """from_axioms_dir(use_strict=True) should separate two axioms that
+    differ only in output unit (which canonical_hash would miss)."""
+    import yaml
+    d = tmp_path / "axioms"
+    d.mkdir()
+    a = _strict_spec([{"name": "f", "formula": "a", "output_unit": "W"}])
+    b = _strict_spec([{"name": "f", "formula": "a", "output_unit": "kW"}])
+    (d / "a.yaml").write_text(yaml.safe_dump(a), encoding="utf-8")
+    (d / "b.yaml").write_text(yaml.safe_dump(b), encoding="utf-8")
+
+    reg_strict = HashRegistry.from_axioms_dir(d, use_strict=True)
+    reg_loose = HashRegistry.from_axioms_dir(d, use_strict=False)
+    assert len(reg_strict) == 2, "strict mode should see two distinct solvers"
+    assert len(reg_loose) == 1, "legacy mode collapses by formula shape only"

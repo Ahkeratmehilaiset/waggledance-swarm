@@ -1,57 +1,50 @@
-# WaggleDance Swarm AI
+# WaggleDance
 
-> Local-first AI runtime with solver-first routing, self-training specialists, overnight dream learning, and full MAGMA audit trail.
+> A local-first cognitive operating system. Deterministic solver-first routing, builder/mentor lanes for capability growth, vector provenance with identity anchors, multimodal ingestion, and a Reality View as the operator surface — with safe review and human-gated promotion separating proposal from runtime change.
 
-[![Tests](https://img.shields.io/badge/tests-5580%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-657%20Phase%209%20targeted%20%2B%20full%20suite-brightgreen)]()
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
 [![Version](https://img.shields.io/badge/version-3.5.7-blue)]()
 
-## What is this?
+## What this is
 
-Most AI systems make the same mistake: they ask a language model first and hope the answer sounds right.
+A locally-running cognitive runtime that decides things deterministically when it can, and consults learning components only when it has to.
 
-Nature solved this problem millions of years ago.
+- **Solver-first routing.** Every query is dispatched to a deterministic solver before any learned model or LLM is consulted. The solver layer is authoritative; everything above it is advisory.
+- **Builder and mentor lanes (Phase 9).** Two safe lanes for the system to grow new capability without touching live runtime: a builder lane that drafts proposals, a mentor lane that supplies advisory context. Both produce review artifacts; neither auto-applies.
+- **Vector provenance with identity anchors.** Every ingested artifact carries a 4-level dedup signature (exact / semantic / sibling / contradiction-or-extension), an identity anchor, and an append-only provenance graph.
+- **Multimodal ingestion.** A single ingestion contract accepts files, folders, FAISS databases, and live streams in copy / link / stream modes.
+- **Capsule-aware deployment.** Use cases are represented as capsules (factory, cottage, home, gadget, personal, research) so the core treats them as data, not hardcoded business logic.
+- **Reality View.** A 11-panel structured view of the system's current state — never fabricates values; missing data shows up as `available=false` with a structured rationale, not as zero or as a guess.
+- **Promotion ladder with human gate.** A 14-stage ladder from curiosity through tension, dream target, meta-proposal, human review, post-campaign runtime candidate, canary cell, limited runtime, full runtime. Four runtime stages require an explicit `human_approval_id`. No auto-promotion.
+- **Provider plane.** Multi-provider routing (Claude, GPT, local Ollama, etc.) gated by a 6-layer trust gate before any provider response can influence self-model or world-model state.
 
-In a beehive, a discovery doesn't become a decision because one individual says so. A scout returns to the hive and dances a figure-eight pattern on the vertical surface of the honeycomb — the angle of the straight run encodes direction, duration encodes distance, vigor encodes quality. But the dance is not a monologue. Experienced nestmates follow the dancer closely, touch her with their antennae, and provide feedback in real time. A stop signal can shut the dance down entirely. Only when the message survives collective scrutiny does it become a route worth committing to.
+## What this is not
 
-WaggleDance is built on this logic.
+To keep the project honest:
 
-It doesn't hand the problem straight to an LLM. It routes it to the right solver first, cross-checks the result through multiple agents, and uses a language model only when it genuinely adds value. Every step leaves an auditable trace. Every decision is justifiable. Every cycle grows the system's own competence.
-
-The figure-eight dance became algorithmic routing. The honeycomb became the MAGMA memory architecture. And the bees' overnight rest became Dream Mode — a safe simulation where the system reviews the day's failures, tests thousands of alternative paths, and returns in the morning sharper than before.
-
-This is not a metaphor. This is an architecture for collective machine intelligence.
+- **Not a chatbot wrapper.** A language model is consulted only when solvers and specialist models cannot resolve the query.
+- **Not auto-merging or auto-deploying.** No code path on a release branch performs `git push origin main`, `merge_to_main(...)`, or `promote_to_runtime(...)`. The atomic runtime flip is a separate, explicitly human-gated session.
+- **Not pretending the producer-side is on main.** The Phase 8.5 producer subsystems (curiosity organ, self-model snapshot, dream curriculum, hive proposes) are real but ship as separate PRs after the Phase 9 scaffold lands. The Phase 9 release contains the contracts and consumers, not the producers.
+- **Not finished.** This release lands the autonomy fabric scaffold + 16 phases of architecture, all green. Generative memory compression, parallel provider ensembles, predictive cache preheating, and a few other speculative variants are explicitly deferred to Phase 12+ with documented blockers.
 
 ## Architecture
 
 ```
-Query → Language Detection → Solver Router
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-        Solver Engines      Specialist Models      LLM (Ollama)
-        (Layer 3)           (Layer 2, sklearn)     (Layer 1, fallback)
-              │                   │                   │
-              └───────────────────┼───────────────────┘
-                                  ▼
-                            Verifier
-                            (checks against world model)
-                                  │
-                   ┌──────────────┤
-                   ▼              ▼
-             Chat Funnel    Autonomy Funnel
-             (Q&A cases)    (full lifecycle)
-                   └──────────────┤
-                                  ▼
-                        CaseTrajectory → MAGMA Audit Trail
-                                              │
-                                  ┌───────────┴───────────┐
-                                  ▼                       ▼
-                           Night Learning           Dream Mode
-                           (train specialists)      (counterfactual sims)
+Query → Solver Router → Solver Engines (Layer 3, authoritative)
+                     → Specialist Models (Layer 2, sklearn, 14 models with canary lifecycle)
+                     → LLM fallback (Layer 1, Ollama or stub)
+                     ↓
+                     Verifier (checks against World Model)
+                     ↓
+                     CaseTrajectory → MAGMA Audit Trail (Audit / Replay / Overlay / Provenance / Trust)
+                     ↓
+                     Night Learning  /  Dream Mode (counterfactual sims)
 ```
+
+The runtime is built around a hexagonal layout: `core/` is the domain, `adapters/http/routes/` and `adapters/llm/` are ports, `bootstrap/` is the DI container, `application/` holds DTOs/services. Hex-cell FAISS retrieval is keyed by `core/hex_cell_topology` — solvers organize into 8 cells (`general`, `thermal`, `energy`, `safety`, `seasonal`, `math`, `system`, `learning`).
 
 ### Layers
 
@@ -62,36 +55,63 @@ Query → Language Detection → Solver Router
 | **1 — Fallback** | Explains | LLM — only when solvers and specialists cannot handle it |
 | **1b — Optional** | Gemma 4 | Optional dual-tier Gemma 4 profiles: fast (e4b) for general fallback, heavy (26b) for hard reasoning |
 
-### Source Layout
+## Phase 9 — Autonomy Fabric (this release)
 
-```
-waggledance/
-  core/
-    autonomy/        Runtime, resource kernel, lifecycle, attention budget
-    world/           World model, entity registry, epistemic uncertainty
-    reasoning/       Solver router, verifier
-    learning/        Dream mode, consolidator, night pipeline, quality gate
-    specialist_models/  Trainer, meta-optimizer, model store (14 sklearn models)
-    goals/           Goal engine, motives, mission store
-    planning/        Planner
-    policy/          Constitution, risk scoring, policy engine
-    actions/         Safe Action Bus (deny-by-default)
-    capabilities/    Registry, selector
-    projections/     Narrative, introspection, autobiographical (read-only)
-    magma/           Audit, provenance, replay, trust, confidence decay
-    hex_cell_topology  Logical cell overlay for hybrid FAISS retrieval
-    domain/          CaseTrajectory, Goal, WorldSnapshot dataclasses
-  adapters/
-    http/routes/     Hexagonal routes — chat, auth, hologram, magma, graph, trust, ops
-    llm/             Ollama adapter
-    memory/          ChromaDB, FAISS
-    sensors/         MQTT, camera, audio
-    config/          YAML bridge, settings loader
-  application/       Services, DTOs
-  bootstrap/         DI container, capability loader
-```
+The 16 phases of the autonomy fabric ship in this release as a self-contained scaffold:
 
-## Quick Start
+| Phase | Module | Purpose |
+|---|---|---|
+| F | `waggledance/core/autonomy/` | Always-on cognitive kernel (10 sub-components: kernel state, governor, mission queue, budget engine, policy core, action gate, attention allocator, background scheduler, micro-learning lane, circuit breaker) |
+| G | `core/ir/` + `core/capsules/` | Cognition IR + Capsule Registry with blast-radius enforcement |
+| H | `core/vector_identity/` + `core/ingestion/` | Vector provenance graph, identity anchors, universal ingestion |
+| I | `core/world_model/` | Calibrated world model, drift detection |
+| P | `ui/hologram/reality_view.py` | 11-panel Reality View (never-fabricate invariant) |
+| V | `core/conversation/` + `core/identity/` | Presence log, meta-dialogue, forbidden-pattern scanning |
+| J | `core/provider_plane/` + `core/api_distillation/` | Multi-provider routing + 6-layer distillation trust gate |
+| U1 | `core/solver_synthesis/` (declarative) | 10 default solver families |
+| U2 | `core/builder_lane/` | Builder, repair forge, mentor forge |
+| U3 | `core/solver_synthesis/` (gap-driven) | Autonomous solver synthesis with cold-shadow throttling |
+| L | `core/memory_tiers/` | Hot/warm/cold/glacier with pinning + invariant extraction |
+| K | `core/hex_topology/` | Real hex runtime topology (4 live states, 4 subdivision states) |
+| M | `core/promotion/` | 14-stage promotion ladder (4 runtime stages require human approval) |
+| O | `core/proposal_compiler/` | Meta-proposal → engineering bundle (patch skeleton, affected files, test spec, rollout plan, rollback plan, acceptance criteria, review checklist, PR draft) |
+| N | `core/local_intelligence/` | Local model distillation **safe scaffold** (advisory-only, 6 critical task kinds refused, no auto-promotion) |
+| Q | `core/cross_capsule/` | Cross-capsule observer (redacted summaries in, redacted observations out) |
+
+All Phase 9 core modules are BUSL-1.1 protected. Tools, tests, and UI compatibility code are Apache 2.0. Schemas are public-interface artifacts.
+
+See [`docs/architecture/PHASE_9_ROADMAP.md`](docs/architecture/PHASE_9_ROADMAP.md) for the full navigation surface.
+
+## Builder and Mentor Lanes
+
+Two complementary safe lanes for capability growth (`waggledance/core/builder_lane/`):
+
+- **Builder lane.** Allocates a worktree, packages a request (`builder_request_pack`), and hands it to a session forge or repair forge. Returns a result pack. Never modifies the live runtime path.
+- **Mentor lane.** Produces advisory context (`mentor_forge`) — notes, alternatives, hints — that travel as advisory IR (`lifecycle_status: advisory`). The lane never claims authority; it just informs the proposal compiler.
+
+Subprocess invocation is gated for human review by default. The CLI emits an `advisory_only` outcome unless explicitly run with operator approval.
+
+## Memory and Identity
+
+- **Vector identity** (`core/vector_identity/`): every persistent artifact has a 4-level dedup signature, an identity anchor (foundational anchors enter a candidate state first), and a chained provenance graph.
+- **Memory tiers** (`core/memory_tiers/`): hot / warm / cold / glacier with an access pattern tracker that counts uses but never rewrites meaning. Pinning engine auto-pins foundational entries; demoting a pinned entry to cold or glacier raises `TierViolation`.
+- **Invariant extractor** runs BEFORE deep tiering: extracts constraints, schemas, and relations so they survive demotion.
+- **Self-model layer** (Phase 8.5, ships as separate follow-up PR): scorecards, blind spots, workspace tensions, attention focus.
+
+## Capsules and deployment
+
+The system is configured by capsule manifests, not hardcoded business logic. Active capsules:
+
+- `factory_v1` — industrial telemetry, OEE/SPC, predictive maintenance
+- `cottage_v1` — off-grid heating, frost protection, energy management
+- `home_v1` — comfort automation, safety, energy optimization
+- `gadget_v1` — edge / IoT (RPi, Jetson)
+- `personal_v1` — single-user assistant
+- `research_v1` — exploratory experiments
+
+Each capsule declares its blast radius, rate limits, sensors, and forbidden actions. The core treats capsule context as a typed value (`capsule_context`), never as branching business rules.
+
+## Quick start
 
 ### Docker (recommended)
 
@@ -101,13 +121,11 @@ cd waggledance-swarm
 docker compose up -d
 ```
 
-Dashboard: http://localhost:8000 | Hologram: http://localhost:8000/hologram
+Dashboard: http://localhost:8000 | Reality View: http://localhost:8000/hologram
 
 ### Native
 
 ```bash
-git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
-cd waggledance-swarm
 pip install -r requirements.txt
 
 # Requires Ollama running locally (ollama serve)
@@ -115,25 +133,21 @@ python start_waggledance.py
 
 # Stub mode — no Ollama needed
 python start_waggledance.py --stub
-```
 
-### Presets
-
-```bash
+# Capsule preset
 python start_waggledance.py --preset=cottage-full
-python start_waggledance.py --preset=factory-production
 ```
 
-## Deployment Profiles
+## Reality View
 
-| Profile | Target | Description |
-|---------|--------|-------------|
-| **GADGET** | Edge / IoT (RPi, Jetson) | Minimal — sensor calibration, battery optimization |
-| **COTTAGE** | Off-grid property (Mini-PC) | Heating control, frost protection, energy management |
-| **HOME** | Smart home (Desktop, NAS) | Comfort automation, safety, energy optimization |
-| **FACTORY** | Industrial (Server, GPU) | OEE, SPC, predictive maintenance, ISO audit trail |
+The `/hologram` page renders an 11-panel structured operator view. Each panel is one of:
 
-Profile controls: agent limits, solver budgets, learning frequency, feed selection, attention allocation.
+- `available=true` with real items, OR
+- `available=false` with a structured `rationale_if_unavailable` string (e.g., `"vector_graph snapshot missing"`)
+
+The never-fabricate invariant means a missing data source is reported as missing — not papered over with default values or zero. See `waggledance/ui/hologram/reality_view.py`.
+
+A real evidence render against Session B `self_model_snapshot` is committed at [`docs/runs/phase9_reality_view_render.json`](docs/runs/phase9_reality_view_render.json) — 5/11 panels populated, 6/11 honestly unavailable.
 
 ## MAGMA Memory Architecture
 
@@ -145,37 +159,27 @@ Profile controls: agent limits, solver budgets, learning frequency, feed selecti
 | **L4** | Provenance | 9-tier source tracking (verifier → observed → solver → rule → stats → case → reflection → LLM → simulated) |
 | **L5** | TrustEngine | Multi-dimensional scoring for agents, capabilities, solvers, routes, specialists |
 
-## Hologram Brain
+## Promotion ladder (the human gate)
 
-The `/hologram` page renders a real-time 3D visualization with 32 nodes across 4 concentric rings:
+The 14-stage promotion ladder at `waggledance/core/promotion/`:
 
-| Ring | Nodes | Glow Semantic |
-|------|------:|---------------|
-| Core cognition | 10 | Utilization / current load |
-| MAGMA audit | 5 | Throughput / volume |
-| System | 8 | Health / availability |
-| Learning | 9 | Lifecycle activity |
+```
+curiosity → tension → dream_target → meta_proposal → human_review
+  → post_campaign_runtime_candidate → canary_cell → limited_runtime → full_runtime
+                                              ↘ archived (allowed from anywhere)
+```
 
-Each node carries `node_meta`: state (7-value enum), device, freshness, source class, quality.
-Docked panel with 8 tabs + Chat. Bilingual FI/EN.
+The four runtime stages (post-campaign-runtime-candidate / canary-cell / limited-runtime / full-runtime) require a non-empty `human_approval_id` of the form `human:<reviewer>:<utc-iso>`. The promotion engine refuses transitions that don't carry one. `detect_bypass()` flags multi-step skips. `rollback_engine` requires the same human id when rolling back from a runtime stage.
 
-- **Chat** — focus guard prevents input reset during polling refresh
-- **Profile selector** — shows the `configured` profile from `settings.yaml`; restart-only behavior with persistent hint when runtime differs
-- **Feeds** — per-source freshness with separate stale thresholds (30 s telemetry, 1800 s feeds), truthful source visibility
-- **Ops tab** — live FlexHW tier and AutoThrottle telemetry from `/api/ops`
+## Final atomic runtime flip — separate session
 
-## Current Status
+The Phase 9 release lands the scaffold. The actual atomic runtime flip — pointing the live runtime read path at the new code — is **not** part of this PR. It runs as a separate prompt (`Prompt 2`, see [`docs/architecture/PROMPT_2_INPUTS_AND_CONTRACTS.md`](docs/architecture/PROMPT_2_INPUTS_AND_CONTRACTS.md)) after:
 
-| Metric | Value |
-|--------|-------|
-| Version | v3.5.7 (Honest Hologram Release) |
-| Architecture | Hexagonal — DI container, port/adapter, single-product |
-| Runtime | ElasticScaler + AdaptiveThrottle + ResourceGuard via DI |
-| Specialist models | 14 (real sklearn training, canary lifecycle) |
-| Tests | 5378 passing, 0 failing |
-| Production validated | 12 h soak — 358/358 ticks green, 0 restarts |
-| UI hardening | 477 Playwright queries (7 buckets), 0 XSS, 0 DOM breaks, 30 min soak stable |
-| Cutover | Full autonomy mode enabled |
+1. all Phase 8.5 follow-up PRs land on main
+2. the 400h gauntlet campaign is finished or frozen
+3. a signed approval artifact has been authored by a human reviewer
+
+The flip is a fast-forward `git push <release_branch>:main` with head-SHA protection, never a force-push.
 
 ## API
 
@@ -186,7 +190,7 @@ REST + WebSocket on port 8000. Key groups:
 | Core | `POST /api/chat`, `GET /api/status`, `GET /api/heartbeat` |
 | Ops | `GET /api/ops` — live FlexHW tier + AutoThrottle telemetry |
 | Autonomy | `/api/autonomy/status`, `/api/autonomy/kpis`, `/api/autonomy/learning/run` |
-| Hologram | `GET /api/hologram/state` (32 nodes + node_meta), `GET /hologram` |
+| Hologram / Reality View | `GET /api/hologram/state`, `GET /hologram` |
 | Storage | `GET /api/storage/health`, `POST /api/storage/wal-checkpoint` |
 | Introspection | `/api/magma/*`, `/api/graph/*`, `/api/trust/*`, `/api/cross-agent/*`, `/api/analytics/*` |
 | Profiles | `GET /api/profiles` — `{active, configured, restart_required}` |
@@ -197,28 +201,53 @@ REST + WebSocket on port 8000. Key groups:
 
 WebSocket at `ws://localhost:8000/ws` for real-time brain updates, chat streaming, alerts.
 
-See [`docs/API.md`](docs/API.md) for full reference.
+See [`docs/API.md`](docs/API.md) for the full reference.
 
 ## Security
 
-- **Auth** — HttpOnly session cookie (SameSite=Strict, 1 h TTL) for the browser; Bearer token for cURL/scripts/CI. API key auto-generated on first start
-- **No browser-visible secrets** — master key never appears in served HTML, inline JS, localStorage, or sessionStorage
-- **No frontend Bearer construction** — all browser fetches use `credentials: 'same-origin'`
-- **No `?token=` in frontend WebSocket** — browser WS connects clean; token parameter is accepted server-side for scripts only
-- **No eval()** — AST-based whitelist expression evaluator (`core/safe_eval.py`)
-- **Safe Action Bus** — all write operations go through policy → risk → approval chain
-- **OOM protection** — ResourceGuard with adaptive throttling and emergency GC
-- **MQTT TLS** — enabled by default (port 8883)
+- **Auth** — HttpOnly session cookie (SameSite=Strict, 1 h TTL) for the browser; Bearer token for cURL/scripts/CI. API key auto-generated on first start.
+- **No browser-visible secrets** — master key never appears in served HTML, inline JS, localStorage, or sessionStorage.
+- **No frontend Bearer construction** — all browser fetches use `credentials: 'same-origin'`.
+- **No `?token=` in frontend WebSocket** — browser WS connects clean; token parameter is accepted server-side for scripts only.
+- **No eval()** — AST-based whitelist expression evaluator (`core/safe_eval.py`).
+- **Safe Action Bus** — all write operations go through policy → risk → approval chain.
+- **OOM protection** — ResourceGuard with adaptive throttling and emergency GC.
+- **MQTT TLS** — enabled by default (port 8883).
+
+## Phase 8 — Honeycomb Solver Scaling (still scaffolding)
+
+Phase 8 is the substrate Phase 9 builds on. It adds planning, hashing, and gating tools for safe solver-library growth without flipping any runtime switch:
+
+- `tools/cell_manifest.py` — deterministic per-cell state cards
+- `waggledance/core/learning/solver_hash.py` — strict `solver_hash()` + dedup scanner
+- `schemas/solver_proposal.schema.json` + `tools/propose_solver.py` — 12-gate quality review, never auto-merges
+- `waggledance/core/learning/composition_graph.py` — typed DAG over the existing library
+- `tools/run_honeycomb_400h_campaign.py` — segment-aware campaign scaffolding; never auto-starts without `--confirm-start`
+
+Design: [`docs/architecture/HONEYCOMB_SOLVER_SCALING.md`](docs/architecture/HONEYCOMB_SOLVER_SCALING.md).
 
 ## Testing
 
 ```bash
-python -m pytest -q                            # Full suite
-python -m pytest tests/autonomy/ -v            # Autonomy runtime
-python -m pytest tests/contracts/ -v           # Port contract tests
-python -m pytest tests/continuity/ -v          # Continuity regression
-python tools/waggle_backup.py --tests-only     # Legacy component suites
+# Phase 9 targeted suite (~7 s, 657 tests)
+python -m pytest tests/test_phase9_*.py -q
+
+# Full suite
+python -m pytest -q
+
+# Subsystems
+python -m pytest tests/autonomy/ -v
+python -m pytest tests/contracts/ -v
+python -m pytest tests/continuity/ -v
 ```
+
+The Phase 9 GLOBAL PROPERTY tests at `tests/test_phase9_global_properties.py` enforce: no silent failures, no auto-enactment to main/live runtime, no constitution self-mutation, no foundational auto-promotion without human approval, no capsule blast-radius leakage, deterministic builder request/result IDs, no absolute path leakage, no secret literals, domain-neutrality.
+
+## Why the name "WaggleDance"?
+
+The name comes from honeybee waggle dances — a real-world example of a collective intelligence system where a single discovery doesn't become a decision until peer feedback validates it. A scout's dance encodes direction (angle), distance (duration), and quality (vigor); experienced nestmates touch the dancer with antennae and provide live feedback; a stop signal can shut the dance down entirely.
+
+The codebase historically used bee/hive metaphors throughout. New code (Phase 9 onward) is **domain-neutral**: terms like Cognitive Fabric, Reality View, Capsule, Cell, Runtime Topology, Provenance, Distillation, Builder Lane, and Mentor Lane replace bee/swarm/honeycomb/factory metaphors in core modules. Legacy paths and product names remain for compatibility.
 
 ## License
 
@@ -226,12 +255,12 @@ python tools/waggle_backup.py --tests-only     # Legacy component suites
 
 | Component | License | File |
 |-----------|---------|------|
-| Open core (infrastructure, adapters, tests, API) | Apache 2.0 | [`LICENSE`](LICENSE) |
-| Protected modules (dream mode, consolidator, meta-optimizer, projections, MAGMA core) | BUSL 1.1 | [`LICENSE-BUSL.txt`](LICENSE-BUSL.txt) |
+| Open core (infrastructure, adapters, tests, API, tools) | Apache 2.0 | [`LICENSE`](LICENSE) |
+| Protected modules (autonomy fabric, dream mode, consolidator, meta-optimizer, projections, MAGMA core) | BUSL 1.1 | [`LICENSE-BUSL.txt`](LICENSE-BUSL.txt) |
 
-Protected module list: [`LICENSE-CORE.md`](LICENSE-CORE.md)
+Protected module list: [`LICENSE-CORE.md`](LICENSE-CORE.md). Phase 9 SPDX coverage: 147/147 source files tagged (107 BUSL-1.1 + 40 Apache-2.0).
 
-BUSL change date: **2030-03-18** — becomes Apache 2.0 automatically.
+BUSL change date: **2030-03-19** — protected modules become Apache 2.0 automatically on this date.
 
 **Personal non-commercial use of protected modules is permitted.**
 Commercial licensing: see [`COMMERCIAL-USE.md`](COMMERCIAL-USE.md) or contact janikorpi@hotmail.com.
@@ -242,4 +271,4 @@ Built by **Jani Korpi** ([Ahkerat Mehilaiset](https://github.com/Ahkeratmehilais
 
 ---
 
-*WaggleDance — Local. Auditable. Autonomous.*
+*WaggleDance — Local. Auditable. Human-gated.*

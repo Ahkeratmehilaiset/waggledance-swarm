@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/agent_pool.schema.json",
+  "title": "Agent pool record",
+  "description": "Specialized mentor/builder agent registration with session affinity metadata.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "agent_id",
+    "provider_type",
+    "specialization_tags",
+    "preferred_capsules",
+    "max_concurrent_jobs",
+    "warm_availability"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "agent_id": {"type": "string"},
+    "provider_type": {
+      "type": "string",
+      "enum": ["claude_code_builder_lane", "anthropic_api",
+               "gpt_api", "local_model_service"]
+    },
+    "specialization_tags": {"type": "array", "items": {"type": "string"}},
+    "preferred_capsules": {"type": "array", "items": {"type": "string"}},
+    "context_pack_refs": {"type": "array", "items": {"type": "string"}},
+    "max_concurrent_jobs": {"type": "integer", "minimum": 1},
+    "daily_budget_calls": {"type": "number", "minimum": 0},
+    "warm_availability": {"type": "boolean"},
+    "session_affinity_hint": {"type": ["string", "null"]}
+  }
+}

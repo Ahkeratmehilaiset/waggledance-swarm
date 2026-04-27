@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/builder_request.schema.json",
+  "title": "Builder lane request pack",
+  "description": "Request from WD's autonomy kernel to a Claude Code builder/mentor lane. Worktree-isolated; never auto-merges to main.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "task_kind",
+    "intent",
+    "isolated_worktree_path",
+    "isolated_branch_name",
+    "no_runtime_mutation",
+    "no_main_branch_auto_merge",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "request_id": {"type": "string", "pattern": "^[a-f0-9]{12}$"},
+    "task_kind": {
+      "type": "string",
+      "enum": [
+        "generate_solver_candidate",
+        "generate_test",
+        "repair_adapter",
+        "patch_schema",
+        "fix_replay_defect",
+        "improve_cli",
+        "enrich_review_bundle",
+        "mentor_note"
+      ]
+    },
+    "intent": {"type": "string", "minLength": 5, "maxLength": 1000},
+    "isolated_worktree_path": {"type": "string"},
+    "isolated_branch_name": {"type": "string"},
+    "agent_id_hint": {"type": ["string", "null"]},
+    "capsule_context": {"type": "string"},
+    "input_payload": {"type": "object"},
+    "no_runtime_mutation": {"type": "boolean", "const": true},
+    "no_main_branch_auto_merge": {"type": "boolean", "const": true},
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_invocations": {"type": "integer", "minimum": 0},
+        "max_wall_seconds": {"type": "integer", "minimum": 0}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch_name", "base_commit_hash"],
+      "properties": {
+        "branch_name": {"type": "string"},
+        "base_commit_hash": {"type": "string"},
+        "pinned_input_manifest_sha256": {"type": "string"}
+      }
+    }
+  }
+}

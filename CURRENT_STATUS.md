@@ -1,31 +1,55 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-04-21
-**Version:** v3.5.7 (Honest Hologram Release, 2026-04-12) + post-release hardening
-**Shipped branch:** `main` at `ddd13e7`
+**Updated:** 2026-04-27
+**Version:** v3.6.0 (Phase 9 Autonomy Fabric scaffold, 2026-04-27)
+**Shipped branch:** `main` at `a1c4152` (squash-merge of PR #51)
+**Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0)
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
 
-### Active work — 400h UI Gauntlet Campaign
+### Latest release — v3.6.0 Phase 9 Autonomy Fabric (review-only)
 
-Ongoing campaign since 2026-04-13 (`docs/runs/ui_gauntlet_400h_20260413_092800/`):
+PR [#51](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/51) squash-merged into main at 2026-04-27T12:36:32Z. The release lands the **autonomy fabric scaffold**: 16 phases of architecture (F–Q) wiring together the always-on cognitive kernel, cognition IR, vector identity, world model, conversation layer, provider plane with 6-layer trust gate, builder/mentor lanes, autonomous solver synthesis with cold-shadow throttling, memory tiers, real hex runtime topology, 14-stage promotion ladder with human gate, proposal compiler, local model distillation safe scaffold, and cross-capsule observer.
+
+**This is a review-only release.** The atomic runtime flip — pointing the live runtime read path at the new fabric — is intentionally deferred to a separate Prompt 2 session, gated on a signed human approval artifact (`docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml.draft`) and the completion of the 400h gauntlet campaign.
+
+**Key numbers:**
+- 657/657 Phase 9 targeted tests passing in ~7 s
+- All 5 CI checks green (unified, test 3.11/3.12/3.13, security-scan)
+- 147/147 Phase 9 .py files SPDX-tagged (107 BUSL-1.1 + 40 Apache-2.0)
+- 4 real-data evidence artifacts under `docs/runs/phase9_*` (Reality View render, kernel tick, conversation probe, proposal compiler bundle)
+
+See [`docs/architecture/PHASE_9_ROADMAP.md`](docs/architecture/PHASE_9_ROADMAP.md) for the full navigation surface.
+
+### 400h UI Gauntlet Campaign — FINAL
+
+Campaign concluded 2026-04-26 (`docs/runs/ui_gauntlet_400h_20260413_092800/final_400h_summary.md`):
 
 | Mode | Cumulative | Target | Status |
 |---|---|---|---|
-| HOT | 119.09h | 80h | ✅ target exceeded |
-| WARM | 72.11h | 120h | 60%, loop mode active |
-| COLD | 0.02h | 200h | first real segment running after 2026-04-21 race fix |
-| **Total** | **175.19h** | **400h** | **43.8% evidence-backed** |
+| HOT | 207.11h | 80h | ✅ 258.9% — target exceeded |
+| WARM | 120.18h | 120h | ✅ 100.1% — target met |
+| COLD | 88.05h | 200h | ⚠️ 44.0% — partial |
+| **Total** | **415.34h** | **400h** | **103.8% — campaign complete** |
 
-**Hardening commits since v3.5.7 ship** (see `CHANGELOG.md [Unreleased]`):
-- `b21548d` faiss_registry CI guard — fixed 19-day red CI
-- `c7f6201` Python 3.11 `perf_counter` + dedup race
-- `3771c45` ci.yml `fail-fast: false`
-- `7d506b3` honest state audit (100h fabricated entries removed)
-- `fa1e687` pidfile lock per mode
-- `03fbb0a` `TargetClosedError` + HOT resume duplicate fix
-- `6e99c2a` atomic segment_id reservation
+- 60 807 queries total
+- 0 XSS hits (zero-tolerance target met)
+- 0 DOM breaks (zero-tolerance target met)
+- Watchdog and auto-commit processes stopped
+- `final_400h_*` summaries generated
 
-No runtime API changes. No version bump planned until campaign completes.
+### Phase 8.5 producer subsystems — deferred follow-up PRs
+
+Phase 9 ships the IR adapter contracts (`from_curiosity.py`, `from_self_model.py`, `from_dream.py`, `from_hive.py`); the producer subsystems on `phase8.5/*` branches ship as separate follow-up PRs after this release. Per the local-only branch audit (`docs/runs/local_only_branch_audit.md`):
+
+| Branch | Substantive commits | Status |
+|---|---|---|
+| `phase8.5/vector-chaos` | 4 | DEFER → follow-up PR (R7.5 — Vector Writer Resilience) |
+| `phase8.5/curiosity-organ` | 10 | DEFER → follow-up PR (Session A — Curiosity Organ) |
+| `phase8.5/self-model-layer` | 16 | DEFER → follow-up PR (Session B — Self-Model Layer) |
+| `phase8.5/dream-curriculum` | 22 | DEFER → follow-up PR (Session C — Dream Pipeline) |
+| `phase8.5/hive-proposes` | 21 | DEFER → follow-up PR (Session D — The Hive Proposes) |
+
+**Next post-release step:** open the Phase 8.5 follow-up PRs in dependency order. After all five land, the Prompt 2 atomic runtime flip session can be scheduled (gated on signed `HUMAN_APPROVAL.yaml`).
 
 ---
 

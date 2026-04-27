@@ -1,5 +1,119 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [3.6.0] — 2026-04-27 — Phase 9 Autonomy Fabric
+
+Branch: `phase9/autonomy-fabric`. **37 commits, 657 Phase 9 targeted tests passing in ~7 s.** PR #51.
+
+The autonomy fabric scaffold ships as a self-contained release. 16 phases (F–Q) build the always-on cognitive kernel and its review-only path from ingest to proposal compiler. The atomic runtime flip is intentionally deferred to a separate Prompt 2 session.
+
+### Architecture additions (16 phases)
+
+| Phase | Module | Purpose |
+|---|---|---|
+| F | `core/autonomy/` | Always-on cognitive kernel; 10 sub-components incl. action_gate (sole exit point), circuit_breaker, attention_allocator |
+| G | `core/ir/` + `core/capsules/` | Cognition IR + Capsule Registry with blast-radius enforcement |
+| H | `core/vector_identity/` + `core/ingestion/` | Vector provenance graph, identity anchors, 4-level dedup, universal ingestion (copy/link/stream) |
+| I | `core/world_model/` | World model + drift detection, separated from self_model |
+| P | `ui/hologram/` | Reality View — 11 panels, never-fabricate invariant |
+| V | `core/conversation/` + `core/identity/` | Presence log, meta-dialogue (5 question kinds), forbidden-pattern scanning |
+| J | `core/provider_plane/` + `core/api_distillation/` | Multi-provider routing + 6-layer distillation trust gate |
+| U1 | `core/solver_synthesis/` (declarative) | 10 default solver families + deterministic compiler |
+| U2 | `core/builder_lane/` | Builder lane, repair forge, mentor forge (advisory-only by default) |
+| U3 | `core/solver_synthesis/` (gap-driven) | Autonomous synthesis with cold/shadow throttling (50 use_count, 3600 s shadow, 0 critical regressions) |
+| L | `core/memory_tiers/` | Hot/warm/cold/glacier + pinning + invariant extractor + TierViolation |
+| K | `core/hex_topology/` | Real hex runtime topology; 4 live states, 4 subdivision states, shadow-first |
+| M | `core/promotion/` | 14-stage promotion ladder; 4 runtime stages require human_approval_id; bypass detection |
+| O | `core/proposal_compiler/` | Meta-proposal → engineering bundle (8 artifacts: patch_skeleton, affected_files, test_spec, rollout_plan, rollback_plan, acceptance_criteria, review_checklist, pr_draft_md) |
+| N | `core/local_intelligence/` | Local model distillation **safe scaffold**; advisory-only; 6 critical task kinds refused; lifecycle {shadow_only, advisory, retired} only |
+| Q | `core/cross_capsule/` | Cross-capsule observer; redacted summaries in, redacted observations out, no_raw_data_leakage |
+
+### Cross-phase guarantees (14 GLOBAL PROPERTY tests)
+
+`tests/test_phase9_global_properties.py` source-greps every Phase 9 module for:
+
+- no silent failures
+- no auto-enactment to main/live runtime (no `git push origin main`, no `promote_to_runtime()`, no `requests.post()`)
+- no constitution self-mutation
+- no foundational auto-promotion without human approval
+- no capsule blast-radius leakage
+- deterministic builder request/result IDs (no `uuid4`/`random` in core)
+- no absolute path leakage in generated bundles
+- no secret-shaped literals
+- domain-neutrality in non-adapter core
+
+All 14 properties pass on first run.
+
+### Real-data evidence artifacts
+
+Four committed evidence artifacts under `docs/runs/`:
+
+- `phase9_reality_view_render.json` — real Reality View render against Session B `self_model_snapshot.json`; 5/11 panels populated, 6/11 honestly unavailable
+- `phase9_pipeline_demo_compiled/` — real Session D `hive_proposals.json` (`meta_proposal_id=4116420fed0a`) → `bundle_9b273467f0` (4 artifacts)
+- `phase9_kernel_tick_dry_run.json` — `wd_kernel_tick.py` against real `constitution.yaml`; SHA-gate verified
+- `phase9_conversation_probe.json` — 4 META_QUESTION_KINDS against real Session B input; all `is_clean=true`, 0 pattern violations
+
+### CLI tools (11 verified with `--help`)
+
+`wd_kernel_tick`, `wd_ingest`, `wd_link`, `wd_identity`, `build_world_model_snapshot`, `render_hologram_reality`, `wd_conversation_probe`, `run_claude_builder_lane`, `wd_bootstrap_solvers`, `wd_synthesize_solver`, `compile_meta_proposal`.
+
+### Documentation
+
+- `docs/architecture/PHASE_9_ROADMAP.md` — 16-phase navigation surface, acceptance check table
+- `docs/architecture/PROMPT_2_INPUTS_AND_CONTRACTS.md` — atomic flip preconditions + approval artifact contract
+- `docs/architecture/LOCAL_MODEL_DISTILLATION.md` — Phase N safe routing contract
+- `docs/architecture/HIGH_RISK_VARIANTS_DEFERRED.md` — 6 deferred variants with explicit blockers
+- `docs/architecture/EXPERIMENTAL_AUTONOMY_PROFILE.md` — profile contract specification
+- `docs/runs/phase9_master_session_report.md` — canonical 9-section session report
+
+### License convention (this release)
+
+- LICENSE-BUSL.txt **Change Date harmonized to 2030-03-19** (matches phase8.5/3c67c95 intentional bump)
+- SPDX-only convention enforced; embedded `(BUSL Change Date 2030-03-19)` markers stripped from 33 source files; LICENSE-BUSL.txt is the single source of truth
+- Phase 9 SPDX coverage: 147/147 .py files tagged (107 BUSL-1.1 for crown-jewel + 40 Apache-2.0 for tools/tests/UI)
+
+### What is NOT in this release
+
+Per Strategy A minimal-scope rule, the following ride on follow-up PRs:
+
+- **Phase 8.5 producer subsystems** (`vector-chaos`, `curiosity-organ`, `self-model-layer`, `dream-curriculum`, `hive-proposes`) — 73 substantive commits across 5 branches. Phase 9 ships the IR adapter contracts (`from_curiosity.py`, `from_self_model.py`, `from_dream.py`, `from_hive.py`); the producers ship separately.
+- **Atomic runtime flip** — `Prompt 2` (separate session). The flip is a fast-forward `git push <release_branch>:main` with head-SHA protection, gated on a signed approval artifact.
+
+### What is intentionally deferred to Phase 12+
+
+Documented in `docs/architecture/HIGH_RISK_VARIANTS_DEFERRED.md`:
+
+1. Speculative parallel provider ensembles
+2. Predictive cache preheating
+3. Unbounded micro-learning expansions
+4. Limited canary auto-promotion under experimental profile
+5. Advanced local model escalation
+6. Generative memory compression
+
+Each item carries explicit blockers a future session must clear before introducing.
+
+### Acceptance check (from MASTER ACCEPTANCE CRITERIA)
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | Phases F, G, H, I, P, V fully implemented & green | ✓ |
+| 2 | Phases J, U1, U2, U3, L, M materially implemented & green | ✓ |
+| 3 | Phases K, O, N at minimum scaffolded; deeper if bandwidth | ✓ K/O fully implemented; N scaffold-first per spec |
+| 4 | Phase Q at minimum documented/scaffolded | ✓ scaffold + 2 deferred docs |
+| 5 | All emitted core artifacts deterministic | ✓ source-grep + behavioral tests |
+| 6 | Real pinned upstream outputs attempted first | ✓ pinned input manifest sha12 5cd8ced05070 |
+| 7 | Real-data success OR documented blocker + fixture fallback | ✓ no fixture fallback used |
+| 8 | No live runtime mutation in this master prompt | ✓ source-grep verified |
+| 9 | Campaign safety remained intact | ✓ worktree-isolated; primary repo untouched |
+| 10 | Crown-jewel modules have proper Change Date | ✓ harmonized to 2030-03-19 |
+| 11 | At least one real Reality View render uses actual artifacts | ✓ Phase P |
+| 12 | Provider plane day-1 multi-provider | ✓ Phase J |
+| 13 | Autonomous solver candidate generation, throttled promotion | ✓ Phases U1/U2/U3 + M |
+| 14 | Real path ingest → reflection → dream → synthesis → proposal → review | ✓ G→H→I→V→O |
+| 15 | Separate final atomic flip prompt prepared as later risk domain | ✓ PROMPT_2_INPUTS_AND_CONTRACTS.md |
+| 16 | continuation_instructions in state.json sufficient for next session | ✓ state.json complete |
+
+---
+
 ## Unreleased — 2026-04-24 / 2026-04-25 — Phase 8 + R4/R5/R6 review cycle + Stage 1+2
 
 Branch: `phase8/honeycomb-solver-scaling-foundation`. **18 commits**, **350 tests + 1 xfail**.

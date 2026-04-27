@@ -1,0 +1,70 @@
+# Human Approval Artifact — DRAFT
+#
+# When ready to flip, the human reviewer:
+#   1. Copies this file to `HUMAN_APPROVAL.yaml`
+#   2. Fills in every field below
+#   3. Signs by adding their reviewer id + ISO timestamp to `human_approval_id`
+#   4. Pins the file's sha256 in the Prompt 2 state file before the flip runs
+#
+# All four `no_*` fields are STRUCTURAL INVARIANTS, not toggles. They MUST be true.
+
+human_approval_id: "human:<reviewer-name>:<utc-iso-8601>"  # e.g. "human:janikorpi:2026-04-30T08:00:00Z"
+approval_kind: "phase9_atomic_flip"
+
+# What is being approved
+branch_under_review: "phase9/autonomy-fabric"
+commit_under_review: "<full 40-char sha of release branch tip at signature time>"
+phase_set_reviewed:
+  - "F"
+  - "G"
+  - "H"
+  - "I"
+  - "P"
+  - "V"
+  - "J"
+  - "U1"
+  - "U2"
+  - "U3"
+  - "L"
+  - "K"
+  - "M"
+  - "O"
+  - "N"
+  - "Q"
+
+# Test evidence
+test_suite_run: "tests/test_phase9_*.py"
+test_suite_result: "657 passed"
+test_suite_run_at_utc: "<utc-iso-8601 of when the test ran>"
+
+# Rationale (free-form, REQUIRED, non-empty)
+rationale: |
+  <Why is this flip safe? What was reviewed? What was tested? What is the
+  scope of the change? What is the rollback story? Why now?>
+
+# Rollback target — the main tip BEFORE the flip
+rollback_target_sha: "<full 40-char sha of main tip at signature time>"
+
+# Structural invariants (DO NOT change these to false; doing so makes the
+# approval invalid)
+no_runtime_auto_promotion: true
+no_main_branch_auto_merge: true
+no_foundational_mutation: true
+no_raw_data_leakage: true
+
+# Timestamps
+approved_at_utc: "<utc-iso-8601 when this artifact was signed>"
+
+# Optional: any deferred items the reviewer is explicitly accepting as deferred
+deferred_items:
+  - "Phase 8.5 vector-chaos PR — to follow"
+  - "Phase 8.5 curiosity-organ PR — to follow"
+  - "Phase 8.5 self-model-layer PR — to follow"
+  - "Phase 8.5 dream-curriculum PR — to follow"
+  - "Phase 8.5 hive-proposes PR — to follow"
+  - "Phase 12+ generative memory compression — explicitly out of scope"
+  - "Phase 12+ 5 other deferred high-risk variants per HIGH_RISK_VARIANTS_DEFERRED.md"
+
+# Optional: notes for the post-flip verifier
+post_flip_verification_notes: |
+  <Any specific things the verifier should pay attention to.>

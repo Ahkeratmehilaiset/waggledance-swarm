@@ -1,5 +1,9 @@
 # Atomic Flip Preparation
 
+> **2026-04-27 status update:** During v3.6.0 release finalization, the previously-signed `HUMAN_APPROVAL.yaml` was discovered to authorize a flip operation whose mechanism (per-cell `os.replace()` on `current/` symlinks) does not match the actual repo state — those symlinks do not exist, and runtime FAISS reads come from `data/faiss/`, a different scope than the hex-cell stagings. The approval has been marked SUPERSEDED. No flip is needed for v3.6.0. The future Stage-2 cutover described in `docs/architecture/MAGMA_FAISS_SCALING.md §2` will require a new approval whose rationale matches the actual operation. Full analysis: [`docs/journal/2026-04-27_atomic_flip_analysis.md`](../journal/2026-04-27_atomic_flip_analysis.md).
+>
+> The files in this directory remain as a *structural template* for what a real cutover review would need (worktree setup, pre-flight checklist, approval contract, post-flip verification, rollback). They do not authorize any current operation.
+
 **Status:** PREPARATION ONLY. The actual atomic runtime flip is **not** executed in the release-to-main session that produced this directory. It runs in a separate Prompt 2 session, gated on a signed approval artifact and the completion of the 400h gauntlet campaign.
 
 ## What's in this directory

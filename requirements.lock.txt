@@ -19,7 +19,7 @@ async-timeout==5.0.1
 attrs==25.3.0
 audioop-lts==0.2.1
 audioread==3.1.0
-av==15.0.0
+av==17.0.0
 backoff==2.2.1
 bcrypt==5.0.0
 beautifulsoup4==4.13.4

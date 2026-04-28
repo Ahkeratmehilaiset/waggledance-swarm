@@ -1,0 +1,1 @@
+{"ts":"2026-04-28T00:00:00Z","section":"P0","severity":"info","class":"truth_discrepancy","id":"TD-P0-001","summary":"CURRENT_STATUS.md claims main=a1c4152; actual main=8bf1869. Resolution deferred to P6.","fatal":false}

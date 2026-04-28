@@ -40,9 +40,48 @@ For the Apache-2.0 text, see `LICENSE`.
 - `waggledance/core/projections/projection_validator.py`
 - `waggledance/core/projections/__init__.py`
 
+### v3.6.x / Phase 10 protected files (Change Date 2030-12-31)
+
+The files below are protected under BUSL-1.1 with a per-file Change
+Date of **2030-12-31**, as defined per Phase 10 RULE 6
+(`NEW_CORE_CHANGE_DATE = 2030-12-31`). Each file carries an explicit
+`# BUSL-Change-Date: 2030-12-31` header. The Change Date in
+`LICENSE-BUSL.txt` (2030-03-19) remains the project-wide default for
+v3.2-era files; per-file dates take precedence when present.
+
+Storage substrate (P2 — control plane and data plane foundation):
+- `waggledance/core/storage/__init__.py`
+- `waggledance/core/storage/control_plane_schema.py`
+- `waggledance/core/storage/control_plane.py`
+- `waggledance/core/storage/path_resolver.py`
+- `waggledance/core/storage/registry_queries.py`
+
+Provider plane execution layer (P3 — provider plane + Claude Code builder lane):
+- `waggledance/core/providers/__init__.py`
+- `waggledance/core/providers/provider_contracts.py`
+- `waggledance/core/providers/provider_registry.py`
+- `waggledance/core/providers/provider_plane.py`
+- `waggledance/core/providers/claude_code_builder.py`
+- `waggledance/core/providers/builder_job_queue.py`
+- `waggledance/core/providers/builder_lane_router.py`
+- `waggledance/core/providers/mentor_forge.py`
+- `waggledance/core/providers/repair_forge.py`
+
+Solver bootstrap orchestration (P4 — U1→U3 escalation, throttler, LLM lane):
+- `waggledance/core/solver_synthesis/cold_shadow_throttler.py`
+- `waggledance/core/solver_synthesis/llm_solver_generator.py`
+- `waggledance/core/solver_synthesis/solver_bootstrap.py`
+- `waggledance/core/solver_synthesis/family_specs/__init__.py`
+
+Reality View scale-aware aggregator (P5):
+- `waggledance/ui/hologram/scale_aware_aggregator.py`
+
 ## Default rule
 
 Any source file not listed above is licensed under Apache License 2.0 unless that file itself carries a BUSL-1.1 SPDX header.
+
+When a file carries a `# BUSL-Change-Date: YYYY-MM-DD` header, that date
+overrides the default Change Date in `LICENSE-BUSL.txt` for that file.
 
 ## Practical summary
 

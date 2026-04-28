@@ -1,5 +1,22 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Unreleased — Phase 10 Foundation, Truth, Builder Lane] — 2026-04-28
+
+Branch: `phase10/foundation-truth-builder-lane`. Substrate work on top of v3.6.0. Six commits:
+
+- `chore(state)` — bootstrap Phase 10 state, archive prior v3.6.0 state, init structured logs (`provider_invocations.jsonl`, `error_log.jsonl`).
+- `docs(audit)` — storage / runtime / cutover truth audit. New: `docs/journal/2026-04-28_storage_runtime_truth.md`, `docs/journal/2026-04-28_cutover_model_classification.md`. Verdict: `MODEL_C_NOOP_ALREADY_COMPLETE` for v3.6.0; future Stage-2 = `MODEL_D_AMBIGUOUS`.
+- `feat(storage)` — `waggledance/core/storage/` (control_plane_schema, control_plane, path_resolver, registry_queries). 16 SQLite tables, schema_version=1, deterministic resolver with override → control-plane → static default precedence. Drop-in compatible with `_DEFAULT_FAISS_DIR`. `LICENSE-CORE.md` updated, Change Date 2030-12-31.
+- `feat(provider)` — `waggledance/core/providers/` (provider_contracts, provider_registry, provider_plane, claude_code_builder, builder_job_queue, builder_lane_router, mentor_forge, repair_forge). JSON-schema-validated dispatch composing the Phase 9 routing scaffold. `ClaudeCodeBuilder` is the only authorised subprocess (RULE 17): isolated worktree, bounded timeout, JSONL invocation log, dry-run fallback when CLI absent.
+- `feat(synthesis)` — `solver_synthesis/cold_shadow_throttler.py`, `llm_solver_generator.py`, `solver_bootstrap.py`, `family_specs/`. U1→U3 escalation orchestrator with throttling + control-plane sync. Phase 9 declarative pipeline + JSON schemas unchanged.
+- `feat(reality)` — `ui/hologram/scale_aware_aggregator.py`. Aggregated panels (solver_family_summary, cell_topology, builder_lane_status, provider_queue_summary) from the control plane. Phase 9 11-panel Reality View + never-fabricate invariant unchanged.
+
+Tests: 59 new targeted tests (51 storage/provider/synthesis + 8 reality-view scale), all green. No runtime hot-path mutation. Atomic flip remains a separate Prompt 2 risk domain.
+
+Doc corrections in this branch:
+- `CURRENT_STATUS.md` — main SHA corrected from `a1c4152` to `8bf1869` (post-v3.6.0 truthfulness commit).
+- `docs/architecture/MAGMA_FAISS_SCALING.md §0` — vector-event producer status tightened; offline tools (`vector_indexer`, `backfill_axioms_to_hex`) ARE producers, autonomy runtime is not.
+
 ## [3.6.0] — 2026-04-27 — Phase 9 Autonomy Fabric
 
 Branch: `phase9/autonomy-fabric`. **37 commits, 657 Phase 9 targeted tests passing in ~7 s.** PR #51.

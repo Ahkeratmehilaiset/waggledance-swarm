@@ -1,110 +1,419 @@
 {
-  "session": "release_to_main",
-  "started_at_utc": "2026-04-27T07:30:00Z",
-  "operator_decision": "Strategy A approved; no history rewrite; merge if gates green; otherwise stop one step before merge with exact commands",
-  "current_branch": "phase9/autonomy-fabric",
-  "current_worktree": "C:/python/project2-master",
-  "pr_source_branch": "phase9/autonomy-fabric",
-  "pr_number": 51,
-  "pr_head_sha_at_session_start": "3c41a5c2c5b6e812218be2cead170fb9741a30e6",
-  "pr_state": "OPEN",
-  "pr_mergeable": "MERGEABLE",
-  "pr_merge_state": "CLEAN",
-  "pr_review_decision": "",
-  "pr_is_draft": false,
-  "main_tip_sha": "d9a6dce",
-  "local_release_tip": "d13a13c (will be updated after Phase 11-13 commit)",
-  "ci_status_at_session_start": "all_green_5_of_5",
-  "ci_checks_at_session_start": {
-    "unified": "SUCCESS",
-    "test_3_11": "SUCCESS",
-    "test_3_12": "SUCCESS",
-    "test_3_13": "SUCCESS",
-    "security_scan": "SUCCESS"
+  "session": "phase10_foundation_truth_builder_lane",
+  "session_started_at_utc": "2026-04-28T00:00:00Z",
+  "operator_directive": "jatketaan tästä C:\\Python\\project2\\wd_phase10_master_prompt_rewritten.md",
+  "prompt_source_path": "C:/Python/project2/wd_phase10_master_prompt_rewritten.md",
+  "session_mode": "release_to_main_phase10_non_cutover",
+  "prior_session_archived_at": "docs/runs/release_to_main_state_v3.6.0.json",
+
+  "rule_compliance": {
+    "rule_0_no_questions": "active",
+    "rule_1_strongest_opus": "active",
+    "rule_2_pr_only": "active",
+    "rule_3_no_force_no_history_rewrite": "active",
+    "rule_4_foundation_db_precedence": "active",
+    "rule_5_stage1_vs_runtime_cutover": "active",
+    "rule_6_busl_change_date_new_core_2030_12_31": "active",
+    "rule_7_test_discipline_targeted": "active",
+    "rule_8_provider_budget_per_section": "active",
+    "rule_9_one_shot_approval": "active",
+    "rule_10_stop_and_handoff": "active",
+    "rule_11_worktree_presence_verified": true,
+    "rule_12_phase8_5_isolation": "active",
+    "rule_13_domain_neutral_language": "active",
+    "rule_14_fail_loud": "active",
+    "rule_15_family_first_solver_growth": "active",
+    "rule_16_control_plane_db_first": "active",
+    "rule_17_builder_lane_subprocess_only": "active",
+    "rule_18_release_to_main_only_no_cutover": "active"
   },
-  "gh_auth": {
-    "logged_in": true,
-    "account": "Ahkeratmehilaiset",
-    "scopes": ["gist", "read:org", "repo", "workflow"]
+
+  "model_selection": {
+    "primary_model": "claude-opus-4-7",
+    "model_id_resolved": "claude-opus-4-7",
+    "model_selection_source": "environment_default_inherited_from_session_invocation",
+    "subagent_model": "inherited_opus_4_7_unless_definition_overrides",
+    "fallback_policy": "log_and_continue_record_event",
+    "fallback_events": [],
+    "verification_method": "system_environment_block_states_powered_by_opus_4_7"
   },
-  "phase8_5_local_only_decision": "DEFER ALL — 73 substantive commits across 5 branches deferred to follow-up PRs. Documented in docs/runs/local_only_branch_audit.md.",
-  "dream_pipeline_resolution": "OPTION 3 — explicitly deferred to phase8.5/dream-curriculum follow-up PR. Phase 9 ships from_dream IR adapter contract; producer ships separately. Documented in docs/runs/dream_pipeline_resolution.md.",
-  "ci_blockers": [],
-  "ci_fix_summary_path": "docs/runs/ci_fix_summary.md",
-  "readme_repositioning": "completed (commit a00858d) — bee-first to cognitive-OS-first; new sections: What this is, What this is not, Phase 9 — Autonomy Fabric, Builder and Mentor Lanes, Memory and Identity, Capsules and deployment, Reality View, Promotion ladder, Final atomic runtime flip — separate session, Why the name WaggleDance?",
-  "docker_review": "completed (commit f2e6d15) — two-entry-point reality documented honestly; no code change",
-  "versioning_decision": "3.5.7 -> 3.6.0 (MINOR bump; rationale in docs/runs/versioning_decision.md)",
-  "release_notes_status": "drafted (docs/runs/release_notes_draft.md)",
-  "release_bundle_status": "drafted (docs/runs/release_bundle_2026_04_27/ — 7 files: release_summary, release_risk_register, merge_readiness_checklist, readme_positioning_summary, deferred_items, post_merge_checklist, final_runtime_flip_deferred)",
-  "atomic_flip_prep_status": "completed (docs/atomic_flip_prep/ — 7 files: 00_README, 01_flip_worktree_setup, 02_pre_flip_checklist, 03_HUMAN_APPROVAL.yaml.draft, 04_flip_review_bundle.md.template, 05_post_flip_verification, 06_rollback_procedure)",
-  "merge_ready": false,
-  "merge_ready_reason": "PR head SHA does not match local release branch tip — 6 release-polish commits not pushed to origin. Operator must run `git push origin phase9/autonomy-fabric` from their own Git Bash before merge can proceed. This shell silently backgrounds network commands and the push has not completed within session window.",
-  "merge_performed": false,
-  "merge_pending_human": true,
-  "tag_performed": false,
-  "phases_completed": [
-    "phase_0_bootstrap_audit",
-    "phase_1_local_only_audit",
-    "phase_2_dream_resolution",
-    "phase_3_integration_no_op (per Phase 1 audit decision)",
-    "phase_4_ci_fix (already applied in 3c41a5c, validated as still-needed)",
-    "phase_5_readme_repositioning",
-    "phase_6_docker_polish",
-    "phase_7_versioning_changelog_release_notes",
-    "phase_8_validation",
-    "phase_9_merge_readiness_check (NOT MERGE-READY due to pending push)",
-    "phase_12_atomic_flip_prep",
-    "phase_13_release_bundle"
+
+  "worktree_audit": {
+    "verified_at_utc": "2026-04-28T00:00:00Z",
+    "active_worktree": "C:/python/project2-master",
+    "active_branch": "phase10/foundation-truth-builder-lane",
+    "branched_from_ref": "origin/main",
+    "branched_from_sha": "8bf1869df7dee06c610e3b2d903782bd6c9d831b",
+    "worktrees_present": [
+      {"path": "C:/Python/project2",        "branch": "phase8.5/dream-curriculum",        "head_sha": "bfa526a",  "rule_12_status": "READ_ONLY_default"},
+      {"path": "C:/Python/project2-a",      "branch": "phase8.5/curiosity-organ",         "head_sha": "2efc4f7",  "rule_12_status": "READ_ONLY_default"},
+      {"path": "C:/Python/project2-b",      "branch": "phase8.5/self-model-layer",        "head_sha": "8478c59",  "rule_12_status": "READ_ONLY_default"},
+      {"path": "C:/Python/project2-d",      "branch": "phase8.5/hive-proposes",           "head_sha": "de8c341",  "rule_12_status": "READ_ONLY_default"},
+      {"path": "C:/Python/project2-flip",   "branch": "phase9/post-campaign-atomic-flip", "head_sha": "8bf1869",  "rule_12_status": "n/a; analysis recommends removal — see docs/journal/2026-04-27_atomic_flip_analysis.md §Disposition"},
+      {"path": "C:/Python/project2-master", "branch": "phase10/foundation-truth-builder-lane", "head_sha": "8bf1869", "rule_12_status": "active_session_worktree"},
+      {"path": "C:/Python/project2-r7_5",   "branch": "phase8.5/vector-chaos",            "head_sha": "322d8b8",  "rule_12_status": "READ_ONLY_default"}
+    ],
+    "no_worktree_created_in_p0": true,
+    "future_worktree_creation_policy": "create only if a section explicitly requires an isolated worktree (e.g., builder lane subprocess per RULE 17, or flip-ready branch per P11)"
+  },
+
+  "git_state": {
+    "remote": "https://github.com/Ahkeratmehilaiset/waggledance-swarm.git",
+    "fetch_completed": true,
+    "main_tip_sha": "8bf1869df7dee06c610e3b2d903782bd6c9d831b",
+    "main_tip_subject": "docs(post-v3.6.0): truthfulness updates (CURRENT_STATUS, CURRENT_STATE, atomic flip prep)",
+    "current_branch": "phase10/foundation-truth-builder-lane",
+    "current_branch_local_sha": "8bf1869df7dee06c610e3b2d903782bd6c9d831b",
+    "current_branch_remote_sha": "not_yet_pushed",
+    "working_tree_clean_modulo_known_untracked": true,
+    "untracked_files_carried_over_from_prior_branch_intentionally_excluded_from_phase10": [
+      "WD_release_to_main_master_prompt.md",
+      "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+      "docs/runs/phase9_pr_body.md"
+    ],
+    "untracked_disposition": "These belong to docs/post-v3.6.0-flip-analysis or earlier work — they will not be added to phase10/foundation-truth-builder-lane.",
+    "release_tags_present": [
+      "v3.6.0", "v3.5.7", "v3.5.6", "v3.5.5", "v3.5.4", "v3.5.3", "v3.5.2", "v3.5.1", "v3.5.0", "v3.4.1"
+    ],
+    "latest_release_tag": "v3.6.0"
+  },
+
+  "truth_discrepancies_found_during_p0": [
+    {
+      "id": "TD-P0-001",
+      "kind": "doc_drift_minor",
+      "claim_in_repo": "CURRENT_STATUS.md line 5 — 'Shipped branch: main at a1c4152'",
+      "actual_state": "origin/main is at 8bf1869 (one commit ahead — the docs/post-v3.6.0 truthfulness commit landed on main after CURRENT_STATUS was written)",
+      "severity": "info",
+      "resolution_section": "P6 — README / state / status / Docker truthfulness",
+      "fail_loud_logged": true
+    }
   ],
-  "phases_pending": [
-    "phase_10_merge (BLOCKED on operator push)",
-    "phase_11_post_merge (BLOCKED on phase_10)"
-  ],
-  "exact_next_commands_for_operator": [
-    "# 1. Push the 6 release-polish commits",
+
+  "phase_dependency_matrix": {
+    "P0": [],
+    "P1": ["P0"],
+    "P2": ["P1"],
+    "P3": ["P2"],
+    "P4": ["P3"],
+    "P5": ["P4"],
+    "P6": ["P2","P4","P5"],
+    "P7": ["P2","P3","P4","P5","P6"],
+    "P8": ["P2","P7"],
+    "P9": ["P8"],
+    "P10": ["P2","P8","P9"],
+    "P11": ["P9","P10"],
+    "P12": ["all_above"]
+  },
+
+  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6","P7","P8","P10","P11"],
+  "phases_in_progress": ["P12"],
+  "phases_pending": [],
+  "phases_blocked": ["P9"],
+
+  "p10_phase8_5_status": {
+    "decision": "READ_ONLY default per RULE 12 — intentionally deferred",
+    "branches_inspected_only": [
+      "phase8.5/vector-chaos",
+      "phase8.5/curiosity-organ",
+      "phase8.5/self-model-layer",
+      "phase8.5/dream-curriculum",
+      "phase8.5/hive-proposes"
+    ],
+    "branches_acted_on": [],
+    "audit_required_action_for_release_path": "none — Phase 10 substrate work does not depend on phase8.5 producer subsystems. They remain follow-up PRs after Phase 10 lands and before Prompt 2 atomic cutover."
+  },
+
+  "p11_atomic_flip_prep": {
+    "executed_cutover": false,
+    "collected_human_approval": false,
+    "merged_flip_pr": false,
+    "files_added": [
+      "docs/architecture/PROMPT_2_ATOMIC_FLIP_REALITY_CORRECTED.md"
+    ],
+    "files_unchanged": [
+      "docs/atomic_flip_prep/00_README.md (the 'no-op for v3.6.0' status block lives on docs/post-v3.6.0-flip-analysis branch; Phase 10 does not reach into another in-flight branch to copy text)",
+      "docs/atomic_flip_prep/01_flip_worktree_setup.md",
+      "docs/atomic_flip_prep/02_pre_flip_checklist.md",
+      "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml.draft (no V2 draft authored — Stage-2 mechanism is MODEL_D_AMBIGUOUS until an RFC defines it)",
+      "docs/atomic_flip_prep/04_flip_review_bundle.md.template",
+      "docs/atomic_flip_prep/05_post_flip_verification.md",
+      "docs/atomic_flip_prep/06_rollback_procedure.md"
+    ],
+    "human_approval_v2_draft_authored": false,
+    "human_approval_v2_reason_for_no_draft": "RULE: V2 needs a defined mechanism; current Stage-2 mechanism is MODEL_D_AMBIGUOUS",
+    "flip_worktree_at_C_python_project2_flip": "exists on branch phase9/post-campaign-atomic-flip @ 8bf1869; recommended for removal per docs/journal/2026-04-27_atomic_flip_analysis.md (no flip-specific commits, MODEL_C means no-op for v3.6.0)",
+    "rule_18_compliance": "no runtime cutover, no HUMAN_APPROVAL collection, no flip PR merge"
+  },
+
+  "p9_status": {
+    "p9_0_gh_auth_state": "logged_in_as_Ahkeratmehilaiset; scopes=gist,read:org,repo,workflow",
+    "p9_1_push_attempt": {
+      "command": "git -C /c/python/project2-master push -u origin phase10/foundation-truth-builder-lane",
+      "outcome": "silently_backgrounded",
+      "stdout_bytes": 0,
+      "remote_branch_exists_after_attempt": false,
+      "verified_via": "git ls-remote origin phase10/foundation-truth-builder-lane → empty",
+      "wait_time_seconds": 10,
+      "diagnosis": "Same documented failure mode as the v3.6.0 release session (see continuation_session_2026_04_27_post_lunch in docs/runs/release_to_main_state_v3.6.0.json). Three plain pushes from the Claude Code shell silently background and produce no output; remote tip does not advance. RULE 3 (no-force-push) was respected — only plain push attempted. RULE P9.1 ONE-PUSH discipline honoured."
+    },
+    "p9_2_through_p9_5": "BLOCKED — cannot create PR / wait CI / merge / tag without push. Per RULE 10 stop-and-handoff: emit exact operator commands, do not improvise."
+  },
+
+  "p9_exact_next_commands_for_operator": [
+    "# Run from your own Git Bash terminal (not from the Claude Code shell):",
     "cd /c/python/project2-master",
-    "git push origin phase9/autonomy-fabric",
     "",
-    "# 2. Wait ~5 minutes for CI to re-run on the new tip",
-    "gh pr checks 51",
-    "# Expect 5/5 SUCCESS at the new head SHA",
+    "# 1. Push the branch",
+    "git push -u origin phase10/foundation-truth-builder-lane",
     "",
-    "# 3. Re-verify mergeability",
-    "gh pr view 51 --json mergeable,mergeStateStatus,headRefOid",
+    "# 2. Wait for CI to fully run on the new tip (expect ~5–10 minutes)",
+    "gh pr create --base main --head phase10/foundation-truth-builder-lane \\",
+    "  --title 'Phase 10 — foundation / truth / builder lane (substrate)' \\",
+    "  --body-file docs/runs/release_bundle_2026_04_28_phase10/release_notes_draft.md",
+    "",
+    "# 3. Confirm CI green at exact head SHA",
+    "EXPECTED_HEAD=$(git rev-parse phase10/foundation-truth-builder-lane)",
+    "echo \"expecting head=$EXPECTED_HEAD\"",
+    "gh pr checks $(gh pr view --json number --jq .number)",
     "",
     "# 4. Squash-merge with head-SHA guard",
-    "EXPECTED_HEAD=$(git rev-parse phase9/autonomy-fabric)",
-    "gh pr merge 51 --squash --match-head-commit=\"$EXPECTED_HEAD\" --subject \"feat(release): Phase 9 — Autonomy Fabric (v3.6.0)\" --body \"$(cat docs/runs/release_notes_draft.md)\"",
+    "PR_NUM=$(gh pr view --json number --jq .number)",
+    "gh pr merge $PR_NUM --squash --match-head-commit=\"$EXPECTED_HEAD\" \\",
+    "  --subject 'feat: Phase 10 substrate (control plane + provider plane + scale-aware Reality View)' \\",
+    "  --body-file docs/runs/release_bundle_2026_04_28_phase10/release_notes_draft.md",
     "",
-    "# 5. Tag and release",
+    "# 5. (Optional) tag — Option B from merge_readiness_checklist.md (prerelease)",
     "git checkout main && git pull",
-    "git tag -a v3.6.0 -m \"Phase 9 — Autonomy Fabric (Release-only; atomic flip deferred to Prompt 2)\"",
-    "git push origin v3.6.0",
-    "gh release create v3.6.0 --title \"v3.6.0 — Phase 9 Autonomy Fabric\" --notes-file docs/runs/release_notes_draft.md --latest",
+    "git tag -a v3.6.1-substrate -m 'Phase 10 — foundation / truth / builder lane substrate'",
+    "git push origin v3.6.1-substrate",
+    "gh release create v3.6.1-substrate \\",
+    "  --title 'v3.6.1-substrate — Phase 10 foundation' \\",
+    "  --notes-file docs/runs/release_bundle_2026_04_28_phase10/release_notes_draft.md \\",
+    "  --prerelease",
     "",
     "# 6. Record outcome",
-    "echo \"<merged_commit_sha>\" > docs/runs/release_bundle_2026_04_27/merged_commit_sha.txt",
-    "echo \"v3.6.0\" > docs/runs/release_bundle_2026_04_27/release_tag.txt"
+    "echo '<merged_commit_sha>' > docs/runs/release_bundle_2026_04_28_phase10/merged_commit_sha.txt"
   ],
-  "no_history_rewrite": true,
-  "no_atomic_flip_in_session": true,
-  "campaign_safety_intact": true,
-  "session_outcome": "Phase 9 release fully prepared locally; merge blocked on a manual `git push` step the operator must run from their own Git Bash. Strategy A's 'stop one step before merge with exact commands' rule is satisfied — see exact_next_commands_for_operator above and docs/runs/release_bundle_2026_04_27/merge_readiness_checklist.md.",
-  "continuation_session_2026_04_27_post_lunch": {
-    "session_kind": "Claude_Code_release_continuation_push_safe",
-    "operator_directive": "Jatka tästä tilasta. Älä käytä --force-pushia. Älä mergeä ennen kuin remote head on varmasti oikea ja checkit vihreitä. Lue ensin olemassa olevat audit- ja state-tiedostot ja käytä niitä source of truthina.",
-    "phase_0_re_check": "branch=phase9/autonomy-fabric, worktree=C:/python/project2-master, gh auth=Ahkeratmehilaiset (repo+workflow), PR #51 OPEN/MERGEABLE/CLEAN, 5/5 CI SUCCESS at remote 3c41a5c",
-    "phase_1_audit_decision": "Read docs/runs/local_only_branch_audit.md. ALL 5 phase8.5 branches = DEFER. Minimum push set = phase9/autonomy-fabric only.",
-    "phase_2_push_attempts": [
-      {"id": "bn2800ahc", "result": "0 bytes output, no remote movement"},
-      {"id": "b3k4tmq20", "result": "0 bytes output, no remote movement (earlier)"},
-      {"id": "b4gzfs57e", "result": "0 bytes output, no remote movement (earlier)"}
+
+  "p8_release_bundle": {
+    "directory": "docs/runs/release_bundle_2026_04_28_phase10/",
+    "files": [
+      "release_summary.md",
+      "release_notes_draft.md",
+      "merge_readiness_checklist.md"
     ],
-    "phase_2_outcome": "Three plain `git push origin phase9/autonomy-fabric` attempts in this Claude Code shell silently backgrounded and produced no output. Remote tip remained 3c41a5c throughout. No --force, --force-with-lease, or filter-* commands used. No-force-push rule respected.",
-    "merge_attempt": "NOT MADE. Per Merge Gating Rule: gate 1 (PR source branch on origin at intended release head) FAILS — origin is 3c41a5c, intended is 3f40f88. Cannot use stale SHA per CRITICAL SHA RULE. Merge would have merged 7 commits behind the local release tip (missing v3.6.0 version bump, README rewrite, atomic flip prep, release bundle).",
-    "no_history_rewrite_2": true,
-    "no_force_push_2": true,
-    "atomic_flip_unchanged": "docs/atomic_flip_prep/ verified present with 7 files; not modified (still local-only, no execution paths)"
+    "branch_tip_at_p8_close": "8cd33a2",
+    "commits_ahead_of_origin_main": 8,
+    "tag_decision": "Option A (no new tag) preferred — substrate framing; PR-only merge to main"
   },
-  "continuation_instructions": "When the operator returns: run the 6 commands listed in exact_next_commands_for_operator from their own Git Bash (NOT the Claude Code shell — git push silently backgrounds there and does not complete). Each step verifies the previous succeeded before proceeding. If gh pr merge fails citing branch protection, follow the Risk 6 mitigation in release_bundle_2026_04_27/release_risk_register.md."
+
+  "p7_test_results": {
+    "total_phase10_targeted": "72 passed, 1 skipped (HUMAN_APPROVAL on docs/post-v3.6.0-flip-analysis branch, brought forward in P11) in 5.19s",
+    "by_module": {
+      "tests/storage/": "21 passed (control_plane + path_resolver)",
+      "tests/providers/": "18 passed (contracts + plane + claude_code_builder + queue + forges)",
+      "tests/solver_synthesis/": "12 passed (throttler + family_specs + llm_generator + bootstrap orchestrator)",
+      "tests/ui_hologram/": "8 passed (scale_aware_aggregator)",
+      "tests/phase10/": "13 passed, 1 skipped (truth/regression/license/no-leak)"
+    },
+    "rule_7_compliance": "Targeted-only — full repository suite NOT run (per RULE 7 docs-only sections use targeted tests; no runtime hot-path mutation)",
+    "rule_7_categories_covered": [
+      "1 storage truth classification (path_resolver drop-in compat + control_plane FK enforcement)",
+      "2 control-plane DB schema creation/migration (canonical tables + idempotent migrate)",
+      "3 path_resolver deterministic resolution (override -> control_plane -> default precedence)",
+      "5 provider plane registry (control-plane integration)",
+      "6 builder lane dry-run / disabled-provider (no_credentials -> dry_run_stub)",
+      "7 Claude Code builder invocation logging (JSONL log written)",
+      "8 mentor output remains advisory (locked by API surface)",
+      "9 declarative family compile (high-confidence U1 path)",
+      "10 U1->U3 escalation routing (low + middle band)",
+      "11 U3 dry-run synthesis validation (parse_status='dry_run')",
+      "12 solver registry scalability smoke test (50k solvers verified)",
+      "13 reality view truthful unavailable-state",
+      "14 reality view aggregation / virtualization contract (no per-solver lists at 500)",
+      "15 README truthfulness regression",
+      "17 approval invalidation / supersession (skipped on this branch; P11 brings forward)",
+      "18 Prompt 2 corrected contract presence",
+      "19 no-force / no-rewrite respected (linear descent from origin/main)",
+      "20 cutover model classification document presence",
+      "21 MODEL_C: no-op documentation",
+      "25 no absolute path leakage in journal/release docs",
+      "26 no secret leakage in P10 crown-jewel files",
+      "27 LICENSE-CORE.md covers all P10 crown-jewel files (19 files)",
+      "28 provider invocations log + error log present and non-empty"
+    ]
+  },
+
+  "p6_deliverables": {
+    "files_edited": [
+      "CURRENT_STATUS.md (updated date 2026-04-28; main SHA a1c4152 -> 8bf1869; added Phase 10 in-flight section)",
+      "README.md (version badge updated; new Phase 10 section before Phase 9; tests-badge updated to 657 + 59 Phase 10)",
+      "CHANGELOG.md (added [Unreleased — Phase 10] entry above [3.6.0])",
+      "docs/architecture/MAGMA_FAISS_SCALING.md (§0 vector_events producer-status nuance: tools ARE producers, autonomy runtime is not)"
+    ],
+    "files_audited_no_change": [
+      "Dockerfile (already truthful per Phase 9 docker review; two-entry-point reality remains honestly documented)",
+      "docker-compose.yml (truthful)",
+      "start_waggledance.py / waggledance/adapters/cli/start_runtime.py (the two entry points referenced by Dockerfile and compose are real and present)"
+    ],
+    "code_changes": "none — P6 is docs-only",
+    "no_license_core_update_needed": "no new crown-jewel files in P6"
+  },
+
+  "p5_deliverables": {
+    "code_modules": ["waggledance/ui/hologram/scale_aware_aggregator.py"],
+    "doc": "docs/architecture/REALITY_VIEW_TRUTH_AND_SCALE.md",
+    "license_update": "LICENSE-CORE.md (added 1 P5 protected file, Change Date 2030-12-31)",
+    "tests_added": [
+      "tests/ui_hologram/__init__.py",
+      "tests/ui_hologram/test_scale_aware_aggregator.py"
+    ],
+    "test_results": "8/8 passed in 2.73s",
+    "phase9_reality_view_unchanged": true,
+    "verdict": "Phase 9 11-panel + never-fabricate invariant carried forward; Phase 10 adds a scale-aware aggregator that produces solver_family_summary + cell_topology + builder_lane_status + provider_queue_summary panels from the control plane",
+    "scale_invariants": [
+      "no one-node-per-solver at scale (verified at 500 solvers in test)",
+      "truncation marker explicit when item cap reached",
+      "aggregator never writes to control plane",
+      "missing source returns available=false with structured rationale, not a placeholder"
+    ]
+  },
+
+  "p4_deliverables": {
+    "code_modules": [
+      "waggledance/core/solver_synthesis/cold_shadow_throttler.py",
+      "waggledance/core/solver_synthesis/llm_solver_generator.py",
+      "waggledance/core/solver_synthesis/solver_bootstrap.py",
+      "waggledance/core/solver_synthesis/family_specs/__init__.py"
+    ],
+    "doc": "docs/architecture/SOLVER_BOOTSTRAP_AND_SYNTHESIS.md",
+    "license_update": "LICENSE-CORE.md (added 4 P4 protected files, Change Date 2030-12-31)",
+    "tests_added": [
+      "tests/solver_synthesis/__init__.py",
+      "tests/solver_synthesis/test_solver_bootstrap.py"
+    ],
+    "test_results": "12/12 P4 tests pass; 51/51 across P2+P3+P4 in 2.14s",
+    "phase9_unchanged": "All Phase 9 solver_synthesis modules + schemas unchanged. Phase 10 composes; does not duplicate.",
+    "u1_u3_escalation_rule": "RULE 15 family-first growth: high_conf >= 0.8 → U1 declarative; mid 0.5–0.8 → U1 attempt with U3 fallback on validation failure; low < 0.5 → U3 free-form via provider plane",
+    "throttle_lanes": "cold (default cap=10, refill=1/s) and shadow (cap=50, refill=5/s) with global max_in_flight=32",
+    "scalability_target": "10k+ candidates/family unattended; control-plane scale verified at 50k solvers in P2 tests"
+  },
+
+  "phase10_extension_to_phase9_provider_request_schema": "Optional 'section' and 'purpose' fields are stripped before Phase 9 schema validation (additionalProperties:false) and preserved on the ProviderRequest dataclass. Wire format unchanged.",
+
+  "p3_deliverables": {
+    "code_modules": [
+      "waggledance/core/providers/__init__.py",
+      "waggledance/core/providers/provider_contracts.py",
+      "waggledance/core/providers/provider_registry.py",
+      "waggledance/core/providers/provider_plane.py",
+      "waggledance/core/providers/claude_code_builder.py",
+      "waggledance/core/providers/builder_job_queue.py",
+      "waggledance/core/providers/builder_lane_router.py",
+      "waggledance/core/providers/mentor_forge.py",
+      "waggledance/core/providers/repair_forge.py"
+    ],
+    "doc": "docs/architecture/PROVIDER_PLANE_AND_BUILDER_LANES.md",
+    "license_update": "LICENSE-CORE.md (added 9 P3 protected files, Change Date 2030-12-31)",
+    "tests_added": [
+      "tests/providers/__init__.py",
+      "tests/providers/test_provider_contracts.py",
+      "tests/providers/test_provider_plane.py"
+    ],
+    "test_results": "18/18 passed in 0.64s",
+    "rule_17_compliance": "Claude Code builder is the only authorised subprocess; isolated worktree only, bounded timeout (default 600s, hard ceiling 7200s), JSONL invocation log, dry-run fallback when CLI absent",
+    "rule_8_compliance": "Provider invocations recorded in control_plane.provider_jobs with section/purpose/cost; logged in docs/runs/provider_invocations.jsonl",
+    "credential_policy": "missing keys disable only that provider; dry_run_stub adapter is always available so the plane is exercisable without credentials (RULE 9)",
+    "mentor_advisory_boundary_enforced_at_api_surface": true,
+    "schema_files_used": [
+      "schemas/provider_request.schema.json (Phase 9, unchanged)",
+      "schemas/provider_response.schema.json (Phase 9, unchanged)"
+    ]
+  },
+
+  "p2_deliverables": {
+    "code_modules": [
+      "waggledance/core/storage/__init__.py",
+      "waggledance/core/storage/control_plane_schema.py",
+      "waggledance/core/storage/control_plane.py",
+      "waggledance/core/storage/path_resolver.py",
+      "waggledance/core/storage/registry_queries.py"
+    ],
+    "doc": "docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md",
+    "license_update": "LICENSE-CORE.md (added v3.6.x / Phase 10 protected files section, Change Date 2030-12-31)",
+    "tests_added": [
+      "tests/storage/__init__.py",
+      "tests/storage/test_control_plane.py",
+      "tests/storage/test_path_resolver.py"
+    ],
+    "test_results": "21/21 passed in 0.98s",
+    "schema_version": 1,
+    "tables_created": 16,
+    "scale_smoke_test": "50k solvers insert+count+lookup verified within bounds",
+    "rule_6_compliance": "all 5 crown-jewel files have BUSL-1.1 + Change Date 2030-12-31 headers; LICENSE-CORE.md updated in same commit"
+  },
+
+  "cutover_model_classification": {
+    "v3_6_0_shipped_behavior": "MODEL_C_NOOP_ALREADY_COMPLETE",
+    "future_stage2_flip_mechanism": "MODEL_D_AMBIGUOUS",
+    "rationale_summary": "v3.6.0 default settings already point at the post-cutover runtime (runtime_primary=waggledance, compatibility_mode=False); migration is purely additive; data/vector/ is dormant; no current/ symlinks exist; no runtime branch on cutover_state. Future Stage-2 flip mechanism is not specified at code level — RFC needed.",
+    "primary_audit_doc": "docs/journal/2026-04-28_cutover_model_classification.md",
+    "supporting_truth_doc": "docs/journal/2026-04-28_storage_runtime_truth.md",
+    "supersedes_in_scope_of_classification": "docs/journal/2026-04-27_atomic_flip_analysis.md (still valid; this audit extends and formally classifies)",
+    "key_evidence": [
+      "core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss (runtime read path)",
+      "waggledance/bootstrap/container.py:335-338 FaissRegistry() default base_dir",
+      "data/vector/ runtime references: only magma/vector_events.py:241 DEFAULT_EVENT_LOG (dormant)",
+      "data/faiss_staging/ + faiss_delta_ledger/: zero runtime hits in core/ or waggledance/",
+      "grep os.symlink over repo: 0 hits (no current/ symlink mechanism)",
+      "grep cutover_state over repo: 0 hits (no runtime branch on cutover state)",
+      "tests/autonomy/test_runtime_cutover_config.py:78-79 default runtime_primary=waggledance",
+      "tools/migrate_to_vector_root.py:7-9 explicit 'physical switchover is a separate reviewed commit'"
+    ]
+  },
+
+  "p1_substrate_gaps_for_p2": [
+    "Path resolver / vector store registry: ABSENT in waggledance/ (runtime hard-codes via _DEFAULT_FAISS_DIR)",
+    "Control-plane DB for solver/family/cell metadata: ABSENT (each subsystem invents own JSON or SQLite shape)",
+    "MAGMA append-only enforcement: convention only — no SQLite triggers, no PRAGMA query_only, raw _conn shared across AuditLog / ProvenanceTracker / TrustEngine"
+  ],
+
+  "p1_doc_corrections_for_p6": [
+    "docs/architecture/MAGMA_FAISS_SCALING.md §0 'no runtime producer yet': narrow truth — applies to in-process autonomy runtime, BUT tools/vector_indexer.py:613 and tools/backfill_axioms_to_hex.py:472 ARE producers today",
+    "CURRENT_STATUS.md:5-6 main=a1c4152 → actual main=8bf1869"
+  ],
+
+  "provider_budget_consumption": {
+    "claude_code_builder_invocations": {"P0": 0, "limit_per_section": 3},
+    "anthropic_api_calls":              {"P0": 0, "limit_per_section": 20},
+    "gpt_openai_api_calls":             {"P0": 0, "limit_per_section": 10},
+    "triangulated_multi_provider":      {"P0": 0, "limit_per_section": 2},
+    "logged_to": "docs/runs/provider_invocations.jsonl"
+  },
+
+  "phase8_5_isolation": {
+    "default_behavior": "READ_ONLY (RULE 12)",
+    "branches_marked_for_action_in_this_session": [],
+    "intentionally_deferred": [
+      "phase8.5/vector-chaos",
+      "phase8.5/curiosity-organ",
+      "phase8.5/self-model-layer",
+      "phase8.5/dream-curriculum",
+      "phase8.5/hive-proposes"
+    ],
+    "deferred_reason": "Phase 10 prompt is foundation/truth/builder-lane work; phase8.5 producer subsystems remain follow-up PRs scheduled after Phase 10 lands and before Prompt 2 atomic cutover."
+  },
+
+  "atomic_flip_position": {
+    "executes_cutover_in_this_session": false,
+    "collects_human_approval_in_this_session": false,
+    "merges_flip_pr_in_this_session": false,
+    "may_correct_prep_artifacts": true,
+    "rule_18_active": true,
+    "prior_approval_status": "SUPERSEDED — see docs/atomic_flip_prep/HUMAN_APPROVAL.yaml header note and docs/journal/2026-04-27_atomic_flip_analysis.md"
+  },
+
+  "exact_next_commands_for_operator_if_blocked": "n/a — P0 complete, P1 starting in same session",
+  "continuation_instructions": "Phase 10 session is autonomous per RULE 0. If a fatal blocker is hit, this state file will be updated with exact_next_commands_for_operator_if_blocked and a stop-and-handoff per RULE 10."
 }

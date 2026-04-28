@@ -1,0 +1,93 @@
+{
+  "session": "post_phase10_finalize_truth_rfc_governance",
+  "session_started_at_utc": "2026-04-28T13:00:00Z",
+  "operator_directive": "Take the repository from 'Phase 10 merged, but post-merge truth/governance/RFC cleanup still missing' to a clean, truthful, reviewable, well-documented post-Phase-10 state, autonomously, without executing the atomic flip.",
+  "session_mode": "post_merge_finalization_docs_governance_rfc",
+  "prior_session_archived_at": "docs/runs/release_to_main_state.json",
+
+  "model_selection": {
+    "primary_model": "claude-opus-4-7",
+    "model_id_resolved": "claude-opus-4-7",
+    "model_selection_source": "system_environment_block_powered_by_opus_4_7",
+    "subagent_model": "inherited_opus_4_7",
+    "fallback_policy": "log_and_continue_record_event",
+    "fallback_events": []
+  },
+
+  "rule_compliance": {
+    "rule_1_pr_only_no_direct_main_push": "active",
+    "rule_2_no_force_no_history_rewrite": "active",
+    "rule_3_no_stale_sha_merge": "active",
+    "rule_4_no_atomic_flip_no_human_approval_collected": "active",
+    "rule_5_magma_faiss_truth_first": "active",
+    "rule_6_phase8_5_read_only": "active",
+    "rule_7_targeted_pytest_only": "active",
+    "rule_8_provider_budget_per_section": "active",
+    "rule_9_stop_and_handoff_at_step5": "armed",
+    "rule_10_push_verification_15s_x_180s": "active",
+    "rule_11_autonomous_merge_only_if_head_match_and_ci_green": "active",
+    "rule_12_domain_neutral_language": "active"
+  },
+
+  "git_state_at_session_start": {
+    "remote": "https://github.com/Ahkeratmehilaiset/waggledance-swarm.git",
+    "origin_main_sha": "08b7e8c6ea589e699a7fb8d0cb600332aaec12d5",
+    "origin_main_subject": "feat: Phase 10 substrate (control plane + provider plane + scale-aware Reality View)",
+    "phase10_pr": {
+      "number": 54,
+      "state": "MERGED",
+      "merged_at_utc": "2026-04-28T12:14:15Z",
+      "merge_commit": "08b7e8c6ea589e699a7fb8d0cb600332aaec12d5",
+      "head_branch_pre_squash_tip": "24ef97ea7d42e56a9575b0dd658832a23099a7fb"
+    },
+    "open_prs_relevant": [
+      {"number": 53, "title": "docs(post-v3.6.0): atomic flip analysis — flip is no-op for v3.6.0", "head": "docs/post-v3.6.0-flip-analysis", "disposition_in_this_session": "supersede after this PR lands; valid content brought forward"}
+    ],
+    "tags_present_latest": "v3.6.0",
+    "tag_v3_6_1_substrate_present": false
+  },
+
+  "working_branch": "post-phase10/finalize-truth-rfc-governance",
+  "branched_from": "origin/main @ 08b7e8c6ea589e699a7fb8d0cb600332aaec12d5",
+
+  "post_merge_truth_drift_detected": [
+    {"id": "PMD-001", "file": "README.md", "drift": "Phase 10 section labelled 'in flight'; version badge shows 'Phase 10 in flight'", "fix": "rephrase to landed-on-main with PR #54 + squash 08b7e8c"},
+    {"id": "PMD-002", "file": "CURRENT_STATUS.md", "drift": "main shown at 8bf1869 (pre-Phase-10) and Phase 10 listed as 'in flight'", "fix": "main now at 08b7e8c; Phase 10 = landed on main via PR #54"},
+    {"id": "PMD-003", "file": "CURRENT_STATE.md", "drift": "auto-generated against pre-Phase-10 state (commit a1c4152 on feature/post-v3.6.0-truthfulness)", "fix": "annotate as snapshot from earlier; do not re-generate (auto-generator output)"},
+    {"id": "PMD-004", "file": "CHANGELOG.md", "drift": "[Unreleased — Phase 10] header still says Unreleased even though Phase 10 substrate landed on main", "fix": "convert to released-as-substrate entry with PR #54 + squash SHA, do not invent a new SemVer tag yet"},
+    {"id": "PMD-005", "file": "docs/runs/release_to_main_state.json", "drift": "phases_blocked includes P9 with 'silently_backgrounded push'; no longer true post-merge", "fix": "archive prior session state record; this new session writes its own state in docs/runs/post_phase10_finalize_2026_04_28/"},
+    {"id": "PMD-006", "file": "docs/runs/release_bundle_2026_04_28_phase10/release_summary.md", "drift": "describes branch tip 8cd33a2 + 'merged_commit_sha not yet known'", "fix": "add post-merge addendum with PR #54 + squash 08b7e8c + merged_at"},
+    {"id": "PMD-007", "file": "docs/runs/release_bundle_2026_04_28_phase10/merge_readiness_checklist.md", "drift": "rows 13-17 marked PENDING; option A vs option B undecided", "fix": "addendum: rows 13-17 satisfied by PR #54 squash; tag decision deferred to a follow-up"},
+    {"id": "PMD-008", "file": "docs/atomic_flip_prep/00_README.md", "drift": "no SUPERSEDED status block; the supersession content lives on unmerged docs/post-v3.6.0-flip-analysis branch (PR #53)", "fix": "bring forward the SUPERSEDED status header in this PR"},
+    {"id": "PMD-009", "file": "docs/journal/", "drift": "main references docs/journal/2026-04-27_atomic_flip_analysis.md from multiple places, but the file lives only on docs/post-v3.6.0-flip-analysis branch", "fix": "bring forward the analysis journal in this PR"}
+  ],
+
+  "supersession_decisions": {
+    "pr_53_disposition": "Will be closed/superseded after this PR merges. Valid content (atomic flip analysis journal, 00_README header, SUPERSEDED HUMAN_APPROVAL.yaml audit artifact, APPROVAL_SHA256) is brought forward.",
+    "human_approval_yaml_disposition": "Brought forward AS AUDIT ARTIFACT ONLY. The file's header explicitly says SUPERSEDED — DO NOT EXECUTE. This is preservation of past truth, not collection of fresh approval. RULE 4 (do not collect HUMAN_APPROVAL) is respected because no new approval is being signed in this session."
+  },
+
+  "phase_dependency": {
+    "P0": [], "P1": ["P0"], "P2": ["P1"], "P3": ["P2"], "P4": ["P3"], "P5": ["P4"], "P6": ["P2","P3","P4","P5"], "P7": ["P1","P2","P3","P4","P5","P6"], "P8": ["P7"], "P9": ["P7","P8"]
+  },
+
+  "phases_completed": ["P0"],
+  "phases_in_progress": ["P1"],
+  "phases_pending": ["P2","P3","P4","P5","P6","P7","P8","P9"],
+
+  "untracked_files_at_session_start": {
+    "WD_release_to_main_master_prompt.md": "operator prompt artifact from prior session — left untracked",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml": "unsigned draft copy left from prior session — left untracked; RULE 4 prohibits collecting approval; no edits made",
+    "docs/runs/phase9_pr_body.md": "stale PR body draft from Phase 9 — left untracked",
+    "docs/runs/release_bundle_2026_04_28_phase10/merged_commit_sha.txt": "single-line file with the actual squash SHA 08b7e8c — will be added in this session as truthful post-merge record"
+  },
+
+  "provider_budget_consumption": {
+    "claude_code_builder_invocations": {"P0": 0, "limit_per_section": 3},
+    "anthropic_api_calls": {"P0": 0, "limit_per_section": 20},
+    "gpt_openai_api_calls": {"P0": 0, "limit_per_section": 10},
+    "triangulated_multi_provider": {"P0": 0, "limit_per_section": 2}
+  },
+
+  "exact_next_commands_for_operator_if_blocked": "n/a — P0 complete, P1 starting in same session"
+}

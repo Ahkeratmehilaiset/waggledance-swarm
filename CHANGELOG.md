@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Unreleased — Phase 10 Foundation, Truth, Builder Lane] — 2026-04-28
+## [Phase 10 substrate — landed on main, no SemVer tag] — 2026-04-28
 
-Branch: `phase10/foundation-truth-builder-lane`. Substrate work on top of v3.6.0. Six commits:
+Branch: `phase10/foundation-truth-builder-lane` (pre-squash tip `24ef97e`). Substrate work on top of v3.6.0. Squash-merged to `main` via [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) at 2026-04-28T12:14:15Z as commit `08b7e8c`. No new SemVer tag minted because Phase 10 adds substrate, not runtime hot-path behaviour change. An optional `v3.6.1-substrate` prerelease tag may be created when post-merge truth/governance are clean. Eight commits collapsed into one squash commit:
 
 - `chore(state)` — bootstrap Phase 10 state, archive prior v3.6.0 state, init structured logs (`provider_invocations.jsonl`, `error_log.jsonl`).
 - `docs(audit)` — storage / runtime / cutover truth audit. New: `docs/journal/2026-04-28_storage_runtime_truth.md`, `docs/journal/2026-04-28_cutover_model_classification.md`. Verdict: `MODEL_C_NOOP_ALREADY_COMPLETE` for v3.6.0; future Stage-2 = `MODEL_D_AMBIGUOUS`.
@@ -11,7 +11,7 @@ Branch: `phase10/foundation-truth-builder-lane`. Substrate work on top of v3.6.0
 - `feat(synthesis)` — `solver_synthesis/cold_shadow_throttler.py`, `llm_solver_generator.py`, `solver_bootstrap.py`, `family_specs/`. U1→U3 escalation orchestrator with throttling + control-plane sync. Phase 9 declarative pipeline + JSON schemas unchanged.
 - `feat(reality)` — `ui/hologram/scale_aware_aggregator.py`. Aggregated panels (solver_family_summary, cell_topology, builder_lane_status, provider_queue_summary) from the control plane. Phase 9 11-panel Reality View + never-fabricate invariant unchanged.
 
-Tests: 59 new targeted tests (51 storage/provider/synthesis + 8 reality-view scale), all green. No runtime hot-path mutation. Atomic flip remains a separate Prompt 2 risk domain.
+Tests at squash time: 72 new targeted tests (51 storage/provider/synthesis + 8 reality-view scale + 13 truth/regression/no-leak), all green. No runtime hot-path mutation. Atomic flip remains a separate Prompt 2 risk domain — now formally specified in `docs/architecture/STAGE2_CUTOVER_RFC.md`.
 
 Doc corrections in this branch:
 - `CURRENT_STATUS.md` — main SHA corrected from `a1c4152` to `8bf1869` (post-v3.6.0 truthfulness commit).

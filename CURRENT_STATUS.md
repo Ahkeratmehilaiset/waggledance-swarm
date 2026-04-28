@@ -1,25 +1,27 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-04-28
-**Version:** v3.6.0 shipped + Phase 10 foundation work in flight on `phase10/foundation-truth-builder-lane`
-**Shipped branch:** `main` at `8bf1869` (post-v3.6.0 truthfulness commit on top of `a1c4152` PR #51 squash)
-**Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0)
+**Version:** v3.6.0 shipped + Phase 10 substrate landed on `main`
+**Shipped branch:** `main` at `08b7e8c` (Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) on top of `8bf1869` post-v3.6.0 truthfulness commit on top of `a1c4152` PR #51 squash)
+**Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0) — no new SemVer tag for Phase 10 (substrate, not runtime behaviour change). An optional `v3.6.1-substrate` prerelease tag may be added once post-merge truth/governance are clean.
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
 
-### Phase 10 — Foundation, Truth, Builder Lane (in flight, 2026-04-28)
+### Phase 10 — Foundation, Truth, Builder Lane (landed on main 2026-04-28T12:14:15Z)
 
-Working branch `phase10/foundation-truth-builder-lane` adds a substrate layer on top of the v3.6.0 release. Six commits to date:
+Phase 10 substrate landed via [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) (squash commit `08b7e8c`) after green CI. Branch `phase10/foundation-truth-builder-lane` (pre-squash tip `24ef97e`). Eight phases collapsed into one squash commit on `main`:
 
 * **P0** — bootstrap reality + state file
-* **P1** — storage / runtime / cutover truth audit (`docs/journal/2026-04-28_storage_runtime_truth.md` + `docs/journal/2026-04-28_cutover_model_classification.md`). Formal classification: v3.6.0 = `MODEL_C_NOOP_ALREADY_COMPLETE`; future Stage-2 flip = `MODEL_D_AMBIGUOUS` until an RFC defines the mechanism.
+* **P1** — storage / runtime / cutover truth audit (`docs/journal/2026-04-28_storage_runtime_truth.md` + `docs/journal/2026-04-28_cutover_model_classification.md`). Formal classification: v3.6.0 = `MODEL_C_NOOP_ALREADY_COMPLETE`; future Stage-2 flip = `MODEL_D_AMBIGUOUS` until an RFC defines the mechanism (now closed by `docs/architecture/STAGE2_CUTOVER_RFC.md`).
 * **P2** — scale-safe control-plane / data-plane foundation (`waggledance/core/storage/`, 16-table SQLite control plane, path resolver with override + control-plane binding + static default precedence, drop-in compatible with the legacy `_DEFAULT_FAISS_DIR`).
 * **P3** — provider plane execution layer (`waggledance/core/providers/`, JSON-schema-validated dispatch, `ClaudeCodeBuilder` subprocess lane with dry-run fallback, mentor-output advisory boundary enforced at the API surface).
 * **P4** — solver bootstrap / synthesis foundation (`solver_synthesis/cold_shadow_throttler.py`, `llm_solver_generator.py`, `solver_bootstrap.py` orchestrator, `family_specs/`).
 * **P5** — Reality View scale-aware aggregator (`ui/hologram/scale_aware_aggregator.py`, no per-solver lists at scale, control-plane-driven aggregations).
+* **P6–P7** — README / CURRENT_STATUS / CHANGELOG / MAGMA truth fixes; targeted truth / regression / no-leak tests.
+* **P8** — release bundle + merge readiness checklist + release notes draft.
 
-All P2–P5 protected files use Change Date 2030-12-31 per Phase 10 RULE 6 (`LICENSE-CORE.md` updated). Phase 8.5 branches remain READ-ONLY per Phase 10 RULE 12. Atomic flip is **not executed** in this work — it remains a separate Prompt 2 risk domain (Phase 10 RULE 18).
+All P2–P5 protected files use Change Date 2030-12-31 per Phase 10 RULE 6 (`LICENSE-CORE.md` updated). Phase 8.5 branches remain READ-ONLY per Phase 10 RULE 12. Atomic flip is **not executed** by Phase 10 — it remains a separate Prompt 2 risk domain (Phase 10 RULE 18) and is now formally specified in [`docs/architecture/STAGE2_CUTOVER_RFC.md`](docs/architecture/STAGE2_CUTOVER_RFC.md).
 
-**Phase 10 test counts (added):** 51 control-plane / provider / synthesis tests + 8 Reality-View scale tests = 59 new targeted tests, all green.
+**Phase 10 test counts (landed):** 51 control-plane / provider / synthesis tests + 8 Reality-View scale tests + 13 truth / regression tests = 72 new targeted tests, all green at squash time.
 
 ### Latest release — v3.6.0 Phase 9 Autonomy Fabric (review-only)
 

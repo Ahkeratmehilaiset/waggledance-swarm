@@ -14,11 +14,11 @@
 | 10 | Phase 8.5 branches not touched | ✅ | RULE 12 honoured; `release_to_main_state.json::phase8_5_isolation` confirms |
 | 11 | Atomic flip not executed | ✅ | RULE 18; no runtime mutation in any commit |
 | 12 | No `git push --force` / `--force-with-lease` / filter-* attempted | ✅ | RULE 3; no destructive git ops in this session |
-| 13 | Branch pushed to origin | ⏳ | P9.1 — pending |
-| 14 | PR created or updated with truthful body | ⏳ | P9.2 — pending |
-| 15 | CI green at exact branch tip SHA | ⏳ | P9.3 — pending |
-| 16 | Squash-merge with `--match-head-commit` guard | ⏳ | P9.4 — pending |
-| 17 | Tag and GitHub release | ⏳ | P9.5 — pending; tag name TBD (post-v3.6.0 substrate; may not warrant a new SemVer tag — see release_summary.md) |
+| 13 | Branch pushed to origin | ✅ | resolved post-session — branch reached `origin/phase10/foundation-truth-builder-lane @ 24ef97e` |
+| 14 | PR created or updated with truthful body | ✅ | PR #54 created against base `main`, head `phase10/foundation-truth-builder-lane` |
+| 15 | CI green at exact branch tip SHA | ✅ | required checks green at `24ef97e` before squash-merge |
+| 16 | Squash-merge with `--match-head-commit` guard | ✅ | squash-merged 2026-04-28T12:14:15Z; mergeCommit `08b7e8c6ea589e699a7fb8d0cb600332aaec12d5` |
+| 17 | Tag and GitHub release | ⏳ | **Option A** chosen at squash time (no new SemVer tag). Optional `v3.6.1-substrate` prerelease tag deferred to the follow-up post-phase10 finalization PR |
 
 ## Decision: tag this work or not?
 

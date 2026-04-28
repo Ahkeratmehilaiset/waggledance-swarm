@@ -106,9 +106,21 @@
     "P12": ["all_above"]
   },
 
-  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6","P7"],
-  "phases_in_progress": ["P8"],
-  "phases_pending": ["P9","P10","P11","P12"],
+  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6","P7","P8"],
+  "phases_in_progress": ["P9"],
+  "phases_pending": ["P10","P11","P12"],
+
+  "p8_release_bundle": {
+    "directory": "docs/runs/release_bundle_2026_04_28_phase10/",
+    "files": [
+      "release_summary.md",
+      "release_notes_draft.md",
+      "merge_readiness_checklist.md"
+    ],
+    "branch_tip_at_p8_close": "8cd33a2",
+    "commits_ahead_of_origin_main": 8,
+    "tag_decision": "Option A (no new tag) preferred — substrate framing; PR-only merge to main"
+  },
 
   "p7_test_results": {
     "total_phase10_targeted": "72 passed, 1 skipped (HUMAN_APPROVAL on docs/post-v3.6.0-flip-analysis branch, brought forward in P11) in 5.19s",

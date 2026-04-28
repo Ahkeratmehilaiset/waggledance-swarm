@@ -46,9 +46,10 @@ Original §4 stands with one addition:
 
 ## What Phase 10 P11 changed in the prep directory
 
-* No edits to `00_README.md`, `01_flip_worktree_setup.md`, `02_pre_flip_checklist.md`, `04_flip_review_bundle.md.template`, `05_post_flip_verification.md`, or `06_rollback_procedure.md`. The structural templates are correct and survive the classification correction.
-* The 2026-04-27 atomic flip analysis (`docs/journal/2026-04-27_atomic_flip_analysis.md`) is referenced from the new `00_README.md` "no-op for v3.6.0" status block — that block lives on `docs/post-v3.6.0-flip-analysis` and will be brought to `main` whenever that branch's PR lands. P11 in Phase 10 does NOT reach into another in-flight branch to copy text — that would be RULE 12-adjacent and confusing. The classification doc + this corrections doc together close the gap on phase10.
-* No `HUMAN_APPROVAL_V2.yaml.draft` is authored. RULE: V2 needs a defined mechanism; mechanism is currently `MODEL_D_AMBIGUOUS`.
+* No edits to `01_flip_worktree_setup.md`, `02_pre_flip_checklist.md`, `04_flip_review_bundle.md.template`, `05_post_flip_verification.md`, or `06_rollback_procedure.md`. The structural templates are correct and survive the classification correction.
+* `00_README.md` carries a SUPERSEDED status block at its head (brought forward from `docs/post-v3.6.0-flip-analysis` in the post-Phase-10 finalization PR — that branch's PR #53 was superseded by it).
+* The 2026-04-27 atomic flip analysis (`docs/journal/2026-04-27_atomic_flip_analysis.md`) and the SUPERSEDED `docs/atomic_flip_prep/HUMAN_APPROVAL.yaml` audit artifact (with its `APPROVAL_SHA256.txt` pin) are now on `main`, brought forward in the same finalization PR. They are preserved verbatim for audit; the YAML's header explicitly says `*** SUPERSEDED — DO NOT EXECUTE ***` and bringing it forward is preservation, not collection.
+* No fresh `HUMAN_APPROVAL_V2.yaml.draft` is authored. RULE: V2 needs a defined mechanism. The mechanism is now specified in [`docs/architecture/STAGE2_CUTOVER_RFC.md`](STAGE2_CUTOVER_RFC.md), but a V2 approval template is still deferred to the actual Prompt 2 execution session — approval is one-shot and belongs to that session, not to design/build sessions.
 
 ## What Prompt 2 must explicitly NOT do
 

@@ -106,9 +106,25 @@
     "P12": ["all_above"]
   },
 
-  "phases_completed": ["P0","P1","P2","P3","P4","P5"],
-  "phases_in_progress": ["P6"],
-  "phases_pending": ["P7","P8","P9","P10","P11","P12"],
+  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6"],
+  "phases_in_progress": ["P7"],
+  "phases_pending": ["P8","P9","P10","P11","P12"],
+
+  "p6_deliverables": {
+    "files_edited": [
+      "CURRENT_STATUS.md (updated date 2026-04-28; main SHA a1c4152 -> 8bf1869; added Phase 10 in-flight section)",
+      "README.md (version badge updated; new Phase 10 section before Phase 9; tests-badge updated to 657 + 59 Phase 10)",
+      "CHANGELOG.md (added [Unreleased — Phase 10] entry above [3.6.0])",
+      "docs/architecture/MAGMA_FAISS_SCALING.md (§0 vector_events producer-status nuance: tools ARE producers, autonomy runtime is not)"
+    ],
+    "files_audited_no_change": [
+      "Dockerfile (already truthful per Phase 9 docker review; two-entry-point reality remains honestly documented)",
+      "docker-compose.yml (truthful)",
+      "start_waggledance.py / waggledance/adapters/cli/start_runtime.py (the two entry points referenced by Dockerfile and compose are real and present)"
+    ],
+    "code_changes": "none — P6 is docs-only",
+    "no_license_core_update_needed": "no new crown-jewel files in P6"
+  },
 
   "p5_deliverables": {
     "code_modules": ["waggledance/ui/hologram/scale_aware_aggregator.py"],

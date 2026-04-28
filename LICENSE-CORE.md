@@ -73,6 +73,9 @@ Solver bootstrap orchestration (P4 — U1→U3 escalation, throttler, LLM lane):
 - `waggledance/core/solver_synthesis/solver_bootstrap.py`
 - `waggledance/core/solver_synthesis/family_specs/__init__.py`
 
+Reality View scale-aware aggregator (P5):
+- `waggledance/ui/hologram/scale_aware_aggregator.py`
+
 ## Default rule
 
 Any source file not listed above is licensed under Apache License 2.0 unless that file itself carries a BUSL-1.1 SPDX header.

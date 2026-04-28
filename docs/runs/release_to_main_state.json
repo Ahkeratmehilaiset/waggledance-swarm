@@ -106,9 +106,28 @@
     "P12": ["all_above"]
   },
 
-  "phases_completed": ["P0","P1","P2","P3","P4"],
-  "phases_in_progress": ["P5"],
-  "phases_pending": ["P6","P7","P8","P9","P10","P11","P12"],
+  "phases_completed": ["P0","P1","P2","P3","P4","P5"],
+  "phases_in_progress": ["P6"],
+  "phases_pending": ["P7","P8","P9","P10","P11","P12"],
+
+  "p5_deliverables": {
+    "code_modules": ["waggledance/ui/hologram/scale_aware_aggregator.py"],
+    "doc": "docs/architecture/REALITY_VIEW_TRUTH_AND_SCALE.md",
+    "license_update": "LICENSE-CORE.md (added 1 P5 protected file, Change Date 2030-12-31)",
+    "tests_added": [
+      "tests/ui_hologram/__init__.py",
+      "tests/ui_hologram/test_scale_aware_aggregator.py"
+    ],
+    "test_results": "8/8 passed in 2.73s",
+    "phase9_reality_view_unchanged": true,
+    "verdict": "Phase 9 11-panel + never-fabricate invariant carried forward; Phase 10 adds a scale-aware aggregator that produces solver_family_summary + cell_topology + builder_lane_status + provider_queue_summary panels from the control plane",
+    "scale_invariants": [
+      "no one-node-per-solver at scale (verified at 500 solvers in test)",
+      "truncation marker explicit when item cap reached",
+      "aggregator never writes to control plane",
+      "missing source returns available=false with structured rationale, not a placeholder"
+    ]
+  },
 
   "p4_deliverables": {
     "code_modules": [

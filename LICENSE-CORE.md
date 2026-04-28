@@ -67,6 +67,12 @@ Provider plane execution layer (P3 — provider plane + Claude Code builder lane
 - `waggledance/core/providers/mentor_forge.py`
 - `waggledance/core/providers/repair_forge.py`
 
+Solver bootstrap orchestration (P4 — U1→U3 escalation, throttler, LLM lane):
+- `waggledance/core/solver_synthesis/cold_shadow_throttler.py`
+- `waggledance/core/solver_synthesis/llm_solver_generator.py`
+- `waggledance/core/solver_synthesis/solver_bootstrap.py`
+- `waggledance/core/solver_synthesis/family_specs/__init__.py`
+
 ## Default rule
 
 Any source file not listed above is licensed under Apache License 2.0 unless that file itself carries a BUSL-1.1 SPDX header.

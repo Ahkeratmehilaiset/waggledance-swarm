@@ -193,16 +193,28 @@ def _structural_validate_response(payload: Mapping[str, Any]) -> None:
         raise ProviderContractError("no_direct_mutation must be True")
 
 
+_PHASE10_REQUEST_EXTENSION_KEYS: tuple[str, ...] = ("section", "purpose")
+
+
 def validate_request(payload: Mapping[str, Any]) -> ProviderRequest:
     """Validate ``payload`` against the Phase 9 request schema and
     return a :class:`ProviderRequest`. Raises
-    :class:`ProviderContractError` on any violation."""
+    :class:`ProviderContractError` on any violation.
+
+    Phase 10 introduces two optional metadata keys (``section`` and
+    ``purpose``) that the Phase 9 schema does not list and forbids
+    via ``additionalProperties: false``. We strip them before
+    schema-level validation and reattach them to the dataclass —
+    that way the Phase 9 wire format stays exactly as-shipped while
+    callers can still tag the call with section / purpose for
+    control-plane persistence (RULE 8 budget tracking)."""
 
     if not isinstance(payload, Mapping):
         raise ProviderContractError(f"request payload must be a Mapping, got {type(payload)!r}")
     schema = _load_schema(_REQUEST_SCHEMA_PATH)
-    _try_jsonschema_validate(payload, schema)
-    _structural_validate_request(payload)
+    schema_payload = {k: v for k, v in payload.items() if k not in _PHASE10_REQUEST_EXTENSION_KEYS}
+    _try_jsonschema_validate(schema_payload, schema)
+    _structural_validate_request(schema_payload)
     return ProviderRequest(
         schema_version=int(payload["schema_version"]),
         request_id=str(payload["request_id"]),

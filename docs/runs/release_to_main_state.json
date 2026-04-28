@@ -106,10 +106,12 @@
     "P12": ["all_above"]
   },
 
-  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6","P7","P8","P10","P11"],
-  "phases_in_progress": ["P12"],
+  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6","P7","P8","P9","P10","P11"],
+  "phases_in_progress": [],
   "phases_pending": [],
-  "phases_blocked": ["P9"],
+  "phases_blocked": [],
+  "phases_blocked_at_session_end": ["P9"],
+  "phases_blocked_at_session_end_resolution": "P9 was reported blocked at the close of the Phase 10 substrate session because Claude Code shell git push appeared to silently background. The push subsequently completed and reached origin; PR #54 was created, CI passed, and the squash-merge to main happened at 2026-04-28T12:14:15Z as commit 08b7e8c6ea589e699a7fb8d0cb600332aaec12d5. The 'silently_backgrounded' diagnosis was an early-classification false positive; future sessions must verify with `git ls-remote` for up to 180s before classifying push as blocked (see CLAUDE.md governance update in the post-phase10 finalization PR).",
 
   "p10_phase8_5_status": {
     "decision": "READ_ONLY default per RULE 12 — intentionally deferred",
@@ -415,5 +417,16 @@
   },
 
   "exact_next_commands_for_operator_if_blocked": "n/a — P0 complete, P1 starting in same session",
-  "continuation_instructions": "Phase 10 session is autonomous per RULE 0. If a fatal blocker is hit, this state file will be updated with exact_next_commands_for_operator_if_blocked and a stop-and-handoff per RULE 10."
+  "continuation_instructions": "Phase 10 session is autonomous per RULE 0. If a fatal blocker is hit, this state file will be updated with exact_next_commands_for_operator_if_blocked and a stop-and-handoff per RULE 10.",
+  "post_merge_resolution": {
+    "resolved_at_utc": "2026-04-28T12:14:15Z",
+    "resolution_kind": "pr_squash_merge_completed",
+    "pr_number": 54,
+    "merge_commit_sha": "08b7e8c6ea589e699a7fb8d0cb600332aaec12d5",
+    "branch_pre_squash_tip": "24ef97ea7d42e56a9575b0dd658832a23099a7fb",
+    "ci_status_at_merge": "all required checks green",
+    "tag_decision_at_merge": "Option A chosen — no new SemVer tag minted at squash time; substrate framing preserved",
+    "p9_revised_classification": "completed (was 'blocked' at session-close; classification was premature)",
+    "session_state_continuation": "docs/runs/post_phase10_finalize_2026_04_28/session_state.json"
+  }
 }

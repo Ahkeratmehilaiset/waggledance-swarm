@@ -91,9 +91,23 @@ caller -> ProviderPlane.dispatch(payload)
 
 A failure at step 4 records the row with `status='failed'` and re-raises. A failure at step 1 or 5 raises `ProviderContractError` before any persistence.
 
+## Bootstrap teacher lane (early-phase truth)
+
+WaggleDance starts weak. The autonomy runtime, solver registry, and capability graph are scaffolds in v3.6.0 / Phase 10 — they exist, they are wired, and they are tested, but they do not yet bootstrap most of their own solver / capability growth from internal signals alone.
+
+In this early phase, the **primary builder / teacher lane is Claude Code Opus 4.7** — invoked through `ClaudeCodeBuilder` (RULE 17 disciplined: isolated worktree, bounded timeout, JSONL invocation log, dry-run fallback when CLI absent). Anthropic API, OpenAI / GPT API, and local-model lanes are first-class peer providers in the routing scaffold, but their concrete HTTP adapters are still follow-up work — only `dry_run_stub` and `claude_code_builder_lane` are exercisable end-to-end today.
+
+This is a scaffolding / orchestration truth, not a capability claim. It says:
+
+* WD is intended to bootstrap toward broader competence over time, with growth gated through Session D / proposal compiler / promotion ladder / human review (no auto-promotion).
+* In the early phase, more of the solver and capability growth flows through Claude Code Opus 4.7 than through internal synthesis alone — `solver_synthesis/solver_bootstrap.py` U1→U3 escalation routes low-confidence gaps to the provider plane, which today resolves predominantly via `claude_code_builder_lane`.
+* As Phase 10 substrate matures (more solver families, more declarative templates, more replay-based self-supervision), the share of growth handled internally is expected to rise. This expectation is documented as direction, not as a deliverable date.
+
+The lane is not load-bearing for runtime cognition: the autonomy runtime continues to operate without consulting the provider plane (see "What Phase 10 P3 does NOT do" below). The teacher lane shapes *what WD can become*; it does not sit in the inner-loop of *what WD is doing right now*.
+
 ## What Phase 10 P3 does NOT do
 
-- **No real Anthropic / OpenAI HTTP adapters.** The shape is in place; concrete adapters are follow-up work that needs credentials and rate-limit handling. The `dry_run_stub` adapter is the only one shipped to keep tests deterministic and prompt budgets at zero.
+- **No real Anthropic / OpenAI HTTP adapters.** The shape is in place; concrete adapters are follow-up work that needs credentials and rate-limit handling. The `dry_run_stub` and `claude_code_builder_lane` adapters are the ones exercisable today; the others remain dry-run-only until those adapters land.
 - **No actual mentor-to-proposal pipeline.** That belongs to Session D / proposal compiler.
 - **No autonomy-runtime call sites.** The autonomy runtime continues to operate without consulting the provider plane. The plane is the lane WD can be *taught* through; it is not WD's irreducible inner cognition.
 

@@ -6,7 +6,7 @@
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20shipped%20%2B%20Phase%2010%20in%20flight-blue)]()
+[![Version](https://img.shields.io/badge/version-3.6.0%20shipped%20%2B%20Phase%2010%20substrate%20landed-blue)]()
 
 ## What this is
 
@@ -55,9 +55,11 @@ The runtime is built around a hexagonal layout: `core/` is the domain, `adapters
 | **1 — Fallback** | Explains | LLM — only when solvers and specialists cannot handle it |
 | **1b — Optional** | Gemma 4 | Optional dual-tier Gemma 4 profiles: fast (e4b) for general fallback, heavy (26b) for hard reasoning |
 
-## Phase 10 — Foundation, Truth, Builder Lane (in flight)
+## Phase 10 — Foundation, Truth, Builder Lane (substrate landed on main)
 
-After v3.6.0 shipped the Phase 9 autonomy fabric scaffold, Phase 10 adds the substrate for tens of thousands of solvers, makes the Claude Code / Anthropic / GPT / local-model lanes first-class, and tightens truthfulness across docs and Reality View.
+After v3.6.0 shipped the Phase 9 autonomy fabric scaffold, Phase 10 added the substrate for tens of thousands of solvers, made the Claude Code / Anthropic / GPT / local-model lanes first-class, and tightened truthfulness across docs and Reality View.
+
+Phase 10 substrate landed on `main` via [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) — squash-merged 2026-04-28T12:14:15Z as commit `08b7e8c`. No new SemVer tag was minted because Phase 10 adds substrate, not runtime hot-path behaviour change. A future runtime-affecting release picks the next version; an optional `v3.6.1-substrate` prerelease tag may be added when post-merge truth/governance are clean.
 
 * **Storage substrate.** A 16-table SQLite control plane (`waggledance/core/storage/`) that owns *current state* of solvers, families, capabilities, vector shards, provider/builder jobs, promotion ladder, runtime path bindings. MAGMA still owns *history*; FAISS / Chroma still own *vector content*. A new `PathResolver` is the seam future cutovers can use without code changes — it is drop-in compatible with the legacy `_DEFAULT_FAISS_DIR` so nothing in the runtime moves until a subsystem opts in.
 * **Provider plane execution layer.** `waggledance/core/providers/` adds JSON-schema-validated request/response dispatch on top of the Phase 9 routing scaffold. `ClaudeCodeBuilder` is the only authorised subprocess (isolated worktree, bounded timeout, JSONL invocation log, dry-run fallback when CLI absent). The mentor-output advisory boundary is enforced at the API surface: mentor notes are IR `learning_suggestion` objects with `lifecycle_status='advisory'`, never directly mutating runtime.
@@ -65,7 +67,7 @@ After v3.6.0 shipped the Phase 9 autonomy fabric scaffold, Phase 10 adds the sub
 * **Scale-aware Reality View.** `ui/hologram/scale_aware_aggregator.py` aggregates per-family rollups, per-cell counts, and queue summaries from the control plane, so the Reality View never claims "one node per solver" at 10k+ scale. The Phase 9 11-panel structure and never-fabricate invariant are unchanged.
 * **Storage / cutover truth audit.** `docs/journal/2026-04-28_storage_runtime_truth.md` and `2026-04-28_cutover_model_classification.md` ground the runtime claims with file:line citations. The v3.6.0 atomic flip is formally classified `MODEL_C_NOOP_ALREADY_COMPLETE`; future Stage-2 flip is `MODEL_D_AMBIGUOUS` until an RFC defines the mechanism.
 
-What Phase 10 explicitly does **not** do: execute the runtime cutover, ship real Anthropic/OpenAI HTTP adapters, replace any Phase 9 module, or claim the autonomy runtime emits vector events at runtime (offline tools do; the autonomy runtime does not yet).
+What Phase 10 explicitly does **not** do: execute the runtime cutover, ship real Anthropic/OpenAI HTTP adapters, replace any Phase 9 module, or claim the autonomy runtime emits vector events at runtime (offline tools do; the autonomy runtime does not yet). The future Stage-2 cutover mechanism is specified in [`docs/architecture/STAGE2_CUTOVER_RFC.md`](docs/architecture/STAGE2_CUTOVER_RFC.md) and remains explicitly *not executed* until a fresh one-shot human approval is collected against that RFC.
 
 ## Phase 9 — Autonomy Fabric (v3.6.0 release)
 

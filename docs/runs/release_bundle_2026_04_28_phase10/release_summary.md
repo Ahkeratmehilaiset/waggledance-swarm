@@ -96,8 +96,17 @@ Push attempt is the next operation (P9). The previous v3.6.0 session reported th
 
 ## Cross-references
 
-* `docs/runs/release_to_main_state.json` — full Phase 10 state.
+* `docs/runs/release_to_main_state.json` — full Phase 10 state (snapshot at squash time; preserved verbatim).
 * `docs/runs/release_to_main_state_v3.6.0.json` — archived prior session state.
 * `docs/runs/provider_invocations.jsonl` — provider budget log (RULE 8).
 * `docs/runs/error_log.jsonl` — fail-loud structured error log (RULE 14).
 * `docs/runs/release_bundle_2026_04_27/` — v3.6.0 release bundle (preserved unchanged).
+* `docs/runs/post_phase10_finalize_2026_04_28/session_state.json` — post-merge truth / governance / RFC finalization session state.
+
+## Post-merge addendum (2026-04-28T12:14:15Z)
+
+* PR #54 squash-merged to `main` after green CI.
+* Squash commit on `main`: `08b7e8c6ea589e699a7fb8d0cb600332aaec12d5`.
+* Pre-squash branch tip preserved on `phase10/foundation-truth-builder-lane`: `24ef97ea7d42e56a9575b0dd658832a23099a7fb`.
+* Tag decision: **Option A** chosen (no new SemVer tag at squash time). An optional `v3.6.1-substrate` prerelease tag may be added in the follow-up `post-phase10/finalize-truth-rfc-governance` PR after CLAUDE.md governance and the Stage-2 cutover RFC land.
+* `docs/runs/release_bundle_2026_04_28_phase10/merged_commit_sha.txt` records the squash SHA verbatim.

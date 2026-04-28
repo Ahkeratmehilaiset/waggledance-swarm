@@ -56,6 +56,17 @@ Storage substrate (P2 — control plane and data plane foundation):
 - `waggledance/core/storage/path_resolver.py`
 - `waggledance/core/storage/registry_queries.py`
 
+Provider plane execution layer (P3 — provider plane + Claude Code builder lane):
+- `waggledance/core/providers/__init__.py`
+- `waggledance/core/providers/provider_contracts.py`
+- `waggledance/core/providers/provider_registry.py`
+- `waggledance/core/providers/provider_plane.py`
+- `waggledance/core/providers/claude_code_builder.py`
+- `waggledance/core/providers/builder_job_queue.py`
+- `waggledance/core/providers/builder_lane_router.py`
+- `waggledance/core/providers/mentor_forge.py`
+- `waggledance/core/providers/repair_forge.py`
+
 ## Default rule
 
 Any source file not listed above is licensed under Apache License 2.0 unless that file itself carries a BUSL-1.1 SPDX header.

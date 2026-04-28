@@ -106,9 +106,39 @@
     "P12": ["all_above"]
   },
 
-  "phases_completed": ["P0","P1","P2"],
-  "phases_in_progress": ["P3"],
-  "phases_pending": ["P4","P5","P6","P7","P8","P9","P10","P11","P12"],
+  "phases_completed": ["P0","P1","P2","P3"],
+  "phases_in_progress": ["P4"],
+  "phases_pending": ["P5","P6","P7","P8","P9","P10","P11","P12"],
+
+  "p3_deliverables": {
+    "code_modules": [
+      "waggledance/core/providers/__init__.py",
+      "waggledance/core/providers/provider_contracts.py",
+      "waggledance/core/providers/provider_registry.py",
+      "waggledance/core/providers/provider_plane.py",
+      "waggledance/core/providers/claude_code_builder.py",
+      "waggledance/core/providers/builder_job_queue.py",
+      "waggledance/core/providers/builder_lane_router.py",
+      "waggledance/core/providers/mentor_forge.py",
+      "waggledance/core/providers/repair_forge.py"
+    ],
+    "doc": "docs/architecture/PROVIDER_PLANE_AND_BUILDER_LANES.md",
+    "license_update": "LICENSE-CORE.md (added 9 P3 protected files, Change Date 2030-12-31)",
+    "tests_added": [
+      "tests/providers/__init__.py",
+      "tests/providers/test_provider_contracts.py",
+      "tests/providers/test_provider_plane.py"
+    ],
+    "test_results": "18/18 passed in 0.64s",
+    "rule_17_compliance": "Claude Code builder is the only authorised subprocess; isolated worktree only, bounded timeout (default 600s, hard ceiling 7200s), JSONL invocation log, dry-run fallback when CLI absent",
+    "rule_8_compliance": "Provider invocations recorded in control_plane.provider_jobs with section/purpose/cost; logged in docs/runs/provider_invocations.jsonl",
+    "credential_policy": "missing keys disable only that provider; dry_run_stub adapter is always available so the plane is exercisable without credentials (RULE 9)",
+    "mentor_advisory_boundary_enforced_at_api_surface": true,
+    "schema_files_used": [
+      "schemas/provider_request.schema.json (Phase 9, unchanged)",
+      "schemas/provider_response.schema.json (Phase 9, unchanged)"
+    ]
+  },
 
   "p2_deliverables": {
     "code_modules": [

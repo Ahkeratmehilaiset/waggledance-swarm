@@ -106,9 +106,95 @@
     "P12": ["all_above"]
   },
 
-  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6","P7","P8"],
-  "phases_in_progress": ["P9"],
-  "phases_pending": ["P10","P11","P12"],
+  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6","P7","P8","P10","P11"],
+  "phases_in_progress": ["P12"],
+  "phases_pending": [],
+  "phases_blocked": ["P9"],
+
+  "p10_phase8_5_status": {
+    "decision": "READ_ONLY default per RULE 12 — intentionally deferred",
+    "branches_inspected_only": [
+      "phase8.5/vector-chaos",
+      "phase8.5/curiosity-organ",
+      "phase8.5/self-model-layer",
+      "phase8.5/dream-curriculum",
+      "phase8.5/hive-proposes"
+    ],
+    "branches_acted_on": [],
+    "audit_required_action_for_release_path": "none — Phase 10 substrate work does not depend on phase8.5 producer subsystems. They remain follow-up PRs after Phase 10 lands and before Prompt 2 atomic cutover."
+  },
+
+  "p11_atomic_flip_prep": {
+    "executed_cutover": false,
+    "collected_human_approval": false,
+    "merged_flip_pr": false,
+    "files_added": [
+      "docs/architecture/PROMPT_2_ATOMIC_FLIP_REALITY_CORRECTED.md"
+    ],
+    "files_unchanged": [
+      "docs/atomic_flip_prep/00_README.md (the 'no-op for v3.6.0' status block lives on docs/post-v3.6.0-flip-analysis branch; Phase 10 does not reach into another in-flight branch to copy text)",
+      "docs/atomic_flip_prep/01_flip_worktree_setup.md",
+      "docs/atomic_flip_prep/02_pre_flip_checklist.md",
+      "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml.draft (no V2 draft authored — Stage-2 mechanism is MODEL_D_AMBIGUOUS until an RFC defines it)",
+      "docs/atomic_flip_prep/04_flip_review_bundle.md.template",
+      "docs/atomic_flip_prep/05_post_flip_verification.md",
+      "docs/atomic_flip_prep/06_rollback_procedure.md"
+    ],
+    "human_approval_v2_draft_authored": false,
+    "human_approval_v2_reason_for_no_draft": "RULE: V2 needs a defined mechanism; current Stage-2 mechanism is MODEL_D_AMBIGUOUS",
+    "flip_worktree_at_C_python_project2_flip": "exists on branch phase9/post-campaign-atomic-flip @ 8bf1869; recommended for removal per docs/journal/2026-04-27_atomic_flip_analysis.md (no flip-specific commits, MODEL_C means no-op for v3.6.0)",
+    "rule_18_compliance": "no runtime cutover, no HUMAN_APPROVAL collection, no flip PR merge"
+  },
+
+  "p9_status": {
+    "p9_0_gh_auth_state": "logged_in_as_Ahkeratmehilaiset; scopes=gist,read:org,repo,workflow",
+    "p9_1_push_attempt": {
+      "command": "git -C /c/python/project2-master push -u origin phase10/foundation-truth-builder-lane",
+      "outcome": "silently_backgrounded",
+      "stdout_bytes": 0,
+      "remote_branch_exists_after_attempt": false,
+      "verified_via": "git ls-remote origin phase10/foundation-truth-builder-lane → empty",
+      "wait_time_seconds": 10,
+      "diagnosis": "Same documented failure mode as the v3.6.0 release session (see continuation_session_2026_04_27_post_lunch in docs/runs/release_to_main_state_v3.6.0.json). Three plain pushes from the Claude Code shell silently background and produce no output; remote tip does not advance. RULE 3 (no-force-push) was respected — only plain push attempted. RULE P9.1 ONE-PUSH discipline honoured."
+    },
+    "p9_2_through_p9_5": "BLOCKED — cannot create PR / wait CI / merge / tag without push. Per RULE 10 stop-and-handoff: emit exact operator commands, do not improvise."
+  },
+
+  "p9_exact_next_commands_for_operator": [
+    "# Run from your own Git Bash terminal (not from the Claude Code shell):",
+    "cd /c/python/project2-master",
+    "",
+    "# 1. Push the branch",
+    "git push -u origin phase10/foundation-truth-builder-lane",
+    "",
+    "# 2. Wait for CI to fully run on the new tip (expect ~5–10 minutes)",
+    "gh pr create --base main --head phase10/foundation-truth-builder-lane \\",
+    "  --title 'Phase 10 — foundation / truth / builder lane (substrate)' \\",
+    "  --body-file docs/runs/release_bundle_2026_04_28_phase10/release_notes_draft.md",
+    "",
+    "# 3. Confirm CI green at exact head SHA",
+    "EXPECTED_HEAD=$(git rev-parse phase10/foundation-truth-builder-lane)",
+    "echo \"expecting head=$EXPECTED_HEAD\"",
+    "gh pr checks $(gh pr view --json number --jq .number)",
+    "",
+    "# 4. Squash-merge with head-SHA guard",
+    "PR_NUM=$(gh pr view --json number --jq .number)",
+    "gh pr merge $PR_NUM --squash --match-head-commit=\"$EXPECTED_HEAD\" \\",
+    "  --subject 'feat: Phase 10 substrate (control plane + provider plane + scale-aware Reality View)' \\",
+    "  --body-file docs/runs/release_bundle_2026_04_28_phase10/release_notes_draft.md",
+    "",
+    "# 5. (Optional) tag — Option B from merge_readiness_checklist.md (prerelease)",
+    "git checkout main && git pull",
+    "git tag -a v3.6.1-substrate -m 'Phase 10 — foundation / truth / builder lane substrate'",
+    "git push origin v3.6.1-substrate",
+    "gh release create v3.6.1-substrate \\",
+    "  --title 'v3.6.1-substrate — Phase 10 foundation' \\",
+    "  --notes-file docs/runs/release_bundle_2026_04_28_phase10/release_notes_draft.md \\",
+    "  --prerelease",
+    "",
+    "# 6. Record outcome",
+    "echo '<merged_commit_sha>' > docs/runs/release_bundle_2026_04_28_phase10/merged_commit_sha.txt"
+  ],
 
   "p8_release_bundle": {
     "directory": "docs/runs/release_bundle_2026_04_28_phase10/",

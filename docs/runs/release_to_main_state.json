@@ -106,9 +106,31 @@
     "P12": ["all_above"]
   },
 
-  "phases_completed": ["P0","P1"],
-  "phases_in_progress": ["P2"],
-  "phases_pending": ["P3","P4","P5","P6","P7","P8","P9","P10","P11","P12"],
+  "phases_completed": ["P0","P1","P2"],
+  "phases_in_progress": ["P3"],
+  "phases_pending": ["P4","P5","P6","P7","P8","P9","P10","P11","P12"],
+
+  "p2_deliverables": {
+    "code_modules": [
+      "waggledance/core/storage/__init__.py",
+      "waggledance/core/storage/control_plane_schema.py",
+      "waggledance/core/storage/control_plane.py",
+      "waggledance/core/storage/path_resolver.py",
+      "waggledance/core/storage/registry_queries.py"
+    ],
+    "doc": "docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md",
+    "license_update": "LICENSE-CORE.md (added v3.6.x / Phase 10 protected files section, Change Date 2030-12-31)",
+    "tests_added": [
+      "tests/storage/__init__.py",
+      "tests/storage/test_control_plane.py",
+      "tests/storage/test_path_resolver.py"
+    ],
+    "test_results": "21/21 passed in 0.98s",
+    "schema_version": 1,
+    "tables_created": 16,
+    "scale_smoke_test": "50k solvers insert+count+lookup verified within bounds",
+    "rule_6_compliance": "all 5 crown-jewel files have BUSL-1.1 + Change Date 2030-12-31 headers; LICENSE-CORE.md updated in same commit"
+  },
 
   "cutover_model_classification": {
     "v3_6_0_shipped_behavior": "MODEL_C_NOOP_ALREADY_COMPLETE",

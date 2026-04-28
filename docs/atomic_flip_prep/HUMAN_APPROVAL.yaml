@@ -1,0 +1,377 @@
+# Human Approval Artifact — SIGNED, then SUPERSEDED 2026-04-27
+#
+# *** SUPERSEDED — DO NOT EXECUTE ***
+#
+# This signed approval was authored in good faith but was based on a
+# rationale (see "SCOPE OF THE CHANGE" below) that did not match the
+# actual repo state:
+#   - claimed: 8 cells with `current/` symlinks rotated by os.replace()
+#   - reality: no such `current/` symlinks exist; runtime reads from
+#     data/faiss/ (different scope), not from data/vector/<cell>/
+#   - claimed: data/vector/events.jsonl writable post-flip
+#   - reality: that file does not exist; vector_events.py defines event
+#     names as a contract but no producer is wired
+#
+# Conclusion (operator decision: option A): the atomic flip is a
+# NO-OP for v3.6.0. The autonomy runtime cutover (a separate cutover)
+# is already complete; the FAISS hex-cell read-path cutover described
+# here is future Stage-2 work that has not been scoped in implementable
+# detail yet.
+#
+# This artifact is preserved for audit. No agent or operator should
+# treat it as authorizing a future flip operation. If/when a real
+# Stage-2 cutover is designed, it requires a NEW approval artifact
+# whose rationale matches the actual operation.
+#
+# Full analysis: docs/journal/2026-04-27_atomic_flip_analysis.md
+#
+# *** END SUPERSEDED NOTE ***
+#
+# Original header (preserved verbatim below):
+#
+# Human Approval Artifact — SIGNED
+#
+# When ready to flip, the human reviewer:
+#   1. Copies this file to `HUMAN_APPROVAL.yaml`
+#   2. Fills in every field below (placeholders are pre-filled with current
+#      known values where possible — verify and adjust before signing)
+#   3. Signs by adding their reviewer id + ISO timestamp to `human_approval_id`
+#      AND `approver_signature` (must start with "SIGNED_BY_")
+#   4. Pins the file's sha256 in the Prompt 2 state file before the flip runs
+#
+# All four `no_*` fields are STRUCTURAL INVARIANTS, not toggles. They MUST be true.
+#
+# Pre-filled SHAs as of 2026-04-27 by Phase 6 of unified release finalization:
+#   main_tip_sha_at_approval = a1c41528e4694094543be30ab641b362c968914d (current main)
+#   phase_9_merge_commit_sha = a1c41528e4694094543be30ab641b362c968914d (= squash-merge of PR #51)
+#   phase_8_5_merge_commits  = DEFERRED (none merged yet; 5 follow-up PRs pending)
+
+human_approval_id: "human:janikorpi:2026-04-27T17:00:00Z"  # e.g. "human:janikorpi:2026-04-30T08:00:00Z"
+approver_signature: "SIGNED_BY_janikorpi"
+signature_date_iso: "2026-04-27T17:00:00Z"
+approval_kind: "phase9_atomic_flip"
+approval_id: "approval-phase9-2026-04-27"  # operator picks the date when signing
+approval_date_iso: "2026-04-27"  # operator fills date
+
+# Pre-flight booleans — ALL must be true for flip execution; default false in draft
+pre_flight:
+  release_on_main: true  # set true when verifying main tip = phase_9_merge_commit_sha
+  campaign_frozen: true  # set true when 400h gauntlet confirmed FINAL (already true 2026-04-26)
+  phase_8_5_handled: true  # set true when all 5 phase8.5 PRs are merged OR explicitly accepted as deferred
+  flip_worktree_ready: true  # set true when /c/python/project2-flip exists with origin/main
+  rollback_plan_reviewed: true  # set true when reviewer has read 06_rollback_procedure.md
+
+# What is being approved
+branch_under_review: "phase9/autonomy-fabric"
+commit_under_review: "fad731d59acded929584735f8e028fc97d8fab55"  # PR #51 head at squash-merge time
+main_tip_sha_at_approval: "a1c41528e4694094543be30ab641b362c968914d"  # current main tip
+phase_9_merge_commit_sha: "a1c41528e4694094543be30ab641b362c968914d"  # squash-merge result
+phase_8_5_merge_commits:
+  vector_chaos: "DEFERRED"  # follow-up PR pending
+  curiosity_organ: "DEFERRED"  # follow-up PR pending
+  self_model_layer: "DEFERRED"  # follow-up PR pending
+  dream_curriculum: "DEFERRED"  # follow-up PR pending
+  hive_proposes: "DEFERRED"  # follow-up PR pending
+phase_set_reviewed:
+  - "F"
+  - "G"
+  - "H"
+  - "I"
+  - "P"
+  - "V"
+  - "J"
+  - "U1"
+  - "U2"
+  - "U3"
+  - "L"
+  - "K"
+  - "M"
+  - "O"
+  - "N"
+  - "Q"
+
+# Test evidence
+test_suite_run: "tests/test_phase9_*.py"
+test_suite_result: "657 passed"
+test_suite_run_at_utc: "2026-04-27T07:46:00Z"
+
+# Rationale (free-form, REQUIRED, non-empty)
+rationale: |
+
+  Phase 9 Autonomy Fabric (v3.6.0) is a self-contained scaffold release
+  that landed in main as a1c41528 via PR #51 squash-merge on 2026-04-27.
+  Post-merge truthfulness corrections (CURRENT_STATUS, CURRENT_STATE)
+  landed as 8bf1869 via PR #52. v3.6.0 release tag is published and
+  remains the latest release. CI was green at squash-merge time
+  (5/5 checks: security-scan, test 3.11/3.12/3.13, unified).
+
+  WHAT WAS REVIEWED
+
+  All 16 phases F-Q implemented across 18 crown-jewel packages:
+  Autonomy Kernel + Circuit Breaker (F), Cognition IR + Capsule Registry
+  (G), Vector Provenance Graph + Universal Ingestion (H), World Model +
+  Calibration Drift Detection (I), Reality View / Hologram Upgrade (P),
+  Conversation Layer + Personality Constants (V), Provider Plane +
+  6-Layer Distillation Gate (J), Solver Families + Declarative Bootstrap
+  (U1), Builder Lane + Repair Forge + Mentor Forge (U2), Autonomous
+  Solver Synthesis + Cold/Shadow Throttling (U3), Memory Tiering +
+  Invariant Extraction (L), Real Hex Runtime Topology (K), Promotion
+  Ladder (M), Proposal Compiler (O), Local Model Distillation safe
+  scaffold (N), Cross-Capsule Observer + High-Risk Variants Docs (Q).
+  License harmonized to BUSL 1.1 / Apache 2030-03-19 single source of
+  truth. Reality View truthfulness verified: 11 structural panels with
+  5 backed by real data, 6 explicitly marked unavailable with
+  rationale strings — the never-fabricate invariant is honored.
+
+  WHAT WAS TESTED
+
+  657/657 targeted Phase 9 tests passing in ~6.4 seconds. 14 cross-phase
+  global property tests pass on first run, verifying no_runtime_mutation,
+  no_main_branch_auto_merge, no_foundational_auto_promotion,
+  no_force_push_paths, no_secrets_or_absolute_paths, and
+  domain-neutrality across all 18 core packages. 11 CLI tools verified
+  via --help. Real-data evidence committed under docs/runs/phase9_*:
+  Reality View render against Session B self_model_snapshot, Phase O
+  pipeline demo against Session D meta-proposals, autonomy kernel
+  dry-run with constitution.yaml sha256 gating, conversation probe
+  responses verified clean across 4 META_QUESTION_KINDS. GitHub CI
+  green on both squash-merge events (PR #51, PR #52).
+
+  SCOPE OF THE CHANGE
+
+  Atomic flip rotates the runtime read path from legacy locations
+  (data/faiss_staging/, data/faiss_delta_ledger/) to the new
+  data/vector/<cell>/current/ structure produced by the Stage 1+2
+  MAGMA migration. The flip itself is one os.replace() per cell across
+  8 cells, recorded as previous_main_tip_sha before any rotation.
+  No code logic changes. No schema changes. No new dependencies. No
+  changes to constitution.yaml or any foundational anchor. Cell topology
+  remains 8 cells; subdivision logic remains advisory-only and
+  shadow-first. The flip is executed in an isolated worktree
+  (/c/python/project2-flip) on branch phase9/post-campaign-atomic-flip,
+  which goes through a normal PR review before merging to main.
+
+  PHASE 8.5 STATUS
+
+  Phase 8.5 producer subsystems (vector-chaos, curiosity-organ,
+  self-model-layer, dream-curriculum, hive-proposes) are explicitly
+  accepted as deferred. Their absence does not block this flip because
+  Phase 9 ships only the IR adapter contracts (consumer-side) and the
+  runtime-flip target paths, not the producers. Source-grep verified
+  that no Phase 9 module imports any Phase 8.5 producer module. Each
+  Phase 8.5 branch is preserved on its existing local/origin state and
+  can ship as independent follow-up PRs after the flip without affecting
+  the flipped runtime read path.
+
+  CAMPAIGN STATE
+
+  The 400h ui_gauntlet capability-growth campaign concluded on
+  2026-04-26 with 415.34h cumulative coverage (103.8% of target),
+  zero XSS findings, zero DOM breaks, and FINAL summary artifacts
+  generated. No active watchdog, auto-commit, or hot/warm/cold worker
+  processes remain. The runtime is in a stable post-campaign state
+  suitable for the storage-layer rotation.
+
+  ROLLBACK STORY
+
+  rollback_target_sha (8bf1869df7dee06c610e3b2d903782bd6c9d831b) is the
+  current main tip before the flip and is preserved in this approval
+  artifact. Rollback uses git revert against the flip commit — never
+  force-push, never history rewrite, per
+  docs/atomic_flip_prep/06_rollback_procedure.md. Legacy storage paths
+  (data/faiss_staging/, data/faiss_delta_ledger/) are NOT deleted as
+  part of the flip; only the runtime read pointer rotates. This means
+  rollback can restore the previous read path without data restoration.
+  Post-flip verification per 05_post_flip_verification.md must pass
+  before considering the flip stable: targeted Phase 9 suite green,
+  vector event log writable, provenance preserved, tag v3.6.0 still
+  reachable.
+
+  WHY NOW
+
+  Phase 9 is in main, v3.6.0 is published, truthfulness corrections
+  are merged, release bundle is finalized, and the campaign that was
+  reading from the legacy storage path has formally concluded. These
+  preconditions will not be more favorable later: deferring the flip
+  would mean accumulating drift between the legacy read path and the
+  Stage 2 vector_root, and would push runtime modernization into a
+  later release where it would be bundled with other unrelated work.
+  The flip is intentionally separated as its own risk domain (per the
+  constitutional principle) so it can be reviewed and merged on its
+  own merits, isolated from any other change. This is the cleanest
+  window to perform it, with the smallest blast radius.
+
+  CONSTITUTIONAL INVARIANTS
+
+  This flip preserves all constitutional invariants:
+  - no_runtime_auto_promotion (the flip itself requires this signed
+    approval and stops one step before merge for human review)
+  - no_main_branch_auto_merge (the flip PR is opened, not merged
+    automatically)
+  - no_foundational_mutation (constitution.yaml is untouched)
+  - no_raw_data_leakage (cross-capsule observer remains advisory-only)
+
+  This signed approval is the load-bearing artifact authorizing the
+  flip execution. Its sha256 must be pinned in the Prompt 2 atomic
+  flip state file before the flip executes. The flip will produce
+  a separate PR for human review and manual merge — the agent never
+  auto-merges runtime-affecting changes.
+
+# Rollback target — the main tip BEFORE the flip
+rollback_target_sha: "8bf1869df7dee06c610e3b2d903782bd6c9d831b"
+
+# Structural invariants (DO NOT change these to false; doing so makes the
+# approval invalid)
+no_runtime_auto_promotion: true
+no_main_branch_auto_merge: true
+no_foundational_mutation: true
+no_raw_data_leakage: true
+
+# Timestamps
+approved_at_utc: "2026-04-27T17:13:00Z"
+
+# Optional: any deferred items the reviewer is explicitly accepting as deferred
+deferred_items:
+  - "Phase 8.5 vector-chaos PR — to follow"
+  - "Phase 8.5 curiosity-organ PR — to follow"
+  - "Phase 8.5 self-model-layer PR — to follow"
+  - "Phase 8.5 dream-curriculum PR — to follow"
+  - "Phase 8.5 hive-proposes PR — to follow"
+  - "Phase 12+ generative memory compression — explicitly out of scope"
+  - "Phase 12+ 5 other deferred high-risk variants per HIGH_RISK_VARIANTS_DEFERRED.md"
+
+# Optional: notes for the post-flip verifier
+post_flip_verification_notes: |
+  Run these verifications IN ORDER after the flip lands. Stop and
+  initiate rollback if any of them fails — do not continue down the
+  list to "see what else fails."
+
+  IMMEDIATE (within 5 minutes of flip merge)
+
+  1. Targeted Phase 9 suite must be green at main:
+       cd /c/python/project2-master
+       git fetch origin && git checkout main && git pull
+       python -m pytest tests/test_phase9_*.py -q
+     Expected: 657 passed in ~7s. Any failure → ROLLBACK.
+
+  2. Tag v3.6.0 must remain reachable from main:
+       git tag --list v3.6.0
+       git log --oneline v3.6.0 | head -1
+     Expected: tag exists and points to a1c41528. If unreachable
+     from new main → ROLLBACK.
+
+  3. Constitution sha256 must be unchanged:
+       python -c "from waggledance.core.autonomy.kernel_state import \
+         load_constitution_sha256; \
+         print(load_constitution_sha256())"
+     Expected: sha256:f3bc565df314f551f4a417340b646a9a617da1d35a3591040c8425c1fbcd5481
+     Any drift → ROLLBACK (constitution must never mutate).
+
+  RUNTIME PATH (within 30 minutes)
+
+  4. Verify the runtime now reads from the new vector_root path,
+     not from legacy:
+       grep -rn "data/faiss_staging\|data/faiss_delta_ledger" \
+         waggledance/core/ | grep -v "test\|__pycache__\|legacy"
+     Expected: NO matches in runtime code (legacy paths may remain
+     in tests and migration tools, that is correct).
+
+  5. Verify data/vector/<cell>/current/ is the active read path
+     for all 8 cells:
+       for cell in general thermal energy safety seasonal math system learning; do
+         test -L "data/vector/$cell/current" || echo "MISSING: $cell"
+       done
+     Expected: no MISSING output. All 8 cells must have a current
+     pointer (symlink or replaced directory). Any missing → ROLLBACK.
+
+  6. Vector event log must be writable and append-only:
+       ls -la data/vector/events.jsonl
+       wc -l data/vector/events.jsonl
+     Expected: file exists, line count is non-decreasing across
+     observations. If file is missing or shrinks → ROLLBACK.
+
+  PROVENANCE (within 1 hour)
+
+  7. Pinned input manifest sha256 must still resolve:
+       grep "pinned_input_manifest_sha256" \
+         docs/runs/phase9_autonomy_fabric_state.json
+     Expected: sha256:5cd8ced0... — verify this sha by recomputing
+     from the listed source files. If it no longer resolves → the
+     flip moved a file it should not have. ROLLBACK.
+
+  8. Reality View render must produce identical output for the
+     same pinned inputs as before the flip:
+       python tools/render_hologram_reality.py \
+         --self-model-path <session-B-snapshot-path> \
+         --ts 2026-04-26T00:00:00Z \
+         --branch-name main \
+         --base-commit-hash <new-main-tip> \
+         --output-path /tmp/post_flip_reality_render.json \
+         --apply --json
+     Compare against docs/runs/phase9_reality_view_render.json.
+     Expected: 5 panels populated with real data, 6 unavailable
+     with rationale strings. Cell topology shows 8 cells. Any
+     difference in panel count or fabricated data → INVESTIGATE
+     before declaring success.
+
+  CI / EXTERNAL (within 2 hours)
+
+  9. GitHub Actions CI must remain green at the new main tip:
+       gh run list --branch main --limit 3
+     Expected: latest run on main is SUCCESS for all 5 checks.
+     A failure here is recoverable but must be triaged before
+     calling the flip stable.
+
+  10. v3.6.0 release page must remain published and reachable:
+        gh release view v3.6.0
+      Expected: published, marked latest, no asset drift. Any
+      regression in the release metadata → file an issue, do not
+      auto-fix.
+
+  EXTENDED OBSERVATION (24 hours)
+
+  11. Watch CI for ~24h after the flip to confirm no regressions
+      in scheduled or upstream-triggered runs:
+        gh run list --branch main --limit 20
+      Expected: no new failures introduced by the flip. If a new
+      failure appears that did not exist on 8bf1869, treat it as
+      a flip-caused regression and rollback.
+
+  12. Spot-check 3 random Phase 9 CLI tools to confirm they still
+      work end-to-end after the runtime path change:
+        python tools/wd_kernel_tick.py --help
+        python tools/render_hologram_reality.py --help
+        python tools/wd_synthesize_solver.py --help
+      Expected: each exits 0 with documented flags listed. A
+      hard import error suggests the runtime path moved further
+      than expected.
+
+  WHAT TO IGNORE
+
+  Do NOT investigate or rollback for:
+  - test_hybrid_retrieval.py::TestFeatureFlag::test_enabled_returns_hybrid
+    (this is a pre-existing xfail per docs/runs/phase8_ci_baseline.md;
+    flip does not change its status)
+  - Campaign auto-checkpoint files under docs/runs/ui_gauntlet_400h_*/
+    (these are frozen FINAL artifacts; they will not be touched by
+    the flip)
+  - Local untracked files in working trees (these are session
+    artifacts, not release content)
+
+  ROLLBACK DECISION RULE
+
+  If any of items 1-8 fails → rollback IMMEDIATELY without further
+  investigation. Items 9-12 require triage but are not auto-rollback
+  triggers; they may indicate a problem outside the flip's scope.
+
+  Rollback procedure: see docs/atomic_flip_prep/06_rollback_procedure.md.
+  Rollback target: 8bf1869df7dee06c610e3b2d903782bd6c9d831b (recorded
+  as rollback_target_sha in this approval artifact).
+
+  ESCALATION
+
+  If two consecutive rollback attempts fail to restore main to
+  rollback_target_sha, stop all automated work, freeze the repo,
+  and post a manual operator handover with full context. Do NOT
+  attempt --force-with-lease or history rewrite as a recovery
+  workaround.

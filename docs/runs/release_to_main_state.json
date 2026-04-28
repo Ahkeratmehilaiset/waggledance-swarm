@@ -106,9 +106,46 @@
     "P12": ["all_above"]
   },
 
-  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6"],
-  "phases_in_progress": ["P7"],
-  "phases_pending": ["P8","P9","P10","P11","P12"],
+  "phases_completed": ["P0","P1","P2","P3","P4","P5","P6","P7"],
+  "phases_in_progress": ["P8"],
+  "phases_pending": ["P9","P10","P11","P12"],
+
+  "p7_test_results": {
+    "total_phase10_targeted": "72 passed, 1 skipped (HUMAN_APPROVAL on docs/post-v3.6.0-flip-analysis branch, brought forward in P11) in 5.19s",
+    "by_module": {
+      "tests/storage/": "21 passed (control_plane + path_resolver)",
+      "tests/providers/": "18 passed (contracts + plane + claude_code_builder + queue + forges)",
+      "tests/solver_synthesis/": "12 passed (throttler + family_specs + llm_generator + bootstrap orchestrator)",
+      "tests/ui_hologram/": "8 passed (scale_aware_aggregator)",
+      "tests/phase10/": "13 passed, 1 skipped (truth/regression/license/no-leak)"
+    },
+    "rule_7_compliance": "Targeted-only — full repository suite NOT run (per RULE 7 docs-only sections use targeted tests; no runtime hot-path mutation)",
+    "rule_7_categories_covered": [
+      "1 storage truth classification (path_resolver drop-in compat + control_plane FK enforcement)",
+      "2 control-plane DB schema creation/migration (canonical tables + idempotent migrate)",
+      "3 path_resolver deterministic resolution (override -> control_plane -> default precedence)",
+      "5 provider plane registry (control-plane integration)",
+      "6 builder lane dry-run / disabled-provider (no_credentials -> dry_run_stub)",
+      "7 Claude Code builder invocation logging (JSONL log written)",
+      "8 mentor output remains advisory (locked by API surface)",
+      "9 declarative family compile (high-confidence U1 path)",
+      "10 U1->U3 escalation routing (low + middle band)",
+      "11 U3 dry-run synthesis validation (parse_status='dry_run')",
+      "12 solver registry scalability smoke test (50k solvers verified)",
+      "13 reality view truthful unavailable-state",
+      "14 reality view aggregation / virtualization contract (no per-solver lists at 500)",
+      "15 README truthfulness regression",
+      "17 approval invalidation / supersession (skipped on this branch; P11 brings forward)",
+      "18 Prompt 2 corrected contract presence",
+      "19 no-force / no-rewrite respected (linear descent from origin/main)",
+      "20 cutover model classification document presence",
+      "21 MODEL_C: no-op documentation",
+      "25 no absolute path leakage in journal/release docs",
+      "26 no secret leakage in P10 crown-jewel files",
+      "27 LICENSE-CORE.md covers all P10 crown-jewel files (19 files)",
+      "28 provider invocations log + error log present and non-empty"
+    ]
+  },
 
   "p6_deliverables": {
     "files_edited": [

@@ -89,11 +89,18 @@ def test_phase10_branch_history_is_linear_descended_from_main() -> None:
     1. Pre-squash-merge: phase10/foundation-truth-builder-lane is ahead
        of origin/main with merge_base == origin/main.
     2. Post-squash-merge (PR #54 merged 2026-04-28): origin/main contains
-       the Phase 10 substrate squash commit and the original branch is
-       no longer linearly ahead. The invariant becomes "the squash commit
-       carries the Phase 10 substrate subject and is on origin/main".
+       the Phase 10 substrate squash commit. The invariant becomes "the
+       recorded squash SHA in merged_commit_sha.txt is still an ancestor
+       of origin/main" — a force-push that rewrote the squash away would
+       break ancestry.
 
-    Skipped if not in a git checkout or if the branch ref is unavailable.
+    Detection: post-squash regime is signalled by the presence of
+    docs/runs/release_bundle_2026_04_28_phase10/merged_commit_sha.txt
+    containing a SHA. This is robust to subsequent commits on main
+    (e.g. PR #55 finalization, future fixes) because the file's
+    contents do not change unless someone replaces the squash record.
+
+    Skipped if not in a git checkout or if the git tooling is unavailable.
     """
 
     git_dir = REPO_ROOT / ".git"
@@ -114,56 +121,46 @@ def test_phase10_branch_history_is_linear_descended_from_main() -> None:
         pytest.skip(f"origin/main unavailable: {main_sha_proc.stderr.strip()}")
     main_sha = main_sha_proc.stdout.strip()
 
-    main_subject_proc = subprocess.run(  # noqa: S603
-        ["git", "log", "-1", "--format=%s", "origin/main"],
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
+    merged_sha_path = (
+        REPO_ROOT
+        / "docs"
+        / "runs"
+        / "release_bundle_2026_04_28_phase10"
+        / "merged_commit_sha.txt"
     )
-    main_subject = main_subject_proc.stdout.strip()
 
-    is_post_squash_merge = "Phase 10 substrate" in main_subject
+    if merged_sha_path.is_file():
+        recorded_sha = merged_sha_path.read_text(encoding="utf-8").strip()
+        if recorded_sha:
+            # Post-squash-merge regime: the recorded squash SHA must
+            # still be an ancestor of origin/main. Any force-push that
+            # rewrote it away would fail this check.
+            contains_proc = subprocess.run(  # noqa: S603
+                [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    recorded_sha,
+                    "origin/main",
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            assert contains_proc.returncode == 0, (
+                "recorded Phase 10 squash commit "
+                f"{recorded_sha} is not an ancestor of origin/main "
+                f"(main_sha={main_sha}); a force-push may have "
+                "rewritten history"
+            )
+            return
 
-    if is_post_squash_merge:
-        # Post-merge regime: the squash commit is on origin/main. Verify
-        # it has not been rewritten away by force-push by re-checking
-        # that the recorded merge SHA from the release bundle still
-        # reachable from origin/main.
-        merged_sha_path = (
-            REPO_ROOT
-            / "docs"
-            / "runs"
-            / "release_bundle_2026_04_28_phase10"
-            / "merged_commit_sha.txt"
-        )
-        if merged_sha_path.is_file():
-            recorded_sha = merged_sha_path.read_text(encoding="utf-8").strip()
-            if recorded_sha:
-                contains_proc = subprocess.run(  # noqa: S603
-                    [
-                        "git",
-                        "merge-base",
-                        "--is-ancestor",
-                        recorded_sha,
-                        "origin/main",
-                    ],
-                    cwd=str(REPO_ROOT),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=10,
-                )
-                assert contains_proc.returncode == 0, (
-                    "recorded Phase 10 squash commit "
-                    f"{recorded_sha} is not on origin/main "
-                    f"(main_sha={main_sha}); a force-push may have "
-                    "rewritten history"
-                )
-        return
-
-    # Pre-merge regime: enforce linear-descent invariant.
+    # Pre-merge regime: enforce the linear-descent invariant against the
+    # original phase10 branch ref. This branch only exists in the
+    # working clone before / during PR #54; after merge it may have
+    # been deleted, in which case we skip rather than fail.
     merge_base = subprocess.run(  # noqa: S603
         ["git", "merge-base", "phase10/foundation-truth-builder-lane", "origin/main"],
         cwd=str(REPO_ROOT),

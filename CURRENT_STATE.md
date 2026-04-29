@@ -1,7 +1,7 @@
 # WaggleDance Swarm — Project State (auto-generated)
 
-**Generated**: 2026-04-27T16:28:29+0300
-**Commit**: `a1c4152` on `feature/post-v3.6.0-truthfulness`
+**Generated**: 2026-04-29T06:45:17+0300
+**Commit**: `4d17b52` on `post-phase10/regenerate-current-state-md`
 **Generator**: `python tools/generate_state.py`
 
 > This file is auto-generated from actual code. Do not edit manually.
@@ -9,10 +9,10 @@
 
 ## Summary
 
-- **Hexagonal runtime** (`waggledance/`): 181 core modules, 47,010 lines
+- **Hexagonal runtime** (`waggledance/`): 196 core modules, 50,734 lines
 - **Legacy core** (`core/`): 85 modules, 27,332 lines
-- **Tests**: 295 files, 5512 test functions
-- **Licensing**: 138 BUSL-protected files, 105 Apache files
+- **Tests**: 302 files, 5585 test functions
+- **Licensing**: 157 BUSL-protected files, 105 Apache files
 
 ## Security Invariants
 
@@ -176,6 +176,14 @@
 | `waggledance/core/provider_plane/provider_router.py` | 86 | RoutingDecision | Complete |
 | `waggledance/core/provider_plane/request_pack_router.py` | 104 | ProviderRequest | Complete |
 | `waggledance/core/provider_plane/response_normalizer.py` | 73 | ProviderResponse | Complete |
+| `waggledance/core/providers/builder_job_queue.py` | 104 | BuilderJobSubmission, BuilderJobQueue | Complete |
+| `waggledance/core/providers/builder_lane_router.py` | 61 | RouteWithJob, BuilderLaneRouter | Complete |
+| `waggledance/core/providers/claude_code_builder.py` | 240 | ClaudeCodeBuilderUnavailable, _LaunchSpec, ClaudeCodeBuilder | Complete |
+| `waggledance/core/providers/mentor_forge.py` | 130 | MentorAdvisoryPayload, MentorForge | Complete |
+| `waggledance/core/providers/provider_contracts.py` | 260 | ProviderContractError, ProviderRequest, ProviderResponse | Complete |
+| `waggledance/core/providers/provider_plane.py` | 277 | ProviderPlaneError, ProviderAdapter, ProviderDispatchResult +3 | Complete |
+| `waggledance/core/providers/provider_registry.py` | 186 | ProviderConfig, ProviderPlaneRegistry | Complete |
+| `waggledance/core/providers/repair_forge.py` | 84 | RepairForge | Complete |
 | `waggledance/core/reasoning/anomaly_engine.py` | 216 | AnomalyResult, AnomalyEngine | Complete |
 | `waggledance/core/reasoning/bee_domain_engine.py` | 346 | ColonyHealthResult, SwarmRiskResult, HoneyYieldResult +1 | Complete |
 | `waggledance/core/reasoning/causal_engine.py` | 231 | CausalChain, ImpactEstimate, CausalEngine | Complete |
@@ -190,9 +198,12 @@
 | `waggledance/core/reasoning/thermal_solver.py` | 256 | ThermalResult, ThermalSolver | Complete |
 | `waggledance/core/reasoning/verifier.py` | 288 | VerifierResult, Verifier | Complete |
 | `waggledance/core/solver_synthesis/bulk_rule_extractor.py` | 159 | FamilyMatch | Complete |
+| `waggledance/core/solver_synthesis/cold_shadow_throttler.py` | 178 | ThrottleVerdict, _LaneState, ColdShadowThrottler | Complete |
 | `waggledance/core/solver_synthesis/declarative_solver_spec.py` | 123 | SolverSpec, SpecValidationError | Complete |
 | `waggledance/core/solver_synthesis/deterministic_solver_compiler.py` | 210 | CompiledSolver | Complete |
 | `waggledance/core/solver_synthesis/gap_to_solver_spec.py` | 65 | GapRoutingDecision | Complete |
+| `waggledance/core/solver_synthesis/llm_solver_generator.py` | 191 | GenerationRequest, GenerationResult | Complete |
+| `waggledance/core/solver_synthesis/solver_bootstrap.py` | 305 | BootstrapDecision, SolverBootstrap | Complete |
 | `waggledance/core/solver_synthesis/solver_candidate_store.py` | 221 | SolverCandidate, SolverCandidateStore | Complete |
 | `waggledance/core/solver_synthesis/solver_family_registry.py` | 166 | SolverFamily, SolverFamilyRegistry | Complete |
 | `waggledance/core/solver_synthesis/solver_quarantine.py` | 163 | QuotaState, AdmissionDecision | Complete |
@@ -200,6 +211,10 @@
 | `waggledance/core/specialist_models/meta_optimizer.py` | 166 | CanaryRecord, HyperparameterProposal, MetaOptimizerState | Complete |
 | `waggledance/core/specialist_models/model_store.py` | 236 | ModelStatus, ModelVersion, ModelStore | Complete |
 | `waggledance/core/specialist_models/specialist_trainer.py` | 944 | TrainingResult, SpecialistTrainer | Complete |
+| `waggledance/core/storage/control_plane.py` | 1014 | ControlPlaneError, SolverFamilyRecord, SolverRecord +10 | Complete |
+| `waggledance/core/storage/control_plane_schema.py` | 271 |  | Complete |
+| `waggledance/core/storage/path_resolver.py` | 227 | PathResolverError, LogicalPathKind, ResolvedPath +1 | Complete |
+| `waggledance/core/storage/registry_queries.py` | 196 | FamilyRollup, CapabilityRollup, RegistryQueries | Complete |
 | `waggledance/core/vector_identity/identity_anchor.py` | 127 | AnchorValidation | Complete |
 | `waggledance/core/vector_identity/ingestion_dedup.py` | 143 | DedupResult | Complete |
 | `waggledance/core/vector_identity/vector_provenance_graph.py` | 187 | LineageEdge, VectorNode, VectorProvenanceGraph | Complete |
@@ -312,12 +327,12 @@
 # Clone and verify:
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-git checkout a1c4152
+git checkout 4d17b52
 
 # Count core modules (expect 40+):
 find waggledance/core -name "*.py" -not -name "__init__.py" | wc -l
 
 # Run tests:
 pip install -r requirements.txt
-pytest tests/ --collect-only -q | tail -1              # expect 5512+
+pytest tests/ --collect-only -q | tail -1              # expect 5585+
 ```

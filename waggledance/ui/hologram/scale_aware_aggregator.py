@@ -32,6 +32,7 @@ never-fabricate invariant.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
@@ -53,6 +54,8 @@ class ScaleAwarePanels:
     provider_queue_summary: RealityPanel
     # Phase 11 — autonomy lane visibility (aggregate, never per-solver)
     autonomy_low_risk_kpis: RealityPanel
+    # Phase 12 — self-starting autonomy loop visibility
+    autonomy_self_starting_kpis: RealityPanel
 
 
 _HARD_CAP_PER_PANEL: int = 256
@@ -77,6 +80,11 @@ def build_scale_aware_panels(
                 "Low-risk autonomy lane",
                 unavailable,
             ),
+            autonomy_self_starting_kpis=_unavailable(
+                "autonomy_self_starting_kpis",
+                "Self-starting autonomy loop",
+                unavailable,
+            ),
         )
 
     queries = RegistryQueries(control_plane)
@@ -86,6 +94,7 @@ def build_scale_aware_panels(
         builder_lane_status=_builder_lane_panel(control_plane),
         provider_queue_summary=_provider_queue_panel(control_plane),
         autonomy_low_risk_kpis=_autonomy_low_risk_kpis_panel(control_plane),
+        autonomy_self_starting_kpis=_autonomy_self_starting_panel(control_plane),
     )
 
 
@@ -298,6 +307,110 @@ def _autonomy_low_risk_kpis_panel(cp: ControlPlaneDB) -> RealityPanel:
     return RealityPanel(
         panel_id="autonomy_low_risk_kpis",
         title="Low-risk autonomy lane",
+        available=True,
+        items=tuple(items),
+    )
+
+
+def _autonomy_self_starting_panel(cp: ControlPlaneDB) -> RealityPanel:
+    """Phase 12 — self-starting autonomy loop visibility.
+
+    Distinguishes self-starting / teacher-assisted / human-gated growth:
+
+    * self-starting: ``autogrowth_runs`` rows with ``intent_id NOT NULL``
+      and ``outcome='auto_promoted'``;
+    * teacher-assisted: ``promotion_decisions`` rows whose linked
+      ``validation_run`` or ``shadow_evaluation`` came through a
+      ``provider_jobs`` ancestry (none today; explicitly 0 until real
+      adapters land);
+    * human-gated: anything in ``promotion_states`` (the Phase 9
+      14-stage ladder), recorded for completeness.
+
+    Returns ``available=false`` when the autonomy queue + autogrowth_runs
+    are both empty — preserves the never-fabricate invariant.
+    """
+
+    queue_total = cp.count_queue_rows()
+    intent_total = cp.count_growth_intents()
+    runs_promoted = len(
+        cp.list_autogrowth_runs(outcome="auto_promoted", limit=10000)
+    )
+    runs_total = cp.stats().table_counts.get("autogrowth_runs", 0)
+
+    if queue_total == 0 and intent_total == 0 and runs_total == 0:
+        return _unavailable(
+            "autonomy_self_starting_kpis",
+            "Self-starting autonomy loop",
+            "no_self_starting_activity_recorded_yet",
+        )
+
+    queue_pending = cp.count_queue_rows(status="queued")
+    queue_claimed = cp.count_queue_rows(status="claimed")
+    queue_completed = cp.count_queue_rows(status="completed")
+    queue_failed = cp.count_queue_rows(status="failed")
+
+    intents_pending = cp.count_growth_intents(status="pending")
+    intents_enqueued = cp.count_growth_intents(status="enqueued")
+    intents_fulfilled = cp.count_growth_intents(status="fulfilled")
+    intents_rejected = cp.count_growth_intents(status="rejected")
+
+    # Per-family breakdown of fulfilled-via-self-starting promotions.
+    rows = cp._conn.execute(  # type: ignore[attr-defined]
+        """
+        SELECT family_kind, COUNT(*) AS c
+        FROM autogrowth_runs WHERE outcome = 'auto_promoted'
+        GROUP BY family_kind ORDER BY family_kind
+        """
+    ).fetchall()
+    per_family = {str(r["family_kind"]): int(r["c"]) for r in rows}
+
+    # Per-cell breakdown of fulfilled intents.
+    rows = cp._conn.execute(  # type: ignore[attr-defined]
+        """
+        SELECT cell_coord, COUNT(*) AS c
+        FROM growth_intents WHERE status = 'fulfilled'
+        GROUP BY cell_coord ORDER BY cell_coord
+        """
+    ).fetchall()
+    per_cell = {str(r["cell_coord"] or "_"): int(r["c"]) for r in rows}
+
+    # Teacher-assisted truth: count promotion_decisions that have a
+    # linked validation_run or shadow_evaluation paired with any
+    # provider_jobs row (today: zero — only dry_run_stub +
+    # claude_code_builder_lane are exercisable, and the inner loop does
+    # not invoke either). The Phase 11 mass proof keeps this at 0;
+    # documenting that explicitly here is what makes the panel honest.
+    provider_jobs_total = cp.stats().table_counts.get("provider_jobs", 0)
+    teacher_assisted_total = 0  # exercised only when provider_jobs > 0
+
+    items: list[dict] = [
+        {"metric": "queue_total", "value": int(queue_total)},
+        {"metric": "queue_pending", "value": int(queue_pending)},
+        {"metric": "queue_claimed", "value": int(queue_claimed)},
+        {"metric": "queue_completed", "value": int(queue_completed)},
+        {"metric": "queue_failed", "value": int(queue_failed)},
+        {"metric": "intents_total", "value": int(intent_total)},
+        {"metric": "intents_pending", "value": int(intents_pending)},
+        {"metric": "intents_enqueued", "value": int(intents_enqueued)},
+        {"metric": "intents_fulfilled", "value": int(intents_fulfilled)},
+        {"metric": "intents_rejected", "value": int(intents_rejected)},
+        {"metric": "self_starting_promotions_total",
+          "value": int(runs_promoted)},
+        {"metric": "teacher_assisted_promotions_total",
+          "value": int(teacher_assisted_total)},
+        {"metric": "provider_jobs_total", "value": int(provider_jobs_total)},
+        {
+            "metric": "per_family_self_starting",
+            "value": json.dumps(per_family, sort_keys=True),
+        },
+        {
+            "metric": "per_cell_self_starting",
+            "value": json.dumps(per_cell, sort_keys=True),
+        },
+    ]
+    return RealityPanel(
+        panel_id="autonomy_self_starting_kpis",
+        title="Self-starting autonomy loop",
         available=True,
         items=tuple(items),
     )

@@ -178,6 +178,101 @@ class RuntimePathBinding:
     rebound_at: Optional[str]
 
 
+# -- schema v2 — Phase 11 autonomous low-risk solver growth ---------
+
+
+@dataclass(frozen=True)
+class SolverArtifactRecord:
+    id: int
+    solver_id: int
+    family_kind: str
+    artifact_id: str
+    spec_canonical_json: str
+    artifact_json: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class FamilyPolicyRecord:
+    id: int
+    family_kind: str
+    is_low_risk: bool
+    max_auto_promote: int
+    min_validation_pass_rate: float
+    min_shadow_samples: int
+    min_shadow_agreement_rate: float
+    notes: Optional[str]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ValidationRunRecord:
+    id: int
+    solver_id: Optional[int]
+    family_kind: str
+    spec_hash: Optional[str]
+    case_count: int
+    pass_count: int
+    fail_count: int
+    status: str
+    evidence: Optional[str]
+    started_at: str
+    completed_at: Optional[str]
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ShadowEvaluationRecord:
+    id: int
+    solver_id: Optional[int]
+    family_kind: str
+    spec_hash: Optional[str]
+    sample_count: int
+    agree_count: int
+    disagree_count: int
+    agreement_rate: Optional[float]
+    oracle_kind: Optional[str]
+    status: str
+    evidence: Optional[str]
+    started_at: str
+    completed_at: Optional[str]
+    created_at: str
+
+
+@dataclass(frozen=True)
+class PromotionDecisionRecord:
+    id: int
+    solver_id: int
+    family_kind: str
+    decision: str
+    decided_by: str
+    validation_run_id: Optional[int]
+    shadow_evaluation_id: Optional[int]
+    invariant_failed: Optional[str]
+    rollback_reason: Optional[str]
+    evidence: Optional[str]
+    created_at: str
+
+
+@dataclass(frozen=True)
+class AutonomyKPISnapshot:
+    id: int
+    snapshot_at: str
+    candidates_total: int
+    validations_pass_total: int
+    validations_fail_total: int
+    shadows_pass_total: int
+    shadows_fail_total: int
+    auto_promotions_total: int
+    rejections_total: int
+    rollbacks_total: int
+    dispatcher_hits_total: int
+    dispatcher_misses_total: int
+    per_family_counts_json: Optional[str]
+    created_at: str
+
+
 @dataclass
 class ControlPlaneStats:
     """Lightweight snapshot used by Reality View / status endpoints."""
@@ -817,6 +912,368 @@ class ControlPlaneDB:
             ).fetchall()
             return [self._row_to_runtime_path_binding(r) for r in rows]
 
+    # -- schema v2: solver artifacts (executable compiled form) --------
+
+    def upsert_solver_artifact(
+        self,
+        solver_id: int,
+        family_kind: str,
+        artifact_id: str,
+        spec_canonical_json: str,
+        artifact_json: str,
+    ) -> SolverArtifactRecord:
+        now = _utcnow()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO solver_artifacts(
+                    solver_id, family_kind, artifact_id,
+                    spec_canonical_json, artifact_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(solver_id, artifact_id) DO UPDATE SET
+                    family_kind=excluded.family_kind,
+                    spec_canonical_json=excluded.spec_canonical_json,
+                    artifact_json=excluded.artifact_json
+                """,
+                (
+                    int(solver_id), family_kind, artifact_id,
+                    spec_canonical_json, artifact_json, now,
+                ),
+            )
+            row = self._conn.execute(
+                """
+                SELECT * FROM solver_artifacts
+                WHERE solver_id = ? AND artifact_id = ?
+                """,
+                (int(solver_id), artifact_id),
+            ).fetchone()
+        return self._row_to_solver_artifact(row)
+
+    def get_solver_artifact(
+        self, solver_id: int
+    ) -> Optional[SolverArtifactRecord]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT * FROM solver_artifacts
+                WHERE solver_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (int(solver_id),),
+            ).fetchone()
+        return None if row is None else self._row_to_solver_artifact(row)
+
+    def list_auto_promoted_artifacts_for_family(
+        self, family_kind: str, *, limit: int = 100
+    ) -> List[SolverArtifactRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT a.*
+                FROM solver_artifacts a
+                JOIN solvers s ON s.id = a.solver_id
+                WHERE a.family_kind = ?
+                  AND s.status = 'auto_promoted'
+                ORDER BY a.id DESC
+                LIMIT ?
+                """,
+                (family_kind, int(limit)),
+            ).fetchall()
+        return [self._row_to_solver_artifact(r) for r in rows]
+
+    # -- schema v2: family policies ------------------------------------
+
+    def upsert_family_policy(
+        self,
+        family_kind: str,
+        *,
+        is_low_risk: bool = False,
+        max_auto_promote: int = 100,
+        min_validation_pass_rate: float = 1.0,
+        min_shadow_samples: int = 5,
+        min_shadow_agreement_rate: float = 1.0,
+        notes: Optional[str] = None,
+    ) -> FamilyPolicyRecord:
+        now = _utcnow()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO family_policies(
+                    family_kind, is_low_risk, max_auto_promote,
+                    min_validation_pass_rate, min_shadow_samples,
+                    min_shadow_agreement_rate, notes,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(family_kind) DO UPDATE SET
+                    is_low_risk=excluded.is_low_risk,
+                    max_auto_promote=excluded.max_auto_promote,
+                    min_validation_pass_rate=excluded.min_validation_pass_rate,
+                    min_shadow_samples=excluded.min_shadow_samples,
+                    min_shadow_agreement_rate=excluded.min_shadow_agreement_rate,
+                    notes=excluded.notes,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    family_kind, 1 if is_low_risk else 0, max_auto_promote,
+                    float(min_validation_pass_rate), int(min_shadow_samples),
+                    float(min_shadow_agreement_rate), notes, now, now,
+                ),
+            )
+            return self._fetch_family_policy(family_kind)
+
+    def get_family_policy(self, family_kind: str) -> Optional[FamilyPolicyRecord]:
+        with self._lock:
+            return self._fetch_family_policy(family_kind, raise_if_missing=False)
+
+    def list_family_policies(
+        self, *, low_risk_only: bool = False
+    ) -> List[FamilyPolicyRecord]:
+        sql = "SELECT * FROM family_policies"
+        params: tuple = ()
+        if low_risk_only:
+            sql += " WHERE is_low_risk = 1"
+        sql += " ORDER BY family_kind"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_family_policy(r) for r in rows]
+
+    # -- schema v2: validation runs ------------------------------------
+
+    def record_validation_run(
+        self,
+        family_kind: str,
+        *,
+        solver_id: Optional[int] = None,
+        spec_hash: Optional[str] = None,
+        case_count: int = 0,
+        pass_count: int = 0,
+        fail_count: int = 0,
+        status: str = "completed",
+        evidence: Optional[str] = None,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+    ) -> ValidationRunRecord:
+        now = _utcnow()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO validation_runs(
+                    solver_id, family_kind, spec_hash,
+                    case_count, pass_count, fail_count,
+                    status, evidence,
+                    started_at, completed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    solver_id, family_kind, spec_hash,
+                    int(case_count), int(pass_count), int(fail_count),
+                    status, evidence,
+                    started_at or now, completed_at or now, now,
+                ),
+            )
+            new_id = cursor.lastrowid
+            row = self._conn.execute(
+                "SELECT * FROM validation_runs WHERE id = ?", (new_id,)
+            ).fetchone()
+            return self._row_to_validation_run(row)
+
+    def get_validation_run(self, run_id: int) -> Optional[ValidationRunRecord]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM validation_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return None if row is None else self._row_to_validation_run(row)
+
+    # -- schema v2: shadow evaluations ----------------------------------
+
+    def record_shadow_evaluation(
+        self,
+        family_kind: str,
+        *,
+        solver_id: Optional[int] = None,
+        spec_hash: Optional[str] = None,
+        sample_count: int = 0,
+        agree_count: int = 0,
+        disagree_count: int = 0,
+        oracle_kind: Optional[str] = None,
+        status: str = "completed",
+        evidence: Optional[str] = None,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+    ) -> ShadowEvaluationRecord:
+        now = _utcnow()
+        rate = (agree_count / sample_count) if sample_count > 0 else None
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO shadow_evaluations(
+                    solver_id, family_kind, spec_hash,
+                    sample_count, agree_count, disagree_count,
+                    agreement_rate, oracle_kind, status, evidence,
+                    started_at, completed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    solver_id, family_kind, spec_hash,
+                    int(sample_count), int(agree_count), int(disagree_count),
+                    rate, oracle_kind, status, evidence,
+                    started_at or now, completed_at or now, now,
+                ),
+            )
+            new_id = cursor.lastrowid
+            row = self._conn.execute(
+                "SELECT * FROM shadow_evaluations WHERE id = ?", (new_id,)
+            ).fetchone()
+            return self._row_to_shadow_evaluation(row)
+
+    def get_shadow_evaluation(
+        self, eval_id: int
+    ) -> Optional[ShadowEvaluationRecord]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM shadow_evaluations WHERE id = ?", (eval_id,)
+            ).fetchone()
+        return None if row is None else self._row_to_shadow_evaluation(row)
+
+    # -- schema v2: promotion decisions ---------------------------------
+
+    def record_promotion_decision(
+        self,
+        solver_id: int,
+        family_kind: str,
+        decision: str,
+        decided_by: str,
+        *,
+        validation_run_id: Optional[int] = None,
+        shadow_evaluation_id: Optional[int] = None,
+        invariant_failed: Optional[str] = None,
+        rollback_reason: Optional[str] = None,
+        evidence: Optional[str] = None,
+    ) -> PromotionDecisionRecord:
+        now = _utcnow()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO promotion_decisions(
+                    solver_id, family_kind, decision, decided_by,
+                    validation_run_id, shadow_evaluation_id,
+                    invariant_failed, rollback_reason, evidence,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(solver_id), family_kind, decision, decided_by,
+                    validation_run_id, shadow_evaluation_id,
+                    invariant_failed, rollback_reason, evidence, now,
+                ),
+            )
+            new_id = cursor.lastrowid
+            row = self._conn.execute(
+                "SELECT * FROM promotion_decisions WHERE id = ?", (new_id,)
+            ).fetchone()
+            return self._row_to_promotion_decision(row)
+
+    def list_promotion_decisions(
+        self,
+        *,
+        solver_id: Optional[int] = None,
+        family_kind: Optional[str] = None,
+        decision: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[PromotionDecisionRecord]:
+        wheres: List[str] = []
+        params: List[object] = []
+        if solver_id is not None:
+            wheres.append("solver_id = ?")
+            params.append(int(solver_id))
+        if family_kind is not None:
+            wheres.append("family_kind = ?")
+            params.append(family_kind)
+        if decision is not None:
+            wheres.append("decision = ?")
+            params.append(decision)
+        sql = "SELECT * FROM promotion_decisions"
+        if wheres:
+            sql += " WHERE " + " AND ".join(wheres)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_promotion_decision(r) for r in rows]
+
+    def count_auto_promoted_for_family(self, family_kind: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM solvers s
+                JOIN solver_families f ON f.id = s.family_id
+                WHERE f.name = ? AND s.status = 'auto_promoted'
+                """,
+                (family_kind,),
+            ).fetchone()
+        return int(row["c"]) if row else 0
+
+    # -- schema v2: autonomy KPIs ---------------------------------------
+
+    def snapshot_autonomy_kpis(
+        self,
+        *,
+        candidates_total: int = 0,
+        validations_pass_total: int = 0,
+        validations_fail_total: int = 0,
+        shadows_pass_total: int = 0,
+        shadows_fail_total: int = 0,
+        auto_promotions_total: int = 0,
+        rejections_total: int = 0,
+        rollbacks_total: int = 0,
+        dispatcher_hits_total: int = 0,
+        dispatcher_misses_total: int = 0,
+        per_family_counts: Optional[Mapping[str, int]] = None,
+    ) -> AutonomyKPISnapshot:
+        now = _utcnow()
+        per_family_json: Optional[str] = (
+            json.dumps(dict(sorted(per_family_counts.items())))
+            if per_family_counts else None
+        )
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO autonomy_kpis(
+                    snapshot_at,
+                    candidates_total,
+                    validations_pass_total, validations_fail_total,
+                    shadows_pass_total, shadows_fail_total,
+                    auto_promotions_total, rejections_total, rollbacks_total,
+                    dispatcher_hits_total, dispatcher_misses_total,
+                    per_family_counts_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    int(candidates_total),
+                    int(validations_pass_total), int(validations_fail_total),
+                    int(shadows_pass_total), int(shadows_fail_total),
+                    int(auto_promotions_total), int(rejections_total),
+                    int(rollbacks_total),
+                    int(dispatcher_hits_total),
+                    int(dispatcher_misses_total),
+                    per_family_json, now,
+                ),
+            )
+            new_id = cursor.lastrowid
+            row = self._conn.execute(
+                "SELECT * FROM autonomy_kpis WHERE id = ?", (new_id,)
+            ).fetchone()
+        return self._row_to_autonomy_kpi(row)
+
+    def latest_autonomy_kpi(self) -> Optional[AutonomyKPISnapshot]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM autonomy_kpis ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return None if row is None else self._row_to_autonomy_kpi(row)
+
     # -- iteration -------------------------------------------------------
 
     def iter_solvers(
@@ -1011,4 +1468,135 @@ class ControlPlaneDB:
             is_active=bool(int(row["is_active"])),
             bound_at=str(row["bound_at"]),
             rebound_at=row["rebound_at"],
+        )
+
+    # -- v2 row converters ---------------------------------------------
+
+    @staticmethod
+    def _row_to_solver_artifact(row: sqlite3.Row) -> SolverArtifactRecord:
+        return SolverArtifactRecord(
+            id=int(row["id"]),
+            solver_id=int(row["solver_id"]),
+            family_kind=str(row["family_kind"]),
+            artifact_id=str(row["artifact_id"]),
+            spec_canonical_json=str(row["spec_canonical_json"]),
+            artifact_json=str(row["artifact_json"]),
+            created_at=str(row["created_at"]),
+        )
+
+    def _fetch_family_policy(
+        self,
+        family_kind: str,
+        *,
+        raise_if_missing: bool = True,
+    ) -> Optional[FamilyPolicyRecord]:
+        row = self._conn.execute(
+            "SELECT * FROM family_policies WHERE family_kind = ?",
+            (family_kind,),
+        ).fetchone()
+        if row is None:
+            if raise_if_missing:
+                raise ControlPlaneError(
+                    f"unknown family_policy {family_kind!r}"
+                )
+            return None
+        return self._row_to_family_policy(row)
+
+    @staticmethod
+    def _row_to_family_policy(row: sqlite3.Row) -> FamilyPolicyRecord:
+        return FamilyPolicyRecord(
+            id=int(row["id"]),
+            family_kind=str(row["family_kind"]),
+            is_low_risk=bool(int(row["is_low_risk"])),
+            max_auto_promote=int(row["max_auto_promote"]),
+            min_validation_pass_rate=float(row["min_validation_pass_rate"]),
+            min_shadow_samples=int(row["min_shadow_samples"]),
+            min_shadow_agreement_rate=float(row["min_shadow_agreement_rate"]),
+            notes=row["notes"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _row_to_validation_run(row: sqlite3.Row) -> ValidationRunRecord:
+        return ValidationRunRecord(
+            id=int(row["id"]),
+            solver_id=(
+                int(row["solver_id"]) if row["solver_id"] is not None else None
+            ),
+            family_kind=str(row["family_kind"]),
+            spec_hash=row["spec_hash"],
+            case_count=int(row["case_count"]),
+            pass_count=int(row["pass_count"]),
+            fail_count=int(row["fail_count"]),
+            status=str(row["status"]),
+            evidence=row["evidence"],
+            started_at=str(row["started_at"]),
+            completed_at=row["completed_at"],
+            created_at=str(row["created_at"]),
+        )
+
+    @staticmethod
+    def _row_to_shadow_evaluation(row: sqlite3.Row) -> ShadowEvaluationRecord:
+        return ShadowEvaluationRecord(
+            id=int(row["id"]),
+            solver_id=(
+                int(row["solver_id"]) if row["solver_id"] is not None else None
+            ),
+            family_kind=str(row["family_kind"]),
+            spec_hash=row["spec_hash"],
+            sample_count=int(row["sample_count"]),
+            agree_count=int(row["agree_count"]),
+            disagree_count=int(row["disagree_count"]),
+            agreement_rate=(
+                float(row["agreement_rate"])
+                if row["agreement_rate"] is not None else None
+            ),
+            oracle_kind=row["oracle_kind"],
+            status=str(row["status"]),
+            evidence=row["evidence"],
+            started_at=str(row["started_at"]),
+            completed_at=row["completed_at"],
+            created_at=str(row["created_at"]),
+        )
+
+    @staticmethod
+    def _row_to_promotion_decision(row: sqlite3.Row) -> PromotionDecisionRecord:
+        return PromotionDecisionRecord(
+            id=int(row["id"]),
+            solver_id=int(row["solver_id"]),
+            family_kind=str(row["family_kind"]),
+            decision=str(row["decision"]),
+            decided_by=str(row["decided_by"]),
+            validation_run_id=(
+                int(row["validation_run_id"])
+                if row["validation_run_id"] is not None else None
+            ),
+            shadow_evaluation_id=(
+                int(row["shadow_evaluation_id"])
+                if row["shadow_evaluation_id"] is not None else None
+            ),
+            invariant_failed=row["invariant_failed"],
+            rollback_reason=row["rollback_reason"],
+            evidence=row["evidence"],
+            created_at=str(row["created_at"]),
+        )
+
+    @staticmethod
+    def _row_to_autonomy_kpi(row: sqlite3.Row) -> AutonomyKPISnapshot:
+        return AutonomyKPISnapshot(
+            id=int(row["id"]),
+            snapshot_at=str(row["snapshot_at"]),
+            candidates_total=int(row["candidates_total"]),
+            validations_pass_total=int(row["validations_pass_total"]),
+            validations_fail_total=int(row["validations_fail_total"]),
+            shadows_pass_total=int(row["shadows_pass_total"]),
+            shadows_fail_total=int(row["shadows_fail_total"]),
+            auto_promotions_total=int(row["auto_promotions_total"]),
+            rejections_total=int(row["rejections_total"]),
+            rollbacks_total=int(row["rollbacks_total"]),
+            dispatcher_hits_total=int(row["dispatcher_hits_total"]),
+            dispatcher_misses_total=int(row["dispatcher_misses_total"]),
+            per_family_counts_json=row["per_family_counts_json"],
+            created_at=str(row["created_at"]),
         )

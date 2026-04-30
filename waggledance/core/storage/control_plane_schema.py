@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 INITIAL_SCHEMA_SQL: List[str] = [
     """
@@ -240,11 +240,161 @@ INITIAL_SCHEMA_SQL: List[str] = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Schema v2 — Phase 11 autonomous low-risk solver growth
+# --------------------------------------------------------------------------
+# Adds five normalized tables for the autonomy lane defined in
+# ``docs/architecture/LOW_RISK_AUTOGROWTH_POLICY.md``. No ad hoc JSON
+# system-of-record (RULE 10): every autonomy current-state lives here,
+# and every promotion / rollback decision is auditable from this schema
+# alone.
+PHASE11_AUTOGROWTH_SCHEMA_SQL: List[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS solver_artifacts (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        solver_id           INTEGER NOT NULL REFERENCES solvers(id) ON DELETE CASCADE,
+        family_kind         TEXT NOT NULL,
+        artifact_id         TEXT NOT NULL,
+        spec_canonical_json TEXT NOT NULL,
+        artifact_json       TEXT NOT NULL,
+        created_at          TEXT NOT NULL,
+        UNIQUE (solver_id, artifact_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_solver_artifacts_family
+        ON solver_artifacts(family_kind)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_solver_artifacts_artifact_id
+        ON solver_artifacts(artifact_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS family_policies (
+        id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+        family_kind                 TEXT NOT NULL UNIQUE,
+        is_low_risk                 INTEGER NOT NULL DEFAULT 0,
+        max_auto_promote            INTEGER NOT NULL DEFAULT 100,
+        min_validation_pass_rate    REAL NOT NULL DEFAULT 1.0,
+        min_shadow_samples          INTEGER NOT NULL DEFAULT 5,
+        min_shadow_agreement_rate   REAL NOT NULL DEFAULT 1.0,
+        notes                       TEXT,
+        created_at                  TEXT NOT NULL,
+        updated_at                  TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_family_policies_low_risk
+        ON family_policies(is_low_risk)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS validation_runs (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        solver_id           INTEGER REFERENCES solvers(id) ON DELETE SET NULL,
+        family_kind         TEXT NOT NULL,
+        spec_hash           TEXT,
+        case_count          INTEGER NOT NULL DEFAULT 0,
+        pass_count          INTEGER NOT NULL DEFAULT 0,
+        fail_count          INTEGER NOT NULL DEFAULT 0,
+        status              TEXT NOT NULL DEFAULT 'running',
+        evidence            TEXT,
+        started_at          TEXT NOT NULL,
+        completed_at        TEXT,
+        created_at          TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_validation_runs_solver
+        ON validation_runs(solver_id, completed_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_validation_runs_family
+        ON validation_runs(family_kind, status)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shadow_evaluations (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        solver_id               INTEGER REFERENCES solvers(id) ON DELETE SET NULL,
+        family_kind             TEXT NOT NULL,
+        spec_hash               TEXT,
+        sample_count            INTEGER NOT NULL DEFAULT 0,
+        agree_count             INTEGER NOT NULL DEFAULT 0,
+        disagree_count          INTEGER NOT NULL DEFAULT 0,
+        agreement_rate          REAL,
+        oracle_kind             TEXT,
+        status                  TEXT NOT NULL DEFAULT 'running',
+        evidence                TEXT,
+        started_at              TEXT NOT NULL,
+        completed_at            TEXT,
+        created_at              TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_shadow_evaluations_solver
+        ON shadow_evaluations(solver_id, completed_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_shadow_evaluations_family
+        ON shadow_evaluations(family_kind, status)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS promotion_decisions (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        solver_id               INTEGER NOT NULL REFERENCES solvers(id) ON DELETE CASCADE,
+        family_kind             TEXT NOT NULL,
+        decision                TEXT NOT NULL,
+        decided_by              TEXT NOT NULL,
+        validation_run_id       INTEGER REFERENCES validation_runs(id) ON DELETE SET NULL,
+        shadow_evaluation_id    INTEGER REFERENCES shadow_evaluations(id) ON DELETE SET NULL,
+        invariant_failed        TEXT,
+        rollback_reason         TEXT,
+        evidence                TEXT,
+        created_at              TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_promotion_decisions_solver
+        ON promotion_decisions(solver_id, decision)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_promotion_decisions_family
+        ON promotion_decisions(family_kind, decision)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_promotion_decisions_decided_by
+        ON promotion_decisions(decided_by, created_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS autonomy_kpis (
+        id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+        snapshot_at                 TEXT NOT NULL,
+        candidates_total            INTEGER NOT NULL DEFAULT 0,
+        validations_pass_total      INTEGER NOT NULL DEFAULT 0,
+        validations_fail_total      INTEGER NOT NULL DEFAULT 0,
+        shadows_pass_total          INTEGER NOT NULL DEFAULT 0,
+        shadows_fail_total          INTEGER NOT NULL DEFAULT 0,
+        auto_promotions_total       INTEGER NOT NULL DEFAULT 0,
+        rejections_total            INTEGER NOT NULL DEFAULT 0,
+        rollbacks_total             INTEGER NOT NULL DEFAULT 0,
+        dispatcher_hits_total       INTEGER NOT NULL DEFAULT 0,
+        dispatcher_misses_total     INTEGER NOT NULL DEFAULT 0,
+        per_family_counts_json      TEXT,
+        created_at                  TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_autonomy_kpis_snapshot_at
+        ON autonomy_kpis(snapshot_at)
+    """,
+]
+
+
 # Forward-only migrations indexed by target schema version.
 # Migration N is applied when current schema_version < N. Each migration
 # is a list of SQL statements applied in a single transaction.
 MIGRATIONS: Dict[int, List[str]] = {
     1: INITIAL_SCHEMA_SQL,
+    2: PHASE11_AUTOGROWTH_SCHEMA_SQL,
 }
 
 
@@ -268,4 +418,11 @@ def all_table_names() -> List[str]:
         "runtime_path_bindings",
         "capsule_registry_bindings",
         "cell_membership",
+        # schema v2 — Phase 11 autonomous low-risk solver growth
+        "solver_artifacts",
+        "family_policies",
+        "validation_runs",
+        "shadow_evaluations",
+        "promotion_decisions",
+        "autonomy_kpis",
     ]

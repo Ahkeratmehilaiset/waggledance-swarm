@@ -105,6 +105,20 @@ This is a scaffolding / orchestration truth, not a capability claim. It says:
 
 The lane is not load-bearing for runtime cognition: the autonomy runtime continues to operate without consulting the provider plane (see "What Phase 10 P3 does NOT do" below). The teacher lane shapes *what WD can become*; it does not sit in the inner-loop of *what WD is doing right now*.
 
+## Inner loop vs outer loop (Phase 12 truth)
+
+After Phase 12 the distinction is sharper and is preserved by tests:
+
+* **Inner loop = local-first.** When the autonomy lane self-starts a low-risk growth attempt — `RuntimeGapDetector → digest_signals_into_intents → AutogrowthScheduler.tick → LowRiskGrower.grow_from_gap → AutoPromotionEngine.evaluate_candidate → LowRiskSolverDispatcher.dispatch` — the entire pipeline runs in-process against `waggledance.core.solver_synthesis.deterministic_solver_compiler` and the pure executors in `waggledance.core.autonomy_growth.solver_executor`. **Zero provider calls.** The Phase 12 mass-safe proof at `docs/runs/phase12_self_starting_autogrowth_2026_04_30/mass_autogrowth_proof.json` promotes 30 solvers across all six allowlisted families end-to-end with `provider_jobs` empty. The inner loop is therefore *not* dependent on Claude Code in the common path.
+* **Outer loop = teacher-assisted.** Claude Code Opus 4.7 stays as the primary teacher lane for cases the inner loop cannot resolve locally:
+  * spec invention when no canonical seed and no high-confidence family match exist (the Phase 9 `bulk_rule_extractor` cannot derive a spec);
+  * family extension (adding a new family kind requires a code change, naturally Claude-Code-mediated through PR review);
+  * mentor-style review of failed candidates that the auto-promotion engine rejected.
+  Outer-loop calls flow through `solver_synthesis.SolverBootstrap` U3 path → provider plane → `claude_code_builder_lane` (Phase 10 chain, position 1).
+* **Future peer lanes** (Anthropic, OpenAI, local models) remain architectural peers in the routing scaffold. Their concrete HTTP adapters are still follow-up work; only `dry_run_stub` and `claude_code_builder_lane` are exercisable end-to-end. Phase 12 does not change that.
+
+A regression test in `tests/autonomy_growth/test_outer_inner_loop_truthful.py` asserts that after the Phase 12 mass-safe proof there are zero `provider_jobs` rows — i.e., the inner-loop-local claim is grounded in code, not just docs. If a future change quietly routes inner-loop common-path growth through a paid provider, that test fails.
+
 ## What Phase 10 P3 does NOT do
 
 - **No real Anthropic / OpenAI HTTP adapters.** The shape is in place; concrete adapters are follow-up work that needs credentials and rate-limit handling. The `dry_run_stub` and `claude_code_builder_lane` adapters are the ones exercisable today; the others remain dry-run-only until those adapters land.

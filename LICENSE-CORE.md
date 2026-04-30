@@ -86,7 +86,7 @@ schema migration extends `waggledance/core/storage/control_plane.py`
 and `control_plane_schema.py` (already listed above) with v2 tables
 and helpers; those files retain their existing protected listing.
 
-Autonomy growth package:
+Autonomy growth package (Phase 11 closed loop + Phase 12 self-starting):
 - `waggledance/core/autonomy_growth/__init__.py`
 - `waggledance/core/autonomy_growth/low_risk_policy.py`
 - `waggledance/core/autonomy_growth/solver_executor.py`
@@ -95,6 +95,9 @@ Autonomy growth package:
 - `waggledance/core/autonomy_growth/auto_promotion_engine.py`
 - `waggledance/core/autonomy_growth/solver_dispatcher.py`
 - `waggledance/core/autonomy_growth/low_risk_grower.py`
+- `waggledance/core/autonomy_growth/family_oracles.py`        # Phase 12
+- `waggledance/core/autonomy_growth/gap_intake.py`            # Phase 12
+- `waggledance/core/autonomy_growth/autogrowth_scheduler.py`  # Phase 12
 
 ## Default rule
 

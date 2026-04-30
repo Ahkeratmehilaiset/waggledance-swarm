@@ -6,7 +6,7 @@
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20shipped%20%2B%20Phase%2010%20substrate%20%2B%20Phase%2011%20autogrowth%20lane-blue)]()
+[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20Phase%2010%20substrate%20%2B%20Phase%2011%20autogrowth%20%2B%20Phase%2012%20self--starting--loop-blue)]()
 
 ## What this is
 
@@ -54,6 +54,28 @@ The runtime is built around a hexagonal layout: `core/` is the domain, `adapters
 | **2 — Learned** | Adapts | 14 specialist models with canary lifecycle |
 | **1 — Fallback** | Explains | LLM — only when solvers and specialists cannot handle it |
 | **1b — Optional** | Gemma 4 | Optional dual-tier Gemma 4 profiles: fast (e4b) for general fallback, heavy (26b) for hard reasoning |
+
+## Phase 12 — Self-starting local-first autogrowth loop
+
+After Phase 11's closed no-human auto-promotion loop, Phase 12 closes the missing left-hand side: a **self-starting** intake that turns runtime evidence into queued growth intents *without a human trigger*, and a local-first scheduler that drains the queue end-to-end with **zero provider calls** in the inner loop.
+
+What is real now (post-Phase-12):
+
+* **Self-starting gap intake.** `RuntimeGapDetector.record(GapSignal)` writes evidence into `runtime_gap_signals`; `digest_signals_into_intents` aggregates into `growth_intents` and enqueues into `autogrowth_queue` — all in the control plane, no JSON-on-disk.
+* **Append-only history mirror.** Every intake / intent / enqueue / promotion event emits a `growth_events` row. The control plane keeps current state; `growth_events` keeps history.
+* **Self-starting scheduler.** `AutogrowthScheduler.run_until_idle()` claims queue rows atomically (no double-claim across concurrent schedulers), dispatches each to `LowRiskGrower.grow_from_gap`, records `autogrowth_runs`, and emits growth events. Rejection is terminal (deterministic given the seed).
+* **Mass-safe proof at scale.** `tools/run_mass_autogrowth_proof.py` runs the full loop end-to-end, growing **30 deterministic low-risk solvers across all 6 allowlisted families and 8 hex cells** with **0 rejections, 0 errors, 0 provider calls**. Reproducible artifact at [`docs/runs/phase12_self_starting_autogrowth_2026_04_30/autonomy_proof.md`](docs/runs/phase12_self_starting_autogrowth_2026_04_30/autonomy_proof.md).
+* **Reality View.** New `autonomy_self_starting_kpis` aggregate panel surfaces queue / intent / promotion counts split by family and cell. The Phase 11 `autonomy_low_risk_kpis` panel still works alongside it; never-fabricate invariant preserved.
+* **Inner-loop / outer-loop truth (locked by test).** `tests/autonomy_growth/test_outer_inner_loop_truthful.py::test_mass_autogrowth_zero_provider_calls` runs the mass proof and asserts the resulting `provider_jobs` table is empty. If a future change quietly routes inner-loop common-path growth through a paid provider, the test fails.
+
+What is still NOT real:
+
+* High-risk families (`weighted_aggregation`, `temporal_window_rule`, `structured_field_extractor`, `deterministic_composition_wrapper`) remain human-gated through the Phase 9 promotion ladder.
+* The Phase 9 14-stage promotion ladder is unchanged. Runtime-stage promotions still require a real `human_approval_id`.
+* The Stage-2 atomic flip is unchanged. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/`. The Stage-2 RFC still gates that mechanism.
+* No real Anthropic / OpenAI HTTP adapters. Only `dry_run_stub` and `claude_code_builder_lane` are exercisable end-to-end. Phase 12 does not change that.
+* No actuator / policy / production-runtime-config writes. Auto-promoted low-risk solvers are *consultable*, not *authoritative*.
+* No consciousness claim. Self-starting growth is an engineering mechanism — observable, reversible, audit-traceable. See `docs/journal/2026-04-30_autonomy_trajectory_and_gap_analysis.md` for the explicit non-claim.
 
 ## Phase 11 — Autonomous low-risk solver growth lane
 

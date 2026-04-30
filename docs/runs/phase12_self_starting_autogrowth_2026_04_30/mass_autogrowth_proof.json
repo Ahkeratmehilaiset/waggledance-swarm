@@ -1,0 +1,129 @@
+{
+  "control_plane_table_counts": {
+    "autogrowth_queue": 30,
+    "autogrowth_runs": 30,
+    "autonomy_kpis": 1,
+    "builder_jobs": 0,
+    "capabilities": 0,
+    "capability_dependencies": 0,
+    "capsule_registry_bindings": 0,
+    "cell_membership": 0,
+    "cutover_states": 0,
+    "family_policies": 6,
+    "growth_events": 120,
+    "growth_intents": 30,
+    "identity_anchors": 0,
+    "promotion_decisions": 30,
+    "promotion_states": 0,
+    "provider_jobs": 0,
+    "runtime_gap_signals": 30,
+    "runtime_path_bindings": 0,
+    "schema_meta": 1,
+    "shadow_evaluations": 30,
+    "solver_artifacts": 30,
+    "solver_capabilities": 0,
+    "solver_families": 6,
+    "solvers": 30,
+    "validation_runs": 30,
+    "vector_indexes": 0,
+    "vector_shards": 0
+  },
+  "dispatch_results": [
+    {
+      "family_kind": "scalar_unit_conversion",
+      "matched": true,
+      "output": 25000.0,
+      "reason": "hit",
+      "solver_name": "kilowatts_to_watts_i0005"
+    },
+    {
+      "family_kind": "lookup_table",
+      "matched": true,
+      "output": "UNKNOWN",
+      "reason": "hit",
+      "solver_name": "verdict_to_label_i0010"
+    },
+    {
+      "family_kind": "threshold_rule",
+      "matched": true,
+      "output": "above_zero",
+      "reason": "hit",
+      "solver_name": "frost_below_0c_i0015"
+    },
+    {
+      "family_kind": "interval_bucket_classifier",
+      "matched": true,
+      "output": "out",
+      "reason": "hit",
+      "solver_name": "score_band_i0020"
+    },
+    {
+      "family_kind": "linear_arithmetic",
+      "matched": true,
+      "output": 1.1,
+      "reason": "hit",
+      "solver_name": "performance_score_i0025"
+    },
+    {
+      "family_kind": "bounded_interpolation",
+      "matched": true,
+      "output": 0.000875,
+      "reason": "hit",
+      "solver_name": "learning_rate_decay_i0030"
+    }
+  ],
+  "intents_created": 30,
+  "intents_enqueued": 30,
+  "kpis": {
+    "auto_promotions_total": 30,
+    "autogrowth_runs_total": 30,
+    "candidates_total": 30,
+    "growth_events_total": 120,
+    "growth_intents_fulfilled": 30,
+    "growth_intents_total": 30,
+    "rejections_total": 0,
+    "rollbacks_total": 0,
+    "shadow_evaluations_total": 30,
+    "validation_runs_total": 30
+  },
+  "per_cell_promotions": {
+    "energy": 5,
+    "general": 5,
+    "learning": 2,
+    "math": 2,
+    "safety": 2,
+    "seasonal": 3,
+    "system": 4,
+    "thermal": 7
+  },
+  "primary_teacher_lane_id": "claude_code_builder_lane",
+  "proof_version": 1,
+  "scheduler": {
+    "auto_promoted": 30,
+    "by_family_promoted": {
+      "bounded_interpolation": 5,
+      "interval_bucket_classifier": 5,
+      "linear_arithmetic": 5,
+      "lookup_table": 5,
+      "scalar_unit_conversion": 5,
+      "threshold_rule": 5
+    },
+    "drained_count": 30,
+    "errored": 0,
+    "id": "mass_proof_scheduler",
+    "rejected": 0,
+    "ticks_idle": 1,
+    "ticks_total": 31
+  },
+  "schema_version": 3,
+  "self_starting": true,
+  "signals_per_family": {
+    "bounded_interpolation": 5,
+    "interval_bucket_classifier": 5,
+    "linear_arithmetic": 5,
+    "lookup_table": 5,
+    "scalar_unit_conversion": 5,
+    "threshold_rule": 5
+  },
+  "signals_recorded": 30
+}

@@ -178,6 +178,19 @@ class RuntimePathBinding:
     rebound_at: Optional[str]
 
 
+# -- schema v4 — Phase 13 capability-aware solver lookup -----------
+
+
+@dataclass(frozen=True)
+class SolverCapabilityFeatureRecord:
+    id: int
+    solver_id: int
+    family_kind: str
+    feature_name: str
+    feature_value: str
+    created_at: str
+
+
 # -- schema v3 — Phase 12 self-starting autogrowth intake -----------
 
 
@@ -1352,6 +1365,123 @@ class ControlPlaneDB:
             ).fetchone()
         return None if row is None else self._row_to_autonomy_kpi(row)
 
+    # -- schema v4: solver capability features -------------------------
+
+    def _replace_solver_capability_features_inplace(
+        self,
+        solver_id: int,
+        family_kind: str,
+        features: Mapping[str, object],
+    ) -> None:
+        """DELETE + INSERTs for a solver's feature set, no transaction
+        management. Intended for callers that already hold a BEGIN.
+        """
+
+        now = _utcnow()
+        self._conn.execute(
+            "DELETE FROM solver_capability_features WHERE solver_id = ?",
+            (int(solver_id),),
+        )
+        for fname, fvalue in sorted(features.items()):
+            fvalue_str = "" if fvalue is None else str(fvalue)
+            self._conn.execute(
+                """
+                INSERT INTO solver_capability_features(
+                    solver_id, family_kind,
+                    feature_name, feature_value, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (int(solver_id), family_kind, fname, fvalue_str, now),
+            )
+
+    def set_solver_capability_features(
+        self,
+        solver_id: int,
+        family_kind: str,
+        features: Mapping[str, object],
+    ) -> List[SolverCapabilityFeatureRecord]:
+        """Replace the feature set for a solver atomically.
+
+        Public version: wraps the work in its own transaction. Callers
+        already inside a transaction (e.g. AutoPromotionEngine commit)
+        should call :meth:`_replace_solver_capability_features_inplace`
+        directly to avoid SQLite "transaction within a transaction".
+        """
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._replace_solver_capability_features_inplace(
+                    solver_id, family_kind, features,
+                )
+                rows = self._conn.execute(
+                    "SELECT * FROM solver_capability_features WHERE solver_id = ? ORDER BY feature_name",
+                    (int(solver_id),),
+                ).fetchall()
+                self._conn.execute("COMMIT")
+            except Exception as exc:  # noqa: BLE001
+                self._conn.execute("ROLLBACK")
+                raise ControlPlaneError(
+                    f"set_solver_capability_features failed: {exc!r}"
+                ) from exc
+        return [self._row_to_solver_capability_feature(r) for r in rows]
+
+    def get_solver_capability_features(
+        self, solver_id: int
+    ) -> List[SolverCapabilityFeatureRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM solver_capability_features WHERE solver_id = ? ORDER BY feature_name",
+                (int(solver_id),),
+            ).fetchall()
+        return [self._row_to_solver_capability_feature(r) for r in rows]
+
+    def find_auto_promoted_solvers_by_features(
+        self,
+        family_kind: str,
+        features: Mapping[str, object],
+        *,
+        limit: int = 5,
+    ) -> List[int]:
+        """Return solver_ids in a family whose feature set is a superset of
+        the requested features and whose status is ``auto_promoted``.
+
+        Returns the most recently registered matches first (DESC by id).
+        Empty ``features`` is rejected to prevent an unbounded scan.
+        """
+
+        if not features:
+            return []
+        # Build (feature_name, feature_value) pairs as a flat parameter list.
+        pairs: List[tuple[str, str]] = []
+        for fname, fvalue in features.items():
+            fvalue_str = "" if fvalue is None else str(fvalue)
+            pairs.append((str(fname), fvalue_str))
+        n = len(pairs)
+        params: List[object] = [family_kind]
+        flat_pairs: List[object] = []
+        for fname, fvalue in pairs:
+            flat_pairs.extend([fname, fvalue])
+        placeholders = ", ".join(["(?, ?)"] * n)
+        sql = (
+            "SELECT cf.solver_id, COUNT(*) AS match_count "
+            "FROM solver_capability_features cf "
+            "JOIN solvers s ON s.id = cf.solver_id "
+            "WHERE cf.family_kind = ? "
+            f"  AND (cf.feature_name, cf.feature_value) IN ({placeholders}) "
+            "  AND s.status = 'auto_promoted' "
+            "GROUP BY cf.solver_id "
+            "HAVING match_count = ? "
+            "ORDER BY cf.solver_id DESC "
+            "LIMIT ?"
+        )
+        params.extend(flat_pairs)
+        params.append(int(n))
+        params.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [int(r["solver_id"]) for r in rows]
+
     # -- schema v3: runtime gap signals --------------------------------
 
     def record_runtime_gap_signal(
@@ -2091,6 +2221,21 @@ class ControlPlaneDB:
             invariant_failed=row["invariant_failed"],
             rollback_reason=row["rollback_reason"],
             evidence=row["evidence"],
+            created_at=str(row["created_at"]),
+        )
+
+    # -- v4 row converter ----------------------------------------------
+
+    @staticmethod
+    def _row_to_solver_capability_feature(
+        row: sqlite3.Row,
+    ) -> SolverCapabilityFeatureRecord:
+        return SolverCapabilityFeatureRecord(
+            id=int(row["id"]),
+            solver_id=int(row["solver_id"]),
+            family_kind=str(row["family_kind"]),
+            feature_name=str(row["feature_name"]),
+            feature_value=str(row["feature_value"]),
             created_at=str(row["created_at"]),
         )
 

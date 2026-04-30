@@ -18,6 +18,25 @@ from .auto_promotion_engine import (
     PromotionOutcome,
     PromotionRequest,
 )
+from .autogrowth_scheduler import (
+    OUTCOME_AUTO_PROMOTED,
+    OUTCOME_BAD_SEED,
+    OUTCOME_FAMILY_NOT_LOW_RISK,
+    OUTCOME_NO_INTENT,
+    OUTCOME_NO_ORACLE,
+    OUTCOME_REJECTED,
+    OUTCOME_SPEC_INVALID,
+    AutogrowthScheduler,
+    SchedulerStats,
+    TickResult,
+)
+from .family_oracles import FAMILY_ORACLES, OracleFn as FamilyOracleFn, get_oracle
+from .gap_intake import (
+    GapSignal,
+    IntakeStats,
+    RuntimeGapDetector,
+    digest_signals_into_intents,
+)
 from .low_risk_grower import (
     PRIMARY_TEACHER_LANE_ID,
     GapInput,
@@ -89,4 +108,24 @@ __all__ = [
     "GapInput",
     "GapOutcome",
     "LowRiskGrower",
+    # gap intake (Phase 12)
+    "GapSignal",
+    "IntakeStats",
+    "RuntimeGapDetector",
+    "digest_signals_into_intents",
+    # family oracles (Phase 12)
+    "FAMILY_ORACLES",
+    "FamilyOracleFn",
+    "get_oracle",
+    # autogrowth scheduler (Phase 12)
+    "AutogrowthScheduler",
+    "SchedulerStats",
+    "TickResult",
+    "OUTCOME_AUTO_PROMOTED",
+    "OUTCOME_REJECTED",
+    "OUTCOME_SPEC_INVALID",
+    "OUTCOME_NO_INTENT",
+    "OUTCOME_NO_ORACLE",
+    "OUTCOME_BAD_SEED",
+    "OUTCOME_FAMILY_NOT_LOW_RISK",
 ]

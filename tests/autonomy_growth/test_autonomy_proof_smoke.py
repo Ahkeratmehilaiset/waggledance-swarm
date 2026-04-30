@@ -42,4 +42,6 @@ def test_autonomy_proof_runs_and_promotes_three_solvers(tmp_path: Path) -> None:
 def test_autonomy_proof_records_primary_teacher_lane(tmp_path: Path) -> None:
     proof = run_autonomy_proof(tmp_path / "out", tmp_path / "p.db")
     assert proof["primary_teacher_lane_id"] == "claude_code_builder_lane"
-    assert proof["schema_version"] == 2
+    # Schema is forward-only; v2 introduced the autonomy tables this proof
+    # exercises. Any v2-or-later schema is acceptable.
+    assert proof["schema_version"] >= 2

@@ -30,12 +30,24 @@ from .autogrowth_scheduler import (
     SchedulerStats,
     TickResult,
 )
+from .family_features import extract_features, feature_dimensions
 from .family_oracles import FAMILY_ORACLES, OracleFn as FamilyOracleFn, get_oracle
 from .gap_intake import (
     GapSignal,
     IntakeStats,
     RuntimeGapDetector,
     digest_signals_into_intents,
+)
+from .low_risk_seed_library import (
+    all_canonical_seeds,
+    expected_per_family_counts,
+    seeds_for_family,
+)
+from .runtime_query_router import (
+    RouterStats,
+    RuntimeQuery,
+    RuntimeQueryRouter,
+    RuntimeRouteResult,
 )
 from .low_risk_grower import (
     PRIMARY_TEACHER_LANE_ID,
@@ -117,6 +129,13 @@ __all__ = [
     "FAMILY_ORACLES",
     "FamilyOracleFn",
     "get_oracle",
+    # capability features (Phase 13)
+    "extract_features",
+    "feature_dimensions",
+    # canonical seed library (Phase 13)
+    "all_canonical_seeds",
+    "expected_per_family_counts",
+    "seeds_for_family",
     # autogrowth scheduler (Phase 12)
     "AutogrowthScheduler",
     "SchedulerStats",
@@ -128,4 +147,9 @@ __all__ = [
     "OUTCOME_NO_ORACLE",
     "OUTCOME_BAD_SEED",
     "OUTCOME_FAMILY_NOT_LOW_RISK",
+    # runtime query router (Phase 13)
+    "RouterStats",
+    "RuntimeQuery",
+    "RuntimeQueryRouter",
+    "RuntimeRouteResult",
 ]

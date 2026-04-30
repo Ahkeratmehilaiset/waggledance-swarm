@@ -1,5 +1,51 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 13 — runtime-integrated harvest + capability-aware uptake] — 2026-04-30
+
+Branch: `phase13/runtime-harvest-capability-uptake`. Connects the autonomy loop to the real runtime seam and adds capability-aware dispatch so harvested structure stays useful at scale. The before/after proof routes 68 structured runtime queries through the real `RuntimeQueryRouter`, harvests, then re-routes — pass 1: 0 served / 68 misses / 68 signals auto-emitted; pass 2: 68 served via capability lookup. **0 provider calls.**
+
+### Added
+
+- Control plane schema **v4** — forward-only migration adds:
+  * `solver_capability_features` — per-(solver_id, feature_name) capability metadata, indexed on `(family_kind, feature_name, feature_value)` and `(solver_id)`.
+  * `find_auto_promoted_solvers_by_features(family, features, limit)` helper with ALL-features-match semantics; rejects empty-feature scans.
+  * `set_solver_capability_features` (public, transactional) + `_replace_solver_capability_features_inplace` (internal, for callers already inside a transaction — used by the AutoPromotionEngine commit path so we don't nest BEGIN IMMEDIATE inside SQLite).
+- New BUSL-1.1 modules in `waggledance/core/autonomy_growth/`:
+  * `runtime_query_router.py` — `RuntimeQueryRouter.route(query)`. Real runtime seam. Dispatches capability-aware first, family-FIFO fallback, then on miss auto-emits a deduped `runtime_gap_signal` (in-memory throttle prevents flooding under hot-loop call patterns).
+  * `family_features.py` — per-family structured feature extractors (scalar_unit_conversion, lookup_table, threshold_rule, interval_bucket_classifier, linear_arithmetic, bounded_interpolation).
+  * `low_risk_seed_library.py` — 68 canonical seeds across all six families and 8 hex cells. Local-first; common path makes zero provider calls.
+- `LowRiskSolverDispatcher.dispatch_by_features(family, features, inputs)` — indexed capability-aware dispatch; refuses unbounded scans on empty feature sets.
+- `AutoPromotionEngine` now records capability features at commit time via `extract_features(family, spec)` so the dispatcher can find auto-promoted solvers by capability immediately.
+- Reality View `autonomy_runtime_harvest_kpis` aggregate panel via `scale_aware_aggregator.py`. Aggregate-only. Honest self-starting / teacher-assisted / human-gated split (today: teacher_assisted = 0 because no real provider adapters; this is documented, not faked).
+- `tools/run_runtime_harvest_proof.py` — reproducible end-to-end before/after proof. Artifacts at `docs/runs/phase13_runtime_harvest_2026_04_30/`.
+- Trajectory analysis at `docs/journal/2026-04-30_runtime_harvest_and_scale_bottlenecks.md` with the post-Phase-12 bottleneck scorecard.
+- Tests:
+  * `tests/storage/test_control_plane_v4.py` — 8 schema-v4 tests.
+  * `tests/autonomy_growth/test_runtime_query_router.py` — 6 router unit tests including throttle, miss emission, end-to-end-then-serve.
+  * `tests/autonomy_growth/test_dispatch_by_features.py` — 7 capability-aware dispatch tests.
+  * `tests/autonomy_growth/test_seed_library.py` — 7 canonical seed library invariants.
+  * `tests/autonomy_growth/test_runtime_harvest_proof_smoke.py` — 3 before/after proof invariants including zero-provider lock.
+  * `tests/ui_hologram/test_runtime_harvest_panel.py` — 4 panel tests including aggregate-only invariant.
+
+### Behaviour
+
+- The autonomy lane gains a real runtime seam: `RuntimeQueryRouter.route(query)` is the call shape a real runtime hot path would use. The router is exercised by the proof and tests in this PR; wiring the router into a specific call site is a separate session's work.
+- After one harvest cycle, capability-aware dispatch routes 68/68 queries in the canonical corpus to the correct auto-promoted solver — **not** family-FIFO last-inserted.
+- Inner-loop common path uses zero provider calls; locked by test.
+
+### Unchanged (truth boundary)
+
+- Phase 9 14-stage promotion ladder. Runtime stages still require `human_approval_id`.
+- Stage-2 atomic flip. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/`. `STAGE2_CUTOVER_RFC.md` still gates that mechanism.
+- Real Anthropic / OpenAI HTTP adapters. Only `dry_run_stub` and `claude_code_builder_lane` exercisable end-to-end.
+- Outer-loop teacher remains Claude Code Opus 4.7 (LLM solver generator priority list, position 1).
+- Six-family allowlist. RULE 19 honoured — no widening this session.
+- `phase8.5/*` branches. Read-only this session.
+
+### Tests at squash time
+
+* Targeted: `tests/autonomy_growth/` 88, `tests/storage/` 51, `tests/ui_hologram/` 22, `tests/providers/` 18, `tests/solver_synthesis/` 12, `tests/phase10/` 14 — all green.
+
 ## [Phase 12 — self-starting local-first autogrowth loop] — 2026-04-30
 
 Branch: `phase12/self-starting-local-autogrowth`. Closes the autonomy loop's missing self-starting left-hand side. End-to-end mass-safe proof grows 30 deterministic low-risk solvers across 6 families and 8 hex cells with zero rejections, zero errors, and zero provider calls in the inner loop.

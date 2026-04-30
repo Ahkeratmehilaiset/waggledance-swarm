@@ -1,10 +1,24 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-04-30
-**Version:** v3.6.0 + Phase 10 substrate + Phase 11 autogrowth + Phase 12 self-starting local-first autogrowth loop on `main`
+**Version:** v3.6.0 + Phase 10 substrate + Phase 11 autogrowth + Phase 12 self-starting + Phase 13 runtime-integrated harvest + capability-aware uptake on `main`
 **Shipped branch:** `main` at `08b7e8c` (Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) on top of `8bf1869` post-v3.6.0 truthfulness commit on top of `a1c4152` PR #51 squash)
 **Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0) — no new SemVer tag for Phase 10 (substrate, not runtime behaviour change). An optional `v3.6.1-substrate` prerelease tag may be added once post-merge truth/governance are clean.
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
+
+### Phase 13 — Runtime-integrated harvest + capability-aware uptake (landed on main 2026-04-30)
+
+Phase 13 connects the autonomy loop to the **real runtime seam** and adds **capability-aware** dispatch so harvested structure stays useful at scale.
+
+* **Schema v4** — new `solver_capability_features` table indexed on `(family_kind, feature_name, feature_value)`. Forward-only migration from v3.
+* **Runtime query router (`runtime_query_router.py`).** Real runtime seam. `RuntimeQueryRouter.route(query)` dispatches via capability-aware lookup first (then family-FIFO fallback), and on miss emits a deduped `runtime_gap_signal` automatically with a `min_signal_interval_seconds` throttle.
+* **Capability features (`family_features.py`).** Per-family structured feature extractors. Each promoted solver carries a small feature set (e.g. `from_unit`+`to_unit` for `scalar_unit_conversion`, `domain` for `lookup_table`, `subject`+`operator` for `threshold_rule`).
+* **Capability-aware dispatch (`solver_dispatcher.dispatch_by_features`).** Indexed `solver_capability_features` lookup with ALL-features-match semantics; refuses unbounded scans on empty feature sets.
+* **Canonical seed library (`low_risk_seed_library.py`).** 68 seeds across all 6 families and 8 cells. Local-first; no provider call.
+* **End-to-end before/after proof.** `tools/run_runtime_harvest_proof.py` routes 68 structured runtime queries through the real router, harvests, then re-routes. Pass 1: 68 misses + 68 auto-emitted signals. Pass 2: 68 served via capability lookup. `provider_jobs` = 0.
+* **Reality View `autonomy_runtime_harvest_kpis` panel.** Aggregate-only; per-family + per-cell signal counts; honest self-starting / teacher-assisted / human-gated split.
+
+What did NOT change: built-in authoritative solvers (Layer 3 retains precedence), the Phase 9 promotion ladder (4 runtime stages still require `human_approval_id`), Stage-2 atomic flip (still gated by `STAGE2_CUTOVER_RFC.md`), `_DEFAULT_FAISS_DIR` (still `data/faiss/`), real Anthropic/OpenAI HTTP adapters (still follow-up work).
 
 ### Phase 12 — Self-starting local-first autogrowth loop (landed on main 2026-04-30)
 

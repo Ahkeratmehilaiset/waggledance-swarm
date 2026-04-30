@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-SCHEMA_VERSION: int = 3
+SCHEMA_VERSION: int = 4
 
 INITIAL_SCHEMA_SQL: List[str] = [
     """
@@ -527,6 +527,35 @@ PHASE12_AUTOGROWTH_INTAKE_SCHEMA_SQL: List[str] = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Schema v4 — Phase 13 capability-aware solver lookup
+# --------------------------------------------------------------------------
+# Adds ``solver_capability_features`` so the runtime dispatcher can match
+# auto-promoted solvers by structured features (family-specific) instead
+# of exact name or family-FIFO. One row per (solver_id, feature_name).
+PHASE13_CAPABILITY_LOOKUP_SCHEMA_SQL: List[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS solver_capability_features (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        solver_id     INTEGER NOT NULL REFERENCES solvers(id) ON DELETE CASCADE,
+        family_kind   TEXT NOT NULL,
+        feature_name  TEXT NOT NULL,
+        feature_value TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        UNIQUE (solver_id, feature_name)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_solver_capability_features_lookup
+        ON solver_capability_features(family_kind, feature_name, feature_value)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_solver_capability_features_solver
+        ON solver_capability_features(solver_id)
+    """,
+]
+
+
 # Forward-only migrations indexed by target schema version.
 # Migration N is applied when current schema_version < N. Each migration
 # is a list of SQL statements applied in a single transaction.
@@ -534,6 +563,7 @@ MIGRATIONS: Dict[int, List[str]] = {
     1: INITIAL_SCHEMA_SQL,
     2: PHASE11_AUTOGROWTH_SCHEMA_SQL,
     3: PHASE12_AUTOGROWTH_INTAKE_SCHEMA_SQL,
+    4: PHASE13_CAPABILITY_LOOKUP_SCHEMA_SQL,
 }
 
 
@@ -570,4 +600,6 @@ def all_table_names() -> List[str]:
         "autogrowth_queue",
         "autogrowth_runs",
         "growth_events",
+        # schema v4 — Phase 13 capability-aware solver lookup
+        "solver_capability_features",
     ]

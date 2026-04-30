@@ -79,6 +79,105 @@ class LowRiskSolverDispatcher:
     def reset_stats(self) -> None:
         self._stats = DispatcherStats()
 
+    def dispatch_by_features(
+        self,
+        family_kind: str,
+        features: Mapping[str, Any],
+        inputs: Mapping[str, Any],
+    ) -> DispatchResult:
+        """Capability-aware dispatch (Phase 13).
+
+        Looks up auto-promoted solvers in the family whose recorded
+        capability features include ALL the requested features, then
+        executes the most recently promoted match. Falls through to a
+        ``miss_no_solver`` result if no solver matches — the caller
+        then typically falls back to family-FIFO :meth:`dispatch` or
+        emits a runtime gap signal.
+
+        Empty ``features`` is rejected explicitly to prevent an
+        unbounded scan.
+        """
+
+        if not is_low_risk_family(family_kind):
+            self._record_miss("miss_family_not_low_risk", family_kind)
+            return DispatchResult(
+                matched=False, family_kind=family_kind,
+                reason="miss_family_not_low_risk",
+            )
+        if not features:
+            self._record_miss("miss_no_features_supplied", family_kind)
+            return DispatchResult(
+                matched=False, family_kind=family_kind,
+                reason="miss_no_features_supplied",
+            )
+        candidate_ids = self._cp.find_auto_promoted_solvers_by_features(
+            family_kind=family_kind,
+            features=features,
+            limit=1,
+        )
+        if not candidate_ids:
+            self._record_miss("miss_no_solver", family_kind)
+            return DispatchResult(
+                matched=False, family_kind=family_kind,
+                reason="miss_no_solver",
+            )
+        solver_id = candidate_ids[0]
+        artifact_record = self._cp.get_solver_artifact(solver_id)
+        if artifact_record is None:
+            self._record_miss("miss_no_solver", family_kind)
+            return DispatchResult(
+                matched=False, family_kind=family_kind,
+                reason="miss_no_solver",
+            )
+        try:
+            artifact = json.loads(artifact_record.artifact_json)
+        except json.JSONDecodeError as exc:
+            self._record_miss("miss_executor_error", family_kind)
+            return DispatchResult(
+                matched=False, family_kind=family_kind,
+                solver_id=solver_id,
+                artifact_id=artifact_record.artifact_id,
+                reason="miss_executor_error",
+                error=f"artifact_json malformed: {exc!s}",
+            )
+        try:
+            output = execute_artifact(artifact, inputs)
+        except UnsupportedFamilyError as exc:
+            self._record_miss("miss_family_not_low_risk", family_kind)
+            return DispatchResult(
+                matched=False, family_kind=family_kind,
+                solver_id=solver_id,
+                artifact_id=artifact_record.artifact_id,
+                reason="miss_family_not_low_risk",
+                error=str(exc),
+            )
+        except ExecutorError as exc:
+            self._record_miss("miss_executor_error", family_kind)
+            return DispatchResult(
+                matched=False, family_kind=family_kind,
+                solver_id=solver_id,
+                artifact_id=artifact_record.artifact_id,
+                reason="miss_executor_error",
+                error=str(exc),
+            )
+        solver_row = self._cp._conn.execute(  # type: ignore[attr-defined]
+            "SELECT name FROM solvers WHERE id = ?",
+            (solver_id,),
+        ).fetchone()
+        solver_name = (
+            str(solver_row["name"]) if solver_row is not None else None
+        )
+        self._record_hit(family_kind)
+        return DispatchResult(
+            matched=True,
+            family_kind=family_kind,
+            solver_id=solver_id,
+            solver_name=solver_name,
+            artifact_id=artifact_record.artifact_id,
+            output=output,
+            reason="hit_by_features",
+        )
+
     def dispatch(self, query: DispatchQuery) -> DispatchResult:
         family = query.family_kind
         if not is_low_risk_family(family):

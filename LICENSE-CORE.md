@@ -98,6 +98,9 @@ Autonomy growth package (Phase 11 closed loop + Phase 12 self-starting):
 - `waggledance/core/autonomy_growth/family_oracles.py`        # Phase 12
 - `waggledance/core/autonomy_growth/gap_intake.py`            # Phase 12
 - `waggledance/core/autonomy_growth/autogrowth_scheduler.py`  # Phase 12
+- `waggledance/core/autonomy_growth/runtime_query_router.py`  # Phase 13
+- `waggledance/core/autonomy_growth/family_features.py`       # Phase 13
+- `waggledance/core/autonomy_growth/low_risk_seed_library.py` # Phase 13
 
 ## Default rule
 

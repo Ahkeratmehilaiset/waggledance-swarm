@@ -6,7 +6,7 @@
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20Phase%2010%20substrate%20%2B%20Phase%2011%20autogrowth%20%2B%20Phase%2012%20self--starting--loop-blue)]()
+[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10%20substrate%20%2B%20P11%20autogrowth%20%2B%20P12%20self--starting%20%2B%20P13%20runtime--harvest-blue)]()
 
 ## What this is
 
@@ -54,6 +54,28 @@ The runtime is built around a hexagonal layout: `core/` is the domain, `adapters
 | **2 — Learned** | Adapts | 14 specialist models with canary lifecycle |
 | **1 — Fallback** | Explains | LLM — only when solvers and specialists cannot handle it |
 | **1b — Optional** | Gemma 4 | Optional dual-tier Gemma 4 profiles: fast (e4b) for general fallback, heavy (26b) for hard reasoning |
+
+## Phase 13 — Runtime-integrated harvest and capability-aware uptake
+
+After Phase 12's self-starting loop, Phase 13 connects the loop to the **real runtime seam** and adds **capability-aware** dispatch so harvested structure stays useful at scale.
+
+What is real now:
+
+* **Runtime query router (`runtime_query_router.py`).** A real seam: callers invoke `RuntimeQueryRouter.route(query)` after their authoritative built-in solvers. The router dispatches to auto-promoted solvers (capability-aware first, family-FIFO fallback) and, on miss, automatically emits a bounded, deduped `runtime_gap_signal`. No human trigger.
+* **Capability-aware dispatch (schema v4).** New `solver_capability_features` table indexed on `(family_kind, feature_name, feature_value)`. Each promoted solver carries a small structured feature set (e.g. `scalar_unit_conversion` → `{from_unit, to_unit}`; `lookup_table` → `{domain, default_present}`; `threshold_rule` → `{subject, operator}`). Runtime queries match by structured equality, not by insertion order.
+* **Canonical seed library (`low_risk_seed_library.py`).** 68 curated seeds across all six families and 8 hex cells (20 unit conversions, 12 lookup tables, 12 threshold rules, 8 interval bands, 8 linear forms, 8 interpolation curves). Local-first; no provider call in the common path.
+* **End-to-end before/after proof.** `tools/run_runtime_harvest_proof.py` routes 68 structured runtime queries through the real router, then re-routes the same queries after one harvest cycle. **Pass 1: 0 served, 68 misses, 68 signals emitted automatically. Pass 2: 68 served via capability lookup, 0 misses. `provider_jobs` = 0.** Artifact at [`docs/runs/phase13_runtime_harvest_2026_04_30/runtime_harvest_proof.md`](docs/runs/phase13_runtime_harvest_2026_04_30/runtime_harvest_proof.md).
+* **Reality View `autonomy_runtime_harvest_kpis` panel.** Surfaces runtime-harvested signal counts split by family and cell, plus the truthful self-starting / teacher-assisted / human-gated split.
+* **Inner-loop / outer-loop truth, locked by test.** `tests/autonomy_growth/test_runtime_harvest_proof_smoke.py::test_runtime_harvest_proof_zero_provider_calls` runs the proof and asserts `provider_jobs_total == 0` and `builder_jobs_total == 0`.
+
+What is still NOT real:
+
+* The router is a real seam, but it is exercised by the proof and tests in this PR. Wiring the router into a specific runtime call site (e.g. a hot path inside the autonomy runtime) is a separate session's work.
+* High-risk families remain human-gated.
+* Stage-2 atomic flip is unchanged. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/`.
+* No real Anthropic / OpenAI HTTP adapters.
+* No actuator-side autonomy.
+* No consciousness claim.
 
 ## Phase 12 — Self-starting local-first autogrowth loop
 

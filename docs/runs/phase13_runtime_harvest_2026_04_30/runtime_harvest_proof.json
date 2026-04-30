@@ -1,0 +1,95 @@
+{
+  "after": {
+    "fallback_or_miss_total": 0,
+    "per_cell_served": {
+      "energy": 10,
+      "general": 11,
+      "learning": 3,
+      "math": 9,
+      "safety": 4,
+      "seasonal": 6,
+      "system": 13,
+      "thermal": 12
+    },
+    "per_family_served": {
+      "bounded_interpolation": 8,
+      "interval_bucket_classifier": 8,
+      "linear_arithmetic": 8,
+      "lookup_table": 12,
+      "scalar_unit_conversion": 20,
+      "threshold_rule": 12
+    },
+    "served_total": 68,
+    "served_via_capability_lookup_total": 68
+  },
+  "before": {
+    "fallback_or_miss_total": 68,
+    "served_total": 0,
+    "signals_emitted_total": 68
+  },
+  "control_plane_table_counts": {
+    "autogrowth_queue": 68,
+    "autogrowth_runs": 68,
+    "autonomy_kpis": 0,
+    "builder_jobs": 0,
+    "capabilities": 0,
+    "capability_dependencies": 0,
+    "capsule_registry_bindings": 0,
+    "cell_membership": 0,
+    "cutover_states": 0,
+    "family_policies": 6,
+    "growth_events": 272,
+    "growth_intents": 68,
+    "identity_anchors": 0,
+    "promotion_decisions": 68,
+    "promotion_states": 0,
+    "provider_jobs": 0,
+    "runtime_gap_signals": 68,
+    "runtime_path_bindings": 0,
+    "schema_meta": 1,
+    "shadow_evaluations": 68,
+    "solver_artifacts": 68,
+    "solver_capabilities": 0,
+    "solver_capability_features": 120,
+    "solver_families": 6,
+    "solvers": 68,
+    "validation_runs": 68,
+    "vector_indexes": 0,
+    "vector_shards": 0
+  },
+  "corpus_size": 68,
+  "harvest": {
+    "by_family_promoted": {
+      "bounded_interpolation": 8,
+      "interval_bucket_classifier": 8,
+      "linear_arithmetic": 8,
+      "lookup_table": 12,
+      "scalar_unit_conversion": 20,
+      "threshold_rule": 12
+    },
+    "intents_created": 68,
+    "intents_enqueued": 68,
+    "scheduler_drained": 68,
+    "scheduler_errored": 0,
+    "scheduler_promoted": 68,
+    "scheduler_rejected": 0
+  },
+  "kpis": {
+    "auto_promotions_total": 68,
+    "autogrowth_runs_total": 68,
+    "builder_jobs_total": 0,
+    "distinct_growth_intents_total": 68,
+    "growth_events_total": 272,
+    "harvested_signals_total": 68,
+    "provider_jobs_total": 0,
+    "queued_rows_total": 68,
+    "rejections_total": 0,
+    "rollbacks_total": 0,
+    "shadow_evaluations_total": 68,
+    "solver_capability_features_total": 120,
+    "validation_runs_total": 68
+  },
+  "primary_teacher_lane_id": "claude_code_builder_lane",
+  "proof_version": 1,
+  "schema_version": 4
+}

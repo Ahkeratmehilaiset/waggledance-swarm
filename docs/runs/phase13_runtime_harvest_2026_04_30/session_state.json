@@ -1,0 +1,98 @@
+{
+  "session": "phase13_runtime_harvest_capability_uptake",
+  "session_started_at_utc": "2026-04-30T17:00:00Z",
+  "operator_directive": "Take WD from 'Phase 12 self-starting local-first autogrowth loop' to a runtime-integrated autonomy slice where actual runtime query paths emit growth signals automatically and capability-aware lookup serves auto-promoted solvers through the normal runtime path.",
+  "session_mode": "runtime_integration_capability_lookup_seed_expansion",
+  "prior_session_archived_at": "docs/runs/phase12_self_starting_autogrowth_2026_04_30/session_state.json",
+
+  "model_selection": {
+    "primary_model": "claude-opus-4-7",
+    "model_id_resolved": "claude-opus-4-7",
+    "subagent_model": "inherited_opus_4_7",
+    "fallback_policy": "log_and_continue_record_event",
+    "fallback_events": []
+  },
+  "teacher_lane_default": "claude-opus-4-7",
+  "provider_usage": 0,
+
+  "rule_compliance": {
+    "rule_1_pr_only": "active",
+    "rule_2_no_force_no_rewrite": "active",
+    "rule_3_no_stale_sha_merge": "active",
+    "rule_4_no_atomic_flip_no_human_approval": "active",
+    "rule_5_magma_faiss_truth_first": "active",
+    "rule_6_phase8_5_read_only": "active",
+    "rule_7_busl_change_date_2030_12_31": "active",
+    "rule_8_no_loose_json_system_of_record": "active",
+    "rule_9_targeted_pytest": "active",
+    "rule_10_no_actuator_or_policy_writes": "active",
+    "rule_11_no_overclaim": "active",
+    "rule_12_domain_neutral": "active",
+    "rule_13_no_padding_if_runtime_slice_unreal": "active",
+    "rule_14_push_verification_180s": "active",
+    "rule_15_autonomous_merge_guardrails": "armed",
+    "rule_17_no_stage2_cutover": "active",
+    "rule_18_hex_cell_aware": "active",
+    "rule_19_no_widen_allowlist_unless_safe": "active"
+  },
+
+  "git_state_at_session_start": {
+    "remote": "https://github.com/Ahkeratmehilaiset/waggledance-swarm.git",
+    "origin_main_sha": "d1c3a10dd4f64d6b85c53ab4ea3414fc11382db4",
+    "origin_main_subject": "feat(autonomy): Phase 12 — self-starting local-first autogrowth loop",
+    "tag_v3_7_0_autogrowth_alpha_present": true,
+    "tag_v3_7_0_autogrowth_alpha_points_at": "992913ecfe6fd07c20346d2062196bc13abb18d2",
+    "tag_v3_7_1_autoloop_alpha_present": true,
+    "tag_v3_7_1_autoloop_alpha_points_at": "d1c3a10dd4f64d6b85c53ab4ea3414fc11382db4",
+    "tag_v3_6_1_substrate_present": true,
+    "phase11_pr_58_merged": true,
+    "phase12_pr_59_merged": true,
+    "open_prs_count_total": 7,
+    "open_prs_relevant_to_this_session": 0,
+    "open_prs_dependabot_count": 7,
+    "phase8_5_remote_refs_present": [
+      "phase8.5/curiosity-organ@1a31b248",
+      "phase8.5/dream-curriculum@bfa526a2",
+      "phase8.5/self-model-layer@e3479dd9"
+    ],
+    "phase8_5_disposition_in_this_session": "READ_ONLY (RULE 6)"
+  },
+
+  "untracked_files_at_session_start_must_not_be_committed": [
+    "WD_release_to_main_master_prompt.md",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+    "docs/runs/phase9_pr_body.md"
+  ],
+
+  "working_branch": "phase13/runtime-harvest-capability-uptake",
+  "branched_from": "origin/main @ d1c3a10dd4f64d6b85c53ab4ea3414fc11382db4",
+
+  "phase13_design": {
+    "runtime_harvest_seam_planned": "RuntimeQueryRouter / IngestionConsultEntry — narrow seam that examines a structured query envelope, invokes the dispatcher, and on miss/fallback emits a runtime_gap_signal via RuntimeGapDetector",
+    "capability_lookup_planned": "schema v4 adds solver_capability_features (one row per (solver_id, feature_name, feature_value)) + indexes; new method LowRiskSolverDispatcher.dispatch_by_features(family_kind, features); built-in solvers retain precedence",
+    "seed_expansion_planned": "low_risk_seed_library.py with canonical seed templates per family + parameter sweep helpers + a feature-extractor per family for capability indexing",
+    "runtime_integration_target": "runtime_query_router module that wires harvest + capability-aware dispatch + fallback path. Does NOT replace built-in solver routing.",
+    "session_target_solvers_min": 48,
+    "session_target_solvers_stretch": 96,
+    "no_actuator_or_policy_mutation": true
+  },
+
+  "provider_budget_caps_this_session": {
+    "claude_code_builder": {"used": 0, "cap": 2},
+    "anthropic_api": {"used": 0, "cap": 2, "default": 0},
+    "openai_api": {"used": 0, "cap": 2, "default": 0},
+    "triangulated": {"used": 0, "cap": 1, "default": 0}
+  },
+
+  "stop_handoff_triggers_armed": [
+    "P2 runtime call path integration not real by end of phase",
+    "P3 capability-aware lookup still effectively exact-name only",
+    "P5 proof corpus does not show runtime before/after improvement",
+    "session ends docs-only",
+    "push remains unavailable after 180s + gh-token fallback"
+  ],
+
+  "phases_completed": ["P0"],
+  "phases_in_progress": ["P1"],
+  "phases_pending": ["P2","P3","P4","P5","P6","P7","P8","P9","P11","P12","P13"]
+}

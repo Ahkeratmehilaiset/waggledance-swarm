@@ -33,6 +33,7 @@ from waggledance.core.storage.control_plane import (
     SolverRecord,
 )
 
+from .family_features import extract_features
 from .low_risk_policy import is_low_risk_family
 from .shadow_evaluator import (
     OracleFn,
@@ -339,6 +340,15 @@ class AutoPromotionEngine:
                     spec_canonical_json=compiled.canonical_json,
                     artifact_json=json.dumps(compiled.artifact, sort_keys=True),
                 )
+                # Phase 13 P3: record capability features for the dispatcher.
+                # Use the in-place helper because we are already inside the
+                # engine's outer BEGIN IMMEDIATE — SQLite forbids nested
+                # transactions.
+                features = extract_features(family_kind, dict(spec.spec))
+                if features:
+                    self._cp._replace_solver_capability_features_inplace(  # type: ignore[attr-defined]
+                        solver.id, family_kind, features,
+                    )
                 val_run = self._cp.record_validation_run(
                     family_kind=family_kind,
                     solver_id=solver.id,

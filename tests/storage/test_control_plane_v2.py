@@ -22,9 +22,13 @@ def cp(tmp_path):
     db.close()
 
 
-def test_schema_version_is_v2_after_migrate(cp: ControlPlaneDB) -> None:
-    assert SCHEMA_VERSION == 2
-    assert cp.schema_version() == 2
+def test_schema_version_is_at_least_v2_after_migrate(cp: ControlPlaneDB) -> None:
+    """v2 introduced these tables; later migrations must keep schema_version
+    monotonically forward. Test passes for any v2-or-later schema."""
+
+    assert SCHEMA_VERSION >= 2
+    assert cp.schema_version() >= 2
+    assert cp.schema_version() == SCHEMA_VERSION
 
 
 def test_v2_tables_present(cp: ControlPlaneDB) -> None:
@@ -224,7 +228,8 @@ def test_v2_migration_is_forward_only_from_v1(tmp_path) -> None:
     # Simulate downgrade then re-upgrade (forward-only invariant: migrate
     # is idempotent at the same version)
     final_version = db.migrate()
-    assert final_version == 2
+    assert final_version == SCHEMA_VERSION
+    assert final_version >= 2
     # v1 row still present
     assert db.get_solver_family("scalar_unit_conversion") is not None
     assert db.get_solver("prev_solver") is not None

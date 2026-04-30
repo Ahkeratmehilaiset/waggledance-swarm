@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 3
 
 INITIAL_SCHEMA_SQL: List[str] = [
     """
@@ -389,12 +389,151 @@ PHASE11_AUTOGROWTH_SCHEMA_SQL: List[str] = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Schema v3 — Phase 12 self-starting local-first autogrowth loop
+# --------------------------------------------------------------------------
+# Adds the missing intake / queue / run-log layer between runtime
+# evidence and the Phase 11 auto-promotion engine. Plus an append-only
+# ``growth_events`` mirror so the audit trail has a history-plane
+# representation alongside the current-state rows in v2.
+PHASE12_AUTOGROWTH_INTAKE_SCHEMA_SQL: List[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS runtime_gap_signals (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind            TEXT NOT NULL,
+        family_kind     TEXT,
+        cell_coord      TEXT,
+        signal_payload  TEXT,
+        weight          REAL NOT NULL DEFAULT 1.0,
+        observed_at     TEXT NOT NULL,
+        created_at      TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_runtime_gap_signals_kind
+        ON runtime_gap_signals(kind, observed_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_runtime_gap_signals_family_cell
+        ON runtime_gap_signals(family_kind, cell_coord)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS growth_intents (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        family_kind         TEXT NOT NULL,
+        cell_coord          TEXT,
+        intent_key          TEXT NOT NULL UNIQUE,
+        priority            INTEGER NOT NULL DEFAULT 0,
+        status              TEXT NOT NULL DEFAULT 'pending',
+        signal_count        INTEGER NOT NULL DEFAULT 0,
+        last_signal_id      INTEGER REFERENCES runtime_gap_signals(id) ON DELETE SET NULL,
+        spec_seed_json      TEXT,
+        notes               TEXT,
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_growth_intents_status
+        ON growth_intents(status, priority DESC, id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_growth_intents_family_cell
+        ON growth_intents(family_kind, cell_coord, status)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS autogrowth_queue (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        intent_id       INTEGER NOT NULL REFERENCES growth_intents(id) ON DELETE CASCADE,
+        priority        INTEGER NOT NULL DEFAULT 0,
+        status          TEXT NOT NULL DEFAULT 'queued',
+        claimed_by      TEXT,
+        claimed_at      TEXT,
+        attempt_count   INTEGER NOT NULL DEFAULT 0,
+        last_error      TEXT,
+        backoff_until   TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_autogrowth_queue_pending
+        ON autogrowth_queue(status, priority DESC, id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_autogrowth_queue_intent
+        ON autogrowth_queue(intent_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_autogrowth_queue_backoff
+        ON autogrowth_queue(backoff_until)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS autogrowth_runs (
+        id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+        queue_row_id                INTEGER REFERENCES autogrowth_queue(id) ON DELETE SET NULL,
+        intent_id                   INTEGER REFERENCES growth_intents(id) ON DELETE SET NULL,
+        outcome                     TEXT NOT NULL,
+        promotion_decision_id       INTEGER REFERENCES promotion_decisions(id) ON DELETE SET NULL,
+        validation_run_id           INTEGER REFERENCES validation_runs(id) ON DELETE SET NULL,
+        shadow_evaluation_id        INTEGER REFERENCES shadow_evaluations(id) ON DELETE SET NULL,
+        family_kind                 TEXT NOT NULL,
+        cell_coord                  TEXT,
+        solver_id                   INTEGER REFERENCES solvers(id) ON DELETE SET NULL,
+        error                       TEXT,
+        evidence                    TEXT,
+        started_at                  TEXT NOT NULL,
+        completed_at                TEXT NOT NULL,
+        created_at                  TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_autogrowth_runs_intent
+        ON autogrowth_runs(intent_id, completed_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_autogrowth_runs_outcome
+        ON autogrowth_runs(outcome, completed_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_autogrowth_runs_family_cell
+        ON autogrowth_runs(family_kind, cell_coord)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS growth_events (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_kind      TEXT NOT NULL,
+        entity_kind     TEXT,
+        entity_id       INTEGER,
+        family_kind     TEXT,
+        cell_coord      TEXT,
+        payload         TEXT,
+        occurred_at     TEXT NOT NULL,
+        created_at      TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_growth_events_entity
+        ON growth_events(entity_kind, entity_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_growth_events_kind
+        ON growth_events(event_kind, occurred_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_growth_events_family_cell
+        ON growth_events(family_kind, cell_coord)
+    """,
+]
+
+
 # Forward-only migrations indexed by target schema version.
 # Migration N is applied when current schema_version < N. Each migration
 # is a list of SQL statements applied in a single transaction.
 MIGRATIONS: Dict[int, List[str]] = {
     1: INITIAL_SCHEMA_SQL,
     2: PHASE11_AUTOGROWTH_SCHEMA_SQL,
+    3: PHASE12_AUTOGROWTH_INTAKE_SCHEMA_SQL,
 }
 
 
@@ -425,4 +564,10 @@ def all_table_names() -> List[str]:
         "shadow_evaluations",
         "promotion_decisions",
         "autonomy_kpis",
+        # schema v3 — Phase 12 self-starting local-first autogrowth loop
+        "runtime_gap_signals",
+        "growth_intents",
+        "autogrowth_queue",
+        "autogrowth_runs",
+        "growth_events",
     ]

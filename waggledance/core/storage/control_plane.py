@@ -178,6 +178,84 @@ class RuntimePathBinding:
     rebound_at: Optional[str]
 
 
+# -- schema v3 — Phase 12 self-starting autogrowth intake -----------
+
+
+@dataclass(frozen=True)
+class RuntimeGapSignalRecord:
+    id: int
+    kind: str
+    family_kind: Optional[str]
+    cell_coord: Optional[str]
+    signal_payload: Optional[str]
+    weight: float
+    observed_at: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class GrowthIntentRecord:
+    id: int
+    family_kind: str
+    cell_coord: Optional[str]
+    intent_key: str
+    priority: int
+    status: str
+    signal_count: int
+    last_signal_id: Optional[int]
+    spec_seed_json: Optional[str]
+    notes: Optional[str]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class AutogrowthQueueRecord:
+    id: int
+    intent_id: int
+    priority: int
+    status: str
+    claimed_by: Optional[str]
+    claimed_at: Optional[str]
+    attempt_count: int
+    last_error: Optional[str]
+    backoff_until: Optional[str]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class AutogrowthRunRecord:
+    id: int
+    queue_row_id: Optional[int]
+    intent_id: Optional[int]
+    outcome: str
+    promotion_decision_id: Optional[int]
+    validation_run_id: Optional[int]
+    shadow_evaluation_id: Optional[int]
+    family_kind: str
+    cell_coord: Optional[str]
+    solver_id: Optional[int]
+    error: Optional[str]
+    evidence: Optional[str]
+    started_at: str
+    completed_at: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class GrowthEventRecord:
+    id: int
+    event_kind: str
+    entity_kind: Optional[str]
+    entity_id: Optional[int]
+    family_kind: Optional[str]
+    cell_coord: Optional[str]
+    payload: Optional[str]
+    occurred_at: str
+    created_at: str
+
+
 # -- schema v2 — Phase 11 autonomous low-risk solver growth ---------
 
 
@@ -1274,6 +1352,440 @@ class ControlPlaneDB:
             ).fetchone()
         return None if row is None else self._row_to_autonomy_kpi(row)
 
+    # -- schema v3: runtime gap signals --------------------------------
+
+    def record_runtime_gap_signal(
+        self,
+        kind: str,
+        *,
+        family_kind: Optional[str] = None,
+        cell_coord: Optional[str] = None,
+        signal_payload: Optional[str] = None,
+        weight: float = 1.0,
+        observed_at: Optional[str] = None,
+    ) -> RuntimeGapSignalRecord:
+        now = _utcnow()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO runtime_gap_signals(
+                    kind, family_kind, cell_coord, signal_payload,
+                    weight, observed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    kind, family_kind, cell_coord, signal_payload,
+                    float(weight), observed_at or now, now,
+                ),
+            )
+            new_id = cursor.lastrowid
+            row = self._conn.execute(
+                "SELECT * FROM runtime_gap_signals WHERE id = ?", (new_id,)
+            ).fetchone()
+        return self._row_to_runtime_gap_signal(row)
+
+    def count_runtime_gap_signals(
+        self,
+        *,
+        kind: Optional[str] = None,
+        family_kind: Optional[str] = None,
+        cell_coord: Optional[str] = None,
+    ) -> int:
+        wheres: List[str] = []
+        params: List[object] = []
+        if kind is not None:
+            wheres.append("kind = ?")
+            params.append(kind)
+        if family_kind is not None:
+            wheres.append("family_kind = ?")
+            params.append(family_kind)
+        if cell_coord is not None:
+            wheres.append("cell_coord = ?")
+            params.append(cell_coord)
+        sql = "SELECT COUNT(*) AS c FROM runtime_gap_signals"
+        if wheres:
+            sql += " WHERE " + " AND ".join(wheres)
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row["c"]) if row else 0
+
+    # -- schema v3: growth intents -------------------------------------
+
+    def upsert_growth_intent(
+        self,
+        family_kind: str,
+        intent_key: str,
+        *,
+        cell_coord: Optional[str] = None,
+        priority: int = 0,
+        status: str = "pending",
+        signal_count: int = 0,
+        last_signal_id: Optional[int] = None,
+        spec_seed_json: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> GrowthIntentRecord:
+        now = _utcnow()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO growth_intents(
+                    family_kind, cell_coord, intent_key,
+                    priority, status, signal_count,
+                    last_signal_id, spec_seed_json, notes,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(intent_key) DO UPDATE SET
+                    family_kind=excluded.family_kind,
+                    cell_coord=excluded.cell_coord,
+                    priority=MAX(growth_intents.priority, excluded.priority),
+                    signal_count=growth_intents.signal_count + 1,
+                    last_signal_id=COALESCE(excluded.last_signal_id, growth_intents.last_signal_id),
+                    spec_seed_json=COALESCE(excluded.spec_seed_json, growth_intents.spec_seed_json),
+                    notes=COALESCE(excluded.notes, growth_intents.notes),
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    family_kind, cell_coord, intent_key,
+                    int(priority), status, int(signal_count),
+                    last_signal_id, spec_seed_json, notes,
+                    now, now,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM growth_intents WHERE intent_key = ?",
+                (intent_key,),
+            ).fetchone()
+        return self._row_to_growth_intent(row)
+
+    def set_growth_intent_status(
+        self, intent_id: int, status: str
+    ) -> Optional[GrowthIntentRecord]:
+        now = _utcnow()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE growth_intents SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, int(intent_id)),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM growth_intents WHERE id = ?", (int(intent_id),)
+            ).fetchone()
+        return None if row is None else self._row_to_growth_intent(row)
+
+    def get_growth_intent(
+        self, intent_id: int
+    ) -> Optional[GrowthIntentRecord]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM growth_intents WHERE id = ?", (int(intent_id),)
+            ).fetchone()
+        return None if row is None else self._row_to_growth_intent(row)
+
+    def count_growth_intents(
+        self, *, status: Optional[str] = None,
+        family_kind: Optional[str] = None,
+        cell_coord: Optional[str] = None,
+    ) -> int:
+        wheres: List[str] = []
+        params: List[object] = []
+        if status is not None:
+            wheres.append("status = ?")
+            params.append(status)
+        if family_kind is not None:
+            wheres.append("family_kind = ?")
+            params.append(family_kind)
+        if cell_coord is not None:
+            wheres.append("cell_coord = ?")
+            params.append(cell_coord)
+        sql = "SELECT COUNT(*) AS c FROM growth_intents"
+        if wheres:
+            sql += " WHERE " + " AND ".join(wheres)
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row["c"]) if row else 0
+
+    # -- schema v3: autogrowth queue -----------------------------------
+
+    def enqueue_growth_intent(
+        self, intent_id: int, *, priority: int = 0
+    ) -> AutogrowthQueueRecord:
+        now = _utcnow()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Refuse to enqueue twice for the same intent if a
+                # queued/claimed row already exists.
+                existing = self._conn.execute(
+                    """
+                    SELECT id FROM autogrowth_queue
+                    WHERE intent_id = ? AND status IN ('queued', 'claimed')
+                    LIMIT 1
+                    """,
+                    (int(intent_id),),
+                ).fetchone()
+                if existing is not None:
+                    row = self._conn.execute(
+                        "SELECT * FROM autogrowth_queue WHERE id = ?",
+                        (existing["id"],),
+                    ).fetchone()
+                    self._conn.execute("COMMIT")
+                    return self._row_to_autogrowth_queue(row)
+                cursor = self._conn.execute(
+                    """
+                    INSERT INTO autogrowth_queue(
+                        intent_id, priority, status,
+                        attempt_count, created_at, updated_at
+                    ) VALUES (?, ?, 'queued', 0, ?, ?)
+                    """,
+                    (int(intent_id), int(priority), now, now),
+                )
+                new_id = cursor.lastrowid
+                self._conn.execute(
+                    "UPDATE growth_intents SET status = 'enqueued', updated_at = ? WHERE id = ?",
+                    (now, int(intent_id)),
+                )
+                row = self._conn.execute(
+                    "SELECT * FROM autogrowth_queue WHERE id = ?", (new_id,)
+                ).fetchone()
+                self._conn.execute("COMMIT")
+            except Exception as exc:  # noqa: BLE001
+                self._conn.execute("ROLLBACK")
+                raise ControlPlaneError(
+                    f"enqueue_growth_intent failed: {exc!r}"
+                ) from exc
+        return self._row_to_autogrowth_queue(row)
+
+    def claim_next_queue_row(
+        self, claimer: str, *, now_iso: Optional[str] = None
+    ) -> Optional[AutogrowthQueueRecord]:
+        """Atomically claim the next 'queued' row whose backoff has expired."""
+
+        now = now_iso or _utcnow()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM autogrowth_queue
+                    WHERE status = 'queued'
+                      AND (backoff_until IS NULL OR backoff_until <= ?)
+                    ORDER BY priority DESC, id ASC
+                    LIMIT 1
+                    """,
+                    (now,),
+                ).fetchone()
+                if row is None:
+                    self._conn.execute("COMMIT")
+                    return None
+                self._conn.execute(
+                    """
+                    UPDATE autogrowth_queue
+                    SET status = 'claimed',
+                        claimed_by = ?,
+                        claimed_at = ?,
+                        attempt_count = attempt_count + 1,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'queued'
+                    """,
+                    (claimer, now, now, int(row["id"])),
+                )
+                refreshed = self._conn.execute(
+                    "SELECT * FROM autogrowth_queue WHERE id = ?",
+                    (int(row["id"]),),
+                ).fetchone()
+                self._conn.execute("COMMIT")
+            except Exception as exc:  # noqa: BLE001
+                self._conn.execute("ROLLBACK")
+                raise ControlPlaneError(
+                    f"claim_next_queue_row failed: {exc!r}"
+                ) from exc
+        return self._row_to_autogrowth_queue(refreshed)
+
+    def complete_queue_row(
+        self,
+        queue_row_id: int,
+        *,
+        status: str,
+        last_error: Optional[str] = None,
+        backoff_seconds: Optional[float] = None,
+    ) -> AutogrowthQueueRecord:
+        now = _utcnow()
+        backoff_iso: Optional[str] = None
+        if backoff_seconds is not None and backoff_seconds > 0:
+            from datetime import timedelta
+            backoff_iso = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=float(backoff_seconds))
+            ).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE autogrowth_queue
+                SET status = ?,
+                    last_error = ?,
+                    backoff_until = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (status, last_error, backoff_iso, now, int(queue_row_id)),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM autogrowth_queue WHERE id = ?", (int(queue_row_id),)
+            ).fetchone()
+        return self._row_to_autogrowth_queue(row)
+
+    def list_autogrowth_queue(
+        self, *, status: Optional[str] = None, limit: int = 200
+    ) -> List[AutogrowthQueueRecord]:
+        sql = "SELECT * FROM autogrowth_queue"
+        params: List[object] = []
+        if status is not None:
+            sql += " WHERE status = ?"
+            params.append(status)
+        sql += " ORDER BY priority DESC, id ASC LIMIT ?"
+        params.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_autogrowth_queue(r) for r in rows]
+
+    def count_queue_rows(self, *, status: Optional[str] = None) -> int:
+        sql = "SELECT COUNT(*) AS c FROM autogrowth_queue"
+        params: List[object] = []
+        if status is not None:
+            sql += " WHERE status = ?"
+            params.append(status)
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row["c"]) if row else 0
+
+    # -- schema v3: autogrowth runs ------------------------------------
+
+    def record_autogrowth_run(
+        self,
+        *,
+        family_kind: str,
+        outcome: str,
+        intent_id: Optional[int] = None,
+        queue_row_id: Optional[int] = None,
+        promotion_decision_id: Optional[int] = None,
+        validation_run_id: Optional[int] = None,
+        shadow_evaluation_id: Optional[int] = None,
+        cell_coord: Optional[str] = None,
+        solver_id: Optional[int] = None,
+        error: Optional[str] = None,
+        evidence: Optional[str] = None,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+    ) -> AutogrowthRunRecord:
+        now = _utcnow()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO autogrowth_runs(
+                    queue_row_id, intent_id, outcome,
+                    promotion_decision_id, validation_run_id,
+                    shadow_evaluation_id,
+                    family_kind, cell_coord, solver_id,
+                    error, evidence,
+                    started_at, completed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    queue_row_id, intent_id, outcome,
+                    promotion_decision_id, validation_run_id,
+                    shadow_evaluation_id,
+                    family_kind, cell_coord, solver_id,
+                    error, evidence,
+                    started_at or now, completed_at or now, now,
+                ),
+            )
+            new_id = cursor.lastrowid
+            row = self._conn.execute(
+                "SELECT * FROM autogrowth_runs WHERE id = ?", (new_id,)
+            ).fetchone()
+        return self._row_to_autogrowth_run(row)
+
+    def list_autogrowth_runs(
+        self,
+        *,
+        outcome: Optional[str] = None,
+        family_kind: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[AutogrowthRunRecord]:
+        wheres: List[str] = []
+        params: List[object] = []
+        if outcome is not None:
+            wheres.append("outcome = ?")
+            params.append(outcome)
+        if family_kind is not None:
+            wheres.append("family_kind = ?")
+            params.append(family_kind)
+        sql = "SELECT * FROM autogrowth_runs"
+        if wheres:
+            sql += " WHERE " + " AND ".join(wheres)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_autogrowth_run(r) for r in rows]
+
+    # -- schema v3: growth events (append-only audit mirror) ----------
+
+    def emit_growth_event(
+        self,
+        event_kind: str,
+        *,
+        entity_kind: Optional[str] = None,
+        entity_id: Optional[int] = None,
+        family_kind: Optional[str] = None,
+        cell_coord: Optional[str] = None,
+        payload: Optional[str] = None,
+        occurred_at: Optional[str] = None,
+    ) -> GrowthEventRecord:
+        now = _utcnow()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO growth_events(
+                    event_kind, entity_kind, entity_id,
+                    family_kind, cell_coord, payload,
+                    occurred_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_kind, entity_kind, entity_id,
+                    family_kind, cell_coord, payload,
+                    occurred_at or now, now,
+                ),
+            )
+            new_id = cursor.lastrowid
+            row = self._conn.execute(
+                "SELECT * FROM growth_events WHERE id = ?", (new_id,)
+            ).fetchone()
+        return self._row_to_growth_event(row)
+
+    def count_growth_events(
+        self, *, event_kind: Optional[str] = None,
+        family_kind: Optional[str] = None,
+        cell_coord: Optional[str] = None,
+    ) -> int:
+        wheres: List[str] = []
+        params: List[object] = []
+        if event_kind is not None:
+            wheres.append("event_kind = ?")
+            params.append(event_kind)
+        if family_kind is not None:
+            wheres.append("family_kind = ?")
+            params.append(family_kind)
+        if cell_coord is not None:
+            wheres.append("cell_coord = ?")
+            params.append(cell_coord)
+        sql = "SELECT COUNT(*) AS c FROM growth_events"
+        if wheres:
+            sql += " WHERE " + " AND ".join(wheres)
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row["c"]) if row else 0
+
     # -- iteration -------------------------------------------------------
 
     def iter_solvers(
@@ -1579,6 +2091,112 @@ class ControlPlaneDB:
             invariant_failed=row["invariant_failed"],
             rollback_reason=row["rollback_reason"],
             evidence=row["evidence"],
+            created_at=str(row["created_at"]),
+        )
+
+    # -- v3 row converters ---------------------------------------------
+
+    @staticmethod
+    def _row_to_runtime_gap_signal(
+        row: sqlite3.Row,
+    ) -> RuntimeGapSignalRecord:
+        return RuntimeGapSignalRecord(
+            id=int(row["id"]),
+            kind=str(row["kind"]),
+            family_kind=row["family_kind"],
+            cell_coord=row["cell_coord"],
+            signal_payload=row["signal_payload"],
+            weight=float(row["weight"]),
+            observed_at=str(row["observed_at"]),
+            created_at=str(row["created_at"]),
+        )
+
+    @staticmethod
+    def _row_to_growth_intent(row: sqlite3.Row) -> GrowthIntentRecord:
+        return GrowthIntentRecord(
+            id=int(row["id"]),
+            family_kind=str(row["family_kind"]),
+            cell_coord=row["cell_coord"],
+            intent_key=str(row["intent_key"]),
+            priority=int(row["priority"]),
+            status=str(row["status"]),
+            signal_count=int(row["signal_count"]),
+            last_signal_id=(
+                int(row["last_signal_id"])
+                if row["last_signal_id"] is not None else None
+            ),
+            spec_seed_json=row["spec_seed_json"],
+            notes=row["notes"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _row_to_autogrowth_queue(row: sqlite3.Row) -> AutogrowthQueueRecord:
+        return AutogrowthQueueRecord(
+            id=int(row["id"]),
+            intent_id=int(row["intent_id"]),
+            priority=int(row["priority"]),
+            status=str(row["status"]),
+            claimed_by=row["claimed_by"],
+            claimed_at=row["claimed_at"],
+            attempt_count=int(row["attempt_count"]),
+            last_error=row["last_error"],
+            backoff_until=row["backoff_until"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _row_to_autogrowth_run(row: sqlite3.Row) -> AutogrowthRunRecord:
+        return AutogrowthRunRecord(
+            id=int(row["id"]),
+            queue_row_id=(
+                int(row["queue_row_id"])
+                if row["queue_row_id"] is not None else None
+            ),
+            intent_id=(
+                int(row["intent_id"])
+                if row["intent_id"] is not None else None
+            ),
+            outcome=str(row["outcome"]),
+            promotion_decision_id=(
+                int(row["promotion_decision_id"])
+                if row["promotion_decision_id"] is not None else None
+            ),
+            validation_run_id=(
+                int(row["validation_run_id"])
+                if row["validation_run_id"] is not None else None
+            ),
+            shadow_evaluation_id=(
+                int(row["shadow_evaluation_id"])
+                if row["shadow_evaluation_id"] is not None else None
+            ),
+            family_kind=str(row["family_kind"]),
+            cell_coord=row["cell_coord"],
+            solver_id=(
+                int(row["solver_id"]) if row["solver_id"] is not None else None
+            ),
+            error=row["error"],
+            evidence=row["evidence"],
+            started_at=str(row["started_at"]),
+            completed_at=str(row["completed_at"]),
+            created_at=str(row["created_at"]),
+        )
+
+    @staticmethod
+    def _row_to_growth_event(row: sqlite3.Row) -> GrowthEventRecord:
+        return GrowthEventRecord(
+            id=int(row["id"]),
+            event_kind=str(row["event_kind"]),
+            entity_kind=row["entity_kind"],
+            entity_id=(
+                int(row["entity_id"]) if row["entity_id"] is not None else None
+            ),
+            family_kind=row["family_kind"],
+            cell_coord=row["cell_coord"],
+            payload=row["payload"],
+            occurred_at=str(row["occurred_at"]),
             created_at=str(row["created_at"]),
         )
 

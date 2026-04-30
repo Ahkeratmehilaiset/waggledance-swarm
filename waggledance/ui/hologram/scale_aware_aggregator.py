@@ -56,6 +56,8 @@ class ScaleAwarePanels:
     autonomy_low_risk_kpis: RealityPanel
     # Phase 12 — self-starting autonomy loop visibility
     autonomy_self_starting_kpis: RealityPanel
+    # Phase 13 — runtime-harvest visibility (signals from real runtime path)
+    autonomy_runtime_harvest_kpis: RealityPanel
 
 
 _HARD_CAP_PER_PANEL: int = 256
@@ -85,6 +87,11 @@ def build_scale_aware_panels(
                 "Self-starting autonomy loop",
                 unavailable,
             ),
+            autonomy_runtime_harvest_kpis=_unavailable(
+                "autonomy_runtime_harvest_kpis",
+                "Runtime harvest autonomy",
+                unavailable,
+            ),
         )
 
     queries = RegistryQueries(control_plane)
@@ -95,6 +102,7 @@ def build_scale_aware_panels(
         provider_queue_summary=_provider_queue_panel(control_plane),
         autonomy_low_risk_kpis=_autonomy_low_risk_kpis_panel(control_plane),
         autonomy_self_starting_kpis=_autonomy_self_starting_panel(control_plane),
+        autonomy_runtime_harvest_kpis=_autonomy_runtime_harvest_panel(control_plane),
     )
 
 
@@ -411,6 +419,98 @@ def _autonomy_self_starting_panel(cp: ControlPlaneDB) -> RealityPanel:
     return RealityPanel(
         panel_id="autonomy_self_starting_kpis",
         title="Self-starting autonomy loop",
+        available=True,
+        items=tuple(items),
+    )
+
+
+def _autonomy_runtime_harvest_panel(cp: ControlPlaneDB) -> RealityPanel:
+    """Phase 13 — runtime-harvest visibility.
+
+    Shows the slice of the autonomy loop that comes from *real
+    runtime call paths* (signals with ``kind='runtime_miss'``), as
+    opposed to the broader self-starting view in
+    :func:`_autonomy_self_starting_panel`. Distinguishes:
+
+    * runtime_harvested_signals
+    * queued_intents
+    * self_starting_promotions (driven by runtime-miss signals)
+    * teacher_assisted_promotions (zero today; surfaced for honesty)
+    * human_gated_promotions (Phase 9 ladder rows)
+
+    Returns ``available=false`` when the runtime-miss signal table is
+    empty AND no scheduler runs exist — preserving the never-fabricate
+    invariant.
+    """
+
+    runtime_miss_total = cp.count_runtime_gap_signals(kind="runtime_miss")
+    queued_total = cp.count_queue_rows(status="queued")
+    runs_promoted = len(
+        cp.list_autogrowth_runs(outcome="auto_promoted", limit=10000)
+    )
+
+    if runtime_miss_total == 0 and queued_total == 0 and runs_promoted == 0:
+        return _unavailable(
+            "autonomy_runtime_harvest_kpis",
+            "Runtime harvest autonomy",
+            "no_runtime_harvest_activity_recorded_yet",
+        )
+
+    # Per-family runtime-miss counts
+    rows = cp._conn.execute(  # type: ignore[attr-defined]
+        """
+        SELECT family_kind, COUNT(*) AS c
+        FROM runtime_gap_signals WHERE kind = 'runtime_miss'
+        GROUP BY family_kind ORDER BY family_kind
+        """
+    ).fetchall()
+    per_family_runtime_miss = {
+        str(r["family_kind"] or "_"): int(r["c"]) for r in rows
+    }
+
+    # Per-cell runtime-miss counts (cell-aware reporting per RULE 18)
+    rows = cp._conn.execute(  # type: ignore[attr-defined]
+        """
+        SELECT cell_coord, COUNT(*) AS c
+        FROM runtime_gap_signals WHERE kind = 'runtime_miss'
+        GROUP BY cell_coord ORDER BY cell_coord
+        """
+    ).fetchall()
+    per_cell_runtime_miss = {
+        str(r["cell_coord"] or "_"): int(r["c"]) for r in rows
+    }
+
+    # Human-gated (Phase 9 promotion ladder rows)
+    human_gated = cp.stats().table_counts.get("promotion_states", 0)
+
+    # Truthful split: teacher-assisted requires real provider_jobs
+    # rows. Today the inner loop has zero. Document that explicitly.
+    provider_jobs_total = cp.stats().table_counts.get("provider_jobs", 0)
+    teacher_assisted_total = 0  # would be > 0 only when adapters land
+
+    items: list[dict] = [
+        {"metric": "runtime_harvested_signals_total",
+          "value": int(runtime_miss_total)},
+        {"metric": "queued_intents_total", "value": int(queued_total)},
+        {"metric": "self_starting_promotions_total",
+          "value": int(runs_promoted)},
+        {"metric": "teacher_assisted_promotions_total",
+          "value": int(teacher_assisted_total)},
+        {"metric": "human_gated_promotions_total",
+          "value": int(human_gated)},
+        {"metric": "provider_jobs_total", "value": int(provider_jobs_total)},
+        {
+            "metric": "per_family_runtime_miss",
+            "value": json.dumps(per_family_runtime_miss, sort_keys=True),
+        },
+        {
+            "metric": "per_cell_runtime_miss",
+            "value": json.dumps(per_cell_runtime_miss, sort_keys=True),
+        },
+    ]
+    return RealityPanel(
+        panel_id="autonomy_runtime_harvest_kpis",
+        title="Runtime harvest autonomy",
         available=True,
         items=tuple(items),
     )

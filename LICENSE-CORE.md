@@ -76,6 +76,26 @@ Solver bootstrap orchestration (P4 — U1→U3 escalation, throttler, LLM lane):
 Reality View scale-aware aggregator (P5):
 - `waggledance/ui/hologram/scale_aware_aggregator.py`
 
+### Phase 11 — autonomous low-risk solver growth lane (Change Date 2030-12-31)
+
+The files below extend the Phase 10 substrate with the closed no-human
+auto-promotion loop and runtime-executable lane defined in
+`docs/architecture/LOW_RISK_AUTOGROWTH_POLICY.md`. All files carry
+the `# BUSL-Change-Date: 2030-12-31` per-file header. The Phase 11
+schema migration extends `waggledance/core/storage/control_plane.py`
+and `control_plane_schema.py` (already listed above) with v2 tables
+and helpers; those files retain their existing protected listing.
+
+Autonomy growth package:
+- `waggledance/core/autonomy_growth/__init__.py`
+- `waggledance/core/autonomy_growth/low_risk_policy.py`
+- `waggledance/core/autonomy_growth/solver_executor.py`
+- `waggledance/core/autonomy_growth/validation_runner.py`
+- `waggledance/core/autonomy_growth/shadow_evaluator.py`
+- `waggledance/core/autonomy_growth/auto_promotion_engine.py`
+- `waggledance/core/autonomy_growth/solver_dispatcher.py`
+- `waggledance/core/autonomy_growth/low_risk_grower.py`
+
 ## Default rule
 
 Any source file not listed above is licensed under Apache License 2.0 unless that file itself carries a BUSL-1.1 SPDX header.

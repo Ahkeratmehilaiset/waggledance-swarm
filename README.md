@@ -6,7 +6,7 @@
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20shipped%20%2B%20Phase%2010%20substrate%20landed-blue)]()
+[![Version](https://img.shields.io/badge/version-3.6.0%20shipped%20%2B%20Phase%2010%20substrate%20%2B%20Phase%2011%20autogrowth%20lane-blue)]()
 
 ## What this is
 
@@ -54,6 +54,26 @@ The runtime is built around a hexagonal layout: `core/` is the domain, `adapters
 | **2 — Learned** | Adapts | 14 specialist models with canary lifecycle |
 | **1 — Fallback** | Explains | LLM — only when solvers and specialists cannot handle it |
 | **1b — Optional** | Gemma 4 | Optional dual-tier Gemma 4 profiles: fast (e4b) for general fallback, heavy (26b) for hard reasoning |
+
+## Phase 11 — Autonomous low-risk solver growth lane
+
+After v3.6.0 + Phase 10 substrate, Phase 11 lands the first **closed no-human autonomous solver growth lane** for a bounded allowlist of deterministic, side-effect-free families. The lane is bounded by [`docs/architecture/LOW_RISK_AUTOGROWTH_POLICY.md`](docs/architecture/LOW_RISK_AUTOGROWTH_POLICY.md).
+
+What is real now:
+
+* Six allowlisted families can be auto-promoted by the system without a human in the inner loop: `scalar_unit_conversion`, `lookup_table`, `threshold_rule`, `interval_bucket_classifier`, `linear_arithmetic`, `bounded_interpolation`.
+* `waggledance/core/autonomy_growth/` ships the closed loop: `LowRiskGrower` (gap → spec → compile), `AutoPromotionEngine` (validate → shadow → I1–I9 invariants → atomic decision write), `LowRiskSolverDispatcher` (runtime executor between built-in solvers and LLM fallback), and `solver_executor.py` (six pure executors).
+* Control-plane schema v2 adds five new normalized tables — `family_policies`, `validation_runs`, `shadow_evaluations`, `promotion_decisions`, `autonomy_kpis` — plus a `solver_artifacts` table for the executable compiled form. No JSON-on-disk system-of-record (RULE 10).
+* Reality View gains an `autonomy_low_risk_kpis` aggregate panel that surfaces auto-promotions / rejections / rollbacks / dispatcher hits without listing per-solver state at scale. The never-fabricate invariant is preserved: an empty autonomy lane returns `available=false` with `rationale_if_unavailable="no_autonomy_activity_recorded_yet"`.
+* `tools/run_autonomy_proof.py` produces a reproducible end-to-end proof artifact at [`docs/runs/phase11_autogrowth_2026_04_29/autonomy_proof.md`](docs/runs/phase11_autogrowth_2026_04_29/autonomy_proof.md) and a machine-readable [`autonomy_proof.json`](docs/runs/phase11_autogrowth_2026_04_29/autonomy_proof.json).
+
+What is **not** real:
+
+* High-risk families (`weighted_aggregation`, `temporal_window_rule`, `structured_field_extractor`, `deterministic_composition_wrapper`) remain human-gated through the existing Phase 9 promotion ladder.
+* The 14-stage Phase 9 promotion ladder is unchanged — runtime-stage promotions still require a real `human_approval_id`. Auto-promotion in this lane is a *separate status flag* (`solvers.status='auto_promoted'`), not a runtime-stage promotion.
+* The Stage-2 atomic flip is unchanged. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/` is the runtime read path until subsystems opt into `PathResolver`. The mechanism is specified in [`docs/architecture/STAGE2_CUTOVER_RFC.md`](docs/architecture/STAGE2_CUTOVER_RFC.md) and remains unexecuted.
+* Real Anthropic / OpenAI HTTP adapters are still follow-up work. Only `dry_run_stub` and `claude_code_builder_lane` are exercisable end-to-end today; Phase 11 does not change that.
+* No actuator-side autonomy. Auto-promoted low-risk solvers are *consultable*, not *authoritative*; built-in solvers retain precedence.
 
 ## Phase 10 — Foundation, Truth, Builder Lane (substrate landed on main)
 

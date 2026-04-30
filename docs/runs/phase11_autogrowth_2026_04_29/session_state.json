@@ -1,0 +1,132 @@
+{
+  "session": "phase11_autonomous_low_risk_growth_lane",
+  "session_started_at_utc": "2026-04-29T07:00:00Z",
+  "operator_directive": "Take WD from 'Phase 10 substrate landed cleanly' to a real, measurable, end-to-end autonomous low-risk solver growth lane. Closed vertical slice; no new substrate-only phase.",
+  "session_mode": "runtime_facing_autonomy_slice",
+  "prior_session_archived_at": "docs/runs/post_phase10_finalize_2026_04_28/session_state.json",
+
+  "model_selection": {
+    "primary_model": "claude-opus-4-7",
+    "model_id_resolved": "claude-opus-4-7",
+    "model_selection_source": "system_environment_block_powered_by_opus_4_7",
+    "subagent_model": "inherited_opus_4_7",
+    "fallback_policy": "log_and_continue_record_event",
+    "fallback_events": []
+  },
+
+  "rule_compliance": {
+    "rule_1_pr_only": "active",
+    "rule_2_no_force_no_rewrite": "active",
+    "rule_3_no_stale_sha_merge": "active",
+    "rule_4_no_atomic_flip_no_human_approval": "active",
+    "rule_5_magma_faiss_truth_first": "active",
+    "rule_6_phase8_5_read_only": "active",
+    "rule_7_targeted_pytest": "active",
+    "rule_8_busl_change_date_2030_12_31": "active",
+    "rule_9_no_more_pure_substrate_phases": "active",
+    "rule_10_no_loose_json_system_of_record": "active",
+    "rule_11_no_overclaim_anthropic_openai": "active",
+    "rule_12_domain_neutral": "active",
+    "rule_13_no_actuator_or_policy_writes": "active",
+    "rule_14_push_verification_180s": "active",
+    "rule_15_autonomous_merge_guardrails": "armed"
+  },
+
+  "git_state_at_session_start": {
+    "remote": "https://github.com/Ahkeratmehilaiset/waggledance-swarm.git",
+    "origin_main_sha": "30dc1dae42af4abebc8adbd96e7210aafe447f61",
+    "origin_main_subject": "docs(state): regenerate CURRENT_STATE.md after Phase 10 substrate",
+    "tag_v3_6_1_substrate_present": true,
+    "tag_v3_6_1_substrate_points_at": "fb918c36144fbb271bc5340c3eaf21ac4a8a1916",
+    "tag_v3_6_1_substrate_annotated_sha": "bd558fc78183cc25efdf84681ab07b6c1ab8e876",
+    "open_prs_count_total": 7,
+    "open_prs_relevant_to_this_session": 0,
+    "open_prs_dependabot_count": 7,
+    "phase8_5_remote_refs_present": [
+      "phase8.5/curiosity-organ@1a31b248",
+      "phase8.5/dream-curriculum@bfa526a2",
+      "phase8.5/self-model-layer@e3479dd9"
+    ],
+    "phase8_5_disposition_in_this_session": "READ_ONLY (RULE 6)"
+  },
+
+  "untracked_files_at_session_start_must_not_be_committed": [
+    "WD_release_to_main_master_prompt.md",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+    "docs/runs/phase9_pr_body.md"
+  ],
+
+  "working_branch": "phase11/autonomous-low-risk-growth-lane",
+  "branched_from": "origin/main @ 30dc1dae42af4abebc8adbd96e7210aafe447f61",
+
+  "phase_dependency": {
+    "P0": [],
+    "P1": ["P0"],
+    "P2": ["P1"],
+    "P3": ["P2"],
+    "P4": ["P3"],
+    "P5": ["P3"],
+    "P6": ["P4","P5"],
+    "P7": ["P6"],
+    "P8": ["P7"],
+    "P9": ["P3","P4","P6","P7","P8"],
+    "P10_stop_handoff_armed_at_phases": ["P3","P4","P11_push"],
+    "P11": ["P9"],
+    "P12": ["P11"],
+    "P13": ["P12"]
+  },
+
+  "phases_completed": ["P0"],
+  "phases_in_progress": ["P1"],
+  "phases_pending": ["P2","P3","P4","P5","P6","P7","P8","P9","P11","P12","P13"],
+
+  "low_risk_allowlist_target": [
+    "scalar_unit_conversion",
+    "lookup_table",
+    "threshold_rule",
+    "interval_bucket_classifier",
+    "bounded_interpolation",
+    "linear_arithmetic"
+  ],
+  "low_risk_allowlist_excluded_with_reason": {
+    "weighted_aggregation": "stateless and side-effect-free, but operator allowlist target prioritised the 6 above; revisit in v2",
+    "temporal_window_rule": "needs time-series state — not stateless enough for the first low-risk lane",
+    "structured_field_extractor": "regex/json-path on arbitrary input — extraction semantics ambiguous; conservative",
+    "deterministic_composition_wrapper": "references other solver_specs by id; brittle until composition-store hardened"
+  },
+
+  "control_plane_v2_planned_tables": {
+    "family_policies": "per-family autopromote policy (is_low_risk, gates)",
+    "validation_runs": "case_count + pass/fail + status + evidence per validation invocation",
+    "shadow_evaluations": "sample_count + agree/disagree per shadow run",
+    "promotion_decisions": "one row per auto-promotion or rollback decision; decided_by='autopromotion_engine' or 'rollback_engine'",
+    "autonomy_kpis": "rolling counts for the autonomy KPI panel"
+  },
+  "control_plane_v2_no_loose_json_rule": "All current-state for autonomy lives in these tables. No ad hoc JSON system-of-record (RULE 10).",
+
+  "runtime_lane_design": {
+    "name": "low_risk_solver_dispatcher",
+    "precedence": "AFTER built-in authoritative solvers, BEFORE LLM fallback",
+    "executable_families": "the same 6 in low_risk_allowlist_target",
+    "side_effect_envelope": "side-effect-free; pure functions of (artifact, input) -> output",
+    "control_plane_read_only_at_runtime": true,
+    "magma_event_emission": "promotion / deactivation events"
+  },
+
+  "provider_budget_consumption": {
+    "claude_code_builder_invocations_total_session": {"used": 0, "cap": 8, "per_phase_cap": 3},
+    "anthropic_api_calls_total_session": {"used": 0, "cap": 5, "default": 0},
+    "gpt_openai_api_calls_total_session": {"used": 0, "cap": 5, "default": 0},
+    "triangulated_multi_provider_total_session": {"used": 0, "cap": 1, "default": 0}
+  },
+
+  "stop_handoff_triggers_armed_in_this_session": [
+    "P3 runtime-executable lane not green by end of phase",
+    "P4 no-human low-risk loop not real by end of phase",
+    "Provider auth + builder lane both unable to truthfully complete a U1-only vertical slice",
+    "Runtime hot-path tests stay red after two focused correction passes",
+    "Push remains unavailable after 180s polling + gh-token authenticated fallback"
+  ],
+
+  "exact_next_commands_for_operator_if_blocked": "n/a — P0 complete, P1 starting"
+}

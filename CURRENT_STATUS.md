@@ -1,10 +1,22 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-04-28
-**Version:** v3.6.0 shipped + Phase 10 substrate landed on `main`
+**Updated:** 2026-04-30
+**Version:** v3.6.0 shipped + Phase 10 substrate + Phase 11 autonomous low-risk growth lane on `main`
 **Shipped branch:** `main` at `08b7e8c` (Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) on top of `8bf1869` post-v3.6.0 truthfulness commit on top of `a1c4152` PR #51 squash)
 **Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0) — no new SemVer tag for Phase 10 (substrate, not runtime behaviour change). An optional `v3.6.1-substrate` prerelease tag may be added once post-merge truth/governance are clean.
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
+
+### Phase 11 — Autonomous low-risk solver growth lane (landed on main 2026-04-30)
+
+Phase 11 closes the first end-to-end no-human autonomous solver growth loop, bounded by `docs/architecture/LOW_RISK_AUTOGROWTH_POLICY.md`. The bounded allowlist contains six side-effect-free deterministic families: `scalar_unit_conversion`, `lookup_table`, `threshold_rule`, `interval_bucket_classifier`, `linear_arithmetic`, `bounded_interpolation`. Outside the allowlist, growth remains human-gated via the existing Phase 9 promotion ladder.
+
+* **`waggledance/core/autonomy_growth/`** — eight new BUSL-1.1 modules: `low_risk_policy`, `solver_executor`, `validation_runner`, `shadow_evaluator`, `solver_dispatcher`, `auto_promotion_engine`, `low_risk_grower`, plus the package init.
+* **Control plane v2** — six new normalized tables (`solver_artifacts`, `family_policies`, `validation_runs`, `shadow_evaluations`, `promotion_decisions`, `autonomy_kpis`) plus their indexes. Forward-only migration from v1 to v2; existing tables unchanged.
+* **Reality View** — new `autonomy_low_risk_kpis` aggregate panel; never-fabricate invariant preserved.
+* **End-to-end proof** — `tools/run_autonomy_proof.py` grows three solvers (one each from three different families), runs through the closed loop, and dispatches them via runtime. Artifact at `docs/runs/phase11_autogrowth_2026_04_29/autonomy_proof.md` + `.json`.
+* **No new SemVer tag at squash time.** Decision deferred to post-merge; an optional `v3.7.0-autogrowth-alpha` prerelease tag may be created.
+
+What did NOT change: built-in authoritative solvers (Layer 3 retains precedence), the Phase 9 promotion ladder (4 runtime stages still require `human_approval_id`), Stage-2 atomic flip (still gated by `STAGE2_CUTOVER_RFC.md`), `_DEFAULT_FAISS_DIR` (still `data/faiss/`), real Anthropic/OpenAI HTTP adapters (still follow-up work).
 
 ### Phase 10 — Foundation, Truth, Builder Lane (landed on main 2026-04-28T12:14:15Z)
 

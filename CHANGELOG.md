@@ -1,5 +1,46 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 12 — self-starting local-first autogrowth loop] — 2026-04-30
+
+Branch: `phase12/self-starting-local-autogrowth`. Closes the autonomy loop's missing self-starting left-hand side. End-to-end mass-safe proof grows 30 deterministic low-risk solvers across 6 families and 8 hex cells with zero rejections, zero errors, and zero provider calls in the inner loop.
+
+### Added
+
+- Control plane schema **v3** — forward-only migration adds:
+  * `runtime_gap_signals` — raw runtime evidence rows (kind/family/cell/payload/weight).
+  * `growth_intents` — distilled growth intents keyed by `(family, cell, seed)` with priority + signal_count.
+  * `autogrowth_queue` — atomically-claimable work queue with backoff support.
+  * `autogrowth_runs` — per-attempt log linking promotion / validation / shadow / solver rows.
+  * `growth_events` — append-only event mirror (signal_recorded / intent_created / intent_enqueued / solver_auto_promoted / solver_rolled_back / etc.).
+  * Plus 13 new indexes for the high-cardinality lookup paths.
+- New BUSL-1.1 modules in `waggledance/core/autonomy_growth/`:
+  * `family_oracles.py` — pure-Python independent reference oracles per family.
+  * `gap_intake.py` — `RuntimeGapDetector` + `digest_signals_into_intents`.
+  * `autogrowth_scheduler.py` — `AutogrowthScheduler` with atomic queue claim, terminal-on-rejection semantics, pluggable scheduler ids for parallelism, `run_until_idle` drain helper.
+- Reality View `autonomy_self_starting_kpis` aggregate panel (`scale_aware_aggregator.py`). Aggregate-only — never per-solver rows. Empty lane returns `available=false` with `rationale_if_unavailable="no_self_starting_activity_recorded_yet"`.
+- `tools/run_mass_autogrowth_proof.py` — reproducible end-to-end self-starting proof. Generates 30 canonical low-risk seeds across 6 families and 8 cells; the scheduler drains the queue.
+- Trajectory analysis at `docs/journal/2026-04-30_autonomy_trajectory_and_gap_analysis.md` with the truthful scorecard (structural readiness 70 → 78; operational autonomy 25 → 45; teacher-lane dependence 35 → 25; human-gate dependence 80 → 65).
+- Tests: `tests/storage/test_control_plane_v3.py` (11), `tests/autonomy_growth/test_gap_intake.py` (5), `tests/autonomy_growth/test_autogrowth_scheduler.py` (9), `tests/autonomy_growth/test_mass_autogrowth_proof_smoke.py` (2), `tests/autonomy_growth/test_outer_inner_loop_truthful.py` (2 — locks the inner-loop-zero-provider-calls claim), `tests/ui_hologram/test_self_starting_panel.py` (5).
+
+### Behaviour
+
+- WaggleDance can now turn its own runtime evidence into a queued low-risk growth intent and execute the promotion loop without a human trigger. The inner-loop common path runs purely in-process; it is verified by test that zero `provider_jobs` rows are written by the mass-safe loop.
+- Atomic queue claim: two schedulers on the same control plane do not double-claim a single queued row.
+- `growth_events` provides an append-only audit mirror alongside the current-state rows in v2/v3.
+
+### Unchanged (truth boundary)
+
+- Phase 9 14-stage promotion ladder. Runtime stages still require `human_approval_id`.
+- Stage-2 atomic flip. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/`. `STAGE2_CUTOVER_RFC.md` still gates that mechanism.
+- Real Anthropic / OpenAI HTTP adapters. Only `dry_run_stub` and `claude_code_builder_lane` exercisable end-to-end. Phase 12 does not change that.
+- Outer-loop teacher remains Claude Code Opus 4.7 (LLM solver generator priority list, position 1).
+- The four excluded families (`weighted_aggregation`, `temporal_window_rule`, `structured_field_extractor`, `deterministic_composition_wrapper`) remain human-gated.
+- `phase8.5/*` branches. Read-only this session.
+
+### Tests at squash time
+
+* Targeted: `tests/autonomy_growth/` 68, `tests/storage/` 43, `tests/ui_hologram/` 18, `tests/providers/` 18, `tests/solver_synthesis/` 12, `tests/phase10/` 14 — all green.
+
 ## [Phase 11 — autonomous low-risk solver growth lane] — 2026-04-30
 
 Branch: `phase11/autonomous-low-risk-growth-lane`. Closed end-to-end no-human autonomous solver growth lane for a bounded allowlist of six deterministic side-effect-free families. Composes onto the Phase 10 substrate; no Stage-2 cutover executed; no actuator-side autonomy added.

@@ -1,10 +1,24 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-04-30
-**Version:** v3.6.0 shipped + Phase 10 substrate + Phase 11 autonomous low-risk growth lane on `main`
+**Version:** v3.6.0 + Phase 10 substrate + Phase 11 autogrowth + Phase 12 self-starting local-first autogrowth loop on `main`
 **Shipped branch:** `main` at `08b7e8c` (Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) on top of `8bf1869` post-v3.6.0 truthfulness commit on top of `a1c4152` PR #51 squash)
 **Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0) — no new SemVer tag for Phase 10 (substrate, not runtime behaviour change). An optional `v3.6.1-substrate` prerelease tag may be added once post-merge truth/governance are clean.
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
+
+### Phase 12 — Self-starting local-first autogrowth loop (landed on main 2026-04-30)
+
+Phase 12 closes the autonomy loop's missing left-hand side: a self-starting intake that converts runtime evidence into queued growth intents *without a human trigger*, plus a scheduler that drains the queue end-to-end at scale.
+
+* **Schema v3** — five new normalized tables: `runtime_gap_signals`, `growth_intents`, `autogrowth_queue`, `autogrowth_runs`, `growth_events`. Plus indexes for `(kind, observed_at)`, `(family_kind, cell_coord)`, `(status, priority DESC)`, `(intent_id)`, `(backoff_until)`, `(event_kind, occurred_at)`. Forward-only migration from v2.
+* **Self-starting intake (`gap_intake.py`)** — `RuntimeGapDetector` records signals; `digest_signals_into_intents` folds them into intents and enqueues them. Mirror events emit into `growth_events`.
+* **Local-first scheduler (`autogrowth_scheduler.py`)** — `AutogrowthScheduler.run_until_idle()` claims queue rows atomically, dispatches to `LowRiskGrower`, records run outcomes, emits growth events. Concurrent schedulers do not double-claim.
+* **Family reference oracles (`family_oracles.py`)** — pure-Python independent reference implementations for the six allowlisted families, used by the scheduler as the shadow oracle.
+* **Mass-safe proof** — `tools/run_mass_autogrowth_proof.py` end-to-end self-starts 30 promotions across all 6 families and 8 hex cells. **0 rejections, 0 errors, 0 provider calls.** Artifact at `docs/runs/phase12_self_starting_autogrowth_2026_04_30/autonomy_proof.md`.
+* **Reality View** — new `autonomy_self_starting_kpis` aggregate panel; Phase 11 `autonomy_low_risk_kpis` panel still works alongside it.
+* **Inner-loop / outer-loop truth** — locked by `tests/autonomy_growth/test_outer_inner_loop_truthful.py`: the mass-safe inner loop runs with `provider_jobs` empty. Outer-loop teacher remains Claude Code Opus 4.7 (position 1 in the LLM solver generator priority list).
+
+What did NOT change: built-in authoritative solvers (Layer 3 retains precedence), the Phase 9 promotion ladder (4 runtime stages still require `human_approval_id`), Stage-2 atomic flip (still gated by `STAGE2_CUTOVER_RFC.md`), `_DEFAULT_FAISS_DIR` (still `data/faiss/`), real Anthropic/OpenAI HTTP adapters (still follow-up work).
 
 ### Phase 11 — Autonomous low-risk solver growth lane (landed on main 2026-04-30)
 

@@ -1,5 +1,51 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 11 — autonomous low-risk solver growth lane] — 2026-04-30
+
+Branch: `phase11/autonomous-low-risk-growth-lane`. Closed end-to-end no-human autonomous solver growth lane for a bounded allowlist of six deterministic side-effect-free families. Composes onto the Phase 10 substrate; no Stage-2 cutover executed; no actuator-side autonomy added.
+
+### Added
+
+- `waggledance/core/autonomy_growth/` — new BUSL-1.1 package with eight modules:
+  * `low_risk_policy.py` — `LOW_RISK_FAMILY_KINDS` allowlist (six families).
+  * `solver_executor.py` — pure runtime executors for each allowlisted family.
+  * `validation_runner.py` — deterministic case-based validation.
+  * `shadow_evaluator.py` — independent-oracle shadow evaluation.
+  * `auto_promotion_engine.py` — closed-loop validate→shadow→I1–I9→atomic decision write.
+  * `solver_dispatcher.py` — runtime-executable lane between built-ins and LLM fallback.
+  * `low_risk_grower.py` — high-level orchestrator and primary teacher-lane surface (Claude Code Opus 4.7 referenced as `PRIMARY_TEACHER_LANE_ID`).
+- Control plane v2 schema migration (`SCHEMA_VERSION = 2`):
+  * `solver_artifacts` — executable compiled-artifact JSON keyed to a solver.
+  * `family_policies` — per-family auto-promote policy.
+  * `validation_runs`, `shadow_evaluations`, `promotion_decisions`, `autonomy_kpis`.
+  * Indexes on `(solver_id, decided_by, family_kind, snapshot_at)` for high-cardinality lookups.
+- Reality View `autonomy_low_risk_kpis` aggregate panel via `scale_aware_aggregator.py`. Never-fabricate invariant preserved.
+- `tools/run_autonomy_proof.py` — reproducible proof script.
+- `docs/architecture/LOW_RISK_AUTOGROWTH_POLICY.md` — policy envelope, invariants, and rollback contract.
+- `docs/runs/phase11_autogrowth_2026_04_29/` — session state + proof artifacts (`autonomy_proof.md`, `autonomy_proof.json`).
+- Tests:
+  * `tests/autonomy_growth/` — 50 targeted tests across executor, dispatcher, promotion engine, grower, low-risk-policy parity, and end-to-end proof smoke.
+  * `tests/storage/test_control_plane_v2.py` — 11 tests for v2 schema.
+  * `tests/ui_hologram/test_autonomy_kpi_panel.py` — 5 tests for the autonomy panel.
+
+### Behaviour
+
+- WaggleDance can now auto-promote a candidate solver in any of the six allowlisted families through `LowRiskGrower.grow_from_gap(...)` without a human in the inner loop. Promotion writes happen in a single SQLite transaction; partial activation is impossible.
+- The runtime dispatcher (`LowRiskSolverDispatcher.dispatch(...)`) reads `solver_artifacts` from the control plane and serves auto-promoted solvers via the pure `solver_executor.execute_artifact(...)`. Built-in authoritative solvers retain precedence; auto-promoted solvers sit in a bounded safe lane between built-ins and LLM fallback.
+- A `rollback(solver_name, reason)` flips an auto-promoted solver to `status='deactivated'` and records a `promotion_decisions` row in the same transaction. Subsequent dispatcher queries skip the deactivated solver.
+
+### Unchanged (truth boundary)
+
+- The Phase 9 14-stage promotion ladder. Runtime stages still require a real `human_approval_id`.
+- The Stage-2 atomic flip. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR` is `data/faiss/`. The Stage-2 RFC at `docs/architecture/STAGE2_CUTOVER_RFC.md` still gates that mechanism.
+- Real Anthropic / OpenAI HTTP adapters. Only `dry_run_stub` and `claude_code_builder_lane` are exercisable end-to-end. Phase 11 does not change that.
+- The Phase 10 truth audit, control-plane substrate, provider plane, and Reality View 11-panel structure.
+- `phase8.5/*` branches. Read-only this session.
+
+### Tests at squash time
+
+* Targeted: `tests/autonomy_growth/` 50, `tests/storage/` 32, `tests/ui_hologram/` 13, `tests/providers/` 18, `tests/solver_synthesis/` 12, `tests/phase10/` 14 — all green.
+
 ## [Phase 10 substrate — landed on main, no SemVer tag] — 2026-04-28
 
 Branch: `phase10/foundation-truth-builder-lane` (pre-squash tip `24ef97e`). Substrate work on top of v3.6.0. Squash-merged to `main` via [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) at 2026-04-28T12:14:15Z as commit `08b7e8c`. No new SemVer tag minted because Phase 10 adds substrate, not runtime hot-path behaviour change. An optional `v3.6.1-substrate` prerelease tag may be created when post-merge truth/governance are clean. Eight commits collapsed into one squash commit:

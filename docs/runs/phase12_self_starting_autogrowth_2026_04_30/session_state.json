@@ -1,0 +1,99 @@
+{
+  "session": "phase12_self_starting_local_autogrowth",
+  "session_started_at_utc": "2026-04-30T14:00:00Z",
+  "operator_directive": "Take WD from 'Phase 11 proved a bounded no-human low-risk solver lane' to a real, measurable, self-starting, local-first autonomy loop that can grow dozens of low-risk deterministic solvers without a human trigger.",
+  "session_mode": "runtime_facing_self_starting_autonomy_slice",
+  "prior_session_archived_at": "docs/runs/phase11_autogrowth_2026_04_29/session_state.json",
+
+  "model_selection": {
+    "primary_model": "claude-opus-4-7",
+    "model_id_resolved": "claude-opus-4-7",
+    "subagent_model": "inherited_opus_4_7",
+    "fallback_policy": "log_and_continue_record_event",
+    "fallback_events": []
+  },
+  "teacher_lane_default": "claude-opus-4-7",
+  "provider_usage": 0,
+
+  "rule_compliance": {
+    "rule_1_pr_only": "active",
+    "rule_2_no_force_no_rewrite": "active",
+    "rule_3_no_stale_sha_merge": "active",
+    "rule_4_no_atomic_flip_no_human_approval": "active",
+    "rule_5_magma_faiss_truth_first": "active",
+    "rule_6_phase8_5_read_only": "active",
+    "rule_7_no_loose_json_system_of_record": "active",
+    "rule_8_busl_change_date_2030_12_31": "active",
+    "rule_9_targeted_pytest": "active",
+    "rule_10_no_actuator_or_policy_writes": "active",
+    "rule_11_no_overclaim": "active",
+    "rule_12_domain_neutral": "active",
+    "rule_13_no_padding_if_runtime_slice_unreal": "active",
+    "rule_14_push_verification_180s": "active",
+    "rule_15_autonomous_merge_guardrails": "armed",
+    "rule_17_no_stage2_cutover": "active",
+    "rule_18_hex_cell_aware": "active"
+  },
+
+  "git_state_at_session_start": {
+    "remote": "https://github.com/Ahkeratmehilaiset/waggledance-swarm.git",
+    "origin_main_sha": "992913ecfe6fd07c20346d2062196bc13abb18d2",
+    "origin_main_subject": "feat(autonomy): Phase 11 — autonomous low-risk solver growth lane",
+    "tag_v3_7_0_autogrowth_alpha_present": true,
+    "tag_v3_7_0_autogrowth_alpha_points_at": "992913ecfe6fd07c20346d2062196bc13abb18d2",
+    "tag_v3_6_1_substrate_present": true,
+    "phase11_pr_58_merged": true,
+    "open_prs_count_total": 7,
+    "open_prs_relevant_to_this_session": 0,
+    "open_prs_dependabot_count": 7,
+    "phase8_5_remote_refs_present": [
+      "phase8.5/curiosity-organ@1a31b248",
+      "phase8.5/dream-curriculum@bfa526a2",
+      "phase8.5/self-model-layer@e3479dd9"
+    ],
+    "phase8_5_disposition_in_this_session": "READ_ONLY (RULE 6)"
+  },
+
+  "untracked_files_at_session_start_must_not_be_committed": [
+    "WD_release_to_main_master_prompt.md",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+    "docs/runs/phase9_pr_body.md"
+  ],
+
+  "working_branch": "phase12/self-starting-local-autogrowth",
+  "branched_from": "origin/main @ 992913ecfe6fd07c20346d2062196bc13abb18d2",
+
+  "phase12_design": {
+    "self_starting_intake_tables_planned": [
+      "runtime_gap_signals",
+      "growth_intents",
+      "autogrowth_queue",
+      "autogrowth_runs"
+    ],
+    "magma_event_mirroring": "growth_intents_emit append-only event entries via promotion_decisions and a new growth_events helper",
+    "scheduler_design": "AutogrowthScheduler.tick() consumes queued intents, dispatches to LowRiskGrower for U1 path; backoff on repeated failure recorded in autogrowth_runs",
+    "mass_growth_target_solvers_this_session": 25,
+    "stretch_target_solvers_this_session": 50,
+    "hex_cell_aware": true,
+    "no_actuator_or_policy_mutation": true
+  },
+
+  "provider_budget_caps_this_session": {
+    "claude_code_builder": {"used": 0, "cap": 3},
+    "anthropic_api": {"used": 0, "cap": 3, "default": 0},
+    "openai_api": {"used": 0, "cap": 3, "default": 0},
+    "triangulated": {"used": 0, "cap": 1, "default": 0}
+  },
+
+  "stop_handoff_triggers_armed": [
+    "P2 self-starting gap intake not real by end of phase",
+    "P3 runtime-executable consult path not green by end of phase",
+    "P4 closed loop not real by end of phase",
+    "session ends docs-only",
+    "push remains unavailable after 180s + gh-token fallback"
+  ],
+
+  "phases_completed": ["P0"],
+  "phases_in_progress": ["P1"],
+  "phases_pending": ["P2","P3","P4","P5","P6","P7","P8","P9","P11","P12","P13"]
+}

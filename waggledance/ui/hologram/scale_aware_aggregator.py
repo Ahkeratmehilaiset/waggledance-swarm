@@ -51,6 +51,8 @@ class ScaleAwarePanels:
     cell_topology: RealityPanel
     builder_lane_status: RealityPanel
     provider_queue_summary: RealityPanel
+    # Phase 11 — autonomy lane visibility (aggregate, never per-solver)
+    autonomy_low_risk_kpis: RealityPanel
 
 
 _HARD_CAP_PER_PANEL: int = 256
@@ -70,6 +72,11 @@ def build_scale_aware_panels(
             cell_topology=_unavailable("cell_topology", "Cell topology", unavailable),
             builder_lane_status=_unavailable("builder_lane_status", "Builder lane status", unavailable),
             provider_queue_summary=_unavailable("provider_queue_summary", "Provider queue summary", unavailable),
+            autonomy_low_risk_kpis=_unavailable(
+                "autonomy_low_risk_kpis",
+                "Low-risk autonomy lane",
+                unavailable,
+            ),
         )
 
     queries = RegistryQueries(control_plane)
@@ -78,6 +85,7 @@ def build_scale_aware_panels(
         cell_topology=_cell_topology_panel(control_plane, queries, cell_coords),
         builder_lane_status=_builder_lane_panel(control_plane),
         provider_queue_summary=_provider_queue_panel(control_plane),
+        autonomy_low_risk_kpis=_autonomy_low_risk_kpis_panel(control_plane),
     )
 
 
@@ -196,6 +204,100 @@ def _provider_queue_panel(cp: ControlPlaneDB) -> RealityPanel:
     return RealityPanel(
         panel_id="provider_queue_summary",
         title="Provider queue summary",
+        available=True,
+        items=tuple(items),
+    )
+
+
+def _autonomy_low_risk_kpis_panel(cp: ControlPlaneDB) -> RealityPanel:
+    """Phase 11 — aggregate autonomy KPIs for the low-risk lane.
+
+    Reads the latest ``autonomy_kpis`` snapshot plus aggregate counts
+    over ``promotion_decisions`` and ``solvers``. Aggregates only —
+    never lists per-solver state. If the autonomy lane has not produced
+    a snapshot yet, returns ``available=false`` with a structured
+    rationale, preserving the never-fabricate invariant.
+    """
+
+    snap = cp.latest_autonomy_kpi()
+    auto_promoted_count = cp.count_solvers(status="auto_promoted")
+    deactivated_count = cp.count_solvers(status="deactivated")
+    rejected_decisions = len(
+        cp.list_promotion_decisions(decision="rejected", limit=10000)
+    )
+    rollback_decisions = len(
+        cp.list_promotion_decisions(decision="rollback", limit=10000)
+    )
+    auto_decisions = len(
+        cp.list_promotion_decisions(decision="auto_promoted", limit=10000)
+    )
+
+    if (
+        snap is None
+        and auto_promoted_count == 0
+        and rejected_decisions == 0
+        and rollback_decisions == 0
+        and auto_decisions == 0
+    ):
+        return _unavailable(
+            "autonomy_low_risk_kpis",
+            "Low-risk autonomy lane",
+            "no_autonomy_activity_recorded_yet",
+        )
+
+    items: list[dict] = [
+        {
+            "metric": "auto_promoted_solvers_active",
+            "value": int(auto_promoted_count),
+        },
+        {
+            "metric": "auto_promoted_solvers_deactivated",
+            "value": int(deactivated_count),
+        },
+        {
+            "metric": "promotion_decisions_auto_promoted_total",
+            "value": int(auto_decisions),
+        },
+        {
+            "metric": "promotion_decisions_rejected_total",
+            "value": int(rejected_decisions),
+        },
+        {
+            "metric": "promotion_decisions_rollback_total",
+            "value": int(rollback_decisions),
+        },
+    ]
+    if snap is not None:
+        items.extend([
+            {
+                "metric": "latest_snapshot_at",
+                "value": snap.snapshot_at,
+            },
+            {
+                "metric": "dispatcher_hits_total_at_last_snapshot",
+                "value": int(snap.dispatcher_hits_total),
+            },
+            {
+                "metric": "dispatcher_misses_total_at_last_snapshot",
+                "value": int(snap.dispatcher_misses_total),
+            },
+            {
+                "metric": "candidates_total_at_last_snapshot",
+                "value": int(snap.candidates_total),
+            },
+            {
+                "metric": "auto_promotions_total_at_last_snapshot",
+                "value": int(snap.auto_promotions_total),
+            },
+        ])
+        if snap.per_family_counts_json:
+            items.append({
+                "metric": "per_family_dispatcher_hits_at_last_snapshot",
+                "value": snap.per_family_counts_json,
+            })
+    return RealityPanel(
+        panel_id="autonomy_low_risk_kpis",
+        title="Low-risk autonomy lane",
         available=True,
         items=tuple(items),
     )

@@ -1,0 +1,212 @@
+{
+  "phase": "Phase 16B P1 — Stable gate inventory",
+  "session_started_utc": "2026-05-01",
+  "stable_target": "v3.8.0",
+  "prerelease_fallback": "v3.7.6-stabilization-alpha",
+  "fail_closed_rule": "v3.8.0 stable is allowed only if every required_for_stable gate is PASS on the post-merge main SHA. Unknown / partial / not-tested / local-only / tool-unavailable / branch-only blocks stable.",
+  "gates": [
+    {
+      "gate_id": "g01_docker_end_to_end",
+      "title": "Docker end-to-end proof tested",
+      "required_for_stable": true,
+      "required_for_prerelease": false,
+      "status": "pending",
+      "evidence_files": ["docs/runs/phase16b_stabilization_release_gate_2026_05_01/docker_verification.md"],
+      "commands": ["docker version", "docker build -t waggledance:phase16b .", "docker run --rm waggledance:phase16b python tools/run_upstream_structured_request_proof.py"],
+      "stable_blocker": "to_be_decided_in_p6",
+      "notes": "Docker availability unknown until P6"
+    },
+    {
+      "gate_id": "g02_remote_fresh_clone",
+      "title": "Remote/fresh clone reproduction verified against post-merge main",
+      "required_for_stable": true,
+      "required_for_prerelease": false,
+      "status": "pending",
+      "evidence_files": ["docs/runs/phase16b_stabilization_release_gate_2026_05_01/fresh_clone_reproduction.md"],
+      "commands": ["git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git <tmpdir>", "git rev-parse HEAD", "git fetch --tags origin", "python -m pytest tests/autonomy_growth/", "python tools/run_upstream_structured_request_proof.py"],
+      "stable_blocker": "to_be_decided_in_p5_and_p13_5",
+      "notes": "Final verification must run against origin/main after PR merge per master prompt"
+    },
+    {
+      "gate_id": "g03_proof_reproducible_copypaste",
+      "title": "Latest proof reproducible by copy-paste commands from repo root",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pass",
+      "evidence_files": ["tools/run_automatic_runtime_hint_proof.py", "tools/run_upstream_structured_request_proof.py", "docs/release/RELEASE_READINESS.md"],
+      "commands": ["python tools/run_automatic_runtime_hint_proof.py", "python tools/run_upstream_structured_request_proof.py"],
+      "stable_blocker": false,
+      "notes": "Both Phase 15 and Phase 16A proofs are reproducible from repo root. Verified in Phase 16A."
+    },
+    {
+      "gate_id": "g04_100_solver_corpus",
+      "title": "100+ auto-promoted low-risk solvers in proof",
+      "required_for_stable": true,
+      "required_for_prerelease": false,
+      "status": "pending",
+      "evidence_files": ["docs/runs/phase16_upstream_structured_request_2026_05_01/upstream_structured_request_proof.json"],
+      "commands": ["python -c \"import json; p=json.load(open('docs/runs/phase16_upstream_structured_request_2026_05_01/upstream_structured_request_proof.json')); print(p['kpis']['auto_promotions_total'])\""],
+      "stable_blocker": "to_be_decided_in_p4",
+      "notes": "Current corpus is 98. P4 will attempt safe expansion to 100+ within existing six families."
+    },
+    {
+      "gate_id": "g05_security_self_audit",
+      "title": "Security self-audit completed",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pending",
+      "evidence_files": ["docs/security/PHASE16B_SECURITY_SELF_AUDIT.md"],
+      "commands": ["see P7"],
+      "stable_blocker": "to_be_decided_in_p7",
+      "notes": "Documented findings + severity + disposition required. No unresolved high/critical for stable."
+    },
+    {
+      "gate_id": "g06_ci_green_on_pr_head",
+      "title": "CI green on PR head SHA",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pending",
+      "evidence_files": ["GitHub PR checks page"],
+      "commands": ["gh pr view <pr> --json statusCheckRollup"],
+      "stable_blocker": "to_be_decided_in_p13",
+      "notes": "5 required checks: unified, test (3.11), test (3.12), test (3.13), security-scan"
+    },
+    {
+      "gate_id": "g07_readme_top_section_accurate",
+      "title": "README top section accurate (≤10 lines, alpha vs not-implemented, consciousness=No)",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pass",
+      "evidence_files": ["README.md"],
+      "commands": ["sed -n '1,15p' README.md"],
+      "stable_blocker": false,
+      "notes": "Verified post-Phase-16A. P9 will refresh wording for the chosen release outcome."
+    },
+    {
+      "gate_id": "g08_release_readiness_latest_tag_truth",
+      "title": "RELEASE_READINESS latest-tag truth accurate",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pass",
+      "evidence_files": ["docs/release/RELEASE_READINESS.md"],
+      "commands": ["grep -n 'Latest tag' docs/release/RELEASE_READINESS.md"],
+      "stable_blocker": false,
+      "notes": "RELEASE_READINESS reflects v3.7.4 as Phase 15 latest-tag and v3.7.5-upstream-runtime-alpha as recommended next. Will refresh in P9."
+    },
+    {
+      "gate_id": "g09_no_provider_dependency_in_inner_loop",
+      "title": "No provider dependency in inner loop",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pass",
+      "evidence_files": ["docs/runs/phase15_runtime_hints_release_2026_05_01/automatic_runtime_hint_proof.json", "docs/runs/phase16_upstream_structured_request_2026_05_01/upstream_structured_request_proof.json"],
+      "commands": ["check kpis.provider_jobs_delta_during_proof and kpis.builder_jobs_delta_during_proof"],
+      "stable_blocker": false,
+      "notes": "Both Phase 15 and Phase 16A proofs record provider_jobs_delta = builder_jobs_delta = 0."
+    },
+    {
+      "gate_id": "g10_stage2_atomic_flip_unexecuted",
+      "title": "Stage-2 atomic flip remains unexecuted",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pass",
+      "evidence_files": ["docs/architecture/STAGE2_CUTOVER_RFC.md", "docs/atomic_flip_prep/00_README.md"],
+      "commands": ["grep -i 'PREPARATION ONLY' docs/atomic_flip_prep/00_README.md"],
+      "stable_blocker": false,
+      "notes": "Atomic flip is preparation-only and will remain unexecuted in this session per RULE 5."
+    },
+    {
+      "gate_id": "g11_human_gated_boundaries_unchanged",
+      "title": "Phase 9 14-stage human-gated promotion ladder unchanged",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pass",
+      "evidence_files": ["waggledance/core/autonomy_growth/auto_promotion_engine.py", "waggledance/core/storage/control_plane_schema.py"],
+      "commands": ["grep -n 'human_approval_id' waggledance/core/autonomy_growth/auto_promotion_engine.py"],
+      "stable_blocker": false,
+      "notes": "Promotion ladder is untouched in Phase 16B."
+    },
+    {
+      "gate_id": "g12_six_family_allowlist_unchanged",
+      "title": "Six-family low-risk allowlist unchanged",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pass",
+      "evidence_files": ["waggledance/core/autonomy_growth/low_risk_policy.py"],
+      "commands": ["grep -n 'LOW_RISK_FAMILY_KINDS' waggledance/core/autonomy_growth/low_risk_policy.py"],
+      "stable_blocker": false,
+      "notes": "RULE 7 forbids widening. Verified intact."
+    },
+    {
+      "gate_id": "g13_no_consciousness_claim",
+      "title": "No consciousness / sentience / AGI / alive claim in any external doc",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pass",
+      "evidence_files": ["README.md", "docs/github/REPOSITORY_PRESENTATION.md", "CHANGELOG.md"],
+      "commands": ["grep -niE 'conscious|sentient|alive|awake|AGI' README.md CHANGELOG.md docs/github/REPOSITORY_PRESENTATION.md docs/release/RELEASE_READINESS.md"],
+      "stable_blocker": false,
+      "notes": "Verified — all references appear in explicit non-claim context."
+    },
+    {
+      "gate_id": "g14_full_corpus_restart_continuity",
+      "title": "Full-corpus restart continuity proven",
+      "required_for_stable": true,
+      "required_for_prerelease": false,
+      "status": "pending",
+      "evidence_files": ["docs/runs/phase16b_stabilization_release_gate_2026_05_01/full_restart_continuity_proof.md"],
+      "commands": ["python tools/run_full_restart_continuity_proof.py", "python -m pytest tests/autonomy_growth/test_full_restart_continuity.py -q"],
+      "stable_blocker": "to_be_decided_in_p2",
+      "notes": "Phase 16A used a 6-seed smoke. P2 will run full 98+ corpus."
+    },
+    {
+      "gate_id": "g15_proof_soak_no_flakes",
+      "title": "Proof soak / repeatability passed with no flakes",
+      "required_for_stable": true,
+      "required_for_prerelease": false,
+      "status": "pending",
+      "evidence_files": ["docs/runs/phase16b_stabilization_release_gate_2026_05_01/proof_soak_report.md"],
+      "commands": ["see P3"],
+      "stable_blocker": "to_be_decided_in_p3",
+      "notes": "Soak strategy: 10 iterations preferred if total < 30 min, else 3 iterations."
+    },
+    {
+      "gate_id": "g16_install_command_truth_consistent",
+      "title": "Install commands consistent across README / RELEASE_READINESS / Docker / CI",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "pending",
+      "evidence_files": ["README.md", "docs/release/RELEASE_READINESS.md", "docs/deployment/DOCKER_QUICKSTART.md", ".github/workflows/"],
+      "commands": ["grep -nE 'pip install' README.md docs/release/RELEASE_READINESS.md docs/deployment/DOCKER_QUICKSTART.md", "find .github/workflows -type f -name '*.yml'"],
+      "stable_blocker": "to_be_decided_in_p8",
+      "notes": "P8 reconciles. Will document canonical install source."
+    },
+    {
+      "gate_id": "g17_http_route_stable_decision",
+      "title": "HTTP/API-route stable requirement explicitly decided",
+      "required_for_stable": true,
+      "required_for_prerelease": false,
+      "status": "pending",
+      "evidence_files": ["docs/release/RELEASE_READINESS.md"],
+      "commands": ["see P8"],
+      "stable_blocker": "to_be_decided_in_p8",
+      "notes": "Default decision: v3.8.0 is a library/service-layer stable, not HTTP-API stable. RELEASE_READINESS will state this explicitly."
+    },
+    {
+      "gate_id": "g18_tag_release_verification_plan",
+      "title": "Tag/release verification plan documented",
+      "required_for_stable": true,
+      "required_for_prerelease": true,
+      "status": "in_progress",
+      "evidence_files": ["docs/runs/phase16b_stabilization_release_gate_2026_05_01/release_decision.md"],
+      "commands": ["git ls-remote --tags origin <tag>", "git rev-parse <tag>^{}", "gh release view <tag> --json name,isPrerelease,tagName,publishedAt"],
+      "stable_blocker": false,
+      "notes": "Documented in master prompt P14 and tracked here. P14 post-tag verification will execute these commands."
+    }
+  ],
+  "summary": {
+    "stable_eligible_at_p1": false,
+    "rationale": "Stable eligibility cannot be determined at P1. Multiple gates (Docker, fresh-clone, security audit, full restart, proof soak, 100+ corpus) are pending P2-P10 work. Default release outcome is v3.7.6-stabilization-alpha unless every gate proves PASS by P11.",
+    "next_phases_required_for_stable_decision": ["P2", "P3", "P4", "P5", "P6", "P7", "P8"]
+  }
+}

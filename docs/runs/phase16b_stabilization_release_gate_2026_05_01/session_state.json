@@ -1,0 +1,90 @@
+{
+  "phase": "Phase 16B — stabilization, full reproduction, security self-audit, autonomy-readiness, v3.8.0 release-gate attempt",
+  "session_started_utc": "2026-05-01",
+  "branch": "phase16b/stabilization-release-gate",
+  "baseline": {
+    "origin_main_sha": "d18e1dad32b998ba446290cafdb26b21be9adeb1",
+    "local_branch_at_session_start": "main",
+    "local_branch_now": "phase16b/stabilization-release-gate",
+    "local_main_equals_origin_main_at_session_start": true,
+    "phase_16a_pr": 63,
+    "phase_16a_merge_sha": "d18e1dad32b998ba446290cafdb26b21be9adeb1",
+    "phase_16a_tag": "v3.7.5-upstream-runtime-alpha",
+    "phase_16a_tag_target_sha": "d18e1dad32b998ba446290cafdb26b21be9adeb1",
+    "phase_16a_release_isPrerelease": true,
+    "phase_16a_release_publishedAt": "2026-05-01T15:44:17Z"
+  },
+  "tier_a_invariants": {
+    "origin_main_contains_phase_16a_merge": true,
+    "v3_7_5_tag_exists_on_origin": true,
+    "v3_7_5_tag_target_matches_phase_16a_merge": true,
+    "upstream_extractor_module_exists": true,
+    "upstream_extractor_path": "waggledance/core/autonomy_growth/upstream_structured_request_extractor.py",
+    "autonomy_service_handle_query_wiring_present": true,
+    "phase_16a_proof_json_exists": true,
+    "phase_16a_proof_no_manual_structured_request": true,
+    "phase_16a_proof_no_manual_low_risk_hint": true,
+    "phase_16a_proof_provider_jobs_delta": 0,
+    "phase_16a_proof_builder_jobs_delta": 0,
+    "phase_16a_proof_corpus_total": 98,
+    "phase_16a_proof_after_served": 98,
+    "stage2_atomic_flip_unexecuted": true,
+    "all_tier_a_passed": true
+  },
+  "tier_b_drift_to_check": {
+    "release_readiness_latest_tag_phrasing": "verified post-Phase-16A; updated to v3.7.4 / v3.7.5 references",
+    "readme_top_section": "verified post-Phase-16A; will be re-checked in P9",
+    "current_status_md_phasing": "verified; will be re-checked in P9",
+    "changelog_phasing": "verified; will be re-checked in P9",
+    "docker_quickstart_phasing": "verified; will be re-checked in P9 + P6",
+    "repository_presentation": "verified post-Phase-15; will be re-checked in P9"
+  },
+  "previous_tags_on_origin": [
+    "v3.6.0",
+    "v3.6.1-substrate",
+    "v3.7.0-autogrowth-alpha",
+    "v3.7.1-autoloop-alpha",
+    "v3.7.2-runtime-harvest-alpha",
+    "v3.7.3-hotpath-alpha",
+    "v3.7.4-runtime-hint-alpha",
+    "v3.7.5-upstream-runtime-alpha"
+  ],
+  "phase8_5_remote_branches": [
+    "phase8.5/curiosity-organ",
+    "phase8.5/dream-curriculum",
+    "phase8.5/self-model-layer"
+  ],
+  "phase8_5_handling": "read-only; not touched in this session",
+  "open_prs_in_scope": [],
+  "open_prs_out_of_scope_dependabot_only": [
+    "PR #26 psutil",
+    "PR #25 websockets",
+    "PR #24 cachetools",
+    "PR #23 av",
+    "PR #22 scipy",
+    "PR #21 actions/checkout",
+    "PR #19 actions/setup-python"
+  ],
+  "stale_untracked_files_at_session_start": [
+    "WD_release_to_main_master_prompt.md",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+    "docs/runs/phase9_pr_body.md"
+  ],
+  "stale_untracked_handling": "do not commit; predate this session",
+  "release_decision_status": "deferred to P11; default fail-closed -> v3.7.6-stabilization-alpha unless every stable gate proves PASS",
+  "guardrails_applied": {
+    "no_force_push": true,
+    "no_history_rewrite": true,
+    "pr_only": true,
+    "match_head_commit_only": true,
+    "stage2_atomic_flip_not_executed": true,
+    "human_approval_not_collected": true,
+    "phase8_5_read_only": true,
+    "no_widening_low_risk_allowlist": true,
+    "no_consciousness_claim": true,
+    "no_new_provider_http_adapters": true,
+    "no_actuator_autonomy": true,
+    "no_high_risk_family_auto_promotion": true,
+    "no_federation_or_sharding": true
+  }
+}

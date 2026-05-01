@@ -59,6 +59,31 @@ What this should produce:
 
 * Console summary ending with the Phase 16A invariants block.
 * Updated `upstream_structured_request_proof.json` on the host (via the volume mount).
+* Post-Phase-16B-P4: corpus is **104** (was 98 in Phase 16A); proof should report `auto_promotions_total = 104`.
+
+## Run the Phase 16B full-corpus restart continuity proof
+
+```
+docker run --rm -v "$(pwd)/docs/runs/phase16b_stabilization_release_gate_2026_05_01:/app/docs/runs/phase16b_stabilization_release_gate_2026_05_01" \
+    waggledance:phase15-alpha \
+    python tools/run_full_restart_continuity_proof.py
+```
+
+What this should produce:
+
+* Console summary ending with the restart-invariants block (all `True`).
+* Updated `full_restart_continuity_proof.json`: `corpus_total = 104`, persisted solver count + capability-feature count identical across reopen, `provider_jobs_delta_across_restart = builder_jobs_delta_across_restart = 0`.
+
+## Run the Phase 16B proof soak
+
+```
+docker run --rm waggledance:phase15-alpha \
+    python tools/run_phase16b_proof_soak.py --iterations 5
+```
+
+What this should produce:
+
+* 15 / 15 iterations pass (3 proofs × 5 iterations); no flakes; mean ~33 s / iteration. Each iteration writes to a unique temp output directory inside the container.
 
 Expected key fields in the JSON:
 
@@ -145,6 +170,8 @@ This boots the legacy webserver. There is no Phase 15-specific compose service; 
 | Phase 15 autonomy proof inside Docker tested | **no — not available** |
 | Phase 16A upstream proof inside Docker tested | **no — not available** |
 | Phase 16A restart-continuity smoke inside Docker tested | **no — not available** |
+| Phase 16B full-corpus restart proof inside Docker tested | **no — not available** |
+| Phase 16B proof soak inside Docker tested | **no — not available** |
 | persistent volume layout production-grade | **no — alpha** |
 | ARM build verified | **no** |
 | no provider credential required for inner loop | yes (proven outside Docker) |

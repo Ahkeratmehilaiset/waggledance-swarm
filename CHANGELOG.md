@@ -1,5 +1,58 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 16B — stabilization, full-corpus restart, proof soak, 100+ release gate, security self-audit] — 2026-05-01
+
+Branch: `phase16b/stabilization-release-gate`. Stabilization and release-gate audit on top of Phase 16A. Outcome: prerelease `v3.7.6-stabilization-alpha` (stable v3.8.0 blocked by three explicit fail-closed gates: Docker unavailable in dev shell, remote/fresh-clone deferred to post-merge main verification, `bandit` not installed).
+
+### Added
+
+- `tools/run_full_restart_continuity_proof.py` — full-corpus (104-seed) restart-continuity proof. Drives `AutonomyService.handle_query` with flat upstream context, harvests, closes control-plane DB, reopens, re-serves. Result: 104 / 104 served via capability lookup pre- and post-restart; persisted solver count + `solver_capability_features` count identical across reopen; `provider_jobs_delta_across_restart = builder_jobs_delta_across_restart = 0`.
+- `tools/run_phase16b_proof_soak.py` — bounded proof-soak driver (default 5 iterations × 3 proofs = 15 runs). Honors the SOAK ARTIFACT ISOLATION rule (every iteration writes to a unique temp output directory and unique scratch DB; canonical `docs/runs/...` artifacts not overwritten). Asserts proof JSON invariants per iteration. Result: 15 / 15 pass, no flakes.
+- `tests/autonomy_growth/test_full_restart_continuity_smoke.py` — 12 tests locking the full-corpus restart proof JSON invariants.
+- `tests/autonomy_growth/test_seed_library.py::test_seed_library_meets_v3_8_0_release_gate_minimum` — enforces `len(all_canonical_seeds()) >= 100`.
+- `+6` canonical seeds in `waggledance/core/autonomy_growth/low_risk_seed_library.py` (one per low-risk family, no allowlist widening): `watt_hours_to_joules` (scalar_unit_conversion), `month_to_quarter` (lookup_table), `solar_yield_above_50kwh` (threshold_rule), `co2_band` (interval_bucket_classifier), `hex_neighbor_combine_4d` (linear_arithmetic), `noise_to_focus_curve` (bounded_interpolation). Library size: 98 → 104.
+- Session artifacts in `docs/runs/phase16b_stabilization_release_gate_2026_05_01/`:
+  * `session_state.json` — Phase 16B baseline reconciliation, TIER A invariants verified.
+  * `stable_gate_inventory.{json,md}` — 18-gate stable / prerelease ledger.
+  * `full_restart_continuity_proof.{json,md}` — Phase 16B P2 artifact.
+  * `proof_soak_report.{json,md}` — Phase 16B P3 artifact (15 / 15 iterations pass at corpus 104, no flakes).
+  * `release_gate_100_solvers.md` — Phase 16B P4 seed-library expansion log.
+  * `fresh_clone_reproduction.md` — Phase 16B P5 local-clone result; remote/fresh deferred to P13.5.
+  * `docker_verification.md` — Phase 16B P6 Docker truth (Docker not available in this session; documented blocker).
+  * `dependency_install_and_api_surface_truth.md` — Phase 16B P8 install-layering + HTTP-route stable-gate decision.
+- `docs/security/PHASE16B_SECURITY_SELF_AUDIT.md` — Phase 16B P7 security self-audit. CI grep clean; manual grep on Phase 11+ files clean; `pip-audit` reports 32 dependency CVEs all classified low and not reachable from inner loop; `bandit` not installed.
+- `tools/run_automatic_runtime_hint_proof.py` and `tools/run_upstream_structured_request_proof.py` corpus_tier strings de-hardcoded from "98 seeds" to dynamic `len(corpus)` reporting.
+
+### Behaviour
+
+- Phase 15 / Phase 16A / Phase 16B canonical proofs all now report `corpus_total = 104` and `auto_promotions_total = 104` post-Phase-16B-P4 expansion.
+- Inner-loop `provider_jobs_delta = builder_jobs_delta = 0` across all three canonical proofs and the restart proof.
+- Restart-continuity proven at full corpus scale: persisted control-plane state survives close+reopen; warm-cache rebuilds on demand; same flat upstream input still served via capability lookup.
+- Soak repeatability: 15 / 15 iterations pass, mean ~33 s per iteration, no flakes.
+
+### Stable v3.8.0 release-gate audit
+
+`docs/release/RELEASE_READINESS.md` updated with the full Phase 16B stable-gate audit. Three fail-closed blockers documented for v3.8.0 stable:
+
+1. **Docker** — `docker` CLI unavailable in the Phase 16B dev shell; `Dockerfile` and `docker-compose.yml` inspected and unchanged; commands documented but **not tested in this session**. External operator with Docker installed must re-verify before stable.
+2. **Remote/fresh-clone reproduction against post-merge main** — Phase 16B P5 verified a local-clone reproduction at the v3.7.5 SHA; per the master prompt's `FRESH CLONE VERIFICATION RULE`, a remote/fresh-clone must run against `origin/main` after Phase 16B PR merges. P13.5 attempts this.
+3. **`bandit`** — not installed in this dev shell; per master-prompt no-heavy-deps rule, not added. `pip-audit` and CI grep + manual grep + dependency-CVE classification together cover the audit; full `bandit` run requires a follow-up session or a pre-existing stable-gate exception in `RELEASE_READINESS.md`.
+
+Phase 16B's outcome is `v3.7.6-stabilization-alpha` per the fail-closed rule. v3.8.0 stable is blocked.
+
+### What did NOT change
+
+- Phase 16A `upstream_structured_request_extractor.py`, `AutonomyService.handle_query` wiring (untouched).
+- Phase 15 `runtime_hint_extractor.py` (untouched).
+- The six-family low-risk allowlist (RULE 7).
+- The Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates).
+- `_DEFAULT_FAISS_DIR` (still `data/faiss/`).
+- Real Anthropic / OpenAI HTTP adapters (still follow-up).
+- HTTP `/api/autonomy/query` route (does not exist; deliberate scope limit; v3.8.0 is library/service-layer-stable, not HTTP-API-stable).
+- Phase 9 14-stage human-gated promotion ladder.
+- Single-process scope (RULE 10).
+- No consciousness claim.
+
 ## [Phase 16A — upstream structured_request propagation and release hardening] — 2026-05-01
 
 Branch: `phase16/upstream-structured-request-release-hardening`. Lifts `structured_request` derivation up to the **service-layer caller** `AutonomyService.handle_query(query, context, priority)`. The deterministic `upstream_structured_request_extractor` reads only flat caller context (`operation` selector + per-operation flat fields) and lifts it into the nested grammar Phase 15's runtime hint extractor consumes. The proof never injects `structured_request` or `low_risk_autonomy_query`. Restart-continuity smoke proves persisted solvers and capability features survive a control-plane close+reopen.

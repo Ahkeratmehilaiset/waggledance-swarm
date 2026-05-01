@@ -61,6 +61,8 @@ _SCALAR_SEEDS: tuple[tuple[str, str, str, str, float, float], ...] = (
     ("megabytes_to_kilobytes",     "system",  "MB",  "kB",  1024.0,              0.0),
     ("gigabytes_to_megabytes",     "system",  "GB",  "MB",  1024.0,              0.0),
     ("days_to_hours",              "system",  "d",   "h",   24.0,                0.0),
+    # Phase 16B P4 expansion (+1 to cross 100-solver release gate)
+    ("watt_hours_to_joules",       "energy",  "Wh",  "J",   3600.0,              0.0),
 )
 
 
@@ -133,6 +135,11 @@ _LOOKUP_SEEDS: tuple[tuple[str, str, str, dict, Any], ...] = (
        "sep": "autumn", "oct": "autumn", "nov": "autumn", "dec": "winter"}, "?"),
     ("severity_to_color",      "safety",   "severity_color",
       {0: "green", 1: "yellow", 2: "orange", 3: "red", 4: "purple"}, "white"),
+    # Phase 16B P4 expansion (+1 to cross 100-solver release gate)
+    ("month_to_quarter",       "seasonal", "month_quarter",
+      {"jan": "Q1", "feb": "Q1", "mar": "Q1", "apr": "Q2", "may": "Q2",
+       "jun": "Q2", "jul": "Q3", "aug": "Q3", "sep": "Q3",
+       "oct": "Q4", "nov": "Q4", "dec": "Q4"}, "?"),
 )
 
 
@@ -180,6 +187,8 @@ _THRESHOLD_SEEDS: tuple[tuple[str, str, str, float, str, str, str], ...] = (
     ("packet_loss_above_2pct", "system",   "packet_loss_pct", 2.0, ">", "lossy",     "clean"),
     ("latency_high_above_200ms","system",  "latency_ms",    200.0, ">", "slow",      "fast"),
     ("freezer_alarm_above_neg5","thermal", "freezer_temp_c", -5.0, ">", "thaw_risk", "ok"),
+    # Phase 16B P4 expansion (+1 to cross 100-solver release gate)
+    ("solar_yield_above_50kwh","energy",   "daily_solar_kwh", 50.0, ">=", "high",     "low"),
 )
 
 
@@ -290,6 +299,13 @@ _INTERVAL_SEEDS: tuple[tuple[str, str, str, list, Any], ...] = (
         {"min": 0.2, "max": 0.6, "label": "moderate"},
         {"min": 0.6, "max": 1.01, "label": "strong"},
     ], "out"),
+    # Phase 16B P4 expansion (+1 to cross 100-solver release gate)
+    ("co2_band", "thermal", "co2_ppm", [
+        {"min": 0.0, "max": 600.0, "label": "good"},
+        {"min": 600.0, "max": 1000.0, "label": "warn"},
+        {"min": 1000.0, "max": 2000.0, "label": "stale"},
+        {"min": 2000.0, "max": 100000.0, "label": "bad"},
+    ], "out"),
 )
 
 
@@ -359,6 +375,10 @@ _LINEAR_SEEDS: tuple[tuple[str, str, list[float], float, list[str]], ...] = (
     ("anomaly_score_3d", "safety",
       [0.5, 0.3, 0.2], 0.0,
       ["recent_z", "context_z", "historical_z"]),
+    # Phase 16B P4 expansion (+1 to cross 100-solver release gate)
+    ("hex_neighbor_combine_4d", "general",
+      [0.4, 0.3, 0.2, 0.1], 0.0,
+      ["near_z", "mid_z", "far_z", "stale_z"]),
 )
 
 
@@ -443,6 +463,11 @@ _INTERP_SEEDS: tuple[tuple[str, str, str, str, list, float, float], ...] = (
       [{"x": 0.0, "y": 1.0}, {"x": 1.0, "y": 0.6},
         {"x": 7.0, "y": 0.3}, {"x": 30.0, "y": 0.1},
         {"x": 90.0, "y": 0.05}], 0.0, 90.0),
+    # Phase 16B P4 expansion (+1 to cross 100-solver release gate)
+    ("noise_to_focus_curve", "general", "noise_db", "focus_score",
+      [{"x": 20.0, "y": 1.0}, {"x": 40.0, "y": 0.8},
+        {"x": 60.0, "y": 0.4}, {"x": 80.0, "y": 0.1},
+        {"x": 100.0, "y": 0.0}], 20.0, 100.0),
 )
 
 
@@ -498,10 +523,11 @@ def _interp_seeds() -> Iterable[dict]:
 def all_canonical_seeds() -> list[dict]:
     """Return every canonical seed across every allowlisted family.
 
-    Total: 27 + 16 + 16 + 13 + 13 + 13 = 98 seeds after Phase 14 P4
-    expansion (above the 96 stretch goal). Phase 13 shipped 68;
-    Phase 14 added 30 across all families while staying inside the
-    six-family allowlist (RULE 19) and preserving hex-cell spread.
+    Total: 28 + 17 + 17 + 14 + 14 + 14 = 104 seeds after Phase 16B P4
+    expansion (+1 per family to cross the 100-solver stable release
+    gate). Phase 13 shipped 68; Phase 14 added 30 to reach 98; Phase
+    16B added 6 to reach 104. All additions stay inside the six-
+    family allowlist (RULE 7) and preserve hex-cell spread.
     """
 
     out: list[dict] = []

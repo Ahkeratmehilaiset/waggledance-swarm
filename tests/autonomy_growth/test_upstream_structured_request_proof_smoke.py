@@ -80,7 +80,11 @@ def test_input_keys_do_not_include_forbidden_internal_fields():
 
 def test_corpus_tier_1_full_six_families():
     p = _proof()
-    assert p["corpus_total"] == 98
+    # Phase 16B P4 expanded the canonical seed library from 98 to 104
+    # to cross the v3.8.0 stable release gate's 100+ requirement.
+    # Older artifacts may still have 98; current canonical artifacts
+    # generated post-Phase-16B will have >= 100.
+    assert p["corpus_total"] >= 98
     assert p["corpus_tier"].startswith("Tier 1")
 
 

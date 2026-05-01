@@ -22,6 +22,22 @@ def test_seed_library_total_meets_session_minimum() -> None:
     )
 
 
+def test_seed_library_meets_v3_8_0_release_gate_minimum() -> None:
+    """Phase 16B P4 release gate: at least 100 canonical seeds.
+
+    Stable v3.8.0 requires >=100 auto-promoted low-risk solvers in
+    the proof. Phase 16B raised the canonical seed library from 98
+    to 104 (+1 per family) to satisfy this gate without widening
+    the six-family allowlist or introducing high-risk families.
+    """
+
+    seeds = all_canonical_seeds()
+    assert len(seeds) >= 100, (
+        f"only {len(seeds)} canonical seeds; v3.8.0 release gate "
+        "minimum is 100"
+    )
+
+
 def test_seed_library_covers_every_allowlisted_family() -> None:
     counts = expected_per_family_counts()
     for fam in LOW_RISK_FAMILY_KINDS:

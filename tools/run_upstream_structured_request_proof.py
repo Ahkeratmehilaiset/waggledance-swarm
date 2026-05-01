@@ -560,7 +560,7 @@ def run(out_dir: Path, db_path: Path) -> dict:
         "corpus_total": len(corpus),
         "corpus_tier": (
             "Tier 1 — selected upstream caller supports all 6 "
-            "low-risk families (98 seeds)"
+            f"low-risk families ({len(corpus)} seeds)"
         ),
         "structured_request_derived_total": (
             structured_request_was_set_after_call

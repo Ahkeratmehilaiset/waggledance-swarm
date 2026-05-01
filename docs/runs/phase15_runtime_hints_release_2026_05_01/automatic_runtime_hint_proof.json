@@ -2,112 +2,112 @@
   "after": {
     "miss_total": 0,
     "per_cell_served": {
-      "energy": 11,
-      "general": 13,
+      "energy": 13,
+      "general": 15,
       "learning": 5,
       "math": 13,
       "safety": 6,
-      "seasonal": 10,
+      "seasonal": 11,
       "system": 24,
-      "thermal": 16
+      "thermal": 17
     },
     "per_family_served": {
-      "bounded_interpolation": 13,
-      "interval_bucket_classifier": 13,
-      "linear_arithmetic": 13,
-      "lookup_table": 16,
-      "scalar_unit_conversion": 27,
-      "threshold_rule": 16
+      "bounded_interpolation": 14,
+      "interval_bucket_classifier": 14,
+      "linear_arithmetic": 14,
+      "lookup_table": 17,
+      "scalar_unit_conversion": 28,
+      "threshold_rule": 17
     },
-    "served_total": 98,
-    "served_via_capability_lookup_total": 98
+    "served_total": 104,
+    "served_via_capability_lookup_total": 104
   },
   "before": {
-    "buffered_signals_flushed": 3,
-    "fallback_or_miss_total": 98,
+    "buffered_signals_flushed": 9,
+    "fallback_or_miss_total": 104,
     "served_total": 0
   },
   "buffered_sink": {
     "documented_hardkill_loss_bound_signals": 1000,
     "max_unflushed_age_ms_configured": 500,
-    "max_unflushed_age_ms_observed": 508.2365,
+    "max_unflushed_age_ms_observed": 509.5915,
     "max_unflushed_signals_configured": 1000,
     "max_unflushed_signals_observed": 48
   },
-  "corpus_tier": "Tier 1 \u2014 selected caller supports all 6 families (98 seeds)",
-  "corpus_total": 98,
+  "corpus_tier": "Tier 1 \u2014 selected caller supports all 6 families (104 seeds)",
+  "corpus_total": 104,
   "extractor_rejection_counts_by_reason": {
-    "derived": 98
+    "derived": 104
   },
   "harvest": {
     "by_family_promoted": {
-      "bounded_interpolation": 13,
-      "interval_bucket_classifier": 13,
-      "linear_arithmetic": 13,
-      "lookup_table": 16,
-      "scalar_unit_conversion": 27,
-      "threshold_rule": 16
+      "bounded_interpolation": 14,
+      "interval_bucket_classifier": 14,
+      "linear_arithmetic": 14,
+      "lookup_table": 17,
+      "scalar_unit_conversion": 28,
+      "threshold_rule": 17
     },
-    "growth_intents_total": 98,
-    "scheduler_drained": 98,
+    "growth_intents_total": 104,
+    "scheduler_drained": 104,
     "scheduler_errored": 0,
-    "scheduler_promoted": 98,
+    "scheduler_promoted": 104,
     "scheduler_rejected": 0
   },
-  "hint_derivation_p50_ms": 0.0142,
-  "hint_derivation_p95_ms": 0.0172,
-  "hint_derivation_p99_ms": 0.0285,
-  "hints_derived_total": 98,
+  "hint_derivation_p50_ms": 0.0125,
+  "hint_derivation_p95_ms": 0.0147,
+  "hint_derivation_p99_ms": 0.0197,
+  "hints_derived_total": 104,
   "hints_rejected_ambiguous_total": 0,
   "hints_rejected_family_not_low_risk_total": 0,
   "hints_rejected_missing_fields_total": 0,
   "hints_rejected_not_structured_total": 0,
   "hot_path_cache_stats": {
-    "cold_hits_warmed": 92,
-    "misses": 98,
-    "warm_hits": 300
+    "cold_hits_warmed": 98,
+    "misses": 104,
+    "warm_hits": 318
   },
   "kpis": {
-    "auto_promotions_total": 98,
+    "auto_promotions_total": 104,
     "builder_jobs_delta_during_proof": 0,
     "builder_jobs_total_after_proof": 0,
-    "growth_events_total": 392,
-    "harvested_signals_total": 98,
+    "growth_events_total": 416,
+    "harvested_signals_total": 104,
     "provider_jobs_delta_during_proof": 0,
     "provider_jobs_total_after_proof": 0,
     "rejections_total": 0,
     "rollbacks_total": 0,
-    "shadow_evaluations_total": 98,
-    "solver_capability_features_total": 170,
-    "validation_runs_total": 98
+    "shadow_evaluations_total": 104,
+    "solver_capability_features_total": 180,
+    "validation_runs_total": 104
   },
   "latency_hint_derivation_only_ms": {
-    "mean_ms": 0.0149,
-    "n": 98,
-    "p50_ms": 0.0142,
-    "p95_ms": 0.0172,
-    "p99_ms": 0.0285
+    "mean_ms": 0.0131,
+    "n": 104,
+    "p50_ms": 0.0125,
+    "p95_ms": 0.0147,
+    "p99_ms": 0.0197
   },
   "latency_pass1_handle_query_ms": {
-    "mean_ms": 20.6472,
-    "n": 98,
-    "p50_ms": 10.7026,
-    "p95_ms": 12.8472,
-    "p99_ms": 465.2109
+    "mean_ms": 19.2523,
+    "n": 104,
+    "p50_ms": 10.5713,
+    "p95_ms": 13.5252,
+    "p99_ms": 415.7584
   },
   "latency_pass2_cold_handle_query_ms": {
-    "mean_ms": 10.9975,
-    "n": 98,
-    "p50_ms": 10.7222,
-    "p95_ms": 14.4753,
-    "p99_ms": 16.9865
+    "mean_ms": 10.2328,
+    "n": 104,
+    "p50_ms": 9.6275,
+    "p95_ms": 11.3992,
+    "p99_ms": 17.4299
   },
   "latency_pass3_warm_handle_query_ms": {
-    "mean_ms": 10.0153,
-    "n": 294,
-    "p50_ms": 9.377,
-    "p95_ms": 12.9222,
-    "p99_ms": 17.7942
+    "mean_ms": 9.7979,
+    "n": 312,
+    "p50_ms": 9.3931,
+    "p95_ms": 11.3391,
+    "p99_ms": 18.5836
   },
   "manual_hint_audit_detected_keys": [],
   "manual_low_risk_hint_in_input_detected": false,

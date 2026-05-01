@@ -450,7 +450,10 @@ def run(out_dir: Path, db_path: Path) -> dict:
         "manual_hint_audit_detected_keys": audit["detected_keys"],
         "proof_constructed_runtime_query_objects": False,
         "corpus_total": len(corpus),
-        "corpus_tier": "Tier 1 — selected caller supports all 6 families (98 seeds)",
+        "corpus_tier": (
+            "Tier 1 — selected caller supports all 6 families "
+            f"({len(corpus)} seeds)"
+        ),
         "hints_derived_total": hint_kinds_pass1.get("derived", 0),
         "hints_rejected_ambiguous_total": hint_kinds_pass1.get(
             "rejected_ambiguous", 0

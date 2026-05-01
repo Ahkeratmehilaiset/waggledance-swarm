@@ -2,95 +2,95 @@
   "after": {
     "miss_total": 0,
     "per_operation_served": {
-      "bucket_check": 13,
-      "interpolation": 13,
-      "linear_eval": 13,
-      "lookup": 16,
-      "threshold_check": 16,
-      "unit_conversion": 27
+      "bucket_check": 14,
+      "interpolation": 14,
+      "linear_eval": 14,
+      "lookup": 17,
+      "threshold_check": 17,
+      "unit_conversion": 28
     },
-    "served_total": 98,
-    "served_via_capability_lookup_total": 98
+    "served_total": 104,
+    "served_via_capability_lookup_total": 104
   },
   "before": {
-    "buffered_signals_flushed": 49,
-    "fallback_or_miss_total": 98,
-    "runtime_signals_enqueued_total": 98,
-    "runtime_signals_flushed_total": 98,
+    "buffered_signals_flushed": 4,
+    "fallback_or_miss_total": 104,
+    "runtime_signals_enqueued_total": 104,
+    "runtime_signals_flushed_total": 104,
     "served_total": 0
   },
   "buffered_sink": {
     "documented_hardkill_loss_bound_signals": 1000,
     "max_unflushed_age_ms_configured": 500,
-    "max_unflushed_age_ms_observed": 502.9969,
+    "max_unflushed_age_ms_observed": 506.5615,
     "max_unflushed_signals_configured": 1000,
-    "max_unflushed_signals_observed": 49
+    "max_unflushed_signals_observed": 51
   },
-  "corpus_tier": "Tier 1 \u2014 selected upstream caller supports all 6 low-risk families (98 seeds)",
-  "corpus_total": 98,
+  "corpus_tier": "Tier 1 \u2014 selected upstream caller supports all 6 low-risk families (104 seeds)",
+  "corpus_total": 104,
   "harvest": {
     "by_family_promoted": {
-      "bounded_interpolation": 13,
-      "interval_bucket_classifier": 13,
-      "linear_arithmetic": 13,
-      "lookup_table": 16,
-      "scalar_unit_conversion": 27,
-      "threshold_rule": 16
+      "bounded_interpolation": 14,
+      "interval_bucket_classifier": 14,
+      "linear_arithmetic": 14,
+      "lookup_table": 17,
+      "scalar_unit_conversion": 28,
+      "threshold_rule": 17
     },
-    "growth_intents_total": 98,
-    "scheduler_drained": 98,
+    "growth_intents_total": 104,
+    "scheduler_drained": 104,
     "scheduler_errored": 0,
-    "scheduler_promoted": 98,
+    "scheduler_promoted": 104,
     "scheduler_rejected": 0
   },
   "hot_path_cache_stats": {
-    "cold_hits_warmed": 92,
-    "misses": 98,
-    "warm_hits": 300
+    "cold_hits_warmed": 98,
+    "misses": 104,
+    "warm_hits": 318
   },
   "kpis": {
-    "auto_promotions_total": 98,
+    "auto_promotions_total": 104,
     "builder_jobs_delta_during_proof": 0,
     "builder_jobs_total_after_proof": 0,
-    "growth_events_total": 392,
-    "harvested_signals_total": 98,
+    "growth_events_total": 416,
+    "harvested_signals_total": 104,
     "provider_jobs_delta_during_proof": 0,
     "provider_jobs_total_after_proof": 0,
     "rejections_total": 0,
     "rollbacks_total": 0,
-    "shadow_evaluations_total": 98,
-    "solver_capability_features_total": 170,
-    "validation_runs_total": 98
+    "shadow_evaluations_total": 104,
+    "solver_capability_features_total": 180,
+    "validation_runs_total": 104
   },
   "latency_pass1_service_handle_query_ms": {
-    "mean_ms": 14.843,
-    "n": 98,
-    "p50_ms": 10.0509,
-    "p95_ms": 12.085,
-    "p99_ms": 42.2303
+    "mean_ms": 18.7941,
+    "n": 104,
+    "p50_ms": 10.0859,
+    "p95_ms": 13.5595,
+    "p99_ms": 405.0041
   },
   "latency_pass2_cold_service_handle_query_ms": {
-    "mean_ms": 10.5198,
-    "n": 98,
-    "p50_ms": 10.1727,
-    "p95_ms": 12.923,
-    "p99_ms": 15.0071
+    "mean_ms": 9.5043,
+    "n": 104,
+    "p50_ms": 9.3922,
+    "p95_ms": 10.6594,
+    "p99_ms": 13.103
   },
   "latency_pass3_warm_service_handle_query_ms": {
-    "mean_ms": 9.807,
-    "n": 294,
-    "p50_ms": 9.3572,
-    "p95_ms": 11.6551,
-    "p99_ms": 17.5943
+    "mean_ms": 11.0006,
+    "n": 312,
+    "p50_ms": 10.2137,
+    "p95_ms": 14.809,
+    "p99_ms": 20.2033
   },
   "latency_upstream_extractor_only_ms": {
-    "mean_ms": 0.0097,
-    "n": 98,
-    "p50_ms": 0.0091,
-    "p95_ms": 0.0113,
-    "p99_ms": 0.0164
+    "mean_ms": 0.0118,
+    "n": 104,
+    "p50_ms": 0.0107,
+    "p95_ms": 0.0146,
+    "p99_ms": 0.0323
   },
-  "low_risk_hint_derived_total": 98,
+  "low_risk_hint_derived_total": 104,
   "manual_hint_audit_detected_keys": [],
   "manual_low_risk_hint_in_input_detected": false,
   "manual_structured_request_in_input_detected": false,
@@ -148,22 +148,22 @@
   "negative_cases_passed_total": 7,
   "negative_cases_total": 7,
   "per_cell_in_input_corpus": {
-    "energy": 11,
-    "general": 13,
+    "energy": 13,
+    "general": 15,
     "learning": 5,
     "math": 13,
     "safety": 6,
-    "seasonal": 10,
+    "seasonal": 11,
     "system": 24,
-    "thermal": 16
+    "thermal": 17
   },
   "per_family_in_input_corpus": {
-    "bounded_interpolation": 13,
-    "interval_bucket_classifier": 13,
-    "linear_arithmetic": 13,
-    "lookup_table": 16,
-    "scalar_unit_conversion": 27,
-    "threshold_rule": 16
+    "bounded_interpolation": 14,
+    "interval_bucket_classifier": 14,
+    "linear_arithmetic": 14,
+    "lookup_table": 17,
+    "scalar_unit_conversion": 28,
+    "threshold_rule": 17
   },
   "primary_teacher_lane_id": "claude_code_builder_lane",
   "proof_bypassed_handle_query": false,
@@ -191,12 +191,12 @@
     "y_var"
   ],
   "selected_upstream_caller_input_shape": "(query: str, context: Dict[str, Any], priority: int) \u2014 context carries flat domain fields: 'operation' (one of {unit_conversion, lookup, threshold_check, bucket_check, linear_eval, interpolation}) plus operation-specific flat fields (from_unit, to_unit, value, key, domain, subject, x, operator, inputs, input_columns_signature, x_var, y_var). NO 'structured_request', NO 'low_risk_autonomy_query'.",
-  "structured_request_derived_total": 98,
+  "structured_request_derived_total": 104,
   "structured_request_rejected_total": 5,
   "structured_request_skipped_total": 2,
-  "upstream_derivation_p50_ms": 0.0091,
-  "upstream_derivation_p95_ms": 0.0113,
-  "upstream_derivation_p99_ms": 0.0164,
+  "upstream_derivation_p50_ms": 0.0107,
+  "upstream_derivation_p95_ms": 0.0146,
+  "upstream_derivation_p99_ms": 0.0323,
   "upstream_extractor_errors_total": 0,
   "upstream_extractor_rejection_counts_by_kind": {
     "rejected_ambiguous": 2,

@@ -53,6 +53,14 @@ _SCALAR_SEEDS: tuple[tuple[str, str, str, str, float, float], ...] = (
     ("minutes_to_seconds",         "system",  "min", "s",  60.0,             0.0),
     ("hours_to_minutes",           "system",  "h",  "min", 60.0,             0.0),
     ("milliseconds_to_seconds",    "system",  "ms", "s",   0.001,            0.0),
+    # Phase 14 P4 expansion — angle/area/volume/data conversions
+    ("degrees_to_radians",         "math",    "deg", "rad", 0.017453292519943295, 0.0),
+    ("radians_to_degrees",         "math",    "rad", "deg", 57.29577951308232,    0.0),
+    ("square_meters_to_square_feet", "math",  "m2",  "ft2", 10.7639,             0.0),
+    ("liters_to_gallons_us",       "math",    "L",   "gal_us", 0.264172,         0.0),
+    ("megabytes_to_kilobytes",     "system",  "MB",  "kB",  1024.0,              0.0),
+    ("gigabytes_to_megabytes",     "system",  "GB",  "MB",  1024.0,              0.0),
+    ("days_to_hours",              "system",  "d",   "h",   24.0,                0.0),
 )
 
 
@@ -113,6 +121,18 @@ _LOOKUP_SEEDS: tuple[tuple[str, str, str, dict, Any], ...] = (
     ("direction_to_angle",   "math",     "direction",
       {"N": 0, "E": 90, "S": 180, "W": 270,
        "NE": 45, "SE": 135, "SW": 225, "NW": 315}, -1),
+    # Phase 14 P4 expansion
+    ("hue_to_temperature_band", "thermal", "hue_temp",
+      {"red": "warm", "orange": "warm", "yellow": "neutral",
+       "green": "cool", "blue": "cool", "violet": "cool"}, "neutral"),
+    ("priority_to_severity",   "system",   "priority",
+      {"P0": 4, "P1": 3, "P2": 2, "P3": 1, "P4": 0}, -1),
+    ("month_to_season_north",  "seasonal", "month_north",
+      {"jan": "winter", "feb": "winter", "mar": "spring", "apr": "spring",
+       "may": "spring", "jun": "summer", "jul": "summer", "aug": "summer",
+       "sep": "autumn", "oct": "autumn", "nov": "autumn", "dec": "winter"}, "?"),
+    ("severity_to_color",      "safety",   "severity_color",
+      {0: "green", 1: "yellow", 2: "orange", 3: "red", 4: "purple"}, "white"),
 )
 
 
@@ -155,6 +175,11 @@ _THRESHOLD_SEEDS: tuple[tuple[str, str, str, float, str, str, str], ...] = (
     ("dry_below_30",           "thermal",  "humidity_pct",  30.0, "<",  "dry",       "normal"),
     ("low_pressure_below_980", "seasonal", "pressure_hpa",  980.0, "<", "low",       "normal"),
     ("undervoltage_below_115", "energy",   "voltage_v",     11.5, "<",  "undervolt", "ok"),
+    # Phase 14 P4 expansion
+    ("disk_full_above_95pct",  "system",   "disk_pct",      95.0, ">=", "full",      "ok"),
+    ("packet_loss_above_2pct", "system",   "packet_loss_pct", 2.0, ">", "lossy",     "clean"),
+    ("latency_high_above_200ms","system",  "latency_ms",    200.0, ">", "slow",      "fast"),
+    ("freezer_alarm_above_neg5","thermal", "freezer_temp_c", -5.0, ">", "thaw_risk", "ok"),
 )
 
 
@@ -234,6 +259,37 @@ _INTERVAL_SEEDS: tuple[tuple[str, str, str, list, Any], ...] = (
         {"min": 980.0, "max": 1020.0, "label": "normal"},
         {"min": 1020.0, "max": 1100.0, "label": "high"},
     ], "out"),
+    # Phase 14 P4 expansion
+    ("wind_band", "seasonal", "wind_speed_ms", [
+        {"min": 0.0, "max": 5.0, "label": "calm"},
+        {"min": 5.0, "max": 11.0, "label": "moderate"},
+        {"min": 11.0, "max": 20.0, "label": "strong"},
+        {"min": 20.0, "max": 100.0, "label": "storm"},
+    ], "out"),
+    ("uv_band", "seasonal", "uv_index", [
+        {"min": 0.0, "max": 3.0, "label": "low"},
+        {"min": 3.0, "max": 6.0, "label": "moderate"},
+        {"min": 6.0, "max": 8.0, "label": "high"},
+        {"min": 8.0, "max": 11.0, "label": "very_high"},
+        {"min": 11.0, "max": 99.0, "label": "extreme"},
+    ], "out"),
+    ("memory_band", "system", "memory_pct", [
+        {"min": 0.0, "max": 50.0, "label": "ok"},
+        {"min": 50.0, "max": 80.0, "label": "warm"},
+        {"min": 80.0, "max": 95.0, "label": "high"},
+        {"min": 95.0, "max": 100.01, "label": "critical"},
+    ], "out"),
+    ("network_lag_band", "system", "rtt_ms", [
+        {"min": 0.0, "max": 30.0, "label": "snappy"},
+        {"min": 30.0, "max": 100.0, "label": "ok"},
+        {"min": 100.0, "max": 300.0, "label": "slow"},
+        {"min": 300.0, "max": 5000.0, "label": "bad"},
+    ], "out"),
+    ("growth_signal_band", "learning", "signal_strength", [
+        {"min": 0.0, "max": 0.2, "label": "weak"},
+        {"min": 0.2, "max": 0.6, "label": "moderate"},
+        {"min": 0.6, "max": 1.01, "label": "strong"},
+    ], "out"),
 )
 
 
@@ -287,6 +343,22 @@ _LINEAR_SEEDS: tuple[tuple[str, str, list[float], float, list[str]], ...] = (
     ("learning_progress", "learning",
       [0.6, 0.4], 0.0,
       ["correct_rate_z", "stability_z"]),
+    # Phase 14 P4 expansion
+    ("rolling_mean_3", "general",
+      [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], 0.0,
+      ["x_t", "x_tm1", "x_tm2"]),
+    ("weighted_average_5", "general",
+      [0.4, 0.3, 0.15, 0.1, 0.05], 0.0,
+      ["s1", "s2", "s3", "s4", "s5"]),
+    ("hvac_setpoint_drift", "thermal",
+      [0.6, -0.4, 0.2], 18.0,
+      ["outdoor_temp", "humidity_dev", "occupancy_z"]),
+    ("daily_charge_estimate", "energy",
+      [0.5, 0.5], 5.0,
+      ["solar_kwh", "grid_kwh"]),
+    ("anomaly_score_3d", "safety",
+      [0.5, 0.3, 0.2], 0.0,
+      ["recent_z", "context_z", "historical_z"]),
 )
 
 
@@ -350,6 +422,27 @@ _INTERP_SEEDS: tuple[tuple[str, str, str, str, list, float, float], ...] = (
       [{"x": 0.0, "y": 1013.25}, {"x": 1000.0, "y": 898.76},
         {"x": 5000.0, "y": 540.20}, {"x": 10000.0, "y": 264.36}],
       0.0, 10000.0),
+    # Phase 14 P4 expansion
+    ("humidity_comfort_curve", "thermal", "humidity_pct", "comfort_factor",
+      [{"x": 0.0, "y": 0.2}, {"x": 30.0, "y": 0.6},
+        {"x": 50.0, "y": 1.0}, {"x": 70.0, "y": 0.7},
+        {"x": 100.0, "y": 0.0}], 0.0, 100.0),
+    ("memory_pressure_curve", "system", "memory_pct", "alloc_latency_ms",
+      [{"x": 0.0, "y": 0.5}, {"x": 50.0, "y": 1.0},
+        {"x": 80.0, "y": 5.0}, {"x": 95.0, "y": 50.0},
+        {"x": 100.0, "y": 200.0}], 0.0, 100.0),
+    ("disk_load_curve", "system", "disk_pct", "iops_score",
+      [{"x": 0.0, "y": 1.0}, {"x": 50.0, "y": 0.95},
+        {"x": 80.0, "y": 0.7}, {"x": 95.0, "y": 0.3},
+        {"x": 100.0, "y": 0.0}], 0.0, 100.0),
+    ("uv_to_burn_curve", "seasonal", "uv_index", "burn_minutes",
+      [{"x": 0.0, "y": 240.0}, {"x": 3.0, "y": 60.0},
+        {"x": 6.0, "y": 30.0}, {"x": 8.0, "y": 15.0},
+        {"x": 11.0, "y": 8.0}], 0.0, 11.0),
+    ("retention_curve", "learning", "days", "retention",
+      [{"x": 0.0, "y": 1.0}, {"x": 1.0, "y": 0.6},
+        {"x": 7.0, "y": 0.3}, {"x": 30.0, "y": 0.1},
+        {"x": 90.0, "y": 0.05}], 0.0, 90.0),
 )
 
 
@@ -405,9 +498,10 @@ def _interp_seeds() -> Iterable[dict]:
 def all_canonical_seeds() -> list[dict]:
     """Return every canonical seed across every allowlisted family.
 
-    Total: 20 + 12 + 12 + 8 + 8 + 8 = 68 seeds (well above the 48
-    minimum target; below the 96 stretch — extending the library is
-    a separate PR).
+    Total: 27 + 16 + 16 + 13 + 13 + 13 = 98 seeds after Phase 14 P4
+    expansion (above the 96 stretch goal). Phase 13 shipped 68;
+    Phase 14 added 30 across all families while staying inside the
+    six-family allowlist (RULE 19) and preserving hex-cell spread.
     """
 
     out: list[dict] = []

@@ -27,6 +27,13 @@ from waggledance.core.autonomy.resource_kernel import (
     ResourceKernel,
 )
 from waggledance.core.autonomy.runtime import AutonomyRuntime
+from waggledance.core.autonomy_growth.upstream_structured_request_extractor import (
+    UPSTREAM_DERIVED,
+    UPSTREAM_REJECTED_AMBIGUOUS,
+    UPSTREAM_SKIPPED,
+    UPSTREAM_SKIPPED_BUILTIN_PRECEDENCE,
+    apply_upstream_structured_request,
+)
 
 log = logging.getLogger("waggledance.application.autonomy_service")
 
@@ -61,6 +68,14 @@ class AutonomyService:
         )
         self._request_count = 0
         self._error_count = 0
+
+        # Phase 16A — upstream structured_request derivation counters.
+        # Aggregate-only; no per-query state or raw-text persistence.
+        self._upstream_structured_requests_derived_total = 0
+        self._upstream_structured_requests_rejected_total = 0
+        self._upstream_structured_requests_skipped_total = 0
+        self._upstream_extractor_errors_total = 0
+        self._upstream_rejection_counts_by_kind: Dict[str, int] = {}
 
         # Night learning pipeline (Priority 1)
         self._night_pipeline = night_pipeline
@@ -265,6 +280,39 @@ class AutonomyService:
         try:
             self._resource_kernel.record_task_start()
             self._admission.record_enqueue()
+
+            # Phase 16A — upstream structured_request derivation.
+            # Caller's natural flat domain payload (operation + flat
+            # fields) is lifted into context["structured_request"]
+            # before the runtime's hint extractor runs. Errors in the
+            # extractor are recorded and isolated; they never crash
+            # the production path.
+            ctx_for_lift: Dict[str, Any] = context if context is not None else {}
+            try:
+                upstream_result = apply_upstream_structured_request(
+                    query, ctx_for_lift,
+                )
+                self._record_upstream_extraction(upstream_result.kind)
+                # Bypass-refusal enforcement: when the upstream extractor
+                # detects that the caller tried to pass
+                # `structured_request` or `low_risk_autonomy_query`
+                # directly, strip those forbidden keys before handing
+                # context to the runtime layer. This makes the upstream
+                # extractor the only legitimate producer of those fields.
+                if upstream_result.kind == UPSTREAM_REJECTED_AMBIGUOUS:
+                    for forbidden in (
+                        "structured_request",
+                        "low_risk_autonomy_query",
+                    ):
+                        ctx_for_lift.pop(forbidden, None)
+                context = ctx_for_lift
+            except Exception as upstream_exc:  # pragma: no cover - defensive
+                self._upstream_extractor_errors_total += 1
+                log.warning(
+                    "upstream_structured_request_extractor error: %s",
+                    upstream_exc,
+                )
+                context = ctx_for_lift  # do not bypass downstream
 
             # Route through compatibility layer
             result = self._compatibility.handle_query(query, context)
@@ -692,4 +740,37 @@ class AutonomyService:
             "errors": self._error_count,
             "is_running": self.is_running,
             "night_pipeline": self._night_pipeline is not None,
+            "upstream_structured_request": self.upstream_structured_request_stats(),
         }
+
+    # ── Phase 16A — upstream structured_request observability ──
+
+    def upstream_structured_request_stats(self) -> Dict[str, Any]:
+        """Aggregate counters for upstream structured_request derivation.
+
+        Aggregate-only. No per-query state. No raw free-text. No
+        per-solver explosion. Caller can read this for Reality View
+        or other panels.
+        """
+        return {
+            "derived_total": self._upstream_structured_requests_derived_total,
+            "rejected_total": self._upstream_structured_requests_rejected_total,
+            "skipped_total": self._upstream_structured_requests_skipped_total,
+            "extractor_errors_total": self._upstream_extractor_errors_total,
+            "rejection_counts_by_kind": dict(
+                self._upstream_rejection_counts_by_kind,
+            ),
+        }
+
+    def _record_upstream_extraction(self, kind: str) -> None:
+        if kind == UPSTREAM_DERIVED:
+            self._upstream_structured_requests_derived_total += 1
+            return
+        if kind in (UPSTREAM_SKIPPED, UPSTREAM_SKIPPED_BUILTIN_PRECEDENCE):
+            self._upstream_structured_requests_skipped_total += 1
+            return
+        # Anything else is a rejection
+        self._upstream_structured_requests_rejected_total += 1
+        self._upstream_rejection_counts_by_kind[kind] = (
+            self._upstream_rejection_counts_by_kind.get(kind, 0) + 1
+        )

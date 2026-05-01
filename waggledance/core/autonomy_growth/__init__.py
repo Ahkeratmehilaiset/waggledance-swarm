@@ -56,6 +56,19 @@ from .runtime_hint_extractor import (
     derive_low_risk_autonomy_hint,
     supported_subkeys,
 )
+from .upstream_structured_request_extractor import (
+    UPSTREAM_DERIVED,
+    UPSTREAM_REJECTED_AMBIGUOUS,
+    UPSTREAM_REJECTED_FAMILY_NOT_LOW_RISK,
+    UPSTREAM_REJECTED_MALFORMED,
+    UPSTREAM_REJECTED_MISSING_FIELDS,
+    UPSTREAM_REJECTED_NOT_STRUCTURED,
+    UPSTREAM_SKIPPED,
+    UPSTREAM_SKIPPED_BUILTIN_PRECEDENCE,
+    UpstreamExtractionResult,
+    apply_upstream_structured_request,
+    derive_upstream_structured_request,
+)
 from .hot_path_cache import (
     BufferedSignalSink,
     BufferedSinkStats,
@@ -198,4 +211,16 @@ __all__ = [
     "RESULT_SKIPPED",
     "derive_low_risk_autonomy_hint",
     "supported_subkeys",
+    # upstream structured_request extractor (Phase 16A)
+    "UPSTREAM_DERIVED",
+    "UPSTREAM_REJECTED_AMBIGUOUS",
+    "UPSTREAM_REJECTED_FAMILY_NOT_LOW_RISK",
+    "UPSTREAM_REJECTED_MALFORMED",
+    "UPSTREAM_REJECTED_MISSING_FIELDS",
+    "UPSTREAM_REJECTED_NOT_STRUCTURED",
+    "UPSTREAM_SKIPPED",
+    "UPSTREAM_SKIPPED_BUILTIN_PRECEDENCE",
+    "UpstreamExtractionResult",
+    "apply_upstream_structured_request",
+    "derive_upstream_structured_request",
 ]

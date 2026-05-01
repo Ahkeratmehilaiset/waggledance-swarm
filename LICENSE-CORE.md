@@ -104,6 +104,7 @@ Autonomy growth package (Phase 11 closed loop + Phase 12 self-starting):
 - `waggledance/core/autonomy_growth/hot_path_cache.py`        # Phase 14
 - `waggledance/core/autonomy_growth/autonomy_consult_adapter.py`  # Phase 14
 - `waggledance/core/autonomy_growth/runtime_hint_extractor.py`    # Phase 15
+- `waggledance/core/autonomy_growth/upstream_structured_request_extractor.py`  # Phase 16A
 
 ## Default rule
 

@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from waggledance.core.capabilities.registry import CapabilityRegistry
 from waggledance.core.capabilities.selector import CapabilitySelector, SelectionResult
@@ -33,6 +33,36 @@ from waggledance.core.memory.working_memory import WorkingMemory
 log = logging.getLogger("waggledance.reasoning.solver_router")
 
 
+# Phase 14 — autonomy consult adapter.
+# A callable injected into SolverRouter that bridges the reasoning
+# router to the low-risk autonomy lane. The callable receives a
+# query envelope (family_kind, inputs, features, cell_coord, intent_seed)
+# and returns an AutonomyConsultOutcome — or None when the consult
+# was not attempted.
+#
+# This is a *backwards-compatible* extension: SolverRouter still works
+# without an autonomy_consult, exactly as in Phase 13. Existing
+# tests do not need to change.
+AutonomyConsultCallable = Callable[
+    [Dict[str, Any]], "Optional[AutonomyConsultOutcome]"
+]
+
+
+@dataclass(frozen=True)
+class AutonomyConsultOutcome:
+    """Outcome reported by the autonomy consult adapter."""
+
+    served: bool
+    source: str  # 'auto_promoted_solver' | 'gap_emitted' | 'gap_throttled'
+                  # | 'family_not_low_risk' | 'consult_skipped'
+    output: Any = None
+    solver_id: Optional[int] = None
+    solver_name: Optional[str] = None
+    artifact_id: Optional[str] = None
+    signal_id: Optional[int] = None
+    miss_reason: Optional[str] = None
+
+
 @dataclass
 class SolverRouteResult:
     """Result of the solver routing pipeline."""
@@ -41,6 +71,8 @@ class SolverRouteResult:
     context_keys: List[str] = field(default_factory=list)
     world_snapshot: Optional[WorldSnapshot] = None
     execution_time_ms: float = 0.0
+    # Phase 14 — autonomy consult outcome (None when not attempted).
+    autonomy_consult: Optional[AutonomyConsultOutcome] = None
 
     @property
     def quality_path(self) -> str:
@@ -50,8 +82,17 @@ class SolverRouteResult:
     def selected_ids(self) -> List[str]:
         return [c.capability_id for c in self.selection.selected]
 
+    @property
+    def autonomy_served(self) -> bool:
+        """True iff the autonomy consult lane handled this query."""
+
+        return (
+            self.autonomy_consult is not None
+            and self.autonomy_consult.served
+        )
+
     def to_dict(self) -> dict:
-        return {
+        out = {
             "intent": self.intent,
             "quality_path": self.quality_path,
             "selected": self.selected_ids,
@@ -59,6 +100,14 @@ class SolverRouteResult:
             "execution_time_ms": self.execution_time_ms,
             "fallback_used": self.selection.fallback_used,
         }
+        if self.autonomy_consult is not None:
+            out["autonomy_consult"] = {
+                "served": self.autonomy_consult.served,
+                "source": self.autonomy_consult.source,
+                "solver_name": self.autonomy_consult.solver_name,
+                "miss_reason": self.autonomy_consult.miss_reason,
+            }
+        return out
 
 
 class SolverRouter:
@@ -78,12 +127,18 @@ class SolverRouter:
         registry: Optional[CapabilityRegistry] = None,
         selector: Optional[CapabilitySelector] = None,
         working_memory: Optional[WorkingMemory] = None,
+        autonomy_consult: Optional[AutonomyConsultCallable] = None,
     ):
         self._registry = registry or CapabilityRegistry()
         self._selector = selector or CapabilitySelector(self._registry)
         self._working_memory = working_memory or WorkingMemory()
+        self._autonomy_consult = autonomy_consult
         self._route_history: List[SolverRouteResult] = []
         self._capability_confidence: Optional[Dict[str, float]] = None
+
+    @property
+    def autonomy_consult_enabled(self) -> bool:
+        return self._autonomy_consult is not None
 
     # ── Main routing ──────────────────────────────────────
 
@@ -117,6 +172,34 @@ class SolverRouter:
         # 3. Select capabilities (solver-first)
         selection = self._selector.select(intent, context, conditions)
 
+        # 3.5 Phase 14 — autonomy consult.
+        # When the built-in capability selection fell back AND the
+        # caller passed a structured low-risk autonomy hint, ask the
+        # autonomy consult lane to serve the query before the caller
+        # falls back to LLM. The consult is *backwards-compatible*:
+        # when no consult callable is wired or no hint is supplied,
+        # behaviour is exactly the Phase 13 baseline.
+        autonomy_outcome: Optional[AutonomyConsultOutcome] = None
+        if (
+            self._autonomy_consult is not None
+            and selection.fallback_used
+        ):
+            hint = context.get("low_risk_autonomy_query")
+            if isinstance(hint, dict) and hint.get("family_kind"):
+                try:
+                    autonomy_outcome = self._autonomy_consult(hint)
+                except Exception as exc:  # noqa: BLE001 — never let
+                    # autonomy errors break the production reasoning
+                    # path; record a structured 'consult_skipped'.
+                    log.warning(
+                        "autonomy_consult raised; skipped: %r", exc
+                    )
+                    autonomy_outcome = AutonomyConsultOutcome(
+                        served=False,
+                        source="consult_skipped",
+                        miss_reason=f"consult_error:{type(exc).__name__}",
+                    )
+
         elapsed = (time.time() - t0) * 1000
 
         result = SolverRouteResult(
@@ -124,6 +207,7 @@ class SolverRouter:
             selection=selection,
             context_keys=context_keys,
             execution_time_ms=round(elapsed, 2),
+            autonomy_consult=autonomy_outcome,
         )
 
         self._record(result)

@@ -39,6 +39,7 @@ from typing import Any, Mapping, Optional
 from waggledance.core.storage.control_plane import ControlPlaneDB
 
 from .gap_intake import GapSignal, RuntimeGapDetector
+from .hot_path_cache import HotPathCache
 from .low_risk_policy import is_low_risk_family
 from .solver_dispatcher import (
     DispatchQuery,
@@ -109,6 +110,7 @@ class RuntimeQueryRouter:
         detector: Optional[RuntimeGapDetector] = None,
         min_signal_interval_seconds: float = _DEFAULT_MIN_SIGNAL_INTERVAL_SECONDS,
         clock: Optional[Any] = None,
+        hot_path: Optional[HotPathCache] = None,
     ) -> None:
         self._cp = control_plane
         self._dispatcher = (
@@ -121,6 +123,7 @@ class RuntimeQueryRouter:
             if detector is not None
             else RuntimeGapDetector(control_plane)
         )
+        self._hot_path = hot_path
         self._min_interval = float(min_signal_interval_seconds)
         self._clock = clock or time.monotonic
         self._lock = threading.Lock()
@@ -142,6 +145,10 @@ class RuntimeQueryRouter:
     def detector(self) -> RuntimeGapDetector:
         return self._detector
 
+    @property
+    def hot_path(self) -> Optional[HotPathCache]:
+        return self._hot_path
+
     def route(self, query: RuntimeQuery) -> RuntimeRouteResult:
         self._stats.queries_total += 1
         family = query.family_kind
@@ -153,6 +160,29 @@ class RuntimeQueryRouter:
                 source="family_not_low_risk",
                 miss_reason="family_not_low_risk",
             )
+
+        # Phase 14: hot-path warm dispatch (memory-resident; no SQLite,
+        # no JSON parse on the warm common case). When opt-in, this
+        # short-circuits the SQLite-backed dispatch_by_features.
+        if self._hot_path is not None and query.features:
+            warm = self._hot_path.warm_dispatch(
+                family_kind=family,
+                features=dict(query.features),
+                inputs=dict(query.inputs),
+            )
+            if warm.matched:
+                self._stats.served_total += 1
+                self._stats.by_family_served[family] = (
+                    self._stats.by_family_served.get(family, 0) + 1
+                )
+                return RuntimeRouteResult(
+                    served=True,
+                    source="auto_promoted_solver",
+                    output=warm.output,
+                    solver_id=warm.solver_id,
+                    solver_name=warm.solver_name,
+                    artifact_id=warm.artifact_id,
+                )
 
         # Capability-aware dispatch first; gracefully degrade to the
         # family-FIFO path if no features were supplied or no
@@ -225,14 +255,24 @@ class RuntimeQueryRouter:
             payload=signal_payload,
             spec_seed=dict(query.spec_seed) if query.spec_seed else None,
         )
-        rec = self._detector.record(signal)
+        # Phase 14: when a HotPathCache is attached, enqueue the miss
+        # signal into the buffered sink instead of doing a synchronous
+        # SQLite INSERT on the request hot path. The sink flushes
+        # asynchronously per the bounded-loss contract documented in
+        # docs/journal/2026-05-01_live_runtime_hotpath_bottlenecks.md.
+        signal_id: Optional[int] = None
+        if self._hot_path is not None:
+            self._hot_path.enqueue_miss_signal(signal)
+        else:
+            rec = self._detector.record(signal)
+            signal_id = rec.id
         self._stats.by_family_emitted[family] = (
             self._stats.by_family_emitted.get(family, 0) + 1
         )
         return RuntimeRouteResult(
             served=False,
             source="gap_emitted",
-            signal_id=rec.id,
+            signal_id=signal_id,
             miss_reason=result.reason or "miss_no_solver",
         )
 

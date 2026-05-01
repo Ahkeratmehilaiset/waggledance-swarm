@@ -1,10 +1,23 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-04-30
-**Version:** v3.6.0 + Phase 10 substrate + Phase 11 autogrowth + Phase 12 self-starting + Phase 13 runtime-integrated harvest + capability-aware uptake on `main`
+**Updated:** 2026-05-01
+**Version:** v3.6.0 + P10 substrate + P11 autogrowth + P12 self-starting + P13 runtime harvest + P14 live runtime hot-path on `main`
 **Shipped branch:** `main` at `08b7e8c` (Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) on top of `8bf1869` post-v3.6.0 truthfulness commit on top of `a1c4152` PR #51 squash)
 **Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0) — no new SemVer tag for Phase 10 (substrate, not runtime behaviour change). An optional `v3.6.1-substrate` prerelease tag may be added once post-merge truth/governance are clean.
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
+
+### Phase 14 — Live runtime hot-path wiring (landed on main 2026-05-01)
+
+Phase 14 wires the autonomy lane into the **production reasoning entrypoint** and collapses the autonomy consult hot path into in-process caches.
+
+* **`SolverRouter.route(...)` autonomy consult.** Backwards-compatible context-hint extension (`context["low_risk_autonomy_query"]`). When built-in selection falls back AND a hint is supplied, the router invokes the autonomy consult lane via `build_autonomy_consult(RuntimeQueryRouter)`. Existing callers see no behaviour change.
+* **`HotPathCache`** — `WarmCapabilityIndex` + `ParsedArtifactCache` + `BufferedSignalSink`. Warm hits skip SQLite + JSON parse entirely. Miss-signal emission moves off the synchronous hot path with a bounded queue (≤ 1000 signals / ≤ 500 ms age). Documented hard-kill loss bound.
+* **Canonical seed library expanded** to 98 entries (Phase 13 had 68). All 6 allowlisted families + 8 hex cells.
+* **Live runtime proof** through `SolverRouter.route(...)`. 98 corpus → 0 misses after one harvest cycle. **Pre-cache p50 ≈ 0.39 ms; warm p50 ≈ 0.06 ms; warm-vs-pre-cache 6.17× faster** (P3 floor 5× met; stretch 10× missed and documented). Provider/builder delta during proof: 0.
+* **Reality View** existing `autonomy_runtime_harvest_kpis` panel extended with Phase 14 capability-indexed solver counts (no new panel — RULE P7).
+* **Inner-loop zero-provider invariant** locked by per-run delta test.
+
+What did NOT change: built-in authoritative solvers (Layer 3 retains precedence), the Phase 9 promotion ladder (4 runtime stages still require `human_approval_id`), Stage-2 atomic flip (still gated by `STAGE2_CUTOVER_RFC.md`), `_DEFAULT_FAISS_DIR` (still `data/faiss/`), real Anthropic/OpenAI HTTP adapters (still follow-up work), six-family allowlist (RULE 19 honoured), single-process scope (RULE 20).
 
 ### Phase 13 — Runtime-integrated harvest + capability-aware uptake (landed on main 2026-04-30)
 

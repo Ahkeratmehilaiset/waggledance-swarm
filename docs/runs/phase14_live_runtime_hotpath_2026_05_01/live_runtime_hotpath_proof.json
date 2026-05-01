@@ -1,0 +1,198 @@
+{
+  "after": {
+    "miss_total": 0,
+    "per_cell_served": {
+      "energy": 11,
+      "general": 13,
+      "learning": 5,
+      "math": 13,
+      "safety": 6,
+      "seasonal": 10,
+      "system": 24,
+      "thermal": 16
+    },
+    "per_family_served": {
+      "bounded_interpolation": 13,
+      "interval_bucket_classifier": 13,
+      "linear_arithmetic": 13,
+      "lookup_table": 16,
+      "scalar_unit_conversion": 27,
+      "threshold_rule": 16
+    },
+    "served_total": 98,
+    "served_via_capability_lookup_total": 98
+  },
+  "before": {
+    "buffered_signals_flushed": 98,
+    "fallback_or_miss_total": 98,
+    "served_total": 0,
+    "signals_emitted_total": 98
+  },
+  "buffered_sink": {
+    "documented_hardkill_loss_bound_signals": 1000,
+    "dropped_total": 0,
+    "enqueued_total": 98,
+    "flushed_total": 98,
+    "max_unflushed_age_ms_configured": 500,
+    "max_unflushed_age_ms_observed": 11.6613,
+    "max_unflushed_signals_configured": 1000,
+    "max_unflushed_signals_observed": 98
+  },
+  "control_plane_table_counts_after_proof": {
+    "autogrowth_queue": 98,
+    "autogrowth_runs": 98,
+    "autonomy_kpis": 0,
+    "builder_jobs": 0,
+    "capabilities": 0,
+    "capability_dependencies": 0,
+    "capsule_registry_bindings": 0,
+    "cell_membership": 0,
+    "cutover_states": 0,
+    "family_policies": 6,
+    "growth_events": 392,
+    "growth_intents": 98,
+    "identity_anchors": 0,
+    "promotion_decisions": 98,
+    "promotion_states": 0,
+    "provider_jobs": 0,
+    "runtime_gap_signals": 98,
+    "runtime_path_bindings": 0,
+    "schema_meta": 1,
+    "shadow_evaluations": 98,
+    "solver_artifacts": 98,
+    "solver_capabilities": 0,
+    "solver_capability_features": 170,
+    "solver_families": 6,
+    "solvers": 98,
+    "validation_runs": 98,
+    "vector_indexes": 0,
+    "vector_shards": 0
+  },
+  "corpus_total": 98,
+  "entrypoint": "waggledance.core.reasoning.solver_router.SolverRouter.route",
+  "harvest": {
+    "by_family_promoted": {
+      "bounded_interpolation": 13,
+      "interval_bucket_classifier": 13,
+      "linear_arithmetic": 13,
+      "lookup_table": 16,
+      "scalar_unit_conversion": 27,
+      "threshold_rule": 16
+    },
+    "intents_created": 98,
+    "intents_enqueued": 98,
+    "scheduler_drained": 98,
+    "scheduler_errored": 0,
+    "scheduler_promoted": 98,
+    "scheduler_rejected": 0
+  },
+  "hot_path_cache_stats": {
+    "artifact_cache_size_after_proof": 92,
+    "by_family_cold_hits": {
+      "bounded_interpolation": 13,
+      "interval_bucket_classifier": 13,
+      "linear_arithmetic": 13,
+      "lookup_table": 12,
+      "scalar_unit_conversion": 27,
+      "threshold_rule": 14
+    },
+    "by_family_warm_hits": {
+      "bounded_interpolation": 65,
+      "interval_bucket_classifier": 65,
+      "linear_arithmetic": 65,
+      "lookup_table": 84,
+      "scalar_unit_conversion": 135,
+      "threshold_rule": 82
+    },
+    "cold_hits_warmed": 92,
+    "misses": 98,
+    "warm_hits": 496,
+    "warm_index_size_after_proof": 92
+  },
+  "kpis": {
+    "auto_promotions_total": 98,
+    "autogrowth_runs_total": 98,
+    "builder_jobs_delta_during_proof": 0,
+    "builder_jobs_total_after_proof": 0,
+    "distinct_growth_intents_total": 98,
+    "growth_events_total": 392,
+    "harvested_signals_total": 98,
+    "provider_jobs_delta_during_proof": 0,
+    "provider_jobs_total_after_proof": 0,
+    "queued_rows_total": 98,
+    "rejections_total": 0,
+    "rollbacks_total": 0,
+    "shadow_evaluations_total": 98,
+    "solver_capability_features_total": 170,
+    "validation_runs_total": 98
+  },
+  "latency_cold_after_promote_ms": {
+    "mean_ms": 0.4484,
+    "n": 98,
+    "p50_ms": 0.4386,
+    "p95_ms": 0.6505,
+    "p99_ms": 1.4507
+  },
+  "latency_pass1_buffered_miss_ms": {
+    "mean_ms": 0.1216,
+    "n": 98,
+    "p50_ms": 0.1088,
+    "p95_ms": 0.1633,
+    "p99_ms": 0.2012
+  },
+  "latency_pre_cache_baseline_ms": {
+    "mean_ms": 0.4068,
+    "n": 294,
+    "p50_ms": 0.3945,
+    "p95_ms": 0.6695,
+    "p99_ms": 1.0707
+  },
+  "latency_warm_ms": {
+    "mean_ms": 0.0676,
+    "n": 490,
+    "p50_ms": 0.0639,
+    "p95_ms": 0.0867,
+    "p99_ms": 0.1681
+  },
+  "latency_warm_vs_pre_cache_ratio": 6.17,
+  "p3_threshold_attainment": {
+    "minimum_floor": {
+      "all_met": true,
+      "details": {
+        "cold_p50_ms_met": true,
+        "cold_p99_ms_met": true,
+        "warm_p50_ms_met": true,
+        "warm_p99_ms_met": true,
+        "warm_vs_pre_cache_ratio_met": true
+      },
+      "thresholds": {
+        "cold_p50_ms": 75.0,
+        "cold_p99_ms": 250.0,
+        "warm_p50_ms": 1.0,
+        "warm_p99_ms": 10.0,
+        "warm_vs_pre_cache_ratio_min": 5.0
+      }
+    },
+    "stretch": {
+      "all_met": false,
+      "details": {
+        "cold_p50_ms_met": true,
+        "cold_p99_ms_met": true,
+        "warm_p50_ms_met": true,
+        "warm_p99_ms_met": true,
+        "warm_vs_pre_cache_ratio_met": false
+      },
+      "thresholds": {
+        "cold_p50_ms": 50.0,
+        "cold_p99_ms": 200.0,
+        "warm_p50_ms": 0.5,
+        "warm_p99_ms": 5.0,
+        "warm_vs_pre_cache_ratio_min": 10.0
+      }
+    }
+  },
+  "pre_cache_served_via_consult_total": 294,
+  "primary_teacher_lane_id": "claude_code_builder_lane",
+  "proof_version": 1,
+  "schema_version": 4
+}

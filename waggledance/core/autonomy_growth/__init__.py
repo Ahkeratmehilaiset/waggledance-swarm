@@ -43,6 +43,18 @@ from .low_risk_seed_library import (
     expected_per_family_counts,
     seeds_for_family,
 )
+from .autonomy_consult_adapter import build_autonomy_consult
+from .hot_path_cache import (
+    BufferedSignalSink,
+    BufferedSinkStats,
+    DEFAULT_MAX_UNFLUSHED_AGE_MS,
+    DEFAULT_MAX_UNFLUSHED_SIGNALS,
+    HotPathCache,
+    HotPathCacheStats,
+    ParsedArtifactCache,
+    WarmCapabilityIndex,
+    WarmDispatchResult,
+)
 from .runtime_query_router import (
     RouterStats,
     RuntimeQuery,
@@ -152,4 +164,15 @@ __all__ = [
     "RuntimeQuery",
     "RuntimeQueryRouter",
     "RuntimeRouteResult",
+    # hot-path cache + buffered sink (Phase 14)
+    "BufferedSignalSink",
+    "BufferedSinkStats",
+    "DEFAULT_MAX_UNFLUSHED_AGE_MS",
+    "DEFAULT_MAX_UNFLUSHED_SIGNALS",
+    "HotPathCache",
+    "HotPathCacheStats",
+    "ParsedArtifactCache",
+    "WarmCapabilityIndex",
+    "WarmDispatchResult",
+    "build_autonomy_consult",
 ]

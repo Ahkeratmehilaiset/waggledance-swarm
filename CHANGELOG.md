@@ -1,5 +1,50 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 14 — live runtime hot-path wiring and low-latency autonomy] — 2026-05-01
+
+Branch: `phase14/live-runtime-hotpath-wiring`. Wires the autonomy lane into the production reasoning entrypoint (`SolverRouter.route`), collapses the warm path's SQLite + JSON cost into in-process caches, and moves miss-signal emission off the synchronous hot path with a bounded buffered sink. Live before/after proof through the production entrypoint shows 98/98 served via capability lookup post-harvest with zero provider calls and a >5× warm-vs-pre-cache speedup.
+
+### Added
+
+- `waggledance/core/reasoning/solver_router.py` extension: backwards-compatible `autonomy_consult` constructor parameter + `AutonomyConsultOutcome` dataclass + `low_risk_autonomy_query` context-hint dispatch in `SolverRouter.route(...)`. Existing callers see no behaviour change.
+- `waggledance/core/autonomy_growth/hot_path_cache.py` (BUSL-1.1):
+  * `WarmCapabilityIndex` — `(family_kind, frozenset(features)) → solver_id` in-memory map; thread-safe; invalidate on solver promotion / deactivation.
+  * `ParsedArtifactCache` — `solver_id → (artifact_id, parsed_dict, solver_name)`; skips `json.loads` on warm hits.
+  * `BufferedSignalSink` — bounded queue (default 1000 signals / 500 ms age, both ≤ RULE P3.3 invariant). `force_flush()`, `atexit` hook, documented hard-kill loss bound = ≤ configured `max_unflushed_signals` OR one `max_unflushed_age_ms` window's worth.
+  * `HotPathCache` — bundles all three; provides `warm_dispatch`, `enqueue_miss_signal`, `flush_signals`, `invalidate_solver`.
+- `waggledance/core/autonomy_growth/autonomy_consult_adapter.py` (BUSL-1.1):
+  * `build_autonomy_consult(RuntimeQueryRouter)` — the canonical bridge between `SolverRouter` and `RuntimeQueryRouter`.
+- `RuntimeQueryRouter` extension: optional `hot_path: HotPathCache` parameter. When attached, `route(...)` uses warm-cache dispatch first and enqueues misses into the buffered sink instead of writing synchronously.
+- `low_risk_seed_library.py` expansion: 68 → 98 canonical seeds across all 6 families (scalar_unit_conversion +7, lookup_table +4, threshold_rule +4, interval_bucket_classifier +5, linear_arithmetic +5, bounded_interpolation +5). Per-family + per-cell spread preserved. RULE 19 honoured (no allowlist widening).
+- `tools/run_live_runtime_hotpath_proof.py` — end-to-end live proof through `SolverRouter.route(...)`. Compares pre-cache (no `HotPathCache`) vs warm-cache latencies; reports P3 threshold attainment (floor / stretch).
+- Reality View `autonomy_runtime_harvest_kpis` panel **extended** (no new panel — RULE P7) with `live_runtime_capability_indexed_solvers_total` and `live_runtime_capability_features_total`.
+- Tests:
+  * `tests/autonomy_growth/test_hot_path_cache.py` — 11 tests covering WarmCapabilityIndex, ParsedArtifactCache, BufferedSignalSink (size bound, age bound, force flush, documented hard-kill bound, default-bound invariant), HotPathCache.warm_dispatch (cold→warm, miss, invalidate, no-SQLite-after-warmup).
+  * `tests/autonomy_growth/test_solver_router_autonomy_consult.py` — 7 tests covering baseline-unchanged, post-promotion serve, miss → gap_emitted, hint-missing skip, non-low-risk family, callable error isolation, built-in-success skip.
+  * `tests/autonomy_growth/test_live_runtime_hotpath_proof_smoke.py` — 5 tests: before/after, zero-provider delta, P3 floor met, real-entrypoint check, buffered-sink bound.
+  * `tests/ui_hologram/test_runtime_harvest_panel.py` — +1 test for Phase 14 capability metrics.
+
+### Behaviour
+
+- `SolverRouter.route(...)` is now the production wiring point for the autonomy lane. The seam fires only when built-in selection falls back AND the caller passes a hint, so existing callers see no behaviour change.
+- Warm-path autonomy consult is memory-resident: zero SQLite, zero JSON parse on warm hits.
+- Miss-path runtime signal emission is off the synchronous hot path; buffered into a bounded queue with explicit flush + atexit hook. Hard-kill loss bound documented.
+- Live proof: pre-cache p50 ≈ 0.39 ms; warm p50 ≈ 0.06 ms; **warm-vs-pre-cache 6.17× faster**. P3 floor (5×) met. P3 stretch (10×) missed because in-process WAL SQLite is already fast — the absolute warm/cold p50/p99 thresholds are met for both floor and stretch.
+
+### Unchanged (truth boundary)
+
+- Phase 9 14-stage promotion ladder. Runtime stages still require `human_approval_id`.
+- Stage-2 atomic flip. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/`. `STAGE2_CUTOVER_RFC.md` still gates that mechanism.
+- Real Anthropic / OpenAI HTTP adapters. Only `dry_run_stub` and `claude_code_builder_lane` exercisable.
+- Outer-loop teacher remains Claude Code Opus 4.7 (LLM solver generator priority list, position 1).
+- Six-family allowlist. RULE 19 honoured — no widening.
+- Single-process scope. RULE 20 honoured — no sharding/federation.
+- `phase8.5/*` branches. Read-only this session.
+
+### Tests at squash time
+
+* Targeted: `tests/autonomy_growth/` 112 (was 88: +11 hot_path + +7 solver_router_consult + +5 live_proof_smoke - 1 in pre-existing skipped), `tests/storage/` 51, `tests/ui_hologram/` 23, `tests/providers/` 18, `tests/solver_synthesis/` 12, `tests/phase10/` 14, `tests/autonomy/test_solver_router.py` (+ existing) — all green.
+
 ## [Phase 13 — runtime-integrated harvest + capability-aware uptake] — 2026-04-30
 
 Branch: `phase13/runtime-harvest-capability-uptake`. Connects the autonomy loop to the real runtime seam and adds capability-aware dispatch so harvested structure stays useful at scale. The before/after proof routes 68 structured runtime queries through the real `RuntimeQueryRouter`, harvests, then re-routes — pass 1: 0 served / 68 misses / 68 signals auto-emitted; pass 2: 68 served via capability lookup. **0 provider calls.**

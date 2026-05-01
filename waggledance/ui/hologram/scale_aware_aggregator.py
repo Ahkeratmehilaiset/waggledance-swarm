@@ -488,6 +488,22 @@ def _autonomy_runtime_harvest_panel(cp: ControlPlaneDB) -> RealityPanel:
     provider_jobs_total = cp.stats().table_counts.get("provider_jobs", 0)
     teacher_assisted_total = 0  # would be > 0 only when adapters land
 
+    # Phase 14: capability-feature-indexed solver count is a truthful
+    # proxy for "how many auto-promoted solvers the runtime
+    # capability-aware dispatcher can find". Live-runtime queries seen
+    # is the cumulative runtime-miss signal count (the only durable
+    # trace of router invocations the control plane carries).
+    capability_features_total = cp.stats().table_counts.get(
+        "solver_capability_features", 0
+    )
+    capability_indexed_solver_rows = cp._conn.execute(  # type: ignore[attr-defined]
+        "SELECT COUNT(DISTINCT solver_id) AS c FROM solver_capability_features"
+    ).fetchone()
+    capability_indexed_solvers = (
+        int(capability_indexed_solver_rows["c"])
+        if capability_indexed_solver_rows else 0
+    )
+
     items: list[dict] = [
         {"metric": "runtime_harvested_signals_total",
           "value": int(runtime_miss_total)},
@@ -499,6 +515,13 @@ def _autonomy_runtime_harvest_panel(cp: ControlPlaneDB) -> RealityPanel:
         {"metric": "human_gated_promotions_total",
           "value": int(human_gated)},
         {"metric": "provider_jobs_total", "value": int(provider_jobs_total)},
+        # Phase 14 — capability-indexed solvers and feature-row count.
+        # These surface the warm-path discoverability of auto-promoted
+        # solvers without per-solver row enumeration.
+        {"metric": "live_runtime_capability_indexed_solvers_total",
+          "value": int(capability_indexed_solvers)},
+        {"metric": "live_runtime_capability_features_total",
+          "value": int(capability_features_total)},
         {
             "metric": "per_family_runtime_miss",
             "value": json.dumps(per_family_runtime_miss, sort_keys=True),

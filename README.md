@@ -6,7 +6,7 @@
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10%20substrate%20%2B%20P11%20autogrowth%20%2B%20P12%20self--starting%20%2B%20P13%20runtime--harvest-blue)]()
+[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10..P13%20%2B%20P14%20live--runtime%20hot--path-blue)]()
 
 ## What this is
 
@@ -54,6 +54,30 @@ The runtime is built around a hexagonal layout: `core/` is the domain, `adapters
 | **2 — Learned** | Adapts | 14 specialist models with canary lifecycle |
 | **1 — Fallback** | Explains | LLM — only when solvers and specialists cannot handle it |
 | **1b — Optional** | Gemma 4 | Optional dual-tier Gemma 4 profiles: fast (e4b) for general fallback, heavy (26b) for hard reasoning |
+
+## Phase 14 — Live runtime hot-path wiring and low-latency autonomy
+
+After Phase 13 added the runtime seam (`RuntimeQueryRouter`) and capability-aware dispatch, Phase 14 wires that seam into the **production reasoning entrypoint** (`SolverRouter.route(...)`), collapses the warm path's SQLite + JSON cost into in-process caches, and moves miss-signal emission off the synchronous hot path with a bounded buffered sink.
+
+What is real now:
+
+* **`SolverRouter.route(...)` autonomy consult.** A backwards-compatible context-hint extension: when the built-in capability selection falls back AND the caller passes `context["low_risk_autonomy_query"]`, the router invokes the autonomy consult lane via `build_autonomy_consult(RuntimeQueryRouter)`. Existing callers without the hint see no behaviour change. Locked by 7 unit tests in `tests/autonomy_growth/test_solver_router_autonomy_consult.py`.
+* **`HotPathCache` (in-process).** `WarmCapabilityIndex` keyed on `(family_kind, frozenset(features))` skips the SQLite `find_auto_promoted_solvers_by_features` call on warm hits. `ParsedArtifactCache` skips the `json.loads` of `artifact_json`. Both invalidate on solver promotion / deactivation.
+* **`BufferedSignalSink` (bounded).** Runtime miss signals enqueue into an in-memory bounded queue (≤ 1000 signals OR ≤ 500 ms age). Explicit `flush()` and `atexit` hook for graceful shutdown. Documented hard-kill loss bound: ≤ 1000 signals or one 500 ms window's worth, whichever is tighter for the workload.
+* **Canonical seed library expanded.** 68 → **98** entries across all 6 families and 8 cells (Phase 14 P4; well above the 96 stretch goal).
+* **Live runtime before/after proof.** `tools/run_live_runtime_hotpath_proof.py` routes 98 structured queries through `SolverRouter.route(...)` against an isolated scratch DB. Pass 1: 0 served / 98 misses / 98 buffered signals. Harvest. Pass 2: 98 served via capability lookup. **Pre-cache p50 ≈ 0.39 ms; warm p50 ≈ 0.06 ms — >5× faster.** P3 floor met (5/5). P3 stretch met for 4/5 absolute thresholds; warm-vs-pre-cache ratio missed stretch (10× target, 6.17× observed) due to in-process WAL SQLite already being fast — documented.
+* **Reality View.** Existing `autonomy_runtime_harvest_kpis` panel extended with Phase 14 capability-indexed solver counts (no new panel — RULE P7 panel discipline).
+* **Inner-loop / outer-loop truth, locked by per-run delta test.** `tests/autonomy_growth/test_live_runtime_hotpath_proof_smoke.py::test_live_runtime_hotpath_proof_zero_provider_delta` runs the proof and asserts `provider_jobs_delta == 0` and `builder_jobs_delta == 0` for the proof window — robust against pre-existing rows in the DB.
+
+What is still NOT real:
+
+* The router is wired into `SolverRouter.route` as a backwards-compatible context-hint extension. Production callers (autonomy runtime hot paths) start passing the hint in a follow-up phase.
+* High-risk families remain human-gated. Allowlist still six families (RULE 19).
+* Stage-2 atomic flip is unchanged. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/`.
+* No real Anthropic / OpenAI HTTP adapters.
+* No actuator-side autonomy.
+* Single-process scope (RULE 20: no sharding/federation this session).
+* No consciousness claim.
 
 ## Phase 13 — Runtime-integrated harvest and capability-aware uptake
 

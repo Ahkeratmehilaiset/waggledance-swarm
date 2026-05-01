@@ -514,6 +514,17 @@ def _autonomy_runtime_harvest_panel(cp: ControlPlaneDB) -> RealityPanel:
     # the hint extractor was the only source of family/cell/intent
     # tagging. (The Phase 12 extractor pipeline writes runtime_miss
     # signals only when an upstream hint is present.)
+    #
+    # Phase 16A note: post-Phase-16A the `AutonomyService.handle_query`
+    # upstream extractor is the only legitimate producer of the
+    # `structured_request` field that the Phase 15 hint extractor
+    # reads. Manual `structured_request` / `low_risk_autonomy_query`
+    # injection is rejected (`UPSTREAM_REJECTED_AMBIGUOUS`) at the
+    # service layer and the forbidden keys are stripped before the
+    # runtime layer sees them. This means the count below now
+    # exclusively reflects upstream-lifted signals when the service
+    # layer is in the call path; the metric name is unchanged for
+    # backwards compatibility.
     hint_aware_signal_rows = cp._conn.execute(  # type: ignore[attr-defined]
         """
         SELECT COUNT(*) AS c FROM runtime_gap_signals
@@ -523,6 +534,26 @@ def _autonomy_runtime_harvest_panel(cp: ControlPlaneDB) -> RealityPanel:
     ).fetchone()
     hint_aware_signals_total = (
         int(hint_aware_signal_rows["c"]) if hint_aware_signal_rows else 0
+    )
+
+    # Phase 16A — narrow Reality View extension. Count
+    # `input_columns_signature` capability-feature rows. This feature
+    # is set only on solvers in the linear_arithmetic family, and the
+    # only automatic path to populate it after Phase 16A is the
+    # upstream extractor lifting the flat
+    # ``inputs`` + ``input_columns_signature`` payload into the
+    # nested grammar. A non-zero count is durable evidence that the
+    # upstream lift round-tripped at least once into the control
+    # plane via a real promotion. Aggregate-only.
+    upstream_signature_rows = cp._conn.execute(  # type: ignore[attr-defined]
+        """
+        SELECT COUNT(*) AS c FROM solver_capability_features
+        WHERE feature_name = 'input_columns_signature'
+        """
+    ).fetchone()
+    upstream_lift_signature_features_total = (
+        int(upstream_signature_rows["c"])
+        if upstream_signature_rows else 0
     )
 
     items: list[dict] = [
@@ -548,6 +579,11 @@ def _autonomy_runtime_harvest_panel(cp: ControlPlaneDB) -> RealityPanel:
         # the autonomy lane through the Phase 15 wiring".
         {"metric": "live_runtime_hint_aware_signals_total",
           "value": int(hint_aware_signals_total)},
+        # Phase 16A — capability-feature rows for
+        # input_columns_signature. Durable evidence the upstream
+        # flat-to-nested lift round-tripped through a promotion.
+        {"metric": "live_runtime_upstream_lift_signature_features_total",
+          "value": int(upstream_lift_signature_features_total)},
         {
             "metric": "per_family_runtime_miss",
             "value": json.dumps(per_family_runtime_miss, sort_keys=True),

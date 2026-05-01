@@ -119,6 +119,12 @@ After Phase 12 the distinction is sharper and is preserved by tests:
 
 A regression test in `tests/autonomy_growth/test_outer_inner_loop_truthful.py` asserts that after the Phase 12 mass-safe proof there are zero `provider_jobs` rows — i.e., the inner-loop-local claim is grounded in code, not just docs. If a future change quietly routes inner-loop common-path growth through a paid provider, that test fails.
 
+Phase 14 extends this distinction to the **live runtime hot path**:
+
+* The `SolverRouter.route(...)` production reasoning entrypoint now optionally invokes the autonomy consult lane (`build_autonomy_consult(RuntimeQueryRouter)`) when the built-in capability selection falls back AND the caller passes a structured `low_risk_autonomy_query` context hint. The seam is backwards-compatible — callers without the hint see no behaviour change.
+* A `HotPathCache` adds an in-memory capability index + parsed-artifact cache + buffered miss sink. Warm-path hits skip SQLite and `json.loads` entirely; miss-path emission writes to a bounded in-memory queue (1000 signals / 500 ms) instead of synchronous SQLite. Documented hard-kill loss bound.
+* The Phase 14 live proof (`tools/run_live_runtime_hotpath_proof.py`) routes 98 structured queries through `SolverRouter.route(...)` against an isolated scratch DB. Pre-cache p50 ≈ 0.39 ms; warm p50 ≈ 0.06 ms — a >5× speedup. **Provider/builder-jobs delta during proof: 0.** The corresponding regression test (`test_live_runtime_hotpath_proof_zero_provider_delta`) locks this invariant per-run instead of as a one-time absolute.
+
 ## What Phase 10 P3 does NOT do
 
 - **No real Anthropic / OpenAI HTTP adapters.** The shape is in place; concrete adapters are follow-up work that needs credentials and rate-limit handling. The `dry_run_stub` and `claude_code_builder_lane` adapters are the ones exercisable today; the others remain dry-run-only until those adapters land.

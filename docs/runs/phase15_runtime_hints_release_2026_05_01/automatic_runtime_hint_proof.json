@@ -1,0 +1,158 @@
+{
+  "after": {
+    "miss_total": 0,
+    "per_cell_served": {
+      "energy": 11,
+      "general": 13,
+      "learning": 5,
+      "math": 13,
+      "safety": 6,
+      "seasonal": 10,
+      "system": 24,
+      "thermal": 16
+    },
+    "per_family_served": {
+      "bounded_interpolation": 13,
+      "interval_bucket_classifier": 13,
+      "linear_arithmetic": 13,
+      "lookup_table": 16,
+      "scalar_unit_conversion": 27,
+      "threshold_rule": 16
+    },
+    "served_total": 98,
+    "served_via_capability_lookup_total": 98
+  },
+  "before": {
+    "buffered_signals_flushed": 3,
+    "fallback_or_miss_total": 98,
+    "served_total": 0
+  },
+  "buffered_sink": {
+    "documented_hardkill_loss_bound_signals": 1000,
+    "max_unflushed_age_ms_configured": 500,
+    "max_unflushed_age_ms_observed": 508.2365,
+    "max_unflushed_signals_configured": 1000,
+    "max_unflushed_signals_observed": 48
+  },
+  "corpus_tier": "Tier 1 \u2014 selected caller supports all 6 families (98 seeds)",
+  "corpus_total": 98,
+  "extractor_rejection_counts_by_reason": {
+    "derived": 98
+  },
+  "harvest": {
+    "by_family_promoted": {
+      "bounded_interpolation": 13,
+      "interval_bucket_classifier": 13,
+      "linear_arithmetic": 13,
+      "lookup_table": 16,
+      "scalar_unit_conversion": 27,
+      "threshold_rule": 16
+    },
+    "growth_intents_total": 98,
+    "scheduler_drained": 98,
+    "scheduler_errored": 0,
+    "scheduler_promoted": 98,
+    "scheduler_rejected": 0
+  },
+  "hint_derivation_p50_ms": 0.0142,
+  "hint_derivation_p95_ms": 0.0172,
+  "hint_derivation_p99_ms": 0.0285,
+  "hints_derived_total": 98,
+  "hints_rejected_ambiguous_total": 0,
+  "hints_rejected_family_not_low_risk_total": 0,
+  "hints_rejected_missing_fields_total": 0,
+  "hints_rejected_not_structured_total": 0,
+  "hot_path_cache_stats": {
+    "cold_hits_warmed": 92,
+    "misses": 98,
+    "warm_hits": 300
+  },
+  "kpis": {
+    "auto_promotions_total": 98,
+    "builder_jobs_delta_during_proof": 0,
+    "builder_jobs_total_after_proof": 0,
+    "growth_events_total": 392,
+    "harvested_signals_total": 98,
+    "provider_jobs_delta_during_proof": 0,
+    "provider_jobs_total_after_proof": 0,
+    "rejections_total": 0,
+    "rollbacks_total": 0,
+    "shadow_evaluations_total": 98,
+    "solver_capability_features_total": 170,
+    "validation_runs_total": 98
+  },
+  "latency_hint_derivation_only_ms": {
+    "mean_ms": 0.0149,
+    "n": 98,
+    "p50_ms": 0.0142,
+    "p95_ms": 0.0172,
+    "p99_ms": 0.0285
+  },
+  "latency_pass1_handle_query_ms": {
+    "mean_ms": 20.6472,
+    "n": 98,
+    "p50_ms": 10.7026,
+    "p95_ms": 12.8472,
+    "p99_ms": 465.2109
+  },
+  "latency_pass2_cold_handle_query_ms": {
+    "mean_ms": 10.9975,
+    "n": 98,
+    "p50_ms": 10.7222,
+    "p95_ms": 14.4753,
+    "p99_ms": 16.9865
+  },
+  "latency_pass3_warm_handle_query_ms": {
+    "mean_ms": 10.0153,
+    "n": 294,
+    "p50_ms": 9.377,
+    "p95_ms": 12.9222,
+    "p99_ms": 17.7942
+  },
+  "manual_hint_audit_detected_keys": [],
+  "manual_low_risk_hint_in_input_detected": false,
+  "negative_cases_detail": [
+    {
+      "expected_hint_kind": "rejected_ambiguous",
+      "observed_hint_kind": "rejected_ambiguous",
+      "query": "ambiguous request",
+      "served": false
+    },
+    {
+      "expected_hint_kind": "rejected_family_not_low_risk",
+      "observed_hint_kind": "rejected_family_not_low_risk",
+      "query": "high-risk family-shaped",
+      "served": false
+    },
+    {
+      "expected_hint_kind": "rejected_missing_fields",
+      "observed_hint_kind": "rejected_missing_fields",
+      "query": "missing fields",
+      "served": false
+    },
+    {
+      "expected_hint_kind": "skipped",
+      "observed_hint_kind": "skipped",
+      "query": "free-text-only \u2014 extractor should skip",
+      "served": false
+    },
+    {
+      "expected_hint_kind": "rejected_malformed",
+      "observed_hint_kind": "rejected_malformed",
+      "query": "malformed x",
+      "served": false
+    }
+  ],
+  "negative_cases_passed_total": 5,
+  "negative_cases_total": 5,
+  "primary_teacher_lane_id": "claude_code_builder_lane",
+  "proof_constructed_runtime_query_objects": false,
+  "proof_version": 1,
+  "schema_version": 4,
+  "selected_caller": "waggledance.core.autonomy.runtime.AutonomyRuntime.handle_query",
+  "selected_caller_input_keys": [
+    "profile",
+    "structured_request"
+  ],
+  "selected_caller_input_shape": "(query: str, context: Dict[str, Any]) \u2014 context carries 'structured_request' with one of {unit_conversion, lookup, threshold_check, bucket_check, linear_eval, interpolation}"
+}

@@ -1,0 +1,121 @@
+{
+  "session": "phase15_automatic_runtime_hints_release_readiness",
+  "session_started_at_utc": "2026-05-01T11:00:00Z",
+  "operator_directive": "Take WD from 'Phase 14 wired the autonomy consult lane into SolverRouter.route behind an explicit context hint' to a real, measurable Phase 15 alpha where one production caller ABOVE SolverRouter derives the hint automatically from its normal input shape.",
+  "session_mode": "automatic_runtime_hints_alpha_release_readiness",
+  "prior_session_archived_at": "docs/runs/phase14_live_runtime_hotpath_2026_05_01/session_state.json",
+
+  "model_selection": {
+    "primary_model": "claude-opus-4-7",
+    "model_id_resolved": "claude-opus-4-7",
+    "subagent_model": "inherited_opus_4_7",
+    "fallback_policy": "log_and_continue_record_event",
+    "fallback_events": []
+  },
+  "teacher_lane_default": "claude-opus-4-7",
+  "provider_usage": 0,
+
+  "p0_baseline_reconciliation": {
+    "tier": "TIER_A_ALIGNED",
+    "origin_main_sha": "2733f87a4bddfe333396cd8586d972b04c188476",
+    "origin_main_subject": "feat(autonomy): Phase 14 — live runtime hot-path wiring and low-latency autonomy",
+    "tags_present_on_origin": [
+      "v3.6.0", "v3.6.1-substrate",
+      "v3.7.0-autogrowth-alpha", "v3.7.1-autoloop-alpha",
+      "v3.7.2-runtime-harvest-alpha", "v3.7.3-hotpath-alpha"
+    ],
+    "phase14_modules_present": [
+      "waggledance/core/autonomy_growth/runtime_query_router.py",
+      "waggledance/core/autonomy_growth/hot_path_cache.py",
+      "waggledance/core/autonomy_growth/autonomy_consult_adapter.py",
+      "waggledance/core/autonomy_growth/family_features.py",
+      "waggledance/core/autonomy_growth/low_risk_seed_library.py"
+    ],
+    "solver_router_has_autonomy_consult": true,
+    "buffered_signal_sink_bound_documented": true,
+    "stage2_atomic_flip_unexecuted": true,
+    "six_family_allowlist_unchanged": true,
+    "phase8_5_disposition": "READ_ONLY (RULE 7)",
+    "tier_b_drift_advisory": "none observed in this snapshot"
+  },
+
+  "untracked_files_at_session_start_must_not_be_committed": [
+    "WD_release_to_main_master_prompt.md",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+    "docs/runs/phase9_pr_body.md"
+  ],
+
+  "working_branch": "phase15/automatic-runtime-hints-release-readiness",
+  "branched_from": "origin/main @ 2733f87a4bddfe333396cd8586d972b04c188476",
+
+  "p1_caller_inventory_summary": {
+    "selected_caller": "waggledance.core.autonomy.runtime.AutonomyRuntime.handle_query(query, context)",
+    "selection_rationale": "AutonomyRuntime.handle_query is the production query handler immediately above SolverRouter.route. It already accepts (query: str, context: Dict[str, Any]) — an open-ended context dict that callers naturally use to pass typed structured runtime data. The Phase 15 hint extractor reads structured fields from context (a normal use of the existing API) and derives the autonomy hint deterministically.",
+    "rejected_summary_in_runtime_entrypoint_truth_map": "see docs/architecture/RUNTIME_ENTRYPOINT_TRUTH_MAP.md"
+  },
+
+  "p2_extractor_design": {
+    "module": "waggledance/core/autonomy_growth/runtime_hint_extractor.py",
+    "input": "(query: str, context: Mapping[str, Any], cell_coord: Optional[str])",
+    "supported_grammar": "context.get('structured_request') is a dict containing exactly one of {unit_conversion, lookup, threshold_check, bucket_check, linear_eval, interpolation}, each with family-specific required fields. Optional shared fields: cell_coord, intent_seed.",
+    "result_kinds": [
+      "derived",
+      "rejected_ambiguous",
+      "rejected_family_not_low_risk",
+      "rejected_missing_fields",
+      "rejected_not_structured",
+      "skipped"
+    ],
+    "no_semantic_guessing": true,
+    "no_provider_calls": true,
+    "no_llm_parse": true
+  },
+
+  "p3_wiring_design": {
+    "file": "waggledance/core/autonomy/runtime.py",
+    "place": "AutonomyRuntime.handle_query, between context enrichment and self.solver_router.route(...)",
+    "behavior": "When extractor returns derived, set context['low_risk_autonomy_query'] = hint. Otherwise leave context unchanged. Wrap extractor call in try/except so its errors never break the production path. After SolverRouter.route returns, if route_result.autonomy_served, surface the consult result in the handle_query return dict's 'autonomy_consult' key.",
+    "backwards_compatible": true
+  },
+
+  "p4_proof_design": {
+    "tool": "tools/run_automatic_runtime_hint_proof.py",
+    "input_shape": "(query: str, context: dict) — exactly the production AutonomyRuntime.handle_query signature; the proof corpus uses context['structured_request'] with normal family-specific subkeys (unit_conversion, lookup, threshold_check, bucket_check, linear_eval, interpolation)",
+    "must_not_pass": ["low_risk_autonomy_query", "family_kind", "features", "spec_seed"],
+    "regression_test": "tests/autonomy_growth/test_automatic_runtime_hint_proof_smoke.py asserts manual_low_risk_hint_in_input_detected == false"
+  },
+
+  "rule_compliance": {
+    "rule_1_no_questions": "active",
+    "rule_2_pr_only": "active",
+    "rule_3_no_force_no_rewrite": "active",
+    "rule_4_no_stale_sha_merge": "active",
+    "rule_5_no_atomic_flip": "active",
+    "rule_6_no_human_approval": "active",
+    "rule_7_phase8_5_read_only": "active",
+    "rule_8_magma_truth_first": "active",
+    "rule_9_busl_change_date": "active",
+    "rule_10_no_loose_json_system_of_record": "active",
+    "rule_11_no_actuator_writes": "active",
+    "rule_12_no_overclaim": "active",
+    "rule_13_no_widen_allowlist": "active",
+    "rule_14_no_sharding_or_federation": "active",
+    "rule_15_panel_discipline": "active",
+    "rule_16_push_verification": "active",
+    "rule_17_180s_window_then_one_more_lsremote": "active",
+    "rule_18_autonomous_merge_guardrails": "armed",
+    "rule_19_no_merge_confirmation_if_guardrails_pass": "active",
+    "rule_20_no_manual_current_state_edit": "active"
+  },
+
+  "provider_budget_caps_this_session": {
+    "claude_code_builder": {"used": 0, "cap": 1},
+    "anthropic_api": {"used": 0, "cap": 1, "default": 0},
+    "openai_api": {"used": 0, "cap": 1, "default": 0},
+    "triangulated": {"used": 0, "cap": 0, "default": 0}
+  },
+
+  "phases_completed": ["P0"],
+  "phases_in_progress": ["P1"],
+  "phases_pending": ["P2","P3","P4","P5","P6","P7","P8","P9","P10","P12","P13","P14"]
+}

@@ -1,10 +1,23 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-05-01
-**Version:** v3.6.0 + P10 substrate + P11 autogrowth + P12 self-starting + P13 runtime harvest + P14 live runtime hot-path on `main`
+**Version:** v3.6.0 + P10..P14 + P15 automatic runtime hints (alpha) on `main`
 **Shipped branch:** `main` at `08b7e8c` (Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) on top of `8bf1869` post-v3.6.0 truthfulness commit on top of `a1c4152` PR #51 squash)
 **Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0) — no new SemVer tag for Phase 10 (substrate, not runtime behaviour change). An optional `v3.6.1-substrate` prerelease tag may be added once post-merge truth/governance are clean.
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
+
+### Phase 15 — Automatic runtime hints + alpha release readiness (landed on main 2026-05-01)
+
+Phase 15 lifts autonomy-hint derivation up to the **production query handler** `AutonomyRuntime.handle_query(query, context)`. Callers no longer need to know about the autonomy lane.
+
+* **`runtime_hint_extractor.py`** — deterministic Python extractor; reads only `context["structured_request"]`; supports six subkeys (one per allowlisted family); zero provider calls, no LLM, no embeddings. Explicit rejection kinds for ambiguous / high-risk-shaped / missing-fields / not-structured / malformed input.
+* **`AutonomyRuntime.handle_query` wiring** — backwards-compatible context-hint injection. The hint extractor runs between context enrichment and `solver_router.route`; on derived hint, `context["low_risk_autonomy_query"]` is set automatically. Errors from the extractor never break the production path.
+* **Live before/after proof through the production caller** (`tools/run_automatic_runtime_hint_proof.py`). 98-seed corpus passes through `AutonomyRuntime.handle_query`; pass 1: 0 served / 98 buffered miss signals; harvest: 98 promoted; pass 2: 98 served via capability lookup; provider/builder delta during proof = 0/0; negative corpus 5/5 passed.
+* **Reality View** existing `autonomy_runtime_harvest_kpis` panel extended with `live_runtime_hint_aware_signals_total` (no new panel — RULE P7).
+* **Release surface** — `docs/github/REPOSITORY_PRESENTATION.md` (external presentation text), `docs/release/RELEASE_READINESS.md` (alpha/release tag policy), `docs/deployment/DOCKER_QUICKSTART.md` (Docker contract; not tested in this session).
+* **P5 self-state snapshot + P6 episodic continuity deferred to Phase 16.** They are observability primitives; deferred per session priority stack to focus on the P2–P4 release gate.
+
+What did NOT change: production callers above `handle_query` do not yet emit `structured_request` (they can opt in with the natural payload); six-family allowlist (RULE 13); Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates that); `_DEFAULT_FAISS_DIR` (still `data/faiss/`); real Anthropic/OpenAI HTTP adapters (still follow-up work); single-process scope (RULE 14); no consciousness claim.
 
 ### Phase 14 — Live runtime hot-path wiring (landed on main 2026-05-01)
 

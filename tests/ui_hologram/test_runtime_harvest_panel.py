@@ -12,6 +12,7 @@ from waggledance.core.autonomy_growth import (
     AutogrowthScheduler,
     GapSignal,
     LowRiskGrower,
+    RuntimeGapDetector,
     RuntimeQuery,
     RuntimeQueryRouter,
     digest_signals_into_intents,
@@ -108,6 +109,47 @@ def test_runtime_harvest_panel_aggregates_after_route_and_harvest(
     assert per_family.get("scalar_unit_conversion") == 1
     per_cell = json.loads(metrics["per_cell_runtime_miss"])
     assert per_cell.get("thermal") == 1
+
+
+def test_runtime_harvest_panel_surfaces_phase14_capability_metrics(
+    cp: ControlPlaneDB,
+) -> None:
+    """Phase 14 P7 — the (extended) panel exposes capability-indexed
+    solver counts. No new panel — same `autonomy_runtime_harvest_kpis`."""
+
+    g = LowRiskGrower(cp)
+    g.ensure_low_risk_policies()
+    seed = _kelvin_seed()
+    detector = RuntimeGapDetector(cp)
+    router = RuntimeQueryRouter(cp, detector=detector,
+                                  min_signal_interval_seconds=0.0)
+    router.route(RuntimeQuery(
+        family_kind="scalar_unit_conversion",
+        inputs={"x": 0.0}, cell_coord="thermal",
+        intent_seed="celsius_to_kelvin",
+        features=extract_features("scalar_unit_conversion", seed["spec"]),
+        spec_seed=seed,
+    ))
+    digest_signals_into_intents(
+        cp,
+        candidate_signals=[GapSignal(
+            kind="runtime_miss", family_kind="scalar_unit_conversion",
+            cell_coord="thermal", intent_seed="celsius_to_kelvin",
+            spec_seed=seed,
+        )],
+        min_signals_per_intent=1, autoenqueue=True,
+    )
+    AutogrowthScheduler(cp).run_until_idle()
+
+    p = build_scale_aware_panels(
+        control_plane=cp,
+    ).autonomy_runtime_harvest_kpis
+    assert p.available is True
+    metrics = {item["metric"]: item["value"] for item in p.items}
+    # Phase 14 metrics present and truthful (one auto-promoted solver
+    # with two capability features: from_unit + to_unit).
+    assert metrics["live_runtime_capability_indexed_solvers_total"] == 1
+    assert metrics["live_runtime_capability_features_total"] == 2
 
 
 def test_runtime_harvest_panel_is_aggregate_not_per_signal(

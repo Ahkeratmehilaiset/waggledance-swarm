@@ -504,6 +504,27 @@ def _autonomy_runtime_harvest_panel(cp: ControlPlaneDB) -> RealityPanel:
         if capability_indexed_solver_rows else 0
     )
 
+    # Phase 15: an in-process hint extractor cannot persist counts
+    # into the control plane without changing the production code path
+    # purely for observability (which would violate RULE 10/13). We
+    # surface a coarse proxy: the count of `runtime_miss` signals
+    # whose intent_seed appears in growth_intents. That is a truthful
+    # under-estimate of "how many hint-derived signals fed the lane"
+    # because by the time a runtime_miss reached the control plane,
+    # the hint extractor was the only source of family/cell/intent
+    # tagging. (The Phase 12 extractor pipeline writes runtime_miss
+    # signals only when an upstream hint is present.)
+    hint_aware_signal_rows = cp._conn.execute(  # type: ignore[attr-defined]
+        """
+        SELECT COUNT(*) AS c FROM runtime_gap_signals
+        WHERE kind = 'runtime_miss'
+          AND family_kind IS NOT NULL
+        """
+    ).fetchone()
+    hint_aware_signals_total = (
+        int(hint_aware_signal_rows["c"]) if hint_aware_signal_rows else 0
+    )
+
     items: list[dict] = [
         {"metric": "runtime_harvested_signals_total",
           "value": int(runtime_miss_total)},
@@ -522,6 +543,11 @@ def _autonomy_runtime_harvest_panel(cp: ControlPlaneDB) -> RealityPanel:
           "value": int(capability_indexed_solvers)},
         {"metric": "live_runtime_capability_features_total",
           "value": int(capability_features_total)},
+        # Phase 15 — runtime-miss signals that carry an extractor-
+        # derived family tag. Aggregate proxy for "hints that reached
+        # the autonomy lane through the Phase 15 wiring".
+        {"metric": "live_runtime_hint_aware_signals_total",
+          "value": int(hint_aware_signals_total)},
         {
             "metric": "per_family_runtime_miss",
             "value": json.dumps(per_family_runtime_miss, sort_keys=True),

@@ -1,8 +1,10 @@
-# Runtime Entrypoint Truth Map (Phase 15 P1)
+# Runtime Entrypoint Truth Map (Phase 15 P1 + Phase 16A P1)
 
-**Status:** authored 2026-05-01 from repo state at `origin/main` `2733f87`. This is the truthful inventory of every place in `waggledance/` that calls into the autonomy reasoning router or its caller chain. Phase 15 selects exactly one production caller above `SolverRouter.route(...)` to wire the deterministic hint extractor into.
+**Status:** initially authored 2026-05-01 for Phase 15 from repo state at `origin/main` `2733f87`. **Phase 16A P1 update appended** at the end of this document, dated 2026-05-01, from repo state at `origin/main` `2b9978d` (post-Phase-15 merge).
 
-**Hard gate (RULE):** `SolverRouter.route(...)` itself is **not eligible** as the selected caller in Phase 15. `RuntimeQueryRouter.route(...)` is **not eligible**. The selected caller must be above `SolverRouter` in the production / service / runtime stack and must already receive normal structured runtime / service input.
+This is the truthful inventory of every place in `waggledance/` that calls into the autonomy reasoning router or its caller chain. Phase 15 selected exactly one production caller above `SolverRouter.route(...)` to wire the deterministic hint extractor into. Phase 16A selects exactly one production caller **above** `AutonomyRuntime.handle_query(...)` to derive `context["structured_request"]` from natural upstream input.
+
+**Hard gate (RULE):** `SolverRouter.route(...)` itself is **not eligible**. `RuntimeQueryRouter.route(...)` is **not eligible**. The Phase 15 selected caller must be above `SolverRouter`. The Phase 16A selected caller must be above `AutonomyRuntime.handle_query` (i.e. above the Phase 15 wiring point).
 
 ## Caller chain diagram
 
@@ -76,3 +78,73 @@ The proof's regression test (`test_automatic_runtime_hint_proof_smoke.py::test_p
 * `tests/autonomy/test_solver_router.py` — production reasoning router tests.
 * Phase 14 proof: `tools/run_live_runtime_hotpath_proof.py`.
 * Phase 15 proof (this PR): `tools/run_automatic_runtime_hint_proof.py`.
+
+---
+
+## Phase 16A P1 update (2026-05-01)
+
+Phase 16A selects the **upstream caller above `AutonomyRuntime.handle_query`** that automatically builds `context["structured_request"]` from its natural input shape, *before* `AutonomyRuntime.handle_query` runs the Phase 15 runtime-hint extractor.
+
+### Phase 16A caller chain (post-Phase-15)
+
+```
+external HTTP / CLI / service caller
+        │
+        ▼
+AutonomyService.handle_query(query, context, priority)         ← PHASE 16A SELECTED CALLER
+        │ admission control + priority + KPIs
+        │ NEW: derive context["structured_request"] from natural flat fields in context
+        ▼
+CompatibilityLayer.handle_query(query, context)                ← thin shim (legacy / autonomy primary)
+        │
+        ▼
+AutonomyRuntime.handle_query(query, context)                   ← Phase 15 selected caller
+        │ NEW (Phase 15): derive context["low_risk_autonomy_query"] from context["structured_request"]
+        ▼
+SolverRouter.route(intent, query, context)                     ← Phase 14 autonomy consult seam
+        │
+        ▼
+LowRiskSolverDispatcher / RuntimeQueryRouter / autonomy growth lane
+```
+
+### Phase 16A candidate inventory
+
+| File:function | Above `handle_query`? | Real runtime? | Distinct upstream input shape? | Naturally testable? | Decision |
+|---|---|---|---|---|---|
+| `waggledance/application/services/autonomy_service.py::AutonomyService.handle_query` | yes | yes — service-layer entrypoint, registered in FastAPI lifespan and `get_autonomy_service` DI | yes — `(query: str, context: Dict[str, Any], priority: int)` adds the service-layer `priority` parameter and admission/metrics surface; production callers populate `context` with flat domain fields | yes — `tests/autonomy/test_wiring_integration.py` already constructs `AutonomyService()` directly | **SELECTED** |
+| `waggledance/core/autonomy/compatibility.py::CompatibilityLayer.handle_query` | yes | yes — wraps `AutonomyRuntime.handle_query` (or legacy) | no — identical `(query, context)` signature; pure pass-through with `source` tag | yes | rejected: thin pass-through with no distinct upstream input. Wiring at `AutonomyService.handle_query` automatically surfaces through this shim. |
+| `waggledance/application/services/chat_service.py::ChatService.handle` | yes (different lane) | yes — chat HTTP endpoint | yes (`ChatRequest` DTO) | yes | rejected: **does not flow through `AutonomyRuntime.handle_query`** — uses `Orchestrator` directly. Out of scope for Phase 16A. |
+| `waggledance/application/services/autonomy_service.py::AutonomyService.execute_mission` | yes | yes | yes — mission-shaped (`goal_type`, `description`, `priority`, `context`) | yes | rejected: mission-shaped input does not map to low-risk solver families. Out of scope for Phase 16A. |
+| `waggledance/adapters/http/routes/autonomy.py` | n/a | yes — FastAPI routes | n/a | n/a | rejected: no `/autonomy/query` route currently exists; the existing autonomy HTTP routes are status/KPI/learning/safety, not query. Adding a route is broader than Phase 16A scope. |
+| `tools/run_automatic_runtime_hint_proof.py::_run_query_through_runtime` | n/a | proof-only harness | n/a | n/a | rejected: proof-only — explicitly forbidden by Phase 16A "must be a real upstream caller" rule. |
+| `waggledance/core/autonomy/runtime.py::AutonomyRuntime.handle_query` | NO — Phase 16A gate forbids | n/a | n/a | n/a | rejected: explicitly forbidden by Phase 16A gate (Phase 15 already wired the runtime-hint extractor here). |
+| `waggledance/core/reasoning/solver_router.py::SolverRouter.route` | NO — Phase 16A gate forbids | n/a | n/a | n/a | rejected: explicitly forbidden by Phase 16A gate. |
+| `waggledance/core/autonomy_growth/runtime_query_router.py::RuntimeQueryRouter.route` | NO — Phase 16A gate forbids | n/a | n/a | n/a | rejected: explicitly forbidden by Phase 16A gate. |
+
+### Phase 16A selected caller — `AutonomyService.handle_query`
+
+* **File:function:** `waggledance/application/services/autonomy_service.py:239` — `AutonomyService.handle_query(self, query: str, context: Optional[Dict[str, Any]] = None, priority: int = 50) -> Dict[str, Any]`.
+* **Distinct upstream input shape:** the service-layer adds the `priority: int` parameter (used for admission control / scheduling) and a service-elapsed metric. Importantly, the *natural* `context` shape at the service layer is a flat domain dict that production / API callers would populate with fields like `operation`, `from_unit`, `to_unit`, `value`, `table`, `key`, `subject`, `x`, `threshold`, `comparator`, `inputs`, `x_var`, `y_var`. The Phase 16A upstream extractor *lifts* these flat fields into the nested `context["structured_request"]` shape that Phase 15's runtime-hint extractor reads.
+* **Why this is not "structured_request under another name":**
+  1. Caller-supplied flat fields are domain-named, not autonomy-named (`from_unit`, `value`, `subject`, `x`) — no field is called `structured_request`.
+  2. The lifting `flat → nested` is a real transformation; a flat caller payload like `{"operation": "unit_conversion", "from_unit": "C", "to_unit": "F", "value": 25}` becomes `context["structured_request"] = {"unit_conversion": {"from_unit": "C", "to_unit": "F", "value": 25}}`.
+  3. The upstream extractor refuses to fabricate. When `context["operation"]` is absent / unrecognised / missing required fields, it returns `skipped` / `rejected_*` and writes nothing.
+  4. Phase 15's runtime-hint extractor still runs unchanged at the `AutonomyRuntime.handle_query` layer; the upstream extractor is purely additive.
+* **Built-in solver precedence preserved:** Phase 14's `SolverRouter.route` still enforces fallback-only autonomy consult; the upstream extractor only writes `context["structured_request"]` and never bypasses capability selection.
+* **Provider fallback risk:** zero. The upstream extractor is deterministic Python — no LLM, no embedding, no provider call.
+* **Existing tests:** `tests/autonomy/test_wiring_integration.py` already constructs `AutonomyService()` directly. Phase 16A adds new tests under `tests/autonomy_growth/test_upstream_structured_request_extractor.py` and `tests/autonomy_growth/test_autonomy_service_upstream_wiring.py`.
+
+### Why CompatibilityLayer was rejected for Phase 16A
+
+`CompatibilityLayer.handle_query(query, context)` has the same signature as `AutonomyRuntime.handle_query` and acts as a thin pass-through with a `source` tag. Wiring the upstream extractor here would be functionally identical to wiring it inside `AutonomyRuntime.handle_query` (which is the Phase 15 wiring point and is forbidden by Phase 16A). Wiring it at `AutonomyService.handle_query` is materially distinct because:
+
+* the service-layer `priority`/admission surface is meaningful production state,
+* `AutonomyService.handle_query` is the FastAPI dependency-injected entrypoint (`get_autonomy_service` DI), so any future HTTP route would naturally flow through here,
+* admission rejection / deferral is recorded *before* the upstream extractor runs, preserving service-layer correctness.
+
+### Phase 16A cross-references
+
+* Phase 16A upstream extractor: `waggledance/core/autonomy_growth/upstream_structured_request_extractor.py`.
+* Phase 16A wiring point: `waggledance/application/services/autonomy_service.py::AutonomyService.handle_query`.
+* Phase 16A proof: `tools/run_upstream_structured_request_proof.py`.
+* Phase 16A proof artifacts: `docs/runs/phase16_upstream_structured_request_2026_05_01/upstream_structured_request_proof.{md,json}`.

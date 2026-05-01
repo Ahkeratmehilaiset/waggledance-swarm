@@ -2,17 +2,17 @@
 
 > Local-first deterministic-solver runtime with a bounded six-family auto-growth lane. Alpha. No cloud, no provider in the inner loop.
 
-**Latest alpha (Phase 15, this release):** the production query handler `AutonomyRuntime.handle_query(query, context)` automatically derives a low-risk autonomy hint from `context["structured_request"]` and consults a deterministic auto-growth lane between built-in solvers and LLM fallback. The lane promotes new solvers from runtime evidence in six allowlisted side-effect-free families (unit conversion, lookup tables, threshold rules, interval bands, linear forms, bounded interpolation). Reproducible proof: `python tools/run_automatic_runtime_hint_proof.py` — 98-corpus, 0 served pre-harvest, 98 served post-harvest via capability lookup, 0 provider/builder calls during proof.
+**Latest alpha (Phase 16A, this release):** the service-layer caller `AutonomyService.handle_query(query, context, priority)` automatically lifts a flat upstream domain payload (`operation` + flat fields like `from_unit`, `value`, `subject`, `x`, `inputs`) into the nested `context["structured_request"]` shape, which the Phase 15 runtime hint extractor then turns into `context["low_risk_autonomy_query"]`. The deterministic auto-growth lane between built-in solvers and LLM fallback continues to promote new solvers from runtime evidence in six allowlisted side-effect-free families. Reproducible proofs: `python tools/run_automatic_runtime_hint_proof.py` (Phase 15) and `python tools/run_upstream_structured_request_proof.py` (Phase 16A) — both 98-corpus, 0 served pre-harvest, 98 served post-harvest via capability lookup, 0 provider/builder calls. Phase 16A also ships a restart-continuity smoke (`tests/autonomy_growth/test_upstream_restart_continuity.py`) that proves auto-promoted solvers and capability features survive a control-plane close+reopen with the same upstream input still served.
 
-**Still alpha / not implemented:** real Anthropic / OpenAI HTTP adapters (only `dry_run_stub` and `claude_code_builder_lane` exercisable end-to-end); Stage-2 atomic flip (specified in `docs/architecture/STAGE2_CUTOVER_RFC.md` but not executed); actuator-side autonomy; federation; high-risk family auto-promotion; production-grade Docker deployment story (see `docs/deployment/DOCKER_QUICKSTART.md`).
+**Still alpha / not implemented:** real Anthropic / OpenAI HTTP adapters (only `dry_run_stub` and `claude_code_builder_lane` exercisable end-to-end); Stage-2 atomic flip (specified in `docs/architecture/STAGE2_CUTOVER_RFC.md` but not executed); actuator-side autonomy; federation; high-risk family auto-promotion; HTTP `/api/autonomy/query` route (Phase 16A wires the service layer; the FastAPI route surface for query is not yet exposed); production-grade Docker deployment story (see `docs/deployment/DOCKER_QUICKSTART.md`).
 
 **Consciousness?** No. The autonomy mechanisms here are engineering primitives (auto-growth, runtime harvest, capability-aware dispatch, hot-path cache), each mapped to a code path, persisted event, and regression test. WaggleDance does not claim to be conscious, sentient, aware, alive, or AGI. See `docs/github/REPOSITORY_PRESENTATION.md` for the external presentation summary and `docs/release/RELEASE_READINESS.md` for the alpha/release tag policy.
 
-[![Tests](https://img.shields.io/badge/tests-Phase%2015%20targeted%20green-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-Phase%2016A%20targeted%20green-brightgreen)]()
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10..P14%20%2B%20P15%20automatic%20hints--alpha-blue)]()
+[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10..P14%20%2B%20P15%20%2B%20P16A%20upstream--alpha-blue)]()
 
 ## What this is
 

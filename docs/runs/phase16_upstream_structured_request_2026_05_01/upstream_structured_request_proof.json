@@ -1,0 +1,207 @@
+{
+  "after": {
+    "miss_total": 0,
+    "per_operation_served": {
+      "bucket_check": 13,
+      "interpolation": 13,
+      "linear_eval": 13,
+      "lookup": 16,
+      "threshold_check": 16,
+      "unit_conversion": 27
+    },
+    "served_total": 98,
+    "served_via_capability_lookup_total": 98
+  },
+  "before": {
+    "buffered_signals_flushed": 49,
+    "fallback_or_miss_total": 98,
+    "runtime_signals_enqueued_total": 98,
+    "runtime_signals_flushed_total": 98,
+    "served_total": 0
+  },
+  "buffered_sink": {
+    "documented_hardkill_loss_bound_signals": 1000,
+    "max_unflushed_age_ms_configured": 500,
+    "max_unflushed_age_ms_observed": 502.9969,
+    "max_unflushed_signals_configured": 1000,
+    "max_unflushed_signals_observed": 49
+  },
+  "corpus_tier": "Tier 1 \u2014 selected upstream caller supports all 6 low-risk families (98 seeds)",
+  "corpus_total": 98,
+  "harvest": {
+    "by_family_promoted": {
+      "bounded_interpolation": 13,
+      "interval_bucket_classifier": 13,
+      "linear_arithmetic": 13,
+      "lookup_table": 16,
+      "scalar_unit_conversion": 27,
+      "threshold_rule": 16
+    },
+    "growth_intents_total": 98,
+    "scheduler_drained": 98,
+    "scheduler_errored": 0,
+    "scheduler_promoted": 98,
+    "scheduler_rejected": 0
+  },
+  "hot_path_cache_stats": {
+    "cold_hits_warmed": 92,
+    "misses": 98,
+    "warm_hits": 300
+  },
+  "kpis": {
+    "auto_promotions_total": 98,
+    "builder_jobs_delta_during_proof": 0,
+    "builder_jobs_total_after_proof": 0,
+    "growth_events_total": 392,
+    "harvested_signals_total": 98,
+    "provider_jobs_delta_during_proof": 0,
+    "provider_jobs_total_after_proof": 0,
+    "rejections_total": 0,
+    "rollbacks_total": 0,
+    "shadow_evaluations_total": 98,
+    "solver_capability_features_total": 170,
+    "validation_runs_total": 98
+  },
+  "latency_pass1_service_handle_query_ms": {
+    "mean_ms": 14.843,
+    "n": 98,
+    "p50_ms": 10.0509,
+    "p95_ms": 12.085,
+    "p99_ms": 42.2303
+  },
+  "latency_pass2_cold_service_handle_query_ms": {
+    "mean_ms": 10.5198,
+    "n": 98,
+    "p50_ms": 10.1727,
+    "p95_ms": 12.923,
+    "p99_ms": 15.0071
+  },
+  "latency_pass3_warm_service_handle_query_ms": {
+    "mean_ms": 9.807,
+    "n": 294,
+    "p50_ms": 9.3572,
+    "p95_ms": 11.6551,
+    "p99_ms": 17.5943
+  },
+  "latency_upstream_extractor_only_ms": {
+    "mean_ms": 0.0097,
+    "n": 98,
+    "p50_ms": 0.0091,
+    "p95_ms": 0.0113,
+    "p99_ms": 0.0164
+  },
+  "low_risk_hint_derived_total": 98,
+  "manual_hint_audit_detected_keys": [],
+  "manual_low_risk_hint_in_input_detected": false,
+  "manual_structured_request_in_input_detected": false,
+  "negative_cases_detail": [
+    {
+      "expected_outcome": "rejected_ambiguous",
+      "low_risk_hint_set": false,
+      "query": "ambiguous: caller supplied structured_request directly",
+      "served": false,
+      "structured_request_set": false
+    },
+    {
+      "expected_outcome": "rejected_family_not_low_risk",
+      "low_risk_hint_set": false,
+      "query": "high-risk operation rejected at upstream layer",
+      "served": false,
+      "structured_request_set": false
+    },
+    {
+      "expected_outcome": "rejected_missing_fields",
+      "low_risk_hint_set": false,
+      "query": "missing flat fields",
+      "served": false,
+      "structured_request_set": false
+    },
+    {
+      "expected_outcome": "rejected_malformed",
+      "low_risk_hint_set": false,
+      "query": "malformed value",
+      "served": false,
+      "structured_request_set": false
+    },
+    {
+      "expected_outcome": "skipped",
+      "low_risk_hint_set": false,
+      "query": "free text only \u2014 no operation supplied",
+      "served": false,
+      "structured_request_set": false
+    },
+    {
+      "expected_outcome": "rejected_ambiguous",
+      "low_risk_hint_set": false,
+      "query": "manual low_risk_autonomy_query injection refused",
+      "served": false,
+      "structured_request_set": false
+    },
+    {
+      "expected_outcome": "skipped_builtin_precedence",
+      "low_risk_hint_set": false,
+      "query": "builtin precedence: caller signals already solved",
+      "served": false,
+      "structured_request_set": false
+    }
+  ],
+  "negative_cases_passed_total": 7,
+  "negative_cases_total": 7,
+  "per_cell_in_input_corpus": {
+    "energy": 11,
+    "general": 13,
+    "learning": 5,
+    "math": 13,
+    "safety": 6,
+    "seasonal": 10,
+    "system": 24,
+    "thermal": 16
+  },
+  "per_family_in_input_corpus": {
+    "bounded_interpolation": 13,
+    "interval_bucket_classifier": 13,
+    "linear_arithmetic": 13,
+    "lookup_table": 16,
+    "scalar_unit_conversion": 27,
+    "threshold_rule": 16
+  },
+  "primary_teacher_lane_id": "claude_code_builder_lane",
+  "proof_bypassed_handle_query": false,
+  "proof_bypassed_selected_caller": false,
+  "proof_constructed_runtime_query_objects": false,
+  "proof_version": 1,
+  "schema_version": 4,
+  "selected_upstream_caller": "waggledance.application.services.autonomy_service.AutonomyService.handle_query",
+  "selected_upstream_caller_input_keys": [
+    "cell_coord",
+    "domain",
+    "from_unit",
+    "input_columns_signature",
+    "inputs",
+    "intent_seed",
+    "key",
+    "operation",
+    "operator",
+    "profile",
+    "subject",
+    "to_unit",
+    "value",
+    "x",
+    "x_var",
+    "y_var"
+  ],
+  "selected_upstream_caller_input_shape": "(query: str, context: Dict[str, Any], priority: int) \u2014 context carries flat domain fields: 'operation' (one of {unit_conversion, lookup, threshold_check, bucket_check, linear_eval, interpolation}) plus operation-specific flat fields (from_unit, to_unit, value, key, domain, subject, x, operator, inputs, input_columns_signature, x_var, y_var). NO 'structured_request', NO 'low_risk_autonomy_query'.",
+  "structured_request_derived_total": 98,
+  "structured_request_rejected_total": 5,
+  "structured_request_skipped_total": 2,
+  "upstream_derivation_p50_ms": 0.0091,
+  "upstream_derivation_p95_ms": 0.0113,
+  "upstream_derivation_p99_ms": 0.0164,
+  "upstream_extractor_errors_total": 0,
+  "upstream_extractor_rejection_counts_by_kind": {
+    "rejected_ambiguous": 2,
+    "rejected_family_not_low_risk": 1,
+    "rejected_malformed": 1,
+    "rejected_missing_fields": 1
+  }
+}

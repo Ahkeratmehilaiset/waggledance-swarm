@@ -1,8 +1,8 @@
 # Docker Quickstart — WaggleDance (alpha)
 
-This document describes how Docker is **expected** to work for the WaggleDance autonomy runtime and proof scripts. The `Dockerfile` and `docker-compose.yml` shipped in this repository are inherited from earlier phases; Phase 15 does not change them.
+This document describes how Docker is **expected** to work for the WaggleDance autonomy runtime and proof scripts. The `Dockerfile` and `docker-compose.yml` shipped in this repository are inherited from earlier phases; Phase 15 and Phase 16A do not change them.
 
-**Tested in this session:** No. Docker is not available in the Phase 15 development shell. The build / run commands below are the documented contract; an external operator should verify on their own machine before treating Docker as production-ready.
+**Tested in this session:** No. Docker is not available in the Phase 16A development shell either. The build / run commands below are the documented contract; an external operator should verify on their own machine before treating Docker as production-ready.
 
 If a step below fails on your machine, the `Dockerfile` is the authoritative source. File an issue with the failing step + your `docker version` output.
 
@@ -47,6 +47,47 @@ Expected key fields in the JSON:
 | `kpis.provider_jobs_delta_during_proof` | 0 |
 | `kpis.builder_jobs_delta_during_proof` | 0 |
 
+## Run the Phase 16A upstream structured_request proof
+
+```
+docker run --rm -v "$(pwd)/docs/runs/phase16_upstream_structured_request_2026_05_01:/app/docs/runs/phase16_upstream_structured_request_2026_05_01" \
+    waggledance:phase15-alpha \
+    python tools/run_upstream_structured_request_proof.py
+```
+
+What this should produce:
+
+* Console summary ending with the Phase 16A invariants block.
+* Updated `upstream_structured_request_proof.json` on the host (via the volume mount).
+
+Expected key fields in the JSON:
+
+| field | expected |
+|---|---|
+| `selected_upstream_caller` | `"waggledance.application.services.autonomy_service.AutonomyService.handle_query"` |
+| `corpus_total` | 98 |
+| `manual_structured_request_in_input_detected` | `false` |
+| `manual_low_risk_hint_in_input_detected` | `false` |
+| `proof_constructed_runtime_query_objects` | `false` |
+| `proof_bypassed_selected_caller` | `false` |
+| `proof_bypassed_handle_query` | `false` |
+| `structured_request_derived_total` | 98 |
+| `low_risk_hint_derived_total` | 98 |
+| `before.served_total` | 0 |
+| `after.served_via_capability_lookup_total` | 98 |
+| `negative_cases_passed_total` | 7 |
+| `kpis.provider_jobs_delta_during_proof` | 0 |
+| `kpis.builder_jobs_delta_during_proof` | 0 |
+
+## Run the Phase 16A restart-continuity smoke
+
+```
+docker run --rm waggledance:phase15-alpha \
+    python -m pytest tests/autonomy_growth/test_upstream_restart_continuity.py -q
+```
+
+Expected: 1 passed. The smoke test creates a temp scratch DB inside the container, drives a six-seed corpus through `AutonomyService.handle_query`, harvests + auto-promotes, closes the DB, reopens it, and verifies that the same flat upstream input is still served via capability lookup with `provider_jobs_delta = builder_jobs_delta = 0` across the restart.
+
 ## Run the targeted test suite
 
 ```
@@ -74,14 +115,14 @@ The default `CMD` is `python start_waggledance.py`, which boots the legacy / hex
 
 ## Offline / local-first note
 
-The Phase 15 inner-loop autonomy proof does not call any external service. It does not require:
+The Phase 15 and Phase 16A inner-loop autonomy proofs do not call any external service. They do not require:
 
 * internet access at runtime (only at build time for `pip install` and APT),
 * a Claude / Anthropic / OpenAI API key,
 * an Ollama instance,
 * a vector store backend.
 
-It writes to a scratch SQLite file inside the mounted output directory and exits with an exit code reflecting test outcome. This is the alpha's local-first contract.
+Both write to a scratch SQLite file inside the mounted output directory and exit with an exit code reflecting test outcome. This is the alpha's local-first contract.
 
 ## Compose
 
@@ -101,7 +142,9 @@ This boots the legacy webserver. There is no Phase 15-specific compose service; 
 | build tested in this session | **no — not available** |
 | run steps documented | yes |
 | run tested in this session | **no — not available** |
-| autonomy proof inside Docker tested | **no — not available** |
+| Phase 15 autonomy proof inside Docker tested | **no — not available** |
+| Phase 16A upstream proof inside Docker tested | **no — not available** |
+| Phase 16A restart-continuity smoke inside Docker tested | **no — not available** |
 | persistent volume layout production-grade | **no — alpha** |
 | ARM build verified | **no** |
 | no provider credential required for inner loop | yes (proven outside Docker) |

@@ -1,0 +1,96 @@
+{
+  "phase": "Phase 16A — upstream structured_request propagation + alpha release hardening",
+  "session_started_utc": "2026-05-01",
+  "branch": "phase16/upstream-structured-request-release-hardening",
+  "baseline": {
+    "origin_main_sha": "2b9978d8ad70aed8e06a07ecd28bd11c56d8a083",
+    "local_main_sha": "2b9978d8ad70aed8e06a07ecd28bd11c56d8a083",
+    "phase_15_pr": 62,
+    "phase_15_merge_sha": "2b9978d8ad70aed8e06a07ecd28bd11c56d8a083",
+    "phase_15_tag": "v3.7.4-runtime-hint-alpha",
+    "phase_15_tag_target_sha": "2b9978d8ad70aed8e06a07ecd28bd11c56d8a083"
+  },
+  "tier_a_invariants": {
+    "origin_main_contains_phase_15_merge": true,
+    "v3_7_4_tag_exists_on_origin": true,
+    "autonomy_runtime_hint_derivation_exists": true,
+    "runtime_hint_extractor_exists": true,
+    "six_family_low_risk_allowlist_intact": true,
+    "stage2_atomic_flip_unexecuted": true,
+    "all_tier_a_passed": true
+  },
+  "tier_b_drift": {
+    "release_readiness_latest_tag_says_v3_7_3_not_v3_7_4": true,
+    "release_readiness_top_header_already_updated_to_v3_7_4": true,
+    "fix_in_p6": true
+  },
+  "previous_tags_on_origin": [
+    "v3.6.0",
+    "v3.6.1-substrate",
+    "v3.7.0-autogrowth-alpha",
+    "v3.7.1-autoloop-alpha",
+    "v3.7.2-runtime-harvest-alpha",
+    "v3.7.3-hotpath-alpha",
+    "v3.7.4-runtime-hint-alpha"
+  ],
+  "selected_upstream_caller": {
+    "module": "waggledance.application.services.autonomy_service",
+    "class_function": "AutonomyService.handle_query",
+    "signature": "(query: str, context: Optional[Dict[str, Any]] = None, priority: int = 50) -> Dict[str, Any]",
+    "above_handle_query": true,
+    "above_solver_router": true,
+    "real_runtime": true,
+    "wired_in_fastapi_lifespan": true,
+    "natural_input_shape": "(query: str, context: Dict[str, Any], priority: int) — context is an open dict that production callers populate with flat domain fields like operation, from_unit, to_unit, value, table, key, subject, x, threshold, comparator, inputs, x_var, y_var, ...",
+    "rejected_alternatives": {
+      "CompatibilityLayer.handle_query": "thin pass-through with identical (query, context) shape; no admission/metrics/priority surface; legacy-shim role; less interesting for upstream propagation",
+      "AutonomyRuntime.handle_query": "explicitly forbidden by Phase 16A gate (Phase 15 already wired the runtime_hint_extractor here)",
+      "SolverRouter.route": "explicitly forbidden by Phase 16A gate",
+      "RuntimeQueryRouter.route": "explicitly forbidden by Phase 16A gate",
+      "ChatService.handle": "different lane — uses Orchestrator, never reaches AutonomyRuntime.handle_query",
+      "AutonomyService.execute_mission": "mission-shaped input, not query-shaped; out of scope for low-risk family hint derivation"
+    }
+  },
+  "upstream_extractor_design": {
+    "module": "waggledance.core.autonomy_growth.upstream_structured_request_extractor",
+    "input": "Mapping[str, Any] — flat domain dict from caller's normal context",
+    "output": "structured_request dict in Phase 15 grammar OR rejected/skipped result",
+    "deterministic_only": true,
+    "zero_provider_calls": true,
+    "no_llm": true,
+    "no_embedding": true,
+    "no_fuzzy_natural_language_inference": true,
+    "no_high_risk_families": true,
+    "no_raw_free_text_persistence": true,
+    "lifts_flat_fields_to_nested_grammar": true,
+    "supported_operations": [
+      "unit_conversion",
+      "lookup",
+      "threshold_check",
+      "bucket_check",
+      "linear_eval",
+      "interpolation"
+    ],
+    "result_kinds": [
+      "derived",
+      "rejected_not_structured",
+      "rejected_missing_fields",
+      "rejected_ambiguous",
+      "rejected_family_not_low_risk",
+      "rejected_malformed",
+      "skipped_builtin_precedence",
+      "skipped"
+    ]
+  },
+  "guardrails_applied": {
+    "no_force_push": true,
+    "no_history_rewrite": true,
+    "pr_only": true,
+    "match_head_commit_only": true,
+    "stage2_atomic_flip_not_executed": true,
+    "human_approval_not_collected": true,
+    "phase8_5_read_only": true,
+    "no_widening_low_risk_allowlist": true,
+    "no_consciousness_claim": true
+  }
+}

@@ -1,10 +1,23 @@
 # Current Status — WaggleDance AI
 
 **Updated:** 2026-05-01
-**Version:** v3.6.0 + P10..P14 + P15 automatic runtime hints (alpha) on `main`
-**Shipped branch:** `main` at `08b7e8c` (Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) on top of `8bf1869` post-v3.6.0 truthfulness commit on top of `a1c4152` PR #51 squash)
-**Tag:** [`v3.6.0`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.6.0) — no new SemVer tag for Phase 10 (substrate, not runtime behaviour change). An optional `v3.6.1-substrate` prerelease tag may be added once post-merge truth/governance are clean.
+**Version:** v3.6.0 + P10..P14 + P15 + P16A upstream-runtime (alpha) on `main`
+**Shipped branch:** `main` at `2b9978d` (Phase 15 squash-merge of [PR #62](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/62)). Phase 16A merge SHA recorded post-merge. Earlier history: Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) at `08b7e8c` on top of `8bf1869` (post-v3.6.0 truthfulness commit) on top of `a1c4152` (PR #51 squash).
+**Tag:** [`v3.7.4-runtime-hint-alpha`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.7.4-runtime-hint-alpha) — Phase 15 prerelease. Recommended next: `v3.7.5-upstream-runtime-alpha` (Phase 16A) — created only after the Phase 16A PR merges.
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
+
+### Phase 16A — Upstream structured_request propagation + restart continuity (landing 2026-05-01)
+
+Phase 16A lifts `structured_request` derivation up to the **service-layer caller** `AutonomyService.handle_query(query, context, priority)`. External callers no longer need to know about the autonomy lane *or* the nested `structured_request` grammar — they pass natural flat domain fields and the service layer derives the nested shape.
+
+* **`upstream_structured_request_extractor.py`** — deterministic Python extractor; reads only flat `context` keys (`operation`, `from_unit`, `to_unit`, `value`, `key`, `domain`, `subject`, `x`, `operator`, `inputs`, `input_columns_signature`, `x_var`, `y_var`, optional `cell_coord` / `intent_seed` / `builtin_solver_succeeded`); zero provider calls, no LLM, no embeddings. Lifts flat-to-nested grammar; refuses to overwrite caller-supplied `structured_request` or `low_risk_autonomy_query` (rejected_ambiguous), strips them at the service layer to enforce the bypass-refusal contract. Six allowlisted operations, no widening.
+* **`AutonomyService.handle_query` wiring** — backwards-compatible. The upstream extractor runs *after* admission control and *before* `compatibility.handle_query`. On derived structured_request, `context["structured_request"]` is set in place; the runtime layer's Phase 15 hint extractor then derives `context["low_risk_autonomy_query"]` exactly as before. Errors from the upstream extractor never break the production path; they are counted on `service.upstream_structured_request_stats()`.
+* **Live before/after proof through the service-layer caller** (`tools/run_upstream_structured_request_proof.py`). 98-seed corpus passes through `AutonomyService.handle_query` using **flat domain context only** — no `structured_request`, no `low_risk_autonomy_query`. Pass 1: 0 served / 98 buffered miss signals; harvest: 98 promoted; pass 2 cold: 98 served via capability lookup; pass 3 warm: warm-cache hits dominate; provider/builder delta during proof = 0/0; negative corpus 7/7 passed (ambiguous, high-risk, missing-fields, malformed, free-text-skip, manual-hint-injection-refused, builtin-precedence).
+* **Restart continuity smoke** (`tests/autonomy_growth/test_upstream_restart_continuity.py`). Six-seed corpus through service, harvest + auto-promote, **close** control plane, **reopen**, drive same flat upstream input through rebuilt service: 6/6 served via capability lookup; persisted solver count and capability-feature count identical across reopen; provider/builder delta across restart = 0/0.
+* **Reality View** `autonomy_runtime_harvest_kpis` panel extended with `live_runtime_upstream_lift_signature_features_total` (no new panel — RULE P7). The existing Phase 15 metric `live_runtime_hint_aware_signals_total` post-Phase-16A reflects upstream-derived signals exclusively when the service layer is in the call path.
+* **Truth map updated** — `docs/architecture/RUNTIME_ENTRYPOINT_TRUTH_MAP.md` includes a Phase 16A P1 inventory section selecting `AutonomyService.handle_query` and rejecting `CompatibilityLayer.handle_query` (thin pass-through), `ChatService.handle` (different lane), `AutonomyService.execute_mission` (mission-shaped), and the FastAPI route surface (no `/api/autonomy/query` route exists).
+
+What did NOT change: production HTTP / FastAPI surface for query (still no `/api/autonomy/query`); six-family allowlist (RULE 13); Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates that); `_DEFAULT_FAISS_DIR` (still `data/faiss/`); real Anthropic/OpenAI HTTP adapters (still follow-up work); single-process scope (RULE 14); no consciousness claim.
 
 ### Phase 15 — Automatic runtime hints + alpha release readiness (landed on main 2026-05-01)
 

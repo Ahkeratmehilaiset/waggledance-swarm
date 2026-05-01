@@ -1,5 +1,77 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 16A — upstream structured_request propagation and release hardening] — 2026-05-01
+
+Branch: `phase16/upstream-structured-request-release-hardening`. Lifts `structured_request` derivation up to the **service-layer caller** `AutonomyService.handle_query(query, context, priority)`. The deterministic `upstream_structured_request_extractor` reads only flat caller context (`operation` selector + per-operation flat fields) and lifts it into the nested grammar Phase 15's runtime hint extractor consumes. The proof never injects `structured_request` or `low_risk_autonomy_query`. Restart-continuity smoke proves persisted solvers and capability features survive a control-plane close+reopen.
+
+### Added
+
+- `waggledance/core/autonomy_growth/upstream_structured_request_extractor.py` (BUSL-1.1; same-commit-listed in `LICENSE-CORE.md`):
+  * `derive_upstream_structured_request(query, context) -> UpstreamExtractionResult` — read-only.
+  * `apply_upstream_structured_request(query, context) -> UpstreamExtractionResult` — mutates context in place on derivation success only.
+  * Deterministic Python; zero provider calls; no LLM, no embeddings; no fuzzy NLP.
+  * Reads flat caller fields keyed by `operation`: `unit_conversion`, `lookup`, `threshold_check`, `bucket_check`, `linear_eval`, `interpolation`. Lifts into the nested Phase 15 grammar via real field renames (`from_unit→from`, `to_unit→to`, `value→x`, etc.).
+  * Result kinds: `derived`, `rejected_not_structured`, `rejected_missing_fields`, `rejected_ambiguous`, `rejected_family_not_low_risk`, `rejected_malformed`, `skipped_builtin_precedence`, `skipped`.
+  * Refuses to overwrite a caller-supplied `structured_request` or `low_risk_autonomy_query` (`rejected_ambiguous`).
+- `AutonomyService.handle_query` wiring (`waggledance/application/services/autonomy_service.py`):
+  * Upstream extractor runs after admission control and before `compatibility.handle_query`.
+  * On `rejected_ambiguous`, the service strips caller-supplied `structured_request` and `low_risk_autonomy_query` before passing context downstream — enforces the bypass-refusal contract.
+  * Errors from the upstream extractor are isolated and counted; production path never crashes.
+  * `service.upstream_structured_request_stats()` aggregates: `derived_total`, `rejected_total`, `skipped_total`, `extractor_errors_total`, `rejection_counts_by_kind`. Surfaced via `service.stats()["upstream_structured_request"]`.
+- `tools/run_upstream_structured_request_proof.py` — end-to-end proof through `AutonomyService.handle_query` using flat domain context only. 98-seed corpus, three-pass measurement (pass 1 misses; harvest; pass 2 cold; pass 3 warm), negative corpus (7 cases), provider/builder delta tracking, hot-path cache stats.
+- Reality View `autonomy_runtime_harvest_kpis` panel **extended** (no new panel — RULE P7) with `live_runtime_upstream_lift_signature_features_total` (durable `solver_capability_features` rows for `input_columns_signature` — evidence the upstream lift round-tripped through a promotion).
+- Tests:
+  * `tests/autonomy_growth/test_upstream_structured_request_extractor.py` — 22 tests (per-family lift, all rejection kinds, builtin-precedence skip, ambiguous-when-caller-supplies-structured_request-or-low_risk_autonomy_query, apply-helper mutation contract, no socket / no urlopen).
+  * `tests/autonomy_growth/test_autonomy_service_upstream_wiring.py` — 11 tests (untouched contexts pass through, lifted structured_request reaches downstream, builtin-precedence skip, high-risk rejected, manual-hint-injection refused with strip, extractor-error isolation, stats surface).
+  * `tests/autonomy_growth/test_upstream_structured_request_proof_smoke.py` — 15 tests locking proof JSON invariants (selected caller, no manual injection, no caller bypass, six-family coverage, before/after, harvest, negative 7/7, provider/builder delta = 0, warm-cache used, upstream derivation < 1 ms p50).
+  * `tests/autonomy_growth/test_upstream_restart_continuity.py` — 1 smoke test (six-seed corpus through service, harvest, close DB, reopen, re-route same upstream input → 6/6 served via capability lookup; persisted solver count + capability-feature count identical across reopen; provider/builder delta across restart = 0/0).
+- Docs:
+  * `docs/architecture/RUNTIME_ENTRYPOINT_TRUTH_MAP.md` — Phase 16A P1 inventory section; selects `AutonomyService.handle_query`; rejects `CompatibilityLayer.handle_query` (thin pass-through), `ChatService.handle` (different lane), `AutonomyService.execute_mission` (mission-shaped), FastAPI route surface (no `/api/autonomy/query` exists).
+  * `docs/release/RELEASE_READINESS.md` — latest-tag drift fixed to `v3.7.4-runtime-hint-alpha`; Phase 16A reproduce commands added; restart-continuity smoke documented; Phase 16A release blockers section.
+  * `docs/deployment/DOCKER_QUICKSTART.md` — Phase 16A proof + restart-continuity smoke commands added; Docker tested-in-session status preserved as "no — not available".
+  * `docs/runs/phase16_upstream_structured_request_2026_05_01/` — `session_state.json`, `upstream_structured_request_proof.json`, `upstream_structured_request_proof.md`, `restart_continuity_smoke.md`.
+
+### Behaviour
+
+- External / API / CLI / service callers above `AutonomyService.handle_query` can now pass natural flat domain payloads (e.g. `{"operation": "unit_conversion", "from_unit": "C", "to_unit": "F", "value": 25}`) and the service-layer derives `context["structured_request"]` automatically. Phase 15's runtime hint extractor then derives `context["low_risk_autonomy_query"]` exactly as before; the autonomy consult lane fires through Phase 14's wiring.
+- Backwards-compatible: callers without `operation` see no behaviour change; `upstream_structured_request_skipped_total` counter increments.
+- Bypass refusal: when a caller passes `structured_request` or `low_risk_autonomy_query` directly alongside an `operation`, the service rejects (`rejected_ambiguous`) and strips the forbidden keys before downstream sees them.
+- Negative corpus 7/7: ambiguous-with-structured_request, high-risk operation, missing flat fields, malformed value, free-text-only skip, manual `low_risk_autonomy_query` injection refused, builtin-precedence skip.
+
+### KPIs from the Phase 16A proof
+
+| metric | value |
+|---|---|
+| `selected_upstream_caller` | `waggledance.application.services.autonomy_service.AutonomyService.handle_query` |
+| `corpus_total` | 98 |
+| `corpus_tier` | Tier 1 — selected upstream caller supports all 6 low-risk families |
+| `manual_structured_request_in_input_detected` | false |
+| `manual_low_risk_hint_in_input_detected` | false |
+| `proof_constructed_runtime_query_objects` | false |
+| `proof_bypassed_selected_caller` | false |
+| `proof_bypassed_handle_query` | false |
+| `structured_request_derived_total` | 98 |
+| `low_risk_hint_derived_total` | 98 |
+| `before.served_total` | 0 |
+| `after.served_via_capability_lookup_total` | 98 |
+| `negative_cases_passed_total` | 7 / 7 |
+| `kpis.provider_jobs_delta_during_proof` | 0 |
+| `kpis.builder_jobs_delta_during_proof` | 0 |
+| `upstream_derivation_p50_ms` | < 0.05 ms |
+| `pass3_warm_handle_query_p50_ms` | < 12 ms |
+
+### What did NOT change
+
+- Phase 15's `runtime_hint_extractor.py` (unchanged; still the only producer of `low_risk_autonomy_query`).
+- The six-family low-risk allowlist (RULE 13).
+- The Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates).
+- `_DEFAULT_FAISS_DIR` (still `data/faiss/`).
+- Real Anthropic / OpenAI HTTP adapters (still follow-up).
+- HTTP `/api/autonomy/query` route (does not exist; Phase 16A wires the service layer; no FastAPI route surface for query).
+- Phase 9 14-stage human-gated promotion ladder (unchanged).
+- Single-process scope (RULE 14).
+- No consciousness claim.
+
 ## [Phase 15 — automatic runtime hints and alpha release readiness] — 2026-05-01
 
 Branch: `phase15/automatic-runtime-hints-release-readiness`. Lifts autonomy-hint derivation up to the production query handler `AutonomyRuntime.handle_query(query, context)`. The deterministic `runtime_hint_extractor` reads only `context["structured_request"]` and derives the autonomy hint internally — callers no longer need to pass `low_risk_autonomy_query` manually. Live before/after proof through the production caller; provider/builder delta during proof = 0.

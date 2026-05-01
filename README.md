@@ -1,12 +1,18 @@
 # WaggleDance
 
-> A local-first cognitive operating system. Deterministic solver-first routing, builder/mentor lanes for capability growth, vector provenance with identity anchors, multimodal ingestion, and a Reality View as the operator surface — with safe review and human-gated promotion separating proposal from runtime change.
+> Local-first deterministic-solver runtime with a bounded six-family auto-growth lane. Alpha. No cloud, no provider in the inner loop.
 
-[![Tests](https://img.shields.io/badge/tests-657%20Phase%209%20%2B%2059%20Phase%2010%20targeted-brightgreen)]()
+**Latest alpha (Phase 15, this release):** the production query handler `AutonomyRuntime.handle_query(query, context)` automatically derives a low-risk autonomy hint from `context["structured_request"]` and consults a deterministic auto-growth lane between built-in solvers and LLM fallback. The lane promotes new solvers from runtime evidence in six allowlisted side-effect-free families (unit conversion, lookup tables, threshold rules, interval bands, linear forms, bounded interpolation). Reproducible proof: `python tools/run_automatic_runtime_hint_proof.py` — 98-corpus, 0 served pre-harvest, 98 served post-harvest via capability lookup, 0 provider/builder calls during proof.
+
+**Still alpha / not implemented:** real Anthropic / OpenAI HTTP adapters (only `dry_run_stub` and `claude_code_builder_lane` exercisable end-to-end); Stage-2 atomic flip (specified in `docs/architecture/STAGE2_CUTOVER_RFC.md` but not executed); actuator-side autonomy; federation; high-risk family auto-promotion; production-grade Docker deployment story (see `docs/deployment/DOCKER_QUICKSTART.md`).
+
+**Consciousness?** No. The autonomy mechanisms here are engineering primitives (auto-growth, runtime harvest, capability-aware dispatch, hot-path cache), each mapped to a code path, persisted event, and regression test. WaggleDance does not claim to be conscious, sentient, aware, alive, or AGI. See `docs/github/REPOSITORY_PRESENTATION.md` for the external presentation summary and `docs/release/RELEASE_READINESS.md` for the alpha/release tag policy.
+
+[![Tests](https://img.shields.io/badge/tests-Phase%2015%20targeted%20green-brightgreen)]()
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10..P13%20%2B%20P14%20live--runtime%20hot--path-blue)]()
+[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10..P14%20%2B%20P15%20automatic%20hints--alpha-blue)]()
 
 ## What this is
 
@@ -54,6 +60,26 @@ The runtime is built around a hexagonal layout: `core/` is the domain, `adapters
 | **2 — Learned** | Adapts | 14 specialist models with canary lifecycle |
 | **1 — Fallback** | Explains | LLM — only when solvers and specialists cannot handle it |
 | **1b — Optional** | Gemma 4 | Optional dual-tier Gemma 4 profiles: fast (e4b) for general fallback, heavy (26b) for hard reasoning |
+
+## Phase 15 — Automatic runtime hints and alpha release readiness
+
+After Phase 14 wired the autonomy consult lane into `SolverRouter.route` behind an explicit context hint, Phase 15 lifts hint derivation up to the **production query handler** `AutonomyRuntime.handle_query(query, context)`. Callers no longer need to know about the autonomy lane — they pass a natural `context["structured_request"]` payload (the same open `context` dict the production API has always accepted), and a deterministic Python extractor derives the autonomy hint internally.
+
+What is real now:
+
+* **`AutonomyRuntime.handle_query(...)` derives the autonomy hint automatically.** Backwards-compatible: callers without `structured_request` see Phase 14 behaviour. Hint extractor errors never break the production path (recorded as `low_risk_autonomy_hint_kind="extractor_error"` and execution continues).
+* **`runtime_hint_extractor.py`** — deterministic Python; zero provider calls; no LLM, no embedding lookup. Reads `context["structured_request"]` only. Six supported subkeys: `unit_conversion`, `lookup`, `threshold_check`, `bucket_check`, `linear_eval`, `interpolation`. Explicit rejection kinds: `rejected_ambiguous`, `rejected_family_not_low_risk`, `rejected_missing_fields`, `rejected_not_structured`, `rejected_malformed`, `skipped`.
+* **Live before/after proof through the production caller.** `tools/run_automatic_runtime_hint_proof.py` routes a 98-seed corpus through `AutonomyRuntime.handle_query` using only `context["structured_request"]`. Pass 1: 0 served / 98 misses / signals buffered. Harvest. Pass 2: 98 served via capability lookup. **`provider_jobs` delta during proof: 0; `builder_jobs` delta during proof: 0.** Negative corpus: 5/5 expected outcomes (ambiguous, high-risk, missing fields, free-text-only, malformed).
+* **Reality View** existing `autonomy_runtime_harvest_kpis` panel **extended** (no new panel — RULE P7) with `live_runtime_hint_aware_signals_total`.
+* **Release surface.** `docs/github/REPOSITORY_PRESENTATION.md` (text prepared, not applied), `docs/release/RELEASE_READINESS.md` (alpha tag policy + reproduce-from-clone steps), `docs/deployment/DOCKER_QUICKSTART.md` (Docker contract; not tested in this session).
+
+What is still NOT real (truth boundary):
+
+* **Production callers above `handle_query` do not yet emit `structured_request`.** The production wiring sits in `handle_query`; callers can opt in with the natural payload, but no in-tree caller does today.
+* **Six-family allowlist preserved.** RULE 13 — no widening this session.
+* **No Stage-2 cutover.** `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/` unchanged.
+* **Self-state snapshot + episodic continuity (P5/P6) deferred to Phase 16.** They are observability primitives, not learning mechanisms; deferred per session priority stack to keep scope tight on the P2–P4 release gate.
+* No actuator-side autonomy. No real Anthropic / OpenAI HTTP adapters. No federation. **No consciousness claim.**
 
 ## Phase 14 — Live runtime hot-path wiring and low-latency autonomy
 

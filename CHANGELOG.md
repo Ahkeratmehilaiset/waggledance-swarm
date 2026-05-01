@@ -1,5 +1,55 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 15 — automatic runtime hints and alpha release readiness] — 2026-05-01
+
+Branch: `phase15/automatic-runtime-hints-release-readiness`. Lifts autonomy-hint derivation up to the production query handler `AutonomyRuntime.handle_query(query, context)`. The deterministic `runtime_hint_extractor` reads only `context["structured_request"]` and derives the autonomy hint internally — callers no longer need to pass `low_risk_autonomy_query` manually. Live before/after proof through the production caller; provider/builder delta during proof = 0.
+
+### Added
+
+- `waggledance/core/autonomy_growth/runtime_hint_extractor.py` (BUSL-1.1):
+  * `derive_low_risk_autonomy_hint(query, context, *, cell_coord=None) -> HintExtractionResult`.
+  * Deterministic Python; zero provider calls; no LLM, no embeddings.
+  * Reads only `context["structured_request"]`; six supported subkeys: `unit_conversion`, `lookup`, `threshold_check`, `bucket_check`, `linear_eval`, `interpolation`.
+  * Explicit rejection kinds: `derived`, `rejected_ambiguous`, `rejected_family_not_low_risk`, `rejected_missing_fields`, `rejected_not_structured`, `rejected_malformed`, `skipped`.
+- `AutonomyRuntime.handle_query` wiring (`waggledance/core/autonomy/runtime.py`):
+  * Backwards-compatible context-hint injection between context enrichment and `solver_router.route`.
+  * Surfaces `route_result.autonomy_consult` outcome in the response dict via the `autonomy_consult` and `low_risk_autonomy_hint_kind` keys.
+  * Hint extractor errors never break the production path (recorded as `extractor_error`).
+  * When the consult lane serves the query, `handle_query` returns it as the response with `quality_path="autonomy_consult"` (built-in solver precedence preserved by Phase 14 contract).
+- `tools/run_automatic_runtime_hint_proof.py` — end-to-end proof through `AutonomyRuntime.handle_query`. 98-seed corpus, before/after, negative corpus, latency.
+- Reality View `autonomy_runtime_harvest_kpis` panel **extended** (no new panel — RULE P7) with `live_runtime_hint_aware_signals_total`.
+- Release surface:
+  * `docs/github/REPOSITORY_PRESENTATION.md` — external presentation text (≤160-char About description; suggested topics; one-paragraph summary; what is real / alpha / not implemented; consciousness non-claim).
+  * `docs/release/RELEASE_READINESS.md` — alpha/release tag policy (`v3.7.x` prerelease vs `v3.8.0` stable gate); reproducible-from-clone instructions; Docker status.
+  * `docs/deployment/DOCKER_QUICKSTART.md` — Docker contract + tested/not-tested status (not tested in this session).
+  * `docs/architecture/RUNTIME_ENTRYPOINT_TRUTH_MAP.md` — Phase 15 P1 caller inventory + selection rationale.
+- Tests:
+  * `tests/autonomy_growth/test_runtime_hint_extractor.py` — 21 tests (per-family derivation, rejection kinds, free-text-only skipped, no provider call side effect).
+  * `tests/autonomy_growth/test_runtime_handle_query_hint_wiring.py` — 7 tests (baseline unchanged, served-via-consult, ambiguous-no-signal, high-risk rejected, extractor error isolation).
+  * `tests/autonomy_growth/test_automatic_runtime_hint_proof_smoke.py` — 8 tests (real-caller path, no manual hint injection, before/after, zero provider delta, warm cache used, six families covered, negative cases pass, hint derivation < 1 ms p50).
+
+### Behaviour
+
+- Production callers can now opt into the autonomy consult lane by passing `context["structured_request"]` with one of six family-specific subkeys. The extractor derives the hint; `SolverRouter.route` invokes the autonomy consult; `RuntimeQueryRouter` + `HotPathCache` (Phase 14) execute the warm path.
+- Backwards-compatible: callers without `structured_request` see Phase 14 behaviour. The hint extractor records `low_risk_autonomy_hint_kind="skipped"` and the autonomy consult lane is not invoked.
+- Negative corpus: ambiguous structured input, high-risk-family-shaped input, missing required fields, free-text-only, malformed input — all five expected outcomes verified.
+
+### Unchanged (truth boundary)
+
+- Production callers above `handle_query` do not yet emit `structured_request` automatically (they can opt in).
+- Phase 9 14-stage promotion ladder. Runtime stages still require `human_approval_id`.
+- Six-family allowlist. RULE 13 honoured — no widening this session.
+- Stage-2 atomic flip. `core/faiss_store.py:26 _DEFAULT_FAISS_DIR=data/faiss/`. `STAGE2_CUTOVER_RFC.md` still gates that mechanism.
+- Real Anthropic / OpenAI HTTP adapters. Only `dry_run_stub` and `claude_code_builder_lane` exercisable.
+- Outer-loop teacher remains Claude Code Opus 4.7 (LLM solver generator priority list, position 1).
+- Single-process scope. RULE 14 honoured.
+- `phase8.5/*` branches. Read-only this session.
+- P5 self-state snapshot + P6 episodic continuity deferred to Phase 16 per session priority stack.
+
+### Tests at squash time
+
+* Targeted: `tests/autonomy_growth/` 148 (was 112: +21 hint extractor + +7 wiring + +8 proof smoke), `tests/storage/` 51, `tests/ui_hologram/` 23, `tests/autonomy/test_solver_router.py` (existing), `tests/providers/` 18, `tests/solver_synthesis/` 12, `tests/phase10/` 14 — all green.
+
 ## [Phase 14 — live runtime hot-path wiring and low-latency autonomy] — 2026-05-01
 
 Branch: `phase14/live-runtime-hotpath-wiring`. Wires the autonomy lane into the production reasoning entrypoint (`SolverRouter.route`), collapses the warm path's SQLite + JSON cost into in-process caches, and moves miss-signal emission off the synchronous hot path with a bounded buffered sink. Live before/after proof through the production entrypoint shows 98/98 served via capability lookup post-harvest with zero provider calls and a >5× warm-vs-pre-cache speedup.

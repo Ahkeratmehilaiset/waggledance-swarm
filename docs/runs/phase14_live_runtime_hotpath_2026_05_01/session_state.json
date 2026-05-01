@@ -1,0 +1,147 @@
+{
+  "session": "phase14_live_runtime_hotpath_wiring",
+  "session_started_at_utc": "2026-05-01T08:00:00Z",
+  "operator_directive": "Take WD from 'Phase 13 proved runtime-integrated harvest in a bounded proof harness' to a real, measurable, live-runtime autonomy slice where one concrete production query entrypoint actually calls the autonomy harvest router during normal structured traffic.",
+  "session_mode": "live_runtime_wiring_hotpath_speed_buffered_signals",
+  "prior_session_archived_at": "docs/runs/phase13_runtime_harvest_2026_04_30/session_state.json",
+
+  "model_selection": {
+    "primary_model": "claude-opus-4-7",
+    "model_id_resolved": "claude-opus-4-7",
+    "subagent_model": "inherited_opus_4_7",
+    "fallback_policy": "log_and_continue_record_event",
+    "fallback_events": []
+  },
+  "teacher_lane_default": "claude-opus-4-7",
+  "provider_usage": 0,
+
+  "rule_compliance": {
+    "rule_1_pr_only": "active",
+    "rule_2_no_force_no_rewrite": "active",
+    "rule_3_no_stale_sha_merge": "active",
+    "rule_4_no_atomic_flip_no_human_approval": "active",
+    "rule_5_magma_faiss_truth_first": "active",
+    "rule_6_phase8_5_read_only": "active",
+    "rule_7_busl_change_date_2030_12_31": "active",
+    "rule_8_no_loose_json_system_of_record": "active",
+    "rule_9_targeted_pytest": "active",
+    "rule_10_no_actuator_or_policy_writes": "active",
+    "rule_11_no_overclaim": "active",
+    "rule_12_domain_neutral": "active",
+    "rule_13_no_padding_if_runtime_slice_unreal": "active",
+    "rule_14_push_verification_180s": "active",
+    "rule_15_autonomous_merge_guardrails": "armed",
+    "rule_17_no_stage2_cutover": "active",
+    "rule_18_hex_cell_aware": "active",
+    "rule_19_no_widen_allowlist": "active",
+    "rule_20_no_sharding_or_federation": "active"
+  },
+
+  "p0_baseline_reconciliation": {
+    "origin_main_sha": "8f07d8f0cc312d588d6b73175d72e78f411a2975",
+    "origin_main_subject": "feat(autonomy): Phase 13 — runtime-integrated harvest and capability-aware autogrowth uptake",
+    "phase11_pr_58_merged_present": true,
+    "phase12_pr_59_merged_present": true,
+    "phase13_pr_60_merged_present": true,
+    "tags_present_on_origin": [
+      {"tag": "v3.6.0", "sha": "0e02dbb5374cdc9825ba9c930795cf060358149f"},
+      {"tag": "v3.6.1-substrate", "sha": "bd558fc78183cc25efdf84681ab07b6c1ab8e876"},
+      {"tag": "v3.7.0-autogrowth-alpha", "sha": "c8578a6856fdd8907c07fd41641a34dd75ec2d97"},
+      {"tag": "v3.7.1-autoloop-alpha", "sha": "58b2f7c319cc885e8afd03d5e95f14015e423419"},
+      {"tag": "v3.7.2-runtime-harvest-alpha", "sha": "e1d334d2a63dabd290a6d165132f28b63b7dac1a"}
+    ],
+    "phase13_artifacts_on_main": [
+      "waggledance/core/autonomy_growth/runtime_query_router.py",
+      "waggledance/core/autonomy_growth/family_features.py",
+      "waggledance/core/autonomy_growth/low_risk_seed_library.py",
+      "tools/run_runtime_harvest_proof.py",
+      "docs/runs/phase13_runtime_harvest_2026_04_30/runtime_harvest_proof.md",
+      "docs/runs/phase13_runtime_harvest_2026_04_30/runtime_harvest_proof.json"
+    ],
+    "open_prs_count_total": 7,
+    "open_prs_relevant_to_this_session": 0,
+    "open_prs_dependabot_count": 7,
+    "phase8_5_remote_refs_present": 3,
+    "phase8_5_disposition_in_this_session": "READ_ONLY (RULE 6)",
+    "baseline_truth_match": "ALIGNED — operator-side narrative matches origin/main and tag state exactly"
+  },
+
+  "untracked_files_at_session_start_must_not_be_committed": [
+    "WD_release_to_main_master_prompt.md",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+    "docs/runs/phase9_pr_body.md"
+  ],
+
+  "working_branch": "phase14/live-runtime-hotpath-wiring",
+  "branched_from": "origin/main @ 8f07d8f0cc312d588d6b73175d72e78f411a2975",
+
+  "p04_entrypoint_inventory": {
+    "candidates_inspected": [
+      {
+        "path": "waggledance/core/reasoning/solver_router.py",
+        "function": "SolverRouter.route(intent, query, context)",
+        "is_runtime_real": true,
+        "is_safely_testable": true,
+        "existing_tests_path": "tests/autonomy/test_solver_router.py",
+        "consumed_by": "waggledance/core/autonomy/runtime.py",
+        "score": "PRIMARY_CANDIDATE"
+      },
+      {
+        "path": "waggledance/core/autonomy_growth/runtime_query_router.py",
+        "function": "RuntimeQueryRouter.route(query)",
+        "note": "this IS the harvest router; we wire SolverRouter into it, not the other way"
+      },
+      {
+        "path": "waggledance/core/autonomy/runtime.py",
+        "note": "consumes SolverRouter; wiring inside SolverRouter naturally surfaces here"
+      },
+      {
+        "path": "waggledance/core/api_distillation/api_consultant.py",
+        "note": "outer-loop only; not the inner-loop entrypoint"
+      },
+      {
+        "path": "waggledance/core/providers/provider_plane.py",
+        "note": "provider plane dispatch; outer-loop"
+      }
+    ],
+    "chosen_entrypoint": "SolverRouter.route(intent, query, context)",
+    "chosen_seam_strategy": "Backwards-compatible extension: when caller passes a low-risk-family hint via context['low_risk_autonomy_query'], SolverRouter checks the autonomy consult lane (RuntimeQueryRouter) BETWEEN the existing built-in capability selection and any LLM fallback. Existing callers without the hint see no behaviour change.",
+    "test_seam": "in-process call to SolverRouter.route(...) with the new context hint asserting that the autonomy consult activates and (after a harvest cycle) serves the auto-promoted solver"
+  },
+
+  "p2_chosen_entrypoint_truthful": "waggledance.core.reasoning.solver_router.SolverRouter.route — production solver-first reasoning router. Existing 30+ unit tests in tests/autonomy/test_solver_router.py confirm production status.",
+
+  "p3_speed_design": {
+    "in_memory_capability_index": "WarmCapabilityIndex keyed on (family_kind, frozenset(features)) -> solver_id; populated lazily from solver_capability_features; invalidated on promotion / deactivation via SchedulerStats / explicit invalidate hook",
+    "parsed_artifact_cache": "ArtifactCache keyed on solver_id -> parsed_artifact dict; TTL infinite within process; invalidated on artifact_id change",
+    "buffered_signal_sink": "BufferedSignalSink with bounded queue (max_unflushed_signals=1000) + bounded age (max_unflushed_age_ms=500); explicit flush() and atexit hook; documented hard-kill loss bound = max(unflushed_signals_at_kill, signals_within_age_window)",
+    "no_sharding": true
+  },
+
+  "p3_acceptance_thresholds": {
+    "stretch": {"warm_p50_ms": 0.5, "warm_p99_ms": 5, "cold_p50_ms": 50, "cold_p99_ms": 200, "warm_vs_pre_cache_ratio_min": 10},
+    "minimum_floor": {"warm_p50_ms": 1.0, "warm_p99_ms": 10, "cold_p50_ms": 75, "cold_p99_ms": 250, "warm_vs_pre_cache_ratio_min": 5}
+  },
+
+  "provider_budget_caps_this_session": {
+    "claude_code_builder": {"used": 0, "cap": 1},
+    "anthropic_api": {"used": 0, "cap": 1, "default": 0},
+    "openai_api": {"used": 0, "cap": 1, "default": 0},
+    "triangulated": {"used": 0, "cap": 0, "default": 0}
+  },
+
+  "stop_handoff_triggers_armed": [
+    "baseline mismatch unresolved by end of P0",
+    "no runtime-real safely-testable candidate (P0.4)",
+    "SolverRouter wiring not exercised by real test by end of P2",
+    "warm path still does sync SQLite/JSON parse by end of P3",
+    "buffered sink loss bound not stated/tested",
+    "P3 minimum floor missed",
+    "proof bypasses chosen entrypoint",
+    "push remains unavailable after 180s + gh-token fallback"
+  ],
+
+  "phases_completed": ["P0", "P0.4"],
+  "phases_in_progress": ["P1"],
+  "phases_pending": ["P2","P3","P4","P5","P6","P7","P8","P9","P11","P12","P13"]
+}

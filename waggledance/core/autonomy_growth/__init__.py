@@ -44,6 +44,18 @@ from .low_risk_seed_library import (
     seeds_for_family,
 )
 from .autonomy_consult_adapter import build_autonomy_consult
+from .runtime_hint_extractor import (
+    HintExtractionResult,
+    RESULT_DERIVED,
+    RESULT_REJECTED_AMBIGUOUS,
+    RESULT_REJECTED_FAMILY_NOT_LOW_RISK,
+    RESULT_REJECTED_MALFORMED,
+    RESULT_REJECTED_MISSING_FIELDS,
+    RESULT_REJECTED_NOT_STRUCTURED,
+    RESULT_SKIPPED,
+    derive_low_risk_autonomy_hint,
+    supported_subkeys,
+)
 from .hot_path_cache import (
     BufferedSignalSink,
     BufferedSinkStats,
@@ -175,4 +187,15 @@ __all__ = [
     "WarmCapabilityIndex",
     "WarmDispatchResult",
     "build_autonomy_consult",
+    # runtime hint extractor (Phase 15)
+    "HintExtractionResult",
+    "RESULT_DERIVED",
+    "RESULT_REJECTED_AMBIGUOUS",
+    "RESULT_REJECTED_FAMILY_NOT_LOW_RISK",
+    "RESULT_REJECTED_MALFORMED",
+    "RESULT_REJECTED_MISSING_FIELDS",
+    "RESULT_REJECTED_NOT_STRUCTURED",
+    "RESULT_SKIPPED",
+    "derive_low_risk_autonomy_hint",
+    "supported_subkeys",
 ]

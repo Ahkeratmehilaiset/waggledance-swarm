@@ -23,6 +23,10 @@ import time
 from typing import Any, Dict, List, Optional
 
 from waggledance.core.actions.action_bus import SafeActionBus
+from waggledance.core.autonomy_growth.runtime_hint_extractor import (
+    RESULT_DERIVED,
+    derive_low_risk_autonomy_hint,
+)
 from waggledance.core.capabilities.registry import CapabilityRegistry
 from waggledance.core.domain.autonomy import (
     Action,
@@ -410,6 +414,24 @@ class AutonomyRuntime:
                 profile=self.profile,
                 source_type="observed")
 
+        # 2c. Phase 15 — deterministic runtime hint extractor.
+        # When the caller's structured_request payload describes a
+        # low-risk-family-shaped query, derive an autonomy consult
+        # hint and drop it into context. The default SolverRouter
+        # (no autonomy_consult wired) ignores the hint, so callers
+        # without the consult lane see no behaviour change.
+        # Failures here MUST NOT break the production path.
+        try:
+            hint_result = derive_low_risk_autonomy_hint(query, context)
+            if hint_result.kind == RESULT_DERIVED and hint_result.hint is not None:
+                context["low_risk_autonomy_query"] = dict(hint_result.hint)
+                context["low_risk_autonomy_hint_kind"] = "derived"
+            else:
+                context["low_risk_autonomy_hint_kind"] = hint_result.kind
+        except Exception as exc:  # noqa: BLE001 — never break runtime
+            log.debug("hint extractor raised; ignored: %r", exc)
+            context["low_risk_autonomy_hint_kind"] = "extractor_error"
+
         # 3. Capability selection
         route_result = self.solver_router.route(intent, query, context)
 
@@ -424,15 +446,54 @@ class AutonomyRuntime:
                     capability_id=cap_ids[0] if cap_ids else "",
                 ))
 
+        # 3b. Phase 15 — if the autonomy consult lane served the query,
+        # surface it as the response. Built-in solver precedence is
+        # preserved: the consult only fires inside SolverRouter.route
+        # when selection.fallback_used is True. A served consult means
+        # the deterministic low-risk lane returned a usable answer
+        # before any LLM fallback would have kicked in.
+        if (
+            route_result.autonomy_consult is not None
+            and route_result.autonomy_served
+        ):
+            consult = route_result.autonomy_consult
+            return {
+                "intent": intent,
+                "quality_path": "autonomy_consult",
+                "response": consult.output,
+                "autonomy_consult": {
+                    "served": True,
+                    "source": consult.source,
+                    "solver_name": consult.solver_name,
+                    "solver_id": consult.solver_id,
+                    "artifact_id": consult.artifact_id,
+                },
+                "low_risk_autonomy_hint_kind": context.get(
+                    "low_risk_autonomy_hint_kind"
+                ),
+                "elapsed_ms": round((time.time() - t0) * 1000, 2),
+            }
+
         # 4. Create action for first selected capability
         if not route_result.selection.selected:
-            return {
+            response = {
                 "intent": intent,
                 "quality_path": "bronze",
                 "response": None,
                 "error": "No capabilities available",
                 "elapsed_ms": round((time.time() - t0) * 1000, 2),
             }
+            # Surface autonomy_consult miss/skip outcome for observability
+            if route_result.autonomy_consult is not None:
+                response["autonomy_consult"] = {
+                    "served": False,
+                    "source": route_result.autonomy_consult.source,
+                    "miss_reason": route_result.autonomy_consult.miss_reason,
+                }
+            response["low_risk_autonomy_hint_kind"] = context.get(
+                "low_risk_autonomy_hint_kind"
+            )
+            return response
 
         primary_cap = route_result.selection.selected[0]
         action = Action(

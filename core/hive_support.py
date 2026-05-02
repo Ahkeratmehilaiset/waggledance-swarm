@@ -100,7 +100,7 @@ class StructuredLogger:
         """Append one JSON line per chat response."""
         record = {
             "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "query_hash": hashlib.md5(query.encode("utf-8", errors="replace")).hexdigest()[:12],
+            "query_hash": hashlib.md5(query.encode("utf-8", errors="replace"), usedforsecurity=False).hexdigest()[:12],
             "method": method,
             "agent_id": agent_id,
             "model_used": model_used,

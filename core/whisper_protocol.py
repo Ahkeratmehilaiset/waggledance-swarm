@@ -242,7 +242,7 @@ class WhisperProtocol:
             topic_symbols.append(TOPIC_GLYPHS["matala"])
 
         # Sisältö-hash → hieroglyfejä (visuaalinen fingerprint)
-        h = hashlib.md5(f"{self._encode_key}{content}".encode()).hexdigest()
+        h = hashlib.md5(f"{self._encode_key}{content}".encode(), usedforsecurity=False).hexdigest()
         content_glyphs = ""
         for i in range(0, min(8, len(h)), 2):
             idx = int(h[i:i+2], 16) % len(HIEROGLYPHS)
@@ -296,7 +296,8 @@ class WhisperProtocol:
 
         # Tallenna
         whisper_id = hashlib.md5(
-            f"{from_agent_id}{to_agent_id}{time.time()}".encode()
+            f"{from_agent_id}{to_agent_id}{time.time()}".encode(),
+            usedforsecurity=False,
         ).hexdigest()[:12]
 
         w = Whisper(

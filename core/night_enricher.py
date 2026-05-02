@@ -621,7 +621,7 @@ class QualityGate:
         # Step 0: Hash-based exact dedup (before LLM call)
         import hashlib
         self._step_stats["hash_dedup"]["checked"] += 1
-        text_hash = hashlib.md5(text.lower().strip().encode()).hexdigest()
+        text_hash = hashlib.md5(text.lower().strip().encode(), usedforsecurity=False).hexdigest()
         if text_hash in self._seen_hashes:
             self._step_stats["hash_dedup"]["rejected"] += 1
             return QualityVerdict(

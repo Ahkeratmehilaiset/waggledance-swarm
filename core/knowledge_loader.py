@@ -361,7 +361,7 @@ class KnowledgeLoader:
     def _file_hash(self, file_path: Path) -> str:
         stat = file_path.stat()
         key = f"{file_path}:{stat.st_size}:{stat.st_mtime}"
-        return hashlib.md5(key.encode()).hexdigest()
+        return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()
 
     def get_knowledge_summary(self, agent_type: str) -> str:
         """

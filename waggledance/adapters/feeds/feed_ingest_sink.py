@@ -141,7 +141,7 @@ class FeedIngestSink:
 
         doc_id = (
             f"{agent_id}_"
-            f"{hashlib.md5(text.encode('utf-8')).hexdigest()[:8]}_"
+            f"{hashlib.md5(text.encode('utf-8'), usedforsecurity=False).hexdigest()[:8]}_"
             f"{int(time.time())}"
         )
 

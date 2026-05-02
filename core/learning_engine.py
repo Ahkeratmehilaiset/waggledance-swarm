@@ -642,7 +642,7 @@ class LearningEngine:
             # Dedup: hash the response content, reject exact/near duplicates
             import hashlib as _hl
             _resp_text = item.get("response", "").strip()[:200]
-            _content_hash = _hl.md5(_resp_text.encode("utf-8", errors="replace")).hexdigest()[:12]
+            _content_hash = _hl.md5(_resp_text.encode("utf-8", errors="replace"), usedforsecurity=False).hexdigest()[:12]
             if _content_hash in self._seen_hashes:
                 finetune_entry["rejection_reason"] = "duplicate_content"
                 finetune_entry["reasoning"] = "duplicate_content"

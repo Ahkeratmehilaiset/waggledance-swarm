@@ -1,5 +1,76 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 16D — final stable-gate closure: Docker + Bandit B324 + v3.8.0 release decision] — 2026-05-02
+
+Branch: `phase16d/final-stable-gate-closure`. Final stable-gate closure sprint on top of Phase 16C. **Outcome: prerelease `v3.7.8-docker-gate-alpha`** (stable v3.8.0 still blocked solely by g01 Docker, which remained unavailable in this dev shell). All 16 Bandit B324 weak-hash findings resolved with persisted semantic fingerprint preservation verified. The blocker set narrows from Phase 16C's "1 substantive (Docker) + 1 residual cleanup (Bandit)" to Phase 16D's **"1 substantive (Docker)" only**.
+
+### Changed (production code)
+
+12 source files received minimal additions of `usedforsecurity=False` to `hashlib.md5(...)` / `hashlib.sha1(...)` calls. Per Python 3.11+ semantics this is a metadata-only flag; digest output is byte-identical (verified live by 33-sample parity test before any code change). Per-site classification, persisted-vs-volatile status, and digest-parity proof are documented in `docs/runs/phase16d_final_stable_gate_closure_2026_05_02/bandit_b324_cleanup.md`.
+
+| file | sites | hash | persisted |
+|---|---|---|---|
+| `core/embedding_cache.py` | 6 | md5 | NO (in-memory LRU keys) |
+| `core/hive_support.py` | 1 | md5 | YES (audit log query_hash) |
+| `core/knowledge_loader.py` | 1 | md5 | likely cache (file fingerprint) |
+| `core/learning_engine.py` | 1 | md5 | volatile + log (response dedup) |
+| `core/night_enricher.py` | 1 | md5 | volatile (text dedup) |
+| `core/whisper_protocol.py` | 2 | md5 | one persisted (whisper_id), one fingerprint |
+| `waggledance/adapters/feeds/feed_ingest_sink.py` | 1 | md5 | YES (doc_id) |
+| `waggledance/adapters/memory/chroma_vector_store.py` | 1 | md5 | volatile (embed cache) |
+| `waggledance/observatory/mama_events/consolidation.py` | 1 | sha1 | YES (replay fingerprint) |
+| `waggledance/observatory/mama_events/taxonomy.py` | 1 | sha1 | YES (event ID) |
+
+### Added
+
+- `docs/security/PHASE16D_SECURITY_AUDIT.md` — Phase 16D security audit doc. Bandit HIGH count: 16 → 0; pip-audit consistent with Phase 16C; CI grep clean; inner-loop reachability unchanged (0 HIGH/MEDIUM in inner loop).
+- `docs/runs/phase16d_final_stable_gate_closure_2026_05_02/`:
+  * `session_state.json` — baseline, environment pre-check (`docker_available=false`), TIER A invariants verified.
+  * `stable_gate_inventory.{json,md}` — 21-gate stable / prerelease ledger.
+  * `bandit_b324_cleanup.md` — per-site classification + fix + digest-parity proof.
+  * `persisted_semantics_preservation.md` — pre/post baselines + field-by-field comparison (14 scalar + 7 restart invariants + 6 per-operation counts identical; raw SQLite SHA differs as expected per RULE 25).
+  * `baseline_pre_b324/` and `baseline_post_b324/` — full restart proof outputs (JSON + MD + DB) used for the persisted-semantics-preservation comparison.
+  * `bandit_report_after.json` — Bandit JSON after B324 cleanup (16 → 0 HIGH).
+  * `docker_verification.md` — Docker still unavailable in dev shell; documented blocker preserved.
+  * `proof_rerun_report.md` — all 4 canonical proofs PASS at corpus 104 post-cleanup; soak 9/9 no flakes.
+  * `automatic_runtime_hint_proof.{json,db}` — Phase 16D re-run output (Phase 15 proof at corpus 104).
+  * `upstream_structured_request_proof.{json,md,db}` — Phase 16D re-run output (Phase 16A proof at corpus 104).
+  * `full_restart_continuity_proof.{json,md,db}` — Phase 16D re-run output (Phase 16B P2 proof at corpus 104).
+  * `proof_soak_report.json` — Phase 16D 3-iter soak (9/9 pass).
+  * `fresh_clone_reproduction.md` — local-clone diagnostic done; branch-ref + post-merge clones in P9.5/P10.
+  * `release_decision.md` — P8 fail-closed decision: v3.7.8-docker-gate-alpha (Docker still blocks v3.8.0).
+
+### Behaviour
+
+- Bandit HIGH count: 16 → 0. All B324 weak-hash lints resolved.
+- Persisted semantic fingerprint preserved across the cleanup. All 14 semantic-fingerprint scalar fields, 7 restart invariants, and 6 per-operation served counts identical pre and post cleanup.
+- All four canonical proofs re-run on Phase 16D branch at corpus 104 with `auto_promotions_total = 104`, `provider_jobs_delta = builder_jobs_delta = 0`, no flakes.
+- No autonomy code changes. Bandit not added to runtime requirements.
+
+### Stable v3.8.0 release-gate audit
+
+`docs/release/RELEASE_READINESS.md` updated. The fail-closed decision after Phase 16D:
+
+* **g01 Docker end-to-end** — still FAIL/NOT_VERIFIED (CLI unavailable). **Sole substantive stable blocker.**
+* **g05 Security audit** — moves from Phase 16C's PARTIAL_IMPROVED to Phase 16D's **PASS**. Bandit HIGH count = 0 under strict no-high reading.
+* **g21 Persisted semantic fingerprint preservation across B324 cleanup** — **PASS** (per RULE 25).
+* All other gates carry forward as PASS from Phase 16C.
+
+Outcome: **`v3.7.8-docker-gate-alpha` prerelease**. Bandit blocker fully closed; v3.8.0 stable still blocked by Docker only.
+
+### What did NOT change
+
+- All Phase 11–16C code, tests, tools, and canonical proof artifacts (no overwrites of `docs/runs/phase11_*` through `docs/runs/phase16c_*`).
+- The six-family low-risk allowlist (RULE 7).
+- The Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates).
+- Real Anthropic / OpenAI HTTP adapters (still follow-up).
+- HTTP `/api/autonomy/query` route (deliberate scope limit; v3.8.0 is library/service-layer-stable, not HTTP-API-stable).
+- Phase 9 14-stage human-gated promotion ladder.
+- Single-process scope (RULE 10).
+- No consciousness claim.
+- `LICENSE-CORE.md` unchanged (no new core files; no new BUSL-1.1 declarations needed).
+- `requirements.txt`, `requirements.lock.txt`, `requirements-ci.txt` unchanged (Bandit is dev-only audit tooling).
+
 ## [Phase 16C — stable-gate closure attempt: Bandit + Docker + v3.8.0 release decision] — 2026-05-02
 
 Branch: `phase16c/stable-gate-closure`. Stable-gate closure sprint on top of Phase 16B. **Outcome: prerelease `v3.7.7-stable-gate-alpha`** (stable v3.8.0 still blocked by g01 Docker, which remained unavailable in this dev shell). Material progress on g05 Bandit: installed and run for the first time; no HIGH/MEDIUM findings reachable from autonomy inner loop; 16 HIGH `B324` weak-hash lints documented in non-inner-loop cache code with planned follow-up.

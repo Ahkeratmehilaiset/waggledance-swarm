@@ -156,7 +156,7 @@ class EpisodicStore:
 
     def fingerprint(self) -> str:
         payload = json.dumps(self.serialise(), sort_keys=True).encode("utf-8")
-        return hashlib.sha1(payload).hexdigest()[:16]
+        return hashlib.sha1(payload, usedforsecurity=False).hexdigest()[:16]
 
 
 # ── pure consolidation function ────────────────────────────

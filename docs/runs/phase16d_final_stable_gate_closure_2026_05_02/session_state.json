@@ -1,0 +1,95 @@
+{
+  "phase": "Phase 16D — final stable gate closure: Docker + Bandit B324 + v3.8.0 release decision",
+  "session_started_utc": "2026-05-02",
+  "branch": "phase16d/final-stable-gate-closure",
+  "environment_pre_check": {
+    "docker_available": false,
+    "docker_version_output": "command not found",
+    "docker_compose_version_output": "command not found",
+    "which_docker_output": "no docker in PATH",
+    "command_v_docker_exe_output": "empty",
+    "docker_desktop_install_path": "not present",
+    "powershell_get_command_docker": "empty",
+    "stable_v3_8_0_possible_in_this_session": false,
+    "rationale": "Docker unavailable in dev shell. Per master prompt P0 ENVIRONMENT PRE-CHECK rule, possible outcomes reduce to B (v3.7.8-docker-gate-alpha if B324 cleanup succeeds) or C (no tag if cleanup fails). Phase 16D will NOT attempt to install Docker (out of scope per RULE 14)."
+  },
+  "baseline": {
+    "origin_main_sha": "b87fbe443485cb7468e3381f5b57a654c51c71c0",
+    "local_main_at_session_start": "b87fbe443485cb7468e3381f5b57a654c51c71c0",
+    "local_main_equals_origin_main": true,
+    "phase_16c_pr": 65,
+    "phase_16c_merge_sha": "b87fbe443485cb7468e3381f5b57a654c51c71c0",
+    "phase_16c_tag": "v3.7.7-stable-gate-alpha",
+    "phase_16c_tag_target_sha": "b87fbe443485cb7468e3381f5b57a654c51c71c0",
+    "phase_16c_release_isPrerelease": true,
+    "phase_16c_release_publishedAt": "2026-05-02T06:16:03Z"
+  },
+  "tier_a_invariants": {
+    "origin_main_contains_phase_16c_merge": true,
+    "v3_7_7_tag_exists_on_origin": true,
+    "v3_7_7_tag_target_matches_phase_16c_merge": true,
+    "v3_7_7_release_is_prerelease": true,
+    "phase_16c_bandit_report_exists": true,
+    "phase_16c_session_artifacts_exist": true,
+    "phase_16c_security_audit_exists": true,
+    "stage2_atomic_flip_unexecuted": true,
+    "all_tier_a_passed": true
+  },
+  "phase_16c_blockers_inherited_for_v3_8_0": [
+    {
+      "id": "g01",
+      "title": "Docker end-to-end",
+      "phase_16c_status": "FAIL_NOT_VERIFIED",
+      "phase_16d_target": "FAIL_NOT_VERIFIED carry-over (Docker unavailable in dev shell)",
+      "phase_16d_action": "documented in P3"
+    },
+    {
+      "id": "g05",
+      "title": "Bandit B324 weak-hash residual cleanup",
+      "phase_16c_status": "PARTIAL_IMPROVED (Bandit installed and run; 16 HIGH findings outside inner loop)",
+      "phase_16d_target": "attempt to add usedforsecurity=False to all 16 hashlib.md5/sha1 calls and verify persisted semantic fingerprint preserved",
+      "phase_16d_action": "P2 — bandit_b324_cleanup.md + persisted_semantics_preservation.md"
+    }
+  ],
+  "previous_tags_on_origin": [
+    "v3.6.0",
+    "v3.6.1-substrate",
+    "v3.7.0-autogrowth-alpha",
+    "v3.7.1-autoloop-alpha",
+    "v3.7.2-runtime-harvest-alpha",
+    "v3.7.3-hotpath-alpha",
+    "v3.7.4-runtime-hint-alpha",
+    "v3.7.5-upstream-runtime-alpha",
+    "v3.7.6-stabilization-alpha",
+    "v3.7.7-stable-gate-alpha"
+  ],
+  "phase8_5_remote_branches_count": 3,
+  "phase8_5_handling": "read-only inspection only; not touched in this session",
+  "open_prs_in_scope": [],
+  "open_prs_out_of_scope_dependabot_only_count": 7,
+  "stale_untracked_files_at_session_start": [
+    "WD_release_to_main_master_prompt.md",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+    "docs/runs/phase9_pr_body.md"
+  ],
+  "stale_untracked_handling": "do not commit; predate this session",
+  "release_decision_status": "deferred to P8; default fail-closed -> v3.7.8-docker-gate-alpha if B324 cleanup PASSES with persisted semantics preserved, OR no tag if cleanup fails",
+  "guardrails_applied": {
+    "no_force_push": true,
+    "no_history_rewrite": true,
+    "pr_only": true,
+    "match_head_commit_only": true,
+    "stage2_atomic_flip_not_executed": true,
+    "human_approval_not_collected": true,
+    "phase8_5_read_only": true,
+    "no_widening_low_risk_allowlist": true,
+    "no_consciousness_claim": true,
+    "no_new_provider_http_adapters": true,
+    "no_actuator_autonomy": true,
+    "no_high_risk_family_auto_promotion": true,
+    "no_federation_or_sharding": true,
+    "no_new_autonomy_features": true,
+    "bandit_not_added_to_runtime_requirements": true,
+    "scratch_db_files_not_staged": "enforced via pre-commit `git status --short` check"
+  }
+}

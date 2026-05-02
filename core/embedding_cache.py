@@ -112,7 +112,7 @@ class EmbeddingEngine:
         return None
 
     def _cached_embed(self, text: str) -> Optional[List[float]]:
-        key = hashlib.md5(text.encode()).hexdigest()
+        key = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
         if key in self._cache:
             self.cache_hits += 1
             self._cache.move_to_end(key)  # LRU refresh
@@ -151,7 +151,7 @@ class EmbeddingEngine:
         prefixed_texts = []
         for i, text in enumerate(texts):
             prefixed = prefix + text
-            key = hashlib.md5(prefixed.encode()).hexdigest()
+            key = hashlib.md5(prefixed.encode(), usedforsecurity=False).hexdigest()
             if key in self._cache:
                 results[i] = self._cache[key]
                 self._cache.move_to_end(key)  # LRU refresh
@@ -187,7 +187,7 @@ class EmbeddingEngine:
                         if j < len(chunk_indices):
                             idx = chunk_indices[j]
                             results[idx] = emb
-                            key = hashlib.md5(chunk[j].encode()).hexdigest()
+                            key = hashlib.md5(chunk[j].encode(), usedforsecurity=False).hexdigest()
                             self._cache[key] = emb
                 else:
                     log.error(f"Batch embed HTTP {r.status_code}")
@@ -316,7 +316,7 @@ class EvalEmbeddingEngine:
 
     def embed(self, text: str) -> Optional[List[float]]:
         """Embed text (no prefix — symmetric model)."""
-        key = hashlib.md5(text.encode()).hexdigest()
+        key = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
         if key in self._cache:
             self.cache_hits += 1
             self._cache.move_to_end(key)  # LRU refresh
@@ -339,7 +339,7 @@ class EvalEmbeddingEngine:
         uncached_texts = []
 
         for i, text in enumerate(texts):
-            key = hashlib.md5(text.encode()).hexdigest()
+            key = hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
             if key in self._cache:
                 results[i] = self._cache[key]
                 self._cache.move_to_end(key)  # LRU refresh
@@ -374,7 +374,7 @@ class EvalEmbeddingEngine:
                         if j < len(chunk_indices):
                             idx = chunk_indices[j]
                             results[idx] = emb
-                            key = hashlib.md5(chunk[j].encode()).hexdigest()
+                            key = hashlib.md5(chunk[j].encode(), usedforsecurity=False).hexdigest()
                             self._cache[key] = emb
                 else:
                     log.error(f"EvalEmbed batch HTTP {r.status_code}")

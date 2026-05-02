@@ -100,7 +100,7 @@ def _stable_event_id(event_type: EventType, timestamp_ms: int, text: str) -> str
     makes replay comparisons straightforward.
     """
 
-    h = hashlib.sha1()
+    h = hashlib.sha1(usedforsecurity=False)
     h.update(event_type.value.encode("utf-8"))
     h.update(str(timestamp_ms).encode("ascii"))
     h.update(text.encode("utf-8", errors="replace"))

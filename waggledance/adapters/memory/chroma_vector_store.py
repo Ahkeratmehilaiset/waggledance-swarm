@@ -168,7 +168,7 @@ class ChromaVectorStore:
     def _embed_text(self, text: str, prefix: str = "search_document: ") -> list[float] | None:
         """Compute embedding via Ollama /api/embed with caching."""
         prefixed = prefix + text
-        cache_key = hashlib.md5(prefixed.encode()).hexdigest()
+        cache_key = hashlib.md5(prefixed.encode(), usedforsecurity=False).hexdigest()
 
         if cache_key in self._embed_cache:
             self._embed_cache.move_to_end(cache_key)

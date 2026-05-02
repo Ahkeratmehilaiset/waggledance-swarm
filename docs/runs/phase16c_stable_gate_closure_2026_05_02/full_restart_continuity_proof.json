@@ -1,0 +1,131 @@
+{
+  "corpus_total": 104,
+  "harvest": {
+    "by_family_promoted": {
+      "bounded_interpolation": 14,
+      "interval_bucket_classifier": 14,
+      "linear_arithmetic": 14,
+      "lookup_table": 17,
+      "scalar_unit_conversion": 28,
+      "threshold_rule": 17
+    },
+    "growth_intents_total": 104,
+    "scheduler_drained": 104,
+    "scheduler_errored": 0,
+    "scheduler_promoted": 104,
+    "scheduler_rejected": 0
+  },
+  "hot_path_cache_post_restart": {
+    "cold_hits_warmed": 98,
+    "misses": 0,
+    "warm_hits": 6
+  },
+  "kpis": {
+    "builder_jobs_delta_during_proof": 0,
+    "builder_jobs_total_after_proof": 0,
+    "provider_jobs_delta_during_proof": 0,
+    "provider_jobs_total_after_proof": 0
+  },
+  "latency_pass1_service_handle_query_ms": {
+    "mean_ms": 20.3235,
+    "n": 104,
+    "p50_ms": 11.615,
+    "p95_ms": 16.6661,
+    "p99_ms": 391.1245
+  },
+  "latency_post_restart_pass2_ms": {
+    "mean_ms": 12.022,
+    "n": 104,
+    "p50_ms": 10.8308,
+    "p95_ms": 18.0365,
+    "p99_ms": 44.0047
+  },
+  "latency_pre_restart_pass2_ms": {
+    "mean_ms": 10.3919,
+    "n": 104,
+    "p50_ms": 10.1157,
+    "p95_ms": 12.3929,
+    "p99_ms": 15.8298
+  },
+  "manual_hint_audit_detected_keys": [],
+  "manual_low_risk_hint_in_input_detected": false,
+  "manual_structured_request_in_input_detected": false,
+  "pass1_before_harvest": {
+    "buffered_signals_flushed": 18,
+    "miss_total": 104,
+    "served_total": 0
+  },
+  "persisted_state_after_reopen": {
+    "builder_jobs": 0,
+    "capability_features_total": 180,
+    "provider_jobs": 0,
+    "solver_count_auto_promoted": 104
+  },
+  "persisted_state_before_close": {
+    "builder_jobs": 0,
+    "capability_features_total": 180,
+    "provider_jobs": 0,
+    "solver_count_auto_promoted": 104
+  },
+  "phase": "16B P2 \u2014 full-corpus restart continuity",
+  "post_restart_pass2": {
+    "miss_total": 0,
+    "per_cell_served": {
+      "energy": 13,
+      "general": 15,
+      "learning": 5,
+      "math": 13,
+      "safety": 6,
+      "seasonal": 11,
+      "system": 24,
+      "thermal": 17
+    },
+    "per_operation_served": {
+      "bucket_check": 14,
+      "interpolation": 14,
+      "linear_eval": 14,
+      "lookup": 17,
+      "threshold_check": 17,
+      "unit_conversion": 28
+    },
+    "served_total": 104,
+    "served_via_capability_lookup_total": 104
+  },
+  "pre_restart_pass2": {
+    "miss_total": 0,
+    "per_cell_served": {
+      "energy": 13,
+      "general": 15,
+      "learning": 5,
+      "math": 13,
+      "safety": 6,
+      "seasonal": 11,
+      "system": 24,
+      "thermal": 17
+    },
+    "per_operation_served": {
+      "bucket_check": 14,
+      "interpolation": 14,
+      "linear_eval": 14,
+      "lookup": 17,
+      "threshold_check": 17,
+      "unit_conversion": 28
+    },
+    "served_total": 104,
+    "served_via_capability_lookup_total": 104
+  },
+  "proof_bypassed_handle_query": false,
+  "proof_bypassed_selected_caller": false,
+  "proof_constructed_runtime_query_objects": false,
+  "proof_version": 1,
+  "restart_invariants": {
+    "builder_jobs_delta_across_restart": 0,
+    "cache_rebuild_success": true,
+    "capability_features_unchanged_across_reopen": true,
+    "provider_jobs_delta_across_restart": 0,
+    "served_unchanged_across_restart": true,
+    "served_via_capability_lookup_unchanged_across_restart": true,
+    "solver_count_unchanged_across_reopen": true
+  },
+  "selected_upstream_caller": "waggledance.application.services.autonomy_service.AutonomyService.handle_query"
+}

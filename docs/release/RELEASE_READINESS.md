@@ -1,4 +1,4 @@
-# Release Readiness — WaggleDance (Phase 16B / v3.7.6-stabilization-alpha candidate)
+# Release Readiness — WaggleDance (Phase 16C / v3.7.7-stable-gate-alpha candidate)
 
 **Status:** alpha / prerelease only. This document defines what `release-ready` means in the WaggleDance autonomy lineage, what version-tag policy applies, and which gates must pass before a stable release is justified.
 
@@ -6,17 +6,17 @@
 
 It does **not** mean stable v3.8.0 unless a separate stable release gate explicitly proves production readiness (see "Tag versioning policy" below).
 
-## Latest tag — v3.7.5-upstream-runtime-alpha (Phase 16A)
+## Latest tag — v3.7.6-stabilization-alpha (Phase 16B)
 
-Phase 16A prerelease tag on `origin/main` at merge commit `d18e1da` (PR #63). Adds automatic deterministic upstream `structured_request` derivation at `AutonomyService.handle_query`; live before/after proof + restart-continuity smoke; provider/builder delta = 0 in proof.
+Phase 16B prerelease tag on `origin/main` at merge commit `bada64c` (PR #64). Adds full-corpus restart-continuity proof, proof-soak driver, +6 canonical seeds (corpus 104), bounded security self-audit, install-layering / HTTP-route stable-gate decisions; provider/builder delta = 0; 15 / 15 soak iterations no flakes.
 
-## Recommended next tag — v3.7.6-stabilization-alpha (Phase 16B)
+## Recommended next tag — v3.7.7-stable-gate-alpha (Phase 16C)
 
-Created **only after** the Phase 16B PR merges and the post-merge release docs check passes.
+Created **only after** the Phase 16C PR merges and the post-merge release docs check passes.
 
-* `v3.7.6-stabilization-alpha` — Phase 16B stabilization prerelease. Adds full-corpus restart continuity proof, proof-soak repeatability driver, +6 canonical seeds (+1 per low-risk family) bringing the corpus to 104 (≥ 100-solver release-gate threshold), bounded security self-audit, install-layering and HTTP-route stable-gate decisions, dependency / fresh-clone / Docker truth audit. Inner-loop provider/builder delta = 0.
+* `v3.7.7-stable-gate-alpha` — Phase 16C stable-gate closure attempt. Adds Bandit security audit (Bandit installed and run for the first time; 0 HIGH/MEDIUM findings reachable from autonomy inner loop; 16 HIGH `B324` weak-hash lints in non-inner-loop cache code documented for follow-up cleanup); re-runs all four canonical proofs at corpus 104 with no flakes; documents Docker as still-not-tested in the dev shell. Outcome: prerelease only — v3.8.0 stable remains blocked by Docker.
 
-Phase 16B is **not** a stable v3.8.0 release. The fail-closed stable gates documented below explain why v3.8.0 remains blocked.
+Phase 16C is **not** a stable v3.8.0 release. The fail-closed stable gates documented below explain why v3.8.0 remains blocked. The remaining blocker reduces from two (Docker + Bandit) to one (Docker).
 
 ## Reproduce the latest proof from a clean clone
 
@@ -115,7 +115,7 @@ See `docs/deployment/DOCKER_QUICKSTART.md`. Docker steps are documented but **no
 ## CI status
 
 * Workflows: `Tests` (unified) + `WaggleDance CI` (test 3.11 / 3.12 / 3.13 + security-scan).
-* Phase 14 PR #61 last green. Phase 15 PR #62 green at merge commit `2b9978d`. Phase 16A PR #63 green at merge commit `d18e1da`. Phase 16B PR re-runs them on its head SHA.
+* Phase 14 PR #61 last green. Phase 15 PR #62 green at merge commit `2b9978d`. Phase 16A PR #63 green at merge commit `d18e1da`. Phase 16B PR #64 green at merge commit `bada64c`. Phase 16C PR re-runs them on its head SHA.
 
 ## HTTP / API surface scope
 
@@ -213,29 +213,33 @@ None remaining. The Phase 16B prerelease gate is met:
 * install-source layering documented; HTTP / API surface stable scope documented.
 * targeted tests green; provider/builder delta = 0 across all proofs.
 
-## Release blockers — for stable v3.8.0 (still blocked)
+## Release blockers — for stable v3.8.0 (still blocked, narrower set after Phase 16C)
 
-The strict fail-closed rule for stable v3.8.0 requires every required-for-stable gate to PASS on the post-merge `main` SHA. Phase 16B leaves three blockers that prevent v3.8.0:
+The strict fail-closed rule for stable v3.8.0 requires every required-for-stable gate to PASS on the post-merge `main` SHA. Phase 16C reduced the blocker set from three (Docker + remote/fresh-clone + Bandit) to one (Docker only) for substance, with one residual cleanup task on Bandit:
 
-1. **g01 Docker end-to-end** — `docker` CLI is not installed in the Phase 16B development shell. No build, no in-container proof. `Dockerfile` and `docker-compose.yml` are inspected and unchanged; commands are documented in `DOCKER_QUICKSTART.md` as **not tested in this session**. An external operator with Docker installed must verify the documented steps before stable v3.8.0 is justified.
-2. **g02 Remote/fresh-clone reproduction against post-merge main** — Phase 16B P5 verified a local-clone reproduction against the v3.7.5 SHA. Per the master prompt's `FRESH CLONE VERIFICATION RULE`, a remote/fresh-clone reproduction must run against `origin/main` after the Phase 16B PR merges. P13.5 will attempt this. If P13.5 is not executed against post-merge main, g02 remains blocked.
-3. **g05 Security audit — `bandit` not installed** — `pip-audit` was available and ran successfully; `bandit` was unavailable and not installed in this session per the master-prompt rule about heavy new dependencies. There is no pre-existing stable-gate exception in this document for missing `bandit`; therefore the strict fail-closed rule blocks v3.8.0. An external operator must run `pip install bandit && bandit -r waggledance/ core/` and verify no high-severity findings before stable v3.8.0 is justified.
+1. **g01 Docker end-to-end** — `docker` CLI is not installed in the Phase 16C development shell either. Same situation as Phase 16B. `Dockerfile` and `docker-compose.yml` inspected and unchanged. **Sole remaining substantive blocker.** An external operator with Docker installed must run `docker build -t waggledance:phase16c .`, then in-container proofs, and amend `RELEASE_READINESS.md` before v3.8.0 stable is justified.
+2. **g05 Security audit — Bandit residual cleanup** — Bandit was installed and run successfully in Phase 16C. **Zero HIGH or MEDIUM findings reachable from the autonomy inner loop.** 16 HIGH `B324` weak-hash lints exist in non-inner-loop cache / dedup / content-addressing code (`hashlib.md5(...)` and `hashlib.sha1(...)` without `usedforsecurity=False`). Under the master prompt's strict no-high reading, these still block v3.8.0; under the reachability-qualified reading, they would pass. The conservative fail-closed reading applies. To unblock: a `chore(security)` follow-up PR adds `usedforsecurity=False` to the 16 affected hashlib calls. See `docs/security/PHASE16C_SECURITY_AUDIT.md`.
 
-These blockers are explicit by design; Phase 16B's outcome is the prerelease `v3.7.6-stabilization-alpha`, which is a **success** outcome under stabilization-mode rules.
+**Resolved in Phase 16C:**
 
-## Stable v3.8.0 — checklist as of Phase 16B
+* g05 Bandit was installed and run for the first time (was UNAVAILABLE in Phase 16B).
+* g02 remote/fresh-clone-against-post-merge-main was satisfied in Phase 16B P13.5 against `bada64c`; Phase 16C P10 re-verifies against the post-Phase-16C-merge SHA.
+
+These blockers are explicit by design; Phase 16C's outcome is the prerelease `v3.7.7-stable-gate-alpha`, a **success** outcome under stabilization-mode rules.
+
+## Stable v3.8.0 — checklist as of Phase 16C
 
 These are tracked here so the next release session knows what to clear:
 
-| gate | required for v3.8.0 | as of Phase 16B |
+| gate | required for v3.8.0 | as of Phase 16C |
 |---|---|---|
-| Docker tested end-to-end on at least one supported platform | yes | **NOT VERIFIED** in this session (Docker unavailable) |
-| External user can reproduce latest proof from a fresh clone | yes | **PARTIAL** — local-clone passes; remote/fresh-clone against post-merge main pending P13.5 |
-| README top section concise (≤ 10 lines summarising current state) | yes | **PASS** — Phase 15 / 16A / 16B refresh keeps it concise |
-| No provider dependency in inner loop | yes | **PASS** (locked by tests) |
-| 100+ auto-promoted solvers in proof | yes | **PASS** — Phase 16B P4 raised the canonical corpus to 104 |
-| Security self-audit with documented findings | yes | **PARTIAL** — `pip-audit` and CI grep clean; `bandit` not installed |
-| Stable release gate explicitly passed | yes | **NOT YET** — this document is the gate ledger; P11 fail-closed decision is `v3.7.6-stabilization-alpha` |
+| Docker tested end-to-end on at least one supported platform | yes | **NOT VERIFIED** in any session yet (Docker unavailable in Phase 16B and Phase 16C dev shells) |
+| External user can reproduce latest proof from a fresh clone | yes | **PASS** — Phase 16B P13.5 verified remote/fresh-clone against post-merge main `bada64c`; Phase 16C P10 re-verifies against post-Phase-16C-merge SHA |
+| README top section concise (≤ 10 lines summarising current state) | yes | **PASS** — Phase 15 / 16A / 16B / 16C refresh keeps it concise |
+| No provider dependency in inner loop | yes | **PASS** (locked by tests + four Phase 16C re-runs) |
+| 100+ auto-promoted solvers in proof | yes | **PASS** — corpus 104 (since Phase 16B); Phase 16C re-confirms `auto_promotions_total = 104` |
+| Security self-audit with documented findings | yes | **PARTIAL_IMPROVED** — Phase 16C: Bandit installed and run; zero HIGH/MEDIUM in inner loop; 16 HIGH B324 weak-hash lints in non-inner-loop cache code documented for follow-up |
+| Stable release gate explicitly passed | yes | **NOT YET** — this document is the gate ledger; P8 fail-closed decision is `v3.7.7-stable-gate-alpha` (Docker still blocks) |
 
 Until a separate session passes the stable gate, the **default tag for any Phase 16-ish work is prerelease only**.
 
@@ -244,14 +248,15 @@ Until a separate session passes the stable gate, the **default tag for any Phase
 | version range | what it means | gate |
 |---|---|---|
 | `v3.6.x` | substrate landed; no runtime behaviour change | Phase 10–11 substrate gate |
-| `v3.7.x` | runtime-autonomy alpha increments | per-phase gate (Phase 11–16B+) |
+| `v3.7.x` | runtime-autonomy alpha increments | per-phase gate (Phase 11–16C+) |
 | `v3.7.4-runtime-hint-alpha` (Phase 15) | automatic runtime hints + alpha release readiness | merged 2026-05-01 |
 | `v3.7.5-upstream-runtime-alpha` (Phase 16A) | upstream `structured_request` propagation + restart continuity | merged 2026-05-01 |
-| **`v3.7.6-stabilization-alpha`** (Phase 16B) | stabilization, full-corpus restart, proof soak, 100+ release gate, security self-audit, install/HTTP truth | this document |
+| `v3.7.6-stabilization-alpha` (Phase 16B) | stabilization, full-corpus restart, proof soak, 100+ release gate, security self-audit, install/HTTP truth | merged 2026-05-01 |
+| **`v3.7.7-stable-gate-alpha`** (Phase 16C) | stable-gate closure attempt: Bandit installed and run; full proof re-verification at corpus 104; Docker still unavailable | this document |
 | `v3.8.0` | first stable release | requires the stable gate above |
 | `v4.0.0` | federation / multi-instance work | reserved; not before an explicit federation phase |
 
-Any Phase 16B successor session producing more autonomy-lane improvements should use the next prerelease tag (e.g. `v3.7.7-...-alpha`) until the stable gate is explicitly passed.
+Any Phase 16C successor session producing more autonomy-lane improvements should use the next prerelease tag (e.g. `v3.7.8-...-alpha`) until the stable gate is explicitly passed.
 
 ## Cross-references
 

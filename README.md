@@ -2,17 +2,17 @@
 
 > Local-first deterministic-solver runtime with a bounded six-family auto-growth lane. Alpha. No cloud, no provider in the inner loop.
 
-**Latest alpha (Phase 16B, this release):** stabilization and release-gate audit on top of Phase 16A. The canonical seed library is raised from 98 to 104 (+1 per low-risk family, no allowlist widening) to cross the 100-solver release-gate threshold. A new full-corpus restart-continuity proof (`tools/run_full_restart_continuity_proof.py`) drives all 104 seeds through `AutonomyService.handle_query`, harvests, closes the control-plane SQLite DB, reopens it, and re-serves the same flat upstream input — 104 / 104 served via capability lookup, persisted state identical across reopen, provider/builder delta = 0. A bounded proof-soak (`tools/run_phase16b_proof_soak.py --iterations 5`) runs 15 / 15 iterations across three proofs with no flakes. Bounded security self-audit (`docs/security/PHASE16B_SECURITY_SELF_AUDIT.md`) runs CI grep, `pip-audit`, and manual greps; no unresolved high/critical findings. v3.8.0 stable remains blocked by Docker (unavailable in this session), remote/fresh-clone-against-post-merge-main, and `bandit` (not installed); Phase 16B ships as `v3.7.6-stabilization-alpha` prerelease.
+**Latest alpha (Phase 16C, this release):** stable-gate closure attempt on top of Phase 16B. **Bandit installed and run** for the first time in any release-gate session: zero HIGH or MEDIUM findings reachable from the autonomy inner loop; 16 HIGH findings outside the inner loop are documented `B324` weak-hash lints in cache / dedup / content-addressing code (`hashlib.md5(...)` and `hashlib.sha1(...)` calls that should pass `usedforsecurity=False`). All four canonical proofs (Phase 15 hint, Phase 16A upstream, Phase 16B full-corpus restart, 3-iteration proof soak) re-run successfully on the Phase 16C branch at corpus 104 with `provider_jobs_delta = builder_jobs_delta = 0` and zero flakes. **v3.8.0 stable remains blocked** by Docker (still unavailable in this development shell). Phase 16C ships as `v3.7.7-stable-gate-alpha` prerelease — material progress over Phase 16B (Bandit now run; 9-iteration soak repeated; full-corpus restart re-confirmed) but stable still blocked by Docker.
 
 **Still alpha / not implemented:** real Anthropic / OpenAI HTTP adapters (only `dry_run_stub` and `claude_code_builder_lane` exercisable end-to-end); Stage-2 atomic flip (specified in `docs/architecture/STAGE2_CUTOVER_RFC.md` but not executed); actuator-side autonomy; federation; high-risk family auto-promotion; HTTP `/api/autonomy/query` route (the FastAPI route surface for query is not exposed; v3.8.0 is library/service-layer-stable, not HTTP-API-stable); production-grade Docker deployment story (see `docs/deployment/DOCKER_QUICKSTART.md`).
 
 **Consciousness?** No. The autonomy mechanisms here are engineering primitives (auto-growth, runtime harvest, capability-aware dispatch, hot-path cache), each mapped to a code path, persisted event, and regression test. WaggleDance does not claim to be conscious, sentient, aware, alive, or AGI. See `docs/github/REPOSITORY_PRESENTATION.md` for the external presentation summary and `docs/release/RELEASE_READINESS.md` for the alpha/release tag policy.
 
-[![Tests](https://img.shields.io/badge/tests-Phase%2016B%20targeted%20green-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-Phase%2016C%20targeted%20green-brightgreen)]()
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10..P14%20%2B%20P15..P16B%20stabilization--alpha-blue)]()
+[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10..P14%20%2B%20P15..P16C%20stable--gate--alpha-blue)]()
 
 ## What this is
 

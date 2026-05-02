@@ -1,0 +1,208 @@
+{
+  "phase": "Phase 16D P1 — stable gate ledger (initial; updated as P2-P12 complete)",
+  "session_started_utc": "2026-05-02",
+  "stable_target": "v3.8.0",
+  "prerelease_fallback": "v3.7.8-docker-gate-alpha",
+  "no_tag_fallback": "no tag if no material progress / B324 cleanup reverted",
+  "fail_closed_rule": "v3.8.0 stable is allowed only if every required-for-stable gate is PASS on the post-merge main SHA. Docker unavailable in this dev shell -> stable is BLOCKED regardless of other gates. Realistic Phase 16D outcome is B (v3.7.8-docker-gate-alpha) or C (no tag).",
+  "environment_pre_check_decision": "stable_v3_8_0_possible_in_this_session = false (docker_available = false)",
+  "gates": [
+    {
+      "gate_id": "g01",
+      "title": "Docker end-to-end",
+      "required_for_stable": true,
+      "initial_status": "FAIL_NOT_VERIFIED",
+      "evidence_source": "P0 ENVIRONMENT PRE-CHECK + Phase 16C carry-over",
+      "remaining_action": "documented in P3 docker_verification.md; external operator must verify",
+      "stable_blocker": true,
+      "phase_16c_status": "FAIL_NOT_VERIFIED"
+    },
+    {
+      "gate_id": "g02",
+      "title": "Remote/fresh clone reproduction post-merge",
+      "required_for_stable": true,
+      "initial_status": "PARTIAL",
+      "evidence_source": "Phase 16B P13.5 PASSED vs bada64c; Phase 16C P10 PASSED vs b87fbe4. Phase 16D P9.5 (branch-ref) + P10 (post-merge main) will re-verify.",
+      "remaining_action": "P9.5 + P10",
+      "stable_blocker": true,
+      "phase_16c_status": "PASS"
+    },
+    {
+      "gate_id": "g03",
+      "title": "README current truth",
+      "required_for_stable": true,
+      "initial_status": "PASS_CARRY",
+      "evidence_source": "Phase 16C refresh; P6 will refresh for Phase 16D",
+      "remaining_action": "P6",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g04",
+      "title": "100+ solver proof",
+      "required_for_stable": true,
+      "initial_status": "PASS_CARRY",
+      "evidence_source": "corpus 104 since Phase 16B; Phase 16C re-confirmed",
+      "remaining_action": "P4 will re-confirm in Phase 16D",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g05",
+      "title": "Security audit / Bandit",
+      "required_for_stable": true,
+      "initial_status": "PARTIAL_IMPROVED",
+      "evidence_source": "Phase 16C ran Bandit (16 HIGH B324 lints in non-inner-loop cache code). Phase 16D P2 will attempt usedforsecurity=False cleanup with persisted semantics preservation guard.",
+      "remaining_action": "P2",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g06",
+      "title": "Provider/builder delta = 0 in inner-loop proofs",
+      "required_for_stable": true,
+      "initial_status": "PASS_CARRY",
+      "evidence_source": "0/0 in all Phase 16C proofs; P4 will re-confirm",
+      "remaining_action": "P4",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g07",
+      "title": "Full-corpus restart proof",
+      "required_for_stable": true,
+      "initial_status": "PASS_CARRY",
+      "evidence_source": "Phase 16C P4 PASSED 104/104; P4 will re-run in Phase 16D",
+      "remaining_action": "P4",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g08",
+      "title": "Proof soak no-flake",
+      "required_for_stable": true,
+      "initial_status": "PASS_CARRY",
+      "evidence_source": "Phase 16B 15/15 + Phase 16C 9/9 no flakes; P4 will re-run 3-iter soak",
+      "remaining_action": "P4",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g09",
+      "title": "Stage-2 atomic flip remains unexecuted",
+      "required_for_stable": true,
+      "initial_status": "PASS",
+      "evidence_source": "docs/atomic_flip_prep/00_README.md PREPARATION ONLY",
+      "remaining_action": "verify no change at end of session",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g10",
+      "title": "No HUMAN_APPROVAL collected",
+      "required_for_stable": true,
+      "initial_status": "PASS",
+      "evidence_source": "RULE 5; not touching docs/atomic_flip_prep/",
+      "remaining_action": "verify no change at end of session",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g11",
+      "title": "No allowlist widening",
+      "required_for_stable": true,
+      "initial_status": "PASS",
+      "evidence_source": "LOW_RISK_FAMILY_KINDS unchanged; no seed library changes in Phase 16D",
+      "remaining_action": "verify no change at end of session",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g12",
+      "title": "No high-risk auto-promotion",
+      "required_for_stable": true,
+      "initial_status": "PASS",
+      "evidence_source": "low_risk_policy.is_low_risk_family blocks anything off the six-family allowlist",
+      "remaining_action": "verify no change at end of session",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g13",
+      "title": "No actuator autonomy",
+      "required_for_stable": true,
+      "initial_status": "PASS",
+      "evidence_source": "auto-promoted solvers consultable, not authoritative",
+      "remaining_action": "verify no change at end of session",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g14",
+      "title": "Control-plane / MAGMA truth preserved",
+      "required_for_stable": true,
+      "initial_status": "PASS_CARRY",
+      "evidence_source": "no schema changes; no data-model changes in Phase 16D scope",
+      "remaining_action": "verify after B324 cleanup that persisted semantics preserved (P2)",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g15",
+      "title": "Release docs truth",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P6",
+      "evidence_source": "P6 will refresh for Phase 16D outcome",
+      "remaining_action": "P6",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g16",
+      "title": "Tag target correctness",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P12",
+      "evidence_source": "P12 post-tag verification",
+      "remaining_action": "P12",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g17",
+      "title": "GitHub release metadata correctness",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P12",
+      "evidence_source": "P12 post-tag verification",
+      "remaining_action": "P12",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g18",
+      "title": "CI green on PR head SHA",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P9",
+      "evidence_source": "P9 PR creation + CI poll",
+      "remaining_action": "P9",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g19",
+      "title": "Docker runtime no-network proof",
+      "required_for_stable": true,
+      "initial_status": "FAIL_NOT_VERIFIED",
+      "evidence_source": "Docker unavailable; same as g01",
+      "remaining_action": "documented in P3",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g20",
+      "title": "Fresh-clone tag fetch verification",
+      "required_for_stable": true,
+      "initial_status": "PASS_CARRY",
+      "evidence_source": "Phase 16B P13.5 + Phase 16C P10 verified all v3.6.x + v3.7.x tags visible in fresh clone; Phase 16D P9.5 + P10 will re-verify with v3.7.7 tag",
+      "remaining_action": "P9.5 + P10",
+      "stable_blocker": true
+    },
+    {
+      "gate_id": "g21",
+      "title": "Persisted semantic fingerprint preservation across B324 cleanup",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P2",
+      "evidence_source": "P2 will capture pre-baseline + apply B324 fixes + capture post-baseline + compare",
+      "remaining_action": "P2 — persisted_semantics_preservation.md",
+      "stable_blocker": true
+    }
+  ],
+  "summary": {
+    "stable_eligible_at_p1": false,
+    "rationale": "Docker unavailable in dev shell makes stable_v3_8_0_possible_in_this_session = false per master-prompt P0 ENVIRONMENT PRE-CHECK. Phase 16D pursues outcome B (v3.7.8-docker-gate-alpha) if B324 cleanup PASSES with persisted semantics preserved, otherwise C (no tag). g05 + g21 are the deciding gates for prerelease eligibility.",
+    "next_phases_required_for_prerelease_decision": ["P2", "P4", "P6", "P7"],
+    "decision_phase": "P8"
+  }
+}

@@ -1,5 +1,53 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 16C — stable-gate closure attempt: Bandit + Docker + v3.8.0 release decision] — 2026-05-02
+
+Branch: `phase16c/stable-gate-closure`. Stable-gate closure sprint on top of Phase 16B. **Outcome: prerelease `v3.7.7-stable-gate-alpha`** (stable v3.8.0 still blocked by g01 Docker, which remained unavailable in this dev shell). Material progress on g05 Bandit: installed and run for the first time; no HIGH/MEDIUM findings reachable from autonomy inner loop; 16 HIGH `B324` weak-hash lints documented in non-inner-loop cache code with planned follow-up.
+
+### Added
+
+- `docs/security/PHASE16C_SECURITY_AUDIT.md` — Phase 16C security audit document. Bandit 1.9.4 ran on `waggledance/` and `core/` (74,639 LOC). Per-finding classification, per-severity breakdown, inner-loop reachability analysis (zero HIGH/MEDIUM in inner loop). pip-audit re-run; CI grep equivalent re-run (clean). Stable-gate disposition: g05 PARTIAL_IMPROVED (Bandit ran; HIGH findings unreachable from inner loop; strict no-high reading still blocks v3.8.0).
+- `docs/runs/phase16c_stable_gate_closure_2026_05_02/`:
+  * `session_state.json` — Phase 16C baseline reconciliation, TIER A invariants verified.
+  * `stable_gate_inventory.{json,md}` — 18-gate stable / prerelease ledger.
+  * `bandit_report.json` — full Bandit JSON output.
+  * `docker_verification.md` — Phase 16C P3 Docker truth (CLI still not installed; documented blocker preserved).
+  * `proof_rerun_report.md` — Phase 16C P4 re-run results: all four proofs PASS at corpus 104, soak 9/9 no flakes.
+  * `automatic_runtime_hint_proof.{json,md,db}` — Phase 16C re-run output (Phase 15 proof at corpus 104).
+  * `upstream_structured_request_proof.{json,md,db}` — Phase 16C re-run output (Phase 16A proof at corpus 104).
+  * `full_restart_continuity_proof.{json,md,db}` — Phase 16C re-run output (Phase 16B P2 proof at corpus 104).
+  * `proof_soak_report.json` — Phase 16C 3-iteration soak (9/9 pass).
+  * `fresh_clone_reproduction.md` — Phase 16C P5 local-clone done; branch-ref + post-merge clones in P9/P10.
+  * `release_decision.md` — Phase 16C P8 decision: v3.7.7-stable-gate-alpha (Docker still blocks stable).
+
+### Behaviour
+
+- No autonomy code changes. Phase 16C is a stabilization / release-gate sprint, not a feature sprint.
+- All four canonical proofs (Phase 15 hint, Phase 16A upstream, Phase 16B full-corpus restart, 3-iteration proof soak) re-run successfully on the Phase 16C branch with `corpus_total = 104`, `auto_promotions_total = 104`, `provider_jobs_delta = builder_jobs_delta = 0`, no flakes. Output written to Phase 16C session folder so Phase 11–16B canonical artifacts remain untouched.
+- `LICENSE-CORE.md` unchanged (no new core files in this sprint).
+
+### Stable v3.8.0 release-gate audit
+
+`docs/release/RELEASE_READINESS.md` updated. The fail-closed decision after Phase 16C:
+
+* **g01 Docker end-to-end** — still FAIL/NOT_VERIFIED (CLI unavailable in dev shell). **Stable blocker.**
+* **g02 Remote/fresh-clone** — Phase 16B P13.5 PASSED against post-merge main `bada64c`; Phase 16C P10 will re-verify against post-Phase-16C-merge SHA. **Will PASS for Phase 16C** if P10 succeeds.
+* **g05 Security audit** — Phase 16C IMPROVED from PARTIAL (Bandit unavailable) to PARTIAL_IMPROVED (Bandit ran; no HIGH/MEDIUM in inner loop; 16 HIGH B324 weak-hash lints documented as not reachable from inner loop, planned for follow-up cleanup). **Strict no-high reading still blocks v3.8.0.**
+* All other gates carry forward as PASS from Phase 16B.
+
+Outcome: **`v3.7.7-stable-gate-alpha` prerelease**. Material progress (Bandit ran, full proof re-verification, 9/9 soak); v3.8.0 stable still blocked by Docker.
+
+### What did NOT change
+
+- All Phase 11–16B code, tests, tools, and canonical proof artifacts (no overwrites of `docs/runs/phase11_*` through `docs/runs/phase16b_*`).
+- The six-family low-risk allowlist (RULE 7).
+- The Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates).
+- Real Anthropic / OpenAI HTTP adapters (still follow-up).
+- HTTP `/api/autonomy/query` route (deliberate scope limit; v3.8.0 is library/service-layer-stable, not HTTP-API-stable).
+- Phase 9 14-stage human-gated promotion ladder.
+- Single-process scope (RULE 10).
+- No consciousness claim.
+
 ## [Phase 16B — stabilization, full-corpus restart, proof soak, 100+ release gate, security self-audit] — 2026-05-01
 
 Branch: `phase16b/stabilization-release-gate`. Stabilization and release-gate audit on top of Phase 16A. Outcome: prerelease `v3.7.6-stabilization-alpha` (stable v3.8.0 blocked by three explicit fail-closed gates: Docker unavailable in dev shell, remote/fresh-clone deferred to post-merge main verification, `bandit` not installed).

@@ -1,12 +1,23 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-05-01
-**Version:** v3.6.0 + P10..P14 + P15..P16B stabilization (alpha) on `main`
-**Shipped branch:** `main` at `d18e1da` (Phase 16A squash-merge of [PR #63](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/63)). Phase 16B merge SHA recorded post-merge. Earlier history: Phase 15 squash-merge of [PR #62](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/62) at `2b9978d`; Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) at `08b7e8c` on top of `8bf1869` (post-v3.6.0 truthfulness commit) on top of `a1c4152` (PR #51 squash).
-**Tag:** [`v3.7.5-upstream-runtime-alpha`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.7.5-upstream-runtime-alpha) — Phase 16A prerelease. Recommended next: `v3.7.6-stabilization-alpha` (Phase 16B) — created only after the Phase 16B PR merges and post-merge release-doc check passes.
+**Updated:** 2026-05-02
+**Version:** v3.6.0 + P10..P14 + P15..P16C stable-gate (alpha) on `main`
+**Shipped branch:** `main` at `bada64c` (Phase 16B squash-merge of [PR #64](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/64)). Phase 16C merge SHA recorded post-merge. Earlier history: Phase 16A squash-merge of [PR #63](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/63) at `d18e1da`; Phase 15 squash-merge of [PR #62](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/62) at `2b9978d`; Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) at `08b7e8c` on top of `8bf1869` (post-v3.6.0 truthfulness commit) on top of `a1c4152` (PR #51 squash).
+**Tag:** [`v3.7.6-stabilization-alpha`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.7.6-stabilization-alpha) — Phase 16B prerelease. Recommended next: `v3.7.7-stable-gate-alpha` (Phase 16C) — created only after the Phase 16C PR merges and post-merge release-doc check passes.
 **CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
 
-### Phase 16B — Stabilization, full-corpus restart, proof soak, 100+ release gate, security self-audit (landing 2026-05-01)
+### Phase 16C — Stable-gate closure attempt: Bandit + Docker + v3.8.0 release decision (landing 2026-05-02)
+
+Phase 16C is a stable-gate closure sprint. It does not introduce new autonomy mechanisms. It attempts to close the two remaining v3.8.0 stable blockers from Phase 16B (Docker end-to-end, Bandit security audit) and re-verifies all carry-forward gates.
+
+* **Bandit installed and run for the first time.** `python -m pip install bandit` (audit-tooling only, NOT added to runtime requirements). `python -m bandit -r waggledance/ core/` against 74,639 lines of code. Result: 16 HIGH (all `B324` weak-hash lints in cache / dedup / content-addressing code), 28 MEDIUM (mostly `B615 huggingface_unsafe_download` model-loading lints in NLP/translation lanes), 226 LOW (defensive try/except/pass, asserts, `B105` false-positive matches against literal status / threshold values). **Zero HIGH or MEDIUM findings reachable from the autonomy inner loop.** All 9 inner-loop findings are LOW false-positives. Full audit at `docs/security/PHASE16C_SECURITY_AUDIT.md`. Bandit JSON at `docs/runs/phase16c_stable_gate_closure_2026_05_02/bandit_report.json`.
+* **Docker still unavailable in dev shell.** `docker version` → command not found. Same situation as Phase 16B P6. `Dockerfile` and `docker-compose.yml` unchanged; documented commands in `DOCKER_QUICKSTART.md` remain "not tested in this session". An external operator with Docker installed must verify before stable v3.8.0.
+* **All four canonical proofs re-run on Phase 16C branch at corpus 104.** Phase 15 hint: 104 promotions, provider/builder Δ = 0. Phase 16A upstream: 104 derived structured_request, 104 derived low_risk_hint, 104 served via capability lookup. Phase 16B full-corpus restart: 104 / 104 served pre and post DB close+reopen, persisted state identical, all restart invariants true, provider/builder Δ across restart = 0. **3-iteration proof soak: 9 / 9 iterations pass at corpus 104, no flakes.**
+* **Stable v3.8.0 BLOCKED by Docker.** g05 Bandit improved from PARTIAL (Phase 16B) to PARTIAL_IMPROVED (Phase 16C — Bandit now run). g01 Docker remains FAIL_NOT_VERIFIED. Per fail-closed rule, the prerelease outcome is `v3.7.7-stable-gate-alpha`. The follow-up to unblock v3.8.0 is documented: install Docker on a verification machine; run the documented Docker proofs; optionally apply a `chore(security): silence Bandit B324 weak-hash lints` cleanup that adds `usedforsecurity=False` to the 16 affected `hashlib.md5(...)` / `hashlib.sha1(...)` calls.
+
+What did NOT change: Phase 9 14-stage human-gated promotion ladder; Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates that, unexecuted); `_DEFAULT_FAISS_DIR` (still `data/faiss/`); real Anthropic/OpenAI HTTP adapters (still follow-up); HTTP `/api/autonomy/query` route (does not exist; deliberate scope limit); single-process scope (RULE 10); no consciousness claim. No new files in `waggledance/core/*`; no LICENSE-CORE.md additions needed.
+
+### Phase 16B — Stabilization, full-corpus restart, proof soak, 100+ release gate, security self-audit (landed on main 2026-05-01)
 
 Phase 16B is a stabilization and release-gate audit. It does not introduce new autonomy mechanisms; it hardens reproducibility, restart survival, repeatability, security auditability, and release-doc truth so an external GitHub reader can decide whether v3.8.0 stable is justified.
 

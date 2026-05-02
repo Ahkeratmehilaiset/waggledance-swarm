@@ -1,0 +1,101 @@
+{
+  "phase": "Phase 16C — stable gate closure: Docker + Bandit + v3.8.0 release decision",
+  "session_started_utc": "2026-05-02",
+  "branch": "phase16c/stable-gate-closure",
+  "baseline": {
+    "origin_main_sha": "bada64c47aeb542bf8d51aa8079e173a1a175618",
+    "local_branch_at_session_start": "main",
+    "local_branch_now": "phase16c/stable-gate-closure",
+    "local_main_equals_origin_main_at_session_start": true,
+    "phase_16b_pr": 64,
+    "phase_16b_merge_sha": "bada64c47aeb542bf8d51aa8079e173a1a175618",
+    "phase_16b_tag": "v3.7.6-stabilization-alpha",
+    "phase_16b_tag_target_sha": "bada64c47aeb542bf8d51aa8079e173a1a175618",
+    "phase_16b_release_isPrerelease": true,
+    "phase_16b_release_publishedAt": "2026-05-01T20:07:04Z"
+  },
+  "tier_a_invariants": {
+    "origin_main_contains_phase_16b_merge": true,
+    "v3_7_6_tag_exists_on_origin": true,
+    "v3_7_6_tag_target_matches_phase_16b_merge": true,
+    "v3_7_6_release_is_prerelease": true,
+    "phase_16b_full_restart_proof_exists": true,
+    "phase_16b_proof_soak_exists": true,
+    "phase_16b_security_audit_doc_exists": true,
+    "phase_16b_release_decision_doc_exists": true,
+    "stage2_atomic_flip_unexecuted": true,
+    "all_tier_a_passed": true
+  },
+  "phase_16b_blockers_for_v3_8_0_inherited": [
+    {
+      "id": "g01",
+      "title": "Docker end-to-end",
+      "phase_16b_status": "FAIL_NOT_VERIFIED",
+      "phase_16c_target": "attempt to verify in P3"
+    },
+    {
+      "id": "g05",
+      "title": "Security audit including Bandit",
+      "phase_16b_status": "PARTIAL_BANDIT_UNAVAILABLE",
+      "phase_16c_target": "attempt Bandit install + run in P2"
+    }
+  ],
+  "phase_16b_gates_already_pass_inherited": [
+    "g02 remote/fresh-clone-against-post-merge-main (PASSED in Phase 16B P13.5)",
+    "g03 latest-proof-reproducible (PASS)",
+    "g04 100+ corpus (PASS at 104)",
+    "g06 README top section accurate (PASS)",
+    "g07 RELEASE_READINESS latest-tag truth (PASS)",
+    "g08 no provider in inner loop (PASS)",
+    "g09 Stage-2 atomic flip unexecuted (PASS)",
+    "g10 promotion ladder unchanged (PASS)",
+    "g11 six-family allowlist unchanged (PASS)",
+    "g12 no consciousness claim (PASS)",
+    "g13 full-corpus restart continuity (PASS)",
+    "g14 proof soak no-flake (PASS)",
+    "g15 install commands consistent layered (PASS)",
+    "g16 HTTP route stable decision documented (PASS)",
+    "g17 tag/release verification plan documented (PASS)"
+  ],
+  "previous_tags_on_origin": [
+    "v3.6.0",
+    "v3.6.1-substrate",
+    "v3.7.0-autogrowth-alpha",
+    "v3.7.1-autoloop-alpha",
+    "v3.7.2-runtime-harvest-alpha",
+    "v3.7.3-hotpath-alpha",
+    "v3.7.4-runtime-hint-alpha",
+    "v3.7.5-upstream-runtime-alpha",
+    "v3.7.6-stabilization-alpha"
+  ],
+  "phase8_5_remote_branches_count": 3,
+  "phase8_5_handling": "read-only inspection only; not touched in this session",
+  "open_prs_in_scope": [],
+  "open_prs_out_of_scope_dependabot_only_count": 7,
+  "stale_untracked_files_at_session_start": [
+    "WD_release_to_main_master_prompt.md",
+    "docs/atomic_flip_prep/03_HUMAN_APPROVAL.yaml",
+    "docs/runs/phase9_pr_body.md"
+  ],
+  "stale_untracked_handling": "do not commit; predate this session",
+  "p0_drift_resolved": [
+    "two phase16b artifacts (full_restart_continuity_proof.{json,md}) had been overwritten by Phase 16B P13.5 post-merge re-run. Restored via `git checkout --` to honor 'do not overwrite Phase 11-16B run artifacts' rule. Phase 16C will write its own re-run output into docs/runs/phase16c_*/ via --out-dir."
+  ],
+  "release_decision_status": "deferred to P8; default fail-closed -> v3.7.7-stable-gate-alpha or no tag unless every stable gate proves PASS including g01 Docker and g05 Bandit",
+  "guardrails_applied": {
+    "no_force_push": true,
+    "no_history_rewrite": true,
+    "pr_only": true,
+    "match_head_commit_only": true,
+    "stage2_atomic_flip_not_executed": true,
+    "human_approval_not_collected": true,
+    "phase8_5_read_only": true,
+    "no_widening_low_risk_allowlist": true,
+    "no_consciousness_claim": true,
+    "no_new_provider_http_adapters": true,
+    "no_actuator_autonomy": true,
+    "no_high_risk_family_auto_promotion": true,
+    "no_federation_or_sharding": true,
+    "no_new_autonomy_features": true
+  }
+}

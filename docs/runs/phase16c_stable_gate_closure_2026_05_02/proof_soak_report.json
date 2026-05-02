@@ -1,0 +1,60 @@
+{
+  "iterations_per_proof": 3,
+  "overall_flake_detected": false,
+  "overall_pass": true,
+  "phase": "16B P3 \u2014 proof soak",
+  "proofs": [
+    {
+      "elapsed_max_s": 38.64,
+      "elapsed_mean_s": 37.96,
+      "elapsed_min_s": 37.22,
+      "elapsed_seconds": [
+        38.64,
+        38.01,
+        37.22
+      ],
+      "first_failure": null,
+      "flake_detected": false,
+      "id": "phase15_runtime_hint",
+      "iterations_failed": 0,
+      "iterations_passed": 3,
+      "iterations_run": 3,
+      "tool": "tools/run_automatic_runtime_hint_proof.py"
+    },
+    {
+      "elapsed_max_s": 39.9,
+      "elapsed_mean_s": 38.85,
+      "elapsed_min_s": 37.96,
+      "elapsed_seconds": [
+        37.96,
+        38.7,
+        39.9
+      ],
+      "first_failure": null,
+      "flake_detected": false,
+      "id": "phase16a_upstream",
+      "iterations_failed": 0,
+      "iterations_passed": 3,
+      "iterations_run": 3,
+      "tool": "tools/run_upstream_structured_request_proof.py"
+    },
+    {
+      "elapsed_max_s": 36.2,
+      "elapsed_mean_s": 35.75,
+      "elapsed_min_s": 35.27,
+      "elapsed_seconds": [
+        36.2,
+        35.27,
+        35.78
+      ],
+      "first_failure": null,
+      "flake_detected": false,
+      "id": "phase16b_full_restart",
+      "iterations_failed": 0,
+      "iterations_passed": 3,
+      "iterations_run": 3,
+      "tool": "tools/run_full_restart_continuity_proof.py"
+    }
+  ],
+  "soak_root": "C:\\Users\\mfi0jjko\\AppData\\Local\\Temp\\phase16b_soak_zncrjyos"
+}

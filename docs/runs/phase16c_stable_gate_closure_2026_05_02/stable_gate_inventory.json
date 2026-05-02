@@ -1,0 +1,214 @@
+{
+  "phase": "Phase 16C P1 — stable gate ledger (initial; updated as P2-P10 complete)",
+  "session_started_utc": "2026-05-02",
+  "stable_target": "v3.8.0",
+  "prerelease_fallback": "v3.7.7-stable-gate-alpha",
+  "no_tag_fallback": "no tag if no material progress",
+  "fail_closed_rule": "v3.8.0 stable is allowed only if every required-for-stable gate is PASS on the post-merge main SHA. Unknown / partial / not-tested / local-only / tool-unavailable / branch-only blocks stable.",
+  "gates": [
+    {
+      "gate_id": "g01",
+      "title": "Docker end-to-end",
+      "stable_required": true,
+      "prerelease_required": false,
+      "status": "pending_p3",
+      "evidence_file": "docs/runs/phase16c_stable_gate_closure_2026_05_02/docker_verification.md",
+      "evidence_summary": "to be established in P3",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "FAIL_NOT_VERIFIED"
+    },
+    {
+      "gate_id": "g02",
+      "title": "Remote/fresh clone reproduction",
+      "stable_required": true,
+      "prerelease_required": false,
+      "status": "pending_p5_and_p10",
+      "evidence_file": "docs/runs/phase16c_stable_gate_closure_2026_05_02/fresh_clone_reproduction.md",
+      "evidence_summary": "Phase 16B P13.5 PASSED against post-merge main bada64c; Phase 16C will re-verify against post-Phase-16C-merge SHA in P10",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g03",
+      "title": "README top-section truth",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "carry_pass",
+      "evidence_file": "README.md",
+      "evidence_summary": "Phase 16B refresh passed; will re-verify in P6",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g04",
+      "title": "Provider/builder delta = 0 in inner-loop proofs",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "carry_pass",
+      "evidence_file": "docs/runs/phase16c_stable_gate_closure_2026_05_02/proof_rerun_report.md",
+      "evidence_summary": "Phase 16B proofs all reported 0/0; P4 will re-confirm",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g05",
+      "title": "Security audit including Bandit",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "pending_p2",
+      "evidence_file": "docs/security/PHASE16C_SECURITY_AUDIT.md",
+      "evidence_summary": "Phase 16B partial (CI grep + manual + pip-audit clean; Bandit unavailable). Phase 16C P2 will attempt Bandit install + run.",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PARTIAL_BANDIT_UNAVAILABLE"
+    },
+    {
+      "gate_id": "g06",
+      "title": "100+ solver proof",
+      "stable_required": true,
+      "prerelease_required": false,
+      "status": "carry_pass",
+      "evidence_file": "docs/runs/phase16c_stable_gate_closure_2026_05_02/proof_rerun_report.md",
+      "evidence_summary": "Phase 16B raised corpus to 104; auto_promotions_total = 104 in all canonical proofs",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g07",
+      "title": "Full-corpus restart continuity",
+      "stable_required": true,
+      "prerelease_required": false,
+      "status": "carry_pass_then_rerun_p4",
+      "evidence_file": "docs/runs/phase16c_stable_gate_closure_2026_05_02/proof_rerun_report.md",
+      "evidence_summary": "Phase 16B P2 PASSED at 104/104; will re-verify in P4 + P10",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g08",
+      "title": "Proof soak / repeatability no-flake",
+      "stable_required": true,
+      "prerelease_required": false,
+      "status": "carry_pass_then_rerun_p4",
+      "evidence_file": "docs/runs/phase16c_stable_gate_closure_2026_05_02/proof_rerun_report.md",
+      "evidence_summary": "Phase 16B P3 15/15 no flakes; P4 will re-soak with 3 iterations",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g09",
+      "title": "Stage-2 atomic flip remains unexecuted",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "carry_pass",
+      "evidence_file": "docs/atomic_flip_prep/00_README.md",
+      "evidence_summary": "PREPARATION ONLY; unchanged",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g10",
+      "title": "Six-family low-risk allowlist unchanged",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "carry_pass",
+      "evidence_file": "waggledance/core/autonomy_growth/low_risk_policy.py",
+      "evidence_summary": "LOW_RISK_FAMILY_KINDS unchanged; +6 seeds in Phase 16B all inside existing six families",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g11",
+      "title": "No actuator-side autonomy",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "carry_pass",
+      "evidence_file": "waggledance/core/autonomy_growth/auto_promotion_engine.py",
+      "evidence_summary": "auto-promoted solvers are consultable, not authoritative; promotion ladder requires human_approval_id for runtime stages",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g12",
+      "title": "No high-risk family auto-promotion",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "carry_pass",
+      "evidence_file": "waggledance/core/autonomy_growth/low_risk_policy.py",
+      "evidence_summary": "low_risk_policy.is_low_risk_family blocks anything off the six-family allowlist; tested",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g13",
+      "title": "Release docs truth",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "pending_p6",
+      "evidence_file": "docs/release/RELEASE_READINESS.md",
+      "evidence_summary": "Phase 16B refresh; P6 will refresh for Phase 16C outcome",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    },
+    {
+      "gate_id": "g14",
+      "title": "GitHub release metadata verification",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "pending_p12",
+      "evidence_file": "docs/runs/phase16c_stable_gate_closure_2026_05_02/release_decision.md",
+      "evidence_summary": "to be established in P12 after tag creation",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS_FOR_v3_7_6"
+    },
+    {
+      "gate_id": "g15",
+      "title": "Tag target SHA verification",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "pending_p12",
+      "evidence_file": "docs/runs/phase16c_stable_gate_closure_2026_05_02/release_decision.md",
+      "evidence_summary": "to be established in P12 after tag creation",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS_FOR_v3_7_6"
+    },
+    {
+      "gate_id": "g16",
+      "title": "CI green on PR head SHA",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "pending_p9",
+      "evidence_file": "GitHub PR checks page",
+      "evidence_summary": "to be established in P9",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS_FOR_PR_64"
+    },
+    {
+      "gate_id": "g17",
+      "title": "Docker docs truth",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "pending_p3_or_p6",
+      "evidence_file": "docs/deployment/DOCKER_QUICKSTART.md",
+      "evidence_summary": "Phase 16B documented honestly as 'not tested in this session'; P3 result will refresh",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS_HONEST"
+    },
+    {
+      "gate_id": "g18",
+      "title": "No consciousness claim",
+      "stable_required": true,
+      "prerelease_required": true,
+      "status": "carry_pass",
+      "evidence_file": "README.md, CHANGELOG.md, docs/release/RELEASE_READINESS.md, docs/github/REPOSITORY_PRESENTATION.md",
+      "evidence_summary": "All Phase 11-16B docs verified; Phase 16C edits will preserve",
+      "blocker_if_not_passed": true,
+      "phase_16b_status": "PASS"
+    }
+  ],
+  "summary": {
+    "stable_eligible_at_p1": false,
+    "rationale": "Phase 16C inherits two open blockers from Phase 16B (g01 Docker FAIL_NOT_VERIFIED and g05 Bandit PARTIAL). P2 attempts to close g05; P3 attempts to close g01. If both close and all other gates remain PASS through P4-P10, v3.8.0 stable is justifiable. If either remains blocked, the fail-closed outcome is v3.7.7-stable-gate-alpha prerelease (or no tag if no material progress).",
+    "next_phases_required_for_stable_decision": ["P2", "P3", "P4", "P5", "P6", "P7"],
+    "decision_phase": "P8"
+  }
+}

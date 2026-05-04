@@ -1,0 +1,272 @@
+[
+  {
+    "_phase17a_family_kind": "scalar_unit_conversion",
+    "candidate_cell": "general",
+    "count": 3,
+    "curiosity_id": "4be9c7b25c575523",
+    "estimated_value": 1.0,
+    "fallback_rate": 0.1,
+    "suspected_gap_type": "missing_solver_for_unit_pair"
+  },
+  {
+    "_phase17a_family_kind": "lookup_table",
+    "candidate_cell": "thermal",
+    "count": 4,
+    "curiosity_id": "da46cbcb972a0b68",
+    "estimated_value": 2.1,
+    "fallback_rate": 0.15,
+    "suspected_gap_type": "lookup_key_not_seeded"
+  },
+  {
+    "_phase17a_family_kind": "threshold_rule",
+    "candidate_cell": "energy",
+    "count": 5,
+    "curiosity_id": "9088a523e70147d1",
+    "estimated_value": 3.2,
+    "fallback_rate": 0.2,
+    "suspected_gap_type": "threshold_band_under_specified"
+  },
+  {
+    "_phase17a_family_kind": "interval_bucket_classifier",
+    "candidate_cell": "safety",
+    "count": 6,
+    "curiosity_id": "a50776ea294b769a",
+    "estimated_value": 4.300000000000001,
+    "fallback_rate": 0.25,
+    "suspected_gap_type": "interval_classifier_boundary_drift"
+  },
+  {
+    "_phase17a_family_kind": "linear_arithmetic",
+    "candidate_cell": "seasonal",
+    "count": 7,
+    "curiosity_id": "2b14a31325374f05",
+    "estimated_value": 5.4,
+    "fallback_rate": 0.3,
+    "suspected_gap_type": "linear_combination_unmodelled"
+  },
+  {
+    "_phase17a_family_kind": "bounded_interpolation",
+    "candidate_cell": "math",
+    "count": 3,
+    "curiosity_id": "6faa2052084b10a2",
+    "estimated_value": 6.5,
+    "fallback_rate": 0.35,
+    "suspected_gap_type": "bounded_interpolation_curve_unfit"
+  },
+  {
+    "_phase17a_family_kind": "scalar_unit_conversion",
+    "candidate_cell": "system",
+    "count": 4,
+    "curiosity_id": "4f4f56bbc3ea090f",
+    "estimated_value": 7.6000000000000005,
+    "fallback_rate": 0.4,
+    "suspected_gap_type": "missing_solver_for_unit_pair"
+  },
+  {
+    "_phase17a_family_kind": "lookup_table",
+    "candidate_cell": "learning",
+    "count": 5,
+    "curiosity_id": "f3b88d5234012b7b",
+    "estimated_value": 1.0,
+    "fallback_rate": 0.45,
+    "suspected_gap_type": "lookup_key_not_seeded"
+  },
+  {
+    "_phase17a_family_kind": "threshold_rule",
+    "candidate_cell": "general",
+    "count": 6,
+    "curiosity_id": "506ea5919c8e33ff",
+    "estimated_value": 2.1,
+    "fallback_rate": 0.5,
+    "suspected_gap_type": "threshold_band_under_specified"
+  },
+  {
+    "_phase17a_family_kind": "interval_bucket_classifier",
+    "candidate_cell": "thermal",
+    "count": 7,
+    "curiosity_id": "ea241a40799a0d48",
+    "estimated_value": 3.2,
+    "fallback_rate": 0.1,
+    "suspected_gap_type": "interval_classifier_boundary_drift"
+  },
+  {
+    "_phase17a_family_kind": "linear_arithmetic",
+    "candidate_cell": "energy",
+    "count": 3,
+    "curiosity_id": "b6b119ccf9723051",
+    "estimated_value": 4.300000000000001,
+    "fallback_rate": 0.15,
+    "suspected_gap_type": "linear_combination_unmodelled"
+  },
+  {
+    "_phase17a_family_kind": "bounded_interpolation",
+    "candidate_cell": "safety",
+    "count": 4,
+    "curiosity_id": "54920a2bbc79b6b5",
+    "estimated_value": 5.4,
+    "fallback_rate": 0.2,
+    "suspected_gap_type": "bounded_interpolation_curve_unfit"
+  },
+  {
+    "_phase17a_family_kind": "scalar_unit_conversion",
+    "candidate_cell": "seasonal",
+    "count": 5,
+    "curiosity_id": "b6c69c6ad7efe10d",
+    "estimated_value": 6.5,
+    "fallback_rate": 0.25,
+    "suspected_gap_type": "missing_solver_for_unit_pair"
+  },
+  {
+    "_phase17a_family_kind": "lookup_table",
+    "candidate_cell": "math",
+    "count": 6,
+    "curiosity_id": "bfded418b71072e9",
+    "estimated_value": 7.6000000000000005,
+    "fallback_rate": 0.3,
+    "suspected_gap_type": "lookup_key_not_seeded"
+  },
+  {
+    "_phase17a_family_kind": "threshold_rule",
+    "candidate_cell": "system",
+    "count": 7,
+    "curiosity_id": "c6720044bb51f141",
+    "estimated_value": 1.0,
+    "fallback_rate": 0.35,
+    "suspected_gap_type": "threshold_band_under_specified"
+  },
+  {
+    "_phase17a_family_kind": "interval_bucket_classifier",
+    "candidate_cell": "learning",
+    "count": 3,
+    "curiosity_id": "849089bb8f1d315a",
+    "estimated_value": 2.1,
+    "fallback_rate": 0.4,
+    "suspected_gap_type": "interval_classifier_boundary_drift"
+  },
+  {
+    "_phase17a_family_kind": "linear_arithmetic",
+    "candidate_cell": "general",
+    "count": 4,
+    "curiosity_id": "8a2c8c4fa6954bc7",
+    "estimated_value": 3.2,
+    "fallback_rate": 0.45,
+    "suspected_gap_type": "linear_combination_unmodelled"
+  },
+  {
+    "_phase17a_family_kind": "bounded_interpolation",
+    "candidate_cell": "thermal",
+    "count": 5,
+    "curiosity_id": "01285def0ac96cdf",
+    "estimated_value": 4.300000000000001,
+    "fallback_rate": 0.5,
+    "suspected_gap_type": "bounded_interpolation_curve_unfit"
+  },
+  {
+    "_phase17a_family_kind": "scalar_unit_conversion",
+    "candidate_cell": "energy",
+    "count": 6,
+    "curiosity_id": "919da1a57d18f7a2",
+    "estimated_value": 5.4,
+    "fallback_rate": 0.1,
+    "suspected_gap_type": "missing_solver_for_unit_pair"
+  },
+  {
+    "_phase17a_family_kind": "lookup_table",
+    "candidate_cell": "safety",
+    "count": 7,
+    "curiosity_id": "79e75b52e89f7e1a",
+    "estimated_value": 6.5,
+    "fallback_rate": 0.15,
+    "suspected_gap_type": "lookup_key_not_seeded"
+  },
+  {
+    "_phase17a_family_kind": "threshold_rule",
+    "candidate_cell": "seasonal",
+    "count": 3,
+    "curiosity_id": "5a95b2b132a6ea8e",
+    "estimated_value": 7.6000000000000005,
+    "fallback_rate": 0.2,
+    "suspected_gap_type": "threshold_band_under_specified"
+  },
+  {
+    "_phase17a_family_kind": "interval_bucket_classifier",
+    "candidate_cell": "math",
+    "count": 4,
+    "curiosity_id": "a3aca173fc07ee6b",
+    "estimated_value": 1.0,
+    "fallback_rate": 0.25,
+    "suspected_gap_type": "interval_classifier_boundary_drift"
+  },
+  {
+    "_phase17a_family_kind": "linear_arithmetic",
+    "candidate_cell": "system",
+    "count": 5,
+    "curiosity_id": "b421c61f53ec3574",
+    "estimated_value": 2.1,
+    "fallback_rate": 0.3,
+    "suspected_gap_type": "linear_combination_unmodelled"
+  },
+  {
+    "_phase17a_family_kind": "bounded_interpolation",
+    "candidate_cell": "learning",
+    "count": 6,
+    "curiosity_id": "4dab8368cbd1175e",
+    "estimated_value": 3.2,
+    "fallback_rate": 0.35,
+    "suspected_gap_type": "bounded_interpolation_curve_unfit"
+  },
+  {
+    "_phase17a_family_kind": "scalar_unit_conversion",
+    "candidate_cell": "general",
+    "count": 7,
+    "curiosity_id": "be4b57e34e51b107",
+    "estimated_value": 4.300000000000001,
+    "fallback_rate": 0.4,
+    "suspected_gap_type": "missing_solver_for_unit_pair"
+  },
+  {
+    "_phase17a_family_kind": "lookup_table",
+    "candidate_cell": "thermal",
+    "count": 3,
+    "curiosity_id": "5704d2bfa5efc46c",
+    "estimated_value": 5.4,
+    "fallback_rate": 0.45,
+    "suspected_gap_type": "lookup_key_not_seeded"
+  },
+  {
+    "_phase17a_family_kind": "threshold_rule",
+    "candidate_cell": "energy",
+    "count": 4,
+    "curiosity_id": "19f41e915e71f017",
+    "estimated_value": 6.5,
+    "fallback_rate": 0.5,
+    "suspected_gap_type": "threshold_band_under_specified"
+  },
+  {
+    "_phase17a_family_kind": "interval_bucket_classifier",
+    "candidate_cell": "safety",
+    "count": 5,
+    "curiosity_id": "ba3761968f3fff6d",
+    "estimated_value": 7.6000000000000005,
+    "fallback_rate": 0.1,
+    "suspected_gap_type": "interval_classifier_boundary_drift"
+  },
+  {
+    "_phase17a_family_kind": "linear_arithmetic",
+    "candidate_cell": "seasonal",
+    "count": 6,
+    "curiosity_id": "b2d9fcc2e1573896",
+    "estimated_value": 1.0,
+    "fallback_rate": 0.15,
+    "suspected_gap_type": "linear_combination_unmodelled"
+  },
+  {
+    "_phase17a_family_kind": "bounded_interpolation",
+    "candidate_cell": "math",
+    "count": 7,
+    "curiosity_id": "27a59530a1084579",
+    "estimated_value": 2.1,
+    "fallback_rate": 0.2,
+    "suspected_gap_type": "bounded_interpolation_curve_unfit"
+  }
+]

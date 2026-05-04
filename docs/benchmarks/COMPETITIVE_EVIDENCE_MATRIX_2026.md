@@ -1,9 +1,10 @@
 # Competitive Evidence Matrix — 2026-Q2
 
-**Status:** Phase 17A snapshot, derived from this session's reproducible artifacts only.
+**Status:** Phase 17A + Phase 17B snapshot, derived from this session's reproducible artifacts only.
 **Date:** 2026-05-04
-**Branch:** `phase17a/producer-fabric-scale` (now on `main` at `c726995c`)
-**Anchor:** `v3.9.0-producer-fabric-alpha` PRERELEASE (released 2026-05-04T18:32:47Z; v3.8.0 remains GitHub Latest)
+**Branch:** `phase17b/local-efficiency-benchmark` (Phase 17A is on `main` at `c726995c`)
+**Anchor:** `v3.9.1-local-efficiency-benchmark-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest, v3.9.0-producer-fabric-alpha remains the previous Pre-release).
+**New evidence this PR:** Phase 17B's `tools/run_phase17b_local_efficiency_benchmark.py` aggregates the existing Phase 11–17A proof outputs into a single benchmark JSON + MD with the master-prompt-mandated metric set (correctness, latency p50/p95/p99, fallback rate, provider/builder delta, audit/provenance coverage, claim labels). Detailed run report: `docs/benchmarks/LOCAL_EFFICIENCY_BENCHMARK_2026.md`.
 
 This is an **engineering** document. It does not market WaggleDance. It enumerates the comparison axes most often used to assess local-first cognitive runtimes, states one factual claim per axis, points to a reproducible artifact in this repo, and labels the claim with one of:
 
@@ -67,11 +68,13 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 
 ### G. 10,000-solver capability scale
 
-* **Claim:** The capability-aware lookup path scales to ≥10,000 auto-promoted solver descriptors balanced across 6 families × 8 hex cells, with sub-millisecond-to-low-ms p50 lookup latency, while keeping provider/builder delta = 0.
-* **Evidence artifacts:** `tools/run_solver_scale_proof.py --descriptors 10000` produces `solver_scale_proof.json` showing `synthetic_solver_descriptors_total = 10000`, `lookup_capability_hits_total = 1000`, `lookup_fifo_fallback_total = 0`, `lookup_miss_total = 0`. `tests/autonomy_growth/test_solver_scale_proof.py` (21/21 PASS at 240 descriptors as a hermetic test) asserts the strict pass criterion.
-* **Measured this session:** at 10,000 synthetic descriptors / 1,000 lookup samples on a 24-CPU / 62 GiB / WSL2 host: build 147 s (~68 descriptors/s), lookup p50 = 4.24 ms, p95 = 10.78 ms, p99 = 14.10 ms.
+* **Claim:** The capability-aware lookup path scales to ≥10,000 auto-promoted solver descriptors balanced across 6 families × 8 hex cells, with low-ms p50 lookup latency, while keeping provider/builder delta = 0.
+* **Evidence artifacts:** `tools/run_solver_scale_proof.py --descriptors 10000` produces `solver_scale_proof.json` showing `synthetic_solver_descriptors_total = 10000`, `lookup_capability_hits_total = 1000`, `lookup_fifo_fallback_total = 0`, `lookup_miss_total = 0`. Phase 17B aggregates this into `phase17b_local_efficiency_benchmark.json` track B with the master-prompt metric set. `tests/autonomy_growth/test_solver_scale_proof.py` (21/21 PASS) and `tests/autonomy_growth/test_phase17b_local_efficiency_benchmark.py` both assert strict pass criteria.
+* **Measured Phase 17A (host run):** build 147.25 s (~68 descriptors/s), lookup p50 = 4.24 ms, p95 = 10.78 ms, p99 = 14.10 ms on the host.
+* **Measured Phase 17A (Docker `--network none` run):** lookup p50 = 0.47 ms, p95 = 0.94 ms, p99 = 1.17 ms on the same host inside `waggledance:phase17a` (`v3.9.0-producer-fabric-alpha-rc`).
+* **Measured Phase 17B (host run, this session):** lookup p50 = 4.33 ms, p95 = 10.98 ms, p99 = 14.39 ms; `release_gate_pass = true`; 1000/1000 hits via `auto_promoted_solver` source.
 * **Honesty caveat:** these are **synthetic** descriptors used only to exercise the data path at scale. The canonical proof corpus is the 128-seed library (Phase 17A P5 expansion). The synthetic descriptors and the canonical corpus are clearly separated in the proof artifacts and labelled `is_synthetic_scale=true, not_canonical_corpus=true`.
-* **Reproduce:** `python tools/run_solver_scale_proof.py --descriptors 10000 --lookup-pass-count 1000`
+* **Reproduce:** `python tools/run_solver_scale_proof.py --descriptors 10000 --lookup-pass-count 1000` or via the aggregator `python tools/run_phase17b_local_efficiency_benchmark.py --skip-ollama --scale-descriptors 10000 --scale-lookups 1000`.
 * **Label:** **MEASURED this session.** **PROVEN** that the data path works (no FIFO fallback, no miss, capability-lookup-only). The 10,000 number itself is a measured ceiling, not an architectural maximum.
 * **Strengthening path:** rerun on a fresh GitHub Actions Linux runner (different hardware) and publish the spread; rerun at 50,000 descriptors and report the build/lookup curve.
 
@@ -92,9 +95,9 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 ### J. LLM / MoE fallback as a hybrid
 
 * **Claim:** The deterministic solver-first runtime can interoperate with an external LLM (Ollama, Anthropic, OpenAI) as a fallback layer. The architecture is provider-pluggable.
-* **Evidence:** `waggledance/adapters/llm/ollama_adapter.py` (real adapter); `waggledance/adapters/llm/dry_run_stub.py` (always-on offline stub); the solver router has a documented fallback step *after* solvers + specialists. Phase 11–17A proofs explicitly do not invoke the LLM lane (provider delta = 0). No live benchmark of the hybrid was taken this session.
-* **Label:** **INFERRED.** The architecture supports the hybrid; the hybrid was not exercised against a benchmark in this session.
-* **Strengthening path:** run the same external benchmark twice — once with the LLM fallback enabled, once disabled — and publish both `coverage` (fraction served by deterministic solver) and the joint accuracy delta.
+* **Evidence:** `waggledance/adapters/llm/ollama_adapter.py` (real adapter); `waggledance/adapters/llm/dry_run_stub.py` (always-on offline stub); the solver router has a documented fallback step *after* solvers + specialists. Phase 11–17A proofs explicitly do not invoke the LLM lane (provider delta = 0). Phase 17B harness includes an **optional** Ollama latency probe (`scenario F`) for the local-only LLM round-trip; default behavior is `SKIPPED` for `--network none` safety. To measure the local hybrid one explicitly opts in via `--include-ollama`. The probe never pulls or downloads a model (master prompt rule 14).
+* **Label:** **INFERRED** for the architecture; **MEASURED-IF-OPTED-IN-LOCALLY** for Ollama latency. The hybrid accuracy delta was not measured this session.
+* **Strengthening path:** run the same external reasoning benchmark twice — once with the LLM fallback enabled, once disabled — and publish both `coverage` (fraction served by deterministic solver) and the joint accuracy delta.
 
 ### K. Industrial / factory / capsule readiness
 
@@ -132,7 +135,7 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 | D. Docker offline `--network none` | PROVEN |
 | E. Restart continuity | PROVEN |
 | F. Producer fabric | PROVEN this session |
-| G. 10k solver capability scale | MEASURED + PROVEN-data-path |
+| G. 10k solver capability scale | MEASURED + PROVEN-data-path (Phase 17A + 17B re-measure) |
 | H. Canonical seed corpus size | PROVEN (128) |
 | I. Raw intelligence vs frontier MoE | **NOT CLAIMED** |
 | J. LLM / MoE hybrid | INFERRED |

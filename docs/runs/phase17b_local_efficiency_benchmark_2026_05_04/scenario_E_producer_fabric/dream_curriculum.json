@@ -1,0 +1,224 @@
+{
+  "continuity_anchor": {
+    "base_commit_hash": "phase17a-fixture",
+    "branch_name": "phase17a/producer-fabric-scale",
+    "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+  },
+  "counts_by_kind": {
+    "calibration_oscillation": 2,
+    "tension": 4
+  },
+  "counts_by_mode": {
+    "introspection": 6,
+    "wait": 1
+  },
+  "nights": [
+    {
+      "dream_objective": "Resolve tension '835c8e3370e50fa9' in cell (unattributed)",
+      "mode": "introspection",
+      "night_index": 1,
+      "primary_cells": [],
+      "primary_source": "deferred_to_dream",
+      "secondary_cells": [],
+      "supporting_evidence": [
+        "6faa2052084b10a2"
+      ],
+      "target_items": [
+        {
+          "blind_spot_bonus": 0.0,
+          "calibration_gap": 0.0,
+          "candidate_cell": null,
+          "dream_priority": 0.066667,
+          "evidence_refs": [
+            "6faa2052084b10a2"
+          ],
+          "expected_value": 1.0,
+          "exploration_bonus": 0.0,
+          "rationale": "tension scorecard_drift: bounded_interpolation score = below floor on 3 validation cases",
+          "recurrence": 1,
+          "severity": 1.0,
+          "source_id": "835c8e3370e50fa9",
+          "source_kind": "tension",
+          "suggested_mode": "introspection"
+        }
+      ],
+      "uncertainty": "medium",
+      "why_now": "dream_priority=0.0667; severity=1.00; recurrence=1"
+    },
+    {
+      "dream_objective": "Resolve calibration_oscillation '50a19f40c45d418c' in cell (unattributed)",
+      "mode": "introspection",
+      "night_index": 2,
+      "primary_cells": [],
+      "primary_source": "deferred_to_dream",
+      "secondary_cells": [],
+      "supporting_evidence": [
+        "9088a523e70147d1"
+      ],
+      "target_items": [
+        {
+          "blind_spot_bonus": 0.0,
+          "calibration_gap": 0.0,
+          "candidate_cell": null,
+          "dream_priority": 0.05,
+          "evidence_refs": [
+            "9088a523e70147d1"
+          ],
+          "expected_value": 1.0,
+          "exploration_bonus": 0.0,
+          "rationale": "tension calibration_oscillation: threshold_rule score = below floor on 3 validation cases",
+          "recurrence": 0,
+          "severity": 1.0,
+          "source_id": "50a19f40c45d418c",
+          "source_kind": "calibration_oscillation",
+          "suggested_mode": "introspection"
+        }
+      ],
+      "uncertainty": "medium",
+      "why_now": "dream_priority=0.0500; severity=1.00; recurrence=0"
+    },
+    {
+      "dream_objective": "Resolve tension '548bfbf7c2f6b982' in cell (unattributed)",
+      "mode": "introspection",
+      "night_index": 3,
+      "primary_cells": [],
+      "primary_source": "deferred_to_dream",
+      "secondary_cells": [],
+      "supporting_evidence": [
+        "da46cbcb972a0b68"
+      ],
+      "target_items": [
+        {
+          "blind_spot_bonus": 0.0,
+          "calibration_gap": 0.0,
+          "candidate_cell": null,
+          "dream_priority": 0.02904,
+          "evidence_refs": [
+            "da46cbcb972a0b68"
+          ],
+          "expected_value": 0.66,
+          "exploration_bonus": 0.0,
+          "rationale": "tension scorecard_drift: lookup_table score = below floor on 2 validation cases",
+          "recurrence": 1,
+          "severity": 0.66,
+          "source_id": "548bfbf7c2f6b982",
+          "source_kind": "tension",
+          "suggested_mode": "introspection"
+        }
+      ],
+      "uncertainty": "high",
+      "why_now": "dream_priority=0.0290; severity=0.66; recurrence=1"
+    },
+    {
+      "dream_objective": "Resolve calibration_oscillation 'b436652c40fdff01' in cell (unattributed)",
+      "mode": "introspection",
+      "night_index": 4,
+      "primary_cells": [],
+      "primary_source": "deferred_to_dream",
+      "secondary_cells": [],
+      "supporting_evidence": [
+        "2b14a31325374f05"
+      ],
+      "target_items": [
+        {
+          "blind_spot_bonus": 0.0,
+          "calibration_gap": 0.0,
+          "candidate_cell": null,
+          "dream_priority": 0.02178,
+          "evidence_refs": [
+            "2b14a31325374f05"
+          ],
+          "expected_value": 0.66,
+          "exploration_bonus": 0.0,
+          "rationale": "tension calibration_oscillation: linear_arithmetic score = below floor on 2 validation cases",
+          "recurrence": 0,
+          "severity": 0.66,
+          "source_id": "b436652c40fdff01",
+          "source_kind": "calibration_oscillation",
+          "suggested_mode": "introspection"
+        }
+      ],
+      "uncertainty": "high",
+      "why_now": "dream_priority=0.0218; severity=0.66; recurrence=0"
+    },
+    {
+      "dream_objective": "Resolve tension '776becadc2b5e1bc' in cell (unattributed)",
+      "mode": "introspection",
+      "night_index": 5,
+      "primary_cells": [],
+      "primary_source": "deferred_to_dream",
+      "secondary_cells": [],
+      "supporting_evidence": [
+        "a50776ea294b769a"
+      ],
+      "target_items": [
+        {
+          "blind_spot_bonus": 0.0,
+          "calibration_gap": 0.0,
+          "candidate_cell": null,
+          "dream_priority": 0.00726,
+          "evidence_refs": [
+            "a50776ea294b769a"
+          ],
+          "expected_value": 0.33,
+          "exploration_bonus": 0.0,
+          "rationale": "tension scorecard_drift: interval_bucket_classifier score = below floor on 1 validation cases",
+          "recurrence": 1,
+          "severity": 0.33,
+          "source_id": "776becadc2b5e1bc",
+          "source_kind": "tension",
+          "suggested_mode": "introspection"
+        }
+      ],
+      "uncertainty": "high",
+      "why_now": "dream_priority=0.0073; severity=0.33; recurrence=1"
+    },
+    {
+      "dream_objective": "Resolve tension '1e491bf5367b0130' in cell (unattributed)",
+      "mode": "introspection",
+      "night_index": 6,
+      "primary_cells": [],
+      "primary_source": "deferred_to_dream",
+      "secondary_cells": [],
+      "supporting_evidence": [
+        "4be9c7b25c575523"
+      ],
+      "target_items": [
+        {
+          "blind_spot_bonus": 0.0,
+          "calibration_gap": 0.0,
+          "candidate_cell": null,
+          "dream_priority": 0.005445,
+          "evidence_refs": [
+            "4be9c7b25c575523"
+          ],
+          "expected_value": 0.33,
+          "exploration_bonus": 0.0,
+          "rationale": "tension calibration_oscillation: scalar_unit_conversion score = below floor on 1 validation cases",
+          "recurrence": 0,
+          "severity": 0.33,
+          "source_id": "1e491bf5367b0130",
+          "source_kind": "tension",
+          "suggested_mode": "introspection"
+        }
+      ],
+      "uncertainty": "high",
+      "why_now": "dream_priority=0.0054; severity=0.33; recurrence=0"
+    },
+    {
+      "dream_objective": "No further dreamable items in this cycle.",
+      "mode": "wait",
+      "night_index": 7,
+      "primary_cells": [],
+      "primary_source": "deferred_to_dream",
+      "secondary_cells": [],
+      "supporting_evidence": [],
+      "target_items": [],
+      "uncertainty": "high",
+      "why_now": "curriculum exhausted"
+    }
+  ],
+  "primary_source": "deferred_to_dream",
+  "schema_version": 1,
+  "secondary_fallback_reason": null
+}

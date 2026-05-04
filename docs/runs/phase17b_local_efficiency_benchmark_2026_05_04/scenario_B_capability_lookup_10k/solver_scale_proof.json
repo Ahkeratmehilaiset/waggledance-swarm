@@ -1,0 +1,66 @@
+{
+  "allowed_families": [
+    "scalar_unit_conversion",
+    "lookup_table",
+    "threshold_rule",
+    "interval_bucket_classifier",
+    "linear_arithmetic",
+    "bounded_interpolation"
+  ],
+  "branch_name": "phase17a/producer-fabric-scale",
+  "build_descriptors_per_second": 60.2,
+  "build_index_time_seconds": 166.0849,
+  "builder_jobs_delta": 0,
+  "descriptors_per_family": {
+    "bounded_interpolation": 1666,
+    "interval_bucket_classifier": 1667,
+    "linear_arithmetic": 1666,
+    "lookup_table": 1667,
+    "scalar_unit_conversion": 1667,
+    "threshold_rule": 1667
+  },
+  "descriptors_per_hex_cell": {
+    "energy": 1252,
+    "general": 1254,
+    "learning": 1248,
+    "math": 1248,
+    "safety": 1248,
+    "seasonal": 1248,
+    "system": 1248,
+    "thermal": 1254
+  },
+  "families_total": 6,
+  "finished_at_utc": "2026-05-04T20:30:15Z",
+  "hex_cells": [
+    "general",
+    "thermal",
+    "energy",
+    "safety",
+    "seasonal",
+    "math",
+    "system",
+    "learning"
+  ],
+  "hex_cells_total": 8,
+  "is_synthetic_scale": true,
+  "lookup_by_source": {
+    "auto_promoted_solver": 1000
+  },
+  "lookup_capability_hits_total": 1000,
+  "lookup_fifo_fallback_total": 0,
+  "lookup_mean_ms": 5.553,
+  "lookup_miss_total": 0,
+  "lookup_p50_ms": 4.3321,
+  "lookup_p95_ms": 10.9753,
+  "lookup_p99_ms": 12.7719,
+  "lookup_pass_count": 1000,
+  "no_allowlist_widening": true,
+  "no_provider_credentials_required": true,
+  "no_runtime_network_required": true,
+  "not_canonical_corpus": true,
+  "phase": "phase17a_solver_scale",
+  "provider_jobs_delta": 0,
+  "schema_version": 1,
+  "started_at_utc": "2026-05-04T20:27:23Z",
+  "synthetic_solver_descriptors_total": 10000
+}

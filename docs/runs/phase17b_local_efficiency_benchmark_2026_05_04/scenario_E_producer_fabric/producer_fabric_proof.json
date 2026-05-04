@@ -1,0 +1,82 @@
+{
+  "allowed_families": [
+    "scalar_unit_conversion",
+    "lookup_table",
+    "threshold_rule",
+    "interval_bucket_classifier",
+    "linear_arithmetic",
+    "bounded_interpolation"
+  ],
+  "branch_name": "phase17a/producer-fabric-scale",
+  "builder_jobs_delta_during_proof": 0,
+  "corpus_total": 30,
+  "finished_at_utc": "2026-05-04T20:31:11Z",
+  "ir_objects_emitted_total": 68,
+  "ir_objects_per_kind": {
+    "curiosity": 30,
+    "dream_curriculum": 6,
+    "dream_meta_proposal": 2,
+    "hive_proposals": 8,
+    "review_bundle": 8,
+    "self_model": 14
+  },
+  "negative_cases": [
+    {
+      "asserted": "no IR objects emitted from empty log",
+      "case": "missing_curiosity_log",
+      "passed": true
+    },
+    {
+      "asserted": "0 IR objects from malformed self_model",
+      "case": "malformed_self_model",
+      "passed": true
+    },
+    {
+      "asserted": "no auto-promotion past review_ready",
+      "case": "high_risk_proposal_not_promoted",
+      "passed": true
+    },
+    {
+      "asserted": "orchestrator rejects HUMAN_APPROVAL collection in build/proof session",
+      "case": "human_approval_in_offline_proof",
+      "passed": true,
+      "rejection_kind": "rejected_human_approval_in_offline_proof"
+    },
+    {
+      "asserted": "orchestrator rejects Stage-2 flip in build/proof session",
+      "case": "stage2_flip_request_in_offline_proof",
+      "passed": true,
+      "rejection_kind": "rejected_stage2_flip_in_offline_proof"
+    },
+    {
+      "asserted": "family outside six-allowlist rejected",
+      "case": "unknown_family_rejected",
+      "passed": true,
+      "rejected_family": "NOT_IN_ALLOWLIST_phase17a_neg"
+    }
+  ],
+  "negative_cases_passed": 6,
+  "negative_cases_total": 6,
+  "no_allowlist_widening": true,
+  "no_human_approval_collected": true,
+  "no_provider_credentials_required": true,
+  "no_runtime_network_required": true,
+  "no_stage2_flip_executed": true,
+  "phase": "phase17a_producer_fabric",
+  "pinned_input_manifest_sha256": "28c3515ac2b13c1e",
+  "produced_artifacts": {
+    "curiosity_log.json": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_E_producer_fabric\\curiosity_log.json",
+    "dream_curriculum.json": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_E_producer_fabric\\dream_curriculum.json",
+    "hive_proposals_and_review_bundle.json": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_E_producer_fabric\\hive_proposals_and_review_bundle.json",
+    "self_model_snapshot.json": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_E_producer_fabric\\self_model_snapshot.json"
+  },
+  "producers_run": [
+    "curiosity",
+    "self_model",
+    "dream",
+    "hive"
+  ],
+  "provider_jobs_delta_during_proof": 0,
+  "schema_version": 1,
+  "started_at_utc": "2026-05-04T20:31:11Z"
+}

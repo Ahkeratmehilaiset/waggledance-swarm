@@ -1,0 +1,70 @@
+{
+  "session_name": "phase17b_local_efficiency_benchmark",
+  "session_date_utc": "2026-05-04",
+  "session_kind": "benchmark_infrastructure_sprint_and_prerelease",
+  "operator": "Jani Korpi",
+  "wall_clock_budget_hours": 10,
+  "operator_decisions": {
+    "working_tree_approach": "B_clean_worktree",
+    "worktree_path": "C:/Python/project2-phase17b-local-efficiency-benchmark",
+    "primary_branch": "phase17b/local-efficiency-benchmark",
+    "session_folder": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/",
+    "autonomy_level": "full_to_release_decision",
+    "merge_authority": "autonomous_squash_match_head_commit_if_guardrails_pass",
+    "tag_authority_v3_9_1_alpha": "create_only_if_all_gates_pass_PRERELEASE_only",
+    "tag_authority_no_tag": "if_any_required_gate_fails",
+    "v3_8_0_modification_authority": "NONE",
+    "v3_9_0_alpha_modification_authority": "NONE",
+    "stable_v3_9_1_or_later": "FORBIDDEN_THIS_SESSION"
+  },
+  "p0_baseline_v3_8_0_invariants": {
+    "tag_object_sha": "7fc7725f757a5f1a9a0bcc07f66093ed0b6c1a00",
+    "tag_target_sha": "824176ebf2a6b8debed41982090a125cbe2ddad1",
+    "is_prerelease": false,
+    "published_at_utc": "2026-05-04T07:13:27Z",
+    "github_latest": true,
+    "verified_unchanged_at_p0": true
+  },
+  "p0_baseline_v3_9_0_alpha_invariants": {
+    "tag_target_sha": "c726995c816ee4c09e031c2190c3de6592e82879",
+    "is_prerelease": true,
+    "published_at_utc": "2026-05-04T18:32:47Z",
+    "verified_unchanged_at_p0": true
+  },
+  "p0_baseline_origin_main": {
+    "head_sha": "363ffa2589bd8fff729c5d69922364b3f689a42d",
+    "head_phase": "Phase 17A post-release docs (PR #72)"
+  },
+  "p0_baseline_ollama": {
+    "binary_path": "/c/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama",
+    "version": "0.22.1",
+    "models_present_count": 9,
+    "models_for_baseline_consideration": [
+      "qwen3:0.6b",
+      "qwen3:1.7b",
+      "phi4-mini:latest",
+      "phi4-mini-reasoning:latest",
+      "deepseek-r1:1.5b",
+      "gemma4:e4b",
+      "gemma4:26b",
+      "all-minilm:latest",
+      "nomic-embed-text:latest"
+    ],
+    "selected_for_baseline": "phi4-mini:latest",
+    "selection_reason": "WaggleDance documented default Ollama model in waggledance/adapters/llm/ollama_adapter.py; smallest representative chat model among already-present models; 2.5 GB",
+    "will_pull_or_download": false,
+    "will_call_cloud_apis": false
+  },
+  "p0_invariants_verified": [
+    "C_drive_not_RAM_disk",
+    "git_remote_origin_is_real_github_https",
+    "v3_8_0_unchanged",
+    "v3_9_0_alpha_unchanged",
+    "main_at_phase17a_post_release_docs",
+    "operator_dirty_worktree_NOT_TOUCHED",
+    "ollama_present_with_existing_models"
+  ],
+  "p0_status": "PASS",
+  "p0_blockers": [],
+  "next_phase": "P1_planning_benchmark_scope"
+}

@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Phase 17B — Local AI Efficiency Benchmark Harness / v3.9.1-local-efficiency-benchmark-alpha CANDIDATE] — 2026-05-04
+## [Phase 17B — Local AI Efficiency Benchmark Harness / v3.9.1-local-efficiency-benchmark-alpha PRERELEASE] — 2026-05-04
 
-Branch: `phase17b/local-efficiency-benchmark`. Benchmark-infrastructure sprint on top of v3.9.0-producer-fabric-alpha. **Outcome (pre-merge): CANDIDATE PRERELEASE `v3.9.1-local-efficiency-benchmark-alpha`**. Tag created only after this PR merges, post-merge benchmark reproduces, and Docker `--network none` reproduces. v3.8.0 stable + v3.9.0-producer-fabric-alpha both remain unchanged.
+Branch: `phase17b/local-efficiency-benchmark`. Benchmark-infrastructure sprint on top of v3.9.0-producer-fabric-alpha. **Outcome: PRERELEASE `v3.9.1-local-efficiency-benchmark-alpha` published 2026-05-04T20:59:09Z**. PR #73 squash-merged at 2026-05-04T20:53:00Z (merge commit `f4d0a4a4`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0-producer-fabric-alpha both remain unchanged.
 
 ### Added (production code)
 

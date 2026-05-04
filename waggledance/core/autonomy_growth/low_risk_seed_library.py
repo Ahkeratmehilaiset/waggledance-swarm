@@ -63,6 +63,11 @@ _SCALAR_SEEDS: tuple[tuple[str, str, str, str, float, float], ...] = (
     ("days_to_hours",              "system",  "d",   "h",   24.0,                0.0),
     # Phase 16B P4 expansion (+1 to cross 100-solver release gate)
     ("watt_hours_to_joules",       "energy",  "Wh",  "J",   3600.0,              0.0),
+    # Phase 17A P5 expansion (+4)
+    ("liters_to_gallons_uk",       "math",    "L",   "gal_uk", 0.219969,         0.0),
+    ("gallons_to_liters_us",       "math",    "gal_us","L",  3.78541,            0.0),
+    ("joules_to_calories",         "energy",  "J",   "cal", 0.239006,            0.0),
+    ("calories_to_joules",         "energy",  "cal", "J",   4.184,               0.0),
 )
 
 
@@ -140,6 +145,21 @@ _LOOKUP_SEEDS: tuple[tuple[str, str, str, dict, Any], ...] = (
       {"jan": "Q1", "feb": "Q1", "mar": "Q1", "apr": "Q2", "may": "Q2",
        "jun": "Q2", "jul": "Q3", "aug": "Q3", "sep": "Q3",
        "oct": "Q4", "nov": "Q4", "dec": "Q4"}, "?"),
+    # Phase 17A P5 expansion (+4)
+    ("iata_country",           "general",  "iata",
+      {"HEL": "FI", "ARN": "SE", "OSL": "NO", "CPH": "DK",
+       "LHR": "GB", "JFK": "US", "NRT": "JP", "FRA": "DE"}, "??"),
+    ("protocol_to_port",       "system",   "protocol",
+      {"http": 80, "https": 443, "ssh": 22, "ftp": 21,
+       "smtp": 25, "dns": 53, "postgres": 5432, "redis": 6379}, -1),
+    ("emoji_to_sentiment",     "general",  "emoji_sentiment",
+      {"happy": "positive", "joy": "positive", "neutral": "neutral",
+       "sad": "negative", "angry": "negative", "calm": "neutral"},
+      "neutral"),
+    ("weekday_to_seasonality", "seasonal", "weekday_seasonality",
+      {"mon": "weekday", "tue": "weekday", "wed": "weekday",
+       "thu": "weekday", "fri": "weekday",
+       "sat": "weekend", "sun": "weekend"}, "?"),
 )
 
 
@@ -189,6 +209,11 @@ _THRESHOLD_SEEDS: tuple[tuple[str, str, str, float, str, str, str], ...] = (
     ("freezer_alarm_above_neg5","thermal", "freezer_temp_c", -5.0, ">", "thaw_risk", "ok"),
     # Phase 16B P4 expansion (+1 to cross 100-solver release gate)
     ("solar_yield_above_50kwh","energy",   "daily_solar_kwh", 50.0, ">=", "high",     "low"),
+    # Phase 17A P5 expansion (+4)
+    ("high_pressure_above_1020", "seasonal", "pressure_hpa",   1020.0, ">",  "high",       "normal"),
+    ("gpu_critical_above_85",    "system",   "gpu_pct",        85.0,  ">=", "critical",   "ok"),
+    ("low_disk_below_10pct",     "system",   "free_disk_pct",  10.0,  "<",  "low",        "ok"),
+    ("humid_critical_above_85",  "thermal",  "humidity_pct",   85.0,  ">=", "condensation_risk", "ok"),
 )
 
 
@@ -306,6 +331,36 @@ _INTERVAL_SEEDS: tuple[tuple[str, str, str, list, Any], ...] = (
         {"min": 1000.0, "max": 2000.0, "label": "stale"},
         {"min": 2000.0, "max": 100000.0, "label": "bad"},
     ], "out"),
+    # Phase 17A P5 expansion (+4)
+    ("aqi_band", "safety", "air_quality_index", [
+        {"min": 0.0, "max": 50.0, "label": "good"},
+        {"min": 50.0, "max": 100.0, "label": "moderate"},
+        {"min": 100.0, "max": 150.0, "label": "unhealthy_sg"},
+        {"min": 150.0, "max": 200.0, "label": "unhealthy"},
+        {"min": 200.0, "max": 300.0, "label": "very_unhealthy"},
+        {"min": 300.0, "max": 500.01, "label": "hazardous"},
+    ], "out"),
+    ("light_level_band", "general", "lux", [
+        {"min": 0.0, "max": 50.0, "label": "dim"},
+        {"min": 50.0, "max": 200.0, "label": "low"},
+        {"min": 200.0, "max": 1000.0, "label": "indoor"},
+        {"min": 1000.0, "max": 10000.0, "label": "bright"},
+        {"min": 10000.0, "max": 130000.0, "label": "outdoor"},
+    ], "out"),
+    ("ph_band", "energy", "ph", [
+        {"min": 0.0, "max": 3.0, "label": "strong_acid"},
+        {"min": 3.0, "max": 6.0, "label": "acid"},
+        {"min": 6.0, "max": 8.0, "label": "neutral"},
+        {"min": 8.0, "max": 11.0, "label": "base"},
+        {"min": 11.0, "max": 14.01, "label": "strong_base"},
+    ], "out"),
+    ("sound_band", "safety", "sound_db", [
+        {"min": 0.0, "max": 30.0, "label": "quiet"},
+        {"min": 30.0, "max": 60.0, "label": "normal"},
+        {"min": 60.0, "max": 85.0, "label": "loud"},
+        {"min": 85.0, "max": 120.0, "label": "harmful"},
+        {"min": 120.0, "max": 200.0, "label": "dangerous"},
+    ], "out"),
 )
 
 
@@ -379,6 +434,19 @@ _LINEAR_SEEDS: tuple[tuple[str, str, list[float], float, list[str]], ...] = (
     ("hex_neighbor_combine_4d", "general",
       [0.4, 0.3, 0.2, 0.1], 0.0,
       ["near_z", "mid_z", "far_z", "stale_z"]),
+    # Phase 17A P5 expansion (+4)
+    ("shipping_cost_simple", "math",
+      [2.5], 5.0,
+      ["weight_kg"]),
+    ("depreciation_per_year_3pct", "energy",
+      [-0.03], 1.0,
+      ["age_years"]),
+    ("exam_score_weighted_3", "learning",
+      [0.4, 0.4, 0.2], 0.0,
+      ["midterm", "final", "homework"]),
+    ("gas_cost_per_km_estimate", "math",
+      [0.012], 2.0,
+      ["distance_km"]),
 )
 
 
@@ -468,6 +536,23 @@ _INTERP_SEEDS: tuple[tuple[str, str, str, str, list, float, float], ...] = (
       [{"x": 20.0, "y": 1.0}, {"x": 40.0, "y": 0.8},
         {"x": 60.0, "y": 0.4}, {"x": 80.0, "y": 0.1},
         {"x": 100.0, "y": 0.0}], 20.0, 100.0),
+    # Phase 17A P5 expansion (+4)
+    ("rh_to_comfort_curve", "thermal", "humidity_pct", "thermal_comfort",
+      [{"x": 0.0, "y": 0.3}, {"x": 30.0, "y": 0.7},
+        {"x": 50.0, "y": 1.0}, {"x": 70.0, "y": 0.7},
+        {"x": 90.0, "y": 0.3}], 0.0, 90.0),
+    ("speed_to_drag_curve", "math", "speed_ms", "drag_force_n",
+      [{"x": 0.0, "y": 0.0}, {"x": 10.0, "y": 5.0},
+        {"x": 20.0, "y": 20.0}, {"x": 40.0, "y": 80.0},
+        {"x": 60.0, "y": 180.0}], 0.0, 60.0),
+    ("altitude_to_pressure_kpa", "seasonal", "elevation_m", "pressure_kpa",
+      [{"x": 0.0, "y": 101.325}, {"x": 1500.0, "y": 84.5},
+        {"x": 3000.0, "y": 70.1}, {"x": 5000.0, "y": 54.0}],
+      0.0, 5000.0),
+    ("effort_to_recovery_curve", "learning", "effort_pct", "recovery_minutes",
+      [{"x": 0.0, "y": 0.0}, {"x": 30.0, "y": 5.0},
+        {"x": 60.0, "y": 15.0}, {"x": 90.0, "y": 60.0},
+        {"x": 100.0, "y": 120.0}], 0.0, 100.0),
 )
 
 
@@ -523,11 +608,11 @@ def _interp_seeds() -> Iterable[dict]:
 def all_canonical_seeds() -> list[dict]:
     """Return every canonical seed across every allowlisted family.
 
-    Total: 28 + 17 + 17 + 14 + 14 + 14 = 104 seeds after Phase 16B P4
-    expansion (+1 per family to cross the 100-solver stable release
-    gate). Phase 13 shipped 68; Phase 14 added 30 to reach 98; Phase
-    16B added 6 to reach 104. All additions stay inside the six-
-    family allowlist (RULE 7) and preserve hex-cell spread.
+    Total: 32 + 21 + 21 + 18 + 18 + 18 = 128 seeds after Phase 17A P5
+    expansion (+4 per family). Phase 13 shipped 68; Phase 14 added 30
+    to reach 98; Phase 16B added 6 to reach 104; Phase 17A added 24
+    to reach 128. All additions stay inside the six-family allowlist
+    (RULE 7) and preserve hex-cell spread.
     """
 
     out: list[dict] = []

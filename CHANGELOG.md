@@ -1,5 +1,68 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 17B — Local AI Efficiency Benchmark Harness / v3.9.1-local-efficiency-benchmark-alpha CANDIDATE] — 2026-05-04
+
+Branch: `phase17b/local-efficiency-benchmark`. Benchmark-infrastructure sprint on top of v3.9.0-producer-fabric-alpha. **Outcome (pre-merge): CANDIDATE PRERELEASE `v3.9.1-local-efficiency-benchmark-alpha`**. Tag created only after this PR merges, post-merge benchmark reproduces, and Docker `--network none` reproduces. v3.8.0 stable + v3.9.0-producer-fabric-alpha both remain unchanged.
+
+### Added (production code)
+
+* **`tools/run_phase17b_local_efficiency_benchmark.py`** (~870 LOC) — reproducible local AI efficiency benchmark harness. Aggregates the existing Phase 11–17A canonical proof scripts (Phase 15 hint, Phase 16A upstream, Phase 16B P2 full restart, Phase 17A producer fabric, Phase 17A 10k synthetic capability scale) as subprocesses into a single benchmark JSON + MD with the master-prompt-mandated metric set:
+
+    * `correctness_count`, `correctness_total`, `correctness_rate`
+    * `latency_ms_p50`, `latency_ms_p95`, `latency_ms_p99`
+    * `throughput_queries_per_second`
+    * `fallback_rate`, `fifo_fallback_count`
+    * `provider_jobs_delta`, `builder_jobs_delta`
+    * `rss_memory_mb`, `docker_network_mode`, `reproducibility_status`, `audit_or_provenance_coverage`, `claim_label`
+
+* **Top-level JSON envelope** keys per master prompt P2: `benchmark_version`, `git_sha`, `python_version`, `platform`, `docker_mode`, `tracks`, `scenarios`, `claim_labels`, `not_claimed`, `release_gate_pass`, `forbidden_claims_absent`, `forbidden_vocabulary_excluded`, `no_consciousness_claim`, `no_beats_all_competitors_claim`, `no_cloud_api_calls_this_session`, `no_pull_or_download_this_session`.
+
+* **Optional `scenario F` Ollama latency probe.** Default behavior is `SKIPPED` so the harness stays `--network none` safe by default. With `--include-ollama` and a model already present, the probe runs 10 deterministic single-turn prompts via the local Ollama CLI (no HTTP, no cloud, no pull). If the requested model is absent the harness records `NOT_AVAILABLE_NOT_RUN` per master prompt rule 14.
+
+* **Documented `scenario G` external competitor slots.** Six slots — Anthropic Claude, OpenAI GPT, Google Gemini, llama.cpp, vLLM, mistral-rs — emit `NOT_RUN` entries with explicit `reason_not_run` + `requirements_to_upgrade_to_measured` lists. No cloud API call this session. No pull / download this session.
+
+* **`tests/autonomy_growth/test_phase17b_local_efficiency_benchmark.py`** (~17 tests) — runs the harness at small scale (--scale-descriptors 240) and asserts: top-level shape, all 5 required tracks present, per-track required metric keys, top-level + per-track provider/builder delta zero, capability lookup synthetic-label honesty, capability lookup no FIFO fallback, canonical corpus ≥ 128, producer fabric 68 IR objects, optional Ollama not affecting required gates, external slots documented as NOT_RUN, raw intelligence NOT CLAIMED, no forbidden vocabulary in MD body, explicit disclaimer flags = true.
+
+* **`docs/benchmarks/LOCAL_EFFICIENCY_BENCHMARK_2026.md`** — Phase 17B benchmark report with measured numbers and explicit "honest scope of these numbers" / "what you cannot take from the table" sections.
+
+* **`docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/`** — full session folder with `session_state.json`, `baseline_verification.md`, `benchmark_design.md`, `phase17b_local_efficiency_benchmark.{json,md}`, per-scenario subfolders, `proof_soak_report.json` (carry-forward soak), `docker_phase17b_verification.md`, `release_decision.md`.
+
+### Changed
+
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** — anchor + axis G (10k solver scale) now references the Phase 17B re-measured numbers; axis J (LLM/MoE hybrid) updated to mention the new optional Ollama probe with `MEASURED-IF-OPTED-IN-LOCALLY` qualifier; raw-intelligence row remains `NOT CLAIMED`.
+* **`.dockerignore`** — extends Phase 16F + 17A carve-outs with `tools/run_phase17b_local_efficiency_benchmark.py` so the same image runs the new harness under `--network none`.
+
+### Behaviour (Phase 17B host run, this branch)
+
+* **Track A solver_hot_path:** `auto_promotions_total = 128`, served via capability = 128, fallback rate 0, provider/builder delta 0.
+* **Track B capability_lookup_10k:** 1000 / 1000 sampled queries hit the real `auto_promoted_solver` source via `RuntimeQueryRouter.route() -> dispatch_by_features()`. Lookup p50 / p95 / p99 = **4.33 / 10.98 / 14.39 ms** on a 24-CPU / 62 GiB / WSL2 host. 0 FIFO fallback, 0 miss.
+* **Track C handle_query_e2e:** corpus 128, `served_via_capability_lookup_total = 128`, 7/7 negative cases pass.
+* **Track D restart_continuity:** 128 / 128 served pre+post DB close+reopen; all 7 restart invariants True; `solver_count = 128 / 128`, `capability_features = 220 / 220` byte-stable across reopen.
+* **Track E producer_fabric:** 68 IR objects emitted across 6 kinds; 6/6 negative cases pass.
+* **Track F ollama_baseline:** `SKIPPED` (default; opt-in via `--include-ollama`).
+* **Track G external_competitor_slots:** `NOT_RUN` (six slots documented with explicit reasons + upgrade requirements).
+* **Top-level envelope:** `release_gate_pass = true`, `provider_jobs_delta = builder_jobs_delta = 0`, `forbidden_claims_absent = true`, `no_consciousness_claim = true`, `no_beats_all_competitors_claim = true`, `no_cloud_api_calls_this_session = true`, `no_pull_or_download_this_session = true`.
+
+### Pre-tag release-gate audit
+
+* g01–g08 carry-forward from v3.8.0 stable: PASS.
+* g (producer fabric + 10k scale + 128 corpus) carry-forward from v3.9.0-producer-fabric-alpha: PASS.
+* Phase 17B benchmark harness exit 0 + `release_gate_pass = true`: PASS.
+* `provider_jobs_delta = builder_jobs_delta = 0` across all 5 WaggleDance tracks: PASS.
+* No allowlist widening, no Stage-2 atomic flip, no HUMAN_APPROVAL collected, no actuator autonomy, no provider HTTP adapter, no `/api/autonomy/query`: PASS.
+* No consciousness claim, no "beats all competitors" claim, no forbidden vocabulary in benchmark MD body: PASS.
+
+### What did NOT change
+
+* All Phase 11–17A code, tests, tools, and canonical proof artifacts (no overwrites). The 14 producer modules and the 128-seed corpus from Phase 17A are unchanged.
+* Phase 9 14-stage human-gated promotion ladder.
+* Six-family allowlist (RULE 13).
+* `_DEFAULT_FAISS_DIR=data/faiss/` and `_DEFAULT_CONTROL_PLANE_DIR=data/control_plane/`.
+* Real Anthropic / OpenAI HTTP adapters (still follow-up).
+* HTTP `/api/autonomy/query` route (deliberate scope limit).
+* `LICENSE-CORE.md` (no new crown-jewel files; the new harness is Apache-2.0 tooling under `tools/`).
+* v3.8.0 + v3.9.0-producer-fabric-alpha + v3.7.8-docker-gate-alpha tags / releases.
+
 ## [Phase 17A — Producer fabric and 10k solver scale / v3.9.0-producer-fabric-alpha PRERELEASE] — 2026-05-04
 
 Branch: `phase17a/producer-fabric-scale`. Capability sprint on top of v3.8.0 stable. **Outcome: PRERELEASE `v3.9.0-producer-fabric-alpha` published 2026-05-04T18:32:47Z**. PR #71 squash-merged at 2026-05-04T18:28:06Z (merge commit `c726995c`); annotated tag pushed to origin; GitHub release published with `isPrerelease=true`. v3.8.0 remains GitHub Latest, untouched.

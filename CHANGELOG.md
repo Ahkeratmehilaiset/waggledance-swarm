@@ -1,5 +1,51 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 17C — Local Ollama Baseline / v3.9.2-local-ollama-baseline-alpha CANDIDATE] — 2026-05-04
+
+Branch: `phase17c/local-ollama-baseline`. Benchmark-extension sprint on top of v3.9.1-local-efficiency-benchmark-alpha. **Outcome (candidate):** PRERELEASE `v3.9.2-local-ollama-baseline-alpha` — to be tagged from the Phase 17C PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0-producer-fabric-alpha + v3.9.1-local-efficiency-benchmark-alpha all remain unchanged.
+
+### Added (production code)
+
+* **`tools/run_phase17c_local_ollama_baseline.py`** (~580 LOC) — wraps the Phase 17B aggregator (`--skip-ollama` pass-through of Tracks A–E) and adds Track F: a 30-prompt deterministic Ollama probe against one already-installed local model. Selection follows the rule-14 preference order (`gemma4:e4b` first, then `gemma4:26b`, `gemma3:4b`, `qwen2.5:7b`, `phi4-mini:latest`, `llama3.2:3b`); the harness picks the first present locally and never pulls a model. Reads subprocess stdout in bytes mode and decodes UTF-8 with `errors="replace"` so model output bytes outside cp1252 cannot crash the harness on Windows hosts.
+* **30 deterministic probe prompts**, 5 per six-family low-risk allowlist: `scalar_unit_conversion`, `lookup_table`, `threshold_rule`, `interval_bucket_classifier`, `linear_arithmetic`, `bounded_interpolation`. Short factoid-style; deterministic SHA-256 hashes emitted per prompt and a chained SHA-256 over all stdouts.
+* **JSON envelope (`benchmark_version = phase17c.v1`)** with required keys: `git_sha`, `python_version`, `platform`, `selected_ollama_model`, `ollama_baseline_status` ∈ {`MEASURED`, `NOT_AVAILABLE_NOT_RUN`, `FAILED`}, `no_model_pull_or_download = true`, `no_cloud_api_calls = true`, `waggle_tracks` (pass-through), `ollama_track`, `claim_labels`, `not_claimed[]` (compounded `no_consciousness` / `no_sentience` / etc. tokens), `release_gates`, `release_gate_pass`, `forbidden_claims_absent`.
+* **`tests/autonomy_growth/test_phase17c_local_ollama_baseline.py`** (15 tests) — fake-PATH ollama shim covering MEASURED, NOT_AVAILABLE_NOT_RUN (with and without `--allow-no-ollama-track`), FAILED, override-model present/absent, forbidden-substring injection, top-level schema, claim-labels, release-gates subdict completeness, MD-sibling content, WaggleDance pass-through. Stub Phase 17B aggregator at `tests/autonomy_growth/_phase17c_stub_phase17b.py`.
+* **`docs/benchmarks/LOCAL_OLLAMA_BASELINE_2026.md`** — Phase 17C benchmark report with measured numbers and explicit "what this measures / does NOT measure" sections.
+* **`docs/runs/phase17c_local_ollama_baseline_2026_05_04/`** — full session folder with `session_state.json`, `baseline_verification.md`, `benchmark_design.md`, `local_model_inventory.{json,md}`, `phase17c_local_ollama_baseline.{json,md}`, `_phase17b_pass_through/` aggregator output, `docker_phase17c_verification.md`, `release_decision.md`.
+
+### Changed
+
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** — anchor and axis J upgraded. Axis J's Ollama line now `MEASURED-LOCAL-OLLAMA-ONE-MODEL` with concrete latency numbers from this session; raw-intelligence row remains `NOT CLAIMED`. The summary table mirrors the upgrade.
+* **`docs/benchmarks/LOCAL_EFFICIENCY_BENCHMARK_2026.md`** — Phase 17C addendum section pointing at the new harness, the new artifact, and the companion Local Ollama Baseline document.
+* **`.dockerignore`** — extends Phase 16F + 17A + 17B carve-outs with `tools/run_phase17c_local_ollama_baseline.py` so the same image runs the new harness under `--network none`.
+
+### Behaviour (Phase 17C host run, this branch)
+
+* **Track A solver_hot_path (pass-through):** `auto_promotions_total = 128`, served-via-capability = 128, fallback rate 0, provider/builder delta 0.
+* **Track B capability_lookup_10k (pass-through):** 1000 / 1000 sampled queries hit the real `auto_promoted_solver` source. Lookup p50 / p95 / p99 = **4.09 / 10.49 / 12.93 ms**. 0 FIFO fallback, 0 miss.
+* **Track C handle_query_e2e (pass-through):** 128 / 128, 7/7 negative cases pass.
+* **Track D restart_continuity (pass-through):** 128 / 128 pre+post, 7/7 invariants True.
+* **Track E producer_fabric (pass-through):** 68 IR objects across 6 kinds, 6/6 negative cases pass.
+* **Track F ollama_baseline (NEW, MEASURED):** model `gemma4:e4b`, ollama `0.22.1`, 30 / 30 prompts succeeded, `median_latency_seconds = 0.7866`, `p95_latency_seconds = 17.5538`, `mean_latency_seconds = 2.5539`, `total_seconds = 76.6193`, `hash_chain_sha256` head `3813e784f4ab42d9...`.
+* **`release_gate_pass = true`**. `forbidden_claims_absent = true`. `provider_jobs_delta = builder_jobs_delta = 0` end-to-end.
+
+### Docker `--network none` (waggledance:phase17c)
+
+`docker build -t waggledance:phase17c -f Dockerfile .` builds on top of the v3.8.0 base. `docker run --rm --network none waggledance:phase17c python tools/run_phase17c_local_ollama_baseline.py --skip-ollama --allow-no-ollama-track ...` exits 0 with `release_gate_pass=true` and `ollama_baseline_status=NOT_AVAILABLE_NOT_RUN`. The Ollama daemon runs OUTSIDE the container by design (the v3.8.0 image notes `OLLAMA_HOST=http://host.docker.internal:11434`); the host run is the canonical record for the MEASURED Ollama probe.
+
+### Honesty contracts (re-asserted)
+
+* No model pull or download. No cloud API calls. No allowlist widening. No autonomy code change. No Stage-2 atomic flip. No HUMAN_APPROVAL collected. No stable-tagged release in this session — at most a PRERELEASE.
+* `not_claimed = ["no_consciousness", "no_sentience", "no_human_like_mind", "no_beats_all_competitors", "no_world_best", "no_world_fastest"]` (compounded tokens used in JSON disclaimers; substring scan of rendered prose stays clean).
+* Forbidden vocabulary substring scan over the rendered MD: 0 hits. Asserted by `tests/autonomy_growth/test_phase17c_local_ollama_baseline.py::test_md_sibling_written` and the harness's own self-scrub gate.
+
+### What did NOT change in Phase 17C
+
+* No modification to `v3.8.0`, `v3.9.0-producer-fabric-alpha`, or `v3.9.1-local-efficiency-benchmark-alpha` tags. v3.8.0 remains GitHub Latest.
+* No autonomy-code change, no allowlist change, no canonical-corpus change, no 10k-scale-ceiling change.
+* No new high-risk variant. No HUMAN_APPROVAL collection. No Stage-2 atomic flip. No `phase8.5/*` branch touched.
+* No new provider HTTP adapter. No `/api/autonomy/query` route. No new builder/router.
+
 ## [Phase 17B — Local AI Efficiency Benchmark Harness / v3.9.1-local-efficiency-benchmark-alpha PRERELEASE] — 2026-05-04
 
 Branch: `phase17b/local-efficiency-benchmark`. Benchmark-infrastructure sprint on top of v3.9.0-producer-fabric-alpha. **Outcome: PRERELEASE `v3.9.1-local-efficiency-benchmark-alpha` published 2026-05-04T20:59:09Z**. PR #73 squash-merged at 2026-05-04T20:53:00Z (merge commit `f4d0a4a4`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0-producer-fabric-alpha both remain unchanged.

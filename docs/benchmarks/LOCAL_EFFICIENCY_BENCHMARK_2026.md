@@ -97,4 +97,15 @@ What you cannot take from the table:
 | Edge fitness (Pi 4 / Pi 5) | a fresh `docker buildx build --platform linux/arm64` + the same harness rerun on the edge host, with hardware spec recorded |
 | Multi-tenant throughput | a separate harness that drives `route()` from N concurrent threads and records per-thread latencies + global qps |
 
+## Phase 17C addendum — Local Ollama baseline (Track F upgrade)
+
+Phase 17C upgrades Track F from `SKIPPED_OPTIONAL` to `MEASURED` for one already-installed local model. The Phase 17C harness wraps the Phase 17B aggregator (Tracks A–E pass-through) and adds a 30-prompt deterministic Ollama probe.
+
+* Reproduce: `python tools/run_phase17c_local_ollama_baseline.py`
+* Artifact: `docs/runs/phase17c_local_ollama_baseline_2026_05_04/phase17c_local_ollama_baseline.json` (+ `.md`).
+* Scope: one local model only (rule-14 preference order picks `gemma4:e4b` first); no model pull or download; no cloud API calls.
+* Companion document: `docs/benchmarks/LOCAL_OLLAMA_BASELINE_2026.md`.
+
+Phase 17C does not change the WaggleDance autonomy code, the six-family allowlist, the canonical 128-seed corpus, or the 10k synthetic-scale ceiling. It does not modify the `v3.8.0`, `v3.9.0-producer-fabric-alpha`, or `v3.9.1-local-efficiency-benchmark-alpha` tags. v3.8.0 remains GitHub Latest.
+
 Each upgrade would land as a new artifact under `docs/runs/<phase>_<topic>_<date>/` and a new label on the corresponding axis of `COMPETITIVE_EVIDENCE_MATRIX_2026.md`. **No row's label changes without new evidence.**

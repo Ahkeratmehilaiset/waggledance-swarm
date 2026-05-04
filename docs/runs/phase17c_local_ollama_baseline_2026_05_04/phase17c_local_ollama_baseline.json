@@ -1,0 +1,694 @@
+{
+  "benchmark_version": "phase17c.v1",
+  "builder_jobs_delta": 0,
+  "claim_labels": {
+    "competitive_evidence_axis_J": "MEASURED-LOCAL-OLLAMA-ONE-MODEL",
+    "no_cloud_api_comparison": true,
+    "no_cross_model_ranking": true,
+    "ollama_local_baseline": "MEASURED-LOCAL-OLLAMA-ONE-MODEL",
+    "raw_intelligence_vs_frontier_moe": "NOT_CLAIMED"
+  },
+  "documented_external_slots": [
+    {
+      "reason_not_run": "would require Anthropic API call; rule 14 forbids cloud calls this session.",
+      "requirements_to_upgrade_to_measured": [
+        "valid Anthropic API key",
+        "documented prompt template + sampling parameters",
+        "tool that records per-query route_source",
+        "comparable WaggleDance run on same input set"
+      ],
+      "slot": "frontier_anthropic_claude",
+      "status": "NOT_RUN"
+    },
+    {
+      "reason_not_run": "would require OpenAI API call; rule 14 forbids cloud calls this session.",
+      "requirements_to_upgrade_to_measured": [
+        "valid OpenAI API key",
+        "documented prompt template + sampling parameters",
+        "comparable WaggleDance run on same input set"
+      ],
+      "slot": "frontier_openai_gpt",
+      "status": "NOT_RUN"
+    },
+    {
+      "reason_not_run": "would require Google Gemini API call; rule 14 forbids cloud calls this session.",
+      "requirements_to_upgrade_to_measured": [
+        "valid Google AI API key",
+        "documented prompt template + sampling parameters",
+        "comparable WaggleDance run on same input set"
+      ],
+      "slot": "frontier_google_gemini",
+      "status": "NOT_RUN"
+    },
+    {
+      "reason_not_run": "llama.cpp not installed on this host; rule 14 forbids download / pull.",
+      "requirements_to_upgrade_to_measured": [
+        "llama.cpp binary already present + model weights already downloaded at session start",
+        "pinned prompt template + sampling parameters",
+        "documented hardware spec"
+      ],
+      "slot": "local_llama_cpp",
+      "status": "NOT_RUN"
+    },
+    {
+      "reason_not_run": "vLLM not installed on this host; rule 14 forbids download / pull.",
+      "requirements_to_upgrade_to_measured": [
+        "vLLM server already running locally with a pre-loaded model at session start",
+        "pinned prompt template + sampling parameters"
+      ],
+      "slot": "local_vllm",
+      "status": "NOT_RUN"
+    },
+    {
+      "reason_not_run": "mistral-rs not installed on this host.",
+      "requirements_to_upgrade_to_measured": [
+        "mistral-rs binary already present + model already downloaded",
+        "pinned prompt template + sampling parameters"
+      ],
+      "slot": "local_mistral_rs",
+      "status": "NOT_RUN"
+    }
+  ],
+  "duration_seconds": 307.9258,
+  "finished_utc": "2026-05-04T22:03:45Z",
+  "forbidden_claims_absent": true,
+  "forbidden_substring_hits": {
+    "json_hits": [],
+    "md_hits": []
+  },
+  "git_sha": "27b8175efe0f75088bf9f3771d54f713c3c3133c",
+  "no_cloud_api_calls": true,
+  "no_model_pull_or_download": true,
+  "not_claimed": [
+    "no_consciousness",
+    "no_sentience",
+    "no_human_like_mind",
+    "no_beats_all_competitors",
+    "no_world_best",
+    "no_world_fastest"
+  ],
+  "ollama_baseline_status": "MEASURED",
+  "ollama_meta_at_session_start": {
+    "available": true,
+    "binary": "C:\\Users\\mfi0jjko\\AppData\\Local\\Programs\\Ollama\\ollama.EXE",
+    "models_installed": [
+      "gemma4:26b",
+      "gemma4:e4b",
+      "all-minilm:latest",
+      "deepseek-r1:1.5b",
+      "qwen3:1.7b",
+      "qwen3:0.6b",
+      "nomic-embed-text:latest",
+      "phi4-mini-reasoning:latest",
+      "phi4-mini:latest",
+      "smollm2:1.7b",
+      "llama3.2:3b",
+      "llama3.2:1b",
+      "akx/viking-7b:latest",
+      "gemma3:4b",
+      "gemma3:1b",
+      "qwen2.5:3b",
+      "qwen2.5:1.5b",
+      "qwen2.5:0.5b",
+      "jobautomation/OpenEuroLLM-Finnish:latest",
+      "osoderholm/poro:latest",
+      "qwen2.5:32b",
+      "qwen2.5:7b"
+    ],
+    "models_installed_count": 22,
+    "version": "ollama version is 0.22.1"
+  },
+  "ollama_track": {
+    "deterministic_seed_argv": [],
+    "finished_at_utc": "2026-05-04T22:03:45Z",
+    "hash_chain_sha256": "3813e784f4ab42d951469cb17097b3b2675e72b1cbc2953c48a22cca3c98f2ab",
+    "mean_latency_seconds": 2.5539066666666668,
+    "median_latency_seconds": 0.7866,
+    "model": "gemma4:e4b",
+    "model_id": null,
+    "ollama_version": "ollama version is 0.22.1",
+    "p95_latency_seconds": 17.5538,
+    "per_prompt": [
+      {
+        "exit_code": 0,
+        "family": "scalar_unit_conversion",
+        "index": 0,
+        "latency_seconds": 5.0643,
+        "prompt_hash": "b1482b0b071e5816186aa039dec1abf625ff576c93d47decfd6bb3d500ea252b",
+        "stderr_bytes": 1831,
+        "stdout_bytes": 6,
+        "stdout_hash": "1c86e07dec92ecce566218b41a26957027f5ddc6fdb1068799d7355dbf3b59d1",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "scalar_unit_conversion",
+        "index": 1,
+        "latency_seconds": 0.8659,
+        "prompt_hash": "cb396f723245ae944160776e2d0554a9df6338a9a7ec78e9d9a48126e211c2d7",
+        "stderr_bytes": 193,
+        "stdout_bytes": 6,
+        "stdout_hash": "0cdfcd3a333a6a568357ceedf1d26dc85929097ac7b6659afc72d505b945df47",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "scalar_unit_conversion",
+        "index": 2,
+        "latency_seconds": 8.2409,
+        "prompt_hash": "3b6ffcfc4dca6780ef4e44e01c67e859c4d5422a95c01889ed0d5fd9922c14ef",
+        "stderr_bytes": 2152,
+        "stdout_bytes": 538,
+        "stdout_hash": "7a6b6d0f48de77be4e67eac9eb20390c1d80cd12fdd6f8cc30721deb36113b9e",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "scalar_unit_conversion",
+        "index": 3,
+        "latency_seconds": 0.7022,
+        "prompt_hash": "2205eae54ab82608120e62426303baa54e2f7baced74d2114ce96adf6a50651b",
+        "stderr_bytes": 157,
+        "stdout_bytes": 3,
+        "stdout_hash": "74d01a0c051c963d9a9b8ab9dbeab1723f0ad8534ea9fa6a942f358d7fa011b4",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "scalar_unit_conversion",
+        "index": 4,
+        "latency_seconds": 0.8375,
+        "prompt_hash": "d92b0f1e41e1c8d76b91e2b5f2d0bf67826a57b6fbcc35e2507956ccd892ce25",
+        "stderr_bytes": 193,
+        "stdout_bytes": 6,
+        "stdout_hash": "c457abf797447d43b11adc234ff099ef86d723e2968e8f5eb6f03845ee7000cf",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "lookup_table",
+        "index": 5,
+        "latency_seconds": 0.7188,
+        "prompt_hash": "e9c51b7ba324e338ebfcf717f94d7f3062df3a63b658baca4b41c9f46e39a82c",
+        "stderr_bytes": 157,
+        "stdout_bytes": 4,
+        "stdout_hash": "c1b1f0e68c423762c0ace9e151f871f270f5a096beb30f409c98630f93aedf70",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "lookup_table",
+        "index": 6,
+        "latency_seconds": 0.6968,
+        "prompt_hash": "da793e181d1fd3a5bb55c62b4f6067bc8c2a9b31ea20f73cbe2730d505f4d8ec",
+        "stderr_bytes": 157,
+        "stdout_bytes": 7,
+        "stdout_hash": "f5796d6131d4085003113af08e0fa81a7546ad729e2769cfa1ebbe0dbdd3b072",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "lookup_table",
+        "index": 7,
+        "latency_seconds": 0.7546,
+        "prompt_hash": "1e5c2f5d7be947295c26b7cec3779a7e7e5f244e5ebec6ee35598a2375e8611d",
+        "stderr_bytes": 157,
+        "stdout_bytes": 4,
+        "stdout_hash": "eedd7971d534628038916fee246cd20e455ae70f1f908353442e1c68a991897a",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "lookup_table",
+        "index": 8,
+        "latency_seconds": 0.6989,
+        "prompt_hash": "d68dfd00f007428fee59b4c663d5e5cf597ee56fecdc9f7a74f8012794cc110b",
+        "stderr_bytes": 157,
+        "stdout_bytes": 9,
+        "stdout_hash": "55af786acb00d84f669ed0a9799b37a9352717f6ba3fb4ebf8ae6f9fc83c7c2b",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "lookup_table",
+        "index": 9,
+        "latency_seconds": 0.7256,
+        "prompt_hash": "19d78ffaa50f2bd7a2082ebc694a1852e17b2326a176666be7cd6c893645e665",
+        "stderr_bytes": 157,
+        "stdout_bytes": 4,
+        "stdout_hash": "1cea09b8d1677c52120c41ac1cc3505f1f9ad99a696fbafd9ee1fd99ff17fcd9",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "threshold_rule",
+        "index": 10,
+        "latency_seconds": 0.7426,
+        "prompt_hash": "0e251c8cb2ea4d73f66d2ddeba1a12863067e669258559f3e5f12b06f0813ea5",
+        "stderr_bytes": 157,
+        "stdout_bytes": 7,
+        "stdout_hash": "4af5d298d5e52f0c6bc84311ad54131527f4fa43b79bffeece0d4fe3e482b355",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "threshold_rule",
+        "index": 11,
+        "latency_seconds": 0.7177,
+        "prompt_hash": "bdffcdf9979f453809f8e39d6f75dc55074d9f08c40651af2fd4f23978934108",
+        "stderr_bytes": 157,
+        "stdout_bytes": 7,
+        "stdout_hash": "12d5e040bba940d62c255dcca5fbee08a090e0caa373c52f6f70c401ae433d1a",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "threshold_rule",
+        "index": 12,
+        "latency_seconds": 0.7866,
+        "prompt_hash": "0cbd52b0e473ded9f1c8ede31fac64cbe17560aeb1b07f5018178d29b847ea52",
+        "stderr_bytes": 157,
+        "stdout_bytes": 7,
+        "stdout_hash": "4af5d298d5e52f0c6bc84311ad54131527f4fa43b79bffeece0d4fe3e482b355",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "threshold_rule",
+        "index": 13,
+        "latency_seconds": 0.7788,
+        "prompt_hash": "1fe691a5985780dfe9e8fd6bfbea27919dcf39093d434007d8f75cb9edefd8e1",
+        "stderr_bytes": 196,
+        "stdout_bytes": 7,
+        "stdout_hash": "0e7cd8d8fa3fd05ded63ef60bc5eb2202a7849b2d512168ec2acd56a3fba20d0",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "threshold_rule",
+        "index": 14,
+        "latency_seconds": 3.39,
+        "prompt_hash": "bbdd6de6eeccd94db0e15227d1eff8f3a8550bb41efda1df455560073557971c",
+        "stderr_bytes": 871,
+        "stdout_bytes": 232,
+        "stdout_hash": "dd8ef0b96aa59989c0e6043bd8e0b10bff7451b963b67f0622417ac8b811f16e",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "interval_bucket_classifier",
+        "index": 15,
+        "latency_seconds": 0.9798,
+        "prompt_hash": "b828532eb9f5d7d20f7ab97540624ae8df7bee17467f6749587e69a4cb02e99f",
+        "stderr_bytes": 229,
+        "stdout_bytes": 9,
+        "stdout_hash": "5da6f584004875c2ff437b40a3b724961bb933307e619fcbe14a85f9743ce93c",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "interval_bucket_classifier",
+        "index": 16,
+        "latency_seconds": 1.0078,
+        "prompt_hash": "2a7289c1c3c4eb89049538489db976738f252db97208b1515ad6a3c68aeb57a2",
+        "stderr_bytes": 217,
+        "stdout_bytes": 8,
+        "stdout_hash": "13fb2b42176b550deb149756bdf4f4efffc10f1c8878bd943b47a7f15e16fe8a",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "interval_bucket_classifier",
+        "index": 17,
+        "latency_seconds": 0.964,
+        "prompt_hash": "b0cee014067016a535f3dabcdb3f2a2cb277799ce5a880e10bb1a8ea6d4af7ae",
+        "stderr_bytes": 229,
+        "stdout_bytes": 9,
+        "stdout_hash": "4200bb6cc046cc43ad1dae4e3118f06c335617d2c2e65ff153b3e09e05d284ee",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "interval_bucket_classifier",
+        "index": 18,
+        "latency_seconds": 0.9637,
+        "prompt_hash": "22759a4fee8452cccd5aeeca4b2744d3ced07a1c11321cca03cb7384e2d82d02",
+        "stderr_bytes": 229,
+        "stdout_bytes": 9,
+        "stdout_hash": "5da6f584004875c2ff437b40a3b724961bb933307e619fcbe14a85f9743ce93c",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "interval_bucket_classifier",
+        "index": 19,
+        "latency_seconds": 1.0441,
+        "prompt_hash": "9040730fb041c3735705e11ba5f2e3393cee2cf8a6a969c42917591300f2a049",
+        "stderr_bytes": 268,
+        "stdout_bytes": 9,
+        "stdout_hash": "4200bb6cc046cc43ad1dae4e3118f06c335617d2c2e65ff153b3e09e05d284ee",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "linear_arithmetic",
+        "index": 20,
+        "latency_seconds": 0.7694,
+        "prompt_hash": "8a4106fb33d01c15a03991fd26e8718fccdff157a94a6b7df9c88081478bfc0a",
+        "stderr_bytes": 169,
+        "stdout_bytes": 4,
+        "stdout_hash": "fc5ad1c82456307ebbebe8b5fbc04d59b2b91ea836839846bc2cef47684d7792",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "linear_arithmetic",
+        "index": 21,
+        "latency_seconds": 0.7662,
+        "prompt_hash": "3ed977ad57a225f27ddeb6db38ee2b9cf19bc2e8a0f682b45c8f2e645ec82f9c",
+        "stderr_bytes": 169,
+        "stdout_bytes": 4,
+        "stdout_hash": "f573548b0e961452b19685793394a5a64336b551dac5ec9ff0d7f8f59296e563",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "linear_arithmetic",
+        "index": 22,
+        "latency_seconds": 0.7586,
+        "prompt_hash": "725482cf1035f2c96fb8ede3c0da44e1c38daa0714f89e80cab06b131321688f",
+        "stderr_bytes": 169,
+        "stdout_bytes": 4,
+        "stdout_hash": "5cd45647d6cca5936e1c56b99ee079aa43596d4dffcd4cc214f919d210abda46",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "linear_arithmetic",
+        "index": 23,
+        "latency_seconds": 2.3357,
+        "prompt_hash": "fcecc46b13802bd450c7e1dd060e8e47e0411f1eb3789e6385e0182ce20ba96f",
+        "stderr_bytes": 571,
+        "stdout_bytes": 130,
+        "stdout_hash": "9adac2b9ccb86fd0e75f8121d900156b775c54af8f14b8951c910b66231769fe",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "linear_arithmetic",
+        "index": 24,
+        "latency_seconds": 2.1319,
+        "prompt_hash": "a46bbdbcaf6d8e3b8cfee8f3187e3acfb93d4e37a4acdfca51927b30cdb6f6d0",
+        "stderr_bytes": 535,
+        "stdout_bytes": 102,
+        "stdout_hash": "c9f60f476f4a2d3598d35a472444d00e44ea02d5272005b0ffa16abbb96466c0",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "bounded_interpolation",
+        "index": 25,
+        "latency_seconds": 17.5538,
+        "prompt_hash": "f334cb434d1eba89e847e2815c5f2854e6c1d1c70c86a900f6a0c68f88a4abd4",
+        "stderr_bytes": 4576,
+        "stdout_bytes": 936,
+        "stdout_hash": "9d63b308c5b92f0bc2068265d3a5e5402403405e16d41ce1c057830dddb712bd",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "bounded_interpolation",
+        "index": 26,
+        "latency_seconds": 0.7136,
+        "prompt_hash": "a8b5594059c2d04db09e08624ac898151fad748113645f5265ad0f90c6373fab",
+        "stderr_bytes": 157,
+        "stdout_bytes": 3,
+        "stdout_hash": "3782bd4de7c426a1abd1b2fe6c108759f7e94ca7e4df8528a1320051e1857d03",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "bounded_interpolation",
+        "index": 27,
+        "latency_seconds": 0.7829,
+        "prompt_hash": "bd631e4a80c1511424f858be41d78442442b893694e4bad252895f773638b377",
+        "stderr_bytes": 169,
+        "stdout_bytes": 4,
+        "stdout_hash": "075e7674a969687957ce158d8a9bc659c9110fdd1db4cefca59359002cdd9880",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "bounded_interpolation",
+        "index": 28,
+        "latency_seconds": 0.7228,
+        "prompt_hash": "578ce064696fcf0ae9890161e8754ff66ff3c2adbc360f500955ce4f51380843",
+        "stderr_bytes": 157,
+        "stdout_bytes": 3,
+        "stdout_hash": "e0d402474e8100da6071bc80f3fb8861fa6dc83fc633fdf3f5449cac9b800a01",
+        "timed_out": false
+      },
+      {
+        "exit_code": 0,
+        "family": "bounded_interpolation",
+        "index": 29,
+        "latency_seconds": 19.4017,
+        "prompt_hash": "eef822000a09e50a704e8d3cd68d18177ec2830af1e47dacf25602a0b5646d35",
+        "stderr_bytes": 5071,
+        "stdout_bytes": 921,
+        "stdout_hash": "080a6d3ea1734a798079b3a4f16b170e7b5169e2f633a93b4ed7170cfa75d724",
+        "timed_out": false
+      }
+    ],
+    "prompt_count": 30,
+    "prompts_failed": 0,
+    "prompts_run": 30,
+    "prompts_succeeded": 30,
+    "selection_rationale": "rule-14 preference order picked gemma4:e4b",
+    "started_at_utc": "2026-05-04T22:02:28Z",
+    "total_seconds": 76.6193
+  },
+  "phase17b_pass_through": {
+    "exit_code": 0,
+    "json_path": "C:\\Python\\project2-phase17c-local-ollama-baseline\\docs\\runs\\phase17c_local_ollama_baseline_2026_05_04\\_phase17b_pass_through\\phase17b_local_efficiency_benchmark.json",
+    "runtime_seconds": 230.8435,
+    "stderr_tail": "",
+    "stdout_tail": "b_local_efficiency_benchmark.json\r\nWrote C:\\Python\\project2-phase17c-local-ollama-baseline\\docs\\runs\\phase17c_local_ollama_baseline_2026_05_04\\_phase17b_pass_through\\phase17b_local_efficiency_benchmark.md\r\n\r\nWaggleDance scenarios A\ufffdE pass: True\r\nProvider/builder delta totals:  0 / 0\r\nOllama baseline status:         SKIPPED\r\nExternal competitor slots:      NOT_RUN (documented)\r\nOverall pass: True\r\n"
+  },
+  "platform": "Windows-11-10.0.22631-SP0",
+  "provider_jobs_delta": 0,
+  "python_version": "3.13.7",
+  "release_gate_pass": true,
+  "release_gates": {
+    "no_allowlist_widened": true,
+    "no_builder_jobs_added": true,
+    "no_forbidden_substring_in_json_or_md": true,
+    "no_provider_jobs_added": true,
+    "no_stable_release_in_phase17c": true,
+    "ollama_track_release_ok": true,
+    "ollama_track_status_in_allowed_set": true,
+    "phase17b_aggregator_clean_exit": true,
+    "tests_pass": true
+  },
+  "selected_ollama_model": "gemma4:e4b",
+  "started_utc": "2026-05-04T21:58:37Z",
+  "waggle_tracks": {
+    "A_solver_hot_path": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 128,
+        "correctness_rate": 1.0,
+        "correctness_total": 128,
+        "docker_network_mode": "host",
+        "fallback_rate": 0.0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_p99": null,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 4.8831664282308065
+      },
+      "raw": {
+        "auto_promotions_total": 128,
+        "builder_jobs_delta": 0,
+        "corpus_total": 128,
+        "exit_code": 0,
+        "name": "A_solver_hot_path",
+        "negative_cases_passed": 5,
+        "out_json_path": "C:\\Python\\project2-phase17c-local-ollama-baseline\\docs\\runs\\phase17c_local_ollama_baseline_2026_05_04\\_phase17b_pass_through\\scenario_A_solver_hot_path\\automatic_runtime_hint_proof.json",
+        "pass2_cold_p50_ms": null,
+        "passed": true,
+        "provider_jobs_delta": 0,
+        "runtime_seconds": 26.2125,
+        "served_via_capability_lookup_total": 128,
+        "tool": "tools/run_automatic_runtime_hint_proof.py"
+      }
+    },
+    "B_capability_lookup_10k": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 1000,
+        "correctness_rate": 1.0,
+        "correctness_total": 1000,
+        "docker_network_mode": "host",
+        "fallback_rate": 0.0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": 4.0901,
+        "latency_ms_p95": 10.4932,
+        "latency_ms_p99": 12.9344,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 6.489094751814838
+      },
+      "raw": {
+        "build_descriptors_per_second": 67.3,
+        "build_index_time_seconds": 148.482,
+        "builder_jobs_delta": 0,
+        "exit_code": 0,
+        "is_synthetic_scale": true,
+        "lookup_capability_hits_total": 1000,
+        "lookup_fifo_fallback_total": 0,
+        "lookup_miss_total": 0,
+        "lookup_p50_ms": 4.0901,
+        "lookup_p95_ms": 10.4932,
+        "lookup_p99_ms": 12.9344,
+        "lookup_pass_count": 1000,
+        "name": "B_capability_lookup_10k",
+        "not_canonical_corpus": true,
+        "out_json_path": "C:\\Python\\project2-phase17c-local-ollama-baseline\\docs\\runs\\phase17c_local_ollama_baseline_2026_05_04\\_phase17b_pass_through\\scenario_B_capability_lookup_10k\\solver_scale_proof.json",
+        "passed": true,
+        "provider_jobs_delta": 0,
+        "runtime_seconds": 154.1047,
+        "synthetic_solver_descriptors_total": 10000,
+        "tool": "tools/run_solver_scale_proof.py"
+      }
+    },
+    "C_handle_query_e2e": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 128,
+        "correctness_rate": 1.0,
+        "correctness_total": 128,
+        "docker_network_mode": "host",
+        "fallback_rate": 0.0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_p99": null,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 4.883762633874236
+      },
+      "raw": {
+        "auto_promotions_total": 128,
+        "builder_jobs_delta": 0,
+        "corpus_total": 128,
+        "exit_code": 0,
+        "name": "C_handle_query_e2e",
+        "negative_cases_passed": 7,
+        "out_json_path": "C:\\Python\\project2-phase17c-local-ollama-baseline\\docs\\runs\\phase17c_local_ollama_baseline_2026_05_04\\_phase17b_pass_through\\scenario_C_handle_query_e2e\\upstream_structured_request_proof.json",
+        "passed": true,
+        "provider_jobs_delta": 0,
+        "runtime_seconds": 26.2093,
+        "served_via_capability_lookup_total": 128,
+        "structured_request_derived_total": 128,
+        "tool": "tools/run_upstream_structured_request_proof.py"
+      }
+    },
+    "D_restart_continuity": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 0,
+        "correctness_rate": null,
+        "correctness_total": 0,
+        "docker_network_mode": "host",
+        "fallback_rate": 0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_p99": null,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 5.472119976230479
+      },
+      "raw": {
+        "builder_jobs_delta_during_proof": 0,
+        "corpus_total": 128,
+        "exit_code": 0,
+        "name": "D_restart_continuity",
+        "out_json_path": "C:\\Python\\project2-phase17c-local-ollama-baseline\\docs\\runs\\phase17c_local_ollama_baseline_2026_05_04\\_phase17b_pass_through\\scenario_D_restart_continuity\\full_restart_continuity_proof.json",
+        "passed": true,
+        "provider_jobs_delta_during_proof": 0,
+        "restart_invariants_all_true": false,
+        "restart_invariants_count": 7,
+        "runtime_seconds": 23.3913,
+        "served_post_restart": null,
+        "served_pre_restart": null,
+        "tool": "tools/run_full_restart_continuity_proof.py"
+      }
+    },
+    "E_producer_fabric": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 68,
+        "correctness_rate": 1.0,
+        "correctness_total": 68,
+        "docker_network_mode": "host",
+        "fallback_rate": 0.0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_p99": null,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 333.70411568409344
+      },
+      "raw": {
+        "builder_jobs_delta": 0,
+        "corpus_total": 30,
+        "exit_code": 0,
+        "ir_objects_emitted_total": 68,
+        "ir_objects_per_kind": {
+          "curiosity": 30,
+          "dream_curriculum": 6,
+          "dream_meta_proposal": 2,
+          "hive_proposals": 8,
+          "review_bundle": 8,
+          "self_model": 14
+        },
+        "name": "E_producer_fabric",
+        "negative_cases_passed": 6,
+        "negative_cases_total": 6,
+        "out_json_path": "C:\\Python\\project2-phase17c-local-ollama-baseline\\docs\\runs\\phase17c_local_ollama_baseline_2026_05_04\\_phase17b_pass_through\\scenario_E_producer_fabric\\producer_fabric_proof.json",
+        "passed": true,
+        "provider_jobs_delta": 0,
+        "runtime_seconds": 0.0899,
+        "tool": "tools/run_phase17a_producer_fabric_proof.py"
+      }
+    }
+  },
+  "waggle_tracks_summary": {
+    "all_waggledance_scenarios_pass": true,
+    "builder_jobs_delta_total": 0,
+    "external_competitor_slots_status": "NOT_RUN",
+    "ollama_baseline_status": "SKIPPED",
+    "overall_pass": true,
+    "provider_jobs_delta_total": 0
+  }
+}

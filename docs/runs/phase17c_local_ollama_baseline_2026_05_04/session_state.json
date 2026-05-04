@@ -1,0 +1,69 @@
+{
+  "phase": "phase17c",
+  "phase_name": "Local Ollama Baseline (Phase 17B Ollama track upgrade)",
+  "started_utc": "2026-05-04T21:30:00Z",
+  "session_id": "phase17c_local_ollama_baseline_2026_05_04",
+  "branch": "phase17c/local-ollama-baseline",
+  "worktree_path": "C:/Python/project2-phase17c-local-ollama-baseline",
+  "base_origin_main_sha": "27b8175efe0f75088bf9f3771d54f713c3c3133c",
+  "base_origin_main_subject": "docs(phase17b): post-release docs update for v3.9.1-local-efficiency-benchmark-alpha (#74)",
+  "model_session": "claude-opus-4-7",
+  "fallback_events": [],
+  "operator_decision": "B_full_autonomy_phase17c",
+  "host": {
+    "platform": "Windows-11-10.0.22631-SP0",
+    "python_version": "3.13.7",
+    "shell": "Git Bash via PowerShell",
+    "git_bash_path": "C:/Program Files/Git/bin/bash.exe"
+  },
+  "preconditions": {
+    "v3_8_0_still_github_latest": true,
+    "v3_9_0_producer_fabric_alpha_isPrerelease": true,
+    "v3_9_1_local_efficiency_benchmark_alpha_isPrerelease": true,
+    "v3_8_0_target_sha": "824176ebf2a6b8debed41982090a125cbe2ddad1",
+    "v3_9_0_producer_fabric_alpha_target_sha": "c726995c816ee4c09e031c2190c3de6592e82879",
+    "v3_9_1_local_efficiency_benchmark_alpha_target_sha": "f4d0a4a4152ca74e98a8d7f7161c233075bf4111"
+  },
+  "ollama": {
+    "command_present": true,
+    "command_path": "/c/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama",
+    "version": "0.22.1",
+    "models_installed_count": 22,
+    "models_running_count": 0,
+    "no_pull_no_download_invariant": true,
+    "no_cloud_api_calls_invariant": true,
+    "gemma4_e4b_present": true,
+    "gemma4_e4b_size_gb": 9.6,
+    "gemma4_e4b_id": "c6eb396dbd59"
+  },
+  "scope_invariants": {
+    "no_stable_release_in_phase17c": true,
+    "no_stage2_atomic_flip": true,
+    "no_human_approval_collected": true,
+    "no_allowlist_widening": true,
+    "no_consciousness_claim": true,
+    "no_beats_all_competitors_claim": true,
+    "phase8_5_branches_read_only": true,
+    "v3_8_0_must_remain_github_latest": true,
+    "no_modification_of_v3_8_0_tag": true,
+    "no_modification_of_v3_9_0_producer_fabric_alpha_tag": true,
+    "no_modification_of_v3_9_1_local_efficiency_benchmark_alpha_tag": true
+  },
+  "tag_under_consideration": "v3.9.2-local-ollama-baseline-alpha",
+  "release_kind_under_consideration": "PRERELEASE only (isPrerelease=true)",
+  "tasks": [
+    {"id": "P17C-0", "name": "Baseline + worktree + Ollama check", "status": "in_progress"},
+    {"id": "P17C-1", "name": "benchmark_design.md (BEFORE coding)", "status": "pending"},
+    {"id": "P17C-2", "name": "Local model inventory + selection", "status": "pending"},
+    {"id": "P17C-3", "name": "Implement tools/run_phase17c_local_ollama_baseline.py + tests", "status": "pending"},
+    {"id": "P17C-4", "name": "Run full host benchmark with Ollama (gemma4:e4b, 30 prompts)", "status": "pending"},
+    {"id": "P17C-5", "name": "Update docs/benchmarks", "status": "pending"},
+    {"id": "P17C-6", "name": "Targeted tests", "status": "pending"},
+    {"id": "P17C-7", "name": "Docker --network none verification", "status": "pending"},
+    {"id": "P17C-8", "name": "Release decision A or B", "status": "pending"},
+    {"id": "P17C-9", "name": "Commit/push/PR + autonomous merge with --match-head-commit", "status": "pending"},
+    {"id": "P17C-10", "name": "Post-merge verification", "status": "pending"},
+    {"id": "P17C-11", "name": "Tag v3.9.2-local-ollama-baseline-alpha PRERELEASE (only if all gates green)", "status": "pending"},
+    {"id": "P17C-12", "name": "Post-release docs PR", "status": "pending"}
+  ]
+}

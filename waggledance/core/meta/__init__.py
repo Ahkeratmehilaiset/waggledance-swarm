@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """WD meta-learner package — Phase 8.5 Session D.
 
 Crown-jewel area per D.txt §BUSL: any non-trivial logic edit here

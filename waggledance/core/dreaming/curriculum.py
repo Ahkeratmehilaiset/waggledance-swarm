@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Dream curriculum planner — selects what WD should dream about.
 
 Reads Session B's self_model_snapshot, self_model_delta, tensions,

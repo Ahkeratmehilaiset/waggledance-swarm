@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Pinned-input consumption layer — Phase 8.5 Session D.
 
 Reads upstream session outputs (Session A curiosity, Session B

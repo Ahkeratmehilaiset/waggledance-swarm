@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Proposal ingestion and deterministic collapse — Phase 8.5 Session
 C, deliverable C.4 (proposal ingestion side).
 

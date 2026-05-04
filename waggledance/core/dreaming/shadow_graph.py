@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Shadow graph — Phase 8.5 Session C, deliverable C.5.
 
 Represents the live solver world plus one or more accepted shadow

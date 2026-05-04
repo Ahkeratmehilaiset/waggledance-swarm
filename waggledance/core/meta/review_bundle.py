@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Review bundle + handoff artifact emission — Phase 8.5 Session D,
 deliverables D7 + D8.
 

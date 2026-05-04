@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Dreaming pipeline — Phase 8.5 Session C.
 
 Strict layered system per c.txt §DREAM PIPELINE FOCUS:

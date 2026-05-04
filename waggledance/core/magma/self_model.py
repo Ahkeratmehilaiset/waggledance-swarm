@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Self-model snapshot — first artifact-grounded reflective layer.
 
 Produces a deterministic offline self-description of WaggleDance

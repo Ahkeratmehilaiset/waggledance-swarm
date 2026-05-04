@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Meta-learner — Phase 8.5 Session D, deliverable D2.
 
 Produces bounded, auditable self-proposals for WD by aggregating

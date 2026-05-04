@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Dream teacher input pack — Phase 8.5 Session C, deliverable C.2.
 
 Builds deterministic dream_request_pack.json/md artifacts from a

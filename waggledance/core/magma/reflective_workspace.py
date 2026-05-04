@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Reflective workspace — integrates curiosity findings with the
 self-model snapshot to surface tensions, blind spots, and the next
 question worth asking.

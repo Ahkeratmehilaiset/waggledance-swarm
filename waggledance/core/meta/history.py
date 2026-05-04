@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BUSL-1.1
 """Meta-proposal history chain — Phase 8.5 Session D, deliverable D6.
 
 docs/runs/hive/HISTORY.jsonl is append-only and unbounded. Each entry

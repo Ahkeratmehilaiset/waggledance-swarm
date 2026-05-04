@@ -1,5 +1,59 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 17A — Producer fabric and 10k solver scale / v3.9.0-producer-fabric-alpha PRERELEASE] — 2026-05-04
+
+Branch: `phase17a/producer-fabric-scale`. Capability sprint on top of v3.8.0 stable. **Outcome: PRERELEASE `v3.9.0-producer-fabric-alpha` published 2026-05-04T18:32:47Z**. PR #71 squash-merged at 2026-05-04T18:28:06Z (merge commit `c726995c`); annotated tag pushed to origin; GitHub release published with `isPrerelease=true`. v3.8.0 remains GitHub Latest, untouched.
+
+### Added (production code)
+
+* **`waggledance/core/dreaming/`** — 7 modules ported from `origin/phase8.5/hive-proposes` (~2168 LOC, stdlib only): `__init__.py`, `curriculum.py`, `collapse.py`, `meta_proposal.py`, `replay.py`, `request_pack.py`, `shadow_graph.py`. SPDX BUSL-1.1 headers added at port time.
+* **`waggledance/core/magma/self_model.py`** (642 LOC) and **`reflective_workspace.py`** (424 LOC) — ported alongside the existing magma/* infrastructure (audit_projector, confidence_decay, etc.) without overwriting any existing file.
+* **`waggledance/core/meta/`** — 5 modules ported (~1277 LOC, stdlib only): `__init__.py`, `history.py`, `inputs.py`, `meta_learner.py`, `review_bundle.py`.
+* **`tools/run_phase17a_producer_fabric_proof.py`** (~640 LOC) — orchestrates curiosity / self-model / dream / hive producers end-to-end against deterministic synthetic fixtures; emits a single `producer_fabric_proof.json` consumed by the existing main IR adapters.
+* **`tools/run_solver_scale_proof.py`** (~370 LOC) — generates 10000 synthetic deterministic capability descriptors balanced across 6 families × 8 hex cells, bulk-loads them into a fresh `ControlPlaneDB`, and exercises the real `RuntimeQueryRouter.route()` capability-aware lookup path over a representative sample.
+* **`tests/autonomy_growth/test_phase17a_producer_fabric_proof.py`** (18 tests) and **`tests/autonomy_growth/test_solver_scale_proof.py`** (21 tests) — integration tests that import and run the orchestrator + scale proof.
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** + **`LOCAL_AI_RUNTIME_COMPARISON.md`** — evidence-labelled (PROVEN / MEASURED / INFERRED / NOT CLAIMED) comparison docs. Raw intelligence vs frontier MoE: NOT CLAIMED. Forbidden vocabulary excluded.
+* **`docs/runs/phase17a_producer_fabric_scale_2026_05_04/`** — full session folder: `session_state.json`, `baseline_verification.md`, `phase85_branch_preservation.md`, `phase85_branch_inventory.json`, `producer_gap_audit.md`, `phase85_reconciliation_matrix.md`, `implementation_plan.md`, `producer_fabric_proof.json`, `curiosity_log.json`, `self_model_snapshot.json`, `dream_curriculum.json`, `hive_proposals_and_review_bundle.json`, `solver_scale_proof.json`, `proof_soak_report.json`, `docker_phase17a_verification.md`, `release_decision.md`.
+
+### Changed
+
+* **`waggledance/core/autonomy_growth/low_risk_seed_library.py`** — canonical seed corpus grown 104 → 128 (+24 entries, +4 per family, no allowlist widening). Per-family counts: scalar 28→32, lookup 17→21, threshold 17→21, interval 14→18, linear 14→18, interp 14→18.
+* **`tests/autonomy_growth/test_seed_library.py`** — added `test_seed_library_meets_phase17a_material_growth_minimum` (≥128) and `test_seed_library_per_family_minimum_after_phase17a_growth` (per-family floor).
+* **`.dockerignore`** — extended Phase 16F carve-outs to include `tools/run_phase17a_producer_fabric_proof.py` and `tools/run_solver_scale_proof.py` so the same image can run the new Phase 17A proofs under `--network none`.
+
+### Phase 8.5 branch preservation (no merge)
+
+All 5 `phase8.5/*` branches now on origin via 4 fast-forward pushes (no force-push, no history rewrite). Closes the CLAUDE.md golden rule #4 gap that left `phase8.5/hive-proposes` and `phase8.5/vector-chaos` local-only with substantive feature commits. Phase 8.5 CLI monoliths (`gap_miner.py` 1439 LOC, `build_self_model_snapshot.py` 1293 LOC, `dream_curriculum.py` CLI, `hive_proposes.py` CLI, `run_dream_cycle.py`) and Phase 8.5 fixture-heavy tests (~4700 LOC across 10 files) intentionally **not** ported — Phase 17A's purpose-built orchestrator subsumes them; phase8.5 branches preserved as historical artifacts.
+
+### Behaviour
+
+* **Producer fabric proof:** 68 IR objects emitted across 6 IR kinds; 6/6 negative cases pass; `provider_jobs_delta = builder_jobs_delta = 0`.
+* **10k synthetic capability scale proof:** 1000/1000 capability hits via the real `auto_promoted_solver` source; 0 FIFO fallback; 0 miss; lookup p50 ≈ 0.47 ms inside Docker `--network none`.
+* **Phase 15 / 16A / 16B P2 proofs at corpus 128:** `auto_promotions_total = 128`, `served_via_capability_lookup = 128` pre+post restart, all invariants True, `provider_jobs_delta = builder_jobs_delta = 0`. Soak 9/9 PASS, no flakes.
+* **Targeted test sweep:** 268 passed (autonomy_growth + phase10) + 122 passed (storage + ui_hologram + solver_router) = 390 passed, 0 failures.
+* **Docker `--network none` re-verified** for the v3.8.0 carry-forward proof set + new Phase 17A proofs.
+
+### v3.9.0-producer-fabric-alpha release-gate audit
+
+Pre-merge gates (all PASS at branch tip): producer fabric proof, 10k scale proof, canonical corpus growth, provider/builder delta = 0, Docker `--network none` proof, targeted tests, no Stage-2 flip, no HUMAN_APPROVAL collected, no allowlist widening, no consciousness claim, v3.8.0 untouched, release docs truthful.
+
+Post-merge gates (all PASS): PR-level CI 5/5 green, autonomous squash-merge with `--match-head-commit=97b9e91` head-SHA protection, post-merge proofs reproduce on `git checkout --detach origin/main`, post-merge Docker rebuild reproduces (`waggledance:v3.9.0-producer-fabric-alpha-rc`), post-merge fresh clone from GitHub HTTPS reproduces.
+
+Tag created: `v3.9.0-producer-fabric-alpha` annotated, target = post-merge main `c726995c`, `isPrerelease=true`, GitHub Latest = `v3.8.0` (unchanged).
+
+### What did NOT change
+
+* All Phase 11–16G code, tests, tools, and canonical proof artifacts (no overwrites).
+* The six-family low-risk allowlist (RULE 13).
+* The Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates).
+* HTTP `/api/autonomy/query` route (does not exist; deliberate scope limit).
+* Real Anthropic / OpenAI HTTP adapters (still follow-up).
+* Phase 9 14-stage human-gated promotion ladder.
+* Single-process scope.
+* No consciousness claim.
+* `LICENSE-CORE.md` — left unchanged in this PR; if a follow-up enumeration is needed for the new producer modules it lands in a separate post-stable docs PR.
+* Bandit / pip-audit posture (audit-only tooling; not in runtime requirements).
+
 ## [Phase 16F — Docker stable-gate closure / v3.8.0 stable release] — 2026-05-04
 
 Branch: `phase16f/docker-stable-gate`. Docker stable-gate closure sprint on top of Phase 16D. **Outcome: v3.8.0 stable released 2026-05-04**. PR #68 squash-merged at 2026-05-04T07:08:23Z (merge commit `824176eb`); annotated tag `v3.8.0` pushed to origin; GitHub release published with `isPrerelease=false` at 2026-05-04T07:13:27Z; `gh release list` confirms v3.8.0 is GitHub Latest. All 22 stable gates final = PASS.

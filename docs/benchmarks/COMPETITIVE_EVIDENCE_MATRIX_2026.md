@@ -2,8 +2,8 @@
 
 **Status:** Phase 17A snapshot, derived from this session's reproducible artifacts only.
 **Date:** 2026-05-04
-**Branch:** `phase17a/producer-fabric-scale`
-**Anchor:** `v3.9.0-producer-fabric-alpha` candidate (PRERELEASE only)
+**Branch:** `phase17a/producer-fabric-scale` (now on `main` at `c726995c`)
+**Anchor:** `v3.9.0-producer-fabric-alpha` PRERELEASE (released 2026-05-04T18:32:47Z; v3.8.0 remains GitHub Latest)
 
 This is an **engineering** document. It does not market WaggleDance. It enumerates the comparison axes most often used to assess local-first cognitive runtimes, states one factual claim per axis, points to a reproducible artifact in this repo, and labels the claim with one of:
 

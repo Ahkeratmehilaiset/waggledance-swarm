@@ -1,14 +1,31 @@
-# Release Readiness — WaggleDance (v3.8.0 stable, released 2026-05-04)
+# Release Readiness — WaggleDance (v3.8.0 stable + v3.9.0-producer-fabric-alpha PRERELEASE)
 
-**Status:** **v3.8.0 stable released 2026-05-04** from Phase 16F PR #68 (squash-merge `824176eb`). All 22 stable gates final = PASS. GitHub Latest = v3.8.0. The previous prerelease `v3.7.8-docker-gate-alpha` (Phase 16D) remains visible as a Pre-release entry; not moved or retagged.
+**Stable status:** **v3.8.0 stable released 2026-05-04** from Phase 16F PR #68 (squash-merge `824176eb`). All 22 stable gates final = PASS. **GitHub Latest = v3.8.0**.
 
-This document defines what `release-ready` means in the WaggleDance autonomy lineage, what version-tag policy applies, and which gates must pass before stable v3.8.0 is created.
+**Prerelease status:** **v3.9.0-producer-fabric-alpha released 2026-05-04T18:32:47Z** from Phase 17A PR #71 (squash-merge `c726995c`) on top of v3.8.0. Pre-release entry on GitHub; v3.8.0 remains GitHub Latest, untouched, not retagged.
 
-`release-ready` here means **truthful stable readiness**: reproducible proofs both locally and inside Docker `--network none`, green CI, clear docs, security audit pass-through, known limitations documented, no consciousness claim.
+This document defines what `release-ready` means in the WaggleDance autonomy lineage, what version-tag policy applies, and which gates must pass before each release tier is created.
+
+`release-ready` here means **truthful readiness**: reproducible proofs both locally and inside Docker `--network none`, green CI, clear docs, security audit pass-through, known limitations documented, no consciousness claim.
 
 ## Latest tag (GitHub Latest) — v3.8.0 (Phase 16F, stable, released 2026-05-04)
 
 `v3.8.0` — first stable release. Phase 16F closed the single remaining v3.8.0 stable blocker from Phase 16D (g01 Docker end-to-end + g19 Docker runtime no-network) by building `waggledance:phase16f` (`python:3.13-slim` + `requirements-ci.txt`, 3.09 GB) and running all four canonical proofs inside Docker `--network none` at corpus 104, exactly matching local results. PR #68 squash-merged at 2026-05-04T07:08:23Z (merge commit `824176eb`); annotated tag `v3.8.0` pushed; GitHub release published with `isPrerelease=false` at 2026-05-04T07:13:27Z. All 22 stable gates final = PASS.
+
+## Latest prerelease — v3.9.0-producer-fabric-alpha (Phase 17A)
+
+`v3.9.0-producer-fabric-alpha` — Phase 17A producer fabric and 10k solver capability scale prerelease on top of v3.8.0 stable. PR #71 squash-merged at 2026-05-04T18:28:06Z (merge commit `c726995c`); annotated tag pushed; GitHub release published with `isPrerelease=true` at 2026-05-04T18:32:47Z.
+
+What this prerelease ships beyond v3.8.0:
+
+* **14 phase8.5 producer modules ported** (~4,511 LOC stdlib + waggledance only): `waggledance/core/dreaming/*` (curriculum, collapse, meta_proposal, replay, request_pack, shadow_graph), `waggledance/core/magma/{self_model, reflective_workspace}.py`, `waggledance/core/meta/*` (meta_learner, history, inputs, review_bundle).
+* **`tools/run_phase17a_producer_fabric_proof.py`** — emits 68 IR objects across 6 kinds (curiosity, self_model, dream_curriculum, dream_meta_proposal, hive_proposals, review_bundle) consumed by the existing main IR adapters; 6/6 negative cases pass; provider/builder delta = 0; 18/18 integration tests.
+* **`tools/run_solver_scale_proof.py`** — 10000 synthetic deterministic solver descriptors balanced across 6 families × 8 hex cells; 1000/1000 capability hits via the real `RuntimeQueryRouter.route()` capability-aware path; 0 FIFO fallback; 0 miss; lookup p50/p95/p99 inside Docker `--network none` ≈ 0.47/0.94/1.17 ms; 21/21 integration tests. Honesty label: `is_synthetic_scale=true, not_canonical_corpus=true`.
+* **Canonical seed corpus 104 → 128** (+24 entries; +4 per family; no allowlist widening; per-family floors 32/21/21/18/18/18).
+* **Phase 8.5 branch preservation on origin** — all 5 `phase8.5/*` branches now visible on origin via 4 fast-forward pushes (no force-push).
+* **Honest competitor evidence docs** (`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md` + `LOCAL_AI_RUNTIME_COMPARISON.md`) with PROVEN / MEASURED / INFERRED / NOT CLAIMED labels per axis. Raw intelligence vs frontier MoE: NOT CLAIMED.
+
+What v3.9.0-producer-fabric-alpha is **not**: a stable release. It does not promote v3.9.0 to stable; that requires a separate stable-gate session and a paired benchmark against a frontier model that has not been run. v3.8.0 remains the recommended stable.
 
 ## Previous prerelease — v3.7.8-docker-gate-alpha (Phase 16D)
 

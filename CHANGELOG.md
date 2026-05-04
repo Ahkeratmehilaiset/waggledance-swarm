@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Phase 17C — Local Ollama Baseline / v3.9.2-local-ollama-baseline-alpha CANDIDATE] — 2026-05-04
+## [Phase 17C — Local Ollama Baseline / v3.9.2-local-ollama-baseline-alpha PRERELEASE] — 2026-05-04
 
-Branch: `phase17c/local-ollama-baseline`. Benchmark-extension sprint on top of v3.9.1-local-efficiency-benchmark-alpha. **Outcome (candidate):** PRERELEASE `v3.9.2-local-ollama-baseline-alpha` — to be tagged from the Phase 17C PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0-producer-fabric-alpha + v3.9.1-local-efficiency-benchmark-alpha all remain unchanged.
+Branch: `phase17c/local-ollama-baseline`. Benchmark-extension sprint on top of v3.9.1-local-efficiency-benchmark-alpha. **Outcome: PRERELEASE `v3.9.2-local-ollama-baseline-alpha` published 2026-05-04T22:26:28Z**. PR #75 squash-merged at 2026-05-04T22:25:23Z (merge commit `db5d7db1`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0-producer-fabric-alpha + v3.9.1-local-efficiency-benchmark-alpha all remain unchanged.
 
 ### Added (production code)
 

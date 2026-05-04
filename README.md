@@ -2,17 +2,18 @@
 
 > Local-first deterministic-solver runtime with a bounded six-family auto-growth lane. Alpha. No cloud, no provider in the inner loop.
 
-**Latest alpha (Phase 16D, this release):** final stable-gate closure attempt on top of Phase 16C. **All 16 Bandit B324 weak-hash findings are resolved** via `usedforsecurity=False` (Bandit HIGH count: 16 → 0). Persisted semantic fingerprint preservation verified per master prompt RULE 25: 14 scalar fields + 7 restart invariants + 6 per-operation served counts identical pre- and post-cleanup. All four canonical proofs re-run at corpus 104 with `provider_jobs_delta = builder_jobs_delta = 0` and zero flakes (3-iter soak: 9/9). **v3.8.0 stable remains blocked solely by Docker** (still unavailable in this development shell — same as Phase 16B and 16C dev shells). Phase 16D ships as `v3.7.8-docker-gate-alpha` prerelease — Bandit blocker fully closed; Docker is now the **single remaining substantive blocker** for v3.8.0 stable.
+**v3.8.0 stable candidate (Phase 16F, this branch):** Docker stable-gate closure on top of Phase 16D. **All four canonical proofs run end-to-end inside Docker with `--network none`** at corpus 104, exactly matching local results: 104 served via capability lookup pre- and post-restart, persisted state identical across DB close+reopen, `provider_jobs_delta = builder_jobs_delta = 0`. The 4-file autonomy_growth smoke suite passes 16/16 inside Docker `--network none` in ~125 s. Bandit HIGH count remains 0 (Phase 16D B324 cleanup intact); pip-audit carry-forward (32 CVEs in 14 packages, all classified `low`, none reachable from inner loop). Local 3-iter proof soak: 9/9, no flakes, mean ~38 s/iter. The image is `python:3.13-slim` + `requirements-ci.txt` (3.09 GB; the lock-file install is documented but not used because the lock pinned several Windows / CUDA-only packages incompatible with linux/amd64 PyPI default wheels). **v3.8.0 stable will be created only if every stable gate also passes on post-merge main and on a fresh clone from GitHub HTTPS.** This is a stable candidate, not a released stable — the tag is created in a separate post-merge step.
 
 **Still alpha / not implemented:** real Anthropic / OpenAI HTTP adapters (only `dry_run_stub` and `claude_code_builder_lane` exercisable end-to-end); Stage-2 atomic flip (specified in `docs/architecture/STAGE2_CUTOVER_RFC.md` but not executed); actuator-side autonomy; federation; high-risk family auto-promotion; HTTP `/api/autonomy/query` route (the FastAPI route surface for query is not exposed; v3.8.0 is library/service-layer-stable, not HTTP-API-stable); production-grade Docker deployment story (see `docs/deployment/DOCKER_QUICKSTART.md`).
 
 **Consciousness?** No. The autonomy mechanisms here are engineering primitives (auto-growth, runtime harvest, capability-aware dispatch, hot-path cache), each mapped to a code path, persisted event, and regression test. WaggleDance does not claim to be conscious, sentient, aware, alive, or AGI. See `docs/github/REPOSITORY_PRESENTATION.md` for the external presentation summary and `docs/release/RELEASE_READINESS.md` for the alpha/release tag policy.
 
-[![Tests](https://img.shields.io/badge/tests-Phase%2016D%20targeted%20green-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-Phase%2016F%20targeted%20green-brightgreen)]()
+[![Docker](https://img.shields.io/badge/docker-Phase%2016F%20stable--gate%20PASS%20(--network%20none)-brightgreen)]()
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-3.6.0%20%2B%20P10..P14%20%2B%20P15..P16D%20docker--gate--alpha-blue)]()
+[![Version](https://img.shields.io/badge/version-v3.8.0%20stable%20candidate%20(Phase%2016F)-blue)]()
 
 ## What this is
 

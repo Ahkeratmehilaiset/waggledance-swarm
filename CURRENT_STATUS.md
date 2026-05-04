@@ -1,12 +1,35 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-05-02
-**Version:** v3.6.0 + P10..P14 + P15..P16D docker-gate (alpha) on `main`
-**Shipped branch:** `main` at `b87fbe4` (Phase 16C squash-merge of [PR #65](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/65)). Phase 16D merge SHA recorded post-merge. Earlier history: Phase 16B squash-merge of [PR #64](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/64) at `bada64c`; Phase 16A squash-merge of [PR #63](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/63) at `d18e1da`; Phase 15 squash-merge of [PR #62](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/62) at `2b9978d`; Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) at `08b7e8c` on top of `8bf1869` (post-v3.6.0 truthfulness commit) on top of `a1c4152` (PR #51 squash).
-**Tag:** [`v3.7.7-stable-gate-alpha`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.7.7-stable-gate-alpha) — Phase 16C prerelease. Recommended next: `v3.7.8-docker-gate-alpha` (Phase 16D) — created only after the Phase 16D PR merges and post-merge release-doc check passes.
-**CI status:** 🟢 green on main (Tests + WaggleDance CI, Python 3.11 | 3.12 | 3.13)
+**Updated:** 2026-05-04
+**Version:** v3.6.0 + P10..P14 + P15..P16D shipped on `main`; **v3.8.0 stable candidate** on branch `phase16f/docker-stable-gate` pending PR merge + post-merge verification.
+**Shipped branch:** `main` at `7210a7e` (Phase 16D squash-merge of [PR #66](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/66)). Earlier history: Phase 16C squash-merge of [PR #65](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/65) at `b87fbe4`; Phase 16B squash-merge of [PR #64](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/64) at `bada64c`; Phase 16A squash-merge of [PR #63](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/63) at `d18e1da`; Phase 15 squash-merge of [PR #62](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/62) at `2b9978d`; Phase 10 squash-merge of [PR #54](https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/54) at `08b7e8c` on top of `8bf1869` on top of `a1c4152` (PR #51 squash).
+**Latest tag at origin/main:** [`v3.7.8-docker-gate-alpha`](https://github.com/Ahkeratmehilaiset/waggledance-swarm/releases/tag/v3.7.8-docker-gate-alpha) (Phase 16D prerelease). **Pending after Phase 16F:** v3.8.0 stable, created only after the Phase 16F PR merges, post-merge proofs pass, and post-merge fresh-clone verification confirms reproducibility from GitHub HTTPS.
+**CI status:** 🟢 PR-level CI green on Phase 16F branch and Phase 16D / 16C / 16B / 16A branches. PR #67 (`fix/ci-fetch-depth-truth-regression`) addresses a known shallow-clone failure of `tests/phase10/test_truth_regression.py::test_phase10_branch_history_is_linear_descended_from_main` on `main` push events; that fix is orthogonal to v3.8.0 and lands on its own PR.
 
-### Phase 16D — Final stable-gate closure: Docker + Bandit B324 + v3.8.0 release decision (landing 2026-05-02)
+### Phase 16F — Docker stable-gate closure and v3.8.0 release candidate (in flight 2026-05-04)
+
+Phase 16F is the Docker stable-gate closure sprint that closes the single remaining v3.8.0 stable blocker (g01 + g19) from Phase 16D. It does not introduce any new autonomy mechanism, allowlist family, or runtime entrypoint.
+
+* **Docker now available for the first time in any WaggleDance dev shell.** Docker Desktop 4.71.0, Engine 29.4.1 (linux/amd64), buildx v0.33.0, compose v5.1.3, runc 1.3.5. `docker run --rm hello-world` PASS. `docker version` shows full client + server presence.
+* **`waggledance:phase16f` image built.** `python:3.13-slim` base + apt (`curl`, `git`, `libvoikko1`, `voikko-fi`) + `requirements-ci.txt` (cross-platform CI subset; the original `requirements.lock.txt` was generated against a Windows + CUDA 11.8 dev environment and pins Linux-incompatible packages — switching to the documented CI requirements is a small deterministic fix permitted by the master prompt). Image ID `7bbac5ee5c72`, size 3.09 GB. Build duration ~7 min on a 24-CPU / 62 GiB / overlayfs / WSL2 host.
+* **All four canonical proofs PASS inside Docker `--network none`** at corpus 104, exactly matching local results:
+  * Phase 15 hint: `auto_promotions_total = 104`, `provider_jobs_delta = builder_jobs_delta = 0`, 5/5 negative cases pass
+  * Phase 16A upstream: `structured_request_derived_total = 104`, `low_risk_hint_derived_total = 104`, 7/7 negative cases pass
+  * Phase 16B P2 full restart: 104/104 served pre and post DB close+reopen, all 7 restart invariants True, `provider_jobs_delta_across_restart = builder_jobs_delta_across_restart = 0`, persisted `solver_count = 104` and `capability_features = 180` identical across reopen
+  * autonomy_growth smoke (4 files): **16 passed, 27 conditional skips, 0 failures** in ~125 s
+* **Local 3-iteration proof soak: 9/9 PASS, no flakes**, mean ~38 s/iter (`phase15_runtime_hint`, `phase16a_upstream`, `phase16b_full_restart` × 3).
+* **Targeted local test sweep (`tests/autonomy_growth/`, `tests/storage/`, `tests/ui_hologram/`, `tests/autonomy/test_solver_router.py`, `tests/phase10/`): 349 passed, 0 failures, 30 warnings** (Voikko `__del__` cleanup ResourceWarning + SwigPy DeprecationWarning — pre-existing, not Phase 16F regressions). 215 s wall.
+* **Bandit + pip-audit carry-forward: PASS.** Bandit HIGH = 0 (B324 cleanup intact), MEDIUM = 28 (carry-forward `B615 huggingface_unsafe_download` outside inner loop), LOW = 226 (carry-forward defensive try/except). pip-audit: 32 CVEs in 14 packages, all `low`, none reachable from inner loop, all tracked by Dependabot PRs.
+* **Stage-2 atomic flip: NOT executed** (carry-forward; `STAGE2_CUTOVER_RFC.md` still gates).
+* **HUMAN_APPROVAL: NOT collected** (CLAUDE.md rule 10 honored — Phase 16F is a build/proof session).
+* **Allowlist: unchanged.** Six families: `scalar_unit_conversion`, `lookup_table`, `threshold_rule`, `interval_bucket_classifier`, `linear_arithmetic`, `bounded_interpolation`. 104 canonical seeds.
+* **Outcome: Phase 16F is a v3.8.0 stable candidate.** Tag will be created **only after** the Phase 16F PR merges, post-merge proofs pass on `git checkout --detach origin/main`, and a fresh clone from `https://github.com/Ahkeratmehilaiset/waggledance-swarm.git` reproduces both the smoke suite and the full restart proof. Stable creation is conditioned on g01–g22 all passing post-merge; if any fails post-merge, no stable tag is created and a fail-closed prerelease (`v3.7.9-docker-verification-alpha`) is the documented fallback only if material Docker progress was made.
+
+What did NOT change: no new autonomy mechanisms; no provider HTTP wiring; Stage-2 atomic flip RFC unchanged; `_DEFAULT_FAISS_DIR` (still `data/faiss/`); `_DEFAULT_CONTROL_PLANE_DIR` (still `data/control_plane/`); HTTP `/api/autonomy/query` route absent (deliberate scope limit; v3.8.0 is library/service-layer-stable, not HTTP-API-stable); single-process scope (RULE 10); LICENSE-CORE.md (no new core files); no consciousness claim.
+
+### Phase 16D — Final stable-gate closure: Docker + Bandit B324 + v3.8.0 release decision (landed on main 2026-05-02)
+
+### Phase 16D — Final stable-gate closure: Docker + Bandit B324 + v3.8.0 release decision (landed on main 2026-05-02)
 
 Phase 16D is the final stable-gate closure attempt. It does not introduce new autonomy mechanisms. It resolves all 16 Bandit B324 weak-hash findings inherited from Phase 16C while preserving persisted semantic fingerprint, and re-confirms every other stable gate. The single remaining stable blocker is Docker (CLI still unavailable in dev shell — same situation as Phase 16B and Phase 16C).
 

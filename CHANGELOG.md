@@ -1,5 +1,68 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 16F — Docker stable-gate closure / v3.8.0 stable candidate] — 2026-05-04
+
+Branch: `phase16f/docker-stable-gate`. Docker stable-gate closure sprint on top of Phase 16D. **Outcome: v3.8.0 stable candidate** — tag is created only after the Phase 16F PR merges, post-merge proofs pass, and a fresh clone from GitHub HTTPS reproduces. The single remaining v3.8.0 stable blocker from Phase 16D (g01 Docker end-to-end + g19 Docker no-network) is closed in this branch; the four other stable gates pending post-merge verification (g02 fresh clone, g16 tag target, g17 release metadata, g22 GitHub Latest) are addressed in P10–P12 of this same session.
+
+### Changed (build / packaging only — no autonomy code change)
+
+* **`Dockerfile`** — switched the `pip install` source from `requirements.lock.txt` to `requirements-ci.txt` (the cross-platform CI subset that has been proven on GitHub Actions Linux runners). The lock file was generated against a Windows + CUDA 11.8 dev environment and pinned several Linux-incompatible packages (`pywin32==310`, `triton-windows==3.6.0.post25`, `torch==2.7.1+cu118`) plus hard-pinned CUDA-12.9.x libraries that conflict with the transitive dependencies of the linux/amd64 PyPI default torch wheel. The Dockerfile's pre-existing comment already documented `requirements-ci.txt` as the alternative for "minimal deployment without hybrid retrieval or e2e browser testing"; Phase 16F adopts that documented alternative. The image drops `faiss-cpu`, `playwright`, `unsloth`, `xformers`, `bitsandbytes`, `webrtcvad`, `pyttsx3`, `comtypes`, etc. — none required by the autonomy proof scripts (which use the SQLite control plane only) or by the targeted smoke suite. Image size: 3.09 GB.
+* **`.dockerignore`** — added explicit carve-outs for the four canonical proof scripts (`tools/run_full_restart_continuity_proof.py`, `tools/run_upstream_structured_request_proof.py`, `tools/run_automatic_runtime_hint_proof.py`, `tools/run_phase16b_proof_soak.py`), `tests/__init__.py`, `tests/conftest.py`, and `tests/autonomy_growth/`. The remainder of `tools/`, `tests/`, and `docs/` stays excluded as before. This lets the same image both run the long-form `python tools/run_*_proof.py` proofs and the autonomy_growth pytest smoke suite under `--network none`.
+* **`requirements.lock.txt`** — added `sys_platform == "win32"` markers to `pywin32`, `pypiwin32`, `pyreadline3`, `triton-windows`; split `torch`, `torchaudio`, `torchvision` into Windows-only `+cu118` lines and `sys_platform != "win32"` plain-version lines; loosened `nvidia-cublas-cu12`, `nvidia-cuda-runtime-cu12`, `nvidia-cudnn-cu12` to `>=` lower-bounds with `sys_platform != "win32"` markers. The lock file is no longer the install source for the Phase 16F image but the markers make it portable for any future Linux re-use without further surgery.
+
+### Added
+
+* **`docs/runs/phase16f_docker_stable_gate_2026_05_03/`** — full Phase 16F session folder:
+  * `session_state.json` — P0 baseline + Docker pre-check evidence.
+  * `stable_gate_inventory.{json,md}` — 22-gate stable / candidate ledger; updated after P2, P3, P4, P5, P10, P12.
+  * `docker_build.md` — six-attempt build narrative with deterministic-fix classification.
+  * `docker_runtime_proofs.md` — three canonical proofs + smoke-suite results inside Docker `--network none`.
+  * `proof_rerun_report.md` — local rerun matching Docker results 1-to-1; soak 9/9 no flakes.
+  * `automatic_runtime_hint_proof.json`, `upstream_structured_request_proof.{json,md}`, `full_restart_continuity_proof.{json,md}` — local proof outputs at corpus 104.
+  * `proof_soak_report.json` — local 3-iter soak report (3 proofs × 3 iterations = 9/9).
+  * `bandit_report.json` — Bandit scan output (HIGH=0, B324=0).
+  * `pip_audit_report.json` — pip-audit scan output (32 CVEs in 14 packages, all `low`).
+  * `release_decision.md` — A/B/C decision and rationale (P8).
+* **`docs/security/PHASE16F_SECURITY_CARRY_FORWARD.md`** — Bandit + pip-audit carry-forward documentation.
+
+### Behaviour
+
+* No autonomy code changes. Phase 16F is a build / proof session.
+* All four canonical proofs pass at corpus 104 inside Docker with the network disabled (`--network none`); local results match Docker 1-to-1 in counts, invariants, and KPI deltas.
+* Provider/builder delta during proof = 0/0 (carry-forward).
+* Persisted semantic fingerprint preserved across the Docker boundary (RULE 25 invariants True).
+* Hot-path cache behaviour identical Docker vs local (warm_hits=318, cold_hits_warmed=98, misses=104).
+
+### Stable v3.8.0 release-gate audit
+
+`docs/release/RELEASE_READINESS.md` updated. The pre-tag stable-gate ledger after Phase 16F:
+
+* **g01 Docker end-to-end** — moves from FAIL_NOT_VERIFIED (Phase 16D) to **PASS**.
+* **g19 Docker runtime no-network** — moves from FAIL_NOT_VERIFIED (Phase 16D) to **PASS**.
+* **g05 Security audit / Bandit** — PASS (carry-forward).
+* **g21 Bandit B324 cleanup** — PASS (carry-forward).
+* All other branch-side gates (g04, g06, g07, g08, g09, g10, g11, g12, g13, g14, g15) — PASS / carry-forward.
+* Pending post-merge verification: **g02** fresh clone, **g16** tag target, **g17** release metadata, **g18** main-side CI (orthogonal — see PR #67), **g20** fresh-clone tag fetch, **g22** GitHub Latest.
+
+If post-merge verification passes: stable tag `v3.8.0` is created; release notes are pushed; GitHub Latest is set to v3.8.0. If post-merge verification fails for a non-Docker reason (CI flake, etc.), no tag is created — no fail-closed prerelease tag is appropriate because Docker progress is fully realized in this branch and an alpha would mis-signal the gate state.
+
+### What did NOT change
+
+* No autonomy mechanism added.
+* The six-family low-risk allowlist (RULE 13) — unchanged.
+* The Phase 9 14-stage human-gated promotion ladder — unchanged.
+* The Stage-2 atomic flip (`STAGE2_CUTOVER_RFC.md` still gates) — not executed.
+* `_DEFAULT_FAISS_DIR=data/faiss/` — unchanged.
+* `_DEFAULT_CONTROL_PLANE_DIR=data/control_plane/` — unchanged.
+* HTTP `/api/autonomy/query` route — still does not exist (deliberate scope limit; v3.8.0 is library / service-layer stable, not HTTP-API stable).
+* Real Anthropic / OpenAI HTTP adapters — still follow-up.
+* Phase 8.5 producer subsystems (curiosity organ, self-model snapshot, dream curriculum, hive proposes, vector-chaos) — still on `phase8.5/*` branches as documented follow-up PRs; not on main.
+* `LICENSE-CORE.md` — unchanged (no new crown-jewel files in this sprint).
+* `requirements.txt` — unchanged.
+* `requirements-ci.txt` — unchanged.
+* Bandit / pip-audit — still NOT in runtime requirements (audit-only tooling).
+* No consciousness claim.
+
 ## [Phase 16D — final stable-gate closure: Docker + Bandit B324 + v3.8.0 release decision] — 2026-05-02
 
 Branch: `phase16d/final-stable-gate-closure`. Final stable-gate closure sprint on top of Phase 16C. **Outcome: prerelease `v3.7.8-docker-gate-alpha`** (stable v3.8.0 still blocked solely by g01 Docker, which remained unavailable in this dev shell). All 16 Bandit B324 weak-hash findings resolved with persisted semantic fingerprint preservation verified. The blocker set narrows from Phase 16C's "1 substantive (Docker) + 1 residual cleanup (Bandit)" to Phase 16D's **"1 substantive (Docker)" only**.

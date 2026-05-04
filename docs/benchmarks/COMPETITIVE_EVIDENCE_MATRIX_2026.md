@@ -1,10 +1,10 @@
 # Competitive Evidence Matrix — 2026-Q2
 
-**Status:** Phase 17A + Phase 17B snapshot, derived from this session's reproducible artifacts only.
+**Status:** Phase 17A + Phase 17B + Phase 17C snapshot, derived from this session's reproducible artifacts only.
 **Date:** 2026-05-04
-**Branch:** `phase17b/local-efficiency-benchmark` (Phase 17A is on `main` at `c726995c`)
-**Anchor:** `v3.9.1-local-efficiency-benchmark-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest, v3.9.0-producer-fabric-alpha remains the previous Pre-release).
-**New evidence this PR:** Phase 17B's `tools/run_phase17b_local_efficiency_benchmark.py` aggregates the existing Phase 11–17A proof outputs into a single benchmark JSON + MD with the master-prompt-mandated metric set (correctness, latency p50/p95/p99, fallback rate, provider/builder delta, audit/provenance coverage, claim labels). Detailed run report: `docs/benchmarks/LOCAL_EFFICIENCY_BENCHMARK_2026.md`.
+**Branch:** `phase17c/local-ollama-baseline` (Phase 17B is the previous tag at `f4d0a4a4`; Phase 17A is on `main` at `c726995c`)
+**Anchor:** `v3.9.2-local-ollama-baseline-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest; v3.9.0-producer-fabric-alpha and v3.9.1-local-efficiency-benchmark-alpha remain the previous Pre-releases).
+**New evidence this PR (Phase 17C):** `tools/run_phase17c_local_ollama_baseline.py` wraps the Phase 17B aggregator (Tracks A–E pass-through) and adds a 30-prompt deterministic Ollama probe against one already-installed local model (`gemma4:e4b`) — upgrading axis J's Ollama line from `MEASURED-IF-OPTED-IN-LOCALLY` to `MEASURED-LOCAL-OLLAMA-ONE-MODEL`. Detailed run report: `docs/benchmarks/LOCAL_OLLAMA_BASELINE_2026.md`.
 
 This is an **engineering** document. It does not market WaggleDance. It enumerates the comparison axes most often used to assess local-first cognitive runtimes, states one factual claim per axis, points to a reproducible artifact in this repo, and labels the claim with one of:
 
@@ -95,9 +95,10 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 ### J. LLM / MoE fallback as a hybrid
 
 * **Claim:** The deterministic solver-first runtime can interoperate with an external LLM (Ollama, Anthropic, OpenAI) as a fallback layer. The architecture is provider-pluggable.
-* **Evidence:** `waggledance/adapters/llm/ollama_adapter.py` (real adapter); `waggledance/adapters/llm/dry_run_stub.py` (always-on offline stub); the solver router has a documented fallback step *after* solvers + specialists. Phase 11–17A proofs explicitly do not invoke the LLM lane (provider delta = 0). Phase 17B harness includes an **optional** Ollama latency probe (`scenario F`) for the local-only LLM round-trip; default behavior is `SKIPPED` for `--network none` safety. To measure the local hybrid one explicitly opts in via `--include-ollama`. The probe never pulls or downloads a model (master prompt rule 14).
-* **Label:** **INFERRED** for the architecture; **MEASURED-IF-OPTED-IN-LOCALLY** for Ollama latency. The hybrid accuracy delta was not measured this session.
-* **Strengthening path:** run the same external reasoning benchmark twice — once with the LLM fallback enabled, once disabled — and publish both `coverage` (fraction served by deterministic solver) and the joint accuracy delta.
+* **Evidence:** `waggledance/adapters/llm/ollama_adapter.py` (real adapter); `waggledance/adapters/llm/dry_run_stub.py` (always-on offline stub); the solver router has a documented fallback step *after* solvers + specialists. Phase 11–17A proofs explicitly do not invoke the LLM lane (provider delta = 0). Phase 17B introduced an optional Ollama latency probe (`scenario F`) but defaulted to `SKIPPED` for `--network none` safety. **Phase 17C upgrades that probe to a measured 30-prompt deterministic baseline against one already-installed local model (`gemma4:e4b`)** — see `tools/run_phase17c_local_ollama_baseline.py` and `docs/benchmarks/LOCAL_OLLAMA_BASELINE_2026.md`. The probe never pulls a model and never calls a cloud API (master prompt rule 14).
+* **Measured Phase 17C (host run, this session, gemma4:e4b, 30 deterministic prompts derived from the six-family allowlist):** `prompts_succeeded = 30 / 30`, `prompts_failed = 0`, `median_latency_seconds = 0.7866`, `p95_latency_seconds = 17.5538`, `mean_latency_seconds = 2.5539`, `total_seconds = 76.6193`, `hash_chain_sha256` head `3813e784f4ab42d9...`, `release_gate_pass = true`.
+* **Label:** **INFERRED** for the architecture; **MEASURED-LOCAL-OLLAMA-ONE-MODEL** for one local model latency this session. The hybrid accuracy delta was not measured this session, and only one local model was exercised — no cross-model ranking is implied.
+* **Strengthening path:** run the same external reasoning benchmark twice — once with the LLM fallback enabled, once disabled — and publish both `coverage` (fraction served by deterministic solver) and the joint accuracy delta. Add additional local models (rule-14 preference order continues with `gemma4:26b`, `gemma3:4b`, `qwen2.5:7b`, `phi4-mini:latest`, `llama3.2:3b`) to widen the local-baseline sample.
 
 ### K. Industrial / factory / capsule readiness
 
@@ -138,7 +139,7 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 | G. 10k solver capability scale | MEASURED + PROVEN-data-path (Phase 17A + 17B re-measure) |
 | H. Canonical seed corpus size | PROVEN (128) |
 | I. Raw intelligence vs frontier MoE | **NOT CLAIMED** |
-| J. LLM / MoE hybrid | INFERRED |
+| J. LLM / MoE hybrid | INFERRED (architecture); MEASURED-LOCAL-OLLAMA-ONE-MODEL (Phase 17C) |
 | K. Industrial / factory readiness | INFERRED |
 | L. Edge resource use | MEASURED (image size); INFERRED (Pi class) |
 | M. Autonomous learning lane | PROVEN within six-family allowlist |

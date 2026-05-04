@@ -1,0 +1,659 @@
+{
+  "insufficient_evidence": [
+    {
+      "candidate_target": "1e491bf5367b0130",
+      "evidence_strength_seen": 0.33,
+      "missing_planes": [
+        "curiosity",
+        "dream",
+        "resilience"
+      ],
+      "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+    },
+    {
+      "candidate_target": "50a19f40c45d418c",
+      "evidence_strength_seen": 1.0,
+      "missing_planes": [
+        "curiosity",
+        "dream",
+        "resilience"
+      ],
+      "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+    },
+    {
+      "candidate_target": "548bfbf7c2f6b982",
+      "evidence_strength_seen": 0.66,
+      "missing_planes": [
+        "curiosity",
+        "dream",
+        "resilience"
+      ],
+      "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+    },
+    {
+      "candidate_target": "776becadc2b5e1bc",
+      "evidence_strength_seen": 0.33,
+      "missing_planes": [
+        "curiosity",
+        "dream",
+        "resilience"
+      ],
+      "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+    },
+    {
+      "candidate_target": "835c8e3370e50fa9",
+      "evidence_strength_seen": 1.0,
+      "missing_planes": [
+        "curiosity",
+        "dream",
+        "resilience"
+      ],
+      "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+    },
+    {
+      "candidate_target": "b436652c40fdff01",
+      "evidence_strength_seen": 0.66,
+      "missing_planes": [
+        "curiosity",
+        "dream",
+        "resilience"
+      ],
+      "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+    }
+  ],
+  "proposals": [
+    {
+      "canonical_target": "energy",
+      "confidence": 0.8,
+      "cross_plane_support_factor": 1.25,
+      "evidence_planes": [
+        "curiosity",
+        "self_model"
+      ],
+      "evidence_strength": 0.588,
+      "expected_value": 0.588,
+      "impacted_cells": [
+        "energy"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "19f080927bca",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.588,
+      "proposal_type": "policy_gate_adjustment",
+      "provenance": {
+        "base_commit_hash": "phase17a-fixture",
+        "branch_name": "phase17a/producer-fabric-scale",
+        "consumed_hook_contracts": [],
+        "fixture_fallback_used": false,
+        "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "medium",
+      "schema_version": 1,
+      "scope_class": "policy",
+      "source_curiosity_ids": [
+        "19f41e915e71f017",
+        "9088a523e70147d1",
+        "919da1a57d18f7a2",
+        "b6b119ccf9723051"
+      ],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:energy"
+      ],
+      "uncertainty": "low",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "2 evidence planes converged on target 'energy' with severity_max=1.00 (cps_factor=1.25, urgency=1.00)"
+    },
+    {
+      "canonical_target": "math",
+      "confidence": 0.8,
+      "cross_plane_support_factor": 1.25,
+      "evidence_planes": [
+        "curiosity",
+        "self_model"
+      ],
+      "evidence_strength": 0.544,
+      "expected_value": 0.544,
+      "impacted_cells": [
+        "math"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "f85e73d3d2f2",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.544,
+      "proposal_type": "policy_gate_adjustment",
+      "provenance": {
+        "base_commit_hash": "phase17a-fixture",
+        "branch_name": "phase17a/producer-fabric-scale",
+        "consumed_hook_contracts": [],
+        "fixture_fallback_used": false,
+        "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "medium",
+      "schema_version": 1,
+      "scope_class": "policy",
+      "source_curiosity_ids": [
+        "27a59530a1084579",
+        "6faa2052084b10a2",
+        "a3aca173fc07ee6b",
+        "bfded418b71072e9"
+      ],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:math"
+      ],
+      "uncertainty": "low",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "2 evidence planes converged on target 'math' with severity_max=1.00 (cps_factor=1.25, urgency=1.00)"
+    },
+    {
+      "canonical_target": "safety",
+      "confidence": 0.8,
+      "cross_plane_support_factor": 1.25,
+      "evidence_planes": [
+        "curiosity",
+        "self_model"
+      ],
+      "evidence_strength": 0.542,
+      "expected_value": 0.542,
+      "impacted_cells": [
+        "safety"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "9b07b15f3836",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.542,
+      "proposal_type": "policy_gate_adjustment",
+      "provenance": {
+        "base_commit_hash": "phase17a-fixture",
+        "branch_name": "phase17a/producer-fabric-scale",
+        "consumed_hook_contracts": [],
+        "fixture_fallback_used": false,
+        "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "medium",
+      "schema_version": 1,
+      "scope_class": "policy",
+      "source_curiosity_ids": [
+        "54920a2bbc79b6b5",
+        "79e75b52e89f7e1a",
+        "a50776ea294b769a",
+        "ba3761968f3fff6d"
+      ],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:safety"
+      ],
+      "uncertainty": "low",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "2 evidence planes converged on target 'safety' with severity_max=0.76 (cps_factor=1.25, urgency=1.00)"
+    },
+    {
+      "canonical_target": "seasonal",
+      "confidence": 0.8,
+      "cross_plane_support_factor": 1.25,
+      "evidence_planes": [
+        "curiosity",
+        "self_model"
+      ],
+      "evidence_strength": 0.542,
+      "expected_value": 0.542,
+      "impacted_cells": [
+        "seasonal"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "cee952a8c55f",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.542,
+      "proposal_type": "policy_gate_adjustment",
+      "provenance": {
+        "base_commit_hash": "phase17a-fixture",
+        "branch_name": "phase17a/producer-fabric-scale",
+        "consumed_hook_contracts": [],
+        "fixture_fallback_used": false,
+        "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "medium",
+      "schema_version": 1,
+      "scope_class": "policy",
+      "source_curiosity_ids": [
+        "2b14a31325374f05",
+        "5a95b2b132a6ea8e",
+        "b2d9fcc2e1573896",
+        "b6c69c6ad7efe10d"
+      ],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:seasonal"
+      ],
+      "uncertainty": "low",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "2 evidence planes converged on target 'seasonal' with severity_max=0.76 (cps_factor=1.25, urgency=1.00)"
+    },
+    {
+      "canonical_target": "thermal",
+      "confidence": 0.8,
+      "cross_plane_support_factor": 1.25,
+      "evidence_planes": [
+        "curiosity",
+        "self_model"
+      ],
+      "evidence_strength": 0.432,
+      "expected_value": 0.432,
+      "impacted_cells": [
+        "thermal"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "07a51f06df70",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.432,
+      "proposal_type": "policy_gate_adjustment",
+      "provenance": {
+        "base_commit_hash": "phase17a-fixture",
+        "branch_name": "phase17a/producer-fabric-scale",
+        "consumed_hook_contracts": [],
+        "fixture_fallback_used": false,
+        "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "medium",
+      "schema_version": 1,
+      "scope_class": "policy",
+      "source_curiosity_ids": [
+        "01285def0ac96cdf",
+        "5704d2bfa5efc46c",
+        "da46cbcb972a0b68",
+        "ea241a40799a0d48"
+      ],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:thermal"
+      ],
+      "uncertainty": "low",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "2 evidence planes converged on target 'thermal' with severity_max=0.66 (cps_factor=1.25, urgency=1.00)"
+    },
+    {
+      "canonical_target": "general",
+      "confidence": 0.8,
+      "cross_plane_support_factor": 1.5,
+      "evidence_planes": [
+        "curiosity",
+        "dream",
+        "self_model"
+      ],
+      "evidence_strength": 0.331667,
+      "expected_value": 0.331667,
+      "impacted_cells": [
+        "general"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "7e0beef54e83",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.398,
+      "proposal_type": "solver_family_growth",
+      "provenance": {
+        "base_commit_hash": "phase17a-fixture",
+        "branch_name": "phase17a/producer-fabric-scale",
+        "consumed_hook_contracts": [],
+        "fixture_fallback_used": false,
+        "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "low",
+      "schema_version": 1,
+      "scope_class": "solver_library",
+      "source_curiosity_ids": [
+        "4be9c7b25c575523",
+        "506ea5919c8e33ff",
+        "8a2c8c4fa6954bc7",
+        "be4b57e34e51b107"
+      ],
+      "source_dream_meta_proposal_ids": [
+        "379f5afe7984dc0c"
+      ],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:general"
+      ],
+      "uncertainty": "low",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "3 evidence planes converged on target 'general' with severity_max=0.60 (cps_factor=1.50, urgency=1.00)"
+    },
+    {
+      "canonical_target": "system",
+      "confidence": 0.8,
+      "cross_plane_support_factor": 1.25,
+      "evidence_planes": [
+        "curiosity",
+        "self_model"
+      ],
+      "evidence_strength": 0.35,
+      "expected_value": 0.35,
+      "impacted_cells": [
+        "system"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "29d146818f6c",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.35,
+      "proposal_type": "policy_gate_adjustment",
+      "provenance": {
+        "base_commit_hash": "phase17a-fixture",
+        "branch_name": "phase17a/producer-fabric-scale",
+        "consumed_hook_contracts": [],
+        "fixture_fallback_used": false,
+        "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "medium",
+      "schema_version": 1,
+      "scope_class": "policy",
+      "source_curiosity_ids": [
+        "4f4f56bbc3ea090f",
+        "b421c61f53ec3574",
+        "c6720044bb51f141"
+      ],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:system"
+      ],
+      "uncertainty": "low",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "2 evidence planes converged on target 'system' with severity_max=0.76 (cps_factor=1.25, urgency=1.00)"
+    },
+    {
+      "canonical_target": "learning",
+      "confidence": 0.8,
+      "cross_plane_support_factor": 1.25,
+      "evidence_planes": [
+        "curiosity",
+        "self_model"
+      ],
+      "evidence_strength": 0.3225,
+      "expected_value": 0.3225,
+      "impacted_cells": [
+        "learning"
+      ],
+      "lifecycle_status": "new",
+      "meta_proposal_id": "bd1de483a2a0",
+      "no_mutation_in_session": true,
+      "proposal_priority": 0.3225,
+      "proposal_type": "policy_gate_adjustment",
+      "provenance": {
+        "base_commit_hash": "phase17a-fixture",
+        "branch_name": "phase17a/producer-fabric-scale",
+        "consumed_hook_contracts": [],
+        "fixture_fallback_used": false,
+        "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+      },
+      "resolution_reason": "n/a",
+      "risk": "medium",
+      "schema_version": 1,
+      "scope_class": "policy",
+      "source_curiosity_ids": [
+        "4dab8368cbd1175e",
+        "849089bb8f1d315a",
+        "f3b88d5234012b7b"
+      ],
+      "source_dream_meta_proposal_ids": [],
+      "source_resilience_refs": [],
+      "source_tension_ids": [
+        "blind_spot:learning"
+      ],
+      "uncertainty": "low",
+      "urgency_factor": 1.0,
+      "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+      "why_now": "2 evidence planes converged on target 'learning' with severity_max=0.66 (cps_factor=1.25, urgency=1.00)"
+    }
+  ],
+  "rejected_candidates": [],
+  "review_bundle": {
+    "consumed_hook_contracts": [],
+    "counts_by_recommended_next_human_action": {
+      "archive_as_low_value": 0,
+      "post_campaign_runtime_review_candidate": 8,
+      "review_for_future_PR": 0,
+      "wait_for_more_evidence": 0
+    },
+    "fixture_fallback_used": {},
+    "human_review_boundary": "This artifact is shadow-only. Every entry requires human review before any runtime promotion. No automatic merging is performed by Session D code. Runtime flip is out of scope until a later gated session with explicit permission.",
+    "insufficient_evidence": [
+      {
+        "candidate_target": "1e491bf5367b0130",
+        "evidence_strength_seen": 0.33,
+        "missing_planes": [
+          "curiosity",
+          "dream",
+          "resilience"
+        ],
+        "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+      },
+      {
+        "candidate_target": "50a19f40c45d418c",
+        "evidence_strength_seen": 1.0,
+        "missing_planes": [
+          "curiosity",
+          "dream",
+          "resilience"
+        ],
+        "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+      },
+      {
+        "candidate_target": "548bfbf7c2f6b982",
+        "evidence_strength_seen": 0.66,
+        "missing_planes": [
+          "curiosity",
+          "dream",
+          "resilience"
+        ],
+        "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+      },
+      {
+        "candidate_target": "776becadc2b5e1bc",
+        "evidence_strength_seen": 0.33,
+        "missing_planes": [
+          "curiosity",
+          "dream",
+          "resilience"
+        ],
+        "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+      },
+      {
+        "candidate_target": "835c8e3370e50fa9",
+        "evidence_strength_seen": 1.0,
+        "missing_planes": [
+          "curiosity",
+          "dream",
+          "resilience"
+        ],
+        "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+      },
+      {
+        "candidate_target": "b436652c40fdff01",
+        "evidence_strength_seen": 0.66,
+        "missing_planes": [
+          "curiosity",
+          "dream",
+          "resilience"
+        ],
+        "why_below_threshold": "single-plane evidence is only allowed for introspection_gap or infrastructure_followup"
+      }
+    ],
+    "proposals": [
+      {
+        "confidence": 0.8,
+        "evidence_planes": [
+          "curiosity",
+          "self_model"
+        ],
+        "impacted_cells": [
+          "energy"
+        ],
+        "lifecycle_status": "new",
+        "meta_proposal_id": "19f080927bca",
+        "proposal_priority": 0.588,
+        "proposal_type": "policy_gate_adjustment",
+        "recommended_next_human_action": "post_campaign_runtime_review_candidate",
+        "scope_class": "policy",
+        "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+        "why_now": "2 evidence planes converged on target 'energy' with severity_max=1.00 (cps_factor=1.25, urgency=1.00)"
+      },
+      {
+        "confidence": 0.8,
+        "evidence_planes": [
+          "curiosity",
+          "self_model"
+        ],
+        "impacted_cells": [
+          "math"
+        ],
+        "lifecycle_status": "new",
+        "meta_proposal_id": "f85e73d3d2f2",
+        "proposal_priority": 0.544,
+        "proposal_type": "policy_gate_adjustment",
+        "recommended_next_human_action": "post_campaign_runtime_review_candidate",
+        "scope_class": "policy",
+        "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+        "why_now": "2 evidence planes converged on target 'math' with severity_max=1.00 (cps_factor=1.25, urgency=1.00)"
+      },
+      {
+        "confidence": 0.8,
+        "evidence_planes": [
+          "curiosity",
+          "self_model"
+        ],
+        "impacted_cells": [
+          "safety"
+        ],
+        "lifecycle_status": "new",
+        "meta_proposal_id": "9b07b15f3836",
+        "proposal_priority": 0.542,
+        "proposal_type": "policy_gate_adjustment",
+        "recommended_next_human_action": "post_campaign_runtime_review_candidate",
+        "scope_class": "policy",
+        "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+        "why_now": "2 evidence planes converged on target 'safety' with severity_max=0.76 (cps_factor=1.25, urgency=1.00)"
+      },
+      {
+        "confidence": 0.8,
+        "evidence_planes": [
+          "curiosity",
+          "self_model"
+        ],
+        "impacted_cells": [
+          "seasonal"
+        ],
+        "lifecycle_status": "new",
+        "meta_proposal_id": "cee952a8c55f",
+        "proposal_priority": 0.542,
+        "proposal_type": "policy_gate_adjustment",
+        "recommended_next_human_action": "post_campaign_runtime_review_candidate",
+        "scope_class": "policy",
+        "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+        "why_now": "2 evidence planes converged on target 'seasonal' with severity_max=0.76 (cps_factor=1.25, urgency=1.00)"
+      },
+      {
+        "confidence": 0.8,
+        "evidence_planes": [
+          "curiosity",
+          "self_model"
+        ],
+        "impacted_cells": [
+          "thermal"
+        ],
+        "lifecycle_status": "new",
+        "meta_proposal_id": "07a51f06df70",
+        "proposal_priority": 0.432,
+        "proposal_type": "policy_gate_adjustment",
+        "recommended_next_human_action": "post_campaign_runtime_review_candidate",
+        "scope_class": "policy",
+        "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+        "why_now": "2 evidence planes converged on target 'thermal' with severity_max=0.66 (cps_factor=1.25, urgency=1.00)"
+      },
+      {
+        "confidence": 0.8,
+        "evidence_planes": [
+          "curiosity",
+          "dream",
+          "self_model"
+        ],
+        "impacted_cells": [
+          "general"
+        ],
+        "lifecycle_status": "new",
+        "meta_proposal_id": "7e0beef54e83",
+        "proposal_priority": 0.398,
+        "proposal_type": "solver_family_growth",
+        "recommended_next_human_action": "post_campaign_runtime_review_candidate",
+        "scope_class": "solver_library",
+        "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+        "why_now": "3 evidence planes converged on target 'general' with severity_max=0.60 (cps_factor=1.50, urgency=1.00)"
+      },
+      {
+        "confidence": 0.8,
+        "evidence_planes": [
+          "curiosity",
+          "self_model"
+        ],
+        "impacted_cells": [
+          "system"
+        ],
+        "lifecycle_status": "new",
+        "meta_proposal_id": "29d146818f6c",
+        "proposal_priority": 0.35,
+        "proposal_type": "policy_gate_adjustment",
+        "recommended_next_human_action": "post_campaign_runtime_review_candidate",
+        "scope_class": "policy",
+        "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+        "why_now": "2 evidence planes converged on target 'system' with severity_max=0.76 (cps_factor=1.25, urgency=1.00)"
+      },
+      {
+        "confidence": 0.8,
+        "evidence_planes": [
+          "curiosity",
+          "self_model"
+        ],
+        "impacted_cells": [
+          "learning"
+        ],
+        "lifecycle_status": "new",
+        "meta_proposal_id": "bd1de483a2a0",
+        "proposal_priority": 0.3225,
+        "proposal_type": "policy_gate_adjustment",
+        "recommended_next_human_action": "post_campaign_runtime_review_candidate",
+        "scope_class": "policy",
+        "why_human_review_required": "Session D code never enacts a proposal. The selected evidence is structurally suggestive but the merge / apply decision must be made by a human reviewer with full context (downstream effects, schedule, risk).",
+        "why_now": "2 evidence planes converged on target 'learning' with severity_max=0.66 (cps_factor=1.25, urgency=1.00)"
+      }
+    ],
+    "provenance": {
+      "base_commit_hash": "phase17a-fixture",
+      "branch_name": "phase17a/producer-fabric-scale",
+      "pinned_input_manifest_sha256": "28c3515ac2b13c1e"
+    },
+    "rejected_candidates": [],
+    "resolved_proposals": [],
+    "schema_version": 1,
+    "summary_text": "8 bounded self-proposals; 6 insufficient-evidence candidates; 0 rejected; 0 resolved since last run.",
+    "why_human_review_required": "Session D code is a recommender, never an actor. Every proposal here is structurally suggestive evidence; the merge / apply decision rests with a human reviewer who can weigh schedule, downstream effects, and risk.",
+    "why_no_runtime_mutation_occurred": "Session D's allowed touch surface excludes runtime registries, axiom YAML, FAISS roots, and port 8002. No code path in waggledance/core/meta/* writes to those locations. Runtime flip is out of scope until a later gated session."
+  }
+}

@@ -1,0 +1,415 @@
+{
+  "benchmark_version": "phase17b.v1",
+  "branch": "phase17b/local-efficiency-benchmark",
+  "builder_jobs_delta": 0,
+  "claim_labels": {
+    "audit_provenance_replay": "PROVEN",
+    "autonomous_learning_six_family": "PROVEN",
+    "canonical_corpus_size_128": "PROVEN",
+    "deterministic_routing_solver_first": "PROVEN",
+    "docker_offline_network_none": "PROVEN_ON_HOST_ONLY",
+    "edge_resource_use": "MEASURED_IMAGE_SIZE_ONLY",
+    "high_risk_safety_gate": "PROVEN",
+    "industrial_factory_readiness": "INFERRED",
+    "llm_moe_hybrid_fallback": "NOT_RUN",
+    "producer_fabric_offline": "PROVEN",
+    "raw_intelligence_vs_frontier_moe": "NOT_CLAIMED",
+    "restart_continuity": "PROVEN",
+    "solver_capability_scale_10k": "MEASURED",
+    "zero_provider_inner_loop": "PROVEN"
+  },
+  "docker_mode": "host",
+  "finished_at_utc": "2026-05-04T20:31:11Z",
+  "forbidden_claims_absent": true,
+  "forbidden_vocabulary_excluded": [
+    "conscious",
+    "sentient",
+    "aware",
+    "alive",
+    "AGI",
+    "revolutionary",
+    "magical",
+    "human-like mind",
+    "self-aware",
+    "explosive intelligence",
+    "emergent",
+    "beats all competitors",
+    "world's best",
+    "world's fastest"
+  ],
+  "git_sha": "363ffa2589bd8fff729c5d69922364b3f689a42d",
+  "no_beats_all_competitors_claim": true,
+  "no_cloud_api_calls_this_session": true,
+  "no_consciousness_claim": true,
+  "no_pull_or_download_this_session": true,
+  "not_claimed": [
+    "raw_intelligence_vs_frontier_moe",
+    "llm_moe_hybrid_fallback"
+  ],
+  "phase": "phase17b_local_efficiency_benchmark",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "provider_jobs_delta": 0,
+  "python_version": "3.13.7",
+  "release_gate_pass": true,
+  "scenarios": {
+    "A_solver_hot_path": {
+      "auto_promotions_total": 128,
+      "builder_jobs_delta": 0,
+      "corpus_total": 128,
+      "exit_code": 0,
+      "name": "A_solver_hot_path",
+      "negative_cases_passed": 5,
+      "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_A_solver_hot_path\\automatic_runtime_hint_proof.json",
+      "pass2_cold_p50_ms": null,
+      "passed": true,
+      "provider_jobs_delta": 0,
+      "runtime_seconds": 25.9812,
+      "served_via_capability_lookup_total": 128,
+      "tool": "tools/run_automatic_runtime_hint_proof.py"
+    },
+    "B_capability_lookup_10k": {
+      "build_descriptors_per_second": 60.2,
+      "build_index_time_seconds": 166.0849,
+      "builder_jobs_delta": 0,
+      "exit_code": 0,
+      "is_synthetic_scale": true,
+      "lookup_capability_hits_total": 1000,
+      "lookup_fifo_fallback_total": 0,
+      "lookup_miss_total": 0,
+      "lookup_p50_ms": 4.3321,
+      "lookup_p95_ms": 10.9753,
+      "lookup_p99_ms": 12.7719,
+      "lookup_pass_count": 1000,
+      "name": "B_capability_lookup_10k",
+      "not_canonical_corpus": true,
+      "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_B_capability_lookup_10k\\solver_scale_proof.json",
+      "passed": true,
+      "provider_jobs_delta": 0,
+      "runtime_seconds": 171.9577,
+      "synthetic_solver_descriptors_total": 10000,
+      "tool": "tools/run_solver_scale_proof.py"
+    },
+    "C_handle_query_e2e": {
+      "auto_promotions_total": 128,
+      "builder_jobs_delta": 0,
+      "corpus_total": 128,
+      "exit_code": 0,
+      "name": "C_handle_query_e2e",
+      "negative_cases_passed": 7,
+      "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_C_handle_query_e2e\\upstream_structured_request_proof.json",
+      "passed": true,
+      "provider_jobs_delta": 0,
+      "runtime_seconds": 31.0779,
+      "served_via_capability_lookup_total": 128,
+      "structured_request_derived_total": 128,
+      "tool": "tools/run_upstream_structured_request_proof.py"
+    },
+    "D_restart_continuity": {
+      "builder_jobs_delta_during_proof": 0,
+      "corpus_total": 128,
+      "exit_code": 0,
+      "name": "D_restart_continuity",
+      "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_D_restart_continuity\\full_restart_continuity_proof.json",
+      "passed": true,
+      "provider_jobs_delta_during_proof": 0,
+      "restart_invariants_all_true": false,
+      "restart_invariants_count": 7,
+      "runtime_seconds": 24.2874,
+      "served_post_restart": null,
+      "served_pre_restart": null,
+      "tool": "tools/run_full_restart_continuity_proof.py"
+    },
+    "E_producer_fabric": {
+      "builder_jobs_delta": 0,
+      "corpus_total": 30,
+      "exit_code": 0,
+      "ir_objects_emitted_total": 68,
+      "ir_objects_per_kind": {
+        "curiosity": 30,
+        "dream_curriculum": 6,
+        "dream_meta_proposal": 2,
+        "hive_proposals": 8,
+        "review_bundle": 8,
+        "self_model": 14
+      },
+      "name": "E_producer_fabric",
+      "negative_cases_passed": 6,
+      "negative_cases_total": 6,
+      "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_E_producer_fabric\\producer_fabric_proof.json",
+      "passed": true,
+      "provider_jobs_delta": 0,
+      "runtime_seconds": 0.1061,
+      "tool": "tools/run_phase17a_producer_fabric_proof.py"
+    },
+    "F_ollama_baseline": {
+      "reason": "--skip-ollama flag set by caller",
+      "status": "SKIPPED"
+    },
+    "G_external_competitor_slots": {
+      "policy": "master prompt rule 14: no cloud API calls and no download / pull this session",
+      "slots": [
+        {
+          "reason_not_run": "would require Anthropic API call; rule 14 forbids cloud calls this session.",
+          "requirements_to_upgrade_to_measured": [
+            "valid Anthropic API key",
+            "documented prompt template + sampling parameters",
+            "tool that records per-query route_source",
+            "comparable WaggleDance run on same input set"
+          ],
+          "slot": "frontier_anthropic_claude",
+          "status": "NOT_RUN"
+        },
+        {
+          "reason_not_run": "would require OpenAI API call; rule 14 forbids cloud calls this session.",
+          "requirements_to_upgrade_to_measured": [
+            "valid OpenAI API key",
+            "documented prompt template + sampling parameters",
+            "comparable WaggleDance run on same input set"
+          ],
+          "slot": "frontier_openai_gpt",
+          "status": "NOT_RUN"
+        },
+        {
+          "reason_not_run": "would require Google Gemini API call; rule 14 forbids cloud calls this session.",
+          "requirements_to_upgrade_to_measured": [
+            "valid Google AI API key",
+            "documented prompt template + sampling parameters",
+            "comparable WaggleDance run on same input set"
+          ],
+          "slot": "frontier_google_gemini",
+          "status": "NOT_RUN"
+        },
+        {
+          "reason_not_run": "llama.cpp not installed on this host; rule 14 forbids download / pull.",
+          "requirements_to_upgrade_to_measured": [
+            "llama.cpp binary already present + model weights already downloaded at session start",
+            "pinned prompt template + sampling parameters",
+            "documented hardware spec"
+          ],
+          "slot": "local_llama_cpp",
+          "status": "NOT_RUN"
+        },
+        {
+          "reason_not_run": "vLLM not installed on this host; rule 14 forbids download / pull.",
+          "requirements_to_upgrade_to_measured": [
+            "vLLM server already running locally with a pre-loaded model at session start",
+            "pinned prompt template + sampling parameters"
+          ],
+          "slot": "local_vllm",
+          "status": "NOT_RUN"
+        },
+        {
+          "reason_not_run": "mistral-rs not installed on this host.",
+          "requirements_to_upgrade_to_measured": [
+            "mistral-rs binary already present + model already downloaded",
+            "pinned prompt template + sampling parameters"
+          ],
+          "slot": "local_mistral_rs",
+          "status": "NOT_RUN"
+        }
+      ],
+      "status": "NOT_RUN"
+    }
+  },
+  "schema_version": 1,
+  "started_at_utc": "2026-05-04T20:26:57Z",
+  "summary": {
+    "all_waggledance_scenarios_pass": true,
+    "builder_jobs_delta_total": 0,
+    "external_competitor_slots_status": "NOT_RUN",
+    "ollama_baseline_status": "SKIPPED",
+    "overall_pass": true,
+    "provider_jobs_delta_total": 0
+  },
+  "tracks": {
+    "A_solver_hot_path": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 128,
+        "correctness_rate": 1.0,
+        "correctness_total": 128,
+        "docker_network_mode": "host",
+        "fallback_rate": 0.0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_p99": null,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 4.926639262235771
+      },
+      "raw": {
+        "auto_promotions_total": 128,
+        "builder_jobs_delta": 0,
+        "corpus_total": 128,
+        "exit_code": 0,
+        "name": "A_solver_hot_path",
+        "negative_cases_passed": 5,
+        "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_A_solver_hot_path\\automatic_runtime_hint_proof.json",
+        "pass2_cold_p50_ms": null,
+        "passed": true,
+        "provider_jobs_delta": 0,
+        "runtime_seconds": 25.9812,
+        "served_via_capability_lookup_total": 128,
+        "tool": "tools/run_automatic_runtime_hint_proof.py"
+      }
+    },
+    "B_capability_lookup_10k": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 1000,
+        "correctness_rate": 1.0,
+        "correctness_total": 1000,
+        "docker_network_mode": "host",
+        "fallback_rate": 0.0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": 4.3321,
+        "latency_ms_p95": 10.9753,
+        "latency_ms_p99": 12.7719,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 5.8153836670297405
+      },
+      "raw": {
+        "build_descriptors_per_second": 60.2,
+        "build_index_time_seconds": 166.0849,
+        "builder_jobs_delta": 0,
+        "exit_code": 0,
+        "is_synthetic_scale": true,
+        "lookup_capability_hits_total": 1000,
+        "lookup_fifo_fallback_total": 0,
+        "lookup_miss_total": 0,
+        "lookup_p50_ms": 4.3321,
+        "lookup_p95_ms": 10.9753,
+        "lookup_p99_ms": 12.7719,
+        "lookup_pass_count": 1000,
+        "name": "B_capability_lookup_10k",
+        "not_canonical_corpus": true,
+        "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_B_capability_lookup_10k\\solver_scale_proof.json",
+        "passed": true,
+        "provider_jobs_delta": 0,
+        "runtime_seconds": 171.9577,
+        "synthetic_solver_descriptors_total": 10000,
+        "tool": "tools/run_solver_scale_proof.py"
+      }
+    },
+    "C_handle_query_e2e": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 128,
+        "correctness_rate": 1.0,
+        "correctness_total": 128,
+        "docker_network_mode": "host",
+        "fallback_rate": 0.0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_p99": null,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 4.118682407755994
+      },
+      "raw": {
+        "auto_promotions_total": 128,
+        "builder_jobs_delta": 0,
+        "corpus_total": 128,
+        "exit_code": 0,
+        "name": "C_handle_query_e2e",
+        "negative_cases_passed": 7,
+        "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_C_handle_query_e2e\\upstream_structured_request_proof.json",
+        "passed": true,
+        "provider_jobs_delta": 0,
+        "runtime_seconds": 31.0779,
+        "served_via_capability_lookup_total": 128,
+        "structured_request_derived_total": 128,
+        "tool": "tools/run_upstream_structured_request_proof.py"
+      }
+    },
+    "D_restart_continuity": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 0,
+        "correctness_rate": null,
+        "correctness_total": 0,
+        "docker_network_mode": "host",
+        "fallback_rate": 0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_p99": null,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 5.270222419855562
+      },
+      "raw": {
+        "builder_jobs_delta_during_proof": 0,
+        "corpus_total": 128,
+        "exit_code": 0,
+        "name": "D_restart_continuity",
+        "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_D_restart_continuity\\full_restart_continuity_proof.json",
+        "passed": true,
+        "provider_jobs_delta_during_proof": 0,
+        "restart_invariants_all_true": false,
+        "restart_invariants_count": 7,
+        "runtime_seconds": 24.2874,
+        "served_post_restart": null,
+        "served_pre_restart": null,
+        "tool": "tools/run_full_restart_continuity_proof.py"
+      }
+    },
+    "E_producer_fabric": {
+      "metrics": {
+        "audit_or_provenance_coverage": "control_plane_sqlite_event_rows",
+        "builder_jobs_delta": 0,
+        "claim_label": "PROVEN",
+        "correctness_count": 68,
+        "correctness_rate": 1.0,
+        "correctness_total": 68,
+        "docker_network_mode": "host",
+        "fallback_rate": 0.0,
+        "fifo_fallback_count": 0,
+        "latency_ms_p50": null,
+        "latency_ms_p95": null,
+        "latency_ms_p99": null,
+        "provider_jobs_delta": 0,
+        "reproducibility_status": "deterministic_pinned",
+        "rss_memory_mb": null,
+        "throughput_queries_per_second": 282.7521206409048
+      },
+      "raw": {
+        "builder_jobs_delta": 0,
+        "corpus_total": 30,
+        "exit_code": 0,
+        "ir_objects_emitted_total": 68,
+        "ir_objects_per_kind": {
+          "curiosity": 30,
+          "dream_curriculum": 6,
+          "dream_meta_proposal": 2,
+          "hive_proposals": 8,
+          "review_bundle": 8,
+          "self_model": 14
+        },
+        "name": "E_producer_fabric",
+        "negative_cases_passed": 6,
+        "negative_cases_total": 6,
+        "out_json_path": "docs\\runs\\phase17b_local_efficiency_benchmark_2026_05_04\\scenario_E_producer_fabric\\producer_fabric_proof.json",
+        "passed": true,
+        "provider_jobs_delta": 0,
+        "runtime_seconds": 0.1061,
+        "tool": "tools/run_phase17a_producer_fabric_proof.py"
+      }
+    }
+  }
+}

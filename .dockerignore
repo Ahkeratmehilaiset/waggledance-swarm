@@ -47,6 +47,7 @@ docs/
 !tools/run_phase16b_proof_soak.py
 !tools/run_phase17a_producer_fabric_proof.py
 !tools/run_solver_scale_proof.py
+!tools/run_phase17b_local_efficiency_benchmark.py
 !tests/__init__.py
 !tests/conftest.py
 !tests/autonomy_growth/

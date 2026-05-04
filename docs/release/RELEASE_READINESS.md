@@ -1,8 +1,10 @@
-# Release Readiness — WaggleDance (v3.8.0 stable + v3.9.0-producer-fabric-alpha PRERELEASE)
+# Release Readiness — WaggleDance (v3.8.0 stable + v3.9.0-producer-fabric-alpha PRERELEASE + v3.9.1-local-efficiency-benchmark-alpha CANDIDATE)
 
 **Stable status:** **v3.8.0 stable released 2026-05-04** from Phase 16F PR #68 (squash-merge `824176eb`). All 22 stable gates final = PASS. **GitHub Latest = v3.8.0**.
 
-**Prerelease status:** **v3.9.0-producer-fabric-alpha released 2026-05-04T18:32:47Z** from Phase 17A PR #71 (squash-merge `c726995c`) on top of v3.8.0. Pre-release entry on GitHub; v3.8.0 remains GitHub Latest, untouched, not retagged.
+**Latest released prerelease:** **v3.9.0-producer-fabric-alpha released 2026-05-04T18:32:47Z** from Phase 17A PR #71 (squash-merge `c726995c`) on top of v3.8.0. Pre-release entry on GitHub; v3.8.0 remains GitHub Latest, untouched, not retagged.
+
+**Candidate prerelease:** **v3.9.1-local-efficiency-benchmark-alpha** (Phase 17B). Tag will be created only after the Phase 17B PR merges, post-merge benchmark reproduces on `origin/main`, and Docker `--network none` reproduces. v3.8.0 must remain Latest. v3.9.0-producer-fabric-alpha must remain the previous Pre-release. Phase 17B is a benchmark-infrastructure prerelease — it adds `tools/run_phase17b_local_efficiency_benchmark.py` and the matching tests/docs but **does not** add a raw-intelligence model, a new autonomy mechanism, an allowlist family, a Stage-2 flip, a HUMAN_APPROVAL artifact, an actuator autonomy lane, or any new provider HTTP route. This is a measured-evidence prerelease, not a feature prerelease.
 
 This document defines what `release-ready` means in the WaggleDance autonomy lineage, what version-tag policy applies, and which gates must pass before each release tier is created.
 

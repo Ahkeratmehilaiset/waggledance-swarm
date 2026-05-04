@@ -2,7 +2,7 @@
 
 > Local-first deterministic-solver runtime with a bounded six-family auto-growth lane. Alpha. No cloud, no provider in the inner loop.
 
-**v3.8.0 stable candidate (Phase 16F, this branch):** Docker stable-gate closure on top of Phase 16D. **All four canonical proofs run end-to-end inside Docker with `--network none`** at corpus 104, exactly matching local results: 104 served via capability lookup pre- and post-restart, persisted state identical across DB close+reopen, `provider_jobs_delta = builder_jobs_delta = 0`. The 4-file autonomy_growth smoke suite passes 16/16 inside Docker `--network none` in ~125 s. Bandit HIGH count remains 0 (Phase 16D B324 cleanup intact); pip-audit carry-forward (32 CVEs in 14 packages, all classified `low`, none reachable from inner loop). Local 3-iter proof soak: 9/9, no flakes, mean ~38 s/iter. The image is `python:3.13-slim` + `requirements-ci.txt` (3.09 GB; the lock-file install is documented but not used because the lock pinned several Windows / CUDA-only packages incompatible with linux/amd64 PyPI default wheels). **v3.8.0 stable will be created only if every stable gate also passes on post-merge main and on a fresh clone from GitHub HTTPS.** This is a stable candidate, not a released stable — the tag is created in a separate post-merge step.
+**v3.8.0 stable (Phase 16F, released 2026-05-04):** the first stable release of WaggleDance. Docker stable-gate verified end-to-end with `--network none` at corpus 104; all four canonical proofs and the 4-file autonomy_growth smoke suite pass inside the rebuilt `waggledance:v3.8.0-rc` image and on a post-merge fresh clone from GitHub HTTPS. `provider_jobs_delta = builder_jobs_delta = 0` across every proof and across the full DB close+reopen restart. Bandit HIGH = 0 (Phase 16D B324 cleanup carried forward); pip-audit: 32 CVEs in 14 packages, all `low`, none reachable from inner loop. Local 3-iter proof soak: 9/9, no flakes, mean ~38 s/iter. The image is `python:3.13-slim` + `requirements-ci.txt` (3.09 GB). **GitHub Latest is v3.8.0**; the previous prerelease `v3.7.8-docker-gate-alpha` (Phase 16D) remains visible as a Pre-release entry. Released by PR #68 (squash-merge `824176eb`).
 
 **Still alpha / not implemented:** real Anthropic / OpenAI HTTP adapters (only `dry_run_stub` and `claude_code_builder_lane` exercisable end-to-end); Stage-2 atomic flip (specified in `docs/architecture/STAGE2_CUTOVER_RFC.md` but not executed); actuator-side autonomy; federation; high-risk family auto-promotion; HTTP `/api/autonomy/query` route (the FastAPI route surface for query is not exposed; v3.8.0 is library/service-layer-stable, not HTTP-API-stable); production-grade Docker deployment story (see `docs/deployment/DOCKER_QUICKSTART.md`).
 
@@ -13,7 +13,7 @@
 [![CI](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0%20%2B%20BUSL%201.1-orange)]()
-[![Version](https://img.shields.io/badge/version-v3.8.0%20stable%20candidate%20(Phase%2016F)-blue)]()
+[![Version](https://img.shields.io/badge/version-v3.8.0%20stable-brightgreen)]()
 
 ## What this is
 

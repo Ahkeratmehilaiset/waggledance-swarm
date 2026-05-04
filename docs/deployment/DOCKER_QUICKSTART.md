@@ -1,4 +1,4 @@
-# Docker Quickstart — WaggleDance (Phase 16F: stable-gate verified)
+# Docker Quickstart — WaggleDance (v3.8.0 stable, Phase 16F verified)
 
 This document describes how Docker works for the WaggleDance autonomy runtime and proof scripts. **Phase 16F verified the documented contract end-to-end** on Docker Desktop 4.71.0 / Engine 29.4.1 with `--network none`. The `Dockerfile` was updated in Phase 16F to use `requirements-ci.txt` (the cross-platform CI subset already proven on GitHub Actions Linux runners) instead of `requirements.lock.txt` — the lock file was generated against a Windows + CUDA 11.8 dev environment and pins Linux-incompatible packages.
 
@@ -15,8 +15,10 @@ If a step below fails on your machine, the `Dockerfile` is the authoritative sou
 ## Build the image
 
 ```
-docker build -t waggledance:phase16f .
+docker build -t waggledance:v3.8.0 .
 ```
+
+(or `waggledance:phase16f` — both refer to the same Phase 16F-verified image; v3.8.0 is the stable tag.)
 
 The build pulls `python:3.13-slim` plus a small APT layer (`curl`, `git`, `libvoikko1`, `voikko-fi`) and installs Python deps from `requirements-ci.txt` (the Phase 16F default — cross-platform Linux-portable subset). Expected build time: 5–10 minutes on a clean cache (Phase 16F measured ~7 min on a 24-CPU / 62 GiB / overlayfs / WSL2 host). Image size: 3.09 GB.
 

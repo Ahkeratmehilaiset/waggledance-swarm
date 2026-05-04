@@ -1,0 +1,236 @@
+{
+  "ledger_name": "phase16f_stable_gate_inventory",
+  "ledger_date_utc": "2026-05-03",
+  "carry_forward_from": "Phase 16D (PR #66, SHA 7210a7e)",
+  "gate_count": 22,
+  "gates": [
+    {
+      "gate_id": "g01",
+      "name": "Docker end-to-end",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P2_P3",
+      "evidence_source": "docker_build.md + docker_runtime_proofs.md",
+      "remaining_action": "build phase16f image; run 3 canonical proofs --network none; run smoke tests; verify auto_promotions_total=104",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "FAIL_NOT_VERIFIED (Docker CLI unavailable in dev shell)"
+    },
+    {
+      "gate_id": "g02",
+      "name": "Remote/fresh clone post-merge",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P10",
+      "evidence_source": "fresh_clone_reproduction.md",
+      "remaining_action": "post-merge: clone from GitHub HTTPS into tmpdir; verify HEAD=post-merge SHA; smoke + restart proof from clean clone",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PARTIAL (local clone done, post-merge clone not done)"
+    },
+    {
+      "gate_id": "g03",
+      "name": "README current truth",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P7",
+      "evidence_source": "README.md",
+      "remaining_action": "update README to v3.8.0 stable candidate language; do NOT claim release before tag",
+      "stable_blocker_if_fail": false,
+      "phase_16d_status": "PASS (README reflects v3.7.8 prerelease)"
+    },
+    {
+      "gate_id": "g04",
+      "name": "100+ solver release gate",
+      "required_for_stable": true,
+      "initial_status": "CARRY_FORWARD_PASS",
+      "evidence_source": "tests/autonomy_growth/test_seed_library.py + low_risk_seed_library.py",
+      "remaining_action": "re-verify in P3 + P4 + P10 that corpus_total=104 and test_seed_library_meets_v3_8_0_release_gate_minimum passes",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (104 seeds; test asserts >=100)"
+    },
+    {
+      "gate_id": "g05",
+      "name": "Security audit / Bandit",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P5",
+      "evidence_source": "PHASE16F_SECURITY_CARRY_FORWARD.md + bandit_report.json",
+      "remaining_action": "re-run bandit -r waggledance/ core/; verify HIGH=0 (B324 closed in 16D); pip-audit if available",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (Bandit HIGH 16->0 in 16D after B324 cleanup)"
+    },
+    {
+      "gate_id": "g06",
+      "name": "Provider/builder delta = 0 in critical proofs",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P3_P4",
+      "evidence_source": "docker_runtime_proofs.md + proof_rerun_report.md",
+      "remaining_action": "re-run all 3 canonical proofs; assert provider_jobs_delta=0 and builder_jobs_delta=0 in proof JSON",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (Phase 15/16A/16B proofs all reported delta=0)"
+    },
+    {
+      "gate_id": "g07",
+      "name": "Full-corpus restart-continuity proof",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P3_P4",
+      "evidence_source": "full_restart_continuity_proof.{json,md}",
+      "remaining_action": "tools/run_full_restart_continuity_proof.py: 104/104 served pre/post DB close+reopen, all restart invariants true",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (Phase 16D 104/104 served pre+post restart, all invariants true)"
+    },
+    {
+      "gate_id": "g08",
+      "name": "Proof soak (3 iterations)",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P4",
+      "evidence_source": "proof_soak_report.json",
+      "remaining_action": "tools/run_phase16b_proof_soak.py --iterations 3; assert 9/9 (3 iter * 3 proofs) pass, no flakes",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (Phase 16D 3-iter soak 9/9 no flakes)"
+    },
+    {
+      "gate_id": "g09",
+      "name": "No Stage-2 atomic flip executed",
+      "required_for_stable": true,
+      "initial_status": "CARRY_FORWARD_PASS",
+      "evidence_source": "STAGE2_CUTOVER_RFC.md + 00_README.md PREPARATION ONLY",
+      "remaining_action": "verify atomic_flip_prep/00_README.md still says PREPARATION ONLY; no _DEFAULT_FAISS_DIR change; no PathResolver runtime read-path mutation",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (no flip executed; preparation-only invariant held)"
+    },
+    {
+      "gate_id": "g10",
+      "name": "No HUMAN_APPROVAL collected this session",
+      "required_for_stable": true,
+      "initial_status": "CARRY_FORWARD_PASS",
+      "evidence_source": "CLAUDE.md rule 10",
+      "remaining_action": "this session does not collect approval; existing 03_HUMAN_APPROVAL.yaml in untracked space remains as draft only",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (no approval collected; CLAUDE.md rule 10 honored)"
+    },
+    {
+      "gate_id": "g11",
+      "name": "No allowlist widening (six-family)",
+      "required_for_stable": true,
+      "initial_status": "CARRY_FORWARD_PASS",
+      "evidence_source": "LOW_RISK_AUTOGROWTH_POLICY.md + low_risk_policy.py",
+      "remaining_action": "verify no new family added; allowlist remains scalar_unit_conversion / lookup_table / threshold_rule / interval_bucket_classifier / linear_arithmetic / bounded_interpolation",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (six-family allowlist unchanged since Phase 11)"
+    },
+    {
+      "gate_id": "g12",
+      "name": "No high-risk auto-promotion",
+      "required_for_stable": true,
+      "initial_status": "CARRY_FORWARD_PASS",
+      "evidence_source": "HIGH_RISK_VARIANTS_DEFERRED.md + tests/test_phase9_global_properties.py",
+      "remaining_action": "verify Phase 9 14-stage promotion ladder still requires human_approval_id at every runtime stage",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (no auto-skip of human-gated stages)"
+    },
+    {
+      "gate_id": "g13",
+      "name": "No actuator autonomy",
+      "required_for_stable": true,
+      "initial_status": "CARRY_FORWARD_PASS",
+      "evidence_source": "SafeActionBus + ActionGate",
+      "remaining_action": "verify SafeActionBus does not auto-execute side-effecting actions without human gate",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (action_bus + action_gate carry forward)"
+    },
+    {
+      "gate_id": "g14",
+      "name": "Control-plane / MAGMA truth preserved",
+      "required_for_stable": true,
+      "initial_status": "CARRY_FORWARD_PASS",
+      "evidence_source": "RULE 25 + persisted_semantics_preservation.md (16D)",
+      "remaining_action": "verify _DEFAULT_FAISS_DIR='data/faiss/'; persisted semantic fingerprint preserved across runs",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (Phase 16D verified 14 scalar fields + 7 invariants + 6 op counts identical)"
+    },
+    {
+      "gate_id": "g15",
+      "name": "Release docs truth",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P7",
+      "evidence_source": "README + CURRENT_STATUS + CHANGELOG + RELEASE_READINESS + DOCKER_QUICKSTART",
+      "remaining_action": "update to v3.8.0 stable candidate language; preserve no consciousness claim; preserve still-not-implemented list",
+      "stable_blocker_if_fail": false,
+      "phase_16d_status": "PASS (Phase 16D docs truthful)"
+    },
+    {
+      "gate_id": "g16",
+      "name": "Tag target correctness",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P11",
+      "evidence_source": "git rev-parse v3.8.0^{} == post-merge main SHA",
+      "remaining_action": "after P10 verification, annotated tag v3.8.0 on post-merge main SHA only",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "N/A (v3.8.0 tag does not exist yet)"
+    },
+    {
+      "gate_id": "g17",
+      "name": "GitHub release metadata correctness",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P12",
+      "evidence_source": "gh release view v3.8.0",
+      "remaining_action": "verify tagName=v3.8.0, isPrerelease=false, publishedAt non-empty, target=post-merge main SHA",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "N/A (no v3.8.0 release exists yet)"
+    },
+    {
+      "gate_id": "g18",
+      "name": "CI green",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P9",
+      "evidence_source": "gh pr checks <PR>",
+      "remaining_action": "wait for CI on phase16f/docker-stable-gate PR; require all required checks green",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "RED on main (PR #67 fix in flight; truth-regression test fails on shallow clone)",
+      "carry_forward_note": "PR #67 (fix/ci-fetch-depth-truth-regression) addresses fetch-depth=0 fix; this Phase 16F PR's CI may also be affected unless #67 lands first or this PR carries the fix"
+    },
+    {
+      "gate_id": "g19",
+      "name": "Docker runtime no-network proof",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P3",
+      "evidence_source": "docker_runtime_proofs.md",
+      "remaining_action": "docker run --rm --network none waggledance:phase16f python tools/run_full_restart_continuity_proof.py with corpus 104",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "FAIL_NOT_VERIFIED (Docker CLI unavailable in dev shell)"
+    },
+    {
+      "gate_id": "g20",
+      "name": "Fresh-clone tag fetch verification",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P10",
+      "evidence_source": "fresh_clone_reproduction.md (post-merge clone section)",
+      "remaining_action": "from tmpdir clone: git fetch --tags origin; assert all v3.6.x and v3.7.x tags visible plus v3.8.0 if created",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "N/A (post-merge clone not done in 16D)"
+    },
+    {
+      "gate_id": "g21",
+      "name": "Bandit B324 cleanup carry-forward",
+      "required_for_stable": true,
+      "initial_status": "CARRY_FORWARD_PASS",
+      "evidence_source": "Phase 16D bandit_report_after.json + persisted_semantics_preservation.md",
+      "remaining_action": "verify B324 HIGH count remains 0; verify usedforsecurity=False additions still in place across 12 source files",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "PASS (16->0 in Phase 16D)"
+    },
+    {
+      "gate_id": "g22",
+      "name": "GitHub Latest = v3.8.0 (stable)",
+      "required_for_stable": true,
+      "initial_status": "PENDING_P12",
+      "evidence_source": "gh release list --limit 5",
+      "remaining_action": "after tag creation: verify v3.8.0 is GitHub Latest, not Pre-release; gh release edit --latest if needed",
+      "stable_blocker_if_fail": true,
+      "phase_16d_status": "GitHub Latest is v3.6.0 (v3.7.x are all prereleases)"
+    }
+  ],
+  "summary": {
+    "carry_forward_pass_count": 8,
+    "pending_action_count": 14,
+    "fail_count": 0,
+    "stable_v3_8_0_blocked_only_by": ["g01_docker_e2e", "g19_docker_no_network"],
+    "all_other_substantive_gates": "carry_forward_or_easily_verifiable"
+  }
+}

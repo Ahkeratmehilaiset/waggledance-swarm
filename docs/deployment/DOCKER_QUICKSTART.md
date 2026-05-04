@@ -1,8 +1,8 @@
-# Docker Quickstart — WaggleDance (alpha)
+# Docker Quickstart — WaggleDance (Phase 16F: stable-gate verified)
 
-This document describes how Docker is **expected** to work for the WaggleDance autonomy runtime and proof scripts. The `Dockerfile` and `docker-compose.yml` shipped in this repository are inherited from earlier phases; Phase 15 and Phase 16A do not change them.
+This document describes how Docker works for the WaggleDance autonomy runtime and proof scripts. **Phase 16F verified the documented contract end-to-end** on Docker Desktop 4.71.0 / Engine 29.4.1 with `--network none`. The `Dockerfile` was updated in Phase 16F to use `requirements-ci.txt` (the cross-platform CI subset already proven on GitHub Actions Linux runners) instead of `requirements.lock.txt` — the lock file was generated against a Windows + CUDA 11.8 dev environment and pins Linux-incompatible packages.
 
-**Tested in this session:** No. Docker is not available in the Phase 16A development shell either. The build / run commands below are the documented contract; an external operator should verify on their own machine before treating Docker as production-ready.
+**Tested in this session:** Yes. All four canonical proofs and the 4-file autonomy_growth smoke suite ran inside `waggledance:phase16f` with `--network none` at corpus 104, matching local results 1-to-1. See `docs/runs/phase16f_docker_stable_gate_2026_05_03/docker_runtime_proofs.md` for full evidence.
 
 If a step below fails on your machine, the `Dockerfile` is the authoritative source. File an issue with the failing step + your `docker version` output.
 
@@ -15,10 +15,12 @@ If a step below fails on your machine, the `Dockerfile` is the authoritative sou
 ## Build the image
 
 ```
-docker build -t waggledance:phase15-alpha .
+docker build -t waggledance:phase16f .
 ```
 
-The build pulls `python:3.13-slim` plus a small APT layer (`curl`, `git`, `libvoikko1`, `voikko-fi`) and installs Python deps from `requirements.lock.txt`. Expected build time: 3–8 minutes on a clean cache, depending on network and CPU.
+The build pulls `python:3.13-slim` plus a small APT layer (`curl`, `git`, `libvoikko1`, `voikko-fi`) and installs Python deps from `requirements-ci.txt` (the Phase 16F default — cross-platform Linux-portable subset). Expected build time: 5–10 minutes on a clean cache (Phase 16F measured ~7 min on a 24-CPU / 62 GiB / overlayfs / WSL2 host). Image size: 3.09 GB.
+
+**Why requirements-ci.txt and not requirements.lock.txt?** The lock file was generated against a Windows + CUDA 11.8 dev environment and pins Linux-incompatible packages (`pywin32`, `triton-windows`, `torch==2.7.1+cu118`, `nvidia-cuda-runtime-cu12==12.9.79`). Phase 16F switched the Dockerfile to `requirements-ci.txt` — the same install source GitHub Actions CI uses on Ubuntu runners. This drops `faiss-cpu`, `playwright`, `unsloth`, `xformers`, `bitsandbytes`, `webrtcvad`, `pyttsx3`, `comtypes` and similar — none required by the autonomy proof scripts (which use the SQLite control plane only) or by the targeted smoke suite. The lock file remains in the repo with `sys_platform` markers added to the Windows-only / CUDA-only lines, so any operator who needs the full hybrid-retrieval / browser-testing image can revert the Dockerfile change locally without further surgery.
 
 ## Run the Phase 15 automatic runtime hint proof
 
@@ -159,21 +161,22 @@ docker compose up -d
 
 This boots the legacy webserver. There is no Phase 15-specific compose service; the autonomy proof is a one-shot script and does not need long-running orchestration.
 
-## Status summary
+## Status summary (Phase 16F verified)
 
 | concern | status |
 |---|---|
 | build steps documented | yes |
-| build tested in this session | **no — not available** |
+| build tested in this session | **yes (Phase 16F, image 3.09 GB)** |
 | run steps documented | yes |
-| run tested in this session | **no — not available** |
-| Phase 15 autonomy proof inside Docker tested | **no — not available** |
-| Phase 16A upstream proof inside Docker tested | **no — not available** |
-| Phase 16A restart-continuity smoke inside Docker tested | **no — not available** |
-| Phase 16B full-corpus restart proof inside Docker tested | **no — not available** |
-| Phase 16B proof soak inside Docker tested | **no — not available** |
-| persistent volume layout production-grade | **no — alpha** |
-| ARM build verified | **no** |
-| no provider credential required for inner loop | yes (proven outside Docker) |
+| run tested in this session | **yes (Phase 16F, `--network none`)** |
+| Phase 15 hint proof inside Docker `--network none` tested | **yes — corpus 104, 0/0 delta** |
+| Phase 16A upstream proof inside Docker `--network none` tested | **yes — corpus 104, 7/7 negative cases pass** |
+| Phase 16B full-corpus restart proof inside Docker `--network none` tested | **yes — 104/104 served pre+post, all invariants True** |
+| autonomy_growth smoke (4 files) inside Docker `--network none` tested | **yes — 16 passed, 27 conditional skips, 0 failures** |
+| Phase 16B proof soak inside Docker tested | not in this session (local soak ran instead, 9/9 no flakes) |
+| persistent volume layout production-grade | **no — still alpha posture** |
+| ARM build verified | **no — linux/amd64 only** |
+| no provider credential required for inner loop | **yes — proven inside Docker `--network none`** |
+| no internet required at runtime | **yes — proven inside Docker `--network none`** |
 
-Treat this document as the contract WaggleDance Docker should honour, not as a tested production deployment guide.
+This document now reflects a tested deployment contract. Phase 16F evidence: `docs/runs/phase16f_docker_stable_gate_2026_05_03/docker_build.md` and `.../docker_runtime_proofs.md`.

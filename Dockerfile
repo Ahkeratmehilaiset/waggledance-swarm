@@ -16,11 +16,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvoikko1 voikko-fi && \
     rm -rf /var/lib/apt/lists/*
 
-# Python deps (pinned versions for reproducible builds). Full lock file,
-# includes faiss-cpu and playwright — use requirements-ci.txt instead for a
-# minimal deployment without hybrid retrieval or e2e browser testing.
-COPY requirements.lock.txt .
-RUN pip install --no-cache-dir -r requirements.lock.txt
+# Python deps. Phase 16F uses requirements-ci.txt (the cross-platform CI
+# subset already proven on GitHub Actions Linux runners) instead of
+# requirements.lock.txt. The lock file was generated against a Windows + cu118
+# CUDA torch environment and pins Windows-only / Linux-incompatible packages
+# (pywin32, triton-windows, torch==2.7.1+cu118, hard-pinned nvidia-cuda-* libs)
+# whose conflict resolution against linux/amd64 PyPI wheels is not solvable
+# without a substantial lock-file rewrite. requirements-ci.txt is what the CI
+# uses and is therefore the documented Linux-portable install for this image.
+# This intentionally drops faiss-cpu, playwright, unsloth, xformers — none of
+# which are required by the autonomy proof scripts or the targeted smoke tests
+# the v3.8.0 stable gate exercises (autonomy uses SQLite control plane only).
+COPY requirements-ci.txt .
+RUN pip install --no-cache-dir -r requirements-ci.txt
 
 # App code
 COPY . .

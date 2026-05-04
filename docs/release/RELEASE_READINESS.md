@@ -1,22 +1,32 @@
-# Release Readiness — WaggleDance (Phase 16D / v3.7.8-docker-gate-alpha candidate)
+# Release Readiness — WaggleDance (Phase 16F / v3.8.0 stable candidate)
 
-**Status:** alpha / prerelease only. This document defines what `release-ready` means in the WaggleDance autonomy lineage, what version-tag policy applies, and which gates must pass before a stable release is justified.
+**Status:** stable candidate on branch `phase16f/docker-stable-gate`, pending PR merge + post-merge verification + fresh-clone reproducibility. The v3.8.0 stable tag will be created **only if** every stable gate also passes after merge to main.
 
-`release-ready` here means **truthful alpha/prerelease readiness**: a reproducible proof, green CI, clear docs, Docker truth, known limitations documented, and no stable production claim.
+This document defines what `release-ready` means in the WaggleDance autonomy lineage, what version-tag policy applies, and which gates must pass before stable v3.8.0 is created.
 
-It does **not** mean stable v3.8.0 unless a separate stable release gate explicitly proves production readiness (see "Tag versioning policy" below).
+`release-ready` here means **truthful stable readiness**: reproducible proofs both locally and inside Docker `--network none`, green CI, clear docs, security audit pass-through, known limitations documented, no consciousness claim.
 
-## Latest tag — v3.7.7-stable-gate-alpha (Phase 16C)
+## Latest tag at origin/main — v3.7.8-docker-gate-alpha (Phase 16D, prerelease)
 
-Phase 16C prerelease tag on `origin/main` at merge commit `b87fbe4` (PR #65). Bandit installed and run for the first time; 16 HIGH B324 lints documented in non-inner-loop cache code for follow-up cleanup; full proof re-verification at corpus 104; provider/builder delta = 0; 9/9 soak no flakes.
+Phase 16D prerelease tag on `origin/main` at merge commit `7210a7e` (PR #66). All 16 Bandit B324 weak-hash findings resolved via `usedforsecurity=False`; persisted semantic fingerprint preservation verified per RULE 25; all four canonical proofs re-run at corpus 104 with `provider_jobs_delta = builder_jobs_delta = 0`; 3-iter soak 9/9 no flakes. Docker was not available in the Phase 16D dev shell; that single remaining substantive blocker is closed in Phase 16F.
 
-## Recommended next tag — v3.7.8-docker-gate-alpha (Phase 16D)
+## Stable target — v3.8.0 (Phase 16F)
 
-Created **only after** the Phase 16D PR merges and the post-merge release docs check passes.
+Created **only after** the Phase 16F PR merges and post-merge verification (P10–P12) passes:
 
-* `v3.7.8-docker-gate-alpha` — Phase 16D final stable-gate closure attempt. **Resolves all 16 Bandit B324 weak-hash findings** via `usedforsecurity=False` (Bandit HIGH count: 16 → 0). Persisted semantic fingerprint preservation verified per master prompt RULE 25 (14 scalar fields + 7 restart invariants + 6 per-operation served counts identical pre and post cleanup). All four canonical proofs re-run at corpus 104; soak 9/9 no flakes. Docker still unavailable in dev shell. Outcome: prerelease only — v3.8.0 stable remains blocked **solely** by Docker.
+* `v3.8.0` — Phase 16F Docker stable-gate closure. **Closes the single remaining v3.8.0 stable blocker** from Phase 16D (g01 Docker end-to-end + g19 Docker runtime no-network) by building `waggledance:phase16f` (`python:3.13-slim` + `requirements-ci.txt`, 3.09 GB) and running all four canonical proofs **inside Docker with `--network none`** at corpus 104, exactly matching local results. The autonomy_growth smoke suite (4 files) runs 16/16 inside Docker with `--network none`. Bandit + pip-audit carry forward unchanged from Phase 16D.
 
-Phase 16D is **not** a stable v3.8.0 release. The blocker set narrows from Phase 16C's "1 substantive (Docker) + 1 residual cleanup (Bandit B324)" to Phase 16D's **"1 substantive (Docker)" only**. v3.8.0 is one external Docker verification away.
+Phase 16F is the **stable candidate** branch, not a released stable. The tag is conditional on:
+
+1. PR-level CI green on `phase16f/docker-stable-gate`.
+2. Squash-merge to `main` succeeds with `--match-head-commit` head-SHA protection.
+3. Post-merge `git checkout --detach origin/main` reproduces all four proofs locally and the rebuilt Docker image (`waggledance:v3.8.0-rc`) reproduces all four proofs `--network none`.
+4. Post-merge fresh-clone from `https://github.com/Ahkeratmehilaiset/waggledance-swarm.git` (clean tmpdir) sees all expected tags and reproduces the smoke suite + full restart proof.
+5. All 22 stable gates final status = PASS.
+
+If steps 1–5 all pass: annotated tag `v3.8.0` is created on the post-merge main SHA; GitHub release is published with `isPrerelease=false`; GitHub Latest is verified to be v3.8.0.
+
+If any of steps 1–5 fails: no stable tag is created. No fail-closed alpha tag is the appropriate fallback in this case because Docker progress is fully realized on the branch — a fresh `v3.7.9-docker-verification-alpha` would mis-signal the gate state. The branch then carries the work forward to a follow-up sprint that addresses the specific post-merge regression.
 
 ## Reproduce the latest proof from a clean clone
 

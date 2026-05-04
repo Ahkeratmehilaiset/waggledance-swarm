@@ -1,0 +1,73 @@
+{
+  "session_name": "phase16f_docker_stable_gate",
+  "session_date_utc": "2026-05-03",
+  "session_kind": "docker_stable_gate_closure",
+  "operator": "Jani Korpi",
+  "operator_decisions": {
+    "working_tree_approach": "B_clean_worktree",
+    "worktree_path": "C:/Python/project2-phase16f-docker-stable-gate",
+    "primary_branch": "phase16f/docker-stable-gate",
+    "session_folder": "docs/runs/phase16f_docker_stable_gate_2026_05_03/",
+    "autonomy_level": "full_to_completion_no_confirmation",
+    "merge_authority": "autonomous_squash_match_head_commit_if_guardrails_pass",
+    "tag_authority_v3_8_0_stable": "create_only_if_every_stable_gate_passes",
+    "tag_authority_v3_7_9_alpha_fallback": "create_only_if_material_progress_and_stable_blocked",
+    "tag_authority_no_tag": "if_docker_unavailable_or_no_material_progress"
+  },
+  "p0_baseline": {
+    "origin_main_sha": "7210a7e652d04ec6721a6429a5576549250ff34e",
+    "worktree_head_sha": "7210a7e652d04ec6721a6429a5576549250ff34e",
+    "worktree_head_phase": "Phase 16D (PR #66 squash-merge of phase16d/final-stable-gate-closure)",
+    "current_branch": "phase16f/docker-stable-gate",
+    "branch_tracks": "origin/main",
+    "worktree_clean": true,
+    "uncommitted_changes_count": 0,
+    "untracked_count": 0
+  },
+  "p0_docker": {
+    "docker_available": true,
+    "docker_client_version": "29.4.1",
+    "docker_client_api_version": "1.54",
+    "docker_client_os_arch": "windows/amd64",
+    "docker_client_context": "desktop-linux",
+    "docker_server_version": "29.4.1",
+    "docker_server_api_version": "1.54",
+    "docker_server_os_arch": "linux/amd64",
+    "docker_desktop_version": "4.71.0 (225177)",
+    "docker_compose_version": "v5.1.3",
+    "docker_buildx_version": "v0.33.0-desktop.1",
+    "containerd_version": "v2.2.3",
+    "runc_version": "1.3.5",
+    "storage_driver": "overlayfs",
+    "kernel_version": "6.6.87.2-microsoft-standard-WSL2",
+    "cpus": 24,
+    "total_memory_gib": 62.39,
+    "hello_world_result": "PASS",
+    "hello_world_evidence": "Container ran end-to-end, output 'Hello from Docker!' confirming pull, create, run, network OK"
+  },
+  "p0_release_baseline": {
+    "latest_prerelease_tag": "v3.7.8-docker-gate-alpha",
+    "latest_prerelease_isPrerelease": true,
+    "latest_prerelease_publishedAt": "2026-05-02T08:00:33Z",
+    "latest_prerelease_name": "v3.7.8-docker-gate-alpha — Phase 16D (PRERELEASE)",
+    "github_latest_stable_tag": "v3.6.0",
+    "expected_stable_target": "v3.8.0",
+    "expected_alpha_fallback": "v3.7.9-docker-verification-alpha"
+  },
+  "p0_invariants_verified": [
+    "C_drive_not_RAM_disk",
+    "git_remote_origin_is_real_github_https",
+    "main_tip_matches_origin_main",
+    "Phase_16D_carry_forward_corpus_104",
+    "Phase_16D_carry_forward_bandit_high_count_zero",
+    "no_phase8_5_branches_touched",
+    "no_stage_2_atomic_flip_executed",
+    "no_human_approval_collected",
+    "no_consciousness_claim",
+    "single_process_scope_preserved"
+  ],
+  "stable_v3_8_0_possible_in_this_session": true,
+  "p0_status": "PASS",
+  "p0_blockers": [],
+  "next_phase": "P1_stable_gate_ledger"
+}

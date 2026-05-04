@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Phase 16F — Docker stable-gate closure / v3.8.0 stable candidate] — 2026-05-04
+## [Phase 16F — Docker stable-gate closure / v3.8.0 stable release] — 2026-05-04
 
-Branch: `phase16f/docker-stable-gate`. Docker stable-gate closure sprint on top of Phase 16D. **Outcome: v3.8.0 stable candidate** — tag is created only after the Phase 16F PR merges, post-merge proofs pass, and a fresh clone from GitHub HTTPS reproduces. The single remaining v3.8.0 stable blocker from Phase 16D (g01 Docker end-to-end + g19 Docker no-network) is closed in this branch; the four other stable gates pending post-merge verification (g02 fresh clone, g16 tag target, g17 release metadata, g22 GitHub Latest) are addressed in P10–P12 of this same session.
+Branch: `phase16f/docker-stable-gate`. Docker stable-gate closure sprint on top of Phase 16D. **Outcome: v3.8.0 stable released 2026-05-04**. PR #68 squash-merged at 2026-05-04T07:08:23Z (merge commit `824176eb`); annotated tag `v3.8.0` pushed to origin; GitHub release published with `isPrerelease=false` at 2026-05-04T07:13:27Z; `gh release list` confirms v3.8.0 is GitHub Latest. All 22 stable gates final = PASS.
 
 ### Changed (build / packaging only — no autonomy code change)
 

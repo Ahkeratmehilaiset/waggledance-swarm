@@ -38,6 +38,44 @@ def test_seed_library_meets_v3_8_0_release_gate_minimum() -> None:
     )
 
 
+def test_seed_library_meets_phase17a_material_growth_minimum() -> None:
+    """Phase 17A P5 material growth: at least 128 canonical seeds.
+
+    Phase 17A raised the canonical seed library from 104 to 128 (+4
+    per family, no allowlist widening) per the master prompt's
+    "Required for release: at least +24 canonical seeds OR explicit
+    no-growth rationale" rule. The +24 additions stay strictly within
+    the existing six-family allowlist and preserve hex-cell spread.
+    """
+
+    seeds = all_canonical_seeds()
+    assert len(seeds) >= 128, (
+        f"only {len(seeds)} canonical seeds; Phase 17A material-growth "
+        "minimum is 128 (104 + 24)"
+    )
+
+
+def test_seed_library_per_family_minimum_after_phase17a_growth() -> None:
+    """Each of the six allowlisted families must carry at least the
+    Phase 17A floor count (per family +4 over Phase 16B). Prevents
+    accidental disproportionate growth in one family."""
+
+    counts = expected_per_family_counts()
+    floor = {
+        "scalar_unit_conversion": 32,
+        "lookup_table": 21,
+        "threshold_rule": 21,
+        "interval_bucket_classifier": 18,
+        "linear_arithmetic": 18,
+        "bounded_interpolation": 18,
+    }
+    for family, minimum in floor.items():
+        assert counts.get(family, 0) >= minimum, (
+            f"family {family!r} has {counts.get(family, 0)} seeds; "
+            f"Phase 17A floor is {minimum}"
+        )
+
+
 def test_seed_library_covers_every_allowlisted_family() -> None:
     counts = expected_per_family_counts()
     for fam in LOW_RISK_FAMILY_KINDS:

@@ -1,0 +1,66 @@
+{
+  "inventory_name": "phase17a_phase85_branch_preservation",
+  "inventory_date_utc": "2026-05-04",
+  "preservation_action": "fast_forward_push_only",
+  "force_push_used": false,
+  "history_rewrite_used": false,
+  "merge_attempted": false,
+  "branches_preserved_count": 4,
+  "branches_unchanged_count": 1,
+  "branches_total_origin_after_p1": 5,
+  "origin_phase85_branches_after_p1": {
+    "phase8.5/curiosity-organ": "2efc4f70ce9d5afa05fcc885aba7724f89c54a2f",
+    "phase8.5/dream-curriculum": "bfa526a2430c31aa8bd6bad052d7c64527231880",
+    "phase8.5/hive-proposes": "de8c341ae02ddeb7c5bc81f9d83fc17e576880d7",
+    "phase8.5/self-model-layer": "8478c59db74e3c9d39aea8aa85dca39c4f114ef5",
+    "phase8.5/vector-chaos": "322d8b8f999c0f2e78033cef2b17f50f6ee23348"
+  },
+  "preservation_actions_taken": [
+    {
+      "branch": "phase8.5/hive-proposes",
+      "kind": "new_origin_branch",
+      "from": null,
+      "to": "de8c341ae02ddeb7c5bc81f9d83fc17e576880d7",
+      "substantive_commits_preserved": 4,
+      "force_push": false
+    },
+    {
+      "branch": "phase8.5/vector-chaos",
+      "kind": "new_origin_branch",
+      "from": null,
+      "to": "322d8b8f999c0f2e78033cef2b17f50f6ee23348",
+      "substantive_commits_preserved": 4,
+      "force_push": false
+    },
+    {
+      "branch": "phase8.5/curiosity-organ",
+      "kind": "fast_forward",
+      "from": "1a31b248f588e27fdf888f31fa532957aada259d",
+      "to": "2efc4f70ce9d5afa05fcc885aba7724f89c54a2f",
+      "substantive_commits_preserved": 1,
+      "substantive_subjects": ["verify(phase8.5): commit Session A real curiosity outputs from gap_miner run"],
+      "force_push": false
+    },
+    {
+      "branch": "phase8.5/self-model-layer",
+      "kind": "fast_forward",
+      "from": "e3479dd9ed41dcdcb96e0466142c62b36daa7d93",
+      "to": "8478c59db74e3c9d39aea8aa85dca39c4f114ef5",
+      "substantive_commits_preserved": 1,
+      "substantive_subjects": ["verify(phase8.5): commit Session B real self-model outputs from build_self_model_snapshot run"],
+      "force_push": false
+    },
+    {
+      "branch": "phase8.5/dream-curriculum",
+      "kind": "no_change",
+      "from": "bfa526a2430c31aa8bd6bad052d7c64527231880",
+      "to": "bfa526a2430c31aa8bd6bad052d7c64527231880",
+      "reason": "local_and_origin_already_identical"
+    }
+  ],
+  "v3_8_0_unchanged_after_p1": true,
+  "main_unchanged_after_p1": true,
+  "p1_status": "PASS",
+  "p1_blockers": [],
+  "next_phase": "P2_planning_producer_gap_audit_before_coding"
+}

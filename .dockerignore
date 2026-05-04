@@ -37,13 +37,16 @@ dashboard/dist
 tests/
 tools/
 docs/
-# Phase 16F carve-outs: include canonical proof scripts + autonomy_growth smoke tests
-# so the same image can run `python tools/run_*_proof.py` and the targeted
-# pytest smoke suite under `--network none` for the v3.8.0 stable gate.
+# Phase 16F + 17A carve-outs: include canonical proof scripts + autonomy_growth
+# smoke tests so the same image can run `python tools/run_*_proof.py` and the
+# targeted pytest smoke suite under `--network none` for the v3.8.0 stable gate
+# and the v3.9.0-producer-fabric-alpha producer fabric + 10k scale proofs.
 !tools/run_full_restart_continuity_proof.py
 !tools/run_upstream_structured_request_proof.py
 !tools/run_automatic_runtime_hint_proof.py
 !tools/run_phase16b_proof_soak.py
+!tools/run_phase17a_producer_fabric_proof.py
+!tools/run_solver_scale_proof.py
 !tests/__init__.py
 !tests/conftest.py
 !tests/autonomy_growth/

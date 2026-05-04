@@ -1,0 +1,146 @@
+{
+  "base_commit_hash": "phase17a-fixture",
+  "blind_spots": [
+    {
+      "detectors": [
+        "coverage_negative_space",
+        "curiosity_silence"
+      ],
+      "domain": "general",
+      "severity": "low"
+    },
+    {
+      "detectors": [
+        "coverage_negative_space",
+        "curiosity_silence"
+      ],
+      "domain": "thermal",
+      "severity": "medium"
+    },
+    {
+      "detectors": [
+        "coverage_negative_space",
+        "curiosity_silence"
+      ],
+      "domain": "energy",
+      "severity": "high"
+    },
+    {
+      "detectors": [
+        "coverage_negative_space",
+        "curiosity_silence"
+      ],
+      "domain": "safety",
+      "severity": "low"
+    },
+    {
+      "detectors": [
+        "coverage_negative_space",
+        "curiosity_silence"
+      ],
+      "domain": "seasonal",
+      "severity": "medium"
+    },
+    {
+      "detectors": [
+        "coverage_negative_space",
+        "curiosity_silence"
+      ],
+      "domain": "math",
+      "severity": "high"
+    },
+    {
+      "detectors": [
+        "coverage_negative_space",
+        "curiosity_silence"
+      ],
+      "domain": "system",
+      "severity": "low"
+    },
+    {
+      "detectors": [
+        "coverage_negative_space",
+        "curiosity_silence"
+      ],
+      "domain": "learning",
+      "severity": "medium"
+    }
+  ],
+  "branch_name": "phase17a/producer-fabric-scale",
+  "snapshot_at_utc": "2026-05-04T18:18:48Z",
+  "snapshot_id": "f972dcf1be6c30cf",
+  "workspace_tensions": [
+    {
+      "claim": "scalar_unit_conversion score = below floor on 1 validation cases",
+      "evidence_refs": [
+        "4be9c7b25c575523"
+      ],
+      "lifecycle_status": "active",
+      "observation": "phase17a fixture indicates scalar_unit_conversion drift",
+      "resolution_path": "deferred_to_dream",
+      "severity": "low",
+      "tension_id": "1e491bf5367b0130",
+      "type": "calibration_oscillation"
+    },
+    {
+      "claim": "lookup_table score = below floor on 2 validation cases",
+      "evidence_refs": [
+        "da46cbcb972a0b68"
+      ],
+      "lifecycle_status": "persisting",
+      "observation": "phase17a fixture indicates lookup_table drift",
+      "resolution_path": "needs_more_evidence",
+      "severity": "medium",
+      "tension_id": "548bfbf7c2f6b982",
+      "type": "scorecard_drift"
+    },
+    {
+      "claim": "threshold_rule score = below floor on 3 validation cases",
+      "evidence_refs": [
+        "9088a523e70147d1"
+      ],
+      "lifecycle_status": "active",
+      "observation": "phase17a fixture indicates threshold_rule drift",
+      "resolution_path": "active",
+      "severity": "high",
+      "tension_id": "50a19f40c45d418c",
+      "type": "calibration_oscillation"
+    },
+    {
+      "claim": "interval_bucket_classifier score = below floor on 1 validation cases",
+      "evidence_refs": [
+        "a50776ea294b769a"
+      ],
+      "lifecycle_status": "persisting",
+      "observation": "phase17a fixture indicates interval_bucket_classifier drift",
+      "resolution_path": "deferred_to_dream",
+      "severity": "low",
+      "tension_id": "776becadc2b5e1bc",
+      "type": "scorecard_drift"
+    },
+    {
+      "claim": "linear_arithmetic score = below floor on 2 validation cases",
+      "evidence_refs": [
+        "2b14a31325374f05"
+      ],
+      "lifecycle_status": "active",
+      "observation": "phase17a fixture indicates linear_arithmetic drift",
+      "resolution_path": "needs_more_evidence",
+      "severity": "medium",
+      "tension_id": "b436652c40fdff01",
+      "type": "calibration_oscillation"
+    },
+    {
+      "claim": "bounded_interpolation score = below floor on 3 validation cases",
+      "evidence_refs": [
+        "6faa2052084b10a2"
+      ],
+      "lifecycle_status": "persisting",
+      "observation": "phase17a fixture indicates bounded_interpolation drift",
+      "resolution_path": "active",
+      "severity": "high",
+      "tension_id": "835c8e3370e50fa9",
+      "type": "scorecard_drift"
+    }
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "session_name": "phase17a_producer_fabric_scale",
+  "session_date_utc": "2026-05-04",
+  "session_kind": "capability_sprint_release_sprint",
+  "operator": "Jani Korpi",
+  "wall_clock_budget_hours": 10,
+  "operator_decisions": {
+    "working_tree_approach": "B_clean_worktree",
+    "worktree_path": "C:/Python/project2-phase17a-producer-fabric-scale",
+    "primary_branch": "phase17a/producer-fabric-scale",
+    "session_folder": "docs/runs/phase17a_producer_fabric_scale_2026_05_04/",
+    "autonomy_level": "full_to_release_decision_no_questions",
+    "merge_authority": "autonomous_squash_match_head_commit_if_guardrails_pass",
+    "tag_authority_v3_9_0_alpha": "create_only_if_all_branch_and_post_merge_gates_pass",
+    "tag_authority_no_tag": "if_any_required_gate_fails",
+    "v3_8_0_modification_authority": "NONE — must not move, retag, edit, or recreate",
+    "stable_v3_9_0": "FORBIDDEN_THIS_SESSION"
+  },
+  "p0_baseline_v3_8_0_invariants": {
+    "tag_object_sha": "7fc7725f757a5f1a9a0bcc07f66093ed0b6c1a00",
+    "tag_target_sha": "824176ebf2a6b8debed41982090a125cbe2ddad1",
+    "is_prerelease": false,
+    "name": "v3.8.0 — stable release",
+    "published_at_utc": "2026-05-04T07:13:27Z",
+    "target_commitish": "main",
+    "github_latest": true,
+    "verified_unchanged_at_p0": true
+  },
+  "p0_baseline_v3_7_8_alpha": {
+    "tag_name": "v3.7.8-docker-gate-alpha",
+    "is_prerelease": true,
+    "published_at_utc": "2026-05-02T08:00:33Z",
+    "verified_unchanged_at_p0": true
+  },
+  "p0_baseline_origin_main": {
+    "head_sha": "48ac0b376c03a45890fb40cc83d9ed960e5c80de",
+    "head_phase": "Phase 16G post-stable CI status truth (PR #70)",
+    "ci_status": "GREEN (Tests + WaggleDance CI both succeeded on 86cde94 and 48ac0b3)"
+  },
+  "p0_baseline_open_prs": [
+    {"pr": 19, "kind": "dependabot", "subject": "actions/setup-python 5->6"},
+    {"pr": 21, "kind": "dependabot", "subject": "actions/checkout 4->6"},
+    {"pr": 22, "kind": "dependabot", "subject": "scipy 1.16.3->1.17.1"},
+    {"pr": 23, "kind": "dependabot", "subject": "av 15.0.0->17.0.0"},
+    {"pr": 24, "kind": "dependabot", "subject": "cachetools 6.1.0->7.0.5"},
+    {"pr": 25, "kind": "dependabot", "subject": "websockets 15.0.1->16.0"},
+    {"pr": 26, "kind": "dependabot", "subject": "psutil 7.0.0->7.2.2"}
+  ],
+  "p0_baseline_open_prs_note": "All 7 open PRs are dependabot routine upgrades. Orthogonal to Phase 17A. NOT in scope this session.",
+  "p0_phase8_5_branch_inventory": {
+    "curiosity_organ": {
+      "origin_sha": "1a31b248f588e27fdf888f31fa532957aada259d",
+      "local_sha": "2efc4f7",
+      "local_origin_relation": "fast_forward_local_ahead",
+      "substantive_local_only_commits": 1,
+      "substantive_local_only_subjects": ["verify(phase8.5): commit Session A real curiosity outputs from gap_miner run"],
+      "preservation_action": "fast_forward_push_to_origin",
+      "force_push_required": false,
+      "worktree_at": "C:/Python/project2-a"
+    },
+    "self_model_layer": {
+      "origin_sha": "e3479dd9ed41dcdcb96e0466142c62b36daa7d93",
+      "local_sha": "8478c59",
+      "local_origin_relation": "fast_forward_local_ahead",
+      "substantive_local_only_commits": 1,
+      "substantive_local_only_subjects": ["verify(phase8.5): commit Session B real self-model outputs from build_self_model_snapshot run"],
+      "preservation_action": "fast_forward_push_to_origin",
+      "force_push_required": false,
+      "worktree_at": "C:/Python/project2-b"
+    },
+    "dream_curriculum": {
+      "origin_sha": "bfa526a2430c31aa8bd6bad052d7c64527231880",
+      "local_sha": "bfa526a",
+      "local_origin_relation": "identical",
+      "substantive_local_only_commits": 0,
+      "preservation_action": "no_push_needed",
+      "worktree_at": "C:/Python/project2"
+    },
+    "hive_proposes": {
+      "origin_sha": "(none — branch does not exist on origin)",
+      "local_sha": "de8c341ae02ddeb7c5bc81f9d83fc17e576880d7",
+      "local_origin_relation": "local_only",
+      "substantive_local_only_commits": 4,
+      "substantive_local_only_subjects": [
+        "docs(phase8.5): document The Hive Proposes architecture, formulas, provenance, runtime-review hooks",
+        "feat(phase8.5): add hive_proposes CLI + history chain + review bundle (30 more tests)",
+        "feat(phase8.5): add meta-proposal schemas + meta_learner core (31 tests)",
+        "chore(phase8.5): start hive-proposes session state and branch bootstrap"
+      ],
+      "preservation_action": "create_new_origin_branch",
+      "force_push_required": false,
+      "worktree_at": "C:/Python/project2-d"
+    },
+    "vector_chaos": {
+      "origin_sha": "(none — branch does not exist on origin)",
+      "local_sha": "322d8b8f999c0f2e78033cef2b17f50f6ee23348",
+      "local_origin_relation": "local_only",
+      "substantive_local_only_commits": 4,
+      "substantive_local_only_subjects": [
+        "docs(phase8.5): document resilience envelope and event log policy",
+        "chore(phase8.5): confirm current writer resilience requires no immediate fixes",
+        "test(phase8.5): add failure-matrix and convergence tests (26 resilience tests)",
+        "chore(phase8.5): start vector-chaos session state and bootstrap writer capability inspection"
+      ],
+      "preservation_action": "create_new_origin_branch",
+      "force_push_required": false,
+      "worktree_at": "C:/Python/project2-r7_5"
+    }
+  },
+  "p0_invariants_verified": [
+    "C_drive_not_RAM_disk",
+    "git_remote_origin_is_real_github_https",
+    "v3_8_0_tag_target_unchanged_824176eb",
+    "v3_8_0_isPrerelease_false",
+    "v3_8_0_github_latest",
+    "v3_7_8_docker_gate_alpha_unchanged_isPrerelease_true",
+    "main_push_event_ci_green_after_pr67_pr70",
+    "operator_dirty_worktree_NOT_TOUCHED",
+    "phase16f_worktree_NOT_TOUCHED (still on phase16g/post-stable-ci-truth)",
+    "all_5_phase85_local_branches_inventoried",
+    "no_phase85_branch_requires_force_push (all fast-forwards)",
+    "single_process_scope_preserved"
+  ],
+  "p0_status": "PASS",
+  "p0_blockers": [],
+  "next_phase": "P1_preserve_local_only_phase85_branches"
+}

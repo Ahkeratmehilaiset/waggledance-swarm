@@ -1,0 +1,70 @@
+{
+  "phase": "phase18b",
+  "phase_name": "Runtime Gap Miner + Solver Feedback Loop",
+  "started_utc": "2026-05-05T16:30:00Z",
+  "session_id": "phase18b_gap_miner_feedback_2026_05_05",
+  "branch": "phase18b/gap-miner-feedback",
+  "worktree_path": "C:/Python/project2-phase18b-gap-miner-feedback",
+  "base_origin_main_sha": "2d32b9b2267d271508d689f94f4631e2965f3be2",
+  "base_origin_main_subject": "docs(phase18a): post-release docs update for v3.10.0-benchmark-schema-alpha (#80)",
+  "model_session": "claude-opus-4-7",
+  "fallback_events": [],
+  "operator_decision": "B_full_autonomy_phase18b",
+  "host": {
+    "platform": "Windows-11-10.0.22631-SP0",
+    "python_version": "3.13.7",
+    "shell": "Git Bash via PowerShell",
+    "core_autocrlf": true
+  },
+  "preconditions": {
+    "v3_8_0_still_github_latest": true,
+    "v3_8_0_target_sha": "824176ebf2a6b8debed41982090a125cbe2ddad1",
+    "v3_8_0_isPrerelease": false,
+    "v3_9_0_target_sha": "c726995c816ee4c09e031c2190c3de6592e82879",
+    "v3_9_1_target_sha": "f4d0a4a4152ca74e98a8d7f7161c233075bf4111",
+    "v3_9_2_target_sha": "db5d7db1ecb9ae6f17293f0bf7261f4c9d40e91c",
+    "v3_9_3_target_sha": "d0704efe46be18d480ed425ff83b087cd36ef9bd",
+    "v3_10_0_target_sha": "4554b24a47045ab10c1c0fbcb010f695d47d867c",
+    "all_prereleases_isPrerelease_true": true
+  },
+  "phase18a_carry_forward": {
+    "bundle_validates_at_session_start": true,
+    "fix_applied_in_p0": "Phase 18A exporter rewritten to write LF unconditionally (write_bytes via _write_text_lf) so the bundle's SHA-256 checksums verify on a fresh Windows checkout; .gitattributes added for the bundle subtree. Pre-existing committed bundle was CRLF on Windows checkouts; re-exported in P0.",
+    "phase18a_tests_pass_after_fix": true
+  },
+  "scope_invariants": {
+    "no_stable_release_in_phase18b": true,
+    "no_stage2_atomic_flip": true,
+    "no_human_approval_collected": true,
+    "no_allowlist_widening": true,
+    "no_consciousness_claim": true,
+    "no_beats_all_competitors_claim": true,
+    "no_cross_vendor_ranking_claim": true,
+    "no_raw_intelligence_superiority_claim": true,
+    "phase8_5_branches_read_only": true,
+    "v3_8_0_must_remain_github_latest": true,
+    "no_modification_of_prior_tags": true,
+    "no_model_pull_or_download": true,
+    "no_cloud_api_calls": true,
+    "no_new_high_risk_autonomy": true,
+    "no_provider_http_adapter": true,
+    "no_api_autonomy_query_route": true,
+    "current_state_md_not_edited_manually": true
+  },
+  "tag_under_consideration": "v3.10.1-gap-miner-feedback-alpha",
+  "release_kind_under_consideration": "PRERELEASE only (isPrerelease=true)",
+  "tasks": [
+    {"id": "P18B-0", "name": "Baseline + carry-forward + bundle EOL fix", "status": "in_progress"},
+    {"id": "P18B-1", "name": "Design doc (BEFORE coding)", "status": "pending"},
+    {"id": "P18B-2", "name": "Phase 8.5 gap miner inventory", "status": "pending"},
+    {"id": "P18B-3", "name": "Implement gap mining core", "status": "pending"},
+    {"id": "P18B-4", "name": "Proof harness", "status": "pending"},
+    {"id": "P18B-5", "name": "Tests", "status": "pending"},
+    {"id": "P18B-6", "name": "Host proofs", "status": "pending"},
+    {"id": "P18B-7", "name": "Docker --network none", "status": "pending"},
+    {"id": "P18B-8", "name": "Docs + evidence matrix", "status": "pending"},
+    {"id": "P18B-9", "name": "Release decision A or B", "status": "pending"},
+    {"id": "P18B-10", "name": "Commit/push/PR/merge", "status": "pending"},
+    {"id": "P18B-11/12/13/14", "name": "Post-merge + tag + post-release docs + final report", "status": "pending"}
+  ]
+}

@@ -1,10 +1,10 @@
 # Competitive Evidence Matrix — 2026-Q2
 
-**Status:** Phase 17A + 17B + 17C + 17D + 18A snapshot, derived from this session's reproducible artifacts only.
+**Status:** Phase 17A + 17B + 17C + 17D + 18A + 18B snapshot, derived from this session's reproducible artifacts only.
 **Date:** 2026-05-05
-**Branch:** `phase18a/benchmark-externalization-schema` (Phase 17D is the previous tag at `d0704efe`; 17C at `db5d7db1`; 17B at `f4d0a4a4`; 17A on `main` at `c726995c`)
-**Anchor:** `v3.10.0-benchmark-schema-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest; v3.9.0/v3.9.1/v3.9.2/v3.9.3 alphas remain the previous Pre-releases).
-**New evidence this PR (Phase 18A):** Phase 17B / 17C / 17D benchmark artifacts are now exportable as a versioned, validated, offline evidence bundle with 7 JSON Schemas, a 16-claim machine-readable ledger, release lineage hard-coded to v3.8.0 Latest, SHA-256 checksums, and a stdlib-only validator (no `jsonschema` pip dependency). New axis O: "Benchmark artifact externalization / schema validation" labelled **PROVEN this session**. Detailed run report: `docs/benchmarks/BENCHMARK_EVIDENCE_BUNDLE_2026.md` and `docs/benchmarks/CLAIM_EVIDENCE_LEDGER.md`.
+**Branch:** `phase18b/gap-miner-feedback` (Phase 18A at `4554b24a`; 17D at `d0704efe`; 17C at `db5d7db1`; 17B at `f4d0a4a4`; 17A on `main` at `c726995c`)
+**Anchor:** `v3.10.1-gap-miner-feedback-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest; v3.9.0/v3.9.1/v3.9.2/v3.9.3/v3.10.0 alphas remain the previous Pre-releases).
+**New evidence this PR (Phase 18B):** the runtime gap-mining feedback loop is now closed on main inside the six-family allowlist. New mainline modules `waggledance/core/autonomy_growth/gap_mining.py` + `gap_candidate.py` and proof harness `tools/run_phase18b_gap_miner_feedback_proof.py` convert structured runtime gap signals into a six-element verdict enum (`ALLOWLISTED_SOLVER_SPEC`, `INSUFFICIENT_EVIDENCE`, `OUT_OF_FAMILY_REJECTED`, `HIGH_RISK_REJECTED`, `BUILDER_HANDOFF_QUARANTINED`, `DUPLICATE_SUPPRESSED`). Host run: 30 synthetic signals → 14 candidates → 6 allowlisted solver specs + 3 insufficient + 2 out-of-family + 1 high-risk + 1 builder-handoff + 1 duplicate; `release_gate_pass = true`; `provider_jobs_delta = builder_jobs_delta = 0`. Axis M upgrades to **PROVEN with measured runtime-gap feedback loop within six-family allowlist**. Phase 18A bundle continues to validate (carry-forward gate green). Detailed run report: `docs/benchmarks/GAP_MINER_FEEDBACK_LOOP_2026.md`.
 
 This is an **engineering** document. It does not market WaggleDance. It enumerates the comparison axes most often used to assess local-first cognitive runtimes, states one factual claim per axis, points to a reproducible artifact in this repo, and labels the claim with one of:
 
@@ -123,8 +123,9 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 ### M. Autonomous learning lane
 
 * **Claim:** The autogrowth scheduler runs end-to-end without a human trigger across the six low-risk families: gap signal → growth intent → autogrowth queue → low-risk grower → auto-promotion → capability-aware dispatch.
-* **Evidence:** Phase 12 mass-safe proof (30 promotions / 6 families / 8 cells / 0 provider calls); Phase 13 runtime harvest proof; Phase 14 hot-path cache proof; Phase 15/16A live runtime hint and upstream structured-request proofs; Phase 16B full-corpus restart with auto_promotions=104; Phase 17A producer fabric + 128-seed corpus.
-* **Label:** **PROVEN** within the bounded six-family allowlist; **NOT CLAIMED** for high-risk families.
+* **Evidence:** Phase 12 mass-safe proof (30 promotions / 6 families / 8 cells / 0 provider calls); Phase 13 runtime harvest proof; Phase 14 hot-path cache proof; Phase 15/16A live runtime hint and upstream structured-request proofs; Phase 16B full-corpus restart with auto_promotions=104; Phase 17A producer fabric + 128-seed corpus. **Phase 18B closes the runtime-gap-mining feedback half of the loop**: structured runtime gap signals → six-element verdict enum (allowlisted solver spec / insufficient evidence / out-of-family rejected / high-risk rejected / builder-handoff quarantined / duplicate suppressed). New mainline modules at `waggledance/core/autonomy_growth/gap_mining.py` + `gap_candidate.py`; proof harness at `tools/run_phase18b_gap_miner_feedback_proof.py`; 19 unit tests; Docker `--network none` PASS; `provider_jobs_delta = builder_jobs_delta = 0`; allowlist unchanged.
+* **Reproduce:** `python tools/run_phase18b_gap_miner_feedback_proof.py`. Expected: 30 signals → 14 candidates → 6 allowlisted specs + 3 insufficient + 2 out-of-family + 1 high-risk + 1 builder-handoff + 1 duplicate; `release_gate_pass = true`.
+* **Label:** **PROVEN with measured runtime-gap feedback loop within six-family allowlist** (Phase 18B). **NOT CLAIMED** for high-risk families. Builder-handoff lane is **PROVEN as a quarantined contract**, **NOT CLAIMED as automatic builder promotion**.
 
 ### N. High-risk safety gate
 
@@ -156,7 +157,7 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 | J. LLM / MoE hybrid | INFERRED (architecture); MEASURED-LOCAL-OLLAMA-PANEL (Phase 17D, 4-model panel × 3 repeats) |
 | K. Industrial / factory readiness | INFERRED |
 | L. Edge resource use | MEASURED (image size); INFERRED (Pi class) |
-| M. Autonomous learning lane | PROVEN within six-family allowlist |
+| M. Autonomous learning lane | PROVEN with measured runtime-gap feedback loop within six-family allowlist (Phase 18B); NOT CLAIMED for high-risk families; builder-handoff PROVEN as quarantined contract, NOT CLAIMED as automatic builder promotion |
 | N. High-risk safety gate | PROVEN as refusal contract |
 | O. Benchmark artifact externalization / schema validation | PROVEN this session (Phase 18A bundle + stdlib-only validator + 15 tests + Docker `--network none`) |
 

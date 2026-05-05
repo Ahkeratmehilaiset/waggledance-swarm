@@ -1,0 +1,13 @@
+# Phase 18B: keep Phase 18A benchmark evidence bundle byte-stable across
+# platforms so its SHA-256 checksums verify on a fresh Windows checkout.
+#
+# `text eol=lf` is not strong enough on Windows when `core.autocrlf=true`
+# is set globally (the working-tree files end up CRLF anyway). `binary`
+# tells git to never transform these files: index bytes == working tree
+# bytes == hashed bytes, on every platform. That is the only guarantee
+# that lets the bundle's SHA-256 checksums verify on a fresh clone.
+schemas/benchmarks/v1/*.schema.json binary
+docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**/*.json binary
+docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**/*.md binary
+docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/checksums.sha256 binary
+docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/README.md binary

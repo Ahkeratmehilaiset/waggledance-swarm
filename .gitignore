@@ -221,6 +221,13 @@ LICENSE-CORE-BACKUP.md
 
 # Benchmark results (keep scripts, remove outputs)
 benchmark_*.json
+# Phase 18A: do NOT ignore the JSON Schema files under schemas/benchmarks/.
+# The benchmark_*.json glob above accidentally matched
+# benchmark_bundle.schema.json which IS source we want committed.
+!schemas/benchmarks/**/*.json
+# Phase 18A: also keep the canonical exported bundle (it is a release
+# artifact tracked in the repo so reviewers can verify checksums offline).
+!docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**/*.json
 
 # Patch/fix scripts (one-time use, not needed in repo)
 fix_*.py

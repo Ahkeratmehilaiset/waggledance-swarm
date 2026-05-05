@@ -3,8 +3,8 @@
 **Bundle name:** phase18a_benchmark_externalization
 **Bundle version:** phase18a.v1
 **Schema version:** benchmarks.v1
-**Generated UTC:** 2026-05-05T06:56:47Z
-**Git SHA:** b9dd6b7d9e55d3c9d1543a4a1409af0923ed34a8
+**Generated UTC:** 2026-05-05T07:09:00Z
+**Git SHA:** fe43f895c9e2296f0df2deccb2320fe4f5685fc4
 **Source branch:** phase18a/benchmark-externalization-schema
 **Release candidate:** v3.10.0-benchmark-schema-alpha
 

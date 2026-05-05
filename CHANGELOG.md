@@ -1,5 +1,46 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 18D — Local Delta Reconciliation / docs-only, NO TAG] — 2026-05-06
+
+Branch: `phase18d/local-delta-docs`. Docs-only reconciliation sprint on top of v3.10.2-mined-solver-dispatch-alpha. **Outcome: docs-only PR; no new prerelease tag.** v3.8.0 stable + all 7 alpha tags (`v3.9.0-producer-fabric-alpha`, `v3.9.1-local-efficiency-benchmark-alpha`, `v3.9.2-local-ollama-baseline-alpha`, `v3.9.3-local-model-sweep-alpha`, `v3.10.0-benchmark-schema-alpha`, `v3.10.1-gap-miner-feedback-alpha`, `v3.10.2-mined-solver-dispatch-alpha`) remain unchanged. v3.8.0 remains GitHub Latest. v3.10.2-mined-solver-dispatch-alpha remains the most recent prerelease.
+
+### Inventory
+
+A bounded reconciliation sprint inventoried every dirty worktree, untracked file, and unpushed commit across the 19 local worktrees. Three artifacts were classified `INCLUDE_RELEASE_DOC`; everything else was classified PARK / DROP per `docs/runs/phase18d_local_delta_release_2026_05_05/local_delta_classification.md`.
+
+### Added (docs)
+
+* **`docs/runs/phase18d_local_delta_release_2026_05_05/`** — full session folder: `baseline_verification.md`, `local_delta_inventory.md`, `local_delta_classification.md`, `local_delta_release_design.md`, `session_state.json`, `host_verification.md`, `docker_phase18d_verification.md`, `release_decision.md`, `pr_body.md`, `final_report.md`.
+* **`docs/runs/phase18c_mined_solver_runtime_dispatch_2026_05_05/final_report.md`** — Phase 18C end-of-session audit document (timeline + 8-tag verification + honesty contracts) carried forward from a local untracked file written immediately after PR #84 merged at 2026-05-05T19:01:17Z.
+
+### Changed (docstrings only)
+
+* **`tools/waggle_backup.py`** — header/changelog updated `v9.1` → `v9.2` referencing v3.7.8-docker-gate-alpha (Phase 16D era). No runtime change.
+* **`tools/waggle_restore.py`** — header/changelog updated `v3.5.7.1` → `v3.7.8.0` referencing Phase 16D. No runtime change.
+
+These two operator-side backup/restore tools were edited locally during the Phase 16D era (2026-05-02 timeframe) but never landed on GitHub. Phase 18D carries the existing local edits forward verbatim. The version log in these tools is therefore intentionally not yet updated past the Phase 16D era; future operator work may continue the changelog forward.
+
+### Behaviour
+
+No production code, proof harness, benchmark, runtime path, or test changed. `tests/phase10/` 14/14 PASS, `tests/benchmarks/test_phase18a_benchmark_externalization.py` 15/15 PASS. Phase 18A bundle validator PASS. Phase 18B proof: `release_gate_pass = true`, 30 → 14 candidates, 6 solver specs, provider/builder delta = 0/0. Phase 18C proof: `release_gate_pass = true`, 18/18 dispatch cases hit, 6 registered solvers, 8 rejected.
+
+### Docker `--network none` (waggledance:phase18d)
+
+Three `docker run --rm --network none` invocations exit 0: Phase 18A bundle validator + Phase 18B proof + Phase 18C proof.
+
+### Honesty contracts (re-asserted)
+
+* No model pull or download. No cloud API calls. No live builder execution. No allowlist widening. No autonomy code change. No Stage-2 atomic flip. No HUMAN_APPROVAL collected. No new prerelease tag created.
+* No cross-vendor ranking. No raw-intelligence superiority claim. No new high-risk autonomy mechanism.
+* Builder handoff still quarantined (Phase 18B/18C contracts unchanged).
+* No new pip dependencies. No DB/SQLite/WAL/SHM files committed. No tokens or secrets exposed in repo files, PR body, release notes, or branch upstream URL.
+* Truthful note on prior token exposure: no token or secret was committed to repository files, release artifacts, tags, PR bodies, or GitHub releases. A prior token exposure occurred in local/session command output before Phase 18D and was remediated by operator token rotation. Phase 18D uses credential-helper Git/GitHub operations and does not print or embed tokens.
+
+### What did NOT change in Phase 18D
+
+* No modification to `v3.8.0`, `v3.9.0-producer-fabric-alpha`, `v3.9.1-local-efficiency-benchmark-alpha`, `v3.9.2-local-ollama-baseline-alpha`, `v3.9.3-local-model-sweep-alpha`, `v3.10.0-benchmark-schema-alpha`, `v3.10.1-gap-miner-feedback-alpha`, or `v3.10.2-mined-solver-dispatch-alpha` tags. v3.8.0 remains GitHub Latest.
+* No autonomy code, no allowlist, no canonical corpus size, no proof harness, no new dispatcher/executor/router/promotion engine, no provider HTTP adapter, no `/api/autonomy/query` route.
+
 ## [Phase 18C — Mined Solver Runtime Dispatch Integration / v3.10.2-mined-solver-dispatch-alpha PRERELEASE] — 2026-05-05
 
 Branch: `phase18c/mined-solver-runtime-dispatch`. Live-runtime integration sprint on top of v3.10.1-gap-miner-feedback-alpha. **Outcome: PRERELEASE `v3.10.2-mined-solver-dispatch-alpha` published 2026-05-05T18:44:19Z**. PR #83 squash-merged at 2026-05-05T18:42:11Z (merge commit `e9aa1de1`); annotated tag pushed at the merge SHA; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 / v3.10.0 / v3.10.1 alphas all remain unchanged. v3.8.0 remains GitHub Latest.

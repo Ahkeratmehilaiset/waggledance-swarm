@@ -255,11 +255,23 @@ def resolve_json_pointer(doc: Any, pointer: str) -> Any:
 # ---------------------------------------------------------------------------
 
 def sha256_of_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    """SHA-256 of the file's bytes after line-ending normalization to LF.
+
+    The bundle is text (JSON + Markdown + the checksums file itself).
+    Different platforms store text checkouts with different EOLs:
+    Linux/macOS keep LF, Windows with `core.autocrlf=true` (and even
+    with explicit `text eol=lf` / `binary` `.gitattributes` rules
+    applied to a fresh clone) frequently writes CRLF on disk. Without
+    normalization, SHA-256 would diverge across platforms even when
+    the canonical content is identical.
+
+    The exporter writes LF bytes. The validator reads whatever EOL is
+    on disk and normalizes back to LF before hashing. This is a
+    documentable contract of `checksums.sha256`: it covers the
+    LF-normalized content of each file.
+    """
+    raw = path.read_bytes()
+    return hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
 
 
 # ---------------------------------------------------------------------------

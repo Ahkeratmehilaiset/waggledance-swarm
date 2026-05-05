@@ -1,5 +1,60 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 18B — Runtime Gap Miner + Solver Feedback Loop / v3.10.1-gap-miner-feedback-alpha CANDIDATE] — 2026-05-05
+
+Branch: `phase18b/gap-miner-feedback`. Capability-extension sprint on top of v3.10.0-benchmark-schema-alpha. **Outcome (candidate):** PRERELEASE `v3.10.1-gap-miner-feedback-alpha` — to be tagged from the Phase 18B PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 / v3.10.0 alphas all remain unchanged.
+
+### Added (production code)
+
+* **`waggledance/core/autonomy_growth/gap_candidate.py`** — `GapVerdict` enum (six elements: `ALLOWLISTED_SOLVER_SPEC`, `INSUFFICIENT_EVIDENCE`, `OUT_OF_FAMILY_REJECTED`, `HIGH_RISK_REJECTED`, `BUILDER_HANDOFF_QUARANTINED`, `DUPLICATE_SUPPRESSED`); `GapCandidate` and `GapMiningResult` frozen dataclasses with `to_dict()` serialization. Pure stdlib.
+* **`waggledance/core/autonomy_growth/gap_mining.py`** — public API: `mine_runtime_gaps(signals, *, config=...)`, `candidate_to_solver_spec(candidate)`, `build_quarantined_builder_handoff(candidate)`. Six-family allowlist (`scalar_unit_conversion`, `lookup_table`, `threshold_rule`, `interval_bucket_classifier`, `linear_arithmetic`, `bounded_interpolation`) enforced fail-closed. Deterministic 16-hex-char `candidate_id` from SHA-256 of `family_kind + canonical_json(feature_dict)`. `cluster_window` field on signals lets two waves of the same gap form two clusters with the same candidate_id, the second of which is `DUPLICATE_SUPPRESSED`. Pure stdlib + `waggledance.core.autonomy_growth.gap_candidate` only — no new pip dependency.
+* **`tools/run_phase18b_gap_miner_feedback_proof.py`** — proof harness with a deterministic 30-signal synthetic fixture covering every verdict at least once. Emits JSON + Markdown proof artifact with full counters, candidates, solver specs, and release gates. Forbidden-vocabulary scrub on both JSON and rendered Markdown. Stdlib-only.
+* **`tests/autonomy_growth/test_phase18b_gap_miner_feedback.py`** (19 tests) — covers all six verdicts, deterministic IDs, provenance presence, solver-spec shape, builder-handoff quarantine, proof JSON shape, release-gate contract, allowlist-unchanged invariant, no-Stage-2/no-HUMAN_APPROVAL flags, Phase 18A bundle still validates (regression gate), and forbidden-vocabulary absence.
+* **`docs/benchmarks/GAP_MINER_FEEDBACK_LOOP_2026.md`** — public-facing report.
+* **`docs/runs/phase18b_gap_miner_feedback_2026_05_05/`** — full session folder with session_state.json, baseline_verification.md, gap_miner_feedback_design.md, phase85_gap_miner_inventory.md, phase85_gap_miner_reconciliation_matrix.md, gap_miner_feedback_proof.{json,md}, host_verification.md, docker_phase18b_verification.md, release_decision.md.
+
+### Fixed (Phase 18A bundle EOL portability)
+
+The Phase 18A evidence bundle's SHA-256 checksums failed validation on a fresh Windows checkout because `core.autocrlf=true` translated LF→CRLF on disk, and the Phase 18A exporter used `Path.write_text(...)` which itself performs the same translation in text mode — making the original Phase 18A run consistent with itself but **not portable** across platforms. Phase 18B P0 surfaced this and ships a fix:
+
+* **`tools/run_phase18a_benchmark_externalization.py`** — switched to `_write_text_lf` / `_copy_text_lf` helpers that write via `Path.write_bytes(text.encode("utf-8"))`, bypassing platform newline translation.
+* **`.gitattributes`** — explicit `text eol=lf` for `schemas/benchmarks/v1/*.schema.json` and the Phase 18A `export_bundle/` subtree.
+* **Re-exported** `docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/` with byte-stable LF content. Phase 18A test suite still 15/15 PASS (including the determinism test).
+
+### Changed
+
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** — anchor updated. Axis M upgraded from "PROVEN within six-family allowlist" to "**PROVEN with measured runtime-gap feedback loop within six-family allowlist** (Phase 18B); NOT CLAIMED for high-risk families; builder-handoff PROVEN as quarantined contract, NOT CLAIMED as automatic builder promotion." Raw-intelligence row and cross-vendor ranking row remain `NOT CLAIMED`.
+* **`.dockerignore`** — extends carve-outs with `tools/run_phase18b_gap_miner_feedback_proof.py` and the canonical Phase 18A export bundle subtree (so the in-container validator can verify it).
+* **`CURRENT_STATUS.md`, `README.md`, `docs/release/RELEASE_READINESS.md`** — candidate-state entries for `v3.10.1-gap-miner-feedback-alpha`.
+
+### Behaviour (Phase 18B host run, this branch)
+
+* **30 synthetic runtime signals → 14 candidates** distributed across all six verdicts: 6 ALLOWLISTED_SOLVER_SPEC, 3 INSUFFICIENT_EVIDENCE, 2 OUT_OF_FAMILY_REJECTED, 1 HIGH_RISK_REJECTED, 1 BUILDER_HANDOFF_QUARANTINED, 1 DUPLICATE_SUPPRESSED.
+* **6 deterministic solver specs** in canonical shape (one per six-family allowlist family).
+* `release_gate_pass = true`. `forbidden_claims_absent = true`. `provider_jobs_delta = builder_jobs_delta = 0`. `no_model_pull_or_download = no_cloud_api_calls = no_live_builder_execution = true`. `allowlist_unchanged = true`. `no_stage2_flip = no_human_approval = true`.
+* `capability_lookup_status = NOT_RUN_OUT_OF_PHASE18B_SCOPE` — Phase 18B emits specs but does not wire `RuntimeQueryRouter.dispatch_by_features` live in this PR (separate follow-up integration sprint). Recorded honestly.
+* **Tests:** 19 / 19 PASS in 0.58 s. Targeted suite (Phase 18B 19 + Phase 18A 15 + phase10 14 + storage 50 + ui_hologram 22 + solver_router 50): 170/170 PASS in 8.13 s.
+
+### Docker `--network none` (waggledance:phase18b)
+
+`docker build -t waggledance:phase18b -f Dockerfile .` builds clean. Two `docker run --rm --network none` invocations exit 0:
+
+1. The Phase 18B proof harness runs on the synthetic fixture (no DB, no Ollama, no cloud).
+2. The Phase 18A validator validates the canonical bundle (now LF-stable, so checksums verify in-container).
+
+### Honesty contracts (re-asserted)
+
+* No model pull or download. No cloud API calls. No live builder execution. No allowlist widening. No autonomy code change outside Phase 18B's modules. No Stage-2 atomic flip. No HUMAN_APPROVAL collected. No stable-tagged release.
+* No cross-vendor ranking. No raw-intelligence superiority claim. No new high-risk autonomy mechanism. No new provider HTTP adapter. No `/api/autonomy/query` route.
+* Builder handoff is a quarantined contract with `no_auto_promotion = true`, `no_provider_call = true`, `no_builder_call_in_proof = true`, `no_cloud_api = true`, `promotion_allowed = false`.
+* No new pip dependencies.
+
+### What did NOT change in Phase 18B
+
+* No modification to `v3.8.0`, `v3.9.0-producer-fabric-alpha`, `v3.9.1-local-efficiency-benchmark-alpha`, `v3.9.2-local-ollama-baseline-alpha`, `v3.9.3-local-model-sweep-alpha`, or `v3.10.0-benchmark-schema-alpha` tags. v3.8.0 remains GitHub Latest.
+* No autonomy code outside Phase 18B's new modules. No allowlist change. No canonical corpus size change (still 128). No 10k synthetic-scale ceiling change. No runtime entrypoint change. No provider HTTP adapter. No `/api/autonomy/query` route.
+* No `phase8.5/*` branch touched. The Phase 8.5 `tools/gap_miner.py` (different shape — campaign-artifact curiosity report generator) stays preserved on its branch as historical research.
+
 ## [Phase 18A — Benchmark Externalization + Schema Hardening / v3.10.0-benchmark-schema-alpha PRERELEASE] — 2026-05-05
 
 Branch: `phase18a/benchmark-externalization-schema`. Benchmark externalization + schema hardening sprint on top of v3.9.3-local-model-sweep-alpha. **Outcome: PRERELEASE `v3.10.0-benchmark-schema-alpha` published 2026-05-05T07:20:31Z**. PR #79 squash-merged at 2026-05-05T07:19:21Z (merge commit `4554b24a`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 alphas all remain unchanged.

@@ -3,9 +3,9 @@
 **Bundle name:** phase18a_benchmark_externalization
 **Bundle version:** phase18a.v1
 **Schema version:** benchmarks.v1
-**Generated UTC:** 2026-05-05T07:09:00Z
-**Git SHA:** fe43f895c9e2296f0df2deccb2320fe4f5685fc4
-**Source branch:** phase18a/benchmark-externalization-schema
+**Generated UTC:** 2026-05-05T13:54:19Z
+**Git SHA:** 2d32b9b2267d271508d689f94f4631e2965f3be2
+**Source branch:** phase18b/gap-miner-feedback
 **Release candidate:** v3.10.0-benchmark-schema-alpha
 
 ## Honesty declarations
@@ -19,9 +19,9 @@
 
 | artifact_id | phase | declared_schema | exported_sha256 (head) |
 | --- | --- | --- | --- |
-| `phase17b_local_efficiency_benchmark` | `phase17b` | `local_efficiency.schema.json` | `f6290d5949b4dfc1...` |
-| `phase17c_local_ollama_baseline` | `phase17c` | `local_ollama_baseline.schema.json` | `8b41e0617953a1c2...` |
-| `phase17d_local_model_sweep` | `phase17d` | `local_model_sweep.schema.json` | `6872f553f3567b11...` |
+| `phase17b_local_efficiency_benchmark` | `phase17b` | `local_efficiency.schema.json` | `981e2505ba5afef6...` |
+| `phase17c_local_ollama_baseline` | `phase17c` | `local_ollama_baseline.schema.json` | `e17a6200c631ce64...` |
+| `phase17d_local_model_sweep` | `phase17d` | `local_model_sweep.schema.json` | `6b1b7c6e8b36a4ab...` |
 
 ## Schemas
 

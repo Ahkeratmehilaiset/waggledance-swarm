@@ -84,6 +84,33 @@ def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+def _write_text_lf(path: Path, text: str) -> None:
+    """Write `text` as UTF-8 with explicit LF line endings.
+
+    Phase 18B fix: Path.write_text() in Python text mode performs
+    platform newline translation (LF -> CRLF on Windows). That made the
+    Phase 18A bundle's checksums.sha256 unstable across platforms,
+    because a fresh Windows checkout would CRLF-expand the schemas/
+    JSON files and break SHA-256 verification. Writing bytes directly
+    keeps the bundle byte-stable.
+    """
+    if "\r\n" in text:
+        text = text.replace("\r\n", "\n")
+    path.write_bytes(text.encode("utf-8"))
+
+
+def _copy_text_lf(src: Path, dst: Path) -> None:
+    """Copy a text file from `src` to `dst`, normalizing CRLF to LF.
+
+    Phase 18B fix: a Windows checkout of `schemas/benchmarks/v1/*.json`
+    can have CRLF on disk while the index has LF. We always emit LF
+    inside the bundle so the bundle's bytes match the bundle's
+    checksums regardless of how the source was checked out.
+    """
+    raw = src.read_bytes()
+    dst.write_bytes(raw.replace(b"\r\n", b"\n"))
+
+
 def _sha256_of_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -609,14 +636,14 @@ def export_bundle(*, source_root: Path, out_dir: Path,
 
     repo_schemas_dir = source_root / "schemas" / "benchmarks" / "v1"
 
-    # 1. Copy schemas into bundle.
+    # 1. Copy schemas into bundle (LF-normalized; see _copy_text_lf).
     for sname in SCHEMA_FILES:
         src = repo_schemas_dir / sname
         if not src.is_file():
             raise FileNotFoundError(
                 f"required source schema missing: {src}"
             )
-        shutil.copyfile(src, schemas_dir / sname)
+        _copy_text_lf(src, schemas_dir / sname)
 
     # 2. Sanitize and write artifacts; collect source SHAs.
     source_shas: dict[str, str] = {}
@@ -637,9 +664,9 @@ def export_bundle(*, source_root: Path, out_dir: Path,
             )
         sanitized = _sanitize(doc, include_raw=include_raw)
         out_artifact = artifacts_dir / entry["exported_filename"]
-        out_artifact.write_text(
+        _write_text_lf(
+            out_artifact,
             json.dumps(sanitized, indent=2, sort_keys=True, default=str),
-            encoding="utf-8",
         )
         artifact_index_entries.append({
             "artifact_id": entry["artifact_id"],
@@ -698,31 +725,24 @@ def export_bundle(*, source_root: Path, out_dir: Path,
     }
 
     # 5. Write all top-level JSON docs.
-    (out_dir / "benchmark_bundle_manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8",
-    )
-    (out_dir / "artifact_index.json").write_text(
-        json.dumps(artifact_index, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    (out_dir / "claim_evidence_ledger.json").write_text(
-        json.dumps(ledger, indent=2, sort_keys=True), encoding="utf-8",
-    )
-    (out_dir / "release_lineage.json").write_text(
-        json.dumps(lineage, indent=2, sort_keys=True), encoding="utf-8",
-    )
+    _write_text_lf(out_dir / "benchmark_bundle_manifest.json",
+                      json.dumps(manifest, indent=2, sort_keys=True))
+    _write_text_lf(out_dir / "artifact_index.json",
+                      json.dumps(artifact_index, indent=2, sort_keys=True))
+    _write_text_lf(out_dir / "claim_evidence_ledger.json",
+                      json.dumps(ledger, indent=2, sort_keys=True))
+    _write_text_lf(out_dir / "release_lineage.json",
+                      json.dumps(lineage, indent=2, sort_keys=True))
 
     # 6. Render Markdown reports.
-    (reports_dir / "benchmark_bundle_index.md").write_text(
+    _write_text_lf(
+        reports_dir / "benchmark_bundle_index.md",
         _render_index_md(manifest=manifest, artifact_index=artifact_index),
-        encoding="utf-8",
     )
-    (reports_dir / "claim_evidence_ledger.md").write_text(
-        _render_ledger_md(ledger), encoding="utf-8",
-    )
-    (out_dir / "README.md").write_text(
-        _render_readme(manifest=manifest), encoding="utf-8",
-    )
+    _write_text_lf(reports_dir / "claim_evidence_ledger.md",
+                      _render_ledger_md(ledger))
+    _write_text_lf(out_dir / "README.md",
+                      _render_readme(manifest=manifest))
 
     # 7. Compute checksums of every file in the bundle.
     checksums_lines: list[str] = []
@@ -734,9 +754,8 @@ def export_bundle(*, source_root: Path, out_dir: Path,
         rel = path.relative_to(out_dir).as_posix()
         sha = _sha256_of_file(path)
         checksums_lines.append(f"{sha}  {rel}")
-    (out_dir / "checksums.sha256").write_text(
-        "\n".join(checksums_lines) + "\n", encoding="utf-8",
-    )
+    _write_text_lf(out_dir / "checksums.sha256",
+                      "\n".join(checksums_lines) + "\n")
 
     return manifest
 

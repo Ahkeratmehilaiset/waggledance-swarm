@@ -10,8 +10,8 @@
   "bundle_version": "phase18a.v1",
   "checksums_file": "checksums.sha256",
   "claim_count": 16,
-  "generated_at_utc": "2026-05-05T07:09:00Z",
-  "git_sha": "fe43f895c9e2296f0df2deccb2320fe4f5685fc4",
+  "generated_at_utc": "2026-05-05T13:54:19Z",
+  "git_sha": "2d32b9b2267d271508d689f94f4631e2965f3be2",
   "no_cloud_api_calls": true,
   "no_consciousness_claim": true,
   "no_cross_vendor_ranking_claim": true,
@@ -34,5 +34,5 @@
     "schemas/local_ollama_baseline.schema.json",
     "schemas/local_model_sweep.schema.json"
   ],
-  "source_branch": "phase18a/benchmark-externalization-schema"
+  "source_branch": "phase18b/gap-miner-feedback"
 }

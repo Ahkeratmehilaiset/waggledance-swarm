@@ -1,0 +1,7 @@
+# Phase 18B: keep Phase 18A benchmark evidence bundle byte-stable across
+# platforms so its SHA-256 checksums verify on a fresh Windows checkout
+# (default `core.autocrlf=true` would otherwise rewrite LF -> CRLF).
+schemas/benchmarks/v1/*.schema.json text eol=lf
+docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**/*.json text eol=lf
+docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**/*.md text eol=lf
+docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/checksums.sha256 text eol=lf

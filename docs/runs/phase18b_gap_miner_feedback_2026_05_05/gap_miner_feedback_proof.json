@@ -1,0 +1,904 @@
+{
+  "allowlist_unchanged": true,
+  "allowlisted_candidates_total": 6,
+  "benchmark_version": "phase18b.v1",
+  "builder_handoff_quarantined_total": 1,
+  "builder_jobs_delta": 0,
+  "candidates": [
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "154e99e6e8c230ed",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_00_00",
+        "phase17b/track_A/missed_00_01",
+        "phase17b/track_A/missed_extra_00"
+      ],
+      "family_kind": "scalar_unit_conversion",
+      "feature_dict": {
+        "input_unit": "km",
+        "output_unit": "miles",
+        "rule": "1 km = 0.621371 miles"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_solver_for_unit_pair"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_00_00",
+          "sig_allow_00_01",
+          "sig_allow_00_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": null,
+      "risk_label": "low_risk",
+      "signal_count": 3,
+      "verdict": "ALLOWLISTED_SOLVER_SPEC"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "affb3e81ededf350",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_01_00",
+        "phase17b/track_A/missed_01_01",
+        "phase17b/track_A/missed_extra_01"
+      ],
+      "family_kind": "lookup_table",
+      "feature_dict": {
+        "example_key": "tin",
+        "table_name": "chemical_symbols"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_lookup_table_solver"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_01_00",
+          "sig_allow_01_01",
+          "sig_allow_01_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": null,
+      "risk_label": "low_risk",
+      "signal_count": 3,
+      "verdict": "ALLOWLISTED_SOLVER_SPEC"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "df8967a3d288be07",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_02_00",
+        "phase17b/track_A/missed_02_01",
+        "phase17b/track_A/missed_extra_02"
+      ],
+      "family_kind": "threshold_rule",
+      "feature_dict": {
+        "example_value": 37,
+        "rule": "above_or_below",
+        "threshold": 30
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_threshold_solver_for_value"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_02_00",
+          "sig_allow_02_01",
+          "sig_allow_02_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": null,
+      "risk_label": "low_risk",
+      "signal_count": 3,
+      "verdict": "ALLOWLISTED_SOLVER_SPEC"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "cc1a87367301deb5",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_03_00",
+        "phase17b/track_A/missed_03_01",
+        "phase17b/track_A/missed_extra_03"
+      ],
+      "family_kind": "interval_bucket_classifier",
+      "feature_dict": {
+        "buckets": "[0,10),[10,20),[20,30)",
+        "example_value": 17
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_bucket_classifier_solver"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_03_00",
+          "sig_allow_03_01",
+          "sig_allow_03_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": null,
+      "risk_label": "low_risk",
+      "signal_count": 3,
+      "verdict": "ALLOWLISTED_SOLVER_SPEC"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "926ece2941dd8f37",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_04_00",
+        "phase17b/track_A/missed_04_01",
+        "phase17b/track_A/missed_extra_04"
+      ],
+      "family_kind": "linear_arithmetic",
+      "feature_dict": {
+        "example_inputs": {
+          "a": 14,
+          "b": 9
+        },
+        "operator": "add"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_arithmetic_solver_for_op"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_04_00",
+          "sig_allow_04_01",
+          "sig_allow_04_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": null,
+      "risk_label": "low_risk",
+      "signal_count": 3,
+      "verdict": "ALLOWLISTED_SOLVER_SPEC"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "1599768241387bc9",
+      "confidence": 0.78,
+      "evidence_refs": [
+        "phase17b/track_A/missed_05_00",
+        "phase17b/track_A/missed_05_01"
+      ],
+      "family_kind": "bounded_interpolation",
+      "feature_dict": {
+        "endpoints": "(0,0)->(10,100)",
+        "example_x": 3
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_interpolation_solver"
+        ],
+        "signal_count": 2,
+        "signal_ids": [
+          "sig_allow_05_00",
+          "sig_allow_05_01"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": null,
+      "risk_label": "low_risk",
+      "signal_count": 2,
+      "verdict": "ALLOWLISTED_SOLVER_SPEC"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "154e99e6e8c230ed",
+      "confidence": 0.78,
+      "evidence_refs": [
+        "phase17b/track_A/missed_dup_00",
+        "phase17b/track_A/missed_dup_01"
+      ],
+      "family_kind": "scalar_unit_conversion",
+      "feature_dict": {
+        "input_unit": "km",
+        "output_unit": "miles",
+        "rule": "1 km = 0.621371 miles"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_solver_for_unit_pair"
+        ],
+        "signal_count": 2,
+        "signal_ids": [
+          "sig_dup_00",
+          "sig_dup_01"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": "candidate_id=154e99e6e8c230ed already emitted this run",
+      "risk_label": "low_risk",
+      "signal_count": 2,
+      "verdict": "DUPLICATE_SUPPRESSED"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "a83a5dbbdd7948de",
+      "confidence": 0.4,
+      "evidence_refs": [
+        "phase17b/track_C/missed_insuf_00"
+      ],
+      "family_kind": "scalar_unit_conversion",
+      "feature_dict": {
+        "input_unit": "lb",
+        "output_unit": "kg",
+        "rule": "1 lb = 0.453592 kg"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_solver_for_unit_pair"
+        ],
+        "signal_count": 1,
+        "signal_ids": [
+          "sig_insuf_00_00"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": "signal_count=1 or confidence=0.400 below thresholds",
+      "risk_label": "low_risk",
+      "signal_count": 1,
+      "verdict": "INSUFFICIENT_EVIDENCE"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "bc030d2ec48018b9",
+      "confidence": 0.4,
+      "evidence_refs": [
+        "phase17b/track_C/missed_insuf_01"
+      ],
+      "family_kind": "lookup_table",
+      "feature_dict": {
+        "example_key": "luxembourg",
+        "table_name": "country_capitals"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_lookup_table_solver"
+        ],
+        "signal_count": 1,
+        "signal_ids": [
+          "sig_insuf_01_00"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": "signal_count=1 or confidence=0.400 below thresholds",
+      "risk_label": "low_risk",
+      "signal_count": 1,
+      "verdict": "INSUFFICIENT_EVIDENCE"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "b1d77a8dba2719eb",
+      "confidence": 0.4,
+      "evidence_refs": [
+        "phase17b/track_C/missed_insuf_02"
+      ],
+      "family_kind": "linear_arithmetic",
+      "feature_dict": {
+        "example_inputs": {
+          "a": 81,
+          "b": 9
+        },
+        "operator": "div"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_arithmetic_solver_for_op"
+        ],
+        "signal_count": 1,
+        "signal_ids": [
+          "sig_insuf_02_00"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": "signal_count=1 or confidence=0.400 below thresholds",
+      "risk_label": "low_risk",
+      "signal_count": 1,
+      "verdict": "INSUFFICIENT_EVIDENCE"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "af51fb9e59ec18a2",
+      "confidence": 0.62,
+      "evidence_refs": [
+        "phase17b/track_D/missed_oof_00_00",
+        "phase17b/track_D/missed_oof_00_01"
+      ],
+      "family_kind": "free_form_summarization",
+      "feature_dict": {
+        "task": "summarize_paragraph"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_low_risk_solver_family_match"
+        ],
+        "signal_count": 2,
+        "signal_ids": [
+          "sig_oof_00_00",
+          "sig_oof_00_01"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": "family_kind='free_form_summarization' not in six-family allowlist",
+      "risk_label": "low_risk",
+      "signal_count": 2,
+      "verdict": "OUT_OF_FAMILY_REJECTED"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "5e95b51c527f7823",
+      "confidence": 0.62,
+      "evidence_refs": [
+        "phase17b/track_D/missed_oof_01_00",
+        "phase17b/track_D/missed_oof_01_01"
+      ],
+      "family_kind": "multi_step_reasoning",
+      "feature_dict": {
+        "task": "chain_of_thought_arithmetic"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_low_risk_solver_family_match"
+        ],
+        "signal_count": 2,
+        "signal_ids": [
+          "sig_oof_01_00",
+          "sig_oof_01_01"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": "family_kind='multi_step_reasoning' not in six-family allowlist",
+      "risk_label": "low_risk",
+      "signal_count": 2,
+      "verdict": "OUT_OF_FAMILY_REJECTED"
+    },
+    {
+      "builder_handoff_payload": null,
+      "candidate_id": "188cccfb5b589f0e",
+      "confidence": 0.85,
+      "evidence_refs": [
+        "phase17b/track_E/missed_hr_00",
+        "phase17b/track_E/missed_hr_01"
+      ],
+      "family_kind": "scalar_unit_conversion",
+      "feature_dict": {
+        "high_risk_marker": "navigation_critical",
+        "input_unit": "rad",
+        "output_unit": "deg",
+        "rule": "1 rad = 57.2958 deg"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "high_risk_navigation_path"
+        ],
+        "signal_count": 2,
+        "signal_ids": [
+          "sig_high_risk_00",
+          "sig_high_risk_01"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": "risk_label=high_risk; six-family low-risk allowlist policy",
+      "risk_label": "high_risk",
+      "signal_count": 2,
+      "verdict": "HIGH_RISK_REJECTED"
+    },
+    {
+      "builder_handoff_payload": {
+        "handoff_id": "04e6735e3cc29b98",
+        "next_step_for_operator": "review the payload manually; if a low-risk family port is feasible, author the spec by hand and submit through the existing Phase 9 14-stage promotion ladder",
+        "no_auto_promotion": true,
+        "no_builder_call_in_proof": true,
+        "no_cloud_api": true,
+        "no_provider_call": true,
+        "promotion_allowed": false,
+        "quarantined_payload": {
+          "evidence_refs": [
+            "phase17b/track_F/handoff_00",
+            "phase17b/track_F/handoff_01"
+          ],
+          "feature_dict": {
+            "context": "operator_initiated_review",
+            "handoff_kind": "free_form_authoring_request"
+          },
+          "miss_reasons": [
+            "operator_explicitly_routed_to_builder"
+          ],
+          "raw_queries": [
+            "Author a custom solver for X.",
+            "Author a custom solver for X."
+          ],
+          "signal_ids": [
+            "sig_builder_00",
+            "sig_builder_01"
+          ]
+        },
+        "reason": "out_of_six_family_allowlist_but_not_high_risk"
+      },
+      "candidate_id": "04e6735e3cc29b98",
+      "confidence": 0.9,
+      "evidence_refs": [
+        "phase17b/track_F/handoff_00",
+        "phase17b/track_F/handoff_01"
+      ],
+      "family_kind": "builder_handoff",
+      "feature_dict": {
+        "context": "operator_initiated_review",
+        "handoff_kind": "free_form_authoring_request"
+      },
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "operator_explicitly_routed_to_builder"
+        ],
+        "signal_count": 2,
+        "signal_ids": [
+          "sig_builder_00",
+          "sig_builder_01"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "rejection_reason": "out_of_six_family_allowlist_but_not_high_risk",
+      "risk_label": "low_risk",
+      "signal_count": 2,
+      "verdict": "BUILDER_HANDOFF_QUARANTINED"
+    }
+  ],
+  "candidates_total": 14,
+  "capability_lookup_status": "NOT_RUN_OUT_OF_PHASE18B_SCOPE",
+  "config_snapshot": {
+    "enable_builder_handoff_quarantine": true,
+    "high_risk_block": true,
+    "min_confidence": 0.55,
+    "min_signals_for_candidate": 2,
+    "suppress_duplicates": true
+  },
+  "counters": {
+    "ALLOWLISTED_SOLVER_SPEC": 6,
+    "BUILDER_HANDOFF_QUARANTINED": 1,
+    "DUPLICATE_SUPPRESSED": 1,
+    "HIGH_RISK_REJECTED": 1,
+    "INSUFFICIENT_EVIDENCE": 3,
+    "OUT_OF_FAMILY_REJECTED": 2,
+    "candidates_total": 14,
+    "signals_total": 30
+  },
+  "duplicates_suppressed_total": 1,
+  "exact_api_blocker": "Phase 18B is fixture-driven and does not wire RuntimeQueryRouter live. Wiring is a follow-up integration sprint.",
+  "finished_utc": "2026-05-05T14:05:57Z",
+  "fixture_size": 30,
+  "forbidden_claims_absent": true,
+  "forbidden_substring_hits": {
+    "json_hits": [],
+    "md_hits": []
+  },
+  "git_sha": "2d32b9b2267d271508d689f94f4631e2965f3be2",
+  "high_risk_rejected_total": 1,
+  "insufficient_evidence_total": 3,
+  "is_synthetic_fixture": true,
+  "no_cloud_api_calls": true,
+  "no_cross_vendor_ranking_claim": true,
+  "no_human_approval": true,
+  "no_live_builder_execution": true,
+  "no_model_pull_or_download": true,
+  "no_raw_intelligence_superiority_claim": true,
+  "no_stage2_flip": true,
+  "out_of_family_rejected_total": 2,
+  "phase": "phase18b_gap_miner_feedback",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "promoted_or_registered_solver_total": 0,
+  "provider_jobs_delta": 0,
+  "python_version": "3.13.7",
+  "release_gate_pass": true,
+  "release_gates": {
+    "allowlist_unchanged": true,
+    "allowlisted_at_least_6": true,
+    "builder_delta_zero": true,
+    "builder_handoff_at_least_1": true,
+    "duplicates_at_least_1": true,
+    "forbidden_claims_absent": true,
+    "high_risk_at_least_1": true,
+    "insufficient_evidence_at_least_3": true,
+    "no_human_approval": true,
+    "no_stage2_flip": true,
+    "out_of_family_at_least_2": true,
+    "provider_delta_zero": true,
+    "signals_at_least_30": true,
+    "solver_specs_at_least_6": true
+  },
+  "signals_total": 30,
+  "solver_specs": [
+    {
+      "candidate_id": "154e99e6e8c230ed",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_00_00",
+        "phase17b/track_A/missed_00_01",
+        "phase17b/track_A/missed_extra_00"
+      ],
+      "expected_artifact_type": "deterministic_low_risk_solver",
+      "family_kind": "scalar_unit_conversion",
+      "feature_dict": {
+        "input_unit": "km",
+        "output_unit": "miles",
+        "rule": "1 km = 0.621371 miles"
+      },
+      "promotion_allowed": true,
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_solver_for_unit_pair"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_00_00",
+          "sig_allow_00_01",
+          "sig_allow_00_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "risk_label": "low_risk",
+      "spec_id": "154e99e6e8c230ed",
+      "training_examples": [
+        {
+          "expected_output_kind": "number",
+          "inputs": {
+            "value": 1.0
+          },
+          "rule_hint": "1 km = 0.621371 miles"
+        }
+      ]
+    },
+    {
+      "candidate_id": "affb3e81ededf350",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_01_00",
+        "phase17b/track_A/missed_01_01",
+        "phase17b/track_A/missed_extra_01"
+      ],
+      "expected_artifact_type": "deterministic_low_risk_solver",
+      "family_kind": "lookup_table",
+      "feature_dict": {
+        "example_key": "tin",
+        "table_name": "chemical_symbols"
+      },
+      "promotion_allowed": true,
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_lookup_table_solver"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_01_00",
+          "sig_allow_01_01",
+          "sig_allow_01_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "risk_label": "low_risk",
+      "spec_id": "affb3e81ededf350",
+      "training_examples": [
+        {
+          "expected_output_kind": "string",
+          "inputs": {
+            "key": "tin"
+          },
+          "table_hint": "chemical_symbols"
+        }
+      ]
+    },
+    {
+      "candidate_id": "df8967a3d288be07",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_02_00",
+        "phase17b/track_A/missed_02_01",
+        "phase17b/track_A/missed_extra_02"
+      ],
+      "expected_artifact_type": "deterministic_low_risk_solver",
+      "family_kind": "threshold_rule",
+      "feature_dict": {
+        "example_value": 37,
+        "rule": "above_or_below",
+        "threshold": 30
+      },
+      "promotion_allowed": true,
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_threshold_solver_for_value"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_02_00",
+          "sig_allow_02_01",
+          "sig_allow_02_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "risk_label": "low_risk",
+      "spec_id": "df8967a3d288be07",
+      "training_examples": [
+        {
+          "expected_output_kind": "boolean_or_label",
+          "inputs": {
+            "value": 37
+          },
+          "threshold_hint": 30
+        }
+      ]
+    },
+    {
+      "candidate_id": "cc1a87367301deb5",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_03_00",
+        "phase17b/track_A/missed_03_01",
+        "phase17b/track_A/missed_extra_03"
+      ],
+      "expected_artifact_type": "deterministic_low_risk_solver",
+      "family_kind": "interval_bucket_classifier",
+      "feature_dict": {
+        "buckets": "[0,10),[10,20),[20,30)",
+        "example_value": 17
+      },
+      "promotion_allowed": true,
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_bucket_classifier_solver"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_03_00",
+          "sig_allow_03_01",
+          "sig_allow_03_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "risk_label": "low_risk",
+      "spec_id": "cc1a87367301deb5",
+      "training_examples": [
+        {
+          "buckets_hint": "[0,10),[10,20),[20,30)",
+          "expected_output_kind": "bucket_label",
+          "inputs": {
+            "value": 17
+          }
+        }
+      ]
+    },
+    {
+      "candidate_id": "926ece2941dd8f37",
+      "confidence": 0.8,
+      "evidence_refs": [
+        "phase17b/track_A/missed_04_00",
+        "phase17b/track_A/missed_04_01",
+        "phase17b/track_A/missed_extra_04"
+      ],
+      "expected_artifact_type": "deterministic_low_risk_solver",
+      "family_kind": "linear_arithmetic",
+      "feature_dict": {
+        "example_inputs": {
+          "a": 14,
+          "b": 9
+        },
+        "operator": "add"
+      },
+      "promotion_allowed": true,
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_arithmetic_solver_for_op"
+        ],
+        "signal_count": 3,
+        "signal_ids": [
+          "sig_allow_04_00",
+          "sig_allow_04_01",
+          "sig_allow_04_extra"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "risk_label": "low_risk",
+      "spec_id": "926ece2941dd8f37",
+      "training_examples": [
+        {
+          "expected_output_kind": "number",
+          "inputs": {
+            "a": 14,
+            "b": 9
+          },
+          "operator_hint": "add"
+        }
+      ]
+    },
+    {
+      "candidate_id": "1599768241387bc9",
+      "confidence": 0.78,
+      "evidence_refs": [
+        "phase17b/track_A/missed_05_00",
+        "phase17b/track_A/missed_05_01"
+      ],
+      "expected_artifact_type": "deterministic_low_risk_solver",
+      "family_kind": "bounded_interpolation",
+      "feature_dict": {
+        "endpoints": "(0,0)->(10,100)",
+        "example_x": 3
+      },
+      "promotion_allowed": true,
+      "provenance": {
+        "config_snapshot": {
+          "enable_builder_handoff_quarantine": true,
+          "high_risk_block": true,
+          "min_confidence": 0.55,
+          "min_signals_for_candidate": 2,
+          "suppress_duplicates": true
+        },
+        "miss_reasons": [
+          "no_interpolation_solver"
+        ],
+        "signal_count": 2,
+        "signal_ids": [
+          "sig_allow_05_00",
+          "sig_allow_05_01"
+        ],
+        "source": "phase18b_gap_mining"
+      },
+      "risk_label": "low_risk",
+      "spec_id": "1599768241387bc9",
+      "training_examples": [
+        {
+          "endpoints_hint": "(0,0)->(10,100)",
+          "expected_output_kind": "number",
+          "inputs": {
+            "x": 3
+          }
+        }
+      ]
+    }
+  ],
+  "solver_specs_total": 6,
+  "started_utc": "2026-05-05T14:05:57Z"
+}

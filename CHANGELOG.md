@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Phase 18B — Runtime Gap Miner + Solver Feedback Loop / v3.10.1-gap-miner-feedback-alpha CANDIDATE] — 2026-05-05
+## [Phase 18B — Runtime Gap Miner + Solver Feedback Loop / v3.10.1-gap-miner-feedback-alpha PRERELEASE] — 2026-05-05
 
-Branch: `phase18b/gap-miner-feedback`. Capability-extension sprint on top of v3.10.0-benchmark-schema-alpha. **Outcome (candidate):** PRERELEASE `v3.10.1-gap-miner-feedback-alpha` — to be tagged from the Phase 18B PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 / v3.10.0 alphas all remain unchanged.
+Branch: `phase18b/gap-miner-feedback`. Capability-extension sprint on top of v3.10.0-benchmark-schema-alpha. **Outcome: PRERELEASE `v3.10.1-gap-miner-feedback-alpha` published 2026-05-05T14:32:46Z**. PR #81 squash-merged at 2026-05-05T14:31:28Z (merge commit `b408b14a`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 / v3.10.0 alphas all remain unchanged.
 
 ### Added (production code)
 

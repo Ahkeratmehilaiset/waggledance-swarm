@@ -119,6 +119,11 @@ The p95 is dominated by two cold-token-emission outliers (prompt 0 at 5.06 s for
 | `v3.8.0` | stable release | **Latest** |
 | `v3.9.0-producer-fabric-alpha` | Phase 17A producer fabric + 10k scale | Pre-release |
 | `v3.9.1-local-efficiency-benchmark-alpha` | Phase 17B local efficiency benchmark harness | Pre-release |
-| `v3.9.2-local-ollama-baseline-alpha` | Phase 17C local Ollama baseline (Track F MEASURED) | Pre-release (candidate) |
+| `v3.9.2-local-ollama-baseline-alpha` | Phase 17C local Ollama baseline (Track F MEASURED, one model) | Pre-release |
+| `v3.9.3-local-model-sweep-alpha` | Phase 17D local Ollama panel + repeatability (this PR's candidate) | Pre-release (candidate) |
 
 Phase 17C does not modify any earlier tag. v3.8.0 remains GitHub Latest.
+
+## Phase 17D successor
+
+Phase 17D extends this single-model baseline to a panel of N already-installed local models with R repeats per model. See `docs/benchmarks/LOCAL_OLLAMA_MODEL_SWEEP_2026.md` for the panel report and `tools/run_phase17d_local_model_sweep.py` for the harness.

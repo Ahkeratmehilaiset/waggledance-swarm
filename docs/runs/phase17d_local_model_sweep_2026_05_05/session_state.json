@@ -1,0 +1,88 @@
+{
+  "phase": "phase17d",
+  "phase_name": "Local Ollama Multi-Model Sweep + Repeatability",
+  "started_utc": "2026-05-05T00:00:00Z",
+  "session_id": "phase17d_local_model_sweep_2026_05_05",
+  "branch": "phase17d/local-model-sweep",
+  "worktree_path": "C:/Python/project2-phase17d-local-model-sweep",
+  "base_origin_main_sha": "4f8a9ea7774a9f4c862c8342dcc69ef714386b8f",
+  "base_origin_main_subject": "docs(phase17c): post-release docs update for v3.9.2-local-ollama-baseline-alpha (#76)",
+  "model_session": "claude-opus-4-7",
+  "fallback_events": [],
+  "operator_decision": "B_full_autonomy_phase17d",
+  "host": {
+    "platform": "Windows-11-10.0.22631-SP0",
+    "python_version": "3.13.7",
+    "shell": "Git Bash via PowerShell"
+  },
+  "preconditions": {
+    "v3_8_0_still_github_latest": true,
+    "v3_8_0_target_sha": "824176ebf2a6b8debed41982090a125cbe2ddad1",
+    "v3_8_0_isPrerelease": false,
+    "v3_9_0_producer_fabric_alpha_target_sha": "c726995c816ee4c09e031c2190c3de6592e82879",
+    "v3_9_0_producer_fabric_alpha_isPrerelease": true,
+    "v3_9_1_local_efficiency_benchmark_alpha_target_sha": "f4d0a4a4152ca74e98a8d7f7161c233075bf4111",
+    "v3_9_1_local_efficiency_benchmark_alpha_isPrerelease": true,
+    "v3_9_2_local_ollama_baseline_alpha_target_sha": "db5d7db1ecb9ae6f17293f0bf7261f4c9d40e91c",
+    "v3_9_2_local_ollama_baseline_alpha_isPrerelease": true
+  },
+  "ollama": {
+    "command_present": true,
+    "command_path": "/c/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama",
+    "version": "0.22.1",
+    "models_installed_count": 22,
+    "models_running_count": 0,
+    "no_pull_no_download_invariant": true,
+    "no_cloud_api_calls_invariant": true,
+    "candidate_models_for_sweep": [
+      {"name": "gemma4:e4b", "id": "c6eb396dbd59", "size_gb": 9.6, "rank": 1},
+      {"name": "gemma3:4b", "id": "a2af6cc3eb7f", "size_gb": 3.3, "rank": 2},
+      {"name": "llama3.2:3b", "id": "a80c4f17acd5", "size_gb": 2.0, "rank": 3},
+      {"name": "phi4-mini:latest", "id": "78fad5d182a7", "size_gb": 2.5, "rank": 4},
+      {"name": "qwen2.5:7b", "id": "845dbda0ea48", "size_gb": 4.7, "rank": 5}
+    ],
+    "deferred_too_large_by_default": [
+      {"name": "gemma4:26b", "id": "5571076f3d70", "size_gb": 17.0,
+       "reason": "size > 10 GB; opt-in only via explicit --ollama-model"},
+      {"name": "qwen2.5:32b", "id": "9f13ba1299af", "size_gb": 19.0,
+       "reason": "size > 10 GB; opt-in only via explicit --ollama-model"},
+      {"name": "osoderholm/poro:latest", "id": "2d5ab8ec7548", "size_gb": 20.0,
+       "reason": "size > 10 GB; opt-in only via explicit --ollama-model"}
+    ]
+  },
+  "scope_invariants": {
+    "no_stable_release_in_phase17d": true,
+    "no_stage2_atomic_flip": true,
+    "no_human_approval_collected": true,
+    "no_allowlist_widening": true,
+    "no_consciousness_claim": true,
+    "no_beats_all_competitors_claim": true,
+    "no_cross_vendor_ranking": true,
+    "no_raw_intelligence_superiority_claim": true,
+    "phase8_5_branches_read_only": true,
+    "v3_8_0_must_remain_github_latest": true,
+    "no_modification_of_v3_8_0_tag": true,
+    "no_modification_of_v3_9_0_producer_fabric_alpha_tag": true,
+    "no_modification_of_v3_9_1_local_efficiency_benchmark_alpha_tag": true,
+    "no_modification_of_v3_9_2_local_ollama_baseline_alpha_tag": true,
+    "no_model_pull_or_download": true,
+    "no_cloud_api_calls": true,
+    "current_state_md_not_edited_manually": true
+  },
+  "tag_under_consideration": "v3.9.3-local-model-sweep-alpha",
+  "release_kind_under_consideration": "PRERELEASE only (isPrerelease=true)",
+  "tasks": [
+    {"id": "P17D-0", "name": "Baseline + worktree + Ollama check", "status": "in_progress"},
+    {"id": "P17D-1", "name": "benchmark_design.md (BEFORE coding)", "status": "pending"},
+    {"id": "P17D-2", "name": "Implement run_phase17d_local_model_sweep.py + tests", "status": "pending"},
+    {"id": "P17D-3", "name": "Run host benchmark (>=2 models, 3 repeats, 30 prompts)", "status": "pending"},
+    {"id": "P17D-4", "name": "WaggleDance carry-forward + Docker --network none", "status": "pending"},
+    {"id": "P17D-5", "name": "Update docs", "status": "pending"},
+    {"id": "P17D-6", "name": "Targeted tests", "status": "pending"},
+    {"id": "P17D-7", "name": "Release decision A or B", "status": "pending"},
+    {"id": "P17D-8", "name": "Commit/push/PR + autonomous merge", "status": "pending"},
+    {"id": "P17D-9", "name": "Post-merge verification", "status": "pending"},
+    {"id": "P17D-10", "name": "Tag v3.9.3 PRERELEASE (only if all gates green)", "status": "pending"},
+    {"id": "P17D-11", "name": "Post-release docs PR + final report", "status": "pending"}
+  ]
+}

@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Phase 18A — Benchmark Externalization + Schema Hardening / v3.10.0-benchmark-schema-alpha CANDIDATE] — 2026-05-05
+## [Phase 18A — Benchmark Externalization + Schema Hardening / v3.10.0-benchmark-schema-alpha PRERELEASE] — 2026-05-05
 
-Branch: `phase18a/benchmark-externalization-schema`. Benchmark externalization + schema hardening sprint on top of v3.9.3-local-model-sweep-alpha. **Outcome (candidate):** PRERELEASE `v3.10.0-benchmark-schema-alpha` — to be tagged from the Phase 18A PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 alphas all remain unchanged.
+Branch: `phase18a/benchmark-externalization-schema`. Benchmark externalization + schema hardening sprint on top of v3.9.3-local-model-sweep-alpha. **Outcome: PRERELEASE `v3.10.0-benchmark-schema-alpha` published 2026-05-05T07:20:31Z**. PR #79 squash-merged at 2026-05-05T07:19:21Z (merge commit `4554b24a`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 alphas all remain unchanged.
 
 ### Added (production code)
 

@@ -3,8 +3,8 @@
 **Bundle name:** phase18a_benchmark_externalization
 **Bundle version:** phase18a.v1
 **Schema version:** benchmarks.v1
-**Generated UTC:** 2026-05-05T13:54:19Z
-**Git SHA:** 2d32b9b2267d271508d689f94f4631e2965f3be2
+**Generated UTC:** 2026-05-05T14:16:23Z
+**Git SHA:** 4cb7cc254ec2fcde8f6289f577c31a1570e0837d
 **Source branch:** phase18b/gap-miner-feedback
 **Release candidate:** v3.10.0-benchmark-schema-alpha
 

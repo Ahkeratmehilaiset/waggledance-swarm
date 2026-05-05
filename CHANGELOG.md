@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Phase 18C — Mined Solver Runtime Dispatch Integration / v3.10.2-mined-solver-dispatch-alpha CANDIDATE] — 2026-05-05
+## [Phase 18C — Mined Solver Runtime Dispatch Integration / v3.10.2-mined-solver-dispatch-alpha PRERELEASE] — 2026-05-05
 
-Branch: `phase18c/mined-solver-runtime-dispatch`. Live-runtime integration sprint on top of v3.10.1-gap-miner-feedback-alpha. **Outcome (candidate):** PRERELEASE `v3.10.2-mined-solver-dispatch-alpha` — to be tagged from the Phase 18C PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 / v3.10.0 / v3.10.1 alphas all remain unchanged.
+Branch: `phase18c/mined-solver-runtime-dispatch`. Live-runtime integration sprint on top of v3.10.1-gap-miner-feedback-alpha. **Outcome: PRERELEASE `v3.10.2-mined-solver-dispatch-alpha` published 2026-05-05T18:44:19Z**. PR #83 squash-merged at 2026-05-05T18:42:11Z (merge commit `e9aa1de1`); annotated tag pushed at the merge SHA; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 / v3.10.0 / v3.10.1 alphas all remain unchanged. v3.8.0 remains GitHub Latest.
 
 Phase 18C closes the explicit Phase 18B gap (`capability_lookup_status = NOT_RUN_OUT_OF_PHASE18B_SCOPE`) by registering Phase 18B mined low-risk solver specs into the real `ControlPlaneDB` and dispatching them through the real `LowRiskSolverDispatcher.dispatch_by_features()` capability-aware path.
 

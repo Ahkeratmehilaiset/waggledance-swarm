@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/benchmarks/v1/release_lineage.schema.json",
+  "title": "Phase 18A release lineage",
+  "description": "Records the stable Latest release, four prior prereleases, and the Phase 18A candidate prerelease. The validator asserts the stable Latest is v3.8.0 and that the prereleases include v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 alpha tags with their canonical SHAs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "stable_latest", "prereleases", "candidate"],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["benchmarks.v1"]},
+    "stable_latest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "target_sha", "isPrerelease", "is_github_latest", "publishedAt"],
+      "properties": {
+        "tag": {"type": "string", "enum": ["v3.8.0"]},
+        "target_sha": {"type": "string", "enum": ["824176ebf2a6b8debed41982090a125cbe2ddad1"]},
+        "isPrerelease": {"type": "boolean", "enum": [false]},
+        "is_github_latest": {"type": "boolean", "enum": [true]},
+        "publishedAt": {"type": "string"}
+      }
+    },
+    "prereleases": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tag", "target_sha", "isPrerelease", "publishedAt"],
+        "properties": {
+          "tag": {"type": "string"},
+          "target_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "isPrerelease": {"type": "boolean", "enum": [true]},
+          "publishedAt": {"type": "string"}
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "expected_isPrerelease", "expected_is_github_latest"],
+      "properties": {
+        "tag": {"type": "string", "enum": ["v3.10.0-benchmark-schema-alpha"]},
+        "expected_isPrerelease": {"type": "boolean", "enum": [true]},
+        "expected_is_github_latest": {"type": "boolean", "enum": [false]}
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/benchmarks/v1/local_efficiency.schema.json",
+  "title": "Phase 17B local efficiency benchmark (sanitized)",
+  "description": "Schema for the sanitized Phase 17B aggregator JSON. The aggregator wraps Phase 11-17A canonical proofs as scenarios A-E and emits per-track metrics. Optional Track F (Ollama) and Track G (external competitor slots) are documented but constrained.",
+  "type": "object",
+  "required": [
+    "phase",
+    "benchmark_version",
+    "schema_version",
+    "git_sha",
+    "tracks",
+    "scenarios",
+    "claim_labels",
+    "summary",
+    "provider_jobs_delta",
+    "builder_jobs_delta",
+    "release_gate_pass",
+    "no_consciousness_claim",
+    "no_beats_all_competitors_claim",
+    "no_cloud_api_calls_this_session",
+    "no_pull_or_download_this_session",
+    "forbidden_claims_absent"
+  ],
+  "properties": {
+    "phase": {"type": "string", "enum": ["phase17b_local_efficiency_benchmark"]},
+    "benchmark_version": {"type": "string", "enum": ["phase17b.v1"]},
+    "schema_version": {"type": "integer"},
+    "git_sha": {"type": "string"},
+    "tracks": {"type": "object"},
+    "scenarios": {"type": "object"},
+    "claim_labels": {"type": "object"},
+    "summary": {"type": "object"},
+    "provider_jobs_delta": {"type": "integer", "enum": [0]},
+    "builder_jobs_delta": {"type": "integer", "enum": [0]},
+    "release_gate_pass": {"type": "boolean", "enum": [true]},
+    "no_consciousness_claim": {"type": "boolean", "enum": [true]},
+    "no_beats_all_competitors_claim": {"type": "boolean", "enum": [true]},
+    "no_cloud_api_calls_this_session": {"type": "boolean", "enum": [true]},
+    "no_pull_or_download_this_session": {"type": "boolean", "enum": [true]},
+    "forbidden_claims_absent": {"type": "boolean", "enum": [true]}
+  }
+}

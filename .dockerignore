@@ -50,6 +50,16 @@ docs/
 !tools/run_phase17b_local_efficiency_benchmark.py
 !tools/run_phase17c_local_ollama_baseline.py
 !tools/run_phase17d_local_model_sweep.py
+# Phase 18A carve-outs: exporter + stdlib-only validator + JSON Schemas +
+# benchmark tests + the three Phase 17B/17C/17D source JSONs that the
+# exporter ingests. Markdown siblings remain excluded.
+!tools/run_phase18a_benchmark_externalization.py
+!tools/validate_phase18a_benchmark_bundle.py
+!schemas/
+!tests/benchmarks/
+!docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json
+!docs/runs/phase17c_local_ollama_baseline_2026_05_04/phase17c_local_ollama_baseline.json
+!docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json
 !tests/__init__.py
 !tests/conftest.py
 !tests/autonomy_growth/

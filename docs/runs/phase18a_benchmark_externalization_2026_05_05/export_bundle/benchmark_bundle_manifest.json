@@ -1,0 +1,38 @@
+{
+  "artifact_count": 3,
+  "artifacts_listed": [
+    "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+    "artifacts/phase17c_local_ollama_baseline.sanitized.json",
+    "artifacts/phase17d_local_model_sweep.sanitized.json"
+  ],
+  "builder_jobs_delta": 0,
+  "bundle_name": "phase18a_benchmark_externalization",
+  "bundle_version": "phase18a.v1",
+  "checksums_file": "checksums.sha256",
+  "claim_count": 16,
+  "generated_at_utc": "2026-05-05T07:09:00Z",
+  "git_sha": "fe43f895c9e2296f0df2deccb2320fe4f5685fc4",
+  "no_cloud_api_calls": true,
+  "no_consciousness_claim": true,
+  "no_cross_vendor_ranking_claim": true,
+  "no_model_pull_or_download": true,
+  "no_raw_intelligence_superiority_claim": true,
+  "provider_jobs_delta": 0,
+  "release_candidate": "v3.10.0-benchmark-schema-alpha",
+  "release_gate_pass": true,
+  "reports_listed": [
+    "reports/benchmark_bundle_index.md",
+    "reports/claim_evidence_ledger.md"
+  ],
+  "schema_version": "benchmarks.v1",
+  "schemas_listed": [
+    "schemas/benchmark_bundle.schema.json",
+    "schemas/artifact_index.schema.json",
+    "schemas/claim_evidence_ledger.schema.json",
+    "schemas/release_lineage.schema.json",
+    "schemas/local_efficiency.schema.json",
+    "schemas/local_ollama_baseline.schema.json",
+    "schemas/local_model_sweep.schema.json"
+  ],
+  "source_branch": "phase18a/benchmark-externalization-schema"
+}

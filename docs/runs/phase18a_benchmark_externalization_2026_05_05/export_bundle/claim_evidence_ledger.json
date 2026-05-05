@@ -1,0 +1,278 @@
+{
+  "allowed_labels": [
+    "PROVEN",
+    "MEASURED",
+    "INFERRED",
+    "NOT_CLAIMED",
+    "NOT_RUN",
+    "MEASURED_LOCAL_ONLY",
+    "MEASURED_LOCAL_OLLAMA_ONE_MODEL",
+    "MEASURED_LOCAL_OLLAMA_PANEL"
+  ],
+  "claims": [
+    {
+      "caveat": "Phase 17B+17C+17D each ran the WaggleDance carry-forward path inside Docker --network none and exited 0; the docker_phase*_verification.md files in each session folder contain the exact commands and image manifests.",
+      "claim_id": "docker_offline_proven",
+      "evidence_artifact": "phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_field_pointer": "/release_gate_pass",
+      "evidence_path_in_bundle": "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "PROVEN",
+      "not_claimed": [
+        "raw_intelligence_superiority",
+        "cross_vendor_ranking"
+      ],
+      "reproduce_command": "docker build -t waggledance:phase17d -f Dockerfile . && docker run --rm --network none waggledance:phase17d python tools/run_phase17c_local_ollama_baseline.py --skip-ollama --allow-no-ollama-track --output /tmp/phase17d.json",
+      "scope": "WaggleDance autonomy + producer fabric + 10k synthetic capability lookup paths.",
+      "source_path_in_repo": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json",
+      "source_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005",
+      "title": "Docker --network none end-to-end proof"
+    },
+    {
+      "caveat": "Phase 17A ported 14 stdlib-only producer modules from origin/phase8.5/hive-proposes; orchestrator emits 68 IR objects across 6 kinds; 6/6 negative cases pass.",
+      "claim_id": "producer_fabric_proven",
+      "evidence_artifact": "phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_field_pointer": "/tracks/E_producer_fabric/raw/passed",
+      "evidence_path_in_bundle": "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "PROVEN",
+      "not_claimed": [
+        "raw_intelligence_superiority"
+      ],
+      "reproduce_command": "python tools/run_phase17a_producer_fabric_proof.py --out-dir <out>",
+      "scope": "Offline producer fabric; deterministic fixtures.",
+      "source_path_in_repo": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json",
+      "source_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005",
+      "title": "Producer fabric (curiosity / self-model / dream / hive) end-to-end offline"
+    },
+    {
+      "caveat": "Synthetic descriptors only (is_synthetic_scale=true, not_canonical_corpus=true); the 10000 number is a measured ceiling on this 24-CPU host, not an architectural maximum.",
+      "claim_id": "capability_lookup_10k_measured",
+      "evidence_artifact": "phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_field_pointer": "/tracks/B_capability_lookup_10k/raw/lookup_capability_hits_total",
+      "evidence_path_in_bundle": "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_value_type": "integer",
+      "label": "MEASURED",
+      "not_claimed": [
+        "raw_intelligence_superiority",
+        "cross_vendor_ranking"
+      ],
+      "reproduce_command": "python tools/run_solver_scale_proof.py --descriptors 10000 --lookup-pass-count 1000",
+      "scope": "WaggleDance RuntimeQueryRouter.route() capability-aware path; six-family allowlist.",
+      "source_path_in_repo": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json",
+      "source_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005",
+      "title": "Capability-lookup at 10000 synthetic descriptors"
+    },
+    {
+      "caveat": "Phase 17A grew the corpus from 104 to 128 (+4 per family, no allowlist widening).",
+      "claim_id": "canonical_corpus_128_proven",
+      "evidence_artifact": "phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_field_pointer": "/tracks/A_solver_hot_path/raw/corpus_total",
+      "evidence_path_in_bundle": "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_value_type": "integer",
+      "label": "PROVEN",
+      "not_claimed": [],
+      "reproduce_command": "python tools/run_automatic_runtime_hint_proof.py",
+      "scope": "Six-family low-risk allowlist seed corpus.",
+      "source_path_in_repo": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json",
+      "source_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005",
+      "title": "Canonical seed corpus = 128 (Phase 17A expansion)"
+    },
+    {
+      "caveat": "Tracks A-E pass-through; Track F SKIPPED by default; Track G external competitor slots NOT_RUN by policy.",
+      "claim_id": "local_efficiency_harness_proven",
+      "evidence_artifact": "phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_field_pointer": "/release_gate_pass",
+      "evidence_path_in_bundle": "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "PROVEN",
+      "not_claimed": [
+        "raw_intelligence_superiority"
+      ],
+      "reproduce_command": "python tools/run_phase17b_local_efficiency_benchmark.py --skip-ollama",
+      "scope": "WaggleDance core proofs aggregated into a single artifact.",
+      "source_path_in_repo": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json",
+      "source_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005",
+      "title": "Phase 17B local efficiency benchmark harness aggregates Phase 11-17A canonical proofs"
+    },
+    {
+      "caveat": "30 deterministic prompts against one already-installed local model; no pull/download; no cloud API. Median 0.7866 s, p95 17.5538 s on this host. Single-model only; no ranking implied.",
+      "claim_id": "local_ollama_one_model_measured",
+      "evidence_artifact": "phase17c_local_ollama_baseline.sanitized.json",
+      "evidence_field_pointer": "/ollama_track/prompts_succeeded",
+      "evidence_path_in_bundle": "artifacts/phase17c_local_ollama_baseline.sanitized.json",
+      "evidence_value_type": "integer",
+      "label": "MEASURED_LOCAL_OLLAMA_ONE_MODEL",
+      "not_claimed": [
+        "raw_intelligence_superiority",
+        "cross_vendor_ranking"
+      ],
+      "reproduce_command": "python tools/run_phase17c_local_ollama_baseline.py",
+      "scope": "Local Ollama daemon, gemma4:e4b, ollama 0.22.1, 30 prompts.",
+      "source_path_in_repo": "docs/runs/phase17c_local_ollama_baseline_2026_05_04/phase17c_local_ollama_baseline.json",
+      "source_sha256": "8b41e0617953a1c2d44cf406454ff6e6c4bb75882618d4ca577892dcbec2fefd",
+      "title": "Phase 17C single-model Ollama baseline (gemma4:e4b)"
+    },
+    {
+      "caveat": "4 already-installed local models; 3 repeats; 30 prompts each = 360 prompts. CoV 0.002-0.029. Reported in selection order; no rank ordering is implied.",
+      "claim_id": "local_ollama_panel_measured",
+      "evidence_artifact": "phase17d_local_model_sweep.sanitized.json",
+      "evidence_field_pointer": "/panel_summary/models_measured_count",
+      "evidence_path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "evidence_value_type": "integer",
+      "label": "MEASURED_LOCAL_OLLAMA_PANEL",
+      "not_claimed": [
+        "raw_intelligence_superiority",
+        "cross_vendor_ranking"
+      ],
+      "reproduce_command": "python tools/run_phase17d_local_model_sweep.py",
+      "scope": "Local Ollama daemon, 4-model panel, 360 prompts on this host.",
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "title": "Phase 17D 4-model Ollama panel + repeatability (3 repeats per model)"
+    },
+    {
+      "caveat": "WaggleDance does not assert raw-intelligence superiority over any frontier MoE model. No paired benchmark was run.",
+      "claim_id": "raw_intelligence_vs_frontier_moe_not_claimed",
+      "evidence_artifact": "phase17d_local_model_sweep.sanitized.json",
+      "evidence_field_pointer": "/claim_labels/raw_intelligence_vs_frontier_moe",
+      "evidence_path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "evidence_value_type": "string",
+      "label": "NOT_CLAIMED",
+      "not_claimed": [
+        "raw_intelligence_superiority"
+      ],
+      "reproduce_command": "(no measurement; this is an explicit non-claim)",
+      "scope": "Public competitive comparison.",
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "title": "Raw intelligence vs frontier MoE - explicit non-claim"
+    },
+    {
+      "caveat": "Per-model numbers are reported in selection order, side-by-side, never with rank ordering. Different models have different parameter counts, training data, and quantizations; the numbers are not directly comparable as 'which model is better'.",
+      "claim_id": "cross_vendor_ranking_not_claimed",
+      "evidence_artifact": "phase17d_local_model_sweep.sanitized.json",
+      "evidence_field_pointer": "/claim_labels/no_cross_vendor_ranking",
+      "evidence_path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "NOT_CLAIMED",
+      "not_claimed": [
+        "cross_vendor_ranking"
+      ],
+      "reproduce_command": "(no measurement; this is an explicit non-claim)",
+      "scope": "Phase 17D 4-model panel.",
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "title": "Cross-vendor ranking among local models - explicit non-claim"
+    },
+    {
+      "caveat": "Phase 17D harness scans every Ollama subprocess stdout AND stderr for pull/download substrings and aborts on a hit. Phase 17C harness never invokes ollama pull. The 22 already-installed models pre-existed at session start.",
+      "claim_id": "no_model_pull_or_download",
+      "evidence_artifact": "phase17d_local_model_sweep.sanitized.json",
+      "evidence_field_pointer": "/no_model_pull_or_download",
+      "evidence_path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "PROVEN",
+      "not_claimed": [],
+      "reproduce_command": "python tools/run_phase17d_local_model_sweep.py",
+      "scope": "All three benchmark harnesses.",
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "title": "No Ollama model was pulled or downloaded across Phase 17B/17C/17D"
+    },
+    {
+      "caveat": "Anthropic, OpenAI, Gemini, llama.cpp, vLLM, mistral-rs slots remain documented NOT_RUN. Docker --network none disables all external network reachability for the carry-forward proofs.",
+      "claim_id": "no_cloud_api_calls",
+      "evidence_artifact": "phase17d_local_model_sweep.sanitized.json",
+      "evidence_field_pointer": "/no_cloud_api_calls",
+      "evidence_path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "PROVEN",
+      "not_claimed": [],
+      "reproduce_command": "see Phase 17B Track G slots in the local efficiency benchmark JSON",
+      "scope": "All three benchmark harnesses.",
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "title": "No cloud LLM API was contacted across Phase 17B/17C/17D"
+    },
+    {
+      "caveat": "Master prompt rule 13 invariant. WaggleDance inner loop did not invoke a provider lane or builder lane during any of the measured proofs.",
+      "claim_id": "provider_builder_delta_zero",
+      "evidence_artifact": "phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_field_pointer": "/provider_jobs_delta",
+      "evidence_path_in_bundle": "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_value_type": "integer",
+      "label": "PROVEN",
+      "not_claimed": [],
+      "reproduce_command": "any Phase 11-17A proof produces JSON with provider_jobs_delta_during_proof and builder_jobs_delta_during_proof",
+      "scope": "WaggleDance autonomy hot-path.",
+      "source_path_in_repo": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json",
+      "source_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005",
+      "title": "provider_jobs_delta = builder_jobs_delta = 0 across all WaggleDance proof paths"
+    },
+    {
+      "caveat": "Phase 17B/17C/17D session_state.json invariants all explicitly forbid Stage-2 flip; Phase 18A session_state.json carries the same invariant.",
+      "claim_id": "no_stage2_flip",
+      "evidence_artifact": "phase17d_local_model_sweep.sanitized.json",
+      "evidence_field_pointer": "/release_gates/no_allowlist_widened",
+      "evidence_path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "PROVEN",
+      "not_claimed": [],
+      "reproduce_command": "(documented in session_state.json invariants under each docs/runs/phase1*_*/)",
+      "scope": "Per-session honesty invariants.",
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "title": "Stage-2 atomic flip not executed in benchmark sessions"
+    },
+    {
+      "caveat": "Approval is one-shot and belongs only to the actual cutover execution session; benchmark sessions never collect.",
+      "claim_id": "no_human_approval_collected",
+      "evidence_artifact": "phase17d_local_model_sweep.sanitized.json",
+      "evidence_field_pointer": "/release_gates/no_allowlist_widened",
+      "evidence_path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "PROVEN",
+      "not_claimed": [],
+      "reproduce_command": "(documented in session_state.json invariants under each docs/runs/phase1*_*/)",
+      "scope": "Per-session honesty invariants.",
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "title": "HUMAN_APPROVAL.yaml not collected in benchmark sessions"
+    },
+    {
+      "caveat": "scalar_unit_conversion, lookup_table, threshold_rule, interval_bucket_classifier, linear_arithmetic, bounded_interpolation - exactly six.",
+      "claim_id": "no_allowlist_widening",
+      "evidence_artifact": "phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_field_pointer": "/claim_labels/autonomous_learning_six_family",
+      "evidence_path_in_bundle": "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+      "evidence_value_type": "string",
+      "label": "PROVEN",
+      "not_claimed": [],
+      "reproduce_command": "python tools/run_phase17b_local_efficiency_benchmark.py --skip-ollama",
+      "scope": "WaggleDance autonomy growth allowlist.",
+      "source_path_in_repo": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json",
+      "source_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005",
+      "title": "Six-family low-risk allowlist remains unchanged"
+    },
+    {
+      "caveat": "The bundle's existence at this path with checksums.sha256 and schemas/ + artifacts/ + reports/ subdirectories, validated by tools/validate_phase18a_benchmark_bundle.py exiting 0, is the proof.",
+      "claim_id": "benchmark_artifact_externalization",
+      "evidence_artifact": "phase17d_local_model_sweep.sanitized.json",
+      "evidence_field_pointer": "/release_gate_pass",
+      "evidence_path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "evidence_value_type": "boolean",
+      "label": "PROVEN",
+      "not_claimed": [
+        "raw_intelligence_superiority",
+        "cross_vendor_ranking"
+      ],
+      "reproduce_command": "python tools/run_phase18a_benchmark_externalization.py --out-dir <dir> --validate",
+      "scope": "Phase 18A bundle export + validation contract.",
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "title": "This bundle: schemas, manifest, ledger, lineage, checksums, sanitized artifacts"
+    }
+  ],
+  "schema_version": "benchmarks.v1"
+}

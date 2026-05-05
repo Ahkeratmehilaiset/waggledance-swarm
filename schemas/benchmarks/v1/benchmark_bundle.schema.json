@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/benchmarks/v1/benchmark_bundle.schema.json",
+  "title": "Phase 18A benchmark bundle manifest",
+  "description": "Top-level manifest of a versioned, validated, offline-exportable WaggleDance evidence bundle. The manifest is the single entry point a reader uses to discover schemas, artifacts, claim ledger, release lineage, and checksums.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_name",
+    "bundle_version",
+    "schema_version",
+    "generated_at_utc",
+    "git_sha",
+    "source_branch",
+    "release_candidate",
+    "artifact_count",
+    "claim_count",
+    "checksums_file",
+    "release_gate_pass",
+    "provider_jobs_delta",
+    "builder_jobs_delta",
+    "no_model_pull_or_download",
+    "no_cloud_api_calls",
+    "no_raw_intelligence_superiority_claim",
+    "no_cross_vendor_ranking_claim",
+    "no_consciousness_claim",
+    "schemas_listed",
+    "artifacts_listed",
+    "reports_listed"
+  ],
+  "properties": {
+    "bundle_name": {"type": "string", "enum": ["phase18a_benchmark_externalization"]},
+    "bundle_version": {"type": "string", "enum": ["phase18a.v1"]},
+    "schema_version": {"type": "string", "enum": ["benchmarks.v1"]},
+    "generated_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "git_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_branch": {"type": "string"},
+    "release_candidate": {"type": "string", "enum": ["v3.10.0-benchmark-schema-alpha"]},
+    "artifact_count": {"type": "integer", "minimum": 1},
+    "claim_count": {"type": "integer", "minimum": 1},
+    "checksums_file": {"type": "string", "enum": ["checksums.sha256"]},
+    "release_gate_pass": {"type": "boolean", "enum": [true]},
+    "provider_jobs_delta": {"type": "integer", "enum": [0]},
+    "builder_jobs_delta": {"type": "integer", "enum": [0]},
+    "no_model_pull_or_download": {"type": "boolean", "enum": [true]},
+    "no_cloud_api_calls": {"type": "boolean", "enum": [true]},
+    "no_raw_intelligence_superiority_claim": {"type": "boolean", "enum": [true]},
+    "no_cross_vendor_ranking_claim": {"type": "boolean", "enum": [true]},
+    "no_consciousness_claim": {"type": "boolean", "enum": [true]},
+    "schemas_listed": {
+      "type": "array",
+      "minItems": 7,
+      "items": {"type": "string"}
+    },
+    "artifacts_listed": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string"}
+    },
+    "reports_listed": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"type": "string"}
+    }
+  }
+}

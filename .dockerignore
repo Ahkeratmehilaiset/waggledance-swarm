@@ -49,6 +49,7 @@ docs/
 !tools/run_solver_scale_proof.py
 !tools/run_phase17b_local_efficiency_benchmark.py
 !tools/run_phase17c_local_ollama_baseline.py
+!tools/run_phase17d_local_model_sweep.py
 !tests/__init__.py
 !tests/conftest.py
 !tests/autonomy_growth/

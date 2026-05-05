@@ -1,5 +1,60 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 17D — Local Ollama Multi-Model Sweep + Repeatability / v3.9.3-local-model-sweep-alpha CANDIDATE] — 2026-05-05
+
+Branch: `phase17d/local-model-sweep`. Measurement-quality sprint on top of v3.9.2-local-ollama-baseline-alpha. **Outcome (candidate):** PRERELEASE `v3.9.3-local-model-sweep-alpha` — to be tagged from the Phase 17D PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0-producer-fabric-alpha + v3.9.1-local-efficiency-benchmark-alpha + v3.9.2-local-ollama-baseline-alpha all remain unchanged.
+
+### Added (production code)
+
+* **`tools/run_phase17d_local_model_sweep.py`** (~470 LOC) — extends the Phase 17C single-model probe to a panel of N already-installed local models with R repeats per model. Imports the 30-prompt manifest, the bytes-mode UTF-8-replace decoder, the forbidden-vocabulary list, and the per-prompt subprocess runner directly from the Phase 17C module so the prompt set stays in one place.
+* **Pull/download abort gate** — every Ollama subprocess stdout AND stderr is scanned for case-insensitive substrings `pulling manifest`, `downloading`, `pulling`, `verifying sha256`, `writing manifest`. A hit aborts the harness with `release_gate_pass=false`, `no_pull_download_detected=false`, and refuses to emit a MEASURED claim for any model.
+* **Ranking-guard substring scrub** — adds 8 ranking substrings (`is faster than`, `is slower than`, `outperforms`, ` beats `, `ranks higher`, `ranked first`, `best of breed`, `better than`) to the forbidden-vocabulary list, so the rendered MD cannot accidentally imply cross-vendor ranking.
+* **Per-model + per-repeat statistics** — `latency_ms_min/p50/p95/p99/mean/stddev`, `coefficient_of_variation` (across the 3 per-repeat medians), `throughput_prompts_per_second`, `hash_chain_sha256` (chained SHA-256 of all stdouts), full `per_repeat[i].per_prompt[]` retained verbatim for re-windowing.
+* **Selection rule** — auto preference order: `gemma4:e4b`, `gemma3:4b`, `llama3.2:3b`, `phi4-mini:latest`, `qwen2.5:7b`. Models > 10 GB (`gemma4:26b`, `qwen2.5:32b`, `osoderholm/poro:latest`) deferred to `deferred_too_large_by_default[]` unless `--prefer-larger-models` is set or operator names them via `--models`.
+* **`tests/autonomy_growth/test_phase17d_local_model_sweep.py`** (13 tests) — fake-PATH ollama shim covering MEASURED-PANEL, NOT_AVAILABLE_NOT_RUN (with and without `--allow-no-ollama-track`), TOO_FEW_MODELS, PULL_DETECTED, FAILED-FOR-MODEL, ranking-substring injection, override-with-absent-model, `--repeat-count` semantics, and full release-gates subdict coverage.
+* **`docs/benchmarks/LOCAL_OLLAMA_MODEL_SWEEP_2026.md`** — Phase 17D benchmark report with measured numbers and explicit "what this measures / does NOT measure" sections, and explicit "no cross-vendor ranking is implied" disclaimer.
+* **`docs/runs/phase17d_local_model_sweep_2026_05_05/`** — full session folder with `session_state.json`, `baseline_verification.md`, `benchmark_design.md`, `phase17d_local_model_sweep.{json,md}`, `docker_phase17d_verification.md`, `release_decision.md`.
+
+### Changed
+
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** — anchor and axis J upgraded. Axis J's Ollama line moves from `MEASURED-LOCAL-OLLAMA-ONE-MODEL` to `MEASURED-LOCAL-OLLAMA-PANEL` with concrete numbers from the 4-model panel; raw-intelligence row remains `NOT CLAIMED`. Summary table mirrors the upgrade.
+* **`docs/benchmarks/LOCAL_OLLAMA_BASELINE_2026.md`** — Phase 17D successor pointer.
+* **`.dockerignore`** — extends Phase 16F + 17A + 17B + 17C carve-outs with `tools/run_phase17d_local_model_sweep.py`.
+
+### Behaviour (Phase 17D host run, this branch)
+
+Windows 11 Enterprise / 24-CPU host, ollama 0.22.1, 4 models × 3 repeats × 30 prompts = 360 prompts total. **All 360 prompts succeeded; 0 failures; 0 timeouts; 0 pull/download triggers.**
+
+| model | size | prompts ok | min ms | p50 ms | p95 ms | p99 ms | mean ms | stddev ms | CoV |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `gemma4:e4b` | 9.6 GB | 90/90 | 700.7 | 784.7 | 18328.7 | 20415.8 | 2661.2 | 4888.2 | 0.0285 |
+| `gemma3:4b` | 3.3 GB | 90/90 | 665.2 | 711.2 | 863.4 | 4777.1 | 776.0 | 427.9 | 0.0022 |
+| `llama3.2:3b` | 2.0 GB | 90/90 | 452.5 | 526.6 | 2958.5 | 4072.5 | 986.2 | 876.8 | 0.0038 |
+| `phi4-mini:latest` | 2.5 GB | 90/90 | 471.7 | 549.3 | 3411.2 | 6364.9 | 1038.7 | 1170.7 | 0.0140 |
+
+* p50 panel spread: 526.6 ms (`llama3.2:3b`) to 784.7 ms (`gemma4:e4b`). Reported in selection order; no rank ordering is implied.
+* CoV across the 3 per-repeat medians: 0.0022 (`gemma3:4b`) to 0.0285 (`gemma4:e4b`) — all far below the 0.30 noise threshold the design doc set as "stable" on this host.
+* `release_gate_pass = true`. `forbidden_claims_absent = true`. `provider_jobs_delta = builder_jobs_delta = 0`.
+* `no_model_pull_or_download = true`. `no_cloud_api_calls = true`.
+* Deferred (NOT exercised, present locally but > 10 GB): `gemma4:26b`, `qwen2.5:32b`, `osoderholm/poro:latest`.
+
+### Docker `--network none` (waggledance:phase17d)
+
+`docker build -t waggledance:phase17d -f Dockerfile .` builds on top of the v3.8.0 base. `docker run --rm --network none waggledance:phase17d python tools/run_phase17c_local_ollama_baseline.py --skip-ollama --allow-no-ollama-track ...` exits 0 with `release_gate_pass=true` and `ollama_baseline_status=NOT_AVAILABLE_NOT_RUN` — confirming the WaggleDance carry-forward path is offline-safe with the new image. The Phase 17D multi-model sweep itself targets the local Ollama daemon which runs OUTSIDE the container by design; the host run is the canonical record for the panel measurement.
+
+### Honesty contracts (re-asserted)
+
+* No model pull or download. No cloud API calls. No allowlist widening. No autonomy code change. No Stage-2 atomic flip. No HUMAN_APPROVAL collected. No stable-tagged release — at most a PRERELEASE.
+* No cross-vendor ranking. No raw-intelligence superiority claim.
+* `not_claimed = ["no_consciousness", "no_sentience", "no_human_like_mind", "no_beats_all_competitors", "no_world_best", "no_world_fastest", "no_raw_intelligence_superiority", "no_cross_vendor_ranking"]`.
+* Forbidden vocabulary substring scan over rendered MD: 0 hits, including the 8 new ranking-guard substrings.
+
+### What did NOT change in Phase 17D
+
+* No modification to `v3.8.0`, `v3.9.0-producer-fabric-alpha`, `v3.9.1-local-efficiency-benchmark-alpha`, or `v3.9.2-local-ollama-baseline-alpha` tags. v3.8.0 remains GitHub Latest.
+* No autonomy code, no allowlist, no canonical corpus size (still 128), no 10k synthetic-scale ceiling, no runtime entrypoint, no provider HTTP adapter.
+* No new high-risk variant. No HUMAN_APPROVAL collection. No Stage-2 atomic flip. No `phase8.5/*` branch touched.
+
 ## [Phase 17C — Local Ollama Baseline / v3.9.2-local-ollama-baseline-alpha PRERELEASE] — 2026-05-04
 
 Branch: `phase17c/local-ollama-baseline`. Benchmark-extension sprint on top of v3.9.1-local-efficiency-benchmark-alpha. **Outcome: PRERELEASE `v3.9.2-local-ollama-baseline-alpha` published 2026-05-04T22:26:28Z**. PR #75 squash-merged at 2026-05-04T22:25:23Z (merge commit `db5d7db1`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0-producer-fabric-alpha + v3.9.1-local-efficiency-benchmark-alpha all remain unchanged.

@@ -1,7 +1,9 @@
 # Current Status — WaggleDance AI
 
-**Updated:** 2026-05-05
+**Updated:** 2026-05-06
 **Stable version:** **v3.8.0 stable** (released 2026-05-04 from Phase 16F, PR #68 squash-merge `824176eb`). Remains GitHub Latest.
+**Most recent prerelease:** **v3.10.2-mined-solver-dispatch-alpha** (released 2026-05-05T18:44:19Z from PR #83 squash-merge `e9aa1de1`). Pre-release entry on GitHub.
+**In-flight (Phase 18D, docs-only, NO TAG):** docs-only reconciliation sprint on `phase18d/local-delta-docs`. Carries forward 1 release-audit doc (Phase 18C `final_report.md`) and 2 docstring/changelog updates (`tools/waggle_backup.py` v9.2 + `tools/waggle_restore.py` v3.7.8.0). No new prerelease tag is created. Carry-forward gates green: phase10 14/14, Phase 18A 15/15 + bundle validator PASS, Phase 18B + Phase 18C proofs PASS, Docker `--network none` 3/3 exit 0. v3.8.0 remains GitHub Latest. v3.10.2 remains the most recent prerelease.
 **Released prerelease (Phase 17A):** **v3.9.0-producer-fabric-alpha** (released 2026-05-04T18:32:47Z from PR #71 squash-merge `c726995c`). Pre-release entry on GitHub.
 **Released prerelease (Phase 17B):** **v3.9.1-local-efficiency-benchmark-alpha** (released 2026-05-04T20:59:09Z from PR #73 squash-merge `f4d0a4a4`). Pre-release entry on GitHub. Adds a reproducible benchmark harness that aggregates the existing Phase 11–17A canonical proofs into a single artifact; documents NOT_RUN slots for six external competitors; introduces an optional Ollama latency probe (default skipped for `--network none` safety). Raw intelligence vs frontier MoE is **NOT CLAIMED**.
 **Released prerelease (Phase 17C):** **v3.9.2-local-ollama-baseline-alpha** (released 2026-05-04T22:26:28Z from PR #75 squash-merge `db5d7db1`). Pre-release entry on GitHub. Upgrades the Phase 17B optional Ollama track from `SKIPPED_OPTIONAL` to a `MEASURED` 30-prompt deterministic baseline against one already-installed local model (`gemma4:e4b`, ollama 0.22.1).

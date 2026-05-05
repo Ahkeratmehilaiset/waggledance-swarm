@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-WaggleDance Backup & Test Tool v9.1
+WaggleDance Backup & Test Tool v9.2
 =====================================
 Runs full component tests, generates AI report, creates backup.
 Supports 76-agent profile system (gadget/cottage/home/factory).
 Supports incremental backups (only changed files since last backup).
+v9.2: Updated for v3.7.8-docker-gate-alpha (Phase 16D — Bandit B324
+      cleanup completed; corpus 104; v3.8.0 stable blocked solely by
+      Docker end-to-end verification, see docs/release/RELEASE_READINESS.md).
 v9.1: Added 400h gauntlet harness (harness_helpers.py, ui_gauntlet_400h.py).
 v9.0: Updated for v3.5.7 release (Phase 7 hologram/news/wire fixes).
 v8.1: Updated for v3.5 architecture (production-ready, 4898 pytest tests).

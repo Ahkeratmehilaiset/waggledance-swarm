@@ -1,5 +1,46 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 18A — Benchmark Externalization + Schema Hardening / v3.10.0-benchmark-schema-alpha CANDIDATE] — 2026-05-05
+
+Branch: `phase18a/benchmark-externalization-schema`. Benchmark externalization + schema hardening sprint on top of v3.9.3-local-model-sweep-alpha. **Outcome (candidate):** PRERELEASE `v3.10.0-benchmark-schema-alpha` — to be tagged from the Phase 18A PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 alphas all remain unchanged.
+
+### Added (production code)
+
+* **`schemas/benchmarks/v1/`** — 7 JSON Schema files (Draft 2020-12): `benchmark_bundle.schema.json`, `artifact_index.schema.json`, `claim_evidence_ledger.schema.json`, `release_lineage.schema.json`, `local_efficiency.schema.json`, `local_ollama_baseline.schema.json`, `local_model_sweep.schema.json`.
+* **`tools/validate_phase18a_benchmark_bundle.py`** (~330 LOC) — stdlib-only validator (no `jsonschema` pip dependency). Implements a Draft 2020-12 subset (`type`, `required`, `enum`, `pattern`, `properties`, `items`, `additionalProperties`, `minimum`, `minItems`) plus RFC 6901 JSON Pointer resolution, SHA-256 checksum verification, sanitization scrub for `stdout`/`stderr` leakage, forbidden-vocabulary substring scan, and release-lineage hard-checks against `v3.8.0` Latest + the 4 v3.9.x alpha SHAs.
+* **`tools/run_phase18a_benchmark_externalization.py`** (~470 LOC) — exporter that ingests Phase 17B/17C/17D committed JSONs, sanitizes them (per-prompt `stdout`/`stderr` → redaction stub), copies the 7 schemas into the bundle, writes manifest + artifact index + claim ledger + release lineage + checksums + Markdown reports. `--include-raw` is opt-in for human inspection and disables `release_gate_pass`.
+* **16-claim machine-readable ledger** baked into the exporter. Includes the explicit `NOT_CLAIMED` entries for raw-intelligence superiority and cross-vendor ranking.
+* **`tests/benchmarks/test_phase18a_benchmark_externalization.py`** (15 tests) — happy path + adversarial (missing file, checksum mismatch, unknown label, unresolved evidence, raw stdout leakage, ranking-substring injection, provider-delta drift) + determinism check.
+* **`docs/benchmarks/BENCHMARK_ARTIFACT_SCHEMA.md`**, **`BENCHMARK_EVIDENCE_BUNDLE_2026.md`**, **`CLAIM_EVIDENCE_LEDGER.md`** — public-facing docs.
+* **`docs/runs/phase18a_benchmark_externalization_2026_05_05/`** — full session folder with session_state.json, baseline_verification.md, benchmark_externalization_design.md, export_bundle/, export_verification.md, docker_phase18a_verification.md, release_decision.md.
+
+### Changed
+
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** — anchor updated. New axis O "Benchmark artifact externalization / schema validation" labelled **PROVEN this session**. Raw-intelligence row remains `NOT CLAIMED`.
+* **`.dockerignore`** — extends carve-outs with `tools/run_phase18a_benchmark_externalization.py`, `tools/validate_phase18a_benchmark_bundle.py`, `schemas/`, `tests/benchmarks/`.
+
+### Behaviour (Phase 18A host run, this branch)
+
+* **Bundle exported:** 3 sanitized artifacts, 7 schemas, 16 claims, 2 Markdown reports, manifest, artifact index, release lineage, README, checksums file.
+* **`release_gate_pass = true`**. `forbidden_claims_absent = true`. `provider_jobs_delta = builder_jobs_delta = 0`. `no_model_pull_or_download = true`. `no_cloud_api_calls = true`. `no_raw_intelligence_superiority_claim = true`. `no_cross_vendor_ranking_claim = true`. `no_consciousness_claim = true`.
+* **Tests:** 15 / 15 PASS in 0.53 s.
+
+### Docker `--network none` (waggledance:phase18a)
+
+`docker build -t waggledance:phase18a -f Dockerfile .` builds on the v3.8.0 base. Combined export + validate in `--network none` exits 0. No Ollama, no network, no cloud reachability — Phase 18A's contract is a pure file-shuffle + checksum + validation exercise that proves the bundle is reproducible offline.
+
+### Honesty contracts (re-asserted)
+
+* No model pull or download. No cloud API calls. No allowlist widening. No autonomy code change. No Stage-2 atomic flip. No HUMAN_APPROVAL collected. No stable-tagged release.
+* No cross-vendor ranking. No raw-intelligence superiority claim.
+* No new measurements; Phase 18A re-exports existing committed Phase 17B/17C/17D evidence.
+* No new pip dependencies.
+
+### What did NOT change in Phase 18A
+
+* No modification to `v3.8.0`, `v3.9.0-producer-fabric-alpha`, `v3.9.1-local-efficiency-benchmark-alpha`, `v3.9.2-local-ollama-baseline-alpha`, or `v3.9.3-local-model-sweep-alpha` tags. v3.8.0 remains GitHub Latest.
+* No autonomy code, no allowlist, no canonical corpus size (still 128), no 10k-scale ceiling, no runtime entrypoint, no provider HTTP adapter, no `/api/autonomy/query` route.
+
 ## [Phase 17D — Local Ollama Multi-Model Sweep + Repeatability / v3.9.3-local-model-sweep-alpha PRERELEASE] — 2026-05-05
 
 Branch: `phase17d/local-model-sweep`. Measurement-quality sprint on top of v3.9.2-local-ollama-baseline-alpha. **Outcome: PRERELEASE `v3.9.3-local-model-sweep-alpha` published 2026-05-05T06:05:30Z**. PR #77 squash-merged at 2026-05-05T06:04:21Z (merge commit `d0704efe`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0-producer-fabric-alpha + v3.9.1-local-efficiency-benchmark-alpha + v3.9.2-local-ollama-baseline-alpha all remain unchanged.

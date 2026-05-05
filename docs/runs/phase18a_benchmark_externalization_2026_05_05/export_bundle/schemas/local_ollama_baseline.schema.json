@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/benchmarks/v1/local_ollama_baseline.schema.json",
+  "title": "Phase 17C local Ollama baseline (sanitized)",
+  "description": "Schema for the sanitized Phase 17C JSON. Single-model Ollama baseline against an already-installed local model. Per-prompt stdout/stderr fields must be redacted in the sanitized export.",
+  "type": "object",
+  "required": [
+    "benchmark_version",
+    "git_sha",
+    "selected_ollama_model",
+    "ollama_baseline_status",
+    "no_model_pull_or_download",
+    "no_cloud_api_calls",
+    "ollama_track",
+    "claim_labels",
+    "not_claimed",
+    "provider_jobs_delta",
+    "builder_jobs_delta",
+    "release_gate_pass",
+    "forbidden_claims_absent"
+  ],
+  "properties": {
+    "benchmark_version": {"type": "string", "enum": ["phase17c.v1"]},
+    "git_sha": {"type": "string"},
+    "selected_ollama_model": {"type": ["string", "null"]},
+    "ollama_baseline_status": {
+      "type": "string",
+      "enum": ["MEASURED", "NOT_AVAILABLE_NOT_RUN", "FAILED"]
+    },
+    "no_model_pull_or_download": {"type": "boolean", "enum": [true]},
+    "no_cloud_api_calls": {"type": "boolean", "enum": [true]},
+    "ollama_track": {
+      "type": "object",
+      "required": ["model", "prompt_count", "prompts_succeeded", "prompts_failed"],
+      "properties": {
+        "model": {"type": ["string", "null"]},
+        "model_id": {"type": ["string", "null"]},
+        "ollama_version": {"type": ["string", "null"]},
+        "prompt_count": {"type": "integer"},
+        "prompts_run": {"type": "integer"},
+        "prompts_succeeded": {"type": "integer"},
+        "prompts_failed": {"type": "integer"},
+        "median_latency_seconds": {"type": ["number", "null"]},
+        "p95_latency_seconds": {"type": ["number", "null"]},
+        "mean_latency_seconds": {"type": ["number", "null"]},
+        "total_seconds": {"type": ["number", "integer"]},
+        "hash_chain_sha256": {"type": ["string", "null"]},
+        "per_prompt": {"type": "array"}
+      }
+    },
+    "claim_labels": {"type": "object"},
+    "not_claimed": {"type": "array"},
+    "provider_jobs_delta": {"type": "integer", "enum": [0]},
+    "builder_jobs_delta": {"type": "integer", "enum": [0]},
+    "release_gate_pass": {"type": "boolean", "enum": [true]},
+    "forbidden_claims_absent": {"type": "boolean", "enum": [true]}
+  }
+}

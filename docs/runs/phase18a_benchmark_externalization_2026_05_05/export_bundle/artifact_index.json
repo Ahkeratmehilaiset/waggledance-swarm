@@ -1,0 +1,35 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": "phase17b_local_efficiency_benchmark",
+      "declared_schema": "local_efficiency.schema.json",
+      "exported_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005",
+      "path_in_bundle": "artifacts/phase17b_local_efficiency_benchmark.sanitized.json",
+      "phase": "phase17b",
+      "raw_fields_redacted": true,
+      "source_path_in_repo": "docs/runs/phase17b_local_efficiency_benchmark_2026_05_04/phase17b_local_efficiency_benchmark.json",
+      "source_sha256": "f6290d5949b4dfc1b6f48d498bb5eda51854718b5b90451b7021ae8b2920e005"
+    },
+    {
+      "artifact_id": "phase17c_local_ollama_baseline",
+      "declared_schema": "local_ollama_baseline.schema.json",
+      "exported_sha256": "8b41e0617953a1c2d44cf406454ff6e6c4bb75882618d4ca577892dcbec2fefd",
+      "path_in_bundle": "artifacts/phase17c_local_ollama_baseline.sanitized.json",
+      "phase": "phase17c",
+      "raw_fields_redacted": true,
+      "source_path_in_repo": "docs/runs/phase17c_local_ollama_baseline_2026_05_04/phase17c_local_ollama_baseline.json",
+      "source_sha256": "8b41e0617953a1c2d44cf406454ff6e6c4bb75882618d4ca577892dcbec2fefd"
+    },
+    {
+      "artifact_id": "phase17d_local_model_sweep",
+      "declared_schema": "local_model_sweep.schema.json",
+      "exported_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786",
+      "path_in_bundle": "artifacts/phase17d_local_model_sweep.sanitized.json",
+      "phase": "phase17d",
+      "raw_fields_redacted": true,
+      "source_path_in_repo": "docs/runs/phase17d_local_model_sweep_2026_05_05/phase17d_local_model_sweep.json",
+      "source_sha256": "6872f553f3567b116900852afd66d1d7d9cc920c20fb41ad83df4d45fe6e9786"
+    }
+  ],
+  "schema_version": "benchmarks.v1"
+}

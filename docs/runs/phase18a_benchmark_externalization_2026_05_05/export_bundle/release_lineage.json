@@ -1,0 +1,41 @@
+{
+  "candidate": {
+    "expected_isPrerelease": true,
+    "expected_is_github_latest": false,
+    "tag": "v3.10.0-benchmark-schema-alpha"
+  },
+  "prereleases": [
+    {
+      "isPrerelease": true,
+      "publishedAt": "2026-05-04T18:32:47Z",
+      "tag": "v3.9.0-producer-fabric-alpha",
+      "target_sha": "c726995c816ee4c09e031c2190c3de6592e82879"
+    },
+    {
+      "isPrerelease": true,
+      "publishedAt": "2026-05-04T20:59:09Z",
+      "tag": "v3.9.1-local-efficiency-benchmark-alpha",
+      "target_sha": "f4d0a4a4152ca74e98a8d7f7161c233075bf4111"
+    },
+    {
+      "isPrerelease": true,
+      "publishedAt": "2026-05-04T22:26:28Z",
+      "tag": "v3.9.2-local-ollama-baseline-alpha",
+      "target_sha": "db5d7db1ecb9ae6f17293f0bf7261f4c9d40e91c"
+    },
+    {
+      "isPrerelease": true,
+      "publishedAt": "2026-05-05T06:05:30Z",
+      "tag": "v3.9.3-local-model-sweep-alpha",
+      "target_sha": "d0704efe46be18d480ed425ff83b087cd36ef9bd"
+    }
+  ],
+  "schema_version": "benchmarks.v1",
+  "stable_latest": {
+    "isPrerelease": false,
+    "is_github_latest": true,
+    "publishedAt": "2026-05-04T07:13:27Z",
+    "tag": "v3.8.0",
+    "target_sha": "824176ebf2a6b8debed41982090a125cbe2ddad1"
+  }
+}

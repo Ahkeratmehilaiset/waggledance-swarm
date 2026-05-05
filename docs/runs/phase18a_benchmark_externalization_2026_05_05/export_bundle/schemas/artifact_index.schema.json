@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/benchmarks/v1/artifact_index.schema.json",
+  "title": "Phase 18A bundle artifact index",
+  "description": "Lists every sanitized artifact in the bundle along with its source path in the repo, its declared schema, and SHA-256 checksums of both the source and the sanitized export.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "artifacts"],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["benchmarks.v1"]},
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "phase",
+          "path_in_bundle",
+          "source_path_in_repo",
+          "source_sha256",
+          "exported_sha256",
+          "declared_schema",
+          "raw_fields_redacted"
+        ],
+        "properties": {
+          "artifact_id": {"type": "string"},
+          "phase": {"type": "string", "enum": ["phase17b", "phase17c", "phase17d"]},
+          "path_in_bundle": {"type": "string"},
+          "source_path_in_repo": {"type": "string"},
+          "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "exported_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "declared_schema": {"type": "string"},
+          "raw_fields_redacted": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

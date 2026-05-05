@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/benchmarks/v1/claim_evidence_ledger.schema.json",
+  "title": "Phase 18A claim evidence ledger",
+  "description": "Maps each WaggleDance claim to a label, an evidence artifact, a JSON Pointer into that artifact, a reproduce command, and explicit not_claimed disclaimers. The validator enforces that every claim's label is in the allowed enum and every evidence reference resolves.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "allowed_labels", "claims"],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["benchmarks.v1"]},
+    "allowed_labels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "PROVEN",
+          "MEASURED",
+          "INFERRED",
+          "NOT_CLAIMED",
+          "NOT_RUN",
+          "MEASURED_LOCAL_ONLY",
+          "MEASURED_LOCAL_OLLAMA_ONE_MODEL",
+          "MEASURED_LOCAL_OLLAMA_PANEL"
+        ]
+      }
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim_id",
+          "label",
+          "title",
+          "evidence_artifact",
+          "evidence_path_in_bundle",
+          "source_path_in_repo",
+          "source_sha256",
+          "evidence_field_pointer",
+          "evidence_value_type",
+          "caveat",
+          "reproduce_command",
+          "scope",
+          "not_claimed"
+        ],
+        "properties": {
+          "claim_id": {"type": "string"},
+          "label": {
+            "type": "string",
+            "enum": [
+              "PROVEN",
+              "MEASURED",
+              "INFERRED",
+              "NOT_CLAIMED",
+              "NOT_RUN",
+              "MEASURED_LOCAL_ONLY",
+              "MEASURED_LOCAL_OLLAMA_ONE_MODEL",
+              "MEASURED_LOCAL_OLLAMA_PANEL"
+            ]
+          },
+          "title": {"type": "string"},
+          "evidence_artifact": {"type": "string"},
+          "evidence_path_in_bundle": {"type": "string"},
+          "source_path_in_repo": {"type": "string"},
+          "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}|n_a$"},
+          "evidence_field_pointer": {"type": "string"},
+          "evidence_value_type": {"type": "string", "enum": ["integer", "number", "string", "boolean", "array", "object", "null", "n_a"]},
+          "caveat": {"type": "string"},
+          "reproduce_command": {"type": "string"},
+          "scope": {"type": "string"},
+          "not_claimed": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

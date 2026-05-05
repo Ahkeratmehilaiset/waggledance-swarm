@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/schemas/benchmarks/v1/local_model_sweep.schema.json",
+  "title": "Phase 17D local Ollama multi-model sweep (sanitized)",
+  "description": "Schema for the sanitized Phase 17D JSON. Panel of N already-installed local Ollama models with R repeats per model. Per-repeat per-prompt stdout/stderr fields must be redacted in the sanitized export. Includes the panel-level coefficient-of-variation across per-repeat medians.",
+  "type": "object",
+  "required": [
+    "benchmark_version",
+    "git_sha",
+    "selected_models",
+    "deferred_too_large_by_default",
+    "model_results",
+    "panel_summary",
+    "repeat_count",
+    "prompt_count",
+    "no_model_pull_or_download",
+    "no_cloud_api_calls",
+    "claim_labels",
+    "not_claimed",
+    "provider_jobs_delta",
+    "builder_jobs_delta",
+    "release_gate_pass",
+    "forbidden_claims_absent"
+  ],
+  "properties": {
+    "benchmark_version": {"type": "string", "enum": ["phase17d.v1"]},
+    "git_sha": {"type": "string"},
+    "selected_models": {"type": "array", "items": {"type": "string"}},
+    "deferred_too_large_by_default": {"type": "array", "items": {"type": "string"}},
+    "model_results": {"type": "object"},
+    "panel_summary": {"type": "object"},
+    "repeat_count": {"type": "integer"},
+    "prompt_count": {"type": "integer"},
+    "no_model_pull_or_download": {"type": "boolean", "enum": [true]},
+    "no_cloud_api_calls": {"type": "boolean", "enum": [true]},
+    "claim_labels": {"type": "object"},
+    "not_claimed": {"type": "array", "items": {"type": "string"}},
+    "provider_jobs_delta": {"type": "integer", "enum": [0]},
+    "builder_jobs_delta": {"type": "integer", "enum": [0]},
+    "release_gate_pass": {"type": "boolean", "enum": [true]},
+    "forbidden_claims_absent": {"type": "boolean", "enum": [true]}
+  }
+}

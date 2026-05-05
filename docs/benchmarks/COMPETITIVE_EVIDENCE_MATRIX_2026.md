@@ -1,10 +1,10 @@
 # Competitive Evidence Matrix — 2026-Q2
 
-**Status:** Phase 17A + Phase 17B + Phase 17C + Phase 17D snapshot, derived from this session's reproducible artifacts only.
+**Status:** Phase 17A + 17B + 17C + 17D + 18A snapshot, derived from this session's reproducible artifacts only.
 **Date:** 2026-05-05
-**Branch:** `phase17d/local-model-sweep` (Phase 17C is the previous tag at `db5d7db1`; Phase 17B at `f4d0a4a4`; Phase 17A on `main` at `c726995c`)
-**Anchor:** `v3.9.3-local-model-sweep-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest; v3.9.0-producer-fabric-alpha, v3.9.1-local-efficiency-benchmark-alpha, and v3.9.2-local-ollama-baseline-alpha remain the previous Pre-releases).
-**New evidence this PR (Phase 17D):** `tools/run_phase17d_local_model_sweep.py` extends the Phase 17C single-model probe to a panel of N already-installed local models with R repeats per model. Host run: 4 models × 3 repeats × 30 prompts = 360 / 360 prompts succeeded; coefficient of variation across per-repeat medians 0.002–0.029 (well under the 0.30 noise threshold the design doc set as "stable"); no model pull or download; no cloud API call. Axis J upgrades from `MEASURED-LOCAL-OLLAMA-ONE-MODEL` to `MEASURED-LOCAL-OLLAMA-PANEL`. Detailed run report: `docs/benchmarks/LOCAL_OLLAMA_MODEL_SWEEP_2026.md`.
+**Branch:** `phase18a/benchmark-externalization-schema` (Phase 17D is the previous tag at `d0704efe`; 17C at `db5d7db1`; 17B at `f4d0a4a4`; 17A on `main` at `c726995c`)
+**Anchor:** `v3.10.0-benchmark-schema-alpha` candidate (PRERELEASE only; v3.8.0 remains GitHub Latest; v3.9.0/v3.9.1/v3.9.2/v3.9.3 alphas remain the previous Pre-releases).
+**New evidence this PR (Phase 18A):** Phase 17B / 17C / 17D benchmark artifacts are now exportable as a versioned, validated, offline evidence bundle with 7 JSON Schemas, a 16-claim machine-readable ledger, release lineage hard-coded to v3.8.0 Latest, SHA-256 checksums, and a stdlib-only validator (no `jsonschema` pip dependency). New axis O: "Benchmark artifact externalization / schema validation" labelled **PROVEN this session**. Detailed run report: `docs/benchmarks/BENCHMARK_EVIDENCE_BUNDLE_2026.md` and `docs/benchmarks/CLAIM_EVIDENCE_LEDGER.md`.
 
 This is an **engineering** document. It does not market WaggleDance. It enumerates the comparison axes most often used to assess local-first cognitive runtimes, states one factual claim per axis, points to a reproducible artifact in this repo, and labels the claim with one of:
 
@@ -132,6 +132,14 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 * **Evidence:** `docs/architecture/HIGH_RISK_VARIANTS_DEFERRED.md`; Phase 17A producer-fabric proof negative cases assert HUMAN_APPROVAL collection in offline build/proof is rejected, Stage-2 atomic flip in build/proof is rejected, family outside the six-allowlist is rejected.
 * **Label:** **PROVEN** as a refusal contract; **NOT CLAIMED** that all conceivable risk modes are catalogued.
 
+### O. Benchmark artifact externalization / schema validation
+
+* **Claim:** Phase 17B / 17C / 17D benchmark artifacts are exportable as a versioned, machine-readable bundle with strict JSON Schemas, claim ledger, release lineage, SHA-256 checksums, and a stdlib-only validator.
+* **Evidence:** Phase 18A bundle at `docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/`. 7 schema files under `schemas/benchmarks/v1/`. Exporter at `tools/run_phase18a_benchmark_externalization.py`. Validator at `tools/validate_phase18a_benchmark_bundle.py` (no `jsonschema` pip dependency). 15-test unit suite at `tests/benchmarks/test_phase18a_benchmark_externalization.py` covering happy path + adversarial fixtures (missing file, checksum mismatch, unknown label, unresolved evidence, raw stdout leakage, ranking-substring injection, provider-delta drift). Docker `--network none` export + validate exits 0.
+* **Reproduce:** `python tools/run_phase18a_benchmark_externalization.py --validate` then `python tools/validate_phase18a_benchmark_bundle.py --bundle-dir docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle`.
+* **Label:** **PROVEN this session.**
+* **Strengthening path:** publish the bundle as a release asset on the v3.10.0-benchmark-schema-alpha GitHub release; add a CI job that re-runs `--validate` on every PR.
+
 ## Summary
 
 | Axis | Label |
@@ -150,6 +158,7 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 | L. Edge resource use | MEASURED (image size); INFERRED (Pi class) |
 | M. Autonomous learning lane | PROVEN within six-family allowlist |
 | N. High-risk safety gate | PROVEN as refusal contract |
+| O. Benchmark artifact externalization / schema validation | PROVEN this session (Phase 18A bundle + stdlib-only validator + 15 tests + Docker `--network none`) |
 
 ## What is NOT in this matrix (master prompt rule 16)
 

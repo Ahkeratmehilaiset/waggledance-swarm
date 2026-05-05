@@ -1,0 +1,509 @@
+{
+  "allowlist_unchanged": true,
+  "allowlisted_candidate_count": 6,
+  "base_main_sha": "0c5335f964fbab2a5f6c0cb74b7033ec8353b998",
+  "benchmark_version": "phase18c.v1",
+  "builder_handoff_quarantine_count": 1,
+  "builder_jobs_delta": 0,
+  "candidate_prerelease": "v3.10.2-mined-solver-dispatch-alpha",
+  "candidates_total": 14,
+  "claim_labels": {
+    "builder_handoff": "QUARANTINED-NOT-AUTOPROMOTED",
+    "consciousness": "NOT_CLAIMED",
+    "cross_vendor_ranking": "NOT_CLAIMED",
+    "high_risk_families": "NOT_CLAIMED",
+    "mined_solver_specs": "MEASURED-RUNTIME-DISPATCH-MINED-SOLVERS-SIX-FAMILY",
+    "raw_intelligence_vs_frontier_moe": "NOT_CLAIMED",
+    "runtime_gap_feedback": "PROVEN-WITH-RUNTIME-DISPATCH"
+  },
+  "config_snapshot": {
+    "enable_builder_handoff_quarantine": true,
+    "high_risk_block": true,
+    "min_confidence": 0.55,
+    "min_signals_for_candidate": 2,
+    "suppress_duplicates": true
+  },
+  "dispatch_case_count": 18,
+  "dispatch_failure_count": 0,
+  "dispatch_success_count": 18,
+  "duplicate_suppression_count": 1,
+  "families_covered": 6,
+  "finished_utc": "2026-05-05T18:05:24Z",
+  "fixture_size": 30,
+  "forbidden_claims_absent": true,
+  "forbidden_substring_hits": {
+    "json_hits": [],
+    "md_hits": []
+  },
+  "high_risk_rejected_total": 1,
+  "insufficient_evidence_total": 3,
+  "is_synthetic_fixture": true,
+  "no_cloud_api_calls": true,
+  "no_cross_vendor_ranking_claim": true,
+  "no_high_risk_autonomy": true,
+  "no_human_approval": true,
+  "no_live_builder_execution": true,
+  "no_model_pull_or_download": true,
+  "no_raw_intelligence_superiority_claim": true,
+  "no_stage2_flip": true,
+  "out_of_family_rejected_total": 2,
+  "per_dispatch_case": [
+    {
+      "actual_output": 6.21371,
+      "artifact_id": "phase18c-154e99e6e8c230ed",
+      "case_id": "phase18c-case-00",
+      "error": null,
+      "expected_output": 6.21371,
+      "family_kind": "scalar_unit_conversion",
+      "features": {
+        "input_unit": "km",
+        "output_unit": "miles",
+        "rule": "1 km = 0.621371 miles"
+      },
+      "inputs": {
+        "x": 10.0
+      },
+      "label": "10_km_to_miles",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 1,
+      "success": true
+    },
+    {
+      "actual_output": 0.0,
+      "artifact_id": "phase18c-154e99e6e8c230ed",
+      "case_id": "phase18c-case-01",
+      "error": null,
+      "expected_output": 0.0,
+      "family_kind": "scalar_unit_conversion",
+      "features": {
+        "input_unit": "km",
+        "output_unit": "miles",
+        "rule": "1 km = 0.621371 miles"
+      },
+      "inputs": {
+        "x": 0.0
+      },
+      "label": "0_km_to_miles",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 1,
+      "success": true
+    },
+    {
+      "actual_output": 62.137100000000004,
+      "artifact_id": "phase18c-154e99e6e8c230ed",
+      "case_id": "phase18c-case-02",
+      "error": null,
+      "expected_output": 62.1371,
+      "family_kind": "scalar_unit_conversion",
+      "features": {
+        "input_unit": "km",
+        "output_unit": "miles",
+        "rule": "1 km = 0.621371 miles"
+      },
+      "inputs": {
+        "x": 100.0
+      },
+      "label": "100_km_to_miles",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 1,
+      "success": true
+    },
+    {
+      "actual_output": "Sn",
+      "artifact_id": "phase18c-affb3e81ededf350",
+      "case_id": "phase18c-case-03",
+      "error": null,
+      "expected_output": "Sn",
+      "family_kind": "lookup_table",
+      "features": {
+        "example_key": "tin",
+        "table_name": "chemical_symbols"
+      },
+      "inputs": {
+        "key": "tin"
+      },
+      "label": "tin",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 2,
+      "success": true
+    },
+    {
+      "actual_output": "Au",
+      "artifact_id": "phase18c-affb3e81ededf350",
+      "case_id": "phase18c-case-04",
+      "error": null,
+      "expected_output": "Au",
+      "family_kind": "lookup_table",
+      "features": {
+        "example_key": "tin",
+        "table_name": "chemical_symbols"
+      },
+      "inputs": {
+        "key": "gold"
+      },
+      "label": "gold",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 2,
+      "success": true
+    },
+    {
+      "actual_output": "Fe",
+      "artifact_id": "phase18c-affb3e81ededf350",
+      "case_id": "phase18c-case-05",
+      "error": null,
+      "expected_output": "Fe",
+      "family_kind": "lookup_table",
+      "features": {
+        "example_key": "tin",
+        "table_name": "chemical_symbols"
+      },
+      "inputs": {
+        "key": "iron"
+      },
+      "label": "iron",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 2,
+      "success": true
+    },
+    {
+      "actual_output": "above",
+      "artifact_id": "phase18c-df8967a3d288be07",
+      "case_id": "phase18c-case-06",
+      "error": null,
+      "expected_output": "above",
+      "family_kind": "threshold_rule",
+      "features": {
+        "example_value": 37,
+        "rule": "above_or_below",
+        "threshold": 30
+      },
+      "inputs": {
+        "x": 37
+      },
+      "label": "37_above_30",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 3,
+      "success": true
+    },
+    {
+      "actual_output": "below",
+      "artifact_id": "phase18c-df8967a3d288be07",
+      "case_id": "phase18c-case-07",
+      "error": null,
+      "expected_output": "below",
+      "family_kind": "threshold_rule",
+      "features": {
+        "example_value": 37,
+        "rule": "above_or_below",
+        "threshold": 30
+      },
+      "inputs": {
+        "x": 12
+      },
+      "label": "12_below_30",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 3,
+      "success": true
+    },
+    {
+      "actual_output": "below",
+      "artifact_id": "phase18c-df8967a3d288be07",
+      "case_id": "phase18c-case-08",
+      "error": null,
+      "expected_output": "below",
+      "family_kind": "threshold_rule",
+      "features": {
+        "example_value": 37,
+        "rule": "above_or_below",
+        "threshold": 30
+      },
+      "inputs": {
+        "x": 30
+      },
+      "label": "30_eq_threshold",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 3,
+      "success": true
+    },
+    {
+      "actual_output": "[0,10)",
+      "artifact_id": "phase18c-cc1a87367301deb5",
+      "case_id": "phase18c-case-09",
+      "error": null,
+      "expected_output": "[0,10)",
+      "family_kind": "interval_bucket_classifier",
+      "features": {
+        "buckets": "[0,10),[10,20),[20,30)",
+        "example_value": 17
+      },
+      "inputs": {
+        "x": 5
+      },
+      "label": "5_in_first",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 4,
+      "success": true
+    },
+    {
+      "actual_output": "[10,20)",
+      "artifact_id": "phase18c-cc1a87367301deb5",
+      "case_id": "phase18c-case-10",
+      "error": null,
+      "expected_output": "[10,20)",
+      "family_kind": "interval_bucket_classifier",
+      "features": {
+        "buckets": "[0,10),[10,20),[20,30)",
+        "example_value": 17
+      },
+      "inputs": {
+        "x": 17
+      },
+      "label": "17_in_second",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 4,
+      "success": true
+    },
+    {
+      "actual_output": "[20,30)",
+      "artifact_id": "phase18c-cc1a87367301deb5",
+      "case_id": "phase18c-case-11",
+      "error": null,
+      "expected_output": "[20,30)",
+      "family_kind": "interval_bucket_classifier",
+      "features": {
+        "buckets": "[0,10),[10,20),[20,30)",
+        "example_value": 17
+      },
+      "inputs": {
+        "x": 22
+      },
+      "label": "22_in_third",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 4,
+      "success": true
+    },
+    {
+      "actual_output": 23.0,
+      "artifact_id": "phase18c-926ece2941dd8f37",
+      "case_id": "phase18c-case-12",
+      "error": null,
+      "expected_output": 23.0,
+      "family_kind": "linear_arithmetic",
+      "features": {
+        "example_inputs": {
+          "a": 14,
+          "b": 9
+        },
+        "operator": "add"
+      },
+      "inputs": {
+        "a": 14.0,
+        "b": 9.0
+      },
+      "label": "14_plus_9",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 5,
+      "success": true
+    },
+    {
+      "actual_output": 0.0,
+      "artifact_id": "phase18c-926ece2941dd8f37",
+      "case_id": "phase18c-case-13",
+      "error": null,
+      "expected_output": 0.0,
+      "family_kind": "linear_arithmetic",
+      "features": {
+        "example_inputs": {
+          "a": 14,
+          "b": 9
+        },
+        "operator": "add"
+      },
+      "inputs": {
+        "a": 0.0,
+        "b": 0.0
+      },
+      "label": "0_plus_0",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 5,
+      "success": true
+    },
+    {
+      "actual_output": 12.0,
+      "artifact_id": "phase18c-926ece2941dd8f37",
+      "case_id": "phase18c-case-14",
+      "error": null,
+      "expected_output": 12.0,
+      "family_kind": "linear_arithmetic",
+      "features": {
+        "example_inputs": {
+          "a": 14,
+          "b": 9
+        },
+        "operator": "add"
+      },
+      "inputs": {
+        "a": 5.0,
+        "b": 7.0
+      },
+      "label": "5_plus_7",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 5,
+      "success": true
+    },
+    {
+      "actual_output": 30.0,
+      "artifact_id": "phase18c-1599768241387bc9",
+      "case_id": "phase18c-case-15",
+      "error": null,
+      "expected_output": 30.0,
+      "family_kind": "bounded_interpolation",
+      "features": {
+        "endpoints": "(0,0)->(10,100)",
+        "example_x": 3
+      },
+      "inputs": {
+        "x": 3
+      },
+      "label": "x_3",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 6,
+      "success": true
+    },
+    {
+      "actual_output": 0.0,
+      "artifact_id": "phase18c-1599768241387bc9",
+      "case_id": "phase18c-case-16",
+      "error": null,
+      "expected_output": 0.0,
+      "family_kind": "bounded_interpolation",
+      "features": {
+        "endpoints": "(0,0)->(10,100)",
+        "example_x": 3
+      },
+      "inputs": {
+        "x": 0
+      },
+      "label": "x_0",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 6,
+      "success": true
+    },
+    {
+      "actual_output": 100.0,
+      "artifact_id": "phase18c-1599768241387bc9",
+      "case_id": "phase18c-case-17",
+      "error": null,
+      "expected_output": 100.0,
+      "family_kind": "bounded_interpolation",
+      "features": {
+        "endpoints": "(0,0)->(10,100)",
+        "example_x": 3
+      },
+      "inputs": {
+        "x": 10
+      },
+      "label": "x_10",
+      "matched": true,
+      "reason": "hit_by_features",
+      "solver_id": 6,
+      "success": true
+    }
+  ],
+  "per_family_dispatch_counts": {
+    "bounded_interpolation": 3,
+    "interval_bucket_classifier": 3,
+    "linear_arithmetic": 3,
+    "lookup_table": 3,
+    "scalar_unit_conversion": 3,
+    "threshold_rule": 3
+  },
+  "phase": "phase18c_mined_solver_runtime_dispatch",
+  "phase18b_counters": {
+    "ALLOWLISTED_SOLVER_SPEC": 6,
+    "BUILDER_HANDOFF_QUARANTINED": 1,
+    "DUPLICATE_SUPPRESSED": 1,
+    "HIGH_RISK_REJECTED": 1,
+    "INSUFFICIENT_EVIDENCE": 3,
+    "OUT_OF_FAMILY_REJECTED": 2,
+    "candidates_total": 14,
+    "signals_total": 30
+  },
+  "platform": "Windows-11-10.0.22631-SP0",
+  "provider_jobs_delta": 0,
+  "python_version": "3.13.7",
+  "registered_solver_count": 6,
+  "registration_summary": {
+    "builder_handoff_quarantined": 1,
+    "compilation_failed_count": 0,
+    "duplicates_suppressed_in_run": 0,
+    "registered_candidate_ids": [
+      "154e99e6e8c230ed",
+      "affb3e81ededf350",
+      "df8967a3d288be07",
+      "cc1a87367301deb5",
+      "926ece2941dd8f37",
+      "1599768241387bc9"
+    ],
+    "registered_count": 6,
+    "registered_solver_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "rejected_by_verdict": {
+      "BUILDER_HANDOFF_QUARANTINED": 1,
+      "DUPLICATE_SUPPRESSED": 1,
+      "HIGH_RISK_REJECTED": 1,
+      "INSUFFICIENT_EVIDENCE": 3,
+      "OUT_OF_FAMILY_REJECTED": 2
+    },
+    "rejected_count": 8
+  },
+  "rejected_by_verdict": {
+    "BUILDER_HANDOFF_QUARANTINED": 1,
+    "DUPLICATE_SUPPRESSED": 1,
+    "HIGH_RISK_REJECTED": 1,
+    "INSUFFICIENT_EVIDENCE": 3,
+    "OUT_OF_FAMILY_REJECTED": 2
+  },
+  "rejected_registration_count": 8,
+  "release_gate_pass": true,
+  "release_gates": {
+    "all_dispatch_cases_succeeded": true,
+    "allowlist_unchanged": true,
+    "builder_delta_zero": true,
+    "dispatch_case_at_least_18": true,
+    "forbidden_claims_absent": true,
+    "no_human_approval": true,
+    "no_live_builder_execution": true,
+    "no_non_allowlisted_registered": true,
+    "no_stage2_flip": true,
+    "provider_delta_zero": true,
+    "registered_count_eq_6": true,
+    "six_families_covered": true
+  },
+  "signals_total": 30,
+  "source_prerelease": "v3.10.1-gap-miner-feedback-alpha",
+  "started_utc": "2026-05-05T18:05:24Z"
+}

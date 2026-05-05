@@ -1,5 +1,54 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 18C — Mined Solver Runtime Dispatch Integration / v3.10.2-mined-solver-dispatch-alpha CANDIDATE] — 2026-05-05
+
+Branch: `phase18c/mined-solver-runtime-dispatch`. Live-runtime integration sprint on top of v3.10.1-gap-miner-feedback-alpha. **Outcome (candidate):** PRERELEASE `v3.10.2-mined-solver-dispatch-alpha` — to be tagged from the Phase 18C PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 / v3.10.0 / v3.10.1 alphas all remain unchanged.
+
+Phase 18C closes the explicit Phase 18B gap (`capability_lookup_status = NOT_RUN_OUT_OF_PHASE18B_SCOPE`) by registering Phase 18B mined low-risk solver specs into the real `ControlPlaneDB` and dispatching them through the real `LowRiskSolverDispatcher.dispatch_by_features()` capability-aware path.
+
+### Added (production code)
+
+* **`waggledance/core/autonomy_growth/mined_solver_runtime.py`** (~310 LOC, stdlib + WaggleDance only, no new pip dependency). Public API:
+  * `compile_mined_spec_to_runtime_artifact(spec)` — translates a Phase 18B mined `(family_kind, feature_dict)` into an executor-shaped artifact via a documented per-family compilation table; unrecognized signatures fail closed with `RuntimeArtifactCompilationError`.
+  * `register_mined_solver_specs(*, candidates, control_plane)` — registers ALLOWLISTED candidates via the canonical Phase 17A four-step pattern (`upsert_solver_family` → `upsert_solver(status='auto_promoted')` → `set_solver_capability_features` → `upsert_solver_artifact`). Idempotent within a run; rejects all five non-ALLOWLISTED verdicts.
+  * `RegistrationSummary` dataclass.
+* **`tools/run_phase18c_mined_solver_runtime_dispatch_proof.py`** — proof harness driving the Phase 18B 30-signal fixture through registration + 18 deterministic dispatch cases (3 per family × 6 families). Every case dispatched through the **real** `LowRiskSolverDispatcher.dispatch_by_features` (not a fake standalone path).
+* **`tests/autonomy_growth/test_phase18c_mined_solver_runtime_dispatch.py`** — 33 unit tests covering registration happy path, exact six-family coverage, idempotent registration, deterministic candidate IDs + spec hashes, fail-closed rejection (unknown family, unrecognized features, high-risk, out-of-family, insufficient evidence, duplicate, builder-handoff), real-router dispatch, ≥3 hits per family, claim labels, release gates, Phase 18A + Phase 18B carry-forward.
+* **`docs/benchmarks/MINED_SOLVER_RUNTIME_DISPATCH_2026.md`** — public-facing report.
+* **`docs/runs/phase18c_mined_solver_runtime_dispatch_2026_05_05/`** — full session folder.
+
+### Changed
+
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** — anchor updated. Axis M upgraded from "PROVEN with measured runtime-gap feedback loop within six-family allowlist" to "**PROVEN with measured runtime-gap feedback loop AND runtime dispatch of mined solver specs within six-family allowlist** (Phase 18C); NOT CLAIMED for high-risk families; builder-handoff PROVEN as quarantined contract, NOT CLAIMED as automatic builder promotion." Raw-intelligence row remains `NOT CLAIMED`.
+* **`.dockerignore`** — extends carve-outs with `tools/run_phase18c_mined_solver_runtime_dispatch_proof.py`.
+* **`CURRENT_STATUS.md`, `README.md`, `docs/release/RELEASE_READINESS.md`** — candidate-state entries for `v3.10.2-mined-solver-dispatch-alpha`.
+
+### Behaviour (host run)
+
+* 30 synthetic signals → 14 candidates (verdict distribution preserved from Phase 18B).
+* **6 mined specs registered** as `auto_promoted` solvers; **8 non-ALLOWLISTED rejected**.
+* **18/18 dispatch cases hit** via `LowRiskSolverDispatcher.dispatch_by_features` (`reason="hit_by_features"`). 3 per family × 6 families.
+* `release_gate_pass=true`, `forbidden_claims_absent=true`, `provider_jobs_delta=builder_jobs_delta=0`.
+* Tests: 33/33 PASS in 5.41 s; targeted suite 203/203 PASS in 13.54 s.
+
+### Docker `--network none` (waggledance:phase18c)
+
+Three `docker run --rm --network none` invocations exit 0: Phase 18C proof + Phase 18B carry-forward + Phase 18A bundle validation.
+
+### Honesty contracts (re-asserted)
+
+* No model pull or download. No cloud API calls. No live builder execution. No allowlist widening. No autonomy code change outside Phase 18C's modules. No Stage-2 atomic flip. No HUMAN_APPROVAL collected. No stable-tagged release.
+* No cross-vendor ranking. No raw-intelligence superiority claim. No new high-risk autonomy mechanism.
+* Builder handoff remains quarantined; zero solver rows for builder-handoff candidates.
+* Compilation table fail-closed; novel signatures require operator review.
+* No new pip dependencies. No DB/SQLite/WAL files committed. No tokens or secrets exposed.
+
+### What did NOT change in Phase 18C
+
+* No modification to `v3.8.0`, v3.9.0-producer-fabric-alpha, v3.9.1-local-efficiency-benchmark-alpha, v3.9.2-local-ollama-baseline-alpha, v3.9.3-local-model-sweep-alpha, v3.10.0-benchmark-schema-alpha, or v3.10.1-gap-miner-feedback-alpha tags. v3.8.0 remains GitHub Latest.
+* No autonomy code outside Phase 18C's new module. No allowlist. No canonical corpus size. No new dispatcher, executor, router, or promotion engine — Phase 18C reuses the existing Phase 11–17A runtime path verbatim.
+* No `phase8.5/*` branch touched.
+
 ## [Phase 18B — Runtime Gap Miner + Solver Feedback Loop / v3.10.1-gap-miner-feedback-alpha PRERELEASE] — 2026-05-05
 
 Branch: `phase18b/gap-miner-feedback`. Capability-extension sprint on top of v3.10.0-benchmark-schema-alpha. **Outcome: PRERELEASE `v3.10.1-gap-miner-feedback-alpha` published 2026-05-05T14:32:46Z**. PR #81 squash-merged at 2026-05-05T14:31:28Z (merge commit `b408b14a`); annotated tag pushed; GitHub release created with `isPrerelease=true`. v3.8.0 stable + v3.9.0 / v3.9.1 / v3.9.2 / v3.9.3 / v3.10.0 alphas all remain unchanged.

@@ -65,6 +65,8 @@ docs/
 !tools/run_phase18b_gap_miner_feedback_proof.py
 !docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/
 !docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**
+# Phase 18C carve-out: mined-solver runtime dispatch proof harness.
+!tools/run_phase18c_mined_solver_runtime_dispatch_proof.py
 !tests/__init__.py
 !tests/conftest.py
 !tests/autonomy_growth/

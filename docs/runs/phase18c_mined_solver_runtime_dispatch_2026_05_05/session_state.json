@@ -1,0 +1,51 @@
+{
+  "phase": "phase18c",
+  "phase_name": "Mined Solver Runtime Dispatch Integration",
+  "started_utc": "2026-05-05T18:00:00Z",
+  "session_id": "phase18c_mined_solver_runtime_dispatch_2026_05_05",
+  "branch": "phase18c/mined-solver-runtime-dispatch",
+  "worktree_path": "C:/Python/project2-phase18c-mined-solver-dispatch",
+  "base_origin_main_sha": "0c5335f964fbab2a5f6c0cb74b7033ec8353b998",
+  "base_origin_main_subject": "docs(phase18b): post-release docs update for v3.10.1-gap-miner-feedback-alpha (#82)",
+  "model_session": "claude-opus-4-7",
+  "host": {
+    "platform": "Windows-11-10.0.22631-SP0",
+    "python_version": "3.13.7",
+    "shell": "Git Bash via PowerShell"
+  },
+  "preconditions": {
+    "v3_8_0_target_sha": "824176ebf2a6b8debed41982090a125cbe2ddad1",
+    "v3_8_0_isPrerelease": false,
+    "v3_8_0_is_github_latest": true,
+    "v3_9_0_target_sha": "c726995c816ee4c09e031c2190c3de6592e82879",
+    "v3_9_1_target_sha": "f4d0a4a4152ca74e98a8d7f7161c233075bf4111",
+    "v3_9_2_target_sha": "db5d7db1ecb9ae6f17293f0bf7261f4c9d40e91c",
+    "v3_9_3_target_sha": "d0704efe46be18d480ed425ff83b087cd36ef9bd",
+    "v3_10_0_target_sha": "4554b24a47045ab10c1c0fbcb010f695d47d867c",
+    "v3_10_1_target_sha": "b408b14a4209ee9f8da00f040223a988815d0f87",
+    "all_prereleases_isPrerelease_true": true,
+    "phase18a_bundle_validates": true,
+    "phase18b_proof_release_gate_pass": true,
+    "phase18b_tests_pass": true
+  },
+  "scope_invariants": {
+    "no_stable_release_in_phase18c": true,
+    "no_stage2_atomic_flip": true,
+    "no_human_approval_collected": true,
+    "no_allowlist_widening": true,
+    "no_consciousness_claim": true,
+    "no_beats_all_competitors_claim": true,
+    "no_cross_vendor_ranking_claim": true,
+    "no_raw_intelligence_superiority_claim": true,
+    "no_live_builder_execution": true,
+    "no_model_pull_or_download": true,
+    "no_cloud_api_calls": true,
+    "no_new_high_risk_autonomy": true,
+    "no_new_pip_dependency": true,
+    "no_token_or_secret_exposure": true,
+    "no_db_files_committed": true,
+    "phase8_5_branches_read_only": true
+  },
+  "tag_under_consideration": "v3.10.2-mined-solver-dispatch-alpha",
+  "release_kind_under_consideration": "PRERELEASE only (isPrerelease=true)"
+}

@@ -127,7 +127,7 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 * **Reproduce:** `python tools/run_phase18b_gap_miner_feedback_proof.py`. Expected: 30 signals → 14 candidates → 6 allowlisted specs + 3 insufficient + 2 out-of-family + 1 high-risk + 1 builder-handoff + 1 duplicate; `release_gate_pass = true`.
 * **Phase 18C closes the runtime-dispatch half:** mined ALLOWLISTED specs are registered into the real `ControlPlaneDB` via the canonical Phase 17A four-step pattern (`upsert_solver_family` → `upsert_solver(status='auto_promoted')` → `set_solver_capability_features` → `upsert_solver_artifact`) and served through the real `LowRiskSolverDispatcher.dispatch_by_features()`. New mainline module `waggledance/core/autonomy_growth/mined_solver_runtime.py`; proof harness `tools/run_phase18c_mined_solver_runtime_dispatch_proof.py`; 33 unit tests. Host run: 6 ALLOWLISTED candidates → 6 registered auto-promoted solvers → 18/18 dispatch cases hit (3 per family × 6 families) via capability-aware path. Non-allowlisted verdicts (insufficient evidence, out-of-family, high-risk, builder-handoff, duplicate) are rejected from registration; never become executable.
 * **Reproduce (Phase 18C):** `python tools/run_phase18c_mined_solver_runtime_dispatch_proof.py`. Expected: `registered_solver_count = 6`, `dispatch_success_count = 18`, `dispatch_failure_count = 0`, `families_covered = 6`; `release_gate_pass = true`; `provider_jobs_delta = builder_jobs_delta = 0`.
-* **Label:** **PROVEN with measured runtime-gap feedback loop AND runtime dispatch of mined solver specs within six-family allowlist** (Phase 18C). **NOT CLAIMED** for high-risk families. Builder-handoff lane is **PROVEN as a quarantined contract**, **NOT CLAIMED as automatic builder promotion**.
+* **Label:** **PROVEN with persisted runtime-gap replay, measured runtime-gap feedback loop, AND runtime dispatch of mined solver specs within six-family allowlist** (Phase 18E). **NOT CLAIMED** for high-risk families. Builder-handoff lane is **PROVEN as a quarantined contract**, **NOT CLAIMED as automatic builder promotion**.
 
 ### N. High-risk safety gate
 
@@ -159,7 +159,7 @@ WaggleDance does **not** claim to "beat all competitors." This document does not
 | J. LLM / MoE hybrid | INFERRED (architecture); MEASURED-LOCAL-OLLAMA-PANEL (Phase 17D, 4-model panel × 3 repeats) |
 | K. Industrial / factory readiness | INFERRED |
 | L. Edge resource use | MEASURED (image size); INFERRED (Pi class) |
-| M. Autonomous learning lane | PROVEN with measured runtime-gap feedback loop AND runtime dispatch of mined solver specs within six-family allowlist (Phase 18C); NOT CLAIMED for high-risk families; builder-handoff PROVEN as quarantined contract, NOT CLAIMED as automatic builder promotion |
+| M. Autonomous learning lane | PROVEN with persisted runtime-gap replay, measured runtime-gap feedback loop, AND runtime dispatch of mined solver specs within six-family allowlist (Phase 18E); NOT CLAIMED for high-risk families; builder-handoff PROVEN as quarantined contract, NOT CLAIMED as automatic builder promotion |
 | N. High-risk safety gate | PROVEN as refusal contract |
 | O. Benchmark artifact externalization / schema validation | PROVEN this session (Phase 18A bundle + stdlib-only validator + 15 tests + Docker `--network none`) |
 

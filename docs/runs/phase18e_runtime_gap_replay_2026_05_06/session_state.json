@@ -1,0 +1,64 @@
+{
+  "phase": "18E",
+  "label": "persisted-runtime-gap-replay-into-mined-solver-dispatch",
+  "session_started_utc": "2026-05-06",
+  "operator_repo_path": "C:\\Python\\project2-master",
+  "origin_url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm.git",
+  "candidate_tag": "v3.10.3-runtime-gap-replay-alpha",
+  "baseline": {
+    "origin_main_sha": "7d1dedef8e29482ff2f8938af484d681e10ca98f",
+    "origin_main_label": "phase18d-docs-only-pr-85-squash-merge",
+    "tags": {
+      "v3.8.0": "824176ebf2a6b8debed41982090a125cbe2ddad1",
+      "v3.9.0-producer-fabric-alpha": "c726995c816ee4c09e031c2190c3de6592e82879",
+      "v3.9.1-local-efficiency-benchmark-alpha": "f4d0a4a4152ca74e98a8d7f7161c233075bf4111",
+      "v3.9.2-local-ollama-baseline-alpha": "db5d7db1ecb9ae6f17293f0bf7261f4c9d40e91c",
+      "v3.9.3-local-model-sweep-alpha": "d0704efe46be18d480ed425ff83b087cd36ef9bd",
+      "v3.10.0-benchmark-schema-alpha": "4554b24a47045ab10c1c0fbcb010f695d47d867c",
+      "v3.10.1-gap-miner-feedback-alpha": "b408b14a4209ee9f8da00f040223a988815d0f87",
+      "v3.10.2-mined-solver-dispatch-alpha": "e9aa1de10376109987a7c18d331bbcc996a9ddf9"
+    },
+    "github_latest_tag": "v3.8.0",
+    "github_latest_is_prerelease": false,
+    "v3_10_3_release_exists": false
+  },
+  "secret_hygiene": {
+    "p0_initial_finding": "9 branch upstream entries contained x-access-token:gho_* embedded URLs from prior session token-in-URL fallback",
+    "token_state": "revoked_by_operator_before_phase_18d",
+    "remediation": "rewrote each affected branch.<name>.remote to 'origin' via git config --replace-all without reading leaked value",
+    "affected_branch_keys": [
+      "branch.phase17c/local-ollama-baseline.remote",
+      "branch.phase17c/post-release-docs.remote",
+      "branch.phase17d/local-model-sweep.remote",
+      "branch.phase17d/post-release-docs.remote",
+      "branch.phase18a/benchmark-externalization-schema.remote",
+      "branch.phase18a/post-release-docs.remote",
+      "branch.phase18b/gap-miner-feedback.remote",
+      "branch.phase18b/post-release-docs.remote",
+      "branch.phase18c/mined-solver-runtime-dispatch.remote"
+    ],
+    "post_remediation_token_count_in_config": 0,
+    "remote_origin_url_clean": true,
+    "gh_auth_via": "keyring (Windows Credential Manager / gh)"
+  },
+  "honesty_contracts_target": {
+    "no_model_pull_or_download": true,
+    "no_cloud_api_calls": true,
+    "no_live_builder_execution": true,
+    "no_stage2_flip": true,
+    "no_human_approval_collected": true,
+    "no_allowlist_widening": true,
+    "no_high_risk_autonomy": true,
+    "no_raw_intelligence_superiority_claim": true,
+    "no_cross_vendor_ranking_claim": true,
+    "no_consciousness_claim": true,
+    "no_token_or_secret_committed": true,
+    "no_db_or_cache_committed": true,
+    "no_new_pip_dependency": true
+  },
+  "branch_plan": {
+    "branch_name": "phase18e/runtime-gap-replay",
+    "base": "origin/main",
+    "worktree_path": "C:\\Python\\project2-phase18e-runtime-gap-replay"
+  }
+}

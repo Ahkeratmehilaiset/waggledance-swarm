@@ -1,5 +1,67 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 18E — Persisted Runtime Gap Replay / v3.10.3-runtime-gap-replay-alpha CANDIDATE] — 2026-05-06
+
+Branch: `phase18e/runtime-gap-replay`. Persistence + replay integration sprint on top of v3.10.2-mined-solver-dispatch-alpha. **Outcome (candidate):** PRERELEASE `v3.10.3-runtime-gap-replay-alpha` — to be tagged from the Phase 18E PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + all 7 alphas (v3.9.0 → v3.10.2) remain unchanged.
+
+Phase 18E proves the full durable autonomous-learning loop:
+
+```
+persisted runtime gap events (runtime_gap_signals,
+                              kind = phase18e.runtime_gap_event.v1)
+  -> load_runtime_gap_events
+  -> mine_runtime_gaps             (Phase 18B verbatim)
+  -> register_mined_solver_specs   (Phase 18C verbatim)
+  -> ControlPlaneDB capability rows + artifacts
+  -> LowRiskSolverDispatcher.dispatch_by_features  (real path)
+```
+
+### Added (production code)
+
+* **`waggledance/core/autonomy_growth/runtime_gap_replay.py`** — public API: `normalize_runtime_gap_event`, `persist_runtime_gap_events`, `load_runtime_gap_events`, `replay_persisted_gap_events`, plus `PersistedGapEvent`, `GapPersistResult`, `GapReplayResult`, `GapEventSchemaError`. Stdlib + WaggleDance only; no new pip dependency. Reuses `mine_runtime_gaps` (Phase 18B) and `register_mined_solver_specs` (Phase 18C) verbatim — no fork.
+* **`tools/run_phase18e_runtime_gap_replay_proof.py`** — proof harness with deterministic 32-event fixture covering 6 ALLOWLISTED families × 4 strong signals + 3 INSUFFICIENT + 1 OUT_OF_FAMILY + 1 HIGH_RISK + 1 BUILDER_HANDOFF + 1 DUPLICATE-window cluster (2 signals). Plus a 4-event malformed batch (missing field, bad schema_version, non-Mapping feature_dict, forbidden-field key). Persists, loads, replays, registers, dispatches through the real `LowRiskSolverDispatcher`, and re-persists + re-replays to prove idempotency. Emits JSON + Markdown with full release-gate dict.
+* **`tests/autonomy_growth/test_phase18e_runtime_gap_replay.py`** — 48 unit/integration tests covering normalization happy paths (per family), fail-closed paths (missing field × all 11 required fields, unsupported schema_version, non-Mapping feature_dict, out-of-range confidence, forbidden keys, non-Mapping raw input), persist-idempotency, malformed/forbidden rejection, load round-trip + source filter, replay calls real `mine_runtime_gaps`, six-family registration, out-of-family / high-risk / builder-handoff non-registration, real `dispatch_by_features` hits with correct outputs, idempotency-no-extra-rows, carry-forward import smokes, allowlist invariant, provider/builder delta zero, schema v3 table still present, Phase 18E `kind` round-trip, end-to-end harness `release_gate_pass = True`, no DB-shaped file under autonomy_growth source.
+* **`docs/benchmarks/RUNTIME_GAP_REPLAY_2026.md`** — public-facing report.
+* **`docs/runs/phase18e_runtime_gap_replay_2026_05_06/`** — full session folder with `baseline_verification.md`, `runtime_gap_replay_inventory.md`, `runtime_gap_replay_design.md`, `session_state.json`, `runtime_gap_replay_proof.{json,md}`, `host_verification.md`, `docker_phase18e_verification.md`, `release_decision.md`, `pr_body.md`, `final_report.md`.
+
+### Changed
+
+* **`waggledance/core/storage/control_plane.py`** — added `list_runtime_gap_signals(*, kind=None, family_kind=None, cell_coord=None, limit=None) -> List[RuntimeGapSignalRecord]`. Read-only helper. **Schema unchanged** — no `ALTER TABLE`, no new column. The existing `record_runtime_gap_signal()` and `count_runtime_gap_signals()` APIs are untouched.
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** — axis M upgraded from "PROVEN with measured runtime-gap feedback loop AND runtime dispatch of mined solver specs within six-family allowlist" to "**PROVEN with persisted runtime-gap replay, measured runtime-gap feedback loop, AND runtime dispatch of mined solver specs within six-family allowlist** (Phase 18E)". Raw-intelligence row, cross-vendor row remain `NOT CLAIMED`.
+* **`.dockerignore`** — extends carve-outs with `tools/run_phase18e_runtime_gap_replay_proof.py` so the in-container proof harness can run.
+* **`CURRENT_STATUS.md`, `README.md`, `docs/release/RELEASE_READINESS.md`** — candidate-state entries for `v3.10.3-runtime-gap-replay-alpha`.
+
+### Behaviour (host run, this branch)
+
+* 32 well-formed events persisted into `runtime_gap_signals` with `kind = phase18e.runtime_gap_event.v1`.
+* 4 malformed/forbidden events rejected at normalization (3 schema-malformed + 1 forbidden-field key); none persisted.
+* 32 events loaded back; mining yields 13 candidates with verdict distribution 6 ALLOWLISTED + 3 INSUFFICIENT + 1 OUT_OF_FAMILY + 1 HIGH_RISK + 1 BUILDER_HANDOFF + 1 DUPLICATE.
+* **6 mined specs registered** as `auto_promoted` solvers via the existing Phase 17A 4-step pattern; **7 non-ALLOWLISTED rejected**.
+* **18 / 18 dispatch cases hit** through `LowRiskSolverDispatcher.dispatch_by_features` with `reason = "hit_by_features"`. 3 cases per family × 6 families.
+* **Idempotency:** second persist inserted 0, skipped 32; second replay produced 0 extra solvers, 0 extra capability features, 0 extra artifacts. `replay_idempotency_pass = true`.
+* `release_gate_pass = true`, `forbidden_claims_absent = true`, `provider_jobs_delta = builder_jobs_delta = 0`, `allowlist_unchanged = true`.
+* Tests: 48 / 48 PASS in 3.08 s (Phase 18E suite). Targeted carry-forward (18E 48 + 18C 33 + 18B 19 + 18A 15 + phase10 14 + storage 50 + ui_hologram 22 + solver_router 50) = **251 / 251 PASS** in 18.29 s.
+
+### Docker `--network none` (waggledance:phase18e)
+
+Four `docker run --rm --network none` invocations exit 0: Phase 18E proof + Phase 18C carry-forward + Phase 18B carry-forward + Phase 18A bundle validator.
+
+### Honesty contracts (re-asserted)
+
+* No model pull or download. No cloud API calls. No live builder execution. No allowlist widening. No autonomy code change outside Phase 18E's new module + the read-only `list_runtime_gap_signals` helper.
+* No Stage-2 atomic flip. No HUMAN_APPROVAL collected. No new high-risk autonomy mechanism.
+* Builder handoff remains quarantined; zero solver rows for builder-handoff candidates.
+* No new pip dependencies. No DB / SQLite / WAL / SHM files committed; the proof DB is a temp file.
+* No tokens or secrets exposed. The leaked-token branch upstream entries from prior sessions were rewritten to `origin` at P0; the cleanup is recorded in `baseline_verification.md`.
+* Truthful note on prior token exposure: a prior token exposure occurred in local/session command output before Phase 18D and was remediated by operator token rotation. Phase 18E uses credential-helper Git/GitHub operations.
+
+### What did NOT change in Phase 18E
+
+* No modification to `v3.8.0`, `v3.9.0-producer-fabric-alpha`, `v3.9.1-local-efficiency-benchmark-alpha`, `v3.9.2-local-ollama-baseline-alpha`, `v3.9.3-local-model-sweep-alpha`, `v3.10.0-benchmark-schema-alpha`, `v3.10.1-gap-miner-feedback-alpha`, or `v3.10.2-mined-solver-dispatch-alpha` tags. v3.8.0 remains GitHub Latest.
+* `ControlPlaneDB` schema v3 — no `ALTER TABLE`, no new column. The new module reuses the existing `runtime_gap_signals` table with `kind = phase18e.runtime_gap_event.v1` as a discriminator.
+* No autonomy code outside Phase 18E's new module + the read-only DB helper. No allowlist. No canonical corpus size. No proof harness for Phase 18A / 18B / 18C touched.
+* No `phase8.5/*` branch touched.
+
 ## [Phase 18D — Local Delta Reconciliation / docs-only, NO TAG] — 2026-05-06
 
 Branch: `phase18d/local-delta-docs`. Docs-only reconciliation sprint on top of v3.10.2-mined-solver-dispatch-alpha. **Outcome: docs-only PR; no new prerelease tag.** v3.8.0 stable + all 7 alpha tags (`v3.9.0-producer-fabric-alpha`, `v3.9.1-local-efficiency-benchmark-alpha`, `v3.9.2-local-ollama-baseline-alpha`, `v3.9.3-local-model-sweep-alpha`, `v3.10.0-benchmark-schema-alpha`, `v3.10.1-gap-miner-feedback-alpha`, `v3.10.2-mined-solver-dispatch-alpha`) remain unchanged. v3.8.0 remains GitHub Latest. v3.10.2-mined-solver-dispatch-alpha remains the most recent prerelease.

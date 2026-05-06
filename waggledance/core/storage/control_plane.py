@@ -1539,6 +1539,36 @@ class ControlPlaneDB:
             row = self._conn.execute(sql, params).fetchone()
         return int(row["c"]) if row else 0
 
+    def list_runtime_gap_signals(
+        self,
+        *,
+        kind: Optional[str] = None,
+        family_kind: Optional[str] = None,
+        cell_coord: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[RuntimeGapSignalRecord]:
+        wheres: List[str] = []
+        params: List[object] = []
+        if kind is not None:
+            wheres.append("kind = ?")
+            params.append(kind)
+        if family_kind is not None:
+            wheres.append("family_kind = ?")
+            params.append(family_kind)
+        if cell_coord is not None:
+            wheres.append("cell_coord = ?")
+            params.append(cell_coord)
+        sql = "SELECT * FROM runtime_gap_signals"
+        if wheres:
+            sql += " WHERE " + " AND ".join(wheres)
+        sql += " ORDER BY id ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_runtime_gap_signal(r) for r in rows]
+
     # -- schema v3: growth intents -------------------------------------
 
     def upsert_growth_intent(

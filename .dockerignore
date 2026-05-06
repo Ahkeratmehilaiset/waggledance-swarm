@@ -67,6 +67,8 @@ docs/
 !docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**
 # Phase 18C carve-out: mined-solver runtime dispatch proof harness.
 !tools/run_phase18c_mined_solver_runtime_dispatch_proof.py
+# Phase 18E carve-out: persisted runtime gap replay proof harness.
+!tools/run_phase18e_runtime_gap_replay_proof.py
 !tests/__init__.py
 !tests/conftest.py
 !tests/autonomy_growth/

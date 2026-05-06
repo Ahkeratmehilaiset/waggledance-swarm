@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Phase 18E — Persisted Runtime Gap Replay / v3.10.3-runtime-gap-replay-alpha CANDIDATE] — 2026-05-06
+## [Phase 18E — Persisted Runtime Gap Replay / v3.10.3-runtime-gap-replay-alpha PRERELEASE] — 2026-05-06
 
-Branch: `phase18e/runtime-gap-replay`. Persistence + replay integration sprint on top of v3.10.2-mined-solver-dispatch-alpha. **Outcome (candidate):** PRERELEASE `v3.10.3-runtime-gap-replay-alpha` — to be tagged from the Phase 18E PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + all 7 alphas (v3.9.0 → v3.10.2) remain unchanged.
+Branch: `phase18e/runtime-gap-replay`. Persistence + replay integration sprint on top of v3.10.2-mined-solver-dispatch-alpha. **Outcome: PRERELEASE `v3.10.3-runtime-gap-replay-alpha` published 2026-05-06T05:42:51Z**. PR #86 squash-merged at 2026-05-06T05:41:40Z (merge commit `6c6ca859`); annotated tag pushed at the merge SHA; GitHub release created with `isPrerelease=true`. v3.8.0 stable + all 7 alphas (v3.9.0 → v3.10.2) remain unchanged. v3.8.0 remains GitHub Latest.
 
 Phase 18E proves the full durable autonomous-learning loop:
 

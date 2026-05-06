@@ -1,0 +1,428 @@
+{
+  "schema_version": 1,
+  "description": "Phase-fix ledger for the WaggleDance orchestrator review pipeline. Tag-IDs (ARCH-NNN, REL-NNN, SEC-NNN) are NOT globally unique -- each review run numbers its own findings from 0. The unique key is (phase_introduced, tag). Anchors use 'path :: stable_text' so they survive line-number drift.",
+  "_legend": {
+    "status": [
+      "fixed",
+      "false_positive_due_to_truncation",
+      "already_fixed",
+      "backlog",
+      "not_reproducible",
+      "informational"
+    ],
+    "source": [
+      "architect",
+      "reliability",
+      "security",
+      "human-review",
+      "final-report"
+    ]
+  },
+  "rows": [
+    {
+      "tag": "ARCH-000",
+      "title": "Empty evidence surface in target iteration package can produce a confident review pass",
+      "source": "architect",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/lib/review/ReviewSurface.ps1 :: review_readiness_status",
+        "orchestrator/Invoke-WaggleReview.ps1 :: NEEDS_REVIEW_SURFACE"
+      ],
+      "tests": [
+        "orchestrator/Test-ReviewIntegrity.ps1"
+      ],
+      "notes": "Phase 2A-4 P9 split execution_status (CompletionVerifier) from review_readiness_status (REVIEW_READY / SUPPLEMENT_ONLY / INSUFFICIENT_EVIDENCE). Review runner refuses INSUFFICIENT_EVIDENCE. SUPPLEMENT_ONLY allowed but reviewer must disclose."
+    },
+    {
+      "tag": "ARCH-001",
+      "title": "Redactor self-corrupts its own source when included in review surface supplement",
+      "source": "architect",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/lib/Redactor.ps1 :: Phase 2A-4 ARCH-001",
+        "orchestrator/lib/review/ReviewSurface.ps1 :: Phase 2A-4 ARCH-001"
+      ],
+      "tests": [
+        "orchestrator/Test-ReviewSurface.ps1 :: Phase 2A-4 ARCH-001"
+      ],
+      "notes": "Phase 2A-4 P2 added Invoke-WaggleSourceSupplementRedaction (value-shape patterns only). Real reviews show 0 self-corruption findings."
+    },
+    {
+      "tag": "ARCH-001",
+      "title": "Subprocess runner duplicated between Invoke-WaggleIteration and Invoke-WaggleReview",
+      "source": "architect",
+      "status": "backlog",
+      "phase_introduced": "Phase 2A-4",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase2a4_backlog.md :: ARCH-002 -- subprocess runner duplication"
+      ],
+      "tests": [],
+      "notes": "Backlog per Phase 2A-4 master prompt rule 3 (do not generalize Invoke-WaggleReviewSubprocess unless REL-005 cannot be fixed in place). REL-005 was fixed in place. Future phase: unify into one Spawn-ClaudeCodeSubprocess. Acceptance: one helper used by both entry points; Test-ReviewSubprocessTimeout still green."
+    },
+    {
+      "tag": "ARCH-002",
+      "title": "Subprocess runner duplication (formal backlog row, by tag-name)",
+      "source": "architect",
+      "status": "backlog",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase2a4_backlog.md :: ARCH-002 -- subprocess runner duplication"
+      ],
+      "tests": [],
+      "notes": "Some Phase 2A-3 / 2A-4 reports use 'ARCH-002' rather than 'ARCH-001 (Phase 2A-4)' for the duplication finding; both refer to the same condition. Suggested phase: Phase 2A-6 or later. Acceptance: one shared subprocess helper; Test-ClaudeRunner + Test-ReviewSubprocessTimeout both green."
+    },
+    {
+      "tag": "ARCH-003",
+      "title": "Entry points dot-source many lib files in fragile fixed order",
+      "source": "architect",
+      "status": "backlog",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase2a4_backlog.md :: ARCH-003 -- entry-point dot-source order"
+      ],
+      "tests": [],
+      "notes": "Low risk; current order works. Suggested phase: Phase 2A-6. Acceptance: a small Import-WaggleOrchestratorLibs helper owns canonical order; static check that both entry points use it."
+    },
+    {
+      "tag": "ARCH-004",
+      "title": "review/ depends back on lib/ root via ReviewAdapter -> Redactor",
+      "source": "architect",
+      "status": "backlog",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase2a4_backlog.md :: ARCH-004 -- review/ -> lib/ root dependency"
+      ],
+      "tests": [],
+      "notes": "Intentional reuse of the Phase 2A-1 redactor. Suggested phase: when lib/review/ becomes a package boundary. Acceptance: documented in design doc OR redactor moved into lib/review/. Phase 2A-5 documents."
+    },
+    {
+      "tag": "ARCH-005",
+      "title": "UNTRUSTED marker check is substring-only",
+      "source": "architect",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/lib/ArtifactValidator.ps1 :: Phase 2A-4 ARCH-005"
+      ],
+      "tests": [
+        "orchestrator/Test-ArtifactValidator.ps1"
+      ],
+      "notes": "Phase 2A-4 P10 anchored check: SECURITY PREAMBLE header AND UNTRUSTED DATA token must both appear in first 40 lines of llm_input_package.md."
+    },
+    {
+      "tag": "ARCH-005",
+      "title": "Phase-tag ledger gap: code comments contain ARCH/REL/SEC tags but no central ledger",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md",
+        "docs/design/phase_fix_ledger.json",
+        "orchestrator/Test-PhaseFixLedger.ps1"
+      ],
+      "tests": [
+        "orchestrator/Test-PhaseFixLedger.ps1"
+      ],
+      "notes": "Phase 2A-5 P1+P2 add the durable ledger and the validator that ensures every (Phase 2A-N, tag) reference in source has a row."
+    },
+    {
+      "tag": "ARCH-006",
+      "title": "Run-WaggleHardeningGates default ReportPath is hardcoded to Phase 2A-2 docs run dir",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "orchestrator/Run-WaggleHardeningGates.ps1 :: default ReportPath",
+        "orchestrator/Test-HardeningGatesReportPath.ps1"
+      ],
+      "tests": [
+        "orchestrator/Test-HardeningGatesReportPath.ps1"
+      ],
+      "notes": "Phase 2A-5 P3+P4+P5: default writes to docs/runs/hardening_gates/<utc>.json + Copy-Item to latest.json (both gitignored)."
+    },
+    {
+      "tag": "REL-000",
+      "title": "Reserved (no Phase 2A reviewer has issued REL-000 yet)",
+      "source": "informational",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: REL-000"
+      ],
+      "tests": [],
+      "notes": "Placeholder so the ledger has a complete REL-000 row. If a future phase issues REL-000, replace this row."
+    },
+    {
+      "tag": "REL-001",
+      "title": "Lock release crash-path may not be visible / may be missing",
+      "source": "reliability",
+      "status": "false_positive_due_to_truncation",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/Invoke-WaggleIteration.ps1 :: Acquire-WaggleLock",
+        "orchestrator/Invoke-WaggleReview.ps1 :: Acquire-WaggleLock",
+        "orchestrator/Test-Lockfile.ps1 :: Phase 2A-4 REL-001"
+      ],
+      "tests": [
+        "orchestrator/Test-Lockfile.ps1"
+      ],
+      "notes": "Source verified: both entry points already had try/finally + Release-WaggleLock -LockId. Phase 2A-3 reviewer saw a head-truncated supplement view that did not include the finally block. Phase 2A-4 P12 keyword-window extraction ensures future reviewers see Acquire/Release windows together."
+    },
+    {
+      "tag": "REL-001",
+      "title": "Lockfile.ps1 not visible in supplement (Phase 2A-4 reviewer's REL-001)",
+      "source": "reliability",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-4",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/lib/review/ReviewSurface.ps1 :: keyword_windows_used"
+      ],
+      "tests": [
+        "orchestrator/Test-ReviewSurface.ps1"
+      ],
+      "notes": "Different finding from Phase 2A-3 REL-001 (same tag-id, different review run). Phase 2A-4 keyword-window extraction includes Lockfile.ps1 in supplement. Listed informational because no code change was specifically attributed to it."
+    },
+    {
+      "tag": "REL-002",
+      "title": "CompletionVerifier has tautological condition (exit_code -ne 0 -or exit_code -eq 0)",
+      "source": "reliability",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/lib/CompletionVerifier.ps1 :: Phase 2A-4 REL-002"
+      ],
+      "tests": [
+        "orchestrator/Test-CompletionVerifier.ps1"
+      ],
+      "notes": "Phase 2A-4 P6: replaced with `if ($fExists)`. Failure signal wins regardless of exit code."
+    },
+    {
+      "tag": "REL-003",
+      "title": "Resume short-circuit may fire before lock acquisition",
+      "source": "reliability",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/Invoke-WaggleIteration.ps1 :: Phase 2A-4 REL-003",
+        "orchestrator/Test-Lockfile.ps1 :: Phase 2A-4 REL-003"
+      ],
+      "tests": [
+        "orchestrator/Test-Lockfile.ps1"
+      ],
+      "notes": "Phase 2A-4 P7: resume short-circuit moved inside try/finally lock so concurrent operators serialise on the lock; the one that exits cleanly still releases."
+    },
+    {
+      "tag": "REL-004",
+      "title": "Unique-artifact contract may not be invoked or hidden by supplement truncation",
+      "source": "reliability",
+      "status": "false_positive_due_to_truncation",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/lib/CompletionVerifier.ps1 :: Test-UniqueIterationArtifact",
+        "orchestrator/Invoke-WaggleIteration.ps1 :: requireUniqueArtifact"
+      ],
+      "tests": [
+        "orchestrator/Test-CompletionVerifier.ps1"
+      ],
+      "notes": "Source verified: CompletionVerifier calls Test-UniqueIterationArtifact when UniqueArtifactPath is supplied; Invoke-WaggleIteration supplies it when requireUniqueArtifact=true. Phase 2A-4 P4 added 5 explicit branch tests: fresh / missing / stale / wrong / disabled."
+    },
+    {
+      "tag": "REL-005",
+      "title": "Review subprocess timeout enforcement may be unsafe (sync ReadToEnd can block forever)",
+      "source": "reliability",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/Invoke-WaggleReview.ps1 :: Phase 2A-4 REL-005"
+      ],
+      "tests": [
+        "orchestrator/Test-ReviewSubprocessTimeout.ps1"
+      ],
+      "notes": "Phase 2A-4 P5: bounded task.Wait + Stop-ProcessTree on drain timeout. Hang scenario terminates ~3.8s under 30s ceiling."
+    },
+    {
+      "tag": "REL-006",
+      "title": "Signal-conflict semantics (both completed and failed signals present)",
+      "source": "reliability",
+      "status": "already_fixed",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 1.6",
+      "canonical_source_anchors": [
+        "orchestrator/lib/CompletionVerifier.ps1 :: NEEDS_REVIEW_CONFLICT"
+      ],
+      "tests": [
+        "orchestrator/Test-CompletionVerifier.ps1"
+      ],
+      "notes": "Phase 1.6's CompletionVerifier already returned NEEDS_REVIEW_CONFLICT when both signals are present. Phase 2A-4 P6 added explicit branch coverage."
+    },
+    {
+      "tag": "REL-007",
+      "title": "Partial-state recovery semantics",
+      "source": "reliability",
+      "status": "backlog",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase2a4_backlog.md :: REL-007 -- partial-state recovery semantics"
+      ],
+      "tests": [],
+      "notes": "Needs design. Suggested phase: Phase 2A-6 or later, after one or two operator sessions surface real partial states. Acceptance: a decision matrix per partial-state case + tests."
+    },
+    {
+      "tag": "REL-008",
+      "title": "Idempotency semantics for same-iteration-id re-runs",
+      "source": "reliability",
+      "status": "backlog",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase2a4_backlog.md :: REL-008 -- idempotency semantics"
+      ],
+      "tests": [],
+      "notes": "Suggested phase: paired with REL-007. Acceptance: documented behavior in CLAUDE.md + a test that asserts it."
+    },
+    {
+      "tag": "REL-009",
+      "title": "Reserved (no Phase 2A reviewer has issued REL-009 yet)",
+      "source": "informational",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: REL-009"
+      ],
+      "tests": [],
+      "notes": "Placeholder so the ledger has a complete REL-009 row. If a future phase issues REL-009, replace this row."
+    },
+    {
+      "tag": "SEC-000",
+      "title": "Reserved (no Phase 2A reviewer has issued SEC-000 yet)",
+      "source": "informational",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: SEC-000"
+      ],
+      "tests": [],
+      "notes": "Placeholder."
+    },
+    {
+      "tag": "SEC-001",
+      "title": "Phase 2A-2 false positive: write-mode runner has Bash + dangerously-skip-permissions",
+      "source": "security",
+      "status": "already_fixed",
+      "phase_introduced": "Phase 2A-2",
+      "phase_fixed_or_documented": "Phase 2A-3",
+      "canonical_source_anchors": [
+        "prompts/review/security.md :: Write-mode vs review-mode metadata",
+        "orchestrator/Test-ReviewSafety.ps1"
+      ],
+      "tests": [
+        "orchestrator/Test-ReviewSafety.ps1"
+      ],
+      "notes": "Phase 2A-3 prompts now distinguish target's write-mode metadata (may have Bash by operator design) from review-mode metadata (must NEVER). Real reviews show this false positive does not recur."
+    },
+    {
+      "tag": "SEC-002",
+      "title": "BEARER_TOKEN regex too narrow (no /, +, =)",
+      "source": "security",
+      "status": "fixed",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-4",
+      "canonical_source_anchors": [
+        "orchestrator/lib/Redactor.ps1 :: Phase 2A-4 SEC-002"
+      ],
+      "tests": [
+        "orchestrator/Test-Redactor.ps1",
+        "orchestrator/Test-Redaction.ps1"
+      ],
+      "notes": "Phase 2A-4 P8: char class extended to [A-Za-z0-9._-/+=]{20,}."
+    },
+    {
+      "tag": "SEC-003",
+      "title": "Reserved",
+      "source": "informational",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: SEC-003"
+      ],
+      "tests": [],
+      "notes": "Placeholder."
+    },
+    {
+      "tag": "SEC-004",
+      "title": "Reserved",
+      "source": "informational",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: SEC-004"
+      ],
+      "tests": [],
+      "notes": "Placeholder."
+    },
+    {
+      "tag": "SEC-005",
+      "title": "Phase 2A-3 security review observation: write-mode metadata recorded as info-only",
+      "source": "security",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-3",
+      "phase_fixed_or_documented": "Phase 2A-3",
+      "canonical_source_anchors": [
+        "prompts/review/security.md :: Write-mode vs review-mode metadata"
+      ],
+      "tests": [
+        "orchestrator/Test-ReviewSafety.ps1"
+      ],
+      "notes": "The Phase 2A-3 security reviewer correctly recorded the target's write-mode --dangerously-skip-permissions at info severity per the new prompt rule, NOT as a finding. Listed informational."
+    },
+    {
+      "tag": "SEC-006",
+      "title": "Reserved",
+      "source": "informational",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: SEC-006"
+      ],
+      "tests": [],
+      "notes": "Placeholder."
+    },
+    {
+      "tag": "SEC-007",
+      "title": "Reserved",
+      "source": "informational",
+      "status": "informational",
+      "phase_introduced": "Phase 2A-5",
+      "phase_fixed_or_documented": "Phase 2A-5",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: SEC-007"
+      ],
+      "tests": [],
+      "notes": "Placeholder."
+    }
+  ]
+}

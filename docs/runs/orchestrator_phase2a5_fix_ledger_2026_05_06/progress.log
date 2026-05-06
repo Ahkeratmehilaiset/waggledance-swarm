@@ -1,0 +1,18 @@
+[2026-05-07T00:30:00Z] P0 START
+[2026-05-07T00:30:00Z] origin/main = a822a100d10a530c9ae59d7b02f0a5c50466b9c2 (Phase 2A-4 squash, PR #92)
+[2026-05-07T00:30:00Z] new branch orchestrator/phase2a5-fix-ledger-and-gates-reporting from origin/main
+[2026-05-07T00:30:00Z] confirmed ARCH-006: default ReportPath at line 26 of Run-WaggleHardeningGates points to phase2a2 dir
+[2026-05-07T00:30:00Z] confirmed ARCH-005 (Phase 2A-5 instance): no ledger file at docs/design/phase_fix_ledger.{md,json}
+[2026-05-07T00:30:00Z] inventory: 7 unique (phase,tag) pairs in source: Phase 2A-4 {ARCH-001,005, REL-001,002,003,005, SEC-002}
+[2026-05-07T00:30:00Z] P0 PASS
+[2026-05-07T00:35:00Z] P1 ledger json+md: ARCH-000..006, REL-000..009, SEC-000..007 covered
+[2026-05-07T00:40:00Z] P2 Test-PhaseFixLedger: 17/17 PASS (with collision-aware (phase, tag) matching)
+[2026-05-07T00:45:00Z] P3 default ReportPath -> docs/runs/hardening_gates/<utc>.json + Copy-Item to latest.json; -SelfTest mode added; rich JSON metadata (report_format_version, git_branch, git_head_sha, git_is_dirty, ps_version, os, results)
+[2026-05-07T00:50:00Z] P4 docs/runs/hardening_gates/{README.md, .gitignore} created; *.json gitignored, README.md + .gitignore exempt
+[2026-05-07T00:52:00Z] P5 Test-HardeningGatesReportPath: 25/25 PASS (uses -SelfTest to avoid running real gates)
+[2026-05-07T00:55:00Z] P6 Run-WaggleHardeningGates includes the 2 new gates -> 17/17 OVERALL PASS
+[2026-05-07T01:00:00Z] P7 prompts/phase2b_handoff_requirements.md committed (since prompts/phase2b_*.md does not exist on origin/main)
+[2026-05-07T01:00:00Z] P8 docs/design/phase2a5_fix_ledger_and_gates_reporting.md design doc
+[2026-05-07T01:05:00Z] P9 final hardening gates run: 17/17 PASS, no Phase 2A-4 regression
+[2026-05-07T01:05:30Z] P10 staged: 12 files forbidden=0 token-shape=0
+[2026-05-07T01:06:00Z] P11 commit + push next

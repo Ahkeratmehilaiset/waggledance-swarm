@@ -1,0 +1,115 @@
+# WaggleDance phase-fix ledger
+
+A durable audit table for fix tags emitted by the Phase 2A review
+runner (architect / security / reliability) and by human review.
+Tags appear in code comments (`# Phase 2A-4 REL-003`), tests
+(`'Phase 2A-4 REL-002 ...'`), and review-output JSON (`SEC-001`).
+
+## Disambiguation contract
+
+Tag-IDs (`ARCH-NNN`, `REL-NNN`, `SEC-NNN`) are NOT globally unique.
+Each review run numbers its findings from 0, so the same tag-ID can
+mean different things across phases:
+
+| Tag        | Phase 2A-3 meaning                          | Phase 2A-4 meaning                              |
+|------------|----------------------------------------------|-------------------------------------------------|
+| `ARCH-001` | Redactor self-corrupts                       | subprocess runner duplicated                    |
+| `REL-001`  | lock release on crash                        | Lockfile.ps1 not visible in supplement          |
+
+The unique key in this ledger is **`(phase_introduced, tag)`**.
+`Test-PhaseFixLedger` matches `Phase 2A-N (ARCH|REL|SEC)-N` patterns
+in source comments against `(phase_fixed_or_documented, tag)` ledger
+rows, NOT against bare tag-IDs.
+
+## Source of truth
+
+`docs/design/phase_fix_ledger.json` is the parseable source of truth.
+This `.md` file is a human-friendly view; both must agree.
+`Test-PhaseFixLedger.ps1` reads the JSON and asserts row count
+matches the markdown.
+
+## Anchor format
+
+Canonical source anchors use `path :: stable_text` rather than
+`path:line` because line numbers drift. The text after `::` must
+appear somewhere in the file.
+
+## Status legend
+
+- `fixed` -- bug confirmed in source and resolved
+- `false_positive_due_to_truncation` -- reviewer's complaint was a
+  supplement-truncation artifact; real source was already correct
+- `already_fixed` -- bug was fixed before the phase that flagged it
+- `backlog` -- low risk; deferred with future-phase + acceptance note
+- `not_reproducible` -- could not reproduce in source / tests
+- `informational` -- placeholder or info-only entry; no code change
+
+## Source legend
+
+`architect` / `reliability` / `security` -- emitted by the matching
+review runner role. `human-review` -- raised by an operator outside
+the review runner. `final-report` -- raised in a phase final report's
+"Remaining risks" section.
+
+---
+
+## ARCH
+
+| Tag | Phase introduced | Title | Status | Fixed/documented in | Tests | Anchors |
+|-----|------------------|-------|--------|----------------------|-------|---------|
+| `ARCH-000` | Phase 2A-3 | Empty evidence surface in target iteration package can produce a confident review pass | fixed | Phase 2A-4 | `Test-ReviewIntegrity.ps1` | `orchestrator/lib/review/ReviewSurface.ps1 :: review_readiness_status`, `orchestrator/Invoke-WaggleReview.ps1 :: NEEDS_REVIEW_SURFACE` |
+| `ARCH-001` | Phase 2A-3 | Redactor self-corrupts its own source when included in review surface supplement | fixed | Phase 2A-4 | `Test-ReviewSurface.ps1` | `orchestrator/lib/Redactor.ps1 :: Phase 2A-4 ARCH-001`, `orchestrator/lib/review/ReviewSurface.ps1 :: Phase 2A-4 ARCH-001` |
+| `ARCH-001` | Phase 2A-4 | Subprocess runner duplicated between Invoke-WaggleIteration and Invoke-WaggleReview (same tag-id, different finding) | backlog | Phase 2A-5 (documented) | -- | `docs/design/phase2a4_backlog.md :: ARCH-002 -- subprocess runner duplication` |
+| `ARCH-002` | Phase 2A-3 | Subprocess runner duplication (formal backlog tag-name) | backlog | Phase 2A-5 (documented) | -- | `docs/design/phase2a4_backlog.md :: ARCH-002 -- subprocess runner duplication` |
+| `ARCH-003` | Phase 2A-3 | Entry points dot-source many lib files in fragile fixed order | backlog | Phase 2A-5 (documented) | -- | `docs/design/phase2a4_backlog.md :: ARCH-003 -- entry-point dot-source order` |
+| `ARCH-004` | Phase 2A-3 | review/ depends back on lib/ root via ReviewAdapter -> Redactor | backlog | Phase 2A-5 (documented) | -- | `docs/design/phase2a4_backlog.md :: ARCH-004 -- review/ -> lib/ root dependency` |
+| `ARCH-005` | Phase 2A-3 | UNTRUSTED marker check is substring-only | fixed | Phase 2A-4 | `Test-ArtifactValidator.ps1` | `orchestrator/lib/ArtifactValidator.ps1 :: Phase 2A-4 ARCH-005` |
+| `ARCH-005` | Phase 2A-5 | Phase-tag ledger gap: code has fix tags but no central ledger | fixed | Phase 2A-5 | `Test-PhaseFixLedger.ps1` | `docs/design/phase_fix_ledger.md`, `docs/design/phase_fix_ledger.json`, `orchestrator/Test-PhaseFixLedger.ps1` |
+| `ARCH-006` | Phase 2A-5 | Run-WaggleHardeningGates default ReportPath is hardcoded to Phase 2A-2 docs run dir | fixed | Phase 2A-5 | `Test-HardeningGatesReportPath.ps1` | `orchestrator/Run-WaggleHardeningGates.ps1 :: default ReportPath`, `orchestrator/Test-HardeningGatesReportPath.ps1` |
+
+## REL
+
+| Tag | Phase introduced | Title | Status | Fixed/documented in | Tests | Anchors |
+|-----|------------------|-------|--------|----------------------|-------|---------|
+| `REL-000` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: REL-000` |
+| `REL-001` | Phase 2A-3 | Lock release crash-path may not be visible / may be missing | false_positive_due_to_truncation | Phase 2A-4 | `Test-Lockfile.ps1` | `orchestrator/Invoke-WaggleIteration.ps1 :: Acquire-WaggleLock`, `orchestrator/Invoke-WaggleReview.ps1 :: Acquire-WaggleLock`, `orchestrator/Test-Lockfile.ps1 :: Phase 2A-4 REL-001` |
+| `REL-001` | Phase 2A-4 | Lockfile.ps1 not visible in supplement (different finding, same tag-id) | informational | Phase 2A-4 | `Test-ReviewSurface.ps1` | `orchestrator/lib/review/ReviewSurface.ps1 :: keyword_windows_used` |
+| `REL-002` | Phase 2A-3 | CompletionVerifier has tautological condition | fixed | Phase 2A-4 | `Test-CompletionVerifier.ps1` | `orchestrator/lib/CompletionVerifier.ps1 :: Phase 2A-4 REL-002` |
+| `REL-003` | Phase 2A-3 | Resume short-circuit may fire before lock acquisition | fixed | Phase 2A-4 | `Test-Lockfile.ps1` | `orchestrator/Invoke-WaggleIteration.ps1 :: Phase 2A-4 REL-003`, `orchestrator/Test-Lockfile.ps1 :: Phase 2A-4 REL-003` |
+| `REL-004` | Phase 2A-3 | Unique-artifact contract may not be invoked or hidden by truncation | false_positive_due_to_truncation | Phase 2A-4 | `Test-CompletionVerifier.ps1` | `orchestrator/lib/CompletionVerifier.ps1 :: Test-UniqueIterationArtifact`, `orchestrator/Invoke-WaggleIteration.ps1 :: requireUniqueArtifact` |
+| `REL-005` | Phase 2A-3 | Review subprocess timeout enforcement may be unsafe | fixed | Phase 2A-4 | `Test-ReviewSubprocessTimeout.ps1` | `orchestrator/Invoke-WaggleReview.ps1 :: Phase 2A-4 REL-005` |
+| `REL-006` | Phase 2A-3 | Signal-conflict semantics | already_fixed | Phase 1.6 | `Test-CompletionVerifier.ps1` | `orchestrator/lib/CompletionVerifier.ps1 :: NEEDS_REVIEW_CONFLICT` |
+| `REL-007` | Phase 2A-3 | Partial-state recovery semantics | backlog | Phase 2A-5 (documented) | -- | `docs/design/phase2a4_backlog.md :: REL-007 -- partial-state recovery semantics` |
+| `REL-008` | Phase 2A-3 | Idempotency semantics for same-iteration-id re-runs | backlog | Phase 2A-5 (documented) | -- | `docs/design/phase2a4_backlog.md :: REL-008 -- idempotency semantics` |
+| `REL-009` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: REL-009` |
+
+## SEC
+
+| Tag | Phase introduced | Title | Status | Fixed/documented in | Tests | Anchors |
+|-----|------------------|-------|--------|----------------------|-------|---------|
+| `SEC-000` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: SEC-000` |
+| `SEC-001` | Phase 2A-2 | Phase 2A-2 false positive: write-mode runner has Bash + dangerously-skip-permissions | already_fixed | Phase 2A-3 | `Test-ReviewSafety.ps1` | `prompts/review/security.md :: Write-mode vs review-mode metadata`, `orchestrator/Test-ReviewSafety.ps1` |
+| `SEC-002` | Phase 2A-3 | BEARER_TOKEN regex too narrow (no /, +, =) | fixed | Phase 2A-4 | `Test-Redactor.ps1`, `Test-Redaction.ps1` | `orchestrator/lib/Redactor.ps1 :: Phase 2A-4 SEC-002` |
+| `SEC-003` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: SEC-003` |
+| `SEC-004` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: SEC-004` |
+| `SEC-005` | Phase 2A-3 | Phase 2A-3 security review observation: write-mode metadata recorded as info-only | informational | Phase 2A-3 | `Test-ReviewSafety.ps1` | `prompts/review/security.md :: Write-mode vs review-mode metadata` |
+| `SEC-006` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: SEC-006` |
+| `SEC-007` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: SEC-007` |
+
+## Maintenance contract
+
+Every Phase 2A-N session that:
+
+1. lands a fix referenced in code with `# Phase 2A-N TAG-NNN`,
+2. carries a finding forward as backlog,
+3. discovers a false-positive-due-to-truncation,
+4. or marks an existing entry as already_fixed,
+
+MUST update `phase_fix_ledger.json` accordingly. `Test-PhaseFixLedger`
+runs in the hardening-gate driver and fails the gate on missing rows.
+
+Reserved rows (status `informational`, title "Reserved") fill out
+the required tag-number ranges (`ARCH-000..006`, `REL-000..009`,
+`SEC-000..007`) so the ledger has a stable shape from this phase
+onward. When a future phase issues a real finding for a reserved
+slot, replace the row.

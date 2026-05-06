@@ -1,0 +1,12 @@
+# Phase 2A-5 ARCH-006: hardening-gate JSON reports are runtime
+# artifacts produced by orchestrator/Run-WaggleHardeningGates.ps1
+# every time gates are run. They are local-only by design --
+# downstream phase final reports may QUOTE summaries from them but
+# the raw JSON does not need to be committed.
+#
+# This .gitignore ignores all *.json (including the `latest.json`
+# Copy-Item shortcut) but keeps the README.md and this .gitignore
+# itself.
+*.json
+!README.md
+!.gitignore

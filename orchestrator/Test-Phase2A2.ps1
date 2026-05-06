@@ -201,6 +201,32 @@ foreach ($rel in $watchFiles) {
 }
 Assert-True 'no token patterns in committed templates/docs' ($secretHits -eq 0)
 
+# ----------------- Phase 2A-3 runtime safety gate is wired in -----------------
+
+$reviewRunnerSrc = Get-Content -Raw -Path (Join-Path $repoRoot 'orchestrator/Invoke-WaggleReview.ps1') -Encoding UTF8
+Assert-True 'Invoke-WaggleReview calls Assert-WaggleReviewSafeProfile before subprocess' (
+    $reviewRunnerSrc -match 'Assert-WaggleReviewSafeProfile[\s\S]*?Invoke-WaggleReviewSubprocess'
+)
+
+# Validator + gate are loadable
+. (Join-Path $repoRoot 'orchestrator/lib/review/ReviewAdapter.ps1')
+$canonicalSafe = Get-WaggleReviewSafeProfile
+$probe = Test-WaggleReviewSafeProfileViolations -EffectiveProfile $canonicalSafe
+Assert-True 'safety validator reports canonical safe profile as ok' ($probe.ok -and $probe.violations.Count -eq 0)
+
+# Runtime gate must throw on a corrupt profile
+$threw = $false
+try {
+    $bad = [pscustomobject]@{
+        safeMode=$true; allowBash=$true; dangerouslySkipPermissions=$false
+        requireUniqueArtifact=$false; sanitizeEnvironment=$true
+        allowedTools=@('Read'); disallowedTools=@('Bash','Write','Edit')
+        exitMarker='REVIEW-COMPLETE'
+    }
+    [void](Assert-WaggleReviewSafeProfile -EffectiveProfile $bad)
+} catch { $threw = $true }
+Assert-True 'runtime gate throws on allowBash=true' $threw
+
 # ----------------- gitignore unignore policy works for orchestrator/lib -----------------
 
 # We don't assume git is on PATH -- we read .gitignore directly and look

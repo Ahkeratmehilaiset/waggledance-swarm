@@ -1,0 +1,19 @@
+[2026-05-06T21:30:00Z] P0 START
+[2026-05-06T21:30:00Z] origin/main = 7d9722317bd0d5edaded9f25b2941081f8ddd68b (Phase 2A-2 squash, PR #90)
+[2026-05-06T21:30:00Z] new branch orchestrator/phase2a3-review-surface-hardening from origin/main
+[2026-05-06T21:30:00Z] pre-checkout cleanup: stashed tools/waggle_*.py + Phase 2A-2 final_report.md edits; backed up Phase 16g/18d/18e/18f untracked dirs to /c/Users/.../wd-pre-phase2a3-untracked-*/
+[2026-05-06T21:30:00Z] confirmed prior review evidence: arch.json files_reviewed=0 (symptom 1), sec.md SEC-001 = source-iter-metadata false positive (symptom 2)
+[2026-05-06T21:30:00Z] P0 PASS
+[2026-05-06T21:35:00Z] P1+P1.5 START -> Test-ReviewSafety (25 cases) + Assert-WaggleReviewSafeProfile wired pre-launch in Invoke-WaggleReview
+[2026-05-06T21:35:30Z] Test-ReviewSafety: 25/25 PASS, Test-ReviewRunner 69/69 still PASS, Test-Phase2A2 56/56 (added 3 wiring assertions) -> P1+P1.5 PASS
+[2026-05-06T21:50:00Z] P2+P3 START -> ReviewSurface.ps1 + Test-ReviewSurface (22 cases)
+[2026-05-06T21:55:00Z] Invoke-WaggleReview integration: package_quality computed + persisted, supplement built when sparse, NEEDS_REVIEW_SURFACE on still-sparse
+[2026-05-06T21:55:00Z] Test-ReviewSurface: 22/22 PASS -> P2+P3 PASS
+[2026-05-06T22:00:00Z] P4 START -> three review prompts updated (write- vs review-mode, empty-evidence finding, supplement disclosure)
+[2026-05-06T22:00:00Z] P5 design doc written -> P4+P5 PASS
+[2026-05-06T22:05:00Z] P6 hardening gates: 10/10 PASS (added Test-ReviewSafety + Test-ReviewSurface to driver)
+[2026-05-06T22:31:16Z] P7 real smoke: 2026-05-06_22-31-16 -> COMPLETED
+[2026-05-06T22:35:00Z] P7 architect review -> needs_attention, files_reviewed=13, lines=1400, supplement disclosed
+[2026-05-06T22:38:00Z] P7 security review -> needs_attention, files_reviewed=14, lines=1850, supplement disclosed; Phase 2A-2 SEC-001 false positive does NOT recur (recorded as info per new prompt guidance)
+[2026-05-06T22:40:00Z] P7 reliability review -> pass_with_notes, files_reviewed=14, lines=1450, supplement disclosed
+[2026-05-06T22:41:00Z] P7 PASS: empty review surface RESOLVED, SEC-001 false positive RESOLVED

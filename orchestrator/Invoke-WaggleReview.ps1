@@ -75,6 +75,7 @@ $Script:OrchestratorLibDir = Join-Path $PSScriptRoot 'lib'
 . (Join-Path $Script:OrchestratorLibDir 'EnvSanitize.ps1')
 . (Join-Path $Script:OrchestratorLibDir 'Redactor.ps1')
 . (Join-Path $Script:ReviewLibDir 'ReviewAdapter.ps1')
+. (Join-Path $Script:ReviewLibDir 'ReviewSurface.ps1')
 
 function Get-Iso8601Utc {
     return (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')
@@ -434,6 +435,22 @@ function Invoke-WaggleReview {
         }
     } catch {}
 
+    # Phase 2A-3: compute package quality + (if sparse) build a
+    # redacted, capped, dynamically-fenced review surface supplement.
+    $packageQualityInfo = Get-WaggleReviewPackageQualityWithSupplementInfo `
+        -ProjectRoot $projectRoot -PackagePath $resolvedPkgPath
+    $supplementMd       = ''
+    $supplementUsed     = $false
+    $sparseReason       = $packageQualityInfo.sparse_reason
+    $supplementFiles    = @()
+    $supplementTruncated = @()
+    if ($packageQualityInfo.sparse -and $null -ne $packageQualityInfo.supplement) {
+        $supplementMd        = [string]$packageQualityInfo.supplement.markdown
+        $supplementUsed      = $true
+        $supplementFiles     = @($packageQualityInfo.supplement.included_files | ForEach-Object { $_.path })
+        $supplementTruncated = @($packageQualityInfo.supplement.truncated_files)
+    }
+
     $reviewPrompt = Build-WaggleReviewPrompt `
         -Role $Role `
         -TemplateText $tpl `
@@ -441,7 +458,10 @@ function Invoke-WaggleReview {
         -SourcePackageRel $relPkg `
         -RedactedPackageText $pkgRed.text `
         -Truncated:$pkgRead.truncated `
-        -OriginalChars $pkgRead.original_chars
+        -OriginalChars $pkgRead.original_chars `
+        -SupplementMarkdown $supplementMd `
+        -SupplementUsed $supplementUsed `
+        -SparseReason $sparseReason
 
     $reviewIterationId = (Get-IterationId) + '_review_' + $Role
 
@@ -466,17 +486,97 @@ function Invoke-WaggleReview {
         applied_at_utc      = Get-Iso8601Utc
     } | ConvertTo-Json -Depth 6 | Set-Content -Path $redReportPath -Encoding UTF8
 
+    # Persist package_quality.json (Phase 2A-3).
+    $packageQualityPath = Join-Path $stagingRoot 'package_quality.json'
+    $pqOut = [ordered]@{
+        target_iteration_id        = $SourceIterationId
+        review_iteration_id        = $reviewIterationId
+        role                       = $Role
+        package_path               = $relPkg
+        reviewable_files_count     = [int]$packageQualityInfo.quality.reviewable_files_count
+        reviewable_lines_count     = [int]$packageQualityInfo.quality.reviewable_lines_count
+        source_section_count       = [int]$packageQualityInfo.quality.source_section_count
+        sparse                     = [bool]$packageQualityInfo.sparse
+        sparse_reason              = [string]$packageQualityInfo.sparse_reason
+        source_supplement_used     = [bool]$supplementUsed
+        source_supplement_files    = $supplementFiles
+        truncated_files_count      = [int]$supplementTruncated.Count
+        redaction_report_path      = $redReportPath
+    }
+    ([pscustomobject]$pqOut) | ConvertTo-Json -Depth 6 | Set-Content -Path $packageQualityPath -Encoding UTF8
+
     $startedAt = Get-Iso8601Utc
+
+    # Decide if we should refuse the run for an empty surface that
+    # the supplement could not fix. NEEDS_REVIEW_SURFACE means the
+    # parent's working tree did not even have the orchestrator + lib
+    # source on disk, so we have nothing meaningful for the reviewer.
+    $needsReviewSurface = $false
+    if ($packageQualityInfo.sparse) {
+        if (-not $supplementUsed -or $supplementFiles.Count -eq 0) {
+            $needsReviewSurface = $true
+        }
+    }
 
     if ($DryRun) {
         return [pscustomobject]@{
-            ok                  = $true
+            ok                  = (-not $needsReviewSurface)
             dry_run             = $true
             review_iteration_id = $reviewIterationId
             prompt_path         = $promptOnDisk
             staging_root        = $stagingRoot
             effective_profile   = $effective
-            errors              = @()
+            package_quality     = $pqOut
+            status              = if ($needsReviewSurface) { 'NEEDS_REVIEW_SURFACE' } else { 'DRY_RUN_OK' }
+            errors              = if ($needsReviewSurface) { @('package is sparse and no supplement could be assembled') } else { @() }
+        }
+    }
+
+    if ($needsReviewSurface) {
+        # Write a failure metadata + return without spawning Claude.
+        $jsonOut = Join-Path $OutputDir ($Role + '.json')
+        $mdOut   = Join-Path $OutputDir ($Role + '.md')
+        $metaOut = Join-Path $OutputDir ($Role + '.metadata.json')
+        $endedAt = Get-Iso8601Utc
+        $meta = [ordered]@{
+            source_iteration_id          = $SourceIterationId
+            review_iteration_id          = $reviewIterationId
+            role                         = $Role
+            status                       = 'NEEDS_REVIEW_SURFACE'
+            package_path                 = $relPkg
+            started_at_utc               = $startedAt
+            completed_at_utc             = $endedAt
+            safe_mode                    = $effective.safeMode
+            allow_bash                   = $effective.allowBash
+            dangerously_skip_permissions = $effective.dangerouslySkipPermissions
+            require_unique_artifact      = $effective.requireUniqueArtifact
+            sanitize_environment         = $effective.sanitizeEnvironment
+            allowed_tools                = $effective.allowedTools
+            disallowed_tools             = $effective.disallowedTools
+            review_json_path             = ''
+            review_md_path               = ''
+            review_json_sha256           = ''
+            review_md_sha256             = ''
+            redaction_report_path        = $redReportPath
+            package_quality_path         = $packageQualityPath
+            staging_root                 = $stagingRoot
+            errors                       = @('NEEDS_REVIEW_SURFACE: ' + $sparseReason + '; the working tree did not provide source files for a supplement either.')
+            run_result                   = $null
+        }
+        $meta | ConvertTo-Json -Depth 16 | Set-Content -Path $metaOut -Encoding UTF8
+        return [pscustomobject]@{
+            ok                  = $false
+            review_iteration_id = $reviewIterationId
+            target_iteration_id = $SourceIterationId
+            role                = $Role
+            status              = 'NEEDS_REVIEW_SURFACE'
+            review_json_path    = ''
+            review_md_path      = ''
+            metadata_path       = $metaOut
+            staging_root        = $stagingRoot
+            errors              = @($meta.errors)
+            effective_profile   = $effective
+            package_quality     = $pqOut
         }
     }
 
@@ -508,6 +608,13 @@ function Invoke-WaggleReview {
             -DisallowedTools $effective.disallowedTools `
             -DebugFile       $debugFile `
             -DangerouslySkipPermissions $false
+
+        # Phase 2A-3 belt-and-braces: runtime safety gate. If anything
+        # in the config-resolution / arg-build chain ever drifts unsafe,
+        # this throws BEFORE we spawn the child process. Defense in
+        # depth on top of Resolve-WaggleReviewEffectiveProfile's
+        # hard-clamp.
+        [void](Assert-WaggleReviewSafeProfile -EffectiveProfile $effective -ArgList $argList)
 
         $timeoutSec = $effective.runTimeoutMinutes * 60
 
@@ -587,6 +694,8 @@ function Invoke-WaggleReview {
             review_json_sha256           = (Get-FileSha256 -Path $jsonOut)
             review_md_sha256             = (Get-FileSha256 -Path $mdOut)
             redaction_report_path        = $redReportPath
+            package_quality_path         = $packageQualityPath
+            package_quality              = $pqOut
             staging_root                 = $stagingRoot
             errors                       = @($errors)
             run_result                   = $runResult
@@ -605,6 +714,7 @@ function Invoke-WaggleReview {
             staging_root        = $stagingRoot
             errors              = @($errors)
             effective_profile   = $effective
+            package_quality     = $pqOut
         }
     }
     finally {

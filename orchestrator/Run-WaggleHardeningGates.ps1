@@ -42,6 +42,8 @@ $gates = @(
     @{ name = 'Test-ReviewSchema';   path = Join-Path $orchDir 'Test-ReviewSchema.ps1' }
     @{ name = 'Test-ReviewAdapter';  path = Join-Path $orchDir 'Test-ReviewAdapter.ps1' }
     @{ name = 'Test-ReviewRunner';   path = Join-Path $orchDir 'Test-ReviewRunner.ps1' }
+    @{ name = 'Test-ReviewSafety';   path = Join-Path $orchDir 'Test-ReviewSafety.ps1' }
+    @{ name = 'Test-ReviewSurface';  path = Join-Path $orchDir 'Test-ReviewSurface.ps1' }
     @{ name = 'Test-Phase2A2';       path = Join-Path $orchDir 'Test-Phase2A2.ps1' }
 )
 

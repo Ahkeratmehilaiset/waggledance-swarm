@@ -298,3 +298,12 @@ R.txt
 /tmp_*.txt
 soak/
 
+# WaggleDance orchestrator (Phase 2A-1/2A-2): the broad `lib/` rule above
+# (line ~20) shadows the orchestrator's own PowerShell library. Re-include
+# it explicitly. Local scratch (iterations/, state/, live configs, *.lock,
+# .claude/) is excluded via .git/info/exclude, NOT here.
+!orchestrator/lib/
+!orchestrator/lib/**
+!orchestrator/lib/review/
+!orchestrator/lib/review/**
+

@@ -1,0 +1,60 @@
+{
+  "_comment_purpose": "Phase 2A-2 SAFE review-mode config. Used by orchestrator\\Invoke-WaggleReview.ps1. Reviewer mode is read-only over an existing iteration package. Reviewer must NOT have Bash, Write, or Edit. Reviewer must NOT inherit the live smoke config's allowBash=true / dangerouslySkipPermissions=true. The runner enforces these at the tool layer regardless of what is below; this file documents the safe profile.",
+  "_comment_relpaths": "All paths are relative; the runner resolves them against ConfigPath's directory or projectRoot.",
+
+  "projectRoot": ".",
+  "transcriptDir": "transcripts",
+  "iterationsDir": "iterations",
+  "stateDir": "state",
+  "reportFile": "raportti.md",
+
+  "executionMode": "print",
+  "claudeCommand": "claude",
+  "model": "opus",
+  "outputFormat": "text",
+  "maxTurns": 60,
+  "permissionMode": "default",
+
+  "safeMode": true,
+  "allowBash": false,
+  "dangerouslySkipPermissions": false,
+
+  "allowedTools": ["Read", "Glob", "Grep"],
+  "disallowedTools": ["Bash", "Write", "Edit"],
+
+  "sanitizeEnvironment": true,
+  "envDenylist": null,
+  "envAllowList": [],
+  "killOnInteractivePrompt": true,
+
+  "runnerPollSeconds": 3,
+  "tailLineCount": 1000,
+  "fullTranscriptMaxBytes": 10485760,
+  "pollIntervalSeconds": 5,
+  "stableThresholdSeconds": 25,
+  "runTimeoutMinutes": 60,
+
+  "llmPackageMaxChars": 200000,
+  "perSectionMaxChars": 60000,
+
+  "requireUniqueArtifact": false,
+  "requireExitMarker": true,
+  "exitMarker": "REVIEW-COMPLETE",
+  "requireReport": false,
+  "requireClaudeAuthStatus": false,
+
+  "interactivePromptPatterns": [
+    "Do you want to proceed",
+    "Continue\\? \\[y/N\\]",
+    "Continue\\? \\(y/n\\)",
+    "Press Enter to continue",
+    "\\[y/N\\]\\s*$",
+    "\\[Y/n\\]\\s*$",
+    "Choose an option",
+    "Please confirm",
+    "Press any key"
+  ],
+  "completedPromptPatterns": [
+    "PS [A-Z]:[^>\\r\\n]*> *$"
+  ]
+}

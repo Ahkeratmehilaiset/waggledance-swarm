@@ -1,0 +1,164 @@
+﻿{
+    "ok":  true,
+    "total":  19,
+    "missing":  0,
+    "empty":  0,
+    "parse_failures":  0,
+    "secret_hits_total":  0,
+    "fake_placeholder_total":  2,
+    "notes":  "fake_placeholder_total counts known-fake test fixture tokens (e.g. ghp_AAAA... 40-char run of single char) used to validate that the Phase 2A-1 Redactor strips them. Those are not real secrets and are intentional.",
+    "results":  [
+                    {
+                        "path":  "orchestrator\\Invoke-WaggleReview.ps1",
+                        "exists":  true,
+                        "size":  28387,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator\\Run-WaggleHardeningGates.ps1",
+                        "exists":  true,
+                        "size":  4882,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator\\Test-Phase2A2.ps1",
+                        "exists":  true,
+                        "size":  10526,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator\\Test-ReviewAdapter.ps1",
+                        "exists":  true,
+                        "size":  11549,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  1
+                    },
+                    {
+                        "path":  "orchestrator\\Test-ReviewSchema.ps1",
+                        "exists":  true,
+                        "size":  6829,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator\\Test-ReviewRunner.ps1",
+                        "exists":  true,
+                        "size":  15143,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  1
+                    },
+                    {
+                        "path":  "orchestrator\\lib\\review\\ReviewAdapter.ps1",
+                        "exists":  true,
+                        "size":  13632,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator\\lib\\review\\ReviewSchema.ps1",
+                        "exists":  true,
+                        "size":  8620,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator\\lib\\review\\Adapter.Architect.ps1",
+                        "exists":  true,
+                        "size":  456,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator\\lib\\review\\Adapter.Security.ps1",
+                        "exists":  true,
+                        "size":  484,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator\\lib\\review\\Adapter.Reliability.ps1",
+                        "exists":  true,
+                        "size":  503,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "schemas\\review.schema.json",
+                        "exists":  true,
+                        "size":  2345,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "prompts\\review\\architect.md",
+                        "exists":  true,
+                        "size":  4499,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "prompts\\review\\security.md",
+                        "exists":  true,
+                        "size":  4905,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "prompts\\review\\reliability.md",
+                        "exists":  true,
+                        "size":  4054,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "orchestrator.config.review.example.json",
+                        "exists":  true,
+                        "size":  1872,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "docs\\design\\phase2a2_review_runner_design.md",
+                        "exists":  true,
+                        "size":  10733,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "docs\\runs\\orchestrator_phase2a2_review_runner_2026_05_06\\baseline.md",
+                        "exists":  true,
+                        "size":  3787,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    },
+                    {
+                        "path":  "docs\\runs\\orchestrator_phase2a2_review_runner_2026_05_06\\final_report.md",
+                        "exists":  true,
+                        "size":  281,
+                        "parses":  true,
+                        "secret_hits":  0,
+                        "fake_placeholders":  0
+                    }
+                ]
+}

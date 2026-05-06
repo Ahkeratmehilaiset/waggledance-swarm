@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/review.schema.json",
+  "title": "WaggleDance Phase 2A-2 review output",
+  "description": "Schema for orchestrator/Invoke-WaggleReview.ps1 output. The reviewer emits this object inside a fenced ```review-json``` block.",
+  "type": "object",
+  "required": [
+    "role",
+    "target_iteration_id",
+    "source_package_path",
+    "summary",
+    "verdict",
+    "findings",
+    "metrics",
+    "completed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": ["architect", "security", "reliability"]
+    },
+    "target_iteration_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_package_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "pass_with_notes", "needs_attention", "fail"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "severity",
+          "title",
+          "where",
+          "evidence",
+          "why_it_matters",
+          "recommended_action"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low", "info"]
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "where": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 },
+          "why_it_matters": { "type": "string", "minLength": 1 },
+          "recommended_action": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "files_reviewed",
+        "lines_reviewed",
+        "review_duration_seconds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "files_reviewed": { "type": "integer", "minimum": 0 },
+        "lines_reviewed": { "type": "integer", "minimum": 0 },
+        "review_duration_seconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "completed": {
+      "type": "boolean"
+    }
+  }
+}

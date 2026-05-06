@@ -1,5 +1,64 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase 18F — Incremental Runtime Gap Replay + Detector Bridge / v3.10.4-incremental-gap-replay-alpha CANDIDATE] — 2026-05-06
+
+Branch: `phase18f/incremental-gap-replay`. Productionization sprint on top of v3.10.3-runtime-gap-replay-alpha. **Outcome (candidate):** PRERELEASE `v3.10.4-incremental-gap-replay-alpha` — to be tagged from the Phase 18F PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + all 8 alphas (`v3.9.0` → `v3.10.3`) remain unchanged.
+
+Phase 18F upgrades Phase 18E's whole-corpus replay into a cursor-based incremental learning loop with concurrency lock, strict load, and a Phase 12 RuntimeGapDetector bridge. **No schema change** — `runtime_gap_signals` reused for events; `schema_meta` reused for cursor + lock; `schema_version` remains 4.
+
+### Added (production code)
+
+* **`waggledance/core/autonomy_growth/incremental_gap_replay.py`** (~580 LOC, stdlib + WaggleDance only). Public API: `read_replay_cursor`, `write_replay_cursor`, `acquire_replay_lock`, `release_replay_lock`, `load_runtime_gap_events_after_id` (strict + counted-skip), `bridge_detector_signal_to_phase18e_event`, `persist_detector_gap_signals_as_replay_events`, `run_incremental_gap_replay_once`. Plus dataclasses (`ReplayCursor`, `ReplayLock`, `IncrementalLoadResult`, `IncrementalReplayResult`, `DetectorBridgeResult`). Reuses `mine_runtime_gaps` (Phase 18B) and `register_mined_solver_specs` (Phase 18C) verbatim.
+* **`tools/run_phase18f_incremental_gap_replay_proof.py`** — proof harness with 10 stages: seed, first replay, no-op, append post-cursor, post-cursor replay, post-cursor no-op, malformed/type-confused/forbidden, RuntimeGapDetector bridge, concurrency lock, release gate aggregation. 32 seed events + 12 post-cursor events covering all six allowlist families × 2 strong signals each.
+* **`tests/autonomy_growth/test_phase18f_incremental_gap_replay.py`** — 46 unit/integration tests covering cursor state survival, no-op replay zero-work, post-cursor incremental processing, strict load (parametrized over malformed JSON / array / string / null / number / empty payload / missing field / forbidden key / secret value), verdict invariants (high-risk / out-of-family / builder-handoff / duplicate non-registration), detector bridge accept + reject parametrized, concurrency lock returns `LOCKED_NOT_RUN`, allowlist tuple invariant, schema-version unchanged.
+* **`docs/benchmarks/INCREMENTAL_RUNTIME_GAP_REPLAY_2026.md`** — public-facing report.
+* **`docs/runs/phase18f_incremental_gap_replay_2026_05_06/`** — full session folder with `baseline_verification.md`, `runtime_gap_path_inventory.md`, `incremental_replay_design.md`, `session_state.json`, `incremental_gap_replay_proof.{json,md}`, `host_verification.md`, `docker_phase18f_verification.md`, `release_decision.md`, `pr_body.md`, `release_notes.md`, `final_report.md`.
+
+### Changed
+
+* **`waggledance/core/storage/control_plane.py`** — added (a) `set_meta` / `get_meta` / `delete_meta` general key/value helpers operating on the existing `schema_meta` table (already created at schema v0); (b) optional `after_id` filter on `list_runtime_gap_signals`. **No schema change.** No `ALTER TABLE`. No new column. Existing `record_runtime_gap_signal` / `count_runtime_gap_signals` APIs are untouched.
+* **`waggledance/core/autonomy_growth/runtime_gap_replay.py`** — defensive guard in `persist_runtime_gap_events` so it tolerates type-confused historical rows (non-Mapping JSON in `signal_payload`) without raising. No behavioral change to callers passing well-formed events.
+* **`waggledance/core/autonomy_growth/mined_solver_runtime.py`** — `_COMPILATION_TABLE` extended with six new strict per-family rules (one new feature_dict per family) so post-cursor mined specs can register as new auto-promoted solvers. Compile rule total: 12 (6 original Phase 18C + 6 phase18f). **No allowlist widening; no new family_kind; no generic code generation.** Each new rule is a hardcoded executor artifact dict.
+* **`docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md`** — axis M upgraded from "PROVEN with persisted runtime-gap replay, measured runtime-gap feedback loop, AND runtime dispatch of mined solver specs within six-family allowlist (Phase 18E)" to "**PROVEN with persisted, idempotent, cursor-incremental runtime-gap replay, RuntimeGapDetector bridge, measured feedback loop, and runtime dispatch of mined solver specs within six-family allowlist** (Phase 18F)".
+* **`.dockerignore`** — extends carve-outs with `tools/run_phase18f_incremental_gap_replay_proof.py`.
+* **`CURRENT_STATUS.md`, `README.md`, `docs/release/RELEASE_READINESS.md`** — candidate-state entries for `v3.10.4-incremental-gap-replay-alpha`.
+
+### Behaviour (host run, this branch)
+
+* **Seed:** 32 valid events persisted; 4 malformed (3 schema + 1 forbidden-field) rejected at persist.
+* **First replay (Stage B):** processes all 32 rows, registers 6 auto-promoted solvers, 6/6 families covered, 18/18 dispatch hits via real `LowRiskSolverDispatcher.dispatch_by_features` with `reason="hit_by_features"`, cursor advances 0 → max_id_seen.
+* **No-op replay (Stage C):** 0 rows processed, 0 extra solvers / capability-features / artifacts; `no_op_idempotency_pass = true`; cursor unchanged.
+* **Append + post-cursor replay (Stages D–E):** 12 new events appended (6 families × 2 signals × phase18f-extended feature_dicts); third replay processes only those 12 rows, registers **6 new** solvers, 18/18 dispatch hits with the new feature_dicts. Total registered solver count after Stage E = 12.
+* **Post-cursor no-op (Stage F):** 0 rows / 0 extras.
+* **Strict load (Stage G):** 4 type-confused payloads injected (string / array / null / malformed-JSON) → 3 type_confusion + 1 malformed counted; total `forbidden_field_rejections = 1`; `builder_handoff_executable_count = 0`; `high_risk_executable_count = 0`.
+* **Detector bridge (Stage H):** 1 valid `GapSignal` adapted + persisted; 2 malformed signals rejected with `BridgeRejectionError`; `detector_bridge_strict_validation_pass = true`; `malformed_detector_row_rejected = true`.
+* **Concurrency (Stage I):** held-lock test returns `lock_result = "LOCKED_NOT_RUN"`; `concurrent_replay_safety_pass = true`; 0 duplicate solvers / artifacts.
+* `release_gate_pass = true`, `forbidden_claims_absent = true`, `provider_jobs_delta = builder_jobs_delta = 0`, `allowlist_unchanged = true`.
+* Tests: 46 / 46 PASS in 5.29 s (Phase 18F). Targeted carry-forward (18F 46 + 18E 48 + 18C 33 + 18B 19 + 18A 15 + phase10 14 + storage 50 + ui_hologram 22 + solver_router 50) = **297 / 297 PASS** in 26.55 s.
+
+### Docker `--network none` (waggledance:phase18f)
+
+Five `docker run --rm --network none` invocations exit 0: Phase 18F proof + Phase 18E carry-forward + Phase 18C carry-forward + Phase 18B carry-forward + Phase 18A bundle validator.
+
+### Honesty contracts (re-asserted)
+
+* No model pull or download. No cloud API calls. No live builder execution.
+* No allowlist widening. The six-family allowlist tuple is unchanged.
+* No autonomy code change outside Phase 18F's new module + the read-only DB helper + the per-family compile-rule extension.
+* No Stage-2 atomic flip. No HUMAN_APPROVAL collected.
+* No new high-risk autonomy mechanism.
+* Builder handoff remains quarantined; zero solver rows for builder-handoff candidates.
+* No new pip dependencies. No DB / SQLite / WAL / SHM file committed; the proof DB is a temp file.
+* No tokens or secrets in any committed file, PR body, release notes, or branch upstream URL. Local Git config token-bearing entry count = 0 (stays clean from Phase 18E P0 cleanup).
+
+### What did NOT change in Phase 18F
+
+* No modification to `v3.8.0` or any of `v3.9.0` / `v3.9.1` / `v3.9.2` / `v3.9.3` / `v3.10.0` / `v3.10.1` / `v3.10.2` / `v3.10.3-runtime-gap-replay-alpha` tags. v3.8.0 remains GitHub Latest.
+* `ControlPlaneDB` schema v3 / v4 — no `ALTER TABLE`, no new column, no new table. The new module reuses `runtime_gap_signals` (events) and `schema_meta` (state).
+* The Phase 12 `RuntimeGapDetector.record()` write path is untouched. Phase 18F adds a read-only adapter on top.
+* No autonomy code outside Phase 18F's bounded surface. No allowlist. No canonical corpus size. Phase 18A bundle / 18B proof / 18C proof / 18E proof are all untouched and pass under carry-forward.
+* No `phase8.5/*` branch touched.
+
 ## [Phase 18E — Persisted Runtime Gap Replay / v3.10.3-runtime-gap-replay-alpha PRERELEASE] — 2026-05-06
 
 Branch: `phase18e/runtime-gap-replay`. Persistence + replay integration sprint on top of v3.10.2-mined-solver-dispatch-alpha. **Outcome: PRERELEASE `v3.10.3-runtime-gap-replay-alpha` published 2026-05-06T05:42:51Z**. PR #86 squash-merged at 2026-05-06T05:41:40Z (merge commit `6c6ca859`); annotated tag pushed at the merge SHA; GitHub release created with `isPrerelease=true`. v3.8.0 stable + all 7 alphas (v3.9.0 → v3.10.2) remain unchanged. v3.8.0 remains GitHub Latest.

@@ -193,6 +193,109 @@ _register_compilation_rule(
 )
 
 
+# Phase 18F additional fixture shapes — one per family. Each is a
+# strictly-typed, hardcoded executor artifact. No generic code
+# generation; no allowlist widening; no new family_kind. These rules
+# let the Phase 18F incremental-replay proof learn a *second* solver
+# per family from post-cursor events without colliding with the Phase
+# 18B/18C originals.
+
+_register_compilation_rule(
+    "scalar_unit_conversion",
+    {
+        "input_unit": "m",
+        "output_unit": "ft",
+        "rule": "1 m = 3.28084 ft",
+    },
+    {
+        "kind": "scalar_unit_conversion",
+        "factor": 3.28084,
+        "offset": 0.0,
+    },
+)
+
+_register_compilation_rule(
+    "lookup_table",
+    {
+        "table_name": "country_codes",
+        "example_key": "fi",
+    },
+    {
+        "kind": "lookup_table",
+        "table": {
+            "fi": "Finland",
+            "se": "Sweden",
+            "no": "Norway",
+            "dk": "Denmark",
+        },
+        "default": "unknown",
+    },
+)
+
+_register_compilation_rule(
+    "threshold_rule",
+    {
+        "threshold": 100,
+        "example_value": 150,
+        "rule": "alert_or_quiet",
+    },
+    {
+        "kind": "threshold_rule",
+        "operator": ">",
+        "threshold": 100,
+        "true_label": "alert",
+        "false_label": "quiet",
+    },
+)
+
+_register_compilation_rule(
+    "interval_bucket_classifier",
+    {
+        "buckets": "[0,33),[33,66),[66,100]",
+        "example_value": 50,
+    },
+    {
+        "kind": "interval_bucket_classifier",
+        "intervals": [
+            {"min": 0, "max": 33, "label": "low"},
+            {"min": 33, "max": 66, "label": "mid"},
+            {"min": 66, "max": 100, "label": "high"},
+        ],
+        "out_of_range_label": "out_of_range",
+    },
+)
+
+_register_compilation_rule(
+    "linear_arithmetic",
+    {
+        "operator": "subtract",
+        "example_inputs": {"a": 20, "b": 5},
+    },
+    {
+        "kind": "linear_arithmetic",
+        "input_columns": ["a", "b"],
+        "coefficients": [1.0, -1.0],
+        "intercept": 0.0,
+    },
+)
+
+_register_compilation_rule(
+    "bounded_interpolation",
+    {
+        "endpoints": "(0,0)->(100,1)",
+        "example_x": 50,
+    },
+    {
+        "kind": "bounded_interpolation",
+        "min_x": 0.0,
+        "max_x": 100.0,
+        "knots": [{"x": 0.0, "y": 0.0}, {"x": 100.0, "y": 1.0}],
+        "method": "linear",
+        "out_of_range_policy": "clip",
+    },
+)
+
+
 def compile_mined_spec_to_runtime_artifact(
     spec: Mapping[str, Any],
 ) -> dict[str, Any]:

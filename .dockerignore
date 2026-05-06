@@ -69,6 +69,8 @@ docs/
 !tools/run_phase18c_mined_solver_runtime_dispatch_proof.py
 # Phase 18E carve-out: persisted runtime gap replay proof harness.
 !tools/run_phase18e_runtime_gap_replay_proof.py
+# Phase 18F carve-out: incremental runtime gap replay proof harness.
+!tools/run_phase18f_incremental_gap_replay_proof.py
 !tests/__init__.py
 !tests/conftest.py
 !tests/autonomy_growth/

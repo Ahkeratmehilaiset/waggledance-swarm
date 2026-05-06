@@ -403,11 +403,16 @@ def persist_runtime_gap_events(
     for rec in existing_records:
         try:
             payload = json.loads(rec.signal_payload or "{}")
-            ev_id = payload.get("event_id")
-            if isinstance(ev_id, str) and ev_id:
-                existing_ids.add(ev_id)
         except (json.JSONDecodeError, TypeError):
             continue
+        if not isinstance(payload, Mapping):
+            # Type-confused or non-object signal_payload (e.g. JSON
+            # string / array / null). Cannot extract event_id; treat
+            # as opaque and skip rather than raise.
+            continue
+        ev_id = payload.get("event_id")
+        if isinstance(ev_id, str) and ev_id:
+            existing_ids.add(ev_id)
 
     for raw in events:
         try:

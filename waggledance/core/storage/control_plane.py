@@ -1545,6 +1545,7 @@ class ControlPlaneDB:
         kind: Optional[str] = None,
         family_kind: Optional[str] = None,
         cell_coord: Optional[str] = None,
+        after_id: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> List[RuntimeGapSignalRecord]:
         wheres: List[str] = []
@@ -1558,6 +1559,9 @@ class ControlPlaneDB:
         if cell_coord is not None:
             wheres.append("cell_coord = ?")
             params.append(cell_coord)
+        if after_id is not None:
+            wheres.append("id > ?")
+            params.append(int(after_id))
         sql = "SELECT * FROM runtime_gap_signals"
         if wheres:
             sql += " WHERE " + " AND ".join(wheres)
@@ -1568,6 +1572,37 @@ class ControlPlaneDB:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_runtime_gap_signal(r) for r in rows]
+
+    # -- schema_meta key/value helpers (general; used by Phase 18F)----
+
+    def get_meta(self, key: str) -> Optional[str]:
+        """Return the raw value stored under ``key`` in ``schema_meta``,
+        or None if absent."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM schema_meta WHERE key = ?", (key,),
+            ).fetchone()
+        return None if row is None else str(row["value"])
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Insert or replace the value stored under ``key`` in
+        ``schema_meta``. ``updated_at`` is set to ``_utcnow()``."""
+        now = _utcnow()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO schema_meta(key, value, updated_at) "
+                "VALUES (?, ?, ?)",
+                (str(key), str(value), now),
+            )
+
+    def delete_meta(self, key: str) -> bool:
+        """Delete the row keyed ``key`` in ``schema_meta``. Returns
+        True if a row was removed."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM schema_meta WHERE key = ?", (str(key),),
+            )
+            return int(cur.rowcount) > 0
 
     # -- schema v3: growth intents -------------------------------------
 

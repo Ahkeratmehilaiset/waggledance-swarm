@@ -91,15 +91,6 @@ if ($ResumeIteration) {
 
 $stateFile = Join-Path $iterationFolder 'state.json'
 
-# Resume short-circuit
-if ($ResumeIteration -and (Test-Path $stateFile) -and -not $Force) {
-    $existing = Read-WaggleState -Path $stateFile
-    if ($existing -and (Test-IsTerminalState -State $existing.status)) {
-        Write-Host "Iteration $IterationId already at terminal state '$($existing.status)'. Use -Force to rerun." -ForegroundColor Yellow
-        exit 0
-    }
-}
-
 # ---- Preflight -----------------------------------------------------------
 $claudeCmd = if (($cfg.PSObject.Properties.Name -contains 'claudeCommand') -and $cfg.claudeCommand) { $cfg.claudeCommand } else { 'claude' }
 $pre = Invoke-PreflightChecks -Config $cfg -LockFilePath $lockPath -ClaudeCommand $claudeCmd
@@ -109,12 +100,27 @@ if (-not $pre.ok) {
 }
 
 # ---- Lock ----------------------------------------------------------------
+# Phase 2A-4 REL-003: acquire the lock BEFORE evaluating any
+# resume short-circuit. Two concurrent operators trying to resume
+# the same iteration must serialise on the lock; whichever acquires
+# first reads state.json and may exit cleanly through the
+# try{}finally{Release-WaggleLock} path. Resume decisions that read
+# mutable iteration state must never happen pre-lock.
 $lock = Acquire-WaggleLock -Path $lockPath -IterationId $IterationId `
             -ForceStaleLock:$ForceStaleLock `
             -DangerouslyOverrideLiveLock:$DangerouslyOverrideLiveLock
 $signalsDir = Initialize-SignalsDir -IterationFolder $iterationFolder
 
 try {
+    # Resume short-circuit (Phase 2A-4 REL-003: now inside try/lock)
+    if ($ResumeIteration -and (Test-Path $stateFile) -and -not $Force) {
+        $existing = Read-WaggleState -Path $stateFile
+        if ($existing -and (Test-IsTerminalState -State $existing.status)) {
+            Write-Host "Iteration $IterationId already at terminal state '$($existing.status)'. Use -Force to rerun." -ForegroundColor Yellow
+            return
+        }
+    }
+
     # ---- Build appended prompt -------------------------------------------
     $promptOnDisk = Join-Path $iterationFolder 'prompt.md'
 

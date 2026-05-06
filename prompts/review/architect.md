@@ -56,6 +56,34 @@ package contained no source surface`). Misleading-confidence passes
 over empty packages are a documented Phase 2A-2 regression that
 Phase 2A-3 fixes; do not reintroduce it.
 
+### Phase 2A-4 review-machine integrity checks
+
+When the package contains a "REVIEW SURFACE SUPPLEMENT" section, the
+supplement is built from the orchestrator's own source. You MUST
+sanity-check the supplement before relying on it:
+
+- Source excerpts should be **parseable** (or, if obviously
+  truncated mid-statement at the per-file char cap, the cause must
+  be visible truncation, NOT a corrupt regex literal in the middle
+  of the body).
+- If a source excerpt looks corrupted in the middle (e.g. a regex
+  pattern definition that has been replaced by a `[REDACTED:NAME]`
+  marker), say so as a finding. Do NOT trust corrupted source as
+  evidence.
+- If supplement lines are line-numbered and contain `[OMITTED:
+  lines X-Y]` markers, that is normal Phase 2A-4 keyword-window
+  extraction; the hidden ranges may matter and you should mention
+  the gap if it covers something material (e.g. lock-acquire is
+  visible but lock-release is in an omitted range).
+
+When the package's `package_quality.json` (or the embedded review
+metadata block) records `review_readiness_status =
+SUPPLEMENT_ONLY` or `evidence_surface_kind = supplement_only`, that
+is informational, not an error. Disclose it in your `summary`.
+When `review_readiness_status = INSUFFICIENT_EVIDENCE`, the runner
+should have refused the run; if you somehow see this, raise it as
+a `critical` finding.
+
 ### Supplement disclosure (mandatory)
 
 If the package contains a "REVIEW SURFACE SUPPLEMENT" section, your

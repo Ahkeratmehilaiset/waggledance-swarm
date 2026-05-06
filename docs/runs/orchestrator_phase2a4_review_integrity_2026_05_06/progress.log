@@ -1,0 +1,30 @@
+[2026-05-06T22:55:00Z] P0 START
+[2026-05-06T22:55:00Z] origin/main = 321d817b22efe282acff2e5f1e8f8f6de979aee8 (Phase 2A-3 squash, PR #91)
+[2026-05-06T22:55:00Z] new branch orchestrator/phase2a4-review-integrity-repair from origin/main
+[2026-05-06T22:55:00Z] stashed Phase 2A-3 progress.log post-merge tweaks
+[2026-05-06T22:55:00Z] baseline hardening gates: 10/10 PASS
+[2026-05-06T22:55:00Z] findings_inventory.md drafted (all rows = unverified)
+[2026-05-06T22:55:00Z] P0 PASS
+[2026-05-06T22:55:00Z] P1 START -> source verification of all findings against on-disk files
+[2026-05-06T22:55:00Z] P1 PASS: 8 confirmed bugs, 2 false-positive-due-to-truncation, 4-5 backlog, 1 already-fixed
+[2026-05-06T22:55:00Z] P6 (REL-002 tautology fix) -> CompletionVerifier:82 simplified, 13/13 Test-CompletionVerifier PASS
+[2026-05-06T22:55:00Z] P8 (SEC-002 BEARER regex) -> /+= added, Test-Redactor 26/26 + Test-Redaction 27/27 still PASS
+[2026-05-06T22:55:00Z] P11 (RISK-fence cap removed) -> max(3, longest+1), Test-ReviewSurface 22/22 PASS
+[2026-05-06T22:55:00Z] P10 (ARCH-005 strict preamble) -> SECURITY PREAMBLE header + UNTRUSTED DATA both required in first 40 lines
+[2026-05-06T22:55:00Z] P7 (REL-003 resume-vs-lock race) -> resume short-circuit moved inside try/finally lock
+[2026-05-06T22:55:00Z] P5 (REL-005 subprocess timeout) -> bounded task.Wait + Stop-ProcessTree on drain timeout, 10/10 Test-ReviewSubprocessTimeout PASS (hang scenario terminates ~3.8s)
+[2026-05-06T22:55:00Z] P2 (ARCH-001 syntax-preserving redactor) -> Invoke-WaggleSourceSupplementRedaction, 13 value-shape rules only; ARCH-001 assertions 5/5 PASS
+[2026-05-06T22:55:00Z] P12 (keyword-window extraction) -> _Get-KeywordWindowExcerpt with line numbers + omitted-range markers + per-file budget 12000 for keyword files
+[2026-05-06T22:55:00Z] P4 (REL-004 unique-artifact verification) -> 5 Test-CompletionVerifier branches added (fresh/missing/stale/wrong/disabled), all PASS
+[2026-05-06T22:55:00Z] P9 (ARCH-000 split execution_status from review_readiness_status) -> review_readiness_status + evidence_surface_kind + has_*_content; INSUFFICIENT_EVIDENCE refuses subprocess; 22/22 Test-ReviewIntegrity PASS
+[2026-05-06T22:55:00Z] P13 (controlled supplement globs) -> orchestrator/lib/*.ps1 + Test-*.ps1 + prompts/review/*.md + schemas/*.json with hard exclude for iterations/state/transcripts; 60/60 Test-ReviewSurface
+[2026-05-06T22:55:00Z] P14 backlog doc -> docs/design/phase2a4_backlog.md (ARCH-002/003/004, REL-006/007/008 + ARCH-002 cross-cut)
+[2026-05-06T22:55:00Z] P15 prompt updates -> all three role prompts get Phase 2A-4 review-machine integrity checks + supplement disclosure + review-mode metadata invariant
+[2026-05-06T22:55:00Z] P16 hardening gates: 15/15 PASS (was 10/10)
+[2026-05-06T23:55:15Z] P17 real smoke 2026-05-06_23-55-15 -> COMPLETED
+[2026-05-07T00:00:00Z] P17 architect review: COMPLETED, verdict pass_with_notes, files_reviewed=11, supplement disclosed, ARCH-001 self-corruption=0
+[2026-05-07T00:00:30Z] P17 security review: COMPLETED, verdict pass_with_notes, files_reviewed=11, supplement disclosed, SEC-001 false-positive=0
+[2026-05-07T00:01:00Z] P17 reliability review: COMPLETED, verdict needs_attention, files_reviewed=9, supplement disclosed
+[2026-05-07T00:01:30Z] all 3 review-mode safety profiles: ok=True violations=[] (independently re-validated)
+[2026-05-07T00:01:30Z] all 3 review_readiness_status = SUPPLEMENT_ONLY (correctly flagged on sparse smoke package)
+[2026-05-07T00:01:30Z] P17 PASS: ARCH-001 + SEC-001 + empty-surface + safety profile all hold under real-Claude conditions

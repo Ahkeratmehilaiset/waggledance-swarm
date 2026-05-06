@@ -80,6 +80,51 @@ try {
         if ($threw) { Pass 'second concurrent acquire throws' } else { Fail 'second acquire' '' }
         [void](Release-WaggleLock -Path $lockPath -LockId $a.lock_id)
     }
+
+    # 11) Phase 2A-4 REL-001: try/finally pattern releases lock on throw.
+    if (Test-Path $lockPath) { Remove-Item -Force $lockPath }
+    $caught = $false
+    $lockedFor = $null
+    try {
+        $lockedFor = Acquire-WaggleLock -Path $lockPath -IterationId 'iter-throw'
+        try {
+            throw 'simulated mid-iteration failure'
+        }
+        finally {
+            [void](Release-WaggleLock -Path $lockPath -LockId $lockedFor.lock_id)
+        }
+    } catch { $caught = $true }
+    if ($caught -and -not (Test-Path $lockPath)) {
+        Pass 'REL-001: try/finally releases lock on throw inside try'
+    } else {
+        Fail 'REL-001: try/finally releases lock on throw inside try' "caught=$caught lockExists=$(Test-Path $lockPath)"
+    }
+
+    # 12) Phase 2A-4 REL-003: Invoke-WaggleIteration must acquire the
+    # lock BEFORE evaluating the resume short-circuit. Static source
+    # check.
+    $iterSrc = Get-Content -Raw -Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'orchestrator/Invoke-WaggleIteration.ps1') -Encoding UTF8
+    $lines = $iterSrc -split "(?:\r\n|\r|\n)"
+    $acquireLine = -1; $resumeLine = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($acquireLine -lt 0 -and $lines[$i] -match '^\s*\$lock\s*=\s*Acquire-WaggleLock') { $acquireLine = $i }
+        if ($resumeLine  -lt 0 -and $lines[$i] -match '\$ResumeIteration\s+-and\s+\(Test-Path\s+\$stateFile\)') { $resumeLine = $i }
+    }
+    if ($acquireLine -gt 0 -and $resumeLine -gt 0 -and $acquireLine -lt $resumeLine) {
+        Pass "REL-003: Acquire-WaggleLock at line $acquireLine precedes resume short-circuit at line $resumeLine"
+    } else {
+        Fail 'REL-003: Acquire-WaggleLock must precede resume short-circuit in Invoke-WaggleIteration.ps1' "acquireLine=$acquireLine resumeLine=$resumeLine"
+    }
+
+    # 13) Phase 2A-4 REL-001 in Invoke-WaggleReview: source-level
+    # check that the review runner has try{ ... } finally { Release }.
+    $rvSrc = Get-Content -Raw -Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'orchestrator/Invoke-WaggleReview.ps1') -Encoding UTF8
+    $hasReleasePath = ($rvSrc -match 'Acquire-WaggleLock[\s\S]*?try\s*\{[\s\S]*?finally\s*\{[\s\S]*?Release-WaggleLock\s+-Path\s+\$lockPath\s+-LockId\s+\$lock\.lock_id')
+    if ($hasReleasePath) {
+        Pass 'REL-001: Invoke-WaggleReview Acquire -> try -> finally -> Release shape present'
+    } else {
+        Fail 'REL-001: Invoke-WaggleReview missing Acquire -> try/finally -> Release shape' ''
+    }
 }
 finally {
     Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue

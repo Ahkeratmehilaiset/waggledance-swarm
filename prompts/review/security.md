@@ -74,6 +74,54 @@ no source surface`). Misleading-confidence passes over empty
 packages are a documented Phase 2A-2 regression that Phase 2A-3
 fixes; do not reintroduce it.
 
+### Phase 2A-4 review-machine integrity checks
+
+The supplement embeds orchestrator source. Phase 2A-4 added a
+syntax-preserving source-supplement redactor that should keep
+parseable code intact while still redacting actual credential
+values. You MUST sanity-check:
+
+- Source excerpts are parseable as PowerShell (or are truncated at
+  the per-file char cap, in which case truncation is at the END,
+  never mid-statement in the middle).
+- Regex literal pattern definitions (e.g. inside Redactor.ps1)
+  should NOT have been redacted. If you see something like
+  `pattern = '(?i)[REDACTED:COOKIE_HEADER]'` you have found a
+  Phase 2A-4 ARCH-001 regression: raise it as a `high` or
+  `critical` finding (it means the syntax-preserving redactor is
+  broken and reviewers cannot audit redactor code).
+- `[OMITTED: lines X-Y]` markers between line-numbered excerpt
+  blocks are normal Phase 2A-4 keyword-window extraction. If the
+  omitted range hides a security-relevant code path you cannot
+  verify, say so explicitly in your summary.
+
+If `package_quality.review_readiness_status = SUPPLEMENT_ONLY`,
+disclose this in your summary. If it is `INSUFFICIENT_EVIDENCE`,
+the runner should have refused the run; if you somehow see this,
+raise as `critical`.
+
+### Review-mode metadata invariants (Phase 2A-4 explicit)
+
+Phase 2A-4 added `Assert-WaggleReviewSafeProfile` as a runtime gate
+that throws BEFORE the review subprocess is spawned, plus
+`Test-WaggleReviewSafeProfileViolations` as the shared validator.
+A review-mode metadata file MUST satisfy:
+
+- `allow_bash: false`
+- `dangerously_skip_permissions: false`
+- `require_unique_artifact: false`
+- `sanitize_environment: true`
+- `allowed_tools` does NOT include `Bash`, `Write`, or `Edit`
+- `disallowed_tools` includes `Bash`, `Write`, `Edit`
+- `command_line` does NOT contain `--dangerously-skip-permissions`
+- `command_line` does NOT contain `Bash` in `--allowed-tools`
+
+If you find a review-mode metadata file violating ANY of these,
+raise a `critical` finding (e.g. `SEC-XXX: review-mode runner
+inherits write-mode permissions`). Multiple layers (config-resolve
+hard-clamp, runtime gate, source-supplement validator) should
+prevent this from ever shipping; a violation means a regression.
+
 ### Supplement disclosure (mandatory)
 
 If the package contains a "REVIEW SURFACE SUPPLEMENT" section, your

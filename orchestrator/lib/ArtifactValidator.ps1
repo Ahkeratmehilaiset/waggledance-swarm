@@ -71,8 +71,29 @@ function Test-IterationArtifacts {
         _add 'redaction_report_present' (Test-Path $rpt) "$rpt missing"
         if (Test-Path $pkg) {
             $pkgText = Get-Content -Raw -Path $pkg
-            $hasUntrustedMarker = ($pkgText -match 'UNTRUSTED DATA' -or $pkgText -match 'untrusted')
-            _add 'package_has_untrusted_marker' $hasUntrustedMarker 'no UNTRUSTED DATA marker found' (-not $hasUntrustedMarker)
+            # Phase 2A-4 ARCH-005: anchored check. The Packager writes
+            # an explicit "## SECURITY PREAMBLE" header followed by
+            # text that includes "UNTRUSTED DATA" within the first ~30
+            # lines. A captured stdout line containing the bare word
+            # "untrusted" must NOT satisfy this check. We require BOTH
+            # the SECURITY PREAMBLE header AND an UNTRUSTED DATA token
+            # near the top of the package.
+            $head = ''
+            if ($pkgText) {
+                $lines = $pkgText -split "(?:\r\n|\r|\n)"
+                $headLineCount = [Math]::Min(40, $lines.Count)
+                $head = ($lines[0..($headLineCount - 1)] -join "`n")
+            }
+            $hasPreambleHeader = ($head -match '(?m)^##\s+SECURITY\s+PREAMBLE\s*$')
+            $hasUntrustedNearTop = ($head -match 'UNTRUSTED\s+DATA')
+            $hasUntrustedMarker = ($hasPreambleHeader -and $hasUntrustedNearTop)
+            $reason = 'no SECURITY PREAMBLE / UNTRUSTED DATA marker in first 40 lines'
+            if ($hasPreambleHeader -and -not $hasUntrustedNearTop) {
+                $reason = 'SECURITY PREAMBLE header found but no UNTRUSTED DATA token in first 40 lines'
+            } elseif (-not $hasPreambleHeader -and $hasUntrustedNearTop) {
+                $reason = 'UNTRUSTED DATA token found but no SECURITY PREAMBLE header in first 40 lines'
+            }
+            _add 'package_has_untrusted_marker' $hasUntrustedMarker $reason (-not $hasUntrustedMarker)
         }
     }
 

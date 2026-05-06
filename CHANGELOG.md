@@ -1,8 +1,8 @@
 # WaggleDance Swarm AI — CHANGELOG
 
-## [Phase 18F — Incremental Runtime Gap Replay + Detector Bridge / v3.10.4-incremental-gap-replay-alpha CANDIDATE] — 2026-05-06
+## [Phase 18F — Incremental Runtime Gap Replay + Detector Bridge / v3.10.4-incremental-gap-replay-alpha PRERELEASE] — 2026-05-06
 
-Branch: `phase18f/incremental-gap-replay`. Productionization sprint on top of v3.10.3-runtime-gap-replay-alpha. **Outcome (candidate):** PRERELEASE `v3.10.4-incremental-gap-replay-alpha` — to be tagged from the Phase 18F PR squash-merge SHA after PR-level CI green and `--match-head-commit`-protected merge. v3.8.0 stable + all 8 alphas (`v3.9.0` → `v3.10.3`) remain unchanged.
+Branch: `phase18f/incremental-gap-replay`. Productionization sprint on top of v3.10.3-runtime-gap-replay-alpha. **Outcome: PRERELEASE `v3.10.4-incremental-gap-replay-alpha` published 2026-05-06T09:01:14Z**. PR #88 squash-merged at 2026-05-06T09:00:05Z (merge commit `c1ddded1`); annotated tag pushed at the merge SHA; GitHub release created with `isPrerelease=true`. v3.8.0 stable + all 8 alphas (`v3.9.0` → `v3.10.3`) remain unchanged. v3.8.0 remains GitHub Latest.
 
 Phase 18F upgrades Phase 18E's whole-corpus replay into a cursor-based incremental learning loop with concurrency lock, strict load, and a Phase 12 RuntimeGapDetector bridge. **No schema change** — `runtime_gap_signals` reused for events; `schema_meta` reused for cursor + lock; `schema_version` remains 4.
 

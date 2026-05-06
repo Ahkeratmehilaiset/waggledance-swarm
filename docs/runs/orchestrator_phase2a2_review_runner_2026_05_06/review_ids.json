@@ -1,0 +1,26 @@
+{
+  "target_iteration_id": "2026-05-06_19-45-54",
+  "reviews": {
+    "architect": {
+      "review_iteration_id": "2026-05-06_20-26-14_review_architect",
+      "status": "COMPLETED",
+      "verdict": "pass",
+      "findings_count": 0,
+      "json_sha256": "4f6cebc0f49df63cd2a6b6659891eb9fb398e479b85be39ec69b3ce5f92bb270"
+    },
+    "security": {
+      "review_iteration_id": "2026-05-06_20-28-01_review_security",
+      "status": "COMPLETED",
+      "verdict": "pass_with_notes",
+      "findings_count": 3,
+      "json_sha256": "e5f55fff59851306ac38a29a22433afbd7489d2bd70f6bacf04ab50453f85c3a"
+    },
+    "reliability": {
+      "review_iteration_id": "2026-05-06_20-29-01_review_reliability",
+      "status": "COMPLETED",
+      "verdict": "pass",
+      "findings_count": 0,
+      "json_sha256": "73fe0d256837c2d404e953e17788a96feff14fb6fe7ccc0f94c32703a50c4e44"
+    }
+  }
+}

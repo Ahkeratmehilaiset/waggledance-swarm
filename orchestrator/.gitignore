@@ -1,0 +1,19 @@
+# Place this file at your PROJECT ROOT (alongside the orchestrator/ folder),
+# not inside orchestrator/. The orchestrator's runtime files live under the
+# project root and must not be committed.
+
+transcripts/
+iterations/
+state/
+orchestrator.config.json
+
+*.tmp
+*.bak
+*.log
+*.stdout
+*.stderr
+
+# Per-iteration debug log produced by claude --debug-file
+claude_debug.log
+
+# OS / editor noi

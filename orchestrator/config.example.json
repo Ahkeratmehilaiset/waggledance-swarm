@@ -1,0 +1,24 @@
+{
+  "_comment": "WaggleDance orchestrator config (Phase 1.6). Copy to orchestrator.config.json and edit projectRoot.",
+
+  "projectRoot": "D:\\WaggleDanceAi",
+  "transcriptDir": "transcripts",
+  "iterationsDir": "iterations",
+  "stateDir": "state",
+  "reportFile": "raportti.md",
+
+  "executionMode": "print",
+  "claudeCommand": "claude",
+  "model": "opus",
+  "outputFormat": "text",
+  "maxTurns": 30,
+  "permissionMode": "default",
+
+  "safeMode": true,
+  "allowBash": false,
+  "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep"],
+  "disallowedTools": ["Bash"],
+  "dangerouslySkipPermissions": false,
+
+  "sanitizeEnvironment": true,
+  "envDenylist"

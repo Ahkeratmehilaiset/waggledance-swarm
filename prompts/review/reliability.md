@@ -48,6 +48,41 @@ package contained no source surface`). Misleading-confidence passes
 over empty packages are a documented Phase 2A-2 regression that
 Phase 2A-3 fixes; do not reintroduce it.
 
+### Phase 2A-4 review-machine integrity checks
+
+The supplement now uses keyword-window extraction (Phase 2A-4 P12)
+for important files like `Invoke-WaggleIteration.ps1`,
+`Invoke-WaggleReview.ps1`, `CompletionVerifier.ps1`, and `Lockfile.ps1`.
+This means you should be able to see, line-numbered:
+
+- The `Acquire-WaggleLock` call AND the matching `try { ... }
+  finally { ... Release-WaggleLock -Path -LockId ... }` block.
+- The unique-artifact contract injection (`requireUniqueArtifact`
+  branch) AND the `Test-UniqueIterationArtifact` call site.
+- The `CompletionVerifier` branches: `NEEDS_REVIEW_CONFLICT`,
+  `COMPLETED_UNVERIFIED`, `FAILED`, `COMPLETED`.
+- The review subprocess timeout enforcement (`TimeoutSeconds`,
+  `Stop-ProcessTree`, bounded `task.Wait`).
+
+If you cannot find one of these in the supplement, say so as a
+finding and recommend that the keyword-window extractor pick up
+that pattern (Phase 2A-5 work).
+
+If you see `[OMITTED: lines X-Y]` markers between line-numbered
+excerpts, treat them as informational gaps. They do not mean code
+is missing from the actual file -- only that it did not fit the
+supplement budget.
+
+If `package_quality.review_readiness_status = SUPPLEMENT_ONLY`,
+disclose it. If `INSUFFICIENT_EVIDENCE`, runner should have
+refused; raise critical if you see one.
+
+Phase 2A-4 also separated `execution_status` (Claude Code run
+verdict) from `review_readiness_status` (package surface
+sufficient for review). A run can be `execution_status =
+COMPLETED` while having `review_readiness_status =
+SUPPLEMENT_ONLY`; that is by design and not a reliability issue.
+
 ### Supplement disclosure (mandatory)
 
 If the package contains a "REVIEW SURFACE SUPPLEMENT" section, your

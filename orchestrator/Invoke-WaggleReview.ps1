@@ -197,10 +197,43 @@ function Invoke-WaggleReviewSubprocess {
         try { $proc.WaitForExit() } catch {}
     }
 
+    # Phase 2A-4 REL-005: bounded wait on the stdout/stderr tasks.
+    # GetAwaiter().GetResult() can block forever if Stop-ProcessTree
+    # somehow failed to close the child's stdout/stderr handles. We
+    # bound the wait so a runaway grandchild can never hang the
+    # orchestrator. After the bounded wait, fall back to whatever
+    # was already on disk (or empty), set timed_out=true, and return.
+    $taskWaitMs = if ($timedOut) { 3000 } else { 10000 }
     $stdoutText = ''
     $stderrText = ''
-    try { $stdoutText = $outTask.GetAwaiter().GetResult() } catch { $stdoutText = '' }
-    try { $stderrText = $errTask.GetAwaiter().GetResult() } catch { $stderrText = '' }
+    $stdoutDrainOk = $true
+    $stderrDrainOk = $true
+    try {
+        if ($outTask.Wait($taskWaitMs)) {
+            $stdoutText = [string]$outTask.Result
+        } else {
+            $stdoutDrainOk = $false
+            try { Stop-ProcessTree -ProcessId $proc.Id } catch {}
+            $timedOut = $true
+        }
+    } catch {
+        $stdoutDrainOk = $false
+        $stdoutText = ''
+    }
+    try {
+        if ($errTask.Wait($taskWaitMs)) {
+            $stderrText = [string]$errTask.Result
+        } else {
+            $stderrDrainOk = $false
+            try { Stop-ProcessTree -ProcessId $proc.Id } catch {}
+            $timedOut = $true
+        }
+    } catch {
+        $stderrDrainOk = $false
+        $stderrText = ''
+    }
+    if ($null -eq $stdoutText) { $stdoutText = '' }
+    if ($null -eq $stderrText) { $stderrText = '' }
 
     [System.IO.File]::WriteAllText($StdoutFile, $stdoutText, [System.Text.Encoding]::UTF8)
     [System.IO.File]::WriteAllText($StderrFile, $stderrText, [System.Text.Encoding]::UTF8)
@@ -227,6 +260,8 @@ function Invoke-WaggleReviewSubprocess {
         sanitize_environment    = [bool]$SanitizeEnvironment
         stdout_text_bytes       = $stdoutText.Length
         stderr_text_bytes       = $stderrText.Length
+        stdout_drain_ok         = [bool]$stdoutDrainOk
+        stderr_drain_ok         = [bool]$stderrDrainOk
     }
 }
 
@@ -486,37 +521,49 @@ function Invoke-WaggleReview {
         applied_at_utc      = Get-Iso8601Utc
     } | ConvertTo-Json -Depth 6 | Set-Content -Path $redReportPath -Encoding UTF8
 
-    # Persist package_quality.json (Phase 2A-3).
+    # Persist package_quality.json (Phase 2A-3 + Phase 2A-4 P9 fields).
     $packageQualityPath = Join-Path $stagingRoot 'package_quality.json'
+    $iterContent = $packageQualityInfo.iteration_content
     $pqOut = [ordered]@{
-        target_iteration_id        = $SourceIterationId
-        review_iteration_id        = $reviewIterationId
-        role                       = $Role
-        package_path               = $relPkg
-        reviewable_files_count     = [int]$packageQualityInfo.quality.reviewable_files_count
-        reviewable_lines_count     = [int]$packageQualityInfo.quality.reviewable_lines_count
-        source_section_count       = [int]$packageQualityInfo.quality.source_section_count
-        sparse                     = [bool]$packageQualityInfo.sparse
-        sparse_reason              = [string]$packageQualityInfo.sparse_reason
-        source_supplement_used     = [bool]$supplementUsed
-        source_supplement_files    = $supplementFiles
-        truncated_files_count      = [int]$supplementTruncated.Count
-        redaction_report_path      = $redReportPath
+        target_iteration_id          = $SourceIterationId
+        review_iteration_id          = $reviewIterationId
+        role                         = $Role
+        package_path                 = $relPkg
+        reviewable_files_count       = [int]$packageQualityInfo.quality.reviewable_files_count
+        reviewable_lines_count       = [int]$packageQualityInfo.quality.reviewable_lines_count
+        source_section_count         = [int]$packageQualityInfo.quality.source_section_count
+        sparse                       = [bool]$packageQualityInfo.sparse
+        sparse_reason                = [string]$packageQualityInfo.sparse_reason
+        source_supplement_used       = [bool]$supplementUsed
+        source_supplement_files      = $supplementFiles
+        truncated_files_count        = [int]$supplementTruncated.Count
+        redaction_report_path        = $redReportPath
+        # Phase 2A-4 P9: independent review-readiness axis.
+        # execution_status (from CompletionVerifier) and
+        # review_readiness_status are SEPARATE: a smoke run can be
+        # execution-wise COMPLETED while still being supplement_only
+        # or insufficient for review.
+        review_readiness_status      = [string]$packageQualityInfo.review_readiness_status
+        review_readiness_reason      = [string]$packageQualityInfo.review_readiness_reason
+        evidence_surface_kind        = [string]$iterContent.evidence_surface_kind
+        empty_captured_channels      = [bool]$iterContent.empty_captured_channels
+        has_stdout_content           = [bool]$iterContent.has_stdout_content
+        has_stderr_content           = [bool]$iterContent.has_stderr_content
+        has_report_content           = [bool]$iterContent.has_report_content
+        has_transcript_content       = [bool]$iterContent.has_transcript_content
+        has_signal_content           = [bool]$iterContent.has_signal_content
+        has_unique_artifact_content  = [bool]$iterContent.has_unique_artifact_content
+        has_artifact_manifest        = [bool]$iterContent.has_artifact_manifest
     }
     ([pscustomobject]$pqOut) | ConvertTo-Json -Depth 6 | Set-Content -Path $packageQualityPath -Encoding UTF8
 
     $startedAt = Get-Iso8601Utc
 
-    # Decide if we should refuse the run for an empty surface that
-    # the supplement could not fix. NEEDS_REVIEW_SURFACE means the
-    # parent's working tree did not even have the orchestrator + lib
-    # source on disk, so we have nothing meaningful for the reviewer.
-    $needsReviewSurface = $false
-    if ($packageQualityInfo.sparse) {
-        if (-not $supplementUsed -or $supplementFiles.Count -eq 0) {
-            $needsReviewSurface = $true
-        }
-    }
+    # Phase 2A-4 P9: refuse the run only on INSUFFICIENT_EVIDENCE
+    # (sparse package AND no usable supplement). SUPPLEMENT_ONLY is
+    # allowed because the supplement disclosure rule in the prompt
+    # tells the reviewer to flag it. REVIEW_READY proceeds normally.
+    $needsReviewSurface = ([string]$packageQualityInfo.review_readiness_status -eq 'INSUFFICIENT_EVIDENCE')
 
     if ($DryRun) {
         return [pscustomobject]@{

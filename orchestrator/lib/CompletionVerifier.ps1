@@ -78,10 +78,13 @@ function Resolve-PrintModeVerdict {
         }
     }
 
-    # 4. Failure path
-    if ($fExists -and ($RunnerResult.exit_code -ne 0 -or $RunnerResult.exit_code -eq 0)) {
-        # Failure signal is itself a strong negative; even if exit code 0
-        # was reported, the signal is the source of truth for failure.
+    # 4. Failure path -- failure signal is the source of truth for
+    # failure regardless of exit code. (Phase 2A-4 REL-002 fix:
+    # the previous condition was a tautology
+    # `(exit_code -ne 0 -or exit_code -eq 0)` which always evaluates
+    # true; the intent was always "if failure signal exists, fail",
+    # so we just say that.)
+    if ($fExists) {
         $reason = 'Failure signal present'
         if ($RunnerResult.exit_code -eq 0) {
             $reason = "$reason (exit code 0 ignored due to explicit failure signal)"

@@ -27,7 +27,8 @@ $Script:DefaultRedactionRules = @(
     @{ name = 'AWS_ACCESS_KEY';  pattern = 'AKIA[0-9A-Z]{16}' }
     @{ name = 'AWS_SECRET_KEY';  pattern = '(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])' }
     @{ name = 'JWT';             pattern = 'eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}' }
-    @{ name = 'BEARER_TOKEN';    pattern = '(?i)(authorization\s*[:=]\s*)?bearer\s+[A-Za-z0-9._\-]{20,}' }
+    # Phase 2A-4 SEC-002: include /, +, = (used in base64-shaped tokens)
+    @{ name = 'BEARER_TOKEN';    pattern = '(?i)(authorization\s*[:=]\s*)?bearer\s+[A-Za-z0-9._\-/+=]{20,}' }
     @{ name = 'BASIC_AUTH';      pattern = '(?i)basic\s+[A-Za-z0-9+/=]{20,}' }
     @{ name = 'PASSWORD_KV';     pattern = '(?i)(password|passwd|pwd)\s*[=:]\s*["'']?[^\s"''<>]{4,}' }
     @{ name = 'API_KEY_KV';      pattern = '(?i)(api[_\-]?key|api[_\-]?token|access[_\-]?token|secret[_\-]?key)\s*[=:]\s*["'']?[^\s"''<>]{8,}' }
@@ -133,6 +134,71 @@ function Restore-GitShaContexts {
 }
 
 function Get-DefaultRedactionRules { return ,$Script:DefaultRedactionRules }
+
+# Phase 2A-4 ARCH-001: separate source-supplement policy.
+#
+# The full default rule set is correct for untrusted captured I/O
+# (stdout, stderr, transcripts, raportti.md, imported LLM responses,
+# logs). But when the review surface supplement embeds local
+# orchestrator source files for the reviewer's benefit, several
+# keyword-prefix patterns (COOKIE_HEADER, SET_COOKIE,
+# PASSWORD_KV, API_KEY_KV, ENV_KV_SECRET) match the redactor's OWN
+# regex literals (e.g. "cookie:" inside the COOKIE_HEADER pattern
+# definition), corrupting the source view.
+#
+# The source-supplement rule set keeps only **value-shape** patterns
+# whose regex character class is a real credential structure (not a
+# bare keyword prefix). Reviewers see parseable PowerShell source;
+# real tokens still get redacted. Keyword-prefix patterns continue
+# to apply to non-source content via the full redactor.
+$Script:SourceSupplementRuleNames = @(
+    'ANTHROPIC_KEY',
+    'OPENAI_PROJ_KEY',
+    'OPENAI_KEY',
+    'GITHUB_PAT',
+    'GITHUB_OAUTH',
+    'SLACK_TOKEN',
+    'STRIPE_KEY',
+    'GOOGLE_API_KEY',
+    'AWS_ACCESS_KEY',
+    'AWS_SECRET_KEY',
+    'JWT',
+    'BASIC_AUTH',
+    'PRIVATE_KEY'
+)
+function Get-DefaultSourceSupplementRedactionRules {
+    $allowed = $Script:SourceSupplementRuleNames
+    $picked = @()
+    foreach ($r in $Script:DefaultRedactionRules) {
+        if ($allowed -contains $r.name) { $picked += $r }
+    }
+    return ,$picked
+}
+
+function Invoke-WaggleSourceSupplementRedaction {
+    <#
+    .SYNOPSIS
+    Phase 2A-4 ARCH-001. Redacts only high-confidence credential
+    VALUES in local source supplement excerpts. Does NOT match on
+    bare keyword prefixes (cookie:, password=, etc.) because the
+    orchestrator's own redactor source contains those as regex
+    literals; redacting them corrupts the supplement view of
+    Redactor.ps1.
+
+    Returns @{ text; report; rules_used }.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Text
+    )
+    $rules = Get-DefaultSourceSupplementRedactionRules
+    $r = Invoke-WaggleRedaction -Text $Text -Rules $rules
+    return [pscustomobject]@{
+        text       = $r.text
+        report     = $r.report
+        rules_used = @($Script:SourceSupplementRuleNames)
+    }
+}
 
 function Invoke-WaggleRedaction {
     <#

@@ -35,16 +35,21 @@ if (-not (Test-Path -LiteralPath $reportDir)) {
 # Phase 2A-1 hardening, then Phase 2A-2 review-runner gates, then
 # the Phase 2A-2 integration gate last.
 $gates = @(
-    @{ name = 'Test-Syntax';         path = Join-Path $orchDir 'Test-Syntax.ps1' }
-    @{ name = 'Test-Redaction';      path = Join-Path $orchDir 'Test-Redaction.ps1' }
-    @{ name = 'Test-Redactor';       path = Join-Path $orchDir 'Test-Redactor.ps1' }
-    @{ name = 'Test-SmokeValidation';path = Join-Path $orchDir 'Test-SmokeValidation.ps1' }
-    @{ name = 'Test-ReviewSchema';   path = Join-Path $orchDir 'Test-ReviewSchema.ps1' }
-    @{ name = 'Test-ReviewAdapter';  path = Join-Path $orchDir 'Test-ReviewAdapter.ps1' }
-    @{ name = 'Test-ReviewRunner';   path = Join-Path $orchDir 'Test-ReviewRunner.ps1' }
-    @{ name = 'Test-ReviewSafety';   path = Join-Path $orchDir 'Test-ReviewSafety.ps1' }
-    @{ name = 'Test-ReviewSurface';  path = Join-Path $orchDir 'Test-ReviewSurface.ps1' }
-    @{ name = 'Test-Phase2A2';       path = Join-Path $orchDir 'Test-Phase2A2.ps1' }
+    @{ name = 'Test-Syntax';                  path = Join-Path $orchDir 'Test-Syntax.ps1' }
+    @{ name = 'Test-Redaction';               path = Join-Path $orchDir 'Test-Redaction.ps1' }
+    @{ name = 'Test-Redactor';                path = Join-Path $orchDir 'Test-Redactor.ps1' }
+    @{ name = 'Test-SmokeValidation';         path = Join-Path $orchDir 'Test-SmokeValidation.ps1' }
+    @{ name = 'Test-ArtifactValidator';       path = Join-Path $orchDir 'Test-ArtifactValidator.ps1' }
+    @{ name = 'Test-Lockfile';                path = Join-Path $orchDir 'Test-Lockfile.ps1' }
+    @{ name = 'Test-CompletionVerifier';      path = Join-Path $orchDir 'Test-CompletionVerifier.ps1' }
+    @{ name = 'Test-ReviewSchema';            path = Join-Path $orchDir 'Test-ReviewSchema.ps1' }
+    @{ name = 'Test-ReviewAdapter';           path = Join-Path $orchDir 'Test-ReviewAdapter.ps1' }
+    @{ name = 'Test-ReviewRunner';            path = Join-Path $orchDir 'Test-ReviewRunner.ps1' }
+    @{ name = 'Test-ReviewSafety';            path = Join-Path $orchDir 'Test-ReviewSafety.ps1' }
+    @{ name = 'Test-ReviewSurface';           path = Join-Path $orchDir 'Test-ReviewSurface.ps1' }
+    @{ name = 'Test-ReviewIntegrity';         path = Join-Path $orchDir 'Test-ReviewIntegrity.ps1' }
+    @{ name = 'Test-ReviewSubprocessTimeout'; path = Join-Path $orchDir 'Test-ReviewSubprocessTimeout.ps1' }
+    @{ name = 'Test-Phase2A2';                path = Join-Path $orchDir 'Test-Phase2A2.ps1' }
 )
 
 $results = New-Object System.Collections.Generic.List[object]

@@ -109,6 +109,21 @@ the review runner. `final-report` -- raised in a phase final report's
 | `REL-011`  | Phase 2B | HALT marker: synthesis can decide work is complete; orchestrator stops cleanly | fixed | Phase 2B | `Test-SynthesisResultImport.ps1`, `Test-EpochCycleTrigger.ps1` | `orchestrator/Import-WaggleSynthesisResult.ps1 :: WAGGLE_HALT`, `orchestrator/lib/external_review/EpochCycleTrigger.ps1 :: halt` |
 | `SEC-008`  | Phase 2B | External response redaction: imported reviewer outputs run through redactor before storage | fixed | Phase 2B | `Test-ExternalReviewImport.ps1`, `Test-SynthesisResultImport.ps1` | `orchestrator/Import-WaggleExternalReviewResponse.ps1 :: Invoke-WaggleRedaction`, `orchestrator/Import-WaggleSynthesisResult.ps1 :: Invoke-WaggleRedaction` |
 
+---
+
+## Phase 2B-Revision additions (operator cockpit + Codex scout + regression ledger)
+
+| Tag | Phase introduced | Title | Status | Fixed/documented in | Tests | Anchors |
+|-----|------------------|-------|--------|----------------------|-------|---------|
+| `ARCH-010` | Phase 2BR | Drop claude_web from default external-review providers; Claude perspective comes from Phase 2A-2 internal review | informational | Phase 2BR | -- | `docs/design/phase_fix_ledger.md :: ARCH-010` |
+| `ARCH-011` | Phase 2BR | Operator Cockpit: passive HTML UI for the manual web-UI step | informational | Phase 2BR | -- | `docs/design/phase_fix_ledger.md :: ARCH-011` |
+| `ARCH-012` | Phase 2BR | Codex Scout integration scaffold (no Codex execution required) | informational | Phase 2BR | -- | `docs/design/phase_fix_ledger.md :: ARCH-012` |
+| `ARCH-013` | Phase 2BR | Proposal Matrix builder: single decision surface for internal + Codex + external proposals | informational | Phase 2BR | -- | `docs/design/phase_fix_ledger.md :: ARCH-013` |
+| `REL-012`  | Phase 2BR | Regression Ledger with severity scoring (0-100), trajectory, status state machine | informational | Phase 2BR | -- | `docs/design/phase_fix_ledger.md :: REL-012` |
+| `REL-013`  | Phase 2BR | Dynamic epoch controller with verification gate, repair-attempt limits, severity-driven iteration ceiling | informational | Phase 2BR | -- | `docs/design/phase_fix_ledger.md :: REL-013` |
+| `REL-014`  | Phase 2BR | Auto-repair classifier + constrained repair prompt builder | informational | Phase 2BR | -- | `docs/design/phase_fix_ledger.md :: REL-014` |
+| `SEC-009`  | Phase 2BR | Internal Claude review schema enhancement: reviewer_self_id + suggested_next_actions | informational | Phase 2BR | -- | `docs/design/phase_fix_ledger.md :: SEC-009` |
+
 ## Maintenance contract
 
 Every Phase 2A-N session that:

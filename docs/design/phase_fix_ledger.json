@@ -536,6 +536,110 @@
         "orchestrator/Test-SynthesisResultImport.ps1"
       ],
       "notes": "Promoted to 'fixed' in Phase 2B P17. Both reviewer and synthesis importers apply Invoke-WaggleRedaction to the entire response BEFORE storing it. Synthetic GitHub PAT in test fixtures is redacted before disk write; synthetic prompt-injection lines are preserved verbatim but inert (they are stored markdown, not executed)."
+    },
+    {
+      "tag": "ARCH-010",
+      "title": "Drop claude_web from default external-review providers; Claude perspective comes from Phase 2A-2 internal review (P1 placeholder)",
+      "source": "human-review",
+      "status": "informational",
+      "phase_introduced": "Phase 2BR",
+      "phase_fixed_or_documented": "Phase 2BR",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: ARCH-010"
+      ],
+      "tests": [],
+      "notes": "P1 placeholder. P12 promotes to 'fixed' once orchestrator.config.example.json drops claude_web from external_review.providers and Export-WaggleExternalReviewQueue.ps1 default Providers/Roles arrays no longer include it. Acceptance: default queue export writes only Gemini + Grok bundles."
+    },
+    {
+      "tag": "ARCH-011",
+      "title": "Operator Cockpit: passive HTML UI for the manual web-UI step (P1 placeholder)",
+      "source": "human-review",
+      "status": "informational",
+      "phase_introduced": "Phase 2BR",
+      "phase_fixed_or_documented": "Phase 2BR",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: ARCH-011"
+      ],
+      "tests": [],
+      "notes": "P1 placeholder. P12 promotes to 'fixed' once review_cockpit.html, orchestrator/Build-WaggleCockpitData.ps1, orchestrator/Open-WaggleCockpit.ps1 land. Acceptance: cockpit reads state/cockpit_data.json, renders per-(provider, role) cards with copy/open/import buttons; no browser automation."
+    },
+    {
+      "tag": "ARCH-012",
+      "title": "Codex Scout integration scaffold (no Codex execution required) (P1 placeholder)",
+      "source": "human-review",
+      "status": "informational",
+      "phase_introduced": "Phase 2BR",
+      "phase_fixed_or_documented": "Phase 2BR",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: ARCH-012"
+      ],
+      "tests": [],
+      "notes": "P1 placeholder. P12 promotes to 'fixed' once schemas/codex_findings.schema.json, prompts/codex_scout.md, orchestrator/Import-WaggleCodexFindings.ps1, codex_setup.md land. Acceptance: synthetic codex_findings.json imports cleanly through the redactor + schema + epoch_id check; the orchestrator does NOT install or run Codex."
+    },
+    {
+      "tag": "ARCH-013",
+      "title": "Proposal Matrix builder: single decision surface aggregating internal + Codex + external proposals (P1 placeholder)",
+      "source": "human-review",
+      "status": "informational",
+      "phase_introduced": "Phase 2BR",
+      "phase_fixed_or_documented": "Phase 2BR",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: ARCH-013"
+      ],
+      "tests": [],
+      "notes": "P1 placeholder. P12 promotes to 'fixed' once orchestrator/Build-WaggleProposalMatrix.ps1 + schemas/proposal_matrix.schema.json land. Acceptance: empty inputs produce empty matrix; internal-only / +Codex / +external all produce matrix rows; linked_ledger_tags + linked_regressions populate from ID matches."
+    },
+    {
+      "tag": "REL-012",
+      "title": "Regression Ledger with severity scoring (0-100), trajectory, status state machine (P1 placeholder)",
+      "source": "human-review",
+      "status": "informational",
+      "phase_introduced": "Phase 2BR",
+      "phase_fixed_or_documented": "Phase 2BR",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: REL-012"
+      ],
+      "tests": [],
+      "notes": "P1 placeholder. P12 promotes to 'fixed' once schemas/regression_ledger.schema.json + orchestrator/lib/RegressionLedger.ps1 + docs/quality/regression_ledger.md + auto-update hooks in Run-WaggleHardeningGates.ps1 land. Acceptance: scoring rubric matches design (40+30+25+20 etc., capped at 100); illegal status transitions throw; auto-hooks fire without breaking host operation."
+    },
+    {
+      "tag": "REL-013",
+      "title": "Dynamic epoch controller with verification gate, repair-attempt limits, severity-driven iteration ceiling (P1 placeholder)",
+      "source": "human-review",
+      "status": "informational",
+      "phase_introduced": "Phase 2BR",
+      "phase_fixed_or_documented": "Phase 2BR",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: REL-013"
+      ],
+      "tests": [],
+      "notes": "P1 placeholder. P12 promotes to 'fixed' once EpochCycleTrigger.ps1 supports min=2/target=3/max=6, decisions {CONTINUE_LOCAL/_FOR_REPAIR/_FOR_VERIFICATION/_FOR_AUTO_REPAIR/EXTERNAL_REVIEW/STRATEGIC_EXTERNAL_REVIEW/HALT/NEEDS_MANUAL_ACTION}, audit JSON, verification prefix, repair caps {medium=2,high=2,critical=1}, resurrection escalation, same-test-twice escalation, severity-cap. Acceptance: ~15 new tests in Test-EpochCycleTrigger.ps1 cover all decision branches."
+    },
+    {
+      "tag": "REL-014",
+      "title": "Auto-repair classifier + constrained repair prompt builder (P1 placeholder)",
+      "source": "human-review",
+      "status": "informational",
+      "phase_introduced": "Phase 2BR",
+      "phase_fixed_or_documented": "Phase 2BR",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: REL-014"
+      ],
+      "tests": [],
+      "notes": "P1 placeholder. P12 promotes to 'fixed' once orchestrator/lib/external_review/FindingClassifier.ps1 (TRIVIAL_AUTO_FIX/LOCAL_REPAIR/EXTERNAL_REVIEW_REQUIRED/NEEDS_MANUAL_ACTION + fixability heuristic + resurrection check) + orchestrator/Build-WaggleAutoRepairPrompt.ps1 (with all 11 hard rules + scope-limit clauses) land. Acceptance: Test-FindingClassifier.ps1 passes >=20 cases across all four classes; epoch controller routes via classifier BEFORE existing decision logic; max_auto_repair_iterations_per_epoch caps the budget."
+    },
+    {
+      "tag": "SEC-009",
+      "title": "Internal Claude review schema enhancement: reviewer_self_id + suggested_next_actions[] (P1 placeholder)",
+      "source": "human-review",
+      "status": "informational",
+      "phase_introduced": "Phase 2BR",
+      "phase_fixed_or_documented": "Phase 2BR",
+      "canonical_source_anchors": [
+        "docs/design/phase_fix_ledger.md :: SEC-009"
+      ],
+      "tests": [],
+      "notes": "P1 placeholder. P12 promotes to 'fixed' once schemas/review.schema.json gains optional reviewer_self_id + suggested_next_actions[] (existing reviews still validate without them); prompts/review/{architect,security,reliability}.md request both blocks; lib/review/ReviewSchema.ps1 accepts/rejects shapes correctly. Acceptance: Test-ReviewSchema covers old + new + malformed cases."
     }
   ]
 }

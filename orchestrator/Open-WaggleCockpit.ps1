@@ -19,9 +19,18 @@ $ErrorActionPreference = 'Stop'
 if (-not $RepoRoot) {
     $RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 }
-$cockpitFile = Join-Path $RepoRoot 'review_cockpit.html'
+# Phase 2B-R2 (ARCH-005): cockpit HTML now lives under
+# orchestrator/cockpit/. Resolve the new path first; fall back to
+# the legacy repo-root location only if the new file is absent so
+# in-flight worktrees that haven't pulled this commit still work.
+$cockpitFile = Join-Path $RepoRoot 'orchestrator/cockpit/review_cockpit.html'
 if (-not (Test-Path -LiteralPath $cockpitFile)) {
-    throw "review_cockpit.html not found at $cockpitFile"
+    $legacyCockpitFile = Join-Path $RepoRoot 'review_cockpit.html'
+    if (Test-Path -LiteralPath $legacyCockpitFile) {
+        $cockpitFile = $legacyCockpitFile
+    } else {
+        throw "review_cockpit.html not found at $cockpitFile or $legacyCockpitFile"
+    }
 }
 $dataFile = Join-Path $RepoRoot 'state/cockpit_data.json'
 if (-not (Test-Path -LiteralPath $dataFile)) {

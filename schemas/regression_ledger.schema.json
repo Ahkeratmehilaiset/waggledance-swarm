@@ -74,6 +74,7 @@
               "no_work_stall",
               "source_supplement_sparse",
               "doc_report_mismatch",
+              "iteration_failure",
               "other"
             ]
           },

@@ -308,9 +308,16 @@ $evidenceSha = $null
 # ------------------------------------------------------------------
 
 [void](Step 'P11-6: Open-WaggleCockpit smoke' {
-    $cockpitFile = Join-Path $repoRoot 'review_cockpit.html'
-    if (-not (Test-Path -LiteralPath $cockpitFile)) { throw "review_cockpit.html missing" }
-    return @{ cockpit_file_exists = $true }
+    # Phase 2B-R2 (ARCH-005): cockpit moved to orchestrator/cockpit/.
+    $cockpitFile = Join-Path $repoRoot 'orchestrator/cockpit/review_cockpit.html'
+    if (-not (Test-Path -LiteralPath $cockpitFile)) {
+        $legacy = Join-Path $repoRoot 'review_cockpit.html'
+        if (-not (Test-Path -LiteralPath $legacy)) {
+            throw "review_cockpit.html missing at $cockpitFile and $legacy"
+        }
+        $cockpitFile = $legacy
+    }
+    return @{ cockpit_file_exists = $true; cockpit_file_path = $cockpitFile }
 })
 
 # ------------------------------------------------------------------

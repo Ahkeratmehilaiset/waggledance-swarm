@@ -187,6 +187,56 @@ $hookLedger = Get-WaggleRegressionLedger -Path $hookPath
 Assert-True 'hook: dedup count still 1' (@($hookLedger.regressions).Count -eq 1)
 Assert-True 'hook: history grew' (@($hookLedger.regressions[0].history).Count -ge 2)
 
+# ---- Phase 2B-R2 P5c: iteration-failure hook --------------------------
+
+$iterHookPath = Join-Path $tmp 'iter_hook.json'
+Add-WaggleRegressionFromIterationFailure -LedgerPath $iterHookPath -IterationId 'iter-fail-1' -FailureKind 'FAILED' -Symptom 'unit harness flake' -ExitCode 1
+$iterLedger = Get-WaggleRegressionLedger -Path $iterHookPath
+Assert-True 'iter-hook: created entry' (@($iterLedger.regressions).Count -eq 1)
+Assert-True 'iter-hook: category=iteration_failure' ([string]$iterLedger.regressions[0].category -eq 'iteration_failure')
+Assert-True 'iter-hook: signature populated' ([string]$iterLedger.regressions[0].issue_signature -match '^[a-f0-9]{64}$')
+Assert-True 'iter-hook: first_symptom carries through' ([string]$iterLedger.regressions[0].first_symptom -eq 'unit harness flake')
+# Same iteration_id + same FailureKind -> same signature -> dedup, no double-add.
+Add-WaggleRegressionFromIterationFailure -LedgerPath $iterHookPath -IterationId 'iter-fail-1' -FailureKind 'FAILED' -Symptom 'second fire'
+$iterLedger = Get-WaggleRegressionLedger -Path $iterHookPath
+Assert-True 'iter-hook: dedup count still 1' (@($iterLedger.regressions).Count -eq 1)
+Assert-True 'iter-hook: dedup history grew' (@($iterLedger.regressions[0].history).Count -ge 2)
+# Different FailureKind -> different signature -> appends.
+Add-WaggleRegressionFromIterationFailure -LedgerPath $iterHookPath -IterationId 'iter-fail-1' -FailureKind 'TIMEOUT' -Symptom 'second kind'
+$iterLedger = Get-WaggleRegressionLedger -Path $iterHookPath
+Assert-True 'iter-hook: distinct kinds append' (@($iterLedger.regressions).Count -eq 2)
+
+# ---- Phase 2B-R2 P5c: review-walk hook -------------------------------
+
+$reviewHookPath = Join-Path $tmp 'review_hook.json'
+$reviewObj = [pscustomobject]@{
+    role = 'security'
+    target_iteration_id = 'review-iter-1'
+    summary = 't'
+    verdict = 'needs_attention'
+    findings = @(
+        [pscustomobject]@{ id = 'SEC-201'; severity = 'critical'; title = 'critical secret leak'; affected_files = @('orchestrator/lib/Redactor.ps1') }
+        [pscustomobject]@{ id = 'SEC-202'; severity = 'high';     title = 'high impact bypass';   affected_files = @('orchestrator/lib/Redactor.ps1') }
+        [pscustomobject]@{ id = 'SEC-203'; severity = 'medium';   title = 'medium ignored';       affected_files = @() }
+        [pscustomobject]@{ id = 'SEC-204'; severity = 'low';      title = 'low ignored';          affected_files = @() }
+    )
+    metrics = @{ files_reviewed = 1; lines_reviewed = 1; review_duration_seconds = 1 }
+    completed = $true
+}
+$hits = Add-WaggleRegressionsFromReviewObject -LedgerPath $reviewHookPath -ReviewObject $reviewObj -IterationId 'review-iter-1' -Role 'security'
+Assert-True 'review-hook: only critical+high contributed' ($hits -eq 2)
+$reviewLedger = Get-WaggleRegressionLedger -Path $reviewHookPath
+Assert-True 'review-hook: 2 entries created' (@($reviewLedger.regressions).Count -eq 2)
+$linkedFindings = @($reviewLedger.regressions | ForEach-Object { @($_.linked_findings) | Select-Object -First 1 })
+Assert-True 'review-hook: SEC-201 in linked_findings' ($linkedFindings -contains 'SEC-201')
+Assert-True 'review-hook: SEC-202 in linked_findings' ($linkedFindings -contains 'SEC-202')
+Assert-True 'review-hook: SEC-203 NOT in linked_findings' (-not ($linkedFindings -contains 'SEC-203'))
+# Re-fire: same iteration_id + same finding_id -> dedup; total still 2.
+$null = Add-WaggleRegressionsFromReviewObject -LedgerPath $reviewHookPath -ReviewObject $reviewObj -IterationId 'review-iter-1' -Role 'security'
+$reviewLedger = Get-WaggleRegressionLedger -Path $reviewHookPath
+Assert-True 'review-hook: re-fire dedups count' (@($reviewLedger.regressions).Count -eq 2)
+Assert-True 'review-hook: re-fire history grew' (@($reviewLedger.regressions[0].history).Count -ge 2)
+
 # ---- Cleanup ----------------------------------------------------------
 
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tmp

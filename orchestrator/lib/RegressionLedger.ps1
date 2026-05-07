@@ -23,7 +23,7 @@ $Script:RLStatuses    = @(
 $Script:RLCategories  = @(
     'test_failure','hardening_gate_failure','ci_failure','runtime_crash',
     'lock_state_signal','security_redaction','no_work_stall',
-    'source_supplement_sparse','doc_report_mismatch','other'
+    'source_supplement_sparse','doc_report_mismatch','iteration_failure','other'
 )
 $Script:RLEvents      = @(
     'introduced','detected','classified',
@@ -59,6 +59,10 @@ $Script:RLScoringRubric = @(
     @{ category = 'ci_failure';                       weight = 30 }
     @{ category = 'previously_passing_test_now_failing'; weight = 25 }
     @{ category = 'runtime_crash';                    weight = 20 }
+    # Phase 2B-R2 (P5c): iteration_failure covers FAILED / TIMEOUT /
+    # NEEDS_MANUAL_ACTION / NEEDS_REVIEW_CONFLICT terminal states from
+    # Invoke-WaggleIteration. Scored between gate (40) and crash (20).
+    @{ category = 'iteration_failure';                weight = 25 }
     @{ category = 'lock_state_signal';                weight = 15 }
     @{ category = 'security_redaction';               weight = 15 }
     @{ category = 'no_work_stall';                    weight = 10 }
@@ -479,6 +483,105 @@ function Add-WaggleRegressionFromHardeningGateFailure {
         # Hooks must NEVER break the host operation.
         Write-Warning ("regression-ledger hook failed: " + $_.Exception.Message)
     }
+}
+
+function Add-WaggleRegressionFromIterationFailure {
+    <#
+    .SYNOPSIS
+    Phase 2B-R2 (P5c) hook: append (or dedup) a regression entry when
+    an iteration ends in a non-success terminal state (FAILED,
+    TIMEOUT, INTERACTIVE_PROMPT_DETECTED, etc.). Called from
+    Invoke-WaggleIteration.ps1 after the iteration's terminal state
+    is decided. Hooks must never break the host operation.
+
+    Dedup contract: same iteration_id + same execution_failure_kind
+    yields the same signature, so repeat hook fires on the same
+    iteration do NOT double-add.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $LedgerPath,
+        [Parameter(Mandatory)] [string] $IterationId,
+        [Parameter(Mandatory)] [string] $FailureKind,
+        [string] $Symptom = '',
+        [int]    $ExitCode = 0
+    )
+    try {
+        $ledger = Get-WaggleRegressionLedger -Path $LedgerPath
+        $signature = Get-WaggleIssueSignature -IterationIdIntroduced $IterationId -FindingId ('ITER-' + $FailureKind) -FailingTestOrFile $FailureKind
+        $existing = @($ledger.regressions | Where-Object { $_.PSObject.Properties['issue_signature'] -and [string]$_.issue_signature -eq $signature -and @('verified','fixed','false_positive') -notcontains [string]$_.status })
+        if ($existing.Count -gt 0) {
+            $regId = [string]$existing[0].id
+            try {
+                Update-WaggleRegressionEntry -Ledger $ledger -RegId $regId -Update @{
+                    history_event = @{ iteration_id = $IterationId; event = 'detected'; issue_signature = $signature; notes = ('repeat iteration_failure: ' + $FailureKind) }
+                } | Out-Null
+            } catch {}
+        } else {
+            $sym = if ($Symptom) { $Symptom } else { ('iteration ended ' + $FailureKind + ' (exit ' + [string]$ExitCode + ')') }
+            $entry = [pscustomobject]@{
+                detected_in_iteration = $IterationId
+                category = 'iteration_failure'
+                first_symptom = $sym
+                affected_files = @()
+                failing_tests = @()
+                linked_findings = @()
+                linked_proposals = @()
+                issue_signature = $signature
+                score_categories = @('iteration_failure')
+            }
+            $entry | Add-Member -NotePropertyName score -NotePropertyValue (Get-WaggleRegressionScore -Entry $entry) -Force
+            $entry | Add-Member -NotePropertyName severity -NotePropertyValue (_Rl-SeverityFromScore -Score ([int]$entry.score)) -Force
+            Add-WaggleRegressionEntry -Ledger $ledger -Entry $entry | Out-Null
+        }
+        Save-WaggleRegressionLedger -Path $LedgerPath -Ledger $ledger
+    } catch {
+        # Hooks must NEVER break the host operation.
+        Write-Warning ("regression-ledger hook failed: " + $_.Exception.Message)
+    }
+}
+
+function Add-WaggleRegressionsFromReviewObject {
+    <#
+    .SYNOPSIS
+    Phase 2B-R2 (P5c) hook: walk the parsed review object and call
+    Add-WaggleRegressionFromInternalFinding for every finding whose
+    severity is 'critical' or 'high'. Called from
+    Invoke-WaggleReview.ps1 after the review JSON parses successfully.
+    Dedup is delegated to the per-finding helper. Hook returns the
+    count of non-low/non-medium findings observed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $LedgerPath,
+        [Parameter(Mandatory)] $ReviewObject,
+        [Parameter(Mandatory)] [string] $IterationId,
+        [Parameter(Mandatory)] [string] $Role
+    )
+    $hits = 0
+    try {
+        if ($null -eq $ReviewObject) { return $hits }
+        if (-not $ReviewObject.PSObject.Properties['findings']) { return $hits }
+        $findings = @($ReviewObject.findings)
+        foreach ($f in $findings) {
+            if ($null -eq $f) { continue }
+            $sev = ''
+            if ($f.PSObject.Properties['severity']) { $sev = [string]$f.severity }
+            if (-not ($sev -in @('critical','high'))) { continue }
+            $fid = ''
+            if ($f.PSObject.Properties['id']) { $fid = [string]$f.id }
+            if (-not $fid) { continue }
+            $sym = ''
+            if ($f.PSObject.Properties['title']) { $sym = [string]$f.title }
+            $files = @()
+            if ($f.PSObject.Properties['affected_files']) { $files = @($f.affected_files | ForEach-Object { [string]$_ } | Where-Object { $_ }) }
+            Add-WaggleRegressionFromInternalFinding -LedgerPath $LedgerPath -IterationId $IterationId -Role $Role -FindingId $fid -Severity $sev -Symptom $sym -AffectedFiles $files | Out-Null
+            $hits++
+        }
+    } catch {
+        Write-Warning ("regression-ledger review-walk hook failed: " + $_.Exception.Message)
+    }
+    return $hits
 }
 
 function Add-WaggleRegressionFromInternalFinding {

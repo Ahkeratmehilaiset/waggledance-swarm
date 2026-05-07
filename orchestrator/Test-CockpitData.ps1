@@ -202,8 +202,14 @@ Assert-True 'pm-summary: internal=4'       ($d.proposal_matrix.claude_internal_c
 # ---- Test 5: cockpit HTML sanity --------------------------------------
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$cockpitFile = Join-Path $repoRoot 'review_cockpit.html'
-Assert-True 'html: cockpit file exists' (Test-Path -LiteralPath $cockpitFile)
+# Phase 2B-R2 (ARCH-005): the cockpit HTML moved to
+# orchestrator/cockpit/. The old repo-root path is the legacy
+# fallback honoured by Open-WaggleCockpit.ps1 only.
+$cockpitFile = Join-Path $repoRoot 'orchestrator/cockpit/review_cockpit.html'
+$legacyCockpitFile = Join-Path $repoRoot 'review_cockpit.html'
+Assert-True 'html: cockpit file exists at orchestrator/cockpit/' (Test-Path -LiteralPath $cockpitFile)
+Assert-True 'html: legacy repo-root cockpit removed' (-not (Test-Path -LiteralPath $legacyCockpitFile))
+Assert-True 'html: orchestrator/cockpit/README.md exists' (Test-Path -LiteralPath (Join-Path $repoRoot 'orchestrator/cockpit/README.md'))
 $html = Get-Content -Raw -Path $cockpitFile -Encoding UTF8
 Assert-True 'html: has element id="cards"'     ($html -match 'id="cards"')
 Assert-True 'html: has element id="summary"'   ($html -match 'id="summary"')

@@ -562,7 +562,7 @@
       "phase_introduced": "Phase 2BR",
       "phase_fixed_or_documented": "Phase 2BR",
       "canonical_source_anchors": [
-        "review_cockpit.html",
+        "orchestrator/cockpit/review_cockpit.html",
         "schemas/cockpit_data.schema.json",
         "orchestrator/Build-WaggleCockpitData.ps1",
         "orchestrator/Open-WaggleCockpit.ps1",
@@ -683,18 +683,125 @@
       "notes": "Promoted to 'fixed' in Phase 2B-Revision P12. Both new fields are OPTIONAL on the Phase 2A-2 internal review schema; old reviews still validate. The validator enforces required sub-fields when reviewer_self_id is present, requires runtime='claude_code' for internal reviews, and validates estimated_effort enum on each suggested_next_action. The three internal review prompt templates request both blocks under a 'Phase 2B-Revision (SEC-009)' section. Test-ReviewSchema covers old/new/malformed shapes; Test-ReviewAdapter asserts the prompt files request both blocks."
     },
     {
+      "tag": "ARCH-001",
+      "title": "Redactor SHA-context allowlist does not survive JSON-encoded diff_text strings",
+      "source": "architect",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR2",
+      "canonical_source_anchors": [
+        "orchestrator/lib/Redactor.ps1 :: GIT_LOG_LINE_JSON_ESC",
+        "orchestrator/lib/Redactor.ps1 :: ARCH-001"
+      ],
+      "tests": [
+        "orchestrator/Test-Redactor.ps1"
+      ],
+      "notes": "P9 architect review of PR #94 found that GIT_LOG_LINE only matched at line-start (?im)^commit\\s+<sha>, which never fires inside a JSON-encoded string where '\\n' is the literal two-char escape. Phase 2BR2 P2 added a sibling rule GIT_LOG_LINE_JSON_ESC matching '\\n' or '\\r\\n' preceding 'commit <hex40>'. New regression tests in Test-Redactor.ps1 (ARCH-001a..d) cover: 40-hex SHA inside JSON-escaped diff_text preserved; PR commit SHA in git_metadata.json preserved; PR commit SHA inside JSON-escaped diff_text preserved; SHA preserved AND inline secret redacted in same blob. Test-Redactor count: 27 -> 37."
+    },
+    {
+      "tag": "ARCH-002",
+      "title": "Redactor AWS_SECRET_KEY pattern eats long PowerShell identifiers",
+      "source": "architect",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR2",
+      "canonical_source_anchors": [
+        "orchestrator/lib/Redactor.ps1 :: ARCH-002",
+        "orchestrator/lib/Redactor.ps1 :: AWS_SECRET_KEY"
+      ],
+      "tests": [
+        "orchestrator/Test-Redactor.ps1"
+      ],
+      "notes": "P9 architect review of PR #94 found the prior pattern (?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=]) accepted any 40-char run from the AWS class, including pure-alpha PowerShell function names like 'Add-WaggleRegressionFromHardeningGateFailure'. Phase 2BR2 P2 tightened the pattern with two zero-width lookaheads requiring at least one digit AND at least one of '/+=' inside the 40-char window. Real AWS secret-access-key shapes still match. Bonus side effect: pure-hex 40-runs (commit SHAs) no longer trip the AWS rule even outside SHA-context positions, so the GitShaContext rules become defence-in-depth rather than load-bearing. New regression tests in Test-Redactor.ps1 (ARCH-002a..c) cover: 40+ alpha PS identifier preserved; real AWS-shape redacted in env context; pure-hex 40-run not eaten."
+    },
+    {
+      "tag": "ARCH-005",
+      "title": "review_cockpit.html lives at repo root with no containing layer",
+      "source": "architect",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR2",
+      "canonical_source_anchors": [
+        "orchestrator/cockpit/review_cockpit.html :: id=\"cards\"",
+        "orchestrator/cockpit/README.md :: Operator Cockpit",
+        "orchestrator/Open-WaggleCockpit.ps1 :: Phase 2B-R2 (ARCH-005)"
+      ],
+      "tests": [
+        "orchestrator/Test-CockpitData.ps1"
+      ],
+      "notes": "P9 architect review of PR #94 noted the HTML cockpit at the repo root blurred the orchestrator's clean entry-points / lib / schemas / prompts boundary structure. Phase 2BR2 P3 git-mv'd review_cockpit.html under orchestrator/cockpit/, added orchestrator/cockpit/README.md describing the cockpit_data.json contract + 5s polling + origin allowlist, and updated Open-WaggleCockpit.ps1 to resolve the new path with a backward-compat fallback to the legacy repo-root location for in-flight worktrees. Test-CockpitData adds three new assertions: cockpit file exists at orchestrator/cockpit/, legacy repo-root cockpit removed, README exists. Test-CockpitData count: 30 -> 32."
+    },
+    {
+      "tag": "ARCH-006",
+      "title": "Dual-ledger contract (phase_fix_ledger vs regression_ledger) is implicit",
+      "source": "architect",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR2",
+      "canonical_source_anchors": [
+        "docs/design/ledger_contract.md :: Dual-ledger contract"
+      ],
+      "tests": [],
+      "notes": "P9 architect review of PR #94 noted phase_fix_ledger.json (committed) and state/regression_ledger.json (gitignored runtime) had overlapping conceptual surface but no documented contract. Phase 2BR2 P4 added docs/design/ledger_contract.md stating: phase_fix_ledger = committed historical record; regression_ledger = live runtime state machine; cross-link rules used by Build-WaggleProposalMatrix; what survives a clean clone; when to write where. The contract doc is referenced by both schemas via the 'See also' footer. Doc-only; no test added (phase_fix_ledger row anchor + ledger_contract.md presence is the proof)."
+    },
+    {
+      "tag": "ARCH-003",
+      "title": "Per-phase duplication: Build-Phase2BManifest and Build-Phase2BRManifest plus their dry-run drivers",
+      "source": "architect",
+      "status": "backlog",
+      "phase_introduced": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR2 (recorded, NOT implemented)",
+      "canonical_source_anchors": [
+        "orchestrator/Build-Phase2BManifest.ps1",
+        "orchestrator/Build-Phase2BRManifest.ps1",
+        "orchestrator/Run-Phase2BEndToEndDryRun.ps1",
+        "orchestrator/Run-Phase2BREndToEndDryRun.ps1"
+      ],
+      "tests": [],
+      "notes": "Backlog target: a future phase that introduces a third manifest. Acceptance: extract Build-WaggleManifest.ps1 / Run-WaggleEndToEndDryRun.ps1 taking phase id + manifest data; per-phase wrappers become 5-line shims; both legacy 2B + 2BR fixtures still PASS the unified driver before the originals are deleted. Phase 2BR2 deliberately does NOT implement this large refactor (per operator P5 ground rule)."
+    },
+    {
+      "tag": "ARCH-004",
+      "title": "EpochCycleTrigger decision priority is a 14-branch hand-coded ladder",
+      "source": "architect",
+      "status": "backlog",
+      "phase_introduced": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR2 (recorded, NOT implemented)",
+      "canonical_source_anchors": [
+        "orchestrator/lib/external_review/EpochCycleTrigger.ps1"
+      ],
+      "tests": [],
+      "notes": "Backlog target: a future phase that adds a 15th branch or changes priority. Acceptance: $Script:DecisionPriorityRules array of {name; predicate; decision} iterated in order; legacy function preserved as -Legacy alias; existing 39-case Test-EpochCycleTrigger continues green; equivalence-on-fixture-corpus gate added before legacy alias is deleted. Phase 2BR2 deliberately does NOT implement this large refactor (per operator P5 ground rule)."
+    },
+    {
+      "tag": "ARCH-007",
+      "title": "_FieldOr helper duplicated across at least three orchestrator libraries",
+      "source": "architect",
+      "status": "backlog",
+      "phase_introduced": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR2 (recorded, NOT implemented)",
+      "canonical_source_anchors": [
+        "orchestrator/lib/external_review/FindingClassifier.ps1 :: _Fc-FieldOr",
+        "orchestrator/Build-WaggleProposalMatrix.ps1 :: _Pmx-FieldOr"
+      ],
+      "tests": [],
+      "notes": "Backlog target: paired with ARCH-009 (PS 5.1 helpers) when a future phase needs the third copy. Acceptance: orchestrator/lib/Common.ps1 with Get-WaggleField / Get-WaggleSafeChildItems / ConvertTo-WaggleJson; existing per-module tests stay green. Low severity. Phase 2BR2 deliberately does NOT implement this small refactor to keep the cleanup pass tight (per operator P5 ground rule)."
+    },
+    {
       "tag": "REL-019",
       "title": "Invoke-WaggleReview top-level CLI dereferences $r.role on -DryRun pscustomobject which lacks role",
       "source": "human-review",
-      "status": "backlog",
+      "status": "fixed",
       "phase_introduced": "Phase 2A-2",
-      "phase_fixed_or_documented": "Phase 2B-R1 (recorded, NOT fixed)",
+      "phase_fixed_or_documented": "Phase 2B-R2",
       "canonical_source_anchors": [
-        "orchestrator/Invoke-WaggleReview.ps1 :: DryRun return",
-        "orchestrator/Invoke-WaggleReview.ps1 :: Write-Host 'Review {0} for {1}'"
+        "orchestrator/Invoke-WaggleReview.ps1 :: Phase 2B-R2 (REL-019)",
+        "orchestrator/Invoke-WaggleReview.ps1 :: target_iteration_id = $SourceIterationId"
       ],
-      "tests": [],
-      "notes": "Found in Phase 2B-R1 P9 while priming the architect self-review with a -DryRun shape check. The DryRun branch returns a pscustomobject with keys {ok, dry_run, review_iteration_id, prompt_path, staging_root, effective_profile, package_quality, status, errors} -- notably WITHOUT 'role'. The CLI wrapper at the bottom of the script then runs Write-Host using -f $r.role, ..., which under StrictMode throws 'The property role cannot be found on this object'. The function exits 1 even though staging is fully populated (review_prompt.md, package_quality.json, redaction_report.json all written correctly). Get-WaggleFindingClass routed this EXTERNAL_REVIEW_REQUIRED / fixability_ambiguous / reason=fixability_ambiguous because the proposed-fix string offered two possible shapes (add 'role' to DryRun return vs guard the caller vs unify the two return shapes). Per Phase 2B-R1 P10 procedure the bug was NOT fixed locally; recorded here for an external reviewer to weigh in on the right shape. Does not block the review pipeline -- the non-DryRun path's return object DOES include 'role' (see Invoke-WaggleReview.ps1 :: 'role = $Role' near line 756)."
+      "tests": [
+        "orchestrator/Test-ReviewRunner.ps1"
+      ],
+      "notes": "Found in Phase 2B-R1 P9 while priming the architect self-review with a -DryRun shape check. The DryRun branch returned a pscustomobject WITHOUT 'role' or 'target_iteration_id'; the top-level CLI wrapper at the bottom of the script does Write-Host (...$r.role, $r.target_iteration_id, ...) under StrictMode in BOTH success and failure paths, which throws PropertyNotFoundStrict. Phase 2B-R1 (P10) routed this EXTERNAL_REVIEW_REQUIRED / fixability_ambiguous because the proposed-fix string offered multiple shapes; recorded as backlog. Phase 2B-R2 P5 reproduced via direct dry-run invocation (Test-ReviewRunner) and confirmed the cleanest fix is to make the DryRun return object carry the same identity fields ('role', 'target_iteration_id', 'status') as the non-DryRun branch. New assertions in Test-ReviewRunner.ps1 ('dry-run: returns role property', 'dry-run: returns target_iteration_id property', 'dry-run: returns status property') lock this in. Test count: 69 -> 72."
     }
   ]
 }

@@ -146,6 +146,13 @@ Assert-True 'C16: heuristic = unsafe for credential keyword' ($ff -eq 'unsafe')
 $ff = Get-WaggleFixabilityHeuristic -Finding (New-Finding -Severity 'medium' -AffectedFiles @() -Where '' -Evidence 'general improvement') -ClassifierConfig $cfg
 Assert-True 'C17: heuristic = ambiguous fallback' ($ff -eq 'ambiguous')
 
+# Phase 2B-R1 (CLF-BUG-001): heuristic must accept punctuation-prefixed
+# 'actual' (e.g. "expected X: a actual: b").
+$ffPunct = Get-WaggleFixabilityHeuristic -Finding (New-Finding -Severity 'medium' -Where 'schemas/foo.schema.json:30' -Evidence 'expected key: foo_count actual: fooCount' -AffectedFiles @('schemas/foo.schema.json')) -ClassifierConfig $cfg
+Assert-True 'C17b: heuristic = clear when actual: with colon' ($ffPunct -eq 'trivial' -or $ffPunct -eq 'clear')
+$clsPunct = Get-WaggleFindingClass -Finding (New-Finding -Severity 'medium' -Where 'schemas/foo.schema.json:30' -Evidence 'expected key: foo_count actual: fooCount' -AffectedFiles @('schemas/foo.schema.json')) -ClassifierConfig $cfg
+Assert-True 'C17c: schema-mismatch with actual: -> LOCAL_REPAIR or TRIVIAL_AUTO_FIX' (@('LOCAL_REPAIR','TRIVIAL_AUTO_FIX') -contains $clsPunct.class)
+
 # 18-19. repair prompt builder fills placeholders -------------------------
 
 $tmp = Join-Path $env:TEMP ("waggle-test-fc-{0}" -f ([guid]::NewGuid().ToString('N')))

@@ -109,13 +109,14 @@ function _Pmx-EachProposal {
     )
     $out = New-Object System.Collections.Generic.List[object]
     if ($null -eq $Obj) { return $out.ToArray() }
+    # Phase 2B-R1 (BWP-BUG-001): explicit null-guard. The previous
+    # `$Obj.PSObject.Properties[X] | ForEach-Object { $_.Value }`
+    # pipes $null when X is missing, and the inner `$_.Value` throws
+    # under Set-StrictMode.
     $proposals = $null
-    if ($SourceKind -eq 'codex') {
-        # Codex schema uses 'proposals' (separate from 'findings').
-        $proposals = $Obj.PSObject.Properties['proposals'] | ForEach-Object { $_.Value }
-    } else {
-        # Internal Claude + external reviewers use 'suggested_next_actions'.
-        $proposals = $Obj.PSObject.Properties['suggested_next_actions'] | ForEach-Object { $_.Value }
+    $proposalKey = if ($SourceKind -eq 'codex') { 'proposals' } else { 'suggested_next_actions' }
+    if ($null -ne $Obj -and $Obj.PSObject.Properties[$proposalKey]) {
+        $proposals = $Obj.$proposalKey
     }
     if ($null -eq $proposals) { return $out.ToArray() }
     foreach ($p in @($proposals)) {

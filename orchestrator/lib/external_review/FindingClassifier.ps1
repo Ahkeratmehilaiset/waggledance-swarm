@@ -176,7 +176,11 @@ function Get-WaggleFixabilityHeuristic {
     $hasFileLine = ($where -match ':\d+\b')
 
     $clearSignals = $false
-    if ($hayLower -match 'expected\s+\S+\s+but\s+got|expected\s+.{1,80}\s+actual\s+|missing field|missing property|typo|off[-\s]?by[-\s]?one|missing brace|parse error|fence-length|reg(ex|ular expression) tightening') {
+    # Phase 2B-R1 P6 (CLF-BUG-001): loosen the "actual" boundary so
+    # real-world evidence text like "expected key: foo_count actual: fooCount"
+    # is recognized as a clear signal. Prior regex required \s+actual\s+
+    # which missed punctuation-prefixed forms (actual:, actual;).
+    if ($hayLower -match 'expected\s+\S+\s+but\s+got|expected\s+.{1,80}[\s:;,]actual[\s:;,]|missing field|missing property|typo|off[-\s]?by[-\s]?one|missing brace|parse error|fence-length|reg(ex|ular expression) tightening') {
         $clearSignals = $true
     }
     if ($files.Count -eq 1 -and $hasFileLine -and $clearSignals) { return 'trivial' }

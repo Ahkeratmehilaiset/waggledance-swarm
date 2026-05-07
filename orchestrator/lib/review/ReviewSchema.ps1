@@ -40,6 +40,19 @@ $Script:ReviewMetricsRequired = @(
     'review_duration_seconds'
 )
 
+# Phase 2B-Revision (SEC-009): optional self-id + suggested_next_actions[].
+$Script:ReviewSelfIdRequired = @(
+    'claimed_model_name',
+    'self_assessed_strengths_for_this_review',
+    'self_assessed_limitations_for_this_review',
+    'uses_extended_thinking_or_reasoning_mode'
+)
+$Script:ReviewProposalRequired = @(
+    'id', 'title', 'rationale', 'approach',
+    'estimated_effort', 'risks', 'expected_payoff'
+)
+$Script:ReviewEffortAllowed = @('small', 'medium', 'large')
+
 function Get-ReviewSchemaConstants {
     return [pscustomobject]@{
         roles      = $Script:ReviewRoleAllowed
@@ -226,6 +239,67 @@ function Test-ReviewObject {
                     $errors.Add("metrics.$k must be a non-negative integer") | Out-Null
                 }
             }
+        }
+    }
+
+    # Phase 2B-Revision (SEC-009): validate OPTIONAL reviewer_self_id.
+    if (Test-ReviewObjectField -Obj $Object -Name 'reviewer_self_id') {
+        $self = Get-ReviewObjectField -Obj $Object -Name 'reviewer_self_id'
+        if ($null -eq $self) {
+            $errors.Add('reviewer_self_id is null') | Out-Null
+        } else {
+            foreach ($k in $Script:ReviewSelfIdRequired) {
+                if (-not (Test-ReviewObjectField -Obj $self -Name $k)) {
+                    $errors.Add("reviewer_self_id missing: $k") | Out-Null
+                }
+            }
+            $cm = Get-ReviewObjectField -Obj $self -Name 'claimed_model_name'
+            if ($null -ne $cm -and -not (Test-ReviewIsNonEmptyString -Value $cm)) {
+                $errors.Add('reviewer_self_id.claimed_model_name must be a non-empty string') | Out-Null
+            }
+            $u = Get-ReviewObjectField -Obj $self -Name 'uses_extended_thinking_or_reasoning_mode'
+            if ($null -ne $u -and -not (Test-ReviewIsBool -Value $u)) {
+                $errors.Add('reviewer_self_id.uses_extended_thinking_or_reasoning_mode must be boolean') | Out-Null
+            }
+            $rt = Get-ReviewObjectField -Obj $self -Name 'runtime'
+            if ($null -ne $rt -and $rt -ne 'claude_code') {
+                $errors.Add("reviewer_self_id.runtime must be 'claude_code' for internal reviews") | Out-Null
+            }
+        }
+    }
+
+    # Phase 2B-Revision (SEC-009): validate OPTIONAL suggested_next_actions[].
+    if (Test-ReviewObjectField -Obj $Object -Name 'suggested_next_actions') {
+        $proposals = Get-ReviewObjectField -Obj $Object -Name 'suggested_next_actions'
+        if ($null -ne $proposals -and -not ($proposals -is [string])) {
+            $proposalsArr = @()
+            if ($null -ne $proposals) { $proposalsArr = @($proposals) }
+            $pidx = 0
+            foreach ($p in $proposalsArr) {
+                $pp = "suggested_next_actions[$pidx]"
+                if ($null -eq $p) {
+                    $errors.Add("$pp is null") | Out-Null
+                } else {
+                    foreach ($k in $Script:ReviewProposalRequired) {
+                        if (-not (Test-ReviewObjectField -Obj $p -Name $k)) {
+                            $errors.Add("$pp missing field: $k") | Out-Null
+                        }
+                    }
+                    $eff = Get-ReviewObjectField -Obj $p -Name 'estimated_effort'
+                    if ($null -ne $eff -and $Script:ReviewEffortAllowed -notcontains $eff) {
+                        $errors.Add("$pp.estimated_effort must be one of $($Script:ReviewEffortAllowed -join ',')") | Out-Null
+                    }
+                    foreach ($strField in @('id','title','rationale','approach','risks','expected_payoff')) {
+                        $v = Get-ReviewObjectField -Obj $p -Name $strField
+                        if ($null -ne $v -and -not (Test-ReviewIsNonEmptyString -Value $v)) {
+                            $errors.Add("$pp.$strField must be a non-empty string") | Out-Null
+                        }
+                    }
+                }
+                $pidx++
+            }
+        } elseif ($proposals -is [string]) {
+            $errors.Add('suggested_next_actions must be an array') | Out-Null
         }
     }
 

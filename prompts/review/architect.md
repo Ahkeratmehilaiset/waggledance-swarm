@@ -120,12 +120,35 @@ that) nor reliability findings (the reliability reviewer does that).
 If you find one of those, note it briefly under "Minor issues" and
 move on.
 
+## Self-introduction (Phase 2B-Revision; SEC-009)
+
+Before the JSON block, emit a fenced `reviewer-self-id` block with
+the reviewer's claimed identity. This is the same shape as Phase
+2B external reviewers use, so internal Claude reviews slot into the
+GPT synthesis bundle without bespoke handling. `runtime` is fixed
+to `"claude_code"` for internal reviews.
+
+## Improvement proposals (Phase 2B-Revision; SEC-009)
+
+Alongside `findings`, emit `suggested_next_actions[]` with 1–8
+concrete improvement proposals: title, rationale, approach (3–5
+lines, specific files/functions/tests), `estimated_effort`
+(`small`/`medium`/`large`), risks, expected payoff. Use IDs of the
+form `PROP-001`, `PROP-002`, etc.
+
+Do not only describe findings as proposals. Strategic refactors,
+new abstractions, dead code worth deleting, test-coverage gaps, and
+automation improvements are valuable proposals even if no immediate
+finding triggers them.
+
 ## Required output
 
 You MUST produce two things:
 
 1. A fenced JSON block at the top of your output, exactly tagged
-   `review-json`:
+   `review-json`. The `reviewer_self_id` and `suggested_next_actions`
+   fields are OPTIONAL but RECOMMENDED for Phase 2B-Revision and
+   later. Older reviews without them still validate.
 
    ```review-json
    {
@@ -134,6 +157,22 @@ You MUST produce two things:
      "source_package_path": "<relative path>",
      "summary": "<2-4 sentences>",
      "verdict": "pass | pass_with_notes | needs_attention | fail",
+     "reviewer_self_id": {
+       "claimed_model_name": "<e.g. Claude Opus 4.7>",
+       "claimed_version": null,
+       "training_cutoff": null,
+       "self_assessed_strengths_for_this_review": [
+         "deep familiarity with PowerShell + Windows tooling",
+         "knowledge of WaggleDance core file layout"
+       ],
+       "self_assessed_limitations_for_this_review": [
+         "limited cross-language refactor judgment",
+         "limited insight into runtime-only race conditions"
+       ],
+       "estimated_context_window_kb": null,
+       "uses_extended_thinking_or_reasoning_mode": false,
+       "runtime": "claude_code"
+     },
      "findings": [
        {
          "id": "ARCH-001",
@@ -143,6 +182,17 @@ You MUST produce two things:
          "evidence": "<quoted excerpt or summary>",
          "why_it_matters": "<short prose>",
          "recommended_action": "<short prose>"
+       }
+     ],
+     "suggested_next_actions": [
+       {
+         "id": "PROP-001",
+         "title": "<short imperative>",
+         "rationale": "<short prose>",
+         "approach": "<3-5 lines: which files, which functions, which tests>",
+         "estimated_effort": "small | medium | large",
+         "risks": "<short prose>",
+         "expected_payoff": "<short prose>"
        }
      ],
      "metrics": {
@@ -164,7 +214,8 @@ You MUST produce two things:
    - `## Minor issues` — bulleted list, may be empty
    - `## Evidence references` — bulleted list of file paths or
      anchors used
-   - `## Suggested next actions` — short numbered list
+   - `## Suggested next actions` — short numbered list (mirrors the
+     `suggested_next_actions[]` JSON entries; same IDs)
    - `## Confidence` — one of low / medium / high, plus a one-line
      justification
 

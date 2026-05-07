@@ -163,12 +163,33 @@ You are NOT looking for architecture findings (the architect reviewer
 does that) nor for reliability findings (the reliability reviewer
 does that). If you find one, note it briefly under "Minor issues".
 
+## Self-introduction (Phase 2B-Revision; SEC-009)
+
+Before the JSON block, emit a fenced `reviewer-self-id` block with
+the reviewer's claimed identity. `runtime` is fixed to
+`"claude_code"` for internal reviews.
+
+## Improvement proposals (Phase 2B-Revision; SEC-009)
+
+Alongside `findings`, emit `suggested_next_actions[]` with 1–8
+concrete improvement proposals: title, rationale, approach (3–5
+lines, specific files/functions/tests), `estimated_effort`
+(`small`/`medium`/`large`), risks, expected payoff. IDs of the
+form `PROP-001`, `PROP-002`, etc.
+
+Strategic improvements to redactor coverage, security-test
+coverage, secret-handling discipline, or threat-model gaps are
+valuable proposals even when no immediate finding triggers them.
+Never quote a real secret in `rationale` or `approach`.
+
 ## Required output
 
 You MUST produce two things:
 
 1. A fenced JSON block at the top of your output, exactly tagged
-   `review-json`:
+   `review-json`. The `reviewer_self_id` and `suggested_next_actions`
+   fields are OPTIONAL but RECOMMENDED for Phase 2B-Revision and
+   later. Older reviews without them still validate.
 
    ```review-json
    {
@@ -177,6 +198,22 @@ You MUST produce two things:
      "source_package_path": "<relative path>",
      "summary": "<2-4 sentences>",
      "verdict": "pass | pass_with_notes | needs_attention | fail",
+     "reviewer_self_id": {
+       "claimed_model_name": "<e.g. Claude Opus 4.7>",
+       "claimed_version": null,
+       "training_cutoff": null,
+       "self_assessed_strengths_for_this_review": [
+         "knowledge of common credential / secret patterns",
+         "knowledge of WaggleDance redaction rules"
+       ],
+       "self_assessed_limitations_for_this_review": [
+         "no access to runtime network behavior",
+         "no access to live secret stores"
+       ],
+       "estimated_context_window_kb": null,
+       "uses_extended_thinking_or_reasoning_mode": false,
+       "runtime": "claude_code"
+     },
      "findings": [
        {
          "id": "SEC-001",
@@ -186,6 +223,17 @@ You MUST produce two things:
          "evidence": "<safe summary; never raw secret values>",
          "why_it_matters": "<short prose>",
          "recommended_action": "<short prose>"
+       }
+     ],
+     "suggested_next_actions": [
+       {
+         "id": "PROP-001",
+         "title": "<short imperative>",
+         "rationale": "<short prose; never quote a real secret>",
+         "approach": "<3-5 lines: which files, which functions, which tests>",
+         "estimated_effort": "small | medium | large",
+         "risks": "<short prose>",
+         "expected_payoff": "<short prose>"
        }
      ],
      "metrics": {
@@ -205,7 +253,8 @@ You MUST produce two things:
    - `## Important issues`
    - `## Minor issues`
    - `## Evidence references`
-   - `## Suggested next actions`
+   - `## Suggested next actions` — mirrors the `suggested_next_actions[]`
+     JSON entries; same IDs
    - `## Confidence`
 
 3. After all of the above, on its own line, the literal:

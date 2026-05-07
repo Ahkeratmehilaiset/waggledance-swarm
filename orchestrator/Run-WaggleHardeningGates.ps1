@@ -95,8 +95,9 @@ if ($SelfTest) {
 # Gate list. Order matters: cheap structural gates first (Syntax),
 # then Phase 2A-1 hardening, then Phase 2A-2 review-runner gates,
 # then Phase 2A-3/4 review surface + safety + integrity gates,
-# then Phase 2A-5 ledger + report-path gates, then the Phase 2A-2
-# integration gate last.
+# then Phase 2A-5 ledger + report-path gates, then the Phase 2B
+# cross-vendor iteration cycle gates, then the Phase 2A-2 integration
+# gate last.
 # --------------------------------------------------------------
 $gates = @(
     @{ name = 'Test-Syntax';                  path = Join-Path $orchDir 'Test-Syntax.ps1' }
@@ -115,6 +116,14 @@ $gates = @(
     @{ name = 'Test-ReviewSubprocessTimeout'; path = Join-Path $orchDir 'Test-ReviewSubprocessTimeout.ps1' }
     @{ name = 'Test-PhaseFixLedger';          path = Join-Path $orchDir 'Test-PhaseFixLedger.ps1' }
     @{ name = 'Test-HardeningGatesReportPath';path = Join-Path $orchDir 'Test-HardeningGatesReportPath.ps1' }
+    # Phase 2B cross-vendor iteration cycle gates (added 2026-05-06).
+    @{ name = 'Test-EpochEvidence';           path = Join-Path $orchDir 'Test-EpochEvidence.ps1' }
+    @{ name = 'Test-ExternalReviewQueue';     path = Join-Path $orchDir 'Test-ExternalReviewQueue.ps1' }
+    @{ name = 'Test-ExternalReviewImport';    path = Join-Path $orchDir 'Test-ExternalReviewImport.ps1' }
+    @{ name = 'Test-SynthesisPasteBlock';     path = Join-Path $orchDir 'Test-SynthesisPasteBlock.ps1' }
+    @{ name = 'Test-SynthesisResultImport';   path = Join-Path $orchDir 'Test-SynthesisResultImport.ps1' }
+    @{ name = 'Test-EpochCycleTrigger';       path = Join-Path $orchDir 'Test-EpochCycleTrigger.ps1' }
+    @{ name = 'Test-IterationFromSynthesis';  path = Join-Path $orchDir 'Test-IterationFromSynthesis.ps1' }
     @{ name = 'Test-Phase2A2';                path = Join-Path $orchDir 'Test-Phase2A2.ps1' }
 )
 

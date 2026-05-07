@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/external_review.schema.json",
+  "title": "WaggleDance Phase 2B external reviewer output",
+  "description": "Wire format for output from an external LLM reviewer (Claude Web, Gemini, Grok). Emitted inside a fenced ```external-review-json``` block in the reviewer's response, followed by an EXTERNAL-REVIEW-COMPLETE marker on its own line. The reviewer-self-id block precedes the JSON.",
+  "type": "object",
+  "required": [
+    "reviewer_self_id",
+    "provider",
+    "role",
+    "target_iteration_id",
+    "epoch_id",
+    "source_evidence_sha256",
+    "reviewer_summary",
+    "verdict",
+    "findings",
+    "suggested_next_actions",
+    "confidence",
+    "limitations",
+    "completed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "reviewer_self_id": {
+      "type": "object",
+      "required": [
+        "claimed_model_name",
+        "self_assessed_strengths_for_this_review",
+        "self_assessed_limitations_for_this_review",
+        "uses_extended_thinking_or_reasoning_mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claimed_model_name": { "type": "string", "minLength": 1 },
+        "claimed_version": { "type": ["string", "null"] },
+        "training_cutoff": { "type": ["string", "null"] },
+        "self_assessed_strengths_for_this_review": {
+          "type": "array", "items": { "type": "string", "minLength": 1 }
+        },
+        "self_assessed_limitations_for_this_review": {
+          "type": "array", "items": { "type": "string", "minLength": 1 }
+        },
+        "estimated_context_window_kb": { "type": ["integer", "null"] },
+        "uses_extended_thinking_or_reasoning_mode": { "type": "boolean" }
+      }
+    },
+    "provider": {
+      "type": "string",
+      "enum": ["claude_web", "gemini", "grok", "gpt", "other"]
+    },
+    "role": {
+      "type": "string",
+      "enum": ["architect", "security", "reliability", "performance", "ux", "maintainer", "synthesis"]
+    },
+    "target_iteration_id": { "type": "string", "minLength": 1 },
+    "epoch_id": { "type": "string", "minLength": 1 },
+    "source_evidence_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "reviewer_summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "pass_with_notes", "needs_attention", "needs_changes", "fail", "insufficient_evidence"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "title", "where", "evidence", "why_it_matters", "recommended_action"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
+          "title": { "type": "string", "minLength": 1 },
+          "where": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 },
+          "why_it_matters": { "type": "string", "minLength": 1 },
+          "recommended_action": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "suggested_next_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "rationale", "approach", "estimated_effort", "risks", "expected_payoff"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "approach": { "type": "string", "minLength": 1 },
+          "estimated_effort": { "type": "string", "enum": ["small", "medium", "large"] },
+          "risks": { "type": "string", "minLength": 1 },
+          "expected_payoff": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "confidence": { "type": "string", "minLength": 1 },
+    "limitations": { "type": "string", "minLength": 1 },
+    "completed": { "type": "boolean", "const": true }
+  }
+}

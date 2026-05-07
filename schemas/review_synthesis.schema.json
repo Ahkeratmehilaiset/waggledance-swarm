@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/review_synthesis.schema.json",
+  "title": "WaggleDance Phase 2B GPT synthesis output",
+  "description": "Wire format for the GPT-Synthesis response that consolidates the three external reviewer outputs and produces the next Claude Code iteration prompt. Emitted inside a fenced ```synthesis-json``` block, followed (when decision=continue) by a fenced ```next-claude-code-prompt``` block, then a SYNTHESIS-COMPLETE marker.",
+  "type": "object",
+  "required": [
+    "synthesizer_self_id",
+    "target_iteration_id",
+    "epoch_id",
+    "source_evidence_sha256",
+    "included_review_imports",
+    "excluded_review_imports",
+    "consolidated_findings",
+    "consolidated_proposals",
+    "decision",
+    "next_claude_code_prompt_block_marker",
+    "completed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "synthesizer_self_id": {
+      "type": "object",
+      "required": ["claimed_model_name", "uses_extended_thinking_or_reasoning_mode"],
+      "additionalProperties": false,
+      "properties": {
+        "claimed_model_name": { "type": "string", "minLength": 1 },
+        "claimed_version": { "type": ["string", "null"] },
+        "uses_extended_thinking_or_reasoning_mode": { "type": "boolean" }
+      }
+    },
+    "target_iteration_id": { "type": "string", "minLength": 1 },
+    "epoch_id": { "type": "string", "minLength": 1 },
+    "source_evidence_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "synthesis_summary": { "type": "string", "minLength": 1, "maxLength": 8000 },
+    "included_review_imports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["import_id", "provider", "role", "weight_in_synthesis"],
+        "additionalProperties": false,
+        "properties": {
+          "import_id": { "type": "string", "minLength": 1 },
+          "provider": { "type": "string", "minLength": 1 },
+          "role": { "type": "string", "minLength": 1 },
+          "weight_in_synthesis": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "excluded_review_imports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["import_id", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "import_id": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "consolidated_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "title", "where", "why_it_matters", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
+          "title": { "type": "string", "minLength": 1 },
+          "where": { "type": "string", "minLength": 1 },
+          "why_it_matters": { "type": "string", "minLength": 1 },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["provider", "role", "review_iteration_id_or_import_id", "finding_id_in_source"],
+              "additionalProperties": false,
+              "properties": {
+                "provider": { "type": "string", "minLength": 1 },
+                "role": { "type": "string", "minLength": 1 },
+                "review_iteration_id_or_import_id": { "type": "string", "minLength": 1 },
+                "finding_id_in_source": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "consolidated_proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "rationale", "merged_from_proposals", "synthesizer_refinements", "execution_priority"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "merged_from_proposals": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["provider", "role", "import_id", "proposal_id_in_source"],
+              "additionalProperties": false,
+              "properties": {
+                "provider": { "type": "string", "minLength": 1 },
+                "role": { "type": "string", "minLength": 1 },
+                "import_id": { "type": "string", "minLength": 1 },
+                "proposal_id_in_source": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          "synthesizer_refinements": { "type": "string" },
+          "execution_priority": { "type": "string", "enum": ["high", "medium", "low", "skip"] }
+        }
+      }
+    },
+    "decision": { "type": "string", "enum": ["continue", "halt", "requires_attention"] },
+    "halt_marker": { "type": ["string", "null"] },
+    "next_claude_code_prompt_block_marker": { "type": "string", "const": "next-claude-code-prompt" },
+    "completed": { "type": "boolean", "const": true }
+  }
+}

@@ -423,6 +423,119 @@
       ],
       "tests": [],
       "notes": "Placeholder."
+    },
+    {
+      "tag": "ARCH-007",
+      "title": "Cross-vendor multi-LLM lane: orchestrator-only, no browser automation in Phase 2B",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2B",
+      "phase_fixed_or_documented": "Phase 2B",
+      "canonical_source_anchors": [
+        "orchestrator/Build-WaggleEpochEvidence.ps1",
+        "orchestrator/Export-WaggleExternalReviewQueue.ps1",
+        "orchestrator/Import-WaggleExternalReviewResponse.ps1",
+        "orchestrator/New-WaggleSynthesisPasteBlock.ps1",
+        "orchestrator/Import-WaggleSynthesisResult.ps1",
+        "orchestrator/New-WaggleIterationFromSynthesis.ps1",
+        "prompts/phase2b_handoff_requirements.md :: browser automation"
+      ],
+      "tests": [
+        "orchestrator/Test-EpochEvidence.ps1",
+        "orchestrator/Test-ExternalReviewQueue.ps1",
+        "orchestrator/Test-ExternalReviewImport.ps1",
+        "orchestrator/Test-SynthesisPasteBlock.ps1",
+        "orchestrator/Test-SynthesisResultImport.ps1",
+        "orchestrator/Test-IterationFromSynthesis.ps1"
+      ],
+      "notes": "Promoted to 'fixed' in Phase 2B P17. The cross-vendor lane is implemented as 7 PowerShell modules driven manually by an operator pasting bundles into chat UIs. End-to-end synthetic dry-run lives at orchestrator/Run-Phase2BEndToEndDryRun.ps1; the report is written to docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/e2e_dry_run.md."
+    },
+    {
+      "tag": "ARCH-008",
+      "title": "Epoch evidence bundler: cumulative N-iteration evidence with 20-attachment cap",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2B",
+      "phase_fixed_or_documented": "Phase 2B",
+      "canonical_source_anchors": [
+        "orchestrator/Build-WaggleEpochEvidence.ps1 :: evidence_sha256",
+        "orchestrator/lib/external_review/EvidenceBundler.ps1",
+        "schemas/epoch_evidence.schema.json"
+      ],
+      "tests": [
+        "orchestrator/Test-EpochEvidence.ps1"
+      ],
+      "notes": "Promoted to 'fixed' in Phase 2B P17. Build-WaggleEpochEvidence computes a deterministic evidence_sha256 over the canonical sorted file list; the per-provider attachment plan enforces the 20-file cap (consolidates iter*_logs and iter*_internal_review when needed); all redacted via Invoke-WaggleRedaction."
+    },
+    {
+      "tag": "ARCH-009",
+      "title": "Provider profile abstraction: Claude Web / Gemini / Grok / GPT synthesis as configurable profiles",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2B",
+      "phase_fixed_or_documented": "Phase 2B",
+      "canonical_source_anchors": [
+        "orchestrator/lib/external_review/ProviderProfiles.ps1",
+        "orchestrator.config.example.json :: external_review"
+      ],
+      "tests": [
+        "orchestrator/Test-EpochEvidence.ps1",
+        "orchestrator/Test-ExternalReviewQueue.ps1"
+      ],
+      "notes": "Promoted to 'fixed' in Phase 2B P17. ProviderProfiles.ps1 default-fills four provider profiles (claude_web, gemini, grok, gpt_synthesis). Each carries enabled/timeout_sec/expected_model_in_ui. Disabled providers produce ok=false bundles instead of errors so the operator sees the gap."
+    },
+    {
+      "tag": "REL-010",
+      "title": "SHA-binding gate: source_evidence_sha256 is enforced at reviewer import, synthesis import, and iteration launch",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2B",
+      "phase_fixed_or_documented": "Phase 2B",
+      "canonical_source_anchors": [
+        "orchestrator/Import-WaggleExternalReviewResponse.ps1 :: source_evidence_sha256",
+        "orchestrator/Import-WaggleSynthesisResult.ps1 :: source_evidence_sha256",
+        "orchestrator/New-WaggleIterationFromSynthesis.ps1 :: source_evidence_sha256"
+      ],
+      "tests": [
+        "orchestrator/Test-ExternalReviewImport.ps1",
+        "orchestrator/Test-SynthesisResultImport.ps1",
+        "orchestrator/Test-IterationFromSynthesis.ps1"
+      ],
+      "notes": "Promoted to 'fixed' in Phase 2B P17. Three-way SHA agreement is enforced: the bundler stamps evidence_sha256 in epoch_evidence.json; reviewer + synthesizer responses must echo the same value; the iteration launcher recomputes from disk and refuses on mismatch. SHA-mismatch is exercised in tests at all three boundaries."
+    },
+    {
+      "tag": "REL-011",
+      "title": "HALT marker: synthesis can decide work is complete; orchestrator stops cleanly",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2B",
+      "phase_fixed_or_documented": "Phase 2B",
+      "canonical_source_anchors": [
+        "orchestrator/Import-WaggleSynthesisResult.ps1 :: WAGGLE_HALT",
+        "orchestrator/lib/external_review/EpochCycleTrigger.ps1 :: halt"
+      ],
+      "tests": [
+        "orchestrator/Test-SynthesisResultImport.ps1",
+        "orchestrator/Test-EpochCycleTrigger.ps1"
+      ],
+      "notes": "Promoted to 'fixed' in Phase 2B P17. decision=halt writes HALT.md with the synthesis_summary; trigger library returns decision=halt when the marker is present; iteration launcher refuses on non-continue decisions. The trigger library prioritizes pause > halt > early-trigger > cumulative."
+    },
+    {
+      "tag": "SEC-008",
+      "title": "External response redaction: imported reviewer outputs run through redactor before storage",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2B",
+      "phase_fixed_or_documented": "Phase 2B",
+      "canonical_source_anchors": [
+        "orchestrator/Import-WaggleExternalReviewResponse.ps1 :: Invoke-WaggleRedaction",
+        "orchestrator/Import-WaggleSynthesisResult.ps1 :: Invoke-WaggleRedaction"
+      ],
+      "tests": [
+        "orchestrator/Test-ExternalReviewImport.ps1",
+        "orchestrator/Test-SynthesisResultImport.ps1"
+      ],
+      "notes": "Promoted to 'fixed' in Phase 2B P17. Both reviewer and synthesis importers apply Invoke-WaggleRedaction to the entire response BEFORE storing it. Synthetic GitHub PAT in test fixtures is redacted before disk write; synthetic prompt-injection lines are preserved verbatim but inert (they are stored markdown, not executed)."
     }
   ]
 }

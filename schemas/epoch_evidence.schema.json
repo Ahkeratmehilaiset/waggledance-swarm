@@ -1,0 +1,109 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/epoch_evidence.schema.json",
+  "title": "WaggleDance Phase 2B epoch evidence bundle",
+  "description": "Cumulative evidence record for a Phase 2B epoch (N=1..3 internal iterations) prepared for external review. The evidence_sha256 is a deterministic content hash that reviewer + synthesis responses must echo back in their own JSON for tamper detection.",
+  "type": "object",
+  "required": [
+    "epoch_id",
+    "first_iteration_id",
+    "last_iteration_id",
+    "iteration_count",
+    "iterations",
+    "cumulative_diff_path",
+    "cumulative_raportti_path",
+    "logs_combined_per_iteration_paths",
+    "internal_reviews_per_iteration_paths",
+    "cumulative_supplement_path",
+    "regression_state",
+    "package_quality_snapshot",
+    "evidence_sha256",
+    "generated_at_utc",
+    "format_version"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "epoch_id": { "type": "string", "minLength": 1 },
+    "first_iteration_id": { "type": "string", "minLength": 1 },
+    "last_iteration_id": { "type": "string", "minLength": 1 },
+    "iteration_count": { "type": "integer", "minimum": 1, "maximum": 50 },
+    "early_trigger_reason": {
+      "type": ["string", "null"],
+      "enum": [null, "regression", "hardening_gate_failure", "internal_critical", "no_work_consecutive", "session_resume", "manual"]
+    },
+    "iterations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "iteration_id",
+          "status",
+          "internal_review_verdicts",
+          "git_diff_lines_changed",
+          "files_touched_count",
+          "no_work_classification"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "iteration_id": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "minLength": 1 },
+          "internal_review_verdicts": {
+            "type": "object",
+            "required": ["architect", "security", "reliability"],
+            "additionalProperties": false,
+            "properties": {
+              "architect": { "type": "string" },
+              "security": { "type": "string" },
+              "reliability": { "type": "string" }
+            }
+          },
+          "git_diff_lines_changed": { "type": "integer", "minimum": 0 },
+          "files_touched_count": { "type": "integer", "minimum": 0 },
+          "no_work_classification": { "type": "boolean" }
+        }
+      }
+    },
+    "cumulative_diff_path": { "type": "string", "minLength": 1 },
+    "cumulative_raportti_path": { "type": "string", "minLength": 1 },
+    "logs_combined_per_iteration_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "internal_reviews_per_iteration_paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "cumulative_supplement_path": { "type": "string", "minLength": 1 },
+    "previous_epoch_synthesis_path": { "type": ["string", "null"] },
+    "regression_state": {
+      "type": "object",
+      "required": ["hardening_gates_failure_present", "ci_failure_present", "previously_passing_test_now_failing"],
+      "additionalProperties": false,
+      "properties": {
+        "hardening_gates_failure_present": { "type": "boolean" },
+        "ci_failure_present": { "type": "boolean" },
+        "previously_passing_test_now_failing": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "package_quality_snapshot": {
+      "type": "object",
+      "required": ["reviewable_files_count", "reviewable_lines_count", "review_readiness_status"],
+      "additionalProperties": false,
+      "properties": {
+        "reviewable_files_count": { "type": "integer", "minimum": 0 },
+        "reviewable_lines_count": { "type": "integer", "minimum": 0 },
+        "review_readiness_status": {
+          "type": "string",
+          "enum": ["REVIEW_READY", "SUPPLEMENT_ONLY", "INSUFFICIENT_EVIDENCE"]
+        }
+      }
+    },
+    "evidence_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "format_version": { "type": "string", "const": "2b.1" }
+  }
+}

@@ -1,5 +1,15 @@
 # Provider hints: Claude Web (claude.ai)
 
+> **Phase 2B-Revision (ARCH-010): claude_web is no longer a default
+> external-review provider.** The Claude perspective is provided by
+> the local Phase 2A-2 self-review runner (architect/security/
+> reliability roles run inside Claude Code). This file is retained
+> for legacy and explicit-opt-in use only — the operator can still
+> invoke `Export-WaggleExternalReviewQueue.ps1 -Providers @('claude_web', ...)`
+> if they want a Claude Web second opinion alongside the internal
+> reviews. The default queue export now writes only Gemini and
+> Grok bundles.
+
 When sending a review prompt to Claude Web, the operator (or the
 future Phase 2C Selenium adapter) should:
 

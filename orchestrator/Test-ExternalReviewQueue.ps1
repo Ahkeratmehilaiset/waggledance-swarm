@@ -144,7 +144,13 @@ $exp = Export-WaggleExternalReviewQueue -ConfigPath $proj.cfg -EvidenceJsonPath 
 Assert-True 'export: ok=true' ($exp.ok -eq $true)
 Assert-True 'export: queue_manifest exists' (Test-Path -LiteralPath $exp.queue_manifest_path)
 Assert-True 'export: cowork_handoff exists' (Test-Path -LiteralPath $exp.cowork_handoff_path)
-Assert-True 'export: 3 bundles' (@($exp.bundles).Count -eq 3)
+# Phase 2B-Revision (ARCH-010): default external-review providers
+# are gemini + grok only (claude_web dropped from defaults; Claude
+# perspective comes from Phase 2A-2 internal review).
+Assert-True 'arch-010: default export = 2 bundles (gemini + grok)' (@($exp.bundles).Count -eq 2)
+Assert-True 'arch-010: gemini bundle present' (@($exp.bundles | Where-Object { $_.provider -eq 'gemini' }).Count -eq 1)
+Assert-True 'arch-010: grok bundle present'   (@($exp.bundles | Where-Object { $_.provider -eq 'grok' }).Count -eq 1)
+Assert-True 'arch-010: no claude_web bundle by default' (@($exp.bundles | Where-Object { $_.provider -eq 'claude_web' }).Count -eq 0)
 
 foreach ($b in $exp.bundles) {
     $bd = $b.bundle_dir
@@ -161,7 +167,6 @@ foreach ($b in $exp.bundles) {
 
 # Cowork handoff has all required sections
 $cowork = Get-Content -Raw -Path $exp.cowork_handoff_path -Encoding UTF8
-Assert-True 'cowork_handoff has bundle invocation for claude_web' ($cowork -match 'claude_web')
 Assert-True 'cowork_handoff has bundle invocation for gemini' ($cowork -match 'gemini')
 Assert-True 'cowork_handoff has bundle invocation for grok' ($cowork -match 'grok')
 Assert-True 'cowork_handoff has Import-WaggleExternalReviewResponse invocation' ($cowork -match 'Import-WaggleExternalReviewResponse')
@@ -236,7 +241,19 @@ $evD = Build-WaggleEpochEvidence -ConfigPath $projD.cfg -IterationIds @($idD)
 $expD = Export-WaggleExternalReviewQueue -ConfigPath $projD.cfg -EvidenceJsonPath $evD.epoch_json_path
 $gemBundle = @($expD.bundles | Where-Object { $_.provider -eq 'gemini' })[0]
 Assert-True 'disabled-provider: gemini bundle ok=false' ($gemBundle.ok -eq $false)
-Assert-True 'disabled-provider: claude_web bundle ok=true' ((@($expD.bundles | Where-Object { $_.provider -eq 'claude_web' })[0]).ok -eq $true)
+Assert-True 'disabled-provider: grok bundle ok=true' ((@($expD.bundles | Where-Object { $_.provider -eq 'grok' })[0]).ok -eq $true)
+
+# ---- Phase 2B-Revision (ARCH-010): legacy claude_web opt-in ----------
+# Default invocation drops claude_web, but explicit -Providers must
+# still produce a claude_web bundle (legacy / second-opinion mode).
+
+$projL = New-FakeProject -Name 'qL'
+$idL = '2026-05-07_04-00-00'
+[void](New-FakeIteration -Root $projL.root -Id $idL)
+$evL = Build-WaggleEpochEvidence -ConfigPath $projL.cfg -IterationIds @($idL)
+$expL = Export-WaggleExternalReviewQueue -ConfigPath $projL.cfg -EvidenceJsonPath $evL.epoch_json_path -Providers @('claude_web','gemini','grok') -Roles @('architect','security','reliability')
+Assert-True 'arch-010 legacy: 3 bundles when claude_web explicitly opted in' (@($expL.bundles).Count -eq 3)
+Assert-True 'arch-010 legacy: claude_web bundle exists when explicit'        (@($expL.bundles | Where-Object { $_.provider -eq 'claude_web' }).Count -eq 1)
 
 # ---- cleanup ---------------------------------------------------------
 

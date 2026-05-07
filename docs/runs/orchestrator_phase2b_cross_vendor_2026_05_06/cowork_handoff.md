@@ -1,5 +1,15 @@
 # Phase 2B operator handoff — cross-vendor multi-LLM iteration cycle
 
+> **Superseded by Phase 2B-Revision (ARCH-010 / ARCH-011).** The
+> default external-review lane no longer includes `claude_web` —
+> the Claude perspective comes from the local Phase 2A-2 internal
+> self-review runner. The operator-facing manual for the revised
+> flow lives at
+> `docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/cowork_handoff.md`
+> (Phase 2B-Revision P8 also adds an HTML Operator Cockpit that
+> drives the manual web-UI step). This document is preserved for
+> historical reference of what Phase 2B originally shipped.
+
 **This is the operator-facing manual for the Phase 2B review cycle.**
 The orchestrator drives N=1..3 local Claude Code iterations per epoch
 between manual external reviews. After each epoch completes (or an

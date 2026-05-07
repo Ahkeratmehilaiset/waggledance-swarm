@@ -11,8 +11,8 @@
 param(
     [string]   $ConfigPath = '',
     [string]   $EvidenceJsonPath = '',
-    [string[]] $Providers = @('claude_web','gemini','grok'),
-    [string[]] $Roles     = @('architect','security','reliability'),
+    [string[]] $Providers = @('gemini','grok'),
+    [string[]] $Roles     = @('architect','reliability'),
     [string]   $OutputBaseDir = '',
     [switch]   $DryRun
 )
@@ -31,8 +31,8 @@ function Export-WaggleExternalReviewQueue {
     param(
         [Parameter(Mandatory)] [string] $ConfigPath,
         [Parameter(Mandatory)] [string] $EvidenceJsonPath,
-        [string[]] $Providers = @('claude_web','gemini','grok'),
-        [string[]] $Roles     = @('architect','security','reliability'),
+        [string[]] $Providers = @('gemini','grok'),
+        [string[]] $Roles     = @('architect','reliability'),
         [string]   $OutputBaseDir = '',
         [switch]   $DryRun
     )

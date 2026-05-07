@@ -183,6 +183,19 @@ function Get-WaggleFixabilityHeuristic {
     if ($hayLower -match 'expected\s+\S+\s+but\s+got|expected\s+.{1,80}[\s:;,]actual[\s:;,]|missing field|missing property|typo|off[-\s]?by[-\s]?one|missing brace|parse error|fence-length|reg(ex|ular expression) tightening') {
         $clearSignals = $true
     }
+    # Phase 2B-R2 P5b (REL-019): the operator confirmed REL-019 was a
+    # 1-line shape-unification fix that the classifier had over-routed
+    # to EXTERNAL_REVIEW_REQUIRED. The bug's evidence carried explicit
+    # strict-mode missing-property signatures
+    # ("the property 'X' cannot be found on this object",
+    # "pscustomobject without 'role'", "PropertyNotFoundStrict"),
+    # plus the recommended_action was a single shape-unification
+    # ("add 'role' to the DryRun return object"). Recognize these as
+    # clear signals so future analogous null-guard / shape-fix
+    # findings route LOCAL_REPAIR.
+    if ($hayLower -match "the property\s+['""]?[a-z0-9_\.\$]+['""]?\s+cannot be found|propertynotfoundstrict|null[-\s]?guard|null guard|shape[-\s]?unification|pscustomobject\s+(?:without|lacks|missing)\s|return\s+(?:object|shape)\s+(?:lacks|missing|without)") {
+        $clearSignals = $true
+    }
     if ($files.Count -eq 1 -and $hasFileLine -and $clearSignals) { return 'trivial' }
     if (($files.Count -le 1 -and $hasFileLine) -or $clearSignals) { return 'clear' }
     if ($files.Count -gt 3) { return 'strategic' }

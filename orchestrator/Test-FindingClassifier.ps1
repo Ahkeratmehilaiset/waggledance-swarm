@@ -153,6 +153,16 @@ Assert-True 'C17b: heuristic = clear when actual: with colon' ($ffPunct -eq 'tri
 $clsPunct = Get-WaggleFindingClass -Finding (New-Finding -Severity 'medium' -Where 'schemas/foo.schema.json:30' -Evidence 'expected key: foo_count actual: fooCount' -AffectedFiles @('schemas/foo.schema.json')) -ClassifierConfig $cfg
 Assert-True 'C17c: schema-mismatch with actual: -> LOCAL_REPAIR or TRIVIAL_AUTO_FIX' (@('LOCAL_REPAIR','TRIVIAL_AUTO_FIX') -contains $clsPunct.class)
 
+# Phase 2B-R2 (REL-019 / P5b): single shape-unification fix patterns
+# must route LOCAL_REPAIR or better. Recognises strict-mode missing
+# property errors and pscustomobject shape gaps as clear signals.
+$relStrict = Get-WaggleFixabilityHeuristic -Finding (New-Finding -Severity 'medium' -Where 'orchestrator/Invoke-WaggleReview.ps1:577' -Evidence "the property 'role' cannot be found on this object. The DryRun pscustomobject lacks role; the CLI Write-Host accesses `$r.role under StrictMode and exits 1." -RecommendedAction 'Add role to the DryRun return object so it carries the same identity fields as the non-DryRun branch.' -AffectedFiles @('orchestrator/Invoke-WaggleReview.ps1')) -ClassifierConfig $cfg
+Assert-True 'C17d: heuristic = clear when strict-mode missing property error present' ($relStrict -eq 'trivial' -or $relStrict -eq 'clear')
+$relCls = Get-WaggleFindingClass -Finding (New-Finding -Severity 'medium' -Where 'orchestrator/Invoke-WaggleReview.ps1:577' -Evidence "the property 'role' cannot be found on this object. The DryRun pscustomobject without role; PropertyNotFoundStrict thrown" -RecommendedAction 'Add role to the DryRun return object.' -AffectedFiles @('orchestrator/Invoke-WaggleReview.ps1')) -ClassifierConfig $cfg
+Assert-True 'C17e: REL-019 strict-mode shape fix -> LOCAL_REPAIR or TRIVIAL_AUTO_FIX' (@('LOCAL_REPAIR','TRIVIAL_AUTO_FIX') -contains $relCls.class)
+$nullGuard = Get-WaggleFixabilityHeuristic -Finding (New-Finding -Severity 'low' -Where 'orchestrator/Foo.ps1:42' -Evidence 'add null-guard before dereference' -RecommendedAction 'wrap in null guard') -ClassifierConfig $cfg
+Assert-True 'C17f: heuristic = clear when null-guard signal present' ($nullGuard -eq 'trivial' -or $nullGuard -eq 'clear')
+
 # 18-19. repair prompt builder fills placeholders -------------------------
 
 $tmp = Join-Path $env:TEMP ("waggle-test-fc-{0}" -f ([guid]::NewGuid().ToString('N')))

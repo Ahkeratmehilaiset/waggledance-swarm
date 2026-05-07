@@ -358,6 +358,27 @@ path if blocked. The iteration_id you write MUST exactly match: $IterationId
         }
     }
 
+    # Phase 2B-R2 (P5c): regression-ledger auto-update hook on
+    # non-success terminal states. Dedup by signature
+    # (iteration_id + failure kind) inside the helper. Hook is
+    # try/catch-shielded; failure here MUST NOT break iteration
+    # termination.
+    if ($verdict.status -in @('FAILED','TIMEOUT','NEEDS_MANUAL_ACTION','NEEDS_REVIEW_CONFLICT')) {
+        try {
+            . (Join-Path $PSScriptRoot 'lib/RegressionLedger.ps1')
+            $stateDirAbs = if ([System.IO.Path]::IsPathRooted($stateDir)) { $stateDir } else { (Join-Path $projectRoot $stateDir) }
+            if (-not (Test-Path -LiteralPath $stateDirAbs)) {
+                New-Item -ItemType Directory -Path $stateDirAbs -Force | Out-Null
+            }
+            $ledgerPath = Join-Path $stateDirAbs 'regression_ledger.json'
+            Add-WaggleRegressionFromIterationFailure -LedgerPath $ledgerPath `
+                -IterationId $IterationId -FailureKind $verdict.status `
+                -Symptom $verdict.reason -ExitCode ([int]$result.exit_code) | Out-Null
+        } catch {
+            Write-Warning ("iteration regression-ledger hook skipped: " + $_.Exception.Message)
+        }
+    }
+
     # Save final state
     Save-WaggleState -State $state -Path $stateFile
     Update-CurrentStatePointer -State $state -StateDir $stateDir

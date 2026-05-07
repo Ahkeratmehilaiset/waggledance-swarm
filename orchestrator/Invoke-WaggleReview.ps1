@@ -566,9 +566,20 @@ function Invoke-WaggleReview {
     $needsReviewSurface = ([string]$packageQualityInfo.review_readiness_status -eq 'INSUFFICIENT_EVIDENCE')
 
     if ($DryRun) {
+        # Phase 2B-R2 (REL-019): the DryRun return object MUST include
+        # the same identity fields ($Role, $SourceIterationId) that the
+        # non-DryRun branch at the bottom of this function returns,
+        # because the top-level CLI wrapper does
+        # `Write-Host ('Review {0} for {1} -> {2}' -f $r.role, $r.target_iteration_id, $r.status)`
+        # in BOTH the success and failure paths. Under Set-StrictMode,
+        # accessing a missing property on a pscustomobject throws
+        # PropertyNotFoundStrict, exiting 1 even when the dry-run
+        # actually succeeded and staged the prompt + package_quality.
         return [pscustomobject]@{
             ok                  = (-not $needsReviewSurface)
             dry_run             = $true
+            role                = $Role
+            target_iteration_id = $SourceIterationId
             review_iteration_id = $reviewIterationId
             prompt_path         = $promptOnDisk
             staging_root        = $stagingRoot
@@ -714,6 +725,28 @@ function Invoke-WaggleReview {
         if ($parse.ok) {
             $json = $parse.object | ConvertTo-Json -Depth 16
             Set-Content -Path $jsonOut -Value $json -Encoding UTF8
+
+            # Phase 2B-R2 (P5c): regression-ledger auto-update hook.
+            # Append a regression entry for every critical / high
+            # security or reliability finding the reviewer surfaced,
+            # de-duplicated by (iteration_id + finding_id) inside the
+            # helper. Failure of the hook MUST NOT break review
+            # completion — Add-WaggleRegressionsFromReviewObject is
+            # itself try/catch-shielded.
+            try {
+                . (Join-Path $Script:OrchestratorLibDir 'RegressionLedger.ps1')
+                $stateDirForLedger = if ([System.IO.Path]::IsPathRooted($stateDir)) { $stateDir } else { (Join-Path $projectRoot $stateDir) }
+                if (-not (Test-Path -LiteralPath $stateDirForLedger)) {
+                    New-Item -ItemType Directory -Path $stateDirForLedger -Force | Out-Null
+                }
+                $ledgerPath = Join-Path $stateDirForLedger 'regression_ledger.json'
+                $appended = Add-WaggleRegressionsFromReviewObject -LedgerPath $ledgerPath -ReviewObject $parse.object -IterationId $SourceIterationId -Role $Role
+                if ($appended -gt 0) {
+                    Write-Host ("review hook: appended/updated {0} regression entries from {1} review" -f $appended, $Role)
+                }
+            } catch {
+                Write-Warning ("review regression-ledger hook skipped: " + $_.Exception.Message)
+            }
 
             $md = ConvertTo-WaggleReviewMarkdown -ReviewObject $parse.object
             Set-Content -Path $mdOut -Value $md -Encoding UTF8

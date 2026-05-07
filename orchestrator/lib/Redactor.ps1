@@ -25,7 +25,16 @@ $Script:DefaultRedactionRules = @(
     @{ name = 'STRIPE_KEY';      pattern = '(?:rk|sk|pk)_(?:live|test)_[A-Za-z0-9]{20,}' }
     @{ name = 'GOOGLE_API_KEY';  pattern = 'AIza[0-9A-Za-z_\-]{35}' }
     @{ name = 'AWS_ACCESS_KEY';  pattern = 'AKIA[0-9A-Z]{16}' }
-    @{ name = 'AWS_SECRET_KEY';  pattern = '(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])' }
+    # Phase 2B-R2 (ARCH-002): real AWS secret access keys are 40 chars
+    # from [A-Za-z0-9/+=] AND effectively always include at least one
+    # digit AND at least one of '/', '+', '='. The prior pattern
+    # accepted any 40-char run from that class, which silently ate
+    # 40-letter PowerShell identifiers like
+    # "Add-WaggleRegressionFromHardeningGateFailure". Two lookaheads
+    # constrain the 40-char window to require a digit AND a slash /
+    # plus / equals so legitimate AWS shapes still match while pure
+    # alpha / pure hex runs are passed through.
+    @{ name = 'AWS_SECRET_KEY';  pattern = '(?<![A-Za-z0-9/+=])(?=[A-Za-z0-9/+=]{0,39}[0-9])(?=[A-Za-z0-9/+=]{0,39}[/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])' }
     @{ name = 'JWT';             pattern = 'eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}' }
     # Phase 2A-4 SEC-002: include /, +, = (used in base64-shaped tokens)
     @{ name = 'BEARER_TOKEN';    pattern = '(?i)(authorization\s*[:=]\s*)?bearer\s+[A-Za-z0-9._\-/+=]{20,}' }
@@ -68,6 +77,14 @@ $Script:GitShaContextRules = @(
     @{ name = 'YAML_FIELD';   pattern = '(?im)^(\s*(?:commit|sha|oid|headRefOid|targetCommitish|target)\s*:\s*)([0-9a-fA-F]{40})(\s*$)' }
     @{ name = 'KV_FIELD';     pattern = '(?i)((?:^|[\s,;])(?:commit|sha|oid|headRefOid|targetCommitish)\s*=\s*)([0-9a-fA-F]{40})(?![0-9a-fA-F])' }
     @{ name = 'GIT_LOG_LINE'; pattern = '(?im)^(commit\s+)([0-9a-fA-F]{40})(\b)' }
+    # Phase 2B-R2 (ARCH-001): when a git log is embedded inside a
+    # JSON-encoded string (e.g. run_metadata.json :: diff_text), real
+    # newlines become the two-character escape sequence backslash + n.
+    # The line-anchored GIT_LOG_LINE rule above never matches because
+    # the SHA is not at column 0 of any real line. Recognise the
+    # JSON-escaped form (literal '\n' or '\r\n') preceding 'commit
+    # <hex40>' so the SHA carve-out survives JSON encoding.
+    @{ name = 'GIT_LOG_LINE_JSON_ESC'; pattern = '(?i)(\\n|\\r\\n)(commit\s+)([0-9a-fA-F]{40})(\b)' }
     @{ name = 'BARE_SHA_TAG'; pattern = '(?i)((?:^|\s)sha[:=]\s*)([0-9a-fA-F]{40})(?![0-9a-fA-F])' }
 )
 

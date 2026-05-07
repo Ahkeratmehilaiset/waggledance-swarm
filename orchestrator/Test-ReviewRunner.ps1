@@ -200,6 +200,13 @@ try {
     $r = Invoke-WaggleReview -ConfigPath $te.liveCfgPath -ReviewConfigPath $te.reviewCfgPath -SourceIterationId $itid -Role 'architect' -DryRun -NoLock
     Assert-True 'dry-run: returns ok' ($r.ok -and $r.dry_run)
     Assert-True 'dry-run: prompt file created' (Test-Path -LiteralPath $r.prompt_path)
+    # Phase 2B-R2 (REL-019): the DryRun pscustomobject MUST carry the
+    # same identity fields as the non-DryRun branch (role,
+    # target_iteration_id, status), because the top-level CLI wrapper
+    # reads $r.role / $r.target_iteration_id under Set-StrictMode.
+    Assert-True 'dry-run: returns role property' ($null -ne $r.PSObject.Properties['role'] -and $r.role -eq 'architect')
+    Assert-True 'dry-run: returns target_iteration_id property' ($null -ne $r.PSObject.Properties['target_iteration_id'] -and $r.target_iteration_id -eq $itid)
+    Assert-True 'dry-run: returns status property' ($null -ne $r.PSObject.Properties['status'] -and -not [string]::IsNullOrEmpty($r.status))
     $promptText = Get-Content -Raw -Path $r.prompt_path
     Assert-True 'dry-run: prompt has UNTRUSTED PACKAGE delimiter' ($promptText -match 'UNTRUSTED PACKAGE BEGIN' -and $promptText -match 'UNTRUSTED PACKAGE END')
     Assert-True 'dry-run: prompt has REVIEW METADATA' ($promptText -match 'REVIEW METADATA')

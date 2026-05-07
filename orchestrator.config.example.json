@@ -88,8 +88,20 @@
   },
 
   "iteration_cycle": {
-    "_comment_phase": "Phase 2B. Controls when local Claude Code iterations bunch into an epoch and trigger external review.",
+    "_comment_phase": "Phase 2B + Phase 2B-Revision (REL-013). Controls when local Claude Code iterations bunch into an epoch and trigger external review. The dynamic controller uses min/target/max instead of the legacy fixed N=3.",
     "local_iterations_per_external_review": 3,
+    "min_local_iterations": 2,
+    "target_local_iterations": 3,
+    "max_local_iterations": 6,
+    "verification_iterations_after_fix": 1,
+    "max_repair_attempts": {
+      "medium": 2,
+      "high": 2,
+      "critical": 1
+    },
+    "escalate_if_same_issue_reappears": true,
+    "escalate_if_same_test_fails_twice": true,
+    "external_review_after_epoch": true,
     "max_iterations_per_session": 50,
     "early_trigger_on_regression": true,
     "early_trigger_on_hardening_gate_failure": true,
@@ -98,6 +110,28 @@
     "no_work_diff_min_bytes": 1,
     "no_work_raportti_min_bytes": 1,
     "no_work_stdout_min_meaningful_bytes": 100
+  },
+
+  "finding_classifier": {
+    "_comment_phase": "Phase 2B-Revision (REL-014). Routes findings between local auto-repair (TRIVIAL_AUTO_FIX / LOCAL_REPAIR) and external review (EXTERNAL_REVIEW_REQUIRED) or manual operator action (NEEDS_MANUAL_ACTION). The local loop polishes mechanical issues so external models see a cleaner trajectory.",
+    "enabled": true,
+    "max_auto_repair_iterations_per_epoch": 3,
+    "max_files_for_trivial_auto_fix": 2,
+    "max_files_for_local_repair": 3,
+    "unsafe_keywords": [
+      "credential", "secret", "private_key", "destructive",
+      "lock corruption", "state corruption", "signal corruption",
+      "rm -rf", "git push --force", "force-with-lease"
+    ],
+    "strategic_keywords": [
+      "should we", "consider redesigning", "two valid approaches",
+      "architectural direction", "policy decision", "ToS",
+      "compliance", "ambiguous semantics"
+    ],
+    "force_external_categories": [
+      "architecture", "security_semantics", "lock_state_signal",
+      "concurrency", "public_api"
+    ]
   },
 
   "models": {

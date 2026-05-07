@@ -1,11 +1,20 @@
 # Phase 2B-R1 — final report
 
-**Status: pending merge SHA after PR merges.**
+**Status: MERGED.**
 
-This report is committed BEFORE the PR opens (per CLAUDE.md
-operational discipline + Phase 2B-R1 P13 commit hygiene). After
-merge, a tiny doc-only patch commit replaces this status line and
-fills in the merge SHA below.
+| Item | Value |
+|------|-------|
+| PR | https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/95 |
+| Pre-merge head SHA | `a93bb950fb341bf8e7b60ee94dbf7f90db834c22` |
+| Merge SHA on `origin/main` | `2f52aa5128fc0baf1fa25caeabc612d1aa5f4573` |
+| Merged at | 2026-05-07T20:55:17Z |
+| Merge mode | squash with `--match-head-commit` (CLAUDE.md rule 9) |
+
+This report was committed BEFORE the PR opened (per CLAUDE.md
+operational discipline + Phase 2B-R1 P13 commit hygiene). The
+present commit is the tiny doc-only patch that fills in the merge
+SHA after PR #95 merged, avoiding the Phase 2B-Revision pattern
+where the post-merge final_report only existed locally.
 
 ## Verdict
 
@@ -22,8 +31,8 @@ classifier's verdict).
 |------|-------|
 | Branch | `orchestrator/phase2br1-first-real-self-epoch` |
 | Forked from | `origin/main` @ `9712de6` (Phase 2B-Revision PR #94) |
-| PR | _pending_ |
-| Merge SHA on `origin/main` | _pending_ |
+| PR | #95 — https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/95 |
+| Merge SHA on `origin/main` | `2f52aa5128fc0baf1fa25caeabc612d1aa5f4573` |
 
 ## What Phase 2B-R1 set out to do
 

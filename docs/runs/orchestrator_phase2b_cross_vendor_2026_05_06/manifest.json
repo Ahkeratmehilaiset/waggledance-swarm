@@ -1,0 +1,325 @@
+﻿{
+    "title":  "Phase 2B file manifest",
+    "phase":  "Phase 2B",
+    "generated_at_utc":  "2026-05-07T00:20:22.3136692Z",
+    "repo_root":  "C:\\Python\\project2-master",
+    "files_count":  45,
+    "missing_count":  0,
+    "entries":  [
+                    {
+                        "relative_path":  "schemas/external_review.schema.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "19f8974622816b62f86c6cdbf8fbe2956e31144c17300690100049e13b611ee4",
+                        "size_bytes":  4147
+                    },
+                    {
+                        "relative_path":  "schemas/review_synthesis.schema.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "83c165e4849c16ecb48fc8773e0187fb7a304bd35f64a3238f5cd94e73ca8728",
+                        "size_bytes":  5271
+                    },
+                    {
+                        "relative_path":  "schemas/epoch_evidence.schema.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "c34e60eb69ba142308f87bbcc86b2b687b0a65100b10bdec40311bd6dfebb334",
+                        "size_bytes":  4285
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/external_review/EvidenceBundler.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "9eee23b0a1eaa2efff0f8aaa449a500637ec5e01e2dc92c2f045bc72ebe03300",
+                        "size_bytes":  9007
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/external_review/EpochCycleTrigger.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "eda4472764d9750a4faf22e700edaf1b31c57306c3a938133b7e14d267ca3536",
+                        "size_bytes":  6847
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/external_review/ExternalReviewSchema.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "562bfc5079d5f315336346c514c8e8aff0a9af76f52707d9b0fb70b1b6d8ad7b",
+                        "size_bytes":  11009
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/external_review/ProviderProfiles.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "2337e38b7aa5012619b147993053062d2869ba22d7cffa797a9ee9c81565bff1",
+                        "size_bytes":  4515
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/external_review/SynthesisSchema.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "dca79f4ec72b574871cf8222bbd110d9568f9baf35f6385d9d3c1725dd187c84",
+                        "size_bytes":  11260
+                    },
+                    {
+                        "relative_path":  "orchestrator/Build-WaggleEpochEvidence.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "fddb770d1fffba2839f20982c54fb073bd3d9a0c3985483696e14cda8280c0cf",
+                        "size_bytes":  18526
+                    },
+                    {
+                        "relative_path":  "orchestrator/Export-WaggleExternalReviewQueue.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "0dad122444d0e6cd4875d858ffcb2ce89ac1b74af935407ea87b83d5ab3b6ae2",
+                        "size_bytes":  13662
+                    },
+                    {
+                        "relative_path":  "orchestrator/Import-WaggleExternalReviewResponse.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "77ca146bb12bc4aa5fc9be20aa342d7d1c68428e0b24fdc0e5aa78a1f2378e67",
+                        "size_bytes":  10117
+                    },
+                    {
+                        "relative_path":  "orchestrator/New-WaggleSynthesisPasteBlock.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "f7910e6c49ec5af863c30c7a1662b0abf4148db36a316cd1953adb2deeb0efcd",
+                        "size_bytes":  12839
+                    },
+                    {
+                        "relative_path":  "orchestrator/Import-WaggleSynthesisResult.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "4373406ff2088dba1679bf8e2be6914df6582e672c48e737dda1ec06fa37c8fa",
+                        "size_bytes":  14550
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-WaggleEpochCycleTrigger.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "f09c5d6fef9c80c81dbed578c73d936652a782f59352802ab9056595305bf178",
+                        "size_bytes":  4276
+                    },
+                    {
+                        "relative_path":  "orchestrator/New-WaggleIterationFromSynthesis.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "1cef7e7fd8e145eeec16ab5117168fe84eaa6e48fcc1221c054b8f154e4edc29",
+                        "size_bytes":  7428
+                    },
+                    {
+                        "relative_path":  "orchestrator/Run-Phase2BEndToEndDryRun.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "a558ce228077c1554661e27ec510756af69fcf0e0a0791922f33fd430cdc8bc8",
+                        "size_bytes":  21109
+                    },
+                    {
+                        "relative_path":  "orchestrator/Build-Phase2BManifest.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "2eba6b1b933cf9b1860bff8a5ddc1459da1047cf4a4bcd7c69f81c52840ea506",
+                        "size_bytes":  7168
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-EpochEvidence.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "59edf48b284a7ba50becafaebfa6088e7125987641e2abaec675647b13e7292d",
+                        "size_bytes":  11805
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-ExternalReviewQueue.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "c26902f38b354bc46af8b20d42f8869c2ca04e57d03813251c3424df85a2cf6c",
+                        "size_bytes":  14398
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-ExternalReviewImport.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "c6799fbb92006641d88bdc967be98b3e3b8f776ab40bac25e110281a5a780e56",
+                        "size_bytes":  20388
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-SynthesisPasteBlock.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "0d9b028a7032f3858ab229e0bb7f4843b385a9d077a1c5ef91e9fa2f636acc99",
+                        "size_bytes":  16304
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-SynthesisResultImport.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "4a3a1bbb1384add8c8b654167b90c953b3ee24a0c81656e14ede383a93526b8d",
+                        "size_bytes":  18297
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-EpochCycleTrigger.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "36ccb3f5429d7e8e13e92258aca036c55d25d975916c1939a470f2e7409bafc8",
+                        "size_bytes":  7537
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-IterationFromSynthesis.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "c67fbafcee7197d52faf1117c3fd933243137ec03dda6b2ab6ef0298d27d154a",
+                        "size_bytes":  13703
+                    },
+                    {
+                        "relative_path":  "orchestrator/Run-WaggleHardeningGates.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "7d3f52df5477563162cf34a68c19389cbb75949a3aacefd71cb8ce2a533a4474",
+                        "size_bytes":  10844
+                    },
+                    {
+                        "relative_path":  "orchestrator.config.example.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "0f5d239e81afd260eaedc9d79b1e5e31a9e087375abe52b33cb43a648dfbc912",
+                        "size_bytes":  3940
+                    },
+                    {
+                        "relative_path":  "docs/design/phase_fix_ledger.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "07b9d0089db8f06bd9c340677e55e1badfc0028060ad23868dcd19108183e678",
+                        "size_bytes":  24117
+                    },
+                    {
+                        "relative_path":  "docs/design/phase_fix_ledger.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "2703ca9972445b6b5ee82d6b010b6692d8687695ece2dfe097a1134f31ccbd75",
+                        "size_bytes":  12147
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/architect.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "b222da8db8376c55fbbd29cf8f6245ee1b7d3bfc8840c367d9f4bbd6a2eb54d5",
+                        "size_bytes":  7466
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/security.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "247646e3a458078cad393aacb32d534bd87e2a9d4754e779de72f9b6fab0c554",
+                        "size_bytes":  6091
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/reliability.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "b3ef20961972a14cf587099d4ac6196785ee4c740a80e9c1f1c36ba24b51e634",
+                        "size_bytes":  4196
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/synthesis_gpt.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "79248915e5bce17c0dc9a53fb0db89ea125e0f2d0e92951194af0eafc653c9d9",
+                        "size_bytes":  6549
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/providers/claude_web.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "9f075918f7673230e2eca7d20055c91f9bf8250008182528b1d81f59736d13c2",
+                        "size_bytes":  1433
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/providers/gemini.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "d1e2eac5bc148103cef2b48f079060c26e1f7080ba39d3c28b012fb3cfaa5ae9",
+                        "size_bytes":  1171
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/providers/grok.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "df207929e47d5d733e8491fcbf2f4125935c0595e12bc9e1f2a265970301eb5e",
+                        "size_bytes":  1049
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/providers/gpt.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "1fb54885d1b85151b49e9f2066c8bc8e4049e0979a82e828b5a6b8bd18302735",
+                        "size_bytes":  1655
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/baseline.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "d6fce6c0c7788dff3674f60739e8ff17f39b8696dc90e55f12dcefa0012e0beb",
+                        "size_bytes":  3858
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/progress.log",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "ddd42c943de656787021ffe3b529554327c1ef86a7d2b3ac1c096950973b4789",
+                        "size_bytes":  150
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/failures.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "923d2c32e6e9a37326ca127b64dacd7484748211ddccdd1508905e5f2c1a2d9e",
+                        "size_bytes":  84
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/core_findings.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "41ed41cc23a1630436ffc8661a619546e5ee292987a957de1032fa08801d6f6c",
+                        "size_bytes":  279
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/cowork_handoff.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "a6385762287e40fd37f300f16ee9c0da61facafb2a461950a0fb847aa452c023",
+                        "size_bytes":  9608
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/e2e_dry_run.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "7b84548df59a889678e12169fa732f7f048027d3b3485edd2fe88162ae8b9b5f",
+                        "size_bytes":  1027
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/e2e_dry_run.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "e4fef34b171ee253009ed43458a9a9166c58b5126716f3554ee8a8fbd7be3544",
+                        "size_bytes":  3009
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/final_report.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "fe02621d016813056706fb31f36ef5d29ff4fbd45e351de542f2adf5f940fc87",
+                        "size_bytes":  3925
+                    },
+                    {
+                        "relative_path":  "docs/design/phase2b_cross_vendor_iteration_cycle.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "d092fe304d4850ad9a0e754162f7dbe4c6e3ad65fc4b41a318be32c326069e44",
+                        "size_bytes":  9439
+                    }
+                ]
+}

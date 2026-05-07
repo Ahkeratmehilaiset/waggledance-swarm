@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/regression_ledger.schema.json",
+  "title": "WaggleDance Phase 2B-Revision regression ledger (REL-012)",
+  "description": "Tracks every detected regression with severity score (0-100), classification status, fixability, finding signature, and trajectory (history events). Used by the dynamic epoch controller (REL-013) and the auto-repair classifier (REL-014) to decide CONTINUE_LOCAL_FOR_REPAIR / VERIFICATION / EXTERNAL_REVIEW. Lives at state/regression_ledger.json (runtime; gitignored). The schema is committed; the data is not.",
+  "type": "object",
+  "required": ["format_version", "regressions"],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": { "type": "string", "const": "1.0" },
+    "generated_at_utc": { "type": "string" },
+    "regressions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "detected_in_iteration",
+          "status",
+          "severity",
+          "score",
+          "category",
+          "history"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^REG-\\d{4}-\\d{2}-\\d{2}-\\d{3,}$",
+            "description": "Format: REG-<UTC-date>-<NNN>. NNN is a per-day sequence."
+          },
+          "introduced_in_iteration": { "type": ["string", "null"] },
+          "detected_in_iteration": { "type": "string", "minLength": 1 },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "classified_trivial",
+              "classified_local_repair",
+              "classified_external",
+              "classified_manual",
+              "repair_prompt_generated",
+              "repair_iteration_in_progress",
+              "fix_attempted",
+              "verification_pending",
+              "verified",
+              "still_failing",
+              "escalated_to_external_review",
+              "reopened",
+              "mitigated",
+              "fixed",
+              "false_positive",
+              "backlog"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["info", "low", "medium", "high", "critical"]
+          },
+          "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "fixability": {
+            "type": "string",
+            "enum": ["trivial", "clear", "ambiguous", "strategic", "unsafe"]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "test_failure",
+              "hardening_gate_failure",
+              "ci_failure",
+              "runtime_crash",
+              "lock_state_signal",
+              "security_redaction",
+              "no_work_stall",
+              "source_supplement_sparse",
+              "doc_report_mismatch",
+              "other"
+            ]
+          },
+          "affected_files": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "failing_tests": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "first_symptom": { "type": "string" },
+          "suspected_cause": { "type": ["string", "null"] },
+          "fixed_in_iteration": { "type": ["string", "null"] },
+          "verified_by": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "linked_findings": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "linked_proposals": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "issue_signature": {
+            "type": "string",
+            "description": "Stable hash of (iteration_id_introduced + finding_id + failing_test_or_file). Used by the epoch controller to detect same-issue resurrection."
+          },
+          "repair_attempts": { "type": "integer", "minimum": 0 },
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["iteration_id", "event"],
+              "additionalProperties": false,
+              "properties": {
+                "iteration_id": { "type": "string" },
+                "event": {
+                  "type": "string",
+                  "enum": [
+                    "introduced",
+                    "detected",
+                    "classified",
+                    "repair_prompt_generated",
+                    "repair_iteration_started",
+                    "attempted_fix",
+                    "verification_pending",
+                    "verification_clean",
+                    "verification_failed",
+                    "escalated_to_external_review",
+                    "root_cause_required",
+                    "reopened",
+                    "mitigated",
+                    "verified"
+                  ]
+                },
+                "issue_signature": { "type": "string" },
+                "repair_attempt_index": { "type": "integer", "minimum": 0 },
+                "score_delta": { "type": "integer" },
+                "notes": { "type": "string" },
+                "at_utc": { "type": "string" }
+              }
+            }
+          },
+          "notes": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "_comment": "WaggleDance orchestrator config example with Phase 2B (cross-vendor multi-LLM iteration cycle) additions. Copy to orchestrator.config.json (gitignored, machine-specific) and edit projectRoot. Phase 2B-only keys live under external_review.*, iteration_cycle.*, and models.*; the rest are Phase 1.6 / 2A.",
+
+  "projectRoot": "C:\\Python\\project2-master",
+  "transcriptDir": "transcripts",
+  "iterationsDir": "iterations",
+  "stateDir": "state",
+  "reportFile": "raportti.md",
+
+  "executionMode": "print",
+  "claudeCommand": "claude",
+  "model": "opus",
+  "outputFormat": "text",
+  "maxTurns": 120,
+  "permissionMode": "default",
+
+  "safeMode": false,
+  "allowBash": true,
+  "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+  "disallowedTools": [],
+  "dangerouslySkipPermissions": true,
+
+  "sanitizeEnvironment": true,
+  "envDenylist": null,
+  "envAllowList": [],
+  "killOnInteractivePrompt": true,
+  "runnerPollSeconds": 3,
+  "tailLineCount": 1000,
+  "fullTranscriptMaxBytes": 10485760,
+  "pollIntervalSeconds": 5,
+  "stableThresholdSeconds": 25,
+  "runTimeoutMinutes": 360,
+  "llmPackageMaxChars": 200000,
+  "perSectionMaxChars": 60000,
+  "requireExitMarker": false,
+  "requireReport": false,
+  "requireClaudeAuthStatus": false,
+  "requireUniqueArtifact": true,
+  "interactivePromptPatterns": [
+    "Do you want to proceed",
+    "Continue\\? \\[y/N\\]",
+    "Continue\\? \\(y/n\\)",
+    "Press Enter to continue",
+    "\\[y/N\\]\\s*$",
+    "\\[Y/n\\]\\s*$",
+    "Choose an option",
+    "Please confirm",
+    "Press any key"
+  ],
+  "completedPromptPatterns": [
+    "PS [A-Z]:[^>\\r\\n]*> *$"
+  ],
+  "exitMarker": "##WAGGLE_RUN_COMPLETE##",
+
+  "external_review": {
+    "_comment_phase": "Phase 2B + Phase 2B-Revision (ARCH-010). Queue + import lane only. Browser automation is OUT of scope. Phase 2B-Revision drops claude_web from default providers because the Claude perspective is provided by the local Phase 2A-2 self-review runner. claude_web infrastructure is retained for legacy/explicit-opt-in via -Providers @('claude_web', ...).",
+    "enabled": true,
+    "queue_dir_relative": "external_reviews/queue",
+    "imported_dir_relative": "external_reviews/imported",
+    "synthesis_dir_relative": "external_reviews/synthesis",
+    "max_attachments_per_provider": 20,
+    "fail_on_attachment_overflow": true,
+    "providers": {
+      "_comment_default_role_assignment": "Phase 2B-Revision: gemini -> architect, grok -> reliability, gpt_synthesis -> synthesis. claude_web removed from defaults; can still be explicitly invoked.",
+      "gemini": {
+        "enabled": true,
+        "timeout_sec": 600,
+        "expected_model_in_ui": "Gemini Pro Advanced",
+        "default_role": "architect"
+      },
+      "grok": {
+        "enabled": true,
+        "timeout_sec": 900,
+        "expected_model_in_ui": "Grok Expert mode",
+        "default_role": "reliability"
+      },
+      "gpt_synthesis": {
+        "enabled": true,
+        "timeout_sec": 4800,
+        "expected_model_in_ui": "GPT Pro 5.5 Extended Thinking",
+        "default_role": "synthesis"
+      }
+    },
+    "auto_approval_rule": "all_reviewers_below_needs_changes",
+    "manual_pause_flag_relative": "state/pause_external_review.flag",
+    "halt_marker": "WAGGLE_HALT",
+    "session_resume_threshold_hours": 4
+  },
+
+  "iteration_cycle": {
+    "_comment_phase": "Phase 2B + Phase 2B-Revision (REL-013). Controls when local Claude Code iterations bunch into an epoch and trigger external review. The dynamic controller uses min/target/max instead of the legacy fixed N=3.",
+    "local_iterations_per_external_review": 3,
+    "min_local_iterations": 2,
+    "target_local_iterations": 3,
+    "max_local_iterations": 6,
+    "verification_iterations_after_fix": 1,
+    "max_repair_attempts": {
+      "medium": 2,
+      "high": 2,
+      "critical": 1
+    },
+    "escalate_if_same_issue_reappears": true,
+    "escalate_if_same_test_fails_twice": true,
+    "external_review_after_epoch": true,
+    "max_iterations_per_session": 50,
+    "early_trigger_on_regression": true,
+    "early_trigger_on_hardening_gate_failure": true,
+    "early_trigger_on_internal_critical_finding": true,
+    "early_trigger_on_no_work_consecutive": 2,
+    "no_work_diff_min_bytes": 1,
+    "no_work_raportti_min_bytes": 1,
+    "no_work_stdout_min_meaningful_bytes": 100
+  },
+
+  "finding_classifier": {
+    "_comment_phase": "Phase 2B-Revision (REL-014). Routes findings between local auto-repair (TRIVIAL_AUTO_FIX / LOCAL_REPAIR) and external review (EXTERNAL_REVIEW_REQUIRED) or manual operator action (NEEDS_MANUAL_ACTION). The local loop polishes mechanical issues so external models see a cleaner trajectory.",
+    "enabled": true,
+    "max_auto_repair_iterations_per_epoch": 3,
+    "max_files_for_trivial_auto_fix": 2,
+    "max_files_for_local_repair": 3,
+    "unsafe_keywords": [
+      "credential", "secret", "private_key", "destructive",
+      "lock corruption", "state corruption", "signal corruption",
+      "rm -rf", "git push --force", "force-with-lease"
+    ],
+    "strategic_keywords": [
+      "should we", "consider redesigning", "two valid approaches",
+      "architectural direction", "policy decision", "ToS",
+      "compliance", "ambiguous semantics"
+    ],
+    "force_external_categories": [
+      "architecture", "security_semantics", "lock_state_signal",
+      "concurrency", "public_api"
+    ]
+  },
+
+  "models": {
+    "_comment_phase": "Phase 2B + Phase 2B-Revision (ARCH-010). Per-provider model preferences. claude_code is the local executable AND the source of internal review (Phase 2A-2). claude_web kept for legacy/explicit-opt-in use.",
+    "claude_code": "claude-opus-4-7",
+    "claude_web": "Claude Opus 4.7 (Max plan)",
+    "gemini": "Gemini Pro Advanced",
+    "grok": "Grok Expert mode",
+    "gpt_synthesis": "GPT Pro 5.5 Extended Thinking"
+  }
+}

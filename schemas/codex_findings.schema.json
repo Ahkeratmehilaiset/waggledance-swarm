@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/codex_findings.schema.json",
+  "title": "WaggleDance Phase 2B-Revision Codex Scout findings (ARCH-012)",
+  "description": "Wire format produced by Codex CLI / app / cloud running as a parallel bug + proposal scout in a separate git worktree. The orchestrator does NOT install or run Codex; it only imports the findings.json file the operator copies in. Importer applies Phase 2A-1 redactor before storage; UNTRUSTED data.",
+  "type": "object",
+  "required": [
+    "format_version",
+    "scout_self_id",
+    "scope",
+    "findings",
+    "proposals",
+    "completed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": { "type": "string", "const": "1.0" },
+    "scout_self_id": {
+      "type": "object",
+      "required": ["tool", "ran_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string",
+          "enum": ["codex_cli", "codex_cloud", "codex_app", "other"]
+        },
+        "version": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "worktree_root": { "type": ["string", "null"] },
+        "ran_at_utc": { "type": "string", "minLength": 1 }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": ["epoch_id", "target_iteration_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "epoch_id": { "type": "string", "minLength": 1 },
+        "target_iteration_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "branch_at_scan": { "type": ["string", "null"] },
+        "commit_at_scan": { "type": ["string", "null"] }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "category", "title", "where", "evidence", "why_it_matters", "recommended_action"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^CDEX-\\d{3,}$" },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
+          "category": {
+            "type": "string",
+            "enum": ["bug", "security", "reliability", "test_gap", "architecture", "performance", "other"]
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "where": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 },
+          "why_it_matters": { "type": "string", "minLength": 1 },
+          "recommended_action": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "rationale", "approach", "estimated_effort", "risks", "expected_payoff"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^CDEX-PROP-\\d{3,}$" },
+          "title": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "approach": { "type": "string", "minLength": 1 },
+          "estimated_effort": { "type": "string", "enum": ["small", "medium", "large"] },
+          "risks": { "type": "string", "minLength": 1 },
+          "expected_payoff": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "completed": { "type": "boolean", "const": true }
+  }
+}

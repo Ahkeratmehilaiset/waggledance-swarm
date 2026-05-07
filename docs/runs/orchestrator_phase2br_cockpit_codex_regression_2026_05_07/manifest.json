@@ -1,0 +1,353 @@
+﻿{
+    "title":  "Phase 2B-Revision file manifest",
+    "phase":  "Phase 2B-Revision",
+    "generated_at_utc":  "2026-05-07T13:38:47.9789975Z",
+    "repo_root":  "C:\\Python\\project2-master",
+    "files_count":  49,
+    "missing_count":  0,
+    "entries":  [
+                    {
+                        "relative_path":  "schemas/codex_findings.schema.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "a895ac1f77d49a6c4450b0b7e227340d19700a2ebd05020cc77551b9f338c0a3",
+                        "size_bytes":  3507
+                    },
+                    {
+                        "relative_path":  "schemas/cockpit_data.schema.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "e196c663e1b8537a30cb3f9df6edce96afc66df4d051a62c7e45207b791ccd37",
+                        "size_bytes":  2929
+                    },
+                    {
+                        "relative_path":  "schemas/proposal_matrix.schema.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "648e068f5d7267aff396267f49b2acbe729afb7121ce3b013f20d2ab182413a3",
+                        "size_bytes":  4410
+                    },
+                    {
+                        "relative_path":  "schemas/regression_ledger.schema.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "cf35a0f793d6e569df3fda1632c7f658a0489980b6dbd8f97730bdb7417f591c",
+                        "size_bytes":  5418
+                    },
+                    {
+                        "relative_path":  "schemas/review.schema.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "76e6d8297b13f284aa098139809b211f6488fc279bb1856e8430779ffa7e6665",
+                        "size_bytes":  4850
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/RegressionLedger.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "1a5b715f80f43b1b0e493ac4c3f941b3374e60a4650cf4575749dbb81e4d7db9",
+                        "size_bytes":  27671
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/external_review/FindingClassifier.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "0ee895f479ad6c510583dd77e68912fea845d0c9f5c1bdef516120712bd2966a",
+                        "size_bytes":  12140
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/external_review/EpochCycleTrigger.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "3f6d95a502ae5d99bb6156c30dd5feb5638aa12e16c1efee8992c9aa26a032f6",
+                        "size_bytes":  22965
+                    },
+                    {
+                        "relative_path":  "orchestrator/lib/review/ReviewSchema.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "fef5b8fab1c99a3bd90e0ee160c582c4858005d64109a6f540a00e3ede2fe9e0",
+                        "size_bytes":  12386
+                    },
+                    {
+                        "relative_path":  "orchestrator/Build-Phase2BRManifest.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "057db370332925f1e450f5f20699b45ea646a37a4ca012c0d361c428ad2d8a67",
+                        "size_bytes":  7805
+                    },
+                    {
+                        "relative_path":  "orchestrator/Build-WaggleAutoRepairPrompt.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "234ce08ec0682a457ecbeb1eb2e69f5029e28ebe084fc424b9c924ab2eaae977",
+                        "size_bytes":  7304
+                    },
+                    {
+                        "relative_path":  "orchestrator/Build-WaggleCockpitData.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "8af6a3b59ae1ff2be5c9d6d7ffb6e030aae0c4e43e64ea4869ff71a717d177a2",
+                        "size_bytes":  13469
+                    },
+                    {
+                        "relative_path":  "orchestrator/Build-WaggleProposalMatrix.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "8079d4f3328cf2abeb39f9291de73b8d40e82cb46329bc397eb210b86c873a10",
+                        "size_bytes":  20509
+                    },
+                    {
+                        "relative_path":  "orchestrator/Import-WaggleCodexFindings.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "0a083f0f0bc3fbcb1cb07a8a27bf27bf5b825081490d87a30ec1db39f194abd3",
+                        "size_bytes":  14830
+                    },
+                    {
+                        "relative_path":  "orchestrator/Open-WaggleCockpit.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "6ba3939ce5ad543125c687200eed93517ef1f626add60c909553cf6e2a7c5dbd",
+                        "size_bytes":  1018
+                    },
+                    {
+                        "relative_path":  "orchestrator/Run-Phase2BREndToEndDryRun.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "87b708a8c07786a66432028f5df667548be0d214c7bf3d9b3541644d7a0b2ce2",
+                        "size_bytes":  30248
+                    },
+                    {
+                        "relative_path":  "orchestrator/Export-WaggleExternalReviewQueue.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "8ddf9f825046be5a734dd37801731b291aeb9bdd06e259b65eac92e470e07364",
+                        "size_bytes":  13902
+                    },
+                    {
+                        "relative_path":  "orchestrator/New-WaggleSynthesisPasteBlock.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "739ed622b3c39d5fa62c45b754841b47b18f12749f652f40fa867455a4124894",
+                        "size_bytes":  21158
+                    },
+                    {
+                        "relative_path":  "orchestrator/Run-WaggleHardeningGates.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "0bd0f265171a10a049223440d925d36d581d9b7c2aea77f280c331463c7162ee",
+                        "size_bytes":  12437
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-CockpitData.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "de0a7e1f0cee2640a9261ac06656197d5ffcb0eb1b5fce26899be30d43a925bc",
+                        "size_bytes":  11876
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-CodexImport.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "39ab408399fc20cd2e836bec5dc1bf31dd1289c7a25ce588ab16f3912c9cdb24",
+                        "size_bytes":  10372
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-FindingClassifier.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "4937f896089d5aae39cbf258959885b1c0dc62b063f2346531b015d77c5596c7",
+                        "size_bytes":  10816
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-ProposalMatrix.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "5d43344fefc797e0257cca69e21ab039d4845f4ca27ddcd4dab39d5e6c016d7e",
+                        "size_bytes":  14055
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-RegressionLedger.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "d51982cadeceee8b34bed9a7741c41936527da2826eb8aa5d6e1789cb7bea4ba",
+                        "size_bytes":  10513
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-EpochCycleTrigger.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "ba82b900b928cf3c9c7f12fd2949c6244566761bf714bf84535d2240eb8d5bce",
+                        "size_bytes":  19818
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-ExternalReviewQueue.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "7370c883d85dc64c801969ae746a582ac4b1ae9ffb1341cc3ac0f08c4e8ec32c",
+                        "size_bytes":  15748
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-ReviewAdapter.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "c5cd124005819e05d652cbc0d7abdceddef78b4d03c956c69bb9d05e8824dd5c",
+                        "size_bytes":  12746
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-ReviewSchema.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "ec877418b78fa63a862654f19c76e8c344d19e82a3bee4667f621f33886f403d",
+                        "size_bytes":  12404
+                    },
+                    {
+                        "relative_path":  "orchestrator/Test-SynthesisPasteBlock.ps1",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "4228a05f3948f416ba8baa3b2662ccc65af0553b49ed413491b4abbe2c0ae05c",
+                        "size_bytes":  17976
+                    },
+                    {
+                        "relative_path":  "prompts/codex_scout.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "e1e362fb9558ee9209bca703adf58729fe0c7d5474d9bc6d4f669779b83a09b2",
+                        "size_bytes":  5106
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/providers/claude_web.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "fd1234f98e0e9ddcdaebaa216a3d00cecb89f99f9f761f2c4e300c90af378485",
+                        "size_bytes":  1994
+                    },
+                    {
+                        "relative_path":  "prompts/external_review/synthesis_gpt.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "d5bb7689c05c831e33f82e0c5508504cdfca0bfc8df144e38fab9a7651b4e4a4",
+                        "size_bytes":  11314
+                    },
+                    {
+                        "relative_path":  "prompts/review/architect.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "83241eb3db9b2aa9859efc959f914aba68634a3767ae9ebef362556a370d220e",
+                        "size_bytes":  10099
+                    },
+                    {
+                        "relative_path":  "prompts/review/security.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "951dbde88ccd907ed94ed96567b4850fe8883065642eef5dd194b8b7cb56a252",
+                        "size_bytes":  11629
+                    },
+                    {
+                        "relative_path":  "prompts/review/reliability.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "81e11ac4a175d08129a9ca1512c945c17c576ab4302245272ece1fa01aebd614",
+                        "size_bytes":  9414
+                    },
+                    {
+                        "relative_path":  "review_cockpit.html",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "fbcf0a8af737539088a0b5d89d0a88475ecd5299abcf60f5566962c4a30214ee",
+                        "size_bytes":  8871
+                    },
+                    {
+                        "relative_path":  "orchestrator.config.example.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "a2dc998b2ce4d4333e02a0209bbaceaea287bf274f3dfde06272f61a10675cee",
+                        "size_bytes":  5844
+                    },
+                    {
+                        "relative_path":  "docs/design/phase_fix_ledger.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "469da7073732060bcb8503946d0cc77fb9d9efb8390ab53d8f325001efa9f0e9",
+                        "size_bytes":  34101
+                    },
+                    {
+                        "relative_path":  "docs/design/phase_fix_ledger.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "bf1bb9fe0c3cff3d43799a812cb1d5e976c869410dcc63a49c62ed45ac17b458",
+                        "size_bytes":  15424
+                    },
+                    {
+                        "relative_path":  "docs/quality/regression_ledger.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "4353a181edecac610a2d7967a6cde29c658e50afbb1c265a60724f4363cd27d0",
+                        "size_bytes":  815
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/baseline.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "6f8a5da347c1974af36f6b94ad7bfd58728b1100f5e4e2213e8f0f8af165af16",
+                        "size_bytes":  1937
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/cockpit_setup.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "2ed4a41132fdcaa24e6ae8177acdd9faf34ca215da13f9e43da488173d879c2c",
+                        "size_bytes":  3900
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/codex_setup.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "70bf43674fe55c68085a2fab31859194125ea430b24ee4db4a951ddab72b83ec",
+                        "size_bytes":  4100
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/core_findings.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "67a42c76b16d1c4febd176baaf2f3ca22f4d83f8db8a0f0eb22c28ff48368dfa",
+                        "size_bytes":  222
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/dry_run.json",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "77deee2872dbc1009dc50979cf4f84795294159e640164342520f9536b17187f",
+                        "size_bytes":  3954
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/dry_run_log.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "455291e572b1c174a5f0a160d8cb17327f413283e005728a1440332c6f3b6441",
+                        "size_bytes":  1700
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/failures.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "93d0f384ecb34d1ff177d52d7535a2e0f9c94f02efc63fb1af5ec9d0053d9325",
+                        "size_bytes":  41
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/final_report.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "f42a954455fd14b9209710390363eeae189b80657ee917e46d69cee791b0e73c",
+                        "size_bytes":  214
+                    },
+                    {
+                        "relative_path":  "docs/runs/orchestrator_phase2b_cross_vendor_2026_05_06/cowork_handoff.md",
+                        "ok":  true,
+                        "reason":  "",
+                        "sha256":  "68db5c229473aefc0586785eed2da1cd47fe6d028878527d02ba60dbcbc53bdb",
+                        "size_bytes":  10167
+                    }
+                ]
+}

@@ -150,6 +150,20 @@ $injIdx   = $prompt.IndexOf('IGNORE PREVIOUS INSTRUCTIONS')
 Assert-True 'prompt build: injection sandboxed between delimiters' ($beginIdx -gt 0 -and $injIdx -gt $beginIdx -and $endIdx -gt $injIdx)
 Assert-True 'prompt build: completion contract present' ($prompt -match 'REVIEW-COMPLETE')
 
+# Phase 2B-Revision (SEC-009): the actual role-specific prompt
+# templates (prompts/review/*.md) ALL request reviewer_self_id and
+# suggested_next_actions and cite "Phase 2B-Revision". The builder
+# test above uses an inline minimal template, so we verify the real
+# template files directly.
+$repoRoot2BR = Split-Path -Parent $PSScriptRoot
+foreach ($roleFile in 'architect.md','security.md','reliability.md') {
+    $body2BR = Get-Content -Raw -Path (Join-Path $repoRoot2BR ('prompts/review/' + $roleFile)) -Encoding UTF8
+    Assert-True ("sec-009: prompts/review/$roleFile requests reviewer_self_id")        ($body2BR -match 'reviewer_self_id')
+    Assert-True ("sec-009: prompts/review/$roleFile requests suggested_next_actions")  ($body2BR -match 'suggested_next_actions')
+    Assert-True ("sec-009: prompts/review/$roleFile cites Phase 2B-Revision")          ($body2BR -match 'Phase 2B-Revision')
+    Assert-True ("sec-009: prompts/review/$roleFile pins runtime to claude_code")      ($body2BR -match '"runtime": "claude_code"|runtime is fixed to|runtime.*claude_code')
+}
+
 # ----------------- find fenced review-json block -----------------
 
 $stdoutGood = @"

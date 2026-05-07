@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/cockpit_data.schema.json",
+  "title": "WaggleDance Phase 2B-Revision Operator Cockpit data file (ARCH-011)",
+  "description": "Runtime state file at state/cockpit_data.json that the cockpit HTML reads. Written by orchestrator/Build-WaggleCockpitData.ps1 after every Build-WaggleEpochEvidence. The data file is gitignored; this schema is committed.",
+  "type": "object",
+  "required": [
+    "format_version",
+    "generated_at_utc",
+    "epoch_id",
+    "iteration_id",
+    "evidence_sha256",
+    "bundles"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": { "type": "string", "const": "1.0" },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "epoch_id": { "type": "string", "minLength": 1 },
+    "iteration_id": { "type": "string", "minLength": 1 },
+    "evidence_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "bundles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "provider",
+          "role",
+          "status",
+          "expected_model_in_ui",
+          "attachment_count",
+          "attachments_dir",
+          "expected_response_path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "provider": { "type": "string", "minLength": 1 },
+          "role": { "type": "string", "minLength": 1 },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "imported", "disabled", "attention"]
+          },
+          "expected_model_in_ui": { "type": "string" },
+          "attachment_count": { "type": "integer", "minimum": 0 },
+          "attachments_dir": { "type": "string" },
+          "expected_response_path": { "type": "string" },
+          "prompt_text": { "type": ["string", "null"] },
+          "import_command": { "type": ["string", "null"] },
+          "import_id": { "type": ["string", "null"] },
+          "imported_at_utc": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "synthesis_status": { "type": ["string", "null"] },
+    "regression_ledger": {
+      "type": ["object", "null"],
+      "required": ["open_critical", "open_high", "open_medium"],
+      "additionalProperties": true,
+      "properties": {
+        "open_critical": { "type": "integer", "minimum": 0 },
+        "open_high":     { "type": "integer", "minimum": 0 },
+        "open_medium":   { "type": "integer", "minimum": 0 }
+      }
+    },
+    "proposal_matrix": {
+      "type": ["object", "null"],
+      "required": ["total"],
+      "additionalProperties": true,
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "claude_internal_count": { "type": "integer", "minimum": 0 },
+        "codex_count": { "type": "integer", "minimum": 0 },
+        "external_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

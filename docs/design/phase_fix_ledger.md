@@ -96,6 +96,34 @@ the review runner. `final-report` -- raised in a phase final report's
 | `SEC-006` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: SEC-006` |
 | `SEC-007` | Phase 2A-5 | Reserved | informational | Phase 2A-5 | -- | `docs/design/phase_fix_ledger.md :: SEC-007` |
 
+---
+
+## Phase 2B additions (cross-vendor multi-LLM iteration cycle)
+
+| Tag | Phase introduced | Title | Status | Fixed/documented in | Tests | Anchors |
+|-----|------------------|-------|--------|----------------------|-------|---------|
+| `ARCH-007` | Phase 2B | Cross-vendor multi-LLM lane: orchestrator-only, no browser automation in Phase 2B | fixed | Phase 2B | `Test-EpochEvidence.ps1`, `Test-ExternalReviewQueue.ps1`, `Test-ExternalReviewImport.ps1`, `Test-SynthesisPasteBlock.ps1`, `Test-SynthesisResultImport.ps1`, `Test-IterationFromSynthesis.ps1` | `orchestrator/Build-WaggleEpochEvidence.ps1`, `orchestrator/Export-WaggleExternalReviewQueue.ps1`, `orchestrator/Import-WaggleExternalReviewResponse.ps1`, `orchestrator/New-WaggleSynthesisPasteBlock.ps1`, `orchestrator/Import-WaggleSynthesisResult.ps1`, `orchestrator/New-WaggleIterationFromSynthesis.ps1`, `prompts/phase2b_handoff_requirements.md :: browser automation` |
+| `ARCH-008` | Phase 2B | Epoch evidence bundler: cumulative N-iteration evidence with 20-attachment cap | fixed | Phase 2B | `Test-EpochEvidence.ps1` | `orchestrator/Build-WaggleEpochEvidence.ps1 :: evidence_sha256`, `orchestrator/lib/external_review/EvidenceBundler.ps1`, `schemas/epoch_evidence.schema.json` |
+| `ARCH-009` | Phase 2B | Provider profile abstraction: Claude Web / Gemini / Grok / GPT synthesis as configurable profiles | fixed | Phase 2B | `Test-EpochEvidence.ps1`, `Test-ExternalReviewQueue.ps1` | `orchestrator/lib/external_review/ProviderProfiles.ps1`, `orchestrator.config.example.json :: external_review` |
+| `REL-010`  | Phase 2B | SHA-binding gate: source_evidence_sha256 enforced at reviewer import, synthesis import, and iteration launch | fixed | Phase 2B | `Test-ExternalReviewImport.ps1`, `Test-SynthesisResultImport.ps1`, `Test-IterationFromSynthesis.ps1` | `orchestrator/Import-WaggleExternalReviewResponse.ps1 :: source_evidence_sha256`, `orchestrator/Import-WaggleSynthesisResult.ps1 :: source_evidence_sha256`, `orchestrator/New-WaggleIterationFromSynthesis.ps1 :: source_evidence_sha256` |
+| `REL-011`  | Phase 2B | HALT marker: synthesis can decide work is complete; orchestrator stops cleanly | fixed | Phase 2B | `Test-SynthesisResultImport.ps1`, `Test-EpochCycleTrigger.ps1` | `orchestrator/Import-WaggleSynthesisResult.ps1 :: WAGGLE_HALT`, `orchestrator/lib/external_review/EpochCycleTrigger.ps1 :: halt` |
+| `SEC-008`  | Phase 2B | External response redaction: imported reviewer outputs run through redactor before storage | fixed | Phase 2B | `Test-ExternalReviewImport.ps1`, `Test-SynthesisResultImport.ps1` | `orchestrator/Import-WaggleExternalReviewResponse.ps1 :: Invoke-WaggleRedaction`, `orchestrator/Import-WaggleSynthesisResult.ps1 :: Invoke-WaggleRedaction` |
+
+---
+
+## Phase 2B-Revision additions (operator cockpit + Codex scout + regression ledger)
+
+| Tag | Phase introduced | Title | Status | Fixed/documented in | Tests | Anchors |
+|-----|------------------|-------|--------|----------------------|-------|---------|
+| `ARCH-010` | Phase 2BR | Drop claude_web from default external-review providers; Claude perspective comes from Phase 2A-2 internal review | fixed | Phase 2BR | `Test-ExternalReviewQueue.ps1` | `orchestrator.config.example.json :: external_review`, `orchestrator/Export-WaggleExternalReviewQueue.ps1 :: gemini`, `prompts/external_review/providers/claude_web.md :: ARCH-010` |
+| `ARCH-011` | Phase 2BR | Operator Cockpit: passive HTML UI for the manual web-UI step | fixed | Phase 2BR | `Test-CockpitData.ps1` | `review_cockpit.html`, `schemas/cockpit_data.schema.json`, `orchestrator/Build-WaggleCockpitData.ps1`, `orchestrator/Open-WaggleCockpit.ps1`, `docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/cockpit_setup.md` |
+| `ARCH-012` | Phase 2BR | Codex Scout integration scaffold (no Codex execution required) | fixed | Phase 2BR | `Test-CodexImport.ps1` | `schemas/codex_findings.schema.json`, `prompts/codex_scout.md`, `orchestrator/Import-WaggleCodexFindings.ps1 :: Invoke-WaggleRedaction`, `docs/runs/orchestrator_phase2br_cockpit_codex_regression_2026_05_07/codex_setup.md` |
+| `ARCH-013` | Phase 2BR | Proposal Matrix builder: single decision surface for internal + Codex + external proposals | fixed | Phase 2BR | `Test-ProposalMatrix.ps1` | `schemas/proposal_matrix.schema.json`, `orchestrator/Build-WaggleProposalMatrix.ps1` |
+| `REL-012`  | Phase 2BR | Regression Ledger with severity scoring (0-100), trajectory, status state machine | fixed | Phase 2BR | `Test-RegressionLedger.ps1` | `schemas/regression_ledger.schema.json`, `orchestrator/lib/RegressionLedger.ps1 :: Get-WaggleRegressionScore`, `orchestrator/Run-WaggleHardeningGates.ps1 :: Add-WaggleRegressionFromHardeningGateFailure`, `docs/quality/regression_ledger.md` |
+| `REL-013`  | Phase 2BR | Dynamic epoch controller with verification gate, repair-attempt limits, severity-driven iteration ceiling | fixed | Phase 2BR | `Test-EpochCycleTrigger.ps1` | `orchestrator/lib/external_review/EpochCycleTrigger.ps1 :: continue_for_verification`, `orchestrator/lib/external_review/EpochCycleTrigger.ps1 :: needs_manual_action`, `orchestrator/lib/external_review/EpochCycleTrigger.ps1 :: strategic_external_review` |
+| `REL-014`  | Phase 2BR | Auto-repair classifier + constrained repair prompt builder | fixed | Phase 2BR | `Test-FindingClassifier.ps1` | `orchestrator/lib/external_review/FindingClassifier.ps1 :: TRIVIAL_AUTO_FIX`, `orchestrator/lib/external_review/FindingClassifier.ps1 :: NEEDS_MANUAL_ACTION`, `orchestrator/Build-WaggleAutoRepairPrompt.ps1 :: SCOPE LIMIT` |
+| `SEC-009`  | Phase 2BR | Internal Claude review schema enhancement: reviewer_self_id + suggested_next_actions | fixed | Phase 2BR | `Test-ReviewSchema.ps1`, `Test-ReviewAdapter.ps1` | `schemas/review.schema.json :: reviewer_self_id`, `schemas/review.schema.json :: suggested_next_actions`, `prompts/review/architect.md :: Phase 2B-Revision`, `prompts/review/security.md :: Phase 2B-Revision`, `prompts/review/reliability.md :: Phase 2B-Revision` |
+
 ## Maintenance contract
 
 Every Phase 2A-N session that:

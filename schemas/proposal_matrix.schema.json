@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/proposal_matrix.schema.json",
+  "title": "WaggleDance Phase 2B-Revision proposal matrix (ARCH-013)",
+  "description": "Single decision surface aggregating improvement proposals from internal Claude reviews (Phase 2A-2 architect/security/reliability), optional Codex Scout findings, and optional external (Gemini/Grok/GPT) reviewer outputs. Built by orchestrator/Build-WaggleProposalMatrix.ps1 once per epoch. The synthesis paste-block (P9) consumes this matrix instead of asking GPT to re-derive proposals from raw review text.",
+  "type": "object",
+  "required": [
+    "format_version",
+    "epoch_id",
+    "iteration_id",
+    "generated_at_utc",
+    "sources_summary",
+    "rows"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": { "type": "string", "const": "1.0" },
+    "epoch_id": { "type": "string", "minLength": 1 },
+    "iteration_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The carrier iteration's id (the last iteration in the epoch). Synthesis dir + matrix sit under iterations/<iteration_id>/."
+    },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "sources_summary": {
+      "type": "object",
+      "required": ["claude_internal_count", "codex_count", "external_count", "total_proposals"],
+      "additionalProperties": false,
+      "properties": {
+        "claude_internal_count": { "type": "integer", "minimum": 0 },
+        "codex_count": { "type": "integer", "minimum": 0 },
+        "external_count": { "type": "integer", "minimum": 0 },
+        "total_proposals": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "source_kind",
+          "source_provider",
+          "source_role",
+          "source_iteration_id_or_import_id",
+          "original_proposal_id",
+          "title",
+          "rationale",
+          "approach",
+          "estimated_effort",
+          "risks",
+          "expected_payoff",
+          "linked_findings",
+          "linked_ledger_tags",
+          "linked_regressions",
+          "category",
+          "matrix_status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Auto-generated, prefix by source: PM-CL-<n> for Claude internal, PM-CDEX-<n> for Codex, PM-EXT-<n> for external."
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": ["claude_internal", "codex", "external"]
+          },
+          "source_provider": {
+            "type": "string",
+            "enum": ["claude_code", "codex", "gemini", "grok", "claude_web", "gpt", "other"]
+          },
+          "source_role": {
+            "type": "string",
+            "enum": ["architect", "security", "reliability", "scout", "synthesis", "performance", "ux", "maintainer", "other"]
+          },
+          "source_iteration_id_or_import_id": { "type": "string", "minLength": 1 },
+          "original_proposal_id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "approach": { "type": "string", "minLength": 1 },
+          "estimated_effort": { "type": "string", "enum": ["small", "medium", "large"] },
+          "risks": { "type": "string", "minLength": 1 },
+          "expected_payoff": { "type": "string", "minLength": 1 },
+          "linked_findings": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "linked_ledger_tags": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "linked_regressions": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "category": {
+            "type": "string",
+            "enum": ["architecture", "security", "reliability", "test_coverage", "automation", "docs", "performance", "ux", "other"]
+          },
+          "matrix_status": {
+            "type": "string",
+            "enum": ["candidate", "accepted_by_synthesis", "combined_with", "refined_by_synthesis", "rejected_by_synthesis", "deferred"]
+          }
+        }
+      }
+    }
+  }
+}

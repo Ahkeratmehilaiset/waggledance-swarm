@@ -95,8 +95,9 @@ if ($SelfTest) {
 # Gate list. Order matters: cheap structural gates first (Syntax),
 # then Phase 2A-1 hardening, then Phase 2A-2 review-runner gates,
 # then Phase 2A-3/4 review surface + safety + integrity gates,
-# then Phase 2A-5 ledger + report-path gates, then the Phase 2A-2
-# integration gate last.
+# then Phase 2A-5 ledger + report-path gates, then the Phase 2B
+# cross-vendor iteration cycle gates, then the Phase 2A-2 integration
+# gate last.
 # --------------------------------------------------------------
 $gates = @(
     @{ name = 'Test-Syntax';                  path = Join-Path $orchDir 'Test-Syntax.ps1' }
@@ -115,6 +116,20 @@ $gates = @(
     @{ name = 'Test-ReviewSubprocessTimeout'; path = Join-Path $orchDir 'Test-ReviewSubprocessTimeout.ps1' }
     @{ name = 'Test-PhaseFixLedger';          path = Join-Path $orchDir 'Test-PhaseFixLedger.ps1' }
     @{ name = 'Test-HardeningGatesReportPath';path = Join-Path $orchDir 'Test-HardeningGatesReportPath.ps1' }
+    # Phase 2B cross-vendor iteration cycle gates (added 2026-05-06).
+    @{ name = 'Test-EpochEvidence';           path = Join-Path $orchDir 'Test-EpochEvidence.ps1' }
+    @{ name = 'Test-ExternalReviewQueue';     path = Join-Path $orchDir 'Test-ExternalReviewQueue.ps1' }
+    @{ name = 'Test-ExternalReviewImport';    path = Join-Path $orchDir 'Test-ExternalReviewImport.ps1' }
+    @{ name = 'Test-SynthesisPasteBlock';     path = Join-Path $orchDir 'Test-SynthesisPasteBlock.ps1' }
+    @{ name = 'Test-SynthesisResultImport';   path = Join-Path $orchDir 'Test-SynthesisResultImport.ps1' }
+    @{ name = 'Test-EpochCycleTrigger';       path = Join-Path $orchDir 'Test-EpochCycleTrigger.ps1' }
+    @{ name = 'Test-IterationFromSynthesis';  path = Join-Path $orchDir 'Test-IterationFromSynthesis.ps1' }
+    # Phase 2B-Revision gates (added 2026-05-07).
+    @{ name = 'Test-ProposalMatrix';          path = Join-Path $orchDir 'Test-ProposalMatrix.ps1' }
+    @{ name = 'Test-RegressionLedger';        path = Join-Path $orchDir 'Test-RegressionLedger.ps1' }
+    @{ name = 'Test-CodexImport';             path = Join-Path $orchDir 'Test-CodexImport.ps1' }
+    @{ name = 'Test-CockpitData';             path = Join-Path $orchDir 'Test-CockpitData.ps1' }
+    @{ name = 'Test-FindingClassifier';       path = Join-Path $orchDir 'Test-FindingClassifier.ps1' }
     @{ name = 'Test-Phase2A2';                path = Join-Path $orchDir 'Test-Phase2A2.ps1' }
 )
 
@@ -156,8 +171,25 @@ foreach ($g in $gates) {
         gate = $name; path = $path; ok = $ok
         exit_code = $exitCode; elapsed_seconds = $elapsed; error = $errMsg
     }) | Out-Null
+    # Phase 2B-Revision (REL-012): on a gate failure, append a
+    # regression-ledger entry. Hook is non-fatal: any exception is
+    # swallowed inside Add-WaggleRegressionFromHardeningGateFailure.
     if (-not $ok) {
         $failed = $true
+        try {
+            $ledgerLib = Join-Path $orchDir 'lib/RegressionLedger.ps1'
+            if (Test-Path -LiteralPath $ledgerLib) {
+                . $ledgerLib
+                $rlPath = Join-Path $repoRoot 'state/regression_ledger.json'
+                if (-not (Test-Path -LiteralPath (Split-Path -Parent $rlPath))) {
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $rlPath) -Force | Out-Null
+                }
+                $hookIid = 'hardening_gates_' + (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH-mm-ssZ')
+                Add-WaggleRegressionFromHardeningGateFailure -LedgerPath $rlPath -GateName $name -IterationId $hookIid -Symptom $errMsg | Out-Null
+            }
+        } catch {
+            Write-Warning ("regression-ledger hook (gate failure) failed: " + $_.Exception.Message)
+        }
         if (-not $ContinueOnFailure) { break }
     }
 }

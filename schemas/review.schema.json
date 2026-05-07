@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://waggledance.local/schemas/review.schema.json",
   "title": "WaggleDance Phase 2A-2 review output",
-  "description": "Schema for orchestrator/Invoke-WaggleReview.ps1 output. The reviewer emits this object inside a fenced ```review-json``` block.",
+  "description": "Schema for orchestrator/Invoke-WaggleReview.ps1 output. The reviewer emits this object inside a fenced ```review-json``` block. Phase 2B-Revision (SEC-009) adds OPTIONAL reviewer_self_id and suggested_next_actions[] fields so internal reviews slot into the GPT synthesis bundle alongside external reviewer outputs. Old reviews without the new fields still validate successfully.",
   "type": "object",
   "required": [
     "role",
@@ -16,6 +16,55 @@
   ],
   "additionalProperties": false,
   "properties": {
+    "reviewer_self_id": {
+      "type": "object",
+      "description": "Phase 2B-Revision (SEC-009) optional self-introduction. When present, must include claimed_model_name, the two self-assessment arrays, and uses_extended_thinking_or_reasoning_mode.",
+      "required": [
+        "claimed_model_name",
+        "self_assessed_strengths_for_this_review",
+        "self_assessed_limitations_for_this_review",
+        "uses_extended_thinking_or_reasoning_mode"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claimed_model_name": { "type": "string", "minLength": 1 },
+        "claimed_version": { "type": ["string", "null"] },
+        "training_cutoff": { "type": ["string", "null"] },
+        "self_assessed_strengths_for_this_review": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "self_assessed_limitations_for_this_review": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "estimated_context_window_kb": { "type": ["integer", "null"] },
+        "uses_extended_thinking_or_reasoning_mode": { "type": "boolean" },
+        "runtime": {
+          "type": "string",
+          "description": "Always 'claude_code' for internal Phase 2A-2 reviews.",
+          "enum": ["claude_code"]
+        }
+      }
+    },
+    "suggested_next_actions": {
+      "type": "array",
+      "description": "Phase 2B-Revision (SEC-009) optional improvement proposals. Each item is the same shape as Phase 2B external_review.suggested_next_actions[].",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "rationale", "approach", "estimated_effort", "risks", "expected_payoff"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "approach": { "type": "string", "minLength": 1 },
+          "estimated_effort": { "type": "string", "enum": ["small", "medium", "large"] },
+          "risks": { "type": "string", "minLength": 1 },
+          "expected_payoff": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "role": {
       "type": "string",
       "enum": ["architect", "security", "reliability"]

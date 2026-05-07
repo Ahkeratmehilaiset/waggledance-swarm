@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<!--
+  WaggleDance Operator Cockpit — Phase 2B-Revision (ARCH-011)
+
+  Self-contained passive UI. Reads state/cockpit_data.json (written
+  by orchestrator/Build-WaggleCockpitData.ps1). Provides per-(provider,
+  role) bundle cards with three actions:
+
+    1. Open attachments folder (file:// link)
+    2. Copy prompt to clipboard (navigator.clipboard.writeText)
+    3. Open the LLM web UI (gemini.google.com / grok.com / chatgpt.com)
+
+  No HTTP server. No browser automation. The cockpit polls
+  state/cockpit_data.json every 5s and refreshes the cards.
+
+  ALLOWED EXTERNAL ORIGINS (any other origin is a bug):
+    https://gemini.google.com
+    https://grok.com
+    https://chatgpt.com
+    https://x.com/i/grok
+-->
+<head>
+<meta charset="utf-8">
+<title>WaggleDance Operator Cockpit</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; padding: 16px; background: #f7f7f9; color: #222; }
+  h1 { font-size: 20px; margin: 0 0 8px 0; }
+  .meta { color: #666; font-size: 13px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
+  .card { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  .card h2 { font-size: 16px; margin: 0 0 6px 0; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; margin-left: 4px; }
+  .b-pending { background: #fff3cd; color: #856404; }
+  .b-imported { background: #d4edda; color: #155724; }
+  .b-disabled { background: #e2e3e5; color: #383d41; }
+  .b-attention { background: #f8d7da; color: #721c24; }
+  .row { font-size: 13px; margin: 4px 0; }
+  .row .k { color: #666; }
+  .actions { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .actions button, .actions a {
+    font-size: 13px; padding: 6px 10px; border: 1px solid #aaa; background: #fafafa;
+    border-radius: 4px; cursor: pointer; text-decoration: none; color: #222;
+  }
+  .actions button:hover, .actions a:hover { background: #eee; }
+  .summary { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
+  pre.cmd { background: #f3f3f3; padding: 8px; border-radius: 4px; font-size: 12px; overflow-x: auto; }
+  .ok { color: #155724; }
+  .warn { color: #856404; }
+  .err { color: #721c24; }
+  .footnote { color: #888; font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<h1>WaggleDance Operator Cockpit</h1>
+<div class="meta" id="meta">Loading state/cockpit_data.json...</div>
+
+<div class="summary" id="summary"></div>
+
+<div class="grid" id="cards"></div>
+
+<div class="footnote">
+  Phase 2B-Revision (ARCH-011). Passive HTML; no browser automation.
+  Poll interval: 5s. Allowed external origins: gemini.google.com, grok.com, chatgpt.com.
+  Data file: <code>state/cockpit_data.json</code>. Refresh by re-running
+  <code>Build-WaggleCockpitData.ps1</code> after every Build-WaggleEpochEvidence.
+</div>
+
+<script>
+"use strict";
+
+// LLM web UI URLs the cockpit may open.
+const PROVIDER_URLS = {
+  gemini: 'https://gemini.google.com/app',
+  grok:   'https://grok.com',
+  gpt_synthesis: 'https://chatgpt.com',
+  gpt: 'https://chatgpt.com',
+  claude_web: 'https://claude.ai'
+};
+
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c];
+  });
+}
+
+function statusBadge(status) {
+  let cls = 'b-pending', label = status || 'pending';
+  if (status === 'imported')   { cls = 'b-imported'; }
+  else if (status === 'disabled')   { cls = 'b-disabled'; }
+  else if (status === 'attention')  { cls = 'b-attention'; }
+  return '<span class="badge ' + cls + '">' + escHtml(label) + '</span>';
+}
+
+function renderSummary(d) {
+  const sum = document.getElementById('summary');
+  if (!d) { sum.innerHTML = ''; return; }
+  let bundleStatus = '';
+  if (d.bundles && d.bundles.length) {
+    const imported = d.bundles.filter(function(b) { return b.status === 'imported'; }).length;
+    const total = d.bundles.length;
+    bundleStatus = imported + ' of ' + total + ' reviewer responses imported';
+  }
+  let synthLine = '';
+  if (d.synthesis_status) { synthLine = ', synthesis: ' + d.synthesis_status; }
+  sum.innerHTML =
+    '<div><strong>Current epoch:</strong> ' + escHtml(d.epoch_id || '(none)') + '</div>' +
+    '<div><strong>Carrier iteration:</strong> ' + escHtml(d.iteration_id || '(none)') + '</div>' +
+    '<div><strong>evidence_sha256:</strong> <code>' + escHtml(d.evidence_sha256 || '(none)') + '</code></div>' +
+    '<div><strong>Status:</strong> ' + escHtml(bundleStatus) + escHtml(synthLine) + '</div>';
+
+  if (d.regression_ledger) {
+    const r = d.regression_ledger;
+    sum.innerHTML +=
+      '<div style="margin-top:8px"><strong>Regression ledger:</strong> ' +
+      'critical=' + (r.open_critical || 0) +
+      ', high=' + (r.open_high || 0) +
+      ', medium=' + (r.open_medium || 0) + '</div>';
+  }
+  if (d.proposal_matrix) {
+    const p = d.proposal_matrix;
+    sum.innerHTML +=
+      '<div><strong>Proposal matrix:</strong> ' + (p.total || 0) + ' total ' +
+      '(' + (p.claude_internal_count || 0) + ' internal, ' +
+      (p.codex_count || 0) + ' codex, ' +
+      (p.external_count || 0) + ' external)</div>';
+  }
+}
+
+function renderCards(d) {
+  const cards = document.getElementById('cards');
+  cards.innerHTML = '';
+  if (!d || !d.bundles) { return; }
+  d.bundles.forEach(function (b) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.dataset.provider = b.provider;
+    card.dataset.role = b.role;
+    const url = PROVIDER_URLS[b.provider] || '';
+    const folderHref = b.attachments_dir ? ('file:///' + b.attachments_dir.replace(/\\/g, '/')) : '#';
+    const respPath = b.expected_response_path || '';
+    let importCmd = '';
+    if (b.import_command) {
+      importCmd = '<pre class="cmd">' + escHtml(b.import_command) + '</pre>';
+    }
+    card.innerHTML =
+      '<h2>' + escHtml(b.provider) + ' / ' + escHtml(b.role) + ' ' + statusBadge(b.status) + '</h2>' +
+      '<div class="row"><span class="k">Expected model in UI:</span> ' + escHtml(b.expected_model_in_ui || '(unknown)') + '</div>' +
+      '<div class="row"><span class="k">Attachments:</span> ' + escHtml(b.attachment_count || 0) + ' files</div>' +
+      '<div class="row"><span class="k">Save response to:</span> <code>' + escHtml(respPath) + '</code></div>' +
+      '<div class="actions">' +
+        '<a href="' + folderHref + '" target="_blank">Open attachments folder</a>' +
+        '<button data-act="copy-prompt">Copy prompt</button>' +
+        (url ? '<a href="' + url + '" target="_blank">Open ' + escHtml(b.provider) + '</a>' : '') +
+        '<button data-act="copy-import">Copy import command</button>' +
+      '</div>' +
+      importCmd;
+
+    card.querySelector('button[data-act="copy-prompt"]').addEventListener('click', function () {
+      if (!b.prompt_text) {
+        alert('No prompt text available for ' + b.provider + '/' + b.role + '.');
+        return;
+      }
+      navigator.clipboard.writeText(b.prompt_text).then(function () {
+        const btn = card.querySelector('button[data-act="copy-prompt"]');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied to clipboard';
+        setTimeout(function () { btn.textContent = orig; }, 1500);
+      }, function (err) {
+        alert('Clipboard write failed: ' + err);
+      });
+    });
+    card.querySelector('button[data-act="copy-import"]').addEventListener('click', function () {
+      if (!b.import_command) {
+        alert('No import command available.');
+        return;
+      }
+      navigator.clipboard.writeText(b.import_command).then(function () {
+        const btn = card.querySelector('button[data-act="copy-import"]');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied to clipboard';
+        setTimeout(function () { btn.textContent = orig; }, 1500);
+      }, function (err) {
+        alert('Clipboard write failed: ' + err);
+      });
+    });
+    cards.appendChild(card);
+  });
+}
+
+function loadAndRender() {
+  fetch('state/cockpit_data.json', { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) { throw new Error('HTTP ' + r.status); }
+    return r.json();
+  }).then(function (d) {
+    document.getElementById('meta').textContent =
+      'Loaded state/cockpit_data.json at ' + new Date().toISOString() +
+      ' (generated_at_utc: ' + (d.generated_at_utc || 'unknown') + ')';
+    renderSummary(d);
+    renderCards(d);
+  }).catch(function (err) {
+    document.getElementById('meta').textContent =
+      'Could not load state/cockpit_data.json: ' + err.message +
+      '. Run orchestrator/Build-WaggleCockpitData.ps1 to generate it.';
+  });
+}
+
+loadAndRender();
+setInterval(loadAndRender, 5000);
+</script>
+</body>
+</html>

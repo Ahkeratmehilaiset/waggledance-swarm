@@ -165,8 +165,25 @@ foreach ($g in $gates) {
         gate = $name; path = $path; ok = $ok
         exit_code = $exitCode; elapsed_seconds = $elapsed; error = $errMsg
     }) | Out-Null
+    # Phase 2B-Revision (REL-012): on a gate failure, append a
+    # regression-ledger entry. Hook is non-fatal: any exception is
+    # swallowed inside Add-WaggleRegressionFromHardeningGateFailure.
     if (-not $ok) {
         $failed = $true
+        try {
+            $ledgerLib = Join-Path $orchDir 'lib/RegressionLedger.ps1'
+            if (Test-Path -LiteralPath $ledgerLib) {
+                . $ledgerLib
+                $rlPath = Join-Path $repoRoot 'state/regression_ledger.json'
+                if (-not (Test-Path -LiteralPath (Split-Path -Parent $rlPath))) {
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $rlPath) -Force | Out-Null
+                }
+                $hookIid = 'hardening_gates_' + (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH-mm-ssZ')
+                Add-WaggleRegressionFromHardeningGateFailure -LedgerPath $rlPath -GateName $name -IterationId $hookIid -Symptom $errMsg | Out-Null
+            }
+        } catch {
+            Write-Warning ("regression-ledger hook (gate failure) failed: " + $_.Exception.Message)
+        }
         if (-not $ContinueOnFailure) { break }
     }
 }

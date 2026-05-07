@@ -128,6 +128,32 @@ Assert-True 'pending: format_version=1.0' ($d.format_version -eq '1.0')
 Assert-True 'pending: bundle count=2' (@($d.bundles).Count -eq 2)
 Assert-True 'pending: bundles all status=pending' (@($d.bundles | Where-Object { $_.status -eq 'pending' }).Count -eq 2)
 Assert-True 'pending: evidence_sha256 captured' ($d.evidence_sha256 -eq $ev)
+# Phase 2B-R1 fix: prompt_text must be a plain string (not a
+# PSObject wrapping with PSPath/PSDrive/value sub-fields).
+foreach ($pb in @($d.bundles)) {
+    Assert-True ("pending: bundle " + $pb.provider + "/" + $pb.role + " prompt_text is string") ($pb.prompt_text -is [string])
+}
+# Phase 2B-R1 fix: provider/role must split on the LAST underscore
+# so claude_web_architect parses as (claude_web, architect). The
+# fixture above uses gemini/architect + grok/reliability so we
+# can assert the expected pair shape directly.
+Assert-True 'pending: gemini/architect bundle present' (@($d.bundles | Where-Object { $_.provider -eq 'gemini' -and $_.role -eq 'architect' }).Count -eq 1)
+Assert-True 'pending: grok/reliability bundle present' (@($d.bundles | Where-Object { $_.provider -eq 'grok' -and $_.role -eq 'reliability' }).Count -eq 1)
+
+# ---- Test 1b: claude_web_architect (3-segment name; legacy opt-in) ----
+# Phase 2B-R1: bundle name has provider with an underscore inside
+# (claude_web). The parser must split on the LAST underscore so
+# the role is the trailing single segment.
+$proj1b = New-FakeProject -Name 'cd1b'
+$iid1b = '2026-05-07_e1b'
+$ev1b = ('c' * 64)
+New-FakeQueueBundle -Root $proj1b.root -IterationId $iid1b -EpochId 'e1b' -Provider 'claude_web' -Role 'architect' -Sha $ev1b
+$out1b = Join-Path $proj1b.root 'state/cockpit_data.json'
+$r1b = Build-WaggleCockpitData -ConfigPath $proj1b.cfg -EpochId 'e1b' -IterationId $iid1b -OutputPath $out1b
+$d1b = Get-Content -Raw -Path $out1b -Encoding UTF8 | ConvertFrom-Json
+$cwBundle = @($d1b.bundles)[0]
+Assert-True 'cw3seg: provider=claude_web (split on LAST underscore)' ($cwBundle.provider -eq 'claude_web')
+Assert-True 'cw3seg: role=architect'                                   ($cwBundle.role -eq 'architect')
 
 # ---- Test 2: one imported -----------------------------------------------
 

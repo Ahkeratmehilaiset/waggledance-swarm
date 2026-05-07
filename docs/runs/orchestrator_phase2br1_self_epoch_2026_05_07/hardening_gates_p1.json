@@ -1,0 +1,251 @@
+﻿{
+    "report_format_version":  1,
+    "report_path":  "docs/runs/orchestrator_phase2br1_self_epoch_2026_05_07/hardening_gates_p1.json",
+    "latest_report_path":  "C:\\Python\\project2-master\\docs\\runs\\hardening_gates\\latest.json",
+    "started_at_utc":  "2026-05-07T20:01:17.5175671Z",
+    "finished_at_utc":  "2026-05-07T20:02:26.9270484Z",
+    "continue_on_failure":  false,
+    "overall_ok":  true,
+    "gates_run":  29,
+    "gates_passed":  29,
+    "gates_failed":  0,
+    "git_branch":  "orchestrator/phase2br1-first-real-self-epoch",
+    "git_head_sha":  "9712de6225ee5fd7fff189ce297a992ec8fc9599",
+    "git_is_dirty":  true,
+    "powershell_version":  "5.1.22621.6931",
+    "os":  "Windows / Microsoft Windows NT 10.0.22631.0",
+    "results":  [
+                    {
+                        "gate":  "Test-Syntax",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-Syntax.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  0.95,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-Redaction",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-Redaction.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.07,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-Redactor",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-Redactor.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.03,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-SmokeValidation",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-SmokeValidation.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.01,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ArtifactValidator",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ArtifactValidator.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.2,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-Lockfile",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-Lockfile.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.18,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-CompletionVerifier",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-CompletionVerifier.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.33,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ReviewSchema",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ReviewSchema.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.13,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ReviewAdapter",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ReviewAdapter.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.38,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ReviewRunner",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ReviewRunner.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  9.16,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ReviewSafety",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ReviewSafety.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.2,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ReviewSurface",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ReviewSurface.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  2.19,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ReviewIntegrity",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ReviewIntegrity.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.59,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ReviewSubprocessTimeout",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ReviewSubprocessTimeout.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  10.28,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-PhaseFixLedger",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-PhaseFixLedger.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.31,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-HardeningGatesReportPath",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-HardeningGatesReportPath.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  2.95,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-EpochEvidence",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-EpochEvidence.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  2.57,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ExternalReviewQueue",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ExternalReviewQueue.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  3.04,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ExternalReviewImport",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ExternalReviewImport.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  2.37,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-SynthesisPasteBlock",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-SynthesisPasteBlock.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  5.7,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-SynthesisResultImport",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-SynthesisResultImport.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  2.37,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-EpochCycleTrigger",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-EpochCycleTrigger.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.41,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-IterationFromSynthesis",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-IterationFromSynthesis.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  2.23,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-ProposalMatrix",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-ProposalMatrix.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.63,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-RegressionLedger",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-RegressionLedger.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.23,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-CodexImport",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-CodexImport.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  2.45,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-CockpitData",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-CockpitData.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.54,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-FindingClassifier",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-FindingClassifier.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  1.2,
+                        "error":  ""
+                    },
+                    {
+                        "gate":  "Test-Phase2A2",
+                        "path":  "C:\\Python\\project2-master\\orchestrator\\Test-Phase2A2.ps1",
+                        "ok":  true,
+                        "exit_code":  0,
+                        "elapsed_seconds":  2.14,
+                        "error":  ""
+                    }
+                ]
+}

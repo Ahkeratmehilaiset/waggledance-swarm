@@ -157,6 +157,18 @@ Assert-True 'empty: total_proposals=0'  ($mtxJson.sources_summary.total_proposal
 $mtxMd = Get-Content -Raw -Path $r.md_path -Encoding UTF8
 Assert-True 'empty: md mentions no-proposal note' ($mtxMd -match '_No proposals')
 
+# ---- Test 1b: old-shape internal review (no suggested_next_actions) ---
+# Phase 2B-R1 (BWP-BUG-001): the matrix builder must not throw
+# under StrictMode when an internal review JSON is missing the
+# optional suggested_next_actions field (the Phase 2A-2 legacy
+# shape, before SEC-009).
+$proj1b = New-FakeProject -Name 'pmx-old-shape'
+$iid1b = '2026-05-07_e1b'
+[void](Add-FakeIteration -Root $proj1b.root -Id $iid1b -WithProposals $false)
+$r1b = Build-WaggleProposalMatrix -ConfigPath $proj1b.cfg -EpochId 'e1b' -IterationId $iid1b -IncludeCodex $false -IncludeExternal $false
+Assert-True 'old-shape: ok=true (no throw under strict)' ($r1b.ok -eq $true)
+Assert-True 'old-shape: 0 rows (no proposals in source)' ($r1b.row_count -eq 0)
+
 # ---- Test 2: internal only -----------------------------------------------
 
 $proj2 = New-FakeProject -Name 'pmx-internal'

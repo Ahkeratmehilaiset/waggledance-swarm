@@ -681,6 +681,20 @@
         "orchestrator/Test-ReviewAdapter.ps1"
       ],
       "notes": "Promoted to 'fixed' in Phase 2B-Revision P12. Both new fields are OPTIONAL on the Phase 2A-2 internal review schema; old reviews still validate. The validator enforces required sub-fields when reviewer_self_id is present, requires runtime='claude_code' for internal reviews, and validates estimated_effort enum on each suggested_next_action. The three internal review prompt templates request both blocks under a 'Phase 2B-Revision (SEC-009)' section. Test-ReviewSchema covers old/new/malformed shapes; Test-ReviewAdapter asserts the prompt files request both blocks."
+    },
+    {
+      "tag": "REL-019",
+      "title": "Invoke-WaggleReview top-level CLI dereferences $r.role on -DryRun pscustomobject which lacks role",
+      "source": "human-review",
+      "status": "backlog",
+      "phase_introduced": "Phase 2A-2",
+      "phase_fixed_or_documented": "Phase 2B-R1 (recorded, NOT fixed)",
+      "canonical_source_anchors": [
+        "orchestrator/Invoke-WaggleReview.ps1 :: DryRun return",
+        "orchestrator/Invoke-WaggleReview.ps1 :: Write-Host 'Review {0} for {1}'"
+      ],
+      "tests": [],
+      "notes": "Found in Phase 2B-R1 P9 while priming the architect self-review with a -DryRun shape check. The DryRun branch returns a pscustomobject with keys {ok, dry_run, review_iteration_id, prompt_path, staging_root, effective_profile, package_quality, status, errors} -- notably WITHOUT 'role'. The CLI wrapper at the bottom of the script then runs Write-Host using -f $r.role, ..., which under StrictMode throws 'The property role cannot be found on this object'. The function exits 1 even though staging is fully populated (review_prompt.md, package_quality.json, redaction_report.json all written correctly). Get-WaggleFindingClass routed this EXTERNAL_REVIEW_REQUIRED / fixability_ambiguous / reason=fixability_ambiguous because the proposed-fix string offered two possible shapes (add 'role' to DryRun return vs guard the caller vs unify the two return shapes). Per Phase 2B-R1 P10 procedure the bug was NOT fixed locally; recorded here for an external reviewer to weigh in on the right shape. Does not block the review pipeline -- the non-DryRun path's return object DOES include 'role' (see Invoke-WaggleReview.ps1 :: 'role = $Role' near line 756)."
     }
   ]
 }

@@ -91,12 +91,15 @@ function Build-WaggleCockpitData {
                 FullName = $bundleFullPath
                 Name = (Split-Path -Leaf $bundleFullPath)
             }
-            # Bundle dir name is "<provider>_<role>"
+            # Bundle dir name is "<provider>_<role>" where provider
+            # may contain underscores (e.g. "claude_web_architect").
+            # Split on the LAST underscore so role is the final
+            # segment.
             $name = $d.Name
-            $parts = $name -split '_', 2
-            if ($parts.Count -lt 2) { continue }
-            $prov = $parts[0]
-            $role = $parts[1]
+            $lastUs = $name.LastIndexOf('_')
+            if ($lastUs -le 0 -or $lastUs -ge ($name.Length - 1)) { continue }
+            $prov = $name.Substring(0, $lastUs)
+            $role = $name.Substring($lastUs + 1)
             $metaP = Join-Path $d.FullName 'metadata.json'
             $promptP = Join-Path $d.FullName 'prompt.md'
             $expRespP = Join-Path $d.FullName 'expected_response_path.txt'
@@ -107,8 +110,9 @@ function Build-WaggleCockpitData {
             }
             $promptText = ''
             if (Test-Path -LiteralPath $promptP) {
-                try { $promptText = Get-Content -Raw -Path $promptP -Encoding UTF8 } catch {}
+                try { $promptText = [string](Get-Content -Raw -Path $promptP -Encoding UTF8) } catch {}
             }
+            if ($null -eq $promptText) { $promptText = '' }
             $respPath = ''
             if (Test-Path -LiteralPath $expRespP) {
                 try { $respPath = (Get-Content -Raw -Path $expRespP -Encoding UTF8).Trim() } catch {}

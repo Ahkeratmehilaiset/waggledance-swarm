@@ -176,10 +176,11 @@ $resDir = Join-Path $proj.root 'tmp_responses'
 [void](New-Item -ItemType Directory -Path $resDir -Force)
 function Write-Response { param([string] $Name, [string] $Body); $p = Join-Path $resDir ($Name + '.md'); Set-Content -Path $p -Value $Body -Encoding UTF8; return $p }
 
+# Phase 2B-Revision (P9): default external pairs are gemini/architect
+# and grok/reliability. claude_web is no longer required.
 $pairs = @(
-    @{ provider = 'claude_web'; role = 'architect'   }
-    @{ provider = 'gemini';     role = 'security'    }
-    @{ provider = 'grok';       role = 'reliability' }
+    @{ provider = 'gemini'; role = 'architect'   }
+    @{ provider = 'grok';   role = 'reliability' }
 )
 foreach ($p in $pairs) {
     $body = New-ReviewerResponseMarkdown -Provider $p.provider -Role $p.role -IterationId $iid -EpochId $EpochId -Sha $Sha
@@ -198,17 +199,26 @@ Assert-True 'paste-block: synthesis_dir exists'         (Test-Path -LiteralPath 
 Assert-True 'paste-block: metadata.json exists'         (Test-Path -LiteralPath $spb.metadata_path)
 Assert-True 'paste-block: attachments dir exists'       (Test-Path -LiteralPath (Join-Path $spb.synthesis_dir 'attachments'))
 Assert-True 'paste-block: at least 5 attachments'       ($spb.attachments.Count -ge 5)
-Assert-True 'paste-block: includes 3 imports'           ($spb.included_imports.Count -eq 3)
+Assert-True 'p9: includes 2 imports (gemini + grok)'    ($spb.included_imports.Count -eq 2)
 
 $body = Get-Content -Raw -Path $spb.paste_block_path -Encoding UTF8
 Assert-True 'paste-block: contains UNTRUSTED warning' ($body -match 'UNTRUSTED')
 Assert-True 'paste-block: contains synthesis-json instructions (template)' ($body -match 'synthesis-json')
 Assert-True 'paste-block: contains MANDATORY-line directive' ($body -match 'MANDATORY: Use Claude Opus 4\.7')
 Assert-True 'paste-block: echoes evidence_sha256' ($body -match [regex]::Escape($Sha))
-Assert-True 'paste-block: has REVIEWER section for claude_web/architect' ($body -match 'REVIEWER: claude_web / architect')
-Assert-True 'paste-block: has REVIEWER section for gemini/security'      ($body -match 'REVIEWER: gemini / security')
-Assert-True 'paste-block: has REVIEWER section for grok/reliability'     ($body -match 'REVIEWER: grok / reliability')
-Assert-True 'paste-block: contains EXTERNAL-REVIEW-COMPLETE marker echo (from each reviewer body)' (([regex]::Matches($body, 'EXTERNAL-REVIEW-COMPLETE')).Count -ge 3)
+
+# Phase 2B-Revision: internal Claude reviews are inlined automatically
+Assert-True 'p9: paste-block has INTERNAL Claude section' ($body -match 'INTERNAL Claude \(Phase 2A-2\)')
+foreach ($role in 'architect','security','reliability') {
+    Assert-True ("p9: paste-block has internal $role review for the iteration") ($body -match ('iteration ' + [regex]::Escape($iid) + ' / ' + $role))
+}
+
+# Phase 2B-Revision: external section present (gemini + grok)
+Assert-True 'p9: paste-block has EXTERNAL section' ($body -match 'EXTERNAL \(Phase 2B reviewer imports\)')
+Assert-True 'p9: paste-block has gemini/architect external entry' ($body -match 'gemini / architect')
+Assert-True 'p9: paste-block has grok/reliability external entry' ($body -match 'grok / reliability')
+Assert-True 'p9: claude_web NOT in default external section' ($body -notmatch 'claude_web / architect')
+
 Assert-True 'paste-block: ends with END OF PASTE-BLOCK marker' ($body -match 'END OF PASTE-BLOCK')
 
 # Verify attachments dir has the canonical evidence files
@@ -217,28 +227,18 @@ Assert-True 'attachments: epoch_evidence.json copied'    (Test-Path -LiteralPath
 Assert-True 'attachments: cumulative_diff.patch copied'  (Test-Path -LiteralPath (Join-Path $atDir 'cumulative_diff.patch'))
 Assert-True 'attachments: cumulative_raportti.md copied' (Test-Path -LiteralPath (Join-Path $atDir 'cumulative_raportti.md'))
 
-# ---- Refusal: a missing role triggers throw ----------------------------
+# ---- Phase 2B-Revision (P9): no-external-imports OK -------------------
 
-$projM = New-FakeProject -Name 'spbM'
-Copy-PromptTemplates -Root $projM.root
-$iidM = '2026-05-07_05-30-00'
-[void](New-FakeIteration -Root $projM.root -Id $iidM)
-$evM = Build-WaggleEpochEvidence -ConfigPath $projM.cfg -IterationIds @($iidM)
-# Import only 2 of 3 reviewers
-foreach ($p in $pairs[0..1]) {
-    $body = New-ReviewerResponseMarkdown -Provider $p.provider -Role $p.role -IterationId $iidM -EpochId $evM.epoch_id -Sha $evM.evidence_sha256
-    $resDirM = Join-Path $projM.root 'tmp_responses'
-    if (-not (Test-Path -LiteralPath $resDirM)) { [void](New-Item -ItemType Directory -Path $resDirM -Force) }
-    $rsp = Join-Path $resDirM ($p.provider + '_' + $p.role + '.md')
-    Set-Content -Path $rsp -Value $body -Encoding UTF8
-    [void](Import-WaggleExternalReviewResponse -ConfigPath $projM.cfg -EpochId $evM.epoch_id `
-            -Provider $p.provider -Role $p.role -ResponseFile $rsp -IterationId $iidM)
-}
-$threw = $false; $emsg = ''
-try { New-WaggleSynthesisPasteBlock -ConfigPath $projM.cfg -EpochId $evM.epoch_id -IterationId $iidM | Out-Null }
-catch { $threw = $true; $emsg = $_.Exception.Message }
-Assert-True 'missing-import: paste-block refused'   $threw
-Assert-True 'missing-import: error names grok/reliability' ($emsg -match 'grok/reliability')
+$projN = New-FakeProject -Name 'spbN'
+Copy-PromptTemplates -Root $projN.root
+$iidN = '2026-05-07_05-30-00'
+[void](New-FakeIteration -Root $projN.root -Id $iidN)
+$evN = Build-WaggleEpochEvidence -ConfigPath $projN.cfg -IterationIds @($iidN)
+$spbN = New-WaggleSynthesisPasteBlock -ConfigPath $projN.cfg -EpochId $evN.epoch_id -IterationId $iidN
+Assert-True 'p9: no-external imports -> paste-block builds'      ($spbN.ok -eq $true)
+$bodyN = Get-Content -Raw -Path $spbN.paste_block_path -Encoding UTF8
+Assert-True 'p9: paste-block has INTERNAL Claude section even without externals' ($bodyN -match 'INTERNAL Claude \(Phase 2A-2\)')
+Assert-True 'p9: paste-block notes no external imports'          ($bodyN -match 'EXTERNAL \(no imports')
 
 # ---- Latest-import-wins ------------------------------------------------
 
@@ -251,7 +251,7 @@ $shaL = $evL.evidence_sha256
 $resDirL = Join-Path $projL.root 'tmp_responses'
 [void](New-Item -ItemType Directory -Path $resDirL -Force)
 
-# Import all three pairs (first round).
+# Import the default Phase 2B-Revision pairs (first round).
 foreach ($p in $pairs) {
     $body = New-ReviewerResponseMarkdown -Provider $p.provider -Role $p.role -IterationId $iidL -EpochId $evL.epoch_id -Sha $shaL
     $rsp = Join-Path $resDirL ($p.provider + '_' + $p.role + '_v1.md')
@@ -261,18 +261,39 @@ foreach ($p in $pairs) {
 }
 # Wait so the timestamp prefix differs (UTC seconds resolution).
 Start-Sleep -Seconds 2
-# Re-import claude_web/architect (this becomes the latest valid for that pair).
-$body2 = New-ReviewerResponseMarkdown -Provider 'claude_web' -Role 'architect' -IterationId $iidL -EpochId $evL.epoch_id -Sha $shaL
-$rsp2 = Join-Path $resDirL 'claude_web_architect_v2.md'
+# Re-import gemini/architect (this becomes the latest valid for that pair).
+$body2 = New-ReviewerResponseMarkdown -Provider 'gemini' -Role 'architect' -IterationId $iidL -EpochId $evL.epoch_id -Sha $shaL
+$rsp2 = Join-Path $resDirL 'gemini_architect_v2.md'
 Set-Content -Path $rsp2 -Value $body2 -Encoding UTF8
 $r2 = Import-WaggleExternalReviewResponse -ConfigPath $projL.cfg -EpochId $evL.epoch_id `
-        -Provider 'claude_web' -Role 'architect' -ResponseFile $rsp2 -IterationId $iidL
+        -Provider 'gemini' -Role 'architect' -ResponseFile $rsp2 -IterationId $iidL
 $latestArchitectId = $r2.import_id
 
 $spbL = New-WaggleSynthesisPasteBlock -ConfigPath $projL.cfg -EpochId $evL.epoch_id -IterationId $iidL
 $metaL = Get-Content -Raw -Path $spbL.metadata_path -Encoding UTF8 | ConvertFrom-Json
-$archEntry = @($metaL.included_imports | Where-Object { $_.provider -eq 'claude_web' -and $_.role -eq 'architect' })[0]
-Assert-True 'latest-wins: claude_web/architect used latest import_id' ($archEntry.import_id -eq $latestArchitectId)
+$archEntry = @($metaL.included_imports | Where-Object { $_.provider -eq 'gemini' -and $_.role -eq 'architect' })[0]
+Assert-True 'latest-wins: gemini/architect used latest import_id' ($archEntry.import_id -eq $latestArchitectId)
+
+# ---- Phase 2B-Revision (P9): proposal matrix + ledger excerpt ---------
+
+$projP = New-FakeProject -Name 'spbP'
+Copy-PromptTemplates -Root $projP.root
+$iidP = '2026-05-07_07-00-00'
+[void](New-FakeIteration -Root $projP.root -Id $iidP)
+$evP = Build-WaggleEpochEvidence -ConfigPath $projP.cfg -IterationIds @($iidP)
+# Drop a synthetic proposal_matrix.md into the synth dir
+$synthDirP = Join-Path (Join-Path (Join-Path $projP.root 'iterations') $iidP) ('external_reviews/synthesis/' + $evP.epoch_id)
+[void](New-Item -ItemType Directory -Path $synthDirP -Force)
+Set-Content -Path (Join-Path $synthDirP 'proposal_matrix.md') -Value '# Proposal matrix synthetic body for P9' -Encoding UTF8
+# Drop a synthetic regression_ledger.json
+[void](New-Item -ItemType Directory -Path (Join-Path $projP.root 'state') -Force)
+Set-Content -Path (Join-Path $projP.root 'state/regression_ledger.json') -Value (@{ format_version = '1.0'; regressions = @( @{ id='REG-2026-05-07-001'; status='open'; severity='high'; score=70; category='hardening_gate_failure'; first_symptom='gate fail'; detected_in_iteration=$iidP; history=@(@{ iteration_id=$iidP; event='detected' }) } ) } | ConvertTo-Json -Depth 10) -Encoding UTF8
+$spbP = New-WaggleSynthesisPasteBlock -ConfigPath $projP.cfg -EpochId $evP.epoch_id -IterationId $iidP
+$bodyP = Get-Content -Raw -Path $spbP.paste_block_path -Encoding UTF8
+Assert-True 'p9: paste-block has PROPOSAL MATRIX section'        ($bodyP -match 'PROPOSAL MATRIX')
+Assert-True 'p9: paste-block inlines proposal matrix body'       ($bodyP -match 'Proposal matrix synthetic body for P9')
+Assert-True 'p9: paste-block has REGRESSION LEDGER EXCERPT section' ($bodyP -match 'REGRESSION LEDGER EXCERPT')
+Assert-True 'p9: paste-block contains ledger entry id'           ($bodyP -match 'REG-2026-05-07-001')
 
 # ---- Cleanup ----------------------------------------------------------
 

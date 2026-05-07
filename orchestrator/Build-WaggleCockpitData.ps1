@@ -71,9 +71,26 @@ function Build-WaggleCockpitData {
     $synthDir = Join-Path $iterFolder ($synthRel.TrimEnd('/','\') + '/' + $EpochId)
 
     # ---- Read each per-(provider, role) bundle's metadata
+    # NOTE on PS 5.1 quirk: same as the inner imports loop below,
+    # avoid foreach over a Get-ChildItem cmdlet expression. Capture
+    # the directory paths into a plain string array first.
     $bundles = New-Object System.Collections.Generic.List[object]
+    $bundleDirs = @()
     if (Test-Path -LiteralPath $queueDir) {
-        foreach ($d in (Get-ChildItem -LiteralPath $queueDir -Directory -ErrorAction SilentlyContinue)) {
+        $rawBundleList = Get-ChildItem -LiteralPath $queueDir -Directory -ErrorAction SilentlyContinue
+        if ($null -ne $rawBundleList) {
+            foreach ($f in $rawBundleList) { $bundleDirs += $f.FullName }
+        }
+    }
+    if ($bundleDirs.Count -gt 0) {
+        $bIdx = 0
+        while ($bIdx -lt $bundleDirs.Count) {
+            $bundleFullPath = $bundleDirs[$bIdx]
+            $bIdx = $bIdx + 1
+            $d = [pscustomobject]@{
+                FullName = $bundleFullPath
+                Name = (Split-Path -Leaf $bundleFullPath)
+            }
             # Bundle dir name is "<provider>_<role>"
             $name = $d.Name
             $parts = $name -split '_', 2
@@ -121,14 +138,27 @@ function Build-WaggleCockpitData {
             }
 
             # Find any matching valid imported response.
+            # NOTE on PS 5.1 quirk: do not use `@(Get-ChildItem ...)`
+            # in a foreach. On this machine it sometimes spins
+            # indefinitely when the resulting array contains a
+            # mix of FileInfo + PSObject metadata. Use an explicit
+            # array variable + a counted while loop instead.
             $importStatus = 'pending'
             $importId = $null
             $importedAt = $null
             if (Test-Path -LiteralPath $importedDir) {
-                foreach ($mf in @(Get-ChildItem -LiteralPath $importedDir -Filter '*.metadata.json' -File -ErrorAction SilentlyContinue)) {
-                    if ($mf.Name -like '*.invalid.metadata.json') { continue }
+                $metaFiles = @()
+                $rawList = Get-ChildItem -LiteralPath $importedDir -Filter '*.metadata.json' -File -ErrorAction SilentlyContinue
+                if ($null -ne $rawList) {
+                    foreach ($f in $rawList) { $metaFiles += $f.FullName }
+                }
+                $mIdx = 0
+                while ($mIdx -lt $metaFiles.Count) {
+                    $mfPath = $metaFiles[$mIdx]
+                    $mIdx = $mIdx + 1
+                    if ($mfPath -like '*.invalid.metadata.json') { continue }
                     try {
-                        $im = Get-Content -Raw -Path $mf.FullName -Encoding UTF8 | ConvertFrom-Json
+                        $im = Get-Content -Raw -Path $mfPath -Encoding UTF8 | ConvertFrom-Json
                     } catch { continue }
                     if (-not [bool]$im.ok) { continue }
                     if (([string]$im.provider) -ne $prov -or ([string]$im.role) -ne $role) { continue }
@@ -173,10 +203,22 @@ function Build-WaggleCockpitData {
     # ---- Synthesis status
     $synthStatus = 'not_started'
     if (Test-Path -LiteralPath $synthDir) {
-        $resJsons = @(Get-ChildItem -LiteralPath $synthDir -Filter 'result_*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.metadata.json' -and $_.Name -notlike '*.invalid.*' })
+        # PS 5.1 quirk: avoid `@(Get-ChildItem | Where-Object)` —
+        # it can hang on this machine. Iterate the result list as
+        # a plain array.
+        $resCount = 0
+        $rawSyn = Get-ChildItem -LiteralPath $synthDir -Filter 'result_*.json' -File -ErrorAction SilentlyContinue
+        if ($null -ne $rawSyn) {
+            foreach ($rs in $rawSyn) {
+                $rn = [string]$rs.Name
+                if ($rn -like '*.metadata.json') { continue }
+                if ($rn -like '*.invalid.*')   { continue }
+                $resCount = $resCount + 1
+            }
+        }
         $halt = Test-Path -LiteralPath (Join-Path $synthDir 'HALT.md')
         if ($halt) { $synthStatus = 'halt' }
-        elseif ($resJsons.Count -gt 0) { $synthStatus = 'imported' }
+        elseif ($resCount -gt 0) { $synthStatus = 'imported' }
         elseif (Test-Path -LiteralPath (Join-Path $synthDir 'paste_block.md')) { $synthStatus = 'paste_block_ready' }
     }
 
@@ -209,18 +251,18 @@ function Build-WaggleCockpitData {
         } catch {}
     }
 
+    $bundlesArr = $bundles.ToArray()
     $data = [ordered]@{
         format_version    = '1.0'
         generated_at_utc  = (Get-Date).ToUniversalTime().ToString('o')
         epoch_id          = $EpochId
         iteration_id      = $IterationId
         evidence_sha256   = $evidenceSha
-        bundles           = $bundles.ToArray()
+        bundles           = $bundlesArr
         synthesis_status  = $synthStatus
         regression_ledger = $regSummary
         proposal_matrix   = $proposalSummary
     }
-
     if (-not $OutputPath) {
         $OutputPath = Join-Path $projectRoot 'state/cockpit_data.json'
     }
@@ -228,7 +270,11 @@ function Build-WaggleCockpitData {
     if ($outDir -and -not (Test-Path -LiteralPath $outDir)) {
         New-Item -ItemType Directory -Path $outDir -Force | Out-Null
     }
-    Set-Content -Path $OutputPath -Value (([pscustomobject]$data) | ConvertTo-Json -Depth 16) -Encoding UTF8
+    # ConvertTo-Json -Depth 16 hangs on PS 5.1 when bundles contain
+    # large prompt_text strings. Our structure is shallow (max 3
+    # levels) so -Depth 4 is sufficient and fast.
+    $jsonText = ([pscustomobject]$data) | ConvertTo-Json -Depth 4
+    Set-Content -Path $OutputPath -Value $jsonText -Encoding UTF8
 
     return [pscustomobject]@{
         ok = $true

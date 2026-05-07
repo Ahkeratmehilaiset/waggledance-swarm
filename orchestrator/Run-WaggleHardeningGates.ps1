@@ -128,14 +128,7 @@ $gates = @(
     @{ name = 'Test-ProposalMatrix';          path = Join-Path $orchDir 'Test-ProposalMatrix.ps1' }
     @{ name = 'Test-RegressionLedger';        path = Join-Path $orchDir 'Test-RegressionLedger.ps1' }
     @{ name = 'Test-CodexImport';             path = Join-Path $orchDir 'Test-CodexImport.ps1' }
-    # Test-CockpitData is intentionally NOT in the gate set yet — the
-    # mini-fixture path through Build-WaggleCockpitData exposes a PS
-    # 5.1 process-spawning hang that is unrelated to the cockpit
-    # builder's correctness. The cockpit builder is exercised by the
-    # P11 end-to-end synthetic dry-run, which represents the
-    # production code path. The test driver remains committed at
-    # orchestrator/Test-CockpitData.ps1 for re-introduction once the
-    # local hang is root-caused.
+    @{ name = 'Test-CockpitData';             path = Join-Path $orchDir 'Test-CockpitData.ps1' }
     @{ name = 'Test-FindingClassifier';       path = Join-Path $orchDir 'Test-FindingClassifier.ps1' }
     @{ name = 'Test-Phase2A2';                path = Join-Path $orchDir 'Test-Phase2A2.ps1' }
 )

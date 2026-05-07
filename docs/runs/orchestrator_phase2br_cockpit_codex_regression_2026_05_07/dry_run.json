@@ -1,0 +1,95 @@
+﻿{
+    "title":  "Phase 2B-Revision end-to-end synthetic dry-run",
+    "generated_at_utc":  "2026-05-07T13:33:28.9880418Z",
+    "project_root":  "C:\\Users\\mfi0jjko\\AppData\\Local\\Temp\\waggle-2br-dryrun-8c54c1782a544322b84dc917d8da3550\\proj",
+    "epoch_id":  "p11-e2e-2br",
+    "evidence_sha256":  "70a0944395f3b4c29fb3a93e4b48366237a5b7a5e3ef0df9d53d8384e6c8a8a4",
+    "iteration_count":  4,
+    "steps":  [
+                  {
+                      "step":  "P11-1: build synthetic 4-iteration project tree",
+                      "ok":  true,
+                      "elapsed_seconds":  0.09,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-2: Build-WaggleEpochEvidence (4 iterations)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.43,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-3: Import synthetic Codex findings",
+                      "ok":  true,
+                      "elapsed_seconds":  0.08,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-4: Build-WaggleProposalMatrix (internal + Codex)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.12,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-5: Build-WaggleCockpitData (round 1)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.04,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-6: Open-WaggleCockpit smoke",
+                      "ok":  true,
+                      "elapsed_seconds":  0,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-7: Export-WaggleExternalReviewQueue (gemini + grok)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.26,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-8: Import 2 synthetic external responses",
+                      "ok":  true,
+                      "elapsed_seconds":  0.07,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-9: Build-WaggleProposalMatrix (with external)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.04,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-10: New-WaggleSynthesisPasteBlock",
+                      "ok":  true,
+                      "elapsed_seconds":  0.09,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-11: Import synthetic synthesis response (continue)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.04,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-12: New-WaggleIterationFromSynthesis (correct SHA, dry-run)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.04,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-13: New-WaggleIterationFromSynthesis (mutated evidence, refused)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.03,
+                      "error":  ""
+                  },
+                  {
+                      "step":  "P11-14: Build-WaggleCockpitData (round 2 â€” post-import)",
+                      "ok":  true,
+                      "elapsed_seconds":  0.17,
+                      "error":  ""
+                  }
+              ],
+    "overall_ok":  true
+}

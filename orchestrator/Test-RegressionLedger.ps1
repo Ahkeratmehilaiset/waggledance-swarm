@@ -237,6 +237,165 @@ $reviewLedger = Get-WaggleRegressionLedger -Path $reviewHookPath
 Assert-True 'review-hook: re-fire dedups count' (@($reviewLedger.regressions).Count -eq 2)
 Assert-True 'review-hook: re-fire history grew' (@($reviewLedger.regressions[0].history).Count -ge 2)
 
+# ---- Phase 2B-R3 P10 (Codex REL-001 fix): severity floor ------------
+# Pre-fix bug: $Severity parameter was accepted but never used.
+# A 'critical' finding was stored with severity='info' (because
+# category-only score was 15, below the 'low' threshold of 20).
+# Post-fix: severity = MAX(score-derived, input-severity).
+$severityHookPath = Join-Path $tmp 'severity_floor.json'
+$critReview = [pscustomobject]@{
+    role = 'security'
+    target_iteration_id = 'sev-iter-1'
+    summary = 't'
+    verdict = 'needs_changes'
+    findings = @(
+        [pscustomobject]@{ id = 'SEC-CRIT-001'; severity = 'critical'; title = 'critical leak'; affected_files = @('a.ps1') }
+        [pscustomobject]@{ id = 'SEC-HIGH-001'; severity = 'high';     title = 'high leak';     affected_files = @('b.ps1') }
+    )
+    metrics = @{ files_reviewed = 1; lines_reviewed = 1; review_duration_seconds = 1 }
+    completed = $true
+}
+$null = Add-WaggleRegressionsFromReviewObject -LedgerPath $severityHookPath -ReviewObject $critReview -IterationId 'sev-iter-1' -Role 'security'
+$sevLedger = Get-WaggleRegressionLedger -Path $severityHookPath
+$critEntry = @($sevLedger.regressions | Where-Object { (@($_.linked_findings) -contains 'SEC-CRIT-001') })[0]
+$highEntry = @($sevLedger.regressions | Where-Object { (@($_.linked_findings) -contains 'SEC-HIGH-001') })[0]
+Assert-True 'REL-001 fix: critical input severity preserved (not downcast to info)' ([string]$critEntry.severity -eq 'critical')
+Assert-True 'REL-001 fix: high input severity preserved'                            ([string]$highEntry.severity -eq 'high')
+Assert-True 'REL-001 fix: score-derived severity is still computed' ([int]$critEntry.score -ge 0)
+
+# _Rl-MaxSeverity unit checks (helper dot-sourced at top of file)
+Assert-True 'REL-001 helper: max(low, high) = high'         (([string](_Rl-MaxSeverity -A 'low' -B 'high'))      -eq 'high')
+Assert-True 'REL-001 helper: max(critical, info) = critical'(([string](_Rl-MaxSeverity -A 'critical' -B 'info')) -eq 'critical')
+Assert-True 'REL-001 helper: max(medium, medium) = medium'  (([string](_Rl-MaxSeverity -A 'medium' -B 'medium'))  -eq 'medium')
+
+# ---- Phase 2B-R3 P10 (Codex REL-002 fix): crash-safe save ------------
+# Pre-fix bug: Remove-Item before Move-Item left a window where a
+# crash between the two left no ledger at all. Post-fix: backup-and-
+# replace with restore-on-failure.
+$crashSafePath = Join-Path $tmp 'crash_safe.json'
+$ledger = Get-WaggleRegressionLedger -Path $crashSafePath
+Save-WaggleRegressionLedger -Path $crashSafePath -Ledger $ledger
+Assert-True 'REL-002 fix: first save creates the ledger' (Test-Path -LiteralPath $crashSafePath)
+$firstContents = Get-Content -Raw -Path $crashSafePath -Encoding UTF8
+# Modify and save again — this exercises the backup-and-replace path.
+$ledger2 = Get-WaggleRegressionLedger -Path $crashSafePath
+$ledger2 | Add-Member -NotePropertyName _test_marker -NotePropertyValue 'rel-002-roundtrip' -Force
+Save-WaggleRegressionLedger -Path $crashSafePath -Ledger $ledger2
+$secondContents = Get-Content -Raw -Path $crashSafePath -Encoding UTF8
+Assert-True 'REL-002 fix: second save replaces previous ledger durably' ((Test-Path -LiteralPath $crashSafePath) -and ($secondContents -match '_test_marker'))
+Assert-True 'REL-002 fix: no .bak left behind after successful replace'  (-not (Test-Path -LiteralPath ($crashSafePath + '.bak')))
+Assert-True 'REL-002 fix: no .tmp left behind after successful replace'  (-not (Test-Path -LiteralPath ($crashSafePath + '.tmp')))
+
+# Phase 2B-R3 P10b (GPT-5.5 Pro review): simulate the original
+# interruption window — the writer crashes AFTER moving live ledger
+# to .bak but BEFORE moving .tmp into place. Get-WaggleRegressionLedger
+# must recover from the .bak instead of returning an empty ledger.
+$recoveryPath = Join-Path $tmp 'recovery_target.json'
+$ledger3 = Get-WaggleRegressionLedger -Path $recoveryPath
+$ledger3 | Add-Member -NotePropertyName _recovery_marker -NotePropertyValue 'survived_crash' -Force
+Save-WaggleRegressionLedger -Path $recoveryPath -Ledger $ledger3
+# Now manually simulate the crash window: move the live ledger to .bak,
+# leave the path missing, and call Get-WaggleRegressionLedger.
+Move-Item -LiteralPath $recoveryPath -Destination ($recoveryPath + '.bak') -Force
+Assert-True 'REL-002 recovery setup: live ledger missing, .bak present' (
+    (-not (Test-Path -LiteralPath $recoveryPath)) -and
+    (Test-Path -LiteralPath ($recoveryPath + '.bak'))
+)
+$recovered = Get-WaggleRegressionLedger -Path $recoveryPath 3>&1 | Where-Object { $_ -is [pscustomobject] -or $_ -is [hashtable] } | Select-Object -First 1
+# Get-WaggleRegressionLedger writes a Write-Warning + restores the
+# .bak as the live ledger; subsequent reads should see the marker.
+$recovered2 = Get-WaggleRegressionLedger -Path $recoveryPath
+Assert-True 'REL-002 recovery: ledger marker survived simulated crash' (
+    ($null -ne $recovered2) -and
+    ($recovered2.PSObject.Properties['_recovery_marker']) -and
+    ([string]$recovered2._recovery_marker -eq 'survived_crash')
+)
+Assert-True 'REL-002 recovery: live ledger restored from .bak after crash window' (
+    Test-Path -LiteralPath $recoveryPath
+)
+
+# ---- Phase 2B-R3 P10c (Codex post-fix REL-001): score_delta floor ----
+# Pre-fix bug: an entry stored with severity='critical' (from the
+# P5c hook's input-severity floor) was downcast to 'info' on the
+# next score_delta update because Update-WaggleRegressionEntry
+# assigned severity from _Rl-SeverityFromScore unconditionally.
+$floorPath = Join-Path $tmp 'severity_floor_lifecycle.json'
+$ledgerF = Get-WaggleRegressionLedger -Path $floorPath
+$entryF = [pscustomobject]@{
+    detected_in_iteration = 'floor-iter-1'
+    category = 'security_redaction'
+    first_symptom = 'high-severity finding'
+    affected_files = @('a.ps1')
+    failing_tests = @()
+    linked_findings = @('SEC-CRIT-X')
+    linked_proposals = @()
+    issue_signature = 'a' * 64
+    score_categories = @('security_redaction')
+    severity = 'critical'   # set the floor on insert
+}
+Add-WaggleRegressionEntry -Ledger $ledgerF -Entry $entryF | Out-Null
+Save-WaggleRegressionLedger -Path $floorPath -Ledger $ledgerF
+$ledgerF2 = Get-WaggleRegressionLedger -Path $floorPath
+$insertedId = [string]$ledgerF2.regressions[0].id
+Assert-True 'REL-001 score_delta: insert preserved critical severity' ([string]$ledgerF2.regressions[0].severity -eq 'critical')
+
+# Now apply a score_delta update — pre-fix this would downcast severity to 'info'.
+Update-WaggleRegressionEntry -Ledger $ledgerF2 -RegId $insertedId -Update @{
+    history_event = @{ iteration_id = 'floor-iter-2'; event = 'detected'; issue_signature = 'a'*64; notes = 'no-op delta' }
+    score_delta = 0
+} | Out-Null
+$updatedEntry = @($ledgerF2.regressions | Where-Object { $_.id -eq $insertedId })[0]
+Assert-True 'REL-001 score_delta: severity NOT downcast after no-op score_delta' ([string]$updatedEntry.severity -eq 'critical')
+
+# A negative score_delta should still NOT downcast (floor preserved).
+Update-WaggleRegressionEntry -Ledger $ledgerF2 -RegId $insertedId -Update @{
+    history_event = @{ iteration_id = 'floor-iter-3'; event = 'detected'; issue_signature = 'a'*64; notes = 'negative delta' }
+    score_delta = -10
+} | Out-Null
+$updatedEntry2 = @($ledgerF2.regressions | Where-Object { $_.id -eq $insertedId })[0]
+Assert-True 'REL-001 score_delta: severity NOT downcast after negative delta'   ([string]$updatedEntry2.severity -eq 'critical')
+
+# A positive score_delta that pushes score INTO 'high' or 'critical' band
+# should still allow upward severity (floor is MAX, not freeze).
+Update-WaggleRegressionEntry -Ledger $ledgerF2 -RegId $insertedId -Update @{
+    history_event = @{ iteration_id = 'floor-iter-4'; event = 'detected'; issue_signature = 'a'*64; notes = 'large positive delta' }
+    score_delta = 95
+} | Out-Null
+$updatedEntry3 = @($ledgerF2.regressions | Where-Object { $_.id -eq $insertedId })[0]
+Assert-True 'REL-001 score_delta: positive delta still sets severity correctly (max of floor + derived)' ([string]$updatedEntry3.severity -eq 'critical')
+
+# ---- Phase 2B-R3 P10d (Codex post-fix REL-002/REL-003): recovery edges
+# Three additional crash-state scenarios beyond the live-missing+bak-present
+# case already covered.
+
+# State: BOTH live and .bak missing — fresh ledger creation.
+$bothMissing = Join-Path $tmp 'both_missing.json'
+$ledgerB = Get-WaggleRegressionLedger -Path $bothMissing
+Assert-True 'REL-003 recovery: both-missing yields fresh empty ledger' ((@($ledgerB.regressions).Count -eq 0) -and ([string]$ledgerB.format_version -eq '1.0'))
+
+# State: BOTH live and .bak present — orphan .bak from earlier crash.
+# Get-WaggleRegressionLedger should clean up the orphan so the next
+# Save's backup-and-replace starts clean (REL-002 P10d cleanup).
+$bothPresentLive = Join-Path $tmp 'both_present.json'
+$bothPresentBak  = $bothPresentLive + '.bak'
+@{ format_version = '1.0'; regressions = @() } | ConvertTo-Json | Set-Content -Path $bothPresentLive -Encoding UTF8
+@{ format_version = '1.0'; regressions = @(); _stale = 'orphan' } | ConvertTo-Json | Set-Content -Path $bothPresentBak -Encoding UTF8
+$ledgerO = Get-WaggleRegressionLedger -Path $bothPresentLive
+Assert-True 'REL-002 cleanup: stale .bak removed when live also present' (-not (Test-Path -LiteralPath $bothPresentBak))
+Assert-True 'REL-002 cleanup: live ledger preserved' (Test-Path -LiteralPath $bothPresentLive)
+
+# Now Save once and verify no .bak orphan re-appears (the create-from-
+# missing branch must reconcile).
+$ledgerO | Add-Member -NotePropertyName _post_cleanup -NotePropertyValue 'survived' -Force
+Save-WaggleRegressionLedger -Path $bothPresentLive -Ledger $ledgerO
+Assert-True 'REL-002 cleanup: post-Save no .bak orphan' (-not (Test-Path -LiteralPath $bothPresentBak))
+Assert-True 'REL-002 cleanup: post-Save no .tmp orphan' (-not (Test-Path -LiteralPath ($bothPresentLive + '.tmp')))
+$reloaded = Get-WaggleRegressionLedger -Path $bothPresentLive
+Assert-True 'REL-002 cleanup: post-Save data round-trip OK' (
+    ($reloaded.PSObject.Properties['_post_cleanup']) -and
+    ([string]$reloaded._post_cleanup -eq 'survived')
+)
+
 # ---- Cleanup ----------------------------------------------------------
 
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tmp

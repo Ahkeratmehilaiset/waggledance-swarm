@@ -97,8 +97,56 @@ function Get-WaggleIssueSignature {
 function Get-WaggleRegressionLedger {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string] $Path)
+    # Phase 2B-R3 P10b (GPT-5.5 Pro review of REL-002 fix): if $Path
+    # is missing but the backup-and-replace sequence in
+    # Save-WaggleRegressionLedger left a .bak behind (process crashed
+    # AFTER the original moved to .bak but BEFORE .tmp moved into
+    # place), recover from the .bak instead of returning a fresh empty
+    # ledger. Without this, the previous "improvement" still loses
+    # state on the original interruption window.
     if (-not (Test-Path -LiteralPath $Path)) {
-        return [pscustomobject]@{ format_version = '1.0'; generated_at_utc = (_Rl-NowUtc); regressions = @() }
+        $backup = $Path + '.bak'
+        if (Test-Path -LiteralPath $backup) {
+            try {
+                # Restore the .bak as the live ledger so subsequent
+                # Save calls see a consistent starting state.
+                Move-Item -LiteralPath $backup -Destination $Path -Force
+                Write-Warning ("regression ledger recovered from backup: " + $backup + " -> " + $Path)
+            } catch {
+                # If restore fails, fall back to reading the .bak
+                # in-place; the next successful Save will overwrite it.
+                Write-Warning ("regression ledger backup restore failed, reading backup in-place: " + $_.Exception.Message)
+                try {
+                    $obj = Get-Content -Raw -Path $backup -Encoding UTF8 | ConvertFrom-Json
+                    if ($null -ne $obj) {
+                        if (-not ($obj.PSObject.Properties['format_version'])) {
+                            $obj | Add-Member -NotePropertyName format_version -NotePropertyValue '1.0' -Force
+                        }
+                        if (-not ($obj.PSObject.Properties['regressions'])) {
+                            $obj | Add-Member -NotePropertyName regressions -NotePropertyValue @() -Force
+                        }
+                        return $obj
+                    }
+                } catch {}
+            }
+        }
+        if (-not (Test-Path -LiteralPath $Path)) {
+            return [pscustomobject]@{ format_version = '1.0'; generated_at_utc = (_Rl-NowUtc); regressions = @() }
+        }
+    } else {
+        # Phase 2B-R3 P10d (Codex post-fix REL-002 fix): if BOTH live
+        # and .bak exist, the previous restore-from-missing path left
+        # an orphan. Clean it up so the next Save's backup-and-replace
+        # sequence starts from a known state. The live file is
+        # authoritative; the .bak is stale.
+        $backup = $Path + '.bak'
+        if (Test-Path -LiteralPath $backup) {
+            try {
+                Remove-Item -LiteralPath $backup -Force
+            } catch {
+                Write-Warning ("could not remove stale ledger backup " + $backup + ": " + $_.Exception.Message)
+            }
+        }
     }
     try {
         $obj = Get-Content -Raw -Path $Path -Encoding UTF8 | ConvertFrom-Json
@@ -113,6 +161,14 @@ function Get-WaggleRegressionLedger {
     }
     if (-not ($obj.PSObject.Properties['regressions'])) {
         $obj | Add-Member -NotePropertyName regressions -NotePropertyValue @() -Force
+    }
+    # Phase 2B-R3 P10d: Save-WaggleRegressionLedger sets generated_at_utc
+    # via property assignment (not Add-Member), so it requires the
+    # property to already exist on the loaded object. Patch it in
+    # defensively when missing so Save never fails on a partial-shape
+    # live ledger left behind by an earlier write.
+    if (-not ($obj.PSObject.Properties['generated_at_utc'])) {
+        $obj | Add-Member -NotePropertyName generated_at_utc -NotePropertyValue (_Rl-NowUtc) -Force
     }
     return $obj
 }
@@ -149,8 +205,32 @@ function Save-WaggleRegressionLedger {
     $Ledger.generated_at_utc = (_Rl-NowUtc)
     $tmp = $Path + '.tmp'
     Set-Content -Path $tmp -Value (([pscustomobject]$Ledger) | ConvertTo-Json -Depth 16) -Encoding UTF8
-    if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
-    Move-Item -LiteralPath $tmp -Destination $Path -Force
+    # Phase 2B-R3 P10 (Codex REL-002 fix): the previous sequence
+    # Remove-Item then Move-Item left a window where a process crash,
+    # AV hold, disk error, or interrupted PowerShell session between
+    # the two calls would leave NO ledger at all (last good was
+    # already deleted, replacement not yet in place). Use a
+    # backup-and-replace sequence instead so the previous ledger
+    # survives until the new one is durably in place. On any failure
+    # of the rename, restore the backup so the writer never destroys
+    # the last known-good ledger.
+    if (Test-Path -LiteralPath $Path) {
+        $backup = $Path + '.bak'
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+        Move-Item -LiteralPath $Path -Destination $backup -Force
+        try {
+            Move-Item -LiteralPath $tmp -Destination $Path -Force
+        } catch {
+            # Replacement failed: restore the backup so the user
+            # still has the last known-good ledger.
+            try { Move-Item -LiteralPath $backup -Destination $Path -Force } catch {}
+            throw
+        }
+        # Replacement successful: drop the backup.
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+    } else {
+        Move-Item -LiteralPath $tmp -Destination $Path -Force
+    }
 }
 
 function Get-WaggleRegressionScore {
@@ -176,6 +256,29 @@ function Get-WaggleRegressionScore {
     }
     if ($sum -gt 100) { $sum = 100 }
     return $sum
+}
+
+$Script:RLSeverityRank = @{ 'info' = 0; 'low' = 1; 'medium' = 2; 'high' = 3; 'critical' = 4 }
+
+function _Rl-MaxSeverity {
+    <#
+    .SYNOPSIS
+    Phase 2B-R3 P10 (Codex REL-001 fix): take the max of two
+    severity strings using $Script:RLSeverityRank. Used as a floor
+    so a high/critical input severity is never downcast by a
+    lower-weight category-derived severity.
+
+    Note: locals are named with non-lowercase forms ($rankA, $rankB)
+    because PowerShell variable lookup is case-insensitive — $a and
+    $A would alias the parameter, returning the int rank instead of
+    the severity string.
+    #>
+    [CmdletBinding()]
+    param([string] $A, [string] $B)
+    $rankA = if ($A -and $Script:RLSeverityRank.ContainsKey([string]$A)) { [int]$Script:RLSeverityRank[[string]$A] } else { 0 }
+    $rankB = if ($B -and $Script:RLSeverityRank.ContainsKey([string]$B)) { [int]$Script:RLSeverityRank[[string]$B] } else { 0 }
+    if ($rankA -ge $rankB) { return [string]$A }
+    return [string]$B
 }
 
 function _Rl-SeverityFromScore {
@@ -221,7 +324,12 @@ function Add-WaggleRegressionEntry {
         $Entry | Add-Member -NotePropertyName status -NotePropertyValue 'open' -Force
     }
     if (-not $Entry.PSObject.Properties['severity']) {
-        $Entry | Add-Member -NotePropertyName severity -NotePropertyValue 'medium' -Force
+        # Phase 2B-R3 P10 (Codex REL-001 fix): default 'info' (rank 0)
+        # so the score-derived severity is always the floor's lower
+        # bound. Was 'medium' previously, but the now-corrected
+        # MAX-severity logic below would preserve 'medium' for any
+        # low-score entry, contradicting the rubric.
+        $Entry | Add-Member -NotePropertyName severity -NotePropertyValue 'info' -Force
     }
     if (-not $Entry.PSObject.Properties['score']) {
         $Entry | Add-Member -NotePropertyName score -NotePropertyValue (Get-WaggleRegressionScore -Entry $Entry) -Force
@@ -247,9 +355,16 @@ function Add-WaggleRegressionEntry {
         })
         $Entry | Add-Member -NotePropertyName history -NotePropertyValue $hist -Force
     }
-    # Recompute severity from score if it's lower than the rubric implies.
+    # Phase 2B-R3 P10 (Codex REL-001 fix): the comment used to say
+    # "if it's lower than the rubric implies" but the code always
+    # overwrote the existing severity, silently downcasting any
+    # high/critical input severity to the score-derived (often 'info')
+    # value. Now: take the MAX of the existing severity and the
+    # score-derived severity, so callers (like the P5c review hook)
+    # can pre-set a floor that survives this generic helper.
     $sevFromScore = _Rl-SeverityFromScore -Score ([int]$Entry.score)
-    $Entry.severity = $sevFromScore
+    $existingSev = [string]$Entry.severity
+    $Entry.severity = (_Rl-MaxSeverity -A $existingSev -B $sevFromScore)
 
     $arr = @($Ledger.regressions) + @($Entry)
     $Ledger.regressions = $arr
@@ -332,7 +447,16 @@ function Update-WaggleRegressionEntry {
     if ($Update.ContainsKey('score_delta')) {
         $newScore = [Math]::Min(100, [Math]::Max(0, [int]$entry.score + [int]$Update['score_delta']))
         $entry.score = $newScore
-        $entry.severity = _Rl-SeverityFromScore -Score $newScore
+        # Phase 2B-R3 P10c (Codex post-fix REL-001 fix): apply the
+        # severity floor on score_delta updates as well as inserts.
+        # Pre-fix bug: an entry inserted with severity='critical'
+        # (because the P5c hook applied the input-severity floor) was
+        # downcast back to 'info' by the next score_delta update,
+        # because Update-WaggleRegressionEntry assigned severity from
+        # _Rl-SeverityFromScore unconditionally. Now the floor is
+        # consistent across the entire entry lifecycle.
+        $derivedSev = _Rl-SeverityFromScore -Score $newScore
+        $entry.severity = (_Rl-MaxSeverity -A ([string]$entry.severity) -B $derivedSev)
     }
     if ($Update.ContainsKey('notes')) {
         $entry.notes = [string]$Update['notes']
@@ -627,7 +751,17 @@ function Add-WaggleRegressionFromInternalFinding {
                 score_categories = @($catScore)
             }
             $entry | Add-Member -NotePropertyName score -NotePropertyValue (Get-WaggleRegressionScore -Entry $entry) -Force
-            $entry | Add-Member -NotePropertyName severity -NotePropertyValue (_Rl-SeverityFromScore -Score ([int]$entry.score)) -Force
+            # Phase 2B-R3 P10 (Codex REL-001 fix): the input $Severity
+            # parameter was previously accepted but never used. The hook
+            # therefore stored every critical/high review finding as
+            # severity='info' because the category-derived score (15 for
+            # security_redaction / lock_state_signal) lives below the
+            # 'low' threshold (20). Apply the input severity as a FLOOR
+            # so a 'critical' or 'high' review finding cannot be
+            # silently downcast by a low-weight category.
+            $derived = _Rl-SeverityFromScore -Score ([int]$entry.score)
+            $effective = _Rl-MaxSeverity -A $derived -B $Severity
+            $entry | Add-Member -NotePropertyName severity -NotePropertyValue $effective -Force
             Add-WaggleRegressionEntry -Ledger $ledger -Entry $entry | Out-Null
         }
         Save-WaggleRegressionLedger -Path $LedgerPath -Ledger $ledger

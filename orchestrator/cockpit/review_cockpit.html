@@ -9,16 +9,22 @@
 
     1. Open attachments folder (file:// link)
     2. Copy prompt to clipboard (navigator.clipboard.writeText)
-    3. Open the LLM web UI (gemini.google.com / grok.com / chatgpt.com)
+    3. Open the LLM web UI (gemini.google.com / grok.com /
+       chatgpt.com / claude.ai)
 
   No HTTP server. No browser automation. The cockpit polls
   state/cockpit_data.json every 5s and refreshes the cards.
+
+  Phase 2B-R3 P10 (Codex ARCH-003 fix): the canonical allowlist
+  is the PROVIDER_URLS constant below in the JS body. Header
+  comment + footer text + Test-CockpitData fixtures must stay
+  aligned with that constant.
 
   ALLOWED EXTERNAL ORIGINS (any other origin is a bug):
     https://gemini.google.com
     https://grok.com
     https://chatgpt.com
-    https://x.com/i/grok
+    https://claude.ai
 -->
 <head>
 <meta charset="utf-8">
@@ -61,7 +67,7 @@
 
 <div class="footnote">
   Phase 2B-Revision (ARCH-011). Passive HTML; no browser automation.
-  Poll interval: 5s. Allowed external origins: gemini.google.com, grok.com, chatgpt.com.
+  Poll interval: 5s. Allowed external origins: gemini.google.com, grok.com, chatgpt.com, claude.ai.
   Data file: <code>state/cockpit_data.json</code>. Refresh by re-running
   <code>Build-WaggleCockpitData.ps1</code> after every Build-WaggleEpochEvidence.
 </div>
@@ -149,13 +155,32 @@ function renderCards(d) {
       '<div class="row"><span class="k">Attachments:</span> ' + escHtml(b.attachment_count || 0) + ' files</div>' +
       '<div class="row"><span class="k">Save response to:</span> <code>' + escHtml(respPath) + '</code></div>' +
       '<div class="actions">' +
-        '<a href="' + folderHref + '" target="_blank">Open attachments folder</a>' +
+        // Phase 2B-R3: 'Open attachments folder' as <a href="file:///...">
+        // works only when the cockpit itself is loaded over file://; under
+        // http:// browsers refuse cross-scheme navigation. Adjacent
+        // 'Copy folder path' button is the universally-working fallback.
+        '<a href="' + folderHref + '" target="_blank" title="Works only when cockpit itself is opened via file://">Open attachments folder</a>' +
+        '<button data-act="copy-folder" title="Copy absolute folder path to clipboard; paste into Explorer or terminal">Copy folder path</button>' +
         '<button data-act="copy-prompt">Copy prompt</button>' +
         (url ? '<a href="' + url + '" target="_blank">Open ' + escHtml(b.provider) + '</a>' : '') +
         '<button data-act="copy-import">Copy import command</button>' +
       '</div>' +
       importCmd;
 
+    card.querySelector('button[data-act="copy-folder"]').addEventListener('click', function () {
+      if (!b.attachments_dir) {
+        alert('No attachments_dir for ' + b.provider + '/' + b.role + '.');
+        return;
+      }
+      navigator.clipboard.writeText(b.attachments_dir).then(function () {
+        const btn = card.querySelector('button[data-act="copy-folder"]');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied — paste in Explorer';
+        setTimeout(function () { btn.textContent = orig; }, 1800);
+      }, function (err) {
+        alert('Clipboard write failed: ' + err);
+      });
+    });
     card.querySelector('button[data-act="copy-prompt"]').addEventListener('click', function () {
       if (!b.prompt_text) {
         alert('No prompt text available for ' + b.provider + '/' + b.role + '.');
@@ -188,8 +213,16 @@ function renderCards(d) {
   });
 }
 
+// Phase 2B-R3: cockpit moved to orchestrator/cockpit/ in PR #97
+// (ARCH-005). The data file is still the canonical repo-root
+// `state/cockpit_data.json`; from this HTML's location that resolves
+// to '../../state/cockpit_data.json'. Keep the user-visible strings
+// referring to `state/cockpit_data.json` since that IS the file's
+// conceptual home — only the URL path differs.
+var COCKPIT_DATA_URL = '../../state/cockpit_data.json';
+
 function loadAndRender() {
-  fetch('state/cockpit_data.json', { cache: 'no-store' }).then(function (r) {
+  fetch(COCKPIT_DATA_URL, { cache: 'no-store' }).then(function (r) {
     if (!r.ok) { throw new Error('HTTP ' + r.status); }
     return r.json();
   }).then(function (d) {

@@ -131,6 +131,8 @@ $gates = @(
     @{ name = 'Test-CockpitData';             path = Join-Path $orchDir 'Test-CockpitData.ps1' }
     @{ name = 'Test-FindingClassifier';       path = Join-Path $orchDir 'Test-FindingClassifier.ps1' }
     @{ name = 'Test-Phase2A2';                path = Join-Path $orchDir 'Test-Phase2A2.ps1' }
+    # Phase 2B-R3 (PM-CL-002): dual-ledger writer-audience invariant.
+    @{ name = 'Test-LedgerContract';          path = Join-Path $orchDir 'Test-LedgerContract.ps1' }
 )
 
 $results = New-Object System.Collections.Generic.List[object]

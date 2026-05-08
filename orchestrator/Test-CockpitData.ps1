@@ -214,8 +214,43 @@ $html = Get-Content -Raw -Path $cockpitFile -Encoding UTF8
 Assert-True 'html: has element id="cards"'     ($html -match 'id="cards"')
 Assert-True 'html: has element id="summary"'   ($html -match 'id="summary"')
 Assert-True 'html: has element id="meta"'      ($html -match 'id="meta"')
-Assert-True 'html: fetches state/cockpit_data.json' ($html -match "fetch\('state/cockpit_data.json'")
+Assert-True 'html: fetches state/cockpit_data.json' ($html -match "fetch\(COCKPIT_DATA_URL" -or $html -match "fetch\('\.\./\.\./state/cockpit_data.json'" -or $html -match "fetch\('state/cockpit_data.json'")
+# Phase 2B-R3: cockpit is at orchestrator/cockpit/ now (ARCH-005,
+# Phase 2BR2). The fetch URL must be a relative path that, resolved
+# from the cockpit HTML's location, lands on the canonical
+# state/cockpit_data.json at repo root. Verify the resolved URL by
+# rebuilding the path the way the browser would.
+$cockpitDirAbs = Split-Path -Parent $cockpitFile
+$urlMatch = [regex]::Match($html, "var\s+COCKPIT_DATA_URL\s*=\s*'([^']+)'")
+Assert-True 'html: COCKPIT_DATA_URL constant declared' $urlMatch.Success
+if ($urlMatch.Success) {
+    $relUrl = $urlMatch.Groups[1].Value
+    $resolved = [System.IO.Path]::GetFullPath((Join-Path $cockpitDirAbs ($relUrl -replace '/', [System.IO.Path]::DirectorySeparatorChar)))
+    $expected = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'state/cockpit_data.json'))
+    Assert-True ('html: COCKPIT_DATA_URL resolves to repo-root state/cockpit_data.json (got ' + $relUrl + ')') ($resolved -ieq $expected)
+}
 Assert-True 'html: uses navigator.clipboard.writeText' ($html -match 'navigator\.clipboard\.writeText')
+# Phase 2B-R3: when cockpit is served over http:// the file:// link
+# for "Open attachments folder" is silently blocked by browsers.
+# A clipboard fallback button must exist so the operator can paste
+# the path into Explorer / terminal manually.
+Assert-True 'html: copy-folder button exists' ($html -match 'data-act="copy-folder"')
+Assert-True 'html: copy-folder writes attachments_dir to clipboard' ($html -match "writeText\(b\.attachments_dir\)")
+
+# Phase 2B-R3 P10 (Codex ARCH-003 fix): canonical provider origin
+# allowlist is in the PROVIDER_URLS constant. Header comment and
+# footer text must agree with it.
+$canonicalHosts = @('gemini.google.com','grok.com','chatgpt.com','claude.ai')
+# NOTE: $host is a read-only PS automatic variable; use $hostName.
+foreach ($hostName in $canonicalHosts) {
+    Assert-True ("html: provider host '" + $hostName + "' present (allowlist consistency)") (
+        $html -match [regex]::Escape($hostName)
+    )
+}
+# Stale alternative URL from a removed header entry must be gone.
+Assert-True 'html: stale x.com/i/grok header entry removed' (
+    $html -notmatch 'x\.com/i/grok'
+)
 Assert-True 'html: 5s polling interval'         ($html -match 'setInterval\(loadAndRender,\s*5000\)')
 
 # Whitelist check: the only external https:// origins the cockpit

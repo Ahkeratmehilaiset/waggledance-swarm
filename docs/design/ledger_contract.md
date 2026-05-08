@@ -15,9 +15,9 @@ This file is the contract.
 |---|---|---|
 | **Purpose** | Committed historical record of every per-phase architectural finding + fix outcome. PR-visible. Read by future phases as primer. | Live runtime state machine of currently-tracked regressions in the local working tree. |
 | **Lifecycle** | Append-only across phases. Rows transition status (`backlog` → `fixed` / `false_positive_due_to_truncation` / `not_reproducible` / `informational`). Never deleted. | Mutable. Entries created on FAILED iteration / critical or high finding; severity scoring + state transitions over the run. May be cleared between runs. |
-| **Existence after `git clone`** | Always present (committed). | Absent until first runtime emit. Always recreated by runtime helpers (`Ensure-WaggleRegressionLedger`). |
-| **Schema** | `schema_version: 1`. Rows: `tag` (e.g. `ARCH-001`, `REL-019`, `SEC-009`), `title`, `source`, `status`, `phase_introduced`, `phase_fixed_or_documented`, `canonical_source_anchors[]`, `tests[]`, `notes`. The unique key is `(phase_introduced, tag)`. | `schema_version: 1`. Entries: `entry_id`, `epoch_id`, `iteration_id`, `finding_id`, `severity`, `signature`, `score`, `state` (e.g. `seen` → `in_review` → `verified_fixed`), `created_at_utc`, `updated_at_utc`, `dedup_key`. |
-| **Authoritative writer** | Human / Claude editing a PR. Validated by `Test-PhaseFixLedger.ps1`. | Runtime: `RegressionLedger.ps1` helpers, called from `Invoke-WaggleIteration` and `Invoke-WaggleReview` (Phase 2B-R2 P5c). Validated by `Test-RegressionLedger.ps1`. |
+| **Existence after `git clone`** | Always present (committed). | Absent until first runtime emit. Always recreated by runtime helpers (`Get-WaggleRegressionLedger (creates empty if absent)`). |
+| **Schema** | `schema_version: 1`. Rows: `tag` (e.g. `ARCH-001`, `REL-019`, `SEC-009`), `title`, `source`, `status`, `phase_introduced`, `phase_fixed_or_documented`, `canonical_source_anchors[]`, `tests[]`, `notes`. The unique key is `(phase_introduced, tag)`. | `schemas/regression_ledger.schema.json` requires per entry: `id`, `detected_in_iteration`, `status` (state-machine value such as `open`, `classified_local_repair`, `verified`, `fixed`, `false_positive`), `severity` (band: `info`/`low`/`medium`/`high`/`critical`), `score` (0-100), `category`, `history[]`. Optional: `introduced_in_iteration`, `fixability`, `affected_files[]`, `failing_tests[]`, `first_symptom`, `suspected_cause`, `fixed_in_iteration`, `verified_by[]`, `linked_findings[]`, `linked_proposals[]`, `issue_signature` (sha256 hex), `repair_attempts`, `notes`. The orchestrator's runtime writer additionally produces a non-schema field `score_categories[]` (used by `Get-WaggleRegressionScore`); it survives because the entry construction sets it and `Add-WaggleRegressionEntry` does not strip it before storage. |
+| **Authoritative writer** | Human / Claude editing a PR. Validated by `Test-PhaseFixLedger.ps1`. | Runtime helpers in `orchestrator/lib/RegressionLedger.ps1`: `Get-WaggleRegressionLedger` (load + create-empty), `Save-WaggleRegressionLedger` (backup-and-replace write), `Add-WaggleRegressionEntry` (write a new entry), `Update-WaggleRegressionEntry` (state-machine transitions + history append), `Add-WaggleRegressionFromHardeningGateFailure` / `Add-WaggleRegressionFromIterationFailure` / `Add-WaggleRegressionFromInternalFinding` / `Add-WaggleRegressionsFromReviewObject` (P5c hooks). Called from `Run-WaggleHardeningGates`, `Invoke-WaggleIteration`, `Invoke-WaggleReview` (Phase 2B-R2 P5c). Validated by `Test-RegressionLedger.ps1`. |
 | **PR review surface** | YES. Diff is reviewable as part of any PR that adds/changes a row. | NO. File is gitignored via `.git/info/exclude` (`/state/`); never reaches the remote. |
 | **Where to look first** | "Has this kind of finding ever appeared in any phase? What was the outcome?" | "Is this regression already known in the current run?" |
 
@@ -38,10 +38,10 @@ This file is the contract.
 * **Stored at:** `state/regression_ledger.json` (gitignored). The repo's `.gitignore` re-includes `orchestrator/lib/`; the `state/` exclusion lives in the local-only `.git/info/exclude` (per the trailing comment in the repo `.gitignore`).
 * **Lifecycle entry-points:**
   * `Add-WaggleRegressionFromIterationFailure` — append/upsert an entry when an iteration ends in `FAILED` / `TIMEOUT` / similar non-success terminal state.
-  * `Add-WaggleRegressionFromReviewFinding` — append/upsert an entry when an internal review surfaces a `critical` or `high` security/reliability finding.
+  * `Add-WaggleRegressionFromInternalFinding` (and the wrapper `Add-WaggleRegressionsFromReviewObject` that walks a parsed review JSON) — append/upsert an entry when an internal review surfaces a `critical` or `high` security/reliability finding.
   * Both helpers go through `Add-WaggleRegressionEntry` (the de-duped writer).
-* **Dedup contract:** entries are de-duped by signature `(iteration_id + ":" + finding_id)` for review-driven entries and by signature `(iteration_id + ":" + execution_failure_kind)` for iteration-driven entries. Re-firing the same hook with the same signature does NOT double-add; instead the existing entry's `updated_at_utc` is bumped and `seen_count` is incremented.
-* **State machine:** `seen` (newly observed) → `in_review` (active triage) → `verified_fixed` (later iteration verified the regression no longer reproduces) → `archived` (closed-out for the epoch). State transitions are gated through `Set-WaggleRegressionState`.
+* **Dedup contract:** entries are de-duped by an `issue_signature` produced via `Get-WaggleIssueSignature(IterationIdIntroduced, FindingId, FailingTestOrFile)`. The hook helpers compute the signature with deliberately-empty `IterationIdIntroduced` for the review and iteration-failure paths so the signature stays stable across iterations (i.e., two different iterations surfacing the same `finding_id` + `affected_file` collapse into one entry). Re-firing the same hook with the same signature does NOT double-add; instead `Update-WaggleRegressionEntry` is called with a `history_event` whose `event="detected"` and `notes="repeat <kind>: <id>"`. The entry's `history[]` array grows by one element per re-fire; there is no `updated_at_utc` or `seen_count` field — the timestamp lives in the latest `history[].at_utc` and the count is `history[].length`.
+* **State machine:** entries start at `open`. They transition via `Update-WaggleRegressionEntry` through classification (`classified_trivial`, `classified_local_repair`, `classified_external`, `classified_manual`), repair (`fix_attempted`, `verification_pending`), and either resolution (`verified` → `fixed`) or alternative outcomes (`still_failing`, `escalated_to_external_review`, `mitigated`, `false_positive`, `reopened`, `backlog`). The full set is in `$Script:RLStatuses` (`orchestrator/lib/RegressionLedger.ps1`); allowed transitions are in `$Script:RLAllowedTransitions` (the writer rejects any unsupported edge).
 * **Severity scoring:** 0–100, derived from finding severity band (`info` < `low` < `medium` < `high` < `critical`) plus a small bonus for resurrection-after-fix.
 * **Validator:** `Test-RegressionLedger.ps1`, in the hardening gate suite.
 
@@ -61,6 +61,24 @@ The matrix builder MUST tolerate the absence of
 The matrix MUST always populate `linked_ledger_tags` from the
 committed ledger, because that file always exists.
 
+## Allowlist of committed `regression_ledger`-named paths
+
+The canonical truth for **which committed paths may legitimately
+contain "regression_ledger" in their name** lives in
+`orchestrator/Test-LedgerContract.ps1` (variables
+`$regressionAllowlistExact` + `$regressionAllowlistPrefixes`).
+That gate is the single source of truth — this document
+deliberately does NOT repeat the list, to avoid the dual-truth
+drift the gate's own architect-review flagged in 2BR3.
+
+If a future change adds a new committed file with
+`regression_ledger` in its path, the test fails with `unexpected
+committed regression_ledger paths`. The fix is either to amend
+the gate's allowlist explicitly (so the addition is reviewable
+in the gate file's PR) or to remove the file. **Editing this
+contract document does not affect the gate — the allowlist lives
+in code.**
+
 ## What survives a clean clone
 
 | File | Survives `git clone`? | Notes |
@@ -69,7 +87,7 @@ committed ledger, because that file always exists.
 | `docs/design/phase_fix_ledger.md` | YES | Committed. |
 | `docs/design/ledger_contract.md` | YES (this file). | Committed. |
 | `schemas/regression_ledger.schema.json` | YES | Committed. |
-| `state/regression_ledger.json` | NO | Runtime-only. Recreated by `Ensure-WaggleRegressionLedger`. |
+| `state/regression_ledger.json` | NO | Runtime-only. Recreated by `Get-WaggleRegressionLedger (creates empty if absent)`. |
 | `iterations/<id>/...` | NO | Runtime-only. |
 | `transcripts/<id>/...` | NO | Runtime-only. |
 | `orchestrator.config.json` | NO | Live config. The committed example is `orchestrator.config.example.json`. |

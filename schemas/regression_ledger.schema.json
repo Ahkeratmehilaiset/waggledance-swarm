@@ -105,6 +105,11 @@
             "type": "string",
             "description": "Stable hash of (iteration_id_introduced + finding_id + failing_test_or_file). Used by the epoch controller to detect same-issue resurrection."
           },
+          "score_categories": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Phase 2B-R3 P10c (Codex post-fix ARCH-001 fix): documented as the runtime writer's auxiliary category-set for Get-WaggleRegressionScore. Optional persisted property — survives storage and is used to recompute score on load. Values are typically a subset of `category` enum but may include additional rubric categories that don't appear in the canonical `category` field."
+          },
           "repair_attempts": { "type": "integer", "minimum": 0 },
           "history": {
             "type": "array",

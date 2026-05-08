@@ -8,17 +8,24 @@ or the human-review-boundary contract of `build_review_bundle` directly.
 
 Pinned invariants (D.txt §D7-D8):
 
-- `recommend_action_for` is **deterministic** from priority + confidence
-  + risk + scope_class. The four boundaries:
+- `recommend_action_for` is **deterministic** from
+  proposal_priority + confidence + scope_class. The four boundaries:
   - `post_campaign_runtime_review_candidate` requires confidence ≥ 0.6,
     priority ≥ 0.05, AND scope ∈ {topology, solver_library, policy};
   - `review_for_future_PR` requires confidence ≥ 0.4 AND priority ≥ 0.02;
   - `archive_as_low_value` requires confidence < 0.30 AND priority < 0.01;
   - `wait_for_more_evidence` is the fall-through.
-- `build_review_bundle` MUST embed the `human_review_boundary` text and
-  the `why_no_runtime_mutation_occurred` explanation. These are the
-  load-bearing strings that prevent shadow-only artifacts from being
-  read as actionable runtime changes.
+  Per Codex PR #106 prompt-review propose_changes (Path A+),
+  `p.risk` is intentionally NOT consumed by `recommend_action_for`;
+  it is preserved on the proposal and surfaced into the review-bundle
+  output so the human reviewer can apply risk judgment manually.
+- `build_review_bundle` MUST embed the `human_review_boundary` text
+  and the `why_no_runtime_mutation_occurred` explanation. These are
+  the load-bearing strings that prevent shadow-only artifacts from
+  being read as actionable runtime changes.
+- `build_review_bundle` proposal blocks MUST carry `risk` for every
+  level (Path A+), so the human-gate artifact never hides a high-risk
+  signal even though the recommended action does not depend on it.
 - `counts_by_recommended_next_human_action` MUST be internally
   consistent (sum equals number of proposals).
 - Proposal blocks MUST preserve lifecycle, evidence_planes, why_now,

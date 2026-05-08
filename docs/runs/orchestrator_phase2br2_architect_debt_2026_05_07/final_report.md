@@ -1,11 +1,19 @@
 # Phase 2B-R2 — final report
 
-**Status: pending merge SHA after PR merges.**
+**Status: MERGED.**
 
-This report is committed BEFORE the PR opens (per CLAUDE.md
-operational discipline + Phase 2B-R1 P13 commit hygiene
-carried forward into 2B-R2). After merge, a tiny doc-only patch
-commit replaces this status line and fills in the merge SHA below.
+| Item | Value |
+|------|-------|
+| PR | https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/97 |
+| Pre-merge head SHA | `264d5857cc6f887d2e65364439c8987e24425cac` |
+| Merge SHA on `origin/main` | `4e3acbe9ac6ae84d4bad0f054ff65e386e384efa` |
+| Merged at | 2026-05-07T21:46:11Z |
+| Merge mode | squash with `--match-head-commit` (CLAUDE.md rule 9) |
+
+This report was committed BEFORE the PR opened (per CLAUDE.md
+operational discipline + Phase 2B-R1 P13 commit hygiene carried
+forward into 2B-R2). The present commit is the tiny doc-only
+patch that fills in the merge SHA after PR #97 merged.
 
 ## Verdict
 
@@ -27,8 +35,8 @@ the iteration runner and review runner.
 |------|-------|
 | Branch | `orchestrator/phase2br2-architect-debt-cleanup` |
 | Forked from | `origin/main` @ `2f52aa5` (Phase 2B-R1 PR #95 squash) |
-| PR | _pending_ |
-| Merge SHA on `origin/main` | _pending_ |
+| PR | #97 — https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/97 |
+| Merge SHA on `origin/main` | `4e3acbe9ac6ae84d4bad0f054ff65e386e384efa` |
 
 ## What Phase 2B-R2 set out to do
 

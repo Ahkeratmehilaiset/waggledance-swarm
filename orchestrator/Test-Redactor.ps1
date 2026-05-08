@@ -164,6 +164,87 @@ $jsonDiffWithKey = '{"diff_text":"commit ' + $hexFortyAlpha + '\nKey=' + ('sk-' 
 $r = Invoke-WaggleRedaction -Text $jsonDiffWithKey
 _t 'ARCH-001d: SHA preserved AND inline key redacted in same blob' ($r.text -match [regex]::Escape($hexFortyAlpha) -and $r.text -match 'REDACTED:ANTHROPIC_KEY')
 
+# ----------------- Phase 2B-R3 Codex SEC-001 / SEC-002 -----------------
+# Source: Codex CLI dual-engine simulation, 2026-05-08 internal-loop epoch.
+
+# SEC-001a: URL userinfo credentials (scheme://user:pwd@host) are now
+# redacted. Pre-fix the redactor had no rule for this shape; a copied
+# git remote URL containing a credential could leak verbatim.
+$urlCred = 'https://x-access-token:opaque-token-xyz123@github.com/Ahkeratmehilaiset/repo.git'
+$r = Invoke-WaggleRedaction -Text "git remote: $urlCred path"
+_t 'SEC-001a: URL userinfo credential is redacted'         ($r.text -match 'REDACTED:URL_USERINFO_CREDENTIAL')
+_t 'SEC-001a: URL userinfo password gone from output'      ($r.text -notmatch 'opaque-token-xyz123')
+
+# SEC-001b: ordinary URL with port (no @) MUST NOT be matched.
+# https://example.com:443/path is not a credential and must pass through.
+$plainUrl = 'See https://example.com:8080/api/v1/foo for the docs.'
+$r = Invoke-WaggleRedaction -Text $plainUrl
+_t 'SEC-001b: host:port URL without @ is NOT matched' ($r.text -notmatch 'REDACTED:URL_USERINFO_CREDENTIAL')
+_t 'SEC-001b: host:port URL preserved verbatim'       ($r.text -match 'https://example.com:8080/api/v1/foo')
+
+# SEC-002a: fine-grained GitHub PAT prefix (github_pat_) is now covered.
+# Pre-fix the existing GITHUB_PAT pattern (gh[psouri]_...) did NOT match
+# this prefix and the redactor would leak fine-grained tokens entirely.
+# Synthetic 90-char body to satisfy the {82,} length requirement.
+$fineGrained = 'github_pat_' + ('A' * 90)
+$r = Invoke-WaggleRedaction -Text "Authorization: token $fineGrained"
+_t 'SEC-002a: fine-grained github_pat_ token redacted' ($r.text -match 'REDACTED:GITHUB_FINE_GRAINED_PAT')
+_t 'SEC-002a: fine-grained token value gone'           ($r.text -notmatch [regex]::Escape($fineGrained))
+
+# SEC-002b: classic ghp_ token still redacted by classic GITHUB_PAT
+# rule (no regression from adding the fine-grained rule).
+$classicPat = 'ghp_' + ('B' * 40)
+$r = Invoke-WaggleRedaction -Text "GH: $classicPat"
+_t 'SEC-002b: classic ghp_ token still redacted by GITHUB_PAT' ($r.text -match 'REDACTED:GITHUB_PAT')
+_t 'SEC-002b: classic ghp_ value gone'                          ($r.text -notmatch [regex]::Escape($classicPat))
+
+# ----------------- Phase 2B-R3 Codex post-fix SEC-001 -----------------
+# Source: Codex CLI post-fix dual-engine review, 2026-05-08.
+# The new GITHUB_FINE_GRAINED_PAT + URL_USERINFO_CREDENTIAL rules
+# must ALSO apply in the source-supplement redaction path
+# (Invoke-WaggleSourceSupplementRedaction). Pre-fix the
+# SourceSupplementRuleNames list omitted them.
+
+$ssFineGrained = 'github_pat_' + ('C' * 90)
+$rss = Invoke-WaggleSourceSupplementRedaction -Text "Token in source: $ssFineGrained"
+_t 'SS-SEC-001a: fine-grained PAT redacted in source-supplement path' ($rss.text -match 'REDACTED:GITHUB_FINE_GRAINED_PAT')
+_t 'SS-SEC-001a: fine-grained PAT value gone in supplement'           ($rss.text -notmatch [regex]::Escape($ssFineGrained))
+
+$ssUrlCred = 'https://x-access-token:supplement-secret-zyx@github.com/Ahkeratmehilaiset/repo.git'
+$rss = Invoke-WaggleSourceSupplementRedaction -Text "git remote: $ssUrlCred end"
+_t 'SS-SEC-001b: URL userinfo redacted in source-supplement path' ($rss.text -match 'REDACTED:URL_USERINFO_CREDENTIAL')
+_t 'SS-SEC-001b: URL userinfo password gone in supplement'        ($rss.text -notmatch 'supplement-secret-zyx')
+
+# ----------------- Phase 2B-R3 P10d Codex post-fix lows -----------------
+
+# SEC-002 (P10d boundary fix): GITHUB_FINE_GRAINED_PAT must NOT match
+# inside a longer alphanumeric+underscore identifier (the previous
+# regex without boundaries would match the substring).
+$benignSurround = 'somemodule_github_pat_' + ('X' * 90) + '_inside_long_identifier'
+$r = Invoke-WaggleRedaction -Text "var $benignSurround end"
+_t 'SEC-002 boundary: github_pat_ embedded in long identifier NOT matched' (
+    $r.text -notmatch 'REDACTED:GITHUB_FINE_GRAINED_PAT'
+)
+# Standalone fine-grained PAT (whitespace-bounded) still IS matched.
+$standalonePat = 'github_pat_' + ('Y' * 90)
+$r = Invoke-WaggleRedaction -Text "Token: $standalonePat ."
+_t 'SEC-002 boundary: standalone fine-grained PAT still matched' (
+    $r.text -match 'REDACTED:GITHUB_FINE_GRAINED_PAT'
+)
+
+# SEC-003 (P10d HuggingFace fix): hf_ token coverage.
+$hfToken = 'hf_' + ('Z' * 35)
+$r = Invoke-WaggleRedaction -Text "HF: $hfToken end"
+_t 'SEC-003: HuggingFace hf_ token redacted' ($r.text -match 'REDACTED:HUGGINGFACE_TOKEN')
+_t 'SEC-003: HuggingFace token value gone'   ($r.text -notmatch [regex]::Escape($hfToken))
+# Also covered in source-supplement path (HUGGINGFACE_TOKEN added to allowlist).
+$rss = Invoke-WaggleSourceSupplementRedaction -Text "Source mention: $hfToken in code"
+_t 'SEC-003: HuggingFace redacted in source-supplement path' ($rss.text -match 'REDACTED:HUGGINGFACE_TOKEN')
+# Boundary check: hf_ inside longer identifier NOT matched.
+$benignHf = 'shf_' + ('A' * 35) + '_long'
+$r = Invoke-WaggleRedaction -Text "id: $benignHf"
+_t 'SEC-003: hf_ inside longer identifier NOT matched' ($r.text -notmatch 'REDACTED:HUGGINGFACE_TOKEN')
+
 Write-Host ""
 Write-Host ("Result: {0}/{1} tests passed" -f $script:passes, $script:tests) -ForegroundColor Cyan
 if ($script:fails.Count -gt 0) { exit 1 }

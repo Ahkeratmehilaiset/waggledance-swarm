@@ -78,7 +78,11 @@ _t 'gho_ token still redacted' (
 )
 _t 'gho_ value gone' ($r.text -notmatch [regex]::Escape($gho))
 
-# 10. github_pat_ token redacted
+# 10. classic GitHub PAT (ghp_) — 36-char body
+# Phase 2B-R3 P10 (Codex SEC-002 fix): the comment used to claim
+# "github_pat_ token redacted" but the fixture was always a classic
+# ghp_ token. Comment corrected; fine-grained github_pat_ coverage
+# is exercised separately in Test-Redactor.ps1 (PROP-002 fix).
 $pat = 'ghp_' + ('a' * 40)
 $r = Invoke-WaggleRedaction -Text "Authorization: token $pat"
 _t 'ghp_ token still redacted' ($r.text -match 'REDACTED:GITHUB_PAT')

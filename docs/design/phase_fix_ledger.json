@@ -571,7 +571,7 @@
       "tests": [
         "orchestrator/Test-CockpitData.ps1"
       ],
-      "notes": "Promoted to 'fixed' in Phase 2B-Revision P12. review_cockpit.html is single-file (embedded JS+CSS), polls state/cockpit_data.json every 5 seconds, restricts external origins to a whitelist (gemini.google.com, grok.com, chatgpt.com, claude.ai), and uses navigator.clipboard.writeText for copy actions. No browser automation. Test-CockpitData.ps1 has a known local PS 5.1 process-spawning hang and is intentionally not yet in the gate driver; Build-WaggleCockpitData itself is exercised by the Phase 2B-R end-to-end synthetic dry-run (P11)."
+      "notes": "Promoted to 'fixed' in Phase 2B-Revision P12. review_cockpit.html is single-file (embedded JS+CSS), polls state/cockpit_data.json every 5 seconds, restricts external origins to a whitelist (gemini.google.com, grok.com, chatgpt.com, claude.ai), and uses navigator.clipboard.writeText for copy actions. No browser automation. Build-WaggleCockpitData is exercised by the Phase 2B-R end-to-end synthetic dry-run (P11). Phase 2B-R3 P10 (Codex ARCH-004 fix): the earlier note here claimed Test-CockpitData.ps1 'is intentionally not yet in the gate driver' due to a local PS 5.1 process-spawning hang. That hang has since been mitigated and Test-CockpitData IS wired into Run-WaggleHardeningGates.ps1; the previous note had drifted and a future reviewer would mistrust the gate suite."
     },
     {
       "tag": "ARCH-012",
@@ -683,6 +683,149 @@
       "notes": "Promoted to 'fixed' in Phase 2B-Revision P12. Both new fields are OPTIONAL on the Phase 2A-2 internal review schema; old reviews still validate. The validator enforces required sub-fields when reviewer_self_id is present, requires runtime='claude_code' for internal reviews, and validates estimated_effort enum on each suggested_next_action. The three internal review prompt templates request both blocks under a 'Phase 2B-Revision (SEC-009)' section. Test-ReviewSchema covers old/new/malformed shapes; Test-ReviewAdapter asserts the prompt files request both blocks."
     },
     {
+      "tag": "REL-021",
+      "title": "P5c regression-ledger hook silently downcasts critical/high review findings to severity=info",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "orchestrator/lib/RegressionLedger.ps1 :: Phase 2B-R3 P10 (Codex REL-001 fix)",
+        "orchestrator/lib/RegressionLedger.ps1 :: _Rl-MaxSeverity"
+      ],
+      "tests": [
+        "orchestrator/Test-RegressionLedger.ps1"
+      ],
+      "notes": "Found by Codex CLI (gpt-5.5) in the Phase 2BR3 dual-engine simulation; Codex novel finding REL-001 (severity=high). Pre-fix bug: Add-WaggleRegressionFromInternalFinding accepted -Severity but never used it. score_categories carried only the category weight ('security_redaction'=15, 'lock_state_signal'=15) which translated to severity='info' (<20 band). Add-WaggleRegressionEntry's comment claimed 'Recompute severity from score if it's lower than the rubric implies' but the code always overwrote with the score-derived value. Therefore EVERY review finding routed through this hook with $Severity='critical' or 'high' landed in state/regression_ledger.json with severity='info', defeating the P5c hook's purpose. Fix: introduced _Rl-MaxSeverity helper using $Script:RLSeverityRank and applied it both inside the hook (input severity as floor) and inside Add-WaggleRegressionEntry (existing entry severity floors the score-derived value). Default-when-unset changed from 'medium' to 'info' so the floor logic gives correct semantics for low-score entries. New test cases in Test-RegressionLedger: 'critical input severity preserved', 'high input severity preserved', plus three _Rl-MaxSeverity unit checks. Test count: 49 -> 59."
+    },
+    {
+      "tag": "REL-022",
+      "title": "Save-WaggleRegressionLedger deletes old file before moving temp; crash window can lose ledger entirely",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "orchestrator/lib/RegressionLedger.ps1 :: Phase 2B-R3 P10 (Codex REL-002 fix)"
+      ],
+      "tests": [
+        "orchestrator/Test-RegressionLedger.ps1"
+      ],
+      "notes": "Found by Codex CLI in the Phase 2BR3 dual-engine simulation; Codex novel finding REL-002 (severity=medium). Pre-fix bug: Save-WaggleRegressionLedger ran Set-Content on $Path.tmp, then if the target existed: Remove-Item then Move-Item. A process crash, AV hold, disk error, or interrupted PowerShell session between Remove-Item and Move-Item left NO ledger at all (last good already deleted, replacement not yet in place). Fix: backup-and-replace sequence. Move existing $Path -> $Path.bak; Move-Item $tmp -> $Path; on failure, restore the .bak and re-throw; on success, drop the .bak. The previous ledger always survives until the new one is durably in place. New test cases: 'first save creates the ledger', 'second save replaces previous ledger durably', 'no .bak left behind after successful replace', 'no .tmp left behind after successful replace'."
+    },
+    {
+      "tag": "SEC-010",
+      "title": "Redactor missing rule for URL-userinfo credentials and fine-grained GitHub PAT prefix",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "orchestrator/lib/Redactor.ps1 :: GITHUB_FINE_GRAINED_PAT",
+        "orchestrator/lib/Redactor.ps1 :: URL_USERINFO_CREDENTIAL"
+      ],
+      "tests": [
+        "orchestrator/Test-Redactor.ps1",
+        "orchestrator/Test-Redaction.ps1"
+      ],
+      "notes": "Found by Codex CLI in the Phase 2BR3 dual-engine simulation; Codex novel findings SEC-001 (URL userinfo) and SEC-002 (fine-grained GitHub PAT). Pre-fix bugs: (a) the Redactor had no rule for credentials embedded in URL userinfo (https://user:secret@host or https://x-access-token:secret@host) — git remotes and copied CLI output commonly carry these and the secret would leak into LLM packages. (b) The classic GITHUB_PAT pattern gh[psouri]_[A-Za-z0-9]{36,} did NOT match the fine-grained PAT prefix github_pat_, and worse, Test-Redaction.ps1 had a comment '# 10. github_pat_ token redacted' immediately above a fixture using 'ghp_' — a test that lied about its coverage. Fix: added URL_USERINFO_CREDENTIAL rule with a host-port-safe pattern (the password segment disallows ':' so https://example.com:443/ is NOT matched), added GITHUB_FINE_GRAINED_PAT rule for the github_pat_[A-Za-z0-9_]{82,} shape, corrected the misleading test comment, and added four new test cases (SEC-001a/b URL userinfo + host-port safety, SEC-002a/b fine-grained + classic regression). Test-Redactor count: 37 -> 45."
+    },
+    {
+      "tag": "ARCH-008",
+      "title": "Cockpit external-origin allowlist disagreed across header comment, footer text, and PROVIDER_URLS",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "orchestrator/cockpit/review_cockpit.html :: PROVIDER_URLS",
+        "orchestrator/cockpit/review_cockpit.html :: ALLOWED EXTERNAL ORIGINS",
+        "orchestrator/Test-CockpitData.ps1 :: allowlist consistency"
+      ],
+      "tests": [
+        "orchestrator/Test-CockpitData.ps1"
+      ],
+      "notes": "Found by Codex CLI in the Phase 2BR3 dual-engine simulation; Codex novel finding architect-ARCH-003. Pre-fix the cockpit had four disagreeing sources of truth on which external origins are allowed: (a) HTML header comment listed gemini.google.com, grok.com, chatgpt.com, x.com/i/grok; (b) the visible footer omitted claude.ai; (c) the JS PROVIDER_URLS object had claude_web=https://claude.ai and did NOT have x.com/i/grok; (d) the ARCH-011 ledger note claimed claude.ai was in the whitelist. The cockpit is a manual trust-boundary tool — operators and reviewers could not tell which origin set was authoritative. Fix: PROVIDER_URLS is now declared the canonical source. Header comment + footer text both list gemini.google.com / grok.com / chatgpt.com / claude.ai (matching PROVIDER_URLS, with the unwired x.com/i/grok header entry removed). Test-CockpitData asserts every canonical host appears in the rendered HTML AND that the stale x.com/i/grok entry is gone. Test count: 36 -> 40."
+    },
+    {
+      "tag": "SEC-011",
+      "title": "Source-supplement redaction omitted new URL-userinfo and fine-grained PAT rules",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "orchestrator/lib/Redactor.ps1 :: SourceSupplementRuleNames",
+        "orchestrator/lib/Redactor.ps1 :: Phase 2B-R3 P10c (Codex post-fix SEC-001 fix)"
+      ],
+      "tests": [
+        "orchestrator/Test-Redactor.ps1"
+      ],
+      "notes": "Found by Codex CLI in the Phase 2BR3 post-fix dual-engine review (post-fix SEC-001 high). Pre-fix bug: P10 added GITHUB_FINE_GRAINED_PAT and URL_USERINFO_CREDENTIAL to DefaultRedactionRules, but NOT to SourceSupplementRuleNames. Phase 2A-4 deliberately uses a reduced source-supplement rule set; leaving the new value-shape rules out created a split-brain redactor where normal captured text was protected but LLM-bound source excerpts could still leak fine-grained PATs and URL-userinfo credentials. Codex's synthetic probe confirmed the leak. Fix: added both rules to SourceSupplementRuleNames. New Test-Redactor cases SS-SEC-001a/b verify the fix end-to-end through Invoke-WaggleSourceSupplementRedaction. Test-Redactor 45 -> 49."
+    },
+    {
+      "tag": "REL-023",
+      "title": "Severity floor was applied on insert but downcast on score_delta updates",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "orchestrator/lib/RegressionLedger.ps1 :: Phase 2B-R3 P10c (Codex post-fix REL-001 fix)",
+        "orchestrator/lib/RegressionLedger.ps1 :: Update-WaggleRegressionEntry"
+      ],
+      "tests": [
+        "orchestrator/Test-RegressionLedger.ps1"
+      ],
+      "notes": "Found by Codex CLI in the Phase 2BR3 post-fix dual-engine review (post-fix REL-001 medium). The original REL-021 fix added a severity floor in Add-WaggleRegressionFromInternalFinding and Add-WaggleRegressionEntry — but Update-WaggleRegressionEntry's score_delta branch assigned severity = _Rl-SeverityFromScore unconditionally, downcasting any pre-existing high/critical severity back to info on the next update. Fix: apply _Rl-MaxSeverity to existing severity AND score-derived severity in the score_delta branch too. Now the floor is consistent across the entry lifecycle (insert + every later update). New Test-RegressionLedger cases verify: insert with critical preserved on no-op delta, on negative delta, and that positive delta still allows upward severity. Test-RegressionLedger 62 -> 66."
+    },
+    {
+      "tag": "ARCH-010",
+      "title": "Schema rejected runtime score_categories field but contract documented it as preserved",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "schemas/regression_ledger.schema.json :: score_categories",
+        "docs/design/ledger_contract.md :: Authoritative writer"
+      ],
+      "tests": [
+        "orchestrator/Test-LedgerContract.ps1"
+      ],
+      "notes": "Found by Codex CLI in the Phase 2BR3 post-fix dual-engine review (post-fix architect ARCH-001 medium, persists). The schema had additionalProperties=false and did not declare score_categories; the runtime writer used score_categories on every entry (Get-WaggleRegressionScore consumes it); the ARCH-009 fix added a doc note explaining 'survives storage'. Codex flagged that this kept a schema-vs-runtime split-brain alive even after the original ARCH-009 fix. Fix: added score_categories as an optional persisted property in the schema (matching the runtime behavior) with a description that explicitly documents it as the runtime-rubric input field for Get-WaggleRegressionScore. Schema validation now matches what RegressionLedger.ps1 actually writes. The ledger_contract.md note about it remains accurate."
+    },
+    {
+      "tag": "ARCH-011",
+      "title": "ledger_contract.md dedup section described non-existent updated_at_utc and seen_count fields",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "docs/design/ledger_contract.md :: Dedup contract"
+      ],
+      "tests": [],
+      "notes": "Found by Codex CLI in the Phase 2BR3 post-fix dual-engine review (post-fix architect ARCH-002 medium new_in_fix). Pre-fix the contract claimed re-fired hooks 'bump updated_at_utc and increment seen_count' — neither field exists in the schema or runtime writer. The actual behavior (per Add-WaggleRegressionFromHardeningGateFailure / Add-WaggleRegressionFromInternalFinding / Add-WaggleRegressionsFromReviewObject) is to call Update-WaggleRegressionEntry with a history_event(event=detected, notes=repeat <kind>: <id>), and the entry's history[] array grows by one element per re-fire. Fix: rewrote the Dedup contract paragraph to describe the actual Get-WaggleIssueSignature signature shape (with deliberately empty IterationIdIntroduced for cross-iteration stability) and the history_event-append behavior (timestamp lives in history[].at_utc, count is history[].length). Doc-only fix; no test added (covered by ledger_contract.md presence + ARCH-009 schema-grounded gate)."
+    },
+    {
+      "tag": "ARCH-009",
+      "title": "ledger_contract.md described stale runtime-ledger schema and helper names",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR3",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "docs/design/ledger_contract.md :: Authoritative writer",
+        "orchestrator/Test-LedgerContract.ps1 :: RequiredContractRuntimeHelpers",
+        "orchestrator/Test-LedgerContract.ps1 :: ForbiddenContractStaleNames"
+      ],
+      "tests": [
+        "orchestrator/Test-LedgerContract.ps1"
+      ],
+      "notes": "Found by Codex CLI in the Phase 2BR3 dual-engine simulation; Codex novel finding architect-ARCH-001 (severity=medium). Pre-fix docs/design/ledger_contract.md (the deliverable that R3's Test-LedgerContract was supposed to enforce) was MATERIALLY incorrect: it claimed runtime helpers Ensure-WaggleRegressionLedger and Set-WaggleRegressionState (neither exist; actual writers are Get-WaggleRegressionLedger / Save / Add / Update), and listed an entry-field set (entry_id, finding_id, signature, state, dedup_key) that did not match the actual schema (id, detected_in_iteration, category, first_symptom, severity, score, status, history, score_categories). The R3 gate enforced only proose-fragment phrases, not the materially-correct contract — meaning a future contributor following the 'authoritative document' would code against a non-existent API. Fix: rewrote the Schema and Authoritative writer rows of the TL;DR table to match schemas/regression_ledger.schema.json + orchestrator/lib/RegressionLedger.ps1 verbatim; rewrote the State-machine bullet to enumerate actual states from $Script:RLStatuses; replaced 'Ensure-WaggleRegressionLedger' with 'Get-WaggleRegressionLedger (creates empty if absent)' throughout; added strict Test-LedgerContract assertions for required helper names + canonical entry fields + a denylist of stale names that must NOT reappear. Test-LedgerContract count: 17 -> 27."
+    },
+    {
       "tag": "ARCH-001",
       "title": "Redactor SHA-context allowlist does not survive JSON-encoded diff_text strings",
       "source": "architect",
@@ -737,12 +880,15 @@
       "source": "architect",
       "status": "fixed",
       "phase_introduced": "Phase 2BR2",
-      "phase_fixed_or_documented": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR3",
       "canonical_source_anchors": [
-        "docs/design/ledger_contract.md :: Dual-ledger contract"
+        "docs/design/ledger_contract.md :: Dual-ledger contract",
+        "orchestrator/Test-LedgerContract.ps1 :: PM-CL-002"
       ],
-      "tests": [],
-      "notes": "P9 architect review of PR #94 noted phase_fix_ledger.json (committed) and state/regression_ledger.json (gitignored runtime) had overlapping conceptual surface but no documented contract. Phase 2BR2 P4 added docs/design/ledger_contract.md stating: phase_fix_ledger = committed historical record; regression_ledger = live runtime state machine; cross-link rules used by Build-WaggleProposalMatrix; what survives a clean clone; when to write where. The contract doc is referenced by both schemas via the 'See also' footer. Doc-only; no test added (phase_fix_ledger row anchor + ledger_contract.md presence is the proof)."
+      "tests": [
+        "orchestrator/Test-LedgerContract.ps1"
+      ],
+      "notes": "P9 architect review of PR #94 noted phase_fix_ledger.json (committed) and state/regression_ledger.json (gitignored runtime) had overlapping conceptual surface but no documented contract. Phase 2BR2 P4 added docs/design/ledger_contract.md stating: phase_fix_ledger = committed historical record; regression_ledger = live runtime state machine; cross-link rules used by Build-WaggleProposalMatrix; what survives a clean clone; when to write where. Phase 2BR3 P1 (PM-CL-002 from R2 architect review) converted the markdown-only contract into an enforced hardening gate at orchestrator/Test-LedgerContract.ps1: asserts phase_fix_ledger.json + .md + ledger_contract.md committed; runtime ledger NOT committed outside an explicit allowlist; contract doc references both ledgers; Build-WaggleProposalMatrix tolerates missing state/regression_ledger.json on a clean clone. 16 assertions; gate count 29 -> 30."
     },
     {
       "tag": "ARCH-003",
@@ -786,6 +932,22 @@
       ],
       "tests": [],
       "notes": "Backlog target: paired with ARCH-009 (PS 5.1 helpers) when a future phase needs the third copy. Acceptance: orchestrator/lib/Common.ps1 with Get-WaggleField / Get-WaggleSafeChildItems / ConvertTo-WaggleJson; existing per-module tests stay green. Low severity. Phase 2BR2 deliberately does NOT implement this small refactor to keep the cleanup pass tight (per operator P5 ground rule)."
+    },
+    {
+      "tag": "REL-020",
+      "title": "Cockpit fetch URL not updated after orchestrator/cockpit/ relocation",
+      "source": "human-review",
+      "status": "fixed",
+      "phase_introduced": "Phase 2BR2",
+      "phase_fixed_or_documented": "Phase 2BR3",
+      "canonical_source_anchors": [
+        "orchestrator/cockpit/review_cockpit.html :: COCKPIT_DATA_URL",
+        "orchestrator/Test-CockpitData.ps1 :: COCKPIT_DATA_URL resolves to repo-root"
+      ],
+      "tests": [
+        "orchestrator/Test-CockpitData.ps1"
+      ],
+      "notes": "Phase 2BR2 PR #97 ARCH-005 git-mv'd review_cockpit.html from repo root to orchestrator/cockpit/ but the JS fetch URL was a literal 'state/cockpit_data.json' which is relative-to-the-HTML-location. From the new location that resolves to orchestrator/cockpit/state/cockpit_data.json which does not exist. Test-CockpitData (32/32) still PASSED because it asserted only the LITERAL string match, not URL resolution from the cockpit's actual location. Operator hit 'Could not load state/cockpit_data.json: Failed to fetch' after opening file:///C:/Python/project2-master/orchestrator/cockpit/review_cockpit.html in browser. Fix: introduce COCKPIT_DATA_URL constant '../../state/cockpit_data.json'; user-visible strings still refer to the canonical 'state/cockpit_data.json' filename. New Test-CockpitData assertion resolves the relative URL from the cockpit's directory and asserts it lands on repo-root state/cockpit_data.json. Test count: 32 -> 34. Caveat: even with the path fix, modern Chrome/Edge block file:// fetches to file:// resources by default; if 'Failed to fetch' persists after the fix, the operator must either pass --allow-file-access-from-files to the browser or serve via a local static HTTP server."
     },
     {
       "tag": "REL-019",

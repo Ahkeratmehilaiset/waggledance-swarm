@@ -21,6 +21,27 @@ $Script:DefaultRedactionRules = @(
     @{ name = 'OPENAI_KEY';      pattern = 'sk-[A-Za-z0-9]{32,}' }
     @{ name = 'GITHUB_PAT';      pattern = 'gh[psouri]_[A-Za-z0-9]{36,}' }
     @{ name = 'GITHUB_OAUTH';    pattern = 'gho_[A-Za-z0-9]{36,}' }
+    # Phase 2B-R3 P10 (Codex SEC-002 fix): fine-grained GitHub PAT
+    # uses a distinct 'github_pat_' prefix, not gh+letter+_.
+    # Tokens are typically ~93 chars total. The classic GITHUB_PAT
+    # pattern above does NOT cover this prefix.
+    # Phase 2B-R3 P10d (Codex post-fix SEC-002 boundary fix): wrap
+    # with negative lookbehind/lookahead so the pattern does not
+    # match inside longer alphanumeric+underscore identifiers (e.g.
+    # 'mygithub_pat_X...123tail' must NOT trigger).
+    @{ name = 'GITHUB_FINE_GRAINED_PAT'; pattern = '(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{82,}(?![A-Za-z0-9_])' }
+    # Phase 2B-R3 P10d (Codex post-fix SEC-003 fix): HuggingFace
+    # access tokens use 'hf_' prefix + base64url-shaped body of
+    # ~34-40 chars. Coverage gap noted by Codex; common in ML/
+    # tooling logs.
+    @{ name = 'HUGGINGFACE_TOKEN';      pattern = '(?<![A-Za-z0-9_])hf_[A-Za-z0-9]{30,}(?![A-Za-z0-9_])' }
+    # Phase 2B-R3 P10 (Codex SEC-001 fix): URL userinfo credentials
+    # like https://user:secret@host or https://x-access-token:secret@host
+    # commonly leak from git-remote URLs and copied CLI output. The
+    # pattern matches scheme://user:password@host where the password
+    # contains no '@', '/', whitespace, or ':' (so port:host syntax
+    # like https://example.com:443/ is NOT matched).
+    @{ name = 'URL_USERINFO_CREDENTIAL'; pattern = '(?i)https?://[A-Za-z0-9._\-]+:[^@/\s:]+@[A-Za-z0-9._\-]+' }
     @{ name = 'SLACK_TOKEN';     pattern = 'xox[apbsr]-[A-Za-z0-9-]{10,}' }
     @{ name = 'STRIPE_KEY';      pattern = '(?:rk|sk|pk)_(?:live|test)_[A-Za-z0-9]{20,}' }
     @{ name = 'GOOGLE_API_KEY';  pattern = 'AIza[0-9A-Za-z_\-]{35}' }
@@ -174,6 +195,16 @@ $Script:SourceSupplementRuleNames = @(
     'OPENAI_KEY',
     'GITHUB_PAT',
     'GITHUB_OAUTH',
+    # Phase 2B-R3 P10c (Codex post-fix SEC-001 fix): the new
+    # value-shape rules added in P10 (GITHUB_FINE_GRAINED_PAT,
+    # URL_USERINFO_CREDENTIAL) MUST also apply to the source-supplement
+    # path. Pre-fix: DefaultRedactionRules covered them but
+    # Invoke-WaggleSourceSupplementRedaction silently passed them
+    # through, leaving fine-grained PATs and URL userinfo credentials
+    # to leak in supplement excerpts.
+    'GITHUB_FINE_GRAINED_PAT',
+    'URL_USERINFO_CREDENTIAL',
+    'HUGGINGFACE_TOKEN',
     'SLACK_TOKEN',
     'STRIPE_KEY',
     'GOOGLE_API_KEY',

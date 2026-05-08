@@ -134,6 +134,28 @@ def test_recommend_action_returns_only_allowlisted_values():
     assert actions.issubset(set(RECOMMENDED_NEXT_HUMAN_ACTIONS))
 
 
+def test_recommend_action_does_not_consider_risk_dimension():
+    """Codex PR #106 prompt-review propose_changes, Path A+:
+
+    `p.risk` MUST NOT change the recommended action. Risk is
+    preserved on the proposal and surfaced into the review bundle
+    so the reviewer can apply risk judgment manually, but the
+    deterministic action mapping uses only proposal_priority,
+    confidence, and scope_class. A future edit that starts reading
+    `p.risk` in `recommend_action_for` will fail this test loudly.
+    """
+    base = dict(confidence=0.7, proposal_priority=0.10,
+                scope_class="topology")
+    actions = {recommend_action_for(_proposal(risk=r, **base))
+               for r in ("low", "medium", "high")}
+    assert len(actions) == 1, (
+        "recommend_action_for must return the same action across all "
+        f"risk levels at the same (confidence, priority, scope); got {actions}"
+    )
+    # Pin the value so an unintentional rewrite is also caught.
+    assert actions == {"post_campaign_runtime_review_candidate"}
+
+
 # --- build_review_bundle: human-review boundary contract -----------
 
 def _bundle_kwargs() -> dict:
@@ -191,6 +213,7 @@ def test_build_review_bundle_proposal_blocks_preserve_metadata():
         lifecycle_status="persisting",
         why_now="three-plane convergence on hex_a",
         why_human_review_required="explicit boundary text required",
+        risk="medium",
     )
     bundle = build_review_bundle(
         proposals=[p],
@@ -202,6 +225,10 @@ def test_build_review_bundle_proposal_blocks_preserve_metadata():
     assert len(bundle["proposals"]) == 1
     block = bundle["proposals"][0]
     assert block["meta_proposal_id"] == "m1"
+    # Path A+ (Codex PR #106 review): risk MUST be preserved in the
+    # bundle's proposal_block so the human-gate artifact carries the
+    # signal even though `recommend_action_for` does not consume it.
+    assert block["risk"] == "medium"
     assert block["lifecycle_status"] == "persisting"
     assert block["evidence_planes"] == ["curiosity", "self_model", "dream"]
     assert block["why_now"] == "three-plane convergence on hex_a"
@@ -231,6 +258,35 @@ def test_build_review_bundle_summary_text_reports_section_sizes():
     assert "1 insufficient-evidence" in s
     assert "2 rejected" in s
     assert "1 resolved since last run" in s
+
+
+def test_build_review_bundle_preserves_risk_for_every_level():
+    """Codex PR #106 prompt-review propose_changes, Path A+:
+
+    The bundle's proposal_block MUST carry `risk` for every level
+    (low/medium/high), so the human-gate artifact never hides the
+    high-risk signal. This is the paired test to
+    test_recommend_action_does_not_consider_risk_dimension —
+    together they pin "risk does not drive action AND risk is
+    visible in the artifact." Without the second pin, the first
+    could normalize a hidden signal.
+    """
+    proposals = [
+        _proposal(meta_proposal_id="p-low", risk="low"),
+        _proposal(meta_proposal_id="p-med", risk="medium"),
+        _proposal(meta_proposal_id="p-high", risk="high"),
+    ]
+    bundle = build_review_bundle(
+        proposals=proposals,
+        insufficient_evidence=[],
+        rejected_candidates=[],
+        resolved_proposal_ids=[],
+        **_bundle_kwargs(),
+    )
+    by_id = {b["meta_proposal_id"]: b for b in bundle["proposals"]}
+    assert by_id["p-low"]["risk"] == "low"
+    assert by_id["p-med"]["risk"] == "medium"
+    assert by_id["p-high"]["risk"] == "high"
 
 
 def test_build_review_bundle_carries_provenance_and_consumed_hooks():

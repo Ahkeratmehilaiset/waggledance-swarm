@@ -30,8 +30,16 @@ from .meta_learner import EvidenceItem, MetaProposal, proposal_to_dict
 
 def recommend_action_for(p: MetaProposal) -> str:
     """Decide which of the four allowed actions a human reviewer
-    should take next for this proposal. Deterministic from priority
-    + confidence + risk + scope_class."""
+    should take next for this proposal. Deterministic from
+    proposal_priority + confidence + scope_class.
+
+    Note (Codex PR #106 prompt-review propose_changes, Path A+):
+    `p.risk` is intentionally NOT consumed here. The recommended
+    action is advisory; the risk value is preserved on the
+    MetaProposal and surfaced into ``build_review_bundle`` proposal
+    blocks so the human reviewer can apply risk judgment manually.
+    A future contributor that starts reading ``p.risk`` here will
+    fail ``test_recommend_action_does_not_consider_risk_dimension``."""
     if p.confidence >= 0.6 and p.proposal_priority >= 0.05 \
             and p.scope_class in ("topology", "solver_library", "policy"):
         return "post_campaign_runtime_review_candidate"
@@ -167,6 +175,7 @@ def build_review_bundle(
             "impacted_cells": list(p.impacted_cells),
             "proposal_priority": p.proposal_priority,
             "confidence": p.confidence,
+            "risk": p.risk,
             "evidence_planes": list(p.evidence_planes),
             "why_now": p.why_now,
             "why_human_review_required": p.why_human_review_required,
@@ -246,13 +255,14 @@ def _render_bundle_md(b: dict) -> str:
         n = b["counts_by_recommended_next_human_action"][action]
         lines.append(f"- `{action}`: {n}")
     lines.extend(["", "## Proposals", "",
-                   "| id | type | priority | confidence | "
+                   "| id | type | priority | confidence | risk | "
                    "next_human_action | lifecycle |",
-                   "|---|---|---|---|---|---|"])
+                   "|---|---|---|---|---|---|---|"])
     for p in b["proposals"]:
         lines.append(
             f"| `{p['meta_proposal_id']}` | `{p['proposal_type']}` | "
             f"{p['proposal_priority']:.4f} | {p['confidence']:.2f} | "
+            f"`{p['risk']}` | "
             f"`{p['recommended_next_human_action']}` | "
             f"`{p['lifecycle_status']}` |"
         )

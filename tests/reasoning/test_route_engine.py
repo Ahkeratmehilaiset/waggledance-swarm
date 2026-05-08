@@ -50,6 +50,48 @@ def test_bounded_history_trims_oldest_when_max_exceeded():
     assert [d.latency_ms for d in engine._decisions] == [5.0, 6.0, 7.0, 8.0, 9.0]
 
 
+def test_bounded_history_keeps_quality_counts_in_lockstep_with_decisions():
+    """Codex review of PR #103: when trimming bounded history, the
+    `_quality_counts` tally must drop in lockstep with `_decisions`,
+    otherwise stats() and get_quality_distribution() describe different
+    history windows (one bounded, one all-time).
+    """
+    engine = RouteEngine()
+    engine._max_decisions = 5
+    # First 5 decisions are 'gold'.
+    for _ in range(5):
+        engine.record_decision("a", "x", "gold", True, 1.0)
+    # Next 5 are 'silver' — they should evict the 'gold' decisions entirely.
+    for _ in range(5):
+        engine.record_decision("a", "x", "silver", True, 1.0)
+    # Both views must describe the same window: 5 silver, no gold.
+    assert len(engine._decisions) == 5
+    assert sum(engine._quality_counts.values()) == 5
+    assert engine._quality_counts == {"silver": 5}
+    assert engine.get_quality_distribution() == {"silver": 1.0}
+
+
+def test_stats_total_decisions_matches_quality_distribution_denominator():
+    """stats() and get_quality_distribution() must agree on the
+    denominator after trim (Codex review of PR #103).
+    """
+    engine = RouteEngine()
+    engine._max_decisions = 4
+    # 6 decisions => oldest 2 ('gold', 'silver') evicted; window is the
+    # last 4: ['gold', 'bronze', 'silver', 'silver'].
+    paths = ["gold", "silver", "gold", "bronze", "silver", "silver"]
+    for p in paths:
+        engine.record_decision("a", "x", p, True, 1.0)
+
+    s = engine.stats()
+    assert s["total_decisions"] == 4
+    assert sum(engine._quality_counts.values()) == 4
+    assert engine._quality_counts == {"gold": 1, "bronze": 1, "silver": 2}
+    dist = engine.get_quality_distribution()
+    assert sum(dist.values()) == pytest.approx(1.0)
+    assert dist["silver"] == pytest.approx(0.5)
+
+
 def test_telemetry_record_failure_is_swallowed():
     """Telemetry exceptions must not crash record_decision (silent fallback)."""
     class _BadTelemetry:

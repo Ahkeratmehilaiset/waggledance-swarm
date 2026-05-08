@@ -102,10 +102,21 @@ class RouteEngine:
             was_fallback=was_fallback,
         )
         self._decisions.append(decision)
-        if len(self._decisions) > self._max_decisions:
-            self._decisions = self._decisions[-self._max_decisions:]
-
         self._quality_counts[quality_path] = self._quality_counts.get(quality_path, 0) + 1
+
+        if len(self._decisions) > self._max_decisions:
+            # Codex review of PR #103: when trimming the bounded history,
+            # `_quality_counts` must drop in lockstep — otherwise
+            # `stats()["total_decisions"]` reflects the trimmed window
+            # while `get_quality_distribution()` keeps an all-time tally,
+            # giving the two views inconsistent denominators.
+            overflow = len(self._decisions) - self._max_decisions
+            for dropped in self._decisions[:overflow]:
+                path = dropped.quality_path
+                self._quality_counts[path] -= 1
+                if self._quality_counts[path] <= 0:
+                    del self._quality_counts[path]
+            self._decisions = self._decisions[overflow:]
 
         if self._telemetry:
             try:

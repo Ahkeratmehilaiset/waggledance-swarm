@@ -86,43 +86,60 @@ class _FakeGraph:
 
 
 # --- engine wiring ---------------------------------------------------
+#
+# Codex review of the first version of this file (PR #102) flagged that
+# `CausalEngine(cognitive_graph=None)` does NOT actually produce a no-graph
+# engine in this repo, because `core.cognitive_graph` imports successfully —
+# so `_get_graph_class()` returns `CognitiveGraph`, and the constructor
+# instantiates a real graph instead of leaving `_graph = None`. Guarding
+# the fallback assertions with `if engine._graph is None:` made those
+# tests silent no-ops in this repo.
+#
+# Fix: force the no-graph branch via the `no_graph_engine` fixture, which
+# monkeypatches `_get_graph_class` to return None for the duration of the
+# test. We then assert `engine._graph is None` up front so the fallback
+# tests can never silently degrade again.
 
-def test_engine_without_graph_reports_unavailable():
+
+@pytest.fixture()
+def no_graph_engine(monkeypatch):
+    """Force CausalEngine to take the no-graph constructor branch.
+
+    Without this, `CausalEngine(cognitive_graph=None)` would still build a
+    real CognitiveGraph because `_get_graph_class()` succeeds in this repo.
+    """
+    monkeypatch.setattr(
+        "waggledance.core.reasoning.causal_engine._get_graph_class",
+        lambda: None,
+    )
     engine = CausalEngine(cognitive_graph=None)
-    # When CognitiveGraph import fails AND no graph is injected, _graph stays None.
-    # In test environment _get_graph_class may resolve, so accept either:
-    # either available is False (no graph), or available is True (real graph).
-    # We pin only the constructor-passes-None semantics:
-    assert isinstance(engine.available, bool)
+    assert engine._graph is None, "fixture must produce a no-graph engine"
+    return engine
 
 
-def test_find_causal_chain_no_graph_returns_none():
-    engine = CausalEngine(cognitive_graph=None)
-    if engine._graph is None:
-        assert engine.find_causal_chain("a", "b") is None
+def test_engine_without_graph_reports_unavailable(no_graph_engine):
+    assert no_graph_engine.available is False
 
 
-def test_estimate_impact_no_graph_returns_empty_estimate():
-    engine = CausalEngine(cognitive_graph=None)
-    if engine._graph is None:
-        result = engine.estimate_impact("a")
-        assert isinstance(result, ImpactEstimate)
-        assert result.affected_entities == []
-        assert result.impact_scores == {}
-        assert result.total_impact == 0.0
+def test_find_causal_chain_no_graph_returns_none(no_graph_engine):
+    assert no_graph_engine.find_causal_chain("a", "b") is None
 
 
-def test_find_root_causes_no_graph_returns_empty_list():
-    engine = CausalEngine(cognitive_graph=None)
-    if engine._graph is None:
-        assert engine.find_root_causes("a") == []
+def test_estimate_impact_no_graph_returns_empty_estimate(no_graph_engine):
+    result = no_graph_engine.estimate_impact("a")
+    assert isinstance(result, ImpactEstimate)
+    assert result.affected_entities == []
+    assert result.impact_scores == {}
+    assert result.total_impact == 0.0
 
 
-def test_get_entity_context_no_graph_reports_unavailable():
-    engine = CausalEngine(cognitive_graph=None)
-    if engine._graph is None:
-        ctx = engine.get_entity_context("a")
-        assert ctx == {"entity": "a", "available": False}
+def test_find_root_causes_no_graph_returns_empty_list(no_graph_engine):
+    assert no_graph_engine.find_root_causes("a") == []
+
+
+def test_get_entity_context_no_graph_reports_unavailable(no_graph_engine):
+    ctx = no_graph_engine.get_entity_context("a")
+    assert ctx == {"entity": "a", "available": False}
 
 
 # --- find_causal_chain (graph-backed) --------------------------------

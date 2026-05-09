@@ -234,15 +234,18 @@ def bulk_load_descriptors(db: ControlPlaneDB,
                                   status="active")
 
     for d in descriptors:
-        db.upsert_solver(
+        # Phase D Priority 3 Cand 1 (R19 solver-scaling scout): use the
+        # SolverRecord that upsert_solver already returns, instead of
+        # paying a second SELECT round-trip per descriptor via
+        # db.get_solver(). At 10k descriptors this drops one full
+        # SQLite read+commit per row from the build phase loop.
+        rec = db.upsert_solver(
             name=d["solver_name"],
             version="phase17a-synth-1",
             family_name=d["family_kind"],
             status="auto_promoted",
             spec_hash=_stable_hash(d["solver_name"]),
         )
-        rec = db.get_solver(d["solver_name"])
-        assert rec is not None
         db.set_solver_capability_features(
             solver_id=rec.id,
             family_kind=d["family_kind"],

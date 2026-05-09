@@ -36,7 +36,12 @@ def _read_snapshot() -> dict:
 
 
 def _snapshot_sha12() -> str:
-    data = SNAPSHOT_PATH.read_bytes()
+    data = json.dumps(
+        _read_snapshot(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(data).hexdigest()[:12]
 
 

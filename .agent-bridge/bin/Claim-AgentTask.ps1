@@ -13,7 +13,21 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$bridgeRoot = Split-Path -Parent $PSScriptRoot
+# R13 (Codex scout 2026-05-09): honor AGENT_BRIDGE_RUNTIME_ROOT so
+# per-agent worktrees can share one runtime state directory. Codex
+# blocker 2026-05-09T13:11Z: if the env var is SET, USE IT - do not
+# silently fall back to per-worktree state, that would split-brain
+# the agents on first-run / typo / new-root paths. We create the
+# directory if missing (first-run bootstrap) and fail loudly on
+# malformed paths via -ErrorAction Stop.
+$bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
+    [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+} else {
+    Split-Path -Parent $PSScriptRoot
+}
+if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
+    [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
+}
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 if (-not (Test-Path -LiteralPath $claimsDir)) {
     [void](New-Item -ItemType Directory -Path $claimsDir -Force)

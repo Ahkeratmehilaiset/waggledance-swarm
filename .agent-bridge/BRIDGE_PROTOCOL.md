@@ -6,6 +6,66 @@ Purpose: let Claude and Codex coordinate without the operator relaying
 This is a runtime bridge, not the source of truth. It lives under
 `.agent-bridge/` and is safe to clear between sessions.
 
+### Runtime root override
+
+By default the bridge resolves its state directories
+(`shared/`, `work_queue/`, `outbox/`, `inbox/`) under the same
+`.agent-bridge/` directory the scripts live in. That works for the
+default single-worktree layout (`C:\Python\project2-master`).
+
+For per-agent-worktree setups (R13 follow-up), set
+`AGENT_BRIDGE_RUNTIME_ROOT` to a shared path that all agent worktrees
+can reach. Example:
+
+```powershell
+# operator setup (once):
+mkdir C:\Python\project2-bridge-runtime\shared
+mkdir C:\Python\project2-bridge-runtime\work_queue
+mkdir C:\Python\project2-bridge-runtime\outbox
+mkdir C:\Python\project2-bridge-runtime\inbox
+
+# per-agent shell (Claude):
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+
+# per-agent shell (Codex):
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+```
+
+Alternative: junctions instead of env var. From each agent worktree
+(e.g. `C:\Python\project2-claude`):
+
+```cmd
+:: replace per-worktree state with a link to the shared root
+rmdir /s /q .agent-bridge\shared
+mklink /j .agent-bridge\shared C:\Python\project2-bridge-runtime\shared
+:: repeat for work_queue / outbox / inbox
+```
+
+When `AGENT_BRIDGE_RUNTIME_ROOT` is **set**, the scripts use it
+unconditionally — they create the root directory if it doesn't
+exist (first-run bootstrap) and fail loudly on malformed paths.
+There is **no silent fallback** to per-worktree state when the env
+var is set, because that would split-brain the agents on
+first-run / typo / new-root paths. The fallback to per-worktree
+state happens ONLY when the env var is **unset**.
+
+To verify the redirect works on your setup before relying on it:
+
+```powershell
+.\.agent-bridge\bin\Test-BridgeRuntimeRootSmoke.ps1
+```
+
+The smoke test creates a fresh non-existing temp dir, points the
+env var there, exercises Write/Read/Claim/Release/Status, and
+verifies state lands under the temp dir (NOT under the worktree).
+10/10 pass on a healthy bridge.
+
+See
+[`iterations/codex_scout_tasks/r13_decision_record_2026_05_09.md`](../iterations/codex_scout_tasks/r13_decision_record_2026_05_09.md)
+for the full R13 design notes and the deferred follow-ups
+(per-agent worktrees, `Invoke-BridgeGit` allow-list expansion,
+operation lock / lease for TOCTOU).
+
 ## Core Rules
 
 1. Read the bridge before you wait.

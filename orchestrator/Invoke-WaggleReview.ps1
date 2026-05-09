@@ -192,6 +192,12 @@ function Invoke-WaggleReviewSubprocess {
         $timedOut = $true
         try { Stop-ProcessTree -ProcessId $proc.Id } catch {}
         try { $null = $proc.WaitForExit(5000) } catch {}
+        try { $proc.Refresh() } catch {}
+        if (-not $proc.HasExited) {
+            try { $proc.Kill() } catch {}
+            try { $null = $proc.WaitForExit(2000) } catch {}
+            try { $proc.Refresh() } catch {}
+        }
     } else {
         # Final synchronous drain to ensure async streams complete.
         try { $proc.WaitForExit() } catch {}

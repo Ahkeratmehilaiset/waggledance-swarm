@@ -97,6 +97,7 @@ Assert-True 'partial-hang: timed_out=true' ($rh.timed_out -eq $true)
 Assert-True ("partial-hang: bounded total elapsed (~$([Math]::Round($elapsed,1))s, must be < 30s)") ($elapsed -lt 30)
 $capturedPartial = ''
 if (Test-Path $so) { $capturedPartial = Get-Content -Raw $so }
+if ($null -eq $capturedPartial) { $capturedPartial = '' }
 # Partial stdout may or may not have flushed depending on platform
 # buffering; assert we have AT MOST the partial fragment + AT LEAST
 # something (partial-hang scenario starting line).

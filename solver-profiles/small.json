@@ -1,0 +1,26 @@
+{
+  "$schema": "https://waggledance.example/schemas/solver-profile-v1.json",
+  "name": "small",
+  "description": "Profile S — offline / heuristic-only. No GPU, no internet, no LLM. Field measurement units, offline industrial devices, air-gapped installs.",
+  "version": "1.0.0",
+  "behaviors": {
+    "allow_internet": false,
+    "allow_local_llm": false,
+    "allow_cloud_llm": false,
+    "allow_speculative_prefetch": false,
+    "fallback_chain": ["heuristic"],
+    "default_provider": "heuristic"
+  },
+  "bridge_llm_client": {
+    "enabled": false,
+    "provider_plugins": [],
+    "max_calls_per_day": 0,
+    "max_cents_per_day": 0,
+    "redaction_required": true
+  },
+  "telemetry": {
+    "enabled": true,
+    "destination": "local_only",
+    "path": "data/telemetry/profile-small/"
+  }
+}

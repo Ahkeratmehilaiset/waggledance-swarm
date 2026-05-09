@@ -1,0 +1,44 @@
+{
+  "$schema": "https://waggledance.example/schemas/solver-profile-v1.json",
+  "name": "large",
+  "description": "Profile L — full four-tier fallback chain. Central solver fleet, cloud-connected deployment. Cache + local LLM + cloud LLM + heuristic. A/B testing enabled. Speculative prefetch allowed. PII redaction ON BY DEFAULT for cloud-bound prompts.",
+  "version": "1.0.0",
+  "behaviors": {
+    "allow_internet": true,
+    "allow_local_llm": true,
+    "allow_cloud_llm": true,
+    "allow_speculative_prefetch": true,
+    "fallback_chain": ["cache", "local-ollama", "cloud", "heuristic"],
+    "default_provider": "cache"
+  },
+  "bridge_llm_client": {
+    "enabled": true,
+    "provider_plugins": [
+      "cache",
+      "local-ollama",
+      "anthropic-api",
+      "openai-api",
+      "azure-openai",
+      "vertex-ai",
+      "cohere",
+      "groq",
+      "together-ai",
+      "heuristic-fallback"
+    ],
+    "max_calls_per_day": 250000,
+    "max_cents_per_day": 5000,
+    "redaction_required": true,
+    "degrade_on_local_llm_missing": "cloud-then-heuristic",
+    "degrade_on_cloud_unavailable": "local-then-heuristic",
+    "degrade_on_budget_exhausted": "heuristic-only"
+  },
+  "ab_testing": {
+    "enabled": true,
+    "min_quality_gain_threshold_percent": 20
+  },
+  "telemetry": {
+    "enabled": true,
+    "destination": "local_and_aggregate",
+    "path": "data/telemetry/profile-large/"
+  }
+}

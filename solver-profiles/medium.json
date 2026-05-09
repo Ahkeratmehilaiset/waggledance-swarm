@@ -1,0 +1,27 @@
+{
+  "$schema": "https://waggledance.example/schemas/solver-profile-v1.json",
+  "name": "medium",
+  "description": "Profile M — local LLM augmentation, no cloud. Workstation, edge server, local factory node. Cache + local-ollama + heuristic fallback. Internet not required.",
+  "version": "1.0.0",
+  "behaviors": {
+    "allow_internet": false,
+    "allow_local_llm": true,
+    "allow_cloud_llm": false,
+    "allow_speculative_prefetch": false,
+    "fallback_chain": ["cache", "local-ollama", "heuristic"],
+    "default_provider": "local-ollama"
+  },
+  "bridge_llm_client": {
+    "enabled": true,
+    "provider_plugins": ["cache", "local-ollama", "heuristic-fallback"],
+    "max_calls_per_day": 50000,
+    "max_cents_per_day": 0,
+    "redaction_required": true,
+    "degrade_on_local_llm_missing": "heuristic-only"
+  },
+  "telemetry": {
+    "enabled": true,
+    "destination": "local_only",
+    "path": "data/telemetry/profile-medium/"
+  }
+}

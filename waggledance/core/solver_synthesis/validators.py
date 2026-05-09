@@ -17,6 +17,7 @@ VERDICTS = (
     "pass_all_gates",
     "needs_more_shadow",
     "regression_detected",
+    "property_test_failed",
     "syntactic_invalid",
     "semantic_invalid",
     "rejected_low_value",
@@ -170,6 +171,14 @@ def decide_verdict(*,
         return "syntactic_invalid"
     if not semantic.passed:
         return "semantic_invalid"
+    # Property tests are declarative invariants. A property failure
+    # is a structural violation and must preempt regression / shadow
+    # gates, which are historical / performance signals. (Codex
+    # post-merge blocker 2026-05-09: failed property tests previously
+    # produced pass_all_gates because this check was missing.)
+    if (property_tests.total > 0
+            and property_tests.passed < property_tests.total):
+        return "property_test_failed"
     if regression.total > 0 and regression.passed < regression.total:
         return "regression_detected"
     if shadow.observations < min_shadow_observations:

@@ -23,8 +23,13 @@ Pinned invariants:
   collect failure names; empty input is vacuously passing.
 - `evaluate_shadow`: clamps concordance to [0, 1].
 - `decide_verdict` precedence (load-bearing):
-  syntactic_invalid > semantic_invalid > regression_detected >
-  needs_more_shadow > rejected_low_value > pass_all_gates.
+  syntactic_invalid > semantic_invalid > property_test_failed >
+  regression_detected > needs_more_shadow > rejected_low_value >
+  pass_all_gates. The `property_test_failed` branch was added in
+  the 2026-05-09 post-merge fix after a Codex high-severity
+  blocker found that failed property tests previously promoted to
+  `pass_all_gates` because the parameter was accepted but never
+  read.
 """
 from __future__ import annotations
 
@@ -211,6 +216,46 @@ def test_decide_verdict_semantic_invalid_when_syntactic_passes():
     assert v == "semantic_invalid"
 
 
+def test_decide_verdict_property_test_failed_when_failures_exist():
+    """2026-05-09 post-merge fix: property tests are declarative
+    invariants. A failure (passed < total) MUST return
+    `property_test_failed`, NOT `pass_all_gates`. This is the
+    regression test for the high-blocker Codex flagged after
+    PR #116 was merged with the gate missing entirely."""
+    fail_props = CountedGateResult(passed=0, total=1, failures=("prop1",))
+    v = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=fail_props, regression=_OK_COUNT,
+        shadow=_GOOD_SHADOW,
+    )
+    assert v == "property_test_failed"
+
+
+def test_decide_verdict_property_test_failure_preempts_regression_and_shadow():
+    """Precedence: property_test_failed wins over regression/shadow
+    even when those would also flag — property tests are structural
+    invariants, regression/shadow are performance signals."""
+    fail_props = CountedGateResult(passed=1, total=2, failures=("p2",))
+    v = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=fail_props, regression=_FAIL_REG,
+        shadow=_LOW_SHADOW,
+    )
+    assert v == "property_test_failed"
+
+
+def test_decide_verdict_property_total_zero_does_not_trigger_failure():
+    """Empty property_tests (total=0) is vacuously passing — must
+    NOT return property_test_failed."""
+    empty_props = CountedGateResult(passed=0, total=0, failures=())
+    v = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=empty_props, regression=_OK_COUNT,
+        shadow=_GOOD_SHADOW,
+    )
+    assert v == "pass_all_gates"
+
+
 def test_decide_verdict_regression_detected_before_shadow_checks():
     v = decide_verdict(
         syntactic=_OK_GATE, semantic=_OK_GATE,
@@ -284,3 +329,29 @@ def test_validate_candidate_assembles_full_report():
     assert report.execution_backend == "cpu"
     assert report.syntactic.passed is True
     assert report.shadow_evaluation.observations == 100
+
+
+def test_validate_candidate_with_failed_property_test_returns_property_test_failed():
+    """2026-05-09 post-merge regression test (Codex high-blocker
+    runtime probe): a candidate with a failed property test MUST
+    return verdict=property_test_failed, not pass_all_gates.
+
+    The exact probe Codex used to surface the bug on `main`:
+        validate_candidate(
+            property_tests_input=[{"name": "prop1", "passed": False}],
+            regression_input=[],
+            shadow_observations=100, shadow_concordance=0.95,
+        )
+    pre-fix returned "pass_all_gates" (autogrowth promotion safety
+    bug); post-fix must return "property_test_failed"."""
+    report = validate_candidate(
+        _candidate(),
+        property_tests_input=[{"name": "prop1", "passed": False}],
+        regression_input=[],
+        shadow_observations=100,
+        shadow_concordance=0.95,
+    )
+    assert report.verdict == "property_test_failed"
+    assert report.property_tests.total == 1
+    assert report.property_tests.passed == 0
+    assert "prop1" in report.property_tests.failures

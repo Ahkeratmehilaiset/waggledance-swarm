@@ -6,6 +6,14 @@ Purpose: let Claude and Codex coordinate without the operator relaying
 This is a runtime bridge, not the source of truth. It lives under
 `.agent-bridge/` and is safe to clear between sessions.
 
+### Reboot bootstrap
+
+If the machine restarts or new Claude/Codex PowerShell windows are opened,
+start from [`BOOTSTRAP.md`](./BOOTSTRAP.md). That file is the versioned
+runbook for restoring the shared runtime root, launching each agent shell, and
+resuming the alternating bridge/orchestrator loop without relying on terminal
+history or operator paste-relay.
+
 ### Runtime root override
 
 By default the bridge resolves its state directories

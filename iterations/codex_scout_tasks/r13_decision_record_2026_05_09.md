@@ -35,14 +35,16 @@ The reason for the partial move:
      `Read-AgentBridge.ps1`, `Write-AgentEvent.ps1`,
      `Get-AgentBridgeStatus.ps1`, `Invoke-BridgeGit.ps1`,
      `Test-BridgeBranchSwitchSafe.ps1`.
-   - When set and pointing to an existing directory, the env var
-     overrides the default `Split-Path -Parent $PSScriptRoot`
-     resolution. State (`shared/events.jsonl`, `work_queue/claims`,
-     `outbox/`, `inbox/`) lands under that directory instead of
-     under each worktree's `.agent-bridge/`.
-   - When unset or pointing to a non-existent path, falls back to
-     the existing behavior (per-worktree state). Default
-     single-worktree users see no change.
+   - When set, the env var overrides the default
+     `Split-Path -Parent $PSScriptRoot` resolution. The scripts use
+     that runtime root unconditionally, create it if it does not yet
+     exist, and fail loudly on malformed/unwritable paths. State
+     (`shared/events.jsonl`, `work_queue/claims`, `outbox/`, `inbox/`)
+     lands under that directory instead of under each worktree's
+     `.agent-bridge/`.
+   - Fallback to the existing per-worktree state happens only when
+     the env var is unset. Default single-worktree users see no
+     change.
 
 2. **`BRIDGE_PROTOCOL.md` doc updates** explaining:
    - the env-var contract;

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "r17-magma-latency-2026-05-09-v1",
+  "purpose": "Repeatable synthetic snapshot manifest for MAGMA latency scout microbenchmarks. The benchmark expands this manifest deterministically; do not change counts when comparing before/after PRs.",
+  "seed": "r17-magma-latency-fixed-seed",
+  "counts": {
+    "event_log_events": 5000,
+    "audit_entries": 500,
+    "trust_targets": 512,
+    "trust_observations_per_target": 80,
+    "replay_missions": 200,
+    "replay_events_per_mission": 8,
+    "vector_events": 10000
+  },
+  "cells": [
+    "general",
+    "thermal",
+    "energy",
+    "safety",
+    "seasonal",
+    "math",
+    "system",
+    "learning"
+  ],
+  "families": [
+    "scalar_unit_conversion",
+    "lookup_table",
+    "threshold_rule",
+    "interval_bucket_classifier",
+    "linear_arithmetic",
+    "bounded_interpolation"
+  ]
+}

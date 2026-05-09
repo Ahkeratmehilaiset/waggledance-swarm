@@ -27,6 +27,7 @@ from .types import (
 from .client import BridgeLLMClient
 from .budget import BudgetExhausted
 from .providers.base import ProviderError, register_provider
+from .ab_harness import ABHarness, ABResult
 
 __all__ = [
     "BridgeLLMClient",
@@ -37,4 +38,6 @@ __all__ = [
     "BudgetExhausted",
     "ProviderError",
     "register_provider",
+    "ABHarness",
+    "ABResult",
 ]

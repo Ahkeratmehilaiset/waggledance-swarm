@@ -110,6 +110,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-Agen
 # Keep the human console readable while preserving full JSON output.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1 -MaxUnresolved 10
 
+# Pre-flight check before ANY branch-changing git operation
+# (switch / checkout / rebase / merge / reset --hard).
+# Exit 0 = safe. Exit 2 = another agent holds an active write claim
+# in the shared worktree. Use a separate worktree, wait for release,
+# or pass -Force to override (logs a decision/override audit event).
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeBranchSwitchSafe.ps1 -Agent claude
+
 # Release a task claim.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Release-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Status done -Message "Review complete; 2 medium findings"
 ```

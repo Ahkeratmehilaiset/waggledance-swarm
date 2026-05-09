@@ -75,11 +75,15 @@ function Add-LineWithRetry {
 }
 
 function Write-JsonAtomic {
-    # Internal review fix A7/S4 (2026-05-09): Set-Content used to clobber
-    # last_<agent>.json mid-write — a concurrent reader could observe a
-    # partially-written file and crash. Write to a temp sibling and move
-    # over the target so readers always see either the old file or the
-    # new file in full, never a torn write.
+    # Internal review fix A7/S4 (2026-05-09, simplified 2026-05-09):
+    # Earlier File.Move + File.Replace dance failed reliably under
+    # write contention with the WARNING surfacing on every event.
+    # Move-Item -Force on Windows uses MoveFileEx with
+    # MOVEFILE_REPLACE_EXISTING which is atomic on NTFS same-volume
+    # and handles both the create and the replace path in one call.
+    # Set-Content was the original problem (truncate-then-write was
+    # non-atomic); Move-Item over a written-in-full temp keeps the
+    # "reader sees old or new, never torn" property.
     param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Json)
     $parent = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $parent)) {
@@ -90,21 +94,12 @@ function Write-JsonAtomic {
     [System.IO.File]::WriteAllText($tmp, $Json, $encoding)
     for ($i = 0; $i -lt 20; $i++) {
         try {
-            [System.IO.File]::Move($tmp, $Path)
+            Move-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
             return
         } catch {
-            # Move fails on Windows when destination exists. Replace it.
-            try {
-                if (Test-Path -LiteralPath $Path) {
-                    [System.IO.File]::Replace($tmp, $Path, $null)
-                    return
-                }
-            } catch {
-                Start-Sleep -Milliseconds (25 + ($i * 10))
-            }
+            Start-Sleep -Milliseconds (25 + ($i * 10))
         }
     }
-    # Last-resort cleanup: remove the temp file so we don't litter shared/.
     try { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } catch {}
     throw "could not atomically replace last-event file: $Path"
 }

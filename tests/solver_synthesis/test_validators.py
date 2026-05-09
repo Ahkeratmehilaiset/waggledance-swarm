@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Direct unit tests for waggledance.core.solver_synthesis.validators.
+
+The validators module runs the gate stack on a SolverCandidate:
+syntactic / semantic / property tests / regression / shadow eval, then
+maps the result through `decide_verdict` to one of the seven verdict
+strings. The verdict drives downstream promotion decisions.
+
+A regression in the verdict precedence (which gate wins when multiple
+fail), the shadow thresholds (`min_shadow_observations`,
+`min_concordance`), or the structural validators can let an invalid
+candidate slip through with a passing verdict — or block a good
+candidate by returning the wrong verdict for the same input. Direct
+test coverage on this file was zero before this PR.
+
+Pinned invariants:
+
+- `syntactic_validate`: empty solver_name / cell_id / non-dict
+  spec_or_code → fails; otherwise passes.
+- `semantic_validate`: invalid invariants (non-str / empty) and
+  non-str expected_output_unit fail.
+- `run_property_tests` / `run_regression_tests`: count passed,
+  collect failure names; empty input is vacuously passing.
+- `evaluate_shadow`: clamps concordance to [0, 1].
+- `decide_verdict` precedence (load-bearing):
+  syntactic_invalid > semantic_invalid > regression_detected >
+  needs_more_shadow > rejected_low_value > pass_all_gates.
+"""
+from __future__ import annotations
+
+import pytest
+
+from waggledance.core.solver_synthesis import SOLVER_SYNTHESIS_SCHEMA_VERSION
+from waggledance.core.solver_synthesis.solver_candidate_store import (
+    SolverCandidate,
+)
+from waggledance.core.solver_synthesis.validators import (
+    CountedGateResult,
+    GateResult,
+    ShadowEvalResult,
+    decide_verdict,
+    evaluate_shadow,
+    run_property_tests,
+    run_regression_tests,
+    semantic_validate,
+    syntactic_validate,
+    validate_candidate,
+)
+
+
+# --- helpers --------------------------------------------------------
+
+def _candidate(*, solver_name: str = "test_solver",
+               cell_id: str = "general",
+               spec: dict | None = None) -> SolverCandidate:
+    return SolverCandidate(
+        schema_version=1,
+        candidate_id="C-1",
+        state="raw_candidate",
+        solver_name=solver_name,
+        cell_id=cell_id,
+        spec_or_code=spec if spec is not None else {"kind": "scalar"},
+        source_gap_ref="gap_x",
+        no_runtime_mutation=True,
+        produced_by="test",
+        branch_name="test/x",
+        base_commit_hash="deadbeef",
+        pinned_input_manifest_sha256="f" * 64,
+    )
+
+
+# --- syntactic_validate --------------------------------------------
+
+def test_syntactic_validate_passes_when_all_required_fields_set():
+    g = syntactic_validate(_candidate())
+    assert g.passed is True
+    assert g.errors == ()
+
+
+def test_syntactic_validate_fails_on_empty_solver_name():
+    g = syntactic_validate(_candidate(solver_name=""))
+    assert g.passed is False
+    assert any("solver_name" in e for e in g.errors)
+
+
+def test_syntactic_validate_fails_on_empty_cell_id():
+    """Force-bypass SolverCandidate's HEX_CELLS post-init check by
+    using object.__setattr__ — we are testing validators directly."""
+    cand = _candidate()
+    object.__setattr__(cand, "cell_id", "")
+    g = syntactic_validate(cand)
+    assert g.passed is False
+    assert any("cell_id" in e for e in g.errors)
+
+
+def test_syntactic_validate_collects_multiple_errors():
+    cand = _candidate(solver_name="")
+    object.__setattr__(cand, "cell_id", "")
+    g = syntactic_validate(cand)
+    assert g.passed is False
+    assert len(g.errors) >= 2
+
+
+# --- semantic_validate ---------------------------------------------
+
+def test_semantic_validate_passes_with_well_formed_invariants_and_unit():
+    g = semantic_validate(_candidate(spec={
+        "invariants": ["x > 0", "y < 100"],
+        "expected_output_unit": "celsius",
+    }))
+    assert g.passed is True
+
+
+def test_semantic_validate_passes_when_optional_fields_absent():
+    g = semantic_validate(_candidate(spec={"kind": "x"}))
+    assert g.passed is True
+
+
+def test_semantic_validate_fails_on_empty_invariant_string():
+    g = semantic_validate(_candidate(spec={"invariants": ["x > 0", "  "]}))
+    assert g.passed is False
+    assert any("invariant" in e for e in g.errors)
+
+
+def test_semantic_validate_fails_on_non_str_invariant():
+    g = semantic_validate(_candidate(spec={"invariants": ["ok", 42]}))
+    assert g.passed is False
+
+
+def test_semantic_validate_fails_on_non_str_expected_output_unit():
+    g = semantic_validate(_candidate(spec={
+        "expected_output_unit": 1.0,
+    }))
+    assert g.passed is False
+
+
+# --- counted gates -------------------------------------------------
+
+def test_run_property_tests_counts_passed_and_failures():
+    tests = [
+        {"name": "p1", "passed": True},
+        {"name": "p2", "passed": False},
+        {"name": "p3", "passed": True},
+    ]
+    r = run_property_tests(_candidate(), tests)
+    assert r.passed == 2
+    assert r.total == 3
+    assert r.failures == ("p2",)
+
+
+def test_run_property_tests_empty_is_vacuously_zero():
+    r = run_property_tests(_candidate(), [])
+    assert r.passed == 0
+    assert r.total == 0
+    assert r.failures == ()
+
+
+def test_run_regression_tests_counts_passed_and_failures():
+    cases = [
+        {"name": "r1", "passed": True},
+        {"name": "r2", "passed": False},
+    ]
+    r = run_regression_tests(_candidate(), cases)
+    assert r.passed == 1
+    assert r.total == 2
+    assert r.failures == ("r2",)
+
+
+# --- evaluate_shadow ------------------------------------------------
+
+def test_evaluate_shadow_clamps_concordance_to_unit_interval():
+    r = evaluate_shadow(_candidate(), observations=10, concordance_ratio=1.5)
+    assert r.concordance_ratio == 1.0
+    r = evaluate_shadow(_candidate(), observations=10, concordance_ratio=-0.5)
+    assert r.concordance_ratio == 0.0
+
+
+def test_evaluate_shadow_passes_through_observations():
+    r = evaluate_shadow(_candidate(), observations=42, concordance_ratio=0.7)
+    assert r.observations == 42
+    assert r.concordance_ratio == pytest.approx(0.7)
+
+
+# --- decide_verdict precedence (load-bearing) ----------------------
+
+_OK_GATE = GateResult(passed=True, errors=())
+_FAIL_GATE = GateResult(passed=False, errors=("e",))
+_OK_COUNT = CountedGateResult(passed=0, total=0, failures=())
+_FAIL_REG = CountedGateResult(passed=0, total=2, failures=("r1", "r2"))
+_GOOD_SHADOW = ShadowEvalResult(observations=100, concordance_ratio=0.95)
+_LOW_SHADOW = ShadowEvalResult(observations=100, concordance_ratio=0.50)
+_FEW_OBS = ShadowEvalResult(observations=5, concordance_ratio=0.95)
+
+
+def test_decide_verdict_syntactic_invalid_first():
+    """Syntactic failure wins over every other gate failure."""
+    v = decide_verdict(
+        syntactic=_FAIL_GATE, semantic=_FAIL_GATE,
+        property_tests=_OK_COUNT, regression=_FAIL_REG,
+        shadow=_LOW_SHADOW,
+    )
+    assert v == "syntactic_invalid"
+
+
+def test_decide_verdict_semantic_invalid_when_syntactic_passes():
+    v = decide_verdict(
+        syntactic=_OK_GATE, semantic=_FAIL_GATE,
+        property_tests=_OK_COUNT, regression=_FAIL_REG,
+        shadow=_LOW_SHADOW,
+    )
+    assert v == "semantic_invalid"
+
+
+def test_decide_verdict_regression_detected_before_shadow_checks():
+    v = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=_OK_COUNT, regression=_FAIL_REG,
+        shadow=_GOOD_SHADOW,
+    )
+    assert v == "regression_detected"
+
+
+def test_decide_verdict_needs_more_shadow_when_observations_below_threshold():
+    v = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=_OK_COUNT, regression=_OK_COUNT,
+        shadow=_FEW_OBS,
+    )
+    assert v == "needs_more_shadow"
+
+
+def test_decide_verdict_rejected_low_value_when_concordance_below_threshold():
+    v = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=_OK_COUNT, regression=_OK_COUNT,
+        shadow=_LOW_SHADOW,
+    )
+    assert v == "rejected_low_value"
+
+
+def test_decide_verdict_pass_all_gates_when_everything_clears():
+    v = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=_OK_COUNT, regression=_OK_COUNT,
+        shadow=_GOOD_SHADOW,
+    )
+    assert v == "pass_all_gates"
+
+
+def test_decide_verdict_min_shadow_observations_threshold_is_50_default():
+    """Pin the default threshold so a future tweak shows up here."""
+    just_below = ShadowEvalResult(observations=49, concordance_ratio=0.95)
+    just_at = ShadowEvalResult(observations=50, concordance_ratio=0.95)
+    v_below = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=_OK_COUNT, regression=_OK_COUNT,
+        shadow=just_below,
+    )
+    v_at = decide_verdict(
+        syntactic=_OK_GATE, semantic=_OK_GATE,
+        property_tests=_OK_COUNT, regression=_OK_COUNT,
+        shadow=just_at,
+    )
+    assert v_below == "needs_more_shadow"
+    assert v_at == "pass_all_gates"
+
+
+# --- validate_candidate end-to-end ---------------------------------
+
+def test_validate_candidate_assembles_full_report():
+    report = validate_candidate(
+        _candidate(),
+        property_tests_input=[{"name": "p1", "passed": True}],
+        regression_input=[],
+        shadow_observations=100,
+        shadow_concordance=0.95,
+        produced_at_iso="2026-05-09T00:00:00Z",
+        execution_backend="cpu",
+    )
+    assert report.candidate_id == "C-1"
+    assert report.schema_version == SOLVER_SYNTHESIS_SCHEMA_VERSION
+    assert report.verdict == "pass_all_gates"
+    assert report.produced_at_iso == "2026-05-09T00:00:00Z"
+    assert report.execution_backend == "cpu"
+    assert report.syntactic.passed is True
+    assert report.shadow_evaluation.observations == 100

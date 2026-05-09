@@ -31,6 +31,17 @@ This is a runtime bridge, not the source of truth. It lives under
      an active write claim unless the other agent has released/handoffed the
      claim or you are working in a separate worktree. New claims record the
      current `git_branch` so status output can expose branch drift.
+   - **Branch-moving git operations MUST go through `Invoke-BridgeGit.ps1`**
+     during autonomous bridge-loop work. Raw `git switch / checkout / merge
+     / rebase / pull` is forbidden when other agents may hold active claims.
+     The wrapper enforces the same-agent + matching-cwd rule and blocks
+     unsafe operations with exit 2; pass-through verbs (status, log, diff,
+     add, commit, push, ...) run unchanged. `-Force` is restricted to
+     operator/system; Claude/Codex agents may NOT bypass the guard.
+   - **Separate git worktrees are the preferred model for real parallel
+     implementation.** Use `git worktree add ../wd-<task> <branch>` so each
+     agent's working tree is independent and a claim's branch state cannot
+     be moved out from under another agent.
 
 3. Publish state after every meaningful step.
    - Use `status` for "I am working on X".
@@ -110,12 +121,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-Agen
 # Keep the human console readable while preserving full JSON output.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1 -MaxUnresolved 10
 
-# Pre-flight check before ANY branch-changing git operation
-# (switch / checkout / rebase / merge / reset --hard).
-# Exit 0 = safe. Exit 2 = another agent holds an active write claim
-# in the shared worktree. Use a separate worktree, wait for release,
-# or pass -Force to override (logs a decision/override audit event).
+# PREFERRED: branch-aware git wrapper. Pass-through for status/log/diff/...;
+# blocks switch/checkout/merge/rebase/pull when another agent holds an
+# active claim. -Force is operator/system only. Use this instead of raw git
+# during autonomous bridge-loop work.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Invoke-BridgeGit.ps1 -Agent claude -- switch main
+
+# Passive pre-flight check (no git execution). Exit 0 = safe, exit 2 =
+# another agent holds an active write claim. Useful for chaining into
+# scripts that need to decide before a branch-moving operation.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeBranchSwitchSafe.ps1 -Agent claude
+
+# End-to-end smoke test of the branch-guard contract. Creates a temporary
+# foreign-agent claim, verifies blocked + pass-through + -Force-rejected
+# behavior, then releases the claim. Run after any change to the guards.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeGuardSmoke.ps1
 
 # Release a task claim.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Release-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Status done -Message "Review complete; 2 medium findings"

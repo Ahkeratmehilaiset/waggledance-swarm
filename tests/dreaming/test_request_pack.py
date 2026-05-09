@@ -248,6 +248,90 @@ def test_build_request_pack_replay_case_ids_empty_when_manifest_none():
     assert pack.replay_case_ids == ()
 
 
+# --- calibration_oscillation linkage (PR #112 fix) -----------------
+# Codex finding 2026-05-09: curriculum.build_curriculum can produce
+# DreamableItem.source_kind == "calibration_oscillation" from
+# workspace_tensions, but build_request_pack used to filter on
+# source_kind == "tension" only. That dropped source_tension_ids,
+# self_model_snippet.workspace_tensions, and replay_case_ids for
+# calibration-oscillation nights. The fix treats both kinds as
+# tension-backed; these tests pin that contract.
+
+def test_calibration_oscillation_item_preserves_tension_id_linkage():
+    """A calibration_oscillation source_kind must contribute its
+    source_id to source_tension_ids — otherwise the dream night
+    silently loses its evidence linkage."""
+    night = _dream_night(target_items=(
+        _dreamable_item("T-osc-1", source_kind="calibration_oscillation"),
+    ))
+    pack = build_request_pack(
+        night=night,
+        self_model={"workspace_tensions": [], "blind_spots": []},
+        cell_manifest={"cell_id": "cell:hex_a"},
+        attention_focus=[],
+        replay_case_manifest=None,
+        **_provenance_kwargs(),
+    )
+    assert pack.source_tension_ids == ("T-osc-1",)
+    assert pack.source_curiosity_ids == ()
+
+
+def test_calibration_oscillation_item_carries_through_to_self_model_snippet():
+    """The self-model snippet must contain the matching workspace
+    tension when the item is a calibration_oscillation, not just a
+    plain tension."""
+    night = _dream_night(target_items=(
+        _dreamable_item("T-osc-1", source_kind="calibration_oscillation"),
+    ))
+    self_model = {
+        "schema_version": 1,
+        "workspace_tensions": [
+            {"tension_id": "T-osc-1", "type": "calibration_drift",
+             "claim": "x", "observation": "y", "severity": "high",
+             "evidence_refs": []},
+            {"tension_id": "T-NOT-IN-NIGHT", "type": "other",
+             "claim": "irrelevant", "observation": "irrelevant",
+             "severity": "low", "evidence_refs": []},
+        ],
+        "scorecard": {},
+        "blind_spots": [],
+    }
+    pack = build_request_pack(
+        night=night,
+        self_model=self_model,
+        cell_manifest={"cell_id": "cell:hex_a"},
+        attention_focus=[],
+        replay_case_manifest=None,
+        **_provenance_kwargs(),
+    )
+    snippet_ids = {
+        t["tension_id"] for t in pack.self_model_snippet["workspace_tensions"]
+    }
+    assert snippet_ids == {"T-osc-1"}
+
+
+def test_calibration_oscillation_item_selects_replay_cases():
+    """replay_case_ids selection must include cases whose
+    source_tension_id matches a calibration_oscillation item, just
+    like for plain tension items."""
+    night = _dream_night(target_items=(
+        _dreamable_item("T-osc-1", source_kind="calibration_oscillation"),
+    ))
+    manifest = {"cases": [
+        {"replay_case_id": "R-osc", "source_tension_id": "T-osc-1"},
+        {"replay_case_id": "R-other", "source_tension_id": "T-OTHER"},
+    ]}
+    pack = build_request_pack(
+        night=night,
+        self_model={"workspace_tensions": [], "blind_spots": []},
+        cell_manifest={"cell_id": "cell:hex_a"},
+        attention_focus=[],
+        replay_case_manifest=manifest,
+        **_provenance_kwargs(),
+    )
+    assert pack.replay_case_ids == ("R-osc",)
+
+
 # --- pack_to_dict + sha round-trip ---------------------------------
 
 def test_pack_to_dict_round_trip_sha_matches_stored():

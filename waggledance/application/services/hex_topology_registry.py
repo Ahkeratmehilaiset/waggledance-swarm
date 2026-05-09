@@ -34,6 +34,13 @@ class HexTopologyRegistry:
         # query time so a cell that flips enabled=False after load
         # still gets filtered out.
         self._neighbor_cell_ids: dict[str, tuple[str, ...]] = {}
+        # Phase D Priority 2 Candidate 3 (R18 hex scout): selector
+        # strings are pre-lowercased at load time so select_origin_cell
+        # doesn't pay O(cells × selectors) `.lower()` calls per query.
+        # Stored as plain tuples (not frozensets) because the substring
+        # match `sel in query_lower` requires string semantics.
+        self._lower_domain_selectors: dict[str, tuple[str, ...]] = {}
+        self._lower_tag_selectors: dict[str, tuple[str, ...]] = {}
         self._agents = agents or []
 
         self._load()
@@ -78,6 +85,7 @@ class HexTopologyRegistry:
                 self._coord_to_cell[coord] = cell_id
 
             self._build_neighbor_id_cache()
+            self._build_selector_index()
             self._map_agents()
             self._validate()
             log.info(
@@ -103,6 +111,21 @@ class HexTopologyRegistry:
                     nids.append(nid)
             cache[cell_id] = tuple(nids)
         self._neighbor_cell_ids = cache
+
+    def _build_selector_index(self) -> None:
+        """Pre-lowercase every domain/tag selector at load time.
+        select_origin_cell() does substring matching against the
+        query (`sel in query_lower`), so we still need string values,
+        not a token-inverted index — but the per-call `.lower()` per
+        selector per cell was the dominant cost on a 7-cell config."""
+        self._lower_domain_selectors = {
+            cell_id: tuple(s.lower() for s in cell.domain_selectors)
+            for cell_id, cell in self._cells.items()
+        }
+        self._lower_tag_selectors = {
+            cell_id: tuple(s.lower() for s in cell.tag_selectors)
+            for cell_id, cell in self._cells.items()
+        }
 
     def _map_agents(self) -> None:
         """Map agents to cells based on domain/tag selectors."""
@@ -187,7 +210,13 @@ class HexTopologyRegistry:
         return neighbors
 
     def select_origin_cell(self, query: str, intent: str = "") -> str | None:
-        """Select the best origin cell for a query based on domain fit."""
+        """Select the best origin cell for a query based on domain fit.
+
+        Uses pre-lowercased selectors built at load time
+        (_build_selector_index) so per-query work is just two
+        `.lower()` calls + substring scans — no per-selector
+        `.lower()` allocations.
+        """
         if not self._cells:
             return None
 
@@ -197,24 +226,25 @@ class HexTopologyRegistry:
         query_lower = query.lower()
         intent_lower = intent.lower()
 
+        domain_index = self._lower_domain_selectors
+        tag_index = self._lower_tag_selectors
+        cell_agents = self._cell_agents
+
         for cell_id, cell in self._cells.items():
             if not cell.enabled:
                 continue
 
             score = 0.0
 
-            # Domain selector match against query terms
-            for sel in cell.domain_selectors:
-                if sel.lower() in query_lower or sel.lower() in intent_lower:
+            for sel in domain_index.get(cell_id, ()):
+                if sel in query_lower or sel in intent_lower:
                     score += 2.0
 
-            # Tag selector match
-            for sel in cell.tag_selectors:
-                if sel.lower() in query_lower or sel.lower() in intent_lower:
+            for sel in tag_index.get(cell_id, ()):
+                if sel in query_lower or sel in intent_lower:
                     score += 1.5
 
-            # Agent count as tiebreaker (prefer cells with more agents)
-            agent_count = len(self._cell_agents.get(cell_id, []))
+            agent_count = len(cell_agents.get(cell_id, []))
             score += agent_count * 0.01
 
             if score > best_score:

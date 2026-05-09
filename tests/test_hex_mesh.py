@@ -273,6 +273,100 @@ class TestNeighborIdCache:
         finally:
             reg._cells[target].enabled = True
 
+    def test_selector_index_lowercases_every_domain_and_tag_selector(self):
+        """Phase D Priority 2 Cand 3: pre-lowercased index built at
+        load time so select_origin_cell doesn't pay O(cells × selectors)
+        `.lower()` per query."""
+        reg = self._registry()
+        for cell_id, cell in reg.cells.items():
+            lowered_domain = reg._lower_domain_selectors.get(cell_id)
+            assert lowered_domain is not None, f"missing domain index for {cell_id}"
+            assert lowered_domain == tuple(
+                s.lower() for s in cell.domain_selectors
+            ), f"{cell_id} domain index drift"
+            lowered_tag = reg._lower_tag_selectors.get(cell_id)
+            assert lowered_tag is not None, f"missing tag index for {cell_id}"
+            assert lowered_tag == tuple(
+                s.lower() for s in cell.tag_selectors
+            ), f"{cell_id} tag index drift"
+
+    def test_select_origin_cell_unchanged_routing_decisions(self):
+        """The pre-lowercased index path must produce identical
+        routing decisions on the existing query corpus — pin the
+        answers so a future selector change doesn't silently move
+        a query off its current cell."""
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
+        # Snapshot the routing decisions for the bench fixture's query
+        # samples — these are the routes the prior recompute-on-call
+        # implementation produced.
+        expected = {
+            "bee hive swarm weather safety": "bee_ops",
+            "energy hvac indoor comfort": "home_comfort",
+            "factory maintenance quality inspection": "production",
+            "supply chain property delivery": "logistics",
+            "fire alarm cyber safety": "safety_security",
+            "general dispatch core status": "hub",
+        }
+        for query, expected_cell in expected.items():
+            assert reg.select_origin_cell(query) == expected_cell, (
+                f"routing changed for {query!r}: got {reg.select_origin_cell(query)!r}, "
+                f"expected {expected_cell!r}"
+            )
+
+    def test_select_origin_cell_intent_argument_still_contributes(self):
+        """The `intent` argument is OR'd with `query` for substring
+        match — pin that the lowercased index preserves this."""
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
+        # An intent-only match (query has no selector terms)
+        cell = reg.select_origin_cell("xyz", intent="bee hive operations")
+        assert cell == "bee_ops"
+
+    def test_select_origin_cell_disabled_cell_skipped(self):
+        """Cell.enabled is consulted at query time (not cached at load
+        time), so flipping enabled=False after load excludes the cell
+        from selection even though its selector index was built."""
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
+        # Sanity: bee_ops would normally win
+        assert reg.select_origin_cell("bee hive") == "bee_ops"
+        # Disable bee_ops; selection must move elsewhere
+        reg._cells["bee_ops"].enabled = False
+        try:
+            cell = reg.select_origin_cell("bee hive")
+            assert cell != "bee_ops"
+        finally:
+            reg._cells["bee_ops"].enabled = True
+
+    def test_select_origin_cell_repeated_queries_are_cheap(self):
+        """Regression guard: 2k repeated select_origin_cell calls
+        must stay under the 10ms operator threshold per call (i.e.,
+        20s aggregate at the hard cap, but realistically << 1s).
+        Codex scout BEFORE measured 65.19 ms / 2k = ~33 µs per call;
+        the pre-lowercase optimization should bring this down."""
+        import time
+        reg = self._registry()
+        queries = [
+            "bee hive swarm weather safety",
+            "energy hvac indoor comfort",
+            "factory maintenance quality inspection",
+            "supply chain property delivery",
+            "fire alarm cyber safety",
+            "general dispatch core status",
+        ]
+        start = time.perf_counter()
+        for i in range(2000):
+            reg.select_origin_cell(queries[i % len(queries)])
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        # 100ms is generous; both BEFORE and AFTER on this machine
+        # are well under that. This catches catastrophic regressions
+        # (e.g. accidentally re-introducing per-query .lower()).
+        assert elapsed_ms < 100.0, (
+            f"2000 select_origin_cell took {elapsed_ms:.2f}ms — "
+            f"expected sub-100ms after Cand 3 selector index"
+        )
+
     def test_get_neighbor_cells_repeated_lookups_are_cheap(self):
         """Regression guard for the headline hex scaling property:
         20k repeated get_neighbor_cells calls must complete in well

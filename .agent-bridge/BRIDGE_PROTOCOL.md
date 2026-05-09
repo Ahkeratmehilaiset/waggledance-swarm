@@ -210,6 +210,19 @@ operation lock / lease for TOCTOU).
      internal iteration.
    - The agent running the iteration owns the fixes it discovers unless
      that would conflict with another active write claim.
+   - **Process-isolated three-role review (R20.5, R16 ratification).**
+     Use `.agent-bridge/bin/Invoke-RoleReview.ps1 -Target <pr|branch>`
+     to run architect, security, and reliability as three independent
+     processes that emit three separate sub-task bridge events plus
+     one synthesis event. The synthesis event references all three
+     sub-task_ids in its message body so disagreement surfaces
+     visibly. The legacy "three labels in one Codex paragraph"
+     pattern (architect: ... ; security: ... ; reliability: ...) is
+     **deprecated** because the three perspectives collapse into one
+     pass with no tooling-level signal that the review degraded. New
+     reviews touching bridge/protocol/source SHOULD use the wrapper.
+     A `-DryRun` mode is available for smoke testing the wiring
+     without executing the orchestrator subprocess.
 
 ## Commands
 

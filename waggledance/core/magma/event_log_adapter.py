@@ -153,10 +153,15 @@ class EventLogAdapter:
 
     def count_by_type(self, since: float = None) -> Dict[str, int]:
         """Count events by type in the local buffer."""
+        # Snapshot to a list under the lock — `self._buffer` is a deque
+        # since Phase D Candidate 3 (#167) and iterating it after the
+        # lock releases would race with a concurrent log_event() and
+        # raise RuntimeError: deque mutated during iteration.
         with self._lock:
-            entries = self._buffer if not since else [
-                e for e in self._buffer if e.timestamp >= since
-            ]
+            if since:
+                entries = [e for e in self._buffer if e.timestamp >= since]
+            else:
+                entries = list(self._buffer)
         counts: Dict[str, int] = {}
         for e in entries:
             counts[e.event_type] = counts.get(e.event_type, 0) + 1
@@ -164,10 +169,12 @@ class EventLogAdapter:
 
     def get_quality_distribution(self, since: float = None) -> Dict[str, int]:
         """Count case events by quality grade."""
+        # Snapshot under the lock — see count_by_type() comment.
         with self._lock:
-            entries = self._buffer if not since else [
-                e for e in self._buffer if e.timestamp >= since
-            ]
+            if since:
+                entries = [e for e in self._buffer if e.timestamp >= since]
+            else:
+                entries = list(self._buffer)
         dist: Dict[str, int] = {}
         for e in entries:
             if e.quality_grade:

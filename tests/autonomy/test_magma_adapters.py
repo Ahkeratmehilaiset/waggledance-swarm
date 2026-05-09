@@ -302,6 +302,47 @@ class TestEventLogAdapter:
         # Newest -> oldest in the retained window
         assert [e.capability_id for e in results] == ["c4", "c3", "c2"]
 
+    def test_count_by_type_safe_under_concurrent_append(self):
+        """Regression for Codex PR #167 finding: with deque, iterating
+        the buffer after releasing the lock races with a concurrent
+        log_event() and raises RuntimeError: deque mutated during
+        iteration. The fix snapshots list(self._buffer) under the
+        lock. This test runs a writer thread alongside repeated
+        count_by_type() calls and asserts no RuntimeError leaks out."""
+        import threading
+
+        class _NoopLedger:
+            def log(self, **kwargs):
+                pass
+
+        el = EventLogAdapter(legacy_ledger=_NoopLedger())
+        stop = threading.Event()
+        errors: list[BaseException] = []
+
+        def writer():
+            i = 0
+            while not stop.is_set():
+                try:
+                    el.log_event("evt", capability_id=f"c{i}")
+                except BaseException as exc:  # pragma: no cover
+                    errors.append(exc)
+                    return
+                i += 1
+
+        t = threading.Thread(target=writer, daemon=True)
+        t.start()
+        try:
+            for _ in range(2000):
+                # Both methods must not raise even while writer
+                # is mutating the deque.
+                el.count_by_type()
+                el.get_quality_distribution()
+        finally:
+            stop.set()
+            t.join(timeout=2.0)
+
+        assert not errors, f"writer thread crashed: {errors!r}"
+
     def test_log_event_avoids_O_N_trim_under_burst(self):
         """Regression guard for the headline win: bursting 5x maxlen
         events must complete in well under the old impl's tail-copy

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "r18-hex-latency-snapshot-2026-05-09",
+  "purpose": "Repeatable Phase D Priority 2 hex latency scout fixture",
+  "synthetic_topology": {
+    "cell_count": 4096,
+    "ring_neighbor_degree": 6,
+    "child_count_per_parent": 2
+  },
+  "workload": {
+    "ring_messages": 20000,
+    "relation_queries": 20000,
+    "registry_neighbor_queries": 20000,
+    "registry_origin_queries": 2000
+  },
+  "registry_config_path": "configs/hex_cells.yaml",
+  "query_samples": [
+    "bee hive swarm weather safety",
+    "energy hvac indoor comfort",
+    "factory maintenance quality inspection",
+    "supply chain property delivery",
+    "fire alarm cyber safety",
+    "general dispatch core status"
+  ]
+}

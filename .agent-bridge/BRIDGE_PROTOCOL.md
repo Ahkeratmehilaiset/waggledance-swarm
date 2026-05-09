@@ -16,6 +16,11 @@ This is a runtime bridge, not the source of truth. It lives under
      continuity section that marks incoming requests to you as `OPEN`
      or `answered`, and outgoing requests you sent as `WAITING-FOR-*`
      or `answered-by-*`, based on matching `task_id` values.
+   - A normal read automatically emits `message/received` for each
+     latest incoming request-like event. This proves "seen by the
+     receiving agent" without pretending the request is complete.
+     Use `-NoAckReceived` only for audits that must not mutate bridge
+     runtime state.
 
 2. Claim write work before editing.
    - A write task must have an active claim with `write_scope`.
@@ -49,6 +54,9 @@ From the repo root:
 ```powershell
 # See recent cross-agent state and active claims.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent codex -ShowClaims -Tail 40
+
+# Read without writing received ACKs.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent codex -ShowClaims -NoAckReceived -Tail 40
 
 # Claim a write task.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Claim-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Summary "Read-only review of Claude diff" -Mode read-only
@@ -147,6 +155,13 @@ protocol update) reports the latest `liveness` and `heartbeat` per
 agent, plus any open `wake_request` events, so the operator can see
 loop state at a glance.
 
+A `wake_request` is no longer considered open after the target agent
+emits any later bridge activity (`liveness`, `heartbeat`, `message`,
+`done`, `finding`, `test`, `decision`, `handoff`, `blocked`, `claim`,
+or `release`) or after a later `wake_request/closed` event with the
+same `task_id`. The continuity section may still show unresolved work;
+the wake list is only for "the target has not woken yet."
+
 ### What does NOT change
 
 - Pure-test exception in the GPT consensus gate is unchanged.
@@ -160,6 +175,31 @@ It gives the loop a shared vocabulary for "I'm awake / I'm asleep /
 please wake X" so the operator pumps the loop with full context
 rather than guessing whose turn it is.
 
+## Received ACK Protocol (added 2026-05-09)
+
+`Read-AgentBridge.ps1 -Agent <agent>` records a lightweight received
+acknowledgement for each latest incoming request-like event by writing:
+
+- `type`: `message`
+- `status`: `received`
+- `task_id`: the original request's exact `task_id`
+- `to`: the original sender
+- `payload.request_ts_utc`: the timestamp of the request being acked
+
+This separates three states that used to collapse together:
+
+- `WAITING-FOR-*`: the target has not acknowledged the latest request.
+- `RECEIVED-BY-*`: the target read the latest request, but has not
+  answered it.
+- `answered-by-*`: the target emitted a non-ACK event with the same
+  `task_id`.
+
+`message/received` never counts as an answer. Agents still close work
+with the normal `done`, `finding`, `blocked`, `handoff`, `test`, or
+other substantive event using the same `task_id`. The ACK is deduped by
+`agent + task_id + request_ts_utc` so repeated bridge reads do not spam
+the event log for the same request.
+
 ## Files
 
 - `.agent-bridge/shared/events.jsonl` - append-only merged event stream.
@@ -169,6 +209,11 @@ rather than guessing whose turn it is.
 - `.agent-bridge/work_queue/claims/*.json` - active task claims.
 - `.agent-bridge/work_queue/done/*.json` - released task claims.
 - `.agent-bridge/inbox/<agent>/*.md` - one-off messages an agent should read.
+
+`Read-AgentBridge.ps1` reads the last 50000 events for continuity
+analysis by default. This is intentionally larger than the original
+5000-line window so two agents emitting heartbeat events every minute do
+not silently age active task history out of the continuity view.
 
 ## Startup Instruction For Both Agents
 

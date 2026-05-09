@@ -18,7 +18,7 @@ Reproduce:
 .\.venv\Scripts\python.exe iterations\codex_scout_tasks\hex_latency_microbench_2026_05_09.py --out-json .codex-audit\r18_hex_latency_microbench.json
 ```
 
-Snapshot hash from this run: `2a03ff973bf1`. Keep the snapshot manifest unchanged for before/after comparisons.
+Snapshot hash from this run: `df1e5b1e3a5e`. The benchmark computes this from canonical JSON content rather than raw file bytes, so CRLF/LF checkout differences do not change the before/after snapshot identity. Keep the snapshot manifest unchanged for before/after comparisons.
 
 The script is pure Python and uses no provider, LLM, Ollama, ChromaDB, network path, or product data writes.
 

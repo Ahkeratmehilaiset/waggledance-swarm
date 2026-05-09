@@ -80,10 +80,10 @@ def from_mentor_context_pack(pack: dict) -> list[ExternalFact]:
         content = str(item.get("content", ""))
         if not content:
             continue
+        claim = content[:500]
         out.append(ExternalFact(
-            fact_id=_fact_id(claim=content[:200],
-                              source_kind="mentor_context_pack"),
-            kind="report", claim=content[:500],
+            fact_id=_fact_id(claim=claim, source_kind="mentor_context_pack"),
+            kind="report", claim=claim,
             confidence=0.6,
             source_refs=(str(item.get("item_id", "")),),
         ))

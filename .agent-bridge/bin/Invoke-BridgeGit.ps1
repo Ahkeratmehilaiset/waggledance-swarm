@@ -130,6 +130,25 @@ function Format-ClaimLine {
         [string]$Claim.mode, $branch, $scope, $cwd)
 }
 
+function Invoke-GitAndExit {
+    param([Parameter(Mandatory)] [string[]] $ArgsToGit)
+
+    # Preserve native git behavior: stdout/stderr pass through and
+    # the script exits with git's raw exit code. With
+    # $ErrorActionPreference='Stop', native non-zero exits can become
+    # terminating NativeCommandError exceptions before we can forward
+    # $LASTEXITCODE, which broke smoke tests for expected git failures.
+    $previousEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & git @ArgsToGit
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousEAP
+    }
+    exit $code
+}
+
 # ── Pass-through path: non-branch-moving verbs run unchanged ──────
 # Codex finding 2026-05-09T12:26Z: do NOT wrap the git call in a
 # function that captures output, otherwise pass-through verbs
@@ -137,8 +156,7 @@ function Format-ClaimLine {
 # absorbs git's stdout. Run git at top level and exit with its
 # raw $LASTEXITCODE.
 if (-not $isBranchMoving) {
-    & git @GitArgs
-    exit $LASTEXITCODE
+    Invoke-GitAndExit -ArgsToGit $GitArgs
 }
 
 # ── Branch-moving path: enforce the guard ─────────────────────────
@@ -171,8 +189,7 @@ foreach ($claim in $claims) {
 if ($blocking.Count -eq 0) {
     # Safe: run the git command at top level so its stdout passes
     # through unchanged.
-    & git @GitArgs
-    exit $LASTEXITCODE
+    Invoke-GitAndExit -ArgsToGit $GitArgs
 }
 
 # ── Blocked: surface the conflict ─────────────────────────────────
@@ -232,5 +249,4 @@ if (Test-Path -LiteralPath $writeAgentEvent) {
         | Out-Null
 }
 
-& git @GitArgs
-exit $LASTEXITCODE
+Invoke-GitAndExit -ArgsToGit $GitArgs

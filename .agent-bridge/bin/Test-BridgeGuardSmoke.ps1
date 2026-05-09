@@ -5,9 +5,10 @@
 
 .DESCRIPTION
     Exercises the bridge branch-guard contract with a temporary
-    foreign-agent claim. Avoids destructive git operations — uses
-    `git status` (pass-through) and `git switch -` against the
-    current branch (no-op) to verify the guard fires correctly.
+    foreign-agent claim. Avoids destructive git operations: uses
+    `git status` (pass-through) and `git switch --no-guess` against
+    a deliberately nonexistent branch to verify guard pass-through
+    without changing the current branch.
 
     Exit code 0 on all expectations met, 1 otherwise. Cleanup is
     always attempted (the temporary claim is released even on
@@ -62,20 +63,19 @@ try {
     Write-Host ''
     Write-Host '2. Branch-moving verb with no active claims:'
     # We cannot safely run a real branch-changing command in a smoke
-    # test, so we verify the guard ALLOWS the call through by passing
-    # `--help` to a wrapped verb. `git switch --help` runs a
-    # documentation-style command (may launch help; on minimal env it
-    # exits non-zero with a clean message), but importantly it
-    # bypasses the BLOCKED branch in our wrapper. We treat ANY exit
-    # other than 2 as "guard passed through to git".
+    # test, so we verify the guard ALLOWS the call through by asking
+    # git to switch to a deliberately impossible branch. Git should
+    # fail quickly, but importantly the wrapper must not produce the
+    # BLOCKED branch-guard message. Avoid `git switch --help` here:
+    # on some Windows environments help can invoke a pager and hang.
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $output = (& $invokeGit -Agent claude -- switch --help 2>&1) -join "`n"
+    $output = (& $invokeGit -Agent claude -- switch --no-guess __bridge_guard_nonexistent_branch__ 2>&1) -join "`n"
     $exit = $LASTEXITCODE
     $ErrorActionPreference = $prevEAP
     $blockedByGuard = ($output -match 'BLOCKED|branch-moving git')
     Add-Check -Name 'no-claim => guard passes through to git' `
-        -Passed (-not $blockedByGuard) `
+        -Passed ($exit -ne 2 -and -not $blockedByGuard) `
         -Detail "exit=$exit, guard-blocked: $blockedByGuard"
 
     # ── 3: foreign-agent active claim => block branch-move ───────

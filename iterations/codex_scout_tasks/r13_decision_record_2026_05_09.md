@@ -119,7 +119,12 @@ that doesn't touch the bridge code itself.
 
 ## Follow-up tasks
 
-- **R13.5 - worktree split** (operator-driven): create
+- **R13.5a - session bootstrap helper** (landed after R13): add
+  `.agent-bridge/bin/Start-AgentBridgeSession.ps1` and
+  `Test-BridgeSessionBootstrapSmoke.ps1` so a reboot/new-shell agent can
+  restore the shared runtime root, run id, liveness marker, and bridge status
+  from one dot-sourced command instead of copying a manual command block.
+- **R13.5b - worktree split** (operator-driven): create
   `C:\Python\project2-claude` + `project2-codex` worktrees; create
   `C:\Python\project2-bridge-runtime\{shared,work_queue,outbox,inbox}`;
   set `AGENT_BRIDGE_RUNTIME_ROOT` for both agent shells.

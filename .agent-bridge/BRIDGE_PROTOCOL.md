@@ -188,6 +188,10 @@ From the repo root:
 # See recent cross-agent state and active claims.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent codex -ShowClaims -Tail 40
 
+# Preferred reboot/new-shell bootstrap. Dot-source this in the shell that will
+# launch the agent so AGENT_BRIDGE_RUNTIME_ROOT and AGENT_BRIDGE_RUN_ID persist.
+. .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex
+
 # Read without writing received ACKs.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent codex -ShowClaims -NoAckReceived -Tail 40
 
@@ -228,6 +232,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-Bri
 # foreign-agent claim, verifies blocked + pass-through + -Force-rejected
 # behavior, then releases the claim. Run after any change to the guards.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeGuardSmoke.ps1
+
+# End-to-end smoke test of the reboot bootstrap helper. Uses a temp runtime
+# root and verifies the helper creates bridge dirs and emits liveness/active.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeSessionBootstrapSmoke.ps1
 
 # Release a task claim.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Release-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Status done -Message "Review complete; 2 medium findings"

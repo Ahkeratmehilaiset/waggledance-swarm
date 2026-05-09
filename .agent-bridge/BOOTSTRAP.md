@@ -46,6 +46,18 @@ env var explicitly so the current session is unambiguous.
 
 ## Claude Code shell
 
+Preferred one-command bootstrap. Dot-source it so the environment variables
+remain in the shell that launches Claude Code:
+
+```powershell
+cd C:\Python\project2-master
+. .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent claude
+```
+
+Then launch Claude Code from the same shell.
+
+Manual fallback:
+
 ```powershell
 cd C:\Python\project2-master
 $env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
@@ -65,6 +77,18 @@ above.
 
 ## Codex shell
 
+Preferred one-command bootstrap. Dot-source it so the environment variables
+remain in the shell that launches Codex:
+
+```powershell
+cd C:\Python\project2-master
+. .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex
+```
+
+Then launch Codex from the same shell.
+
+Manual fallback:
+
 ```powershell
 cd C:\Python\project2-master
 $env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
@@ -79,6 +103,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-Agen
 
 Then launch Codex from the same shell. The session must keep the env vars
 above.
+
+## Bootstrap smoke test
+
+After bridge bootstrap changes, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeSessionBootstrapSmoke.ps1
+```
+
+This uses a temporary runtime root, proves `Start-AgentBridgeSession.ps1`
+creates the shared bridge directories, emits `liveness/active`, and leaves the
+production runtime root untouched.
 
 ## Resume algorithm
 

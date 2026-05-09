@@ -27,6 +27,19 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
 }
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 
+# R15: opportunistic stale-claim sweep on every read. Cheap (only
+# walks the small active-claims dir). The sweep emits its own
+# release/stale_lease events that downstream readers see.
+$staleSweep = Join-Path $PSScriptRoot 'Invoke-StaleClaimSweep.ps1'
+if (Test-Path -LiteralPath $staleSweep -PathType Leaf) {
+    try {
+        & $staleSweep -Quiet | Out-Null
+    } catch {
+        # Sweep is best-effort: a sweep failure must NOT prevent
+        # the read from showing the rest of the bridge state.
+    }
+}
+
 function Read-BridgeEventObjects {
     # Internal review fix R1/A1 (2026-05-09): default 5000 was too low.
     # Heartbeat traffic at 60s * 2 agents is about 2880 events/day, so the

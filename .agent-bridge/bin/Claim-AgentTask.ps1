@@ -108,17 +108,25 @@ if (-not $RunId) {
     $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
 }
 
+$nowUtc = (Get-Date).ToUniversalTime().ToString('o')
 $claim = [ordered]@{
-    claimed_at_utc = (Get-Date).ToUniversalTime().ToString('o')
-    agent          = $Agent
-    task_id        = $TaskId
-    summary        = $Summary
-    mode           = $Mode
-    write_scope    = @($WriteScope)
-    run_id         = $RunId
-    pid            = $PID
-    cwd            = (Get-Location).Path
-    git_branch     = Get-CurrentGitBranch
+    claimed_at_utc      = $nowUtc
+    # R15: stale-claim-lease. last_heartbeat_utc is bumped by
+    # Send-Liveness.ps1 on heartbeat/liveness-active events for
+    # this agent; Invoke-StaleClaimSweep.ps1 archives claims whose
+    # heartbeat is older than AGENT_BRIDGE_STALE_LEASE_SECONDS
+    # (default 300s). On creation it equals claimed_at_utc so a
+    # claim that's never heart-beated still has a finite lease.
+    last_heartbeat_utc  = $nowUtc
+    agent               = $Agent
+    task_id             = $TaskId
+    summary             = $Summary
+    mode                = $Mode
+    write_scope         = @($WriteScope)
+    run_id              = $RunId
+    pid                 = $PID
+    cwd                 = (Get-Location).Path
+    git_branch          = Get-CurrentGitBranch
 }
 $json = ($claim | ConvertTo-Json -Depth 8)
 

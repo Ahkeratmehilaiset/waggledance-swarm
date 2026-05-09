@@ -87,8 +87,8 @@ function Format-BridgeText {
     return ($text.Substring(0, [Math]::Max(0, $MaxLength - 3)) + '...')
 }
 
-$events = Read-EventObjects -Path $eventsPath -MaxLines $Tail
-$claims = Read-ClaimObjects
+$events = @(Read-EventObjects -Path $eventsPath -MaxLines $Tail)
+$claims = @(Read-ClaimObjects)
 $agents = @('claude','codex')
 
 $contributions = @()

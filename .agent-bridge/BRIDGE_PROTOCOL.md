@@ -26,6 +26,11 @@ This is a runtime bridge, not the source of truth. It lives under
    - A write task must have an active claim with `write_scope`.
    - Do not edit a path covered by another active write claim.
    - Read-only review can use `-Mode read-only` and does not block writers.
+   - The Git branch is shared workspace state. Do not switch branches,
+     rebase, merge, or otherwise move the worktree while another agent has
+     an active write claim unless the other agent has released/handoffed the
+     claim or you are working in a separate worktree. New claims record the
+     current `git_branch` so status output can expose branch drift.
 
 3. Publish state after every meaningful step.
    - Use `status` for "I am working on X".
@@ -60,6 +65,10 @@ This is a runtime bridge, not the source of truth. It lives under
      `handoff/*`, `test/*`, or `message/answered`.
    - If an agent disagrees, it must say why and propose the smallest safe
      alternative. Silence is treated as unresolved work.
+   - If the original requester later proves the request is obsolete, it may
+     close the request with the same `task_id` using `done/superseded`,
+     `done/closed`, `decision/superseded`, or `release/done`. Status tools
+     report this as `closed`, not as an answer from the target agent.
 
 7. Alternate review loops.
    - For meaningful bridge/protocol/source changes, run the
@@ -97,6 +106,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Write-Ag
 # See active claims, unresolved requests, contribution counts, recent
 # substantive events, and next-action signals.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1
+
+# Keep the human console readable while preserving full JSON output.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1 -MaxUnresolved 10
 
 # Release a task claim.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Release-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Status done -Message "Review complete; 2 medium findings"

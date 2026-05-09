@@ -274,3 +274,61 @@ class TestEventLogAdapter:
         el.log_event("test")
         stats = el.stats()
         assert isinstance(stats, dict)
+
+    def test_buffer_caps_at_max_and_keeps_newest(self):
+        """The deque(maxlen) swap (Phase D Candidate 3) must drop the
+        OLDEST entries on overflow, keeping the newest _max_buffer.
+        Pin this contract so any future buffer change can't silently
+        flip eviction direction."""
+        el = EventLogAdapter(path=":memory:")
+        el._buffer = type(el._buffer)(maxlen=5)
+        el._max_buffer = 5
+        for i in range(8):
+            el.log_event("evt", source="src", capability_id=f"c{i}")
+        assert len(el._buffer) == 5
+        cap_ids = [e.capability_id for e in el._buffer]
+        # First three (c0,c1,c2) evicted; newest five remain in order.
+        assert cap_ids == ["c3", "c4", "c5", "c6", "c7"]
+
+    def test_query_returns_newest_first_after_overflow(self):
+        """`query()` reverses the buffer so callers see most-recent
+        first. Verify this still holds after deque eviction."""
+        el = EventLogAdapter(path=":memory:")
+        el._buffer = type(el._buffer)(maxlen=3)
+        el._max_buffer = 3
+        for i in range(5):
+            el.log_event("evt", capability_id=f"c{i}")
+        results = el.query(limit=10)
+        # Newest -> oldest in the retained window
+        assert [e.capability_id for e in results] == ["c4", "c3", "c2"]
+
+    def test_log_event_avoids_O_N_trim_under_burst(self):
+        """Regression guard for the headline win: bursting 5x maxlen
+        events must complete in well under the old impl's tail-copy
+        cost. Old impl trimmed via `self._buffer[-N:]` on every
+        over-cap append (O(N) per append). New impl is O(1) per
+        append. Uses a no-op legacy ledger so the timing measures
+        the buffer path only — same shape the microbench uses."""
+        import time
+
+        class _NoopLedger:
+            def log(self, **kwargs):
+                pass
+
+        el = EventLogAdapter(legacy_ledger=_NoopLedger())
+        # Default maxlen is 1000; burst 5000 events so the old impl
+        # would have done 4000 tail-copy trims.
+        n = 5000
+        start = time.perf_counter()
+        for i in range(n):
+            el.log_event("burst", capability_id=f"c{i}")
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        assert len(el._buffer) == 1000
+        # 50ms is generous headroom; old impl on the scout machine
+        # measured ~81ms (with the same no-op ledger), so deque
+        # should beat that comfortably. Anything past 50ms means
+        # the trim path regressed back to O(N).
+        assert elapsed_ms < 50.0, (
+            f"5000-event burst took {elapsed_ms:.2f}ms — "
+            f"expected O(1) per-append trim with deque"
+        )

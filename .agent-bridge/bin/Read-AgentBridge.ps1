@@ -50,6 +50,20 @@ function Test-IsAnswerEvent {
     return @('done','finding','decision','blocked','handoff','test','claim','release') -contains $type
 }
 
+function Test-IsRequesterClosureEvent {
+    param([Parameter(Mandatory)] [object] $Event)
+    $status = [string]$Event.status
+    $type = [string]$Event.type
+    if ($type -eq 'message') {
+        return @('closed','superseded','cancelled','canceled') -contains $status
+    }
+    if (@('done','release','decision') -notcontains $type) { return $false }
+    return @(
+        'done','closed','superseded','merged','abandoned',
+        'completed','approved','cancelled','canceled'
+    ) -contains $status
+}
+
 function Send-ReceivedAck {
     param(
         [Parameter(Mandatory)] [string] $AgentName,
@@ -199,6 +213,23 @@ if ($Agent -and -not $NoContinuity) {
                     Write-Host ("  answered {0}: request {1}/{2} -> {3}/{4}" -f `
                         $taskId, $req.type, $req.status, $last.type, $last.status)
                 } else {
+                    $closure = @(
+                        $allEvents |
+                            Where-Object {
+                                [string]$_.agent -eq [string]$req.agent -and
+                                [string]$_.task_id -eq $taskId -and
+                                [string]$_.ts_utc -gt [string]$req.ts_utc -and
+                                (Test-IsRequesterClosureEvent -Event $_)
+                            } |
+                            Sort-Object ts_utc |
+                            Select-Object -Last 1
+                    )
+                    if ($closure.Count -gt 0) {
+                        $last = $closure[-1]
+                        Write-Host ("  closed-by-requester {0}: request {1}/{2} -> {3}/{4}" -f `
+                            $taskId, $req.type, $req.status, $last.type, $last.status)
+                        continue
+                    }
                     $receivedSuffix = ''
                     if ($receivedByTask.ContainsKey($taskId) -and $receivedByTask[$taskId]) {
                         $receivedSuffix = ' (received)'
@@ -249,6 +280,23 @@ if ($Agent -and -not $NoContinuity) {
                     Write-Host ("  answered-by-{0} {1}: request {2}/{3} -> {4}/{5}" -f `
                         $req.to, $taskId, $req.type, $req.status, $last.type, $last.status)
                 } else {
+                    $closure = @(
+                        $allEvents |
+                            Where-Object {
+                                [string]$_.agent -eq $Agent -and
+                                [string]$_.task_id -eq $taskId -and
+                                [string]$_.ts_utc -gt [string]$req.ts_utc -and
+                                (Test-IsRequesterClosureEvent -Event $_)
+                            } |
+                            Sort-Object ts_utc |
+                            Select-Object -Last 1
+                    )
+                    if ($closure.Count -gt 0) {
+                        $last = $closure[-1]
+                        Write-Host ("  closed-by-{0} {1}: request {2}/{3} -> {4}/{5}" -f `
+                            $Agent, $taskId, $req.type, $req.status, $last.type, $last.status)
+                        continue
+                    }
                     $received = @(
                         $allEvents |
                             Where-Object {

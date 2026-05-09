@@ -113,6 +113,18 @@ _MODE_TO_ACTION = {
     "wait": "wait",
 }
 
+# DreamableItem.source_kind values that originate from a workspace
+# tension (and therefore carry a tension_id that the self-model and
+# replay manifest can resolve). curriculum.build_curriculum can emit
+# either "tension" or "calibration_oscillation" — both must be
+# treated as tension-backed when assembling source_tension_ids,
+# self_model snippets, and replay-case selection. Treating only
+# "tension" here was the PR #112 finding (codex 2026-05-09):
+# calibration_oscillation nights silently lost evidence/replay
+# linkage even when the self-model and replay manifest contained
+# the tension.
+_TENSION_BACKED_KINDS: tuple[str, ...] = ("tension", "calibration_oscillation")
+
 
 def _slice_self_model(self_model: dict, tension_ids: Iterable[str]) -> dict:
     """Return a small snippet of the self-model relevant to the given
@@ -165,7 +177,7 @@ def build_request_pack(
     """Build a single DreamRequestPack for one night."""
     items: list[DreamableItem] = list(night.target_items)
     tension_ids = tuple(it.source_id for it in items
-                          if it.source_kind == "tension")
+                          if it.source_kind in _TENSION_BACKED_KINDS)
     curiosity_ids = tuple(it.source_id for it in items
                             if it.source_kind == "curiosity")
     candidate_cell = (night.primary_cells[0]

@@ -26,6 +26,14 @@ class HexTopologyRegistry:
         self._cells: dict[str, HexCellDefinition] = {}
         self._coord_to_cell: dict[HexCoord, str] = {}
         self._cell_agents: dict[str, list] = {}
+        # Phase D Priority 2 Candidate 1 (R18 hex scout): topology is
+        # immutable post-load, so the per-cell ring-1 neighbor IDs can
+        # be cached once instead of recomputing cell.coord.neighbors()
+        # + six _coord_to_cell lookups on every get_neighbor_cells call.
+        # Cache stores IDs only — enabled-state is still consulted at
+        # query time so a cell that flips enabled=False after load
+        # still gets filtered out.
+        self._neighbor_cell_ids: dict[str, tuple[str, ...]] = {}
         self._agents = agents or []
 
         self._load()
@@ -69,6 +77,7 @@ class HexTopologyRegistry:
                 self._cells[cell_id] = cell
                 self._coord_to_cell[coord] = cell_id
 
+            self._build_neighbor_id_cache()
             self._map_agents()
             self._validate()
             log.info(
@@ -79,6 +88,21 @@ class HexTopologyRegistry:
 
         except Exception as e:
             log.warning("Failed to load hex topology: %s", e)
+
+    def _build_neighbor_id_cache(self) -> None:
+        """Precompute ring-1 neighbor cell IDs per cell from the
+        immutable axial topology. Iteration order matches
+        HexCoord.neighbors() so callers see the same neighbor
+        sequence as the prior recompute-on-call implementation."""
+        cache: dict[str, tuple[str, ...]] = {}
+        for cell_id, cell in self._cells.items():
+            nids: list[str] = []
+            for nc in cell.coord.neighbors():
+                nid = self._coord_to_cell.get(nc)
+                if nid and nid != cell_id:
+                    nids.append(nid)
+            cache[cell_id] = tuple(nids)
+        self._neighbor_cell_ids = cache
 
     def _map_agents(self) -> None:
         """Map agents to cells based on domain/tag selectors."""
@@ -146,17 +170,20 @@ class HexTopologyRegistry:
         return list(self._cell_agents.get(cell_id, []))
 
     def get_neighbor_cells(self, cell_id: str) -> list[HexCellDefinition]:
-        """Get ring-1 neighbor cells for a cell."""
-        cell = self._cells.get(cell_id)
-        if not cell:
+        """Get ring-1 neighbor cells for a cell.
+
+        Reads cached neighbor IDs (built once at load time) and looks
+        up the live HexCellDefinition + enabled flag at query time so
+        a runtime enabled=False flip still excludes the cell.
+        """
+        nids = self._neighbor_cell_ids.get(cell_id)
+        if not nids:
             return []
-        neighbors = []
-        for nc in cell.coord.neighbors():
-            nid = self._coord_to_cell.get(nc)
-            if nid and nid != cell_id:
-                ncell = self._cells.get(nid)
-                if ncell and ncell.enabled:
-                    neighbors.append(ncell)
+        neighbors: list[HexCellDefinition] = []
+        for nid in nids:
+            ncell = self._cells.get(nid)
+            if ncell and ncell.enabled:
+                neighbors.append(ncell)
         return neighbors
 
     def select_origin_cell(self, query: str, intent: str = "") -> str | None:

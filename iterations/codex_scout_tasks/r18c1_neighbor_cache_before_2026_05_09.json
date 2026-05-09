@@ -1,0 +1,119 @@
+{
+  "benchmark_id": "r18-hex-latency-microbench-2026-05-09",
+  "counts": {
+    "default_config_cells": 7,
+    "registry_neighbor_queries": 20000,
+    "registry_origin_queries": 2000,
+    "relation_queries": 20000,
+    "ring_messages": 20000,
+    "ring_neighbor_degree": 6,
+    "synthetic_cells": 4096
+  },
+  "operations": [
+    {
+      "count": 20000,
+      "max_ms": 62.0897,
+      "operation": "ring_messaging.deliver_batch ring_request",
+      "p50_ms": 62.0897,
+      "p95_ms": 62.0897,
+      "p99_ms": 62.0897,
+      "samples": 1,
+      "total_ms": 62.0897
+    },
+    {
+      "count": 20000,
+      "max_ms": 61.3268,
+      "operation": "ring_messaging.deliver_batch child_to_parent",
+      "p50_ms": 61.3268,
+      "p95_ms": 61.3268,
+      "p99_ms": 61.3268,
+      "samples": 1,
+      "total_ms": 61.3268
+    },
+    {
+      "count": 20000,
+      "max_ms": 17.4006,
+      "operation": "parent_child_relations.neighbors_of repeated",
+      "p50_ms": 17.4006,
+      "p95_ms": 17.4006,
+      "p99_ms": 17.4006,
+      "samples": 1,
+      "total_ms": 17.4006
+    },
+    {
+      "count": 20000,
+      "max_ms": 199.2934,
+      "operation": "HexTopologyRegistry.get_neighbor_cells repeated",
+      "p50_ms": 199.2934,
+      "p95_ms": 199.2934,
+      "p99_ms": 199.2934,
+      "samples": 1,
+      "total_ms": 199.2934
+    },
+    {
+      "count": 2000,
+      "max_ms": 49.1557,
+      "operation": "HexTopologyRegistry.select_origin_cell repeated",
+      "p50_ms": 49.1557,
+      "p95_ms": 49.1557,
+      "p99_ms": 49.1557,
+      "samples": 1,
+      "total_ms": 49.1557
+    }
+  ],
+  "schema_version": 1,
+  "snapshot_path": "C:\\Python\\project2-master\\iterations\\codex_scout_tasks\\hex_latency_snapshot_2026_05_09.json",
+  "snapshot_sha256_12": "72d580beb304",
+  "threshold_10ms": [
+    {
+      "count": 20000,
+      "max_ms": 62.0897,
+      "operation": "ring_messaging.deliver_batch ring_request",
+      "p50_ms": 62.0897,
+      "p95_ms": 62.0897,
+      "p99_ms": 62.0897,
+      "samples": 1,
+      "total_ms": 62.0897
+    },
+    {
+      "count": 20000,
+      "max_ms": 61.3268,
+      "operation": "ring_messaging.deliver_batch child_to_parent",
+      "p50_ms": 61.3268,
+      "p95_ms": 61.3268,
+      "p99_ms": 61.3268,
+      "samples": 1,
+      "total_ms": 61.3268
+    },
+    {
+      "count": 20000,
+      "max_ms": 17.4006,
+      "operation": "parent_child_relations.neighbors_of repeated",
+      "p50_ms": 17.4006,
+      "p95_ms": 17.4006,
+      "p99_ms": 17.4006,
+      "samples": 1,
+      "total_ms": 17.4006
+    },
+    {
+      "count": 20000,
+      "max_ms": 199.2934,
+      "operation": "HexTopologyRegistry.get_neighbor_cells repeated",
+      "p50_ms": 199.2934,
+      "p95_ms": 199.2934,
+      "p99_ms": 199.2934,
+      "samples": 1,
+      "total_ms": 199.2934
+    },
+    {
+      "count": 2000,
+      "max_ms": 49.1557,
+      "operation": "HexTopologyRegistry.select_origin_cell repeated",
+      "p50_ms": 49.1557,
+      "p95_ms": 49.1557,
+      "p99_ms": 49.1557,
+      "samples": 1,
+      "total_ms": 49.1557
+    }
+  ]
+}

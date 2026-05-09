@@ -114,6 +114,34 @@ try {
         -Passed $sawReleaseEvent `
         -Detail "marker present in events.jsonl tail"
 
+    # Direct claim acquisition must also sweep stale blockers before
+    # conflict checks. This is the continuity path used when an agent
+    # wakes and immediately claims the next write task.
+    Write-Host ''
+    Write-Host '1b. Direct claim acquisition clears stale conflicting claims:'
+    & $claimTask -Agent claude -TaskId 'r15-smoke-direct-stale-owner' `
+        -Summary 'R15 smoke: stale conflicting owner' -Mode write `
+        -WriteScope 'tests/smoke/direct' | Out-Null
+    $directOwnerPath = Join-Path $claimsDir 'r15-smoke-direct-stale-owner.json'
+    $directOwner = Get-Content -Raw -Path $directOwnerPath -Encoding UTF8 |
+        ConvertFrom-Json
+    $directOwner.last_heartbeat_utc = $past
+    ($directOwner | ConvertTo-Json -Depth 8) |
+        Set-Content -Path $directOwnerPath -Encoding UTF8
+
+    & $claimTask -Agent codex -TaskId 'r15-smoke-direct-successor' `
+        -Summary 'R15 smoke: successor claim after stale blocker' `
+        -Mode write -WriteScope 'tests/smoke/direct' | Out-Null
+    $directSuccessorPath = Join-Path $claimsDir 'r15-smoke-direct-successor.json'
+    $directArchives = @(Get-ChildItem -Path $doneDir `
+        -Filter 'r15-smoke-direct-stale-owner*.stale_lease.json' `
+        -File -ErrorAction SilentlyContinue)
+    Add-Check -Name 'claim acquisition sweeps stale conflicting write claim' `
+        -Passed ((-not (Test-Path -LiteralPath $directOwnerPath)) -and `
+                 (Test-Path -LiteralPath $directSuccessorPath) -and `
+                 ($directArchives.Count -ge 1)) `
+        -Detail "stale owner removed, successor claim present, archives=$($directArchives.Count)"
+
     # ── 2: Fresh claim NOT swept ────────────────────────────────
     Write-Host ''
     Write-Host '2. Fresh claim is NOT auto-released:'

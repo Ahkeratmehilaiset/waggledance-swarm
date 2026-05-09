@@ -81,6 +81,19 @@ $safeTask = ConvertTo-SafeName $TaskId
 if (-not $safeTask) { throw 'TaskId does not produce a safe claim filename' }
 $claimPath = Join-Path $claimsDir ($safeTask + '.json')
 
+# R15 follow-up (Codex review 2026-05-09): claim acquisition is the
+# path that most needs stale-lease continuity. Status/read helpers
+# sweep opportunistically too, but a claim-first agent must not be
+# blocked forever by an expired conflicting write claim.
+$sweepScript = Join-Path $PSScriptRoot 'Invoke-StaleClaimSweep.ps1'
+if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
+    try {
+        & $sweepScript -Quiet | Out-Null
+    } catch {
+        Write-Warning ("stale-claim sweep before claim acquisition failed: {0}" -f $_.Exception.Message)
+    }
+}
+
 $activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
 foreach ($file in $activeClaims) {
     try {

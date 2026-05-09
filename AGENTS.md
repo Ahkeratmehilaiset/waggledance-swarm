@@ -18,6 +18,15 @@
   the tests you pass, commits, and pushes in a single safe step.
 
 ## Task rules
+- Operate in non-interactive mode by default. If the operator has already
+  granted session-level approval, do not ask yes/no or 1/2/3 questions; choose
+  the safest useful option and continue.
+- Prefer autonomous defaults: approve low-risk continuation, choose the
+  recommended/lowest-risk path when options are equivalent, and unblock the
+  bridge queue with scoped work instead of waiting for operator relay.
+- Only stop for operator input when a destructive action, credential/secret,
+  external payment, unresolved write-scope conflict, or legally/security
+  sensitive decision cannot be handled from repo evidence.
 - Reproduce failures before changing code.
 - Prefer the smallest safe patch.
 - Do not add dependencies unless explicitly required.

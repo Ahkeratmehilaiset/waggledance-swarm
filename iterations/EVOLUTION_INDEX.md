@@ -315,6 +315,157 @@ entries:
     R20.2 -> R20.4 -> R20.3 -> R20.6.
   next_bottleneck: R20.1 EVOLUTION_INDEX backfill (this round)
 
+- session_id: r20.1-evolution-index
+  pr: 175
+  owner: claude
+  reviewer: null
+  merged_utc: 2026-05-09T19:56:20Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 5
+  axis_c_push_to_merge_minutes: 10
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    EVOLUTION_INDEX.md ships the Axis-C substrate. Schema folds in
+    Codex stand-in's split (claim_to_push vs push_to_merge),
+    pre_merge_findings_caught, runtime_behavior_changed. Validator at
+    tools/check_evolution_index.py + 4/4 tests pin the schema.
+  next_bottleneck: R20.5 R16 process isolation
+
+- session_id: r20.5-r16-process-isolation
+  pr: 176
+  owner: claude
+  reviewer: null
+  merged_utc: 2026-05-09T20:10:18Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 10
+  axis_c_push_to_merge_minutes: 14
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    Invoke-RoleReview wrapper makes architect/security/reliability
+    review operationally three-process. Existing infra (orchestrator/
+    Invoke-WaggleReview.ps1 + prompts/review/*) was already there;
+    R20.5 adds the bridge-side wrapper that emits 3 + 1 events with
+    stable sub-task_ids. 12/12 smoke. BRIDGE_PROTOCOL rule 7 marks
+    legacy "three labels in one paragraph" pattern as deprecated.
+  next_bottleneck: R20.2 BridgeLLMClient prototype
+
+- session_id: r20.4-deployment-profiles
+  pr: 177
+  owner: claude
+  reviewer: null
+  merged_utc: 2026-05-09T20:22:19Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 11
+  axis_c_push_to_merge_minutes: 12
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    solver-profiles/{small,medium,large}.json + Start-WaggleDanceSolver.ps1
+    + Profile S subprocess test. The headline guarantee is the
+    subprocess-isolated import-discipline check: a fresh Python
+    process loads Profile S and confirms zero LLM SDKs leaked to
+    sys.modules. Plus a guard-sanity test that injects fake anthropic
+    and confirms the guard catches it.
+  next_bottleneck: R20.2 BridgeLLMClient (Codex-owned; resilience if silent)
+
+- session_id: r20.2-bridge-llm-client
+  pr: 178
+  owner: claude
+  reviewer: null
+  merged_utc: 2026-05-09T20:36:20Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 5
+  axis_c_push_to_merge_minutes: 14
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    BridgeLLMClient four-tier fallback (cache -> local-ollama -> cloud
+    stub -> heuristic). Profile S clean: importing waggledance.core.
+    bridge_llm leaks zero LLM SDKs into sys.modules. OllamaProvider
+    uses importlib.util.find_spec to stay clean; lazy-imports the
+    package only inside .call(). Telemetry per R20 §2.3 + budget per
+    §2.5 with degrade-to-heuristic on exhaustion. 14/14 tests.
+    Codex-owned per synthesis; Claude resilience-takeover after ~3.5h
+    Codex silence on the bridge.
+  next_bottleneck: R20.3 first doping point (Codex-owned)
+
+- session_id: r20.3-ab-harness-and-decision-b
+  pr: 179
+  owner: claude
+  reviewer: null
+  merged_utc: 2026-05-09T20:49:25Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 4
+  axis_c_push_to_merge_minutes: 13
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    ABHarness substrate ships. Production wire-up DEFERRED via Decision
+    B: no labelled corpus exists for R20 §2.4 20% gain threshold.
+    Activation criteria spelled out in iterations/codex_scout_tasks/
+    r20_3_decision_b_2026_05_09.md. 7/7 tests including treatment-
+    failure-falls-through and proportional split over 100 samples.
+  next_bottleneck: R20.6 release-readiness Decision B
+
+- session_id: r20.6-release-readiness-decision-b
+  pr: null
+  owner: claude
+  reviewer: null
+  merged_utc: null
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    R20.6 is a release-readiness Decision B per the master prompt's
+    explicit alternative when soak between substrate and release is
+    needed. CHANGELOG.md 2026-05-09 entry + README.md front-page
+    snapshot + docs/release/R20_RELEASE_READINESS_2026_05_09.md
+    activation criteria. No semver bump, no Docker, no GitHub release.
+    Activates when all five criteria hit (A/B run, cloud provider
+    plugin, R19 Cand 2 measured, Codex synthesis ratification, Phase C
+    gate re-verification).
+  next_bottleneck: R20.6 activation prerequisites (R21 will track)
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

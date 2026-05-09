@@ -1,5 +1,118 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Phase D scaling pass + R20 explosive-growth substrate / NO TAG] — 2026-05-09
+
+Operator-driven overnight session running two sprints back-to-back:
+"Phase D" (R17 / R18 / R19) measurable scaling improvements on top of
+v3.10.4-incremental-gap-replay-alpha, followed by R20 ("explosive
+measured capability growth and runtime LLM augmentation") substrate
+PRs. **No new release tag this session** — substrate-level work (every
+runtime-API addition is OFF by default and behind a feature flag); a
+real release happens only after R20.3's first real A/B activates.
+
+### Phase D — measurable scaling improvements (#165–#172)
+
+Snapshot-pinned microbench evidence under `iterations/codex_scout_tasks/`.
+Apples-to-apples on the same machine where possible.
+
+| Round | PR | Operation | Before | After | Speedup |
+|---|---|---|---:|---:|---:|
+| R17 Cand 1 | #165 | TrustAdapter.get_ranking 512 targets | 22.97 ms | 0.86 ms | ~26.7× |
+| R17 Cand 2 | #166 | vector_events incr 100 vs full 10k | 108.84 ms | 1.60 ms | ~68× |
+| R17 Cand 3 | #167 | EventLogAdapter.log_event 5000 | 81.41 ms | 25.49 ms | ~3.2× |
+| R18 Cand 1 | #170 | HexTopologyRegistry.get_neighbor_cells 20k | 199.29 ms | 21.78 ms | ~9.1× |
+| R18 Cand 3 | #171 | HexTopologyRegistry.select_origin_cell 2k | 41.43 ms | 21.33 ms | ~1.94× |
+
+Plus scout artifacts (#164 / #168 / #169 / #172) + one abandon decision
+(R18 Cand 2 deliver_batch relation index; documented at
+`iterations/codex_scout_tasks/r18c2_abandoned_2026_05_09.md` per R20
+master prompt rule 4 — measurable result OR explicit abandon).
+
+R19 Priority 3 (10k+ scaling) scout closed Phase D with one shipped
+fix (redundant SELECT in `tools/run_solver_scale_proof.py`,
+code-hygiene; bench at 1000 noise-dominated, full-scale re-validation
+deferred). Cand 2 (transaction batching, projected 5–20× build
+speedup at 10k) and Cand 3 (lookup p99 14.10 ms profiling) sized and
+deferred to R21.
+
+### R20 — explosive-growth substrate (#173–#179)
+
+Runtime LLM augmentation, recursive self-improvement, and deployment
+profiles substrate. Five-of-six R20 PRs landed; sixth (this PR) is
+the release-readiness assessment. Codex was silent for ~3.5 hours
+mid-session; Claude resilience-took R20.2 / R20.3 / R20.6 per the
+operator's resilience directive.
+
+| PR | Round | Owner | What it adds |
+|---|---|---|---|
+| #173 | routing | Claude | R20 master prompt copy + Claude Part 0–5 baseline |
+| #174 | synthesis | Claude (resilience) | Codex stand-in baseline + ratified PR plan |
+| #175 | R20.1 | Claude | `iterations/EVOLUTION_INDEX.md` + 11 backfilled rounds + validator |
+| #176 | R20.5 | Claude | `Invoke-RoleReview.ps1` wrapper for genuine three-role review (architect/security/reliability as separate processes) + 12/12 smoke + BRIDGE_PROTOCOL rule 7 deprecation of legacy "three labels in one paragraph" |
+| #177 | R20.4 | Claude | `solver-profiles/{small,medium,large}.json` + `Start-WaggleDanceSolver.ps1` + Profile S subprocess import-discipline test (12/12) |
+| #178 | R20.2 | Claude (resilience) | `BridgeLLMClient` four-tier fallback (cache → local-ollama → cloud-stub → heuristic) + 14/14 tests; Profile S compatible (zero LLM SDK leak) |
+| #179 | R20.3 | Claude (resilience) | `ABHarness` for runtime A/B with safe `treatment_share=0.0` default + Decision B doc on activation criteria |
+
+### Floor scope reached and exceeded
+
+The synthesis at `iterations/codex_scout_tasks/r20_synthesis_2026_05_09.md`
+agreed a minimum viable overnight floor of R20.1 + R20.5 skeleton +
+R20.4 Profile S. Five R20.x PRs landing (full implementation including
+R20.2 BridgeLLMClient and R20.3 ABHarness substrate) puts this session
+**above** that floor.
+
+### Profile S contract held throughout
+
+- Importing `waggledance.core.bridge_llm` leaks **zero** LLM SDK names
+  into `sys.modules` (subprocess-isolated test in
+  `tests/test_bridge_llm_client.py`).
+- `Start-WaggleDanceSolver.ps1 -Profile small` sets
+  `WAGGLE_ALLOW_INTERNET=0`, `WAGGLE_ALLOW_LOCAL_LLM=0`,
+  `WAGGLE_ALLOW_CLOUD_LLM=0`, `WAGGLE_BRIDGE_LLM_ENABLED=0`,
+  `WAGGLE_FALLBACK_CHAIN=heuristic`.
+- `BridgeLLMClient.disabled()` constructs a heuristic-only client
+  with no `cache` or `ollama` provider instantiated.
+- `ABHarness(treatment_share=0.0)` (default) skips the treatment
+  arm entirely — no LLM call ever fires.
+
+### What's intentionally deferred
+
+- Cloud LLM provider plugins (Anthropic / OpenAI / Vertex / Cohere /
+  Groq / Together) — Tier 3 hook present but no cloud SDK imported.
+- Production wire-up of any specific runtime LLM injection point.
+  R20.3 ships the substrate; activation requires a labelled corpus
+  for the 20% quality-gain threshold (criteria spelled out in
+  `iterations/codex_scout_tasks/r20_3_decision_b_2026_05_09.md`).
+- `BridgeLLMRedactor` / `BridgeLLMRehydrator` — gated on cloud tier
+  enablement.
+- A real semver bump and Docker images — see release-readiness
+  Decision B at `docs/release/R20_RELEASE_READINESS_2026_05_09.md`.
+- R19 Priority 3 Cand 2 (transaction batching) and Cand 3 (lookup
+  p99 profiling) — sized; deferred to R21.
+
+### Tests landed this session
+
+- 9 hex tests (#170 / #171) — `TestNeighborIdCache` parity + scaling guards
+- 4 EventLog tests (#167 R20-style include) — deque eviction + concurrent-snapshot regression
+- 32 vector_events tests (#166) — offset-reader contract incl. partial-line
+- 19 trust adapter tests (#165) — caching equivalence + scaling
+- 21 scale-proof tests carried (#172 unchanged)
+- 4 EVOLUTION_INDEX tests (#175) — schema validator
+- 12 Invoke-RoleReview smoke checks (#176)
+- 12 solver-profile tests (#177) — Profile S subprocess isolation
+- 14 BridgeLLMClient tests (#178) — four-tier fallback + budget + telemetry
+- 7 ABHarness tests (#179) — safe defaults + treatment fallthrough
+
+### Bridge events of note
+
+- 2026-05-09T17:34:31Z — operator queued R20 prompt
+- 2026-05-09T19:14:49Z — R20 ROUTING fired (operator → codex,
+  decision/proposed/major, sha256 `34041159919ac1fb...`)
+- 2026-05-09T17:53Z onward — Codex went silent on the bridge;
+  PR #170 / #171 / #172 / #169 / #173 / #174 / #175 / #176 / #177 /
+  #178 / #179 all autonomously merged by Claude per CLAUDE.md rule 9 +
+  the operator resilience directive
+
 ## [Phase 18F — Incremental Runtime Gap Replay + Detector Bridge / v3.10.4-incremental-gap-replay-alpha PRERELEASE] — 2026-05-06
 
 Branch: `phase18f/incremental-gap-replay`. Productionization sprint on top of v3.10.3-runtime-gap-replay-alpha. **Outcome: PRERELEASE `v3.10.4-incremental-gap-replay-alpha` published 2026-05-06T09:01:14Z**. PR #88 squash-merged at 2026-05-06T09:00:05Z (merge commit `c1ddded1`); annotated tag pushed at the merge SHA; GitHub release created with `isPrerelease=true`. v3.8.0 stable + all 8 alphas (`v3.9.0` → `v3.10.3`) remain unchanged. v3.8.0 remains GitHub Latest.

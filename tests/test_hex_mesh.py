@@ -189,6 +189,113 @@ class TestTopologyRegistry:
         assert s["cells_loaded"] == 7
 
 
+class TestNeighborIdCache:
+    """Phase D Priority 2 Candidate 1 (R18 hex scout): the registry
+    caches per-cell ring-1 neighbor IDs at load time. These tests
+    pin the contract so a future change can't silently regress
+    ordering, disabled-cell filtering, or cache shape."""
+
+    def _registry(self, agents=None):
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        return HexTopologyRegistry(
+            config_path="configs/hex_cells.yaml",
+            agents=agents or [],
+        )
+
+    def test_cache_built_for_every_cell(self):
+        reg = self._registry()
+        cache = reg._neighbor_cell_ids
+        assert set(cache.keys()) == set(reg.cells.keys())
+        # Every entry is a tuple of strings (cached IDs)
+        for cell_id, nids in cache.items():
+            assert isinstance(nids, tuple)
+            assert all(isinstance(n, str) for n in nids)
+
+    def test_cache_excludes_self(self):
+        reg = self._registry()
+        for cell_id, nids in reg._neighbor_cell_ids.items():
+            assert cell_id not in nids, (
+                f"cache for {cell_id} must not contain self"
+            )
+
+    def test_cache_only_contains_known_cell_ids(self):
+        """Cache must only reference cells that exist in the topology
+        — i.e. no neighbor coords pointing to empty space leak through."""
+        reg = self._registry()
+        known = set(reg.cells.keys())
+        for cell_id, nids in reg._neighbor_cell_ids.items():
+            for nid in nids:
+                assert nid in known, (
+                    f"cache for {cell_id} references unknown cell {nid}"
+                )
+
+    def test_get_neighbor_cells_matches_recompute_baseline(self):
+        """Equivalence: cached path must return exactly the same set
+        of cells the prior recompute-from-coord path returned, in the
+        same order (ordering follows HexCoord.neighbors())."""
+        reg = self._registry()
+        for cell_id, cell in reg.cells.items():
+            cached = [c.id for c in reg.get_neighbor_cells(cell_id)]
+            # Recompute the old way for the comparison baseline:
+            recomputed = []
+            for nc in cell.coord.neighbors():
+                nid = reg._coord_to_cell.get(nc)
+                if nid and nid != cell_id:
+                    ncell = reg._cells.get(nid)
+                    if ncell and ncell.enabled:
+                        recomputed.append(ncell.id)
+            assert cached == recomputed, (
+                f"{cell_id}: cached={cached} recomputed={recomputed}"
+            )
+
+    def test_get_neighbor_cells_unknown_cell_returns_empty(self):
+        reg = self._registry()
+        assert reg.get_neighbor_cells("does_not_exist") == []
+
+    def test_runtime_disable_still_filtered_after_cache_built(self):
+        """The cache stores IDs only; disabled-state is consulted at
+        query time. So flipping enabled=False on a cached neighbor
+        AFTER load must still drop it from get_neighbor_cells output
+        (otherwise the cache would lock in stale enabled state)."""
+        reg = self._registry()
+        hub_neighbors_before = [c.id for c in reg.get_neighbor_cells("hub")]
+        assert hub_neighbors_before, "hub must have neighbors in default config"
+
+        # Disable one of the hub's neighbors and verify it disappears
+        target = hub_neighbors_before[0]
+        reg._cells[target].enabled = False
+        try:
+            hub_neighbors_after = [c.id for c in reg.get_neighbor_cells("hub")]
+            assert target not in hub_neighbors_after
+            assert hub_neighbors_after == [
+                nid for nid in hub_neighbors_before if nid != target
+            ]
+        finally:
+            reg._cells[target].enabled = True
+
+    def test_get_neighbor_cells_repeated_lookups_are_cheap(self):
+        """Regression guard for the headline hex scaling property:
+        20k repeated get_neighbor_cells calls must complete in well
+        under the prior recompute-from-coord cost. Codex scout
+        measured 253.28 ms BEFORE; the cached path should comfortably
+        beat that. We assert < 100 ms as a generous regression
+        threshold (microbench script measures the actual number)."""
+        import time
+        reg = self._registry()
+        cell_ids = list(reg.cells.keys())
+        assert cell_ids
+        start = time.perf_counter()
+        for _ in range(20000):
+            for cid in cell_ids:
+                reg.get_neighbor_cells(cid)
+                break  # one lookup per outer iteration
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        assert elapsed_ms < 100.0, (
+            f"20000 get_neighbor_cells took {elapsed_ms:.2f}ms — "
+            f"expected < 100ms after R18 Candidate 1 cache"
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 3. LOCAL-FIRST BEHAVIOR
 # ═══════════════════════════════════════════════════════════════════

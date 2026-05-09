@@ -12,8 +12,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,13 @@ class EventLogAdapter:
             cls = _get_legacy_class()
             self._ledger = cls(path=path) if cls else None
         self._lock = threading.Lock()
-        self._buffer: List[EventLogEntry] = []
         self._max_buffer = 1000
+        # deque(maxlen=N) evicts the oldest entry on append once full,
+        # so we never pay an O(N) tail-copy trim like the prior
+        # `self._buffer = self._buffer[-self._max_buffer:]` did on every
+        # over-cap append. Iteration order is still oldest -> newest,
+        # matching the list semantics callers depend on.
+        self._buffer: Deque[EventLogEntry] = deque(maxlen=self._max_buffer)
 
     def log_event(self, event_type: str, source: str = "autonomy",
                   goal_id: str = "", capability_id: str = "",
@@ -76,8 +82,6 @@ class EventLogAdapter:
 
         with self._lock:
             self._buffer.append(entry)
-            if len(self._buffer) > self._max_buffer:
-                self._buffer = self._buffer[-self._max_buffer:]
 
         if self._ledger:
             try:
@@ -149,10 +153,15 @@ class EventLogAdapter:
 
     def count_by_type(self, since: float = None) -> Dict[str, int]:
         """Count events by type in the local buffer."""
+        # Snapshot to a list under the lock — `self._buffer` is a deque
+        # since Phase D Candidate 3 (#167) and iterating it after the
+        # lock releases would race with a concurrent log_event() and
+        # raise RuntimeError: deque mutated during iteration.
         with self._lock:
-            entries = self._buffer if not since else [
-                e for e in self._buffer if e.timestamp >= since
-            ]
+            if since:
+                entries = [e for e in self._buffer if e.timestamp >= since]
+            else:
+                entries = list(self._buffer)
         counts: Dict[str, int] = {}
         for e in entries:
             counts[e.event_type] = counts.get(e.event_type, 0) + 1
@@ -160,10 +169,12 @@ class EventLogAdapter:
 
     def get_quality_distribution(self, since: float = None) -> Dict[str, int]:
         """Count case events by quality grade."""
+        # Snapshot under the lock — see count_by_type() comment.
         with self._lock:
-            entries = self._buffer if not since else [
-                e for e in self._buffer if e.timestamp >= since
-            ]
+            if since:
+                entries = [e for e in self._buffer if e.timestamp >= since]
+            else:
+                entries = list(self._buffer)
         dist: Dict[str, int] = {}
         for e in entries:
             if e.quality_grade:

@@ -1,0 +1,239 @@
+{
+  "benchmark_id": "r17-magma-latency-microbench-2026-05-09",
+  "counts": {
+    "audit_entries": 500,
+    "event_log_events": 5000,
+    "replay_events_per_mission": 8,
+    "replay_missions": 200,
+    "trust_observations_per_target": 80,
+    "trust_targets": 512,
+    "vector_events": 10000
+  },
+  "operations": [
+    {
+      "count": 5000,
+      "max_ms": 31.4259,
+      "operation": "EventLogAdapter.log_event bulk",
+      "p50_ms": 31.4259,
+      "p95_ms": 31.4259,
+      "p99_ms": 31.4259,
+      "samples": 1,
+      "total_ms": 31.4259
+    },
+    {
+      "count": 3,
+      "max_ms": 0.0986,
+      "operation": "EventLogAdapter.query by type",
+      "p50_ms": 0.0733,
+      "p95_ms": 0.0961,
+      "p99_ms": 0.0981,
+      "samples": 3,
+      "total_ms": 0.23
+    },
+    {
+      "count": 1,
+      "max_ms": 0.1375,
+      "operation": "EventLogAdapter.count_by_type",
+      "p50_ms": 0.1375,
+      "p95_ms": 0.1375,
+      "p99_ms": 0.1375,
+      "samples": 1,
+      "total_ms": 0.1375
+    },
+    {
+      "count": 1,
+      "max_ms": 0.1857,
+      "operation": "EventLogAdapter.stats",
+      "p50_ms": 0.1857,
+      "p95_ms": 0.1857,
+      "p99_ms": 0.1857,
+      "samples": 1,
+      "total_ms": 0.1857
+    },
+    {
+      "count": 500,
+      "max_ms": 2.266,
+      "operation": "AuditProjector.record bulk",
+      "p50_ms": 2.266,
+      "p95_ms": 2.266,
+      "p99_ms": 2.266,
+      "samples": 1,
+      "total_ms": 2.266
+    },
+    {
+      "count": 128,
+      "max_ms": 0.0503,
+      "operation": "AuditProjector.query_by_goal",
+      "p50_ms": 0.0336,
+      "p95_ms": 0.0418,
+      "p99_ms": 0.0459,
+      "samples": 128,
+      "total_ms": 4.4479
+    },
+    {
+      "count": 3,
+      "max_ms": 0.039,
+      "operation": "AuditProjector.query_by_event_type",
+      "p50_ms": 0.0354,
+      "p95_ms": 0.0386,
+      "p99_ms": 0.0389,
+      "samples": 3,
+      "total_ms": 0.1087
+    },
+    {
+      "count": 40960,
+      "max_ms": 229.9034,
+      "operation": "TrustAdapter.record_observation bulk",
+      "p50_ms": 229.9034,
+      "p95_ms": 229.9034,
+      "p99_ms": 229.9034,
+      "samples": 1,
+      "total_ms": 229.9034
+    },
+    {
+      "count": 512,
+      "max_ms": 0.0402,
+      "operation": "TrustAdapter.get_trust_score",
+      "p50_ms": 0.0024,
+      "p95_ms": 0.0045,
+      "p99_ms": 0.015,
+      "samples": 512,
+      "total_ms": 1.4736
+    },
+    {
+      "count": 512,
+      "max_ms": 1.1702,
+      "operation": "TrustAdapter.get_ranking",
+      "p50_ms": 1.1702,
+      "p95_ms": 1.1702,
+      "p99_ms": 1.1702,
+      "samples": 1,
+      "total_ms": 1.1702
+    },
+    {
+      "count": 1600,
+      "max_ms": 7.6332,
+      "operation": "ReplayAdapter.record_mission_event bulk",
+      "p50_ms": 7.6332,
+      "p95_ms": 7.6332,
+      "p99_ms": 7.6332,
+      "samples": 1,
+      "total_ms": 7.6332
+    },
+    {
+      "count": 200,
+      "max_ms": 0.0203,
+      "operation": "ReplayAdapter.get_mission_replay",
+      "p50_ms": 0.0031,
+      "p95_ms": 0.0055,
+      "p99_ms": 0.0084,
+      "samples": 200,
+      "total_ms": 0.6834
+    },
+    {
+      "count": 200,
+      "max_ms": 0.7665,
+      "operation": "ReplayAdapter.list_missions",
+      "p50_ms": 0.7665,
+      "p95_ms": 0.7665,
+      "p99_ms": 0.7665,
+      "samples": 1,
+      "total_ms": 0.7665
+    },
+    {
+      "count": 10000,
+      "max_ms": 219.8656,
+      "operation": "vector_events.emit_many JSONL",
+      "p50_ms": 219.8656,
+      "p95_ms": 219.8656,
+      "p99_ms": 219.8656,
+      "samples": 1,
+      "total_ms": 219.8656
+    },
+    {
+      "count": 10000,
+      "max_ms": 137.6952,
+      "operation": "vector_events.read_events full scan",
+      "p50_ms": 137.6952,
+      "p95_ms": 137.6952,
+      "p99_ms": 137.6952,
+      "samples": 1,
+      "total_ms": 137.6952
+    },
+    {
+      "count": 10000,
+      "max_ms": 154.8918,
+      "operation": "vector_events.read_events_from_offset full scan",
+      "p50_ms": 154.8918,
+      "p95_ms": 154.8918,
+      "p99_ms": 154.8918,
+      "samples": 1,
+      "total_ms": 154.8918
+    },
+    {
+      "count": 100,
+      "max_ms": 1.9914,
+      "operation": "vector_events.read_events_from_offset incremental",
+      "p50_ms": 1.9914,
+      "p95_ms": 1.9914,
+      "p99_ms": 1.9914,
+      "samples": 1,
+      "total_ms": 1.9914
+    }
+  ],
+  "schema_version": 1,
+  "snapshot_path": "C:\\Python\\project2-master\\iterations\\codex_scout_tasks\\magma_latency_snapshot_2026_05_09.json",
+  "snapshot_sha256_12": "bb3e93036f3e",
+  "threshold_10ms": [
+    {
+      "count": 5000,
+      "max_ms": 31.4259,
+      "operation": "EventLogAdapter.log_event bulk",
+      "p50_ms": 31.4259,
+      "p95_ms": 31.4259,
+      "p99_ms": 31.4259,
+      "samples": 1,
+      "total_ms": 31.4259
+    },
+    {
+      "count": 40960,
+      "max_ms": 229.9034,
+      "operation": "TrustAdapter.record_observation bulk",
+      "p50_ms": 229.9034,
+      "p95_ms": 229.9034,
+      "p99_ms": 229.9034,
+      "samples": 1,
+      "total_ms": 229.9034
+    },
+    {
+      "count": 10000,
+      "max_ms": 219.8656,
+      "operation": "vector_events.emit_many JSONL",
+      "p50_ms": 219.8656,
+      "p95_ms": 219.8656,
+      "p99_ms": 219.8656,
+      "samples": 1,
+      "total_ms": 219.8656
+    },
+    {
+      "count": 10000,
+      "max_ms": 137.6952,
+      "operation": "vector_events.read_events full scan",
+      "p50_ms": 137.6952,
+      "p95_ms": 137.6952,
+      "p99_ms": 137.6952,
+      "samples": 1,
+      "total_ms": 137.6952
+    },
+    {
+      "count": 10000,
+      "max_ms": 154.8918,
+      "operation": "vector_events.read_events_from_offset full scan",
+      "p50_ms": 154.8918,
+      "p95_ms": 154.8918,
+      "p99_ms": 154.8918,
+      "samples": 1,
+      "total_ms": 154.8918
+    }
+  ]
+}

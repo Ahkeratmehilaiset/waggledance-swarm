@@ -478,6 +478,24 @@ class TestPersistenceRuntimeWiring:
         result = rt._persist_safe("test.ok", lambda: 42)
         assert result == 42
 
+    def test_magma_safe_catches_errors(self):
+        """_magma_safe should swallow MAGMA adapter exceptions."""
+        from waggledance.core.autonomy.runtime import AutonomyRuntime
+        rt = AutonomyRuntime(profile="test")
+
+        def boom():
+            raise RuntimeError("magma kaboom")
+
+        result = rt._magma_safe("test.boom", boom)
+        assert result is None
+
+    def test_magma_safe_returns_value(self):
+        """_magma_safe should return the function's return value."""
+        from waggledance.core.autonomy.runtime import AutonomyRuntime
+        rt = AutonomyRuntime(profile="test")
+        result = rt._magma_safe("test.ok", lambda: {"status": "recorded"})
+        assert result == {"status": "recorded"}
+
     def test_stats_includes_persistence(self):
         """Stats should include persistence sections when stores exist."""
         from waggledance.core.autonomy.runtime import AutonomyRuntime

@@ -32,6 +32,7 @@ from waggledance.core.magma.replay_engine import ReplayAdapter
 from waggledance.core.magma.trust_adapter import TrustAdapter
 from waggledance.core.magma.vector_events import (
     read_events,
+    read_events_from_offset,
     solver_upserted,
     vector_upsert_requested,
     emit_many,
@@ -306,6 +307,42 @@ def bench_vector_events(manifest: dict) -> list[dict]:
         if len(read_back) != n:
             raise AssertionError(f"read back {len(read_back)} events, expected {n}")
         rows.append(_summary(name, [read_ms], count=n))
+
+        # Phase D Candidate 2: offset-based incremental read.
+        # Full scan from offset=0 must match read_events length (parity)
+        # and demonstrates the new path's full-scan cost — should be in
+        # the same order as read_events, since both walk every line.
+        name, full_offset_ms, (offset_full, after_full) = _timed(
+            "vector_events.read_events_from_offset full scan",
+            lambda: read_events_from_offset(path, byte_offset=0),
+        )
+        if len(offset_full) != n:
+            raise AssertionError(
+                f"read_events_from_offset full read back {len(offset_full)} "
+                f"events, expected {n}"
+            )
+        rows.append(_summary(name, [full_offset_ms], count=n))
+
+        # Headline: append a small batch and read incrementally from
+        # the saved offset. The whole point of Candidate 2 is that this
+        # cost scales with the new event count, NOT the total log size.
+        incr_count = max(100, n // 100)  # 100 by default; ~1% of bulk
+        incr_events = [
+            solver_upserted(cells[i % len(cells)], f"incr-{i:05d}",
+                             f"incr-sig-{i}", f"incr/{i}.yaml")
+            for i in range(incr_count)
+        ]
+        emit_many(incr_events, path)
+        name, incr_ms, (offset_incr, _) = _timed(
+            "vector_events.read_events_from_offset incremental",
+            lambda: read_events_from_offset(path, byte_offset=after_full),
+        )
+        if len(offset_incr) != incr_count:
+            raise AssertionError(
+                f"incremental read returned {len(offset_incr)} events, "
+                f"expected {incr_count}"
+            )
+        rows.append(_summary(name, [incr_ms], count=incr_count))
     return rows
 
 

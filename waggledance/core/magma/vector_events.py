@@ -313,3 +313,92 @@ def read_events(path: Path | str | None = None) -> Iterator[VectorEvent]:
             except (KeyError, ValueError):
                 # Unknown / malformed event — skip
                 continue
+
+
+def _parse_event_dict(d: dict[str, Any]) -> VectorEvent | None:
+    """Build a VectorEvent from a parsed JSON dict; return None if the
+    dict is missing required fields or describes an unknown event type.
+    Shared by read_events and read_events_from_offset so both paths
+    apply the same liberal-skip semantics."""
+    try:
+        return VectorEvent(
+            event=d["event"],
+            cell_id=d["cell_id"],
+            solver_id=d.get("solver_id"),
+            ts=d.get("ts") or _utc_now_iso(),
+            payload=d.get("payload") or {},
+            schema_version=d.get("schema_version", VECTOR_EVENT_SCHEMA_VERSION),
+            source=d.get("source"),
+        )
+    except (KeyError, ValueError):
+        return None
+
+
+def read_events_from_offset(
+    path: Path | str | None = None,
+    byte_offset: int = 0,
+) -> tuple[list[VectorEvent], int]:
+    """Incrementally read events appended after `byte_offset`.
+
+    Returns ``(events, next_byte_offset)``. Persist ``next_byte_offset``
+    and pass it back on the next call to skip already-consumed rows;
+    that turns the consumer scan from O(total_log_size) into
+    O(new_events) — the right shape for the event-sourced vector
+    projection that Stage 2 lands.
+
+    Behavior:
+    - ``byte_offset == 0``: read everything (parity with read_events
+      modulo this function's list return shape).
+    - ``byte_offset == file_size``: returns ``([], byte_offset)``.
+    - Trailing incomplete line (mid-write at EOF): NOT consumed —
+      ``next_byte_offset`` stops at the start of the partial line so a
+      later call sees the line once a writer flushes the newline.
+    - Malformed JSON / unknown event: line is skipped but its bytes
+      DO advance the offset (matching read_events liberal-skip).
+    - Missing file: returns ``([], 0)``.
+    - ``byte_offset > file_size``: raises ``ValueError`` so the caller
+      can detect log rotation / truncation explicitly. Silently
+      starting over would re-process events the consumer already
+      committed against, which is the wrong default.
+
+    File is opened in binary mode so byte counts stay exact regardless
+    of platform newline rewriting.
+    """
+    target = _resolve_event_log(path)
+    if not target.exists():
+        return [], 0
+
+    file_size = target.stat().st_size
+    if byte_offset > file_size:
+        raise ValueError(
+            f"byte_offset {byte_offset} > file_size {file_size} for "
+            f"{target} — log appears to have been rotated or truncated"
+        )
+    if byte_offset == file_size:
+        return [], byte_offset
+
+    events: list[VectorEvent] = []
+    next_offset = byte_offset
+    with open(target, "rb") as f:
+        f.seek(byte_offset)
+        while True:
+            raw = f.readline()
+            if not raw:
+                # EOF after a clean line boundary.
+                break
+            if not raw.endswith(b"\n"):
+                # Trailing partial line — do NOT advance past it.
+                break
+            line_bytes = len(raw)
+            text = raw[:-1].decode("utf-8", errors="replace").rstrip("\r")
+            next_offset += line_bytes
+            if not text.strip():
+                continue
+            try:
+                d = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            evt = _parse_event_dict(d)
+            if evt is not None:
+                events.append(evt)
+    return events, next_offset

@@ -99,9 +99,18 @@ def _curiosity_log() -> list[dict]:
 
 
 def _calibration_corrections() -> list[dict]:
+    """Codex post-merge finding 2026-05-09: the field is `prior_score`,
+    not `score`. With the wrong key, calibration_gap_for_dimension's
+    KeyError fallback returns 0.0 and the deferred scorecard_drift
+    item gets dream_priority ~0.067 instead of ~0.533. The runtime
+    probe Codex ran:
+      key='score'        → calibration_gap=0.0, dream_priority=0.066667
+      key='prior_score'  → calibration_gap=0.4, dream_priority=0.533333
+    The intended priority path was therefore undercovered before
+    this fix."""
     return [
         {"dimension": "math_breadth", "evidence_implied_score": 0.4,
-         "score": 0.8},
+         "prior_score": 0.8},
     ]
 
 
@@ -116,6 +125,39 @@ def test_dreamable_items_sorted_priority_desc_with_source_id_tiebreak():
     # Sorted by (-dream_priority, source_id).
     priorities = [it.dream_priority for it in items]
     assert priorities == sorted(priorities, reverse=True)
+
+
+def test_deferred_scorecard_drift_uses_calibration_gap_path():
+    """Codex post-merge finding 2026-05-09: pin the calibration-gap
+    path itself — the deferred scorecard_drift item targeting
+    `math_breadth` MUST receive calibration_gap from the corrections
+    fixture (not the 0.0 KeyError fallback). Expected:
+      calibration_gap = abs(prior_score 0.8 - evidence_implied 0.4) = 0.4
+      dream_priority  = 1.0 * 0.4 * 1.333 * 1.0 * 1.0 = 0.533333
+    A regression that re-routes the dream cycle past the calibration
+    path — for example by reverting to fixture key 'score' — will
+    fail this assertion loudly."""
+    items = build_dreamable_items(
+        self_model=_self_model_with_deferred_tension(),
+        curiosity_log=_curiosity_log(),
+        calibration_corrections=_calibration_corrections(),
+    )
+    # The deferred tension is the math_breadth scorecard_drift in
+    # cell:hex_math; it should be the highest-priority item.
+    deferred = [it for it in items if it.source_kind == "tension"
+                and it.candidate_cell == "hex_math"]
+    assert len(deferred) == 1, (
+        f"expected one deferred scorecard_drift item; got {items}"
+    )
+    target = deferred[0]
+    assert target.calibration_gap == pytest.approx(0.4)
+    assert target.dream_priority == pytest.approx(0.533333, abs=1e-5)
+    # And it must outrank the calibration_oscillation item, which has
+    # only the floor calibration_gap=0.05.
+    osc = [it for it in items
+           if it.source_kind == "calibration_oscillation"]
+    if osc:
+        assert target.dream_priority > osc[0].dream_priority
 
 
 def test_dreamable_items_emit_one_per_tension_blindspot_top3_curiosity():

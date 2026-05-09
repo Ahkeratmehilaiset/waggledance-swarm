@@ -266,3 +266,204 @@ def test_round_trip_emit_read_preserves_event_id(tmp_path):
     emit(e, log)
     [reparsed] = list(read_events(log))
     assert reparsed.event_id() == original_id
+
+
+# ── read_events_from_offset (Phase D Candidate 2) ─────────────────
+#
+# Stage 2 vector indexing is event-sourced. Consumers that re-scan the
+# full JSONL on every poll will trend toward O(total_log_size) per tick;
+# offset-based reads keep the cost O(new_events). The tests below pin
+# the contract so that switching consumers from full scan to checkpoint
+# reads is a behavior-preserving change.
+
+
+def test_read_events_from_offset_zero_offset_returns_all(tmp_path):
+    """offset=0 reads every event (parity with read_events list-form)."""
+    from waggledance.core.magma.vector_events import (
+        emit_many, read_events, read_events_from_offset,
+    )
+    log = tmp_path / "events.jsonl"
+    events = [
+        solver_upserted("thermal", f"m{i}", f"s{i}", f"p{i}")
+        for i in range(8)
+    ]
+    emit_many(events, log)
+
+    full_scan = list(read_events(log))
+    offset_scan, next_offset = read_events_from_offset(log, byte_offset=0)
+
+    assert len(offset_scan) == len(full_scan) == 8
+    assert [e.event_id() for e in offset_scan] == [e.event_id() for e in full_scan]
+    # next_offset must equal file size after a clean scan
+    assert next_offset == log.stat().st_size
+
+
+def test_read_events_from_offset_incremental_returns_only_new(tmp_path):
+    """The headline contract: after a full scan, append more events,
+    second call from saved offset returns ONLY the appended ones."""
+    from waggledance.core.magma.vector_events import (
+        emit_many, read_events_from_offset,
+    )
+    log = tmp_path / "events.jsonl"
+    first_batch = [
+        solver_upserted("thermal", f"m{i}", f"s{i}", f"p{i}")
+        for i in range(5)
+    ]
+    emit_many(first_batch, log)
+
+    batch1, offset_after_first = read_events_from_offset(log, byte_offset=0)
+    assert len(batch1) == 5
+
+    # Append two more
+    second_batch = [
+        vector_upsert_requested("thermal", "m100", "s100", reason="r1"),
+        vector_delete_requested("thermal", "m100", reason="r2"),
+    ]
+    emit_many(second_batch, log)
+
+    batch2, offset_after_second = read_events_from_offset(
+        log, byte_offset=offset_after_first
+    )
+    assert len(batch2) == 2
+    assert batch2[0].payload["model_id"] == "m100"
+    assert batch2[1].payload["model_id"] == "m100"
+    assert offset_after_second == log.stat().st_size
+
+
+def test_read_events_from_offset_at_eof_returns_empty(tmp_path):
+    """offset == file_size → no events available, offset unchanged."""
+    from waggledance.core.magma.vector_events import (
+        emit, read_events_from_offset,
+    )
+    log = tmp_path / "events.jsonl"
+    emit(solver_upserted("thermal", "a", "sig", "p"), log)
+    eof = log.stat().st_size
+
+    events, next_offset = read_events_from_offset(log, byte_offset=eof)
+    assert events == []
+    assert next_offset == eof
+
+
+def test_read_events_from_offset_missing_file_returns_empty(tmp_path):
+    from waggledance.core.magma.vector_events import read_events_from_offset
+    missing = tmp_path / "nonexistent.jsonl"
+    events, next_offset = read_events_from_offset(missing, byte_offset=0)
+    assert events == []
+    assert next_offset == 0
+
+
+def test_read_events_from_offset_stale_offset_raises(tmp_path):
+    """offset > file_size means the log was rotated / truncated; raise
+    so callers don't silently re-process from the start."""
+    from waggledance.core.magma.vector_events import (
+        emit, read_events_from_offset,
+    )
+    log = tmp_path / "events.jsonl"
+    emit(solver_upserted("thermal", "a", "sig", "p"), log)
+    bogus_offset = log.stat().st_size + 1000
+
+    with pytest.raises(ValueError, match="rotated or truncated"):
+        read_events_from_offset(log, byte_offset=bogus_offset)
+
+
+def test_read_events_from_offset_skips_partial_trailing_line(tmp_path):
+    """If the writer is mid-flush, the trailing partial line MUST NOT
+    be parsed and its bytes MUST NOT advance the offset. Once the line
+    is completed, a second call returns the now-complete event."""
+    from waggledance.core.magma.vector_events import (
+        emit, read_events_from_offset,
+    )
+    log = tmp_path / "events.jsonl"
+    emit(solver_upserted("thermal", "a", "sig", "p"), log)
+    offset_after_complete = log.stat().st_size
+
+    # Append a partial line (no trailing newline)
+    with open(log, "ab") as f:
+        f.write(b'{"event":"solver.upserted","cell_id":"thermal"')
+
+    events, next_offset = read_events_from_offset(
+        log, byte_offset=offset_after_complete
+    )
+    # Partial line ignored
+    assert events == []
+    assert next_offset == offset_after_complete
+
+    # Complete the line + valid payload, then re-read
+    with open(log, "ab") as f:
+        f.write(
+            b',"solver_id":"m999","payload":{"model_id":"m999",'
+            b'"signature":"s999","source_path":"p999"}}\n'
+        )
+    events2, next_offset2 = read_events_from_offset(
+        log, byte_offset=offset_after_complete
+    )
+    assert len(events2) == 1
+    assert events2[0].payload["model_id"] == "m999"
+    assert next_offset2 == log.stat().st_size
+
+
+def test_read_events_from_offset_skips_malformed_lines_but_advances(tmp_path):
+    """Liberal-skip parity with read_events: garbage bytes between two
+    valid events are skipped, and their bytes still advance the offset
+    so subsequent reads don't re-process them."""
+    from waggledance.core.magma.vector_events import (
+        emit, read_events_from_offset,
+    )
+    log = tmp_path / "events.jsonl"
+    emit(solver_upserted("thermal", "a", "sig", "p"), log)
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("{ this is not valid json\n")
+        f.write(json.dumps({"event": "nope.unknown", "cell_id": "thermal"}) + "\n")
+    emit(solver_upserted("thermal", "b", "sig", "p"), log)
+
+    events, next_offset = read_events_from_offset(log, byte_offset=0)
+    # Only the two valid known-event lines survive
+    assert len(events) == 2
+    assert events[0].payload["model_id"] == "a"
+    assert events[1].payload["model_id"] == "b"
+    # All bytes consumed (including the skipped malformed lines)
+    assert next_offset == log.stat().st_size
+
+
+def test_read_events_from_offset_scaling_is_O_new(tmp_path):
+    """Regression guard for the headline scaling property: reading 100
+    new events from a 5000-event log must NOT take the same time as a
+    full 5000-event scan. We don't pin a specific time (microbench
+    does that) — just assert the incremental scan is at least an
+    order of magnitude faster than the full scan on the same log."""
+    import time
+    from waggledance.core.magma.vector_events import (
+        emit_many, read_events_from_offset,
+    )
+    log = tmp_path / "events.jsonl"
+    bulk = [
+        solver_upserted("thermal", f"m{i}", f"s{i}", f"p{i}")
+        for i in range(5000)
+    ]
+    emit_many(bulk, log)
+
+    # Measure full scan
+    t0 = time.perf_counter()
+    _, full_offset = read_events_from_offset(log, byte_offset=0)
+    full_ms = (time.perf_counter() - t0) * 1000
+
+    # Append 100 more
+    extras = [
+        solver_upserted("thermal", f"x{i}", f"sx{i}", f"px{i}")
+        for i in range(100)
+    ]
+    emit_many(extras, log)
+
+    # Measure incremental scan
+    t0 = time.perf_counter()
+    new_events, _ = read_events_from_offset(log, byte_offset=full_offset)
+    incremental_ms = (time.perf_counter() - t0) * 1000
+
+    assert len(new_events) == 100
+    # 100 events / 5000 events ≈ 2% of the work; allow generous 20%
+    # headroom for warmup variance, but anything close to full_ms
+    # would mean the offset path is doing a full scan — regression.
+    assert incremental_ms < full_ms * 0.2, (
+        f"incremental={incremental_ms:.2f}ms full={full_ms:.2f}ms — "
+        f"offset reader is not skipping consumed bytes"
+    )

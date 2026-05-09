@@ -94,17 +94,19 @@ $bridgeRoot = Split-Path -Parent $PSScriptRoot
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 
 function Get-ActiveClaims {
-    if (-not (Test-Path -LiteralPath $claimsDir)) { return ,@() }
-    $out = @()
+    # Emit zero or more claim objects into the pipeline; caller wraps
+    # with @(...) to always get an array. The earlier `return ,@()`
+    # pattern caused PSStrictMode "property 'agent' not found"
+    # because the empty single-array wrapper looked like a single
+    # claim with no fields. (Codex finding 2026-05-09T12:26Z.)
+    if (-not (Test-Path -LiteralPath $claimsDir)) { return }
     foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
                                  -ErrorAction SilentlyContinue)) {
         try {
-            $obj = Get-Content -Raw -Path $file.FullName -Encoding UTF8 |
+            Get-Content -Raw -Path $file.FullName -Encoding UTF8 |
                 ConvertFrom-Json
-            $out += $obj
         } catch {}
     }
-    return ,$out
 }
 
 function Format-ClaimLine {
@@ -128,23 +130,21 @@ function Format-ClaimLine {
         [string]$Claim.mode, $branch, $scope, $cwd)
 }
 
-function Invoke-RawGit {
-    param([Parameter(Mandatory)] [string[]] $Args)
-    & git @Args
-    $code = $LASTEXITCODE
-    if ($null -eq $code) { $code = 0 }
-    return $code
-}
-
 # ── Pass-through path: non-branch-moving verbs run unchanged ──────
+# Codex finding 2026-05-09T12:26Z: do NOT wrap the git call in a
+# function that captures output, otherwise pass-through verbs
+# (log/diff/etc) print nothing because the function's pipeline
+# absorbs git's stdout. Run git at top level and exit with its
+# raw $LASTEXITCODE.
 if (-not $isBranchMoving) {
-    $code = Invoke-RawGit -Args $GitArgs
-    exit $code
+    & git @GitArgs
+    exit $LASTEXITCODE
 }
 
 # ── Branch-moving path: enforce the guard ─────────────────────────
 $claims = @(Get-ActiveClaims)
 $currentCwd = (Get-Location).Path
+
 
 # Spec invariant: allow only when (no claims) OR (all claims belong
 # to this agent AND cwd matches each claim's recorded cwd).
@@ -169,9 +169,10 @@ foreach ($claim in $claims) {
 }
 
 if ($blocking.Count -eq 0) {
-    # Safe: run the git command.
-    $code = Invoke-RawGit -Args $GitArgs
-    exit $code
+    # Safe: run the git command at top level so its stdout passes
+    # through unchanged.
+    & git @GitArgs
+    exit $LASTEXITCODE
 }
 
 # ── Blocked: surface the conflict ─────────────────────────────────
@@ -231,5 +232,5 @@ if (Test-Path -LiteralPath $writeAgentEvent) {
         | Out-Null
 }
 
-$code = Invoke-RawGit -Args $GitArgs
-exit $code
+& git @GitArgs
+exit $LASTEXITCODE

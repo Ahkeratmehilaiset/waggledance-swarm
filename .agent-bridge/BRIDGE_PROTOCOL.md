@@ -42,6 +42,27 @@ This is a runtime bridge, not the source of truth. It lives under
      implementation.** Use `git worktree add ../wd-<task> <branch>` so each
      agent's working tree is independent and a claim's branch state cannot
      be moved out from under another agent.
+   - **Known limits of the `Invoke-BridgeGit.ps1` wrapper** (Codex review
+     2026-05-09): the wrapper is the immediate mitigation, not the
+     structural fix.
+     - **Allow-list, not deny-list, is the right shape long-term.** The
+       wrapper only guards `switch / checkout / merge / rebase / pull`.
+       `reset --hard`, `clean -fdx`, `stash`, `restore --source`,
+       `cherry-pick / revert` (with conflicts), and submodule operations
+       can also mutate shared workspace state. Treat raw destructive git
+       as forbidden during bridge-loop work; extend wrapper scope as
+       follow-up.
+     - **TOCTOU window** between `Get-ActiveClaims` and `& git` exists.
+       A genuine race needs an operation lock or lease, not just a
+       check-then-act guard.
+     - **Wrapper is not a hard sandbox.** Raw `git.exe` bypasses it.
+       The PATH-shim or per-agent worktree approach is the only
+       enforcement.
+     - The wrapper is sufficient for the autonomous bridge-loop *as a
+       cooperative protocol* — it makes the unsafe path noisy and
+       audit-traceable. It is NOT sufficient against an adversarial or
+       buggy agent that calls `git.exe` directly. Real parallel
+       implementation should use separate worktrees.
 
 3. Publish state after every meaningful step.
    - Use `status` for "I am working on X".
@@ -123,13 +144,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-Agen
 
 # PREFERRED: branch-aware git wrapper. Pass-through for status/log/diff/...;
 # blocks switch/checkout/merge/rebase/pull when another agent holds an
-# active claim. -Force is operator/system only. Use this instead of raw git
-# during autonomous bridge-loop work.
-powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Invoke-BridgeGit.ps1 -Agent claude -- switch main
+# active claim. -Force is operator/system only.
+#
+# IMPORTANT: invoke via -Command (not -File). PowerShell -File mode treats
+# `--` as an ambiguous parameter and the trailing git args do not bind to
+# -GitArgs. The -Command form preserves them via ValueFromRemainingArguments.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& .\.agent-bridge\bin\Invoke-BridgeGit.ps1 -Agent claude -- switch main"
 
 # Passive pre-flight check (no git execution). Exit 0 = safe, exit 2 =
-# another agent holds an active write claim. Useful for chaining into
-# scripts that need to decide before a branch-moving operation.
+# another agent holds an active write claim. Useful for scripting decisions
+# before a branch-moving operation. -File mode is fine here (no `--`).
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeBranchSwitchSafe.ps1 -Agent claude
 
 # End-to-end smoke test of the branch-guard contract. Creates a temporary

@@ -58,22 +58,23 @@ $bridgeRoot = Split-Path -Parent $PSScriptRoot
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 
 function Get-ActiveClaims {
-    if (-not (Test-Path -LiteralPath $claimsDir)) {
-        return ,@()
-    }
-    $out = @()
+    # Emit zero or more claim objects into the pipeline; caller wraps
+    # with @(...). The earlier `return ,@()` / `return ,$out` pattern
+    # caused PSStrictMode to surface "property 'agent' not found"
+    # because the inner array was wrapped as a single object that
+    # happened to look like a claim missing its fields.
+    # (Codex finding 2026-05-09T12:26Z.)
+    if (-not (Test-Path -LiteralPath $claimsDir)) { return }
     foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
                                  -ErrorAction SilentlyContinue)) {
         try {
-            $obj = Get-Content -Raw -Path $file.FullName -Encoding UTF8 |
+            Get-Content -Raw -Path $file.FullName -Encoding UTF8 |
                 ConvertFrom-Json
-            $out += $obj
         } catch {}
     }
-    return ,$out
 }
 
-$allClaims = Get-ActiveClaims
+$allClaims = @(Get-ActiveClaims)
 
 # Only WRITE claims by OTHER agents block - read-only claims and
 # own-agent claims do not affect a branch switch.

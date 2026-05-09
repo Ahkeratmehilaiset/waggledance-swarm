@@ -169,6 +169,58 @@ class TestTrustAdapter:
         ranking = ta.get_ranking("capability")
         assert len(ranking) >= 2
 
+    def test_all_scores_match_individual_scores(self):
+        ta = TrustAdapter()
+        for target_id in ("solver-a", "solver-b", "solver-c"):
+            ta.record_observation("solver", target_id, True,
+                                  confidence=0.9, context="actual")
+            ta.record_observation("solver", target_id, False,
+                                  confidence=0.4, context="simulated")
+
+        scores = ta.get_all_scores("solver")
+        expected = {
+            f"solver:{target_id}": ta.get_trust_score("solver", target_id)
+            for target_id in ("solver-a", "solver-b", "solver-c")
+        }
+        assert scores == pytest.approx(expected)
+
+    def test_ranking_uses_single_pass_not_public_per_target_scorer(self, monkeypatch):
+        ta = TrustAdapter()
+        for i in range(8):
+            target_id = f"solver-{i}"
+            ta.record_observation("solver", target_id, i % 2 == 0)
+            ta.record_observation("solver", target_id, True)
+
+        def fail_if_called(*args, **kwargs):  # pragma: no cover - failure path
+            raise AssertionError("get_ranking should not call get_trust_score")
+
+        monkeypatch.setattr(ta, "get_trust_score", fail_if_called)
+        ranking = ta.get_ranking("solver", limit=3)
+
+        assert len(ranking) == 3
+        assert all(row["target"].startswith("solver:") for row in ranking)
+
+    def test_all_scores_target_type_filter_is_exact_prefix(self):
+        ta = TrustAdapter()
+        ta.record_observation("solver", "same-id", True)
+        ta.record_observation("capability", "same-id", False)
+
+        assert set(ta.get_all_scores("solver")) == {"solver:same-id"}
+        assert set(ta.get_all_scores("capability")) == {
+            "capability:same-id"
+        }
+
+    def test_score_totals_follow_retained_observation_window(self):
+        ta = TrustAdapter()
+        ta._max_per_target = 3
+        for _ in range(3):
+            ta.record_observation("solver", "trimmed", False)
+        for _ in range(3):
+            ta.record_observation("solver", "trimmed", True)
+
+        assert ta.get_trust_score("solver", "trimmed") == 1.0
+        assert ta.get_all_scores("solver")["solver:trimmed"] == 1.0
+
     def test_trend_with_sufficient_data(self):
         ta = TrustAdapter()
         for _ in range(25):

@@ -10,7 +10,16 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$bridgeRoot = Split-Path -Parent $PSScriptRoot
+# R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
+# (create root if missing, fail loud on malformed path).
+$bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
+    [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+} else {
+    Split-Path -Parent $PSScriptRoot
+}
+if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
+    [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
+}
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 

@@ -68,6 +68,37 @@ env var there, exercises Write/Read/Claim/Release/Status, and
 verifies state lands under the temp dir (NOT under the worktree).
 10/10 pass on a healthy bridge.
 
+### Stale-claim lease (R15)
+
+Claim records carry a `last_heartbeat_utc` field that is bumped
+by `Send-Liveness.ps1` on every `liveness/active` and
+`heartbeat/active` event for the claim's owning agent. If
+`now - last_heartbeat_utc` exceeds the lease threshold
+(default 300s, override via `AGENT_BRIDGE_STALE_LEASE_SECONDS`),
+the claim is automatically archived to
+`work_queue/done/<task>.<utc>.stale_lease.json` and a
+`release/stale_lease` event is emitted by the `system` agent.
+
+The sweep is opportunistic: every call to
+`Read-AgentBridge.ps1` and `Get-AgentBridgeStatus.ps1` runs
+`Invoke-StaleClaimSweep.ps1 -Quiet` first, so any agent that
+reads the bridge clears stale claims for everyone. The sweep
+is a no-op when no claims are stale.
+
+`operator` and `system` claims are **immune** from auto-release
+even when stale — those are privileged claims that may
+legitimately outlive the lease.
+
+To verify the sweep works on your setup:
+
+```powershell
+.\.agent-bridge\bin\Test-BridgeStaleLeaseSmoke.ps1
+```
+
+10/10 pass on a healthy bridge. Covers stale auto-release,
+fresh-claim-not-swept, heartbeat-extends-lease, operator/system
+immunity, and the env-var threshold contract.
+
 See
 [`iterations/codex_scout_tasks/r13_decision_record_2026_05_09.md`](../iterations/codex_scout_tasks/r13_decision_record_2026_05_09.md)
 for the full R13 design notes and the deferred follow-ups

@@ -81,6 +81,19 @@ $safeTask = ConvertTo-SafeName $TaskId
 if (-not $safeTask) { throw 'TaskId does not produce a safe claim filename' }
 $claimPath = Join-Path $claimsDir ($safeTask + '.json')
 
+# R15 follow-up (Codex review 2026-05-09): claim acquisition is the
+# path that most needs stale-lease continuity. Status/read helpers
+# sweep opportunistically too, but a claim-first agent must not be
+# blocked forever by an expired conflicting write claim.
+$sweepScript = Join-Path $PSScriptRoot 'Invoke-StaleClaimSweep.ps1'
+if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
+    try {
+        & $sweepScript -Quiet | Out-Null
+    } catch {
+        Write-Warning ("stale-claim sweep before claim acquisition failed: {0}" -f $_.Exception.Message)
+    }
+}
+
 $activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
 foreach ($file in $activeClaims) {
     try {
@@ -108,17 +121,25 @@ if (-not $RunId) {
     $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
 }
 
+$nowUtc = (Get-Date).ToUniversalTime().ToString('o')
 $claim = [ordered]@{
-    claimed_at_utc = (Get-Date).ToUniversalTime().ToString('o')
-    agent          = $Agent
-    task_id        = $TaskId
-    summary        = $Summary
-    mode           = $Mode
-    write_scope    = @($WriteScope)
-    run_id         = $RunId
-    pid            = $PID
-    cwd            = (Get-Location).Path
-    git_branch     = Get-CurrentGitBranch
+    claimed_at_utc      = $nowUtc
+    # R15: stale-claim-lease. last_heartbeat_utc is bumped by
+    # Send-Liveness.ps1 on heartbeat/liveness-active events for
+    # this agent; Invoke-StaleClaimSweep.ps1 archives claims whose
+    # heartbeat is older than AGENT_BRIDGE_STALE_LEASE_SECONDS
+    # (default 300s). On creation it equals claimed_at_utc so a
+    # claim that's never heart-beated still has a finite lease.
+    last_heartbeat_utc  = $nowUtc
+    agent               = $Agent
+    task_id             = $TaskId
+    summary             = $Summary
+    mode                = $Mode
+    write_scope         = @($WriteScope)
+    run_id              = $RunId
+    pid                 = $PID
+    cwd                 = (Get-Location).Path
+    git_branch          = Get-CurrentGitBranch
 }
 $json = ($claim | ConvertTo-Json -Depth 8)
 

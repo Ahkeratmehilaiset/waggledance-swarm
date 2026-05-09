@@ -103,3 +103,52 @@ if (-not $TaskId) {
     -Message $Message `
     -TaskId $TaskId `
     -Paths $Paths
+
+# R15: bump last_heartbeat_utc on this agent's active claims so
+# Invoke-StaleClaimSweep.ps1 doesn't auto-release them. Only
+# liveness/active and heartbeat/active extend the lease — a
+# liveness/sleeping or wake_request does NOT keep the claim alive
+# (that would defeat the whole point of the lease).
+if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
+    # Resolve runtime root the same way other bridge scripts do
+    # (R13 AGENT_BRIDGE_RUNTIME_ROOT support). Inlined here to
+    # keep Send-Liveness self-contained.
+    $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
+        [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+    } else {
+        Split-Path -Parent $PSScriptRoot
+    }
+    $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
+    if (Test-Path -LiteralPath $claimsDir -PathType Container) {
+        $heartbeatTs = (Get-Date).ToUniversalTime().ToString('o')
+        foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' `
+                                          -File -ErrorAction SilentlyContinue)) {
+            try {
+                $obj = Get-Content -Raw -Path $file.FullName -Encoding UTF8 |
+                    ConvertFrom-Json
+            } catch { continue }
+            if ([string]$obj.agent -ne $Agent) { continue }
+            # Bump field, preserving claim shape.
+            if ($obj.PSObject.Properties['last_heartbeat_utc']) {
+                $obj.last_heartbeat_utc = $heartbeatTs
+            } else {
+                $obj | Add-Member -NotePropertyName last_heartbeat_utc `
+                    -NotePropertyValue $heartbeatTs -Force
+            }
+            try {
+                $json = ($obj | ConvertTo-Json -Depth 8)
+                $tmp = "$($file.FullName).tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+                $encoding = New-Object System.Text.UTF8Encoding($false)
+                [System.IO.File]::WriteAllText($tmp, $json, $encoding)
+                Move-Item -LiteralPath $tmp -Destination $file.FullName `
+                    -Force -ErrorAction Stop
+            } catch {
+                # Lease bump is best-effort; failure here just
+                # means the next heartbeat will retry. Don't fail
+                # the liveness emit because of a lease-update glitch.
+                Write-Warning ("could not bump lease for {0}: {1}" -f `
+                    $file.Name, $_.Exception.Message)
+            }
+        }
+    }
+}

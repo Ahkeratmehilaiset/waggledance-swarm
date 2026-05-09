@@ -20,6 +20,14 @@ $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
 if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
 }
+
+# R15: opportunistic stale-claim sweep before showing status.
+$staleSweep = Join-Path $PSScriptRoot 'Invoke-StaleClaimSweep.ps1'
+if (Test-Path -LiteralPath $staleSweep -PathType Leaf) {
+    try {
+        & $staleSweep -Quiet | Out-Null
+    } catch {}  # best-effort
+}
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 

@@ -65,8 +65,9 @@
     "verdict": {
       "type": "string",
       "enum": ["pass_all_gates", "needs_more_shadow",
-               "regression_detected", "syntactic_invalid",
-               "semantic_invalid", "rejected_low_value"]
+               "regression_detected", "property_test_failed",
+               "syntactic_invalid", "semantic_invalid",
+               "rejected_low_value"]
     },
     "produced_at_iso": {"type": "string"},
     "execution_backend": {"type": "string",

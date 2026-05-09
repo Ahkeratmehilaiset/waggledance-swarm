@@ -305,6 +305,22 @@ def test_from_mentor_context_pack_truncates_claim_to_500_chars():
     assert len(facts[0].claim) == 500
 
 
+def test_from_mentor_context_pack_fact_id_uses_emitted_claim():
+    """Two long mentor notes that share a prefix but differ inside
+    the emitted 500-char claim must not collapse to one fact_id.
+    Downstream deltas and dedup use fact_id as the stable key."""
+    shared_prefix = "x" * 200
+    pack = {"items": [
+        {"item_id": "M-1", "kind": "design_pattern",
+         "content": shared_prefix + "A"},
+        {"item_id": "M-2", "kind": "design_pattern",
+         "content": shared_prefix + "B"},
+    ]}
+    facts = from_mentor_context_pack(pack)
+    assert facts[0].claim != facts[1].claim
+    assert facts[0].fact_id != facts[1].fact_id
+
+
 def test_from_mentor_context_pack_missing_item_id_uses_empty_string():
     pack = {"items": [
         {"kind": "design_pattern", "content": "some external fact"},

@@ -11,7 +11,10 @@ linkage). Drift here would either:
   promotes solvers that consistently over-estimate), or
 - generate spurious alerts on stable systems (alert fatigue).
 
-ZERO direct test coverage on main as of 2026-05-09.
+Near-zero dedicated module-level coverage on main as of
+2026-05-09: the legacy Phase 9 world-model test hit broad
+detect_drift cases, but not the boundary, sorting, windowing, and
+serialization invariants pinned here.
 
 Pinned invariants:
 

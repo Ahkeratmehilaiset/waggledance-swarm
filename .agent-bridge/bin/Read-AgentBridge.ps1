@@ -6,6 +6,7 @@ param(
     [switch] $OtherOnly,
     [switch] $ShowClaims,
     [switch] $ShowLiveness,
+    [switch] $ShowScoreboard,
     [switch] $NoContinuity,
     [switch] $NoAckReceived,
     [switch] $Raw
@@ -42,7 +43,11 @@ function Read-BridgeEventObjects {
 
 function Test-IsAnswerEvent {
     param([Parameter(Mandatory)] [object] $Event)
-    return @('received','seen','acknowledged') -notcontains [string]$Event.status
+    $status = [string]$Event.status
+    $type = [string]$Event.type
+    if (@('received','seen','acknowledged') -contains $status) { return $false }
+    if ($type -eq 'message') { return $status -eq 'answered' }
+    return @('done','finding','decision','blocked','handoff','test','claim','release') -contains $type
 }
 
 function Send-ReceivedAck {
@@ -376,6 +381,104 @@ if ($ShowLiveness -and -not $NoContinuity) {
         Write-Host ''
     } else {
         Write-Host '  (no events.jsonl yet)'
+        Write-Host ''
+    }
+}
+
+if ($ShowScoreboard) {
+    # Internal review additive (2026-05-09): real-time attribution view —
+    # who has done what, and how much, since the bridge started. Counts
+    # the durable bridge-event types per agent so both Claude and Codex
+    # (and the operator) can see at a glance how the iteration loop has
+    # shared the load. No filtering by date here; for a windowed view
+    # add a later -SinceUtc parameter.
+    Write-Host 'AGENT SCOREBOARD' -ForegroundColor Cyan
+    if (-not (Test-Path -LiteralPath $eventsPath)) {
+        Write-Host '  (no events.jsonl yet)'
+        Write-Host ''
+    } else {
+        $allScoreEvents = Read-BridgeEventObjects -Path $eventsPath -MaxLines 0
+        $byAgent = @{}
+        foreach ($e in $allScoreEvents) {
+            $a = [string]$e.agent
+            if (-not $a) { continue }
+            if (-not $byAgent.ContainsKey($a)) {
+                $byAgent[$a] = [ordered]@{
+                    findings_raised  = 0
+                    fixes_done       = 0
+                    decisions        = 0
+                    handoffs         = 0
+                    claims           = 0
+                    releases         = 0
+                    messages_sent    = 0
+                    blocked_raised   = 0
+                    last_activity    = ''
+                    last_message     = ''
+                    last_task_id     = ''
+                }
+            }
+            $row = $byAgent[$a]
+            switch ([string]$e.type) {
+                'finding'  { $row.findings_raised++ }
+                'done'     { $row.fixes_done++ }
+                'decision' { $row.decisions++ }
+                'handoff'  { $row.handoffs++ }
+                'claim'    { $row.claims++ }
+                'release'  { $row.releases++ }
+                'blocked'  { $row.blocked_raised++ }
+                'message'  {
+                    if ([string]$e.status -ne 'received') { $row.messages_sent++ }
+                }
+                default    { }
+            }
+            $tsRaw = [string]$e.ts_utc
+            if ($tsRaw -and $tsRaw -gt [string]$row.last_activity) {
+                $row.last_activity = $tsRaw
+                $row.last_message  = [string]$e.message
+                $row.last_task_id  = [string]$e.task_id
+            }
+        }
+        if ($byAgent.Keys.Count -eq 0) {
+            Write-Host '  (no agents)'
+        } else {
+            Write-Host ('  {0,-9} {1,7} {2,5} {3,5} {4,5} {5,5} {6,5} {7,5} {8,5}  last' -f `
+                'agent','findings','fixes','decis','hand','claim','rel','msgs','blk')
+            foreach ($a in ($byAgent.Keys | Sort-Object)) {
+                $row = $byAgent[$a]
+                $lastTask = $row.last_task_id
+                if (-not $lastTask) { $lastTask = '-' }
+                $lastMsg = $row.last_message
+                if (-not $lastMsg) { $lastMsg = '-' }
+                if ($lastMsg.Length -gt 60) { $lastMsg = $lastMsg.Substring(0,57) + '...' }
+                Write-Host ('  {0,-9} {1,7} {2,5} {3,5} {4,5} {5,5} {6,5} {7,5} {8,5}  [{9}] {10}' -f `
+                    $a, $row.findings_raised, $row.fixes_done, $row.decisions,
+                    $row.handoffs, $row.claims, $row.releases, $row.messages_sent,
+                    $row.blocked_raised, $lastTask, $lastMsg)
+            }
+            # Recent done/finding events — what got fixed, by whom.
+            Write-Host ''
+            Write-Host '  RECENT FIXES (done + finding/closed)' -ForegroundColor DarkCyan
+            $recentFixes = @(
+                $allScoreEvents |
+                    Where-Object {
+                        ([string]$_.type -eq 'done') -or
+                        ([string]$_.type -eq 'finding' -and [string]$_.status -eq 'closed')
+                    } |
+                    Sort-Object ts_utc |
+                    Select-Object -Last 12
+            )
+            if ($recentFixes.Count -eq 0) {
+                Write-Host '    (none yet)'
+            } else {
+                foreach ($f in $recentFixes) {
+                    $msg = [string]$f.message
+                    if ($msg.Length -gt 70) { $msg = $msg.Substring(0,67) + '...' }
+                    Write-Host ('    {0}  {1,-7} {2}/{3} [{4}] {5}' -f `
+                        ([string]$f.ts_utc), [string]$f.agent, [string]$f.type,
+                        [string]$f.status, [string]$f.task_id, $msg)
+                }
+            }
+        }
         Write-Host ''
     }
 }

@@ -43,9 +43,33 @@ This is a runtime bridge, not the source of truth. It lives under
    - If the other agent owns the only conflicting write scope, either do
      read-only review, take an unclaimed task, or publish `blocked` with
      the exact blocker.
+   - If there is no conflicting write scope and no blocking operator-only
+     decision, claim a useful scout, review, verification, or implementation
+     task. Do not wait for the operator to say "continue".
 
 5. Operator escalation is only for external permissions, destructive
    actions, or unresolved claim conflicts.
+
+6. Opinions require replies.
+   - Any `finding/open`, `message/proposal`, `decision/proposal`,
+     `blocked/*`, or explicit review opinion sent to another agent must
+     receive a substantive reply with the same `task_id`.
+   - `message/received` only proves the target has seen it. It never
+     satisfies the reply requirement.
+   - A valid reply is `done/*`, `finding/*`, `decision/*`, `blocked/*`,
+     `handoff/*`, `test/*`, or `message/answered`.
+   - If an agent disagrees, it must say why and propose the smallest safe
+     alternative. Silence is treated as unresolved work.
+
+7. Alternate review loops.
+   - For meaningful bridge/protocol/source changes, run the
+     architect/security/reliability loop before merge.
+   - Prefer alternating ownership: if Claude implemented the last fix,
+     Codex should review or run the next internal iteration; if Codex
+     implemented the last fix, Claude should review or run the next
+     internal iteration.
+   - The agent running the iteration owns the fixes it discovers unless
+     that would conflict with another active write claim.
 
 ## Commands
 
@@ -69,6 +93,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Write-Ag
 
 # Reply to a request: preserve the original task id so continuity is machine-checkable.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Write-AgentEvent.ps1 -Agent codex -Type done -TaskId "validators-property-gate-fix-prompt-review-2026-05-09" -Status approved -To claude -Message "Path X approved by Codex consensus"
+
+# See active claims, unresolved requests, contribution counts, recent
+# substantive events, and next-action signals.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1
 
 # Release a task claim.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Release-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Status done -Message "Review complete; 2 medium findings"

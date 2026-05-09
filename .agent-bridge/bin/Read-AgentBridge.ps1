@@ -63,7 +63,12 @@ if ($Agent -and -not $NoContinuity) {
         Write-Host ''
     } else {
         $allEvents = Read-BridgeEventObjects -Path $eventsPath
-        $requestTypes = @('message','handoff','blocked','finding','decision')
+        $requestTypes = @('message','handoff','blocked','finding','decision','done')
+        $requestStatuses = @(
+            'request','ready','blocked','open','proposal',
+            'fix-pushed','fix-branch-pushed','pushed',
+            'ready_for_implementation'
+        )
         $requests = @(
             $allEvents |
                 Where-Object {
@@ -71,6 +76,7 @@ if ($Agent -and -not $NoContinuity) {
                     [string]$_.to -eq $Agent -and
                     [string]$_.agent -ne $Agent -and
                     $requestTypes -contains [string]$_.type -and
+                    $requestStatuses -contains [string]$_.status -and
                     [string]$_.task_id
                 } |
                 Sort-Object ts_utc
@@ -116,6 +122,7 @@ if ($Agent -and -not $NoContinuity) {
                     [string]$_.to -and
                     [string]$_.to -ne $Agent -and
                     $requestTypes -contains [string]$_.type -and
+                    $requestStatuses -contains [string]$_.status -and
                     [string]$_.task_id
                 } |
                 Sort-Object ts_utc

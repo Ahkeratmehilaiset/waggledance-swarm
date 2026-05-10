@@ -467,10 +467,10 @@ entries:
   next_bottleneck: R20.6 activation prerequisites (R21 will track)
 
 - session_id: r21.1-oracle-ab-harness
-  pr: null
+  pr: 187
   owner: claude
   reviewer: codex
-  merged_utc: null
+  merged_utc: 2026-05-10T04:14:04Z
   axis_a_before_ms: null
   axis_a_after_ms: null
   axis_a_metric: null
@@ -518,6 +518,185 @@ entries:
     the oracle YAMLs to the FAISS staging routing layer they
     actually target (different code path entirely).
   next_bottleneck: R21.2 R19 Cand 2 build-phase transaction batching
+
+- session_id: r21.2-control-plane-transaction-batching
+  pr: null
+  owner: codex
+  reviewer: claude
+  merged_utc: null
+  axis_a_before_ms: 152271.5
+  axis_a_after_ms: 1830.5
+  axis_a_metric: tools.run_solver_scale_proof.bulk_load_descriptors_10k
+  axis_a_snapshot: r21_2_scale_10k_2026_05_10
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 1
+  post_merge_audit_findings: 0
+  failed_attempts: 1
+  lessons_learned: |
+    R21.2 closes R19 Cand 2 by adding a public
+    ControlPlaneDB.transaction() context manager and wrapping
+    tools/run_solver_scale_proof.py::bulk_load_descriptors in one
+    explicit SQLite transaction. The repeatable 10k benchmark uses
+    the same synthetic descriptor snapshot and lookup count before
+    and after:
+
+    - before: 152.2715 s build, 65.7 descriptors/s
+    - after: 1.8305 s build, 5462.9 descriptors/s
+    - speedup: 83.19x, 150.4410 s saved
+
+    Capability lookup correctness remained green in both runs:
+    1000/1000 auto_promoted_solver hits, zero FIFO fallback, zero
+    misses. The after run's lookup p99 is noisier (34.9939 ms vs
+    22.8506 ms) but R21.2 targets build-phase latency, not lookup
+    p99; R19 Cand 3 remains the lookup-tail follow-up.
+
+    Coordination finding: Claude claimed R21.2 first but its claim
+    stale-released without heartbeat after partially editing the
+    shared worktree. Codex avoided parallel edits, then finished from
+    the existing diff after stale release. This is counted as one
+    pre-merge coordination finding, not a product-code failure.
+  next_bottleneck: R21.3 cloud provider plugin + BridgeLLMRedactor
+
+- session_id: r21.3-anthropic-and-redactor
+  pr: 189
+  owner: claude
+  reviewer: codex
+  merged_utc: 2026-05-10T04:58:27Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 5
+  axis_c_push_to_merge_minutes: 11
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 3
+  failed_attempts: 0
+  lessons_learned: |
+    R21.3 ships AnthropicProvider (Tier 3 cloud) + BridgeLLMRedactor
+    enforcing operator decision 4 PII regexes (email, credit-card,
+    phone, file path) ON BY DEFAULT for cloud-bound prompts.
+    AcceptPiiToCloud=False hard default. Lazy-import keeps Profile S
+    clean (importing waggledance.core.bridge_llm leaks zero LLM
+    SDKs into sys.modules per subprocess-isolated test). Mandatory
+    redactor on every cloud call; provider raises ProviderError on
+    <REDACTOR_FAILED> sentinel (fail-closed contract). 18 redactor
+    tests + AnthropicProvider plumbing tests PASS.
+
+    Post-merge audit (filed via bridge finding/open
+    r22-redactor-bugs-2026-05-10): 3 bugs found in cloud path,
+    queued for R22.0 hotfix:
+    - F1 medium: POSIX_PATH_RE eats URL paths
+      (https://docs.python.org/3/library/re.html -> https:/<PATH_1>)
+    - F2 low DoS: <REDACTOR_FAILED> sentinel injection in user prompt
+      triggers false fail-closed
+    - F3 medium: AnthropicProvider ignores
+      request.budget.max_latency_ms (potential indefinite hang)
+      and cost_cents not computed (budget tracker can't enforce
+      $-budget for Anthropic)
+  next_bottleneck: R21.4 gate re-verification
+
+- session_id: r21.4-gate-reverification
+  pr: 190
+  owner: claude
+  reviewer: codex
+  merged_utc: 2026-05-10T05:12:28Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 4
+  axis_c_push_to_merge_minutes: 11
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    R21.4 read-only verification round on top of post-R21.3 main.
+    All five operational gates green:
+    - cold-shell BOOTSTRAP (R13/R13.5): 10/10
+    - 5+ autonomous PRs landed: 17 since R20 routing
+    - 5-min stale lease (R15): 11/11
+    - bridge role-review smoke (R20.5/R16): 12/12
+    - R20+R21+Phase D targeted regression: 268/268 in 13.93s
+    Closes R21.5 release-decision gate (3).
+  next_bottleneck: R21.5 release decision (Codex / Claude resilience)
+
+- session_id: r21.5-release-decision
+  pr: 191
+  owner: claude
+  reviewer: codex
+  merged_utc: 2026-05-10T05:38:34Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 4
+  axis_c_push_to_merge_minutes: 23
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 1
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    R21.5 ships the v3.11.0-r20-axis-b-activated-alpha PRERELEASE
+    decision (CHANGELOG entry, README front-page note, anti-claims
+    rule 18) with all 5 operator R21.5 gates ✅:
+    1. R21.1 has real delta_quality (#187, 0.5 first non-null axis-B)
+    2. Part 1 finalized (#183/#184/#185/#186 on main)
+    3. R21.4 gate re-verification green (#190; 268/268 regression)
+    4. R20 Decision B 5 conditions all ✅ (A/B run; AnthropicProvider
+       + redactor #189; R19 Cand 2 measured at 10k = 79.3x speedup;
+       Codex synthesis-amendment ratification 03:35:18Z; Phase C
+       gates re-verify R21.4)
+    5. PR #182 Profile S env fix merged (1bbef6b)
+
+    Codex pre-merge finding: pyproject version bump 3.6.0 -> 3.11.0a1
+    broke TestVersionConsistency. Codex fix-on-branch (f4daa18) keeps
+    the package version numeric (3.6.0) and documents the prerelease
+    identity as Git tag v3.11.0-r20-axis-b-activated-alpha.
+  next_bottleneck: R21.6 closeout (tag + GitHub release + GHCR)
+
+- session_id: r21.6-closeout
+  pr: 192
+  owner: claude
+  reviewer: codex
+  merged_utc: 2026-05-10T05:54:44Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 5
+  axis_c_push_to_merge_minutes: 28
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    R21.6 closeout: .github/workflows/release-docker.yml builds the
+    canonical + sliding-alias + Profile S/M images on GHCR per
+    operator decision 3, refuses to publish if tag does not end in
+    'alpha' (operator decision 2 hard guard), skips waggledance:latest
+    update. Smoke-test job pulls image and asserts Profile S
+    BridgeLLMClient.disabled() works + redactor scrubs alice@example.org.
+    Local Docker Desktop unavailable on build machine; GitHub Actions
+    runs the build in CI. Operator-runnable post-merge runbook in
+    closeout doc; release.published auto-fires the workflow.
+
+    Post-merge: tag v3.11.0-r20-axis-b-activated-alpha pushed; GitHub
+    release isPrerelease=true at e4e51dd; GHCR workflow run
+    25621316901 succeeded (build-and-push + smoke-test both green;
+    canonical + axis-b-alpha + small-axis-b-alpha + medium-axis-b-alpha
+    images live on ghcr.io/ahkeratmehilaiset/waggledance). R21 sprint
+    end-to-end complete in ~2h 11min (operator paste 03:48Z to
+    release publish 05:59Z) vs 8h budget.
+  next_bottleneck: R22.0 redactor + AnthropicProvider hotfix (3 bugs from post-merge audit) → R22.1+ scout-led work
 
 ```
 

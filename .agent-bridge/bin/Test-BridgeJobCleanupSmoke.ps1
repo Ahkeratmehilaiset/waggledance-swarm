@@ -63,6 +63,9 @@ try {
     # Pre-clean any leftover jobs from prior smoke runs in this host
     Get-Job -Name 'agent-bridge-*' -ErrorAction SilentlyContinue |
         Remove-Job -Force -ErrorAction SilentlyContinue
+    Get-EventSubscriber -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.SourceIdentifier -eq 'PowerShell.Exiting' } |
+        Unregister-Event -Force -ErrorAction SilentlyContinue
     Remove-Variable -Name '__AgentBridgeCleanupRegistered' `
         -Scope Global -ErrorAction SilentlyContinue
 
@@ -86,11 +89,20 @@ try {
         -Scope Global -ErrorAction SilentlyContinue
     Add-Check 'cleanup-registered flag set' (
         $null -ne $flagVar -and $flagVar.Value -eq $true)
-    $beforeCount = @(Get-EventSubscriber -ErrorAction SilentlyContinue).Count
+    $beforeSubscribers = @(
+        Get-EventSubscriber -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.SourceIdentifier -eq 'PowerShell.Exiting' }
+    )
+    Add-Check 'cleanup PowerShell.Exiting subscriber exists' (
+        $beforeSubscribers.Count -eq 1) "count=$($beforeSubscribers.Count)"
+    $beforeCount = $beforeSubscribers.Count
     # Re-source the bootstrap; the flag should prevent double-register
     . $startSession -Agent claude -RuntimeRoot $tempRoot `
         -SkipBridgeRead -SkipLiveness -SkipGitStatus -SkipWakeWatcher -SkipHeartbeatJob | Out-Null
-    $afterCount = @(Get-EventSubscriber -ErrorAction SilentlyContinue).Count
+    $afterCount = @(
+        Get-EventSubscriber -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.SourceIdentifier -eq 'PowerShell.Exiting' }
+    ).Count
     Add-Check 'second dot-source did not duplicate cleanup subscription' `
         ($afterCount -eq $beforeCount) "before=$beforeCount after=$afterCount"
 
@@ -103,6 +115,15 @@ try {
     Add-Check 'heartbeat job removed' ($null -eq $hbAfter)
     Add-Check 'AGENT_BRIDGE_WAKE_JOB env cleared' ([string]::IsNullOrEmpty($env:AGENT_BRIDGE_WAKE_JOB))
     Add-Check 'AGENT_BRIDGE_HEARTBEAT_JOB env cleared' ([string]::IsNullOrEmpty($env:AGENT_BRIDGE_HEARTBEAT_JOB))
+    $env:AGENT_BRIDGE_WAKE_JOB = 'whatif-wake'
+    $env:AGENT_BRIDGE_HEARTBEAT_JOB = 'whatif-heartbeat'
+    & $stopSession -WhatIf 2>&1 | Out-Null
+    Add-Check 'Stop-AgentBridgeSession -WhatIf preserves wake env' `
+        ($env:AGENT_BRIDGE_WAKE_JOB -eq 'whatif-wake')
+    Add-Check 'Stop-AgentBridgeSession -WhatIf preserves heartbeat env' `
+        ($env:AGENT_BRIDGE_HEARTBEAT_JOB -eq 'whatif-heartbeat')
+    Remove-Item Env:AGENT_BRIDGE_WAKE_JOB -ErrorAction SilentlyContinue
+    Remove-Item Env:AGENT_BRIDGE_HEARTBEAT_JOB -ErrorAction SilentlyContinue
 
     # ── 4: Stop-AgentBridgeSession -Agent stops only that agent ───────
     Write-Host '4. Stop-AgentBridgeSession -Agent <name> filters by agent:'
@@ -146,6 +167,9 @@ try {
             Stop-Job -Job $_ -ErrorAction SilentlyContinue
             Remove-Job -Job $_ -Force -ErrorAction SilentlyContinue
         }
+    Get-EventSubscriber -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.SourceIdentifier -eq 'PowerShell.Exiting' } |
+        Unregister-Event -Force -ErrorAction SilentlyContinue
     if ($null -ne $savedRoot) { $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRoot } else { Remove-Item Env:AGENT_BRIDGE_RUNTIME_ROOT -ErrorAction SilentlyContinue }
     if ($null -ne $savedRunId) { $env:AGENT_BRIDGE_RUN_ID = $savedRunId } else { Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue }
     if ($null -ne $savedWakeJob) { $env:AGENT_BRIDGE_WAKE_JOB = $savedWakeJob } else { Remove-Item Env:AGENT_BRIDGE_WAKE_JOB -ErrorAction SilentlyContinue }

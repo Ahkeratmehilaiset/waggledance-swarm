@@ -69,8 +69,13 @@ foreach ($job in $jobs) {
 # point at jobs in a now-dead parent process which we cannot touch, but
 # clearing them prevents downstream tooling from waving a stale id around.
 if (-not $Agent -or $Agent -eq 'claude' -or $Agent -eq 'codex' -or $Agent -eq 'operator' -or $Agent -eq 'system') {
-    Remove-Item Env:AGENT_BRIDGE_WAKE_JOB -ErrorAction SilentlyContinue
-    Remove-Item Env:AGENT_BRIDGE_HEARTBEAT_JOB -ErrorAction SilentlyContinue
+    if ($PSCmdlet.ShouldProcess(
+            'AGENT_BRIDGE_WAKE_JOB / AGENT_BRIDGE_HEARTBEAT_JOB',
+            'Clear process env vars'
+        )) {
+        Remove-Item Env:AGENT_BRIDGE_WAKE_JOB -ErrorAction SilentlyContinue
+        Remove-Item Env:AGENT_BRIDGE_HEARTBEAT_JOB -ErrorAction SilentlyContinue
+    }
 }
 
 [pscustomobject]@{

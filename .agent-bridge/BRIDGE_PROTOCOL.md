@@ -289,7 +289,7 @@ operation lock / lease for TOCTOU).
      <name>`) to clean them up. Without this, dead agent shells keep
      emitting `liveness/active` events and bumping `last_heartbeat_utc`
      on their own claims, defeating stale-lease auto-release.
-     Verified by `Test-BridgeJobCleanupSmoke.ps1` (12/12 PASS).
+     Verified by `Test-BridgeJobCleanupSmoke.ps1`.
 
 ## Commands
 

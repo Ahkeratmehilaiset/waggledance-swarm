@@ -243,6 +243,35 @@ def test_warm_dispatch_cold_then_warm(cp: ControlPlaneDB) -> None:
     assert cache.stats.cold_hits_warmed == 1
 
 
+def test_cold_warmup_uses_control_plane_solver_name_lookup(
+    cp: ControlPlaneDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sid = _grow_one(cp)
+    detector = RuntimeGapDetector(cp)
+    cache = HotPathCache(control_plane=cp, detector=detector)
+    calls: list[int] = []
+    expected_solver_name = cp.get_solver_name(sid)
+    original_get_solver_name = cp.get_solver_name
+
+    def spy_get_solver_name(solver_id: int):
+        calls.append(solver_id)
+        return original_get_solver_name(solver_id)
+
+    monkeypatch.setattr(cp, "get_solver_name", spy_get_solver_name)
+
+    result = cache.warm_dispatch(
+        "scalar_unit_conversion",
+        {"from_unit": "C", "to_unit": "K"},
+        {"x": 0.0},
+    )
+
+    assert result.matched is True
+    assert result.source == "cold_then_warmed"
+    assert result.solver_id == sid
+    assert result.solver_name == expected_solver_name
+    assert calls == [sid]
+
+
 def test_warm_dispatch_miss_records_no_solver(cp: ControlPlaneDB) -> None:
     detector = RuntimeGapDetector(cp)
     cache = HotPathCache(control_plane=cp, detector=detector)

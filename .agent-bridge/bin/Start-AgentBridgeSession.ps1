@@ -27,7 +27,9 @@ param(
     [switch] $SkipLiveness,
     [switch] $SkipGitStatus,
     [switch] $SkipWakeWatcher,
-    [switch] $SkipHeartbeatJob
+    [switch] $SkipHeartbeatJob,
+    [switch] $RequireDedicatedWorktree,
+    [string] $PrimaryRepoRoot = 'C:\Python\project2-master'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,6 +47,7 @@ if (-not $RepoRoot) {
 
 $repoFull = Resolve-FullPath $RepoRoot
 $runtimeFull = Resolve-FullPath $RuntimeRoot
+$primaryRepoFull = Resolve-FullPath $PrimaryRepoRoot
 
 if (-not (Test-Path -LiteralPath $repoFull -PathType Container)) {
     throw "repo root does not exist: $repoFull"
@@ -56,6 +59,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $repoFull '.git'))) {
 $repoDrive = [System.IO.Path]::GetPathRoot($repoFull)
 if ($repoDrive -and $repoDrive.TrimEnd('\') -ne 'C:') {
     throw "repo root must be on persistent C: drive: $repoFull"
+}
+
+$isDedicatedWorktree = -not $repoFull.TrimEnd('\').Equals(
+    $primaryRepoFull.TrimEnd('\'),
+    [System.StringComparison]::OrdinalIgnoreCase
+)
+if ($RequireDedicatedWorktree -and -not $isDedicatedWorktree) {
+    throw ((
+        "dedicated agent worktree required; refusing to bootstrap in primary shared repo: {0}. " +
+        "Create one with .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 first."
+    ) -f $repoFull)
 }
 
 $runtimeDirs = @(
@@ -101,7 +115,7 @@ if (-not $SkipLiveness) {
         -Agent $Agent `
         -State active `
         -TaskId "$Agent-session-bootstrap-$((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd'))" `
-        -Message "$Agent session bootstrapped; runtime_root=$runtimeFull; repo_root=$repoFull" |
+        -Message "$Agent session bootstrapped; runtime_root=$runtimeFull; repo_root=$repoFull; dedicated_worktree=$isDedicatedWorktree" |
         Out-Null
 }
 
@@ -161,6 +175,8 @@ if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
 [pscustomobject]@{
     agent          = $Agent
     repo_root      = $repoFull
+    primary_repo_root = $primaryRepoFull
+    dedicated_worktree = $isDedicatedWorktree
     runtime_root   = $runtimeFull
     run_id         = $RunId
     git_branch     = $gitBranch

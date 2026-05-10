@@ -217,7 +217,9 @@ def test_proof_curiosity_log_uses_only_allowed_families(out_dir: Path,
 # Determinism
 # ---------------------------------------------------------------------------
 
-def test_proof_deterministic_across_two_runs(tmp_path: Path) -> None:
+def test_proof_deterministic_across_two_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Two consecutive runs against the same args produce identical
     pinned_input_manifest_sha256 and identical curiosity_log content.
 
@@ -228,6 +230,9 @@ def test_proof_deterministic_across_two_runs(tmp_path: Path) -> None:
 
     out_a = tmp_path / "run_a"
     out_b = tmp_path / "run_b"
+    timestamps = iter(
+        f"2026-05-10T08:59:{second:02d}Z" for second in range(10)
+    )
 
     try:
         for od in (out_a, out_b):
@@ -237,6 +242,7 @@ def test_proof_deterministic_across_two_runs(tmp_path: Path) -> None:
                 "--corpus-size", "30",
             ]
             import run_phase17a_producer_fabric_proof as orch  # noqa: F811
+            monkeypatch.setattr(orch, "_utc_iso_now", lambda: next(timestamps))
             assert orch.main() == 0
     finally:
         sys.argv = saved

@@ -402,15 +402,9 @@ class HotPathCache:
                 return WarmDispatchResult(
                     matched=False, source="miss", error=str(exc)
                 )
-            # solver_name lookup (one extra SQLite SELECT only on the cold
-            # path; cached afterwards)
-            solver_row = self.control_plane._conn.execute(  # type: ignore[attr-defined]
-                "SELECT name FROM solvers WHERE id = ?",
-                (int(solver_id),),
-            ).fetchone()
-            solver_name = (
-                str(solver_row["name"]) if solver_row is not None else None
-            )
+            # solver_name lookup (one extra locked ControlPlaneDB read only
+            # on the cold path; cached afterwards)
+            solver_name = self.control_plane.get_solver_name(int(solver_id))
             self.artifact_cache.store(
                 solver_id, artifact_record.artifact_id, parsed, solver_name,
             )

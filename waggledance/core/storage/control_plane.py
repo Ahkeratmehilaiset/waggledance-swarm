@@ -629,6 +629,13 @@ class ControlPlaneDB:
             ).fetchone()
             return self._row_to_solver(row) if row else None
 
+    def get_solver_name(self, solver_id: int) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT name FROM solvers WHERE id = ?", (int(solver_id),)
+            ).fetchone()
+            return str(row["name"]) if row is not None else None
+
     def count_solvers(self, *, status: Optional[str] = None) -> int:
         with self._lock:
             if status is None:

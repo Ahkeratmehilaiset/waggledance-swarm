@@ -572,8 +572,10 @@ def main() -> int:
 
     # Pinned input manifest sha — derived from the curiosity_log + self_model
     # so the proof is reproducible and deterministic.
+    pinned_self_model = dict(self_model)
+    pinned_self_model["snapshot_at_utc"] = "<excluded-from-pinned-input>"
     pinned_input_sha = _stable_hash(
-        json.dumps({"curiosity": curiosity_log, "self_model": self_model},
+        json.dumps({"curiosity": curiosity_log, "self_model": pinned_self_model},
                     sort_keys=True, default=str)
     )
 

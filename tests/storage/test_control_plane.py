@@ -60,6 +60,8 @@ def test_solver_family_upsert_and_solver_link(cp: ControlPlaneDB) -> None:
     assert sv2.id == sv.id
     assert sv2.version == "0.2.0"
     assert sv2.status == "shadow"
+    assert cp.get_solver_name(sv.id) == "thermal_basic"
+    assert cp.get_solver_name(sv.id + 999_999) is None
 
 
 def test_solver_unknown_family_raises(cp: ControlPlaneDB) -> None:

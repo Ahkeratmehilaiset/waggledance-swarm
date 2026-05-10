@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .budget import BudgetConfig, BudgetExhausted, BudgetTracker, load_budget_config
+from .providers.anthropic import AnthropicProvider
 from .providers.base import ProviderError, ProviderPlugin, all_providers
 from .providers.cache import ExactCacheProvider
 from .providers.cloud_stub import CloudStubProvider
@@ -126,6 +127,7 @@ class BridgeLLMClient:
             providers = [
                 ExactCacheProvider(),
                 OllamaProvider(),
+                AnthropicProvider(),
                 CloudStubProvider(),
                 HeuristicProvider(),
             ]

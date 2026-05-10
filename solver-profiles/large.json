@@ -8,7 +8,7 @@
     "allow_local_llm": true,
     "allow_cloud_llm": true,
     "allow_speculative_prefetch": true,
-    "fallback_chain": ["cache", "local-ollama", "cloud", "heuristic"],
+    "fallback_chain": ["cache", "local-ollama", "anthropic-api", "heuristic"],
     "default_provider": "cache"
   },
   "bridge_llm_client": {

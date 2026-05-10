@@ -69,6 +69,7 @@ class GroupCallResult:
 
     ok: bool
     input_language: str
+    output_language: str
     query_original: str
     query_corrected: str
     query_normalized_fi: str
@@ -107,16 +108,33 @@ class AgentGroupCallPipeline:
         agent_slots: Iterable[GroupAgentSlot],
         *,
         shared_context: str = "",
+        output_language: str = "en",
         max_tokens: int = 1024,
     ) -> GroupCallResult:
         """Run one English JSON LLM call for multiple agent slots."""
 
         slots = tuple(agent_slots)
+        normalized_output_language = _normalize_output_language(output_language)
+        if normalized_output_language is None:
+            return self._error_result(
+                user_text,
+                f"unsupported output language: {output_language}",
+                output_language="en",
+            )
         if not slots:
-            return self._error_result(user_text, "no agent slots supplied")
+            return self._error_result(
+                user_text,
+                "no agent slots supplied",
+                output_language=normalized_output_language,
+            )
 
         prepared = self._prepare_query(user_text)
-        prompt = self._build_prompt(prepared, slots, shared_context)
+        prompt = self._build_prompt(
+            prepared,
+            slots,
+            shared_context,
+            output_language=normalized_output_language,
+        )
 
         response = await self.llm.generate(
             prompt=prompt,
@@ -132,6 +150,7 @@ class AgentGroupCallPipeline:
                 "LLM group response was not valid JSON",
                 prepared=prepared,
                 raw_response=raw,
+                output_language=normalized_output_language,
             )
 
         answers_raw = parsed.get("answers")
@@ -141,10 +160,11 @@ class AgentGroupCallPipeline:
                 "LLM group response missing answers list",
                 prepared=prepared,
                 raw_response=raw,
+                output_language=normalized_output_language,
             )
 
-        output_fi = prepared["input_language"] == "fi"
-        answers: list[GroupAnswer] = []
+        output_fi = normalized_output_language == "fi"
+        answer_pairs: list[tuple[str, str, float]] = []
         for item in answers_raw:
             if not isinstance(item, dict):
                 continue
@@ -153,31 +173,44 @@ class AgentGroupCallPipeline:
             if not agent_id or not answer_en:
                 continue
             confidence = _safe_float(item.get("confidence"), default=0.0)
-            display = self._translate("en_to_fi", answer_en) if output_fi else answer_en
-            answers.append(GroupAnswer(
-                agent_id=agent_id,
-                answer_en=answer_en,
-                answer_display=display,
-                confidence=confidence,
-            ))
+            answer_pairs.append((agent_id, answer_en, confidence))
 
-        if not answers:
+        if not answer_pairs:
             return self._error_result(
                 user_text,
                 "LLM group response had no usable answers",
                 prepared=prepared,
                 raw_response=raw,
+                output_language=normalized_output_language,
             )
 
         synthesis_en = str(parsed.get("synthesis") or "").strip()
+        display_texts = [pair[1] for pair in answer_pairs]
+        synthesis_index = None
+        if synthesis_en:
+            synthesis_index = len(display_texts)
+            display_texts.append(synthesis_en)
+        if output_fi:
+            display_texts = self._translate_many("en_to_fi", display_texts)
+        answers = tuple(
+            GroupAnswer(
+                agent_id=agent_id,
+                answer_en=answer_en,
+                answer_display=display_texts[index],
+                confidence=confidence,
+            )
+            for index, (agent_id, answer_en, confidence)
+            in enumerate(answer_pairs)
+        )
         synthesis_display = (
-            self._translate("en_to_fi", synthesis_en)
-            if output_fi and synthesis_en
+            display_texts[synthesis_index]
+            if synthesis_index is not None
             else synthesis_en
         )
         return GroupCallResult(
             ok=True,
             input_language=prepared["input_language"],
+            output_language=normalized_output_language,
             query_original=user_text,
             query_corrected=prepared["query_corrected"],
             query_normalized_fi=prepared["query_normalized_fi"],
@@ -194,7 +227,7 @@ class AgentGroupCallPipeline:
         if input_language == "fi":
             corrected = autocorrect_fi(original)
             normalized = normalize_fi(corrected, sort_words=True)
-            query_en = self._translate("fi_to_en", corrected)
+            query_en = self._translate_many("fi_to_en", [corrected])[0]
         else:
             corrected = original
             normalized = ""
@@ -212,25 +245,24 @@ class AgentGroupCallPipeline:
         prepared: dict[str, str],
         agent_slots: tuple[GroupAgentSlot, ...],
         shared_context: str,
+        output_language: str,
     ) -> str:
-        slot_lines = []
-        for slot in agent_slots:
-            slot_lines.append({
-                "agent_id": slot.agent_id,
-                "name": slot.name or slot.agent_id,
-                "role": _clip(slot.role, 240),
-                "system_prompt_excerpt": _clip(
-                    slot.system_prompt,
-                    self.max_agent_prompt_chars,
-                ),
-                "context_excerpt": _clip(slot.context, self.max_agent_context_chars),
-            })
+        slot_lines = self._prepare_agent_slots(agent_slots)
+        shared_context_en = (
+            self._translate_many("fi_to_en", [shared_context])[0]
+            if _looks_finnish(shared_context)
+            else shared_context
+        )
         payload = {
+            "display_output_language": output_language,
             "query_original": prepared["query_original"],
             "query_corrected": prepared["query_corrected"],
             "query_normalized_fi": prepared["query_normalized_fi"],
             "query_en": prepared["query_en"],
-            "shared_context": _clip(shared_context, self.max_shared_context_chars),
+            "shared_context_en": _clip(
+                shared_context_en,
+                self.max_shared_context_chars,
+            ),
             "agents": slot_lines,
             "required_output_schema": {
                 "answers": [
@@ -245,6 +277,54 @@ class AgentGroupCallPipeline:
         }
         return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
+    def _prepare_agent_slots(
+        self,
+        agent_slots: tuple[GroupAgentSlot, ...],
+    ) -> list[dict[str, str]]:
+        slot_lines: list[dict[str, str]] = []
+        pending: list[tuple[int, str]] = []
+        for index, slot in enumerate(agent_slots):
+            values = {
+                "agent_id": slot.agent_id,
+                "name": slot.name or slot.agent_id,
+                "role": _clip(slot.role, 240),
+                "system_prompt_excerpt": _clip(
+                    slot.system_prompt,
+                    self.max_agent_prompt_chars,
+                ),
+                "context_excerpt": _clip(slot.context, self.max_agent_context_chars),
+            }
+            slot_lines.append(values)
+            for field in ("role", "system_prompt_excerpt", "context_excerpt"):
+                if _looks_finnish(values[field]):
+                    pending.append((index, field))
+        if pending:
+            translated = self._translate_many(
+                "fi_to_en",
+                [slot_lines[index][field] for index, field in pending],
+            )
+            for (index, field), value in zip(pending, translated):
+                slot_lines[index][field] = value
+        return slot_lines
+
+    def _translate_many(self, direction: str, texts: list[str]) -> list[str]:
+        if not texts or self.translator is None:
+            return list(texts)
+        batch_method = (
+            "batch_fi_to_en" if direction == "fi_to_en" else "batch_en_to_fi"
+        )
+        try:
+            if hasattr(self.translator, batch_method):
+                raw_results = getattr(self.translator, batch_method)(texts)
+                if len(raw_results) == len(texts):
+                    return [
+                        _translation_text(result, original)
+                        for result, original in zip(raw_results, texts)
+                    ]
+        except Exception:
+            pass
+        return [self._translate(direction, text) for text in texts]
+
     def _translate(self, direction: str, text: str) -> str:
         if not text or self.translator is None:
             return text
@@ -258,7 +338,7 @@ class AgentGroupCallPipeline:
                 translated = result.get("translated") if isinstance(result, dict) else None
             else:
                 translated = None
-            return str(translated or text)
+            return _translation_text(translated, text)
         except Exception:
             return text
 
@@ -269,6 +349,7 @@ class AgentGroupCallPipeline:
         *,
         prepared: dict[str, str] | None = None,
         raw_response: str = "",
+        output_language: str = "en",
     ) -> GroupCallResult:
         prepared = prepared or {
             "input_language": "fi" if _looks_finnish(user_text) else "en",
@@ -279,6 +360,7 @@ class AgentGroupCallPipeline:
         return GroupCallResult(
             ok=False,
             input_language=prepared["input_language"],
+            output_language=output_language,
             query_original=user_text,
             query_corrected=prepared["query_corrected"],
             query_normalized_fi=prepared["query_normalized_fi"],
@@ -309,6 +391,27 @@ def _safe_float(value: Any, *, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_output_language(language: str) -> str | None:
+    normalized = (language or "en").strip().lower()
+    if normalized in {"en", "english"}:
+        return "en"
+    if normalized in {"fi", "finnish", "suomi"}:
+        return "fi"
+    return None
+
+
+def _translation_text(result: Any, fallback: str) -> str:
+    if result is None:
+        return fallback
+    if hasattr(result, "text"):
+        value = getattr(result, "text")
+    elif isinstance(result, dict):
+        value = result.get("translated") or result.get("text")
+    else:
+        value = result
+    return str(value or fallback)
 
 
 def _parse_group_json(raw: str) -> dict[str, Any] | None:

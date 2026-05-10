@@ -1,25 +1,78 @@
-# R21 operator decisions (delegated)
+# R21 operator decisions
 
-- timestamp_utc: 2026-05-10T03:49:00Z
-- author: codex, applying delegated operator instruction
+- timestamp_utc: 2026-05-10T03:51:00Z
+- author: operator (recorded by codex)
 - task_id: r21-explosive-growth-axis-b-activation-2026-05-10
 - basis:
-  - operator said "1" / continue
-  - operator previously stated the likely fastest release-unlock path is
-    beta: deterministic golden-output evaluator
+  - explicit operator directive received 2026-05-10
   - R21 synthesis surfaced four decisions
-- status: decisions-set; operator may supersede explicitly
+- status: explicit decisions set
 
 ## Decision 1: Axis B path
 
-Choose Path B / beta: deterministic golden-output evaluator.
+APPROVED beta: deterministic golden-output evaluator.
 
 `tests/oracle/*.yaml` is the source corpus for R21.1. It is not a
 `case_trajectory_input -> ground_truth_grade` labelled corpus. It is a
 deterministic routing/solver oracle and therefore satisfies R20.3 Decision B
 criterion 2.
 
-## Decision 2: Quality aggregation
+No labelled corpus is required for R21.1.
+
+## Decision 2: Release tag boundary
+
+If all R21.5 conditions are met, the prerelease tag is:
+
+`v3.11.0-r20-axis-b-activated-alpha`
+
+Do not promote to `v3.11.0` stable in this session.
+
+If any R21.5 condition is not met, ship a Decision C / deferral document
+instead of a tag.
+
+## Decision 3: Docker registry
+
+GHCR is the primary registry:
+
+`ghcr.io/ahkeratmehilaiset/waggledance:*`
+
+Docker Hub is not used in this session. Public visibility is allowed.
+
+## Decision 4: PII policy for cloud prompts
+
+Conservative default:
+
+- redact email-like matches using the operator-provided character class
+  `[\w@.+-]+` for email tokens
+- redact credit-card-like digit spans with `\b\d{13,19}\b`
+- redact phone-like spans with `\+?\d[\d\s-]{8,}`
+- redact full file paths
+
+`AcceptPiiToCloud=false` is the hard default. Cloud-bound PII is allowed
+only with explicit opt-in. R21.3 must fail closed if redaction is unavailable.
+
+## Decision 5: R21 execution order and time bound
+
+Proceed strictly in this order:
+
+1. R21.1
+2. R21.2
+3. R21.3
+4. R21.4
+5. R21.5
+6. R21.6
+
+Continue until all six PRs are merged or 8 hours have elapsed, whichever
+comes first.
+
+At the 4-hour checkpoint, send a bridge `decision/reported` status update to
+the operator.
+
+R21.6 is the closeout PR after R21.5: final report / release-or-deferral
+summary / bridge status consolidation. It must not publish a second release
+artifact beyond the R21.5 decision.
+
+## Decision 6: Quality aggregation
 
 Use macro-average across oracle files.
 
@@ -29,7 +82,7 @@ larger files or easy-positive utterance clusters from hiding weaker cells.
 R21.1 should still report supporting micro-average numbers as secondary
 diagnostics when cheap, but the release-gate `delta_quality` uses macro-average.
 
-## Decision 3: Positive and negative weighting
+## Decision 7: Positive and negative weighting
 
 Use equal positive/negative weighting:
 
@@ -44,7 +97,7 @@ Reason: routing to the right cell and rejecting the wrong cell are both part
 of the quality contract. Equal weighting prevents a treatment from improving
 positive routing while quietly degrading negative rejection.
 
-## Decision 4: No-Ollama availability
+## Decision 8: No-Ollama availability
 
 R21.1 should still ship if `OllamaProvider.is_available()` is false.
 
@@ -62,7 +115,7 @@ If Ollama is available, R21.1 should measure the real treatment path. Either
 way, the result must be recorded in `EVOLUTION_INDEX.md` and must not be
 claimed as a >=20% quality improvement unless the measured number says so.
 
-## Decision 5: R21.5 ownership and release rule
+## Decision 9: R21.5 ownership and release rule
 
 Codex owns R21.5 release-decision work, matching the R21 synthesis.
 

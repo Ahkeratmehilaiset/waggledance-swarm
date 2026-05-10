@@ -39,9 +39,17 @@ def test_readme_mentions_phase_10_and_correct_main_sha() -> None:
 
 
 def test_current_status_main_sha_matches_origin_main() -> None:
-    cs = (REPO_ROOT / "CURRENT_STATUS.md").read_text(encoding="utf-8")
-    # The fix in P6: main was updated from a1c4152 to 8bf1869.
-    assert "8bf1869" in cs, "CURRENT_STATUS.md must reference the actual main SHA 8bf1869"
+    """Phase 10 P6 truth-regression invariant - historically pinned the
+    `8bf1869` truthfulness commit reference inside `CURRENT_STATUS.md`.
+    The file was retired in R22.5 cleanup (2026-05-10);
+    `CURRENT_STATE.md` is the surviving auto-generated state file.
+    Truthfulness commit history is preserved in `CHANGELOG.md` and
+    git log."""
+    import pytest
+    pytest.skip(
+        "CURRENT_STATUS.md retired in R22.5 cleanup; "
+        "see CHANGELOG and git log for 8bf1869 history."
+    )
 
 
 # ---------------------------------------------------------------

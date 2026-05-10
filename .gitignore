@@ -1,6 +1,9 @@
 # Codex audit artifacts
 .codex-audit/
 
+# R23.0 wake-on-event sentinels (per-shell dirty bits, never committed)
+.agent-bridge/wake_*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

@@ -289,6 +289,9 @@ python start_waggledance.py --stub
 python start_waggledance.py --preset=cottage-full
 ```
 
+For CI / Docker / minimal-deps reproduction use `requirements-ci.txt`
+(matches the published image; smaller surface than `requirements.txt`).
+
 ## Reality View
 
 The `/hologram` page renders an 11-panel structured operator view. Each panel is one of:

@@ -4,6 +4,12 @@
 # R23.0 wake-on-event sentinels (per-shell dirty bits, never committed)
 .agent-bridge/wake_*
 
+# Operator-local session helpers (R22.5 release-surface audit 2026-05-10)
+# Watch-CodexPrompts.ps1 is a Windows-Terminal monitor for Codex prompts;
+# prompts/prompt*_*.md are session-specific operator paste files.
+Watch-CodexPrompts.ps1
+prompts/prompt*_*.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

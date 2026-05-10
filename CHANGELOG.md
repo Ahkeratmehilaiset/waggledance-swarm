@@ -1,5 +1,109 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [R22 + R23 Phase D scaling refinements + autonomy fabric / no version bump] — 2026-05-10
+
+Operator-driven autonomous-merge sprint built on top of R21. Closes the
+structural pull-only deadlock between Claude and Codex (270 s+ wait → 221 ms
+push-style wake), refines the production HotPathCache measurement, aligns the
+oracle corpus with the real hex registry, and patches four silent bugs found
+in post-merge audits. **No `pyproject.toml` version bump** per operator
+decision 2 — these PRs ship under the existing v3.11.0-alpha tag identity.
+
+### R23 — bridge / autonomy fabric
+
+- **R23.0 (#195) — wake-on-event substrate**: `Watch-Bridge.ps1` background
+  watcher polls `shared/events.jsonl` and writes `wake_<agent>` when an event
+  whose `to` targets the watched agent appears. `Test-BridgeWake.ps1` is the
+  consume-on-read helper. Smoke 9/9 PASS; end-to-end Start-Job latency
+  221 ms warm (operator spec was < 2 s). Axis A meta-metric on the
+  agent-coordination loop: 270 000 ms → 221 ms.
+- **R23.0 follow-up (#196)** — EVOLUTION_INDEX entry with the Axis A
+  before/after numbers.
+- **R23.1 (#197) — automation gates + heartbeat**: `Start-BridgeHeartbeat.ps1`
+  emits `heartbeat/active` every 60 s so long-running active turns do not let
+  claims expire while tests or model reasoning run. `Get-BridgeNextAction.ps1`
+  prioritizes claims → incoming → foreign-write events.
+- **R23.2 (#199) — dedicated agent worktree bootstrap**:
+  `New-AgentBridgeWorktree.ps1` creates per-agent git worktrees so Claude and
+  Codex can write in parallel without stepping on each other.
+  `Start-AgentBridgeSession.ps1 -RequireDedicatedWorktree` refuses to bootstrap
+  in the primary shared repo.
+
+### R22.0 — post-merge cloud-path hotfix
+
+- **R22.0 (#194)** — three redactor / Anthropic provider bugs:
+  - F1: URL paths preserved through `BridgeLLMRedactor` (POSIX_PATH_RE was
+    eating URLs)
+  - F2: structured `failed: bool` flag on `RedactionResult` so cloud providers
+    consult the flag, not text-equality on `<REDACTOR_FAILED>` (a malicious
+    prompt could otherwise spoof fail-closed)
+  - F3: `AnthropicProvider` honors `request.budget.max_latency_ms` via SDK
+    `timeout=`; `cost_cents` computed from haiku per-million-token pricing so
+    the budget tracker can enforce $-budget
+
+### R22.1a — bench realism
+
+- **R22.1a (#200)** — `tools/run_solver_scale_proof.py` now wires
+  `HotPathCache` so the bench measures the production codepath. The R21.5
+  measurement of 33 ms p99 was on a non-production codepath (router without
+  HotPathCache).
+- **R22.1a follow-up (#201)** — `hot_path_cache.py:407` was reading
+  `_conn.execute()` directly, bypassing `ControlPlaneDB._lock`. Now goes
+  through public `get_solver_name()` wrapper.
+
+### R22.2 — Axis B baseline lift
+
+- **R22.2 (#198)** — hex-aligned eval. `tests/oracle_hex/*.yaml` × 7 with
+  140 utterances (15 positive + 5 negative per cell) explicitly aligned to
+  the seven hex registry cells (`hub` / `bee_ops` / `environment` /
+  `home_comfort` / `safety_security` / `production` / `logistics`).
+  Heuristic `HexTopologyRegistry.select_origin_cell` reaches
+  `control_quality = 0.7619`, a +52.4 percentage-point absolute lift over
+  R21.1's topology-mismatched 0.5. Negatives 100 % across all cells.
+  The remaining 0.2381 is paraphrase headroom for R22.3 LLM treatment.
+
+### R22.x — silent-bug sweep (post-merge audits)
+
+- **R22.x (#202)** — `BaselineStore.get / get_all / count` now hold `_lock`
+  (was reading without lock; concurrent `upsert()` could observe partial
+  state, drift detection accuracy at risk).
+- **R22.x (#203)** — `seasonal_engine.py:70` uses
+  `datetime.now(timezone.utc).month` (was tz-naive; ±1 h DST drift in
+  EU/Helsinki at transition windows).
+- **R22.x (#204)** — `ControlPlaneDB.migrate()` sets `_in_transaction` after
+  `BEGIN IMMEDIATE`; exception handler uses
+  `_rollback_sqlite_transaction_if_open()` so a failed BEGIN does not skip
+  rollback.
+- **R22.2d (#205)** — 2D branch-isolation baseline benchmark
+  (measurement-only). On `6cbe1d9`: hub idle p99 12.94 ms; hub while
+  bee_ops hot 31.05 ms (2.40×); hub during adversarial other-branch writes
+  167.86 ms (12.97×); uniform CV 0.55. Informs R25 3D-sharding deferral.
+- **R22.3 prep (#206)** — `ABHarness` rejects blank/whitespace
+  `treatment_value` so an Anthropic empty-string response (content-policy
+  refusal, timeout race) cannot corrupt `quality_arm` measurements.
+
+### Coordination metrics
+
+- 12 PRs landed in 2026-05-10 (#194 – #206 range, excluding dependabot),
+  all autonomous-merge under CLAUDE.md rule 9 + operator rule E.
+- Bridge median reaction time across the day: ~10–30 min from finding to
+  claim, vs ~270 s+ pull-only worst-case before R23.0.
+- Silent-bug audits (Claude background research): 2 rounds, 7 real bugs
+  found, all fixed (Codex landed 4 of them, Claude shipped R22.0 hotfix).
+  Zero false-positive bugs.
+
+### Anti-claims
+
+- `pyproject.toml` stays at `version = "3.6.0"` — these PRs ship under the
+  existing R21 alpha tag identity. R22.5 will bump to v3.12.0 stable no
+  earlier than 2026-05-24 (operator constraint).
+- No new cloud provider integrations beyond R21.3's `AnthropicProvider`.
+  Real Anthropic A/B (R22.3 Profile L) is in flight at end of this entry,
+  not yet operator-key-tested.
+- No 3D hex topology / per-cell DB sharding. R25 scout exists
+  (`iterations/codex_scout_tasks/r25_hex_3d_sharding_scout_2026_05_10.md`)
+  but operator deferred — wait for R22.1a measurement and R22.5 stable cut.
+
 ## [R21 Axis B activation + cloud LLM substrate / v3.11.0-r20-axis-b-activated-alpha PRERELEASE] — 2026-05-10
 
 Operator-driven 8-hour overnight sprint on top of v3.10.4-incremental-gap-replay-alpha (Phase 18F) and the previous-session R17–R20 substrate work. **R21 activates the Axis B (per-decision quality) substrate that R20 only stubbed**, lands the first cloud LLM provider plugin, and proves R19 Cand 2 build-phase transaction batching at full 10k scale. Operator approved prerelease tag `v3.11.0-r20-axis-b-activated-alpha`. **NOT promoted to `v3.11.0` stable** per operator decision 2.

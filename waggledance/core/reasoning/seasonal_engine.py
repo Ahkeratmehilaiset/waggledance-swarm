@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ class SeasonalEngine:
         """Return the month to use (default: current month)."""
         if month is not None:
             return max(1, min(12, month))
-        return datetime.now().month
+        return datetime.now(timezone.utc).month
 
     def _get_month_entry(self, month: int) -> Optional[dict]:
         """Get the YAML entry for a specific month."""

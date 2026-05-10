@@ -466,6 +466,59 @@ entries:
     gate re-verification).
   next_bottleneck: R20.6 activation prerequisites (R21 will track)
 
+- session_id: r21.1-oracle-ab-harness
+  pr: null
+  owner: claude
+  reviewer: codex
+  merged_utc: null
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: 0.5
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    R21.1 ships the oracle-backed A/B harness for select_origin_cell
+    and produces the FIRST non-null axis_b_quality entry in this
+    file. control_quality = 0.5, treatment_quality = 0.5,
+    delta_quality_pct = 0.00%. Two factors collapse the signal on
+    this run:
+
+    1. Topology mismatch: tests/oracle/*.yaml uses cells
+       energy/math/safety/system/thermal but configs/hex_cells.yaml
+       has hub/bee_ops/environment/home_comfort/safety_security/
+       production/logistics. The two taxonomies slice the routing
+       space differently (decision-type vs domain), so an oracle
+       expecting cell="math" never matches a heuristic returning
+       cell="bee_ops". Both arms produce file_score=0.5 (perfect
+       neg rejection because neither hits oracle.cell, zero pos
+       routing).
+    2. Ollama unavailable on this machine
+       (local_llm_status=unavailable per Decision 8). Treatment arm
+       fell through to control on every utterance (420/420
+       fallthrough_uses, 420/420 unparsed_responses). delta=0 is
+       the informational outcome required by Decision 8.
+
+    Per operator decision 8 + R20 rule 17: ship the result honestly,
+    keep treatment disabled, log the topology-mismatch finding for
+    R22 follow-up. The release-gate condition "R21.1 has a real
+    delta_quality number" is satisfied (0.00%, not null).
+
+    R22 candidate: either (a) build a hex-aligned synthetic eval
+    matching the 7 hex cells with selectors-derived utterances, or
+    (b) build an oracle-cell to hex-cell mapping table where the
+    semantics permit (note: honey_yield in oracle is cell="math"
+    because of the calculation type but topically routes to
+    bee_ops in hex — these don't reconcile cleanly), or (c) wire
+    the oracle YAMLs to the FAISS staging routing layer they
+    actually target (different code path entirely).
+  next_bottleneck: R21.2 R19 Cand 2 build-phase transaction batching
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

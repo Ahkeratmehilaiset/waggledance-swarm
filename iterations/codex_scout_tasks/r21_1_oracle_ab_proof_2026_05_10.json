@@ -1,0 +1,363 @@
+{
+  "benchmark_id": "r21-oracle-ab-proof-2026-05-10",
+  "call_site": "HexTopologyRegistry.select_origin_cell",
+  "configuration": {
+    "client_is_enabled": false,
+    "fallback_chain": [
+      "heuristic"
+    ],
+    "local_llm_status": "unavailable",
+    "rng_seed": 42,
+    "treatment_enabled": false,
+    "treatment_share": 1.0
+  },
+  "control": {
+    "elapsed_seconds": 0.0067,
+    "micro_neg": [
+      140,
+      140
+    ],
+    "micro_pos": [
+      0,
+      280
+    ],
+    "per_file": [
+      {
+        "cell": "energy",
+        "file": "battery_discharge.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "math",
+        "file": "colony_food_reserves.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "energy",
+        "file": "comfort_energy_tradeoff.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "thermal",
+        "file": "heat_pump_cop.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "thermal",
+        "file": "heating_cost.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "thermal",
+        "file": "hive_thermal_balance.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "math",
+        "file": "honey_yield.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "system",
+        "file": "mtbf_prediction.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "system",
+        "file": "oee_decomposition.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "thermal",
+        "file": "pipe_freezing.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "system",
+        "file": "signal_propagation.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "energy",
+        "file": "solar_yield.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "safety",
+        "file": "swarm_risk.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "safety",
+        "file": "varroa_treatment.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      }
+    ],
+    "quality": 0.5
+  },
+  "corpus": {
+    "files": 14,
+    "oracle_dir": "C:\\Python\\project2-master\\tests\\oracle",
+    "total_negative": 140,
+    "total_positive": 280
+  },
+  "delta_quality_pct": 0.0,
+  "deployment_recommendation": "keep_disabled",
+  "schema_version": 1,
+  "task_id": "r21-claude-oracle-ab-harness-2026-05-10",
+  "treatment": {
+    "elapsed_seconds": 0.1919,
+    "fallthrough_uses": 420,
+    "local_llm_uses": 0,
+    "micro_neg": [
+      140,
+      140
+    ],
+    "micro_pos": [
+      0,
+      280
+    ],
+    "per_file": [
+      {
+        "cell": "energy",
+        "file": "battery_discharge.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "math",
+        "file": "colony_food_reserves.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "energy",
+        "file": "comfort_energy_tradeoff.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "thermal",
+        "file": "heat_pump_cop.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "thermal",
+        "file": "heating_cost.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "thermal",
+        "file": "hive_thermal_balance.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "math",
+        "file": "honey_yield.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "system",
+        "file": "mtbf_prediction.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "system",
+        "file": "oee_decomposition.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "thermal",
+        "file": "pipe_freezing.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "system",
+        "file": "signal_propagation.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "energy",
+        "file": "solar_yield.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "safety",
+        "file": "swarm_risk.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      },
+      {
+        "cell": "safety",
+        "file": "varroa_treatment.yaml",
+        "file_score": 0.5,
+        "neg_correct": 10,
+        "neg_score": 1.0,
+        "neg_total": 10,
+        "pos_correct": 0,
+        "pos_score": 0.0,
+        "pos_total": 20
+      }
+    ],
+    "quality": 0.5,
+    "unparsed_responses": 420
+  }
+}

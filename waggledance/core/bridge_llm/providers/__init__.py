@@ -14,6 +14,7 @@ from .cache import ExactCacheProvider
 from .cloud_stub import CloudStubProvider
 from .ollama import OllamaProvider
 from .heuristic import HeuristicProvider
+from .anthropic import AnthropicProvider
 
 __all__ = [
     "ProviderPlugin",
@@ -24,4 +25,5 @@ __all__ = [
     "CloudStubProvider",
     "OllamaProvider",
     "HeuristicProvider",
+    "AnthropicProvider",
 ]

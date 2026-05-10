@@ -25,7 +25,7 @@ param(
     [string] $WorktreeRoot = 'C:\tmp\waggledance-agent-worktrees',
     [string] $Base = 'origin/main',
     [string] $Branch = '',
-    [string] $RuntimeRoot = 'C:\Python\project2-bridge-runtime'
+    [string] $RuntimeRoot = 'C:\Python\project2-master\.agent-bridge'
 )
 
 $ErrorActionPreference = 'Stop'

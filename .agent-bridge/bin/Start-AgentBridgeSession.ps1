@@ -19,7 +19,7 @@ param(
     [ValidateSet('codex','claude','operator','system')]
     [string] $Agent,
 
-    [string] $RuntimeRoot = 'C:\Python\project2-bridge-runtime',
+    [string] $RuntimeRoot = 'C:\Python\project2-master\.agent-bridge',
     [string] $RepoRoot = '',
     [string] $RunId = '',
 

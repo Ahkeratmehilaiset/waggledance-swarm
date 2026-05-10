@@ -11,14 +11,14 @@ conversation history.
 
 - Source repo: `C:\Python\project2-master`
 - Per-agent worktree root: `C:\tmp\waggledance-agent-worktrees`
-- Shared bridge runtime root: `C:\Python\project2-bridge-runtime`
+- Shared bridge runtime root: `C:\Python\project2-master\.agent-bridge`
 - Bridge protocol: `.agent-bridge\BRIDGE_PROTOCOL.md`
 - Status command: `.agent-bridge\bin\Get-AgentBridgeStatus.ps1`
 - Reader command: `.agent-bridge\bin\Read-AgentBridge.ps1`
 
-The runtime root is intentionally outside any one worktree. If Claude and
-Codex later use separate worktrees, both still point to the same runtime root
-through `AGENT_BRIDGE_RUNTIME_ROOT`.
+The runtime root is the primary repo's `.agent-bridge` directory so fresh
+agent worktrees preserve the current live event history. Separate Claude/Codex
+worktrees point back to this same root through `AGENT_BRIDGE_RUNTIME_ROOT`.
 
 ## One-time setup after reboot
 
@@ -26,10 +26,10 @@ Run once in any PowerShell if the runtime root may not exist:
 
 ```powershell
 New-Item -ItemType Directory -Force `
-  C:\Python\project2-bridge-runtime\shared,`
-  C:\Python\project2-bridge-runtime\work_queue,`
-  C:\Python\project2-bridge-runtime\outbox,`
-  C:\Python\project2-bridge-runtime\inbox | Out-Null
+  C:\Python\project2-master\.agent-bridge\shared,`
+  C:\Python\project2-master\.agent-bridge\work_queue,`
+  C:\Python\project2-master\.agent-bridge\outbox,`
+  C:\Python\project2-master\.agent-bridge\inbox | Out-Null
 ```
 
 Optional persistent user environment variable:
@@ -37,7 +37,7 @@ Optional persistent user environment variable:
 ```powershell
 [Environment]::SetEnvironmentVariable(
   'AGENT_BRIDGE_RUNTIME_ROOT',
-  'C:\Python\project2-bridge-runtime',
+  'C:\Python\project2-master\.agent-bridge',
   'User'
 )
 ```
@@ -69,7 +69,7 @@ cd $wt.worktree_path
 ```
 
 Claude uses the same pattern with `-Agent claude`. Both worktrees still write
-to the same `C:\Python\project2-bridge-runtime` runtime root, so bridge
+to the same `C:\Python\project2-master\.agent-bridge` runtime root, so bridge
 events, claims, wake files, and heartbeat state remain shared.
 
 ## Claude Code shell
@@ -89,7 +89,7 @@ Manual fallback:
 
 ```powershell
 cd C:\Python\project2-master
-$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 $env:AGENT_BRIDGE_RUN_ID = "claude-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))"
 git pull --ff-only
 
@@ -121,7 +121,7 @@ Manual fallback:
 
 ```powershell
 cd C:\Python\project2-master
-$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 $env:AGENT_BRIDGE_RUN_ID = "codex-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))"
 git pull --ff-only
 

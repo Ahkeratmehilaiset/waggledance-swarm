@@ -27,16 +27,16 @@ can reach. Example:
 
 ```powershell
 # operator setup (once):
-mkdir C:\Python\project2-bridge-runtime\shared
-mkdir C:\Python\project2-bridge-runtime\work_queue
-mkdir C:\Python\project2-bridge-runtime\outbox
-mkdir C:\Python\project2-bridge-runtime\inbox
+mkdir C:\Python\project2-master\.agent-bridge\shared
+mkdir C:\Python\project2-master\.agent-bridge\work_queue
+mkdir C:\Python\project2-master\.agent-bridge\outbox
+mkdir C:\Python\project2-master\.agent-bridge\inbox
 
 # per-agent shell (Claude):
-$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 
 # per-agent shell (Codex):
-$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 ```
 
 Alternative: junctions instead of env var. From each agent worktree
@@ -45,7 +45,7 @@ Alternative: junctions instead of env var. From each agent worktree
 ```cmd
 :: replace per-worktree state with a link to the shared root
 rmdir /s /q .agent-bridge\shared
-mklink /j .agent-bridge\shared C:\Python\project2-bridge-runtime\shared
+mklink /j .agent-bridge\shared C:\Python\project2-master\.agent-bridge\shared
 :: repeat for work_queue / outbox / inbox
 ```
 

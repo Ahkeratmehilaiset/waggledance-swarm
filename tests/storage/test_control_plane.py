@@ -67,6 +67,66 @@ def test_solver_unknown_family_raises(cp: ControlPlaneDB) -> None:
         cp.upsert_solver("orphan", "0.0.1", family_name="does-not-exist")
 
 
+def test_transaction_commits_public_write_methods(cp: ControlPlaneDB) -> None:
+    with cp.transaction():
+        fam = cp.upsert_solver_family("thermal", "1.0.0")
+        sv = cp.upsert_solver(
+            "thermal_basic",
+            "0.1.0",
+            family_name="thermal",
+            status="auto_promoted",
+        )
+        features = cp.set_solver_capability_features(
+            solver_id=sv.id,
+            family_kind="thermal",
+            features={"unit": "celsius", "mode": "heating"},
+        )
+        artifact = cp.upsert_solver_artifact(
+            solver_id=sv.id,
+            family_kind="thermal",
+            artifact_id="artifact-1",
+            spec_canonical_json='{"kind":"linear_arithmetic"}',
+            artifact_json='{"kind":"linear_arithmetic"}',
+        )
+
+    assert fam.id > 0
+    assert cp.get_solver("thermal_basic") == sv
+    assert {f.feature_name for f in features} == {"mode", "unit"}
+    assert cp.get_solver_artifact(sv.id) == artifact
+    assert cp._conn.in_transaction is False  # noqa: SLF001
+
+
+def test_transaction_rolls_back_public_write_methods(
+    cp: ControlPlaneDB,
+) -> None:
+    with pytest.raises(RuntimeError, match="abort batch"):
+        with cp.transaction():
+            cp.upsert_solver_family("thermal", "1.0.0")
+            cp.upsert_solver("thermal_basic", "0.1.0", family_name="thermal")
+            raise RuntimeError("abort batch")
+
+    assert cp.get_solver_family("thermal") is None
+    assert cp.get_solver("thermal_basic") is None
+    assert cp.count_solvers() == 0
+    assert cp._conn.in_transaction is False  # noqa: SLF001
+
+
+def test_nested_transaction_joins_outer_transaction(
+    cp: ControlPlaneDB,
+) -> None:
+    with cp.transaction():
+        cp.upsert_solver_family("thermal", "1.0.0")
+        with cp.transaction():
+            cp.upsert_solver(
+                "thermal_basic",
+                "0.1.0",
+                family_name="thermal",
+            )
+
+    assert cp.get_solver("thermal_basic") is not None
+    assert cp._conn.in_transaction is False  # noqa: SLF001
+
+
 def test_capability_dependency_dag(cp: ControlPlaneDB) -> None:
     cp.upsert_capability("reason.causal", "1.0")
     cp.upsert_capability("solver.thermal", "1.0")

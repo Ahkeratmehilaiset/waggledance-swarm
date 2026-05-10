@@ -21,22 +21,22 @@ By default the bridge resolves its state directories
 `.agent-bridge/` directory the scripts live in. That works for the
 default single-worktree layout (`C:\Python\project2-master`).
 
-For per-agent-worktree setups (R13 follow-up), set
+For per-agent-worktree setups (R23.2 default for parallel write work), set
 `AGENT_BRIDGE_RUNTIME_ROOT` to a shared path that all agent worktrees
 can reach. Example:
 
 ```powershell
 # operator setup (once):
-mkdir C:\Python\project2-bridge-runtime\shared
-mkdir C:\Python\project2-bridge-runtime\work_queue
-mkdir C:\Python\project2-bridge-runtime\outbox
-mkdir C:\Python\project2-bridge-runtime\inbox
+mkdir C:\Python\project2-master\.agent-bridge\shared
+mkdir C:\Python\project2-master\.agent-bridge\work_queue
+mkdir C:\Python\project2-master\.agent-bridge\outbox
+mkdir C:\Python\project2-master\.agent-bridge\inbox
 
 # per-agent shell (Claude):
-$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 
 # per-agent shell (Codex):
-$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 ```
 
 Alternative: junctions instead of env var. From each agent worktree
@@ -45,7 +45,7 @@ Alternative: junctions instead of env var. From each agent worktree
 ```cmd
 :: replace per-worktree state with a link to the shared root
 rmdir /s /q .agent-bridge\shared
-mklink /j .agent-bridge\shared C:\Python\project2-bridge-runtime\shared
+mklink /j .agent-bridge\shared C:\Python\project2-master\.agent-bridge\shared
 :: repeat for work_queue / outbox / inbox
 ```
 
@@ -67,6 +67,39 @@ The smoke test creates a fresh non-existing temp dir, points the
 env var there, exercises Write/Read/Claim/Release/Status, and
 verifies state lands under the temp dir (NOT under the worktree).
 10/10 pass on a healthy bridge.
+
+### Dedicated worktrees (R23.2)
+
+Wake files and heartbeat events make the bridge responsive, but they do not
+physically isolate a shared git working directory. R23.2 makes the structural
+fix scriptable: create a dedicated worktree before starting a write-capable
+agent session.
+
+```powershell
+cd C:\Python\project2-master
+git fetch origin main
+$wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 `
+  -Agent codex `
+  -TaskId "r22.1a-hotpath-benchmark" `
+  -Base origin/main
+cd $wt.worktree_path
+. .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex -RequireDedicatedWorktree
+```
+
+Use `-Agent claude` for Claude. Both worktrees point to the same bridge
+runtime root, so claims and events remain shared while branch state is
+separate. `Start-AgentBridgeSession.ps1 -RequireDedicatedWorktree` refuses to
+bootstrap from the primary shared repo (`C:\Python\project2-master`) and is
+the safest default for autonomous write loops.
+
+Verify the substrate with:
+
+```powershell
+.\.agent-bridge\bin\Test-BridgeWorktreeIsolationSmoke.ps1
+```
+
+The smoke creates a temporary local repo, then proves codex and claude get
+distinct worktrees/branches while the source repo branch remains unchanged.
 
 ### Stale-claim lease (R15)
 
@@ -146,9 +179,10 @@ operation lock / lease for TOCTOU).
      add, commit, push, ...) run unchanged. `-Force` is restricted to
      operator/system; Claude/Codex agents may NOT bypass the guard.
    - **Separate git worktrees are the preferred model for real parallel
-     implementation.** Use `git worktree add ../wd-<task> <branch>` so each
-     agent's working tree is independent and a claim's branch state cannot
-     be moved out from under another agent.
+     implementation.** Use `New-AgentBridgeWorktree.ps1` so each agent's
+     working tree is independent and a claim's branch state cannot be moved
+     out from under another agent. Use raw `git worktree add` only for manual
+     recovery/debugging.
    - **Known limits of the `Invoke-BridgeGit.ps1` wrapper** (Codex review
      2026-05-09): the wrapper is the immediate mitigation, not the
      structural fix.
@@ -261,6 +295,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-Age
 # $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0) to opt out.
 . .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex
 
+# R23.2 preferred write-capable startup: create a dedicated worktree first,
+# then require that the agent session is not running in the primary shared
+# repo.
+$wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 -Agent codex -TaskId "r22.1a-hotpath-benchmark" -Base origin/main
+cd $wt.worktree_path
+. .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex -RequireDedicatedWorktree
+
 # Fast pre-check used by the agent's polling loop. Returns $true exactly once
 # after a targeted event arrives; the wake file is consumed on read.
 & .\.agent-bridge\bin\Test-BridgeWake.ps1 -Agent codex
@@ -309,6 +350,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-Bri
 # End-to-end smoke test of the reboot bootstrap helper. Uses a temp runtime
 # root and verifies the helper creates bridge dirs and emits liveness/active.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeSessionBootstrapSmoke.ps1
+
+# End-to-end smoke test of per-agent worktree creation/isolation.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeWorktreeIsolationSmoke.ps1
 
 # Release a task claim.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Release-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Status done -Message "Review complete; 2 medium findings"

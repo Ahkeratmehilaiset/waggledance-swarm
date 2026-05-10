@@ -10,14 +10,15 @@ conversation history.
 ## Persistent paths
 
 - Source repo: `C:\Python\project2-master`
-- Shared bridge runtime root: `C:\Python\project2-bridge-runtime`
+- Per-agent worktree root: `C:\tmp\waggledance-agent-worktrees`
+- Shared bridge runtime root: `C:\Python\project2-master\.agent-bridge`
 - Bridge protocol: `.agent-bridge\BRIDGE_PROTOCOL.md`
 - Status command: `.agent-bridge\bin\Get-AgentBridgeStatus.ps1`
 - Reader command: `.agent-bridge\bin\Read-AgentBridge.ps1`
 
-The runtime root is intentionally outside any one worktree. If Claude and
-Codex later use separate worktrees, both still point to the same runtime root
-through `AGENT_BRIDGE_RUNTIME_ROOT`.
+The runtime root is the primary repo's `.agent-bridge` directory so fresh
+agent worktrees preserve the current live event history. Separate Claude/Codex
+worktrees point back to this same root through `AGENT_BRIDGE_RUNTIME_ROOT`.
 
 ## One-time setup after reboot
 
@@ -25,10 +26,10 @@ Run once in any PowerShell if the runtime root may not exist:
 
 ```powershell
 New-Item -ItemType Directory -Force `
-  C:\Python\project2-bridge-runtime\shared,`
-  C:\Python\project2-bridge-runtime\work_queue,`
-  C:\Python\project2-bridge-runtime\outbox,`
-  C:\Python\project2-bridge-runtime\inbox | Out-Null
+  C:\Python\project2-master\.agent-bridge\shared,`
+  C:\Python\project2-master\.agent-bridge\work_queue,`
+  C:\Python\project2-master\.agent-bridge\outbox,`
+  C:\Python\project2-master\.agent-bridge\inbox | Out-Null
 ```
 
 Optional persistent user environment variable:
@@ -36,7 +37,7 @@ Optional persistent user environment variable:
 ```powershell
 [Environment]::SetEnvironmentVariable(
   'AGENT_BRIDGE_RUNTIME_ROOT',
-  'C:\Python\project2-bridge-runtime',
+  'C:\Python\project2-master\.agent-bridge',
   'User'
 )
 ```
@@ -44,10 +45,38 @@ Optional persistent user environment variable:
 Even if that user env var is set, each new agent shell should set the process
 env var explicitly so the current session is unambiguous.
 
+## Preferred isolated worktree startup
+
+For real parallel Claude+Codex work, do not run both agents from
+`C:\Python\project2-master`. Create one physical git worktree per agent/task
+first, then bootstrap the bridge from inside that worktree. This removes the
+branch-switch race entirely: one agent can switch, commit, or test without
+moving the other agent's working directory.
+
+Run from the primary source repo:
+
+```powershell
+cd C:\Python\project2-master
+git fetch origin main
+
+$wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 `
+  -Agent codex `
+  -TaskId "codex-session-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))" `
+  -Base origin/main
+
+cd $wt.worktree_path
+. .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex -RequireDedicatedWorktree
+```
+
+Claude uses the same pattern with `-Agent claude`. Both worktrees still write
+to the same `C:\Python\project2-master\.agent-bridge` runtime root, so bridge
+events, claims, wake files, and heartbeat state remain shared.
+
 ## Claude Code shell
 
-Preferred one-command bootstrap. Dot-source it so the environment variables
-remain in the shell that launches Claude Code:
+Fallback shared-worktree bootstrap. Use this only for read-only review,
+operator maintenance, or when there is no parallel writer. Dot-source it so
+the environment variables remain in the shell that launches Claude Code:
 
 ```powershell
 cd C:\Python\project2-master
@@ -60,7 +89,7 @@ Manual fallback:
 
 ```powershell
 cd C:\Python\project2-master
-$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 $env:AGENT_BRIDGE_RUN_ID = "claude-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))"
 git pull --ff-only
 
@@ -77,8 +106,9 @@ above.
 
 ## Codex shell
 
-Preferred one-command bootstrap. Dot-source it so the environment variables
-remain in the shell that launches Codex:
+Fallback shared-worktree bootstrap. Use this only for read-only review,
+operator maintenance, or when there is no parallel writer. Dot-source it so
+the environment variables remain in the shell that launches Codex:
 
 ```powershell
 cd C:\Python\project2-master
@@ -91,7 +121,7 @@ Manual fallback:
 
 ```powershell
 cd C:\Python\project2-master
-$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-bridge-runtime'
+$env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 $env:AGENT_BRIDGE_RUN_ID = "codex-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))"
 git pull --ff-only
 
@@ -110,11 +140,16 @@ After bridge bootstrap changes, run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeSessionBootstrapSmoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeWorktreeIsolationSmoke.ps1
 ```
 
 This uses a temporary runtime root, proves `Start-AgentBridgeSession.ps1`
 creates the shared bridge directories, emits `liveness/active`, and leaves the
 production runtime root untouched.
+
+The worktree smoke creates a temporary local git repository and proves
+`New-AgentBridgeWorktree.ps1` creates separate Claude/Codex worktrees without
+moving the source repo branch.
 
 ## Resume algorithm
 

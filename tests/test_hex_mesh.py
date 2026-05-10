@@ -163,6 +163,63 @@ class TestTopologyRegistry:
         env_agents = reg.get_cell_agents("environment")
         assert any(a.id == "meteorologist" for a in env_agents)
 
+    def test_domain_selector_blocks_tag_and_id_fallback_when_domain_misses(self, tmp_path):
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        from waggledance.core.domain.agent import AgentDefinition
+
+        config = tmp_path / "hex_cells.yaml"
+        config.write_text(
+            """
+cells:
+  - id: safety
+    coord: {q: 0, r: 0}
+    description: Safety branch
+    domain_selectors: ["safety"]
+    tag_selectors: ["alarm"]
+    enabled: true
+""",
+            encoding="utf-8",
+        )
+        agents = [
+            AgentDefinition(
+                id="safety_domain",
+                name="Safety Domain",
+                domain="industrial safety",
+                tags=[],
+                skills=[],
+                trust_level=0,
+                specialization_score=0.0,
+                active=True,
+                profile="HOME",
+            ),
+            AgentDefinition(
+                id="tag_only_alarm",
+                name="Tag Only",
+                domain="weather",
+                tags=["alarm"],
+                skills=[],
+                trust_level=0,
+                specialization_score=0.0,
+                active=True,
+                profile="HOME",
+            ),
+            AgentDefinition(
+                id="safety_name_only",
+                name="Name Only",
+                domain="logistics",
+                tags=[],
+                skills=[],
+                trust_level=0,
+                specialization_score=0.0,
+                active=True,
+                profile="HOME",
+            ),
+        ]
+
+        reg = HexTopologyRegistry(config_path=str(config), agents=agents)
+        mapped = {agent.id for agent in reg.get_cell_agents("safety")}
+        assert mapped == {"safety_domain"}
+
     def test_select_origin_cell_bee(self):
         from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
         reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])

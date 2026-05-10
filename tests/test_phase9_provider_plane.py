@@ -328,6 +328,34 @@ def test_extractor_handles_full_payload():
     assert len(out["lessons"]) == 1
 
 
+def test_extractor_preserves_zero_confidence_fact():
+    response = rn.normalize(
+        request_id="r", provider_used="anthropic_api",
+        raw_payload={
+            "extracted_facts": [
+                {"claim": "explicit no-confidence signal", "confidence": 0.0},
+            ],
+        },
+        ts_iso="t",
+    )
+    out = ke.extract(response)
+    assert out["facts"][0].confidence == 0.0
+
+
+def test_extractor_defaults_missing_confidence_fact():
+    response = rn.normalize(
+        request_id="r", provider_used="anthropic_api",
+        raw_payload={
+            "extracted_facts": [
+                {"claim": "missing confidence uses neutral default"},
+            ],
+        },
+        ts_iso="t",
+    )
+    out = ke.extract(response)
+    assert out["facts"][0].confidence == 0.5
+
+
 def test_extractor_handles_empty_payload():
     response = rn.normalize(
         request_id="r", provider_used="anthropic_api",

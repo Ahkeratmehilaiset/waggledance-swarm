@@ -68,6 +68,14 @@ def _ext_id(provider: str, claim: str, prefix: str = "ex") -> str:
     return f"{prefix}_" + hashlib.sha256(canonical).hexdigest()[:10]
 
 
+def _fact_confidence(raw_value: object, default: float = 0.5) -> float:
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, str) and raw_value.strip() == "":
+        return default
+    return float(raw_value)
+
+
 def extract(response: ProviderResponse) -> dict:
     """Returns {facts: [...], solver_specs: [...], lessons: [...]}.
 
@@ -87,7 +95,7 @@ def extract(response: ProviderResponse) -> dict:
         facts.append(ExtractedFact(
             extracted_id=_ext_id(provider, claim, "fact"),
             claim=claim,
-            confidence=float(f.get("confidence") or 0.5),
+            confidence=_fact_confidence(f.get("confidence")),
             source_provider=provider,
         ))
 

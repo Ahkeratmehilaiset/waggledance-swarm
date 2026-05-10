@@ -1,7 +1,7 @@
 # WaggleDance Swarm — Project State (auto-generated)
 
-**Generated**: 2026-04-29T06:45:17+0300
-**Commit**: `4d17b52` on `post-phase10/regenerate-current-state-md`
+**Generated**: 2026-05-10T16:48:07+0300
+**Commit**: `8824e8a` on `waggledance/r22.5-release-surface-pr-alpha`
 **Generator**: `python tools/generate_state.py`
 
 > This file is auto-generated from actual code. Do not edit manually.
@@ -9,10 +9,10 @@
 
 ## Summary
 
-- **Hexagonal runtime** (`waggledance/`): 196 core modules, 50,734 lines
-- **Legacy core** (`core/`): 85 modules, 27,332 lines
-- **Tests**: 302 files, 5585 test functions
-- **Licensing**: 157 BUSL-protected files, 105 Apache files
+- **Hexagonal runtime** (`waggledance/`): 242 core modules, 65,978 lines
+- **Legacy core** (`core/`): 85 modules, 27,333 lines
+- **Tests**: 394 files, 7016 test functions
+- **Licensing**: 1954 BUSL-protected files, 1792 Apache files
 
 ## Security Invariants
 
@@ -53,7 +53,41 @@
 | `waggledance/core/autonomy/mission_queue.py` | 284 | Mission | Complete |
 | `waggledance/core/autonomy/policy_core.py` | 251 | PolicyRule, HardRule, PolicyEvaluation +1 | Complete |
 | `waggledance/core/autonomy/resource_kernel.py` | 511 | LoadLevel, ResourceTier, ResourceSnapshot +5 | Complete |
-| `waggledance/core/autonomy/runtime.py` | 1240 | AutonomyRuntime | Complete |
+| `waggledance/core/autonomy/runtime.py` | 1301 | AutonomyRuntime | Complete |
+| `waggledance/core/autonomy_growth/auto_promotion_engine.py` | 423 | PromotionRequest, PromotionOutcome, AutoPromotionEngine | Complete |
+| `waggledance/core/autonomy_growth/autogrowth_scheduler.py` | 410 | TickResult, SchedulerStats, AutogrowthScheduler | Complete |
+| `waggledance/core/autonomy_growth/autonomy_consult_adapter.py` | 88 |  | Complete |
+| `waggledance/core/autonomy_growth/family_features.py` | 113 |  | Complete |
+| `waggledance/core/autonomy_growth/family_oracles.py` | 136 |  | Complete |
+| `waggledance/core/autonomy_growth/gap_candidate.py` | 98 | GapVerdict, GapCandidate, GapMiningResult | Complete |
+| `waggledance/core/autonomy_growth/gap_intake.py` | 210 | GapSignal, IntakeStats, RuntimeGapDetector | Complete |
+| `waggledance/core/autonomy_growth/gap_mining.py` | 419 | GapMiningConfig | Complete |
+| `waggledance/core/autonomy_growth/hot_path_cache.py` | 470 | WarmDispatchResult, HotPathCacheStats, BufferedSinkStats +5 | Complete |
+| `waggledance/core/autonomy_growth/incremental_gap_replay.py` | 638 | BridgeRejectionError, ReplayCursor, ReplayLock +3 | Complete |
+| `waggledance/core/autonomy_growth/low_risk_grower.py` | 200 | GapInput, GapOutcome, LowRiskGrower | Complete |
+| `waggledance/core/autonomy_growth/low_risk_policy.py` | 42 |  | Complete |
+| `waggledance/core/autonomy_growth/low_risk_seed_library.py` | 652 |  | Complete |
+| `waggledance/core/autonomy_growth/mined_solver_runtime.py` | 522 | RuntimeArtifactCompilationError, RegistrationSummary | Complete |
+| `waggledance/core/autonomy_growth/runtime_gap_replay.py` | 578 | GapEventSchemaError, PersistedGapEvent, GapPersistResult +1 | Complete |
+| `waggledance/core/autonomy_growth/runtime_hint_extractor.py` | 439 | HintExtractionResult | Complete |
+| `waggledance/core/autonomy_growth/runtime_query_router.py` | 302 | RuntimeQuery, RuntimeRouteResult, RouterStats +1 | Complete |
+| `waggledance/core/autonomy_growth/shadow_evaluator.py` | 143 | ShadowOutcome | Complete |
+| `waggledance/core/autonomy_growth/solver_dispatcher.py` | 316 | DispatchQuery, DispatchResult, DispatcherStats +1 | Complete |
+| `waggledance/core/autonomy_growth/solver_executor.py` | 242 | ExecutorError, UnsupportedFamilyError | Complete |
+| `waggledance/core/autonomy_growth/upstream_structured_request_extractor.py` | 502 | UpstreamExtractionResult | Complete |
+| `waggledance/core/autonomy_growth/validation_runner.py` | 118 | ValidationOutcome | Complete |
+| `waggledance/core/bridge_llm/ab_harness.py` | 171 | ABResult, ABHarness | Complete |
+| `waggledance/core/bridge_llm/budget.py` | 159 | BudgetExhausted, BudgetState, BudgetConfig +1 | Complete |
+| `waggledance/core/bridge_llm/client.py` | 277 | BridgeLLMClient | Complete |
+| `waggledance/core/bridge_llm/providers/anthropic.py` | 153 | AnthropicProvider | Complete |
+| `waggledance/core/bridge_llm/providers/base.py` | 58 | ProviderError, ProviderPlugin | Complete |
+| `waggledance/core/bridge_llm/providers/cache.py` | 59 | ExactCacheProvider | Complete |
+| `waggledance/core/bridge_llm/providers/cloud_stub.py` | 24 | CloudStubProvider | Complete |
+| `waggledance/core/bridge_llm/providers/heuristic.py` | 42 | HeuristicProvider | Complete |
+| `waggledance/core/bridge_llm/providers/ollama.py` | 65 | OllamaProvider | Complete |
+| `waggledance/core/bridge_llm/redactor.py` | 209 | RedactionResult, BridgeLLMRedactor, BridgeLLMRehydrator | Complete |
+| `waggledance/core/bridge_llm/telemetry.py` | 74 | TelemetryLogger | Complete |
+| `waggledance/core/bridge_llm/types.py` | 69 | FallbackLevel, CallBudget, LLMRequest +1 | Complete |
 | `waggledance/core/builder_lane/builder_lane_router.py` | 76 | BuilderRoutingDecision | Complete |
 | `waggledance/core/builder_lane/builder_request_pack.py` | 116 | BuilderRequest | Complete |
 | `waggledance/core/builder_lane/builder_result_pack.py` | 114 | BuilderArtifact, BuilderResult | Complete |
@@ -78,6 +112,12 @@
 | `waggledance/core/domain/memory_record.py` | 18 | MemoryRecord | Stub |
 | `waggledance/core/domain/task.py` | 26 | TaskRequest, TaskRoute | Complete |
 | `waggledance/core/domain/trust_score.py` | 25 | TrustSignals, AgentTrust | Complete |
+| `waggledance/core/dreaming/collapse.py` | 412 | CollapsedProposal, CollapseReport | Complete |
+| `waggledance/core/dreaming/curriculum.py` | 485 | DreamableItem, DreamNight, DreamCurriculum | Complete |
+| `waggledance/core/dreaming/meta_proposal.py` | 368 | DreamMetaProposal | Complete |
+| `waggledance/core/dreaming/replay.py` | 368 | ReplayCase, CaseEvaluation, ReplayReport | Complete |
+| `waggledance/core/dreaming/request_pack.py` | 292 | DreamRequestPack | Complete |
+| `waggledance/core/dreaming/shadow_graph.py` | 220 | ShadowNode, ShadowEdge, ShadowGraph +1 | Complete |
 | `waggledance/core/goals/goal_engine.py` | 276 | GoalEngine | Complete |
 | `waggledance/core/goals/mission_store.py` | 99 | MissionStore | Complete |
 | `waggledance/core/goals/motives.py` | 162 | MotiveConfig, ConflictResult, MotiveRegistry | Complete |
@@ -120,11 +160,13 @@
 | `waggledance/core/local_intelligence/model_evaluator.py` | 84 | _ModelEvaluatorError, ModelEvaluationReport, ModelEvaluator | Complete |
 | `waggledance/core/magma/audit_projector.py` | 233 | AuditEntry, AuditProjector | Projection (read-only) |
 | `waggledance/core/magma/confidence_decay.py` | 52 |  | Complete |
-| `waggledance/core/magma/event_log_adapter.py` | 189 | EventLogEntry, EventLogAdapter | Complete |
+| `waggledance/core/magma/event_log_adapter.py` | 200 | EventLogEntry, EventLogAdapter | Complete |
 | `waggledance/core/magma/provenance.py` | 201 | ProvenanceRecord, ProvenanceAdapter | Complete |
+| `waggledance/core/magma/reflective_workspace.py` | 425 | Workspace | Complete |
 | `waggledance/core/magma/replay_engine.py` | 274 | MissionReplayEntry, MissionReplay, ReplayAdapter | Complete |
-| `waggledance/core/magma/trust_adapter.py` | 202 | TrustRecord, TrustAdapter | Complete |
-| `waggledance/core/magma/vector_events.py` | 315 | VectorEvent | Complete |
+| `waggledance/core/magma/self_model.py` | 643 | CalibrationEvidence, ScorecardDimension, BlindSpot +9 | Complete |
+| `waggledance/core/magma/trust_adapter.py` | 250 | TrustRecord, TrustAdapter | Complete |
+| `waggledance/core/magma/vector_events.py` | 404 | VectorEvent | Complete |
 | `waggledance/core/memory/working_memory.py` | 204 | MemorySlot, WorkingMemory | Complete |
 | `waggledance/core/memory_tiers/access_pattern_tracker.py` | 47 | AccessRecord, AccessPatternTracker | Complete |
 | `waggledance/core/memory_tiers/cold_tier.py` | 25 | ColdTier | Complete |
@@ -134,6 +176,10 @@
 | `waggledance/core/memory_tiers/pinning_engine.py` | 73 | PinRecord, PinningEngine | Complete |
 | `waggledance/core/memory_tiers/tier_manager.py` | 238 | TierAssignment, TierViolation, TierManager | Complete |
 | `waggledance/core/memory_tiers/warm_tier.py` | 23 | WarmTier | Complete |
+| `waggledance/core/meta/history.py` | 160 | HistoryEntry | Complete |
+| `waggledance/core/meta/inputs.py` | 170 |  | Complete |
+| `waggledance/core/meta/meta_learner.py` | 592 | EvidenceItem, MetaProposal, SynthesisResult | Complete |
+| `waggledance/core/meta/review_bundle.py` | 292 |  | Complete |
 | `waggledance/core/orchestration/lifecycle.py` | 52 | AgentLifecycleManager | Complete |
 | `waggledance/core/orchestration/orchestrator.py` | 300 | Orchestrator | Complete |
 | `waggledance/core/orchestration/round_table.py` | 191 | ConsensusResult, RoundTableEngine | Complete |
@@ -191,9 +237,9 @@
 | `waggledance/core/reasoning/hybrid_router.py` | 163 |  | Complete |
 | `waggledance/core/reasoning/optimization_engine.py` | 234 | OptimizationResult, OptimizationEngine | Complete |
 | `waggledance/core/reasoning/question_frame.py` | 207 | Comparator, Negation, QuestionFrame | Complete |
-| `waggledance/core/reasoning/route_engine.py` | 223 | RouteMetrics, RouteDecision, RouteEngine | Complete |
+| `waggledance/core/reasoning/route_engine.py` | 234 | RouteMetrics, RouteDecision, RouteEngine | Complete |
 | `waggledance/core/reasoning/seasonal_engine.py` | 159 | SeasonalEngine | Complete |
-| `waggledance/core/reasoning/solver_router.py` | 373 | SolverRouteResult, SolverRouter | Complete |
+| `waggledance/core/reasoning/solver_router.py` | 457 | AutonomyConsultOutcome, SolverRouteResult, SolverRouter | Complete |
 | `waggledance/core/reasoning/stats_engine.py` | 205 | StatsResult, StatsEngine | Complete |
 | `waggledance/core/reasoning/thermal_solver.py` | 256 | ThermalResult, ThermalSolver | Complete |
 | `waggledance/core/reasoning/verifier.py` | 288 | VerifierResult, Verifier | Complete |
@@ -207,18 +253,18 @@
 | `waggledance/core/solver_synthesis/solver_candidate_store.py` | 221 | SolverCandidate, SolverCandidateStore | Complete |
 | `waggledance/core/solver_synthesis/solver_family_registry.py` | 166 | SolverFamily, SolverFamilyRegistry | Complete |
 | `waggledance/core/solver_synthesis/solver_quarantine.py` | 163 | QuotaState, AdmissionDecision | Complete |
-| `waggledance/core/solver_synthesis/validators.py` | 207 | GateResult, CountedGateResult, ShadowEvalResult +1 | Complete |
+| `waggledance/core/solver_synthesis/validators.py` | 216 | GateResult, CountedGateResult, ShadowEvalResult +1 | Complete |
 | `waggledance/core/specialist_models/meta_optimizer.py` | 166 | CanaryRecord, HyperparameterProposal, MetaOptimizerState | Complete |
 | `waggledance/core/specialist_models/model_store.py` | 236 | ModelStatus, ModelVersion, ModelStore | Complete |
 | `waggledance/core/specialist_models/specialist_trainer.py` | 944 | TrainingResult, SpecialistTrainer | Complete |
-| `waggledance/core/storage/control_plane.py` | 1014 | ControlPlaneError, SolverFamilyRecord, SolverRecord +10 | Complete |
-| `waggledance/core/storage/control_plane_schema.py` | 271 |  | Complete |
+| `waggledance/core/storage/control_plane.py` | 2521 | ControlPlaneError, SolverFamilyRecord, SolverRecord +22 | Complete |
+| `waggledance/core/storage/control_plane_schema.py` | 605 |  | Complete |
 | `waggledance/core/storage/path_resolver.py` | 227 | PathResolverError, LogicalPathKind, ResolvedPath +1 | Complete |
 | `waggledance/core/storage/registry_queries.py` | 196 | FamilyRollup, CapabilityRollup, RegistryQueries | Complete |
 | `waggledance/core/vector_identity/identity_anchor.py` | 127 | AnchorValidation | Complete |
 | `waggledance/core/vector_identity/ingestion_dedup.py` | 143 | DedupResult | Complete |
 | `waggledance/core/vector_identity/vector_provenance_graph.py` | 187 | LineageEdge, VectorNode, VectorProvenanceGraph | Complete |
-| `waggledance/core/world/baseline_store.py` | 163 | Baseline, BaselineStore | Complete |
+| `waggledance/core/world/baseline_store.py` | 168 | Baseline, BaselineStore | Complete |
 | `waggledance/core/world/entity_registry.py` | 103 | Entity, EntityRegistry | Complete |
 | `waggledance/core/world/epistemic_uncertainty.py` | 362 | BaselineProvider, EntityProvider, GoalProvider +2 | Complete |
 | `waggledance/core/world/graph_builder.py` | 192 | GraphBuilder | Complete |
@@ -318,7 +364,7 @@
 | `core/translation_proxy.py` | 1687 | VoikkoEngine, OpusMTFallback, TranslationProxy +2 | Complete |
 | `core/trust_engine.py` | 310 | TrustSignal, AgentReputation, TrustEngine | Complete |
 | `core/web_learner.py` | 263 | WebLearningAgent | Complete |
-| `core/whisper_protocol.py` | 446 | Whisper, WhisperProtocol | Complete |
+| `core/whisper_protocol.py` | 447 | Whisper, WhisperProtocol | Complete |
 | `core/yaml_bridge.py` | 680 | YAMLBridge | Complete |
 
 ## Verification Commands
@@ -327,12 +373,12 @@
 # Clone and verify:
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-git checkout 4d17b52
+git checkout 8824e8a
 
 # Count core modules (expect 40+):
 find waggledance/core -name "*.py" -not -name "__init__.py" | wc -l
 
 # Run tests:
 pip install -r requirements.txt
-pytest tests/ --collect-only -q | tail -1              # expect 5585+
+pytest tests/ --collect-only -q | tail -1              # expect 7016+
 ```

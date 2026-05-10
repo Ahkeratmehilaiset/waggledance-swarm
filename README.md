@@ -1,16 +1,48 @@
 # WaggleDance
 
-> A local-first AI runtime that thinks deterministically and grows new solvers on its own — without leaking your data to the cloud. Hex-mesh routing across 7 specialized cells, six-family auto-growth lane, MAGMA-audited provenance.
+> A local-first AI runtime that routes deterministically and grows new solvers on its own — without leaking your data to the cloud. Hex-mesh routing across 7 specialized cells, six-family auto-growth lane, MAGMA-audited provenance.
 
-**Why care?** Measurable wins on the same machine, same snapshots:
+## What's measured (same machine, same snapshots)
 
-- **79× faster** at 10 000-descriptor build (147.25 s → 1.86 s, R21.2)
+**Capability routing at scale**:
+
+- **10 000 solver descriptors**: 1000/1000 capability hits, **0 FIFO fallback, 0 misses**, **warm p99 lookup 0.05 ms** (cold p99 28.7 ms after cache attach)
+- **50 000 solver descriptors** (stress): 2000/2000 hits, 0 fallback, 0 misses, **warm p99 lookup 0.22 ms** (cold p99 354.8 ms)
+- **Provider jobs delta = 0, builder jobs delta = 0** on every tested path
+
+**Live agents**:
+
+- **1004 live agent clones spawned in 120 s** (~8.36/s, p50 88.8 ms, p99 1.43 s)
+- **81 live agent templates** thinking concurrently in **0.47 s**, zero errors
+- Object-runtime live-agent capacity ≥ 1000 as-is. (Practical live-LLM concurrency is bottlenecked by local model latency; English agent contract is the next mitigation, see PR #214 adapter.)
+
+**Mined solver dispatch (autogrowth)**:
+
+- 30 runtime gap signals → 14 candidates → **6 allowlisted solvers registered**, 8 rejected
+- **18/18 dispatch cases pass** across all 6 low-risk solver families
+- Release gate: PASS
+
+**Other axis wins**:
+
+- **79× faster** 10 000-descriptor build (147.25 s → 1.86 s, R21.2 transaction batching)
 - **+52.4 pp absolute lift** on Axis B routing quality (0.5 → 0.7619 on hex-aligned oracle, R22.2)
-- **221 ms** agent-coordination latency (down from 270 s+ pull-only worst-case, R23.0)
-- **7016 tests** across 394 files, BUSL source-available
-- **Profile S** runs fully offline (verified: zero cloud-LLM SDKs leak into `sys.modules`); **Profile L** opts into Anthropic with PII redacted by default
+- **221 ms** agent-coordination latency (down from 270 s+ pull-only worst-case, R23.0 wake-on-event substrate)
+- **7016 tests across 394 files**, BUSL source-available
 
-R22 + R23 sprint shipped 12 PRs of substrate refinement on top of R21 alpha (2026-05-10). v3.12.0 stable cut targeted **2026-05-24**+ after the 14-day soak. See `CHANGELOG.md` for the round-by-round trail.
+**Profiles**:
+
+- **Profile S** runs fully offline — verified zero cloud-LLM SDKs leak into `sys.modules` after `bridge_llm` import (subprocess-isolated test)
+- **Profile L** opts into Anthropic with PII redacted by default (operator-decision-4 verbatim regexes for emails / credit-cards / phones / file paths)
+
+## What is NOT claimed
+
+- **Not** "scales all runtime paths to 50 000 solvers" — cold-path lookup p99 at 50 k is 354 ms; warm path is what's fast
+- **Not** "solves branch isolation" — 2D ControlPlaneDB shows 2.8× p99 degradation under single-hot cross-branch load and 12.2× under adversarial cold-flood; sharding pilot is R25 candidate
+- **Not** a real 50 000-human-authored-solver corpus — synthetic descriptors used for capability bench
+- **Not** a live Ollama group-call benchmark — Ollama not on PATH in measurement session
+- **Not** consciousness, **not** AGI, **not** "world's fastest", **not** cross-vendor ranking
+
+R22 + R23 sprint shipped 12 PRs of substrate refinement on top of R21 alpha (2026-05-10). v3.12.0 stable cut targeted **2026-05-24+** after the 14-day soak. See `CHANGELOG.md` for the round-by-round trail.
 
 **v3.11.0-r20-axis-b-activated-alpha (R21, PRERELEASE):** released 2026-05-10 from PR #191 (squash-merge target this PR). GitHub release `isPrerelease=true`, GHCR image `ghcr.io/ahkeratmehilaiset/waggledance:v3.11.0-r20-axis-b-activated-alpha` per operator decision 3. **NOT promoted to `v3.11.0` stable** per operator (`do NOT promote to v3.11.0 stable in this session`); the R21.5 identity is a prerelease Git tag, not a stable `pyproject.toml` package-version bump. v3.8.0 remains GitHub Latest. R21 closes the operator's 5-condition R21.5 release gate built on top of R20 Decision B: (1) ✅ R21.1 has real `delta_quality` (#187, first non-null Axis B in project history at 0.5/0.5/0.0% with topology-mismatch + Ollama-unavailable Decision-8 honesty notes); (2) ✅ Part 1 (4 files: codex baseline #183, claude baseline #184, synthesis #185, operator decisions #186); (3) ✅ R21.4 gate re-verification green (#190 — cold-shell BOOTSTRAP 10/10, stale lease 11/11, role-review smoke 12/12, R20+R21+Phase D regression 268/268); (4) ✅ R20 Decision B's five conditions explicitly checked off (A/B run, AnthropicProvider+BridgeLLMRedactor #189, R19 Cand 2 measured at 10k = **147.25 s → 1.86 s = 79.3× speedup**, Codex synthesis-amendment ratification, Phase C gates re-verify); (5) ✅ PR #182 Profile S env fix merged. Cloud+privacy posture: `BridgeLLMClient` four-tier chain structurally complete; Profile S leaks zero LLM SDKs into `sys.modules` (subprocess test); `AcceptPiiToCloud=False` hard default; redactor enforces operator-decision-4 PII patterns (emails / credit-cards / phones / file paths); fail-closed via `<REDACTOR_FAILED>` sentinel preventing cloud dispatch.
 

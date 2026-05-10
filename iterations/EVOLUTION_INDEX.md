@@ -698,6 +698,50 @@ entries:
     release publish 05:59Z) vs 8h budget.
   next_bottleneck: R22.0 redactor + AnthropicProvider hotfix (3 bugs from post-merge audit) → R22.1+ scout-led work
 
+- session_id: r23.0-bridge-wake-on-event
+  pr: 195
+  owner: claude
+  reviewer: codex
+  merged_utc: 2026-05-10T07:41:36Z
+  axis_a_before_ms: 270000.0
+  axis_a_after_ms: 221.0
+  axis_a_metric: bridge_polling_deadlock_response
+  axis_a_snapshot: 8964189
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 10
+  axis_c_push_to_merge_minutes: 12
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    R23.0 closes the structural pull-only deadlock the operator hit on
+    2026-05-10: idle Claude + idle Codex could each wait 270 s+ on the
+    other before the next manual poll. Adds Watch-Bridge.ps1 (file-poll
+    watcher 1 s + 250 ms debounce) writing wake_<agent> sentinel when a
+    shared/events.jsonl event whose `to` targets the watched agent
+    appears, plus Test-BridgeWake.ps1 consume-on-read helper, plus
+    Start-AgentBridgeSession.ps1 background-job integration with
+    -SkipWakeWatcher / WAGGLE_BRIDGE_WAKE_ENABLED=0 kill switches.
+
+    Used file-poll instead of Register-ObjectEvent FileSystemWatcher:
+    Win PS 5.1 runspace boundary makes Register-ObjectEvent fragile
+    across Start-Job. Equivalent observable behavior, more robust under
+    shell churn. R20.5 Invoke-RoleReview compatibility: the 250 ms
+    post-write debounce collapses three near-simultaneous subprocess
+    emissions into one wake.
+
+    Smoke 9/9 PASS (Test-BridgeWakeOnEventSmoke.ps1): targeted /
+    self-echo ignored / comma-list to= / non-targeted ignored /
+    consume-on-read / live Start-Job latency / kill-switch. Measured
+    latency: 221 ms warm, well below the operator <2 s spec.
+
+    runtime_behavior_changed=false because the substrate is
+    coordination-layer only (bridge protocol + agent shells); no
+    waggledance/ runtime code path changed. Axis A here is a meta-
+    metric on the agent-coordination loop, not a runtime SLO.
+  next_bottleneck: R24 mandatory role-review gate substrate (operator pre-direktiivi 2026-05-10) — turns the soft-rule on bridge/protocol/source/runtime/cloud/privacy PRs into a tooling-enforced gate.
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

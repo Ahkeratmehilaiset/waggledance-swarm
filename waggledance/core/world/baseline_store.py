@@ -41,7 +41,7 @@ class BaselineStore:
     """SQLite-backed baseline value storage with rolling updates."""
 
     def __init__(self, db_path: str = "data/world_baselines.db"):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -66,23 +66,26 @@ class BaselineStore:
         self._conn.commit()
 
     def get(self, entity_id: str, metric_name: str) -> Optional[Baseline]:
-        row = self._conn.execute(
-            "SELECT * FROM baselines WHERE entity_id=? AND metric_name=?",
-            (entity_id, metric_name),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM baselines WHERE entity_id=? AND metric_name=?",
+                (entity_id, metric_name),
+            ).fetchone()
         if row is None:
             return None
         return self._row_to_baseline(row)
 
     def get_all_for_entity(self, entity_id: str) -> List[Baseline]:
-        rows = self._conn.execute(
-            "SELECT * FROM baselines WHERE entity_id=?",
-            (entity_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM baselines WHERE entity_id=?",
+                (entity_id,),
+            ).fetchall()
         return [self._row_to_baseline(r) for r in rows]
 
     def get_all(self) -> List[Baseline]:
-        rows = self._conn.execute("SELECT * FROM baselines").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM baselines").fetchall()
         return [self._row_to_baseline(r) for r in rows]
 
     def upsert(
@@ -144,11 +147,13 @@ class BaselineStore:
         return {b.key: b.baseline_value for b in self.get_all()}
 
     def count(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM baselines").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM baselines").fetchone()
         return row[0] if row else 0
 
     def close(self):
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     @staticmethod
     def _row_to_baseline(row) -> Baseline:

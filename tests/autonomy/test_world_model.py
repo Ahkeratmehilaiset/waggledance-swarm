@@ -12,6 +12,7 @@ Tests cover:
 
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,29 @@ class TestBaselineStore:
         store.upsert("hive_1", "temperature", 35.0, source_type="inferred_by_solver")
         bl = store.get("hive_1", "temperature")
         assert bl.source_type == "inferred_by_solver"
+
+    def test_reads_are_lock_scoped_and_upsert_remains_reentrant(self, store):
+        class TrackingLock:
+            def __init__(self):
+                self._inner = threading.RLock()
+                self.entries = 0
+
+            def __enter__(self):
+                self.entries += 1
+                return self._inner.__enter__()
+
+            def __exit__(self, exc_type, exc, tb):
+                return self._inner.__exit__(exc_type, exc, tb)
+
+        tracker = TrackingLock()
+        store._lock = tracker
+        store.upsert("hive_1", "temperature", 35.0)
+        store.upsert("hive_1", "temperature", 40.0)
+        assert store.get("hive_1", "temperature") is not None
+        assert len(store.get_all_for_entity("hive_1")) == 1
+        assert len(store.get_all()) == 1
+        assert store.count() == 1
+        assert tracker.entries >= 6
 
 
 # ── WorldModel ────────────────────────────────────────────────

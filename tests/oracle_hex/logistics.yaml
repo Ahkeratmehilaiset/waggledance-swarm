@@ -1,0 +1,29 @@
+# R22.2 — hex-aligned eval (logistics cell)
+solver: logistics_property
+domain: logistics
+cell: logistics
+description: "Logistics and property — supply chain, carpentry, waste, budget"
+
+positive:
+  - "supply chain delay this week"
+  - "toimitusketju viivästyy"
+  - "delivery truck ETA"
+  - "budget tracker over plan"
+  - "carpenter quote for shed"
+  - "waste handler missed pickup"
+  - "well water level low"
+  - "commute planner morning route"
+  - "property boundary survey"
+  - "kiinteistön rajamerkintä"
+  - "the warehouse order is short two pallets"
+  - "varasto sai vain puolet tilauksesta"
+  - "the timber price went up again"
+  - "compostable waste collection delayed"
+  - "wood for the new fence"
+
+negative:
+  - "hive temperature warning"
+  - "frost forecast tomorrow"
+  - "indoor lighting dim"
+  - "fire alarm panel test"
+  - "production line OEE"

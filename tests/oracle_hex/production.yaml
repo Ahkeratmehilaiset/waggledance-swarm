@@ -1,0 +1,29 @@
+# R22.2 — hex-aligned eval (production cell)
+solver: production_quality
+domain: production
+cell: production
+description: "Production and quality — factory, lab, inspection, maintenance"
+
+positive:
+  - "production line stop"
+  - "tuotantolinjan pysäytys"
+  - "OEE decomposition this shift"
+  - "quality inspector report due"
+  - "shift manager handover note"
+  - "maintenance planner schedule"
+  - "lab analyst sample backlog"
+  - "equipment tech overhaul plan"
+  - "industrial HVAC unit alarm"
+  - "factory floor humidity rising"
+  - "we are running below takt time today"
+  - "olemme alle takt-ajan tänään"
+  - "the grinder makes a strange noise"
+  - "näytteen analysointi viivästyy laboratoriossa"
+  - "MTBF on the compressor dropping"
+
+negative:
+  - "hive temperature warning"
+  - "frost forecast tomorrow"
+  - "indoor lighting dim"
+  - "fire alarm panel test"
+  - "delivery truck ETA"

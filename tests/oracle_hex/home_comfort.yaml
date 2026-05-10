@@ -1,0 +1,29 @@
+# R22.2 — hex-aligned eval (home_comfort cell)
+solver: home_energy_advisor
+domain: home_comfort
+cell: home_comfort
+description: "Home comfort — energy, HVAC, lighting, indoor environment"
+
+positive:
+  - "energy bill spike this month"
+  - "sähkölasku kasvanut tässä kuussa"
+  - "HVAC fan running too long"
+  - "lighting dim in kitchen"
+  - "indoor humidity uneven"
+  - "heating cost monthly"
+  - "smart thermostat schedule"
+  - "the living room feels too cold even on max"
+  - "olohuone on kylmä vaikka ilmastointi on täydellä"
+  - "air feels stale in the bedroom"
+  - "noise from the air handler at night"
+  - "yövalaistus tuntuu liian kirkkaalta"
+  - "dehumidifier ran out of water"
+  - "kotipuutarhan kasvit kuihtuvat"
+  - "indoor garden plant wilting"
+
+negative:
+  - "hive temperature warning"
+  - "frost forecast tomorrow"
+  - "fire alarm panel test"
+  - "production line OEE"
+  - "delivery truck ETA"

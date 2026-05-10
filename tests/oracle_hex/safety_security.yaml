@@ -1,0 +1,29 @@
+# R22.2 — hex-aligned eval (safety_security cell)
+solver: safety_security
+domain: safety
+cell: safety_security
+description: "Safety and security — physical, cyber, fire, child safety"
+
+positive:
+  - "fire alarm panel test"
+  - "savun haistaminen kellarissa"
+  - "cyber guard caught intrusion"
+  - "child safety gate broken"
+  - "back yard guard motion alert"
+  - "lock cylinder not turning"
+  - "shore guard radio offline"
+  - "front door unlocked overnight"
+  - "etuovi auki yöllä"
+  - "odd login from unknown country"
+  - "tuntematon kirjautuminen ulkomailta"
+  - "pihalla joku liikkuu kameralla"
+  - "someone is moving in the yard on camera"
+  - "smoke detector battery low"
+  - "carbon monoxide reading high"
+
+negative:
+  - "hive temperature warning"
+  - "frost forecast tomorrow"
+  - "energy bill spike"
+  - "production line OEE"
+  - "delivery truck ETA"

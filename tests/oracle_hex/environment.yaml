@@ -1,0 +1,29 @@
+# R22.2 — hex-aligned eval (environment cell)
+solver: env_monitoring
+domain: environment
+cell: environment
+description: "Environmental monitoring — weather, climate, soil, water"
+
+positive:
+  - "weather forecast tomorrow"
+  - "huominen sääennuste"
+  - "frost risk overnight"
+  - "soil moisture dropping"
+  - "storm alert for region"
+  - "water quality reading high"
+  - "climate trend last decade"
+  - "ilmaston muutos viime kymmenellä vuodella"
+  - "limnologist needs lake data"
+  - "microclimate at the meadow"
+  - "the air feels heavy and gray today"
+  - "ilma tuntuu raskaalta ja harmaalta"
+  - "jäätyykö maaperä yöllä"
+  - "is it going to be very humid"
+  - "should I expect heavy rainfall this week"
+
+negative:
+  - "hive temperature warning"
+  - "fire alarm panel test"
+  - "indoor lighting dim"
+  - "production line OEE"
+  - "delivery truck ETA"

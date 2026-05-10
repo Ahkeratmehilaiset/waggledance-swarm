@@ -689,8 +689,16 @@ class TestFrontendIntegrity:
             assert f"'{nid}'" in html or f'"{nid}"' in html, f"Node {nid} not found in v6 HTML"
 
     def test_v5_preserved(self):
-        """v5 file still exists."""
-        assert _V5_HTML_PATH.exists(), "hologram-brain-v5.html should be preserved"
+        """Phase 16 invariant - historically pinned the coexistence of
+        the v5 and v6 hologram HTML files. v5 was retired in R22.5
+        cleanup (2026-05-10) since the Dockerfile and runtime only
+        reference v6. Test kept as a placeholder so the surrounding
+        suite layout is not disturbed."""
+        import pytest
+        pytest.skip(
+            "hologram-brain-v5.html retired in R22.5 cleanup; "
+            "Dockerfile + runtime use v6 only."
+        )
 
 
 # ═══════════════════════════════════════════════════════════════

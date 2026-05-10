@@ -43,6 +43,14 @@ WINDOWS_PATH_RE: Pattern[str] = re.compile(
 POSIX_PATH_RE: Pattern[str] = re.compile(
     r"(?:/[\w.\-]+){2,}",
 )
+# R22.0 finding F1: pre-mask URLs so the path regex doesn't chew the
+# path-portion of a URL. Looking-behind for `:` was insufficient
+# because the URL's *second* slash is preceded by another slash, not
+# the colon — and any later segment break is preceded by an
+# alphanumeric char that the lookbehind can't see past.
+URL_RE: Pattern[str] = re.compile(r"https?://[^\s<>\"']+")
+_URL_MASK_OPEN = "\x00URL\x00"
+_URL_MASK_CLOSE = "\x00ENDURL\x00"
 
 
 # Placeholder names per master prompt §2.6
@@ -63,12 +71,19 @@ class RedactionResult:
         counts: per-category count for telemetry.
         applied: True if any redaction happened (caller may skip the
             cloud call if False, treating the input as already safe).
+        failed: True only if the redactor itself failed (R22.0 finding
+            F2). Cloud providers MUST consult this flag instead of
+            comparing ``text == "<REDACTOR_FAILED>"`` to avoid a
+            user-prompt-controlled false fail-closed (a malicious or
+            accidental prompt containing the literal sentinel string
+            would otherwise spoof the fail-closed signal).
     """
 
     text: str
     replacements: dict[str, str] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     applied: bool = False
+    failed: bool = False
 
 
 class BridgeLLMRedactor:
@@ -104,12 +119,16 @@ class BridgeLLMRedactor:
         try:
             return self._redact_safely(prompt)
         except Exception:
-            # Fail closed — see class docstring.
+            # Fail closed — see class docstring. R22.0: also set
+            # failed=True so the cloud provider's check doesn't have
+            # to compare the text against the sentinel string (which
+            # a malicious prompt could spoof).
             return RedactionResult(
                 text="<REDACTOR_FAILED>",
                 replacements={},
                 counts={},
                 applied=True,
+                failed=True,
             )
 
     def _redact_safely(self, prompt: str) -> RedactionResult:
@@ -132,6 +151,15 @@ class BridgeLLMRedactor:
                 return placeholder
             return _replace
 
+        # R22.0 F1: mask URLs first so POSIX_PATH_RE doesn't munch
+        # their path-portion. We restore them at the end before
+        # returning the redacted text.
+        url_masks: list[str] = []
+        def _mask_url(m: re.Match[str]) -> str:
+            url_masks.append(m.group(0))
+            return f"{_URL_MASK_OPEN}{len(url_masks) - 1}{_URL_MASK_CLOSE}"
+        text = URL_RE.sub(_mask_url, text)
+
         # Order matters: paths first (to avoid the email regex chewing
         # paths that contain `@`); credit-card before phone (digit
         # patterns overlap); email before phone (digit-only phone
@@ -141,6 +169,15 @@ class BridgeLLMRedactor:
         text = EMAIL_RE.sub(make_replacer(EMAIL_PLACEHOLDER), text)
         text = CREDIT_CARD_RE.sub(make_replacer(TOKEN_PLACEHOLDER), text)
         text = PHONE_RE.sub(make_replacer(PHONE_PLACEHOLDER), text)
+
+        # Restore masked URLs verbatim — they were never PII to begin
+        # with for redaction purposes (the operator's decision-4
+        # categories are emails / credit-cards / phones / file paths,
+        # not URLs).
+        if url_masks:
+            for idx, original in enumerate(url_masks):
+                placeholder = f"{_URL_MASK_OPEN}{idx}{_URL_MASK_CLOSE}"
+                text = text.replace(placeholder, original)
 
         applied = any(c > 0 for c in counts.values())
         return RedactionResult(

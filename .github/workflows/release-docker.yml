@@ -39,10 +39,12 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-            echo "promote_alias=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "promote_alias=axis-b-alpha" >> "$GITHUB_OUTPUT"
+            echo "profile_aliases=yes" >> "$GITHUB_OUTPUT"
           else
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
             echo "promote_alias=${{ inputs.promote_alias }}" >> "$GITHUB_OUTPUT"
+            echo "profile_aliases=${{ inputs.profile_aliases }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Refuse to publish if target tag does NOT match the alpha shape
@@ -97,14 +99,14 @@ jobs:
       # tag aliasing. Real Profile S filtering happens at runtime via
       # WAGGLE_PROFILE / Start-WaggleDanceSolver.ps1 + solver-profiles/*.json.
       - name: Tag Profile S alias
-        if: ${{ inputs.profile_aliases == 'yes' }}
+        if: ${{ steps.target.outputs.profile_aliases == 'yes' }}
         run: |
           docker buildx imagetools create \
             --tag ghcr.io/ahkeratmehilaiset/waggledance:small-axis-b-alpha \
             ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
 
       - name: Tag Profile M alias
-        if: ${{ inputs.profile_aliases == 'yes' }}
+        if: ${{ steps.target.outputs.profile_aliases == 'yes' }}
         run: |
           docker buildx imagetools create \
             --tag ghcr.io/ahkeratmehilaiset/waggledance:medium-axis-b-alpha \

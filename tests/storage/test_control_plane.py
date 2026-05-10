@@ -9,6 +9,7 @@ Covers RULE 7 categories:
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -20,6 +21,30 @@ from waggledance.core.storage import (
     SCHEMA_VERSION,
 )
 from waggledance.core.storage.control_plane_schema import all_table_names
+
+
+class _BeginFailureConn:
+    def __init__(self) -> None:
+        self.in_transaction = False
+        self.rolled_back = False
+
+    def execute(self, sql: str, *args: object) -> "_BeginFailureConn":
+        if sql == "BEGIN IMMEDIATE":
+            self.in_transaction = True
+            raise sqlite3.OperationalError("simulated failure after begin")
+        if sql == "ROLLBACK":
+            self.rolled_back = True
+            self.in_transaction = False
+            return self
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+def _control_plane_with_conn(conn: object) -> ControlPlaneDB:
+    cp = object.__new__(ControlPlaneDB)
+    cp._conn = conn  # noqa: SLF001
+    cp._lock = threading.RLock()  # noqa: SLF001
+    cp._in_transaction = False  # noqa: SLF001
+    return cp
 
 
 @pytest.fixture()
@@ -127,6 +152,31 @@ def test_nested_transaction_joins_outer_transaction(
 
     assert cp.get_solver("thermal_basic") is not None
     assert cp._conn.in_transaction is False  # noqa: SLF001
+
+
+def test_transaction_rolls_back_when_begin_leaves_sqlite_open() -> None:
+    conn = _BeginFailureConn()
+    cp = _control_plane_with_conn(conn)
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated failure"):
+        with cp.transaction():
+            raise AssertionError("body should not run")
+
+    assert conn.rolled_back is True
+    assert conn.in_transaction is False
+    assert cp._in_transaction is False  # noqa: SLF001
+
+
+def test_migrate_rolls_back_when_begin_leaves_sqlite_open() -> None:
+    conn = _BeginFailureConn()
+    cp = _control_plane_with_conn(conn)
+
+    with pytest.raises(ControlPlaneError, match="schema migration failed"):
+        cp.migrate()
+
+    assert conn.rolled_back is True
+    assert conn.in_transaction is False
+    assert cp._in_transaction is False  # noqa: SLF001
 
 
 def test_capability_dependency_dag(cp: ControlPlaneDB) -> None:

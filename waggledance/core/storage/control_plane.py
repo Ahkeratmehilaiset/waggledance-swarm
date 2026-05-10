@@ -386,12 +386,19 @@ class ControlPlaneDB:
         if not self._in_transaction:
             self._conn.execute("BEGIN IMMEDIATE")
 
+    def _sqlite_transaction_is_open(self) -> bool:
+        return bool(getattr(self._conn, "in_transaction", False))
+
+    def _rollback_sqlite_transaction_if_open(self) -> None:
+        if self._sqlite_transaction_is_open():
+            self._conn.execute("ROLLBACK")
+
     def _commit(self) -> None:
         if not self._in_transaction:
             self._conn.execute("COMMIT")
 
     def _rollback(self) -> None:
-        if not self._in_transaction:
+        if not self._in_transaction and self._sqlite_transaction_is_open():
             self._conn.execute("ROLLBACK")
 
     @contextmanager
@@ -440,13 +447,13 @@ class ControlPlaneDB:
             # The outer transaction MUST issue raw BEGIN/COMMIT/ROLLBACK
             # directly because the helper methods skip when
             # _in_transaction is True (which we set right after begin).
-            self._conn.execute("BEGIN IMMEDIATE")
-            self._in_transaction = True
             try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._in_transaction = True
                 yield
                 self._conn.execute("COMMIT")
-            except Exception:
-                self._conn.execute("ROLLBACK")
+            except BaseException:
+                self._rollback_sqlite_transaction_if_open()
                 raise
             finally:
                 self._in_transaction = False
@@ -493,8 +500,8 @@ class ControlPlaneDB:
         """Bring the schema up to :data:`SCHEMA_VERSION`. Returns final version."""
 
         with self._lock:
-            self._begin()
             try:
+                self._begin()
                 self._conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS schema_meta (
@@ -1036,8 +1043,8 @@ class ControlPlaneDB:
 
         now = _utcnow()
         with self._lock:
-            self._begin()
             try:
+                self._begin()
                 self._conn.execute(
                     """
                     UPDATE runtime_path_bindings
@@ -1493,8 +1500,8 @@ class ControlPlaneDB:
         """
 
         with self._lock:
-            self._begin()
             try:
+                self._begin()
                 self._replace_solver_capability_features_inplace(
                     solver_id, family_kind, features,
                 )
@@ -1789,8 +1796,8 @@ class ControlPlaneDB:
     ) -> AutogrowthQueueRecord:
         now = _utcnow()
         with self._lock:
-            self._begin()
             try:
+                self._begin()
                 # Refuse to enqueue twice for the same intent if a
                 # queued/claimed row already exists.
                 existing = self._conn.execute(
@@ -1840,8 +1847,8 @@ class ControlPlaneDB:
 
         now = now_iso or _utcnow()
         with self._lock:
-            self._begin()
             try:
+                self._begin()
                 row = self._conn.execute(
                     """
                     SELECT * FROM autogrowth_queue

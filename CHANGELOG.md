@@ -1,5 +1,95 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [R21 Axis B activation + cloud LLM substrate / v3.11.0-r20-axis-b-activated-alpha PRERELEASE] — 2026-05-10
+
+Operator-driven 8-hour overnight sprint on top of v3.10.4-incremental-gap-replay-alpha (Phase 18F) and the previous-session R17–R20 substrate work. **R21 activates the Axis B (per-decision quality) substrate that R20 only stubbed**, lands the first cloud LLM provider plugin, and proves R19 Cand 2 build-phase transaction batching at full 10k scale. Operator approved prerelease tag `v3.11.0-r20-axis-b-activated-alpha`. **NOT promoted to `v3.11.0` stable** per operator decision 2.
+
+### Activation gate (operator R21.5 5-condition checklist) — all green
+
+1. ✅ R21.1 has a real `delta_quality` number — #187, recorded in `EVOLUTION_INDEX.md` as `axis_b_quality: 0.5` (the **first non-null Axis B in project history**) with topology-mismatch + Ollama-unavailable Decision-8 honesty notes.
+2. ✅ Part 1 finalized — Codex baseline (#183), Claude baseline (#184), synthesis (#185), operator decisions (#186) all on main.
+3. ✅ R21.4 gate re-verification green — #190 (cold-shell BOOTSTRAP 10/10, stale lease 11/11, role-review smoke 12/12, R20+R21+Phase D regression 268/268).
+4. ✅ R20 Decision B's five conditions explicitly checked off — see "Decision B closure" below.
+5. ✅ PR #182 Profile S env fix merged at 03:31:12Z (Codex post-merge audit caught BridgeLLMClient ignoring `WAGGLE_BRIDGE_LLM_ENABLED`/`WAGGLE_FALLBACK_CHAIN`/`WAGGLE_BRIDGE_LLM_REDACTION` env vars set by `Start-WaggleDanceSolver.ps1`).
+
+### R20 Decision B closure (gate 4 detail)
+
+From `docs/release/R20_RELEASE_READINESS_2026_05_09.md`:
+
+1. ✅ **A/B has been run and recorded** — R21.1 #187, recorded honestly with `delta_quality = 0.0%`, `recommendation = keep_disabled` per rule 17.
+2. ✅ **At least one cloud provider plugin lands** — R21.3 #189 `AnthropicProvider` (Tier 3, lazy-imports SDK, raises `ProviderError` when missing) with mandatory `BridgeLLMRedactor` per operator decision 4 (email/credit-card/phone/path patterns; `AcceptPiiToCloud=False` hard default; fail-closed via `<REDACTOR_FAILED>` sentinel).
+3. ✅ **R19 Cand 2 transaction batching measured at full 10k** — R21.2 #188 + R21.5 full bench: build time **147.25 s → 1.86 s = 79.3× speedup at 10k**. Lookup p99 33.0 ms (still above 10ms threshold; R19 Cand 3 deferred per scout note).
+4. ✅ **Codex synthesis-amendment ratification** — Codex `decision/approved_with_amendment` at 2026-05-10T03:35:18Z, amendment "tests/oracle/*.yaml satisfies criterion 2 (deterministic golden-output evaluator), NOT criterion 1 (labelled `case_trajectory_input → ground_truth_grade` corpus)" was folded verbatim into `r21_synthesis_2026_05_10.md`. Synthesis ratified by amendment-folding; the file's "Codex amendment (reserved)" block is for further amendments, of which Codex posted none.
+5. ✅ **Phase C gates re-verify cleanly on the post-R20 commit** — R21.4 gate re-verification report at `iterations/codex_scout_tasks/r21_4_gate_reverification_2026_05_10.md`.
+
+### R21 PRs
+
+| PR | Round | Owner | Outcome |
+|---|---|---|---|
+| #182 | R21.0 (R20 hygiene) | Codex | ✅ MERGED — Profile S env-vars honored by BridgeLLMClient.default(); explicit unavailable cloud stub; provider registry discoverable |
+| #183 | R21 baseline (Codex) | Codex | ✅ MERGED — ratify-with-amendments on R20 Decision B; Path B/β recommended |
+| #184 | R21 baseline (Claude) | Claude | ✅ MERGED — concur path β; tests/oracle/*.yaml = ~450 utterances; first measured call site = `select_origin_cell` |
+| #185 | R21 synthesis | Claude | ✅ MERGED — Codex amendment folded verbatim; final R21 PR plan ratified |
+| #186 | R21 operator decisions | Codex (operator-recorded) | ✅ MERGED — verbatim operator paste-time directive |
+| #187 | R21.1 | Claude | ✅ MERGED — oracle A/B harness; first non-null axis_b_quality (0.5) |
+| #188 | R21.2 | Claude (resilience) | ✅ MERGED — `ControlPlaneDB.transaction()` + bulk_load wrap; ~95× at 1k, 79.3× at 10k |
+| #189 | R21.3 | Claude (resilience) | ✅ MERGED — AnthropicProvider + BridgeLLMRedactor; 18/18 redactor tests; fail-closed contract |
+| #190 | R21.4 | Claude | ✅ MERGED — gate re-verification; all 5 gates green; 268/268 regression |
+| this | R21.5 | Claude (resilience) | release decision; CHANGELOG + README; prerelease Git tag only |
+
+(Codex was active on R20 audit (#182) and R21 baseline (#183) but went stale 04:34Z mid-#188-review. Resilience-takeover per operator R21 directive: "If either Codex or Claude exits/crashes, the other continues.")
+
+### Headline metrics
+
+| Operation | Before | After | Gain |
+|---|---:|---:|---:|
+| ControlPlaneDB.bulk_load_descriptors at 10000 | **147.25 s** | **1.86 s** | **~79× faster** |
+| ControlPlaneDB.bulk_load_descriptors at 1000 (median 5 runs) | 15.46 s | 0.16 s | ~95× faster |
+| HexTopologyRegistry.select_origin_cell A/B `quality_arm` | (no oracle previously wired) | 0.5 (control) / 0.5 (treatment) | first non-null Axis B; topology-mismatch finding documented |
+
+### Cloud + privacy posture
+
+- `BridgeLLMClient` four-tier fallback (cache → local-ollama → cloud → heuristic) is now structurally complete; `AnthropicProvider` is the Tier 3 reference plugin.
+- Profile S compatibility held throughout: importing `waggledance.core.bridge_llm` leaves `sys.modules` clean of `anthropic`, `openai`, `ollama`, `vertexai`, `cohere`, `groq`, etc. (subprocess-isolated test asserts this).
+- Cloud calls **must** redact PII before transmission (operator decision 4 verbatim: `[\w@.+-]+` emails, `\b\d{13,19}\b` credit-cards, `\+?\d[\d\s-]{8,}` phones, full file paths).
+- `AcceptPiiToCloud=False` is the **hard default**; explicit per-call opt-in only; logged in telemetry per master prompt §2.6.
+- Fail-closed: redactor exception → `<REDACTOR_FAILED>` sentinel → `AnthropicProvider.call()` raises `ProviderError` → chain falls through to heuristic without dispatching the cloud call.
+
+### Operator-mandated R21.6 follow-up (not in this PR)
+
+- Tag the merge commit of this PR with annotated tag `v3.11.0-r20-axis-b-activated-alpha`.
+- Push tag to origin.
+- Create GitHub release with `isPrerelease=true`, body extracted from this CHANGELOG entry.
+- Do not bump `pyproject.toml` / `waggledance.__version__` in this PR:
+  existing package-version tests intentionally require numeric `X.Y.Z`
+  parity there. The R21.5 release identity is the prerelease Git tag,
+  not a stable Python package-version promotion.
+- Build Docker images per operator decision 3:
+  - `ghcr.io/ahkeratmehilaiset/waggledance:v3.11.0-r20-axis-b-activated-alpha` (canonical)
+  - `ghcr.io/ahkeratmehilaiset/waggledance:axis-b-alpha` (sliding alias)
+  - `ghcr.io/ahkeratmehilaiset/waggledance:small-axis-b-alpha` (Profile S subset)
+  - `ghcr.io/ahkeratmehilaiset/waggledance:medium-axis-b-alpha` (Profile M subset)
+- `waggledance:latest` does NOT move (operator: "do NOT promote to v3.11.0 stable in this session"). v3.8.0 remains GitHub Latest.
+- Smoke-test the published image: `docker pull` → `docker run` → wait for ready → run baseline benchmark; fail if image does not start; fail if latency >2× expected threshold.
+
+### Tests
+
+- 268/268 R20+R21+Phase D combined targeted regression PASS in 13.93s
+- 11/11 stale-lease smoke
+- 12/12 role-review smoke
+- 10/10 runtime-root smoke
+
+### Anti-claims (R20 master prompt rule 18)
+
+- NOT a stable release — explicit prerelease.
+- NOT promoted to `waggledance:latest` Docker tag.
+- NOT a "raw intelligence superiority" claim — the only Axis B number recorded is `0.5 / 0.5 / 0.0%` with explicit topology-mismatch caveat. The 79× build speedup is Axis A, not Axis B.
+- NOT consciousness; not AGI; not "world fastest"; not cross-vendor ranking.
+
+### Operator handoff
+
+R21.6 closeout PR follows. After R21.6 merges, this session's 8h R21 window closes.
+
 ## [Phase D scaling pass + R20 explosive-growth substrate / NO TAG] — 2026-05-09
 
 Operator-driven overnight session running two sprints back-to-back:

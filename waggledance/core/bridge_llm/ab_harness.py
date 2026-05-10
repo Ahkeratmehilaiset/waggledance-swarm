@@ -51,6 +51,15 @@ from .types import LLMRequest, LLMResponse
 log = logging.getLogger(__name__)
 
 
+def _usable_treatment_value(value: Any | None) -> Any | None:
+    """Return None for empty treatment values that cannot be safely chosen."""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
 @dataclass
 class ABResult:
     """One A/B decision result."""
@@ -129,7 +138,7 @@ class ABHarness:
                 treatment_response = response
                 # The treatment value IS the response text — callers who
                 # need typed extraction can post-process.
-                treatment_value = response.text
+                treatment_value = _usable_treatment_value(response.text)
                 t_latency = (time.perf_counter() - t_start) * 1000
             except Exception as exc:
                 # Hard requirement: the harness MUST NOT crash the call
@@ -142,7 +151,7 @@ class ABHarness:
 
         # Pick the production decision
         if (
-            treatment_value is not None
+            _usable_treatment_value(treatment_value) is not None
             and self._rng.random() < self._treatment_share
         ):
             chosen_value = treatment_value

@@ -95,6 +95,58 @@ def test_harness_treatment_failure_falls_through_to_control():
     assert result.latency_treatment_ms is not None
 
 
+@pytest.mark.parametrize("treatment_text", ["", "   ", "\n\t"])
+def test_harness_blank_treatment_response_falls_through_to_control(treatment_text):
+    """Blank cloud/local treatment text is not a usable decision.
+
+    R22.3 Profile-L A/B will exercise real provider paths. Empty text can come
+    from provider refusal or transient response parsing issues; the harness must
+    not choose it or expose it as a treatment value.
+    """
+    from waggledance.core.bridge_llm import ABHarness, BridgeLLMClient, LLMRequest
+    from waggledance.core.bridge_llm.providers.heuristic import HeuristicProvider
+    from waggledance.core.bridge_llm.types import (
+        FallbackLevel,
+        LLMResponse,
+    )
+
+    class BlankClient(BridgeLLMClient):
+        def run(self, request):
+            return LLMResponse(
+                text=treatment_text,
+                fallback_level=FallbackLevel.CLOUD_LLM,
+                provider="test-cloud",
+                success=True,
+                latency_ms=0.0,
+            )
+
+    client = BlankClient(
+        providers=[HeuristicProvider()],
+        fallback_chain=("heuristic",),
+        config={"enabled": True},
+    )
+    harness = ABHarness(
+        client=client,
+        injection_point="ab.test.blank",
+        treatment_share=1.0,
+        rng_seed=42,
+    )
+
+    result = harness.run(
+        control_fn=lambda: "heuristic-answer",
+        treatment_request=LLMRequest(
+            injection_point="ab.test.blank", prompt="hi"
+        ),
+    )
+
+    assert result.treatment_response is not None
+    assert result.treatment_response.text == treatment_text
+    assert result.treatment_value is None
+    assert result.chosen_value == "heuristic-answer"
+    assert result.chosen_arm == "control"
+    assert result.latency_treatment_ms is not None
+
+
 def test_harness_records_both_latencies_when_share_full():
     from waggledance.core.bridge_llm import (
         ABHarness, BridgeLLMClient, LLMRequest,

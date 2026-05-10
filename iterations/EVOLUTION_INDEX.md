@@ -706,7 +706,7 @@ entries:
   axis_a_before_ms: 270000.0
   axis_a_after_ms: 221.0
   axis_a_metric: bridge_polling_deadlock_response
-  axis_a_snapshot: 8964189
+  axis_a_snapshot: "8964189"
   axis_b_quality: null
   axis_c_claim_to_push_minutes: 10
   axis_c_push_to_merge_minutes: 12

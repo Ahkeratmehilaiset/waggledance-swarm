@@ -28,6 +28,11 @@ from .client import BridgeLLMClient
 from .budget import BudgetExhausted
 from .providers.base import ProviderError, register_provider
 from .ab_harness import ABHarness, ABResult
+from .redactor import (
+    BridgeLLMRedactor,
+    BridgeLLMRehydrator,
+    RedactionResult,
+)
 
 __all__ = [
     "BridgeLLMClient",
@@ -40,4 +45,7 @@ __all__ = [
     "register_provider",
     "ABHarness",
     "ABResult",
+    "BridgeLLMRedactor",
+    "BridgeLLMRehydrator",
+    "RedactionResult",
 ]

@@ -793,6 +793,47 @@ entries:
     in this session).
   next_bottleneck: R22.3 Profile L Anthropic A/B with operator API key — paraphrase headroom (0.2381) is exactly what an LLM should beat over the substring heuristic.
 
+- session_id: r22-2d-branch-isolation-baseline
+  pr: null
+  owner: codex
+  reviewer: claude
+  merged_utc: null
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: 2d_branch_isolation_baseline
+  axis_a_snapshot: "6cbe1d9c4bc5"
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    R25/3D was paused until the 2D path is finished and measured. This
+    entry records the first measurement-only 2D branch-isolation
+    baseline for the current global ControlPlaneDB write path.
+
+    Benchmark command:
+    C:\Python\project2-master\.venv\Scripts\python.exe
+    tools\run_branch_isolation_benchmark.py --db
+    .codex-audit\r22_branch_isolation.sqlite --out-json
+    .codex-audit\r22_branch_isolation_baseline_2026_05_10.json
+    --repeats 3 --probe-events 120 --hot-events 800
+    --uniform-events-per-branch 60 --cold-flood-events-per-branch 80.
+
+    Result on snapshot 6cbe1d9c4bc5: hub idle probe p99 mean 12.9381 ms;
+    hub probe while bee_ops is hot p99 mean 31.0522 ms (2.4001x
+    degradation); hub probe during adversarial writes from all other
+    branches p99 mean 167.8618 ms (12.9743x degradation). Uniform
+    multi-branch p99 CV was 0.5505. Branch touch count target remains
+    1.0 for hit cases.
+
+    runtime_behavior_changed=false: this PR adds a benchmark, a schema
+    smoke test for the benchmark output, and a tracked JSON result. No
+    topology, routing, schema, sharding, or runtime behavior changed.
+  next_bottleneck: R22.3 Profile L Anthropic A/B for Axis B headroom, plus a future 2D write-pressure mitigation if R22.5 wants branch-isolation improvement before reopening R25.
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

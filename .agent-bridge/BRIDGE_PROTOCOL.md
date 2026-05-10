@@ -223,6 +223,19 @@ operation lock / lease for TOCTOU).
      reviews touching bridge/protocol/source SHOULD use the wrapper.
      A `-DryRun` mode is available for smoke testing the wiring
      without executing the orchestrator subprocess.
+   - **Wake-on-event substrate (R23.0).** Pure pull-only polling can
+     deadlock for 270 s+ when both agents are idle. Each session shell
+     should run `Watch-Bridge.ps1` as a background job (the
+     `Start-AgentBridgeSession.ps1` bootstrap launches it automatically
+     unless `$env:WAGGLE_BRIDGE_WAKE_ENABLED=0` or `-SkipWakeWatcher`).
+     The watcher polls `shared/events.jsonl` once per second; when a
+     new event whose `to` targets the watched agent appears, it
+     creates `<bridgeRoot>/wake_<agent>` as a dirty bit. The agent's
+     polling loop should call `Test-BridgeWake.ps1 -Agent <name>` each
+     iteration as a fast pre-check before any heavier
+     `Read-AgentBridge.ps1` call; finding the file consumes it. End-
+     to-end measured smoke latency (`Test-BridgeWakeOnEventSmoke.ps1`)
+     is < 300 ms when the watcher is warm.
 
 ## Commands
 
@@ -234,7 +247,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-Age
 
 # Preferred reboot/new-shell bootstrap. Dot-source this in the shell that will
 # launch the agent so AGENT_BRIDGE_RUNTIME_ROOT and AGENT_BRIDGE_RUN_ID persist.
+# By default also launches the R23.0 wake-on-event watcher as a background job;
+# pass -SkipWakeWatcher (or set $env:WAGGLE_BRIDGE_WAKE_ENABLED=0) to opt out.
 . .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex
+
+# Fast pre-check used by the agent's polling loop. Returns $true exactly once
+# after a targeted event arrives; the wake file is consumed on read.
+& .\.agent-bridge\bin\Test-BridgeWake.ps1 -Agent codex
 
 # Read without writing received ACKs.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent codex -ShowClaims -NoAckReceived -Tail 40

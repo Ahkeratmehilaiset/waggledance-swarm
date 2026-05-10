@@ -25,7 +25,8 @@ param(
 
     [switch] $SkipBridgeRead,
     [switch] $SkipLiveness,
-    [switch] $SkipGitStatus
+    [switch] $SkipGitStatus,
+    [switch] $SkipWakeWatcher
 )
 
 $ErrorActionPreference = 'Stop'
@@ -110,11 +111,36 @@ if (-not $SkipBridgeRead) {
     & $bridgeStatus -MaxUnresolved 15
 }
 
+# R23.0: launch the wake-on-event watcher as a background job so the
+# agent's polling loop can react in <2 s instead of waiting on its own
+# cadence. Honors $env:WAGGLE_BRIDGE_WAKE_ENABLED=0 as a kill switch
+# (Watch-Bridge.ps1 short-circuits on that). The job is recorded in
+# $env:AGENT_BRIDGE_WAKE_JOB so the agent shell can stop it on exit.
+$wakeJobId = ''
+$wakeEnabled = $env:WAGGLE_BRIDGE_WAKE_ENABLED -ne '0'
+if ((-not $SkipWakeWatcher) -and $wakeEnabled) {
+    $watchScript = Join-Path $PSScriptRoot 'Watch-Bridge.ps1'
+    if (Test-Path -LiteralPath $watchScript) {
+        try {
+            $job = Start-Job -Name "agent-bridge-watcher-$Agent" -ScriptBlock {
+                param($scriptPath, $agentArg, $runtimeArg)
+                & $scriptPath -Agent $agentArg -RuntimeRoot $runtimeArg
+            } -ArgumentList $watchScript, $Agent, $runtimeFull
+            $wakeJobId = $job.Id
+            $env:AGENT_BRIDGE_WAKE_JOB = [string]$wakeJobId
+        } catch {
+            Write-Warning "Start-AgentBridgeSession: could not start wake watcher: $($_.Exception.Message)"
+        }
+    }
+}
+
 [pscustomobject]@{
-    agent        = $Agent
-    repo_root    = $repoFull
-    runtime_root = $runtimeFull
-    run_id       = $RunId
-    git_branch   = $gitBranch
-    note         = 'Dot-source this script so env vars persist in the agent shell.'
+    agent          = $Agent
+    repo_root      = $repoFull
+    runtime_root   = $runtimeFull
+    run_id         = $RunId
+    git_branch     = $gitBranch
+    wake_job_id    = $wakeJobId
+    wake_enabled   = $wakeEnabled
+    note           = 'Dot-source this script so env vars persist in the agent shell.'
 }

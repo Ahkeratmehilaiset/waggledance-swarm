@@ -35,7 +35,7 @@ From `docs/release/R20_RELEASE_READINESS_2026_05_09.md`:
 | #188 | R21.2 | Claude (resilience) | ✅ MERGED — `ControlPlaneDB.transaction()` + bulk_load wrap; ~95× at 1k, 79.3× at 10k |
 | #189 | R21.3 | Claude (resilience) | ✅ MERGED — AnthropicProvider + BridgeLLMRedactor; 18/18 redactor tests; fail-closed contract |
 | #190 | R21.4 | Claude | ✅ MERGED — gate re-verification; all 5 gates green; 268/268 regression |
-| this | R21.5 | Claude (resilience) | release decision; CHANGELOG + README + version bump |
+| this | R21.5 | Claude (resilience) | release decision; CHANGELOG + README; prerelease Git tag only |
 
 (Codex was active on R20 audit (#182) and R21 baseline (#183) but went stale 04:34Z mid-#188-review. Resilience-takeover per operator R21 directive: "If either Codex or Claude exits/crashes, the other continues.")
 
@@ -60,6 +60,10 @@ From `docs/release/R20_RELEASE_READINESS_2026_05_09.md`:
 - Tag the merge commit of this PR with annotated tag `v3.11.0-r20-axis-b-activated-alpha`.
 - Push tag to origin.
 - Create GitHub release with `isPrerelease=true`, body extracted from this CHANGELOG entry.
+- Do not bump `pyproject.toml` / `waggledance.__version__` in this PR:
+  existing package-version tests intentionally require numeric `X.Y.Z`
+  parity there. The R21.5 release identity is the prerelease Git tag,
+  not a stable Python package-version promotion.
 - Build Docker images per operator decision 3:
   - `ghcr.io/ahkeratmehilaiset/waggledance:v3.11.0-r20-axis-b-activated-alpha` (canonical)
   - `ghcr.io/ahkeratmehilaiset/waggledance:axis-b-alpha` (sliding alias)

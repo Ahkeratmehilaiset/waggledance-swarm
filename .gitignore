@@ -10,6 +10,12 @@
 Watch-CodexPrompts.ps1
 prompts/prompt*_*.md
 
+# Operator-local scratch (R22.5 cleanup 2026-05-10): brief / report
+# / handoff prompts that don't belong in the tracked release surface.
+WAGGLEDANCE_AI_BRIEF.md
+raportti.md
+WD_release_to_main_master_prompt.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

@@ -172,6 +172,39 @@ if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
     }
 }
 
+# R23.1.1: register PowerShell.Exiting handler so the wake-watcher and
+# heartbeat background jobs are stopped when the agent shell exits
+# normally. Without this, the jobs orphan: a dead Codex/Claude session
+# keeps emitting liveness/heartbeat events and bumping last_heartbeat_utc
+# on its claims, defeating the stale-lease auto-release contract.
+#
+# The exit handler covers normal shutdown (`exit`, end-of-script, host
+# close); it does NOT fire on Ctrl+C kill or process termination. For
+# those cases, the operator runs Stop-AgentBridgeSession.ps1 manually
+# (see runbook in BRIDGE_PROTOCOL.md). Idempotent via a session-scoped
+# flag: dot-sourcing the same Start-AgentBridgeSession.ps1 twice in one
+# shell registers only one cleanup handler.
+$cleanupAlreadyRegistered = $null -ne `
+    (Get-Variable -Name '__AgentBridgeCleanupRegistered' `
+        -Scope Global -ErrorAction SilentlyContinue)
+if (-not $cleanupAlreadyRegistered) {
+    [void](Register-EngineEvent -SourceIdentifier 'PowerShell.Exiting' `
+        -SupportEvent -Action {
+        foreach ($envName in @('AGENT_BRIDGE_WAKE_JOB', 'AGENT_BRIDGE_HEARTBEAT_JOB')) {
+            $jobId = [Environment]::GetEnvironmentVariable($envName, 'Process')
+            if (-not $jobId) { continue }
+            try {
+                $job = Get-Job -Id $jobId -ErrorAction SilentlyContinue
+                if ($job) {
+                    Stop-Job -Job $job -ErrorAction SilentlyContinue
+                    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+    })
+    Set-Variable -Name '__AgentBridgeCleanupRegistered' -Scope Global -Value $true
+}
+
 [pscustomobject]@{
     agent          = $Agent
     repo_root      = $repoFull

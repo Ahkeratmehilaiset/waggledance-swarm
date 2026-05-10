@@ -278,6 +278,18 @@ operation lock / lease for TOCTOU).
      `Read-AgentBridge.ps1` call; finding the file consumes it. End-
      to-end measured smoke latency (`Test-BridgeWakeOnEventSmoke.ps1`)
      is < 300 ms when the watcher is warm.
+   - **Background-job cleanup (R23.1.1).** The wake (R23.0) and
+     heartbeat (R23.1) background jobs are stopped automatically on
+     normal PowerShell shutdown via a `PowerShell.Exiting` event
+     handler registered once per session in
+     `Start-AgentBridgeSession.ps1`. **Hard kills (Ctrl+C close on
+     host crash, OOM, BSOD)** do NOT trigger the handler. After such
+     a kill, the next bootstrap in the same host inherits orphans;
+     run `Stop-AgentBridgeSession.ps1` (optionally with `-Agent
+     <name>`) to clean them up. Without this, dead agent shells keep
+     emitting `liveness/active` events and bumping `last_heartbeat_utc`
+     on their own claims, defeating stale-lease auto-release.
+     Verified by `Test-BridgeJobCleanupSmoke.ps1`.
 
 ## Commands
 

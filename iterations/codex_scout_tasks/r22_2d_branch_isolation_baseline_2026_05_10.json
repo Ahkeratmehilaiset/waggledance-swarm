@@ -1,0 +1,483 @@
+{
+  "database": {
+    "db_path": ".codex-audit\\r22_branch_isolation.sqlite",
+    "mode": "single_global_control_plane_db",
+    "schema_version": 4
+  },
+  "generated_at_utc": "2026-05-10T12:51:13Z",
+  "git_head": "6cbe1d9c4bc5",
+  "machine": {
+    "platform": "Windows-11-10.0.22631-SP0",
+    "processor": "Intel64 Family 6 Model 151 Stepping 2, GenuineIntel",
+    "python": "3.13.7"
+  },
+  "parameters": {
+    "cold_flood_events_per_branch": 80,
+    "hot_events": 800,
+    "probe_events": 120,
+    "repeats": 3,
+    "uniform_events_per_branch": 60
+  },
+  "profiles": {
+    "adversarial_cold_flood": [
+      {
+        "branch_touch_count_avg": 1.0,
+        "cold_branches": [
+          "bee_ops",
+          "environment",
+          "home_comfort",
+          "logistics",
+          "production",
+          "safety_security"
+        ],
+        "latency": {
+          "count": 120,
+          "max_ms": 216.2937,
+          "mean_ms": 29.505989166666666,
+          "median_ms": 32.508799999999994,
+          "min_ms": 3.7874,
+          "p95_ms": 74.282785,
+          "p99_ms": 127.63031700000002
+        },
+        "probe_branch": "hub",
+        "repeat": 1
+      },
+      {
+        "branch_touch_count_avg": 1.0,
+        "cold_branches": [
+          "bee_ops",
+          "environment",
+          "home_comfort",
+          "logistics",
+          "production",
+          "safety_security"
+        ],
+        "latency": {
+          "count": 120,
+          "max_ms": 303.6332,
+          "mean_ms": 28.079653333333333,
+          "median_ms": 18.855600000000003,
+          "min_ms": 3.9814,
+          "p95_ms": 78.53897499999998,
+          "p99_ms": 192.1304490000002
+        },
+        "probe_branch": "hub",
+        "repeat": 2
+      },
+      {
+        "branch_touch_count_avg": 1.0,
+        "cold_branches": [
+          "bee_ops",
+          "environment",
+          "home_comfort",
+          "logistics",
+          "production",
+          "safety_security"
+        ],
+        "latency": {
+          "count": 120,
+          "max_ms": 198.2594,
+          "mean_ms": 28.664930833333337,
+          "median_ms": 18.28295,
+          "min_ms": 3.8227,
+          "p95_ms": 84.72886,
+          "p99_ms": 183.82450600000016
+        },
+        "probe_branch": "hub",
+        "repeat": 3
+      }
+    ],
+    "idle_probe": [
+      {
+        "branch_touch_count_avg": 1.0,
+        "latency": {
+          "count": 120,
+          "max_ms": 10.5807,
+          "mean_ms": 5.639095833333333,
+          "median_ms": 5.732749999999999,
+          "min_ms": 3.8421,
+          "p95_ms": 9.139064999999999,
+          "p99_ms": 9.750086
+        },
+        "probe_branch": "hub",
+        "repeat": 1
+      },
+      {
+        "branch_touch_count_avg": 1.0,
+        "latency": {
+          "count": 120,
+          "max_ms": 12.5487,
+          "mean_ms": 5.724291666666667,
+          "median_ms": 5.3284,
+          "min_ms": 4.1821,
+          "p95_ms": 7.411165,
+          "p99_ms": 9.680319
+        },
+        "probe_branch": "hub",
+        "repeat": 2
+      },
+      {
+        "branch_touch_count_avg": 1.0,
+        "latency": {
+          "count": 120,
+          "max_ms": 22.8922,
+          "mean_ms": 5.817139999999999,
+          "median_ms": 5.03925,
+          "min_ms": 3.9697,
+          "p95_ms": 9.002889999999999,
+          "p99_ms": 19.383773000000005
+        },
+        "probe_branch": "hub",
+        "repeat": 3
+      }
+    ],
+    "single_hot_interference": [
+      {
+        "branch_touch_count_avg": 1.0,
+        "hot_branch": "bee_ops",
+        "latency": {
+          "count": 120,
+          "max_ms": 28.9717,
+          "mean_ms": 8.954649999999999,
+          "median_ms": 8.686,
+          "min_ms": 3.8905,
+          "p95_ms": 13.419724999999996,
+          "p99_ms": 19.01263200000001
+        },
+        "probe_branch": "hub",
+        "repeat": 1
+      },
+      {
+        "branch_touch_count_avg": 1.0,
+        "hot_branch": "bee_ops",
+        "latency": {
+          "count": 120,
+          "max_ms": 70.5219,
+          "mean_ms": 13.0008525,
+          "median_ms": 10.91525,
+          "min_ms": 4.454,
+          "p95_ms": 23.33607499999999,
+          "p99_ms": 40.09622000000003
+        },
+        "probe_branch": "hub",
+        "repeat": 2
+      },
+      {
+        "branch_touch_count_avg": 1.0,
+        "hot_branch": "bee_ops",
+        "latency": {
+          "count": 120,
+          "max_ms": 42.3034,
+          "mean_ms": 10.697052500000002,
+          "median_ms": 9.987649999999999,
+          "min_ms": 4.0853,
+          "p95_ms": 20.398325,
+          "p99_ms": 34.047889000000005
+        },
+        "probe_branch": "hub",
+        "repeat": 3
+      }
+    ],
+    "uniform_multi_branch": [
+      {
+        "branches": {
+          "bee_ops": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 8.7822,
+              "mean_ms": 5.753236666666667,
+              "median_ms": 5.7443,
+              "min_ms": 3.9466,
+              "p95_ms": 6.346284999999999,
+              "p99_ms": 7.570044999999992
+            }
+          },
+          "environment": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 12.6346,
+              "mean_ms": 5.394208333333333,
+              "median_ms": 5.0126,
+              "min_ms": 3.7649,
+              "p95_ms": 8.592244999999998,
+              "p99_ms": 11.084197999999992
+            }
+          },
+          "home_comfort": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 10.1259,
+              "mean_ms": 5.430381666666666,
+              "median_ms": 4.91695,
+              "min_ms": 4.1397,
+              "p95_ms": 7.66487,
+              "p99_ms": 8.925544999999993
+            }
+          },
+          "hub": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 8.5369,
+              "mean_ms": 6.39671,
+              "median_ms": 6.28975,
+              "min_ms": 4.7561,
+              "p95_ms": 7.471469999999999,
+              "p99_ms": 8.430345999999998
+            }
+          },
+          "logistics": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 14.801,
+              "mean_ms": 5.27811,
+              "median_ms": 4.7633,
+              "min_ms": 3.9436,
+              "p95_ms": 6.918599999999997,
+              "p99_ms": 13.507896999999993
+            }
+          },
+          "production": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 13.2445,
+              "mean_ms": 5.114446666666667,
+              "median_ms": 4.73825,
+              "min_ms": 3.8681,
+              "p95_ms": 6.751259999999994,
+              "p99_ms": 10.782901999999986
+            }
+          },
+          "safety_security": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 8.8721,
+              "mean_ms": 4.8066466666666665,
+              "median_ms": 4.55655,
+              "min_ms": 4.0451,
+              "p95_ms": 6.064659999999998,
+              "p99_ms": 8.533026999999997
+            }
+          }
+        },
+        "p99_cv": 0.19437916517949164,
+        "p99_max_min_ratio": 1.7843879395697129,
+        "repeat": 1
+      },
+      {
+        "branches": {
+          "bee_ops": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 156.4786,
+              "mean_ms": 8.177688333333332,
+              "median_ms": 4.76985,
+              "min_ms": 3.9052,
+              "p95_ms": 10.277384999999999,
+              "p99_ms": 76.38120299999953
+            }
+          },
+          "environment": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 9.5741,
+              "mean_ms": 5.183211666666667,
+              "median_ms": 4.8604,
+              "min_ms": 4.2704,
+              "p95_ms": 6.832699999999999,
+              "p99_ms": 9.402764
+            }
+          },
+          "home_comfort": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 8.177,
+              "mean_ms": 5.114013333333333,
+              "median_ms": 4.9252,
+              "min_ms": 3.9602,
+              "p95_ms": 6.306025,
+              "p99_ms": 7.173527999999994
+            }
+          },
+          "hub": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 15.3724,
+              "mean_ms": 6.112496666666667,
+              "median_ms": 5.9472000000000005,
+              "min_ms": 4.3831,
+              "p95_ms": 8.554769999999998,
+              "p99_ms": 12.180027999999982
+            }
+          },
+          "logistics": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 9.5955,
+              "mean_ms": 5.579845000000001,
+              "median_ms": 5.56395,
+              "min_ms": 4.1648,
+              "p95_ms": 7.059254999999999,
+              "p99_ms": 9.446053
+            }
+          },
+          "production": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 6.7239,
+              "mean_ms": 4.70742,
+              "median_ms": 4.5618,
+              "min_ms": 4.0217,
+              "p95_ms": 5.993519999999999,
+              "p99_ms": 6.717469
+            }
+          },
+          "safety_security": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 15.059,
+              "mean_ms": 5.180888333333333,
+              "median_ms": 4.7493,
+              "min_ms": 3.9239,
+              "p95_ms": 8.14806,
+              "p99_ms": 12.568786999999986
+            }
+          }
+        },
+        "p99_cv": 1.2270127415930194,
+        "p99_max_min_ratio": 11.370533008786424,
+        "repeat": 2
+      },
+      {
+        "branches": {
+          "bee_ops": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 8.5597,
+              "mean_ms": 4.86221,
+              "median_ms": 4.56785,
+              "min_ms": 3.9144,
+              "p95_ms": 6.715874999999998,
+              "p99_ms": 8.434619999999999
+            }
+          },
+          "environment": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 20.4861,
+              "mean_ms": 5.992055,
+              "median_ms": 5.8393,
+              "min_ms": 3.9585,
+              "p95_ms": 8.859744999999997,
+              "p99_ms": 15.167603999999969
+            }
+          },
+          "home_comfort": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 8.3891,
+              "mean_ms": 5.607936666666666,
+              "median_ms": 5.4604,
+              "min_ms": 4.1117,
+              "p95_ms": 7.257654999999999,
+              "p99_ms": 7.945360999999997
+            }
+          },
+          "hub": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 12.5146,
+              "mean_ms": 5.046241666666666,
+              "median_ms": 4.8354,
+              "min_ms": 3.9316,
+              "p95_ms": 5.72354,
+              "p99_ms": 8.834887999999978
+            }
+          },
+          "logistics": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 17.9434,
+              "mean_ms": 5.034761666666667,
+              "median_ms": 4.593249999999999,
+              "min_ms": 3.9536,
+              "p95_ms": 7.193189999999998,
+              "p99_ms": 12.159393999999967
+            }
+          },
+          "production": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 9.754,
+              "mean_ms": 5.244508333333333,
+              "median_ms": 4.94885,
+              "min_ms": 3.8917,
+              "p95_ms": 8.229819999999998,
+              "p99_ms": 9.5711
+            }
+          },
+          "safety_security": {
+            "branch_touch_count_avg": 1.0,
+            "latency": {
+              "count": 60,
+              "max_ms": 10.0348,
+              "mean_ms": 6.310325000000001,
+              "median_ms": 5.962400000000001,
+              "min_ms": 5.2144,
+              "p95_ms": 9.092649999999999,
+              "p99_ms": 9.790244999999999
+            }
+          }
+        },
+        "p99_cv": 0.23010616180179927,
+        "p99_max_min_ratio": 1.908988653882432,
+        "repeat": 3
+      }
+    ]
+  },
+  "proof_version": 1,
+  "purpose": "2d_branch_isolation_baseline",
+  "summary": {
+    "adversarial_degradation_ratio": 12.974260900230846,
+    "adversarial_probe_p99_ms_mean": 167.86175733333346,
+    "branch_touch_count_hit_case_target": 1.0,
+    "idle_probe_p99_ms_mean": 12.938059333333335,
+    "single_hot_degradation_ratio": 2.4000699177501588,
+    "single_hot_probe_p99_ms_mean": 31.052247000000012,
+    "uniform_p99_cv_mean": 0.5504993561914368
+  },
+  "topology": {
+    "branch_ids": [
+      "bee_ops",
+      "environment",
+      "home_comfort",
+      "hub",
+      "logistics",
+      "production",
+      "safety_security"
+    ],
+    "config_path": "C:\\tmp\\wd-r22-3-axisb-branch-isolation\\configs\\hex_cells.yaml",
+    "hot_branch": "bee_ops",
+    "model": "2d_axial_hex",
+    "probe_branch": "hub"
+  }
+}

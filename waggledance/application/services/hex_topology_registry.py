@@ -131,26 +131,31 @@ class HexTopologyRegistry:
         """Map agents to cells based on domain/tag selectors."""
         for cell_id, cell in self._cells.items():
             matched = []
+            domain_selectors = self._lower_domain_selectors.get(cell_id, ())
+            tag_selectors = self._lower_tag_selectors.get(cell_id, ())
             for agent in self._agents:
                 if not agent.active:
                     continue
-                # Domain match
-                if cell.domain_selectors:
+                # Domain selectors are a gate: when present, an agent
+                # must match the cell domain before tag/name fallbacks
+                # are considered.
+                if domain_selectors:
                     agent_domain = getattr(agent, "domain", "").lower()
-                    if any(s.lower() in agent_domain for s in cell.domain_selectors):
+                    if any(s in agent_domain for s in domain_selectors):
                         matched.append(agent)
                         continue
+                    continue
                 # Tag match
-                if cell.tag_selectors:
+                if tag_selectors:
                     agent_tags = [t.lower() for t in getattr(agent, "tags", [])]
                     agent_skills = [s.lower() for s in getattr(agent, "skills", [])]
                     all_tags = agent_tags + agent_skills
-                    if any(s.lower() in all_tags for s in cell.tag_selectors):
+                    if any(s in all_tags for s in tag_selectors):
                         matched.append(agent)
                         continue
                 # Name/ID match as fallback
                 agent_id = getattr(agent, "id", "").lower()
-                if any(s.lower() in agent_id for s in cell.domain_selectors + cell.tag_selectors):
+                if any(s in agent_id for s in domain_selectors + tag_selectors):
                     matched.append(agent)
 
             self._cell_agents[cell_id] = matched

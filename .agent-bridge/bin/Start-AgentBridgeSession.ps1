@@ -26,7 +26,8 @@ param(
     [switch] $SkipBridgeRead,
     [switch] $SkipLiveness,
     [switch] $SkipGitStatus,
-    [switch] $SkipWakeWatcher
+    [switch] $SkipWakeWatcher,
+    [switch] $SkipHeartbeatJob
 )
 
 $ErrorActionPreference = 'Stop'
@@ -134,6 +135,29 @@ if ((-not $SkipWakeWatcher) -and $wakeEnabled) {
     }
 }
 
+# R23.1: launch an agent heartbeat job so active claims do not expire
+# during long model turns or test runs. The job uses Send-Liveness.ps1
+# every 60 s, which bumps last_heartbeat_utc for this agent's active
+# claims. Operators can opt out via WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0
+# or -SkipHeartbeatJob.
+$heartbeatJobId = ''
+$heartbeatEnabled = $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED -ne '0'
+if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
+    $heartbeatScript = Join-Path $PSScriptRoot 'Start-BridgeHeartbeat.ps1'
+    if (Test-Path -LiteralPath $heartbeatScript) {
+        try {
+            $job = Start-Job -Name "agent-bridge-heartbeat-$Agent" -ScriptBlock {
+                param($scriptPath, $agentArg, $runtimeArg)
+                & $scriptPath -Agent $agentArg -RuntimeRoot $runtimeArg
+            } -ArgumentList $heartbeatScript, $Agent, $runtimeFull
+            $heartbeatJobId = $job.Id
+            $env:AGENT_BRIDGE_HEARTBEAT_JOB = [string]$heartbeatJobId
+        } catch {
+            Write-Warning "Start-AgentBridgeSession: could not start heartbeat job: $($_.Exception.Message)"
+        }
+    }
+}
+
 [pscustomobject]@{
     agent          = $Agent
     repo_root      = $repoFull
@@ -142,5 +166,7 @@ if ((-not $SkipWakeWatcher) -and $wakeEnabled) {
     git_branch     = $gitBranch
     wake_job_id    = $wakeJobId
     wake_enabled   = $wakeEnabled
+    heartbeat_job_id = $heartbeatJobId
+    heartbeat_enabled = $heartbeatEnabled
     note           = 'Dot-source this script so env vars persist in the agent shell.'
 }

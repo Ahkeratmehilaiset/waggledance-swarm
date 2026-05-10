@@ -99,6 +99,14 @@ To verify the sweep works on your setup:
 fresh-claim-not-swept, heartbeat-extends-lease, operator/system
 immunity, and the env-var threshold contract.
 
+R23.1 adds a session heartbeat job so long-running active turns do
+not accidentally let claims expire while tests or model reasoning run.
+`Start-AgentBridgeSession.ps1` launches `Start-BridgeHeartbeat.ps1`
+unless `$env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0` or
+`-SkipHeartbeatJob` is passed. The job emits `heartbeat/active`
+every 60 s, which updates `last_heartbeat_utc` on the agent's active
+claims.
+
 See
 [`iterations/codex_scout_tasks/r13_decision_record_2026_05_09.md`](../iterations/codex_scout_tasks/r13_decision_record_2026_05_09.md)
 for the full R13 design notes and the deferred follow-ups
@@ -249,6 +257,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-Age
 # launch the agent so AGENT_BRIDGE_RUNTIME_ROOT and AGENT_BRIDGE_RUN_ID persist.
 # By default also launches the R23.0 wake-on-event watcher as a background job;
 # pass -SkipWakeWatcher (or set $env:WAGGLE_BRIDGE_WAKE_ENABLED=0) to opt out.
+# R23.1 also launches a heartbeat job; pass -SkipHeartbeatJob (or set
+# $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0) to opt out.
 . .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex
 
 # Fast pre-check used by the agent's polling loop. Returns $true exactly once

@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -377,12 +378,88 @@ class ControlPlaneDB:
 
     DEFAULT_DB_PATH: Path = Path("data") / "control_plane.db"
 
+    # R21.2: transaction helpers respecting _in_transaction so that
+    # nested begin/commit calls inside a public transaction() block
+    # do not raise SQLITE_OperationalError "cannot start a transaction
+    # within a transaction" / "cannot commit - no transaction active".
+    def _begin(self) -> None:
+        if not self._in_transaction:
+            self._conn.execute("BEGIN IMMEDIATE")
+
+    def _commit(self) -> None:
+        if not self._in_transaction:
+            self._conn.execute("COMMIT")
+
+    def _rollback(self) -> None:
+        if not self._in_transaction:
+            self._conn.execute("ROLLBACK")
+
+    @contextmanager
+    def transaction(self):
+        """Wrap a sequence of write operations in a single SQLite
+        transaction.
+
+        R21.2 (R19 Cand 2). Without this, every individual write
+        method (``upsert_solver``, ``set_solver_capability_features``,
+        ``upsert_solver_artifact``, etc.) runs as its own implicit
+        transaction (the connection is opened with
+        ``isolation_level=None`` so SQLite is in autocommit mode).
+        That triggers an fsync per write, dominating the cost of
+        bulk loads — at 10k descriptors the
+        ``tools/run_solver_scale_proof.py`` build phase pays
+        ~30000 fsyncs and takes ~150 s.
+
+        Used as::
+
+            with db.transaction():
+                for d in descriptors:
+                    rec = db.upsert_solver(...)
+                    db.set_solver_capability_features(...)
+                    db.upsert_solver_artifact(...)
+
+        Semantics:
+
+        - ``BEGIN IMMEDIATE`` on entry to acquire the write lock
+          immediately and avoid mid-transaction ``SQLITE_BUSY``.
+        - ``COMMIT`` on successful block exit.
+        - ``ROLLBACK`` on exception, then re-raise.
+        - The ``self._lock`` is held for the entire transaction so
+          concurrent threads serialize.
+        - Re-entrant safe: a nested ``transaction()`` call from the
+          same thread is a no-op (the outer transaction commits all
+          its work). Nested rollback would need ``SAVEPOINT`` —
+          deferred to a follow-up if anyone needs partial rollback.
+        """
+        with self._lock:
+            if self._in_transaction:
+                # Nested call from the same thread; piggyback on the
+                # outer transaction. Caller must let exceptions
+                # bubble up so the outer ROLLBACK fires.
+                yield
+                return
+            # The outer transaction MUST issue raw BEGIN/COMMIT/ROLLBACK
+            # directly because the helper methods skip when
+            # _in_transaction is True (which we set right after begin).
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._in_transaction = True
+            try:
+                yield
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+            finally:
+                self._in_transaction = False
+
     def __init__(self, db_path: Optional[Path | str] = None) -> None:
         self._db_path: Path = (
             Path(db_path) if db_path is not None else self.DEFAULT_DB_PATH
         )
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        # R21.2: tracks whether we're currently inside a public
+        # transaction() block so nested transaction() calls are no-ops.
+        self._in_transaction = False
         self._conn = sqlite3.connect(
             str(self._db_path), check_same_thread=False, isolation_level=None
         )
@@ -416,7 +493,7 @@ class ControlPlaneDB:
         """Bring the schema up to :data:`SCHEMA_VERSION`. Returns final version."""
 
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self._begin()
             try:
                 self._conn.execute(
                     """
@@ -441,10 +518,10 @@ class ControlPlaneDB:
                         "INSERT OR REPLACE INTO schema_meta(key, value, updated_at) VALUES (?, ?, ?)",
                         ("schema_version", str(target), now),
                     )
-                self._conn.execute("COMMIT")
+                self._commit()
                 return target
             except Exception as exc:  # noqa: BLE001 — fail-loud per RULE 14
-                self._conn.execute("ROLLBACK")
+                self._rollback()
                 raise ControlPlaneError(f"schema migration failed: {exc!r}") from exc
 
     def schema_version(self) -> int:
@@ -952,7 +1029,7 @@ class ControlPlaneDB:
 
         now = _utcnow()
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self._begin()
             try:
                 self._conn.execute(
                     """
@@ -975,10 +1052,10 @@ class ControlPlaneDB:
                     "SELECT * FROM runtime_path_bindings WHERE id = ?", (cursor.lastrowid,)
                 ).fetchone()
                 assert row is not None
-                self._conn.execute("COMMIT")
+                self._commit()
                 return self._row_to_runtime_path_binding(row)
             except Exception:
-                self._conn.execute("ROLLBACK")
+                self._rollback()
                 raise
 
     def get_active_runtime_path(self, logical_name: str, path_kind: str) -> Optional[RuntimePathBinding]:
@@ -1409,7 +1486,7 @@ class ControlPlaneDB:
         """
 
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self._begin()
             try:
                 self._replace_solver_capability_features_inplace(
                     solver_id, family_kind, features,
@@ -1418,9 +1495,9 @@ class ControlPlaneDB:
                     "SELECT * FROM solver_capability_features WHERE solver_id = ? ORDER BY feature_name",
                     (int(solver_id),),
                 ).fetchall()
-                self._conn.execute("COMMIT")
+                self._commit()
             except Exception as exc:  # noqa: BLE001
-                self._conn.execute("ROLLBACK")
+                self._rollback()
                 raise ControlPlaneError(
                     f"set_solver_capability_features failed: {exc!r}"
                 ) from exc
@@ -1705,7 +1782,7 @@ class ControlPlaneDB:
     ) -> AutogrowthQueueRecord:
         now = _utcnow()
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self._begin()
             try:
                 # Refuse to enqueue twice for the same intent if a
                 # queued/claimed row already exists.
@@ -1722,7 +1799,7 @@ class ControlPlaneDB:
                         "SELECT * FROM autogrowth_queue WHERE id = ?",
                         (existing["id"],),
                     ).fetchone()
-                    self._conn.execute("COMMIT")
+                    self._commit()
                     return self._row_to_autogrowth_queue(row)
                 cursor = self._conn.execute(
                     """
@@ -1741,9 +1818,9 @@ class ControlPlaneDB:
                 row = self._conn.execute(
                     "SELECT * FROM autogrowth_queue WHERE id = ?", (new_id,)
                 ).fetchone()
-                self._conn.execute("COMMIT")
+                self._commit()
             except Exception as exc:  # noqa: BLE001
-                self._conn.execute("ROLLBACK")
+                self._rollback()
                 raise ControlPlaneError(
                     f"enqueue_growth_intent failed: {exc!r}"
                 ) from exc
@@ -1756,7 +1833,7 @@ class ControlPlaneDB:
 
         now = now_iso or _utcnow()
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
+            self._begin()
             try:
                 row = self._conn.execute(
                     """
@@ -1769,7 +1846,7 @@ class ControlPlaneDB:
                     (now,),
                 ).fetchone()
                 if row is None:
-                    self._conn.execute("COMMIT")
+                    self._commit()
                     return None
                 self._conn.execute(
                     """
@@ -1787,9 +1864,9 @@ class ControlPlaneDB:
                     "SELECT * FROM autogrowth_queue WHERE id = ?",
                     (int(row["id"]),),
                 ).fetchone()
-                self._conn.execute("COMMIT")
+                self._commit()
             except Exception as exc:  # noqa: BLE001
-                self._conn.execute("ROLLBACK")
+                self._rollback()
                 raise ControlPlaneError(
                     f"claim_next_queue_row failed: {exc!r}"
                 ) from exc

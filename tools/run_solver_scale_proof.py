@@ -228,37 +228,42 @@ def bulk_load_descriptors(db: ControlPlaneDB,
     """Insert descriptors into the control plane and time the operation."""
     started = time.monotonic()
 
-    for fam in ALLOWED_FAMILIES:
-        db.upsert_solver_family(name=fam, version="phase17a-synth-1",
-                                  description=f"Phase 17A synthetic scale: {fam}",
-                                  status="active")
+    # R21.2: wrap the entire bulk load in a single SQLite transaction
+    # so the per-row implicit autocommit (~30000 fsyncs at 10k) becomes
+    # one. Projected 5-20x build speedup at full scale.
+    with db.transaction():
+        for fam in ALLOWED_FAMILIES:
+            db.upsert_solver_family(
+                name=fam, version="phase17a-synth-1",
+                description=f"Phase 17A synthetic scale: {fam}",
+                status="active",
+            )
 
-    for d in descriptors:
-        # Phase D Priority 3 Cand 1 (R19 solver-scaling scout): use the
-        # SolverRecord that upsert_solver already returns, instead of
-        # paying a second SELECT round-trip per descriptor via
-        # db.get_solver(). At 10k descriptors this drops one full
-        # SQLite read+commit per row from the build phase loop.
-        rec = db.upsert_solver(
-            name=d["solver_name"],
-            version="phase17a-synth-1",
-            family_name=d["family_kind"],
-            status="auto_promoted",
-            spec_hash=_stable_hash(d["solver_name"]),
-        )
-        db.set_solver_capability_features(
-            solver_id=rec.id,
-            family_kind=d["family_kind"],
-            features=d["features"],
-        )
-        artifact_canonical = json.dumps(d["artifact"], sort_keys=True)
-        db.upsert_solver_artifact(
-            solver_id=rec.id,
-            family_kind=d["family_kind"],
-            artifact_id=d["artifact_id"],
-            spec_canonical_json=artifact_canonical,
-            artifact_json=artifact_canonical,
-        )
+        for d in descriptors:
+            # Phase D Priority 3 Cand 1 (R19): use the SolverRecord
+            # that upsert_solver already returns, instead of paying a
+            # second SELECT round-trip per descriptor via
+            # db.get_solver().
+            rec = db.upsert_solver(
+                name=d["solver_name"],
+                version="phase17a-synth-1",
+                family_name=d["family_kind"],
+                status="auto_promoted",
+                spec_hash=_stable_hash(d["solver_name"]),
+            )
+            db.set_solver_capability_features(
+                solver_id=rec.id,
+                family_kind=d["family_kind"],
+                features=d["features"],
+            )
+            artifact_canonical = json.dumps(d["artifact"], sort_keys=True)
+            db.upsert_solver_artifact(
+                solver_id=rec.id,
+                family_kind=d["family_kind"],
+                artifact_id=d["artifact_id"],
+                spec_canonical_json=artifact_canonical,
+                artifact_json=artifact_canonical,
+            )
 
     elapsed = time.monotonic() - started
     return {

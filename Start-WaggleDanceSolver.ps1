@@ -108,9 +108,9 @@ if ($PrintOnly) { return }
 # ── Launch runtime (Stage 1: deferred to follow-up) ──────────────
 #
 # In Stage 1 the bootstrap script's job is to make the profile
-# choice operator-visible and set the env vars. Wiring the runtime
-# entry point is an R20.4 follow-up once R20.2 BridgeLLMClient lands
-# and the runtime knows how to consume WAGGLE_BRIDGE_LLM_ENABLED.
+# choice operator-visible and set the env vars consumed by
+# BridgeLLMClient.default(). Wiring the long-lived runtime entry
+# point remains a follow-up.
 #
 # Until then, treat -PrintOnly as the supported mode. Operators
 # wanting to launch the actual runtime should `python -m waggledance ...`

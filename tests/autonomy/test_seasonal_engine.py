@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import waggledance.core.reasoning.seasonal_engine as seasonal_engine
 from waggledance.core.reasoning.seasonal_engine import SeasonalEngine
 
 
@@ -35,6 +36,23 @@ class TestGetCurrentTasks:
         assert isinstance(tasks, list)
         tasks13 = self.engine.get_current_tasks(month=13)
         assert isinstance(tasks13, list)
+
+    def test_default_month_uses_timezone_aware_utc_now(self, monkeypatch):
+        class FixedDateTime:
+            calls = []
+
+            @classmethod
+            def now(cls, tz=None):
+                cls.calls.append(tz)
+
+                class FixedNow:
+                    month = 12
+
+                return FixedNow()
+
+        monkeypatch.setattr(seasonal_engine, "datetime", FixedDateTime)
+        assert self.engine._current_month() == 12
+        assert FixedDateTime.calls == [seasonal_engine.timezone.utc]
 
 
 class TestGetSeasonalFactor:

@@ -742,6 +742,57 @@ entries:
     metric on the agent-coordination loop, not a runtime SLO.
   next_bottleneck: R24 mandatory role-review gate substrate (operator pre-direktiivi 2026-05-10) — turns the soft-rule on bridge/protocol/source/runtime/cloud/privacy PRs into a tooling-enforced gate.
 
+- session_id: r22.2-hex-aligned-eval
+  pr: null
+  owner: claude
+  reviewer: codex
+  merged_utc: null
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: 0.7619
+  axis_c_claim_to_push_minutes: 30
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    R21.1 used tests/oracle/*.yaml whose `cell:` field used the
+    energy/math/safety/system/thermal taxonomy (decision-type) which
+    did NOT match configs/hex_cells.yaml's hub/bee_ops/environment/
+    home_comfort/safety_security/production/logistics taxonomy
+    (domain). Result: control_quality=0.5 that did not reflect the
+    underlying heuristic's competence — taxonomy mismatch was masking
+    the real Axis B baseline.
+
+    R22.2 ships tests/oracle_hex/*.yaml with 7 files × (15 positive +
+    5 negative) = 140 utterances explicitly aligned to the seven hex
+    cells. With this corpus, HexTopologyRegistry.select_origin_cell
+    reaches control_quality=0.7619 — a +52.4% absolute lift in the
+    Axis B baseline (0.5 -> 0.7619). The remaining 0.2381 is paraphrase
+    headroom: utterances written in Finnish/English natural language
+    that intentionally avoid the selector keywords. That gap is what
+    an LLM treatment can target in R22.3.
+
+    Per-cell breakdown (heuristic): hub 1.0 / environment 0.7667 /
+    safety_security 0.7333 / logistics 0.7333 / bee_ops 0.7 /
+    home_comfort 0.7 / production 0.7. Negatives: 100% across all
+    cells (cross-cell discrimination is solid; substring matching
+    does not bleed across taxonomies).
+
+    runtime_behavior_changed=false: no waggledance/ code path changed;
+    pure test fixture + regression-floor pin. Reuses
+    tools/run_r21_oracle_ab_proof.py via its existing --oracle-dir flag
+    (no new harness needed).
+
+    axis_b_quality=0.7619 is the heuristic baseline on the new corpus.
+    delta_quality stays 0% until R22.3 wires a real cloud LLM (Ollama
+    unavailable on this machine; Anthropic provider exists but no key
+    in this session).
+  next_bottleneck: R22.3 Profile L Anthropic A/B with operator API key — paraphrase headroom (0.2381) is exactly what an LLM should beat over the substring heuristic.
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

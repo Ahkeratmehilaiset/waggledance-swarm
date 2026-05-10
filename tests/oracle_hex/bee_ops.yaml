@@ -1,0 +1,29 @@
+# R22.2 — hex-aligned eval (bee_ops cell)
+solver: bee_operations
+domain: bee_ops
+cell: bee_ops
+description: "Apiary operations — bee health, hive management, swarm monitoring"
+
+positive:
+  - "hive temperature warning"
+  - "pesän lämpötila huolestuttaa"
+  - "swarm probability today"
+  - "varroa mite treatment plan"
+  - "honey yield this season"
+  - "tarkista pesä #5 kunto"
+  - "queen replacement timing"
+  - "pollinator activity weak"
+  - "kuningattaren vaihto"
+  - "apiary inspection schedule"
+  - "the colony seems weaker than last year"
+  - "yhdyskunta heikentynyt viime vuodesta"
+  - "buzzing reduced near the boxes"
+  - "is the queen laying enough eggs"
+  - "munintatahti tuntuu hidastuneen"
+
+negative:
+  - "frost forecast tomorrow"
+  - "indoor humidity high"
+  - "fire alarm panel test"
+  - "production line stop"
+  - "delivery truck ETA"

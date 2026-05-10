@@ -202,6 +202,30 @@ def test_client_load_llm_config_uses_env_var(tmp_path, monkeypatch):
     assert cfg["fallback_chain"] == ["cache", "heuristic"]
 
 
+def test_default_client_honors_profile_env_disable(monkeypatch):
+    """Profile S bootstrap env must disable the default client path."""
+    monkeypatch.delenv("AGENT_BRIDGE_RUNTIME_ROOT", raising=False)
+    monkeypatch.setenv("WAGGLE_BRIDGE_LLM_ENABLED", "0")
+    monkeypatch.setenv("WAGGLE_FALLBACK_CHAIN", "heuristic")
+    monkeypatch.setenv("WAGGLE_BRIDGE_LLM_REDACTION", "1")
+
+    from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest
+    from waggledance.core.bridge_llm.types import FallbackLevel
+
+    client = BridgeLLMClient.default()
+    assert client.is_enabled() is False
+    assert client.fallback_chain == ("heuristic",)
+    assert {"cache", "local-ollama", "cloud", "heuristic"}.issubset(
+        set(client.providers)
+    )
+
+    response = client.run(LLMRequest(
+        injection_point="profile_s.env", prompt="must stay offline",
+    ))
+    assert response.fallback_level == FallbackLevel.HEURISTIC
+    assert response.provider == "heuristic"
+
+
 # ─── Budget enforcement ──────────────────────────────────────────
 
 def test_budget_tracker_blocks_when_calls_exhausted():
@@ -264,3 +288,12 @@ def test_register_provider_makes_plugin_globally_visible():
     register_provider(SignalProvider())
     assert get_provider("test-signal") is not None
     assert get_provider("test-signal").name == "test-signal"
+
+    from waggledance.core.bridge_llm import BridgeLLMClient
+
+    client = BridgeLLMClient(providers=[], fallback_chain=("test-signal",))
+    response = client.run(LLMRequest(
+        injection_point="plugin.registry", prompt="hello",
+    ))
+    assert response.provider == "test-signal"
+    assert response.text == "signal"

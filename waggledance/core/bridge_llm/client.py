@@ -30,8 +30,9 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .budget import BudgetConfig, BudgetExhausted, BudgetTracker, load_budget_config
-from .providers.base import ProviderError, ProviderPlugin
+from .providers.base import ProviderError, ProviderPlugin, all_providers
 from .providers.cache import ExactCacheProvider
+from .providers.cloud_stub import CloudStubProvider
 from .providers.heuristic import HeuristicProvider
 from .providers.ollama import OllamaProvider
 from .telemetry import TelemetryLogger
@@ -45,8 +46,35 @@ log = logging.getLogger(__name__)
 DEFAULT_CHAIN: tuple[str, ...] = (
     "cache",
     "local-ollama",
+    "cloud",
     "heuristic",
 )
+
+
+def _env_flag(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_env_overrides(config: dict) -> dict:
+    """Merge profile bootstrap env vars over file/default config."""
+    merged = dict(config)
+    enabled = _env_flag("WAGGLE_BRIDGE_LLM_ENABLED")
+    if enabled is not None:
+        merged["enabled"] = enabled
+
+    redaction = _env_flag("WAGGLE_BRIDGE_LLM_REDACTION")
+    if redaction is not None:
+        merged["redaction_required"] = redaction
+
+    chain = os.environ.get("WAGGLE_FALLBACK_CHAIN")
+    if chain is not None:
+        parsed = [part.strip() for part in chain.split(",") if part.strip()]
+        if parsed:
+            merged["fallback_chain"] = parsed
+    return merged
 
 
 def _default_config_path() -> Path:
@@ -60,12 +88,12 @@ def load_llm_config(path: Path | str | None = None) -> dict:
     """Load llm_config.json or return a safe-default dict."""
     p = Path(path) if path is not None else _default_config_path()
     if not p.is_file():
-        return {
+        return _apply_env_overrides({
             "enabled": True,
             "fallback_chain": list(DEFAULT_CHAIN),
             "redaction_required": True,
-        }
-    return json.loads(p.read_text(encoding="utf-8"))
+        })
+    return _apply_env_overrides(json.loads(p.read_text(encoding="utf-8")))
 
 
 class BridgeLLMClient:
@@ -98,9 +126,12 @@ class BridgeLLMClient:
             providers = [
                 ExactCacheProvider(),
                 OllamaProvider(),
+                CloudStubProvider(),
                 HeuristicProvider(),
             ]
         for p in providers:
+            self._providers[p.name] = p
+        for p in all_providers().values():
             self._providers[p.name] = p
         if fallback_chain is None:
             fallback_chain = self._config.get("fallback_chain") or DEFAULT_CHAIN

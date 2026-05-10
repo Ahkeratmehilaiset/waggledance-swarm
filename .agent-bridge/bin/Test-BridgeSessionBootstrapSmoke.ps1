@@ -43,7 +43,9 @@ $tempParentFull = [System.IO.Path]::GetFullPath($env:TEMP)
 
 $savedRuntime = $env:AGENT_BRIDGE_RUNTIME_ROOT
 $savedRunId = $env:AGENT_BRIDGE_RUN_ID
+$savedCleanupEvent = $env:AGENT_BRIDGE_CLEANUP_EVENT
 $savedLocation = (Get-Location).Path
+$bootstrap = $null
 
 try {
     Write-Host 'Bridge session bootstrap smoke test' -ForegroundColor Cyan
@@ -71,6 +73,22 @@ try {
     Add-Check -Name 'AGENT_BRIDGE_RUN_ID set in process' `
         -Passed ([string]$env:AGENT_BRIDGE_RUN_ID -eq 'codex-bootstrap-smoke') `
         -Detail $env:AGENT_BRIDGE_RUN_ID
+    Add-Check -Name 'wake watcher job id recorded' `
+        -Passed ([int]$bootstrap.wake_job_id -gt 0) `
+        -Detail "wake_job_id=$($bootstrap.wake_job_id)"
+    Add-Check -Name 'heartbeat job id recorded' `
+        -Passed ([int]$bootstrap.heartbeat_job_id -gt 0) `
+        -Detail "heartbeat_job_id=$($bootstrap.heartbeat_job_id)"
+    Add-Check -Name 'cleanup event registered for background jobs' `
+        -Passed (-not [string]::IsNullOrWhiteSpace([string]$bootstrap.cleanup_event_id)) `
+        -Detail "cleanup_event_id=$($bootstrap.cleanup_event_id)"
+    if ($bootstrap.cleanup_event_id) {
+        $subscriber = Get-EventSubscriber -SourceIdentifier $bootstrap.cleanup_event_id `
+            -Force -ErrorAction SilentlyContinue
+        Add-Check -Name 'cleanup event subscriber exists' `
+            -Passed ($null -ne $subscriber) `
+            -Detail "subscriber=$($bootstrap.cleanup_event_id)"
+    }
 
     foreach ($relative in @(
         'shared',
@@ -125,8 +143,23 @@ try {
 
 } finally {
     Set-Location -LiteralPath $savedLocation
+    if ($bootstrap) {
+        foreach ($jobId in @($bootstrap.wake_job_id, $bootstrap.heartbeat_job_id)) {
+            if ($jobId) {
+                try { Stop-Job -Id ([int]$jobId) -ErrorAction SilentlyContinue | Out-Null } catch {}
+                try { Remove-Job -Id ([int]$jobId) -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+            }
+        }
+        if ($bootstrap.cleanup_event_id) {
+            try {
+                Unregister-Event -SourceIdentifier $bootstrap.cleanup_event_id `
+                    -ErrorAction SilentlyContinue
+            } catch {}
+        }
+    }
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRuntime
     $env:AGENT_BRIDGE_RUN_ID = $savedRunId
+    $env:AGENT_BRIDGE_CLEANUP_EVENT = $savedCleanupEvent
 
     if (Test-Path -LiteralPath $tempRootFull) {
         $safeTempChild = $tempRootFull.StartsWith(

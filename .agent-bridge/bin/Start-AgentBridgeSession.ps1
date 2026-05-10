@@ -40,6 +40,39 @@ function Resolve-FullPath {
     return [System.IO.Path]::GetFullPath($Path)
 }
 
+function ConvertTo-SafeSourceIdentifier {
+    param([Parameter(Mandatory)] [string] $Value)
+    return (($Value -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+}
+
+function Register-BridgeJobCleanup {
+    param(
+        [Parameter(Mandatory)] [string] $AgentName,
+        [Parameter(Mandatory)] [string] $RunIdValue,
+        [Parameter(Mandatory)] [int[]] $JobIds
+    )
+    $ids = @($JobIds | Where-Object { $_ -gt 0 })
+    if ($ids.Count -eq 0) { return '' }
+    $safeRun = ConvertTo-SafeSourceIdentifier $RunIdValue
+    $sourceId = "agent-bridge-cleanup-$AgentName-$safeRun-$PID"
+    $payload = ($ids | ForEach-Object { [string]$_ }) -join ','
+    Register-EngineEvent `
+        -SourceIdentifier $sourceId `
+        -SupportEvent `
+        -MessageData $payload `
+        -Action {
+            $idsText = [string]$Event.MessageData
+            foreach ($raw in @($idsText -split ',')) {
+                if (-not $raw) { continue }
+                $jobId = 0
+                if (-not [int]::TryParse($raw, [ref]$jobId)) { continue }
+                try { Stop-Job -Id $jobId -ErrorAction SilentlyContinue | Out-Null } catch {}
+                try { Remove-Job -Id $jobId -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+            }
+        } | Out-Null
+    return $sourceId
+}
+
 $bridgeRoot = Split-Path -Parent $PSScriptRoot
 if (-not $RepoRoot) {
     $RepoRoot = Split-Path -Parent $bridgeRoot
@@ -172,6 +205,17 @@ if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
     }
 }
 
+$cleanupJobIds = @()
+if ($wakeJobId) { $cleanupJobIds += [int]$wakeJobId }
+if ($heartbeatJobId) { $cleanupJobIds += [int]$heartbeatJobId }
+$cleanupEventId = Register-BridgeJobCleanup `
+    -AgentName $Agent `
+    -RunIdValue $RunId `
+    -JobIds $cleanupJobIds
+if ($cleanupEventId) {
+    $env:AGENT_BRIDGE_CLEANUP_EVENT = $cleanupEventId
+}
+
 [pscustomobject]@{
     agent          = $Agent
     repo_root      = $repoFull
@@ -184,5 +228,6 @@ if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
     wake_enabled   = $wakeEnabled
     heartbeat_job_id = $heartbeatJobId
     heartbeat_enabled = $heartbeatEnabled
+    cleanup_event_id = $cleanupEventId
     note           = 'Dot-source this script so env vars persist in the agent shell.'
 }

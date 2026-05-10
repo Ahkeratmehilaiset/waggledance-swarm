@@ -152,6 +152,24 @@ def test_proof_all_lookups_hit_capability_path(proof: dict) -> None:
     }
 
 
+def test_proof_uses_production_hot_path_cache(proof: dict) -> None:
+    """R22.1a: the scale proof must measure the production-shaped
+    RuntimeQueryRouter wiring with HotPathCache attached, not the old
+    no-cache benchmark-only path."""
+    assert proof["production_hot_path_cache_attached"] is True
+    assert proof["lookup_benchmark_shape"] == "hot_path_cache_attached_warm_pass"
+    hot = proof["hot_path_cache_stats"]
+    assert hot["cold_hits_warmed"] == proof["lookup_pass_count"]
+    assert hot["warm_hits"] == proof["lookup_pass_count"]
+    assert hot["misses"] == 0
+    assert hot["warm_index_size_after_lookup"] == proof["lookup_pass_count"]
+    assert hot["artifact_cache_size_after_lookup"] == proof["lookup_pass_count"]
+    cold = proof["lookup_cold_after_attach"]
+    assert cold["lookup_capability_hits_total"] == proof["lookup_pass_count"]
+    assert cold["lookup_fifo_fallback_total"] == 0
+    assert cold["lookup_miss_total"] == 0
+
+
 def test_proof_lookup_latency_p50_under_100ms(proof: dict) -> None:
     """p50 capability lookup latency should be well under 100 ms even
     with a SQLite-backed control plane and 240 descriptors. This is
@@ -218,6 +236,9 @@ def test_real_capability_lookup_path_exercised() -> None:
     from waggledance.core.autonomy_growth.runtime_query_router import (
         RuntimeQueryRouter as _RealRouter,
     )
+    from waggledance.core.autonomy_growth.hot_path_cache import (
+        HotPathCache as _RealHotPathCache,
+    )
     from waggledance.core.autonomy_growth.solver_dispatcher import (
         LowRiskSolverDispatcher as _RealDispatcher,
     )
@@ -226,6 +247,7 @@ def test_real_capability_lookup_path_exercised() -> None:
     )
     # The proof module imports the real classes by name.
     assert scale.RuntimeQueryRouter is _RealRouter
+    assert scale.HotPathCache is _RealHotPathCache
     assert scale.LowRiskSolverDispatcher is _RealDispatcher
     assert scale.ControlPlaneDB is _RealCP
 

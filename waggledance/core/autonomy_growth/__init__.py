@@ -26,7 +26,9 @@ from .autogrowth_scheduler import (
     OUTCOME_NO_ORACLE,
     OUTCOME_REJECTED,
     OUTCOME_SPEC_INVALID,
+    AutogrowthBackgroundTicker,
     AutogrowthScheduler,
+    BackgroundTickerStats,
     SchedulerStats,
     TickResult,
 )
@@ -175,6 +177,8 @@ __all__ = [
     "seeds_for_family",
     # autogrowth scheduler (Phase 12)
     "AutogrowthScheduler",
+    "AutogrowthBackgroundTicker",
+    "BackgroundTickerStats",
     "SchedulerStats",
     "TickResult",
     "OUTCOME_AUTO_PROMOTED",

@@ -65,6 +65,15 @@ async def lifespan(app: FastAPI):
                 "inactive: %s", exc, exc_info=True,
             )
 
+    # Start low-risk autogrowth queue drain if the runtime wired it.
+    autogrowth_ticker = getattr(container, "autogrowth_background_ticker", None)
+    if autogrowth_ticker is not None:
+        try:
+            await autogrowth_ticker.start()
+            logger.info("AutogrowthBackgroundTicker started")
+        except Exception as exc:
+            logger.warning("AutogrowthBackgroundTicker start failed: %s", exc)
+
     # Start autonomy runtime if available
     if hasattr(container, "autonomy_service"):
         try:
@@ -102,6 +111,15 @@ async def lifespan(app: FastAPI):
     yield  # application is running
 
     # ---- SHUTDOWN ----
+    # Stop autogrowth ticker before closing ControlPlaneDB.
+    autogrowth_ticker = getattr(container, "autogrowth_background_ticker", None)
+    if autogrowth_ticker is not None:
+        try:
+            await autogrowth_ticker.stop()
+            logger.info("AutogrowthBackgroundTicker stopped")
+        except Exception as exc:
+            logger.warning("AutogrowthBackgroundTicker stop failed: %s", exc)
+
     # Stop DataFeedScheduler first so in-flight feed tasks can drain into the sink
     scheduler = getattr(container, "data_feed_scheduler", None)
     if scheduler is not None:

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import json
+import asyncio
 
 import pytest
 
 from waggledance.core.autonomy_growth import (
+    AutogrowthBackgroundTicker,
     AutogrowthScheduler,
     DispatchQuery,
     GapSignal,
@@ -234,3 +236,54 @@ def test_two_schedulers_do_not_double_claim(cp: ControlPlaneDB) -> None:
     r2 = b.tick()
     assert r1.claimed and r2.claimed
     assert r1.queue_row_id != r2.queue_row_id
+
+
+def test_background_ticker_drain_once_drains_ready_queue(
+    cp: ControlPlaneDB,
+) -> None:
+    _seed_intent(
+        cp, "scalar_unit_conversion", "suc:thermal:bg_c_to_k",
+        _scalar_seed("bg_celsius_to_kelvin"),
+    )
+    ticker = AutogrowthBackgroundTicker(
+        AutogrowthScheduler(cp),
+        interval_seconds=60,
+        max_ticks_per_wake=5,
+    )
+    drained = asyncio.run(ticker.drain_once())
+    assert drained == 1
+    assert ticker.stats.wakeups_total == 1
+    assert ticker.stats.non_idle_ticks == 1
+    assert ticker.stats.errors_total == 0
+    assert cp.count_solvers(status="auto_promoted") == 1
+
+
+def test_background_ticker_start_stop_is_idempotent(
+    cp: ControlPlaneDB,
+) -> None:
+    ticker = AutogrowthBackgroundTicker(
+        AutogrowthScheduler(cp),
+        interval_seconds=60,
+    )
+
+    async def _run():
+        assert await ticker.start() is True
+        assert await ticker.start() is False
+        assert ticker.is_running is True
+        assert await ticker.stop() is True
+        assert await ticker.stop() is False
+        assert ticker.is_running is False
+
+    asyncio.run(_run())
+
+
+def test_background_ticker_keeps_loop_alive_on_scheduler_error() -> None:
+    class BrokenScheduler:
+        def run_until_idle(self, **kwargs):
+            raise RuntimeError("boom")
+
+    ticker = AutogrowthBackgroundTicker(BrokenScheduler())
+    drained = asyncio.run(ticker.drain_once())
+    assert drained == 0
+    assert ticker.stats.errors_total == 1
+    assert "boom" in ticker.stats.last_error

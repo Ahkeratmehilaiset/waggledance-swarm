@@ -239,3 +239,72 @@ def test_real_loader_en_baseline_for_energy_advisor() -> None:
     ]["spot_expensive_c_kwh"]["action"]
     # English eval question
     assert "spot-price threshold" in agent["eval_questions"][0]["q"]
+
+
+# ----- Codex Round-1 confirmed_bug regression --------------------------------
+
+
+def test_set_language_after_fi_default_restores_en_baseline() -> None:
+    """Codex PR #235 Round 1 confirmed_bug regression.
+
+    Repro: default ``_language='fi'`` triggers overlay application during
+    ``_ensure_loaded()``, then ``set_language('en')`` must restore the
+    English baseline. Before the Round-1 fix, ``set_language`` only
+    mutated ``self._language`` and left the Finnish overlay in
+    ``self._agents``. After the fix, ``set_language`` rebuilds
+    ``self._agents`` from the immutable ``self._agents_base`` snapshot.
+    """
+    bridge = YAMLBridge("agents")
+    bridge._ensure_loaded()  # default 'fi', overlay applied
+    fi_action = bridge._agents["energy_advisor"][
+        "DECISION_METRICS_AND_THRESHOLDS"
+    ]["spot_expensive_c_kwh"]["action"]
+    assert "siirrä kuormia" in fi_action
+
+    bridge.set_language("en")
+    en_action = bridge._agents["energy_advisor"][
+        "DECISION_METRICS_AND_THRESHOLDS"
+    ]["spot_expensive_c_kwh"]["action"]
+    assert "shift discretionary loads" in en_action, (
+        "set_language('en') after default-fi load did not restore the "
+        "English baseline — overlay persisted across the language switch"
+    )
+
+    bridge.set_language("fi")
+    fi_reapplied = bridge._agents["energy_advisor"][
+        "DECISION_METRICS_AND_THRESHOLDS"
+    ]["spot_expensive_c_kwh"]["action"]
+    assert "siirrä kuormia" in fi_reapplied
+    assert fi_action == fi_reapplied
+
+
+def test_agents_base_is_immutable_across_locale_switches() -> None:
+    """Baseline snapshot must never be mutated by overlay application."""
+    bridge = YAMLBridge("agents")
+    bridge._ensure_loaded()
+    base_pre = bridge._agents_base["energy_advisor"][
+        "DECISION_METRICS_AND_THRESHOLDS"
+    ]["spot_expensive_c_kwh"]["action"]
+    assert "shift discretionary loads" in base_pre
+
+    for lang in ["en", "fi", "en", "fi", "en"]:
+        bridge.set_language(lang)
+        base_now = bridge._agents_base["energy_advisor"][
+            "DECISION_METRICS_AND_THRESHOLDS"
+        ]["spot_expensive_c_kwh"]["action"]
+        assert base_now == base_pre, (
+            f"_agents_base mutated after set_language({lang!r}): "
+            f"pre={base_pre!r} now={base_now!r}"
+        )
+
+
+def test_set_language_before_load_is_safe() -> None:
+    """set_language called before _ensure_loaded must not crash."""
+    bridge = YAMLBridge("agents")
+    bridge.set_language("en")
+    assert bridge._language == "en"
+    bridge._ensure_loaded()
+    agent = bridge._agents["energy_advisor"]
+    assert "shift discretionary loads" in agent[
+        "DECISION_METRICS_AND_THRESHOLDS"
+    ]["spot_expensive_c_kwh"]["action"]

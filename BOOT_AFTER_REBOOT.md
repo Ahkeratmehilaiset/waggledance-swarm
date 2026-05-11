@@ -87,7 +87,7 @@ cd $wt.worktree_path
 Both worktrees write to the same `.agent-bridge/` runtime root, so claims
 and events stay synchronized.
 
-## 5. Open development findings (post-2026-05-10)
+## 5. Open development findings (post-2026-05-11)
 
 These are the topics Codex / Claude / operator should expect to resume on
 the next session. Each line points to where the deeper context lives.
@@ -100,14 +100,31 @@ the next session. Each line points to where the deeper context lives.
 - **R22.5 stable v3.12.0 promotion** — target ≥ **2026-05-24** (14-day soak
   ends + R22.3 lands). Promotion criteria checklist in
   `iterations/codex_scout_tasks/r22_5_promotion_criteria_scout_2026_05_10.md`.
-- **R22.5 release-docker-stable.yml workflow** — drafted (not yet PR'd)
-  in `iterations/codex_scout_tasks/r22_5_stable_promotion_workflow_2026_05_10.md`.
-  Required before stable cut to move `:latest`.
-- **EVOLUTION_INDEX entries for Codex's measurements** — drafted in
-  `iterations/codex_scout_tasks/evolution_index_entries_codex_measurements_draft_2026_05_10.md`.
-  Pending Codex's amend or autonomous push by Claude per resilience.
-- **PR #216 README "myyvempi" with Codex's measured numbers** — pure-docs,
-  CI running, autonomous-merge OK once green.
+  The stable-promotion workflow `.github/workflows/release-docker-stable.yml`
+  is now on main (PR #221, merged 2026-05-11) so the cut is a one-click
+  `gh workflow run` away.
+- **Option B production PR (Codex in-flight)** — `r22-option-b-read-connections-2026-05-11`
+  active claim in Codex worktree at `C:/tmp/.../codex-r22-option-b-read-connections-2026-05-11`.
+  Implements the measured thread-local read-only `sqlite3.Connection`
+  + `query_only=ON` PRAGMA pattern that Claude's spike validated at
+  313–1 028× routing-read improvement and full 8 258-test suite PASS.
+  Write scope `waggledance/core/storage/control_plane.py` + 2 test files.
+
+### Recently closed (2026-05-10 + 2026-05-11)
+
+- **R22 branch-isolation stress measurement track** (Run A/B/C/D + Run E
+  read-path + Run F routing hot-path + Option B spike) — full data in
+  `.codex-audit/branch_isolation_stress_2026_05_10/SUMMARY.md`; recorded
+  in `iterations/EVOLUTION_INDEX.md` via PR #220 (2026-05-11).
+- **R22.5 release-docker-stable.yml workflow** — PR #221 merged 2026-05-11.
+- **EVOLUTION_INDEX substrate measurement entries** — PR #219 (solver +
+  live-agent capacity) and PR #220 (branch-isolation stress) both merged
+  2026-05-11.
+- **PR #216 README "myyvempi" with Codex's measured numbers** — merged
+  2026-05-10.
+- **Orphan worktree `.codex-audit/wd-pr191-fix`** — 88 MB stale directory
+  cleaned 2026-05-11 (residual `.pytest_cache` subdir locked, harmless
+  disk-space only; operator-side cleanup on next reboot).
 
 ### Operator decisions awaiting
 
@@ -115,11 +132,21 @@ the next session. Each line points to where the deeper context lives.
    Recommended Option B (full English baseline + `agents_locale/fi/` overlay).
    Sized at 42–50 FTE hours, 2.1–2.6k LoC diff, 3–4 weeks calendar. AFTER
    R22.5 stable cut. Scout: `iterations/codex_scout_tasks/r22_x_finnish_to_english_agent_contract_scout_2026_05_10.md`.
-2. **R25 3D hex topology + per-cell DB sharding** — Codex's full
-   12-document scout pack lives in `iterations/codex_scout_tasks/r25_*_codex_*.md`.
-   Operator deferred to AFTER R22.5 + measurement gate from R22.1a. Don't
-   implement until current 2D production p99 numbers + branch-isolation
-   bench (12.2× degradation under adversarial load, see PR #205) justify it.
+2. **R25 3D hex topology + per-cell DB sharding** — **architectural
+   recommendation UPDATED 2026-05-11 by the Run A–F + Option B spike**:
+   R25 is now a *write-contention-only* decision. The earlier "12.2×
+   degradation under adversarial load" framing covered only one of three
+   contention regimes; the measurement track exposed cross-table routing
+   degradation (2 494× at N=6 concurrent writers) and same-table read
+   degradation (128× at N=6) which Option B (thread-local read connection
+   + WAL MVCC) fixes at ~10–30 LoC. The recommended ordering is **(1)
+   land Codex's Option B PR + measure production traffic, (2) THEN decide
+   R25** based on write-side p99 alone. Full Run A–F + Option B numbers in
+   `.codex-audit/branch_isolation_stress_2026_05_10/SUMMARY.md` and
+   `iterations/EVOLUTION_INDEX.md` (entry
+   `r22-2d-branch-isolation-stress-inflection`). Codex's 12-document
+   scout pack at `iterations/codex_scout_tasks/r25_*_codex_*.md` is
+   reference material — don't implement until the Option B path lands.
 3. **Dependabot #21 (checkout 4→6) + #26 (psutil patch)** — low-risk
    hygiene cleanup, awaiting operator approve/defer signal. The other 5
    dependabot PRs (#19/#22/#23/#24/#25) deferred per the audit.

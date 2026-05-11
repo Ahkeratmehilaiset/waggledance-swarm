@@ -47,6 +47,24 @@ async def lifespan(app: FastAPI):
     _verify = container.memory_repository
     _verify = container.trust_store
 
+    # Audit D2.1: warm ControlPlaneDB so data/control_plane.db exists
+    # before any autonomy-growth consumer tries to write to it. The
+    # cached_property runs ControlPlaneDB.__init__ which opens the
+    # connection, sets WAL, and calls migrate().
+    if hasattr(container, "control_plane_db"):
+        try:
+            cp_db = container.control_plane_db
+            if cp_db is not None:
+                logger.info(
+                    "ControlPlaneDB warmed: %s (schema v%d)",
+                    cp_db.db_path, cp_db.schema_version(),
+                )
+        except Exception as exc:
+            logger.error(
+                "ControlPlaneDB warmup failed; autonomy-growth track "
+                "inactive: %s", exc, exc_info=True,
+            )
+
     # Start autonomy runtime if available
     if hasattr(container, "autonomy_service"):
         try:
@@ -101,6 +119,17 @@ async def lifespan(app: FastAPI):
             logger.info("AutonomyService stopped")
         except Exception as exc:
             logger.warning("AutonomyService stop failed: %s", exc)
+
+    # Audit D2.1: close ControlPlaneDB. Calling close() on an
+    # already-closed handle is safe (idempotent).
+    if hasattr(container, "control_plane_db"):
+        try:
+            cp_db = container.control_plane_db
+            if cp_db is not None:
+                cp_db.close()
+                logger.info("ControlPlaneDB closed")
+        except Exception as exc:
+            logger.warning("ControlPlaneDB close failed: %s", exc)
 
     # Close OllamaAdapter httpx client if present
     llm = container.llm

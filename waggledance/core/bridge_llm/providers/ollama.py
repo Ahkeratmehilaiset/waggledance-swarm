@@ -37,29 +37,50 @@ class OllamaProvider(ProviderPlugin):
         import ollama  # type: ignore[import-not-found]
 
         start = time.perf_counter()
+        timeout_s = max(0.5, min(request.budget.max_latency_ms / 1000.0, 30.0))
         try:
-            client = ollama.Client(host=self._host)
-            result = client.chat(
-                model=self._model,
-                messages=[{"role": "user", "content": request.prompt}],
-                options={
-                    # Honor latency budget loosely; ollama doesn't expose
-                    # a hard timeout per call, but we cap retries.
-                    "num_predict": 256,
-                },
+            max_attempts = int(request.budget.max_retries)
+        except (TypeError, ValueError):
+            max_attempts = 1
+        max_attempts = max(1, max_attempts)
+
+        last_error: Exception | None = None
+        for attempt in range(max_attempts):
+            elapsed_s = time.perf_counter() - start
+            if attempt > 0 and elapsed_s >= timeout_s:
+                raise ProviderError(
+                    "ollama latency budget exhausted before retry"
+                ) from last_error
+
+            attempt_timeout_s = timeout_s if attempt == 0 else max(
+                0.5, min(timeout_s - elapsed_s, 30.0)
             )
-            text = (result.get("message") or {}).get("content", "")
-            tokens_in = int(result.get("prompt_eval_count", 0))
-            tokens_out = int(result.get("eval_count", 0))
-            latency_ms = (time.perf_counter() - start) * 1000
-            return LLMResponse(
-                text=text,
-                fallback_level=FallbackLevel.LOCAL_LLM,
-                provider=self.name,
-                success=True,
-                latency_ms=latency_ms,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-            )
-        except Exception as exc:  # ollama not running, model missing, etc.
-            raise ProviderError(f"ollama call failed: {exc}") from exc
+            try:
+                client = ollama.Client(host=self._host, timeout=attempt_timeout_s)
+                result = client.chat(
+                    model=self._model,
+                    messages=[{"role": "user", "content": request.prompt}],
+                    options={
+                        "num_predict": 256,
+                    },
+                )
+                text = (result.get("message") or {}).get("content", "")
+                tokens_in = int(result.get("prompt_eval_count", 0))
+                tokens_out = int(result.get("eval_count", 0))
+                latency_ms = (time.perf_counter() - start) * 1000
+                return LLMResponse(
+                    text=text,
+                    fallback_level=FallbackLevel.LOCAL_LLM,
+                    provider=self.name,
+                    success=True,
+                    latency_ms=latency_ms,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                )
+            except Exception as exc:  # ollama not running, model missing, etc.
+                last_error = exc
+                if attempt == max_attempts - 1:
+                    raise ProviderError(f"ollama call failed: {exc}") from exc
+                continue
+
+        raise ProviderError("ollama call failed") from last_error

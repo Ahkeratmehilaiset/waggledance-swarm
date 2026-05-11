@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,72 @@ def test_ollama_provider_call_raises_provider_error_when_unavailable(monkeypatch
     monkeypatch.setattr(o, "is_available", lambda: False)
     with pytest.raises(ProviderError):
         o.call(LLMRequest(injection_point="x", prompt="hello"))
+
+
+def test_ollama_provider_passes_latency_budget_to_sdk_timeout(monkeypatch):
+    from waggledance.core.bridge_llm.providers import ollama as ollama_mod
+    from waggledance.core.bridge_llm.types import LLMRequest, CallBudget
+
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        def chat(self, **kwargs):
+            captured["chat_kwargs"] = kwargs
+            return {
+                "message": {"content": "ok"},
+                "prompt_eval_count": 1,
+                "eval_count": 2,
+            }
+
+    monkeypatch.setitem(sys.modules, "ollama", types.SimpleNamespace(
+        Client=FakeClient,
+    ))
+    provider = ollama_mod.OllamaProvider(host="http://fake")
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+
+    provider.call(LLMRequest(
+        injection_point="x",
+        prompt="hello",
+        budget=CallBudget(max_latency_ms=1234),
+    ))
+
+    assert captured["client_kwargs"]["host"] == "http://fake"
+    assert captured["client_kwargs"]["timeout"] == pytest.approx(1.234)
+    assert captured["chat_kwargs"]["options"]["num_predict"] == 256
+
+
+def test_ollama_provider_honors_max_retries_budget(monkeypatch):
+    from waggledance.core.bridge_llm.providers import ollama as ollama_mod
+    from waggledance.core.bridge_llm.providers.base import ProviderError
+    from waggledance.core.bridge_llm.types import LLMRequest, CallBudget
+
+    attempts = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def chat(self, **kwargs):
+            attempts.append(kwargs)
+            raise RuntimeError("daemon still loading")
+
+    monkeypatch.setitem(sys.modules, "ollama", types.SimpleNamespace(
+        Client=FakeClient,
+    ))
+    provider = ollama_mod.OllamaProvider()
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+
+    with pytest.raises(ProviderError, match="daemon still loading"):
+        provider.call(LLMRequest(
+            injection_point="x",
+            prompt="hello",
+            budget=CallBudget(max_retries=2),
+        ))
+
+    assert len(attempts) == 2
 
 
 # ─── BridgeLLMClient end-to-end ──────────────────────────────────

@@ -131,13 +131,34 @@ class TestBackfillDryRun:
 
         svc = HybridBackfillService(hybrid, store, embed)
 
-        # Dry run indexes the ID tracking
+        # Dry run reports candidates without mutating duplicate tracking.
         dr = asyncio.run(svc.run(dry_run=True))
         assert dr.indexed == 1
 
-        # Real run after dry run — ID was tracked, so it's a duplicate
+        # Real run after dry run should still index the case.
         rr = asyncio.run(svc.run(dry_run=False))
-        assert rr.skipped_duplicate == 1
+        assert rr.indexed == 1
+        assert rr.skipped_duplicate == 0
+
+    def test_low_quality_cases_skipped(self):
+        cases = [
+            _make_case("c1", query="trusted case"),
+            {
+                "trajectory_id": "c2",
+                "intent": "chat",
+                "quality_grade": "quarantine",
+                "data": '{"query": "bad", "response": "do not index"}',
+            },
+        ]
+        hybrid = _make_hybrid_retrieval()
+        store = _make_case_store(cases)
+        embed = _make_embed_fn()
+
+        svc = HybridBackfillService(hybrid, store, embed)
+        result = asyncio.run(svc.run())
+
+        assert result.indexed == 1
+        assert result.skipped_quality == 1
 
 
 class TestBackfillCellCounts:
@@ -180,6 +201,19 @@ class TestBackfillAuth:
         src_run = inspect.getsource(backfill_run)
         assert "require_auth" in src_status
         assert "require_auth" in src_run
+
+    def test_backfill_bool_parser_handles_false_string(self):
+        from waggledance.adapters.http.routes.hybrid import _parse_bool
+
+        assert _parse_bool("false", "dry_run") is False
+        assert _parse_bool("true", "dry_run") is True
+
+    def test_backfill_limit_parser_rejects_invalid_range(self):
+        from fastapi import HTTPException
+        from waggledance.adapters.http.routes.hybrid import _parse_limit
+
+        with pytest.raises(HTTPException):
+            _parse_limit(0)
 
 
 class TestBackfillNoContent:

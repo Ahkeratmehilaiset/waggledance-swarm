@@ -121,6 +121,7 @@ class HybridRetrievalService:
         ring2_enabled: bool = False,
         mode: str = "shadow",          # v3 §1.1 — shadow | candidate | authoritative
         min_score: float = 0.35,       # v3 +Phase D v2 — score threshold for off-domain rejection
+        sufficient_score: float = _SUFFICIENT_SCORE,
     ):
         self._faiss_registry = faiss_registry
         self._topology = topology
@@ -130,6 +131,7 @@ class HybridRetrievalService:
         self._ring2_enabled = ring2_enabled
         self._mode = mode if mode in ("shadow", "candidate", "authoritative") else "shadow"
         self._min_score = float(min_score)
+        self._sufficient_score = float(sufficient_score)
 
         # Counters
         self._total_queries = 0
@@ -155,6 +157,10 @@ class HybridRetrievalService:
     @property
     def min_score(self) -> float:
         return self._min_score
+
+    @property
+    def sufficient_score(self) -> float:
+        return self._sufficient_score
 
     @property
     def is_authoritative(self) -> bool:
@@ -185,6 +191,7 @@ class HybridRetrievalService:
             trace.retrieval_mode = "global_only"
             # Fall through to global ChromaDB only
             await self._search_global(query, k, trace)
+            self._finalize_answer(trace, k, "global_only")
             trace.total_ms = (time.perf_counter() - t0) * 1000
             return trace
 
@@ -211,12 +218,13 @@ class HybridRetrievalService:
             trace.embeddings_degraded = True
             # Fallback to global-only (no FAISS without embeddings)
             await self._search_global(query, k, trace)
+            self._finalize_answer(trace, k, f"cell:{assignment.cell_id}+global")
             trace.total_ms = (time.perf_counter() - t0) * 1000
             return trace
 
         # 1. Local cell FAISS
         t_local = time.perf_counter()
-        local_hits = self._search_faiss_cell(assignment.cell_id, query_vec, k)
+        local_hits = self._search_faiss_cell(assignment.cell_id, query_vec, k, "local_faiss")
         trace.local_faiss_ms = (time.perf_counter() - t_local) * 1000
         trace.local_candidates = len(local_hits)
 
@@ -227,6 +235,7 @@ class HybridRetrievalService:
 
         # Check if local results are sufficient
         if self._sufficient(trace.hits, k):
+            trace.hits = self._dedupe_and_sort(trace.hits, k)
             trace.answered_by_layer = "local_faiss"
             trace.route_source = f"cell:{assignment.cell_id}"
             trace.total_ms = (time.perf_counter() - t0) * 1000
@@ -236,7 +245,7 @@ class HybridRetrievalService:
         t_neighbor = time.perf_counter()
         remaining = k - len(trace.hits)
         for neighbor_id in assignment.neighbors_ring1:
-            n_hits = self._search_faiss_cell(neighbor_id, query_vec, remaining)
+            n_hits = self._search_faiss_cell(neighbor_id, query_vec, remaining, "neighbor_faiss")
             if n_hits:
                 trace.hits.extend(n_hits)
                 trace.neighbor_hit = True
@@ -251,6 +260,7 @@ class HybridRetrievalService:
             self._neighbor_hits += 1
 
         if self._sufficient(trace.hits, k):
+            trace.hits = self._dedupe_and_sort(trace.hits, k)
             trace.answered_by_layer = "neighbor_faiss"
             trace.route_source = f"cell:{assignment.cell_id}+ring1"
             trace.total_ms = (time.perf_counter() - t0) * 1000
@@ -260,7 +270,7 @@ class HybridRetrievalService:
         if self._ring2_enabled and assignment.neighbors_ring2:
             remaining = k - len(trace.hits)
             for nn_id in assignment.neighbors_ring2:
-                n_hits = self._search_faiss_cell(nn_id, query_vec, remaining)
+                n_hits = self._search_faiss_cell(nn_id, query_vec, remaining, "neighbor_faiss")
                 if n_hits:
                     trace.hits.extend(n_hits)
                     trace.neighbor_hit = True
@@ -271,6 +281,7 @@ class HybridRetrievalService:
                 trace.neighbor_hops_used = 2
 
             if self._sufficient(trace.hits, k):
+                trace.hits = self._dedupe_and_sort(trace.hits, k)
                 trace.answered_by_layer = "neighbor_faiss"
                 trace.route_source = f"cell:{assignment.cell_id}+ring2"
                 trace.total_ms = (time.perf_counter() - t0) * 1000
@@ -278,28 +289,8 @@ class HybridRetrievalService:
 
         # 4. Global ChromaDB
         await self._search_global(query, k, trace)
-
-        # Determine answered_by_layer based on best source
-        if not trace.hits:
-            trace.llm_fallback = True
-            trace.answered_by_layer = "llm"
-            self._llm_fallbacks += 1
-        elif trace.global_hit and not trace.local_hit and not trace.neighbor_hit:
-            trace.answered_by_layer = "global_chroma"
-            self._global_hits += 1
-        elif trace.local_hit:
-            trace.answered_by_layer = "local_faiss"
-        elif trace.neighbor_hit:
-            trace.answered_by_layer = "neighbor_faiss"
-        else:
-            trace.answered_by_layer = "global_chroma"
-            self._global_hits += 1
-
-        trace.route_source = f"cell:{assignment.cell_id}+global"
+        self._finalize_answer(trace, k, f"cell:{assignment.cell_id}+global")
         trace.total_ms = (time.perf_counter() - t0) * 1000
-
-        # Sort all hits by score, deduplicate, truncate
-        trace.hits = self._dedupe_and_sort(trace.hits, k)
 
         return trace
 
@@ -324,19 +315,34 @@ class HybridRetrievalService:
         collection_name = f"cell_{cell_id}"
 
         try:
+            if self.has_document(doc_id):
+                log.debug("Hybrid ingest skipped existing doc %s", doc_id)
+                return cell_id
             col = self._faiss_registry.get_or_create(collection_name)
-            col.add(doc_id, text, vector, metadata or {})
-            log.debug("Ingested doc %s into cell %s", doc_id, cell_id)
+            added = col.add(doc_id, text, vector, metadata or {})
+            if added:
+                col.save()
+                log.debug("Ingested doc %s into cell %s", doc_id, cell_id)
             return cell_id
         except Exception as e:
             log.warning("Hybrid ingest failed for cell %s: %s", cell_id, e)
             return None
+
+    def has_document(self, doc_id: str) -> bool:
+        exists = getattr(self._faiss_registry, "document_exists", None)
+        if callable(exists):
+            return bool(exists(doc_id))
+        return False
 
     def stats(self) -> dict:
         """Return hybrid retrieval statistics."""
         total = self._total_queries or 1
         return {
             "enabled": self._enabled,
+            "mode": self._mode,
+            "is_authoritative": self.is_authoritative,
+            "min_score": self._min_score,
+            "sufficient_score": self._sufficient_score,
             "total_queries": self._total_queries,
             "local_hits": self._local_hits,
             "neighbor_hits": self._neighbor_hits,
@@ -353,11 +359,22 @@ class HybridRetrievalService:
 
     # ── Private helpers ───────────────────────────────────────
 
-    def _search_faiss_cell(self, cell_id: str, query_vec, k: int) -> List[HybridHit]:
+    def _search_faiss_cell(
+        self,
+        cell_id: str,
+        query_vec,
+        k: int,
+        source_layer: str,
+    ) -> List[HybridHit]:
         """Search a single cell's FAISS index."""
+        if k <= 0:
+            return []
         collection_name = f"cell_{cell_id}"
         try:
-            col = self._faiss_registry.get_or_create(collection_name)
+            getter = getattr(self._faiss_registry, "get_existing", None)
+            col = getter(collection_name) if callable(getter) else self._faiss_registry.get_or_create(collection_name)
+            if col is None:
+                return []
             if col.count == 0:
                 return []
             results = col.search(query_vec, k=k)
@@ -366,7 +383,7 @@ class HybridRetrievalService:
                     doc_id=r.doc_id,
                     text=r.text,
                     score=r.score,
-                    source_layer="local_faiss" if cell_id else "neighbor_faiss",
+                    source_layer=source_layer,
                     cell_id=cell_id,
                     metadata=r.metadata,
                 )
@@ -409,11 +426,25 @@ class HybridRetrievalService:
             trace.chroma_degraded = True
             trace.global_chroma_ms = (time.perf_counter() - t_global) * 1000
 
-    @staticmethod
-    def _sufficient(hits: List[HybridHit], k: int) -> bool:
+    def _sufficient(self, hits: List[HybridHit], k: int) -> bool:
         """Check if we have enough high-quality hits to stop searching."""
-        good = [h for h in hits if h.score >= _SUFFICIENT_SCORE]
+        good = [h for h in hits if h.score >= self._sufficient_score]
         return len(good) >= min(k, 3)
+
+    def _finalize_answer(self, trace: HybridTraceResult, k: int, route_source: str) -> None:
+        """Set final answer telemetry from the best deduped hit."""
+        trace.hits = self._dedupe_and_sort(trace.hits, k)
+        trace.route_source = route_source
+        if not trace.hits:
+            trace.llm_fallback = True
+            trace.answered_by_layer = "llm"
+            self._llm_fallbacks += 1
+            return
+
+        best_layer = trace.hits[0].source_layer
+        trace.answered_by_layer = best_layer
+        if best_layer == "global_chroma":
+            self._global_hits += 1
 
     @staticmethod
     def _dedupe_and_sort(hits: List[HybridHit], k: int) -> List[HybridHit]:

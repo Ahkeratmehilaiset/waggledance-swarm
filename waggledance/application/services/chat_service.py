@@ -403,7 +403,11 @@ class ChatService:
             except Exception:
                 pass
 
-            if trace_result.hits and not trace_result.llm_fallback:
+            if (
+                trace_result.hits
+                and not trace_result.llm_fallback
+                and getattr(self._hybrid_retrieval, "is_authoritative", False)
+            ):
                 # Format hits into a response
                 _lang = language
                 _header = ("Löysin seuraavat tiedot:\n\n" if _lang == "fi"

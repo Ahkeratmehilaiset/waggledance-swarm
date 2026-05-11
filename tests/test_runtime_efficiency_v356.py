@@ -263,6 +263,17 @@ class TestSkipNeighborSequential:
         # but the skip counter should be 0
         assert m["skipped_neighbor_attempts"] == 0 or m["global_escalations"] >= 1
 
+    @pytest.mark.asyncio
+    async def test_neighbor_llm_disabled_skips_neighbor(self):
+        ha = _make_assist(
+            allow_neighbor_llm=False,
+            skip_low_value_neighbor_when_sequential=False,
+            preflight_min_score=0.0,
+        )
+        await ha.resolve("general home context long enough to pass preflight")
+        m = ha.get_metrics()
+        assert m["skipped_neighbor_attempts"] >= 1
+
 
 # ══════════════════════════════════════════════════════════════
 # 4. BUDGET EXHAUSTION
@@ -292,6 +303,14 @@ class TestBudgetExhaustion:
         assert "budget_exhaustions" in m
         assert "skipped_local_attempts" in m
         assert "skipped_neighbor_attempts" in m
+
+    @pytest.mark.asyncio
+    async def test_magma_counter_requires_successful_write(self):
+        magma = MagicMock()
+        magma.record.side_effect = RuntimeError("locked")
+        ha = _make_assist(magma_audit=magma, preflight_min_score=0.9)
+        await ha.resolve("Hello world")
+        assert ha.get_metrics()["magma_traces_written"] == 0
 
 
 # ══════════════════════════════════════════════════════════════
@@ -326,14 +345,14 @@ class TestCounterConsistency:
 
     @pytest.mark.asyncio
     async def test_total_queries_consistent(self):
-        """origin_resolutions + preflight_skips = total hex queries."""
+        """origin_resolutions is the total completed hex query count."""
         ha = _make_assist(preflight_min_score=0.0)
         for _ in range(3):
             await ha.resolve("test query")
         m = ha.get_metrics()
         eff = ha.get_efficiency_stats()
         total = eff["total_hex_queries"]
-        assert total == m["origin_cell_resolutions"] + m["preflight_skips"]
+        assert total == m["origin_cell_resolutions"]
 
     def test_efficiency_stats_has_required_fields(self):
         ha = _make_assist()

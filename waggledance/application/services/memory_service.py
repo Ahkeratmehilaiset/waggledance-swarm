@@ -31,6 +31,10 @@ class MemoryService:
         self._memory = memory
         self._event_bus = event_bus
         self._hybrid_retrieval = hybrid_retrieval
+        self._hybrid_mirror_successes = 0
+        self._hybrid_mirror_failures = 0
+        self._last_hybrid_mirror_error: str | None = None
+        self._last_hybrid_mirror_cell: str | None = None
 
     async def ingest(
         self,
@@ -75,10 +79,14 @@ class MemoryService:
         if self._hybrid_retrieval and self._hybrid_retrieval.enabled:
             try:
                 embed_fn = getattr(self._hybrid_retrieval, '_embed_fn', None)
-                if embed_fn:
+                if not embed_fn:
+                    self._mark_hybrid_mirror_failure("missing embed function")
+                else:
                     vec = embed_fn(record.content)
-                    if vec is not None:
-                        await self._hybrid_retrieval.ingest(
+                    if vec is None:
+                        self._mark_hybrid_mirror_failure("embed function returned None")
+                    else:
+                        cell_id = await self._hybrid_retrieval.ingest(
                             doc_id=record.id,
                             text=record.content,
                             vector=vec,
@@ -88,8 +96,14 @@ class MemoryService:
                                 "agent_id": record.agent_id or "",
                             },
                         )
+                        if cell_id:
+                            self._hybrid_mirror_successes += 1
+                            self._last_hybrid_mirror_cell = cell_id
+                            self._last_hybrid_mirror_error = None
+                        else:
+                            self._mark_hybrid_mirror_failure("hybrid ingest returned no cell")
             except Exception as e:
-                log.debug("Hybrid FAISS mirror failed (non-blocking): %s", e)
+                self._mark_hybrid_mirror_failure(f"{type(e).__name__}: {e}")
 
         await self._event_bus.publish(DomainEvent(
             type=EventType.MEMORY_STORED,
@@ -99,6 +113,20 @@ class MemoryService:
         ))
 
         return record
+
+    def _mark_hybrid_mirror_failure(self, reason: str) -> None:
+        self._hybrid_mirror_failures += 1
+        self._last_hybrid_mirror_error = reason
+        log.warning("Hybrid FAISS mirror failed (non-blocking): %s", reason)
+
+    def hybrid_mirror_status(self) -> dict:
+        return {
+            "enabled": bool(self._hybrid_retrieval and self._hybrid_retrieval.enabled),
+            "successes": self._hybrid_mirror_successes,
+            "failures": self._hybrid_mirror_failures,
+            "last_error": self._last_hybrid_mirror_error,
+            "last_cell": self._last_hybrid_mirror_cell,
+        }
 
     async def retrieve_context(
         self,

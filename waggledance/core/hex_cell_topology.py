@@ -22,6 +22,7 @@ Neighbor topology (ring-1 adjacency):
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, List, Optional, Set
 
@@ -120,6 +121,11 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
         "specialist", "dream", "night", "yö",
     ],
 }
+
+
+def _keyword_matches(query: str, keyword: str) -> bool:
+    pattern = rf"(?<!\w){re.escape(keyword.lower())}(?!\w)"
+    return re.search(pattern, query) is not None
 
 
 @dataclass
@@ -225,7 +231,7 @@ class HexCellTopology:
         best_cell: Optional[str] = None
         best_count = 0
         for cell_id, keywords in _DOMAIN_KEYWORDS.items():
-            count = sum(1 for kw in keywords if kw in q)
+            count = sum(1 for kw in keywords if _keyword_matches(q, kw))
             if count > best_count:
                 best_count = count
                 best_cell = cell_id

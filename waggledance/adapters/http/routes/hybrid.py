@@ -7,7 +7,7 @@ when hybrid is disabled.
 
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from waggledance.adapters.http.deps import get_container, require_auth
 
@@ -16,14 +16,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["hybrid"])
 
 
+def _collection_count(registry, name: str) -> int:
+    count_if_exists = getattr(registry, "count_if_exists", None)
+    if callable(count_if_exists):
+        return int(count_if_exists(name))
+    get_existing = getattr(registry, "get_existing", None)
+    if callable(get_existing):
+        col = get_existing(name)
+        return int(col.count) if col is not None else 0
+    col = registry.get_or_create(name)
+    return int(col.count)
+
+
+def _parse_bool(value, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+    if value in (0, 1):
+        return bool(value)
+    raise HTTPException(status_code=400, detail=f"{field} must be a boolean")
+
+
+def _parse_limit(value) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be an integer") from None
+    if limit < 1 or limit > 50000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 50000")
+    return limit
+
+
 @router.get("/api/hybrid/status")
 def hybrid_status(container=Depends(get_container), _auth=Depends(require_auth)):
     """Return hybrid retrieval status and metrics."""
     try:
         hr = container.hybrid_retrieval
+        mode = getattr(hr, "mode", "shadow")
         return {
             "enabled": hr.enabled,
-            "retrieval_mode": "hybrid" if hr.enabled else "global_only",
+            "mode": mode,
+            "is_authoritative": getattr(hr, "is_authoritative", False),
+            "retrieval_mode": f"hybrid:{mode}" if hr.enabled else "global_only",
             "ring2_enabled": hr._ring2_enabled,
             "stats": hr.stats(),
         }
@@ -43,8 +82,7 @@ def hybrid_topology(container=Depends(get_container), _auth=Depends(require_auth
             neighbors = sorted(_ADJACENCY.get(cell_id, set()))
             # Get FAISS collection size for this cell
             try:
-                col = container.faiss_registry.get_or_create(f"cell_{cell_id}")
-                doc_count = col.count
+                doc_count = _collection_count(container.faiss_registry, f"cell_{cell_id}")
             except Exception:
                 doc_count = 0
             cells[cell_id] = {
@@ -71,8 +109,7 @@ def hybrid_cells(container=Depends(get_container), _auth=Depends(require_auth)):
         cells = {}
         for cell_id in ALL_CELLS:
             try:
-                col = registry.get_or_create(f"cell_{cell_id}")
-                cells[cell_id] = col.count
+                cells[cell_id] = _collection_count(registry, f"cell_{cell_id}")
             except Exception:
                 cells[cell_id] = 0
         return {"cells": cells, "total_documents": sum(cells.values())}
@@ -125,6 +162,8 @@ async def backfill_run(
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
     dry_run = body.get("dry_run", False)
     limit = body.get("limit", 5000)
 
@@ -132,5 +171,5 @@ async def backfill_run(
     if bf.is_running:
         return {"error": "Backfill already in progress", "running": True}
 
-    result = await bf.run(dry_run=bool(dry_run), limit=int(limit))
+    result = await bf.run(dry_run=_parse_bool(dry_run, "dry_run"), limit=_parse_limit(limit))
     return result.to_dict()

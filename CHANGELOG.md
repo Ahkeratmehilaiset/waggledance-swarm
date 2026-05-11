@@ -1,5 +1,101 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [R22.2e Option B — read-lock relaxation + traffic histogram tool / no version bump] — 2026-05-11
+
+Operator-directed iteration sprint following the post-R23 measurement
+track (Run A–F + Option B spike on 2026-05-10 / 2026-05-11). Eliminates
+the cross-table and same-table read regimes that emerged as the
+operationally painful bottleneck under writer load, without the
+schema-migration cost of R25 3D-hex sharding. **No `pyproject.toml`
+version bump** — these PRs ship under the existing tag identity until
+R22.5 stable cut at >= 2026-05-24.
+
+### R22.2e — Option B Phase 1 + Phase 2 (ControlPlaneDB read-conn separation)
+
+- **R22.2e Phase 1 (#223)** — thread-local read-only SQLite connections
+  in `ControlPlaneDB`. Adds `self._tls`, `_configure_connection()`,
+  `_ro_conn()`, `_read_conn()`, `_read_conns` list, and a `_closed`
+  flag with `ControlPlaneError` on use-after-close. The 4 hottest read
+  methods (`get_solver`, `get_active_runtime_path`,
+  `list_runtime_gap_signals`, `count_runtime_gap_signals`) now use
+  `_read_conn()` with transaction-state-aware dispatch: in-tx reads
+  stay on the writer connection (preserves uncommitted-write
+  visibility); non-tx reads use the per-thread read-only connection
+  (bypasses `self._lock` entirely, SQLite WAL MVCC handles concurrent
+  read/write). Authored by Codex in their worktree under stale-released
+  claim; Claude validated (3/3 new tests + full 8 258-test repo suite
+  PASS) and landed with full Co-Authored-By attribution. Production
+  measurement: `get_active_runtime_path` p99 **59.85 ms → 0.029 ms**
+  (~2 064×), `get_solver` p99 **70.93 ms → 0.030 ms** (~2 364×),
+  `list_runtime_gap_signals(100)` p99 **222.83 ms → 4.49 ms** (~49.7×)
+  under a 6-cell concurrent `runtime_gap_signal` writer flood. EVOLUTION_INDEX
+  entry: `r22-2e-option-b-read-connection-production`.
+- **R22.2e Phase 2 (#227)** — mechanically extends Phase 1's
+  `_read_conn()` pattern to 11 additional read methods:
+  `list_solver_families`, `get_solver_name`, `count_solvers`,
+  `get_vector_shard`, `list_active_runtime_paths`, `get_validation_run`,
+  `count_auto_promoted_for_family`, `get_meta`, `get_growth_intent`,
+  `count_growth_intents`, `count_queue_rows`. Brings total Option B
+  coverage to 15 read methods. Writes, DDL, migrations, and helpers
+  (`_fetch_*`) remain on `self._lock` + `self._conn` (atomicity
+  required). 8 new targeted tests; 80/80 storage tests pass; zero
+  regressions. Phase 3 scout at
+  `iterations/codex_scout_tasks/option_b_phase_3_helper_routed_reads_scout_2026_05_11.md`
+  for the remaining ~9 helper-routed + multi-statement reads (optional
+  polish, not a hot-path blocker).
+
+### R22 — Run A–F + Option B spike measurement track
+
+- **EVOLUTION_INDEX entry (#220)** —
+  `r22-2d-branch-isolation-stress-inflection` records the 4-run write-side
+  stress (Run A baseline 14.09× → Run B escalated 17.35× → Run C
+  saturation 13.22× → Run D N-sweep with knee at N=4 concurrent writers)
+  plus Run E read-path (128× at N=6) plus Run F cross-table routing
+  (2 494× at N=6) plus the Option B spike showing 313–2 064×
+  improvement. The architectural decision is now data-driven: R25 3D
+  hex sharding is a write-contention-only question, deferred behind
+  Option B + 24 h production traffic histogram.
+
+### Tools
+
+- **`tools/runtime_gap_signal_concurrency_histogram.py` (#224)** —
+  per-cell + per-window concurrency histogram for the R25 go/no-go
+  decision. Reads a `ControlPlaneDB` SQLite snapshot read-only
+  (`PRAGMA query_only = ON`), computes total observation windows
+  from `first_ts..last_ts` inclusive (NOT only active windows — that
+  was a bug Codex caught and Claude fixed pre-merge with a
+  sparse-burst regression test). Verdict ladder maps the histogram
+  to the Run F knee: `insufficient-data` → `r25-not-needed` →
+  `r25-defer` → `r25-consider` → `r25-strongly-recommended`. Run
+  against any 24 h production snapshot to compute the N=4 knee
+  crossing rate. 7 unit tests including the Codex-repro sparse-burst
+  regression.
+
+### R22.5 release-surface prep
+
+- **`.github/workflows/release-docker-stable.yml` (#221)** — companion
+  to the existing alpha-only `release-docker.yml`. Manual
+  `workflow_dispatch` only; refuses `alpha`/`beta`/`rc`/`dev`/`pre`
+  suffix; enforces strict `vMAJOR.MINOR.PATCH` semver; `:latest` move
+  is operator-gated via explicit input. Smoke checks Profile S clean
+  import, redactor, alias digest equality. Pre-stages R22.5 stable
+  v3.12.0 cut as a one-click `gh workflow run` invocation.
+- **`CURRENT_STATE.md` + `BOOT_AFTER_REBOOT.md` refreshes (#222, #225)**
+  — regenerated source-tree stats and operator-decision list to reflect
+  today's merges. Operator decision #2 (R25) updated to the
+  write-contention-only framing.
+- **EVOLUTION_INDEX substrate measurement entries (#219)** — Codex's
+  laptop solver-descriptor capacity (10k/50k cold p99 25/366 ms) and
+  live-agent capacity (81 templates / 1 004 clones in 120 s / 0.47 s
+  concurrent warm think). Measurement-only baselines.
+- **`README.md` landing blurb refresh (#216)** — Codex's measured
+  numbers (10k/50k descriptor capacity, 81/1 004 live agents) replace
+  the prior "Why care" generic text.
+- **`docs/github/REPOSITORY_PRESENTATION.md`, `DOCKER_QUICKSTART.md`,
+  `RELEASE_READINESS.md` (#218)** — Codex refreshed Phase-15-drift in
+  these external-presentation surfaces to current R22 / R23 / R22.5
+  truth boundary.
+
 ## [R22 + R23 Phase D scaling refinements + autonomy fabric / no version bump] — 2026-05-10
 
 Operator-driven autonomous-merge sprint built on top of R21. Closes the

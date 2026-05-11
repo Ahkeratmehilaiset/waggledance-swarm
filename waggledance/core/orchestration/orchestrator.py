@@ -65,11 +65,12 @@ class Orchestrator:
             source="orchestrator",
         ))
 
-        trust_scores = {}
-        for agent in self._agents:
-            trust = await self._trust_store.get_trust(agent.id)
-            if trust:
-                trust_scores[agent.id] = trust
+        # Audit H47: batch-fetch trust scores instead of N+1 round-trips.
+        # On a HOME profile (75 agents) the old loop cost ~37 ms per chat
+        # request just for trust lookup; this collapses to one DB call.
+        trust_scores = await self._trust_store.get_trust_many(
+            agent.id for agent in self._agents
+        )
 
         selected = self._scheduler.select_agents(
             task=task,
@@ -131,11 +132,12 @@ class Orchestrator:
 
     async def run_round_table(self, task: TaskRequest) -> ConsensusResult:
         """Escalate to multi-agent consensus."""
-        trust_scores = {}
-        for agent in self._agents:
-            trust = await self._trust_store.get_trust(agent.id)
-            if trust:
-                trust_scores[agent.id] = trust
+        # Audit H47: batch-fetch trust scores instead of N+1 round-trips.
+        # On a HOME profile (75 agents) the old loop cost ~37 ms per chat
+        # request just for trust lookup; this collapses to one DB call.
+        trust_scores = await self._trust_store.get_trust_many(
+            agent.id for agent in self._agents
+        )
 
         selected = self._scheduler.select_agents(
             task=task,

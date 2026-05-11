@@ -4,6 +4,7 @@ Ported from core/chat_handler.py and backend/routes/chat.py.
 All memory access goes through MemoryService.retrieve_context().
 """
 
+import asyncio
 import logging
 import re
 import time
@@ -183,8 +184,8 @@ class ChatService:
                 if should_cache_result_simple(solver_result, self._query_frequency.get(cache_key, 0)):
                     self._hot_cache.set(cache_key, solver_result, ttl=3600)
                 self._record_telemetry("solver", 0.95, elapsed, True, req.query)
-                self._record_case(req.query, solver_result, 0.95,
-                                  "solver", "solver", elapsed)
+                await self._record_case(req.query, solver_result, 0.95,
+                                        "solver", "solver", elapsed)
                 return ChatResult(
                     response=solver_result,
                     language=language,
@@ -224,7 +225,7 @@ class ChatService:
                     hex_trace = hex_result.get("trace")
                     self._record_telemetry(
                         "hex_mesh", hex_result["confidence"], elapsed, True, req.query)
-                    self._record_case(
+                    await self._record_case(
                         req.query, hex_result["response"],
                         hex_result["confidence"], hex_result["source"],
                         "hex_mesh", elapsed)
@@ -282,7 +283,7 @@ class ChatService:
             route.route_type, result.confidence, elapsed, True, req.query)
 
         # Record case trajectory for learning funnel
-        self._record_case(
+        await self._record_case(
             req.query, result.response, result.confidence,
             result.source, route.route_type, elapsed)
 
@@ -323,13 +324,19 @@ class ChatService:
         except Exception:
             pass
 
-    def _record_case(self, query: str, response: str, confidence: float,
-                      source: str, route_type: str, elapsed_ms: float):
+    async def _record_case(self, query: str, response: str, confidence: float,
+                            source: str, route_type: str, elapsed_ms: float):
         """Record a CaseTrajectory from chat traffic via build_from_legacy.
 
         Chat traffic doesn't go through the full autonomy pipeline, so we use
         build_from_legacy() which truthfully records the Q&A without fabricating
         execution/verifier data that didn't happen.
+
+        Audit H47: SQLiteCaseStore.save_case is synchronous and calls
+        sqlite3.commit() inside a threading.Lock — that blocks the asyncio
+        event loop for the duration of the fsync. Wrapped here in
+        asyncio.to_thread so the commit runs on a worker thread and the
+        event loop is free to handle other chat requests.
         """
         if self._case_builder is None:
             return
@@ -342,7 +349,8 @@ class ChatService:
                 route_type=route_type,
             )
             if self._case_store is not None:
-                self._case_store.save_case(
+                await asyncio.to_thread(
+                    self._case_store.save_case,
                     case.to_dict(),
                     intent=route_type,
                     elapsed_ms=elapsed_ms,
@@ -412,7 +420,7 @@ class ChatService:
                     self._hot_cache.set(cache_key, response, ttl=3600)
 
                 self._record_telemetry(source, confidence, elapsed, True, query)
-                self._record_case(query, response, confidence, source, source, elapsed)
+                await self._record_case(query, response, confidence, source, source, elapsed)
 
                 result = ChatResult(
                     response=response,

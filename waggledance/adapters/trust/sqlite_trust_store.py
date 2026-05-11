@@ -91,6 +91,26 @@ class SQLiteTrustStore:
             return None
         return self._row_to_trust(row)
 
+    async def get_trust_many(self, agent_ids) -> "dict[str, AgentTrust]":
+        """Batch trust fetch — single SELECT instead of N round-trips.
+
+        Implements TrustStorePort.get_trust_many for audit H47. The
+        orchestrator used to iterate `for agent in self._agents: await
+        get_trust(agent.id)`, costing 75 round-trips per chat request
+        on a HOME profile. This collapses to one SELECT with IN clause.
+
+        Empty agent_ids returns an empty dict without touching the DB.
+        """
+        ids = list(agent_ids)
+        if not ids:
+            return {}
+        db = await self._ensure_db()
+        placeholders = ",".join("?" for _ in ids)
+        sql = f"SELECT * FROM agent_trust WHERE agent_id IN ({placeholders})"
+        async with db.execute(sql, ids) as cursor:
+            rows = await cursor.fetchall()
+        return {row[0]: self._row_to_trust(row) for row in rows}
+
     async def update_trust(
         self, agent_id: str, signals: TrustSignals
     ) -> AgentTrust:

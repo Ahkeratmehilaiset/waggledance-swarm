@@ -919,6 +919,132 @@ entries:
     latency and the Finnish prompt contract.
   next_bottleneck: per-agent knowledge injection and SQLite commit throughput at >=1000 live agents; English agent contract plus prompt trim/token cap policy before claiming scalable live LLM agents.
 
+- session_id: r22-2d-branch-isolation-stress-inflection
+  pr: null
+  owner: claude
+  reviewer: codex
+  merged_utc: null
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: branch_isolation_probe_p99_under_concurrent_writers
+  axis_a_snapshot: claude-r22-branch-isolation-stress-2026-05-10
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    Measurement-only follow-up to r22-2d-branch-isolation-baseline.
+    Claude reran the branch-isolation stress harness in four passes
+    after PR #205 to validate whether the 2D/global ControlPlaneDB
+    path is sufficient before reopening R25 3D hex sharding.
+
+    Run A/B/C repeated the adversarial multi-branch flood at increasing
+    load:
+
+    - Run A: idle p99 7.96 ms, adversarial p99 112.12 ms,
+      degradation 14.09x, uniform CV 0.58.
+    - Run B: idle p99 9.07 ms, adversarial p99 157.40 ms,
+      degradation 17.35x, uniform CV 0.26.
+    - Run C: idle p99 11.01 ms, adversarial p99 145.57 ms,
+      degradation 13.22x, uniform CV 0.12.
+
+    The saturation signal is a hard wall around 150 ms adversarial p99
+    under a six-branch concurrent write flood. Single-hot contention
+    stayed around 3x at higher load, so the hard case is multi-branch
+    concurrent writers, not one hot branch.
+
+    Run D swept the number of concurrent cold writer cells at fixed
+    events per branch. Idle baseline was 8.08 ms. Probe p99 by writer
+    count:
+
+    - N=1: 39.29 ms, 4.87x
+    - N=2: 70.27 ms, 8.70x
+    - N=3: 87.72 ms, 10.86x
+    - N=4: 145.08 ms, 17.97x
+    - N=5: 166.71 ms, 20.65x
+    - N=6: 197.17 ms, 24.42x
+
+    The inflection point is N=4 concurrent writer cells: the N=3 to
+    N=4 jump is about 65%, much larger than the other steps. Below the
+    knee, each extra writer adds roughly 12-18 ms; above it, each adds
+    roughly 25-30 ms. The measured bottleneck is consistent with the
+    shared SQLite WAL/write-lock path rather than one pathological hex
+    branch.
+
+    SLA map from the sweep:
+
+    - p99 < 50 ms tolerates N<=1; R25 needed if production has 2+
+      concurrently active writer cells.
+    - p99 < 100 ms tolerates N<=3; R25 needed if production has 4+.
+    - p99 < 150 ms tolerates N<=4.
+    - p99 < 200 ms tolerates all six cells in this adversarial sweep.
+
+    Run E added read-path latency probes under concurrent writes after
+    pre-populating 14k runtime_gap_signal rows. While cold writers inserted
+    into other cells, hub reads degraded sharply:
+
+    - list_runtime_gap_signals(limit=100): idle 1.73 ms, N=1 46.05 ms,
+      N=3 125.53 ms, N=6 222.83 ms.
+    - list_runtime_gap_signals(limit=500): idle 4.94 ms, N=1 52.36 ms,
+      N=3 101.09 ms, N=6 144.31 ms.
+    - count_runtime_gap_signals: idle 2.13 ms, N=1 23.46 ms,
+      N=3 24.07 ms, N=6 46.22 ms.
+
+    The smallest list query suffered the worst relative degradation:
+    26.6x at one concurrent writer and 128.6x at six concurrent writers.
+    A strict sub-50 ms read SLA is therefore not met by the 2D/global DB
+    whenever any concurrent writer is active. The root cause is structural:
+    list_runtime_gap_signals and count_runtime_gap_signals take the same
+    ControlPlaneDB self._lock as record_runtime_gap_signal, so reads
+    serialize behind writes.
+
+    Run F added routing hot-path probes against different tables while the
+    writers still hit runtime_gap_signals. get_active_runtime_path reads
+    runtime_path_bindings and get_solver reads solvers, but both degraded
+    because the current application lock is global to the connection:
+
+    - get_active_runtime_path: idle 0.0238 ms, N=1 7.74 ms,
+      N=3 33.91 ms, N=6 59.85 ms.
+    - get_solver: idle 0.0312 ms, N=1 11.50 ms,
+      N=3 34.54 ms, N=6 70.93 ms.
+
+    Run F changed the architectural decision from "R25 sharding only" to
+    "measure the cheap read/write separation first." Claude then measured
+    an Option B spike that monkey-patched get_active_runtime_path,
+    get_solver, and list_runtime_gap_signals to use per-thread read-only
+    SQLite connections while writes stayed on self._lock + self._conn.
+    WAL was already enabled. The spike results:
+
+    - get_active_runtime_path at N=6: 59.85 ms current to 0.19 ms,
+      about 313x faster.
+    - get_active_runtime_path at N=3: 33.91 ms current to 0.033 ms,
+      about 1028x faster.
+    - get_solver at N=6: 70.93 ms current to 0.29 ms,
+      about 245x faster.
+    - get_solver at N=3: 34.54 ms current to 0.097 ms,
+      about 356x faster.
+    - list_runtime_gap_signals(limit=100) at N=6: 222.83 ms current
+      to 5.09 ms, about 44x faster.
+    - list_runtime_gap_signals(limit=100) at N=3: 125.53 ms current
+      to 5.32 ms, about 24x faster.
+
+    Option B therefore fixes two of the three observed regimes: Run E
+    same-table reads behind writes and Run F cross-table routing reads
+    behind unrelated writes. It does not fix Runs A-D same-table write
+    contention, because writes still serialize through SQLite. R25
+    per-cell DB sharding remains the structural write-contention answer,
+    but it is no longer the first-line read/routing fix. R25 should be
+    decided after a production Option B PR and a production concurrent
+    write histogram, not before.
+
+    runtime_behavior_changed=false: no source files or runtime paths
+    changed. Artifacts are in the gitignored audit directory
+    .codex-audit/branch_isolation_stress_2026_05_10/.
+  next_bottleneck: productionize and test the measured ControlPlaneDB Option B design with transaction, pragma, and close() safeguards; then collect a 24h runtime_gap_signal write histogram by hex cell before deciding whether R25 sharding is required for the target write-p99 SLA.
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

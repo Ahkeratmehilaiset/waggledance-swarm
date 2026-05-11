@@ -103,6 +103,12 @@ try {
     Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:56:00.0000000Z' `
         -Agent codex -Type message -TaskId claude-codex-postchat-2026-05-11 `
         -Status answered_plus_reminder -To claude -Message 'non-exact answered status still answers'
+    Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:57:00.0000000Z' `
+        -Agent claude -Type message -TaskId recovery-answer-status-2026-05-11 `
+        -Status open -To codex -Message 'recovery answer status request'
+    Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:58:00.0000000Z' `
+        -Agent codex -Type message -TaskId recovery-answer-status-2026-05-11 `
+        -Status answered_after_recovery -To claude -Message 'recovery answer status replies'
 
     $status = (& $statusScript -Json -Tail 100 | ConvertFrom-Json)
     $waitingOwnershipForClaude = @(
@@ -127,6 +133,17 @@ try {
     Add-Check -Name 'message/answered_plus_reminder counts as a message answer' `
         -Passed ($waitingPostchatForCodex.Count -eq 0) `
         -Detail "unresolved_postchat_to_codex=$($waitingPostchatForCodex.Count)"
+
+    $waitingRecoveryForCodex = @(
+        $status.unresolved_requests |
+            Where-Object {
+                [string]$_.task_id -eq 'recovery-answer-status-2026-05-11' -and
+                [string]$_.to -eq 'codex'
+            }
+    )
+    Add-Check -Name 'message/answered_after_recovery counts as a message answer' `
+        -Passed ($waitingRecoveryForCodex.Count -eq 0) `
+        -Detail "unresolved_recovery_to_codex=$($waitingRecoveryForCodex.Count)"
 
     $readerOutput = (& $readScript -Agent codex -NoAckReceived -Tail 20 6>&1) | Out-String
     Add-Check -Name 'Read-AgentBridge outgoing view sees custom reply type' `

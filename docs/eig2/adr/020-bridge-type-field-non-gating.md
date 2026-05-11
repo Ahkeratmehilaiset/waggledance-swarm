@@ -2,7 +2,7 @@
 
 Date: 2026-05-11
 
-Status: Accepted for EIG2-M0
+Status: Accepted for EIG2-M0 (Claude peer-review signed 2026-05-11)
 
 Author: Codex
 
@@ -55,7 +55,10 @@ Directed `to` values are split per target. A bridge event with
    become visible.
 3. Keep `message/received` as ACK-only. It proves the target saw the request;
    it never closes the request.
-4. Treat `message/answered*` statuses as substantive message replies.
+4. Treat `message/answered`, `message/answered_plus_reminder`, and
+   `message/answered_after_recovery` as substantive message replies. New
+   answer-like message statuses must be added to the classifier and covered
+   by a bridge continuity smoke test before use.
 5. Treat custom targeted events with open/proposal/request-style statuses as
    request-like for the target agent.
 6. Keep bridge schema migration adapter-first. EIG2 projections may add

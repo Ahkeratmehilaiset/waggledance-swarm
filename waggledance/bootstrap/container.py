@@ -115,6 +115,38 @@ class Container:
         from waggledance.bootstrap.event_bus import InMemoryEventBus
         return InMemoryEventBus()
 
+    @cached_property
+    def control_plane_db(self):
+        """ControlPlaneDB — persistent autonomy-growth substrate.
+
+        Audit H51 / operator decision D2.1: ControlPlaneDB used to be
+        instantiated only by offline tools (tools/*.py) and tests; no
+        production code path created data/control_plane.db. The R25
+        decision histogram + autogrowth_scheduler + RuntimeGapDetector
+        all need this DB to exist before they can write anything.
+
+        Stub mode (e.g. unit tests, CI without persistent data/)
+        returns None so consumers can degrade gracefully. Non-stub
+        production opens the DB at data/control_plane.db (the
+        ControlPlaneDB default), runs schema migration, and the
+        connection is closed by api.py lifespan on shutdown.
+
+        Note: ControlPlaneDB.__init__ acquires a sqlite WAL connection
+        and runs migrate(). Construction is therefore O(schema
+        version) — typically < 50 ms cold.
+        """
+        if self._stub:
+            return None
+        try:
+            from waggledance.core.storage.control_plane import ControlPlaneDB
+            return ControlPlaneDB()
+        except Exception as exc:
+            log.error(
+                "ControlPlaneDB construction failed — autonomy-growth "
+                "track will be inactive (D2 wiring): %s", exc,
+            )
+            return None
+
     # --- Core (lazy imports -- Agent 1 may still be running) ---
 
     @cached_property

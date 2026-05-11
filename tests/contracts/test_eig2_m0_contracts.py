@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import jsonschema
 import yaml
 
 
@@ -57,3 +58,11 @@ def test_config_schema_requires_disabled_alpha_default() -> None:
     assert props["enabled"]["const"] is False
     assert props["implemented"]["const"] is True
     assert props["production_default"]["const"] == "hex2d_sparse_tunnels"
+
+
+def test_config_yaml_validates_against_schema() -> None:
+    config_path = ROOT / "configs" / "explosive_intelligence_growth_v2.yaml"
+    schema_path = ROOT / ".orchestrator" / "contracts" / "eig2_config.schema.json"
+    config = yaml.load(config_path.read_text(encoding="utf-8"), Loader=yaml.CSafeLoader)
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    jsonschema.validate(config, schema)

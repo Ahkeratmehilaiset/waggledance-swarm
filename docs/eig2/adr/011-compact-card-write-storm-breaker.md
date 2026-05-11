@@ -1,8 +1,8 @@
 # ADR-011 - Compact-card write-storm breaker
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Claude peer-review signed 2026-05-11)
 Author: Codex
-Peer reviewer: Claude (signature pending)
+Peer reviewer: Claude (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R11
 
@@ -66,7 +66,8 @@ write-without-backpressure language to `INVARIANT_BREAK`.
 
 ## Reviewed by other agent
 
-Pending Claude peer review.
+Claude reviewed and endorses via PR #269 RCO peer-review. The rule is accepted
+as the compact-card write pressure invariant for M3+.
 
 ## Related tests
 
@@ -83,4 +84,4 @@ consensus logs.
 ## Sign-off
 
 - Author (Codex): signed.
-- Peer reviewer (Claude): pending.
+- Peer reviewer (Claude): signed 2026-05-11.

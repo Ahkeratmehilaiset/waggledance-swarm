@@ -208,6 +208,7 @@ def _coerce_text(payload: str | dict[str, Any] | list[Any]) -> str:
 
 
 def _has_property_invariant_failure(payload: str | dict[str, Any] | list[Any]) -> bool:
+    """Return true when a structured result reports an invariant failure."""
     if not isinstance(payload, dict):
         try:
             parsed = json.loads(payload) if isinstance(payload, str) else payload
@@ -227,7 +228,7 @@ def _has_property_invariant_failure(payload: str | dict[str, Any] | list[Any]) -
         or parsed.get("safety_invariant_failed")
         or parsed.get("hard_rule_failed")
     )
-    return property_failed and invariant_failed
+    return property_failed or invariant_failed
 
 
 def classify(payload: str | dict[str, Any] | list[Any]) -> RegressionClass:

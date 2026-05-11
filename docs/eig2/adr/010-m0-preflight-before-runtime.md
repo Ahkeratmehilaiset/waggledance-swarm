@@ -1,8 +1,8 @@
 # ADR-010 - M0 preflight before runtime work
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Claude peer-review signed 2026-05-11)
 Author: Codex
-Peer reviewer: Claude (signature pending)
+Peer reviewer: Claude (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R10
 
@@ -65,7 +65,8 @@ exist.
 
 ## Reviewed by other agent
 
-Pending Claude peer review.
+Claude reviewed and endorses via PR #269 RCO peer-review. The rule is accepted
+as the M0 ordering gate before any runtime work.
 
 ## Related tests
 
@@ -79,4 +80,4 @@ R12/R13 ordering evidence from PR #263 and PR #268.
 ## Sign-off
 
 - Author (Codex): signed.
-- Peer reviewer (Claude): pending.
+- Peer reviewer (Claude): signed 2026-05-11.

@@ -1,8 +1,8 @@
 # ADR-014 - Queue and backpressure before breaker for EIG2 writes
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Claude peer-review signed 2026-05-11)
 Author: Codex
-Peer reviewer: Claude (signature pending)
+Peer reviewer: Claude (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R14
 
@@ -64,7 +64,8 @@ backpressure to `INVARIANT_BREAK`; storage pressure still maps to
 
 ## Reviewed by other agent
 
-Pending Claude peer review.
+Claude reviewed and endorses via PR #269 RCO peer-review. The rule is accepted
+as the required ordering for optional EIG2 write paths.
 
 ## Related tests
 
@@ -79,4 +80,4 @@ convergent ship-list item 6.
 ## Sign-off
 
 - Author (Codex): signed.
-- Peer reviewer (Claude): pending.
+- Peer reviewer (Claude): signed 2026-05-11.

@@ -50,6 +50,19 @@ def test_property_test_overrides_classifier_when_invariant_failed() -> None:
     assert result == mod.RegressionClass.INVARIANT_BREAK
 
 
+def test_single_invariant_failure_flags_are_invariant_breaks() -> None:
+    mod = _load_module()
+    for flag in (
+        "property_test_failed",
+        "property_failed",
+        "invariant_test_failed",
+        "invariant_failed",
+        "safety_invariant_failed",
+        "hard_rule_failed",
+    ):
+        assert mod.classify({flag: True}) == mod.RegressionClass.INVARIANT_BREAK
+
+
 def test_hot_path_llm_precedes_latency_pattern() -> None:
     mod = _load_module()
     result = mod.classify("hot-path LLM call caused p99 routing regression")

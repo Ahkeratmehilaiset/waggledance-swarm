@@ -1,8 +1,8 @@
 # ADR-018 - Version monotonicity inside the sprint chain
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Claude peer-review signed 2026-05-11)
 Author: Codex
-Peer reviewer: Claude (signature pending)
+Peer reviewer: Claude (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R18
 
@@ -64,7 +64,8 @@ monotonic version evidence to `INVARIANT_BREAK`.
 
 ## Reviewed by other agent
 
-Pending Claude peer review.
+Claude reviewed and endorses via PR #269 RCO peer-review. The rule is accepted
+as the release/version naming invariant for the EIG2 sprint chain.
 
 ## Related tests
 
@@ -78,4 +79,4 @@ collides with the current stable/release-prep chain.
 ## Sign-off
 
 - Author (Codex): signed.
-- Peer reviewer (Claude): pending.
+- Peer reviewer (Claude): signed 2026-05-11.

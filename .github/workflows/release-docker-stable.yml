@@ -1,0 +1,164 @@
+name: Release stable Docker images to GHCR
+
+# R22.5+ stable-promotion workflow. Companion to release-docker.yml
+# (alpha/prerelease). Only triggers manually; refuses any tag that ends
+# in alpha / beta / rc / dev / pre. When run, it publishes:
+#   - ghcr.io/.../waggledance:<tag>            (canonical, e.g. v3.12.0)
+#   - ghcr.io/.../waggledance:stable           (sliding stable alias)
+#   - ghcr.io/.../waggledance:latest           (sliding global alias, operator-gated)
+#   - ghcr.io/.../waggledance:small-stable     (Profile S, opt-in)
+#   - ghcr.io/.../waggledance:medium-stable    (Profile M, opt-in)
+#
+# Operator gate: workflow_dispatch only. The release.published auto-trigger
+# is INTENTIONALLY disabled so a GitHub tag move alone cannot accidentally
+# promote :latest.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable git tag to publish (e.g. v3.12.0). Must NOT end in alpha/beta/rc."
+        required: true
+        type: string
+      move_latest:
+        description: "Move :latest to this tag (yes/no). Default no — operator must opt-in."
+        required: true
+        type: choice
+        options: ["yes", "no"]
+        default: "no"
+      profile_aliases:
+        description: "Update small-stable / medium-stable Profile aliases (yes/no)"
+        required: false
+        type: choice
+        options: ["yes", "no"]
+        default: "yes"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Refuse if tag is alpha/beta/rc/dev/pre
+        id: check
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [[ "$TAG" =~ (alpha|beta|rc|dev|pre)$ ]]; then
+            echo "Tag '$TAG' is a prerelease shape — refusing to publish."
+            echo "Stable promotion goes through this workflow ONLY for tags like v3.12.0."
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '$TAG' does not match strict semver vMAJOR.MINOR.PATCH — refusing."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-tag.outputs.tag }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push canonical stable image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }}
+
+      - name: Tag :stable sliding alias
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/ahkeratmehilaiset/waggledance:stable \
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }}
+
+      - name: Tag :latest (operator-gated)
+        if: ${{ inputs.move_latest == 'yes' }}
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/ahkeratmehilaiset/waggledance:latest \
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }}
+
+      - name: Tag Profile S stable alias
+        if: ${{ inputs.profile_aliases == 'yes' }}
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/ahkeratmehilaiset/waggledance:small-stable \
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }}
+
+      - name: Tag Profile M stable alias
+        if: ${{ inputs.profile_aliases == 'yes' }}
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/ahkeratmehilaiset/waggledance:medium-stable \
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }}
+
+  smoke-test:
+    needs: [validate-tag, build-and-push]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Pull canonical
+        run: docker pull ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }}
+
+      - name: Smoke — Profile S clean import + redactor + LLM disabled
+        run: |
+          docker run --rm \
+            -e WAGGLE_PROFILE=small \
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }} \
+            python -c "
+          import sys
+          from waggledance.core.bridge_llm import (
+              BridgeLLMClient, LLMRequest, BridgeLLMRedactor,
+          )
+          leaked = [n for n in ('anthropic', 'openai', 'ollama', 'vertexai',
+                                  'cohere', 'groq')
+                     if n in sys.modules]
+          assert not leaked, f'Profile S regression at stable: {leaked}'
+          assert not BridgeLLMClient.disabled('profile_s_stable').is_enabled()
+          assert BridgeLLMRedactor().redact('alice@example.org').applied
+          print('SMOKE_OK_STABLE')
+          "
+
+      - name: Smoke — :stable alias resolves to canonical
+        run: |
+          docker pull ghcr.io/ahkeratmehilaiset/waggledance:stable
+          STABLE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            ghcr.io/ahkeratmehilaiset/waggledance:stable)
+          CANONICAL_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }})
+          if [ "$STABLE_DIGEST" != "$CANONICAL_DIGEST" ]; then
+            echo "::warning::stable alias does not resolve to canonical digest"
+          fi
+
+      - name: Smoke — :latest only if moved
+        if: ${{ inputs.move_latest == 'yes' }}
+        run: |
+          docker pull ghcr.io/ahkeratmehilaiset/waggledance:latest
+          LATEST_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            ghcr.io/ahkeratmehilaiset/waggledance:latest)
+          CANONICAL_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }})
+          if [ "$LATEST_DIGEST" != "$CANONICAL_DIGEST" ]; then
+            echo "::error::latest alias does not resolve to canonical digest after move"
+            exit 1
+          fi

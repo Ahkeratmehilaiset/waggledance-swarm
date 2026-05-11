@@ -103,7 +103,8 @@ squash-merge them WITHOUT a fresh approval prompt **only if all four**:
 a) PR head SHA matches the local `EXPECTED_HEAD`,
 b) all required CI checks are green,
 c) GitHub mergeable state is `clean` / `mergeable`,
-d) no rule in this file (or in `wd_phase*_master_prompt*.md`) is violated.
+d) no rule in this file (or in any tracked per-session prompt returned by
+   `git ls-files '*master_prompt*.md'`) is violated.
 
 Use `gh pr merge --match-head-commit="$EXPECTED_HEAD"` to refuse stale-SHA
 merges. Never `--admin`, never `--no-verify`, never force-push.
@@ -146,9 +147,9 @@ direct," that is the moment to stop and open a PR.
 - `AGENTS.md` task rules still apply.
 - `.gitignore` still applies.
 - The project's existing build, test, and release processes still apply.
-- `wd_phase*_master_prompt*.md` per-session rules still apply on top of
-  this file. Per-session rules can be more strict; they cannot loosen
-  the rules above.
+- Tracked per-session prompts returned by `git ls-files '*master_prompt*.md'`
+  still apply on top of this file. Per-session rules can be more strict; they
+  cannot loosen the rules above.
 
 ## When in doubt
 

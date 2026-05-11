@@ -1,12 +1,22 @@
 # Hex Neighbor Mesh — Cell Topology
 # 7 cells: 1 center hub + 6 ring-1 domain clusters
 # Axial coordinates (q, r)
+#
+# Audit H1+H24+H28: agent.domain is derived from
+# configs/alias_registry.yaml canonical IDs (e.g.
+# "domain.apiary.beekeeper" -> "apiary"). The selectors below were
+# extended in the H24/H28 PR with the canonical-domain tokens used by
+# the alias registry so the 75 production agents distribute across all
+# cells instead of collapsing to hub. The pre-H24 tokens are kept for
+# back-compat with any agent YAML that still ships an explicit
+# header.domain field. Empirical: hub_count drops from 75/75 (100%)
+# to 1/75 (1%) with the same agents/ directory unchanged.
 
 cells:
   - id: hub
     coord: {q: 0, r: 0}
     description: "Central dispatch hub — general queries, cross-domain routing"
-    domain_selectors: [general, dispatch, core]
+    domain_selectors: [general, dispatch, core, system, dispatcher]
     tag_selectors: [core_dispatcher]
     enabled: true
     neighbor_policy: default
@@ -22,7 +32,7 @@ cells:
   - id: environment
     coord: {q: 0, r: -1}
     description: "Environmental monitoring — weather, climate, soil, water"
-    domain_selectors: [weather, climate, soil, water, frost, storm, meteorolog, limnolog]
+    domain_selectors: [weather, climate, soil, water, frost, storm, meteorolog, limnolog, nature]
     tag_selectors: [meteorologist, flight_weather, frost_soil, limnologist, air_quality, storm_alert, microclimate]
     enabled: true
     neighbor_policy: default
@@ -30,7 +40,7 @@ cells:
   - id: home_comfort
     coord: {q: -1, r: 0}
     description: "Home comfort — energy, HVAC, lighting, indoor environment"
-    domain_selectors: [energy, hvac, lighting, indoor, comfort, home, smart, garden]
+    domain_selectors: [energy, hvac, lighting, indoor, comfort, home, smart, garden, cottage, maintenance]
     tag_selectors: [energy_advisor, smart_home, hvac, lighting_master, indoor_garden, pet_care, noise_monitor]
     enabled: true
     neighbor_policy: default
@@ -46,7 +56,7 @@ cells:
   - id: production
     coord: {q: 0, r: 1}
     description: "Production and quality — factory, lab, inspection, maintenance"
-    domain_selectors: [production, factory, quality, maintenance, lab, inspection, industrial]
+    domain_selectors: [production, factory, quality, maintenance, lab, inspection, industrial, science]
     tag_selectors: [production_line, quality_inspector, shift_manager, maintenance_planner, lab_analyst, equipment_tech, hvac_industrial]
     enabled: true
     neighbor_policy: default
@@ -54,7 +64,7 @@ cells:
   - id: logistics
     coord: {q: 1, r: -1}
     description: "Logistics and property — supply chain, carpentry, waste, budget"
-    domain_selectors: [logistics, supply, delivery, budget, property, waste, carpenter, well]
+    domain_selectors: [logistics, supply, delivery, budget, property, waste, carpenter, well, operations]
     tag_selectors: [supply_chain, delivery_tracker, budget_tracker, carpenter, waste_handler, well_water, commute_planner]
     enabled: true
     neighbor_policy: default

@@ -1,6 +1,6 @@
 # WaggleDance
 
-> A local-first AI runtime that routes deterministically and grows new solvers on its own — without leaking your data to the cloud. Hex-mesh routing across 7 specialized cells, six-family auto-growth lane, MAGMA-audited provenance.
+> A local-first AI runtime that routes deterministically and grows new solvers on its own — without leaking your data to the cloud. Two-topology hex routing (7-cell agent map + 8-cell solver retrieval — see [`docs/architecture/HEX_TOPOLOGIES.md`](docs/architecture/HEX_TOPOLOGIES.md)), six-family auto-growth lane, MAGMA-audited provenance.
 
 ## What's measured (same machine, same snapshots)
 
@@ -115,7 +115,14 @@ Query → Solver Router → Solver Engines (Layer 3, authoritative)
                      Night Learning  /  Dream Mode (counterfactual sims)
 ```
 
-The runtime is built around a hexagonal layout: `core/` is the domain, `adapters/http/routes/` and `adapters/llm/` are ports, `bootstrap/` is the DI container, `application/` holds DTOs/services. Hex-cell FAISS retrieval is keyed by `core/hex_cell_topology` — solvers organize into 8 cells (`general`, `thermal`, `energy`, `safety`, `seasonal`, `math`, `system`, `learning`).
+The runtime is built around a hexagonal layout: `core/` is the domain, `adapters/http/routes/` and `adapters/llm/` are ports, `bootstrap/` is the DI container, `application/` holds DTOs/services.
+
+There are **two independent hex topologies** (see [`docs/architecture/HEX_TOPOLOGIES.md`](docs/architecture/HEX_TOPOLOGIES.md) for the full disambiguation):
+
+- **Agent-routing topology (7 cells)** in `configs/hex_cells.yaml`, loaded by `HexTopologyRegistry`. Cells: `hub`, `bee_ops`, `environment`, `home_comfort`, `safety_security`, `production`, `logistics`. Used by `HexNeighborAssist` to pick which subset of the 75 agents provides expertise for a chat fallback. Gated by `hex_mesh.enabled` (default `false`).
+- **Solver-retrieval topology (8 cells)** in `waggledance/core/hex_cell_topology.py` (`HexCellTopology`). Cells: `general`, `thermal`, `energy`, `safety`, `seasonal`, `math`, `system`, `learning`. Used by `HybridRetrievalService` to pick per-cell FAISS indices. Gated by `hybrid_retrieval.enabled`.
+
+Both are stateless and rebuilt at boot. They never compare cell IDs — different inputs, different outputs.
 
 ### Layers
 

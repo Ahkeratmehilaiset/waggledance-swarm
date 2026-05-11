@@ -185,10 +185,27 @@ class Container:
 
         Synchronous — called once during orchestrator construction.
         Returns activated AgentDefinition list (empty on error).
+
+        Audit H12 / D3.2: agents are constructed with active=False and
+        then activated by AgentLifecycleManager.spawn_for_profile.
+        AgentLifecycleManager is the sole owner of active-state
+        transitions per its docstring; before this change the
+        container set active=True inline, bypassing the manager and
+        leaving it unwired in production.
+
+        Profile filtering still happens at YAML-load time because
+        agent YAMLs declare a *list* of supported profiles
+        (``profiles: [HOME, COTTAGE]``) and lifecycle only knows the
+        single ``agent.profile`` slot — filtering at load preserves
+        multi-profile semantics. Lifecycle's spawn_for_profile then
+        flips active=True on the already-filtered list.
         """
         try:
             import yaml
             from waggledance.core.domain.agent import AgentDefinition
+            from waggledance.core.orchestration.lifecycle import (
+                AgentLifecycleManager,
+            )
 
             agents_dir = Path("agents")
             if not agents_dir.exists():
@@ -206,7 +223,7 @@ class Container:
                     profile, sorted(KNOWN_PROFILES),
                 )
                 return []
-            agents = []
+            loaded: list[AgentDefinition] = []
             for yaml_file in sorted(agents_dir.rglob("*.yaml")):
                 try:
                     with open(yaml_file, encoding="utf-8") as f:
@@ -219,6 +236,23 @@ class Container:
                     profiles = [p.upper() for p in data.get("profiles", ["ALL"])]
                     if profile not in profiles and "ALL" not in profiles:
                         continue
+                    # AgentDefinition.profile is a single string but
+                    # YAML allows a list. We pick the value that lets
+                    # AgentLifecycleManager.spawn_for_profile see a
+                    # match on the active profile: "ALL" if the agent
+                    # is universal, otherwise the active profile (we
+                    # already verified it's in the agent's list).
+                    # This avoids the pre-H12 bug where profiles[0]
+                    # was used verbatim, so an agent with
+                    # profiles=[APIARY, HOME] got profile="APIARY"
+                    # and would be dropped by the lifecycle filter
+                    # on a HOME-profile boot.
+                    if "ALL" in profiles:
+                        agent_profile = "ALL"
+                    else:
+                        agent_profile = profile
+                    # Construct with active=False; AgentLifecycleManager
+                    # flips it after the filter pass (H12).
                     agent = AgentDefinition(
                         id=header["agent_id"],
                         name=header.get("agent_name", header["agent_id"]),
@@ -229,15 +263,25 @@ class Container:
                         ),
                         trust_level=0,
                         specialization_score=0.0,
-                        active=True,
-                        profile=profiles[0] if profiles else "ALL",
+                        active=False,
+                        profile=agent_profile,
                     )
-                    agents.append(agent)
+                    loaded.append(agent)
                 except Exception as e:
                     log.warning("Failed to load agent %s: %s", yaml_file, e)
 
-            log.info("Loaded %d agents for profile %s", len(agents), profile)
-            return agents
+            # AgentLifecycleManager.spawn_for_profile is the sole owner
+            # of the active flag (audit H12). Before this wiring the
+            # manager existed in waggledance/core/orchestration/lifecycle.py
+            # but the container never called it.
+            lifecycle = AgentLifecycleManager()
+            activated = lifecycle.spawn_for_profile(loaded, profile)
+            log.info(
+                "Loaded %d agents for profile %s (activated %d via "
+                "AgentLifecycleManager)",
+                len(loaded), profile, len(activated),
+            )
+            return activated
         except Exception as e:
             log.warning("Agent loading failed, orchestrator will run with 0 agents: %s", e)
             return []

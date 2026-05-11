@@ -496,6 +496,19 @@ other substantive event using the same `task_id`. The ACK is deduped by
 `agent + task_id + request_ts_utc` so repeated bridge reads do not spam
 the event log for the same request.
 
+## Polymorphic Continuity Classification (added 2026-05-11)
+
+Bridge readers must tolerate richer domain event types. A targeted event with
+the same `task_id` from the requested agent is a substantive answer unless it
+is an ACK (`message/received`, `seen`, `acknowledged`) or infrastructure
+traffic (`heartbeat`, `liveness`, `wake_request`). This prevents custom events
+such as `ownership_proposal/open` from being silently dropped by polling.
+
+Directed events are request-like when they have `to`, `task_id`, and an
+open/proposal/request-style status. Readers split comma-separated `to` values
+so `to: "claude,operator"` is tracked per target instead of waiting for a
+nonexistent combined agent named `claude,operator`.
+
 ## Files
 
 - `.agent-bridge/shared/events.jsonl` - append-only merged event stream.

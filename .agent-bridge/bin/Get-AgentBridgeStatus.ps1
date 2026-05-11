@@ -30,6 +30,10 @@ if (Test-Path -LiteralPath $staleSweep -PathType Leaf) {
 }
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
+$classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
+if (Test-Path -LiteralPath $classifier -PathType Leaf) {
+    . $classifier
+}
 
 function Read-EventObjects {
     param([Parameter(Mandatory)] [string] $Path, [int] $MaxLines = 50000)
@@ -54,46 +58,6 @@ function Read-ClaimObjects {
         try { [void]$items.Add((Get-Content -Raw -Path $file.FullName -Encoding UTF8 | ConvertFrom-Json)) } catch {}
     }
     return $items
-}
-
-function Test-IsRequestLike {
-    param([Parameter(Mandatory)] [object] $Event)
-    $requestTypes = @('message','handoff','blocked','finding','decision','done')
-    $requestStatuses = @(
-        'request','ready','blocked','open','proposal',
-        'fix-pushed','fix-branch-pushed','pushed',
-        'ready_for_implementation'
-    )
-    return (
-        $Event.PSObject.Properties['to'] -and
-        [string]$Event.to -and
-        [string]$Event.task_id -and
-        $requestTypes -contains [string]$Event.type -and
-        $requestStatuses -contains [string]$Event.status
-    )
-}
-
-function Test-IsAnswerEvent {
-    param([Parameter(Mandatory)] [object] $Event)
-    $status = [string]$Event.status
-    $type = [string]$Event.type
-    if (@('received','seen','acknowledged') -contains $status) { return $false }
-    if ($type -eq 'message') { return $status -eq 'answered' }
-    return @('done','finding','decision','blocked','handoff','test','claim','release') -contains $type
-}
-
-function Test-IsRequesterClosureEvent {
-    param([Parameter(Mandatory)] [object] $Event)
-    $status = [string]$Event.status
-    $type = [string]$Event.type
-    if ($type -eq 'message') {
-        return @('closed','superseded','cancelled','canceled') -contains $status
-    }
-    if (@('done','release','decision') -notcontains $type) { return $false }
-    return @(
-        'done','closed','superseded','merged','abandoned',
-        'completed','approved','cancelled','canceled'
-    ) -contains $status
 }
 
 function Format-BridgeText {
@@ -129,15 +93,21 @@ foreach ($agent in $agents) {
 }
 
 $latestRequests = @{}
-foreach ($event in @($events | Where-Object { Test-IsRequestLike -Event $_ } | Sort-Object ts_utc)) {
-    $key = "{0}|{1}" -f [string]$event.to, [string]$event.task_id
-    $latestRequests[$key] = $event
+foreach ($event in @($events | Where-Object { Test-BridgeRequestLikeEvent -Event $_ } | Sort-Object ts_utc)) {
+    foreach ($target in @(Get-BridgeEventTargets -Event $event)) {
+        $key = "{0}|{1}" -f $target, [string]$event.task_id
+        $latestRequests[$key] = [pscustomobject]@{
+            target = $target
+            event = $event
+        }
+    }
 }
 
 $requestStates = @()
 foreach ($key in ($latestRequests.Keys | Sort-Object)) {
-    $request = $latestRequests[$key]
-    $target = [string]$request.to
+    $requestInfo = $latestRequests[$key]
+    $request = $requestInfo.event
+    $target = [string]$requestInfo.target
     $taskId = [string]$request.task_id
     $answer = @(
         $events |
@@ -145,7 +115,7 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
                 [string]$_.agent -eq $target -and
                 [string]$_.task_id -eq $taskId -and
                 [string]$_.ts_utc -gt [string]$request.ts_utc -and
-                (Test-IsAnswerEvent -Event $_)
+                (Test-BridgeAnswerEvent -Event $_)
             } |
             Sort-Object ts_utc |
             Select-Object -Last 1
@@ -168,7 +138,7 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
                 [string]$_.agent -eq [string]$request.agent -and
                 [string]$_.task_id -eq $taskId -and
                 [string]$_.ts_utc -gt [string]$request.ts_utc -and
-                (Test-IsRequesterClosureEvent -Event $_)
+                (Test-BridgeRequesterClosureEvent -Event $_)
             } |
             Sort-Object ts_utc |
             Select-Object -Last 1

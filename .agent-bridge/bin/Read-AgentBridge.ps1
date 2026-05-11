@@ -26,6 +26,10 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
 }
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
+$classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
+if (Test-Path -LiteralPath $classifier -PathType Leaf) {
+    . $classifier
+}
 
 # R15: opportunistic stale-claim sweep on every read. Cheap (only
 # walks the small active-claims dir). The sweep emits its own
@@ -61,29 +65,6 @@ function Read-BridgeEventObjects {
         } catch {}
     }
     return $items
-}
-
-function Test-IsAnswerEvent {
-    param([Parameter(Mandatory)] [object] $Event)
-    $status = [string]$Event.status
-    $type = [string]$Event.type
-    if (@('received','seen','acknowledged') -contains $status) { return $false }
-    if ($type -eq 'message') { return $status -eq 'answered' }
-    return @('done','finding','decision','blocked','handoff','test','claim','release') -contains $type
-}
-
-function Test-IsRequesterClosureEvent {
-    param([Parameter(Mandatory)] [object] $Event)
-    $status = [string]$Event.status
-    $type = [string]$Event.type
-    if ($type -eq 'message') {
-        return @('closed','superseded','cancelled','canceled') -contains $status
-    }
-    if (@('done','release','decision') -notcontains $type) { return $false }
-    return @(
-        'done','closed','superseded','merged','abandoned',
-        'completed','approved','cancelled','canceled'
-    ) -contains $status
 }
 
 function Send-ReceivedAck {
@@ -181,20 +162,12 @@ if ($Agent -and -not $NoContinuity) {
         Write-Host ''
     } else {
         $allEvents = Read-BridgeEventObjects -Path $eventsPath
-        $requestTypes = @('message','handoff','blocked','finding','decision','done')
-        $requestStatuses = @(
-            'request','ready','blocked','open','proposal',
-            'fix-pushed','fix-branch-pushed','pushed',
-            'ready_for_implementation'
-        )
         $requests = @(
             $allEvents |
                 Where-Object {
-                    $_.PSObject.Properties['to'] -and
-                    [string]$_.to -eq $Agent -and
+                    (Test-BridgeRequestLikeEvent -Event $_) -and
+                    (Test-BridgeAddressedTo -Event $_ -TargetAgent $Agent) -and
                     [string]$_.agent -ne $Agent -and
-                    $requestTypes -contains [string]$_.type -and
-                    $requestStatuses -contains [string]$_.status -and
                     [string]$_.task_id
                 } |
                 Sort-Object ts_utc
@@ -225,7 +198,7 @@ if ($Agent -and -not $NoContinuity) {
                             [string]$_.agent -eq $Agent -and
                             [string]$_.task_id -eq $taskId -and
                             [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                            (Test-IsAnswerEvent -Event $_)
+                            (Test-BridgeAnswerEvent -Event $_)
                         } |
                         Sort-Object ts_utc |
                         Select-Object -Last 1
@@ -241,7 +214,7 @@ if ($Agent -and -not $NoContinuity) {
                                 [string]$_.agent -eq [string]$req.agent -and
                                 [string]$_.task_id -eq $taskId -and
                                 [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                                (Test-IsRequesterClosureEvent -Event $_)
+                                (Test-BridgeRequesterClosureEvent -Event $_)
                             } |
                             Sort-Object ts_utc |
                             Select-Object -Last 1
@@ -263,36 +236,39 @@ if ($Agent -and -not $NoContinuity) {
             }
         }
 
-        $sentRequests = @(
-            $allEvents |
-                Where-Object {
-                    $_.PSObject.Properties['to'] -and
+        $sentRequests = New-Object System.Collections.Generic.List[object]
+        foreach ($r in @($allEvents | Where-Object {
                     [string]$_.agent -eq $Agent -and
-                    [string]$_.to -and
-                    [string]$_.to -ne $Agent -and
-                    $requestTypes -contains [string]$_.type -and
-                    $requestStatuses -contains [string]$_.status -and
-                    [string]$_.task_id
-                } |
-                Sort-Object ts_utc
-        )
+                    (Test-BridgeRequestLikeEvent -Event $_)
+                } | Sort-Object ts_utc)) {
+            foreach ($target in @(Get-BridgeEventTargets -Event $r)) {
+                if ($target -and $target -ne $Agent) {
+                    [void]$sentRequests.Add([pscustomobject]@{
+                        target = $target
+                        event = $r
+                    })
+                }
+            }
+        }
         if ($sentRequests.Count -eq 0) {
             Write-Host '  outgoing: (none)'
         } else {
             Write-Host '  outgoing:'
             $sentLatestByTask = @{}
             foreach ($r in $sentRequests) {
-                $sentLatestByTask[[string]$r.task_id] = $r
+                $sentLatestByTask[("{0}|{1}" -f [string]$r.target, [string]$r.event.task_id)] = $r
             }
             foreach ($taskId in ($sentLatestByTask.Keys | Sort-Object)) {
-                $req = $sentLatestByTask[$taskId]
+                $reqInfo = $sentLatestByTask[$taskId]
+                $req = $reqInfo.event
+                $target = [string]$reqInfo.target
                 $reply = @(
                     $allEvents |
                         Where-Object {
-                            [string]$_.agent -eq [string]$req.to -and
-                            [string]$_.task_id -eq $taskId -and
+                            [string]$_.agent -eq $target -and
+                            [string]$_.task_id -eq [string]$req.task_id -and
                             [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                            (Test-IsAnswerEvent -Event $_)
+                            (Test-BridgeAnswerEvent -Event $_)
                         } |
                         Sort-Object ts_utc |
                         Select-Object -Last 1
@@ -300,15 +276,15 @@ if ($Agent -and -not $NoContinuity) {
                 if ($reply.Count -gt 0) {
                     $last = $reply[-1]
                     Write-Host ("  answered-by-{0} {1}: request {2}/{3} -> {4}/{5}" -f `
-                        $req.to, $taskId, $req.type, $req.status, $last.type, $last.status)
+                        $target, $req.task_id, $req.type, $req.status, $last.type, $last.status)
                 } else {
                     $closure = @(
                         $allEvents |
                             Where-Object {
                                 [string]$_.agent -eq $Agent -and
-                                [string]$_.task_id -eq $taskId -and
+                                [string]$_.task_id -eq [string]$req.task_id -and
                                 [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                                (Test-IsRequesterClosureEvent -Event $_)
+                                (Test-BridgeRequesterClosureEvent -Event $_)
                             } |
                             Sort-Object ts_utc |
                             Select-Object -Last 1
@@ -316,14 +292,14 @@ if ($Agent -and -not $NoContinuity) {
                     if ($closure.Count -gt 0) {
                         $last = $closure[-1]
                         Write-Host ("  closed-by-{0} {1}: request {2}/{3} -> {4}/{5}" -f `
-                            $Agent, $taskId, $req.type, $req.status, $last.type, $last.status)
+                            $Agent, $req.task_id, $req.type, $req.status, $last.type, $last.status)
                         continue
                     }
                     $received = @(
                         $allEvents |
                             Where-Object {
-                                [string]$_.agent -eq [string]$req.to -and
-                                [string]$_.task_id -eq $taskId -and
+                                [string]$_.agent -eq $target -and
+                                [string]$_.task_id -eq [string]$req.task_id -and
                                 [string]$_.type -eq 'message' -and
                                 [string]$_.status -eq 'received' -and
                                 [string]$_.ts_utc -gt [string]$req.ts_utc
@@ -333,11 +309,11 @@ if ($Agent -and -not $NoContinuity) {
                     )
                     if ($received.Count -gt 0) {
                         Write-Host ("  RECEIVED-BY-{0} {1}: waiting for answer to {2}/{3}: {4}" -f `
-                            $req.to, $taskId, $req.type, $req.status, $req.message) `
+                            $target, $req.task_id, $req.type, $req.status, $req.message) `
                             -ForegroundColor Yellow
                     } else {
                         Write-Host ("  WAITING-FOR-{0} {1}: {2}/{3}: {4}" -f `
-                            $req.to, $taskId, $req.type, $req.status, $req.message) `
+                            $target, $req.task_id, $req.type, $req.status, $req.message) `
                             -ForegroundColor Yellow
                     }
                 }

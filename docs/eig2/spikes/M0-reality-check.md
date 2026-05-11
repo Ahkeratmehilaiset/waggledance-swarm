@@ -76,6 +76,9 @@ All paths relative to repo root. Line numbers are from `origin/main` @ `bcc4753`
   - `record_cutover_state(...)` (line 1088)
   - `record_validation_run(...)` (line 1342)
   - `record_shadow_evaluation(...)` (line 1395)
+  - `record_promotion_decision(...)` (line 1452) — flagged by Codex bridge review 2026-05-11T18:35Z
+  - `record_runtime_gap_signal(...)` (line 1737) — **mandatory for EIG2**: backs section 5 above. `RuntimeGapDetector.record()` in `gap_intake.py:76` calls `self._cp.record_runtime_gap_signal(...)`. Any EIG2 module that depends on RuntimeGapDetector emission must verify this method exists at the pinned SHA.
+  - `record_autogrowth_run(...)` (line 2139) — flagged by Codex bridge review 2026-05-11T18:35Z
 - Option B (R22.2e) relaxed read-side locks — every NEW EIG2 writer must pass an "Option-B compliance" contract test per R15:
   - write does not block existing readers beyond budget P
   - reader observes monotonic progress under concurrent write storm
@@ -137,7 +140,9 @@ Existing repo alarm vocabulary is unrelated (e.g., `freezer_alarm_above_neg5` in
 
 - `configs/hex_cells.yaml` — 7-cell agent-routing topology (load by HexTopologyRegistry).
 - `configs/alias_registry.yaml` — canonical ID map (load by AliasRegistry.from_yaml_default).
-- `configs/profiles/{small,medium,large}.json` — profile definitions consumed by AgentLifecycleManager.spawn_for_profile (Note: actual path may be `solver-profiles/*.json` per repo convention; M0 PR2 owner verifies).
+- **Two distinct profile vocabularies — do NOT conflate** (Codex bridge review 2026-05-11T18:35Z flagged the original "maybe" as insufficient):
+  - **Solver profile files**: `solver-profiles/{small,medium,large}.json` — verified to exist at `origin/main` `ccd4d12`. These configure solver-budget tiers. EIG2 §3 module table lists "solver-profiles/{small,medium,large}.json" as a PR2 update target (Codex-owned).
+  - **Agent runtime profile vocabulary**: `KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})` defined in `waggledance/bootstrap/container.py:15`. This is the `WAGGLE_PROFILE` environment-variable vocabulary validated by `_load_agents` per H30 / PR #239. Agent YAML files use these profile labels in their `profiles:` field, and `AgentLifecycleManager.spawn_for_profile` filters by membership against this set. EIG2 must not invent new agent profile labels without amending KNOWN_PROFILES via PR + ADR.
 - `data/control_plane.db` — SQLite (created on first write per D2.1 lifecycle).
 
 ## 12. What does NOT yet exist (and which milestone creates it)

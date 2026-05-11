@@ -10,7 +10,7 @@ Authorship convention: each ADR has an author (drafts the rule-text) and a peer 
 |---|---|---|---|---|---|---|---|
 | 010 | R10 | M0 preflight before runtime work | Codex | Claude | drafting (in PR2) | TBD | TBD |
 | 011 | R11 | Compact-card write-storm breaker | Codex | Claude | drafting (in PR2) | TBD | TBD |
-| 012 | R12 | M0 scope freeze — zero `waggledance/core/*` changes | Claude | Codex | proposed (Claude signed; Codex pending) | TBD (joint PR3) | `eig2-m0-adr-set-prep` / 012-m0-scope-freeze.md |
+| 012 | R12 | M0 scope freeze — zero `waggledance/core/*` changes | Claude | Codex | proposed (Claude signed + amended for `implemented:true` semantic alignment with PR #268; Codex pending) | TBD (joint PR3) | `eig2-m0-adr-set-prep` / 012-m0-scope-freeze.md |
 | 013 | R13 | RCO inventory required before adapter proposals | Claude | Codex | proposed (Claude signed; Codex pending) | TBD (joint PR3) | `eig2-m0-adr-set-prep` / 013-rco-inventory-required.md |
 | 014 | R14 | Queue + backpressure BEFORE breaker for writes | Codex | Claude | drafting (in PR2) | TBD | TBD |
 | 015 | R15 | Option-B compliance test per new EIG2 writer | Claude | Codex | proposed (Claude signed; Codex pending) | TBD (joint PR3) | `eig2-m0-adr-set-prep` / 015-option-b-compliance.md |

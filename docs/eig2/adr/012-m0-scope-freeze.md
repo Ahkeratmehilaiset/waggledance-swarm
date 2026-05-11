@@ -20,8 +20,8 @@ The EIG2-M0 milestone explicitly forbids any modification to files under the `wa
 - `docs/eig2/spikes/*.md`
 - `docs/eig2/adr/*.md`
 - `docs/eig2/proposals/*.md`
-- `configs/explosive_intelligence_growth_v2.yaml` (must have `enabled: false implemented: false`)
-- `configs/eig2_self_modification_denylist.yaml` (per EIG2 §29.1 initial creation rule)
+- `configs/explosive_intelligence_growth_v2.yaml` (must have `enabled: false`; `implemented` is alpha metadata, NOT a runtime-readiness claim — see semantic note below)
+- `configs/eig2_self_modification_denylist.yaml` (per EIG2 §29.1 initial creation rule; created in this commit alongside the ADR set)
 - `.orchestrator/bridge_adapter_spec.md`
 - `.orchestrator/bridge_classify.py`
 - `.orchestrator/no_human_prompt_lint.py`
@@ -43,6 +43,17 @@ Anything outside this allowlist is rejected by the M0 PR-review gate.
 - **All M0 deliverables are docs / config / .orchestrator-internal.** Mechanical to review; mechanical to revert.
 - **M0 ends when both agents endorse via M6 trust-filter** that R10–R19 ADR set is complete and PR1/PR2 spikes + adapter spec + reference impls have landed.
 - **M1 (interfaces) begins by lifting this freeze for `waggledance/core/reasoning/topology_provider.py` only,** as a single first runtime touch under fresh review. Future `waggledance/core/*` additions follow per-file ADR.
+
+## Semantic note: `implemented` field
+
+The `configs/explosive_intelligence_growth_v2.yaml` ships with `implemented: true` (enforced as a schema `const` in `.orchestrator/contracts/eig2_config.schema.json` from PR #268). This is **semantic alpha metadata**, NOT a runtime-readiness claim. Two definitions were debated during PR #268 RCO review:
+
+- (a) `implemented` = "any EIG2 module exists in the repo" → true once `.orchestrator/*` shipped via PR #268.
+- (b) `implemented` = "runtime is wired and reachable from the chat path" → false until M3/M4 first runtime touch.
+
+Decision: (a). `enabled: false` is the production gate; `implemented: true` is the "EIG2 surface has begun shipping" flag. Production behavior is governed entirely by `enabled` and the per-feature flags inside the config (`tunnels.enabled`, `magma_strata.progressive_replay_enabled`, etc.) plus `.eig2.halt`. The `implemented` field is informational — useful for dashboards and final-acceptance reports (Part 28.3 `eig2_default_enabled_actual`), never load-bearing for safety.
+
+If a future PR needs definition (b) semantics (e.g., to gate a runtime probe), introduce a separate `runtime_wired: bool` field rather than redefining `implemented`.
 
 ## Safety impact
 

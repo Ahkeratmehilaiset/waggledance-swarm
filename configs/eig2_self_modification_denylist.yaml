@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: BUSL-1.1
+# EIG2 self-modification denylist
+#
+# Owner: Claude (per docs/eig2/spikes/M0-reality-check.md §12)
+# Created: 2026-05-11, M0 milestone (R12 + EIG2 §10.4 default list + §29.1
+# initial creation rule).
+#
+# This file lists repository paths that the EIG2 autonomy_growth runtime
+# may NEVER modify. An autonomous attempt to write to any of these paths
+# is denied at the code level (see .orchestrator/bridge_classify.py
+# RegressionClass.INVARIANT_BREAK and forthcoming M3 safety modules);
+# emits a `safety_fence_alarm`; appends a MAGMA audit event; and creates
+# a proposal in `docs/eig2/proposals/` per EIG2 Part 11.3.
+#
+# This denylist is itself denylisted (entry: self-modification denylist
+# below). Implementation-time agents (Claude / Codex) MAY amend this
+# file only via a tracked PR with peer-review + ADR, never autonomously
+# at runtime, per EIG2 §29.1.
+
+protocol_version: "eig2-denylist-v1"
+
+categories:
+
+  hard_rules:
+    description: |
+      Files encoding non-negotiable operating rules. Mutating these
+      removes the foundation of the autonomous safety model.
+    paths:
+      - "CLAUDE.md"
+      - "AGENTS.md"
+      - "prompts/master_prompt*.md"
+
+  license_and_compliance:
+    description: |
+      License classification and commercial-use restrictions. Legal /
+      audit territory; agents may add new entries for newly created
+      protected files per Part 21.5, but never modify existing rows
+      or weaken any classification.
+    paths:
+      - "LICENSE-CORE.md"
+      - "LICENSE"
+      - "COMMERCIAL-USE.md"
+
+  bridge_protocol:
+    description: |
+      Bridge protocol surface — schema, classifier, projection. The R3
+      incident (2026-05-11T17:50:28Z) demonstrated what happens when
+      this layer is altered without ADR. Mutation requires an ADR
+      (e.g., ADR 020 for the polymorphic-reply fix).
+    paths:
+      - ".agent-bridge/bin/BridgeEventClassifier.ps1"
+      - ".agent-bridge/bin/Read-AgentBridge.ps1"
+      - ".agent-bridge/bin/Get-AgentBridgeStatus.ps1"
+      - ".agent-bridge/bin/Get-BridgeNextAction.ps1"
+      - ".agent-bridge/bin/Test-BridgePolymorphicContinuitySmoke.ps1"
+      - ".orchestrator/bridge_classify.py"
+      - ".orchestrator/eig2_bridge_projection.py"
+      - ".orchestrator/no_human_prompt_lint.py"
+      - ".orchestrator/contracts/eig2_bridge_event.schema.json"
+
+  magma_core:
+    description: |
+      MAGMA append-only chain, event log adapter, and provenance.
+      Hard rule 1 (Part 1.2): no replacement of MAGMA's append-only
+      temporal audit chain with a spatial graph.
+    paths:
+      - "waggledance/core/magma/event_log_adapter.py"
+      - "waggledance/core/magma/provenance.py"
+      - "waggledance/core/magma/replay_engine.py"
+      - "waggledance/core/magma/audit_projector.py"
+
+  eig2_halt:
+    description: |
+      Hard kill switch. If autonomy_growth could remove this, it would
+      not be an emergency stop. Part 10.2 + ADR-016 + ADR-017.
+    paths:
+      - ".eig2.halt"
+      - "waggledance/core/safety/eig2_halt.py"
+
+  eig2_safety_modules:
+    description: |
+      Backpressure, circuit breakers, resource budget. These are the
+      ground-truth safety layer; autonomous re-tuning is denied.
+      Future PR3+ wires this.
+    paths:
+      - "waggledance/core/safety/backpressure.py"
+      - "waggledance/core/safety/circuit_breakers.py"
+      - "waggledance/core/safety/resource_budget.py"
+
+  production_profiles_and_config:
+    description: |
+      Production profile definitions and the conservative EIG2 config.
+      `enabled: false` is the production gate; autonomy_growth cannot
+      flip it. Solver budgets remain operator-controlled.
+    paths:
+      - "configs/explosive_intelligence_growth_v2.yaml"
+      - "solver-profiles/small.json"
+      - "solver-profiles/medium.json"
+      - "solver-profiles/large.json"
+      - "configs/hex_cells.yaml"
+      - "configs/alias_registry.yaml"
+
+  redaction_and_fail_closed:
+    description: |
+      PII redaction and fail-closed provider policy. Operator-decision-4
+      (BridgeLLMRedactor) lives here; weakening these silently exposes
+      operator HETU/IBAN/Y-tunnus via cloud LLM calls.
+    paths:
+      - "waggledance/core/bridge_llm/redactor.py"
+      - "waggledance/adapters/llm/bridge_llm_adapter.py"
+
+  stage2_cutover:
+    description: |
+      Atomic-flip RFC + human approval. CLAUDE.md rule 10 +
+      ADR-016 require operator signature at execution time;
+      autonomy_growth may never author or modify these.
+    paths:
+      - "docs/architecture/STAGE2_CUTOVER_RFC.md"
+      - "HUMAN_APPROVAL.yaml"
+      - "HUMAN_APPROVAL_V2.yaml"
+      - "HUMAN_APPROVAL*.yaml"
+
+  self_modification_denylist:
+    description: |
+      This file. EIG2 §29.1: after initial creation, runtime
+      self-modification may never modify the denylist. Implementation-
+      time agents (Claude / Codex) may amend only via PR + ADR.
+    paths:
+      - "configs/eig2_self_modification_denylist.yaml"
+
+  agent_runtime_profile_vocabulary:
+    description: |
+      KNOWN_PROFILES + container bootstrap path. H30 hardened this
+      after a misconfigured WAGGLE_PROFILE booted with 0 agents.
+      autonomy_growth may not invent new profile labels.
+    paths:
+      - "waggledance/bootstrap/container.py"
+
+# Notes for implementers:
+#
+# - Detection: runtime checks should match `paths` glob-style. A
+#   write attempt that resolves to any glob match is denied + logged.
+# - Path normalization: forward slashes, repo-relative, case-sensitive
+#   on Linux, case-insensitive on Windows (apply Path.resolve() before
+#   matching).
+# - Glob semantics: `*` matches within a path segment; `**` matches
+#   across segments. `HUMAN_APPROVAL*.yaml` matches HUMAN_APPROVAL.yaml,
+#   HUMAN_APPROVAL_V2.yaml, etc.
+# - Override path: there is no autonomous override. Implementation-
+#   time agents amend via PR + ADR (per §29.1).
+# - Test surface: `tests/safety/test_eig2_denylist.py` (planned PR3 or M3)
+#   verifies that each category's paths are denied; mutation tests
+#   verify a removed denylist entry fails the safety contract test.

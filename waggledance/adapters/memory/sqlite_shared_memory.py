@@ -118,12 +118,22 @@ class SQLiteSharedMemory:
     for update_task to prevent arbitrary column writes.
     """
 
-    def __init__(self, db_path: str = "./shared_memory.db") -> None:
+    def __init__(self, db_path: str = "data/shared_memory.db") -> None:
+        # Audit H38: default moved from "./shared_memory.db" (project
+        # root) to "data/shared_memory.db" so the file lands next to
+        # the other operational DBs (audit_log, world_store, etc.)
+        # instead of polluting the repo root.
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
 
     async def initialize(self) -> None:
         """Open the database, enable WAL mode, create schema, check version."""
+        # H38: make sure the parent dir exists; aiosqlite.connect would
+        # otherwise raise on a fresh checkout that doesn't have data/.
+        from pathlib import Path as _Path
+        _parent = _Path(self._db_path).parent
+        if str(_parent) and str(_parent) != ".":
+            _parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
 

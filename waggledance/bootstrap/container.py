@@ -26,16 +26,41 @@ class Container:
 
     @cached_property
     def llm(self):
-        """LLMPort implementation."""
+        """LLMPort implementation.
+
+        Audit H49 / operator decision D3.4: production LLM calls now
+        route through BridgeLLMClient's 4-tier fallback chain
+        (cache -> local-ollama -> cloud -> heuristic), which brings
+        BridgeLLMRedactor onto cloud calls and lets Profile S short-
+        circuit to heuristic safely. Before this wiring the
+        orchestrator called OllamaAdapter directly and the entire
+        ~1200-LOC BridgeLLMClient stack sat unused in production.
+
+        Stub mode still returns StubLLMAdapter unchanged. If
+        BridgeLLMClient construction fails for any reason (missing
+        config, import error), we fall back to the original direct
+        OllamaAdapter so the runtime stays operational.
+        """
         if self._stub:
             from waggledance.adapters.llm.stub_llm_adapter import StubLLMAdapter
             return StubLLMAdapter()
         from waggledance.adapters.llm.ollama_adapter import OllamaAdapter
-        return OllamaAdapter(
+        direct = OllamaAdapter(
             base_url=self._settings.ollama_host,
             default_model=self._settings.chat_model,
             timeout_seconds=self._settings.ollama_timeout_seconds,
         )
+        try:
+            from waggledance.adapters.llm.bridge_llm_adapter import BridgeLLMAdapter
+            from waggledance.core.bridge_llm.client import BridgeLLMClient
+            client = BridgeLLMClient.default()
+            return BridgeLLMAdapter(client=client, fallback_adapter=direct)
+        except Exception as exc:
+            log.warning(
+                "BridgeLLMClient wiring failed (D3.4); orchestrator "
+                "will use OllamaAdapter directly: %s", exc,
+            )
+            return direct
 
     @cached_property
     def gemma_router(self):

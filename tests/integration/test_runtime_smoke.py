@@ -79,8 +79,18 @@ class TestNonStubContainer(unittest.TestCase):
         class_name = type(repo).__name__
         self.assertEqual(class_name, "ChromaMemoryRepository")
 
-    def test_non_stub_uses_ollama_adapter(self):
-        """Container(stub=False).llm is OllamaAdapter."""
+    def test_non_stub_uses_bridge_or_ollama_adapter(self):
+        """Container(stub=False).llm is BridgeLLMAdapter (or OllamaAdapter as fallback).
+
+        Audit fix D3.4 (PR #257): container.llm now routes through
+        BridgeLLMClient's 4-tier fallback chain (cache -> local-ollama
+        -> cloud -> heuristic) instead of returning OllamaAdapter
+        directly. OllamaAdapter remains the fallback adapter inside
+        BridgeLLMAdapter so the local-LLM behavior is unchanged when
+        the bridge chain is operational. If BridgeLLMClient
+        construction fails (missing config), container.llm falls back
+        to OllamaAdapter directly — both classes are acceptable here.
+        """
         from waggledance.adapters.config.settings_loader import WaggleSettings
         from waggledance.bootstrap.container import Container
 
@@ -88,7 +98,10 @@ class TestNonStubContainer(unittest.TestCase):
         container = Container(settings=settings, stub=False)
         llm = container.llm
         class_name = type(llm).__name__
-        self.assertEqual(class_name, "OllamaAdapter")
+        self.assertIn(
+            class_name, {"BridgeLLMAdapter", "OllamaAdapter"},
+            f"unexpected llm adapter class: {class_name}",
+        )
 
     def test_stub_uses_stub_llm(self):
         """Container(stub=True).llm is StubLLMAdapter."""

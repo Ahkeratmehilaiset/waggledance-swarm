@@ -183,6 +183,51 @@ class TestSQLiteTrustStore(unittest.TestCase):
         finally:
             self._run(store.close())
 
+    # ── Audit H47 regression: batched get_trust_many ────────────────
+
+    def test_get_trust_many_empty_input(self):
+        """Empty agent list returns empty dict without touching DB."""
+        store = SQLiteTrustStore(self._db_path)
+        try:
+            result = self._run(store.get_trust_many([]))
+            self.assertEqual(result, {})
+        finally:
+            self._run(store.close())
+
+    def test_get_trust_many_returns_stored_subset(self):
+        """Batch fetch returns only agents that have a row."""
+        store = SQLiteTrustStore(self._db_path)
+        try:
+            self._run(store.update_trust("alpha", _make_signals()))
+            self._run(store.update_trust("beta", _make_signals()))
+            result = self._run(store.get_trust_many(
+                ["alpha", "beta", "missing"]
+            ))
+            self.assertEqual(set(result.keys()), {"alpha", "beta"})
+            self.assertEqual(result["alpha"].agent_id, "alpha")
+            self.assertEqual(result["beta"].agent_id, "beta")
+        finally:
+            self._run(store.close())
+
+    def test_get_trust_many_single_query_for_many_agents(self):
+        """Audit H47: 75 agents now fetched in 1 SELECT, not 75 SELECTs.
+
+        We can't assert "exactly one DB round-trip" portably, but we can
+        assert the result has the expected shape and a generator input
+        works (matching orchestrator's `aid for a in self._agents`).
+        """
+        store = SQLiteTrustStore(self._db_path)
+        try:
+            ids = [f"agent_{i}" for i in range(75)]
+            for aid in ids:
+                self._run(store.update_trust(aid, _make_signals()))
+            gen = (aid for aid in ids)
+            result = self._run(store.get_trust_many(gen))
+            self.assertEqual(len(result), 75)
+            self.assertEqual(set(result.keys()), set(ids))
+        finally:
+            self._run(store.close())
+
 
 if __name__ == "__main__":
     unittest.main()

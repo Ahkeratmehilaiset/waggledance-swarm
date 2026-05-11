@@ -39,6 +39,17 @@ class InMemoryTrustStore:
         """Return trust score for the given agent, or None if not tracked."""
         return self._scores.get(agent_id)
 
+    async def get_trust_many(self, agent_ids):
+        """Batch get_trust — O(N) dict lookups, no async cost.
+
+        Implements TrustStorePort.get_trust_many for audit H47.
+        """
+        return {
+            aid: self._scores[aid]
+            for aid in agent_ids
+            if aid in self._scores
+        }
+
     async def update_trust(
         self,
         agent_id: str,

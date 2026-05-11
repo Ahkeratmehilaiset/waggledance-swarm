@@ -45,6 +45,38 @@ class TestInMemoryTrustStoreGetTrust:
         assert trust.agent_id == "agent-A"
 
 
+class TestInMemoryTrustStoreGetTrustMany:
+    """Audit H47 regression — batch trust fetch returns dict, omits misses."""
+
+    @pytest.mark.asyncio
+    async def test_get_trust_many_empty_input(
+        self, stub_trust_store: InMemoryTrustStore
+    ) -> None:
+        result = await stub_trust_store.get_trust_many([])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_get_trust_many_returns_stored_subset(
+        self, stub_trust_store: InMemoryTrustStore
+    ) -> None:
+        await stub_trust_store.update_trust("a1", _make_signals())
+        await stub_trust_store.update_trust("a2", _make_signals())
+        result = await stub_trust_store.get_trust_many(["a1", "a2", "missing"])
+        assert set(result.keys()) == {"a1", "a2"}
+        assert result["a1"].agent_id == "a1"
+        assert result["a2"].agent_id == "a2"
+
+    @pytest.mark.asyncio
+    async def test_get_trust_many_accepts_generator(
+        self, stub_trust_store: InMemoryTrustStore
+    ) -> None:
+        # Mirrors orchestrator usage `get_trust_many(a.id for a in agents)`.
+        await stub_trust_store.update_trust("g1", _make_signals())
+        gen = (aid for aid in ["g1", "g2"])
+        result = await stub_trust_store.get_trust_many(gen)
+        assert list(result.keys()) == ["g1"]
+
+
 class TestInMemoryTrustStoreUpdateTrust:
     """update_trust() behavior."""
 

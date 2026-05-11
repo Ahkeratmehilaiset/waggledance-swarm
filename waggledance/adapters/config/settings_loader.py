@@ -55,7 +55,12 @@ class WaggleSettings:
     profile: str = "HOME"
     ollama_host: str = "http://localhost:11434"
     chroma_dir: str = "./chroma_data"
-    db_path: str = "./shared_memory.db"
+    # Audit H38: db_path moved from "./shared_memory.db" (project root)
+    # to "data/shared_memory.db" so it lands next to audit_log.db /
+    # world_store.db / case_store.db / control_plane.db instead of
+    # polluting the repo root. The trust_store derives its path from
+    # os.path.dirname(db_path), so it gracefully moves with this change.
+    db_path: str = "data/shared_memory.db"
 
     # Models
     chat_model: str = "phi4-mini"
@@ -208,7 +213,10 @@ class WaggleSettings:
                 _preset_profile).upper(),
             ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
             chroma_dir=os.environ.get("CHROMA_DIR", "./chroma_data"),
-            db_path=os.environ.get("WAGGLE_DB_PATH", "./shared_memory.db"),
+            # H38: env-var default mirrors the dataclass field default
+            # (data/shared_memory.db). Operators on WAGGLE_DB_PATH override
+            # see no behavior change; only the unset case moves.
+            db_path=os.environ.get("WAGGLE_DB_PATH", "data/shared_memory.db"),
             chat_model=os.environ.get("WAGGLE_CHAT_MODEL", _preset_chat_model),
             learning_model=os.environ.get("WAGGLE_LEARNING_MODEL", "llama3.2:1b"),
             embed_model=os.environ.get("WAGGLE_EMBED_MODEL", _preset_embed_model),

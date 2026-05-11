@@ -33,6 +33,10 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
 }
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
+$classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
+if (Test-Path -LiteralPath $classifier -PathType Leaf) {
+    . $classifier
+}
 
 function Read-BridgeEventObjects {
     param([string] $Path, [int] $MaxLines)
@@ -59,35 +63,6 @@ function Read-ClaimObjects {
     return $items
 }
 
-function Test-IsAddressedTo {
-    param([object] $Event, [string] $TargetAgent)
-    if (-not $Event.PSObject.Properties['to']) { return $false }
-    $to = [string]$Event.to
-    if (-not $to) { return $false }
-    $targets = ($to -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-    return $targets -contains $TargetAgent
-}
-
-function Test-IsRequestLike {
-    param([object] $Event)
-    $requestTypes = @('message','handoff','blocked','finding','decision','done')
-    $requestStatuses = @('request','ready','blocked','open','proposal','fix-pushed','fix-branch-pushed','pushed','ready_for_implementation')
-    return (
-        [string]$Event.task_id -and
-        $requestTypes -contains [string]$Event.type -and
-        $requestStatuses -contains [string]$Event.status
-    )
-}
-
-function Test-IsAnswerEvent {
-    param([object] $Event)
-    $status = [string]$Event.status
-    $type = [string]$Event.type
-    if (@('received','seen','acknowledged') -contains $status) { return $false }
-    if ($type -eq 'message') { return $status -eq 'answered' }
-    return @('done','finding','decision','blocked','handoff','test','claim','release') -contains $type
-}
-
 $events = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail)
 $claims = @(Read-ClaimObjects)
 $ownClaims = @($claims | Where-Object { [string]$_.agent -eq $Agent })
@@ -95,7 +70,7 @@ $foreignWriteClaims = @($claims | Where-Object { [string]$_.agent -ne $Agent -an
 
 $requestsForAgent = @(
     $events |
-        Where-Object { (Test-IsRequestLike -Event $_) -and (Test-IsAddressedTo -Event $_ -TargetAgent $Agent) } |
+        Where-Object { (Test-BridgeRequestLikeEvent -Event $_) -and (Test-BridgeAddressedTo -Event $_ -TargetAgent $Agent) } |
         Sort-Object ts_utc
 )
 
@@ -107,7 +82,7 @@ foreach ($req in $requestsForAgent) {
                 [string]$_.agent -eq $Agent -and
                 [string]$_.task_id -eq [string]$req.task_id -and
                 [string]$_.ts_utc -gt [string]$req.ts_utc -and
-                (Test-IsAnswerEvent -Event $_)
+                (Test-BridgeAnswerEvent -Event $_)
             } |
             Sort-Object ts_utc |
             Select-Object -Last 1

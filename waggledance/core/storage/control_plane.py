@@ -626,8 +626,11 @@ class ControlPlaneDB:
             return self._fetch_one_solver_family(name)
 
     def get_solver_family(self, name: str) -> Optional[SolverFamilyRecord]:
-        with self._lock:
-            return self._fetch_one_solver_family(name, raise_if_missing=False)
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                return self._fetch_one_solver_family(name, raise_if_missing=False, conn=conn)
+        return self._fetch_one_solver_family(name, raise_if_missing=False, conn=conn)
 
     def list_solver_families(self) -> List[SolverFamilyRecord]:
         conn = self._read_conn()
@@ -1306,8 +1309,11 @@ class ControlPlaneDB:
             return self._fetch_family_policy(family_kind)
 
     def get_family_policy(self, family_kind: str) -> Optional[FamilyPolicyRecord]:
-        with self._lock:
-            return self._fetch_family_policy(family_kind, raise_if_missing=False)
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                return self._fetch_family_policy(family_kind, raise_if_missing=False, conn=conn)
+        return self._fetch_family_policy(family_kind, raise_if_missing=False, conn=conn)
 
     def list_family_policies(
         self, *, low_risk_only: bool = False
@@ -2261,8 +2267,15 @@ class ControlPlaneDB:
         name: str,
         *,
         raise_if_missing: bool = True,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> Optional[SolverFamilyRecord]:
-        row = self._conn.execute(
+        # Option B Phase 3 Cat 1: helper accepts an optional connection so
+        # read-only callers can pass the thread-local read connection,
+        # bypassing self._lock. Writer callers (upsert_*) leave conn=None
+        # and the helper falls back to self._conn while the caller holds
+        # self._lock.
+        target = self._conn if conn is None else conn
+        row = target.execute(
             "SELECT * FROM solver_families WHERE name = ?", (name,)
         ).fetchone()
         if row is None:
@@ -2435,8 +2448,12 @@ class ControlPlaneDB:
         family_kind: str,
         *,
         raise_if_missing: bool = True,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> Optional[FamilyPolicyRecord]:
-        row = self._conn.execute(
+        # Option B Phase 3 Cat 1: helper accepts an optional connection so
+        # read-only callers can pass the thread-local read connection.
+        target = self._conn if conn is None else conn
+        row = target.execute(
             "SELECT * FROM family_policies WHERE family_kind = ?",
             (family_kind,),
         ).fetchone()

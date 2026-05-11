@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: BUSL-1.1
+explosive_intelligence_growth_v2:
+  enabled: false
+  implemented: true
+  production_default: "hex2d_sparse_tunnels"
+  enable_requires_profile_or_test_flag: true
+
+  topology:
+    base: "hex2d"
+    virtual_3d_enabled: false
+    virtual_4d_enabled: false
+    benchmark_only: true
+
+  tunnels:
+    enabled: true
+    max_depth: 2
+    max_candidates: 16
+    max_tunnels_per_node: 4
+    max_global_tunnels: 100000
+    min_trust: 0.65
+    min_success_rate: 0.55
+    decay_half_life_hours: 168
+    canary_enabled: false
+    learned_candidates_shadow_only: true
+
+  magma_strata:
+    progressive_replay_enabled: true
+    compact_cards_enabled: true
+    l0_budget_tokens: 128
+    l1_budget_tokens: 512
+    l2_budget_tokens: 2048
+    l3_budget_tokens: 8192
+    boot_token_budget_low_mode: 170
+    l4_requires_high_risk_or_audit: true
+
+  safety:
+    no_llm_hot_path: true
+    fail_closed_on_hash_mismatch: true
+    require_provenance_for_tunnels: true
+    preserve_raw_audit: true
+    small_profile_forces_local: true
+
+  resource_quotas:
+    max_memory_mb: 512
+    max_open_files: 256
+    max_threads: 16
+    max_replay_concurrency: 4
+    max_magma_write_queue: 1000
+    max_compact_card_rate_per_minute: 600
+    max_tunnel_candidates_per_hour: 1000
+    max_tunnel_promotions_per_day: 0
+    energy_budget_mode: "factory"
+
+  autonomous_mode:
+    human_interaction_disabled: true
+    autonomous_merge_to_main: false

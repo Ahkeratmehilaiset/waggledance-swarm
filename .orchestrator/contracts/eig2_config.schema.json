@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waggledance.local/contracts/eig2_config.schema.json",
+  "title": "EIG2 conservative alpha config",
+  "type": "object",
+  "required": ["explosive_intelligence_growth_v2"],
+  "properties": {
+    "explosive_intelligence_growth_v2": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "implemented",
+        "production_default",
+        "enable_requires_profile_or_test_flag",
+        "topology",
+        "tunnels",
+        "magma_strata",
+        "safety",
+        "resource_quotas",
+        "autonomous_mode"
+      ],
+      "properties": {
+        "enabled": {
+          "const": false
+        },
+        "implemented": {
+          "const": true
+        },
+        "production_default": {
+          "const": "hex2d_sparse_tunnels"
+        },
+        "enable_requires_profile_or_test_flag": {
+          "const": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

@@ -135,7 +135,7 @@ class Container:
             for yaml_file in sorted(agents_dir.rglob("*.yaml")):
                 try:
                     with open(yaml_file, encoding="utf-8") as f:
-                        data = yaml.safe_load(f)
+                        data = yaml.load(f, Loader=yaml.CSafeLoader)
                     if not data or not isinstance(data, dict):
                         continue
                     header = data.get("header", {})
@@ -403,7 +403,7 @@ class Container:
             for axiom_path in axioms_dir.rglob("*.yaml"):
                 try:
                     with open(axiom_path, encoding="utf-8") as f:
-                        axiom = yaml.safe_load(f) or {}
+                        axiom = yaml.load(f, Loader=yaml.CSafeLoader) or {}
                     if axiom.get("model_id"):
                         specs[axiom["model_id"]] = axiom.get("solver_output_schema", {})
                 except Exception:

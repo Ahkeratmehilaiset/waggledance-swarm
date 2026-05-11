@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0  # full history needed by tests/phase10/test_truth_regression.py (merge-base --is-ancestor against squash-merge SHAs)
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 

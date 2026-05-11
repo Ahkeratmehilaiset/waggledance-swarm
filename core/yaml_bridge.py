@@ -242,6 +242,53 @@ ROUTING_KEYWORDS = {
 }
 
 
+def _deep_copy_yaml(value):
+    """Deep copy a parsed-YAML value (dict/list/scalar).
+
+    Faster than ``copy.deepcopy`` for plain YAML trees because we know
+    the shape (no class instances, no cycles). Used by ``YAMLBridge`` to
+    snapshot the un-overlaid baseline so ``set_language`` can rebuild
+    the effective ``self._agents`` view per locale.
+    """
+    if isinstance(value, dict):
+        return {k: _deep_copy_yaml(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deep_copy_yaml(v) for v in value]
+    return value
+
+
+def _deep_merge_yaml(base, overlay):
+    """Recursive deep-merge for the R22.x locale overlay loader.
+
+    Used by ``YAMLBridge._apply_locale_overlays`` to layer
+    ``agents_locale/<locale>/<id>.yaml`` over ``agents/<id>/core.yaml``.
+
+    Semantics:
+    - Both ``base`` and ``overlay`` dict at the same key: recurse.
+    - ``overlay`` value present at a key: ``overlay`` wins (including
+      lists — lists REPLACE rather than concatenate, matching the
+      translation-overlay use case where a list of FI action prose is
+      replaced by the same list of EN prose, not appended).
+    - Key only in ``base``: kept (overlay omitted that key).
+    - Non-dict either side: ``overlay`` replaces.
+
+    Pure function; does not mutate either argument.
+    """
+    if not isinstance(base, dict) or not isinstance(overlay, dict):
+        return overlay
+    result = dict(base)
+    for key, val in overlay.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(val, dict)
+        ):
+            result[key] = _deep_merge_yaml(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
 class YAMLBridge:
     """
     Yhdistää YAML-tietopohjan runtime-moottoriin.
@@ -251,6 +298,10 @@ class YAMLBridge:
     def __init__(self, agents_dir: str = "agents", active_profile: str = None):
         self.agents_dir = Path(agents_dir)
         self._agents: dict = {}
+        # R22.x Option B Phase 2: separate immutable baseline (no overlay
+        # applied) from the effective view in self._agents. set_language()
+        # rebuilds self._agents from self._agents_base + new-locale overlay.
+        self._agents_base: dict = {}
         self._agents_en: dict = {}  # EN-käännös välimuistissa
         self._loaded = False
         self._translation_proxy = None
@@ -286,8 +337,79 @@ class YAMLBridge:
                 except Exception as e:
                     log.warning(f"Virhe ladattaessa {d}: {e}")
 
+        # R22.x Option B Phase 2: snapshot the un-overlaid baseline so
+        # set_language() can rebuild self._agents for any locale without
+        # re-reading core.yaml from disk. _deep_copy_yaml is sufficient
+        # because the YAML tree is plain dict/list/scalar.
+        self._agents_base = {k: _deep_copy_yaml(v) for k, v in self._agents.items()}
+
+        # Apply optional agents_locale/<locale>/<id>.yaml overlays on top
+        # of the core.yaml baseline. No-op when no overlays exist (today's
+        # state for 80 of 81 agents) or locale is the baseline 'en'.
+        self._apply_locale_overlays()
+
         self._loaded = True
         log.info(f"YAMLBridge: {len(self._agents)} agenttia ladattu (lang={self._language})")
+
+    def _apply_locale_overlays(self) -> None:
+        """Deep-merge agents_locale/<self._language>/<agent_id>.yaml over base.
+
+        The R22.x Finnish→English migration uses ``agents/<id>/core.yaml`` as
+        the English baseline and ``agents_locale/fi/<id>.yaml`` as an
+        operator-facing Finnish overlay (name_fi, KNOWLEDGE_TABLES.title,
+        ASSUMPTIONS domain keywords, regulatory references). After the
+        bulk migration lands (Phase 3 PRs in
+        ``docs/architecture/R22X_FINNISH_TO_ENGLISH_MIGRATION_RFC.md``),
+        Finnish UI consumers set ``self._language = 'fi'`` and the overlay
+        loader restores the Finnish surface on top of the English baseline.
+
+        Pre-migration this loader is a no-op: there are no overlay files yet,
+        and ``self._language = 'fi'`` simply finds no overlay and returns the
+        Finnish-native core.yaml as before.
+
+        The overlay precedence is: base ⊕ overlay (overlay wins on
+        conflicts). Lists in overlay REPLACE lists in base (not concatenate)
+        — chosen because translation overlays typically replace a list of
+        Finnish action prose with the same list of English prose, not append.
+        """
+        locale = self._language
+        if not locale or locale == "en":
+            # English is the baseline; overlay only applies for non-en consumers.
+            return
+        overlay_root = Path(__file__).resolve().parent.parent / "agents_locale" / locale
+        if not overlay_root.exists():
+            return
+        applied = 0
+        for agent_id in list(self._agents.keys()):
+            overlay_path = overlay_root / f"{agent_id}.yaml"
+            if not overlay_path.exists():
+                continue
+            try:
+                overlay_raw = None
+                for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+                    try:
+                        with open(overlay_path, encoding=enc) as f:
+                            overlay_raw = yaml.safe_load(f)
+                        break
+                    except (UnicodeDecodeError, UnicodeError):
+                        continue
+                if not isinstance(overlay_raw, dict):
+                    log.warning(
+                        f"Overlay {overlay_path.name} is not a YAML mapping; skipped"
+                    )
+                    continue
+                merged = _deep_merge_yaml(self._agents[agent_id], overlay_raw)
+                self._agents[agent_id] = self._fix_encoding_deep(merged)
+                applied += 1
+            except Exception as exc:  # noqa: BLE001 - locale overlay must not fail load
+                log.warning(
+                    f"Locale overlay load failed for {agent_id} [{locale}]: {exc}"
+                )
+        if applied:
+            log.info(
+                f"YAMLBridge: applied {applied} {locale} overlays from "
+                f"agents_locale/{locale}/"
+            )
 
     def set_translation_proxy(self, proxy, language: str = "en"):
         """
@@ -371,8 +493,26 @@ class YAMLBridge:
         return "en" if en_score > fi_score else "fi"
 
     def set_language(self, language: str):
-        """Vaihda kieli lennossa (fi/en)."""
+        """Vaihda kieli lennossa (fi/en).
+
+        R22.x Option B Phase 2: rebuilds ``self._agents`` from the
+        immutable ``self._agents_base`` snapshot + new-locale overlay.
+        Without this rebuild, a previously-applied overlay would persist
+        when switching to a different locale (Codex's confirmed bug in
+        Round 1 review of PR #235).
+        """
         self._language = language
+        if not self._loaded or not self._agents_base:
+            # Pre-load: just record the language; _ensure_loaded()
+            # will load fresh and apply the appropriate overlay.
+            return
+        # Rebuild effective view from the un-overlaid baseline. Use a
+        # deep copy so subsequent overlay merges (in this call or a
+        # future set_language) do not mutate _agents_base.
+        self._agents = {
+            k: _deep_copy_yaml(v) for k, v in self._agents_base.items()
+        }
+        self._apply_locale_overlays()
 
     @classmethod
     def _translate_deep(cls, obj, proxy):

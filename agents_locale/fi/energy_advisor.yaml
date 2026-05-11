@@ -1,0 +1,33 @@
+# R22.x Finnish overlay for energy_advisor.
+# Applied by core.yaml_bridge._apply_locale_overlays() when language='fi'.
+# Restores Finnish UI/operator-facing strings on top of the English baseline
+# in agents/energy_advisor/core.yaml.
+#
+# Per RFC docs/architecture/R22X_FINNISH_TO_ENGLISH_MIGRATION_RFC.md:
+# - header.name_fi stays Finnish (already in base — re-asserted here for clarity)
+# - ASSUMPTIONS Finnish-locale rendering
+# - DECISION_METRICS_AND_THRESHOLDS.*.action Finnish prose
+# - eval_questions Finnish (test harness uses these against Finnish-locale users)
+#
+# Lists REPLACE base lists per loader semantics (overlay-wins).
+
+header:
+  name_fi: 'Sähkö- ja energiaoptimointi'
+
+ASSUMPTIONS:
+- Suomen sähkömarkkina (Nord Pool)
+- Kotitalous tai pienyritys
+
+DECISION_METRICS_AND_THRESHOLDS:
+  spot_expensive_c_kwh:
+    action: ">20 c/kWh → siirrä kuormia halvemmalle tunnille"
+  spot_cheap_c_kwh:
+    action: "<5 c/kWh → käynnistä lämminvesivaraaja"
+
+eval_questions:
+- q: Mikä on spot expensive c kwh?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spot_expensive_c_kwh.value
+  source: src:EN1
+- q: Mikä on spot cheap c kwh?
+  a_ref: DECISION_METRICS_AND_THRESHOLDS.spot_cheap_c_kwh.value
+  source: src:EN1

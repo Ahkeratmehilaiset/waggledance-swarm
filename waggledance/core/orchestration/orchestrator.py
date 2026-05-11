@@ -178,8 +178,22 @@ class Orchestrator:
         return await self._round_table.deliberate(task, selected, responses)
 
     async def is_ready(self) -> bool:
-        """Check all ports are healthy."""
+        """Check all ports are healthy.
+
+        Audit H30: a misconfigured WAGGLE_PROFILE (typo, unknown profile,
+        empty config) silently boots with zero agents and serves
+        ``/health`` + ``/ready`` green. We now treat zero-agent state as
+        not-ready so a routine readiness probe fails loudly instead.
+        Tests / stub mode that legitimately want zero agents can fix
+        their fixture to register at least one ``ALL``-profile dummy.
+        """
         try:
+            if not self._agents:
+                log.warning(
+                    "Readiness: orchestrator has 0 agents — "
+                    "check WAGGLE_PROFILE and agents/ directory"
+                )
+                return False
             llm_ok = await self._llm.is_available()
             vector_ok = await self._vector_store.is_ready()
             return llm_ok and vector_ok

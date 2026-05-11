@@ -7,6 +7,14 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
+# Audit H30: a misconfigured WAGGLE_PROFILE (typo, unknown value) used
+# to silently boot WaggleDance with 0 agents. The canonical profiles
+# below are the four shipped configurations; "ALL" is the meta-value
+# that matches every agent and is accepted at runtime but should not
+# be selected as the active profile.
+KNOWN_PROFILES = frozenset({"GADGET", "COTTAGE", "HOME", "FACTORY"})
+
+
 class Container:
     """One Container instance = one running WaggleDance system."""
 
@@ -131,6 +139,16 @@ class Container:
                 return []
 
             profile = self._settings.get_profile().upper()
+            if profile not in KNOWN_PROFILES:
+                # Audit H30: fail loudly on unknown profile rather than
+                # silently filtering away every agent (which served 200
+                # OK on /health while the runtime was effectively empty).
+                log.error(
+                    "Unknown WAGGLE_PROFILE %r — expected one of %s. "
+                    "Returning 0 agents; readiness probe will fail.",
+                    profile, sorted(KNOWN_PROFILES),
+                )
+                return []
             agents = []
             for yaml_file in sorted(agents_dir.rglob("*.yaml")):
                 try:

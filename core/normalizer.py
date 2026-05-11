@@ -58,6 +58,49 @@ _FI_SUFFIXES = [
 ]
 
 
+def _has_voikko_runtime(path: Path) -> bool:
+    """Return False on Windows when the Voikko DLL cannot be found."""
+    if os.name != "nt":
+        return True
+    dll_name = "libvoikko-1.dll"
+    if (path / dll_name).exists():
+        return True
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if entry and (Path(entry) / dll_name).exists():
+            return True
+    return False
+
+
+def _guard_voikko_destructor(libvoikko_module) -> None:
+    """Suppress libvoikko's partial-constructor __del__ AttributeError.
+
+    Some Windows failures occur after a Voikko object has been allocated
+    but before its private handle is set. The upstream __del__ then raises
+    AttributeError during garbage collection. Guard only that broken state;
+    healthy objects still run the original destructor.
+    """
+    try:
+        voikko_cls = libvoikko_module.Voikko
+        original_del = getattr(voikko_cls, "__del__", None)
+        if original_del is None or getattr(
+            original_del, "_waggledance_guarded", False
+        ):
+            return
+
+        def _safe_del(self):
+            if not hasattr(self, "_Voikko__handle"):
+                return
+            try:
+                original_del(self)
+            except AttributeError:
+                return
+
+        _safe_del._waggledance_guarded = True  # type: ignore[attr-defined]
+        voikko_cls.__del__ = _safe_del
+    except Exception:
+        return
+
+
 def _init_voikko():
     """Initialize Voikko singleton. Called once on first normalize_fi() call.
 
@@ -87,8 +130,12 @@ def _init_voikko():
         # Only try if path exists AND contains Voikko dictionary data (5/ subdir)
         if not p.exists() or not (p / "5").exists():
             continue
+        if not _has_voikko_runtime(p):
+            log.debug(f"Normalizer Voikko runtime missing ({p})")
+            continue
         try:
             import libvoikko
+            _guard_voikko_destructor(libvoikko)
             # CRITICAL Windows fix: tell libvoikko where the DLL is
             libvoikko.Voikko.setLibrarySearchPath(str(p))
             _voikko = libvoikko.Voikko("fi", path=str(p))

@@ -134,7 +134,7 @@ Existing repo alarm vocabulary is unrelated (e.g., `freezer_alarm_above_neg5` in
   - `related_milestone`
   - `parent_id` (no current analog — task_id continuity is implicit)
   - `payload_hash` (no current analog)
-- Decision (R3 + Codex C011): adapter-first, NOT migration. EIG2 read/write goes through a projection layer that maps live fields to EIG2 schema view. Existing readers see live schema unchanged. Live event-loss bug (R3 incident: `ownership_proposal` dropped by Codex's `type == "message"` filter) is being fixed by Codex on branch `bridge-polymorphic-reply-polling-2026-05-11` — when that lands, ADR 020 (`docs/eig2/adr/020-bridge-type-field-non-gating.md`) codifies the no-filter-by-type convention.
+- Decision (R3 + Codex C011): adapter-first, NOT migration. EIG2 read/write goes through a projection layer that maps live fields to EIG2 schema view. Existing readers see live schema unchanged. Live event-loss bug (R3 incident at `2026-05-11T17:50:28Z`: `ownership_proposal` dropped by Codex's `type == "message"` filter) was fixed by Codex via PR #265 (merged to main as commit `0133cb16`) and PR #267 (merged as commit `b10a95a`, ADR 020 amendments + empty-status-safe classifier helper). ADR 020 (`docs/eig2/adr/020-bridge-type-field-non-gating.md`) is now `Accepted for EIG2-M0 (Claude peer-review signed 2026-05-11)` and codifies the no-filter-by-type convention. The R3 incident itself remains preserved as evidence supporting the adapter-first decision.
 
 ## 11. Ledger / config files EIG2 will reference
 

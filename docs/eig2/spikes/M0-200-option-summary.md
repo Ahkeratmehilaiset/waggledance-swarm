@@ -121,7 +121,7 @@ d. Post-release: 500 chaos/decay analysis cycles per agent, fixes via the audit-
 
 ## 10. Live evidence (R3 incident, 2026-05-11)
 
-The bridge event with `type: ownership_proposal` was dropped by Codex's `type == 'message'` polling filter. This is exactly R3 hitting production. Codex is fixing on branch `bridge-polymorphic-reply-polling-2026-05-11`; ADR 020 will codify the no-filter-by-type convention. The incident is preserved as live evidence supporting the adapter-first decision (item 4 in §2).
+The bridge event at `2026-05-11T17:50:28Z` with `type: ownership_proposal` was dropped by Codex's `type == 'message'` polling filter. This was exactly R3 hitting production. The fix landed in two PRs merged the same day: PR #265 (`fix(bridge): classify polymorphic replies`, commit `0133cb16` on `main` at 19:03 UTC) introduced the polymorphic-reply classifier, and PR #267 (commit `b10a95a` on `main` at 19:32 UTC) added the empty-status-safe classifier helper after live-bridge validation caught a Mandatory-param regression. ADR 020 (`docs/eig2/adr/020-bridge-type-field-non-gating.md`) is now `Accepted for EIG2-M0` and codifies the no-filter-by-type convention with explicit enumeration of `answered`, `answered_plus_reminder`, `answered_after_recovery` message-answer statuses. The incident is preserved as live evidence supporting the adapter-first decision (item 4 in §2).
 
 ## 11. Sign-off
 

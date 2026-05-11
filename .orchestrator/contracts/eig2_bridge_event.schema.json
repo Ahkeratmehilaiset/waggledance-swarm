@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waggledance.local/contracts/eig2_bridge_event.schema.json",
+  "title": "EIG2 bridge event projection",
+  "type": "object",
+  "required": [
+    "protocol_version",
+    "message_type",
+    "id",
+    "timestamp",
+    "author",
+    "payload_hash"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": "eig2-bridge-v1"
+    },
+    "message_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "id": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "author": {
+      "type": "string"
+    },
+    "related_milestone": {
+      "type": "string"
+    },
+    "parent_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "payload_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "live_schema": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

@@ -1011,18 +1011,39 @@ entries:
     - get_solver: idle 0.0312 ms, N=1 11.50 ms,
       N=3 34.54 ms, N=6 70.93 ms.
 
-    Run F changes the architectural decision from "R25 sharding only" to
-    "measure the cheap read/write separation first." R25 per-cell DB
-    sharding still addresses same-table multi-writer contention from Runs
-    A-D, but Run E/F show that a smaller ControlPlaneDB change may remove
-    the read and routing tax: scope or drop self._lock for read methods and
-    use SQLite WAL/read-write separation. That option must be replayed
-    against Run E and Run F before committing to the heavier R25 migration.
+    Run F changed the architectural decision from "R25 sharding only" to
+    "measure the cheap read/write separation first." Claude then measured
+    an Option B spike that monkey-patched get_active_runtime_path,
+    get_solver, and list_runtime_gap_signals to use per-thread read-only
+    SQLite connections while writes stayed on self._lock + self._conn.
+    WAL was already enabled. The spike results:
+
+    - get_active_runtime_path at N=6: 59.85 ms current to 0.19 ms,
+      about 313x faster.
+    - get_active_runtime_path at N=3: 33.91 ms current to 0.033 ms,
+      about 1028x faster.
+    - get_solver at N=6: 70.93 ms current to 0.29 ms,
+      about 245x faster.
+    - get_solver at N=3: 34.54 ms current to 0.097 ms,
+      about 356x faster.
+    - list_runtime_gap_signals(limit=100) at N=6: 222.83 ms current
+      to 5.09 ms, about 44x faster.
+    - list_runtime_gap_signals(limit=100) at N=3: 125.53 ms current
+      to 5.32 ms, about 24x faster.
+
+    Option B therefore fixes two of the three observed regimes: Run E
+    same-table reads behind writes and Run F cross-table routing reads
+    behind unrelated writes. It does not fix Runs A-D same-table write
+    contention, because writes still serialize through SQLite. R25
+    per-cell DB sharding remains the structural write-contention answer,
+    but it is no longer the first-line read/routing fix. R25 should be
+    decided after a production Option B PR and a production concurrent
+    write histogram, not before.
 
     runtime_behavior_changed=false: no source files or runtime paths
     changed. Artifacts are in the gitignored audit directory
     .codex-audit/branch_isolation_stress_2026_05_10/.
-  next_bottleneck: spike and measure ControlPlaneDB read/write lock separation plus SQLite WAL against Run E/F; also collect a 24h runtime_gap_signal write histogram by hex cell in production-like traffic before deciding whether R25 sharding is required for the target p99 SLA.
+  next_bottleneck: productionize and test the measured ControlPlaneDB Option B design with transaction, pragma, and close() safeguards; then collect a 24h runtime_gap_signal write histogram by hex cell before deciding whether R25 sharding is required for the target write-p99 SLA.
 
 ```
 

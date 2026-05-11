@@ -89,8 +89,14 @@ class Scheduler:
 
         success_signal = 1.0 if result.confidence > 0.5 else 0.0
         speed_signal = max(0.0, 1.0 - result.latency_ms / 10000.0)
+        raw_reliability = result.metadata.get("reliability", result.confidence)
+        try:
+            reliability_signal = float(raw_reliability)
+        except (TypeError, ValueError):
+            reliability_signal = result.confidence
+        reliability_signal = max(0.0, min(1.0, reliability_signal))
         new_pheromone = old_pheromone * (1.0 - alpha) + (
-            success_signal * 0.4 + speed_signal * 0.3 + success_signal * 0.3
+            success_signal * 0.4 + speed_signal * 0.3 + reliability_signal * 0.3
         ) * alpha
 
         new_scores = dict(state.pheromone_scores)

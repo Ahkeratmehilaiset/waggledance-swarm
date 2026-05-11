@@ -125,6 +125,20 @@ class TestSchedulerUpdateState:
         new_state = s.update_state(state, "a1", result)
         assert new_state.pheromone_scores["a1"] > 0.5
 
+    def test_pheromone_uses_reliability_signal_not_duplicate_success(self, mock_config):
+        s = Scheduler(mock_config)
+        state = SchedulerState(
+            pheromone_scores={"a1": 0.5}, usage_counts={}, recent_successes={}
+        )
+        result = AgentResult(
+            agent_id="a1", response="ok", confidence=0.6,
+            latency_ms=5000, source="llm",
+        )
+        new_state = s.update_state(state, "a1", result)
+        # old * 0.8 + (success*0.4 + speed*0.3 + reliability*0.3) * 0.2
+        # = 0.5*0.8 + (1.0*0.4 + 0.5*0.3 + 0.6*0.3) * 0.2
+        assert new_state.pheromone_scores["a1"] == pytest.approx(0.546)
+
     def test_pheromone_decreases_on_failure(self, mock_config):
         s = Scheduler(mock_config)
         state = SchedulerState(pheromone_scores={"a1": 0.8}, usage_counts={}, recent_successes={})

@@ -919,6 +919,74 @@ entries:
     latency and the Finnish prompt contract.
   next_bottleneck: per-agent knowledge injection and SQLite commit throughput at >=1000 live agents; English agent contract plus prompt trim/token cap policy before claiming scalable live LLM agents.
 
+- session_id: r22-2d-branch-isolation-stress-inflection
+  pr: null
+  owner: claude
+  reviewer: codex
+  merged_utc: null
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: branch_isolation_probe_p99_under_concurrent_writers
+  axis_a_snapshot: claude-r22-branch-isolation-stress-2026-05-10
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    Measurement-only follow-up to r22-2d-branch-isolation-baseline.
+    Claude reran the branch-isolation stress harness in four passes
+    after PR #205 to validate whether the 2D/global ControlPlaneDB
+    path is sufficient before reopening R25 3D hex sharding.
+
+    Run A/B/C repeated the adversarial multi-branch flood at increasing
+    load:
+
+    - Run A: idle p99 7.96 ms, adversarial p99 112.12 ms,
+      degradation 14.09x, uniform CV 0.58.
+    - Run B: idle p99 9.07 ms, adversarial p99 157.40 ms,
+      degradation 17.35x, uniform CV 0.26.
+    - Run C: idle p99 11.01 ms, adversarial p99 145.57 ms,
+      degradation 13.22x, uniform CV 0.12.
+
+    The saturation signal is a hard wall around 150 ms adversarial p99
+    under a six-branch concurrent write flood. Single-hot contention
+    stayed around 3x at higher load, so the hard case is multi-branch
+    concurrent writers, not one hot branch.
+
+    Run D swept the number of concurrent cold writer cells at fixed
+    events per branch. Idle baseline was 8.08 ms. Probe p99 by writer
+    count:
+
+    - N=1: 39.29 ms, 4.87x
+    - N=2: 70.27 ms, 8.70x
+    - N=3: 87.72 ms, 10.86x
+    - N=4: 145.08 ms, 17.97x
+    - N=5: 166.71 ms, 20.65x
+    - N=6: 197.17 ms, 24.42x
+
+    The inflection point is N=4 concurrent writer cells: the N=3 to
+    N=4 jump is about 65%, much larger than the other steps. Below the
+    knee, each extra writer adds roughly 12-18 ms; above it, each adds
+    roughly 25-30 ms. The measured bottleneck is consistent with the
+    shared SQLite WAL/write-lock path rather than one pathological hex
+    branch.
+
+    SLA map from the sweep:
+
+    - p99 < 50 ms tolerates N<=1; R25 needed if production has 2+
+      concurrently active writer cells.
+    - p99 < 100 ms tolerates N<=3; R25 needed if production has 4+.
+    - p99 < 150 ms tolerates N<=4.
+    - p99 < 200 ms tolerates all six cells in this adversarial sweep.
+
+    runtime_behavior_changed=false: no source files or runtime paths
+    changed. Artifacts are in the gitignored audit directory
+    .codex-audit/branch_isolation_stress_2026_05_10/.
+  next_bottleneck: collect a 24h runtime_gap_signal write histogram by hex cell in production-like traffic; decide R25 sharding from observed concurrent active writer cells and the target p99 SLA.
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

@@ -1,8 +1,8 @@
 # ADR-013 — Reality Check Owner inventory required before adapter proposals
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Codex peer-review signed 2026-05-11)
 Author: Claude (Reality Check Owner, EIG2 Part 12.7)
-Peer reviewer: Codex (signature pending)
+Peer reviewer: Codex (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R13 (Claude addition, agreed in bridge thread `claude-eig2-coldrehearsal-2026-05-11`)
 
@@ -67,15 +67,16 @@ Maps to `INVARIANT_BREAK` (Part 19 RegressionClass enum) if violated: any PR2-cl
 
 ## Reviewed by other agent
 
-Pending. Codex peer-review required before this ADR moves to status `accepted`. Acceptable signoff modes per M6:
-- Codex appends a "Codex peer-review" section to this file (PR amendment), OR
-- Codex sends bridge endorsement on task_id `eig2-m0-adr-r13-review-2026-05-11`, OR
-- Codex submits GitHub PR review with `APPROVED` status on the joint PR3.
+Codex reviewed and endorses. The PR #263 re-review already exercised this rule:
+Codex found missing `ControlPlaneDB` write methods and profile vocabulary
+ambiguity, Claude amended the inventory, and the corrected inventory merged
+before PR #268. PR3 adds explicit classifier coverage for unlisted-hook /
+inventory-gap language before this ADR lands.
 
 ## Related tests
 
 - (existing) `docs/eig2/spikes/M0-reality-check.md` shipped in PR #263 — this ADR ratifies its required structure.
-- (planned, PR2) `tests/orchestrator/test_bridge_classify_rco_inventory_gap.py` — classifier emits `INVARIANT_BREAK` for adapter proposals referencing unlisted hooks.
+- (existing, PR3) `tests/orchestrator/test_bridge_classify.py::test_rco_inventory_gap_detected_as_invariant_break` — classifier emits `INVARIANT_BREAK` for adapter proposals referencing unlisted hooks.
 - (planned, PR3) `tests/contracts/test_eig2_m0_inventory_completeness.py` — fails if M0-reality-check.md lacks any of the nine required sections.
 
 ## Provenance
@@ -89,4 +90,4 @@ Generalized from R13 binding-rule discussion in bridge thread `claude-eig2-coldr
 ## Sign-off
 
 - Author (Claude): signed.
-- Peer reviewer (Codex): pending.
+- Peer reviewer (Codex): signed 2026-05-11.

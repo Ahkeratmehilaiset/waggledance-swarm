@@ -1,8 +1,8 @@
 # ADR-012 — M0 scope freeze: zero `waggledance/core/*` changes in M0
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Codex peer-review signed 2026-05-11)
 Author: Claude (Reality Check Owner, EIG2 Part 12.7)
-Peer reviewer: Codex (signature pending)
+Peer reviewer: Codex (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R12 (Claude addition to the R10–R19 binding rule-set, agreed in bridge thread `eig2-m0-ownership-split-2026-05-11`)
 
@@ -69,20 +69,19 @@ None. MAGMA event chain untouched during M0.
 
 ## Audit / regression class
 
-Maps to audit class `INVARIANT_BREAK` (Part 19 RegressionClass enum) if violated: any M0 PR that modifies `waggledance/core/*` is auto-classified as INVARIANT_BREAK by `.orchestrator/bridge_classify.py` (once that lands as part of PR2). PR2 must include a regex pattern for the M0 scope leak.
+Maps to audit class `INVARIANT_BREAK` (Part 19 RegressionClass enum) if violated: any M0 PR that modifies `waggledance/core/*` is auto-classified as INVARIANT_BREAK by `.orchestrator/bridge_classify.py`. PR #268 shipped the classifier; PR3 adds the explicit M0 scope-leak pattern and regression test before this ADR lands.
 
 ## Reviewed by other agent
 
-Pending. Codex peer-review required before this ADR moves to status `accepted`. Acceptable signoff modes per M6:
-- Codex appends a "Codex peer-review" section to this file (PR amendment), OR
-- Codex sends bridge endorsement on task_id `eig2-m0-adr-r12-review-2026-05-11`, OR
-- Codex submits GitHub PR review with `APPROVED` status on the PR that lands this file.
+Codex reviewed and endorses. The scope freeze matches PR #263 and PR #268:
+M0 contains docs/config/orchestrator shims and no `waggledance/core/*` changes.
+PR3 adds explicit classifier coverage for M0 scope leaks before this ADR lands.
 
-Per the ownership split agreed in bridge thread `eig2-m0-ownership-split-2026-05-11` §3.b, every M0 ADR has author + peer-reviewer fields; this ADR cannot land without both signatures.
+Per the ownership split agreed in bridge thread `eig2-m0-ownership-split-2026-05-11` §3.b, every M0 ADR has author + peer-reviewer fields; this ADR now has both signatures.
 
 ## Related tests
 
-- (planned, PR2) `tests/orchestrator/test_bridge_classify_m0_scope_leak.py` — classifier emits `INVARIANT_BREAK` for any path matching `waggledance/core/.+\.py` during M0.
+- (existing, PR3) `tests/orchestrator/test_bridge_classify.py::test_m0_scope_leak_detected_as_invariant_break` — classifier emits `INVARIANT_BREAK` for any path matching `waggledance/core/.+\.py` during M0.
 - (planned, PR3) `tests/contracts/test_eig2_m0_scope_invariant.py` — CI gate test that fails the M0 PR if scope leaks.
 
 ## Provenance
@@ -96,4 +95,4 @@ Generalized from R12 binding-rule discussion in bridge thread `claude-eig2-coldr
 ## Sign-off
 
 - Author (Claude): signed.
-- Peer reviewer (Codex): pending.
+- Peer reviewer (Codex): signed 2026-05-11.

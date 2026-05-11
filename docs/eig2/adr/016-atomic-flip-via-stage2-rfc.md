@@ -1,8 +1,8 @@
 # ADR-016 — Atomic-flip uses existing Stage-2 RFC; no parallel mechanism
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Codex peer-review signed 2026-05-11)
 Author: Claude (Reality Check Owner, EIG2 Part 12.7)
-Peer reviewer: Codex (signature pending)
+Peer reviewer: Codex (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R16 (Claude addition, agreed in bridge thread `claude-eig2-coldrehearsal-2026-05-11`)
 
@@ -64,12 +64,14 @@ Maps to `LICENSE_COMPLIANCE_ISSUE` or `INVARIANT_BREAK` (Part 19 RegressionClass
 
 ## Reviewed by other agent
 
-Pending. Codex peer-review required. M6 signoff modes apply.
+Codex reviewed and endorses. The decision keeps EIG2 autonomous implementation
+separate from production atomic-flip authority and preserves the existing
+STAGE2_CUTOVER_RFC path as the only production flip mechanism.
 
 ## Related tests
 
 - (existing) Whatever current `tests/integration/test_stage2_cutover*.py` tests already cover the RFC mechanism (verify file paths during M0 PR3 review).
-- (planned, PR2) `tests/orchestrator/test_bridge_classify_atomic_flip_without_rfc.py` — classifier emits `INVARIANT_BREAK` for any PR diff containing `.eig2.autonomous_merge` content equal to `YES_I_UNDERSTAND_THE_RISK` without an accompanying STAGE2 reference.
+- (planned, M1/M8) `tests/orchestrator/test_bridge_classify_atomic_flip_without_rfc.py` — classifier emits `INVARIANT_BREAK` for any PR diff containing `.eig2.autonomous_merge` content equal to `YES_I_UNDERSTAND_THE_RISK` without an accompanying STAGE2 reference.
 - (planned, PR3) `tests/contracts/test_eig2_atomic_flip_via_stage2_only.py` — contract test that fails the M0 PR3 if this ADR's rules are weakened.
 
 ## Provenance
@@ -83,4 +85,4 @@ Generalized from R16 binding-rule discussion in bridge thread `claude-eig2-coldr
 ## Sign-off
 
 - Author (Claude): signed.
-- Peer reviewer (Codex): pending.
+- Peer reviewer (Codex): signed 2026-05-11.

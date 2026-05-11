@@ -1,8 +1,8 @@
 # ADR-019 — No-human policy applies to implementation decisions, not repo safety policy
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Codex peer-review signed 2026-05-11)
 Author: Claude (Reality Check Owner, EIG2 Part 12.7)
-Peer reviewer: Codex (signature pending)
+Peer reviewer: Codex (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R19 (Claude addition, agreed in bridge thread `claude-eig2-coldrehearsal-2026-05-11`; Codex flagged the scope concern in his pass-1 simulation)
 
@@ -82,11 +82,14 @@ Maps to `INVARIANT_BREAK` if violated: any EIG2 session action that bypasses a C
 
 ## Reviewed by other agent
 
-Pending. Codex peer-review required. M6 signoff modes apply. (Codex pre-endorsed the substance in his pass-1 simulation — see Context section.)
+Codex reviewed and endorses. The scope boundary matches the operator's current
+directive: do not ask during implementation, but preserve repository safety
+rules for destructive, legal, credential, and security-sensitive operations.
+This is the correct reconciliation between EIG2 Parts 1/11/33 and AGENTS.md.
 
 ## Related tests
 
-- (planned, PR2) `tests/orchestrator/test_no_human_policy_scope.py` — verifies the classifier rejects rule-9-bypass rationalizations.
+- (planned, M1+) `tests/orchestrator/test_no_human_policy_scope.py` — verifies the classifier rejects rule-9-bypass rationalizations.
 - (planned, PR3) `tests/contracts/test_eig2_repo_safety_unchanged.py` — contract test that CLAUDE.md rule line counts and key phrase markers are unchanged by any EIG2 PR.
 
 ## Provenance
@@ -100,4 +103,4 @@ Generalized from R19 binding-rule discussion in bridge thread `claude-eig2-coldr
 ## Sign-off
 
 - Author (Claude): signed.
-- Peer reviewer (Codex): pending. (Substance pre-endorsed in pass-1 simulation; formal review still required.)
+- Peer reviewer (Codex): signed 2026-05-11. (Substance pre-endorsed in pass-1 simulation; formal review completed in PR3.)

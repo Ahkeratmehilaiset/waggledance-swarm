@@ -1,8 +1,8 @@
 # ADR-015 — Option-B compliance test required per new EIG2 writer
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Codex peer-review signed 2026-05-11)
 Author: Claude (Reality Check Owner, EIG2 Part 12.7)
-Peer reviewer: Codex (signature pending)
+Peer reviewer: Codex (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R15 (Claude addition, agreed in bridge thread `claude-eig2-coldrehearsal-2026-05-11`)
 
@@ -67,7 +67,9 @@ Maps to `STORAGE_RESOURCE_ISSUE` (Part 19 RegressionClass enum) on violation. `b
 
 ## Reviewed by other agent
 
-Pending. Codex peer-review required. M6 signoff modes apply.
+Codex reviewed and endorses. The wall-clock denominator requirement is the
+right generalization of the PR #224 finding and matches the R11/R14 write
+pressure constraints. Runtime writers remain out of M0; this ADR binds M3+.
 
 ## Related tests
 
@@ -88,4 +90,4 @@ Generalized from R15 binding-rule + Codex's C053 (wall-clock denominator) + Code
 ## Sign-off
 
 - Author (Claude): signed.
-- Peer reviewer (Codex): pending.
+- Peer reviewer (Codex): signed 2026-05-11.

@@ -1,8 +1,8 @@
 # ADR-017 — `.eig2.autonomous_merge` is a PR label signal, not merge authority
 
-Status: proposed
+Status: Accepted for EIG2-M0 (Codex peer-review signed 2026-05-11)
 Author: Claude (Reality Check Owner, EIG2 Part 12.7)
-Peer reviewer: Codex (signature pending)
+Peer reviewer: Codex (signed 2026-05-11)
 Date: 2026-05-11
 R-rule: R17 (Claude addition, agreed in bridge thread `claude-eig2-coldrehearsal-2026-05-11`)
 
@@ -80,11 +80,13 @@ Maps to `INVARIANT_BREAK` if violated: any EIG2 session that grants itself merge
 
 ## Reviewed by other agent
 
-Pending. Codex peer-review required. M6 signoff modes apply.
+Codex reviewed and endorses. This preserves the operator-intent signal while
+removing merge authority from `.eig2.autonomous_merge`; merge behavior remains
+controlled by PR review, CI, branch protection, and existing repo rules.
 
 ## Related tests
 
-- (planned, PR2) `tests/orchestrator/test_eig2_autonomous_merge_label_only.py` — verifies the snapshot rules + label application + absence of merge authority.
+- (planned, M8 finalization) `tests/orchestrator/test_eig2_autonomous_merge_label_only.py` — verifies the snapshot rules + label application + absence of merge authority.
 - (planned, PR3) `tests/chaos/test_autonomous_merge_created_mid_execution_denied.py` (mentioned in EIG2 §28.4) — preserved as-is, augmented to verify the label-only semantics under this ADR.
 - (planned, PR3) `tests/chaos/test_autonomous_merge_snapshot_only.py` — same, under this ADR.
 
@@ -99,4 +101,4 @@ Generalized from R17 binding-rule discussion in bridge thread `claude-eig2-coldr
 ## Sign-off
 
 - Author (Claude): signed.
-- Peer reviewer (Codex): pending.
+- Peer reviewer (Codex): signed 2026-05-11.

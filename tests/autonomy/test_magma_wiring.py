@@ -54,7 +54,30 @@ class TestQueryPathAudit:
         rt.handle_query("Calculate the temperature deviation")
         entries = rt.audit.query_by_event_type("capability.selected")
         assert len(entries) >= 1
-        assert "intent" in entries[0].payload
+        payload = entries[0].payload
+        assert "intent" in payload
+        assert "cap_id" in payload
+        assert payload["cap_id"] == payload["capabilities"][0]
+        assert entries[0].capability_id == payload["cap_id"]
+
+    def test_capability_selected_event_includes_empty_cap_id_without_capabilities(self):
+        class _Selection:
+            selected = []
+
+        class _RouteResult:
+            selection = _Selection()
+            quality_path = "bronze"
+            autonomy_consult = None
+
+        rt = AutonomyRuntime()
+        rt.solver_router.route = lambda intent, query, context: _RouteResult()
+        rt.handle_query("No matching capability")
+
+        entries = rt.audit.query_by_event_type("capability.selected")
+        payload = entries[0].payload
+        assert payload["capabilities"] == []
+        assert payload["cap_id"] == ""
+        assert entries[0].capability_id == ""
 
     def test_policy_event_on_full_path(self):
         rt = AutonomyRuntime()

@@ -438,12 +438,14 @@ class AutonomyRuntime:
         # MAGMA: record capability selection
         if self.audit and AuditEntry is not None:
             cap_ids = [c.capability_id for c in route_result.selection.selected]
+            primary_cap_id = cap_ids[0] if cap_ids else ""
             self._magma_safe("audit.capability_selected", self.audit.record,
                 AuditEntry(
                     event_type="capability.selected",
                     payload={"intent": intent, "capabilities": cap_ids,
-                             "quality_path": route_result.quality_path},
-                    capability_id=cap_ids[0] if cap_ids else "",
+                             "quality_path": route_result.quality_path,
+                             "cap_id": primary_cap_id},
+                    capability_id=primary_cap_id,
                 ))
 
         # 3b. Phase 15 — if the autonomy consult lane served the query,

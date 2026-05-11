@@ -226,6 +226,60 @@ def test_default_client_honors_profile_env_disable(monkeypatch):
     assert response.provider == "heuristic"
 
 
+def test_default_client_profile_l_env_registers_anthropic_provider(monkeypatch):
+    """Profile L env should route to the real Anthropic provider name,
+    not the unavailable cloud placeholder."""
+    monkeypatch.delenv("AGENT_BRIDGE_RUNTIME_ROOT", raising=False)
+    monkeypatch.setenv("WAGGLE_BRIDGE_LLM_ENABLED", "1")
+    monkeypatch.setenv(
+        "WAGGLE_FALLBACK_CHAIN",
+        "cache,local-ollama,anthropic-api,heuristic",
+    )
+    monkeypatch.setenv("WAGGLE_BRIDGE_LLM_REDACTION", "1")
+
+    from waggledance.core.bridge_llm import BridgeLLMClient
+
+    client = BridgeLLMClient.default()
+    assert client.is_enabled() is True
+    assert client.fallback_chain == (
+        "cache", "local-ollama", "anthropic-api", "heuristic",
+    )
+    assert "anthropic-api" in client.providers
+    assert client.providers["anthropic-api"].__class__.__name__ == (
+        "AnthropicProvider"
+    )
+
+
+def test_default_client_profile_l_env_does_not_import_anthropic_sdk():
+    """Constructing the default client with Profile L's cloud provider
+    registered must stay SDK-clean until an actual cloud call."""
+    script = textwrap.dedent('''
+        import os, sys
+        sys.path.insert(0, %r)
+        os.environ.pop("AGENT_BRIDGE_RUNTIME_ROOT", None)
+        os.environ["WAGGLE_BRIDGE_LLM_ENABLED"] = "1"
+        os.environ["WAGGLE_FALLBACK_CHAIN"] = (
+            "cache,local-ollama,anthropic-api,heuristic"
+        )
+        os.environ["WAGGLE_BRIDGE_LLM_REDACTION"] = "1"
+        from waggledance.core.bridge_llm import BridgeLLMClient
+        client = BridgeLLMClient.default()
+        assert "anthropic-api" in client.providers
+        if "anthropic" in sys.modules:
+            print("ANTHROPIC_SDK_LEAKED")
+            sys.exit(1)
+        print("ANTHROPIC_PROVIDER_REGISTERED_WITHOUT_SDK_IMPORT")
+    ''') % (str(REPO_ROOT),)
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, (
+        f"failed: stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    )
+    assert "ANTHROPIC_PROVIDER_REGISTERED_WITHOUT_SDK_IMPORT" in proc.stdout
+
+
 # ─── Budget enforcement ──────────────────────────────────────────
 
 def test_budget_tracker_blocks_when_calls_exhausted():

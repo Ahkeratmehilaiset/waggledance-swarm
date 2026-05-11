@@ -57,6 +57,8 @@ def test_profile_large_full_chain_with_redaction_required():
     behaviors = parsed["behaviors"]
     assert behaviors["allow_cloud_llm"] is True
     assert "cache" in behaviors["fallback_chain"]
+    assert "anthropic-api" in behaviors["fallback_chain"]
+    assert "cloud" not in behaviors["fallback_chain"]
     assert "heuristic" in behaviors["fallback_chain"]
     bridge = parsed["bridge_llm_client"]
     assert bridge["redaction_required"] is True, (

@@ -7,6 +7,8 @@ Per operator decision 4 (2026-05-10) for cloud-bound prompts:
   used verbatim)
 - redact credit-card-like digit spans: ``\\b\\d{13,19}\\b``
 - redact phone-like spans: ``\\+?\\d[\\d\\s-]{8,}``
+- redact Finnish HETU / IBAN / Y-tunnus before generic phone spans so
+  partial identifiers do not leak and telemetry keeps the right class
 - redact full file paths
 
 Hard default: ``AcceptPiiToCloud=False``. Cloud-bound PII is allowed
@@ -31,6 +33,15 @@ from typing import Pattern
 # specified them. Kept as compiled patterns for hot-path use.
 EMAIL_RE: Pattern[str] = re.compile(r"[\w.+-]+@[\w.+-]+")
 CREDIT_CARD_RE: Pattern[str] = re.compile(r"\b\d{13,19}\b")
+# Finnish identifiers must run before PHONE_RE. The generic phone
+# pattern is intentionally broad enough to catch digit-heavy PII, but
+# without these earlier classifiers it leaves HETU/IBAN fragments in
+# the redacted text and mislabels telemetry as PHONE.
+HETU_RE: Pattern[str] = re.compile(
+    r"\b[0-3]\d[01]\d\d{2}[+\-A]\d{3}[0-9A-Y]\b",
+)
+IBAN_RE: Pattern[str] = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){8,32}\b")
+Y_TUNNUS_RE: Pattern[str] = re.compile(r"\b\d{7}-\d\b")
 # Phone: optional leading +, then a digit, then at least 8 more
 # digits/spaces/hyphens. Matches international + national patterns.
 PHONE_RE: Pattern[str] = re.compile(r"\+?\d[\d\s-]{8,}")
@@ -56,6 +67,9 @@ _URL_MASK_CLOSE = "\x00ENDURL\x00"
 # Placeholder names per master prompt §2.6
 EMAIL_PLACEHOLDER = "EMAIL"
 TOKEN_PLACEHOLDER = "TOKEN"   # credit-card / opaque digit token
+HETU_PLACEHOLDER = "HETU"
+IBAN_PLACEHOLDER = "IBAN"
+BUSINESS_ID_PLACEHOLDER = "BUSINESS_ID"
 PHONE_PLACEHOLDER = "PHONE"
 PATH_PLACEHOLDER = "PATH"
 
@@ -136,6 +150,9 @@ class BridgeLLMRedactor:
         counts: dict[str, int] = {
             EMAIL_PLACEHOLDER: 0,
             TOKEN_PLACEHOLDER: 0,
+            HETU_PLACEHOLDER: 0,
+            IBAN_PLACEHOLDER: 0,
+            BUSINESS_ID_PLACEHOLDER: 0,
             PHONE_PLACEHOLDER: 0,
             PATH_PLACEHOLDER: 0,
         }
@@ -161,11 +178,15 @@ class BridgeLLMRedactor:
         text = URL_RE.sub(_mask_url, text)
 
         # Order matters: paths first (to avoid the email regex chewing
-        # paths that contain `@`); credit-card before phone (digit
-        # patterns overlap); email before phone (digit-only phone
-        # might catch part of a numeric local-part).
+        # paths that contain `@`); specific Finnish identifiers before
+        # generic digit patterns; credit-card before phone (digit
+        # patterns overlap); email before phone (digit-only phone might
+        # catch part of a numeric local-part).
         text = WINDOWS_PATH_RE.sub(make_replacer(PATH_PLACEHOLDER), text)
         text = POSIX_PATH_RE.sub(make_replacer(PATH_PLACEHOLDER), text)
+        text = HETU_RE.sub(make_replacer(HETU_PLACEHOLDER), text)
+        text = IBAN_RE.sub(make_replacer(IBAN_PLACEHOLDER), text)
+        text = Y_TUNNUS_RE.sub(make_replacer(BUSINESS_ID_PLACEHOLDER), text)
         text = EMAIL_RE.sub(make_replacer(EMAIL_PLACEHOLDER), text)
         text = CREDIT_CARD_RE.sub(make_replacer(TOKEN_PLACEHOLDER), text)
         text = PHONE_RE.sub(make_replacer(PHONE_PLACEHOLDER), text)

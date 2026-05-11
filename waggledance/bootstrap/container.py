@@ -172,6 +172,51 @@ class Container:
             )
             return None
 
+    @cached_property
+    def autogrowth_scheduler(self):
+        """AutogrowthScheduler bound to the persistent control plane."""
+        cp_db = self.control_plane_db
+        if cp_db is None:
+            return None
+        try:
+            from waggledance.core.autonomy_growth import AutogrowthScheduler
+            return AutogrowthScheduler(cp_db)
+        except Exception as exc:
+            log.error(
+                "AutogrowthScheduler construction failed; background "
+                "autogrowth tick inactive: %s", exc,
+            )
+            return None
+
+    @cached_property
+    def autogrowth_background_ticker(self):
+        """Background ticker that drains autogrowth_queue during runtime."""
+        scheduler = self.autogrowth_scheduler
+        if scheduler is None:
+            return None
+        enabled = bool(
+            self._settings.get("autogrowth.background_tick_enabled", True)
+        )
+        if not enabled:
+            return None
+        try:
+            from waggledance.core.autonomy_growth import AutogrowthBackgroundTicker
+            return AutogrowthBackgroundTicker(
+                scheduler,
+                interval_seconds=float(
+                    self._settings.get("autogrowth.background_interval_s", 30.0)
+                ),
+                max_ticks_per_wake=int(
+                    self._settings.get("autogrowth.background_max_ticks", 20)
+                ),
+            )
+        except Exception as exc:
+            log.error(
+                "AutogrowthBackgroundTicker construction failed; background "
+                "autogrowth tick inactive: %s", exc,
+            )
+            return None
+
     # --- Core (lazy imports -- Agent 1 may still be running) ---
 
     @cached_property

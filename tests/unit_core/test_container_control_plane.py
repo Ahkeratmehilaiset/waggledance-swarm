@@ -31,6 +31,13 @@ class _StubSettings:
     db_path = "shared_memory.db"
 
 
+class _AutogrowthDisabledSettings(_StubSettings):
+    def get(self, key, default=None):
+        if key == "autogrowth.background_tick_enabled":
+            return False
+        return super().get(key, default)
+
+
 class TestControlPlaneDbWiring:
     def test_stub_mode_returns_none(self):
         """Stub mode (tests/CI without persistent data dir) returns None
@@ -74,3 +81,33 @@ class TestControlPlaneDbWiring:
         ):
             c = Container(settings=_StubSettings(), stub=False)
             assert c.control_plane_db is None
+
+    def test_stub_mode_autogrowth_ticker_returns_none(self):
+        c = Container(settings=_StubSettings(), stub=True)
+        assert c.autogrowth_scheduler is None
+        assert c.autogrowth_background_ticker is None
+
+    def test_non_stub_builds_autogrowth_background_ticker(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        c = Container(settings=_StubSettings(), stub=False)
+        try:
+            ticker = c.autogrowth_background_ticker
+            assert ticker is not None
+            assert ticker.is_running is False
+        finally:
+            if c.control_plane_db is not None:
+                c.control_plane_db.close()
+
+    def test_autogrowth_background_ticker_respects_disabled_flag(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        c = Container(settings=_AutogrowthDisabledSettings(), stub=False)
+        try:
+            assert c.autogrowth_scheduler is not None
+            assert c.autogrowth_background_ticker is None
+        finally:
+            if c.control_plane_db is not None:
+                c.control_plane_db.close()

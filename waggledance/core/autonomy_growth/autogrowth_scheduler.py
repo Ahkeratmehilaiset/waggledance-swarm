@@ -26,7 +26,9 @@ trivially halt-able.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import socket
 import time
 import uuid
@@ -44,6 +46,7 @@ from .family_oracles import FAMILY_ORACLES
 from .low_risk_grower import GapInput, GapOutcome, LowRiskGrower
 from .low_risk_policy import is_low_risk_family
 
+log = logging.getLogger(__name__)
 
 # Outcome strings for autogrowth_runs.outcome
 OUTCOME_AUTO_PROMOTED = "auto_promoted"
@@ -79,6 +82,14 @@ class SchedulerStats:
     rejected: int = 0
     errored: int = 0
     by_family_promoted: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class BackgroundTickerStats:
+    wakeups_total: int = 0
+    non_idle_ticks: int = 0
+    errors_total: int = 0
+    last_error: Optional[str] = None
 
 
 class AutogrowthScheduler:
@@ -396,8 +407,82 @@ class AutogrowthScheduler:
             )
 
 
+class AutogrowthBackgroundTicker:
+    """Async lifecycle wrapper that periodically drains autogrowth_queue."""
+
+    def __init__(
+        self,
+        scheduler: AutogrowthScheduler,
+        *,
+        interval_seconds: float = 30.0,
+        max_ticks_per_wake: int = 20,
+    ) -> None:
+        self._scheduler = scheduler
+        self._interval_seconds = max(0.01, float(interval_seconds))
+        self._max_ticks_per_wake = max(1, int(max_ticks_per_wake))
+        self._stats = BackgroundTickerStats()
+        self._task: Optional[asyncio.Task] = None
+
+    @property
+    def stats(self) -> BackgroundTickerStats:
+        return self._stats
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    async def start(self) -> bool:
+        """Start the background ticker. Returns False if already running."""
+
+        if self.is_running:
+            return False
+        self._task = asyncio.create_task(
+            self._run_loop(), name="autogrowth-background-ticker"
+        )
+        return True
+
+    async def stop(self) -> bool:
+        """Cancel and await the background ticker task."""
+
+        task = self._task
+        self._task = None
+        if task is None:
+            return False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return True
+
+    async def drain_once(self) -> int:
+        """Drain ready queue work once without blocking the event loop."""
+
+        self._stats.wakeups_total += 1
+        try:
+            drained = await asyncio.to_thread(
+                self._scheduler.run_until_idle,
+                max_ticks=self._max_ticks_per_wake,
+            )
+            self._stats.non_idle_ticks += int(drained)
+            self._stats.last_error = None
+            return int(drained)
+        except Exception as exc:  # noqa: BLE001 - background loop must stay alive
+            self._stats.errors_total += 1
+            self._stats.last_error = f"{type(exc).__name__}: {exc}"
+            log.warning("Autogrowth background tick failed: %s", exc, exc_info=True)
+            return 0
+
+    async def _run_loop(self) -> None:
+        while True:
+            await self.drain_once()
+            await asyncio.sleep(self._interval_seconds)
+
+
 __all__ = [
     "AutogrowthScheduler",
+    "AutogrowthBackgroundTicker",
+    "BackgroundTickerStats",
     "SchedulerStats",
     "TickResult",
     "OUTCOME_AUTO_PROMOTED",

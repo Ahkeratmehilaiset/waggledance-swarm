@@ -16,6 +16,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $bridgeBin = $PSScriptRoot
+$readScript = Join-Path $bridgeBin 'Read-AgentBridge.ps1'
 $statusScript = Join-Path $bridgeBin 'Get-AgentBridgeStatus.ps1'
 $nextActionScript = Join-Path $bridgeBin 'Get-BridgeNextAction.ps1'
 
@@ -126,6 +127,15 @@ try {
     Add-Check -Name 'message/answered_plus_reminder counts as a message answer' `
         -Passed ($waitingPostchatForCodex.Count -eq 0) `
         -Detail "unresolved_postchat_to_codex=$($waitingPostchatForCodex.Count)"
+
+    $readerOutput = (& $readScript -Agent codex -NoAckReceived -Tail 20 6>&1) | Out-String
+    Add-Check -Name 'Read-AgentBridge outgoing view sees custom reply type' `
+        -Passed ($readerOutput -match 'answered-by-claude eig2-m0-ownership-split-2026-05-11: request message/request -> ownership_proposal/open') `
+        -Detail (($readerOutput -split "`r?`n" | Where-Object { $_ -match 'eig2-m0-ownership-split-2026-05-11' } | Select-Object -First 2) -join ' | ')
+
+    Add-Check -Name 'Read-AgentBridge incoming view accepts answered_plus_reminder' `
+        -Passed ($readerOutput -match 'answered claude-codex-postchat-2026-05-11: request message/open -> message/answered_plus_reminder') `
+        -Detail (($readerOutput -split "`r?`n" | Where-Object { $_ -match 'claude-codex-postchat-2026-05-11' } | Select-Object -First 2) -join ' | ')
 
     $next = (& $nextActionScript -Agent codex -Json -Tail 100 | ConvertFrom-Json)
     Add-Check -Name 'next-action no longer asks Codex to answer already-answered postchat' `

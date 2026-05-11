@@ -103,15 +103,22 @@ the next session. Each line points to where the deeper context lives.
   The stable-promotion workflow `.github/workflows/release-docker-stable.yml`
   is now on main (PR #221, merged 2026-05-11) so the cut is a one-click
   `gh workflow run` away.
-- **Option B production PR (Codex in-flight)** — `r22-option-b-read-connections-2026-05-11`
-  active claim in Codex worktree at `C:/tmp/.../codex-r22-option-b-read-connections-2026-05-11`.
-  Implements the measured thread-local read-only `sqlite3.Connection`
-  + `query_only=ON` PRAGMA pattern that Claude's spike validated at
-  313–1 028× routing-read improvement and full 8 258-test suite PASS.
-  Write scope `waggledance/core/storage/control_plane.py` + 2 test files.
+- **24 h production runtime_gap_signal histogram collection** — the
+  next concrete data ask. Run `python -m tools.runtime_gap_signal_concurrency_histogram
+  --db <prod control_plane.db> --window-seconds 1 --out-json out.json`
+  against a 24 h snapshot once Option B (PR #223) has been on main for
+  one full day. Verdict ladder (`r25-not-needed` → `r25-defer` →
+  `r25-consider` → `r25-strongly-recommended`) gates operator decision #2.
+  Tool landed via PR #224.
 
 ### Recently closed (2026-05-10 + 2026-05-11)
 
+- **Option B (thread-local read-only SQLite connections)** — PR #223
+  merged 2026-05-11 at `09900438`. Codex authored, Claude validated +
+  landed on Codex's behalf after claim auto-released (stale-lease).
+  Measured 2 064× routing-read speedup + 49.7× list-read speedup at
+  N=6 concurrent writer flood; cross-table routing now stays sub-millisecond
+  under any flood. Co-Authored-By attribution intact.
 - **R22 branch-isolation stress measurement track** (Run A/B/C/D + Run E
   read-path + Run F routing hot-path + Option B spike) — full data in
   `.codex-audit/branch_isolation_stress_2026_05_10/SUMMARY.md`; recorded
@@ -132,21 +139,23 @@ the next session. Each line points to where the deeper context lives.
    Recommended Option B (full English baseline + `agents_locale/fi/` overlay).
    Sized at 42–50 FTE hours, 2.1–2.6k LoC diff, 3–4 weeks calendar. AFTER
    R22.5 stable cut. Scout: `iterations/codex_scout_tasks/r22_x_finnish_to_english_agent_contract_scout_2026_05_10.md`.
-2. **R25 3D hex topology + per-cell DB sharding** — **architectural
-   recommendation UPDATED 2026-05-11 by the Run A–F + Option B spike**:
+2. **R25 3D hex topology + per-cell DB sharding** — **status 2026-05-11**:
    R25 is now a *write-contention-only* decision. The earlier "12.2×
    degradation under adversarial load" framing covered only one of three
-   contention regimes; the measurement track exposed cross-table routing
-   degradation (2 494× at N=6 concurrent writers) and same-table read
-   degradation (128× at N=6) which Option B (thread-local read connection
-   + WAL MVCC) fixes at ~10–30 LoC. The recommended ordering is **(1)
-   land Codex's Option B PR + measure production traffic, (2) THEN decide
-   R25** based on write-side p99 alone. Full Run A–F + Option B numbers in
-   `.codex-audit/branch_isolation_stress_2026_05_10/SUMMARY.md` and
-   `iterations/EVOLUTION_INDEX.md` (entry
-   `r22-2d-branch-isolation-stress-inflection`). Codex's 12-document
-   scout pack at `iterations/codex_scout_tasks/r25_*_codex_*.md` is
-   reference material — don't implement until the Option B path lands.
+   contention regimes; the measurement track (Run A–F + Option B spike,
+   PR #220 EVOLUTION_INDEX entry `r22-2d-branch-isolation-stress-inflection`)
+   exposed cross-table routing degradation (2 494× at N=6 concurrent
+   writers) and same-table read degradation (128× at N=6). **PR #223
+   Option B is now on main** (merged `09900438`) and structurally fixes
+   2 of 3 regimes. R25 only addresses the remaining same-table write
+   contention (Run A–D), and only if production traffic crosses the
+   measured knee at N=4 concurrent writer cells. **Next step before R25
+   commitment**: run `tools/runtime_gap_signal_concurrency_histogram.py`
+   (PR #224) against a 24 h production snapshot — verdict is one of
+   `r25-not-needed`, `r25-defer`, `r25-consider`, or
+   `r25-strongly-recommended`. Codex's 12-document scout pack at
+   `iterations/codex_scout_tasks/r25_*_codex_*.md` is reference material
+   for when/if the histogram says go.
 3. **Dependabot #21 (checkout 4→6) + #26 (psutil patch)** — low-risk
    hygiene cleanup, awaiting operator approve/defer signal. The other 5
    dependabot PRs (#19/#22/#23/#24/#25) deferred per the audit.

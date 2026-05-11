@@ -53,6 +53,40 @@ def test_fi_suffixes_list():
     print("  [PASS] _FI_SUFFIXES list contains Finnish case endings")
 
 
+def test_voikko_runtime_check_requires_windows_dll(monkeypatch, tmp_path):
+    import core.normalizer as nm
+
+    monkeypatch.setattr(nm.os, "name", "nt")
+    monkeypatch.setenv("PATH", "")
+
+    assert nm._has_voikko_runtime(tmp_path) is False
+    (tmp_path / "libvoikko-1.dll").write_bytes(b"stub")
+    assert nm._has_voikko_runtime(tmp_path) is True
+
+
+def test_voikko_destructor_guard_suppresses_partial_init_attribute_error():
+    from core.normalizer import _guard_voikko_destructor
+
+    calls = []
+
+    class Voikko:
+        def __del__(self):
+            calls.append("called")
+            self.__handle
+
+    fake_libvoikko = type("FakeLibVoikko", (), {"Voikko": Voikko})
+    _guard_voikko_destructor(fake_libvoikko)
+
+    broken = Voikko()
+    broken.__del__()
+    assert calls == []
+
+    healthy = Voikko()
+    healthy._Voikko__handle = object()
+    healthy.__del__()
+    assert calls == ["called"]
+
+
 # ── 3. normalize_fi — basic behaviour ────────────────────────────────────
 
 def test_normalize_empty_string():

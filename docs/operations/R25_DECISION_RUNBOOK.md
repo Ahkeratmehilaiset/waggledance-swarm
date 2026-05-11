@@ -22,7 +22,7 @@ python -m tools.runtime_gap_signal_concurrency_histogram `
 Output ends with a verdict line:
 
 ```
-R25 decision signal: <r25-not-needed | r25-defer | r25-consider | r25-strongly-recommended>
+R25 decision signal: <insufficient-data | r25-not-needed | r25-defer | r25-consider | r25-strongly-recommended>
   <rationale>
 ```
 
@@ -113,13 +113,19 @@ R25 decision signal: r25-defer
 
 ### Verdict ladder
 
-| Verdict | Condition | Recommended action |
+The thresholds below match the tool's actual logic in
+`tools/runtime_gap_signal_concurrency_histogram.py` exactly:
+- `pct_n2` is the percent of windows with ≥ 2 concurrent cells.
+- `pct_n4` is the percent of windows with ≥ 4 concurrent cells.
+- Comparisons are strict-greater-than in the tool, so the boundaries are inclusive on the lower side.
+
+| Verdict | Condition (matches tool code) | Recommended action |
 |---|---|---|
-| `insufficient-data` | < 60 observation windows | Collect a longer span. The histogram is statistically meaningless. |
-| `r25-not-needed` | < 5 % windows have ≥ 2 concurrent cells | **Hylkää R25 lopullisesti.** Production is single-branch-dominant. Re-run after major workload changes. |
-| `r25-defer` | < 10 % windows have ≥ 4 concurrent cells | **Keep deferred.** Below the Run F knee. Re-check in 3 months or after major workload changes. |
-| `r25-consider` | 10–50 % at ≥ 4 | **Collect larger sample (7d).** Knee region — single 24h sample may be unrepresentative. |
-| `r25-strongly-recommended` | > 50 % at ≥ 4 | **Aloita R25 RFC.** Production routinely crosses the knee; sharding will pay for itself. Codex's 12-document scout at `iterations/codex_scout_tasks/r25_*_codex_*.md` is the starting point. |
+| `insufficient-data` | total observation windows < 60 | Collect a longer span. The histogram is statistically meaningless below ~1 minute of data. |
+| `r25-not-needed` | `pct_n2 <= 5 %` (i.e. ≤ 5 % of windows have ≥ 2 concurrent cells) | **Close the R25 track formally.** Production is single-branch-dominant. Re-run after major workload changes. |
+| `r25-defer` | `pct_n2 > 5 %` AND `pct_n4 <= 10 %` | **Keep R25 deferred.** Below the Run F knee at N=4. Re-check in 3 months or after major workload changes. |
+| `r25-consider` | `pct_n4 > 10 %` AND `pct_n4 <= 50 %` | **Collect a larger sample (7d minimum; longer if known weekly / month-end / batch cycles).** Knee region — single 24 h sample may be unrepresentative. |
+| `r25-strongly-recommended` | `pct_n4 > 50 %` | **Start the R25 RFC.** Production routinely crosses the knee; sharding will pay for itself. Codex's 12-document scout at `iterations/codex_scout_tasks/r25_*_codex_*.md` is the starting point. |
 
 ### What "knee at N=4" means
 
@@ -173,7 +179,12 @@ If your production rarely has even 2 concurrent cells, you are **on the safe sid
 - **The tool measures ONE table** (`runtime_gap_signals`). If your production has contention on a different table (e.g., `solver_artifacts` or `vector_events`), this tool will miss it. The Run A–F measurement series specifically targeted `runtime_gap_signals` because that was the operationally-painful regime; if a different table emerges as the bottleneck, a per-table histogram is the right tool, not this one.
 - **24 hours may not be enough** for a representative sample. If your production has a weekly cycle (e.g., batch-jobs on Saturday), use a 7-day sample.
 - **A `r25-not-needed` verdict today does not mean R25 will never be needed.** Workload patterns shift. Re-run periodically.
-- **R25 is one option for the write-contention regime.** Alternatives: (a) lock-relaxation for writes (similar shape to Option B for reads, harder because writes need atomicity), (b) batch-coalescing of `runtime_gap_signals` writes at the application layer. These are not in the current Codex R25 scout but could be cheaper than full sharding.
+- **R25 is one option for the write-contention regime.** Alternatives in increasing order of cost:
+  (a) **Table-level partitioning** of `runtime_gap_signals` (split the single table into per-cell tables within the same DB; smaller migration than full per-cell DB sharding).
+  (b) **Batch-coalescing** of `runtime_gap_signals` writes at the application layer (group multiple writes from the same cell into a single transaction, reducing lock-acquisition frequency).
+  (c) **Lock-relaxation for writes** (similar shape to Option B for reads but harder because writes need atomicity; would need a per-cell write queue with serialized flush).
+  (d) **Full R25 per-cell DB sharding** (the heavy option in the Codex scout pack).
+  Verdict `r25-consider` could be addressed by (a) or (b) before committing to (d).
 
 ---
 

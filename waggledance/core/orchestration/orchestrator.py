@@ -147,12 +147,10 @@ class Orchestrator:
             n=6,
         )
 
-        # Build prompts for all agents
+        # Build prompts via YAMLBridge with f-string fallback (D3.3 Phase A).
+        from waggledance.core.orchestration.prompt_builder import build_agent_prompt
         prompts = [
-            (
-                f"You are {agent.name} ({agent.domain}). "
-                f"Answer briefly: {task.query}"
-            )
+            build_agent_prompt(agent, task.query, style_hint="Answer briefly.")
             for agent in selected
         ]
 
@@ -242,12 +240,10 @@ class Orchestrator:
         """
         start = time.monotonic()
 
-        # Build prompts
+        # Build prompts via YAMLBridge with f-string fallback (D3.3 Phase A).
+        from waggledance.core.orchestration.prompt_builder import build_agent_prompt
         prompts = [
-            (
-                f"You are {agent.name}, expert in {agent.domain}. "
-                f"Answer: {task.query}"
-            )
+            build_agent_prompt(agent, task.query)
             for agent in agents
         ]
 

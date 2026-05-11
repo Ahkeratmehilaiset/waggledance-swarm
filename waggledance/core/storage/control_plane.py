@@ -464,16 +464,56 @@ class ControlPlaneDB:
         )
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._tls = threading.local()
+        self._read_conns: List[sqlite3.Connection] = []
+        self._closed = False
         # R21.2: tracks whether we're currently inside a public
         # transaction() block so nested transaction() calls are no-ops.
         self._in_transaction = False
         self._conn = sqlite3.connect(
             str(self._db_path), check_same_thread=False, isolation_level=None
         )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._configure_connection(self._conn)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self.migrate()
+
+    def _configure_connection(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        query_only: bool = False,
+    ) -> sqlite3.Connection:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        if query_only:
+            conn.execute("PRAGMA query_only = ON")
+        return conn
+
+    def _ro_conn(self) -> sqlite3.Connection:
+        """Return this thread's read-only connection for autocommit reads."""
+
+        if self._closed:
+            raise ControlPlaneError("control-plane database is closed")
+        conn = getattr(self._tls, "ro_conn", None)
+        if conn is not None:
+            return conn
+        with self._lock:
+            if self._closed:
+                raise ControlPlaneError("control-plane database is closed")
+            conn = sqlite3.connect(
+                str(self._db_path), check_same_thread=False, isolation_level=None
+            )
+            self._configure_connection(conn, query_only=True)
+            self._read_conns.append(conn)
+            self._tls.ro_conn = conn
+            return conn
+
+    def _read_conn(self) -> sqlite3.Connection:
+        # Transaction-scoped reads must use the writer connection so callers
+        # see uncommitted writes and concurrent readers keep the old behavior.
+        if self._in_transaction:
+            return self._conn
+        return self._ro_conn()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -485,6 +525,15 @@ class ControlPlaneDB:
 
     def close(self) -> None:
         with self._lock:
+            self._closed = True
+            for conn in self._read_conns:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+            self._read_conns.clear()
+            if getattr(self._tls, "ro_conn", None) is not None:
+                del self._tls.ro_conn
             try:
                 self._conn.close()
             except sqlite3.Error:
@@ -630,11 +679,17 @@ class ControlPlaneDB:
             return self._row_to_solver(row)
 
     def get_solver(self, name: str) -> Optional[SolverRecord]:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT * FROM solvers WHERE name = ?", (name,)
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT * FROM solvers WHERE name = ?", (name,)
             ).fetchone()
-            return self._row_to_solver(row) if row else None
+        return self._row_to_solver(row) if row else None
 
     def get_solver_name(self, solver_id: int) -> Optional[str]:
         with self._lock:
@@ -1073,15 +1128,25 @@ class ControlPlaneDB:
                 raise
 
     def get_active_runtime_path(self, logical_name: str, path_kind: str) -> Optional[RuntimePathBinding]:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    """
+                    SELECT * FROM runtime_path_bindings
+                     WHERE logical_name = ? AND path_kind = ? AND is_active = 1
+                    """,
+                    (logical_name, path_kind),
+                ).fetchone()
+        else:
+            row = conn.execute(
                 """
                 SELECT * FROM runtime_path_bindings
                  WHERE logical_name = ? AND path_kind = ? AND is_active = 1
                 """,
                 (logical_name, path_kind),
             ).fetchone()
-            return self._row_to_runtime_path_binding(row) if row else None
+        return self._row_to_runtime_path_binding(row) if row else None
 
     def list_active_runtime_paths(self) -> List[RuntimePathBinding]:
         with self._lock:
@@ -1626,8 +1691,12 @@ class ControlPlaneDB:
         sql = "SELECT COUNT(*) AS c FROM runtime_gap_signals"
         if wheres:
             sql += " WHERE " + " AND ".join(wheres)
-        with self._lock:
-            row = self._conn.execute(sql, params).fetchone()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(sql, params).fetchone()
+        else:
+            row = conn.execute(sql, params).fetchone()
         return int(row["c"]) if row else 0
 
     def list_runtime_gap_signals(
@@ -1660,8 +1729,12 @@ class ControlPlaneDB:
         if limit is not None:
             sql += " LIMIT ?"
             params.append(int(limit))
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                rows = conn.execute(sql, params).fetchall()
+        else:
+            rows = conn.execute(sql, params).fetchall()
         return [self._row_to_runtime_gap_signal(r) for r in rows]
 
     # -- schema_meta key/value helpers (general; used by Phase 18F)----

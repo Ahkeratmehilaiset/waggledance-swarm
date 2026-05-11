@@ -60,6 +60,58 @@ class TestClassifyIntent:
     def test_causal_finnish(self):
         assert SolverRouter.classify_intent("miksi näin tapahtui") == "causal"
 
+    # ── H22/H58 regression: substring -> word-boundary anchoring ──
+    #
+    # Before the H58 fix, "sum" in math_signals matched "consumption",
+    # "rule" matched "rules", "cause" matched "because", etc., routing
+    # natural-language queries to the wrong solver. These tests pin the
+    # word-boundary anchoring so a future copy-paste of a short signal
+    # term cannot silently re-introduce substring false positives.
+
+    def test_sum_does_not_match_consumption(self):
+        # "consumption" contains "sum" as substring — before H58 fix
+        # this routed to math, missing the stats branch entirely.
+        result = SolverRouter.classify_intent(
+            "Tell me about electricity consumption last week"
+        )
+        assert result == "stats", (
+            "expected stats (consumption + last week), got "
+            f"{result!r} — substring sum->consumption may be back"
+        )
+
+    def test_sum_does_not_match_sumitomo(self):
+        # Pure non-math query containing "sum" as substring.
+        result = SolverRouter.classify_intent("sumitomo tradings news")
+        assert result != "math", (
+            f"got {result!r} — 'sum' substring matched 'sumitomo'"
+        )
+
+    def test_sum_does_not_match_consumes(self):
+        result = SolverRouter.classify_intent("what consumes battery")
+        assert result != "math", (
+            f"got {result!r} — 'sum' substring matched 'consumes'"
+        )
+
+    def test_heat_does_not_match_wheat(self):
+        # "heat" is in thermal_signals; before H58 it would match "wheat".
+        result = SolverRouter.classify_intent("wheat field")
+        assert result != "thermal", (
+            f"got {result!r} — 'heat' substring matched 'wheat'"
+        )
+
+    def test_rule_does_not_match_judge_ruled(self):
+        result = SolverRouter.classify_intent("a judge ruled")
+        assert result != "constraint", (
+            f"got {result!r} — 'rule' substring matched 'ruled'"
+        )
+
+    def test_model_does_not_match_modeling(self):
+        # "model" in formula_signals would match "modeling" before H58.
+        result = SolverRouter.classify_intent("modeling complex systems")
+        assert result != "symbolic", (
+            f"got {result!r} — 'model' substring matched 'modeling'"
+        )
+
 
 # ── CapabilitySelector routing ────────────────────────────────────
 

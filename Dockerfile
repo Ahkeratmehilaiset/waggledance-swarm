@@ -45,4 +45,9 @@ ENV PYTHONUNBUFFERED=1
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["python", "start_waggledance.py"]
+# Canonical entrypoint (v3.12.0): align Dockerfile CMD with the
+# docker-compose command and the pyproject [project.scripts] entry,
+# all of which delegate to waggledance.adapters.cli.start_runtime:main.
+# start_waggledance.py is retained as a dev-convenience wrapper but
+# the production-shape entrypoint is the python -m form.
+CMD ["python", "-m", "waggledance.adapters.cli.start_runtime"]

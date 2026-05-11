@@ -1097,6 +1097,61 @@ entries:
     the same Option B shape: 8258 passed, 6 skipped, 1 xfailed.
   next_bottleneck: collect the 24h runtime_gap_signal concurrent-write histogram by cell; if production rarely crosses the N=4 writer knee, keep R25 deferred and prefer small read-method coverage polish over 3D hex sharding.
 
+- session_id: r22-2e-option-b-read-connection-phase-3
+  pr: 231
+  owner: claude
+  reviewer: codex
+  merged_utc: 2026-05-11T10:54:31Z
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: null
+  axis_a_snapshot: null
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    Phase 3 completed the ControlPlaneDB Option B read-connection sweep
+    after PR #223 and PR #227 had already covered the first 15 read
+    methods. PR #229, PR #230, and PR #231 added the remaining 11
+    read methods and raised the covered read surface to 26 methods.
+
+    Phase 3 Cat 2 (PR #229) covered seven multi-statement or dynamic-SQL
+    reads: list_family_policies, get_shadow_evaluation,
+    list_promotion_decisions, get_solver_capability_features,
+    list_autogrowth_queue, list_autogrowth_runs, and
+    count_growth_events.
+
+    Phase 3 Cat 1 (PR #230) covered the two helper-routed public reads:
+    get_solver_family and get_family_policy. The private helper
+    signatures gained an optional conn parameter so read callers can use
+    the thread-local read connection while writer callers keep the old
+    self._conn fallback under self._lock.
+
+    Phase 3 Cat 3 (PR #231) covered the final two single-row reads found
+    by the completion sweep: schema_version and latest_autonomy_kpi.
+    The rare stats() admin snapshot intentionally remains serialized
+    because it loops over every table and is not a hot routing path.
+
+    No new latency number is claimed for Phase 3. The painful read
+    contention regimes were already measured and fixed by the production
+    Option B entry. Phase 3 records consistency: future ControlPlaneDB
+    read methods should follow _read_conn() plus transaction-state guard
+    by default.
+
+    Codex review evidence: PR #229 passed targeted tests (24), the
+    storage+transaction suite (96), diff-check, GitHub CI, and a seeded
+    runtime probe for all seven Cat 2 methods. PR #230 post-merge audit
+    passed targeted tests (29), storage+transaction (101), diff-check,
+    GitHub CI, and a 24-method runtime probe. PR #231 passed targeted
+    tests (24), storage+transaction (104), diff-check, GitHub CI, a
+    two-method runtime probe, and post-merge sanity (32 targeted,
+    104 storage+transaction).
+  next_bottleneck: collect the 24h runtime_gap_signal concurrent-write histogram by cell; stats() can remain serialized unless production traces show it on a hot admin/dashboard path.
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

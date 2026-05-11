@@ -630,11 +630,17 @@ class ControlPlaneDB:
             return self._fetch_one_solver_family(name, raise_if_missing=False)
 
     def list_solver_families(self) -> List[SolverFamilyRecord]:
-        with self._lock:
-            rows = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                rows = conn.execute(
+                    "SELECT * FROM solver_families ORDER BY name"
+                ).fetchall()
+        else:
+            rows = conn.execute(
                 "SELECT * FROM solver_families ORDER BY name"
             ).fetchall()
-            return [self._row_to_solver_family(r) for r in rows]
+        return [self._row_to_solver_family(r) for r in rows]
 
     # -- solvers ---------------------------------------------------------
 
@@ -692,21 +698,36 @@ class ControlPlaneDB:
         return self._row_to_solver(row) if row else None
 
     def get_solver_name(self, solver_id: int) -> Optional[str]:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT name FROM solvers WHERE id = ?", (int(solver_id),)
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT name FROM solvers WHERE id = ?", (int(solver_id),)
             ).fetchone()
-            return str(row["name"]) if row is not None else None
+        return str(row["name"]) if row is not None else None
 
     def count_solvers(self, *, status: Optional[str] = None) -> int:
-        with self._lock:
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                if status is None:
+                    row = conn.execute("SELECT COUNT(*) AS c FROM solvers").fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS c FROM solvers WHERE status = ?", (status,)
+                    ).fetchone()
+        else:
             if status is None:
-                row = self._conn.execute("SELECT COUNT(*) AS c FROM solvers").fetchone()
+                row = conn.execute("SELECT COUNT(*) AS c FROM solvers").fetchone()
             else:
-                row = self._conn.execute(
+                row = conn.execute(
                     "SELECT COUNT(*) AS c FROM solvers WHERE status = ?", (status,)
                 ).fetchone()
-            return int(row["c"])
+        return int(row["c"])
 
     # -- capabilities ----------------------------------------------------
 
@@ -843,11 +864,17 @@ class ControlPlaneDB:
             return self._row_to_vector_shard(row)
 
     def get_vector_shard(self, logical_name: str) -> Optional[VectorShardRecord]:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT * FROM vector_shards WHERE logical_name = ?", (logical_name,)
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT * FROM vector_shards WHERE logical_name = ?", (logical_name,)
             ).fetchone()
-            return self._row_to_vector_shard(row) if row else None
+        return self._row_to_vector_shard(row) if row else None
 
     def register_vector_index(
         self,
@@ -1149,15 +1176,25 @@ class ControlPlaneDB:
         return self._row_to_runtime_path_binding(row) if row else None
 
     def list_active_runtime_paths(self) -> List[RuntimePathBinding]:
-        with self._lock:
-            rows = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM runtime_path_bindings
+                     WHERE is_active = 1
+                     ORDER BY path_kind, logical_name
+                    """
+                ).fetchall()
+        else:
+            rows = conn.execute(
                 """
                 SELECT * FROM runtime_path_bindings
                  WHERE is_active = 1
                  ORDER BY path_kind, logical_name
                 """
             ).fetchall()
-            return [self._row_to_runtime_path_binding(r) for r in rows]
+        return [self._row_to_runtime_path_binding(r) for r in rows]
 
     # -- schema v2: solver artifacts (executable compiled form) --------
 
@@ -1325,8 +1362,14 @@ class ControlPlaneDB:
             return self._row_to_validation_run(row)
 
     def get_validation_run(self, run_id: int) -> Optional[ValidationRunRecord]:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT * FROM validation_runs WHERE id = ?", (run_id,)
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT * FROM validation_runs WHERE id = ?", (run_id,)
             ).fetchone()
         return None if row is None else self._row_to_validation_run(row)
@@ -1449,8 +1492,20 @@ class ControlPlaneDB:
         return [self._row_to_promotion_decision(r) for r in rows]
 
     def count_auto_promoted_for_family(self, family_kind: str) -> int:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM solvers s
+                    JOIN solver_families f ON f.id = s.family_id
+                    WHERE f.name = ? AND s.status = 'auto_promoted'
+                    """,
+                    (family_kind,),
+                ).fetchone()
+        else:
+            row = conn.execute(
                 """
                 SELECT COUNT(*) AS c
                 FROM solvers s
@@ -1742,8 +1797,14 @@ class ControlPlaneDB:
     def get_meta(self, key: str) -> Optional[str]:
         """Return the raw value stored under ``key`` in ``schema_meta``,
         or None if absent."""
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT value FROM schema_meta WHERE key = ?", (key,),
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT value FROM schema_meta WHERE key = ?", (key,),
             ).fetchone()
         return None if row is None else str(row["value"])
@@ -1833,8 +1894,14 @@ class ControlPlaneDB:
     def get_growth_intent(
         self, intent_id: int
     ) -> Optional[GrowthIntentRecord]:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT * FROM growth_intents WHERE id = ?", (int(intent_id),)
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT * FROM growth_intents WHERE id = ?", (int(intent_id),)
             ).fetchone()
         return None if row is None else self._row_to_growth_intent(row)
@@ -1858,8 +1925,12 @@ class ControlPlaneDB:
         sql = "SELECT COUNT(*) AS c FROM growth_intents"
         if wheres:
             sql += " WHERE " + " AND ".join(wheres)
-        with self._lock:
-            row = self._conn.execute(sql, params).fetchone()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(sql, params).fetchone()
+        else:
+            row = conn.execute(sql, params).fetchone()
         return int(row["c"]) if row else 0
 
     # -- schema v3: autogrowth queue -----------------------------------
@@ -2012,8 +2083,12 @@ class ControlPlaneDB:
         if status is not None:
             sql += " WHERE status = ?"
             params.append(status)
-        with self._lock:
-            row = self._conn.execute(sql, params).fetchone()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(sql, params).fetchone()
+        else:
+            row = conn.execute(sql, params).fetchone()
         return int(row["c"]) if row else 0
 
     # -- schema v3: autogrowth runs ------------------------------------

@@ -231,19 +231,28 @@ class Container:
         Synchronous — called once during orchestrator construction.
         Returns activated AgentDefinition list (empty on error).
 
-        Audit H12 / D3.2: agents are constructed with active=False and
+        Audit H1+H24+H30+H12+H38+H51+H49 — see below for the
+        per-finding contribution:
+
+        H30: validate WAGGLE_PROFILE against KNOWN_PROFILES; unknown
+        profile returns [] with ERROR log.
+
+        H1+H24: derive ``agent.domain`` from
+        configs/alias_registry.yaml canonical IDs (e.g.
+        ``beekeeper -> domain.apiary.beekeeper`` -> "apiary") so the
+        75 production agents distribute across hex cells instead of
+        collapsing to "general"/hub. Empirical: hub-dominance
+        100% (75/75) -> ~1% (1/75) on the same agents/ directory.
+
+        H12 / D3.2: agents are constructed with active=False and
         then activated by AgentLifecycleManager.spawn_for_profile.
         AgentLifecycleManager is the sole owner of active-state
         transitions per its docstring; before this change the
         container set active=True inline, bypassing the manager and
-        leaving it unwired in production.
-
-        Profile filtering still happens at YAML-load time because
-        agent YAMLs declare a *list* of supported profiles
-        (``profiles: [HOME, COTTAGE]``) and lifecycle only knows the
-        single ``agent.profile`` slot — filtering at load preserves
-        multi-profile semantics. Lifecycle's spawn_for_profile then
-        flips active=True on the already-filtered list.
+        leaving it unwired in production. Profile filtering still
+        happens at YAML-load time because agent YAMLs declare a
+        *list* of supported profiles (``profiles: [HOME, COTTAGE]``)
+        and lifecycle only knows the single ``agent.profile`` slot.
         """
         try:
             import yaml
@@ -259,15 +268,27 @@ class Container:
 
             profile = self._settings.get_profile().upper()
             if profile not in KNOWN_PROFILES:
-                # Audit H30: fail loudly on unknown profile rather than
-                # silently filtering away every agent (which served 200
-                # OK on /health while the runtime was effectively empty).
+                # H30: fail loudly on unknown profile rather than
+                # silently filtering away every agent.
                 log.error(
                     "Unknown WAGGLE_PROFILE %r — expected one of %s. "
                     "Returning 0 agents; readiness probe will fail.",
                     profile, sorted(KNOWN_PROFILES),
                 )
                 return []
+            # H24: load AliasRegistry once (best-effort — falls back to
+            # the pre-H24 "general" default if the registry file is
+            # absent or malformed so test fixtures without configs/
+            # still boot).
+            alias_registry = None
+            try:
+                from waggledance.core.capabilities.aliasing import AliasRegistry
+                alias_registry = AliasRegistry.from_yaml_default()
+            except Exception as exc:
+                log.warning(
+                    "AliasRegistry unavailable; agent.domain will fall "
+                    "back to header.domain or 'general' (H24): %s", exc,
+                )
             loaded: list[AgentDefinition] = []
             for yaml_file in sorted(agents_dir.rglob("*.yaml")):
                 try:
@@ -281,27 +302,21 @@ class Container:
                     profiles = [p.upper() for p in data.get("profiles", ["ALL"])]
                     if profile not in profiles and "ALL" not in profiles:
                         continue
-                    # AgentDefinition.profile is a single string but
-                    # YAML allows a list. We pick the value that lets
-                    # AgentLifecycleManager.spawn_for_profile see a
-                    # match on the active profile: "ALL" if the agent
-                    # is universal, otherwise the active profile (we
-                    # already verified it's in the agent's list).
-                    # This avoids the pre-H12 bug where profiles[0]
-                    # was used verbatim, so an agent with
-                    # profiles=[APIARY, HOME] got profile="APIARY"
-                    # and would be dropped by the lifecycle filter
-                    # on a HOME-profile boot.
+                    agent_id = header["agent_id"]
+                    # H24: derive domain via AliasRegistry canonical ID.
+                    domain = self._resolve_agent_domain(
+                        agent_id, header, alias_registry,
+                    )
+                    # H12: agent.profile picked so lifecycle filter
+                    # accepts the match (avoids pre-H12 profiles[0] bug).
                     if "ALL" in profiles:
                         agent_profile = "ALL"
                     else:
                         agent_profile = profile
-                    # Construct with active=False; AgentLifecycleManager
-                    # flips it after the filter pass (H12).
                     agent = AgentDefinition(
-                        id=header["agent_id"],
-                        name=header.get("agent_name", header["agent_id"]),
-                        domain=header.get("domain", "general"),
+                        id=agent_id,
+                        name=header.get("agent_name", agent_id),
+                        domain=domain,
                         tags=data.get("tags", []),
                         skills=list(
                             data.get("DECISION_METRICS_AND_THRESHOLDS", {}).keys()
@@ -330,6 +345,29 @@ class Container:
         except Exception as e:
             log.warning("Agent loading failed, orchestrator will run with 0 agents: %s", e)
             return []
+
+    @staticmethod
+    def _resolve_agent_domain(agent_id, header, alias_registry):
+        """Derive ``agent.domain`` from alias_registry canonical ID (H24).
+
+        Resolution order:
+        1. explicit ``header.domain`` field if the YAML provides one
+           (preserves manual overrides);
+        2. canonical ID part [1] from alias_registry (e.g.
+           ``shared.energy.advisor`` -> "energy");
+        3. ``"general"`` (pre-H24 default — only used when both
+           registry lookup and header field are missing).
+        """
+        explicit = header.get("domain")
+        if explicit:
+            return explicit
+        if alias_registry is not None:
+            canonical = alias_registry.resolve(agent_id)
+            if canonical and "." in canonical:
+                parts = canonical.split(".")
+                if len(parts) >= 2 and parts[1]:
+                    return parts[1]
+        return "general"
 
     @cached_property
     def orchestrator(self):

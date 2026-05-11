@@ -76,6 +76,43 @@ def test_redactor_scrubs_phone():
     assert "<PHONE_1>" in result.text
 
 
+def test_redactor_scrubs_finnish_hetu_before_phone():
+    from waggledance.core.bridge_llm import BridgeLLMRedactor
+    r = BridgeLLMRedactor()
+    result = r.redact("HETU 010195-123A belongs to the applicant")
+    assert "010195-123A" not in result.text
+    assert "<HETU_1>" in result.text
+    assert "<PHONE_" not in result.text
+    assert result.counts["HETU"] == 1
+    assert result.counts["PHONE"] == 0
+    assert result.replacements["<HETU_1>"] == "010195-123A"
+
+
+def test_redactor_scrubs_finnish_iban_country_code():
+    from waggledance.core.bridge_llm import BridgeLLMRedactor
+    r = BridgeLLMRedactor()
+    result = r.redact("Pay to FI21 1234 5600 0007 85")
+    assert "FI21" not in result.text
+    assert "1234 5600 0007 85" not in result.text
+    assert "<IBAN_1>" in result.text
+    assert "<PHONE_" not in result.text
+    assert result.counts["IBAN"] == 1
+    assert result.counts["PHONE"] == 0
+    assert result.replacements["<IBAN_1>"] == "FI21 1234 5600 0007 85"
+
+
+def test_redactor_classifies_finnish_business_id_before_phone():
+    from waggledance.core.bridge_llm import BridgeLLMRedactor
+    r = BridgeLLMRedactor()
+    result = r.redact("Y-tunnus 2828492-2")
+    assert "2828492-2" not in result.text
+    assert "<BUSINESS_ID_1>" in result.text
+    assert "<PHONE_" not in result.text
+    assert result.counts["BUSINESS_ID"] == 1
+    assert result.counts["PHONE"] == 0
+    assert result.replacements["<BUSINESS_ID_1>"] == "2828492-2"
+
+
 def test_redactor_scrubs_windows_path():
     from waggledance.core.bridge_llm import BridgeLLMRedactor
     r = BridgeLLMRedactor()

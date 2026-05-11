@@ -5,6 +5,7 @@ All memory access goes through MemoryService.retrieve_context().
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -72,6 +73,8 @@ _EN_STOPWORDS = frozenset({
 # so Finnish letters survive splitting.
 _TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 
+LOW_CONFIDENCE_GAP_THRESHOLD = 0.6
+
 # v1.18.0: use shared helpers (convergence layer)
 from core.shared_routing_helpers import probe_micromodel as _shared_probe_micromodel
 
@@ -91,6 +94,8 @@ class ChatService:
         verifier_store: object | None = None,
         hybrid_retrieval: object | None = None,
         hex_neighbor_assist: object | None = None,
+        control_plane_db: object | None = None,
+        runtime_gap_detector: object | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._memory_service = memory_service
@@ -107,6 +112,11 @@ class ChatService:
         self._hybrid_retrieval = hybrid_retrieval
         # v3.5.4: hex neighbor mesh
         self._hex_neighbor_assist = hex_neighbor_assist
+        self._runtime_gap_detector = runtime_gap_detector
+        if self._runtime_gap_detector is None and control_plane_db is not None:
+            from waggledance.core.autonomy_growth.gap_intake import RuntimeGapDetector
+
+            self._runtime_gap_detector = RuntimeGapDetector(control_plane_db)
         # v1.18.0: telemetry + ledger (lazy-init)
         self._telemetry = None
         self._ledger = None
@@ -206,7 +216,8 @@ class ChatService:
         hybrid_trace = None
         if self._hybrid_retrieval and self._hybrid_retrieval.enabled:
             hybrid_trace = await self._try_hybrid_retrieval(
-                req.query, features.solver_intent, language, cache_key, start)
+                req.query, features.solver_intent, language, cache_key, start,
+                req.profile)
             if hybrid_trace and hybrid_trace.get("answered"):
                 return hybrid_trace["result"]
 
@@ -281,6 +292,16 @@ class ChatService:
         # v1.18.0: record telemetry + ledger
         self._record_telemetry(
             route.route_type, result.confidence, elapsed, True, req.query)
+        self._record_low_confidence_gap(
+            query=req.query,
+            confidence=result.confidence,
+            latency_ms=elapsed,
+            route_type=route.route_type,
+            source=result.source,
+            language=language,
+            profile=req.profile,
+            round_table_used=round_table_used,
+        )
 
         # Record case trajectory for learning funnel
         await self._record_case(
@@ -298,6 +319,54 @@ class ChatService:
             cached=False,
             hybrid_trace=hybrid_trace,
         )
+
+    def _record_low_confidence_gap(
+        self,
+        *,
+        query: str,
+        confidence: float,
+        latency_ms: float,
+        route_type: str,
+        source: str,
+        language: str,
+        profile: str,
+        round_table_used: bool,
+        cell_coord: str | None = None,
+    ) -> None:
+        """Persist low-confidence chat observations into RuntimeGapDetector."""
+
+        if confidence >= LOW_CONFIDENCE_GAP_THRESHOLD:
+            return
+        detector = self._runtime_gap_detector
+        if detector is None:
+            return
+        try:
+            from waggledance.core.autonomy_growth.gap_intake import GapSignal
+
+            query_hash = hashlib.sha256(
+                query.encode("utf-8", errors="replace")
+            ).hexdigest()[:16]
+            payload = {
+                "confidence": float(confidence),
+                "latency_ms": float(latency_ms),
+                "route_type": route_type,
+                "source": source,
+                "language": language,
+                "profile": profile,
+                "round_table_used": bool(round_table_used),
+                "query_hash": query_hash,
+                "query_length": len(query),
+            }
+            detector.record(GapSignal(
+                kind="low_confidence_chat",
+                family_kind=None,
+                cell_coord=cell_coord,
+                intent_seed=query_hash,
+                weight=max(0.1, LOW_CONFIDENCE_GAP_THRESHOLD - float(confidence)),
+                payload=payload,
+            ))
+        except Exception:
+            log.debug("Failed to record low-confidence chat gap", exc_info=True)
 
     def _record_telemetry(self, route_type: str, confidence: float,
                            latency_ms: float, success: bool, query: str):
@@ -362,7 +431,7 @@ class ChatService:
 
     async def _try_hybrid_retrieval(
         self, query: str, intent: str, language: str,
-        cache_key: str, start: float,
+        cache_key: str, start: float, profile: str,
     ) -> dict | None:
         """Try hybrid FAISS + hex-cell retrieval. Returns dict with trace and optional result."""
         try:
@@ -424,6 +493,17 @@ class ChatService:
                     self._hot_cache.set(cache_key, response, ttl=3600)
 
                 self._record_telemetry(source, confidence, elapsed, True, query)
+                self._record_low_confidence_gap(
+                    query=query,
+                    confidence=confidence,
+                    latency_ms=elapsed,
+                    route_type=source,
+                    source=source,
+                    language=language,
+                    profile=profile,
+                    round_table_used=False,
+                    cell_coord=trace_dict.get("cell_coord"),
+                )
                 await self._record_case(query, response, confidence, source, source, elapsed)
 
                 result = ChatResult(

@@ -1,6 +1,7 @@
 """Tests for ChatService — hot cache, routing, escalation."""
 
 import asyncio
+import json
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -10,6 +11,7 @@ from waggledance.application.services.chat_service import ChatService
 from waggledance.application.services.hybrid_retrieval_service import HybridHit, HybridTraceResult
 from waggledance.core.domain.agent import AgentResult
 from waggledance.core.orchestration.routing_policy import select_route
+from waggledance.core.storage.control_plane import ControlPlaneDB
 
 
 @pytest.fixture
@@ -127,6 +129,7 @@ class TestChatService:
                 answered_by_layer="local_faiss",
                 hits=[HybridHit("d1", "shadow hit", 0.95, "local_faiss", "math")],
             ))
+
             svc = ChatService(
                 orchestrator=mock_orchestrator,
                 memory_service=mock_memory_service,
@@ -138,8 +141,88 @@ class TestChatService:
             svc._hybrid_observer = MagicMock()
             svc._hybrid_observer.record_candidate = AsyncMock()
 
-            trace = await svc._try_hybrid_retrieval("query", "chat", "en", "query", 0.0)
+            trace = await svc._try_hybrid_retrieval(
+                "query", "chat", "en", "query", 0.0, "HOME"
+            )
 
             assert trace["hit_count"] == 1
             assert "answered" not in trace
         asyncio.run(_run())
+
+    def test_low_confidence_chat_emits_runtime_gap_signal(
+        self,
+        tmp_path,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        cp = ControlPlaneDB(tmp_path / "control_plane.db")
+        try:
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                control_plane_db=cp,
+            )
+            mock_orchestrator.handle_task.return_value = AgentResult(
+                agent_id="a1", response="uncertain", confidence=0.55,
+                latency_ms=50, source="llm",
+            )
+
+            async def _run():
+                result = await svc.handle(ChatRequest(query="low conf", profile="HOME"))
+                assert result.confidence == 0.55
+
+            asyncio.run(_run())
+
+            signals = cp.list_runtime_gap_signals(kind="low_confidence_chat")
+            assert len(signals) == 1
+            assert cp.count_growth_events(event_kind="signal_recorded") == 1
+            assert signals[0].family_kind is None
+            payload = json.loads(signals[0].signal_payload)
+            assert payload["confidence"] == 0.55
+            assert payload["route_type"] == "llm"
+            assert payload["source"] == "llm"
+            assert payload["profile"] == "HOME"
+            assert payload["query_length"] == len("low conf")
+            assert "query_hash" in payload
+            assert "low conf" not in signals[0].signal_payload
+        finally:
+            cp.close()
+
+    def test_high_confidence_chat_does_not_emit_runtime_gap_signal(
+        self,
+        tmp_path,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        cp = ControlPlaneDB(tmp_path / "control_plane.db")
+        try:
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                control_plane_db=cp,
+            )
+            mock_orchestrator.handle_task.return_value = AgentResult(
+                agent_id="a1", response="solid", confidence=0.8,
+                latency_ms=50, source="llm",
+            )
+
+            async def _run():
+                result = await svc.handle(ChatRequest(query="high conf"))
+                assert result.confidence == 0.8
+
+            asyncio.run(_run())
+
+            assert cp.count_runtime_gap_signals(kind="low_confidence_chat") == 0
+            assert cp.count_growth_events(event_kind="signal_recorded") == 0
+        finally:
+            cp.close()

@@ -1045,6 +1045,58 @@ entries:
     .codex-audit/branch_isolation_stress_2026_05_10/.
   next_bottleneck: productionize and test the measured ControlPlaneDB Option B design with transaction, pragma, and close() safeguards; then collect a 24h runtime_gap_signal write histogram by hex cell before deciding whether R25 sharding is required for the target write-p99 SLA.
 
+- session_id: r22-2e-option-b-read-connection-production
+  pr: 223
+  owner: codex
+  reviewer: claude
+  merged_utc: 2026-05-11T09:59:28Z
+  axis_a_before_ms: 59.85
+  axis_a_after_ms: 0.029
+  axis_a_metric: ControlPlaneDB.get_active_runtime_path_N6_writer_flood_p99
+  axis_a_snapshot: option_b_production_measure_pr223_2026_05_11
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: 124
+  axis_c_push_to_merge_minutes: 12
+  runtime_behavior_changed: true
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    PR #223 productionized the measured ControlPlaneDB Option B design:
+    per-thread read-only SQLite connections for hot read methods while
+    writes remain on the writer connection and transaction reads stay on
+    the writer path. The shipped implementation covers
+    get_active_runtime_path, get_solver, count_runtime_gap_signals, and
+    list_runtime_gap_signals, with explicit close() cleanup and
+    use-after-close protection.
+
+    Claude measured the actual PR #223 code before merge using the
+    production driver from the Codex worktree. Under a six-cell
+    runtime_gap_signal writer flood:
+
+    - get_active_runtime_path: 59.85 ms before to 0.029 ms after,
+      about 2064x faster.
+    - get_solver: 70.93 ms before to 0.030 ms after,
+      about 2364x faster.
+    - list_runtime_gap_signals(limit=100): 222.83 ms before to
+      4.49 ms after, about 49.7x faster.
+
+    Idle baseline after the production patch stayed in the same fast
+    range: get_active_runtime_path 0.033 ms, get_solver 0.029 ms,
+    list@100 2.0 ms. Under N=6 writer load the routing reads were
+    effectively constant: get_active_runtime_path 0.029 ms and
+    get_solver 0.030 ms. The cross-table contention regime measured
+    in Run F is therefore structurally eliminated without R25 sharding.
+
+    Validation combined Codex local tests and Claude independent
+    measurement: baseline blocking reproduced before patch; 38 targeted
+    storage/transaction/read-connection tests passed; 91 storage,
+    gap_intake, and hot_path_cache tests passed; git diff --check
+    passed; GitHub CI passed unified, Python 3.11, 3.12, 3.13, and
+    security-scan. Claude also previously ran the full suite against
+    the same Option B shape: 8258 passed, 6 skipped, 1 xfailed.
+  next_bottleneck: collect the 24h runtime_gap_signal concurrent-write histogram by cell; if production rarely crosses the N=4 writer knee, keep R25 deferred and prefer small read-method coverage polish over 3D hex sharding.
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

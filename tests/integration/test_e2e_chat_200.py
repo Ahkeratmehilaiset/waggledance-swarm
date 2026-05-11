@@ -69,6 +69,35 @@ def _chat(query: str, lang: str = "auto") -> "Response":
     return resp
 
 
+MIN_CHAT_CONFIDENCE = 0.5
+INVALID_CHAT_SOURCES = {"", "unknown", "none", "null"}
+
+
+def _assert_chat_ok(resp, *, require_response_text: bool = True) -> dict:
+    """Assert the stable /api/chat success contract used by all 200 cases."""
+    assert resp.status_code == 200
+    data = resp.json()
+
+    response = data.get("response")
+    assert isinstance(response, str)
+    if require_response_text:
+        assert response.strip()
+
+    source = data.get("source")
+    assert isinstance(source, str)
+    assert source.strip().lower() not in INVALID_CHAT_SOURCES
+
+    confidence = data.get("confidence")
+    assert isinstance(confidence, (int, float))
+    assert not isinstance(confidence, bool)
+    assert 0.0 <= confidence <= 1.0
+    assert confidence >= MIN_CHAT_CONFIDENCE
+
+    assert isinstance(data.get("latency_ms"), (int, float))
+    assert isinstance(data.get("cached"), bool)
+    return data
+
+
 # ══════════════════════════════════════════════════════════════════
 # 1. FINNISH CORRECT (30 tests)
 # ══════════════════════════════════════════════════════════════════
@@ -113,10 +142,7 @@ FINNISH_CORRECT = [
 )
 def test_finnish_correct(test_id, query):
     resp = _chat(query, lang="fi")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    _assert_chat_ok(resp)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -158,10 +184,7 @@ FINNISH_TYPOS = [
 )
 def test_finnish_with_typos(test_id, query):
     resp = _chat(query, lang="fi")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    _assert_chat_ok(resp)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -203,10 +226,7 @@ ENGLISH_CORRECT = [
 )
 def test_english_correct(test_id, query):
     resp = _chat(query, lang="en")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    _assert_chat_ok(resp)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -243,10 +263,7 @@ ENGLISH_TYPOS = [
 )
 def test_english_with_typos(test_id, query):
     resp = _chat(query, lang="en")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    _assert_chat_ok(resp)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -288,10 +305,7 @@ SPECIAL_CHARS = [
 )
 def test_special_characters(test_id, query):
     resp = _chat(query)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    _assert_chat_ok(resp)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -328,10 +342,7 @@ MATH_FORMULAS = [
 )
 def test_math_formulas(test_id, query):
     resp = _chat(query)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    _assert_chat_ok(resp)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -363,10 +374,7 @@ MIXED_LANGUAGE = [
 )
 def test_mixed_language(test_id, query):
     resp = _chat(query)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    _assert_chat_ok(resp)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -403,9 +411,7 @@ EDGE_CASES = [
 )
 def test_edge_cases(test_id, query):
     resp = _chat(query)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
+    _assert_chat_ok(resp, require_response_text=False)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -442,10 +448,7 @@ DOMAIN_ERRORS = [
 )
 def test_domain_specific_with_errors(test_id, query):
     resp = _chat(query)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    _assert_chat_ok(resp)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -456,8 +459,7 @@ def test_domain_specific_with_errors(test_id, query):
 def test_response_has_required_fields():
     """Every chat response must include source, confidence, latency_ms, cached."""
     resp = _chat("Hello WaggleDance", lang="en")
-    assert resp.status_code == 200
-    data = resp.json()
+    data = _assert_chat_ok(resp)
     for field in ("response", "source", "confidence", "latency_ms", "cached"):
         assert field in data, f"Missing field: {field}"
 
@@ -465,32 +467,26 @@ def test_response_has_required_fields():
 def test_finnish_detected_from_umlauts():
     """Query with ä/ö → language=fi in response."""
     resp = _chat("Mikä on mehiläisten pääravinto?")
-    assert resp.status_code == 200
-    data = resp.json()
+    data = _assert_chat_ok(resp)
     assert data.get("language") == "fi"
 
 
 def test_english_detected_from_ascii():
     """Plain ASCII query → language=en in response."""
     resp = _chat("What do bees eat?")
-    assert resp.status_code == 200
-    data = resp.json()
+    data = _assert_chat_ok(resp)
     assert data.get("language") == "en"
 
 
 def test_time_query_returns_time():
     """Time keyword → response contains time-related content."""
     resp = _chat("What time is it?", lang="en")
-    assert resp.status_code == 200
-    data = resp.json()
+    data = _assert_chat_ok(resp)
     assert "time" in data["response"].lower()
 
 
 def test_confidence_is_numeric():
     """Confidence field must be a float 0.0–1.0."""
     resp = _chat("Tell me about varroa mites", lang="en")
-    assert resp.status_code == 200
-    data = resp.json()
-    conf = data.get("confidence", -1)
-    assert isinstance(conf, (int, float))
-    assert 0.0 <= conf <= 1.0
+    data = _assert_chat_ok(resp)
+    assert data["confidence"] >= MIN_CHAT_CONFIDENCE

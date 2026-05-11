@@ -79,7 +79,19 @@ def build_histogram(
     db_path: Path,
     window_seconds: int = 1,
 ) -> dict:
-    """Compute the per-cell + windowed-concurrency histogram."""
+    """Compute the per-cell + windowed-concurrency histogram.
+
+    The SLA percentages are computed against the TOTAL observation span
+    (first_ts..last_ts inclusive, in window_seconds buckets), not against
+    only the windows that contain writes. Quiet windows are part of
+    production reality and must be in the denominator — otherwise a
+    sparse burst pattern would falsely appear as majority load.
+    """
+    if window_seconds <= 0:
+        raise ValueError(
+            f"window_seconds must be > 0; got {window_seconds!r}"
+        )
+
     per_cell_count: Counter = Counter()
     windows: dict[int, set[str]] = defaultdict(set)
     window_writes: Counter = Counter()
@@ -118,11 +130,20 @@ def build_histogram(
     concurrency_per_window = [len(cells) for cells in windows.values()]
     writes_per_window = list(window_writes.values())
 
-    # Histogram of windows by concurrency level
     concurrency_hist: Counter = Counter(concurrency_per_window)
-    total_windows = len(windows)
+    active_window_count = len(windows)
 
-    # SLA threshold percentages (how many windows have >= N concurrent cells)
+    # Total observation windows = first_ts..last_ts inclusive in
+    # window_seconds buckets. Quiet windows (no writes) are part of
+    # production reality so they belong in the denominator. If we used
+    # only active_window_count, a sparse burst pattern (e.g. 61 one-second
+    # bursts over a 3 600 s span) would falsely report 100 percent
+    # N>=4 and trigger r25-strongly-recommended.
+    assert last_ts is not None  # implied by first_ts not None
+    last_window_idx = _window_key(last_ts, window_seconds, epoch)
+    total_observation_windows = last_window_idx + 1
+
+    # SLA threshold percentages — denominator is TOTAL observation windows
     sla_buckets: dict[str, dict[str, float | int]] = {}
     for n_threshold in (2, 3, 4, 5, 6, 7):
         windows_at_or_above = sum(
@@ -131,7 +152,7 @@ def build_histogram(
         sla_buckets[f"N_ge_{n_threshold}"] = {
             "windows": windows_at_or_above,
             "pct_of_total_windows": round(
-                100.0 * windows_at_or_above / total_windows, 3
+                100.0 * windows_at_or_above / total_observation_windows, 3
             ),
         }
 
@@ -146,7 +167,8 @@ def build_histogram(
         "row_count": int(sum(per_cell_count.values())),
         "distinct_cells": len(per_cell_count),
         "per_cell_count": dict(per_cell_count.most_common()),
-        "total_windows": total_windows,
+        "total_observation_windows": total_observation_windows,
+        "active_window_count": active_window_count,
         "concurrency_per_window_summary": {
             "min": min(concurrency_per_window),
             "p50": int(statistics.median(concurrency_per_window)),
@@ -163,7 +185,7 @@ def build_histogram(
         },
         "concurrency_histogram": dict(sorted(concurrency_hist.items())),
         "sla_thresholds": sla_buckets,
-        "r25_decision_signal": _r25_signal(sla_buckets, total_windows),
+        "r25_decision_signal": _r25_signal(sla_buckets, total_observation_windows),
     }
 
 
@@ -230,6 +252,15 @@ def _r25_signal(
     return {"verdict": verdict, "rationale": rationale}
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(
+            f"window-seconds must be > 0; got {value!r}"
+        )
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -240,9 +271,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--window-seconds",
-        type=int,
+        type=_positive_int,
         default=1,
-        help="Concurrency window granularity (default 1 s)",
+        help="Concurrency window granularity in seconds (must be > 0, default 1)",
     )
     parser.add_argument(
         "--out-json",
@@ -271,20 +302,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"# window: {result['window_seconds']} s")
     print(f"# span: {result['span_seconds']:.0f} s ({result['row_count']} rows)")
     print(f"# distinct cells: {result['distinct_cells']}")
+    print(f"# total observation windows: {result['total_observation_windows']}")
+    print(f"# active windows (>=1 write): {result['active_window_count']}")
     print()
     print("Per-cell write count:")
     for cell, count in result["per_cell_count"].items():
         print(f"  {cell:20s} {count:8d}")
     print()
-    print(f"Concurrency-per-window stats:")
+    print(f"Concurrency-per-window stats (active windows only):")
     cps = result["concurrency_per_window_summary"]
     print(f"  min={cps['min']}  p50={cps['p50']}  p99={cps['p99']}  "
           f"max={cps['max']}  mean={cps['mean']}")
     print()
-    print("SLA-threshold buckets (pct of windows with >= N concurrent cells):")
+    print("SLA-threshold buckets (pct of TOTAL observation windows with >= N concurrent cells):")
     for k, v in result["sla_thresholds"].items():
-        print(f"  {k}: {v['pct_of_total_windows']:6.2f} %  "
-              f"({v['windows']} of {result['total_windows']} windows)")
+        print(f"  {k}: {v['pct_of_total_windows']:6.3f} %  "
+              f"({v['windows']} of {result['total_observation_windows']} windows)")
     print()
     verdict = result["r25_decision_signal"]
     print(f"R25 decision signal: {verdict['verdict']}")

@@ -1317,8 +1317,12 @@ class ControlPlaneDB:
         if low_risk_only:
             sql += " WHERE is_low_risk = 1"
         sql += " ORDER BY family_kind"
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                rows = conn.execute(sql, params).fetchall()
+        else:
+            rows = conn.execute(sql, params).fetchall()
         return [self._row_to_family_policy(r) for r in rows]
 
     # -- schema v2: validation runs ------------------------------------
@@ -1419,8 +1423,14 @@ class ControlPlaneDB:
     def get_shadow_evaluation(
         self, eval_id: int
     ) -> Optional[ShadowEvaluationRecord]:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT * FROM shadow_evaluations WHERE id = ?", (eval_id,)
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT * FROM shadow_evaluations WHERE id = ?", (eval_id,)
             ).fetchone()
         return None if row is None else self._row_to_shadow_evaluation(row)
@@ -1487,8 +1497,12 @@ class ControlPlaneDB:
             sql += " WHERE " + " AND ".join(wheres)
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(int(limit))
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                rows = conn.execute(sql, params).fetchall()
+        else:
+            rows = conn.execute(sql, params).fetchall()
         return [self._row_to_promotion_decision(r) for r in rows]
 
     def count_auto_promoted_for_family(self, family_kind: str) -> int:
@@ -1640,8 +1654,15 @@ class ControlPlaneDB:
     def get_solver_capability_features(
         self, solver_id: int
     ) -> List[SolverCapabilityFeatureRecord]:
-        with self._lock:
-            rows = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                rows = conn.execute(
+                    "SELECT * FROM solver_capability_features WHERE solver_id = ? ORDER BY feature_name",
+                    (int(solver_id),),
+                ).fetchall()
+        else:
+            rows = conn.execute(
                 "SELECT * FROM solver_capability_features WHERE solver_id = ? ORDER BY feature_name",
                 (int(solver_id),),
             ).fetchall()
@@ -2073,8 +2094,12 @@ class ControlPlaneDB:
             params.append(status)
         sql += " ORDER BY priority DESC, id ASC LIMIT ?"
         params.append(int(limit))
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                rows = conn.execute(sql, params).fetchall()
+        else:
+            rows = conn.execute(sql, params).fetchall()
         return [self._row_to_autogrowth_queue(r) for r in rows]
 
     def count_queue_rows(self, *, status: Optional[str] = None) -> int:
@@ -2158,8 +2183,12 @@ class ControlPlaneDB:
             sql += " WHERE " + " AND ".join(wheres)
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(int(limit))
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                rows = conn.execute(sql, params).fetchall()
+        else:
+            rows = conn.execute(sql, params).fetchall()
         return [self._row_to_autogrowth_run(r) for r in rows]
 
     # -- schema v3: growth events (append-only audit mirror) ----------
@@ -2216,8 +2245,12 @@ class ControlPlaneDB:
         sql = "SELECT COUNT(*) AS c FROM growth_events"
         if wheres:
             sql += " WHERE " + " AND ".join(wheres)
-        with self._lock:
-            row = self._conn.execute(sql, params).fetchone()
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(sql, params).fetchone()
+        else:
+            row = conn.execute(sql, params).fetchone()
         return int(row["c"]) if row else 0
 
     # -- iteration -------------------------------------------------------

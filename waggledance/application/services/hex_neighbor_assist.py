@@ -192,7 +192,7 @@ class HexNeighborAssist:
             trace.completed_at = time.time()
             trace.total_latency_ms = (trace.completed_at - trace.started_at) * 1000
 
-            self._emit_magma(
+            completed_trace_written = self._emit_magma(
                 "HEX_QUERY_COMPLETED",
                 trace_id=trace_id,
                 source=trace.final_source,
@@ -202,7 +202,7 @@ class HexNeighborAssist:
 
             with self._lock:
                 self._metrics.origin_cell_resolutions += 1
-                if self._magma_trace:
+                if completed_trace_written:
                     self._metrics.magma_traces_written += 1
                 trace_dict = trace.to_dict()
                 self._trace_buffer.append(trace_dict)
@@ -474,6 +474,13 @@ class HexNeighborAssist:
         self, origin_id: str, query: str, trace: HexResolutionTrace,
     ) -> list[HexNeighborResponse]:
         """Ask ring-1 neighbors for help, in parallel."""
+        if not self._allow_neighbor_llm:
+            trace.neighbor_skipped = True
+            self._emit_magma("HEX_NEIGHBOR_SKIPPED_DISABLED", trace_id=trace.trace_id)
+            with self._lock:
+                self._metrics.skipped_neighbor_attempts += 1
+            return []
+
         neighbor_cells = self._registry.get_neighbor_cells(origin_id)
         if not neighbor_cells:
             return []
@@ -509,7 +516,10 @@ class HexNeighborAssist:
                 )
 
             try:
-                raw = await self._dispatcher.dispatch_batch(batch)
+                raw = await asyncio.wait_for(
+                    self._dispatcher.dispatch_batch(batch),
+                    timeout=max(self._neighbor_budget_ms / 1000.0, 0.001),
+                )
                 with self._lock:
                     self._metrics.completed_hex_neighbor_batches += 1
 
@@ -525,6 +535,8 @@ class HexNeighborAssist:
                             latency_ms=latency,
                             source="neighbor",
                         ))
+                        if "neighbor" not in trace.models_used:
+                            trace.models_used.append("neighbor")
                         self._health.record_success(cell.id)
                         self._emit_magma(
                             "HEX_NEIGHBOR_RESPONSE",
@@ -535,16 +547,28 @@ class HexNeighborAssist:
                     else:
                         self._health.record_error(cell.id)
 
+            except asyncio.TimeoutError:
+                trace.budget_exhausted = True
+                self._emit_magma("HEX_NEIGHBOR_BUDGET_EXHAUSTED", trace_id=trace.trace_id)
+                with self._lock:
+                    self._metrics.budget_exhaustions += 1
+                log.debug("Parallel neighbor dispatch exhausted budget")
             except Exception as e:
                 log.warning("Parallel neighbor dispatch failed: %s", e)
 
         else:
             # Sequential fallback — limit to 1 neighbor, budget 10s max
             selected = selected[:1]
-            seq_budget_s = 10.0
+            seq_budget_s = max(self._neighbor_budget_ms / 1000.0, 0.001)
+            budget_recorded = False
             for cell in selected:
                 if (time.time() - t0) > seq_budget_s:
                     log.debug("Hex neighbor sequential budget exhausted")
+                    trace.budget_exhausted = True
+                    if not budget_recorded:
+                        budget_recorded = True
+                        with self._lock:
+                            self._metrics.budget_exhaustions += 1
                     break
                 self._emit_magma(
                     "HEX_NEIGHBOR_REQUESTED",
@@ -560,8 +584,12 @@ class HexNeighborAssist:
                         f"You are an expert in: {agent_context}. "
                         f"Help answer: {query}"
                     )
-                    resp_text = await self._llm.generate(
-                        prompt=prompt, max_tokens=500, temperature=0.7,
+                    remaining_s = max(seq_budget_s - (time.time() - t0), 0.001)
+                    resp_text = await asyncio.wait_for(
+                        self._llm.generate(
+                            prompt=prompt, max_tokens=500, temperature=0.7,
+                        ),
+                        timeout=remaining_s,
                     )
                     latency = (time.time() - t0) * 1000
                     if resp_text:
@@ -573,6 +601,8 @@ class HexNeighborAssist:
                             latency_ms=latency,
                             source="neighbor",
                         ))
+                        if "neighbor" not in trace.models_used:
+                            trace.models_used.append("neighbor")
                         self._health.record_success(cell.id)
                         self._emit_magma(
                             "HEX_NEIGHBOR_RESPONSE",
@@ -580,6 +610,19 @@ class HexNeighborAssist:
                             neighbor_cell=cell.id,
                             confidence=conf,
                         )
+                except asyncio.TimeoutError:
+                    trace.budget_exhausted = True
+                    if not budget_recorded:
+                        budget_recorded = True
+                        with self._lock:
+                            self._metrics.budget_exhaustions += 1
+                    self._health.record_error(cell.id)
+                    self._emit_magma(
+                        "HEX_NEIGHBOR_BUDGET_EXHAUSTED",
+                        trace_id=trace.trace_id,
+                        neighbor_cell=cell.id,
+                    )
+                    break
                 except Exception as e:
                     self._health.record_error(cell.id)
                     self._emit_magma(
@@ -637,6 +680,10 @@ class HexNeighborAssist:
         total_weight = sum(w for _, _, w in candidates)
         weighted_sum = sum(c * w for _, c, w in candidates)
         merged_conf = weighted_sum / total_weight if total_weight > 0 else best_conf
+        if local_result and neighbor_responses:
+            merged_conf += 0.05
+        if len(candidates) > 1:
+            merged_conf += min(0.10, 0.04 * (len(candidates) - 1))
 
         # Cap at 0.95
         merged_conf = min(merged_conf, 0.95)
@@ -655,13 +702,13 @@ class HexNeighborAssist:
         if not response:
             return 0.0
 
-        conf = 0.5  # baseline
+        conf = 0.55  # baseline
 
         # Length bonus (substantive responses)
-        if len(response) > 100:
+        if len(response) > 50:
             conf += 0.1
-        if len(response) > 300:
-            conf += 0.05
+        if len(response) > 160:
+            conf += 0.1
 
         # Agent match bonus
         query_lower = query.lower()
@@ -669,16 +716,16 @@ class HexNeighborAssist:
             name = getattr(agent, "name", "").lower()
             domain = getattr(agent, "domain", "").lower()
             if name in query_lower or domain in query_lower:
-                conf += 0.1
+                conf += 0.15
                 break
 
         return min(conf, 0.95)
 
     # ── MAGMA integration ────────────────────────────────────────
 
-    def _emit_magma(self, event_type: str, **payload: Any) -> None:
+    def _emit_magma(self, event_type: str, **payload: Any) -> bool:
         if not self._magma or not self._magma_trace:
-            return
+            return False
         try:
             from waggledance.core.magma.audit_projector import AuditEntry
 
@@ -687,8 +734,9 @@ class HexNeighborAssist:
                 payload=payload,
                 source="hex_mesh",
             ))
+            return True
         except Exception:
-            pass
+            return False
 
     # ── Metrics ──────────────────────────────────────────────────
 
@@ -725,7 +773,7 @@ class HexNeighborAssist:
         """Return v3.5.6 efficiency statistics for /api/ops and hologram."""
         with self._lock:
             m = self._metrics
-            total_queries = m.origin_cell_resolutions + m.preflight_skips
+            total_queries = m.origin_cell_resolutions
             return {
                 "total_hex_queries": total_queries,
                 "preflight_skips": m.preflight_skips,

@@ -69,13 +69,16 @@ class FaissCollection:
         text: str,
         vector: np.ndarray,
         metadata: Optional[Dict[str, Any]] = None,
-    ):
+    ) -> bool:
         """Add a single document."""
+        if self.has_doc_id(doc_id):
+            return False
         vec = self._normalize(vector.astype(np.float32).reshape(1, -1))
         self._index.add(vec)
         self._doc_ids.append(doc_id)
         self._texts.append(text)
         self._metadata.append(metadata or {})
+        return True
 
     def add_batch(
         self,
@@ -87,11 +90,27 @@ class FaissCollection:
         """Add multiple documents at once (faster than individual adds)."""
         if not doc_ids:
             return
-        vecs = self._normalize(vectors.astype(np.float32))
+        filtered_doc_ids: List[str] = []
+        filtered_texts: List[str] = []
+        filtered_vectors: List[np.ndarray] = []
+        filtered_metadatas: List[Dict[str, Any]] = []
+        metadata_items = metadatas or [{} for _ in doc_ids]
+        seen = set(self._doc_ids)
+        for doc_id, text, vector, metadata in zip(doc_ids, texts, vectors, metadata_items):
+            if doc_id in seen:
+                continue
+            seen.add(doc_id)
+            filtered_doc_ids.append(doc_id)
+            filtered_texts.append(text)
+            filtered_vectors.append(vector)
+            filtered_metadatas.append(metadata or {})
+        if not filtered_doc_ids:
+            return
+        vecs = self._normalize(np.asarray(filtered_vectors).astype(np.float32))
         self._index.add(vecs)
-        self._doc_ids.extend(doc_ids)
-        self._texts.extend(texts)
-        self._metadata.extend(metadatas or [{} for _ in doc_ids])
+        self._doc_ids.extend(filtered_doc_ids)
+        self._texts.extend(filtered_texts)
+        self._metadata.extend(filtered_metadatas)
 
     # ------------------------------------------------------------------
     # Read
@@ -119,6 +138,9 @@ class FaissCollection:
     @property
     def count(self) -> int:
         return self._index.ntotal
+
+    def has_doc_id(self, doc_id: str) -> bool:
+        return doc_id in self._doc_ids
 
     # ------------------------------------------------------------------
     # Persistence
@@ -188,11 +210,49 @@ class FaissRegistry:
             )
         return self._collections[name]
 
+    def get_existing(self, name: str, dim: Optional[int] = None) -> Optional[FaissCollection]:
+        if name in self._collections:
+            return self._collections[name]
+        collection_dir = self._base_dir / name
+        if not collection_dir.exists():
+            return None
+        collection = FaissCollection(
+            name=name,
+            dim=dim or self._default_dim,
+            persist_dir=str(collection_dir),
+        )
+        self._collections[name] = collection
+        return collection
+
+    def count_if_exists(self, name: str, dim: Optional[int] = None) -> int:
+        collection = self.get_existing(name, dim=dim)
+        return collection.count if collection is not None else 0
+
+    def document_exists(self, doc_id: str) -> bool:
+        for collection in self._collections.values():
+            if collection.has_doc_id(doc_id):
+                return True
+        loaded_names = set(self._collections)
+        for name in sorted(self._persisted_collection_names() - loaded_names):
+            collection = self.get_existing(name)
+            if collection is not None and collection.has_doc_id(doc_id):
+                return True
+        return False
+
+    def _persisted_collection_names(self) -> set[str]:
+        if not self._base_dir.exists():
+            return set()
+        names: set[str] = set()
+        for child in self._base_dir.iterdir():
+            if child.is_dir() and ((child / "index.faiss").exists() or (child / "meta.json").exists()):
+                names.add(child.name)
+        return names
+
     def list_collections(self) -> List[str]:
-        return list(self._collections.keys())
+        return sorted(set(self._collections) | self._persisted_collection_names())
 
     def stats(self) -> Dict[str, int]:
-        return {name: col.count for name, col in self._collections.items()}
+        return {name: self.count_if_exists(name) for name in self.list_collections()}
 
     def save_all(self):
         for col in self._collections.values():

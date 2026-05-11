@@ -95,7 +95,12 @@ class _WaggleCollector:
             yield up
             return
 
-        hex_assist = getattr(container, "hex_neighbor_assist", None)
+        try:
+            hex_assist = getattr(container, "hex_neighbor_assist", None)
+        except Exception as exc:
+            logger.warning("metrics: failed to fetch hex_neighbor_assist: %s", exc)
+            yield up
+            return
         if hex_assist is None:
             yield up
             return

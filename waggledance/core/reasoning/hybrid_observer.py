@@ -54,7 +54,7 @@ from waggledance.core.reasoning.hybrid_router import filter_by_question_frame
 from waggledance.core.reasoning.question_frame import parse as parse_frame
 
 
-TRACE_FILE_DEFAULT = Path("docs/runs/magma_hybrid_candidate_trace.jsonl")
+TRACE_FILE_DEFAULT = Path("data/runtime/magma_hybrid_candidate_trace.jsonl")
 
 
 @dataclass

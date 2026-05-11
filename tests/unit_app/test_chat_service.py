@@ -3,10 +3,11 @@
 import asyncio
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from waggledance.application.dto.chat_dto import ChatRequest, ChatResult
 from waggledance.application.services.chat_service import ChatService
+from waggledance.application.services.hybrid_retrieval_service import HybridHit, HybridTraceResult
 from waggledance.core.domain.agent import AgentResult
 from waggledance.core.orchestration.routing_policy import select_route
 
@@ -112,4 +113,33 @@ class TestChatService:
             await chat_service.handle(req)
             # Second call should have incremented frequency; cache set may be called
             assert mock_hot_cache.set.called or True  # may or may not cache depending on frequency
+        asyncio.run(_run())
+
+    def test_hybrid_shadow_hits_do_not_answer(
+        self, mock_orchestrator, mock_memory_service, mock_hot_cache, mock_config
+    ):
+        async def _run():
+            hybrid = MagicMock()
+            hybrid.enabled = True
+            hybrid.is_authoritative = False
+            hybrid.retrieve = AsyncMock(return_value=HybridTraceResult(
+                retrieval_mode="hybrid:shadow",
+                answered_by_layer="local_faiss",
+                hits=[HybridHit("d1", "shadow hit", 0.95, "local_faiss", "math")],
+            ))
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hybrid_retrieval=hybrid,
+            )
+            svc._hybrid_observer = MagicMock()
+            svc._hybrid_observer.record_candidate = AsyncMock()
+
+            trace = await svc._try_hybrid_retrieval("query", "chat", "en", "query", 0.0)
+
+            assert trace["hit_count"] == 1
+            assert "answered" not in trace
         asyncio.run(_run())

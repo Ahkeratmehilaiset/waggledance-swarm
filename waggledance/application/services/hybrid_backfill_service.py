@@ -26,6 +26,7 @@ class BackfillResult:
     total_scanned: int = 0
     indexed: int = 0
     skipped_duplicate: int = 0
+    skipped_quality: int = 0
     skipped_no_content: int = 0
     skipped_embed_fail: int = 0
     failed: int = 0
@@ -41,6 +42,7 @@ class BackfillResult:
             "total_scanned": self.total_scanned,
             "indexed": self.indexed,
             "skipped_duplicate": self.skipped_duplicate,
+            "skipped_quality": self.skipped_quality,
             "skipped_no_content": self.skipped_no_content,
             "skipped_embed_fail": self.skipped_embed_fail,
             "failed": self.failed,
@@ -65,10 +67,12 @@ class HybridBackfillService:
         hybrid_retrieval,
         case_store=None,
         embed_fn=None,
+        trusted_quality_grades: tuple[str, ...] = ("gold", "silver"),
     ):
         self._hybrid = hybrid_retrieval
         self._case_store = case_store
         self._embed_fn = embed_fn
+        self._trusted_quality_grades = tuple(g.lower() for g in trusted_quality_grades)
         self._indexed_ids: set = set()
         self._last_result: Optional[BackfillResult] = None
         self._running = False
@@ -145,8 +149,13 @@ class HybridBackfillService:
             doc_id = self._case_doc_id(case)
 
             # Skip already indexed
-            if doc_id in self._indexed_ids:
+            if self._already_indexed(doc_id):
                 result.skipped_duplicate += 1
+                continue
+
+            quality_grade = self._case_quality_grade(case)
+            if not self._trusted_quality(quality_grade):
+                result.skipped_quality += 1
                 continue
 
             # Extract indexable content
@@ -167,7 +176,6 @@ class HybridBackfillService:
                 cell_id = assignment.cell_id
                 result.cell_counts[cell_id] = result.cell_counts.get(cell_id, 0) + 1
                 result.indexed += 1
-                self._indexed_ids.add(doc_id)
                 continue
 
             # Embed content
@@ -195,7 +203,11 @@ class HybridBackfillService:
                     text=content,
                     vector=vec,
                     intent=intent,
-                    metadata={"source": "backfill", "case_id": case.get("trajectory_id", "")},
+                    metadata={
+                        "source": "backfill",
+                        "case_id": case.get("trajectory_id", ""),
+                        "quality_grade": quality_grade,
+                    },
                 )
                 if cell_id:
                     result.indexed += 1
@@ -207,6 +219,30 @@ class HybridBackfillService:
                 result.failed += 1
                 if len(result.errors) < 5:
                     result.errors.append(f"Ingest error: {e}")
+
+    def _already_indexed(self, doc_id: str) -> bool:
+        if doc_id in self._indexed_ids:
+            return True
+        has_document = getattr(self._hybrid, "has_document", None)
+        if callable(has_document):
+            try:
+                exists = has_document(doc_id)
+            except Exception:
+                exists = False
+            if exists is True:
+                self._indexed_ids.add(doc_id)
+                return True
+        return False
+
+    def _case_quality_grade(self, case: dict) -> str:
+        grade = case.get("quality_grade", "")
+        if isinstance(grade, str) and grade:
+            return grade.lower()
+        return "unknown"
+
+    def _trusted_quality(self, grade: str) -> bool:
+        grade = grade.lower()
+        return grade == "unknown" or grade in self._trusted_quality_grades
 
     def _case_doc_id(self, case: dict) -> str:
         """Generate a stable document ID for a case trajectory."""

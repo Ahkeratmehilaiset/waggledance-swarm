@@ -1,5 +1,7 @@
 """Unit tests for MemoryService — ingest, retrieve, correction."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from waggledance.application.services.memory_service import MemoryService
@@ -102,6 +104,46 @@ class TestMemoryServiceIngest:
         svc = MemoryService(mock_vector_store, mock_memory_repo, mock_event_bus)
         record = await svc.ingest("timed", source="api")
         assert record.created_at > 0
+
+    @pytest.mark.asyncio
+    async def test_hybrid_mirror_status_success(
+        self, mock_vector_store, mock_memory_repo, mock_event_bus
+    ):
+        hybrid = MagicMock()
+        hybrid.enabled = True
+        hybrid._embed_fn = lambda text: [1.0, 0.0]
+        hybrid.ingest = AsyncMock(return_value="general")
+
+        svc = MemoryService(
+            mock_vector_store, mock_memory_repo, mock_event_bus,
+            hybrid_retrieval=hybrid,
+        )
+        await svc.ingest("mirrored fact", source="api")
+
+        status = svc.hybrid_mirror_status()
+        assert status["successes"] == 1
+        assert status["failures"] == 0
+        assert status["last_cell"] == "general"
+
+    @pytest.mark.asyncio
+    async def test_hybrid_mirror_status_failure(
+        self, mock_vector_store, mock_memory_repo, mock_event_bus
+    ):
+        hybrid = MagicMock()
+        hybrid.enabled = True
+        hybrid._embed_fn = lambda text: None
+        hybrid.ingest = AsyncMock()
+
+        svc = MemoryService(
+            mock_vector_store, mock_memory_repo, mock_event_bus,
+            hybrid_retrieval=hybrid,
+        )
+        await svc.ingest("mirror fail", source="api")
+
+        status = svc.hybrid_mirror_status()
+        assert status["successes"] == 0
+        assert status["failures"] == 1
+        assert "returned None" in status["last_error"]
 
 
 class TestMemoryServiceRetrieve:

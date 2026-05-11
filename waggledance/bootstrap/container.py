@@ -357,6 +357,7 @@ class Container:
         ring2 = bool(self._settings.get("hybrid_retrieval.ring2_enabled", False))
         mode = str(self._settings.get("hybrid_retrieval.mode", "shadow"))
         min_score = float(self._settings.get("hybrid_retrieval.min_score", 0.35))
+        sufficient_score = float(self._settings.get("hybrid_retrieval.sufficient_score", 0.70))
 
         # Embedding function: reuse Ollama embed via vector_store's _embed_text if available
         embed_fn = None
@@ -382,6 +383,7 @@ class Container:
             ring2_enabled=ring2,
             mode=mode,
             min_score=min_score,
+            sufficient_score=sufficient_score,
         )
 
     @cached_property
@@ -390,7 +392,7 @@ class Container:
         alongside keyword's actual decision in MAGMA trace.
 
         Per v3 §1.1 candidate mode: hybrid traces both, production uses keyword.
-        Output: docs/runs/magma_hybrid_candidate_trace.jsonl
+        Output: data/runtime/magma_hybrid_candidate_trace.jsonl
         """
         from waggledance.core.reasoning.hybrid_observer import HybridObserver
         from pathlib import Path
@@ -412,6 +414,12 @@ class Container:
         return HybridObserver(
             hybrid_retrieval_service=self.hybrid_retrieval,
             solver_specs=specs,
+            trace_file=Path(
+                self._settings.get(
+                    "hybrid_retrieval.trace_file",
+                    "data/runtime/magma_hybrid_candidate_trace.jsonl",
+                )
+            ),
         )
 
     @cached_property

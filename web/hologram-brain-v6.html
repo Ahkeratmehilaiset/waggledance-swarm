@@ -1248,11 +1248,18 @@ function fmt(value, fallback) {
 }
 
 function card(key, val) {
-  return `<div class="p-card"><span class="k">${key}</span><span class="v">${fmt(val)}</span></div>`;
+  return `<div class="p-card"><span class="k">${escapeHtml(key)}</span><span class="v">${escapeHtml(fmt(val))}</span></div>`;
+}
+
+function cardHtml(key, htmlVal) {
+  return `<div class="p-card"><span class="k">${escapeHtml(key)}</span><span class="v">${htmlVal}</span></div>`;
 }
 
 function stateDot(state) {
-  return `<span class="state-dot state-${state || 'unavailable'}"></span>${localizeState(state)}`;
+  const safeState = ['active', 'idle', 'failed', 'framework', 'probe', 'quarantined', 'unavailable', 'unwired'].includes(state)
+    ? state
+    : 'unavailable';
+  return `<span class="state-dot state-${safeState}"></span>${escapeHtml(localizeState(state))}`;
 }
 
 function qualityBar(q) {
@@ -1351,7 +1358,7 @@ function buildReasoningPanel(el) {
   html += `</div></div>`;
   if (ss.scores && ss.scores.length) {
     html += `<div class="p-section"><div class="p-section-title">Quality Distribution</div><div class="p-list">`;
-    ss.scores.forEach(s => { html += `<div class="p-list-item">${s.quality}: ${s.count}</div>`; });
+    ss.scores.forEach(s => { html += `<div class="p-list-item">${escapeHtml(s.quality)}: ${escapeHtml(s.count)}</div>`; });
     html += `</div></div>`;
   }
   el.innerHTML = html;
@@ -1363,10 +1370,10 @@ function buildMicroPanel(el) {
   let html = `<div class="p-section"><div class="p-section-title">${t('sections.micro_families')}</div>`;
   html += `<div class="p-list">`;
   for (const [nid, info] of Object.entries(cs)) {
-    html += `<div class="p-list-item">${stateDot(info.state)} <strong>${nid}</strong>`;
-    if (info.device) html += ` &middot; ${localizeDevice(info.device)}`;
+    html += `<div class="p-list-item">${stateDot(info.state)} <strong>${escapeHtml(nid)}</strong>`;
+    if (info.device) html += ` &middot; ${escapeHtml(localizeDevice(info.device))}`;
     if (info.quality !== null && info.quality !== undefined) html += ` &middot; Q:${(info.quality * 100).toFixed(0)}%`;
-    if (info.source_class) html += ` &middot; ${localizeSourceClass(info.source_class)}`;
+    if (info.source_class) html += ` &middot; ${escapeHtml(localizeSourceClass(info.source_class))}`;
     html += `</div>`;
   }
   html += `</div></div>`;
@@ -1634,7 +1641,7 @@ function buildMeshPanel(el) {
   if (selectedMeshCell) {
     const sc = cells.find(c => c.id === selectedMeshCell);
     if (sc) {
-      html += `<div class="cell-inspector"><div class="p-section-title">${sc.id}</div>`;
+      html += `<div class="cell-inspector"><div class="p-section-title">${escapeHtml(sc.id)}</div>`;
       html += `<div class="p-grid">`;
       html += card('Domain', sc.domain || '\u2014');
       html += card('Health', sc.health_score);
@@ -1664,9 +1671,10 @@ function _hexCellHtml(c) {
     (c.self_heal_pending ? 'state-probe' :
     (c.state === 'active' ? 'state-active' : 'state-idle'));
   const selected = selectedMeshCell === c.id ? ' selected' : '';
-  return `<div class="hex-cell ${stateClass}${selected}" data-cell-id="${c.id}">
-    <span class="hex-label">${c.id}</span>
-    <span class="hex-health">${(c.health_score * 100).toFixed(0)}%</span>
+  const health = Number.isFinite(Number(c.health_score)) ? (Number(c.health_score) * 100).toFixed(0) : '0';
+  return `<div class="hex-cell ${stateClass}${selected}" data-cell-id="${escapeAttr(c.id)}">
+    <span class="hex-label">${escapeHtml(c.id)}</span>
+    <span class="hex-health">${health}%</span>
   </div>`;
 }
 
@@ -1744,9 +1752,9 @@ function buildMagmaPanel(el) {
       const ts = e.timestamp ? new Date(e.timestamp * 1000).toLocaleTimeString() : '';
       const detail = JSON.stringify(e, null, 2);
       html += `<div class="magma-entry" data-idx="${i}">
-        <span class="me-type">${type}</span>
-        <span class="me-time">${src} ${ts}</span>
-        <div class="magma-detail"><pre>${detail}</pre></div>
+        <span class="me-type">${escapeHtml(type)}</span>
+        <span class="me-time">${escapeHtml(`${src} ${ts}`)}</span>
+        <div class="magma-detail"><pre>${escapeHtml(detail)}</pre></div>
       </div>`;
     });
   }
@@ -1833,8 +1841,12 @@ function buildChatPanel(el) {
 
 function escapeHtml(s) {
   const d = document.createElement('div');
-  d.textContent = s;
+  d.textContent = s == null ? '' : String(s);
   return d.innerHTML;
+}
+
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/`/g, '&#96;');
 }
 
 async function sendChat() {
@@ -1892,7 +1904,7 @@ function showInspector(nodeId) {
   document.getElementById('inspectorSub').textContent = info.desc || '';
 
   let bodyHtml = `<div class="p-grid" style="margin-top:6px">`;
-  bodyHtml += card(t('inspector.state'), stateDot(meta.state));
+  bodyHtml += cardHtml(t('inspector.state'), stateDot(meta.state));
   if (meta.device) bodyHtml += card(t('inspector.device'), localizeDevice(meta.device));
   if (meta.source_class) bodyHtml += card(t('inspector.source'), localizeSourceClass(meta.source_class));
   if (meta.freshness_s != null) {
@@ -1905,8 +1917,8 @@ function showInspector(nodeId) {
     bodyHtml += `<div style="margin-top:8px">${qualityBar(meta.quality)}</div>`;
   }
   bodyHtml += `<div style="margin-top:6px;font-size:10px;color:rgba(200,230,244,0.5)">`;
-  bodyHtml += `${t('inspector.connections')}: `;
-  bodyHtml += `Layer: ${info.layer || node.ring}`;
+  bodyHtml += `${escapeHtml(t('inspector.connections'))}: `;
+  bodyHtml += `Layer: ${escapeHtml(info.layer || node.ring)}`;
   bodyHtml += `</div>`;
   document.getElementById('inspectorBody').innerHTML = bodyHtml;
 
@@ -1914,8 +1926,8 @@ function showInspector(nodeId) {
   const incoming = brain.edges.filter(e => e.to === nodeId).map(e => brain.getNodeById(e.from)?.short || e.from);
   const outgoing = brain.edges.filter(e => e.from === nodeId).map(e => brain.getNodeById(e.to)?.short || e.to);
   let chipHtml = '';
-  incoming.forEach(s => { chipHtml += `<span class="chip">\u2190 ${s}</span>`; });
-  outgoing.forEach(s => { chipHtml += `<span class="chip">${s} \u2192</span>`; });
+  incoming.forEach(s => { chipHtml += `<span class="chip">\u2190 ${escapeHtml(s)}</span>`; });
+  outgoing.forEach(s => { chipHtml += `<span class="chip">${escapeHtml(s)} \u2192</span>`; });
   document.getElementById('inspectorChips').innerHTML = chipHtml;
 }
 

@@ -6,12 +6,23 @@ Reads configs/hex_cells.yaml, validates topology, maps cells to agents.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 from waggledance.core.domain.hex_mesh import HexCellDefinition, HexCoord
 
 log = logging.getLogger(__name__)
+_WORD_RE = re.compile(r"\w+")
+
+
+def _selector_matches(selector: str, text: str, terms: set[str] | None = None) -> bool:
+    selector = selector.lower().strip()
+    if not selector or not text:
+        return False
+    if len(selector) >= 6:
+        return selector in text
+    return selector in (terms if terms is not None else set(_WORD_RE.findall(text)))
 
 
 class HexTopologyRegistry:
@@ -70,6 +81,17 @@ class HexTopologyRegistry:
 
                 coord_data = cell_data.get("coord", {})
                 coord = HexCoord(q=coord_data.get("q", 0), r=coord_data.get("r", 0))
+                if cell_id in self._cells:
+                    log.warning("Duplicate hex cell id %s skipped", cell_id)
+                    continue
+                if coord in self._coord_to_cell:
+                    log.warning(
+                        "Duplicate hex coordinate %s for cell %s skipped; already owned by %s",
+                        coord,
+                        cell_id,
+                        self._coord_to_cell[coord],
+                    )
+                    continue
 
                 cell = HexCellDefinition(
                     id=cell_id,
@@ -141,7 +163,7 @@ class HexTopologyRegistry:
                 # are considered.
                 if domain_selectors:
                     agent_domain = getattr(agent, "domain", "").lower()
-                    if any(s in agent_domain for s in domain_selectors):
+                    if any(_selector_matches(s, agent_domain) for s in domain_selectors):
                         matched.append(agent)
                         continue
                     continue
@@ -155,7 +177,7 @@ class HexTopologyRegistry:
                         continue
                 # Name/ID match as fallback
                 agent_id = getattr(agent, "id", "").lower()
-                if any(s in agent_id for s in domain_selectors + tag_selectors):
+                if any(_selector_matches(s, agent_id) for s in domain_selectors + tag_selectors):
                     matched.append(agent)
 
             self._cell_agents[cell_id] = matched
@@ -230,6 +252,8 @@ class HexTopologyRegistry:
 
         query_lower = query.lower()
         intent_lower = intent.lower()
+        query_terms = set(_WORD_RE.findall(query_lower))
+        intent_terms = set(_WORD_RE.findall(intent_lower))
 
         domain_index = self._lower_domain_selectors
         tag_index = self._lower_tag_selectors
@@ -240,22 +264,33 @@ class HexTopologyRegistry:
                 continue
 
             score = 0.0
+            selector_score = 0.0
 
             for sel in domain_index.get(cell_id, ()):
-                if sel in query_lower or sel in intent_lower:
-                    score += 2.0
+                if (
+                    _selector_matches(sel, query_lower, query_terms)
+                    or _selector_matches(sel, intent_lower, intent_terms)
+                ):
+                    selector_score += 2.0
 
             for sel in tag_index.get(cell_id, ()):
-                if sel in query_lower or sel in intent_lower:
-                    score += 1.5
+                if (
+                    _selector_matches(sel, query_lower, query_terms)
+                    or _selector_matches(sel, intent_lower, intent_terms)
+                ):
+                    selector_score += 1.5
 
             agent_count = len(cell_agents.get(cell_id, []))
-            score += agent_count * 0.01
+            if selector_score > 0:
+                score = selector_score + agent_count * 0.01
 
             if score > best_score:
                 best_score = score
                 best_cell = cell_id
 
+        if best_score <= 0:
+            hub = self._cells.get("hub")
+            return "hub" if hub and hub.enabled else None
         return best_cell
 
     def stats(self) -> dict[str, Any]:

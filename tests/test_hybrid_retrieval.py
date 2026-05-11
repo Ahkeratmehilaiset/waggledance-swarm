@@ -125,6 +125,11 @@ class TestCellAssignment:
         assert a.cell_id == CELL_GENERAL
         assert a.method in ("default", "intent")
 
+    def test_keyword_scan_uses_word_boundaries(self, topology):
+        for query in ("cheating at cards", "empower the team", "nightmare story", "diskussion topic"):
+            a = topology.assign_cell("chat", query)
+            assert a.cell_id == CELL_GENERAL
+
     def test_unknown_intent_defaults_general(self, topology):
         a = topology.assign_cell("unknown_intent", "")
         assert a.cell_id == CELL_GENERAL
@@ -312,6 +317,29 @@ class TestFaissLocalHit:
         col = hybrid_service._faiss_registry.get_or_create("cell_math")
         assert col.count == 1
 
+    def test_ingest_is_deduped_and_persisted(self, hybrid_service, embed_fn):
+        vec = embed_fn("test document")
+        asyncio.run(hybrid_service.ingest("doc1", "test document", vec, intent="math"))
+        asyncio.run(hybrid_service.ingest("doc1", "test document", vec, intent="math"))
+
+        col = hybrid_service._faiss_registry.get_or_create("cell_math")
+        assert col.count == 1
+
+        base_dir = hybrid_service._faiss_registry._base_dir
+        registry2 = FaissRegistry(base_dir=str(base_dir), default_dim=4)
+        assert registry2.count_if_exists("cell_math") == 1
+        assert registry2.document_exists("doc1") is True
+
+    def test_neighbor_hit_source_layer_is_neighbor(self, hybrid_service, embed_fn):
+        col = hybrid_service._faiss_registry.get_or_create("cell_energy", dim=4)
+        col.add("doc-neighbor", "addition formula neighbor", embed_fn("addition formula"))
+
+        trace = asyncio.run(
+            hybrid_service.retrieve("addition formula", intent="math"))
+
+        assert trace.neighbor_hit is True
+        assert trace.hits[0].source_layer == "neighbor_faiss"
+
     def test_ingest_disabled_returns_none(self, hybrid_service_disabled, embed_fn):
         vec = embed_fn("test")
         result = asyncio.run(
@@ -374,6 +402,8 @@ class TestStats:
     def test_stats_disabled(self, hybrid_service_disabled):
         s = hybrid_service_disabled.stats()
         assert s["enabled"] is False
+        assert s["mode"] == "shadow"
+        assert s["is_authoritative"] is False
 
 
 # ── FaissCollection Tests ─────────────────────────────────────
@@ -392,6 +422,13 @@ class TestFaissCollection:
         assert len(results) == 1
         assert results[0].doc_id == "doc1"
         assert results[0].score > 0.9  # Cosine similarity to self should be ~1.0
+
+    def test_duplicate_add_is_ignored(self, tmp_path):
+        col = FaissCollection("test", dim=4, persist_dir=str(tmp_path / "test"))
+        vec = np.array([1, 0, 0, 0], dtype=np.float32)
+        assert col.add("doc1", "test text", vec) is True
+        assert col.add("doc1", "test text again", vec) is False
+        assert col.count == 1
 
     def test_empty_collection_returns_empty(self, tmp_path):
         col = FaissCollection("empty", dim=4, persist_dir=str(tmp_path / "empty"))
@@ -443,6 +480,16 @@ class TestFaissRegistry:
         col.add("d1", "t1", np.zeros(4, dtype=np.float32))
         s = faiss_registry.stats()
         assert s["test"] == 1
+
+    def test_list_collections_discovers_persisted(self, tmp_path):
+        registry = FaissRegistry(base_dir=str(tmp_path / "faiss"), default_dim=4)
+        col = registry.get_or_create("persisted", dim=4)
+        col.add("d1", "t1", np.ones(4, dtype=np.float32))
+        col.save()
+
+        registry2 = FaissRegistry(base_dir=str(tmp_path / "faiss"), default_dim=4)
+        assert registry2.list_collections() == ["persisted"]
+        assert registry2.count_if_exists("persisted") == 1
 
 
 # ── API Schema Tests ──────────────────────────────────────────

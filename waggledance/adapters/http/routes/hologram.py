@@ -49,6 +49,7 @@ ALL_NODE_IDS = (
 
 # Timestamp of last runtime stats call (for freshness)
 _last_stats_time: float = 0.0
+_SECRET_KEY_FRAGMENTS = ("api_key", "authorization", "password", "secret", "token")
 
 
 def _load_html() -> str:
@@ -57,6 +58,21 @@ def _load_html() -> str:
     if _HOLOGRAM_HTML is None:
         _HOLOGRAM_HTML = _HOLOGRAM_PATH.read_text(encoding="utf-8")
     return _HOLOGRAM_HTML
+
+
+def _redact_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if any(fragment in key_text.lower() for fragment in _SECRET_KEY_FRAGMENTS):
+                continue
+            else:
+                redacted[key] = _redact_secrets(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
 
 
 @router.get("/hologram", response_class=HTMLResponse)
@@ -790,10 +806,7 @@ def _magma_timeline(service, container=None) -> list:
                      "source": getattr(e, "source", ""),
                      "timestamp": getattr(e, "timestamp", 0)}
                 )
-                # Sanitize — no secrets
-                entry.pop("api_key", None)
-                entry.pop("token", None)
-                entries.append(entry)
+                entries.append(_redact_secrets(entry))
         except Exception:
             pass
 

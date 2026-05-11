@@ -204,6 +204,19 @@ def test_metrics_hex_assist_raising_reports_down():
     assert "waggledance_hex_preflight_skips_total" not in body
 
 
+def test_metrics_hex_assist_property_raising_reports_down():
+    class _Container:
+        @property
+        def hex_neighbor_assist(self):
+            raise RuntimeError("constructor failed")
+
+    client = TestClient(_make_app(_Container()))
+
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert "waggledance_up 0.0" in resp.text
+
+
 def test_metrics_missing_container_attribute_reports_down():
     """``app.state.container`` absent entirely."""
     app = FastAPI()

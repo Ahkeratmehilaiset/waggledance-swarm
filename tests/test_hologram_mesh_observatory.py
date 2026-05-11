@@ -383,6 +383,29 @@ class TestNoSecretLeakage:
             assert "api_key" not in entry
             assert "token" not in entry
 
+    def test_sanitization_removes_nested_secrets(self):
+        from waggledance.adapters.http.routes.hologram import _magma_timeline
+
+        magma = MagicMock()
+        magma.recent.return_value = [{
+            "event_type": "HEX_QUERY_STARTED",
+            "payload": {
+                "headers": {"Authorization": "Bearer secret"},
+                "nested": [{"token": "secret-token"}, {"value": "safe"}],
+            },
+        }]
+
+        container = MagicMock()
+        container.magma_audit = magma
+        service = MagicMock()
+        service._container = container
+
+        result = _magma_timeline(service, container)
+        payload = result[0]["payload"]
+        assert "Authorization" not in payload["headers"]
+        assert "token" not in payload["nested"][0]
+        assert payload["nested"][1]["value"] == "safe"
+
 
 # ══════════════════════════════════════════════════════════════════
 # 7. Auth regression
@@ -672,7 +695,7 @@ class TestMagmaTimelineSanitization:
         service = MagicMock()
         service._container = container
 
-        result = _magma_timeline(service)
+        result = _magma_timeline(service, container)
         for entry in result:
             assert "api_key" not in entry
 

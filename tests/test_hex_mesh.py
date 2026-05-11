@@ -380,6 +380,17 @@ class TestNeighborIdCache:
         cell = reg.select_origin_cell("xyz", intent="bee hive operations")
         assert cell == "bee_ops"
 
+    def test_select_origin_cell_no_match_returns_hub_not_yaml_order(self):
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
+        assert reg.select_origin_cell("unrelated nonsense phrase") == "hub"
+
+    def test_select_origin_cell_short_selectors_use_boundaries(self):
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
+        assert reg.select_origin_cell("fire alarm") == "safety_security"
+        assert reg.select_origin_cell("firefly alarmed") == "hub"
+
     def test_select_origin_cell_disabled_cell_skipped(self):
         """Cell.enabled is consulted at query time (not cached at load
         time), so flipping enabled=False after load excludes the cell

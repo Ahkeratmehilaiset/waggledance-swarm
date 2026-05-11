@@ -834,6 +834,91 @@ entries:
     topology, routing, schema, sharding, or runtime behavior changed.
   next_bottleneck: R22.3 Profile L Anthropic A/B for Axis B headroom, plus a future 2D write-pressure mitigation if R22.5 wants branch-isolation improvement before reopening R25.
 
+- session_id: r22-laptop-solver-capacity-substrate
+  pr: null
+  owner: codex
+  reviewer: claude
+  merged_utc: null
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: run_solver_scale_proof_50k_descriptors_capacity_baseline
+  axis_a_snapshot: laptop-solver-capacity-agent-text-audit-2026-05-10
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    Measurement-only baseline, not a speedup PR. Axis-A before/after
+    fields stay null because the current validator requires paired
+    before/after numbers; the raw latency values are recorded here.
+
+    Codex measured tools/run_solver_scale_proof.py capacity on an
+    isolated worktree at 10k and 50k synthetic descriptors:
+
+    - 10k descriptors: build 1.8921 s, warm p99 0.7216 ms,
+      cold p99 25.127 ms, zero fallback, zero misses.
+    - 50k descriptors: build 24.529 s, warm p99 0.1534 ms,
+      cold p99 366.4572 ms, zero fallback, zero misses.
+
+    A later presentation-claims audit on the same day rechecked the
+    practical claim boundary: 10k descriptors had 1000/1000 capability
+    hits, warm p99 0.0497 ms, cold p99 28.7341 ms; 50k descriptors
+    had 2000/2000 hits, warm p99 0.2198 ms, cold p99 354.8117 ms.
+    Both runs had zero FIFO fallback and zero misses.
+
+    This records a scale substrate, not a runtime behavior change and
+    not a regression against the R22.5 promotion floor. The R22.5 floor
+    still tracks separate operations such as TrustAdapter.get_ranking,
+    vector_events offset reads, select_origin_cell, and ControlPlaneDB
+    bulk-load latency.
+  next_bottleneck: 2D branch-isolation write pressure remains the measured structural blocker; cold-path descriptor attach/index behavior at 20k+ should be optimized only if it appears in production traces.
+
+- session_id: r22-live-agent-capacity-substrate
+  pr: null
+  owner: codex
+  reviewer: claude
+  merged_utc: null
+  axis_a_before_ms: null
+  axis_a_after_ms: null
+  axis_a_metric: AgentSpawner_concurrent_warm_think_81_live_agents_baseline
+  axis_a_snapshot: live-agent-capacity-audit-2026-05-10
+  axis_b_quality: null
+  axis_c_claim_to_push_minutes: null
+  axis_c_push_to_merge_minutes: null
+  runtime_behavior_changed: false
+  pre_merge_findings_caught: 0
+  post_merge_audit_findings: 0
+  failed_attempts: 0
+  lessons_learned: |
+    Measurement-only baseline for live agents, not synthetic solver
+    descriptors. Current AgentSpawner/YAMLBridge exposed 81 live
+    templates. With a fake LLM runtime:
+
+    - spawner init: 2.22 s
+    - spawn all 81: 7.57 s
+    - sequential think across 81: 8.55 s
+    - concurrent warm think across 81: 0.47 s
+    - errors: 0
+
+    Bounded 120 s as-is spawn throughput reached 1004 live agent
+    clones, about 8.36 per second, with p50 spawn 88.8 ms and p99
+    spawn 1.43 s. A previous 10 minute stress reached 948/1000 before
+    timeout because per-agent knowledge injection plus SQLite commits
+    were slow, not because RAM was exhausted.
+
+    Live-LLM throughput is a separate bottleneck. Ollama qwen/deepseek
+    reasoning models returned thinking with empty response under small
+    caps. gemma4:e4b direct worked, but Agent.think needed cap 512 to
+    return non-empty output, with the first core_dispatcher call around
+    39.7 s. Output stayed Finnish because of the current prompt
+    contract. Object/runtime live-agent capacity is therefore >=1000
+    as-is; practical live LLM concurrency remains gated by local model
+    latency and the Finnish prompt contract.
+  next_bottleneck: per-agent knowledge injection and SQLite commit throughput at >=1000 live agents; English agent contract plus prompt trim/token cap policy before claiming scalable live LLM agents.
+
 ```
 
 ## Cumulative axis-A summary (as of R20.1)

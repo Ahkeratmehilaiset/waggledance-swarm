@@ -581,11 +581,17 @@ class ControlPlaneDB:
                 raise ControlPlaneError(f"schema migration failed: {exc!r}") from exc
 
     def schema_version(self) -> int:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version'"
             ).fetchone()
-            return int(row["value"]) if row else 0
+        return int(row["value"]) if row else 0
 
     def stats(self) -> ControlPlaneStats:
         counts: dict[str, int] = {}
@@ -1590,8 +1596,14 @@ class ControlPlaneDB:
         return self._row_to_autonomy_kpi(row)
 
     def latest_autonomy_kpi(self) -> Optional[AutonomyKPISnapshot]:
-        with self._lock:
-            row = self._conn.execute(
+        conn = self._read_conn()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT * FROM autonomy_kpis ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+        else:
+            row = conn.execute(
                 "SELECT * FROM autonomy_kpis ORDER BY id DESC LIMIT 1"
             ).fetchone()
         return None if row is None else self._row_to_autonomy_kpi(row)

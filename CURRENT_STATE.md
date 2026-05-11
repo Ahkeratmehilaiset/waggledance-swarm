@@ -1,7 +1,7 @@
 # WaggleDance Swarm — Project State (auto-generated)
 
-**Generated**: 2026-05-10T16:48:07+0300
-**Commit**: `8824e8a` on `waggledance/r22.5-release-surface-pr-alpha`
+**Generated**: 2026-05-11T10:50:03+0300
+**Commit**: `f60fb00` on `waggledance/r22.5-current-state-refresh`
 **Generator**: `python tools/generate_state.py`
 
 > This file is auto-generated from actual code. Do not edit manually.
@@ -9,10 +9,10 @@
 
 ## Summary
 
-- **Hexagonal runtime** (`waggledance/`): 242 core modules, 65,978 lines
-- **Legacy core** (`core/`): 85 modules, 27,333 lines
-- **Tests**: 394 files, 7016 test functions
-- **Licensing**: 1954 BUSL-protected files, 1792 Apache files
+- **Hexagonal runtime** (`waggledance/`): 242 core modules, 65,991 lines
+- **Legacy core** (`core/`): 86 modules, 27,775 lines
+- **Tests**: 395 files, 7024 test functions
+- **Licensing**: 1741 BUSL-protected files, 1594 Apache files
 
 ## Security Invariants
 
@@ -36,7 +36,7 @@
 |--------|------:|---------|--------|
 | `waggledance/core/actions/action_bus.py` | 240 | ActionResult, SafeActionBus | Complete |
 | `waggledance/core/api_distillation/api_consultant.py` | 191 | TrustGateResult, ConsultationRecord | Complete |
-| `waggledance/core/api_distillation/knowledge_extractor.py` | 126 | ExtractedFact, ExtractedSolverSpec, ExtractedLesson | Complete |
+| `waggledance/core/api_distillation/knowledge_extractor.py` | 134 | ExtractedFact, ExtractedSolverSpec, ExtractedLesson | Complete |
 | `waggledance/core/api_distillation/offline_replay_engine.py` | 90 |  | Complete |
 | `waggledance/core/autonomy/action_gate.py` | 236 | GateVerdict, GateBatchReport | Complete |
 | `waggledance/core/autonomy/attention_allocator.py` | 115 | AttentionWeight | Complete |
@@ -284,6 +284,7 @@
 | `core/active_learning.py` | 106 | LearningCandidate, ActiveLearningScorer | Complete |
 | `core/adaptive_throttle.py` | 362 | ThrottleState, AdaptiveThrottle | Complete |
 | `core/agent_channels.py` | 93 | AgentChannel, ChannelRegistry | Complete |
+| `core/agent_group_call.py` | 442 | GroupAgentSlot, GroupAnswer, GroupCallResult +1 | Complete |
 | `core/agent_levels.py` | 347 | AgentLevel, AgentStats, AgentLevelManager | Complete |
 | `core/agent_rollback.py` | 89 | AgentRollback | Complete |
 | `core/audit_log.py` | 176 | AuditLog | Complete |
@@ -373,12 +374,12 @@
 # Clone and verify:
 git clone https://github.com/Ahkeratmehilaiset/waggledance-swarm.git
 cd waggledance-swarm
-git checkout 8824e8a
+git checkout f60fb00
 
 # Count core modules (expect 40+):
 find waggledance/core -name "*.py" -not -name "__init__.py" | wc -l
 
 # Run tests:
 pip install -r requirements.txt
-pytest tests/ --collect-only -q | tail -1              # expect 7016+
+pytest tests/ --collect-only -q | tail -1              # expect 7024+
 ```

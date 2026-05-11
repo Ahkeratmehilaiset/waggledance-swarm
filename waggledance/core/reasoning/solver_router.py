@@ -110,6 +110,39 @@ class SolverRouteResult:
         return out
 
 
+# ── classify_intent signal helper ──────────────────────────────
+#
+# Audit finding H22/H58: substring matching ("sum" in "consumption")
+# routed natural-language queries to the wrong intent solver. The fix
+# is to anchor every signal term at word boundaries. `\b` is unicode-
+# aware under Python 3 default flags, so Finnish characters (ä/ö/å)
+# participate correctly.
+#
+# Patterns are compiled once at module load. Each frozenset of signals
+# becomes one alternation regex, so a query is scanned in a single pass
+# per signal set rather than N substring checks.
+_SIGNAL_PATTERN_CACHE: dict[frozenset[str], re.Pattern[str]] = {}
+
+
+def _has_signal(query_lower: str, signals: set[str] | frozenset[str]) -> bool:
+    """Return True iff any of *signals* appears as a whole word in *query_lower*.
+
+    *query_lower* MUST already be lower-cased; the caller in
+    SolverRouter.classify_intent does the .lower().strip() once and
+    reuses the same string for every signal-set check.
+    """
+    key = frozenset(signals)
+    pat = _SIGNAL_PATTERN_CACHE.get(key)
+    if pat is None:
+        # Sort longest-first so e.g. "how much" is tried before "much"
+        # would have been (defensive; current sets don't have overlaps
+        # but the cost is negligible).
+        alts = "|".join(re.escape(s) for s in sorted(key, key=len, reverse=True))
+        pat = re.compile(r"\b(?:" + alts + r")\b")
+        _SIGNAL_PATTERN_CACHE[key] = pat
+    return bool(pat.search(query_lower))
+
+
 class SolverRouter:
     """
     Solver-first reasoning router.
@@ -252,7 +285,7 @@ class SolverRouter:
         # Math / calculation keywords + digit-operator-digit
         math_signals = {"laske", "calculate", "compute", "paljonko", "how much",
                         "sum"}
-        if any(s in q for s in math_signals):
+        if _has_signal(q, math_signals):
             return "math"
         # Arithmetic: digit OP digit (excludes bare "-" which appears in "-5C")
         if re.search(r'\d\s*[+*/=]\s*\d', q):
@@ -264,19 +297,19 @@ class SolverRouter:
         # Symbolic / formula
         formula_signals = {"formula", "kaava", "model", "malli", "axiom",
                           "solve for", "ratkaise"}
-        if any(s in q for s in formula_signals):
+        if _has_signal(q, formula_signals):
             return "symbolic"
 
         # Constraint / rule check
         rule_signals = {"rule", "sääntö", "constraint", "check", "tarkista",
                        "compliant", "violation"}
-        if any(s in q for s in rule_signals):
+        if _has_signal(q, rule_signals):
             return "constraint"
 
         # Seasonal
         seasonal_signals = {"season", "vuodenaika", "kausi", "spring", "kevät",
                            "summer", "kesä", "autumn", "syksy", "winter", "talvi"}
-        if any(s in q for s in seasonal_signals):
+        if _has_signal(q, seasonal_signals):
             return "seasonal"
 
         # ── Time-series stats: metric + time window (before thermal) ──
@@ -284,7 +317,7 @@ class SolverRouter:
                        "energy", "keskiarvo", "keskimääräinen"}
         _TS_WINDOWS = {"last", "this", "week", "month", "days", "yesterday",
                        "today", "viime", "tämä", "viikko", "kuukausi", "päivää"}
-        if any(m in q for m in _TS_METRICS) and any(w in q for w in _TS_WINDOWS):
+        if _has_signal(q, _TS_METRICS) and _has_signal(q, _TS_WINDOWS):
             return "stats"
 
         # Thermal — but skip if optimization verb present ("optimize heating")
@@ -295,16 +328,16 @@ class SolverRouter:
                            "warm", "lämmin", "cold", "kylmä"}
         _OPTIM_VERBS = {"optimize", "optimoi", "minimize", "maximize", "allocate",
                         "cheapest", "halvin", "optimization"}
-        has_thermal = any(s in q for s in thermal_signals) or re.search(r'\d+\s*°?[cf]\b', q)
-        if has_thermal and not any(ov in q for ov in _OPTIM_VERBS):
+        has_thermal = _has_signal(q, thermal_signals) or re.search(r'\d+\s*°?[cf]\b', q)
+        if has_thermal and not _has_signal(q, _OPTIM_VERBS):
             return "thermal"
 
         # Schedule disambiguation: schedule without active verb → retrieval
         _SCHED_WORDS = {"schedule", "aikataulu", "kalenteri", "calendar", "timetable"}
         _SCHED_VERBS = {"optimize", "optimoi", "minimize", "maximize", "allocate",
                         "create", "build", "schedule this", "optimization"}
-        if any(sw in q for sw in _SCHED_WORDS):
-            if any(ov in q for ov in _SCHED_VERBS):
+        if _has_signal(q, _SCHED_WORDS):
+            if _has_signal(q, _SCHED_VERBS):
                 return "optimization"
             return "retrieval"
 
@@ -312,31 +345,31 @@ class SolverRouter:
         optim_signals = {"optimize", "optimoi", "aikatauluta",
                          "minimize", "allocate", "cheapest", "halvin",
                          "optimization"}
-        if any(s in q for s in optim_signals):
+        if _has_signal(q, optim_signals):
             return "optimization"
 
         # Statistics (no time window required)
         stats_signals = {"statistics", "tilasto", "trend", "keskiarvo",
                          "median", "percentile", "correlation", "summary"}
-        if any(s in q for s in stats_signals):
+        if _has_signal(q, stats_signals):
             return "stats"
 
         # Causal
         causal_signals = {"cause", "syy", "why", "miksi", "impact", "vaikutus",
                           "root cause", "because", "koska", "depends"}
-        if any(s in q for s in causal_signals):
+        if _has_signal(q, causal_signals):
             return "causal"
 
         # Anomaly / deviation
         anomaly_signals = {"anomaly", "anomalia", "deviation", "poikkeama",
                           "outlier", "unusual", "epätavallinen"}
-        if any(s in q for s in anomaly_signals):
+        if _has_signal(q, anomaly_signals):
             return "anomaly"
 
         # Retrieval / search
         retrieval_signals = {"what is", "mikä on", "tell me", "kerro",
                             "explain", "selitä", "search", "hae", "find", "etsi"}
-        if any(s in q for s in retrieval_signals):
+        if _has_signal(q, retrieval_signals):
             return "retrieval"
 
         # Default: chat (LLM fallback)

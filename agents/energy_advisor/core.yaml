@@ -1,29 +1,29 @@
 header:
   agent_id: energy_advisor
-  agent_name:  Energy Advisor
+  agent_name: Energy Advisor
   name_fi: 'Sähkö- ja energiaoptimointi'
-  version: 1.0.0
-  last_updated: '2026-03-02'
+  version: 1.1.0
+  last_updated: '2026-05-11'
 profiles:
   - home
   - factory
 priority: high
 ASSUMPTIONS:
-- Suomen sähkömarkkina (Nord Pool)
-- Kotitalous tai pienyritys
+- Finnish electricity market (Nord Pool spot pricing)
+- Household or small enterprise scale
 DECISION_METRICS_AND_THRESHOLDS:
   spot_expensive_c_kwh:
     value: 20
-    action: ">20 c/kWh → siirrä kuormia halvemmalle tunnille"
+    action: ">20 c/kWh: shift discretionary loads to a cheaper hour"
     source: src:EN1
   spot_cheap_c_kwh:
     value: 5
-    action: "<5 c/kWh → käynnistä lämminvesivaraaja"
+    action: "<5 c/kWh: start the hot-water tank cycle"
     source: src:EN1
 eval_questions:
-- q: Mikä on spot expensive c kwh?
+- q: What is the spot-price threshold in c/kWh above which loads should shift?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.spot_expensive_c_kwh.value
   source: src:EN1
-- q: Mikä on spot cheap c kwh?
+- q: What is the spot-price threshold in c/kWh below which the hot-water tank should run?
   a_ref: DECISION_METRICS_AND_THRESHOLDS.spot_cheap_c_kwh.value
   source: src:EN1

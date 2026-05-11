@@ -1,5 +1,106 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Audit Fix Series — D-decisions wired + 28 audit findings landed / v3.12.0 candidate] — 2026-05-11
+
+A coordinated multi-agent (Claude Code + OpenAI Codex) audit-and-fix
+sprint. Two-hour parallel skeptic audit produced 88 findings; the
+operator-approved D1/D2/D3 decisions then drove a 25-PR sequence
+that wired the previously-unused autonomy/LLM/trust infrastructure
+into the production runtime and shipped fixes for the routing,
+security, performance, and hygiene findings.
+
+### Operator-decision wireups (D2 + D3 chains)
+
+- **D2.1 — `container.control_plane_db` lifecycle (#253)** — the
+  ControlPlaneDB used to be instantiated only by offline tools, so
+  `data/control_plane.db` never appeared in production and the R25
+  decision histogram always returned `insufficient-data`. Now warmed
+  by api.py lifespan, closed on shutdown.
+- **D2.2 — `RuntimeGapDetector` emits on low-confidence chat (#260)** —
+  chat responses below a configurable confidence threshold now write
+  `runtime_gap_signal` rows. With Option B's read-side relaxation
+  (R22.2e) this is safe under writer load.
+- **D2.3 — `autogrowth_scheduler` background ticker (#261)** —
+  closes the autonomy-growth loop: gap signals -> mined-solver
+  candidates -> auto-promotion. Profile S still disables the lane.
+- **D3.2 — `AgentLifecycleManager` wired into Container (#251)** —
+  agents now constructed with `active=False`, then activated by
+  `lifecycle.spawn_for_profile`. Fixes the pre-H12 multi-profile
+  bug where `profiles=[APIARY, HOME]` agents were dropped because
+  `profiles[0]` was stored verbatim.
+- **D3.3 Phase A — `YAMLBridge.build_system_prompt` w/ f-string fallback (#252)** —
+  orchestrator prompts route through YAMLBridge's
+  ASSUMPTIONS / DECISION_METRICS / locale-overlay assembly. Falls
+  back to the pre-D3.3 f-string when YAMLBridge is unavailable so
+  production never sees empty prompts. Phase B (remove fallback
+  once all 75 agents validated) is a follow-up.
+- **D3.4 — `BridgeLLMClient` 4-tier chain wired into `container.llm` (#257)** —
+  Production LLM calls now route via cache -> local-ollama -> cloud
+  -> heuristic with the operator-decision-4 `BridgeLLMRedactor`
+  active on cloud calls. OllamaAdapter remains the fallback inside
+  the wrapper for graceful degradation.
+
+### Audit findings landed (28 H-numbered)
+
+| Finding | Title | PR |
+|---|---|---|
+| **H1 + H24 + H26 + H27 + H28** | AliasRegistry-derived agent.domain + hex_cells selector extension. Hub-dominance 100% → ~1%. | #245 |
+| H4 + H14 + H17 | Two-topology disambiguation (7-cell agent vs 8-cell solver) — README + new `docs/architecture/HEX_TOPOLOGIES.md`. | #256 |
+| H11 + D3.3-A | YAMLBridge prompt with f-string fallback. | #252 |
+| H12 + D3.2 | AgentLifecycleManager wired into container. | #251 |
+| H21 | `yaml.CSafeLoader` for agent + axiom load (~7× boot speedup). | #237 |
+| H22 + H58 | `\b`-anchor classify_intent signal terms. | #238 |
+| H30 | `WAGGLE_PROFILE` validation + 0-agent readiness fail. | #239 |
+| H32 | Voikko normalizer `__del__` partial-init guard. | #243 |
+| H33 + H34 | `RetentionPolicy` module + CLI for audit_log / world_store. | #248 |
+| H35a | `capability.selected` payload always includes `cap_id`. | #247 |
+| H38 | `shared_memory.db` default path moved to `data/`. | #254 |
+| H42 | Stopword-based language detection (diacritic-less FI / EN-with-diacritic-noun cases). | #246 |
+| H43 + H44 | PII git-history scrub runbook (operator-executable). | #249 |
+| H46 + Codex hexacon-track tactical bugs | Dashboard XSS hardening + hybrid retrieval / mesh runtime fixes. | #244 |
+| H47 | Batched trust fetch + async `case_store.save_case`. | #242 |
+| H48 | OllamaProvider timeout + budget honoring. | #250 |
+| H49 + D3.4 | BridgeLLMClient 4-tier wiring. | #257 |
+| H51 + D2.1 | ControlPlaneDB lifecycle warm at boot. | #253 |
+| H52 | Scheduler pheromone update — copy-paste bug replaced with `reliability` signal. | #241 |
+| H53 Phase 1 | `freshness_score` derived from scheduler `recent_successes` instead of constant `1.0`. | #255 |
+| H54 | BridgeLLMRedactor classifies Finnish HETU / IBAN / Y-tunnus before phone regex. | #240 |
+| H23 | e2e_chat_200 strengthened — source + confidence floor assertions. | #258 |
+| H45 cluster | CLAUDE.md glob fix + `configs/capsules` ownership docs + .python gitignore. | #259 |
+
+### Test plan
+
+- ~150 new tests across the 25 PRs covering each finding's regression
+  surface (production agent distribution, profile validation, freshness
+  computation, bridge LLM adapter, retention rules, etc.).
+- All required CI checks (test on Python 3.11/3.12/3.13 + security-scan)
+  pass on `origin/main`. The `unified` informational job still has
+  legacy `ModuleNotFoundError` noise that pre-dates this series.
+
+### Pending (operator-executable)
+
+- **D1 PII history scrub** — `docs/operations/D1_PII_SCRUB_RUNBOOK.md` (#249)
+  ships the 5-step runbook for `git-filter-repo` + force-push to
+  remove the operator's Y-tunnus / business name from git history.
+  Operator-only execution per CLAUDE.md rule 9.
+- **D3.3 Phase B** — remove the f-string fallback in
+  `waggledance/core/orchestration/prompt_builder.py` after all 75
+  agents have been validated to return non-empty rich prompts via
+  YAMLBridge.
+- **H53 Phase 2** — compute the remaining 4 TrustSignals
+  (hallucination_rate, consensus_agreement, correction_rate,
+  fact_production_rate) from verifier_store / case_store / round_table.
+
+### Release notes
+
+- **v3.12.0** target — pyproject.toml + `waggledance/__init__.py`
+  bumped in #233 (pre-this-series).
+- GitHub Latest remains **v3.8.0 stable** until either an explicit
+  v3.12.0 stable cut OR a v3.12.0-audit-fix-alpha prerelease completes
+  its 14-day soak.
+
+---
+
 ## [R22.2e Option B — read-lock relaxation + traffic histogram tool / no version bump] — 2026-05-11
 
 Operator-directed iteration sprint following the post-R23 measurement

@@ -50,7 +50,7 @@ function Test-BridgeInfrastructureEvent {
 }
 
 function Test-BridgeMessageAnswerStatus {
-    param([Parameter(Mandatory)] [string] $Status)
+    param([AllowEmptyString()] [string] $Status)
 
     return @(
         'answered',

@@ -287,14 +287,46 @@ class Orchestrator:
             )
         return best
 
+    # Audit H53: trust signal collapse mitigation. Of the 6 TrustSignals
+    # fields, 4 are still hardcoded to constants pending Phase-2 work
+    # that pulls them from verifier_store/case_store/round_table outcomes.
+    # freshness_score is the easiest signal to ground in real data
+    # because the scheduler already tracks per-agent success timestamps,
+    # so we compute it from scheduler_state.recent_successes.
+    # validation_rate is the existing real signal.
+    #
+    # Decay window matches typical agent "warm-cache" expectation:
+    # 1.0 immediately after success, fading linearly over 7 days to 0.
+    _FRESHNESS_DECAY_SECONDS = 7 * 86400  # 1 week
+
+    def _compute_freshness(self, agent_id: str) -> float:
+        last_success_ts = self._scheduler_state.recent_successes.get(agent_id, 0.0)
+        if last_success_ts <= 0:
+            return 0.0
+        age = time.time() - last_success_ts
+        if age <= 0:
+            return 1.0
+        if age >= self._FRESHNESS_DECAY_SECONDS:
+            return 0.0
+        return max(0.0, 1.0 - age / self._FRESHNESS_DECAY_SECONDS)
+
     async def _update_trust(self, result: AgentResult) -> None:
-        """Update trust scores after task completion (Orchestrator is the sole writer)."""
+        """Update trust scores after task completion (Orchestrator is the sole writer).
+
+        Audit H53 Phase 1: freshness_score is computed from the
+        scheduler's recent_successes timestamp. The other 4 signals
+        (hallucination_rate, consensus_agreement, correction_rate,
+        fact_production_rate) remain constant pending Phase 2, which
+        pulls them from verifier_store / case_store / round_table
+        outcomes. Validation_rate continues to take result.confidence
+        as before.
+        """
         signals = TrustSignals(
             hallucination_rate=0.0,
             validation_rate=result.confidence,
             consensus_agreement=0.0,
             correction_rate=0.0,
             fact_production_rate=0.0,
-            freshness_score=1.0,
+            freshness_score=self._compute_freshness(result.agent_id),
         )
         await self._trust_store.update_trust(result.agent_id, signals)

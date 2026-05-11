@@ -5,6 +5,7 @@ All memory access goes through MemoryService.retrieve_context().
 """
 
 import logging
+import re
 import time
 import uuid
 
@@ -27,6 +28,48 @@ from waggledance.core.ports.hot_cache_port import HotCachePort
 log = logging.getLogger(__name__)
 
 FI_CHARS = set("äöåÄÖÅ")
+
+# Audit H42: a single ä/ö/å detector misclassifies diacritic-less
+# Finnish (mobile typing) as English and English with German/Swedish
+# proper nouns ("Möbel", "Schrödinger") as Finnish. Stopword overlap
+# gives a confident vote when either set hits; we fall back to the
+# old diacritic check only on a tie (both stopword counts zero).
+#
+# Sets are small and deliberately uncontroversial — common function
+# words that appear in almost every natural-language sentence in each
+# language. Adding domain terms (e.g. "mehiläispesä") would bloat the
+# set without improving signal, since domain terms are rarer than
+# function words.
+_FI_STOPWORDS = frozenset({
+    "on", "ei", "ja", "tai", "mutta", "kun", "että", "joka", "jos",
+    "vai", "kuin", "myös", "vielä", "jo",
+    "mitä", "miksi", "kuinka", "paljonko", "mikä", "milloin", "missä",
+    "kuka", "mistä", "mihin", "miten", "kumpi",
+    "minä", "sinä", "hän", "me", "te", "he", "se",
+    "tämä", "tuo", "nämä", "nuo",
+    "olen", "olet", "olemme", "olette", "ovat", "oli", "ollut",
+    "kerro", "kerrotko", "kerrohan",
+    "voi", "voiko", "saako", "haluan", "tarvitsen",
+    "nyt", "tänään", "huomenna", "eilen",
+    "talvella", "kesällä", "syksyllä", "keväällä",
+})
+_EN_STOPWORDS = frozenset({
+    "the", "a", "an",
+    "is", "are", "was", "were", "be", "been", "being",
+    "of", "in", "on", "at", "to", "for", "with", "by", "from",
+    "and", "or", "but", "if", "when", "where", "why", "how",
+    "what", "who", "which", "this", "that", "these", "those",
+    "i", "you", "he", "she", "it", "we", "they",
+    "my", "your", "his", "her", "its", "our", "their",
+    "do", "does", "did", "have", "has", "had",
+    "can", "could", "should", "would", "will", "shall", "may", "might",
+    "tell", "me", "us", "give", "show",
+    "today", "yesterday", "tomorrow", "now",
+})
+
+# Cheap token splitter — unicode-aware via Python 3 default `\w` flags
+# so Finnish letters survive splitting.
+_TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 
 # v1.18.0: use shared helpers (convergence layer)
 from core.shared_routing_helpers import probe_micromodel as _shared_probe_micromodel
@@ -443,9 +486,32 @@ class ChatService:
 
     @staticmethod
     def _detect_language(query: str, hint: str) -> str:
-        """Detect query language. FI chars -> fi, otherwise use hint or default."""
+        """Detect query language. Stopword-overlap with diacritic fallback.
+
+        Audit H42 refinement of the prior FI_CHARS-only check. The old
+        single-char detector misclassified:
+        - "kuinka talvi vaikuttaa" (diacritic-less Finnish) -> en
+        - "Schrödinger equation"   (English w/ German letter)  -> fi
+        - "Möbel sale at IKEA"     (English w/ German noun)    -> fi
+        - "paljonko maksaa"        (pure Finnish w/o ä/ö)      -> en
+        Now: count tokens overlapping with each language's stopword
+        set. Winner takes the language. On a tie (both 0) we fall
+        back to the diacritic check to preserve the pre-H42 behavior
+        for very short / proper-noun-only queries.
+
+        Explicit ``hint != "auto"`` always wins — operator/client
+        knows best.
+        """
         if hint != "auto":
             return hint
+        tokens = {tok.lower() for tok in _TOKEN_RE.findall(query)}
+        fi_hits = len(tokens & _FI_STOPWORDS)
+        en_hits = len(tokens & _EN_STOPWORDS)
+        if fi_hits > en_hits:
+            return "fi"
+        if en_hits > fi_hits:
+            return "en"
+        # Tie: defer to the original diacritic check, then default en.
         if any(c in FI_CHARS for c in query):
             return "fi"
         return "en"

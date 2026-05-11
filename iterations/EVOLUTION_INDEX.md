@@ -982,10 +982,47 @@ entries:
     - p99 < 150 ms tolerates N<=4.
     - p99 < 200 ms tolerates all six cells in this adversarial sweep.
 
+    Run E added read-path latency probes under concurrent writes after
+    pre-populating 14k runtime_gap_signal rows. While cold writers inserted
+    into other cells, hub reads degraded sharply:
+
+    - list_runtime_gap_signals(limit=100): idle 1.73 ms, N=1 46.05 ms,
+      N=3 125.53 ms, N=6 222.83 ms.
+    - list_runtime_gap_signals(limit=500): idle 4.94 ms, N=1 52.36 ms,
+      N=3 101.09 ms, N=6 144.31 ms.
+    - count_runtime_gap_signals: idle 2.13 ms, N=1 23.46 ms,
+      N=3 24.07 ms, N=6 46.22 ms.
+
+    The smallest list query suffered the worst relative degradation:
+    26.6x at one concurrent writer and 128.6x at six concurrent writers.
+    A strict sub-50 ms read SLA is therefore not met by the 2D/global DB
+    whenever any concurrent writer is active. The root cause is structural:
+    list_runtime_gap_signals and count_runtime_gap_signals take the same
+    ControlPlaneDB self._lock as record_runtime_gap_signal, so reads
+    serialize behind writes.
+
+    Run F added routing hot-path probes against different tables while the
+    writers still hit runtime_gap_signals. get_active_runtime_path reads
+    runtime_path_bindings and get_solver reads solvers, but both degraded
+    because the current application lock is global to the connection:
+
+    - get_active_runtime_path: idle 0.0238 ms, N=1 7.74 ms,
+      N=3 33.91 ms, N=6 59.85 ms.
+    - get_solver: idle 0.0312 ms, N=1 11.50 ms,
+      N=3 34.54 ms, N=6 70.93 ms.
+
+    Run F changes the architectural decision from "R25 sharding only" to
+    "measure the cheap read/write separation first." R25 per-cell DB
+    sharding still addresses same-table multi-writer contention from Runs
+    A-D, but Run E/F show that a smaller ControlPlaneDB change may remove
+    the read and routing tax: scope or drop self._lock for read methods and
+    use SQLite WAL/read-write separation. That option must be replayed
+    against Run E and Run F before committing to the heavier R25 migration.
+
     runtime_behavior_changed=false: no source files or runtime paths
     changed. Artifacts are in the gitignored audit directory
     .codex-audit/branch_isolation_stress_2026_05_10/.
-  next_bottleneck: collect a 24h runtime_gap_signal write histogram by hex cell in production-like traffic; decide R25 sharding from observed concurrent active writer cells and the target p99 SLA.
+  next_bottleneck: spike and measure ControlPlaneDB read/write lock separation plus SQLite WAL against Run E/F; also collect a 24h runtime_gap_signal write histogram by hex cell in production-like traffic before deciding whether R25 sharding is required for the target p99 SLA.
 
 ```
 

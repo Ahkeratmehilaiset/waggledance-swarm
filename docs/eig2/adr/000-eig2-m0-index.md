@@ -4,27 +4,29 @@ This file enumerates every ADR that constitutes the EIG2-M0 binding rule-set (R1
 
 Authorship convention: each ADR has an author (drafts the rule-text) and a peer reviewer (cross-signs). Per the M6 trust-filter (`docs/eig2/spikes/M0-200-option-summary.md` §6), no ADR transitions from `proposed` → `accepted` without both signatures. Ownership split agreed in bridge thread `eig2-m0-ownership-split-2026-05-11`.
 
+Status: M0 complete 2026-05-11T21:00:25Z. PR #263, #265, #266, #267, #268, and #269 are merged; post-merge sanity on `origin/main` `2cc6fec28d4103b8c7deab6aad8488866b5e3ba6` was green.
+
 ## Status table
 
 | ID | R-rule | Title | Author | Peer reviewer | Status | Landing PR | Branch / file |
 |---|---|---|---|---|---|---|---|
-| 010 | R10 | M0 preflight before runtime work | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 010-m0-preflight-before-runtime.md |
-| 011 | R11 | Compact-card write-storm breaker | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 011-compact-card-write-storm-breaker.md |
-| 012 | R12 | M0 scope freeze — zero `waggledance/core/*` changes | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 012-m0-scope-freeze.md |
-| 013 | R13 | RCO inventory required before adapter proposals | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 013-rco-inventory-required.md |
-| 014 | R14 | Queue + backpressure BEFORE breaker for writes | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 014-queue-backpressure-before-breaker.md |
-| 015 | R15 | Option-B compliance test per new EIG2 writer | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 015-option-b-compliance.md |
-| 016 | R16 | Atomic-flip via STAGE2_CUTOVER_RFC; no parallel mechanism | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 016-atomic-flip-via-stage2-rfc.md |
-| 017 | R17 | `.eig2.autonomous_merge` is PR label signal, not merge authority | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 017-eig2-autonomous-merge-label-only.md |
-| 018 | R18 | Version monotonicity inside the sprint chain | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 018-version-monotonicity.md |
-| 019 | R19 | No-human policy scoped to implementation decisions | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | TBD (joint PR3) | `codex/eig2-m0-pr3-adr-sync-20260511` / 019-no-human-policy-scope.md |
+| 010 | R10 | M0 preflight before runtime work | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 010-m0-preflight-before-runtime.md |
+| 011 | R11 | Compact-card write-storm breaker | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 011-compact-card-write-storm-breaker.md |
+| 012 | R12 | M0 scope freeze — zero `waggledance/core/*` changes | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 012-m0-scope-freeze.md |
+| 013 | R13 | RCO inventory required before adapter proposals | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 013-rco-inventory-required.md |
+| 014 | R14 | Queue + backpressure BEFORE breaker for writes | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 014-queue-backpressure-before-breaker.md |
+| 015 | R15 | Option-B compliance test per new EIG2 writer | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 015-option-b-compliance.md |
+| 016 | R16 | Atomic-flip via STAGE2_CUTOVER_RFC; no parallel mechanism | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 016-atomic-flip-via-stage2-rfc.md |
+| 017 | R17 | `.eig2.autonomous_merge` is PR label signal, not merge authority | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 017-eig2-autonomous-merge-label-only.md |
+| 018 | R18 | Version monotonicity inside the sprint chain | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 018-version-monotonicity.md |
+| 019 | R19 | No-human policy scoped to implementation decisions | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 019-no-human-policy-scope.md |
 | 020 | (R3 fix) | Bridge `type` field is non-gating | Codex | Claude | **accepted** | PR #266 → main `ccd4d12`; PR #267 amendments → main `b10a95a` | `main` |
 
 ## Sequence of M0 PRs (ownership split §5)
 
 - **PR1** (Claude, M0 spikes): `docs/eig2/spikes/M0-reality-check.md` + `docs/eig2/spikes/M0-200-option-summary.md`. **MERGED** to main via PR #263 commit `10d8493` at 2026-05-11T19:50:16Z.
 - **PR2** (Codex, M0 reference shims): `.orchestrator/bridge_classify.py`, `.orchestrator/eig2_bridge_projection.py`, `.orchestrator/no_human_prompt_lint.py`, `.orchestrator/contracts/*.json`, `configs/explosive_intelligence_growth_v2.yaml` (`enabled:false`, `implemented:true`), and contract/orchestrator tests. **MERGED** to main via PR #268 commit `ba27ae1` at 2026-05-11T20:25:15Z.
-- **PR3** (joint, M0 ADR set): all of R10–R19 drafts collected on `codex/eig2-m0-pr3-adr-sync-20260511`, both authors cross-signed, single squash merge with both authors in commit trailer. Branch includes a non-force merge of PR #268 so the ADR PR cannot delete PR2 shims. Codex appended R10/R11/R14/R18 drafts and signed R12/R13/R15/R16/R17/R19; Claude endorsed and signed R10/R11/R14/R18 in PR #269 review.
+- **PR3** (joint, M0 ADR set): all of R10–R19 drafts collected on `codex/eig2-m0-pr3-adr-sync-20260511`, both authors cross-signed, single squash merge with both authors in commit trailer. Branch included a non-force merge of PR #268 so the ADR PR could not delete PR2 shims. Codex appended R10/R11/R14/R18 drafts and signed R12/R13/R15/R16/R17/R19; Claude endorsed and signed R10/R11/R14/R18 in PR #269 review. **MERGED** to main via PR #269 commit `2cc6fec` at 2026-05-11T21:00:25Z.
 
 ADR 020 is independent of this sequence — it landed early as the urgent bridge protocol fix.
 

@@ -15,7 +15,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # full history needed by tests/phase10/test_truth_regression.py (merge-base --is-ancestor against squash-merge SHAs)
 
@@ -68,7 +68,7 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check for dangerous patterns
         run: |
           echo "=== Checking for eval() outside safe_eval ==="

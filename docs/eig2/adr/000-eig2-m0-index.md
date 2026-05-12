@@ -4,7 +4,7 @@ This file enumerates every ADR that constitutes the EIG2-M0 binding rule-set (R1
 
 Authorship convention: each ADR has an author (drafts the rule-text) and a peer reviewer (cross-signs). Per the M6 trust-filter (`docs/eig2/spikes/M0-200-option-summary.md` §6), no ADR transitions from `proposed` → `accepted` without both signatures. Ownership split agreed in bridge thread `eig2-m0-ownership-split-2026-05-11`.
 
-Status: M0 complete 2026-05-11T21:00:25Z. PR #263, #265, #266, #267, #268, and #269 are merged; post-merge sanity on `origin/main` `2cc6fec28d4103b8c7deab6aad8488866b5e3ba6` was green. Follow-up EIG2 substrate ADRs 021-040, 042-048, 050-058, and 059-062 landed on 2026-05-12 via PR #296, #297, #298, #300-#314, #316, #317, #319-#325, and #327-#339.
+Status: M0 complete 2026-05-11T21:00:25Z. PR #263, #265, #266, #267, #268, and #269 are merged; post-merge sanity on `origin/main` `2cc6fec28d4103b8c7deab6aad8488866b5e3ba6` was green. Follow-up EIG2 substrate ADRs 021-062 landed on 2026-05-12 via PR #296, #297, #298, #300-#314, #316-#326, and #327-#339.
 
 ## Status table
 
@@ -41,6 +41,7 @@ Status: M0 complete 2026-05-11T21:00:25Z. PR #263, #265, #266, #267, #268, and #
 | 038 | L2 | Tunnel overlay sparse audited graph | Claude | Codex | **accepted** substrate-only | PR #314 -> main `e6189f8` | `main` / 038-tunnel-overlay.md |
 | 039 | L4 | Multi-cell candidate set portfolio routing | Claude | Codex | **accepted** substrate-only | PR #316 -> main `03cc30f` | `main` / 039-multi-cell-candidate-portfolio.md |
 | 040 | L5 | Negative tunnels | Claude | Codex | **accepted** substrate-only | PR #317 -> main `b619c8e` | `main` / 040-negative-tunnels.md |
+| 041 | L54-reframed | Capability factory lazy binding | Claude | Codex | **accepted** substrate-only | PR #318 -> main `d6bddc9` | `main` / 041-capability-factory-lazy-binding.md |
 | 042 | L3 | Tunnel co-occurrence learning | Claude | Codex | **accepted** substrate-only | PR #319 -> main `d4f109d` | `main` / 042-tunnel-co-occurrence-mining.md |
 | 043 | L6 | Curiosity-gradient routing | Claude | Codex | **accepted** substrate-only | PR #320 -> main `8a7cd2f` | `main` / 043-curiosity-gradient-routing.md |
 | 044 | L7 | Temporal tunnel layers | Claude | Codex | **accepted** substrate-only | PR #321 -> main `e9e44e5` | `main` / 044-temporal-tunnel-layers.md |
@@ -48,6 +49,7 @@ Status: M0 complete 2026-05-11T21:00:25Z. PR #263, #265, #266, #267, #268, and #
 | 046 | L9 | Color-class interleaving | Claude | Codex | **accepted** substrate-only | PR #323 -> main `4e41230` | `main` / 046-color-class-interleaving.md |
 | 047 | L10 | Cell-pair traversal telemetry | Claude | Codex | **accepted** substrate-only | PR #324 -> main `749364e` | `main` / 047-cell-pair-traversal-telemetry.md |
 | 048 | L23 | Solver-portfolio promotion | Claude | Codex | **accepted** substrate-only | PR #325 -> main `b0b7df5` | `main` / 048-solver-portfolio-promotion.md |
+| 049 | L24 | Sleep-time consolidation | Claude | Codex | **accepted** substrate-only | PR #326 -> main `ac32190` | `main` / 049-sleep-time-consolidation.md |
 | 050 | L26 | Domain-bridging incentive for cross-domain solvers | Claude | Codex | **accepted** substrate-only | PR #327 -> main `c0635f1` | `main` / 050-domain-bridging-incentive.md |
 | 051 | L27 | Solver retirement | Claude | Codex | **accepted** substrate-only | PR #328 -> main `43d537f` | `main` / 051-solver-retirement.md |
 | 052 | L28 | Multi-objective promotion | Claude | Codex | **accepted** substrate-only | PR #329 -> main `6fa7e44` | `main` / 052-multi-objective-promotion.md |

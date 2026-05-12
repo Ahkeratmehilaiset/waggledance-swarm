@@ -1106,3 +1106,35 @@ class TestHologramUI:
         # FI keys
         assert "Datasyotteet" in html
         assert "Konfiguroidut lahteet" in html
+
+    def test_hologram_escape_attr_handles_quotes(self):
+        """Attribute escaping protects mesh data-cell-id values."""
+        html = _read_v6_html()
+        assert 'data-cell-id="${escapeAttr(c.id)}"' in html
+        assert "replace(/&/g, '&amp;')" in html
+        assert "replace(/\"/g, '&quot;')" in html
+        assert "replace(/'/g, '&#39;')" in html
+        assert "replace(/</g, '&lt;')" in html
+        assert "replace(/>/g, '&gt;')" in html
+        assert "replace(/`/g, '&#96;')" in html
+
+    def test_hologram_dynamic_list_labels_are_escaped(self):
+        """Dynamic list labels must not be interpolated raw into innerHTML."""
+        html = _read_v6_html()
+        assert "${escapeHtml(e.name)}" in html
+        assert "${e.name}:" not in html
+        assert "${escapeHtml(ti.name)}" in html
+        assert ">${ti.name}</div>" not in html
+
+    def test_hologram_feed_panel_dynamic_values_are_escaped(self):
+        """Feed API values rendered through innerHTML stay escaped."""
+        html = _read_v6_html()
+        assert "${escapeHtml(t('node_states.' + s.state))}" in html
+        assert "${escapeHtml(s.interval_min)}min interval" in html
+        assert "${escapeHtml(s.items_count)} items" in html
+        assert "${escapeHtml(fresh)}" in html
+        assert "${escapeHtml(v.temp_c)}" in html
+        assert "${escapeHtml(v.wind_ms)}" in html
+        assert "${escapeHtml(v.humidity_pct)}" in html
+        assert "${escapeHtml(v.price_c_kwh)}" in html
+        assert "${escapeHtml(v.type)}" in html

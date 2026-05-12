@@ -1400,7 +1400,7 @@ function buildLearningPanel(el) {
   if (l.leaderboard && l.leaderboard.length) {
     html += `<div class="p-section"><div class="p-section-title">Leaderboard</div><div class="p-list">`;
     l.leaderboard.forEach(e => {
-      html += `<div class="p-list-item">${e.name}: ${(e.accuracy * 100).toFixed(1)}%</div>`;
+      html += `<div class="p-list-item">${escapeHtml(e.name)}: ${(e.accuracy * 100).toFixed(1)}%</div>`;
     });
     html += `</div></div>`;
   }
@@ -1454,20 +1454,20 @@ function buildFeedsPanel(el) {
       html += ` <span style="opacity:0.5;font-size:0.85em">${escapeHtml(s.protocol)}</span>`;
       if (s.provider) html += ` <span style="opacity:0.4;font-size:0.8em">(${escapeHtml(s.provider)})</span>`;
       html += `<div style="opacity:0.6;font-size:0.85em">`;
-      html += `${t('node_states.' + s.state)}`;
-      html += ` \u00b7 ${s.interval_min}min interval`;
+      html += `${escapeHtml(t('node_states.' + s.state))}`;
+      html += ` \u00b7 ${escapeHtml(s.interval_min)}min interval`;
       if (s.critical) html += ` \u00b7 <span style="color:#f87171">${t('feeds.critical')}</span>`;
       html += `</div>`;
 
       // Data section — always show, truthful about what's available
       html += `<div style="margin-top:4px;font-size:0.85em">`;
       if (s.items_count > 0) {
-        html += `<span style="color:#4ade80">${s.items_count} items</span>`;
+        html += `<span style="color:#4ade80">${escapeHtml(s.items_count)} items</span>`;
         const fresh = _freshnessLabel(s.freshness_s);
         if (fresh) {
           const stale = s.freshness_s > FEED_STALE_THRESHOLD_S;
           html += ` \u00b7 <span style="color:${stale ? '#facc15' : 'rgba(220,244,255,0.7)'}">`;
-          html += `${fresh}${stale ? ' \u26a0' : ''}</span>`;
+          html += `${escapeHtml(fresh)}${stale ? ' \u26a0' : ''}</span>`;
         }
       } else {
         html += `<span style="opacity:0.4">${t('no_data')}</span>`;
@@ -1488,14 +1488,14 @@ function buildFeedsPanel(el) {
         html += `<div style="margin-top:4px;font-size:0.85em;color:#a8efff">`;
         if (s.type === 'weather') {
           const v = s.latest_value;
-          if (v.temp_c != null) html += `${v.temp_c}\u00b0C`;
-          if (v.wind_ms != null) html += `, ${v.wind_ms} m/s`;
-          if (v.humidity_pct != null) html += `, ${v.humidity_pct}% RH`;
+          if (v.temp_c != null) html += `${escapeHtml(v.temp_c)}\u00b0C`;
+          if (v.wind_ms != null) html += `, ${escapeHtml(v.wind_ms)} m/s`;
+          if (v.humidity_pct != null) html += `, ${escapeHtml(v.humidity_pct)}% RH`;
         }
         if (s.type === 'electricity') {
           const v = s.latest_value;
-          if (v.price_c_kwh != null) html += `${v.price_c_kwh} c/kWh`;
-          if (v.type) html += ` (${v.type})`;
+          if (v.price_c_kwh != null) html += `${escapeHtml(v.price_c_kwh)} c/kWh`;
+          if (v.type) html += ` (${escapeHtml(v.type)})`;
         }
         html += `</div>`;
       }
@@ -1549,7 +1549,7 @@ function buildOpsPanel(el) {
       const bg = active ? 'rgba(90,220,255,0.25)' : 'rgba(255,255,255,0.04)';
       const border = active ? '1px solid rgba(90,220,255,0.5)' : '1px solid rgba(255,255,255,0.08)';
       const weight = active ? '700' : '400';
-      html += `<div class="flexhw-tier${active ? ' flexhw-tier-active' : ''}" style="flex:1;text-align:center;padding:4px 2px;border-radius:4px;background:${bg};border:${border};font-size:10px;font-weight:${weight}">${ti.name}</div>`;
+      html += `<div class="flexhw-tier${active ? ' flexhw-tier-active' : ''}" style="flex:1;text-align:center;padding:4px 2px;border-radius:4px;background:${bg};border:${border};font-size:10px;font-weight:${weight}">${escapeHtml(ti.name)}</div>`;
     });
     html += `</div>`;
   }
@@ -1846,7 +1846,13 @@ function escapeHtml(s) {
 }
 
 function escapeAttr(s) {
-  return escapeHtml(s).replace(/`/g, '&#96;');
+  return (s == null ? '' : String(s))
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/`/g, '&#96;');
 }
 
 async function sendChat() {

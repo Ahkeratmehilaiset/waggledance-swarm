@@ -221,7 +221,19 @@ class AutogrowthScheduler:
                 error=f"no_oracle:{gap.family_kind}",
             )
 
-        outcome: GapOutcome = self._grower.grow_from_gap(gap)
+        try:
+            outcome: GapOutcome = self._grower.grow_from_gap(gap)
+        except Exception as exc:  # noqa: BLE001 - release claimed queue row
+            last_error = f"unhandled: {type(exc).__name__}: {exc}"
+            self._cp.complete_queue_row(
+                claimed.id, status="failed", last_error=last_error,
+            )
+            self._stats.errored += 1
+            log.exception(
+                "Autogrowth tick aborted; claim released for queue_row %s",
+                claimed.id,
+            )
+            raise
         promotion = outcome.promotion
 
         if outcome.accepted and outcome.reason == "auto_promoted":

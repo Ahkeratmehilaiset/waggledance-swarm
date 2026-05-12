@@ -88,6 +88,21 @@ def test_redactor_scrubs_finnish_hetu_before_phone():
     assert result.replacements["<HETU_1>"] == "010195-123A"
 
 
+@pytest.mark.parametrize("separator", ["B", "C", "D", "E", "F", "Y", "X", "W", "V", "U"])
+def test_redactor_scrubs_finnish_hetu_new_dvv_separators_before_phone(separator):
+    """DVV's 2023 separator expansion added B-F for 2000s and Y-U for 1900s."""
+    from waggledance.core.bridge_llm import BridgeLLMRedactor
+    r = BridgeLLMRedactor()
+    hetu = f"030604{separator}903K"
+    result = r.redact(f"HETU {hetu} belongs to the applicant")
+    assert hetu not in result.text
+    assert "<HETU_1>" in result.text
+    assert "<PHONE_" not in result.text
+    assert result.counts["HETU"] == 1
+    assert result.counts["PHONE"] == 0
+    assert result.replacements["<HETU_1>"] == hetu
+
+
 def test_redactor_scrubs_finnish_iban_country_code():
     from waggledance.core.bridge_llm import BridgeLLMRedactor
     r = BridgeLLMRedactor()
@@ -99,6 +114,18 @@ def test_redactor_scrubs_finnish_iban_country_code():
     assert result.counts["IBAN"] == 1
     assert result.counts["PHONE"] == 0
     assert result.replacements["<IBAN_1>"] == "FI21 1234 5600 0007 85"
+
+
+def test_redactor_scrubs_lowercase_iban_before_phone():
+    from waggledance.core.bridge_llm import BridgeLLMRedactor
+    r = BridgeLLMRedactor()
+    result = r.redact("Pay to fi2112345600000785")
+    assert "fi2112345600000785" not in result.text
+    assert "<IBAN_1>" in result.text
+    assert "<PHONE_" not in result.text
+    assert result.counts["IBAN"] == 1
+    assert result.counts["PHONE"] == 0
+    assert result.replacements["<IBAN_1>"] == "fi2112345600000785"
 
 
 def test_redactor_classifies_finnish_business_id_before_phone():

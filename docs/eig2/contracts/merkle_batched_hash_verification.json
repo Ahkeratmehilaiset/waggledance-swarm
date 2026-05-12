@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Merkle-batched hash verification contract (L16)",
+  "description": "Invariants for batched Merkle-tree hash verification of raw MAGMA events. See ADR-028.",
+  "version": 1,
+  "batch_size": 1024,
+  "hash_function": "sha256",
+  "leaf_size_bytes": 32,
+  "invariants": [
+    {
+      "id": "MBH-001",
+      "name": "fixed_batch_size",
+      "description": "batch_size=1024 events per Merkle batch. Constant across profiles.",
+      "must": [
+        "batch_size value read from this contract, not hardcoded in Python",
+        "small and large profiles use the same batch_size",
+        "verification math (log2(batch_size) = 10 proof hashes) is profile-uniform"
+      ]
+    },
+    {
+      "id": "MBH-002",
+      "name": "sha256_hash_function",
+      "description": "Leaf hashes (per-event) and interior hashes use sha256. No SHA-1, no truncation.",
+      "must": [
+        "leaf_hash = sha256(event_canonical_bytes)",
+        "parent_hash = sha256(left_hash_bytes || right_hash_bytes)",
+        "leaf and interior hashes are 32 bytes each (full sha256 output)",
+        "no truncation to 16 bytes or alternative hash"
+      ]
+    },
+    {
+      "id": "MBH-003",
+      "name": "canonical_pair_concatenation",
+      "description": "Parent hash from two children uses left || right concatenation of raw 32-byte hashes. Documented bit-for-bit.",
+      "must": [
+        "concatenation order is left FIRST, right SECOND",
+        "no separator byte, no length prefix",
+        "two independent implementations of the spec produce identical root"
+      ]
+    },
+    {
+      "id": "MBH-004",
+      "name": "odd_leaf_padding",
+      "description": "When a batch has fewer than batch_size events (last partial batch), pad with sha256(empty byte string) leaves.",
+      "must": [
+        "pad value = sha256(b'') = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "pad applied to right-fill batch to batch_size",
+        "padding policy is operator-visible in audit log when applied"
+      ]
+    },
+    {
+      "id": "MBH-005",
+      "name": "root_stored_on_batch_close",
+      "description": "A batch's root hash is written EXACTLY ONCE, when the batch closes (1024 events accumulated OR snapshot rotation forces flush). No re-compute on read.",
+      "must": [
+        "batch close trigger 1: event count reaches batch_size",
+        "batch close trigger 2: snapshot-rotation flush forces partial batch close",
+        "no re-computation of root_hash on subsequent reads",
+        "writer responsible for atomicity: root written + chain marker advance in same transaction"
+      ]
+    },
+    {
+      "id": "MBH-006",
+      "name": "per_event_proof_path",
+      "description": "Verifying a specific event reads its batch root + log2(batch_size) sibling hashes, then recomputes path. No global merge of all roots.",
+      "must": [
+        "walker identifies batch via event_index // batch_size",
+        "proof length = log2(batch_size) = 10 sibling hashes for batch_size=1024",
+        "each batch verifies independently -- no cross-batch chain"
+      ]
+    },
+    {
+      "id": "MBH-007",
+      "name": "mismatch_fails_closed",
+      "description": "Any root or proof mismatch triggers raw-replay fallback per ADR-021. This ADR specifies verification mechanism only; fallback decision is unchanged.",
+      "must": [
+        "root_hash mismatch -> raw replay fallback (per ADR-021 fallback_contract.hash_mismatch)",
+        "per-event proof mismatch -> raw replay fallback",
+        "log WARNING with batch_index + event_index on mismatch"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of MagmaMerkleBatcher (separate PR)",
+    "Interior-hash caching (separate ADR if needed)",
+    "Cross-batch global Merkle (explicitly NOT planned for L16)",
+    "Hash function migration to SHA-3 (future ADR if requirements change)"
+  ],
+  "related_adrs": ["021", "022", "024"],
+  "related_leaps_50_menu": ["L16", "L18", "L19"],
+  "depends_on_contracts": ["progressive_replay_l0_l4.json"]
+}

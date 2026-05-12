@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Queue + backpressure for compact-card writes (L32)",
+  "description": "ADR-054. Wires ADR-024 compact-card writes through ADR-014 queue+backpressure.",
+  "version": 1,
+  "policy_defaults": {"max_queue_size": 10000, "soft_threshold_pct": 70, "hard_threshold_pct": 100, "batch_size": 100, "drain_interval_ms": 100, "sustained_rate_per_sec": 1000},
+  "invariants": [
+    {"id": "QBC-001", "name": "max_queue_10000", "description": "Default cap.", "must": ["default 10000", "operator-tunable"]},
+    {"id": "QBC-002", "name": "soft_70pct_telemetry_only", "description": "Soft threshold = telemetry, no behavior change.", "must": ["slow-down telemetry emitted at 7000", "no queue/breaker change"]},
+    {"id": "QBC-003", "name": "hard_100pct_breaker", "description": "Hard threshold fires ADR-011 breaker.", "must": ["raw MAGMA stays authoritative", "compact cards become async-best-effort"]},
+    {"id": "QBC-004", "name": "drain_1000_per_sec", "description": "batch=100, interval=100ms.", "must": ["sustained 1000 cards/sec drain", "operator-tunable batch + interval"]},
+    {"id": "QBC-005", "name": "non_blocking_producer", "description": "Card writer never blocks request path.", "must": ["queue.put is non-blocking (returns drop indicator on full)", "no asyncio.wait inside producer"]},
+    {"id": "QBC-006", "name": "raw_magma_authoritative", "description": "Queue full -> cards dropped, raw events still written.", "must": ["raw MAGMA append never gated by queue", "compact cards are derived layer per ADR-011/015"]},
+    {"id": "QBC-007", "name": "backpressure_metrics", "description": "Queue depth + drop_count emitted to events.jsonl.", "must": ["metrics emitted every drain cycle", "operator can observe queue health"]}
+  ],
+  "out_of_scope": ["Implementation of CompactCardWriteQueue (separate PR)", "Cross-process queue (single-process only)"],
+  "related_adrs": ["011", "014", "024"],
+  "related_leaps_50_menu": ["L32"]
+}

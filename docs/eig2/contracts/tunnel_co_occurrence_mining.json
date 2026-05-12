@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Tunnel co-occurrence mining contract (L3)",
+  "description": "Hebbian-style forward tunnel mining from solver co-fire events. See ADR-042.",
+  "version": 1,
+  "policy_defaults": {
+    "mining_window_hours": 168,
+    "mining_window_range_hours": [24, 720],
+    "min_cofire_count": 10,
+    "trust_formula": "cofire_count / max(invocations_A, invocations_B)",
+    "min_trust_score": 0.70,
+    "mining_cadence_seconds": 3600,
+    "tunnel_mining_enabled": true
+  },
+  "invariants": [
+    {
+      "id": "TCM-001",
+      "name": "mining_window_7d_default",
+      "description": "Default 168 hours (7 days). Range [24, 720].",
+      "must": [
+        "default 168",
+        "validator accepts [24, 720]"
+      ]
+    },
+    {
+      "id": "TCM-002",
+      "name": "min_cofire_10",
+      "description": "Pairs below 10 co-fires not considered.",
+      "must": [
+        "min_cofire_count default 10",
+        "below threshold: no tunnel proposed"
+      ]
+    },
+    {
+      "id": "TCM-003",
+      "name": "jaccard_trust_formula",
+      "description": "trust = cofire_count / max(invocations_A, invocations_B). Pinned.",
+      "must": [
+        "formula matches contract string",
+        "max() denominator (NOT min, NOT product) -- conservative bound",
+        "result clamped to [0.0, 1.0]"
+      ]
+    },
+    {
+      "id": "TCM-004",
+      "name": "threshold_matches_adr_038",
+      "description": "Mined tunnel trust_score MUST equal Jaccard trust; tunnel accepted only when >= 0.70 (ADR-038 TUN-001).",
+      "must": [
+        "tunnel.trust_score == Jaccard trust at write time",
+        "tunnels < 0.70 rejected",
+        "matches ADR-038 sparse-threshold invariant"
+      ]
+    },
+    {
+      "id": "TCM-005",
+      "name": "bidirectional_emission",
+      "description": "Co-fire mines BOTH directions (A->B AND B->A).",
+      "must": [
+        "miner emits two tunnel records per qualifying pair",
+        "each tunnel has its own provenance_event_id (the most recent dispatch event)",
+        "directions are independent in registry"
+      ]
+    },
+    {
+      "id": "TCM-006",
+      "name": "same_lifecycle_as_adr_038",
+      "description": "Mined tunnels use ADR-038 TUN-007 lifecycle (30-day revalidation, 90-day archive).",
+      "must": [
+        "revalidation interval 30 days",
+        "archive after 90 days stale",
+        "mined and operator-edited tunnels have identical lifecycle"
+      ]
+    },
+    {
+      "id": "TCM-007",
+      "name": "hourly_cadence",
+      "description": "Default hourly. Range [600, 86400].",
+      "must": [
+        "mining_cadence_seconds default 3600",
+        "validator accepts [600, 86400]"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of TunnelCoOccurrenceMiner (separate PR)",
+    "Query-class normalization helper (assumed shared with ADR-032)",
+    "Operator dashboard for mined tunnels (future PR)"
+  ],
+  "related_adrs": ["032", "038", "040"],
+  "related_leaps_50_menu": ["L2", "L3", "L5", "L10"]
+}

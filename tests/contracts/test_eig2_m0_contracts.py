@@ -9,6 +9,8 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+ADR_DIR = ROOT / "docs" / "eig2" / "adr"
+ADR_INDEX = ADR_DIR / "000-eig2-m0-index.md"
 
 
 def test_eig2_config_defaults_are_conservative() -> None:
@@ -66,3 +68,23 @@ def test_config_yaml_validates_against_schema() -> None:
     config = yaml.load(config_path.read_text(encoding="utf-8"), Loader=yaml.CSafeLoader)
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     jsonschema.validate(config, schema)
+
+
+def test_eig2_adr_index_lists_every_adr_file() -> None:
+    """Every EIG2 ADR file must have a status-table row in the index.
+
+    The index says it is the source of truth for ADR existence and landing
+    PRs, so new substrate ADRs must not land as orphan files.
+    """
+    index_text = ADR_INDEX.read_text(encoding="utf-8")
+    adr_files = [
+        path.name
+        for path in sorted(ADR_DIR.glob("*.md"))
+        if path.name != ADR_INDEX.name
+    ]
+    missing = [name for name in adr_files if name not in index_text]
+    assert missing == [], (
+        "EIG2 ADR index is missing rows for ADR files: "
+        f"{missing}. Update {ADR_INDEX.relative_to(ROOT).as_posix()} in the "
+        "same PR that adds or transitions an ADR."
+    )

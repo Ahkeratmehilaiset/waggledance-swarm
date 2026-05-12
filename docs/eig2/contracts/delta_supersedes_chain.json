@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Delta-encoded supersedes chain contract (L13)",
+  "description": "Invariants for delta-encoded supersedes-update semantics on compact-card-v1 cards. See ADR-025.",
+  "version": 1,
+  "delta_mode_enum": ["full", "partial", "tombstone"],
+  "added_fields": [
+    {
+      "name": "delta_mode",
+      "type": "enum",
+      "values": ["full", "partial", "tombstone"],
+      "required": true
+    },
+    {
+      "name": "delta_removed_keys",
+      "type": "list[str]",
+      "required": true,
+      "description": "summary keys explicitly deleted in this update; empty list if none"
+    }
+  ],
+  "chain_max_depth": 64,
+  "invariants": [
+    {
+      "id": "DSC-001",
+      "name": "delta_mode_enum_only",
+      "description": "Cards declare delta_mode in {full, partial, tombstone}. No other values allowed.",
+      "must": [
+        "validator rejects delta_mode outside the enum",
+        "delta_mode_enum is read from this contract file, not hardcoded in Python"
+      ]
+    },
+    {
+      "id": "DSC-002",
+      "name": "first_card_is_full",
+      "description": "The first card of any chain (supersedes_card_id=null) MUST be delta_mode=full.",
+      "must": [
+        "writer validates: supersedes_card_id is null implies delta_mode=full",
+        "consumer rejects chain start that is not full"
+      ]
+    },
+    {
+      "id": "DSC-003",
+      "name": "partial_requires_supersedes",
+      "description": "A card with delta_mode=partial MUST have supersedes_card_id != null.",
+      "must": [
+        "validator rejects partial card whose supersedes_card_id is null"
+      ]
+    },
+    {
+      "id": "DSC-004",
+      "name": "chain_depth_bound",
+      "description": "Replay walks chain backward to find a full card. Depth > chain_max_depth -> fail-closed to raw replay.",
+      "must": [
+        "chain_max_depth = 64 (configurable but pinned in contract)",
+        "walker counts hops; exceeding depth raises ChainDepthExceeded and triggers raw replay fallback",
+        "fallback path logs WARNING with chain start card_id and exceeded depth"
+      ]
+    },
+    {
+      "id": "DSC-005",
+      "name": "tombstone_terminates",
+      "description": "No card may declare supersedes_card_id pointing to a card whose delta_mode=tombstone. Once tombstoned, a new chain starts fresh.",
+      "must": [
+        "writer rejects supersedes_card_id pointing at a tombstone card",
+        "reader treats tombstone as 'subject retired'; reading after returns None"
+      ]
+    },
+    {
+      "id": "DSC-006",
+      "name": "per_card_hash",
+      "description": "card_hash is computed over the card's OWN content (delta-encoded summary). Verification is per-card; no need to reconstruct the full record to verify.",
+      "must": [
+        "writer computes card_hash over the partial summary as-stored",
+        "verifier checks card_hash without reconstructing the chain",
+        "matches ADR-024 CDC-003 deterministic hash semantics"
+      ]
+    },
+    {
+      "id": "DSC-007",
+      "name": "delta_removed_keys_required",
+      "description": "delta_removed_keys is required on every card (may be empty list). Reconstruction skips listed keys when walking the chain.",
+      "must": [
+        "every card has delta_removed_keys field (empty list permitted)",
+        "reconstruction walker treats listed keys as 'deleted in this generation' and does NOT inherit them from upstream cards",
+        "absence of the field is a validator error"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of CompactCardChain walker (separate PR)",
+    "L1 prefetch policy preferring 'full' cards (separate ADR)",
+    "Tombstone-driven retraining of derived indices (separate ADR)",
+    "Garbage collection of fully-superseded chains (separate ADR)"
+  ],
+  "related_adrs": ["021", "022", "024"],
+  "related_leaps_50_menu": ["L12", "L13", "L14", "L18"],
+  "depends_on_contracts": ["compact_decision_card.json"]
+}

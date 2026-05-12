@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Trust-staged routing contract (L8)",
+  "description": "Composite-trust-derived routing fan-out. See ADR-045.",
+  "version": 1,
+  "stage_enum": ["direct", "broad", "verified"],
+  "stage_thresholds": {"direct_min": 0.80, "broad_min": 0.50},
+  "stage_k_mapping": {"direct": 1, "broad": 3, "verified": 5},
+  "invariants": [
+    {"id": "TSR-001", "name": "stage_enum_only", "description": "Stage in {direct, broad, verified}.", "must": ["validator rejects other values", "stage_enum read from contract"]},
+    {"id": "TSR-002", "name": "boundaries_pinned", "description": "0.80 direct, 0.50 broad.", "must": ["direct_min default 0.80", "broad_min default 0.50", "validator rejects values outside [0, 1]"]},
+    {"id": "TSR-003", "name": "k_mapping_fixed", "description": "direct=1, broad=3, verified=5.", "must": ["stage_k_mapping exact", "K not operator-tunable per stage"]},
+    {"id": "TSR-004", "name": "verified_cross_check_only", "description": "Only verified stage invokes verifier agent.", "must": ["direct/broad skip verifier", "verified invokes verifier", "verifier check happens AFTER initial portfolio"]},
+    {"id": "TSR-005", "name": "no_silent_escalation", "description": "Stage upgrade requires explicit caller signal.", "must": ["framework does not auto-bump direct->broad based on cache miss", "matches RTB-007 from ADR-027"]},
+    {"id": "TSR-006", "name": "profile_override_thresholds", "description": "Thresholds operator-tunable per profile, K fixed.", "must": ["thresholds in profile config", "K mapping fixed in contract"]},
+    {"id": "TSR-007", "name": "stage_logged_in_trace", "description": "Every routing decision logs stage.", "must": ["log entry includes stage field", "trace ID + stage for ops correlation"]}
+  ],
+  "out_of_scope": ["Implementation (separate PR)", "Adaptive stage thresholds (future ADR)"],
+  "related_adrs": ["027", "037", "039"],
+  "related_leaps_50_menu": ["L8"]
+}

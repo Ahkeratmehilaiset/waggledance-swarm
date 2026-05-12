@@ -24,8 +24,10 @@ def _collection_count(registry, name: str) -> int:
     if callable(get_existing):
         col = get_existing(name)
         return int(col.count) if col is not None else 0
-    col = registry.get_or_create(name)
-    return int(col.count)
+    raise AttributeError(
+        f"registry {type(registry).__name__} exposes neither "
+        "count_if_exists nor get_existing; refusing get_or_create on read path"
+    )
 
 
 def _parse_bool(value, field: str) -> bool:

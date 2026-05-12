@@ -1764,6 +1764,46 @@ class ControlPlaneDB:
             ).fetchone()
         return self._row_to_runtime_gap_signal(row)
 
+    def record_runtime_gap_signal_many(
+        self,
+        signals: Iterable[Mapping[str, object]],
+    ) -> List[RuntimeGapSignalRecord]:
+        prepared: List[tuple[object, object, object, object, float, object, str]] = []
+        now = _utcnow()
+        for signal in signals:
+            prepared.append(
+                (
+                    signal["kind"],
+                    signal.get("family_kind"),
+                    signal.get("cell_coord"),
+                    signal.get("signal_payload"),
+                    float(signal.get("weight", 1.0)),
+                    signal.get("observed_at") or now,
+                    now,
+                )
+            )
+        if not prepared:
+            return []
+
+        rows = []
+        with self.transaction():
+            for values in prepared:
+                cursor = self._conn.execute(
+                    """
+                    INSERT INTO runtime_gap_signals(
+                        kind, family_kind, cell_coord, signal_payload,
+                        weight, observed_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+                row = self._conn.execute(
+                    "SELECT * FROM runtime_gap_signals WHERE id = ?",
+                    (cursor.lastrowid,),
+                ).fetchone()
+                rows.append(row)
+        return [self._row_to_runtime_gap_signal(row) for row in rows]
+
     def count_runtime_gap_signals(
         self,
         *,

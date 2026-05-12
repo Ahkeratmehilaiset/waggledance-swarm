@@ -55,6 +55,41 @@ def test_record_runtime_gap_signal_round_trip(cp: ControlPlaneDB) -> None:
     assert cp.count_runtime_gap_signals(cell_coord="thermal") == 0
 
 
+def test_record_runtime_gap_signal_many_round_trips_in_order(cp: ControlPlaneDB) -> None:
+    records = cp.record_runtime_gap_signal_many(
+        [
+            {
+                "kind": "miss",
+                "family_kind": "lookup_table",
+                "cell_coord": "general",
+                "signal_payload": json.dumps({"key": "blue"}),
+                "weight": 1.25,
+                "observed_at": "2026-05-12T00:00:00Z",
+            },
+            {
+                "kind": "fallback",
+                "family_kind": "threshold_rule",
+                "cell_coord": "thermal",
+                "weight": 0.5,
+            },
+        ]
+    )
+
+    assert [rec.kind for rec in records] == ["miss", "fallback"]
+    assert [rec.id for rec in records] == sorted(rec.id for rec in records)
+    assert records[0].signal_payload == json.dumps({"key": "blue"})
+    assert records[0].observed_at == "2026-05-12T00:00:00Z"
+    assert records[1].weight == pytest.approx(0.5)
+    assert cp.count_runtime_gap_signals() == 2
+    assert cp.count_runtime_gap_signals(kind="miss") == 1
+    assert cp.count_runtime_gap_signals(family_kind="threshold_rule") == 1
+
+
+def test_record_runtime_gap_signal_many_empty_is_noop(cp: ControlPlaneDB) -> None:
+    assert cp.record_runtime_gap_signal_many([]) == []
+    assert cp.count_runtime_gap_signals() == 0
+
+
 def test_growth_intent_upsert_increments_signal_count(
     cp: ControlPlaneDB,
 ) -> None:

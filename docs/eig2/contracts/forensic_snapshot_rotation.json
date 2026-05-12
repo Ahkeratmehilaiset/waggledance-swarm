@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Forensic snapshot rotation contract (L19)",
+  "description": "Invariants for MAGMA L4 forensic-snapshot rotation. See ADR-022.",
+  "version": 1,
+  "invariants": [
+    {
+      "id": "FSR-001",
+      "name": "raw_chain_authoritative",
+      "description": "Raw MAGMA event chain is the source of truth. Snapshots are derived. On hash mismatch between snapshot and raw chain, raw chain wins.",
+      "must": [
+        "snapshot_engine never modifies raw chain",
+        "hash mismatch logs WARNING and falls back to raw-chain walk"
+      ]
+    },
+    {
+      "id": "FSR-002",
+      "name": "snapshot_boundary_hash",
+      "description": "Every snapshot stores hash of raw event at the snapshot boundary. Replay verifies the hash before trusting the snapshot.",
+      "must": [
+        "snapshot record contains boundary_event_hash field",
+        "replay verifies boundary_event_hash == raw chain hash at that index",
+        "verification failure triggers fallback"
+      ]
+    },
+    {
+      "id": "FSR-003",
+      "name": "fail_closed_fallback",
+      "description": "Snapshot read failure (disk, corruption, hash mismatch) MUST fall back to raw-chain walk with a logged WARNING. No silent skip.",
+      "must": [
+        "ENOENT on snapshot file -> WARNING + raw walk",
+        "ChecksumError on snapshot -> WARNING + raw walk",
+        "snapshot id is logged in fallback path"
+      ]
+    },
+    {
+      "id": "FSR-004",
+      "name": "replay_equivalence",
+      "description": "Replay-from-snapshot + delta MUST produce the same observable state as raw-chain walk for the same event range.",
+      "must": [
+        "for any snapshot S and event range [S.boundary, end]: replay(S, delta) == replay_raw(start, end)",
+        "tested with property-style equivalence on small synthetic chains"
+      ]
+    },
+    {
+      "id": "FSR-005",
+      "name": "no_write_amplification",
+      "description": "Snapshot generation is read-only from the raw chain. No reordering, no rewrites.",
+      "must": [
+        "MagmaSnapshotEngine has no write API to raw chain",
+        "snapshot records have separate storage path from raw events"
+      ]
+    },
+    {
+      "id": "FSR-006",
+      "name": "rotation_is_policy_not_code",
+      "description": "Rotation cadence, retention window, and tier-transition thresholds are operator-configurable via configs/forensic_snapshots.yaml. No magic numbers in code.",
+      "must": [
+        "configs/forensic_snapshots.yaml is the single source for rotation policy",
+        "code reads rotation_interval_hours, warm_retention_count, cold_after_days from config",
+        "default values documented in YAML, not hardcoded in Python"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of MagmaSnapshotEngine (separate PR)",
+    "zstd-at-rest compression (L18, separate ADR)",
+    "Snapshot-driven incremental retraining of L1/L2/L3 caches (separate ADR)"
+  ],
+  "related_adrs": ["011", "014", "021"],
+  "related_leaps_50_menu": ["L18", "L19"]
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Temporal tunnel layers contract (L7)",
+  "description": "Season/hour-aware tunnel restrictions. See ADR-044.",
+  "version": 1,
+  "valid_layers": ["all", "season:spring", "season:summer", "season:autumn", "season:winter", "hour:0-6", "hour:6-12", "hour:12-18", "hour:18-24"],
+  "default_layer": "all",
+  "season_calendar": {"spring": ["03", "04", "05"], "summer": ["06", "07", "08"], "autumn": ["09", "10", "11"], "winter": ["12", "01", "02"]},
+  "invariants": [
+    {"id": "TTL-001", "name": "default_all", "description": "Default temporal_layer='all'.", "must": ["new tunnels default to 'all' if temporal_layer absent", "backward-compat with ADR-038 tunnels"]},
+    {"id": "TTL-002", "name": "enum_valid_layers", "description": "Arbitrary strings rejected.", "must": ["validator rejects layer outside valid_layers", "valid_layers read from contract"]},
+    {"id": "TTL-003", "name": "hour_buckets_non_overlapping", "description": "4x6h windows covering 24h.", "must": ["[0,6) [6,12) [12,18) [18,24)", "no overlap, no gap"]},
+    {"id": "TTL-004", "name": "season_buckets_calendrical", "description": "Meteorological seasons.", "must": ["spring=Mar-May, summer=Jun-Aug, autumn=Sep-Nov, winter=Dec-Feb", "month-based not astronomical"]},
+    {"id": "TTL-005", "name": "fallback_to_all", "description": "No temporal match -> fall through to 'all' layer.", "must": ["routing query first filters by current time-bucket", "fallback to 'all'-layer tunnels", "fallback logged at DEBUG"]},
+    {"id": "TTL-006", "name": "single_layer_per_tunnel", "description": "Exactly one temporal_layer per tunnel.", "must": ["no list/multi-layer assignment", "validator rejects array values"]},
+    {"id": "TTL-007", "name": "lifecycle_inherits_adr_038", "description": "30-day revalidation, 90-day archive.", "must": ["matches ADR-038 TUN-007", "no separate temporal-tunnel lifecycle"]}
+  ],
+  "out_of_scope": ["Implementation (separate PR)", "Custom temporal buckets (operator-defined) -- future ADR"],
+  "related_adrs": ["038"],
+  "related_leaps_50_menu": ["L7"]
+}

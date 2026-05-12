@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Profile-aware budgets contract (L38)",
+  "description": "Per-profile resource quotas. See ADR-055.",
+  "version": 1,
+  "yaml_path": "configs/profile_budgets.yaml",
+  "profile_enum": ["GADGET", "COTTAGE", "HOME", "FACTORY"],
+  "budget_keys": ["max_memory_mb", "max_replay_concurrency", "l1_prefetch_k", "l3_elevated_budget"],
+  "default_budgets": {
+    "GADGET": {"max_memory_mb": 128, "max_replay_concurrency": 2, "l1_prefetch_k": 32, "l3_elevated_budget": 4096},
+    "COTTAGE": {"max_memory_mb": 256, "max_replay_concurrency": 4, "l1_prefetch_k": 64, "l3_elevated_budget": 8192},
+    "HOME": {"max_memory_mb": 1024, "max_replay_concurrency": 8, "l1_prefetch_k": 100, "l3_elevated_budget": 8192},
+    "FACTORY": {"max_memory_mb": 4096, "max_replay_concurrency": 16, "l1_prefetch_k": 200, "l3_elevated_budget": 16384}
+  },
+  "invariants": [
+    {"id": "PAB-001", "name": "profile_enum_exact", "description": "GADGET, COTTAGE, HOME, FACTORY.", "must": ["matches existing taxonomy", "no other values"]},
+    {"id": "PAB-002", "name": "monotonic_across_profiles", "description": "GADGET <= COTTAGE <= HOME <= FACTORY for each budget key.", "must": ["all budget keys monotone non-decreasing", "validator enforces at load"]},
+    {"id": "PAB-003", "name": "yaml_single_source", "description": "yaml_path = configs/profile_budgets.yaml.", "must": ["single source of truth", "loaded via yaml.CSafeLoader"]},
+    {"id": "PAB-004", "name": "immutable_per_container", "description": "Budgets resolved at __init__, no runtime mutation.", "must": ["Container.budgets is read-only after init", "test verifies AttributeError on assignment"]},
+    {"id": "PAB-005", "name": "l1_k_matches_adr_026", "description": "l1_prefetch_k respects ADR-026 PLP-001.", "must": ["all profile values in [1, ...]", "validator cross-checks ADR-026 range"]},
+    {"id": "PAB-006", "name": "l3_elevated_matches_adr_027", "description": "l3_elevated_budget respects ADR-027 RTB-002.", "must": ["values are powers of 2 (4096, 8192, 16384) for memory-aligned hydration", "matches RTB-002 elevated tier"]},
+    {"id": "PAB-007", "name": "validation_at_boot", "description": "Missing profile entry -> ERROR + boot fails.", "must": ["validator at Container.__init__", "boot fails fast on missing config", "no silent default fallback"]}
+  ],
+  "out_of_scope": ["Implementation of budget loader/validator (separate PR)", "Adaptive budget tuning at runtime (future ADR)"],
+  "related_adrs": ["026", "027"],
+  "related_leaps_50_menu": ["L38"]
+}

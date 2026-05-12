@@ -37,10 +37,16 @@ CREDIT_CARD_RE: Pattern[str] = re.compile(r"\b\d{13,19}\b")
 # pattern is intentionally broad enough to catch digit-heavy PII, but
 # without these earlier classifiers it leaves HETU/IBAN fragments in
 # the redacted text and mislabels telemetry as PHONE.
+# HETU separators: + for 1800s, - plus Y/X/W/V/U for 1900s, and
+# A/B/C/D/E/F for 2000s after the DVV separator expansion.
+_HETU_SEPARATOR_RE = r"[+\-A-FYXWVU]"
 HETU_RE: Pattern[str] = re.compile(
-    r"\b[0-3]\d[01]\d\d{2}[+\-A]\d{3}[0-9A-Y]\b",
+    rf"\b[0-3]\d[01]\d\d{{2}}{_HETU_SEPARATOR_RE}\d{{3}}[0-9A-Y]\b",
 )
-IBAN_RE: Pattern[str] = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){8,32}\b")
+IBAN_RE: Pattern[str] = re.compile(
+    r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){8,32}\b",
+    re.IGNORECASE,
+)
 Y_TUNNUS_RE: Pattern[str] = re.compile(r"\b\d{7}-\d\b")
 # Phone: optional leading +, then a digit, then at least 8 more
 # digits/spaces/hyphens. Matches international + national patterns.

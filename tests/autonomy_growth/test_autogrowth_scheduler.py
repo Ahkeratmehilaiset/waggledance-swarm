@@ -181,6 +181,29 @@ def test_tick_rejects_bad_seed_terminally(cp: ControlPlaneDB) -> None:
     assert final.status == "rejected"
 
 
+def test_tick_releases_claim_on_unexpected_grower_exception(
+    cp: ControlPlaneDB,
+) -> None:
+    class BrokenGrower:
+        def grow_from_gap(self, gap):
+            raise RuntimeError("grower boom")
+
+    _seed_intent(
+        cp, "scalar_unit_conversion", "suc:thermal:boom",
+        _scalar_seed("boom"),
+    )
+
+    sched = AutogrowthScheduler(cp, grower=BrokenGrower())
+    with pytest.raises(RuntimeError, match="grower boom"):
+        sched.tick()
+
+    rows = cp.list_autogrowth_queue()
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert rows[0].last_error == "unhandled: RuntimeError: grower boom"
+    assert sched.stats.errored == 1
+
+
 def test_self_starting_loop_signal_to_promotion(cp: ControlPlaneDB) -> None:
     """End-to-end: detector records a signal -> digest creates intent +
     enqueues -> scheduler.tick() promotes -> dispatcher serves it."""

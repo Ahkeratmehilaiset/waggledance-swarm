@@ -4,10 +4,11 @@
 
 A coordinated multi-agent (Claude Code + OpenAI Codex) audit-and-fix
 sprint. Two-hour parallel skeptic audit produced 88 findings; the
-operator-approved D1/D2/D3 decisions then drove a 25-PR sequence
-that wired the previously-unused autonomy/LLM/trust infrastructure
+operator-approved D1/D2/D3 decisions then drove an initial 25-PR
+sequence, followed by RCO hardening closure through #277. Together
+these wired the previously-unused autonomy/LLM/trust infrastructure
 into the production runtime and shipped fixes for the routing,
-security, performance, and hygiene findings.
+security, performance, concurrency, and hygiene findings.
 
 ### Operator-decision wireups (D2 + D3 chains)
 
@@ -68,14 +69,41 @@ security, performance, and hygiene findings.
 | H23 | e2e_chat_200 strengthened — source + confidence floor assertions. | #258 |
 | H45 cluster | CLAUDE.md glob fix + `configs/capsules` ownership docs + .python gitignore. | #259 |
 
+### Post-audit RCO hardening closure (2026-05-12)
+
+- **EIG2 M0/M1 docs and architecture checkpoint (#263, #269, #270)** —
+  records the M0 reality-check inventory, ADR set, and M1 architecture map
+  before the next hexagonal/EIG2 work starts.
+- **BridgeLLM + provider parameter preservation (#272)** — generation
+  parameters now flow through the request path instead of being silently
+  dropped by provider defaults.
+- **Finnish PII redactor expansion (#271)** — covers additional HETU
+  separator shapes while keeping the conservative over-redaction posture.
+- **Hybrid retrieval contract cleanup (#273)** — un-xfails the hybrid
+  retrieval mode test and accepts the `hybrid:*` submode family.
+- **YAMLBridge prompt-builder race fix (#274)** — locks language selection
+  and prompt construction as one critical section so concurrent FI/EN prompt
+  builds cannot cross-contaminate locale state.
+- **Hybrid route + hologram redaction hardening (#275)** — read-path
+  collection counts no longer call `get_or_create`, and hologram redaction
+  preserves token metrics while still removing real secret-shaped keys.
+- **Chat low-confidence runtime-gap write offload (#276)** — blocking
+  `RuntimeGapDetector.record` work now runs off the async chat event loop.
+- **Autogrowth scheduler claim-release fix (#277)** — unexpected grower
+  exceptions mark the queue row `failed` before re-raising, preventing
+  permanently-claimed growth intents.
+
 ### Test plan
 
 - ~150 new tests across the 25 PRs covering each finding's regression
   surface (production agent distribution, profile validation, freshness
   computation, bridge LLM adapter, retention rules, etc.).
-- All required CI checks (test on Python 3.11/3.12/3.13 + security-scan)
-  pass on `origin/main`. The `unified` informational job still has
-  legacy `ModuleNotFoundError` noise that pre-dates this series.
+- Post-closure targeted sanity on `main` after #274-#277:
+  prompt-builder, hybrid routes, hologram redaction, chat service,
+  chat case recording, gap intake, and autogrowth scheduler tests
+  passed together (57/57).
+- Required CI checks for this docs PR should remain limited to the normal
+  Python 3.11/3.12/3.13 test matrix, `unified`, and `security-scan`.
 
 ### Pending (operator-executable)
 
@@ -95,9 +123,11 @@ security, performance, and hygiene findings.
 
 - **v3.12.0** target — pyproject.toml + `waggledance/__init__.py`
   bumped in #233 (pre-this-series).
-- GitHub Latest remains **v3.8.0 stable** until either an explicit
-  v3.12.0 stable cut OR a v3.12.0-audit-fix-alpha prerelease completes
-  its 14-day soak.
+- GitHub Latest remains **v3.8.0 stable** until an explicit v3.12.0
+  stable cut. Recommendation after #274-#277: prepare the candidate now,
+  but do not move `:latest` or publish v3.12.0 as stable until the R22.5
+  soak/release gate passes and the D1 PII-history decision is explicitly
+  acknowledged.
 
 ---
 

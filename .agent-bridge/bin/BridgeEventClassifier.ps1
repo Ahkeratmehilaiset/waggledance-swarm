@@ -49,6 +49,16 @@ function Test-BridgeInfrastructureEvent {
     return @('heartbeat','liveness','wake_request') -contains [string]$Event.type
 }
 
+function Test-BridgeMessageAnswerStatus {
+    param([AllowEmptyString()] [string] $Status)
+
+    return @(
+        'answered',
+        'answered_plus_reminder',
+        'answered_after_recovery'
+    ) -contains $Status
+}
+
 function Test-BridgeRequesterClosureEvent {
     param([Parameter(Mandatory)] [object] $Event)
 
@@ -75,7 +85,9 @@ function Test-BridgeRequestLikeEvent {
     $type = [string]$Event.type
     $status = [string]$Event.status
 
-    if ($type -eq 'message' -and $status -like 'answered*') { return $false }
+    if ($type -eq 'message' -and (Test-BridgeMessageAnswerStatus -Status $status)) {
+        return $false
+    }
     if (Test-BridgeRequesterClosureEvent -Event $Event) { return $false }
 
     $requestTypes = @('message','handoff','blocked','finding','decision','done')
@@ -111,7 +123,7 @@ function Test-BridgeAnswerEvent {
     $status = [string]$Event.status
 
     if ($type -eq 'message') {
-        if ($status -like 'answered*') { return $true }
+        if (Test-BridgeMessageAnswerStatus -Status $status) { return $true }
         if (Test-BridgeRequestLikeEvent -Event $Event) { return $false }
         return $true
     }

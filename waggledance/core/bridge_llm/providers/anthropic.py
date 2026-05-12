@@ -119,11 +119,17 @@ class AnthropicProvider(ProviderPlugin):
         client = anthropic.Anthropic(timeout=timeout_s)
         start = time.perf_counter()
         try:
-            model = request.metadata.get("model", self._model)
+            model = request.effective_model(self._model)
+            create_kwargs = {
+                "model": model,
+                "max_tokens": request.effective_max_tokens(self._max_tokens),
+                "messages": [{"role": "user", "content": redaction.text}],
+            }
+            temperature = request.effective_temperature()
+            if temperature is not None:
+                create_kwargs["temperature"] = temperature
             response = client.messages.create(
-                model=model,
-                max_tokens=self._max_tokens,
-                messages=[{"role": "user", "content": redaction.text}],
+                **create_kwargs,
             )
             text_blocks = [
                 block.text for block in response.content

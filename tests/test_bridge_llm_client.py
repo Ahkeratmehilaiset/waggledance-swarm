@@ -72,6 +72,32 @@ def test_cache_provider_miss_raises_provider_error(tmp_path):
         cache.call(req)
 
 
+def test_cache_provider_keys_generation_params():
+    from waggledance.core.bridge_llm.providers.cache import ExactCacheProvider
+    from waggledance.core.bridge_llm.providers.base import ProviderError
+    from waggledance.core.bridge_llm.types import LLMRequest
+
+    cache = ExactCacheProvider()
+    req_a = LLMRequest(
+        injection_point="test.point",
+        prompt="same prompt",
+        model="model-a",
+        temperature=0.0,
+        max_tokens=128,
+    )
+    req_b = LLMRequest(
+        injection_point="test.point",
+        prompt="same prompt",
+        model="model-b",
+        temperature=0.0,
+        max_tokens=128,
+    )
+    cache.store(req_a, "model-a-answer")
+    assert cache.call(req_a).text == "model-a-answer"
+    with pytest.raises(ProviderError, match="cache miss"):
+        cache.call(req_b)
+
+
 def test_heuristic_provider_always_works():
     from waggledance.core.bridge_llm.providers.heuristic import HeuristicProvider
     from waggledance.core.bridge_llm.types import LLMRequest, FallbackLevel
@@ -149,6 +175,94 @@ def test_ollama_provider_passes_latency_budget_to_sdk_timeout(monkeypatch):
     assert captured["chat_kwargs"]["options"]["num_predict"] == 256
 
 
+def test_ollama_provider_uses_request_generation_params(monkeypatch):
+    from waggledance.core.bridge_llm.providers import ollama as ollama_mod
+    from waggledance.core.bridge_llm.types import LLMRequest
+
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        def chat(self, **kwargs):
+            captured["chat_kwargs"] = kwargs
+            return {
+                "message": {"content": "ok"},
+                "prompt_eval_count": 1,
+                "eval_count": 2,
+            }
+
+    monkeypatch.setitem(sys.modules, "ollama", types.SimpleNamespace(
+        Client=FakeClient,
+    ))
+    provider = ollama_mod.OllamaProvider()
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+
+    provider.call(LLMRequest(
+        injection_point="x",
+        prompt="hello",
+        model="custom-ollama",
+        temperature=0.0,
+        max_tokens=512,
+    ))
+
+    assert captured["chat_kwargs"]["model"] == "custom-ollama"
+    assert captured["chat_kwargs"]["options"]["temperature"] == 0.0
+    assert captured["chat_kwargs"]["options"]["num_predict"] == 512
+
+
+def test_anthropic_provider_uses_request_generation_params(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
+    from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
+    from waggledance.core.bridge_llm.types import LLMRequest
+
+    captured_create = {}
+
+    class StubUsage:
+        input_tokens = 1
+        output_tokens = 2
+
+    class StubBlock:
+        type = "text"
+        text = "ok"
+
+    class StubResponse:
+        content = [StubBlock()]
+        usage = StubUsage()
+
+    class StubAnthropic:
+        def __init__(self, timeout=None, **kwargs):
+            pass
+
+        @property
+        def messages(self):
+            class _M:
+                @staticmethod
+                def create(**kwargs):
+                    captured_create.update(kwargs)
+                    return StubResponse()
+            return _M()
+
+    monkeypatch.setitem(sys.modules, "anthropic", type(sys)("anthropic_stub"))
+    sys.modules["anthropic"].Anthropic = StubAnthropic  # type: ignore[attr-defined]
+
+    provider = AnthropicProvider()
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+    response = provider.call(LLMRequest(
+        injection_point="x",
+        prompt="hello",
+        model="claude-test",
+        temperature=0.0,
+        max_tokens=321,
+    ))
+
+    assert response.text == "ok"
+    assert captured_create["model"] == "claude-test"
+    assert captured_create["temperature"] == 0.0
+    assert captured_create["max_tokens"] == 321
+
+
 def test_ollama_provider_honors_max_retries_budget(monkeypatch):
     from waggledance.core.bridge_llm.providers import ollama as ollama_mod
     from waggledance.core.bridge_llm.providers.base import ProviderError
@@ -194,6 +308,89 @@ def test_client_disabled_short_circuits_to_heuristic():
     ))
     assert response.fallback_level == FallbackLevel.HEURISTIC
     assert response.success is True
+
+
+def test_llm_request_effective_generation_params_preserve_metadata_compat():
+    from waggledance.core.bridge_llm.types import LLMRequest
+
+    legacy = LLMRequest(
+        injection_point="x",
+        prompt="hello",
+        metadata={
+            "model": "legacy-model",
+            "temperature": "0",
+            "max_tokens": "512",
+        },
+    )
+    assert legacy.effective_model("provider-default") == "legacy-model"
+    assert legacy.effective_temperature(0.7) == 0.0
+    assert legacy.effective_max_tokens(256) == 512
+
+    explicit = LLMRequest(
+        injection_point="x",
+        prompt="hello",
+        model="explicit-model",
+        temperature=0.2,
+        max_tokens=128,
+        metadata={
+            "model": "legacy-model",
+            "temperature": 0.9,
+            "max_tokens": 999,
+        },
+    )
+    assert explicit.effective_model("provider-default") == "explicit-model"
+    assert explicit.effective_temperature(0.7) == 0.2
+    assert explicit.effective_max_tokens(256) == 128
+
+
+@pytest.mark.asyncio
+async def test_bridge_llm_adapter_lifts_generation_params_into_request():
+    from waggledance.adapters.llm.bridge_llm_adapter import BridgeLLMAdapter
+    from waggledance.core.bridge_llm.types import FallbackLevel, LLMResponse
+
+    captured = {}
+
+    class CaptureClient:
+        def is_enabled(self):
+            return True
+
+        def run(self, request):
+            captured["request"] = request
+            return LLMResponse(
+                text="bridge ok",
+                fallback_level=FallbackLevel.HEURISTIC,
+                provider="capture",
+                success=True,
+                latency_ms=0.0,
+            )
+
+    class FallbackAdapter:
+        async def generate(self, **kwargs):
+            raise AssertionError("fallback should not be used")
+
+    adapter = BridgeLLMAdapter(
+        CaptureClient(),
+        FallbackAdapter(),
+        injection_point="test.adapter",
+    )
+
+    text = await adapter.generate(
+        "hello",
+        model="custom-model",
+        temperature=0.0,
+        max_tokens=512,
+    )
+
+    assert text == "bridge ok"
+    request = captured["request"]
+    assert request.injection_point == "test.adapter"
+    assert request.prompt == "hello"
+    assert request.model == "custom-model"
+    assert request.temperature == 0.0
+    assert request.max_tokens == 512
+    assert request.metadata["model"] == "custom-model"
+    assert request.metadata["temperature"] == 0.0
+    assert request.metadata["max_tokens"] == 512
 
 
 def test_client_serves_from_cache_when_seeded(tmp_path, monkeypatch):

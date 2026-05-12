@@ -45,11 +45,11 @@ def _setup_windows_utf8() -> None:
             stderr=subprocess.DEVNULL,
             check=False,
             shell=False,
+            timeout=2.0,
         )
-    except (OSError, FileNotFoundError):
-        # chcp.com absent (extremely minimal Windows install) — the
-        # env-var + stdout.reconfigure layers below still give us UTF-8
-        # for Python output, so this is not fatal.
+    except (OSError, subprocess.TimeoutExpired):
+        # chcp.com absent or stuck: env vars + stdout.reconfigure still
+        # give Python output UTF-8, so this is not fatal.
         pass
 
     os.environ["PYTHONUTF8"] = "1"

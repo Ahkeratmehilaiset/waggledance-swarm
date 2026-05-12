@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Stability score trust signal contract (L45)",
+  "description": "Per-agent response variance over rolling 7-day window. See ADR-035.",
+  "version": 1,
+  "field_name": "stability_score",
+  "field_type": "float",
+  "field_range": [0.0, 1.0],
+  "convention": "higher_is_better",
+  "policy_defaults": {
+    "rolling_window_days": 7,
+    "min_query_clusters": 5,
+    "min_responses_per_cluster": 2,
+    "sample_size_n": 20,
+    "refresh_cadence_seconds": 86400,
+    "default_on_insufficient_data": 0.5,
+    "stability_weight_in_composite": 0.10
+  },
+  "invariants": [
+    {
+      "id": "STB-001",
+      "name": "field_name_stability_score",
+      "description": "Exact field name in TrustSignals dataclass. Type float, range [0.0, 1.0].",
+      "must": [
+        "field name == 'stability_score' (no abbreviation)",
+        "type annotation is float",
+        "value clamped to [0.0, 1.0]"
+      ]
+    },
+    {
+      "id": "STB-002",
+      "name": "higher_is_better",
+      "description": "Convention: 1.0 = identical responses across time, 0.0 = uncorrelated. Lower-better convention does NOT apply.",
+      "must": [
+        "composite trust formula adds stability_score (NOT 1 - stability_score)",
+        "documentation/comments state higher_is_better explicitly",
+        "downstream consumers do NOT invert the value"
+      ]
+    },
+    {
+      "id": "STB-003",
+      "name": "rolling_7_day_window",
+      "description": "Computed over last 7 days. Configurable but default 7.",
+      "must": [
+        "rolling_window_days default 7",
+        "window slides with current time",
+        "data older than window not included in computation"
+      ]
+    },
+    {
+      "id": "STB-004",
+      "name": "default_0_5_on_insufficient_data",
+      "description": "When < 5 query-clusters with >= 2 responses, return 0.5 (neutral).",
+      "must": [
+        "min_query_clusters default 5",
+        "min_responses_per_cluster default 2",
+        "below threshold -> default_on_insufficient_data = 0.5",
+        "no false-confident high or low score on fleet warm-up"
+      ]
+    },
+    {
+      "id": "STB-005",
+      "name": "refresh_cadence_24h",
+      "description": "Cached and refreshed every 24h, not per-query.",
+      "must": [
+        "refresh_cadence_seconds default 86400 (24h)",
+        "AutonomyMetrics.stability_cache stores last value + timestamp",
+        "per-query reads do NOT trigger fresh computation"
+      ]
+    },
+    {
+      "id": "STB-006",
+      "name": "l51_contract_test_must_update",
+      "description": "When stability_score is added to TrustSignals, the L51 contract test (tests/contracts/test_fan_in_public_surface_contracts.py) MUST be amended.",
+      "must": [
+        "implementation PR amends L51 contract test together with the dataclass field",
+        "field tuple update in test_autonomy_domain_core_dataclass_contracts must include 'stability_score'",
+        "this prevents the L51 contract from drifting silently"
+      ]
+    },
+    {
+      "id": "STB-007",
+      "name": "backward_compat_metadata_default",
+      "description": "If AgentResult.metadata lacks stability_score, extractor returns 0.5 (matches sufficient-data threshold).",
+      "must": [
+        "_derive_stability_score in orchestrator returns 0.5 on missing field",
+        "consistent with PR #287 fallback-on-missing pattern",
+        "no exception propagates when field is absent"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of StabilityComputer (separate PR)",
+    "Embedding-similarity vs token-overlap choice (implementation detail)",
+    "Operator dashboards for cross-agent stability comparison (separate PR)"
+  ],
+  "related_adrs": [],
+  "related_leaps_50_menu": ["L41", "L42", "L43", "L44", "L45", "L47", "L49"]
+}

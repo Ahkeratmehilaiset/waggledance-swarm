@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Bayesian trust update contract (L50)",
+  "description": "Beta(alpha, beta) posterior trust representation. See ADR-060.",
+  "version": 1,
+  "distribution": "Beta",
+  "prior": {"alpha": 2.0, "beta": 2.0},
+  "policy_defaults": {"credible_interval_pct": 95, "high_risk_uses_lower_ci": true},
+  "invariants": [
+    {"id": "BTU-001", "name": "beta_representation", "description": "Per-signal stored as 2 floats (alpha, beta).", "must": ["alpha + beta >= 1.0 always", "both floats", "stored as TrustSignals.<signal>_alpha + <signal>_beta or equivalent struct"]},
+    {"id": "BTU-002", "name": "prior_beta_2_2", "description": "Weakly-informative prior Beta(2, 2).", "must": ["default alpha=2.0 beta=2.0", "prior mean = 0.5", "operator-tunable to other Beta priors but default pinned"]},
+    {"id": "BTU-003", "name": "update_formula", "description": "alpha += success, beta += failure. No decay here.", "must": ["pure conjugate update", "ADR-037 temporal decay applied SEPARATELY on the point/CI output, not on alpha/beta directly"]},
+    {"id": "BTU-004", "name": "point_and_ci_exposed", "description": "Both point estimate + 95% CI exposed via API.", "must": ["api: get_point_estimate() and get_credible_interval(pct=95)", "lower and upper bounds returned as tuple"]},
+    {"id": "BTU-005", "name": "routine_uses_point", "description": "ROUTINE/STANDARD risk tier uses point estimate.", "must": ["per ADR-027 risk tier", "routine routing path uses alpha/(alpha+beta)"]},
+    {"id": "BTU-006", "name": "high_risk_uses_lower_ci", "description": "high_risk uses lower 95% CI for conservatism.", "must": ["per ADR-027 RTB-007 no-silent-escalation", "explicit lower-CI requirement for irreversible actions", "credible_interval_pct default 95"]},
+    {"id": "BTU-007", "name": "backward_compat", "description": "Existing scalar trust APIs still work.", "must": ["composite_score field on AgentTrust preserved", "BetaTrust is additive, not replacement", "downstream code can ignore Beta data and use scalar"]}
+  ],
+  "out_of_scope": ["Implementation (separate PR)", "Multi-armed bandit selection (future ADR)", "Non-Beta priors per signal type (future ADR)"],
+  "related_adrs": ["027", "035", "036", "037", "059"],
+  "related_leaps_50_menu": ["L50"]
+}

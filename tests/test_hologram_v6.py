@@ -115,13 +115,13 @@ def _make_service(running=True, stats=None, extra_attrs=None):
 def _build_state(service):
     """Call build_hologram_state with patched imports."""
     from waggledance.adapters.http.routes.hologram import build_hologram_state
-    # Patch _ws_clients and _gpu_info_safe to avoid side effects
+    # Patch shared _ws_clients and _gpu_info_safe to avoid side effects
     with patch("waggledance.adapters.http.routes.hologram._gpu_info_safe",
                return_value={"gpu_percent": 0, "gpu_mem_used": 0, "gpu_mem_total": 0}):
         with patch("waggledance.adapters.http.routes.hologram.psutil") as mock_psutil:
             mock_psutil.cpu_percent.return_value = 0
             try:
-                with patch("waggledance.adapters.http.routes.compat_dashboard._ws_clients", set()):
+                with patch("waggledance.adapters.http.routes._dashboard_shared._ws_clients", set()):
                     return build_hologram_state(service)
             except ImportError:
                 return build_hologram_state(service)
@@ -303,7 +303,7 @@ class TestNodeMetadataContract:
                     return_value={"gpu_percent": 0, "gpu_mem_used": 0, "gpu_mem_total": 8192}):
             with patch("waggledance.adapters.http.routes.hologram.psutil") as mock_psutil:
                 mock_psutil.cpu_percent.return_value = 0
-                with patch("waggledance.adapters.http.routes.compat_dashboard._ws_clients", set()):
+                with patch("waggledance.adapters.http.routes._dashboard_shared._ws_clients", set()):
                     state = build_hologram_state(svc)
         assert state["node_meta"]["sys_compute"]["device"] == "GPU"
 
@@ -407,7 +407,7 @@ class TestNewRingNodes:
                     return_value={"gpu_percent": 45, "gpu_mem_used": 2000, "gpu_mem_total": 8192}):
             with patch("waggledance.adapters.http.routes.hologram.psutil") as mock_psutil:
                 mock_psutil.cpu_percent.return_value = 10
-                with patch("waggledance.adapters.http.routes.compat_dashboard._ws_clients", set()):
+                with patch("waggledance.adapters.http.routes._dashboard_shared._ws_clients", set()):
                     state = build_hologram_state(svc)
         assert state["node_meta"]["sys_compute"]["state"] == "active"
         assert state["node_meta"]["sys_compute"]["device"] == "GPU"
@@ -420,7 +420,7 @@ class TestNewRingNodes:
                     return_value={"gpu_percent": 0, "gpu_mem_used": 0, "gpu_mem_total": 0}):
             with patch("waggledance.adapters.http.routes.hologram.psutil") as mock_psutil:
                 mock_psutil.cpu_percent.return_value = 0
-                with patch("waggledance.adapters.http.routes.compat_dashboard._ws_clients", mock_clients):
+                with patch("waggledance.adapters.http.routes._dashboard_shared._ws_clients", mock_clients):
                     from waggledance.adapters.http.routes.hologram import build_hologram_state
                     state = build_hologram_state(svc)
         assert state["node_meta"]["sys_websocket"]["state"] == "active"

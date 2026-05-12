@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from waggledance.adapters.http.deps import get_autonomy_service, get_container
 from waggledance.adapters.http.routes._capability_state import derive_capability_state
+from waggledance.adapters.http.routes._dashboard_shared import _ws_clients
 from waggledance.adapters.http.routes.auth_session import validate_session
 
 logger = logging.getLogger(__name__)
@@ -1022,10 +1023,6 @@ async def broadcast_ws(message: dict):
 
 
 # ── /ws WebSocket ─────────────────────────────────────────
-
-# Connected clients for broadcasting
-_ws_clients: set = set()
-
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

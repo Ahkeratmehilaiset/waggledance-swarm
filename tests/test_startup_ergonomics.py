@@ -181,6 +181,10 @@ def test_setup_windows_utf8_uses_subprocess_not_os_system(monkeypatch):
             "subprocess.run must be called with shell=False to avoid "
             "spawning cmd.exe"
         )
+        assert 0 < kwargs.get("timeout", 0) <= 5, (
+            "chcp.com startup probe must be bounded so Windows startup "
+            "cannot hang indefinitely"
+        )
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -210,6 +214,22 @@ def test_setup_windows_utf8_survives_chcp_missing(monkeypatch):
     # Must not raise.
     mod._setup_windows_utf8()
     # Env vars should still be set.
+    import os as _os
+    assert _os.environ.get("PYTHONUTF8") == "1"
+    assert _os.environ.get("PYTHONIOENCODING") == "utf-8"
+
+
+def test_setup_windows_utf8_survives_chcp_timeout(monkeypatch):
+    """A stuck ``chcp.com`` process must not make startup hang forever."""
+    mod = _reload_start_runtime()
+    monkeypatch.setattr("sys.platform", "win32")
+
+    def fake_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    mod._setup_windows_utf8()
+
     import os as _os
     assert _os.environ.get("PYTHONUTF8") == "1"
     assert _os.environ.get("PYTHONIOENCODING") == "utf-8"

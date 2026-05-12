@@ -7,7 +7,9 @@ BUG 2 fix: All asyncio tasks tracked via _track_task() with error callbacks.
 
 import asyncio
 import logging
+import math
 import time
+from collections.abc import Mapping
 
 from waggledance.core.domain.agent import AgentDefinition, AgentResult
 from waggledance.core.domain.events import DomainEvent, EventType
@@ -299,13 +301,11 @@ class Orchestrator:
             )
         return best
 
-    # Audit H53: trust signal collapse mitigation. Of the 6 TrustSignals
-    # fields, 4 are still hardcoded to constants pending Phase-2 work
-    # that pulls them from verifier_store/case_store/round_table outcomes.
-    # freshness_score is the easiest signal to ground in real data
-    # because the scheduler already tracks per-agent success timestamps,
-    # so we compute it from scheduler_state.recent_successes.
-    # validation_rate is the existing real signal.
+    # Audit H53: trust signal collapse mitigation. Trust signal stores already
+    # support the full six-signal model; this adapter grounds the non-validation
+    # signals in AgentResult.metadata when upstream runtime evidence exists.
+    # Empty metadata preserves the old defaults so existing execution paths do
+    # not change silently.
     #
     # Decay window matches typical agent "warm-cache" expectation:
     # 1.0 immediately after success, fading linearly over 7 days to 0.
@@ -322,23 +322,105 @@ class Orchestrator:
             return 0.0
         return max(0.0, 1.0 - age / self._FRESHNESS_DECAY_SECONDS)
 
+    @staticmethod
+    def _metadata_mapping(result: AgentResult) -> Mapping[str, object]:
+        metadata = getattr(result, "metadata", {})
+        if isinstance(metadata, Mapping):
+            return metadata
+        return {}
+
+    @staticmethod
+    def _clamp_rate(value: object, default: float = 0.0) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not math.isfinite(parsed):
+            return default
+        return max(0.0, min(1.0, parsed))
+
+    @staticmethod
+    def _bool_rate(value: object, default: float = 0.0) -> float:
+        if isinstance(value, bool):
+            return 1.0 if value else 0.0
+        return Orchestrator._clamp_rate(value, default=default)
+
+    def _derive_hallucination_rate(
+        self, metadata: Mapping[str, object]
+    ) -> float:
+        if "hallucination_rate" in metadata:
+            return self._clamp_rate(metadata["hallucination_rate"])
+        verifier_result = metadata.get("verifier_result")
+        if isinstance(verifier_result, Mapping) and "hallucination" in verifier_result:
+            return self._bool_rate(verifier_result["hallucination"])
+        if "hallucination" in metadata:
+            return self._bool_rate(metadata["hallucination"])
+        return 0.0
+
+    def _derive_consensus_agreement(
+        self, metadata: Mapping[str, object]
+    ) -> float:
+        if "consensus_agreement" in metadata:
+            return self._clamp_rate(metadata["consensus_agreement"])
+        consensus = metadata.get("consensus")
+        if isinstance(consensus, Mapping):
+            for key in ("agreement", "agreed", "confidence"):
+                if key in consensus:
+                    return self._bool_rate(consensus[key])
+        return 0.0
+
+    def _derive_correction_rate(
+        self, metadata: Mapping[str, object]
+    ) -> float:
+        if "correction_rate" in metadata:
+            return self._clamp_rate(metadata["correction_rate"])
+        verifier_result = metadata.get("verifier_result")
+        if isinstance(verifier_result, Mapping):
+            if "has_correction" in verifier_result:
+                return self._bool_rate(verifier_result["has_correction"])
+            if "correction_count" in verifier_result:
+                return self._clamp_rate(verifier_result["correction_count"])
+        if "correction_count" in metadata:
+            return self._clamp_rate(metadata["correction_count"])
+        return 0.0
+
+    def _derive_fact_production_rate(
+        self, metadata: Mapping[str, object]
+    ) -> float:
+        if "fact_production_rate" in metadata:
+            return self._clamp_rate(metadata["fact_production_rate"])
+        if "facts_produced" in metadata:
+            try:
+                facts = float(metadata["facts_produced"])
+                window = float(metadata.get("fact_window_hours", 1.0))
+            except (TypeError, ValueError):
+                return 0.0
+            if not math.isfinite(facts) or not math.isfinite(window):
+                return 0.0
+            if window <= 0.0:
+                return 0.0
+            return self._clamp_rate(facts / window)
+        if "fact_count" in metadata:
+            return self._clamp_rate(metadata["fact_count"])
+        return 0.0
+
+    def _compute_trust_signals(self, result: AgentResult) -> TrustSignals:
+        metadata = self._metadata_mapping(result)
+        return TrustSignals(
+            hallucination_rate=self._derive_hallucination_rate(metadata),
+            validation_rate=self._clamp_rate(result.confidence),
+            consensus_agreement=self._derive_consensus_agreement(metadata),
+            correction_rate=self._derive_correction_rate(metadata),
+            fact_production_rate=self._derive_fact_production_rate(metadata),
+            freshness_score=self._compute_freshness(result.agent_id),
+        )
+
     async def _update_trust(self, result: AgentResult) -> None:
         """Update trust scores after task completion (Orchestrator is the sole writer).
 
-        Audit H53 Phase 1: freshness_score is computed from the
-        scheduler's recent_successes timestamp. The other 4 signals
-        (hallucination_rate, consensus_agreement, correction_rate,
-        fact_production_rate) remain constant pending Phase 2, which
-        pulls them from verifier_store / case_store / round_table
-        outcomes. Validation_rate continues to take result.confidence
-        as before.
+        Audit H53: freshness_score is computed from scheduler timestamps.
+        Other trust signals use AgentResult.metadata when present and retain
+        the previous 0.0 defaults when no runtime evidence is attached.
         """
-        signals = TrustSignals(
-            hallucination_rate=0.0,
-            validation_rate=result.confidence,
-            consensus_agreement=0.0,
-            correction_rate=0.0,
-            fact_production_rate=0.0,
-            freshness_score=self._compute_freshness(result.agent_id),
-        )
+        signals = self._compute_trust_signals(result)
         await self._trust_store.update_trust(result.agent_id, signals)

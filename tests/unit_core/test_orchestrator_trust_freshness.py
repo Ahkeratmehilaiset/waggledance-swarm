@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Audit H53 Phase 1 regression — freshness_score derives from real data.
+"""Audit H53 regression - trust signals derive from real data.
 
 Before this fix all 5 non-validation TrustSignals fields were
 hardcoded to constants (hallucination=0, consensus=0, correction=0,
@@ -7,15 +7,14 @@ fact_production=0, freshness=1.0). The composite_score formula
 therefore collapsed to a 0.50-0.70 band, narrower than the
 trust_level thresholds (MASTER >= 0.8) could reach.
 
-Phase 1 of H53 mitigation: ground freshness_score in the scheduler's
-recent_successes timestamps. Other 4 signals stay constant pending
-Phase 2 (verifier_store / case_store integration).
+H53 mitigation grounds freshness_score in scheduler timestamps and
+the other trust signals in AgentResult.metadata when runtime evidence
+is present. Empty metadata preserves the old 0.0 defaults.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
 import pytest
@@ -30,14 +29,14 @@ class _StubScheduler:
 
 
 class _AgentResult:
-    def __init__(self, agent_id, confidence=0.7):
+    def __init__(self, agent_id, confidence=0.7, metadata=None):
         self.agent_id = agent_id
         self.confidence = confidence
+        self.metadata = metadata or {}
 
 
 def _make_orchestrator(recent_successes: dict[str, float]):
-    """Build an Orchestrator with a controlled scheduler state and a
-    mock trust_store that captures the TrustSignals it receives."""
+    """Build an Orchestrator with controlled scheduler state."""
     trust_store = AsyncMock()
     orch = Orchestrator(
         scheduler=_StubScheduler(),
@@ -64,7 +63,7 @@ class TestFreshnessComputation:
         ts = time.time() - 86400  # 1 day ago
         orch, _ = _make_orchestrator({"alpha": ts})
         score = orch._compute_freshness("alpha")
-        # Linear decay over 7 days: 1 - 1/7 ≈ 0.857
+        # Linear decay over 7 days: 1 - 1/7 ~= 0.857
         assert 0.84 < score < 0.87
 
     def test_full_decay_window_returns_zero(self):
@@ -94,7 +93,7 @@ class TestFreshnessComputation:
         assert orch._compute_freshness("alpha") == 1.0
 
 
-class TestUpdateTrustUsesFreshness:
+class TestUpdateTrustSignals:
     @pytest.mark.asyncio
     async def test_update_trust_passes_real_freshness(self):
         ts = time.time() - 86400  # 1 day old
@@ -108,12 +107,13 @@ class TestUpdateTrustUsesFreshness:
         agent_id_arg, signals = call.args
         assert agent_id_arg == "alpha"
         assert 0.84 < signals.freshness_score < 0.87
-        # Validation continues to come from result.confidence (existing
-        # real signal — left unchanged by H53 Phase 1).
+        # Validation continues to come from result.confidence.
         assert signals.validation_rate == 0.5
-        # Phase 1 deliberately leaves the other 4 as constants.
+        # Empty metadata preserves the old defaults.
         assert signals.hallucination_rate == 0.0
         assert signals.consensus_agreement == 0.0
+        assert signals.correction_rate == 0.0
+        assert signals.fact_production_rate == 0.0
 
     @pytest.mark.asyncio
     async def test_update_trust_unknown_agent_freshness_zero(self):
@@ -121,3 +121,75 @@ class TestUpdateTrustUsesFreshness:
         await orch._update_trust(_AgentResult("never_seen"))
         signals = trust_store.update_trust.await_args.args[1]
         assert signals.freshness_score == 0.0
+
+    @pytest.mark.asyncio
+    async def test_update_trust_uses_explicit_metadata_trust_signals(self):
+        orch, trust_store = _make_orchestrator({"alpha": time.time()})
+        result = _AgentResult(
+            "alpha",
+            confidence=0.8,
+            metadata={
+                "hallucination_rate": 0.25,
+                "consensus_agreement": 0.75,
+                "correction_rate": 0.10,
+                "fact_production_rate": 0.60,
+            },
+        )
+
+        await orch._update_trust(result)
+
+        signals = trust_store.update_trust.await_args.args[1]
+        assert signals.validation_rate == pytest.approx(0.8)
+        assert signals.hallucination_rate == pytest.approx(0.25)
+        assert signals.consensus_agreement == pytest.approx(0.75)
+        assert signals.correction_rate == pytest.approx(0.10)
+        assert signals.fact_production_rate == pytest.approx(0.60)
+        assert 0.99 < signals.freshness_score <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_update_trust_derives_metadata_from_runtime_evidence(self):
+        orch, trust_store = _make_orchestrator({"alpha": time.time()})
+        result = _AgentResult(
+            "alpha",
+            confidence=0.9,
+            metadata={
+                "verifier_result": {
+                    "hallucination": True,
+                    "has_correction": True,
+                },
+                "consensus": {"agreement": 0.5},
+                "facts_produced": 2,
+                "fact_window_hours": 4,
+            },
+        )
+
+        await orch._update_trust(result)
+
+        signals = trust_store.update_trust.await_args.args[1]
+        assert signals.hallucination_rate == 1.0
+        assert signals.consensus_agreement == pytest.approx(0.5)
+        assert signals.correction_rate == 1.0
+        assert signals.fact_production_rate == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_update_trust_clamps_metadata_rates(self):
+        orch, trust_store = _make_orchestrator({"alpha": time.time()})
+        result = _AgentResult(
+            "alpha",
+            confidence=1.25,
+            metadata={
+                "hallucination_rate": -0.25,
+                "consensus_agreement": 1.25,
+                "correction_rate": float("nan"),
+                "fact_production_rate": 2.0,
+            },
+        )
+
+        await orch._update_trust(result)
+
+        signals = trust_store.update_trust.await_args.args[1]
+        assert signals.validation_rate == 1.0
+        assert signals.hallucination_rate == 0.0
+        assert signals.consensus_agreement == 1.0
+        assert signals.correction_rate == 0.0
+        assert signals.fact_production_rate == 1.0

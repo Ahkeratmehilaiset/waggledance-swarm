@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Color-class interleaving contract (L9)",
+  "description": "Hexacon 3-color partition for synthesis breadth. See ADR-046.",
+  "version": 1,
+  "color_enum": ["A", "B", "C"],
+  "coloring_formula": "(coord.q + 2 * coord.r) mod 3 -> {0:A, 1:B, 2:C}",
+  "rotation_default": "round_robin",
+  "invariants": [
+    {"id": "CCI-001", "name": "three_color_enum", "description": "color_class in {A, B, C}.", "must": ["validator rejects other values", "color_enum read from contract"]},
+    {"id": "CCI-002", "name": "coloring_formula_pinned", "description": "(q + 2r) mod 3 maps to A/B/C.", "must": ["formula identical across implementations", "mod-3 result 0/1/2 -> A/B/C"]},
+    {"id": "CCI-003", "name": "adjacent_non_share", "description": "Ring-1 neighbors never share color.", "must": ["mathematical property of (q + 2r) mod 3 on axial grid", "test verifies on hex_cells.yaml topology"]},
+    {"id": "CCI-004", "name": "rotation_default_round_robin", "description": "A->B->C->A round-robin per synthesis tick.", "must": ["default round_robin", "operator-tunable to 'weighted' mode"]},
+    {"id": "CCI-005", "name": "no_veto_interaction", "description": "Color filter applies BEFORE negative tunnel veto.", "must": ["color rotation independent of veto", "both apply in order: color first, veto second"]},
+    {"id": "CCI-006", "name": "computed_at_init", "description": "color_class precomputed in HexCellDefinition.", "must": ["computed at HexTopologyRegistry.__init__", "no per-query recomputation", "matches ADR-037 boot-precomp pattern"]},
+    {"id": "CCI-007", "name": "bridge_events_emit_color", "description": "Synthesis events log color_class.", "must": ["events.jsonl entries include color_class field", "downstream analysis can group by color"]}
+  ],
+  "out_of_scope": ["Implementation of color-class selector (separate PR)", "4+ color partitions (future ADR if needed)"],
+  "related_adrs": ["038"],
+  "related_leaps_50_menu": ["L9"]
+}

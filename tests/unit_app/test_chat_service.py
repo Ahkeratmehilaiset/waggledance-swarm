@@ -150,6 +150,39 @@ class TestChatService:
             assert "answered" not in trace
         asyncio.run(_run())
 
+    def test_hybrid_candidate_hits_do_not_answer(
+        self, mock_orchestrator, mock_memory_service, mock_hot_cache, mock_config
+    ):
+        async def _run():
+            hybrid = MagicMock()
+            hybrid.enabled = True
+            hybrid.is_authoritative = False
+            hybrid.retrieve = AsyncMock(return_value=HybridTraceResult(
+                retrieval_mode="hybrid:candidate",
+                answered_by_layer="local_faiss",
+                hits=[HybridHit("d1", "candidate hit", 0.95, "local_faiss", "chat")],
+            ))
+
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+                hybrid_retrieval=hybrid,
+            )
+            svc._hybrid_observer = MagicMock()
+            svc._hybrid_observer.record_candidate = AsyncMock()
+
+            trace = await svc._try_hybrid_retrieval(
+                "query", "chat", "en", "query", 0.0, "HOME"
+            )
+
+            assert trace["retrieval_mode"] == "hybrid:candidate"
+            assert trace["hit_count"] == 1
+            assert "answered" not in trace
+        asyncio.run(_run())
+
     def test_low_confidence_chat_emits_runtime_gap_signal(
         self,
         tmp_path,

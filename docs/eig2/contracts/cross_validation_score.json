@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Cross-validation score contract (L46)",
+  "description": "Held-out probes across other domains. See ADR-058.",
+  "version": 1,
+  "field_name": "cross_validation_score",
+  "field_type": "float",
+  "field_range": [0.0, 1.0],
+  "convention": "higher_is_better",
+  "policy_defaults": {"probe_sample_size": 50, "probe_sample_range": [20, 200], "min_distinct_domains": 5, "exclude_own_domain": true, "default_on_insufficient": 0.5, "refresh_cadence_seconds": 604800},
+  "invariants": [
+    {"id": "CVS-001", "name": "field_name", "description": "cross_validation_score on TrustSignals.", "must": ["field name exact", "type float [0,1]"]},
+    {"id": "CVS-002", "name": "probe_sample_50", "description": "Default 50. Range [20, 200].", "must": ["default 50", "validator accepts range"]},
+    {"id": "CVS-003", "name": "five_distinct_domains", "description": ">= 5 different agent.domain values in sample.", "must": ["sampling spans >= 5 domains", "fewer -> default_on_insufficient"]},
+    {"id": "CVS-004", "name": "excludes_own_domain", "description": "Primary domain excluded.", "must": ["exclude_own_domain=true default", "no easy-mode evaluation"]},
+    {"id": "CVS-005", "name": "l51_contract_update", "description": "L51 fan-in test amended on field add.", "must": ["matches STB-006 / LCO-006 pattern"]},
+    {"id": "CVS-006", "name": "default_0_5_on_insufficient", "description": "< 5 domains in held-out -> 0.5.", "must": ["neutral on insufficient probe coverage"]},
+    {"id": "CVS-007", "name": "refresh_weekly", "description": "Cached 7 days.", "must": ["refresh_cadence_seconds default 604800", "weekly recomputation per agent"]}
+  ],
+  "out_of_scope": ["Implementation (separate PR)", "Adaptive probe sample size (future)"],
+  "related_adrs": ["035", "036", "037", "048"],
+  "related_leaps_50_menu": ["L46"]
+}

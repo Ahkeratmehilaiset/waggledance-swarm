@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Anti-cargo-cult check contract (L29)",
+  "description": "Adversarial held-out probe gate before canary promotion. See ADR-034.",
+  "version": 1,
+  "yaml_path": "configs/anti_cargo_cult_probes.yaml",
+  "policy_defaults": {
+    "tolerance_pct": 5,
+    "stable_tag_after_days_clean": 90
+  },
+  "required_probe_fields": [
+    "probe_id",
+    "probe_version",
+    "input",
+    "expected_class",
+    "baseline_accuracy",
+    "added_at_utc",
+    "added_by"
+  ],
+  "tolerance_range": [0, 20],
+  "invariants": [
+    {
+      "id": "ACC-001",
+      "name": "yaml_pinned_probe_set",
+      "description": "Probes live at configs/anti_cargo_cult_probes.yaml. Loaded once at gate-init.",
+      "must": [
+        "yaml_path = configs/anti_cargo_cult_probes.yaml exactly",
+        "loaded at AntiCargoCultGate.__init__ via yaml.CSafeLoader",
+        "load failure -> ERROR + gate disabled (fail-closed via explicit operator alert)"
+      ]
+    },
+    {
+      "id": "ACC-002",
+      "name": "required_probe_fields_present",
+      "description": "Every probe has probe_id, probe_version, input, expected_class, baseline_accuracy, added_at_utc, added_by.",
+      "must": [
+        "all 7 required_probe_fields present",
+        "missing field -> probe rejected on load with WARNING (continue with other probes)",
+        "no silent default-filling"
+      ]
+    },
+    {
+      "id": "ACC-003",
+      "name": "tolerance_bound",
+      "description": "tolerance_pct default 5. Tunable in [0, 20] range. Promotion blocked when candidate < baseline - tolerance.",
+      "must": [
+        "default 5%",
+        "validator rejects tolerance outside [0, 20]",
+        "block condition: candidate_accuracy < (baseline_accuracy - tolerance_pct/100)"
+      ]
+    },
+    {
+      "id": "ACC-004",
+      "name": "block_on_tolerance_fail",
+      "description": "Promotion is BLOCKED (not just penalized) when candidate falls below baseline - tolerance.",
+      "must": [
+        "promotion gate returns BLOCK status on tolerance fail",
+        "no fallthrough to next gate -- this gate is dispositive when it fails",
+        "BLOCK status logged with probe_ids that failed"
+      ]
+    },
+    {
+      "id": "ACC-005",
+      "name": "no_silent_probe_removal",
+      "description": "Removing a probe requires explicit YAML diff with removed_reason comment.",
+      "must": [
+        "implementation has no auto-prune for active entries",
+        "removing a probe is a manual YAML edit + commit",
+        "removed entries should have a removed_at_utc + removed_reason field in version control"
+      ]
+    },
+    {
+      "id": "ACC-006",
+      "name": "stable_tag_for_stale_probes",
+      "description": "Probes with no candidate failures in 90 days get stable: true tag. Tagged still run but deprioritized.",
+      "must": [
+        "stable_tag_after_days_clean default 90",
+        "stable=true probes still evaluated, just listed last in gate order",
+        "no probe is dropped from active rotation by tagging alone"
+      ]
+    },
+    {
+      "id": "ACC-007",
+      "name": "probe_versioning",
+      "description": "Each probe has probe_id + probe_version. Editing increments version; probe_id stable.",
+      "must": [
+        "probe_id stable across edits",
+        "probe_version monotone increment on edit",
+        "candidate evaluation records (probe_id, probe_version) for traceability"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of AntiCargoCultGate (separate PR)",
+    "Synthetic adversarial probe generation (future ADR)",
+    "Cross-domain probe sharing (future ADR)"
+  ],
+  "related_adrs": ["024", "031", "033"],
+  "related_leaps_50_menu": ["L21", "L25", "L29"]
+}

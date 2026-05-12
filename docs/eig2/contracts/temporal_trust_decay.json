@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Temporal trust decay contract (L49)",
+  "description": "Composite-level exponential decay applied to agent trust. See ADR-037.",
+  "version": 1,
+  "composition_mode": "multiplicative",
+  "decay_formula": "0.5 ** (age_days / half_life_days)",
+  "policy_defaults": {
+    "half_life_days": 7.0,
+    "half_life_range_days": [1.0, 90.0]
+  },
+  "invariants": [
+    {
+      "id": "TTD-001",
+      "name": "multiplicative_composition",
+      "description": "composite = composite_raw * decay_factor. Not subtractive, not replacement.",
+      "must": [
+        "code applies decay as `composite = composite_raw * decay_factor`",
+        "test verifies multiplicative semantics (not subtraction, not max/min)"
+      ]
+    },
+    {
+      "id": "TTD-002",
+      "name": "half_life_7_days_default",
+      "description": "Default half-life pinned at 7 days. Operator-tunable in [1, 90].",
+      "must": [
+        "half_life_days default 7.0",
+        "validator accepts range [1.0, 90.0]",
+        "outside range -> validation error"
+      ]
+    },
+    {
+      "id": "TTD-003",
+      "name": "exponential_formula",
+      "description": "decay = 0.5 ** (age_days / half_life_days). Pinned in contract.",
+      "must": [
+        "formula matches the contract string",
+        "implementations using linear or step decay are rejected",
+        "decay at age=half_life = 0.5 exactly"
+      ]
+    },
+    {
+      "id": "TTD-004",
+      "name": "never_seen_is_zero",
+      "description": "last_success_ts <= 0 -> decay_factor 0.0.",
+      "must": [
+        "agent with no successes returns decay 0.0",
+        "composite for never-seen agent is 0.0",
+        "router excludes 0.0-decay agents from candidate pool"
+      ]
+    },
+    {
+      "id": "TTD-005",
+      "name": "future_ts_clamps_to_one",
+      "description": "last_success_ts > now -> 1.0 (clock skew clamp).",
+      "must": [
+        "future timestamps do not yield negative-age math",
+        "value clamped at 1.0 (no decay)",
+        "logged at DEBUG (not error -- can happen with clock skew across worktrees)"
+      ]
+    },
+    {
+      "id": "TTD-006",
+      "name": "recoverable",
+      "description": "First success after staleness resets decay to 1.0.",
+      "must": [
+        "no permanent demotion",
+        "recovery is immediate once a fresh success is recorded",
+        "decay state is derived from last_success_ts only, no separate 'penalty' state"
+      ]
+    },
+    {
+      "id": "TTD-007",
+      "name": "composes_with_freshness_signal",
+      "description": "Per-signal freshness_score (PR #287) continues to exist; THIS decay applies to COMPOSITE.",
+      "must": [
+        "freshness_score still computed and contributed to composite_raw",
+        "decay_factor multiplied AFTER the per-signal weighted sum",
+        "the two effects are complementary, not redundant",
+        "test verifies both fields move independently"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of compute_temporal_decay (separate PR)",
+    "Per-domain half-life (future ADR)",
+    "Predictive recovery boost (future ADR)"
+  ],
+  "related_adrs": ["035", "036"],
+  "related_leaps_50_menu": ["L41", "L45", "L47", "L49"]
+}

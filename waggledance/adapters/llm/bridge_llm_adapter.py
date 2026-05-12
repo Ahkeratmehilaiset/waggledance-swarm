@@ -65,6 +65,9 @@ class BridgeLLMAdapter:
         request = LLMRequest(
             injection_point=self._injection_point,
             prompt=prompt,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
             metadata={
                 "model": model,
                 "temperature": temperature,

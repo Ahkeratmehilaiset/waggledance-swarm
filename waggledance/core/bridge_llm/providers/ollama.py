@@ -57,12 +57,16 @@ class OllamaProvider(ProviderPlugin):
             )
             try:
                 client = ollama.Client(host=self._host, timeout=attempt_timeout_s)
+                options: dict[str, int | float] = {
+                    "num_predict": request.effective_max_tokens(256),
+                }
+                temperature = request.effective_temperature()
+                if temperature is not None:
+                    options["temperature"] = temperature
                 result = client.chat(
-                    model=self._model,
+                    model=request.effective_model(self._model),
                     messages=[{"role": "user", "content": request.prompt}],
-                    options={
-                        "num_predict": 256,
-                    },
+                    options=options,
                 )
                 text = (result.get("message") or {}).get("content", "")
                 tokens_in = int(result.get("prompt_eval_count", 0))

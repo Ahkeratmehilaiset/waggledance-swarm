@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 
@@ -29,7 +30,20 @@ class ExactCacheProvider(ProviderPlugin):
 
     @staticmethod
     def _key(request: LLMRequest) -> str:
-        blob = f"{request.injection_point}\n{request.prompt}".encode("utf-8")
+        blob = json.dumps(
+            {
+                "injection_point": request.injection_point,
+                "prompt": request.prompt,
+                "model": request.model,
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens,
+                "metadata_model": request.metadata.get("model"),
+                "metadata_temperature": request.metadata.get("temperature"),
+                "metadata_max_tokens": request.metadata.get("max_tokens"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()
 
     def store(self, request: LLMRequest, text: str) -> None:

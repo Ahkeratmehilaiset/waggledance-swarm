@@ -2,19 +2,27 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Replay bridge events through Approach-B dev-orchestrator.
 
-Approach B (per orchestrator simulation discussion 2026-05-12):
-* Reuses .orchestrator/ surface (bridge_classify, eig2_bridge_projection).
-* Adds handshake-claim protocol layer on top of existing `claim` events.
-* Measures retrospectively: would Approach B have caught the actual session
-  pain points (duplicate convergences, dangling-dep failures, false-positive
-  batches, RCO gaps)?
+This is the retrospective companion to tools/build_agent_flight_plan.py.
+It scores the same bridge history that the Flight Plan builder consumes
+prospectively, using the same formal status enum and the same metric
+field names (``metrics`` block + ``formal_statuses`` block). One shared
+vocabulary, two perspectives:
 
-Read-only — does not write to events.jsonl, does not modify state. Pure
-simulation against historical data.
+* ``build_agent_flight_plan.py`` -- prospective: "what should the next
+  agent session do given the current bridge state?"
+* ``sim_orchestrator.py``       -- retrospective: "did the past N hours
+  of bridge state satisfy the coordination contract?"
+
+The two reports are aligned per
+``codex-orchestrator-sim-b-opinion-2026-05-12 / consensus_accepted`` so
+their ``metrics`` blocks can be diffed directly without translation.
+
+Read-only -- does not write to events.jsonl, does not modify state.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -22,20 +30,74 @@ from collections import defaultdict, Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
-
-# Reuse the existing classifier from .orchestrator/
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / ".orchestrator"))
-try:
-    from bridge_classify import classify, RegressionClass  # type: ignore
-except Exception:
-    classify = None
-    RegressionClass = None  # type: ignore
+from typing import Any, Callable
 
 
 REPO = Path(__file__).resolve().parent.parent
 EVENTS_PATH = REPO / ".agent-bridge" / "shared" / "events.jsonl"
 
+SCHEMA_VERSION = "agent-flight-plan-retrospective-v1"
+SCHEMA_ALIGNED_WITH = "agent-flight-plan-v1"
+
+
+# --- Flight Plan helper import --------------------------------------------
+#
+# Reuse the exact helpers the Flight Plan builder uses, so the formal
+# status detection (``_is_consensus``, ``_has_rco``, ``_load_statuses``)
+# behaves identically on both the prospective and retrospective sides.
+# If a helper drifts on Codex's side, this importer follows automatically.
+
+def _load_module(path: Path, module_name: str) -> Any | None:
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_BUILDER_MODULE = _load_module(
+    REPO / "tools" / "build_agent_flight_plan.py", "_afp_builder"
+)
+
+# Bridge classifier (regression-class triage) lives under .orchestrator/.
+_CLASSIFIER_MODULE = _load_module(
+    REPO / ".orchestrator" / "bridge_classify.py", "_bridge_classify"
+)
+classify = getattr(_CLASSIFIER_MODULE, "classify", None) if _CLASSIFIER_MODULE else None
+
+
+def _load_statuses() -> dict[str, str]:
+    if _BUILDER_MODULE is not None and hasattr(_BUILDER_MODULE, "_load_statuses"):
+        return _BUILDER_MODULE._load_statuses()  # type: ignore[attr-defined]
+    return {
+        "rco_requested": "rco_requested",
+        "rco_done": "rco_done",
+        "consensus_proposal": "consensus_proposal",
+        "consensus_accepted": "consensus_accepted",
+        "claim_required": "claim_required",
+        "missing_claim": "missing_claim",
+    }
+
+
+def _is_consensus(event: dict, statuses: dict[str, str]) -> bool:
+    if _BUILDER_MODULE is not None and hasattr(_BUILDER_MODULE, "_is_consensus"):
+        return bool(_BUILDER_MODULE._is_consensus(event, statuses))  # type: ignore[attr-defined]
+    status = str(event.get("status") or "").lower()
+    return status in {statuses["consensus_proposal"], statuses["consensus_accepted"]} \
+        or status.startswith("consensus_")
+
+
+def _has_rco(event: dict, statuses: dict[str, str]) -> bool:
+    if _BUILDER_MODULE is not None and hasattr(_BUILDER_MODULE, "_has_rco"):
+        return bool(_BUILDER_MODULE._has_rco(event, statuses))  # type: ignore[attr-defined]
+    text = (str(event.get("status") or "") + " " + str(event.get("message") or "")).lower()
+    return statuses["rco_requested"] in text or statuses["rco_done"] in text or " rco " in f" {text} "
+
+
+# --- Event model ----------------------------------------------------------
 
 @dataclass
 class Event:
@@ -113,46 +175,79 @@ def build_threads(events: list[Event]) -> dict[str, TaskThread]:
     return threads
 
 
-# --- Approach B simulation rules ------------------------------------------
+# --- Aligned metrics (Flight Plan v1 vocabulary) --------------------------
+
+def compute_aligned_metrics(
+    threads: dict[str, TaskThread],
+    statuses: dict[str, str],
+) -> dict:
+    """Compute the same metric block the Flight Plan builder emits.
+
+    Field names match ``agent_flight_plan.schema.json::metrics`` exactly so
+    retrospective and prospective reports can be diffed directly.
+    """
+    task_total = 0
+    with_claim = 0
+    multi_agent = 0
+    multi_agent_without_claim = 0
+    formal_rco = 0
+    consensus = 0
+    for th in threads.values():
+        non_system = {a for a in th.participants if a != "system"}
+        if not non_system:
+            continue
+        task_total += 1
+        if th.claim_agent:
+            with_claim += 1
+        if len(non_system) > 1:
+            multi_agent += 1
+            if not th.claim_agent:
+                multi_agent_without_claim += 1
+        if any(_has_rco(ev.raw, statuses) for ev in th.events):
+            formal_rco += 1
+        if any(_is_consensus(ev.raw, statuses) for ev in th.events):
+            consensus += 1
+    coverage_pct = round(100.0 * with_claim / task_total, 1) if task_total else 0.0
+    return {
+        "task_threads_total": task_total,
+        "threads_with_claim": with_claim,
+        "claim_coverage_pct": coverage_pct,
+        "multi_agent_threads": multi_agent,
+        "multi_agent_threads_without_claim": multi_agent_without_claim,
+        "formal_rco_threads": formal_rco,
+        "consensus_topics": consensus,
+    }
+
+
+# --- Retrospective extensions --------------------------------------------
 
 HANDSHAKE_WINDOW_MIN = 15  # peer must claim or ack within 15 min of first work post
 
 
-def measure_handshake_coverage(threads: dict[str, TaskThread]) -> dict:
-    """How often did a task start with a claim before substantive work?"""
-    total = 0
-    with_claim = 0
+def measure_handshake_examples(threads: dict[str, TaskThread]) -> dict:
+    """Surface concrete examples of multi-agent threads that ran without
+    a claim handshake. The aggregate count lives in metrics; this block
+    keeps the audit-trail-friendly samples."""
     claim_before_work = 0
-    multi_agent = 0
-    solo_to_multi_no_handshake = 0
     examples_no_handshake: list[str] = []
     for th in threads.values():
-        if th.first_agent == "system":
-            continue
-        total += 1
-        if th.claim_agent:
-            with_claim += 1
-            if th.claim_ts and th.claim_ts <= th.first_ts + timedelta(seconds=60):
-                claim_before_work += 1
         non_system = {a for a in th.participants if a != "system"}
-        if len(non_system) > 1:
-            multi_agent += 1
-            if not th.claim_agent:
-                solo_to_multi_no_handshake += 1
-                if len(examples_no_handshake) < 8:
-                    examples_no_handshake.append(th.task_id)
+        if not non_system:
+            continue
+        if th.claim_agent and th.claim_ts and th.claim_ts <= th.first_ts + timedelta(seconds=60):
+            claim_before_work += 1
+        if len(non_system) > 1 and not th.claim_agent and len(examples_no_handshake) < 8:
+            examples_no_handshake.append(th.task_id)
     return {
-        "total_task_threads": total,
-        "with_claim_event": with_claim,
         "claim_before_or_with_first_work": claim_before_work,
-        "multi_agent_threads": multi_agent,
-        "multi_agent_no_handshake": solo_to_multi_no_handshake,
         "examples_no_handshake": examples_no_handshake,
     }
 
 
-# Heuristic: detect "independent convergence" — same conceptual work, different
-# task_ids, both agents post on the same theme within a short window.
+# Heuristic: detect "independent convergence" -- same conceptual work,
+# different task_ids, both agents post on the same theme within a short
+# window. This is a Claude-lane retrospective lens; the Flight Plan
+# does not need it for the prospective view.
 CONVERGENCE_KEYWORDS = [
     (re.compile(r"\bai[- ]?(?:assisted|mentor)\b", re.I), "ai_mentor_bootstrap"),
     (re.compile(r"\bbootstrap[- ]?kit\b", re.I), "ai_mentor_bootstrap"),
@@ -271,8 +366,7 @@ def measure_finding_quality(events: list[Event]) -> dict:
 
 
 def measure_classifier_coverage(events: list[Event]) -> dict:
-    """Run .orchestrator/bridge_classify.py over events that mention failures.
-    Approach B uses this for PR failure triage."""
+    """Run .orchestrator/bridge_classify.py over events that mention failures."""
     if classify is None:
         return {"classifier_available": False}
     failure_evs = [
@@ -325,31 +419,75 @@ def measure_lane_balance(events: list[Event]) -> dict:
     }
 
 
-# --- Approach B "what-if" projection --------------------------------------
+def project_approach_b_savings(
+    metrics: dict,
+    convergence: dict,
+    pr: dict,
+    findings: dict,
+) -> dict:
+    """Translate observed gaps into estimates of what Approach B would have caught.
 
-def project_approach_b_savings(threads: dict[str, TaskThread], convergence: dict,
-                                pr: dict, findings: dict) -> dict:
-    """Translate observed gaps into estimates of what Approach B would have caught."""
-    # Multi-agent threads without handshake -> Approach B requires claim first.
-    multi_no_hs = sum(1 for t in threads.values()
-                      if len({a for a in t.participants if a != "system"}) > 1
-                      and t.claim_agent is None)
-    # Convergence themes -> if peer had ack'd theme via handshake on first agent's
-    # claim, second agent would not have started parallel work.
+    Reuses the aligned ``metrics`` block so field names line up with the
+    prospective Flight Plan.
+    """
     duplicated_themes_under_60min = sum(
         1 for c in convergence["themes"] if c["gap_minutes"] < 60.0
     )
     missing_rco = pr["rco_total"] - pr["rco_with_peer_review"]
-    # Findings retracted = false-positive yield Approach B's classifier
-    # could not directly catch (bridge_classify is a regression-class triage,
-    # not a substance reviewer) BUT the handshake-then-RCO step would have
-    # forced peer-review before publishing the finding upstream.
     fp_caught_by_pre_rco = findings["retracted_or_disputed"]
     return {
         "duplicate_work_prevented_estimate": duplicated_themes_under_60min,
         "rco_gaps_to_close": missing_rco,
         "false_positive_findings_caught_pre_publish": fp_caught_by_pre_rco,
-        "multi_agent_threads_without_handshake": multi_no_hs,
+        "multi_agent_threads_without_claim": metrics["multi_agent_threads_without_claim"],
+    }
+
+
+# --- Report assembly ------------------------------------------------------
+
+def build_report(
+    events: list[Event],
+    threads: dict[str, TaskThread],
+    *,
+    events_path: str,
+    since_hours: float,
+    cutoff: datetime,
+    approach: str,
+    statuses: dict[str, str] | None = None,
+    now_utc: str | None = None,
+) -> dict:
+    statuses = statuses if statuses is not None else _load_statuses()
+    metrics = compute_aligned_metrics(threads, statuses)
+    convergence = measure_convergence(events)
+    pr_lifecycle = measure_pr_lifecycle(events)
+    finding_quality = measure_finding_quality(events)
+    last_event_ts = events[-1].ts.isoformat() if events else ""
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "schema_aligned_with": SCHEMA_ALIGNED_WITH,
+        "generated_at_utc": now_utc or datetime.now(timezone.utc).isoformat(),
+        "approach": approach,
+        "source": {
+            "events_path": events_path,
+            "event_count": len(events),
+            "last_event_ts_utc": last_event_ts,
+            "cutoff_utc": cutoff.isoformat(),
+            "since_hours": since_hours,
+        },
+        "metrics": metrics,
+        "formal_statuses": statuses,
+        "retrospective_extensions": {
+            "agents": dict(Counter(e.agent for e in events).most_common()),
+            "handshake_examples": measure_handshake_examples(threads),
+            "independent_convergences": convergence,
+            "pr_lifecycle": pr_lifecycle,
+            "finding_quality": finding_quality,
+            "bridge_classify_coverage": measure_classifier_coverage(events),
+            "lane_balance": measure_lane_balance(events),
+            "approach_b_projection": project_approach_b_savings(
+                metrics, convergence, pr_lifecycle, finding_quality
+            ),
+        },
     }
 
 
@@ -365,24 +503,13 @@ def main() -> int:
     events = parse_events(Path(args.events), cutoff)
     threads = build_threads(events)
 
-    report = {
-        "approach": args.approach,
-        "events_path": args.events,
-        "since_hours": args.since_hours,
-        "cutoff_utc": cutoff.isoformat(),
-        "event_count": len(events),
-        "unique_task_threads": len(threads),
-        "agents": dict(Counter(e.agent for e in events).most_common()),
-        "handshake_coverage": measure_handshake_coverage(threads),
-        "independent_convergences": measure_convergence(events),
-        "pr_lifecycle": measure_pr_lifecycle(events),
-        "finding_quality": measure_finding_quality(events),
-        "bridge_classify_coverage": measure_classifier_coverage(events),
-        "lane_balance": measure_lane_balance(events),
-    }
-    report["approach_b_projection"] = project_approach_b_savings(
-        threads, report["independent_convergences"],
-        report["pr_lifecycle"], report["finding_quality"],
+    report = build_report(
+        events,
+        threads,
+        events_path=args.events,
+        since_hours=args.since_hours,
+        cutoff=cutoff,
+        approach=args.approach,
     )
     body = json.dumps(report, indent=2, ensure_ascii=False, default=str)
     if args.out == "-":

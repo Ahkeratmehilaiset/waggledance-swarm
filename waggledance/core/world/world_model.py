@@ -44,7 +44,7 @@ class WorldModel:
             try:
                 from core.cognitive_graph import CognitiveGraph
                 cognitive_graph = CognitiveGraph()
-            except ImportError:
+            except ImportError as exc:
                 cognitive_graph = None
                 if autonomy_mode:
                     log.error(
@@ -54,7 +54,7 @@ class WorldModel:
                     raise RuntimeError(
                         "CognitiveGraph required in autonomy mode "
                         "(primary=waggledance, compatibility_mode=false)"
-                    )
+                    ) from exc
                 log.error(
                     "CognitiveGraph not available — learning loop INACTIVE. "
                     "Install core.cognitive_graph or pass an instance explicitly."

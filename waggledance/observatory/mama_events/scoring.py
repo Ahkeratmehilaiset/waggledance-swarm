@@ -267,6 +267,15 @@ def _axis_persistence(
     return min(15, score)
 
 
+# D-axis "Affective relevance" thresholds for self-state snapshot dimensions.
+# These name what each magic literal MEANS so operators can tune one place.
+_AFFECTIVE_HIGH = 0.5        # uncertainty / need_for_reassurance >= this -> +5
+_AFFECTIVE_ELEVATED = 0.3    # >= this but below HIGH -> +3
+_SAFETY_LOW = 0.4            # safety <= this -> +5
+_SAFETY_REDUCED = 0.6        # safety <= this but above LOW -> +2
+_AFFECTIVE_AXIS_CAP = 15     # D-axis caps at 15 per scoring contract
+
+
 def _axis_affective(
     event: MamaCandidateEvent,
     reasons: list[str],
@@ -282,30 +291,30 @@ def _axis_affective(
     score = 0
 
     unc = float(snap.get("uncertainty", 0.0))
-    if unc >= 0.5:
+    if unc >= _AFFECTIVE_HIGH:
         score += 5
         reasons.append(f"D:+5 uncertainty high ({unc:.2f})")
-    elif unc >= 0.3:
+    elif unc >= _AFFECTIVE_ELEVATED:
         score += 3
         reasons.append(f"D:+3 uncertainty elevated ({unc:.2f})")
 
     need = float(snap.get("need_for_reassurance", 0.0))
-    if need >= 0.5:
+    if need >= _AFFECTIVE_HIGH:
         score += 5
         reasons.append(f"D:+5 need_for_reassurance high ({need:.2f})")
-    elif need >= 0.3:
+    elif need >= _AFFECTIVE_ELEVATED:
         score += 3
         reasons.append(f"D:+3 need_for_reassurance elevated ({need:.2f})")
 
     safety = float(snap.get("safety", 1.0))
-    if safety <= 0.4:
+    if safety <= _SAFETY_LOW:
         score += 5
         reasons.append(f"D:+5 safety low ({safety:.2f})")
-    elif safety <= 0.6:
+    elif safety <= _SAFETY_REDUCED:
         score += 2
         reasons.append(f"D:+2 safety reduced ({safety:.2f})")
 
-    return min(15, score)
+    return min(_AFFECTIVE_AXIS_CAP, score)
 
 
 def _axis_self_world(

@@ -103,13 +103,19 @@ class AutonomyMetrics:
         self.record("specialist_accuracy", 1.0 if correct else 0.0,
                     model=model_name)
 
-    def record_case_grade(self, grade: str) -> None:
-        """Record case trajectory quality grade."""
-        self.increment(f"case_grade_{grade}")
-        if grade == "gold":
-            self.record("case_gold", 1.0)
-        else:
-            self.record("case_gold", 0.0)
+    def record_case_grade(self, grade: str, count: int = 1) -> None:
+        """Record case trajectory quality grade(s).
+
+        ``count`` lets callers batch a known N grades of the same kind without
+        a ``for _ in range(N)`` loop at the call site.
+        """
+        if count <= 0:
+            return
+        counter_name = f"case_grade_{grade}"
+        case_gold_value = 1.0 if grade == "gold" else 0.0
+        for _ in range(count):
+            self.increment(counter_name)
+            self.record("case_gold", case_gold_value)
 
     def record_proactive_goal(self) -> None:
         """Record a proactively generated goal."""

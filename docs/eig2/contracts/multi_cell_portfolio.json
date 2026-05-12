@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Multi-cell candidate portfolio contract (L4)",
+  "description": "Top-K cell selection for portfolio routing. See ADR-039.",
+  "version": 1,
+  "candidate_dataclass": {
+    "name": "CellCandidate",
+    "decorator": "@dataclass(frozen=True, slots=True)",
+    "fields": ["cell_id", "confidence", "matched_selectors"]
+  },
+  "policy_defaults": {
+    "k_default": 3,
+    "k_range": [1, 10]
+  },
+  "invariants": [
+    {
+      "id": "MCP-001",
+      "name": "k_default_3",
+      "description": "Default top-K is 3. Range [1, 10].",
+      "must": [
+        "k_default = 3",
+        "validator rejects k < 1 or k > 10",
+        "profile config can override default"
+      ]
+    },
+    {
+      "id": "MCP-002",
+      "name": "sorted_descending",
+      "description": "Result list sorted by confidence DESC. First element matches legacy select_origin_cell.",
+      "must": [
+        "result is a list",
+        "result[i].confidence >= result[i+1].confidence",
+        "legacy select_origin_cell returns result[0].cell_id"
+      ]
+    },
+    {
+      "id": "MCP-003",
+      "name": "confidence_clamped",
+      "description": "Each candidate.confidence in [0.0, 1.0].",
+      "must": [
+        "confidence clamped to [0.0, 1.0]",
+        "value outside range rejected at construction"
+      ]
+    },
+    {
+      "id": "MCP-004",
+      "name": "matched_selectors_transparent",
+      "description": "Each candidate has matched_selectors tuple listing exact selector strings.",
+      "must": [
+        "matched_selectors is a tuple of str",
+        "operator can use for debug audit",
+        "empty tuple allowed when no selector matched (e.g., default-fallback cell)"
+      ]
+    },
+    {
+      "id": "MCP-005",
+      "name": "slots_dataclass",
+      "description": "CellCandidate uses @dataclass(frozen=True, slots=True) per L60-NEW pattern.",
+      "must": [
+        "exact decorator @dataclass(frozen=True, slots=True)",
+        "immutable",
+        "memory-efficient"
+      ]
+    },
+    {
+      "id": "MCP-006",
+      "name": "backward_compat_select_origin_cell",
+      "description": "Existing select_origin_cell(query) remains, returns top_k(query, k=1)[0].cell_id or None.",
+      "must": [
+        "no breaking change to existing select_origin_cell API",
+        "implementation can delegate to top_k internally",
+        "None returned when no candidates exist"
+      ]
+    },
+    {
+      "id": "MCP-007",
+      "name": "empty_result_semantics",
+      "description": "When no cell matches, return EMPTY LIST (not None).",
+      "must": [
+        "top_k returns [] when zero candidates",
+        "callers distinguish [] vs None semantically",
+        "no exception raised on empty"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of select_origin_cells_top_k (separate PR)",
+    "Verifier/ensemble logic consuming the portfolio (separate ADR)",
+    "Portfolio caching for repeat queries (separate ADR)"
+  ],
+  "related_adrs": ["038"],
+  "related_leaps_50_menu": ["L2", "L3", "L4", "L5"]
+}

@@ -6,6 +6,7 @@ v6: 32 nodes (core 10 + MAGMA 5 + system 8 + learning 9),
 """
 
 import logging
+import re
 import secrets
 import time
 from pathlib import Path
@@ -49,7 +50,11 @@ ALL_NODE_IDS = (
 
 # Timestamp of last runtime stats call (for freshness)
 _last_stats_time: float = 0.0
-_SECRET_KEY_FRAGMENTS = ("api_key", "authorization", "password", "secret", "token")
+_SECRET_KEY_RE = re.compile(
+    r"(?:^|[_\-.])(?:api_key|authorization|password|secret)(?:$|[_\-.])"
+    r"|(?:^|[_\-.])token(?:$|[_\-.](?:value|hash|secret|key)$)",
+    flags=re.IGNORECASE,
+)
 
 
 def _load_html() -> str:
@@ -65,7 +70,7 @@ def _redact_secrets(value: Any) -> Any:
         redacted: Dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            if any(fragment in key_text.lower() for fragment in _SECRET_KEY_FRAGMENTS):
+            if _SECRET_KEY_RE.search(key_text):
                 continue
             else:
                 redacted[key] = _redact_secrets(item)

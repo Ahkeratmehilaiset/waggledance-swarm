@@ -372,7 +372,13 @@ class HybridRetrievalService:
         collection_name = f"cell_{cell_id}"
         try:
             getter = getattr(self._faiss_registry, "get_existing", None)
-            col = getter(collection_name) if callable(getter) else self._faiss_registry.get_or_create(collection_name)
+            if not callable(getter):
+                log.debug(
+                    "FAISS registry %s has no get_existing; refusing get_or_create on read path",
+                    type(self._faiss_registry).__name__,
+                )
+                return []
+            col = getter(collection_name)
             if col is None:
                 return []
             if col.count == 0:

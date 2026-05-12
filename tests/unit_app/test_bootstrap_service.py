@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from waggledance.application.services.bootstrap_service import BootstrapService
 from waggledance.core.domain.memory_record import MemoryRecord
+from waggledance.core.orchestration.lifecycle import AgentLifecycleManager
 
 
 @pytest.fixture
@@ -117,6 +118,31 @@ class TestBootstrapLoadAgents:
         assert result[0].domain == "general"
         assert result[0].tags == []
         assert result[0].active is False  # lifecycle mock returns as-is
+
+    @pytest.mark.asyncio
+    async def test_multiprofile_agent_uses_active_profile_for_lifecycle(
+        self, mock_config, tmp_path
+    ):
+        """A HOME boot must not drop an agent whose first YAML profile is COTTAGE."""
+        mock_config.get_profile.return_value = "HOME"
+        service = BootstrapService(mock_config, AgentLifecycleManager())
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "multi.yaml").write_text(
+            "header:\n"
+            "  agent_id: multi\n"
+            "  agent_name: Multi Profile\n"
+            "profiles:\n"
+            "  - COTTAGE\n"
+            "  - HOME\n",
+            encoding="utf-8",
+        )
+
+        result = await service.load_agents(agents_dir)
+
+        assert [agent.id for agent in result] == ["multi"]
+        assert result[0].profile == "HOME"
+        assert result[0].active is True
 
 
 class TestBootstrapWarmCache:

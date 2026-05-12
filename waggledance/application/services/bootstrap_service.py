@@ -38,7 +38,7 @@ class BootstrapService:
         """
         import yaml
 
-        profile = self._config.get_profile()
+        profile = str(self._config.get_profile() or "").upper()
         agents: list[AgentDefinition] = []
 
         if not agents_dir.exists():
@@ -54,7 +54,15 @@ class BootstrapService:
                     continue
 
                 header = data.get("header", {})
-                profiles = data.get("profiles", ["ALL"])
+                profiles = [
+                    str(p).upper()
+                    for p in data.get("profiles", ["ALL"])
+                    if p is not None
+                ] or ["ALL"]
+                if profile not in profiles and "ALL" not in profiles:
+                    continue
+
+                agent_profile = "ALL" if "ALL" in profiles else profile
 
                 agent = AgentDefinition(
                     id=header.get("agent_id", yaml_file.stem),
@@ -67,7 +75,7 @@ class BootstrapService:
                     trust_level=0,
                     specialization_score=0.0,
                     active=False,
-                    profile=profiles[0] if profiles else "ALL",
+                    profile=agent_profile,
                 )
                 agents.append(agent)
             except Exception as e:

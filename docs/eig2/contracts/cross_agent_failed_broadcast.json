@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Cross-agent failed-candidate broadcast contract (L22)",
+  "description": "Shared anti-knowledge via bridge events. See ADR-032.",
+  "version": 1,
+  "event_type": "failed_candidate_broadcast",
+  "required_fields": [
+    "event_type",
+    "candidate_class_hash",
+    "rejection_reason",
+    "rejected_at_utc",
+    "rejecting_agent_id",
+    "feature_fingerprint",
+    "ttl_hours"
+  ],
+  "policy_defaults": {
+    "ttl_hours": 720,
+    "ttl_hours_max": 8760
+  },
+  "invariants": [
+    {
+      "id": "CFB-001",
+      "name": "event_schema_required_fields",
+      "description": "Event has fixed required fields. Validator rejects events missing any.",
+      "must": [
+        "all 7 required_fields present on every event",
+        "missing field -> validator error",
+        "extra fields allowed but ignored by consumers"
+      ]
+    },
+    {
+      "id": "CFB-002",
+      "name": "hash_normalization",
+      "description": "candidate_class_hash = sha256(normalized candidate structure). Normalization: sorted keys + lowercased terms.",
+      "must": [
+        "two normalization implementations produce identical hash for equivalent candidates",
+        "normalization rule documented in implementation (sorted keys, lowercased string terms)",
+        "hash is full sha256 hex (64 chars)"
+      ]
+    },
+    {
+      "id": "CFB-003",
+      "name": "ttl_bounded",
+      "description": "ttl_hours default 720 (30 days). Pinned upper bound 8760 (1 year). Operator-tunable in range.",
+      "must": [
+        "default 720",
+        "upper bound 8760 hardcoded in this contract",
+        "validator rejects ttl_hours > 8760 or <= 0"
+      ]
+    },
+    {
+      "id": "CFB-004",
+      "name": "bridge_mediated_only",
+      "description": "No shared database. All anti-knowledge transfer via bridge events.jsonl.",
+      "must": [
+        "no database table for anti-knowledge",
+        "publisher writes to events.jsonl ONLY",
+        "subscribers consume from events.jsonl ONLY"
+      ]
+    },
+    {
+      "id": "CFB-005",
+      "name": "per_agent_local_cache",
+      "description": "Each agent maintains its own anti-knowledge cache. No central service.",
+      "must": [
+        "no shared anti-knowledge service in waggledance/core",
+        "each agent has its own AntiKnowledgeCache instance",
+        "cache state is per-agent, not per-swarm"
+      ]
+    },
+    {
+      "id": "CFB-006",
+      "name": "ttl_eviction",
+      "description": "Entries older than ttl_hours evicted lazily on miner check.",
+      "must": [
+        "cache check compares (now - entry_ts) against ttl_hours",
+        "expired entries removed during lookup OR by periodic sweep",
+        "expired entries do NOT block re-broadcast"
+      ]
+    },
+    {
+      "id": "CFB-007",
+      "name": "subscriber_idempotency",
+      "description": "Subscriber consuming the same broadcast event twice MUST NOT double-count it.",
+      "must": [
+        "dedup by (candidate_class_hash, rejecting_agent_id, rejected_at_utc) or event uuid",
+        "second consumption of same event is a no-op",
+        "test verifies idempotency by replaying event stream"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Bloom filter false-positive tuning (implementation choice)",
+    "Anti-knowledge backup/restore (separate ADR)",
+    "Cross-swarm federation (explicitly NOT planned)"
+  ],
+  "related_adrs": ["024", "031"],
+  "related_leaps_50_menu": ["L21", "L22", "L25"]
+}

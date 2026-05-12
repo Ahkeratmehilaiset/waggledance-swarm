@@ -23,6 +23,7 @@ from waggledance.adapters.http.routes._capability_state import (
     CapabilityInfo,
     derive_capability_state,
 )
+from waggledance.adapters.http.routes._dashboard_shared import websocket_client_count
 
 logger = logging.getLogger(__name__)
 
@@ -237,11 +238,7 @@ def _derive_node_meta(
         meta["source_class"] = "live"
 
     elif node_id == "sys_websocket":
-        try:
-            from waggledance.adapters.http.routes.compat_dashboard import _ws_clients
-            client_count = len(_ws_clients)
-        except ImportError:
-            client_count = 0
+        client_count = websocket_client_count()
         meta["state"] = "active" if client_count > 0 else "idle"
         meta["source_class"] = "live"
 
@@ -588,11 +585,7 @@ def build_hologram_state(service, *, container=None) -> Dict[str, Any]:
     total_comp = lifecycle.get("total_components", 0)
     sys_api_val = _clamp(healthy_comp / max(total_comp, 1))
 
-    try:
-        from waggledance.adapters.http.routes.compat_dashboard import _ws_clients
-        ws_count = len(_ws_clients)
-    except ImportError:
-        ws_count = 0
+    ws_count = websocket_client_count()
     sys_websocket_val = _clamp(ws_count / 5.0)
 
     feeds = rs.get("feeds", {})

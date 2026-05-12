@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "God-class decomposition contract (L52)",
+  "description": "Decomposition strategy for container + autonomy runtime. See ADR-061.",
+  "version": 1,
+  "container_split": {
+    "storage": "container/storage.py",
+    "llm": "container/llm.py",
+    "memory": "container/memory.py",
+    "agents": "container/agents.py",
+    "services": "container/services.py"
+  },
+  "runtime_split": {
+    "core": "autonomy/runtime/core.py",
+    "wiring": "autonomy/runtime/wiring.py",
+    "policy": "autonomy/runtime/policy.py"
+  },
+  "policy_defaults": {"total_pr_count": 8, "lines_per_pr_max": 200},
+  "invariants": [
+    {"id": "GCD-001", "name": "public_surface_preserved", "description": "External callers can still `c.llm`, `c.control_plane_db`, etc.", "must": ["no symbol rename on Container public surface", "tests using Container API continue to pass without modification"]},
+    {"id": "GCD-002", "name": "cached_property_pin_honored", "description": "Per ADR-036 — each sub-module preserves @cached_property on the 39 service accessors.", "must": ["sub-modules use @cached_property", "L36 test_container_cached_property_pin updated to match new layout", "no @property regression"]},
+    {"id": "GCD-003", "name": "l51_contract_gates", "description": "PR #284 fan-in contract test passes on every split PR.", "must": ["test_fan_in_public_surface_contracts passes after each split", "field tuples unchanged"]},
+    {"id": "GCD-004", "name": "no_transitive_depth_claim", "description": "ADR forbids cold-boot claim. Benefit is blast radius only.", "must": ["docs do NOT claim cold-import reduction", "PR descriptions do NOT cite cold-boot wins"]},
+    {"id": "GCD-005", "name": "incremental_landing", "description": "5+3=8 PRs, each independently mergeable.", "must": ["total_pr_count = 8", "no big-bang refactor PR"]},
+    {"id": "GCD-006", "name": "lines_per_pr_max_200", "description": "Each PR moves <=200 lines from monolith.", "must": ["validator at PR review", "no PR exceeds 200 lines moved"]},
+    {"id": "GCD-007", "name": "composition_over_inheritance", "description": "Sub-modules attach via composition, not multiple inheritance.", "must": ["Container instance composes sub-module facades", "no MRO complications", "matches PR #284 single-inheritance pin"]}
+  ],
+  "out_of_scope": ["The 8 implementation PRs (separate)", "Renaming public symbols (forbidden by GCD-001)", "Further decomposition beyond 5+3 (operator decision based on how split holds up)"],
+  "related_adrs": ["036"],
+  "related_leaps_50_menu": ["L36", "L51", "L52"]
+}

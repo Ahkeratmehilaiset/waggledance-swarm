@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Curiosity-gradient routing contract (L6)",
+  "description": "Boost cells with high gap_miner activity. See ADR-043.",
+  "version": 1,
+  "policy_defaults": {
+    "curiosity_weight": 0.15,
+    "curiosity_weight_max": 0.20,
+    "hot_path_budget_us": 5
+  },
+  "invariants": [
+    {"id": "CGR-001", "name": "weight_capped", "description": "curiosity_weight <= 0.20", "must": ["validator rejects curiosity_weight > 0.20", "curiosity is influence not dictator"]},
+    {"id": "CGR-002", "name": "normalized_over_fleet", "description": "Normalized cell_gap_count / max(cell_gap_count).", "must": ["raw counts not used directly", "max-normalization across all cells", "result added to base_score in [0, curiosity_weight]"]},
+    {"id": "CGR-003", "name": "configurable_per_profile", "description": "default 0.15, range [0.0, 0.20]", "must": ["profile config respected", "default 0.15"]},
+    {"id": "CGR-004", "name": "decays_with_success", "description": "Cell with falling gap_signals loses boost organically.", "must": ["no separate decay code; normalization handles it", "gap_signals naturally drop as cell succeeds"]},
+    {"id": "CGR-005", "name": "no_veto_interaction", "description": "Curiosity-boosted route is still vetoed if negative tunnel matches.", "must": ["negative tunnel veto applied AFTER curiosity scoring", "curiosity cannot override veto"]},
+    {"id": "CGR-006", "name": "read_only_signal", "description": "Scorer never modifies gap_signal records.", "must": ["no write to gap_signal table from routing path", "read-only query only"]},
+    {"id": "CGR-007", "name": "hot_path_5us", "description": "Curiosity score lookup < 5 µs.", "must": ["pre-aggregated counters at module init", "no per-call SQL", "matches TUN-005 budget"]}
+  ],
+  "out_of_scope": ["Implementation of CuriosityScorer (separate PR)", "Adaptive curiosity_weight (future ADR)"],
+  "related_adrs": ["031", "038", "040"],
+  "related_leaps_50_menu": ["L6"]
+}

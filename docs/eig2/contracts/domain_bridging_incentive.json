@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Domain-bridging incentive contract (L26)",
+  "description": "1.5x promotion-score bonus for cross-domain solvers. See ADR-050.",
+  "version": 1,
+  "policy_defaults": {"domain_bridge_multiplier": 1.5, "multiplier_range": [1.0, 2.0], "min_examples_per_domain": 10, "min_distinct_domains": 2},
+  "invariants": [
+    {"id": "DBI-001", "name": "multiplier_1_5_default", "description": "1.5x bonus default. Range [1.0, 2.0].", "must": ["default 1.5", "operator-tunable in range"]},
+    {"id": "DBI-002", "name": "cross_domain_threshold", "description": ">= 10 examples from >= 2 domains required.", "must": ["min_examples_per_domain default 10", "min_distinct_domains default 2"]},
+    {"id": "DBI-003", "name": "domain_enum_from_agent_domain", "description": "Reuses existing agent.domain field.", "must": ["no new domain taxonomy", "AliasRegistry-derived per H24"]},
+    {"id": "DBI-004", "name": "applied_at_promotion", "description": "Bonus modifies promotion-gate score, not runtime.", "must": ["computed once at promotion evaluation", "runtime routing uses promoted score"]},
+    {"id": "DBI-005", "name": "anti_cargo_cult_still_applies", "description": "Bonus does NOT bypass ADR-034 gate.", "must": ["bridging solver still passes anti-cargo-cult probes", "no free riders"]},
+    {"id": "DBI-006", "name": "auditable", "description": "Promotion log includes bridging_indicator + domains list.", "must": ["events.jsonl entry has bridging_indicator: bool", "domains: list[str] field populated"]},
+    {"id": "DBI-007", "name": "no_retroactive_boost", "description": "Promoted solver retains bonus; not recomputed.", "must": ["bonus baked into stored solver record at promotion time", "no per-query recomputation"]}
+  ],
+  "out_of_scope": ["Implementation (separate PR)", "Domain-pair-specific multipliers (future ADR)"],
+  "related_adrs": ["034", "038", "048"],
+  "related_leaps_50_menu": ["L26"]
+}

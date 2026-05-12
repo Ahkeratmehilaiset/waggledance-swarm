@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Failure-pattern mining contract (L25)",
+  "description": "Anti-feature extraction from rejected candidates. See ADR-033.",
+  "version": 1,
+  "policy_defaults": {
+    "window_n_rejections": 200,
+    "anti_feature_threshold_k": 20,
+    "anti_feature_ttl_days": 30,
+    "anti_feature_penalty": 0.3,
+    "mining_cadence_seconds": 3600
+  },
+  "yaml_path": "configs/gap_miner_anti_features.yaml",
+  "invariants": [
+    {
+      "id": "FPM-001",
+      "name": "n_window_default_200",
+      "description": "Mining input is last N rejected candidates (default 200).",
+      "must": [
+        "window_n_rejections default 200, configurable",
+        "older rejections fall out of window"
+      ]
+    },
+    {
+      "id": "FPM-002",
+      "name": "k_threshold_default_20",
+      "description": "Feature value becomes anti-feature when K of N rejections share it. Default K=20 (10%).",
+      "must": [
+        "anti_feature_threshold_k default 20",
+        "ratio k/n = 0.10 default acceptance",
+        "k <= n always (validator check)"
+      ]
+    },
+    {
+      "id": "FPM-003",
+      "name": "anti_feature_ttl_30_days",
+      "description": "Anti-features auto-expire after 30 days unless re-evidenced or marked permanent.",
+      "must": [
+        "anti_feature_ttl_days default 30",
+        "rotation timestamp captured per entry",
+        "expired entries removed from YAML on next mining pass"
+      ]
+    },
+    {
+      "id": "FPM-004",
+      "name": "advisory_not_blocking",
+      "description": "Anti-features apply a penalty to candidate promotion score, NOT a hard ban.",
+      "must": [
+        "anti_feature_penalty default 0.3",
+        "applied as score adjustment, not as filter",
+        "candidate with anti-feature MAY still be promoted if other signals are strong"
+      ]
+    },
+    {
+      "id": "FPM-005",
+      "name": "yaml_persistence",
+      "description": "Anti-features written to configs/gap_miner_anti_features.yaml. Human-readable.",
+      "must": [
+        "yaml_path = configs/gap_miner_anti_features.yaml exactly",
+        "miner writes via yaml.CSafeLoader-compatible round-trip",
+        "operator can hand-edit the YAML safely"
+      ]
+    },
+    {
+      "id": "FPM-006",
+      "name": "operator_permanent_flag",
+      "description": "Operator-set permanent: true prevents automatic rotation.",
+      "must": [
+        "yaml entry schema includes optional permanent: bool field (default false)",
+        "rotation pass skips entries where permanent=true",
+        "permanent entries never deleted by automatic mining"
+      ]
+    },
+    {
+      "id": "FPM-007",
+      "name": "mining_cadence_bounded",
+      "description": "Mining runs periodically. Default hourly, configurable in [10min, 24h].",
+      "must": [
+        "mining_cadence_seconds default 3600",
+        "validator rejects values outside [600, 86400] range",
+        "miner is scheduled by autogrowth_background_ticker, not on critical path"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of FailurePatternMiner (separate PR)",
+    "Adaptive K threshold based on rejection volume (future)",
+    "Cross-agent anti-feature sharing (covered by ADR-032)"
+  ],
+  "related_adrs": ["031", "032"],
+  "related_leaps_50_menu": ["L21", "L22", "L25", "L29"]
+}

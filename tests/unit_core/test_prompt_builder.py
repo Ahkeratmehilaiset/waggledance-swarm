@@ -13,6 +13,8 @@ orchestrators and YAMLBridge's rich prompt assembly. Tests pin:
 
 from __future__ import annotations
 
+import concurrent.futures
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -119,6 +121,45 @@ class TestBuildAgentPromptYamlBridge:
         with patch.object(prompt_builder, "_get_yaml_bridge", return_value=bridge):
             prompt_builder.build_agent_prompt(agent, "X", language="en")
         assert seen_languages == ["en"]
+
+    def test_concurrent_multilanguage_does_not_cross_pollute(self):
+        """set_language and build_system_prompt are one critical section."""
+
+        class RaceBridge:
+            def __init__(self):
+                self.language = None
+                self.fi_set = threading.Event()
+                self.en_set = threading.Event()
+
+            def set_language(self, language):
+                if language == "fi":
+                    self.language = "fi"
+                    self.fi_set.set()
+                    self.en_set.wait(0.25)
+                elif language == "en":
+                    self.fi_set.wait(1.0)
+                    self.language = "en"
+                    self.en_set.set()
+
+            def build_system_prompt(self, agent_id):
+                return f"system:{self.language}:{agent_id}"
+
+        bridge = RaceBridge()
+        agent = _fake_agent("alpha", "Alpha", "apiary")
+
+        def call(language):
+            return prompt_builder.build_agent_prompt(agent, "Q", language=language)
+
+        with patch.object(prompt_builder, "_get_yaml_bridge", return_value=bridge):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                fi_future = pool.submit(call, "fi")
+                assert bridge.fi_set.wait(1.0)
+                en_future = pool.submit(call, "en")
+                fi_prompt = fi_future.result(timeout=2.0)
+                en_prompt = en_future.result(timeout=2.0)
+
+        assert "system:fi:alpha" in fi_prompt
+        assert "system:en:alpha" in en_prompt
 
 
 class TestSingletonCache:

@@ -103,14 +103,15 @@ def build_agent_prompt(
     system_part: str | None = None
     if bridge is not None and agent_id:
         try:
-            # set_language is best-effort; if it raises, we still try
-            # build_system_prompt with the bridge's current language.
-            if hasattr(bridge, "set_language"):
-                try:
-                    bridge.set_language(language)
-                except Exception:  # noqa: BLE001
-                    pass
-            built = bridge.build_system_prompt(agent_id)
+            with _yaml_bridge_lock:
+                # set_language is best-effort; if it raises, we still try
+                # build_system_prompt with the bridge's current language.
+                if hasattr(bridge, "set_language"):
+                    try:
+                        bridge.set_language(language)
+                    except Exception:  # noqa: BLE001
+                        pass
+                built = bridge.build_system_prompt(agent_id)
             if isinstance(built, str) and built.strip():
                 system_part = built
         except Exception as exc:  # noqa: BLE001 — fail-safe

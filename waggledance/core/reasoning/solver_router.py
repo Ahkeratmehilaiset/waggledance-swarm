@@ -19,6 +19,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from waggledance.core.capabilities.registry import CapabilityRegistry
@@ -122,6 +123,117 @@ class SolverRouteResult:
 # becomes one alternation regex, so a query is scanned in a single pass
 # per signal set rather than N substring checks.
 _SIGNAL_PATTERN_CACHE: dict[frozenset[str], re.Pattern[str]] = {}
+SOLVER_SIGNAL_CONFIG_PATH = (
+    Path(__file__).resolve().parents[3] / "configs" / "solver_signals.yaml"
+)
+
+_DEFAULT_SIGNAL_SETS: dict[str, frozenset[str]] = {
+    "math": frozenset({
+        "laske", "calculate", "compute", "paljonko", "how much", "sum",
+    }),
+    "formula": frozenset({
+        "formula", "kaava", "model", "malli", "axiom", "solve for", "ratkaise",
+    }),
+    "constraint": frozenset({
+        "rule", "sääntö", "constraint", "check", "tarkista",
+        "compliant", "violation",
+    }),
+    "seasonal": frozenset({
+        "season", "vuodenaika", "kausi", "spring", "kevät", "summer", "kesä",
+        "autumn", "syksy", "winter", "talvi",
+    }),
+    "time_series_metrics": frozenset({
+        "average", "trend", "compare", "cost", "consumption",
+        "energy", "keskiarvo", "keskimääräinen",
+    }),
+    "time_series_windows": frozenset({
+        "last", "this", "week", "month", "days", "yesterday",
+        "today", "viime", "tämä", "viikko", "kuukausi", "päivää",
+    }),
+    "thermal": frozenset({
+        "temperature", "lämpötila", "heat", "frost", "pakkanen",
+        "pakkasvaara", "thermal", "heating", "cooling", "lämmitys",
+        "celsius", "fahrenheit", "degrees", "astetta", "too hot",
+        "too cold", "liian kuuma", "liian kylmä", "warm", "lämmin",
+        "cold", "kylmä",
+    }),
+    "optimization_verbs": frozenset({
+        "optimize", "optimoi", "minimize", "maximize", "allocate",
+        "cheapest", "halvin", "optimization",
+    }),
+    "schedule_words": frozenset({
+        "schedule", "aikataulu", "kalenteri", "calendar", "timetable",
+    }),
+    "schedule_verbs": frozenset({
+        "optimize", "optimoi", "minimize", "maximize", "allocate",
+        "create", "build", "schedule this", "optimization",
+    }),
+    "optimization": frozenset({
+        "optimize", "optimoi", "aikatauluta", "minimize", "allocate",
+        "cheapest", "halvin", "optimization",
+    }),
+    "statistics": frozenset({
+        "statistics", "tilasto", "trend", "keskiarvo", "median",
+        "percentile", "correlation", "summary",
+    }),
+    "causal": frozenset({
+        "cause", "syy", "why", "miksi", "impact", "vaikutus",
+        "root cause", "because", "koska", "depends",
+    }),
+    "anomaly": frozenset({
+        "anomaly", "anomalia", "deviation", "poikkeama",
+        "outlier", "unusual", "epätavallinen",
+    }),
+    "retrieval": frozenset({
+        "what is", "mikä on", "tell me", "kerro", "explain", "selitä",
+        "search", "hae", "find", "etsi",
+    }),
+}
+
+
+def _normalize_signal_sets(raw: object) -> dict[str, frozenset[str]]:
+    if not isinstance(raw, dict):
+        raise ValueError("solver signal config must be a mapping")
+
+    signal_sets: dict[str, frozenset[str]] = {}
+    for name, fallback in _DEFAULT_SIGNAL_SETS.items():
+        if name not in raw:
+            signal_sets[name] = fallback
+            continue
+        values = raw[name]
+        if not isinstance(values, list):
+            raise ValueError(f"solver signal group {name!r} must be a list")
+        normalized = {
+            str(value).strip().lower()
+            for value in values
+            if str(value).strip()
+        }
+        signal_sets[name] = frozenset(normalized or fallback)
+    return signal_sets
+
+
+def _load_solver_signal_sets(
+    path: Path = SOLVER_SIGNAL_CONFIG_PATH,
+) -> dict[str, frozenset[str]]:
+    try:
+        import yaml
+
+        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=loader)
+        return _normalize_signal_sets(data)
+    except Exception as exc:
+        log.warning(
+            "Solver signal registry unavailable at %s; using defaults: %s",
+            path, exc,
+        )
+        return dict(_DEFAULT_SIGNAL_SETS)
+
+
+_SIGNAL_SETS = _load_solver_signal_sets()
+
+
+def _signals(name: str) -> frozenset[str]:
+    return _SIGNAL_SETS.get(name, _DEFAULT_SIGNAL_SETS[name])
 
 
 def _has_signal(query_lower: str, signals: set[str] | frozenset[str]) -> bool:
@@ -283,9 +395,7 @@ class SolverRouter:
             return "math"
 
         # Math / calculation keywords + digit-operator-digit
-        math_signals = {"laske", "calculate", "compute", "paljonko", "how much",
-                        "sum"}
-        if _has_signal(q, math_signals):
+        if _has_signal(q, _signals("math")):
             return "math"
         # Arithmetic: digit OP digit (excludes bare "-" which appears in "-5C")
         if re.search(r'\d\s*[+*/=]\s*\d', q):
@@ -295,81 +405,56 @@ class SolverRouter:
             return "math"
 
         # Symbolic / formula
-        formula_signals = {"formula", "kaava", "model", "malli", "axiom",
-                          "solve for", "ratkaise"}
-        if _has_signal(q, formula_signals):
+        if _has_signal(q, _signals("formula")):
             return "symbolic"
 
         # Constraint / rule check
-        rule_signals = {"rule", "sääntö", "constraint", "check", "tarkista",
-                       "compliant", "violation"}
-        if _has_signal(q, rule_signals):
+        if _has_signal(q, _signals("constraint")):
             return "constraint"
 
         # Seasonal
-        seasonal_signals = {"season", "vuodenaika", "kausi", "spring", "kevät",
-                           "summer", "kesä", "autumn", "syksy", "winter", "talvi"}
-        if _has_signal(q, seasonal_signals):
+        if _has_signal(q, _signals("seasonal")):
             return "seasonal"
 
         # ── Time-series stats: metric + time window (before thermal) ──
-        _TS_METRICS = {"average", "trend", "compare", "cost", "consumption",
-                       "energy", "keskiarvo", "keskimääräinen"}
-        _TS_WINDOWS = {"last", "this", "week", "month", "days", "yesterday",
-                       "today", "viime", "tämä", "viikko", "kuukausi", "päivää"}
+        _TS_METRICS = _signals("time_series_metrics")
+        _TS_WINDOWS = _signals("time_series_windows")
         if _has_signal(q, _TS_METRICS) and _has_signal(q, _TS_WINDOWS):
             return "stats"
 
         # Thermal — but skip if optimization verb present ("optimize heating")
-        thermal_signals = {"temperature", "lämpötila", "heat", "frost", "pakkanen",
-                           "pakkasvaara", "thermal", "heating", "cooling", "lämmitys",
-                           "celsius", "fahrenheit", "degrees", "astetta",
-                           "too hot", "too cold", "liian kuuma", "liian kylmä",
-                           "warm", "lämmin", "cold", "kylmä"}
-        _OPTIM_VERBS = {"optimize", "optimoi", "minimize", "maximize", "allocate",
-                        "cheapest", "halvin", "optimization"}
+        thermal_signals = _signals("thermal")
+        _OPTIM_VERBS = _signals("optimization_verbs")
         has_thermal = _has_signal(q, thermal_signals) or re.search(r'\d+\s*°?[cf]\b', q)
         if has_thermal and not _has_signal(q, _OPTIM_VERBS):
             return "thermal"
 
         # Schedule disambiguation: schedule without active verb → retrieval
-        _SCHED_WORDS = {"schedule", "aikataulu", "kalenteri", "calendar", "timetable"}
-        _SCHED_VERBS = {"optimize", "optimoi", "minimize", "maximize", "allocate",
-                        "create", "build", "schedule this", "optimization"}
+        _SCHED_WORDS = _signals("schedule_words")
+        _SCHED_VERBS = _signals("schedule_verbs")
         if _has_signal(q, _SCHED_WORDS):
             if _has_signal(q, _SCHED_VERBS):
                 return "optimization"
             return "retrieval"
 
         # Optimization
-        optim_signals = {"optimize", "optimoi", "aikatauluta",
-                         "minimize", "allocate", "cheapest", "halvin",
-                         "optimization"}
-        if _has_signal(q, optim_signals):
+        if _has_signal(q, _signals("optimization")):
             return "optimization"
 
         # Statistics (no time window required)
-        stats_signals = {"statistics", "tilasto", "trend", "keskiarvo",
-                         "median", "percentile", "correlation", "summary"}
-        if _has_signal(q, stats_signals):
+        if _has_signal(q, _signals("statistics")):
             return "stats"
 
         # Causal
-        causal_signals = {"cause", "syy", "why", "miksi", "impact", "vaikutus",
-                          "root cause", "because", "koska", "depends"}
-        if _has_signal(q, causal_signals):
+        if _has_signal(q, _signals("causal")):
             return "causal"
 
         # Anomaly / deviation
-        anomaly_signals = {"anomaly", "anomalia", "deviation", "poikkeama",
-                          "outlier", "unusual", "epätavallinen"}
-        if _has_signal(q, anomaly_signals):
+        if _has_signal(q, _signals("anomaly")):
             return "anomaly"
 
         # Retrieval / search
-        retrieval_signals = {"what is", "mikä on", "tell me", "kerro",
-                            "explain", "selitä", "search", "hae", "find", "etsi"}
-        if _has_signal(q, retrieval_signals):
+        if _has_signal(q, _signals("retrieval")):
             return "retrieval"
 
         # Default: chat (LLM fallback)

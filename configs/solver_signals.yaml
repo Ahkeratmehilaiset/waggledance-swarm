@@ -1,0 +1,157 @@
+# SolverRouter intent signal registry.
+#
+# Keep terms lowercase. Multi-word terms are supported; SolverRouter matches
+# every term with word-boundary anchored regexes.
+math:
+  - calculate
+  - compute
+  - how much
+  - laske
+  - paljonko
+  - sum
+formula:
+  - axiom
+  - formula
+  - kaava
+  - malli
+  - model
+  - ratkaise
+  - solve for
+constraint:
+  - check
+  - compliant
+  - constraint
+  - rule
+  - sääntö
+  - tarkista
+  - violation
+seasonal:
+  - autumn
+  - kesä
+  - kausi
+  - kevät
+  - season
+  - spring
+  - summer
+  - syksy
+  - talvi
+  - vuodenaika
+  - winter
+time_series_metrics:
+  - average
+  - compare
+  - consumption
+  - cost
+  - energy
+  - keskiarvo
+  - keskimääräinen
+  - trend
+time_series_windows:
+  - days
+  - last
+  - month
+  - päivää
+  - tämä
+  - this
+  - today
+  - viime
+  - viikko
+  - week
+  - yesterday
+  - kuukausi
+thermal:
+  - astetta
+  - celsius
+  - cold
+  - cooling
+  - degrees
+  - fahrenheit
+  - frost
+  - heat
+  - heating
+  - kylmä
+  - lämmin
+  - lämmitys
+  - lämpötila
+  - pakkanen
+  - pakkasvaara
+  - temperature
+  - thermal
+  - too cold
+  - too hot
+  - warm
+  - liian kylmä
+  - liian kuuma
+optimization_verbs:
+  - allocate
+  - cheapest
+  - halvin
+  - maximize
+  - minimize
+  - optimoi
+  - optimization
+  - optimize
+schedule_words:
+  - aikataulu
+  - calendar
+  - kalenteri
+  - schedule
+  - timetable
+schedule_verbs:
+  - allocate
+  - build
+  - create
+  - maximize
+  - minimize
+  - optimoi
+  - optimization
+  - optimize
+  - schedule this
+optimization:
+  - aikatauluta
+  - allocate
+  - cheapest
+  - halvin
+  - minimize
+  - optimoi
+  - optimization
+  - optimize
+statistics:
+  - correlation
+  - keskiarvo
+  - median
+  - percentile
+  - statistics
+  - summary
+  - tilasto
+  - trend
+causal:
+  - because
+  - cause
+  - depends
+  - impact
+  - koska
+  - miksi
+  - root cause
+  - syy
+  - vaikutus
+  - why
+anomaly:
+  - anomaly
+  - anomalia
+  - deviation
+  - epätavallinen
+  - outlier
+  - poikkeama
+  - unusual
+retrieval:
+  - etsi
+  - explain
+  - find
+  - hae
+  - kerro
+  - mikä on
+  - search
+  - selitä
+  - tell me
+  - what is

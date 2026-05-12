@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "LRU memoization contract (L40)",
+  "description": "Allowlist for @lru_cache on hot-path functions. See ADR-057.",
+  "version": 1,
+  "allowed_sites": [
+    {"module": "waggledance/adapters/http/routes/status.py", "function": "get_readiness_state", "maxsize": 1, "justification": "/status readiness check pre-existing, low-cost"}
+  ],
+  "policy_defaults": {"forbid_unbounded_cache": true, "require_hashable_args": true, "require_pure_function": true},
+  "invariants": [
+    {"id": "LRU-001", "name": "allowlist_source_of_truth", "description": "Every @lru_cache in waggledance/ MUST be in allowlist.", "must": ["contract test scans codebase", "violations fail at PR time"]},
+    {"id": "LRU-002", "name": "maxsize_bounded", "description": "No @lru_cache(maxsize=None).", "must": ["maxsize field required and > 0", "validator rejects None or 0"]},
+    {"id": "LRU-003", "name": "hashable_args", "description": "Function args MUST all be hashable.", "must": ["no dict/list/set in arg list", "no @dataclass without slots+frozen as arg type"]},
+    {"id": "LRU-004", "name": "pure_function_rule", "description": "Function deterministic + side-effect-free.", "must": ["no I/O", "no random.random / time.time", "no global mutation"]},
+    {"id": "LRU-005", "name": "hot_path_justification", "description": "Allowlist entry has justification citing measurement.", "must": ["justification field non-empty on every entry", "should reference L34 budget or bench result"]},
+    {"id": "LRU-006", "name": "reviewable", "description": "Adding to allowlist requires PR review + bench.", "must": ["PR description shows before/after measurement", "code review verifies purity"]},
+    {"id": "LRU-007", "name": "no_unbounded_cache", "description": "Only @lru_cache(maxsize=K). No @cache (== @lru_cache(maxsize=None)).", "must": ["scanner detects @cache decorator", "@cache use rejected at PR time"]}
+  ],
+  "out_of_scope": ["Implementation of allowlist scanner (separate PR)", "Adaptive cache size (future ADR)"],
+  "related_adrs": [],
+  "related_leaps_50_menu": ["L40"]
+}

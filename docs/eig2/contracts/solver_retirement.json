@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Solver retirement contract (L27)",
+  "description": "Auto-demote chronic underperformers. See ADR-051.",
+  "version": 1,
+  "policy_defaults": {"quality_floor": 0.55, "quality_floor_range": [0.30, 0.80], "consecutive_days_below_floor": 30, "archive_strikes_window_days": 90, "archive_strikes_count": 2},
+  "invariants": [
+    {"id": "SOR-001", "name": "quality_floor_default", "description": "Floor 0.55. Operator-tunable [0.30, 0.80].", "must": ["default 0.55", "validator rejects out of range"]},
+    {"id": "SOR-002", "name": "30_consecutive_days_below", "description": "30 CONSECUTIVE not cumulative.", "must": ["streak resets on any day median >= floor", "single-day recovery resets counter"]},
+    {"id": "SOR-003", "name": "demote_to_shadow_not_archive", "description": "First demotion recoverable.", "must": ["prod->shadow state transition", "not prod->archive directly"]},
+    {"id": "SOR-004", "name": "three_strike_archive", "description": "2 demotions within 90 days -> archive.", "must": ["cumulative demotion count tracked", "archive on second demotion within window"]},
+    {"id": "SOR-005", "name": "atomic_state_transition", "description": "prod->shadow or shadow->archive atomic.", "must": ["single transaction", "no observable partial state"]},
+    {"id": "SOR-006", "name": "audit_log_with_reason", "description": "Each transition logs reason code.", "must": ["reason enum: DEMOTE_QUALITY_FLOOR, ARCHIVE_THREE_STRIKE, REVIVE_OPERATOR", "events.jsonl entry"]},
+    {"id": "SOR-007", "name": "capacity_slot_release", "description": "Demotion releases prod slot.", "must": ["slot becomes available for new candidate promotion", "matches L24 portfolio promotion flow"]}
+  ],
+  "out_of_scope": ["Implementation of RetirementWatcher (separate PR)", "Adaptive quality floor (future ADR)"],
+  "related_adrs": ["048", "049"],
+  "related_leaps_50_menu": ["L27"]
+}

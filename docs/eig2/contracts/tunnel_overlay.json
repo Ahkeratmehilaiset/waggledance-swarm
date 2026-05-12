@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Tunnel overlay registry contract (L2)",
+  "description": "Sparse audited graph of cross-cell routing shortcuts. See ADR-038.",
+  "version": 1,
+  "yaml_path": "configs/tunnel_overlay.yaml",
+  "direction_enum": ["forward", "negative"],
+  "policy_defaults": {
+    "min_trust_score": 0.70,
+    "revalidation_interval_days": 30,
+    "archive_after_days_stale": 90,
+    "hot_path_lookup_budget_us": 5
+  },
+  "tunnel_required_fields": [
+    "tunnel_id",
+    "from_cell",
+    "to_solver",
+    "trust_score",
+    "provenance_event_id",
+    "added_at_utc",
+    "last_validated_utc",
+    "direction"
+  ],
+  "invariants": [
+    {
+      "id": "TUN-001",
+      "name": "sparse_threshold",
+      "description": "Default min_trust_score=0.70 to add a tunnel. Operator-tunable.",
+      "must": [
+        "default 0.70",
+        "tunnels below threshold rejected at write time",
+        "threshold readable from this contract, not hardcoded in Python"
+      ]
+    },
+    {
+      "id": "TUN-002",
+      "name": "auditable_provenance",
+      "description": "Every tunnel has provenance_event_id pointing to the co-fire event that justified it. NULL forbidden.",
+      "must": [
+        "provenance_event_id field is required and non-null on every tunnel",
+        "validator rejects tunnels missing or null provenance",
+        "operator-added hand-edit tunnels MUST cite a provenance_event_id (operator-edit event)"
+      ]
+    },
+    {
+      "id": "TUN-003",
+      "name": "direction_enum",
+      "description": "direction value is 'forward' or 'negative'. Negative tunnels (L5) extend the registry, not a separate registry.",
+      "must": [
+        "direction in {forward, negative}",
+        "negative tunnels stored alongside forward, distinguished by enum",
+        "routing path interprets negative as 'do NOT route here'"
+      ]
+    },
+    {
+      "id": "TUN-004",
+      "name": "yaml_persistence",
+      "description": "Registry persisted as YAML at configs/tunnel_overlay.yaml.",
+      "must": [
+        "yaml_path = configs/tunnel_overlay.yaml exactly",
+        "loaded via yaml.CSafeLoader for fast parse",
+        "operator hand-edits supported (clean YAML round-trip)"
+      ]
+    },
+    {
+      "id": "TUN-005",
+      "name": "hot_path_lookup_budget",
+      "description": "tunnel_registry.lookup_tunnels() must be < 5 µs per call. Matches L34 hot-path budget.",
+      "must": [
+        "lookup uses indexed dict (from_cell -> [tunnel_ids]) not linear scan",
+        "p50 lookup latency under 5 µs verified by hot-path contract test",
+        "if budget tightens, lookup index must be tightened (e.g., flat hash table)"
+      ]
+    },
+    {
+      "id": "TUN-006",
+      "name": "slots_dataclass",
+      "description": "Tunnel record uses @dataclass(frozen=True, slots=True) per L60-NEW pattern.",
+      "must": [
+        "Tunnel decorator must be @dataclass(frozen=True, slots=True)",
+        "immutable record semantics",
+        "memory-efficient instantiation"
+      ]
+    },
+    {
+      "id": "TUN-007",
+      "name": "revalidation_freshness",
+      "description": "Periodic revalidation; tunnels not revalidated > 90 days auto-archive (kept in YAML, active=false).",
+      "must": [
+        "revalidation_interval_days default 30",
+        "archive_after_days_stale default 90",
+        "archived tunnels remain in YAML with active=false flag",
+        "router skips active=false tunnels in lookup"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "L3 Hebbian co-fire mining (Codex queue)",
+    "L4 multi-cell portfolio routing (Codex queue)",
+    "L5 negative tunnel mining (direction enum here; mining elsewhere)",
+    "Implementation of TunnelRegistry class (separate PR)"
+  ],
+  "related_adrs": ["027"],
+  "related_leaps_50_menu": ["L1", "L2", "L3", "L4", "L5"]
+}

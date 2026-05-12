@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -192,6 +193,65 @@ class TestChatService:
             assert "low conf" not in signals[0].signal_payload
         finally:
             cp.close()
+
+    def test_low_confidence_gap_write_does_not_block_loop(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        class BlockingDetector:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.release = threading.Event()
+                self.signals = []
+
+            def record(self, signal):
+                self.entered.set()
+                if not self.release.wait(timeout=1.0):
+                    raise AssertionError("record was not released")
+                self.signals.append(signal)
+
+        detector = BlockingDetector()
+        svc = ChatService(
+            orchestrator=mock_orchestrator,
+            memory_service=mock_memory_service,
+            hot_cache=mock_hot_cache,
+            routing_policy_fn=select_route,
+            config=mock_config,
+            runtime_gap_detector=detector,
+        )
+
+        async def _run():
+            record_task = asyncio.create_task(svc._record_low_confidence_gap(
+                query="low conf",
+                confidence=0.55,
+                latency_ms=1.0,
+                route_type="llm",
+                source="llm",
+                language="en",
+                profile="HOME",
+                round_table_used=False,
+            ))
+            for _ in range(100):
+                if detector.entered.is_set():
+                    break
+                await asyncio.sleep(0.001)
+            assert detector.entered.is_set()
+
+            async def _tick():
+                await asyncio.sleep(0)
+                return "event-loop-free"
+
+            assert await asyncio.wait_for(_tick(), timeout=0.05) == "event-loop-free"
+            detector.release.set()
+            await asyncio.wait_for(record_task, timeout=1.0)
+
+        asyncio.run(_run())
+
+        assert len(detector.signals) == 1
+        assert detector.signals[0].kind == "low_confidence_chat"
 
     def test_high_confidence_chat_does_not_emit_runtime_gap_signal(
         self,

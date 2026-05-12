@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from waggledance.core.domain.autonomy import CapabilityCategory, CapabilityContract
 
@@ -256,6 +256,13 @@ class CapabilityRegistry:
     def __init__(self, load_builtins: bool = True):
         self._capabilities: Dict[str, CapabilityContract] = {}
         self._executors: Dict[str, Any] = {}
+        # Lazy binding (L54-reframed / ADR-041): factory is invoked on
+        # first get_executor() call; result is cached in _executors.
+        # _factory_failed caches cap_ids whose factory returned an
+        # unavailable executor OR raised, so subsequent get_executor()
+        # short-circuits to None without re-running the factory.
+        self._executor_factories: Dict[str, Callable[[], Any]] = {}
+        self._factory_failed: Set[str] = set()
         if load_builtins:
             self._load_builtins()
 
@@ -368,17 +375,70 @@ class CapabilityRegistry:
         self._executors[capability_id] = executor
         log.debug("Bound executor for capability: %s", capability_id)
 
+    def register_executor_factory(
+        self,
+        capability_id: str,
+        factory: Callable[[], Any],
+    ) -> None:
+        """Register a factory that constructs the executor on first invocation.
+
+        Per ADR-041 (L54-reframed). The factory MUST defer BOTH the adapter
+        module import AND the constructor call. First `get_executor()` call
+        triggers the factory; result is cached. Unavailable executors mark
+        the capability_id as failed and subsequent calls return None
+        without re-running the factory.
+        """
+        self._executor_factories[capability_id] = factory
+        log.debug("Registered executor factory for capability: %s", capability_id)
+
     def get_executor(self, capability_id: str) -> Optional[Any]:
-        """Get the executor bound to a capability ID, or None."""
-        return self._executors.get(capability_id)
+        """Get the executor bound to a capability ID, or None.
+
+        Lookup order (per ADR-041 CFB-003):
+          1. Eagerly-bound _executors cache.
+          2. _factory_failed short-circuit -> None.
+          3. _executor_factories lazy invocation -> cache result.
+        """
+        # Cached eager bind OR cached lazy result.
+        executor = self._executors.get(capability_id)
+        if executor is not None:
+            return executor
+        # Known failure -> short-circuit.
+        if capability_id in self._factory_failed:
+            return None
+        # Lazy factory path.
+        factory = self._executor_factories.get(capability_id)
+        if factory is None:
+            return None
+        try:
+            executor = factory()
+        except Exception as exc:
+            log.debug(
+                "Lazy factory raised for %s: %s", capability_id, exc
+            )
+            self._factory_failed.add(capability_id)
+            return None
+        if not getattr(executor, "available", True):
+            self._factory_failed.add(capability_id)
+            return None
+        self._executors[capability_id] = executor
+        return executor
 
     def executor_count(self) -> int:
-        """Return number of bound executors."""
-        return len(self._executors)
+        """Return number of bound executors (eager + lazy factories registered).
+
+        Includes lazy factories that have not yet been invoked, minus
+        those that already proved unavailable.
+        """
+        eager = set(self._executors.keys())
+        lazy = set(self._executor_factories.keys()) - self._factory_failed
+        return len(eager | lazy)
 
     def executor_ids(self) -> List[str]:
-        """Return capability IDs that have bound executors."""
-        return list(self._executors.keys())
+        """Return capability IDs that have bound executors (eager + lazy)."""
+        eager = set(self._executors.keys())
+        lazy = set(self._executor_factories.keys()) - self._factory_failed
+        return sorted(eager | lazy)
 
     # ── Lookup ────────────────────────────────────────────
 

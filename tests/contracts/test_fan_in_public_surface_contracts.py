@@ -6,12 +6,37 @@ import inspect
 
 from waggledance.adapters.http import deps
 from waggledance.core.bridge_llm import types as bridge_types
-from waggledance.core.domain import agent, autonomy
+from waggledance.core.domain import agent, autonomy, events
 from waggledance.core.storage import control_plane
 
 
 def _field_names(cls: type) -> tuple[str, ...]:
     return tuple(field.name for field in dataclasses.fields(cls))
+
+
+def _assert_slotted(cls: type) -> None:
+    assert hasattr(cls, "__slots__"), f"{cls.__name__} must stay slotted"
+    instance = cls(**{
+        field.name: _sample_value_for_field(field)
+        for field in dataclasses.fields(cls)
+    })
+    assert not hasattr(instance, "__dict__"), (
+        f"{cls.__name__} instances must not grow a per-instance __dict__"
+    )
+
+
+def _sample_value_for_field(field: dataclasses.Field) -> object:
+    if field.default is not dataclasses.MISSING:
+        return field.default
+    if field.default_factory is not dataclasses.MISSING:  # type: ignore[attr-defined]
+        return field.default_factory()  # type: ignore[misc]
+    if field.type in (int, "int"):
+        return 1
+    if field.type in (float, "float"):
+        return 1.0
+    if field.type in (bool, "bool"):
+        return False
+    return "sample"
 
 
 def test_autonomy_domain_core_dataclass_contracts() -> None:
@@ -47,6 +72,36 @@ def test_autonomy_domain_core_dataclass_contracts() -> None:
 
     for cls, fields in expected.items():
         assert _field_names(cls) == fields
+
+
+def test_l51_high_frequency_dataclasses_stay_slotted() -> None:
+    """PR #288 made the L51 high-frequency records slotted for memory use.
+
+    Field-shape tests alone do not catch a future refactor that drops
+    ``slots=True`` while keeping the same public fields.
+    """
+    slotted_classes = (
+        autonomy.Goal,
+        autonomy.WorldSnapshot,
+        autonomy.RiskScore,
+        autonomy.CapabilityContract,
+        autonomy.Action,
+        autonomy.CaseTrajectory,
+        agent.AgentDefinition,
+        agent.AgentResult,
+        events.DomainEvent,
+        bridge_types.CallBudget,
+        bridge_types.LLMRequest,
+        bridge_types.LLMResponse,
+        control_plane.SolverRecord,
+        control_plane.CapabilityRecord,
+        control_plane.RuntimeGapSignalRecord,
+        control_plane.GrowthIntentRecord,
+        control_plane.AutogrowthQueueRecord,
+        control_plane.AutonomyKPISnapshot,
+    )
+    for cls in slotted_classes:
+        _assert_slotted(cls)
 
 
 def test_autonomy_domain_enum_contracts() -> None:

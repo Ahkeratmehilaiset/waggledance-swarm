@@ -17,7 +17,14 @@ BLOCKING_FULL_NAMES = {
     "requests.post",
     "requests.put",
     "requests.request",
+    "socket.create_connection",
     "sqlite3.connect",
+    "subprocess.call",
+    "subprocess.check_call",
+    "subprocess.check_output",
+    "subprocess.Popen",
+    "subprocess.run",
+    "time.sleep",
     "urllib.request.urlopen",
 }
 
@@ -92,12 +99,21 @@ class _AsyncBlockingIoVisitor(ast.NodeVisitor):
         self.path = path
         self.aliases = aliases
         self.async_stack: list[str] = []
+        self.blocking_sync_helpers_stack: list[set[str]] = []
         self.violations: list[str] = []
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.async_stack.append(node.name)
+        blocking_sync_helpers = {
+            child.name
+            for child in node.body
+            if isinstance(child, ast.FunctionDef)
+            and _function_contains_blocking_io(child, self.aliases)
+        }
+        self.blocking_sync_helpers_stack.append(blocking_sync_helpers)
         for child in node.body:
             self.visit(child)
+        self.blocking_sync_helpers_stack.pop()
         self.async_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -118,10 +134,59 @@ class _AsyncBlockingIoVisitor(ast.NodeVisitor):
         if self.async_stack:
             name = _call_name(node.func, self.aliases)
             method_name = name.rsplit(".", 1)[-1]
-            if name in BLOCKING_FULL_NAMES or method_name in BLOCKING_METHOD_NAMES:
+            direct_blocking_helper = (
+                self.blocking_sync_helpers_stack
+                and name in self.blocking_sync_helpers_stack[-1]
+            )
+            if (
+                name in BLOCKING_FULL_NAMES
+                or method_name in BLOCKING_METHOD_NAMES
+                or direct_blocking_helper
+            ):
                 rel_path = self.path.relative_to(PROJECT_ROOT).as_posix()
                 self.violations.append(f"{rel_path}:{node.lineno}: {name}")
         self.generic_visit(node)
+
+
+class _BlockingIoCallFinder(ast.NodeVisitor):
+    def __init__(self, aliases: dict[str, str]) -> None:
+        self.aliases = aliases
+        self.found = False
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = _call_name(node.func, self.aliases)
+        method_name = name.rsplit(".", 1)[-1]
+        if name in BLOCKING_FULL_NAMES or method_name in BLOCKING_METHOD_NAMES:
+            self.found = True
+            return
+        self.generic_visit(node)
+
+
+def _function_contains_blocking_io(
+    node: ast.FunctionDef,
+    aliases: dict[str, str],
+) -> bool:
+    finder = _BlockingIoCallFinder(aliases)
+    for child in node.body:
+        finder.visit(child)
+        if finder.found:
+            return True
+    return False
+
+
+def _async_blocking_io_violations_for_tree(
+    path: Path,
+    tree: ast.Module,
+) -> list[str]:
+    visitor = _AsyncBlockingIoVisitor(path, _import_aliases(tree))
+    visitor.visit(tree)
+    return visitor.violations
 
 
 def _async_blocking_io_violations() -> list[str]:
@@ -130,9 +195,7 @@ def _async_blocking_io_violations() -> list[str]:
         if "__pycache__" in path.parts:
             continue
         tree = _parse(path)
-        visitor = _AsyncBlockingIoVisitor(path, _import_aliases(tree))
-        visitor.visit(tree)
-        violations.extend(visitor.violations)
+        violations.extend(_async_blocking_io_violations_for_tree(path, tree))
     return violations
 
 
@@ -175,3 +238,51 @@ def test_low_confidence_gap_write_stays_off_event_loop() -> None:
     fn = _async_function(tree, "_record_low_confidence_gap")
 
     assert "_record_signal" in _to_thread_first_args(fn, aliases)
+
+
+def test_scanner_catches_direct_call_to_nested_blocking_helper() -> None:
+    tree = ast.parse(
+        """
+import sqlite3
+
+async def bad():
+    def _write():
+        sqlite3.connect("state.db")
+    _write()
+"""
+    )
+    path = WAGGLEDANCE_ROOT / "_synthetic_async_blocking_helper.py"
+    violations = _async_blocking_io_violations_for_tree(path, tree)
+    assert violations == [
+        "waggledance/_synthetic_async_blocking_helper.py:7: _write"
+    ]
+
+
+def test_scanner_allows_nested_blocking_helper_offloaded_to_thread() -> None:
+    tree = ast.parse(
+        """
+import asyncio
+import sqlite3
+
+async def good():
+    def _write():
+        sqlite3.connect("state.db")
+    await asyncio.to_thread(_write)
+"""
+    )
+    path = WAGGLEDANCE_ROOT / "_synthetic_async_to_thread_helper.py"
+    assert _async_blocking_io_violations_for_tree(path, tree) == []
+
+
+def test_scanner_catches_common_blocking_stdlib_calls() -> None:
+    tree = ast.parse(
+        """
+import time
+
+async def bad():
+    time.sleep(1)
+"""
+    )
+    path = WAGGLEDANCE_ROOT / "_synthetic_async_time_sleep.py"
+    violations = _async_blocking_io_violations_for_tree(path, tree)
+    assert violations == ["waggledance/_synthetic_async_time_sleep.py:5: time.sleep"]

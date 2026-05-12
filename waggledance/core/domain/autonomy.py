@@ -104,7 +104,7 @@ def _uuid() -> str:
 
 # ── Core Models ──────────────────────────────────────────────
 
-@dataclass
+@dataclass(slots=True)
 class Goal:
     """A discrete objective the system is trying to achieve."""
     goal_id: str = field(default_factory=_uuid)
@@ -169,7 +169,7 @@ class Goal:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class WorldSnapshot:
     """The state of the world at a specific point in time."""
     snapshot_id: str = field(default_factory=_uuid)
@@ -199,7 +199,7 @@ class WorldSnapshot:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class RiskScore:
     """Multi-dimensional risk assessment for an action."""
     severity: float = 0.0       # 0-1: how bad if it goes wrong
@@ -237,7 +237,7 @@ class RiskScore:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class CapabilityContract:
     """What a capability can do and what guarantees it provides."""
     capability_id: str
@@ -262,7 +262,7 @@ class CapabilityContract:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class Action:
     """A discrete step taken by the system through the Safe Action Bus."""
     action_id: str = field(default_factory=_uuid)
@@ -397,7 +397,7 @@ class Plan:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class CaseTrajectory:
     """
     The full record of a goal → plan → action → outcome cycle.

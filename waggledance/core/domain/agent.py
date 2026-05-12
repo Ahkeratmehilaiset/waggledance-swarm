@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 
 
-@dataclass
+@dataclass(slots=True)
 class AgentDefinition:
     """Immutable agent identity and capabilities."""
 
@@ -18,7 +18,7 @@ class AgentDefinition:
     profile: str  # GADGET / COTTAGE / HOME / FACTORY / ALL
 
 
-@dataclass
+@dataclass(slots=True)
 class AgentResult:
     """Result of an agent processing a task."""
 

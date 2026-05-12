@@ -45,7 +45,7 @@ class EventType(Enum):
     SPECIALIST_ROLLED_BACK = "specialist_rolled_back"
 
 
-@dataclass
+@dataclass(slots=True)
 class DomainEvent:
     """Immutable domain event."""
 

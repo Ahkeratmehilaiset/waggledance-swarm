@@ -16,7 +16,7 @@ class FallbackLevel(enum.IntEnum):
     HEURISTIC = 4
 
 
-@dataclass
+@dataclass(slots=True)
 class CallBudget:
     """Per-call budget controls. All fields optional with safe defaults."""
 
@@ -29,7 +29,7 @@ class CallBudget:
     fallback_policy: str = "best_effort"  # or "fail_fast"
 
 
-@dataclass
+@dataclass(slots=True)
 class LLMRequest:
     """One BridgeLLMClient call.
 
@@ -77,7 +77,7 @@ class LLMRequest:
         return parsed if parsed > 0 else default
 
 
-@dataclass
+@dataclass(slots=True)
 class LLMResponse:
     """Response from a single BridgeLLMClient call."""
 

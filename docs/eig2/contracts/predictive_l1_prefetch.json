@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Predictive L1 prefetch contract (L14)",
+  "description": "Policy invariants for predictive boot-time L1 prefetch on compact-card-v1 cards. See ADR-026.",
+  "version": 1,
+  "policy_defaults": {
+    "prefetch_k": 100,
+    "recency_window_hours": 24,
+    "same_subject_max_share": 0.10
+  },
+  "invariants": [
+    {
+      "id": "PLP-001",
+      "name": "k_bounded_positive_integer",
+      "description": "prefetch_k MUST be a positive integer. Default 100, profile-tunable.",
+      "must": [
+        "type assertion: isinstance(prefetch_k, int) and prefetch_k > 0",
+        "default = 100 readable from this contract, not hardcoded",
+        "profile config may override via 'l1_prefetch_k' key"
+      ]
+    },
+    {
+      "id": "PLP-002",
+      "name": "recency_window_bound",
+      "description": "Cards selected for prefetch MUST have produced_at_utc within recency_window_hours (default 24) of boot time. Older cards ignored regardless of access count.",
+      "must": [
+        "filter applied BEFORE ranking by access count",
+        "boot time captured as wall clock at prefetch start",
+        "card.produced_at_utc parsed as ISO8601 UTC"
+      ]
+    },
+    {
+      "id": "PLP-003",
+      "name": "diversity_floor",
+      "description": "At most same_subject_max_share (default 0.10) of K cards may share the same subject_id. Prevents subject-monopoly.",
+      "must": [
+        "after ranking, post-filter caps same-subject cards at floor(K * share)",
+        "if cap forces drop, lower-ranked diverse subjects fill the gap"
+      ]
+    },
+    {
+      "id": "PLP-004",
+      "name": "decision_kind_coverage",
+      "description": "Every allowed decision_kind (per ADR-024 CDC-007) MUST have at least one card in prefetch set, IF such a card exists in the candidate pool.",
+      "must": [
+        "before final K cut, ensure each represented kind has >= 1 slot",
+        "if a kind has no card in candidate pool, skip it (no failure)",
+        "logged at INFO when coverage forces a swap"
+      ]
+    },
+    {
+      "id": "PLP-005",
+      "name": "no_history_recency_fallback",
+      "description": "When autogrowth_scheduler.stats is empty, fall back to pure-recency top-K (newest within window). INFO log, not WARNING (expected first-boot behavior).",
+      "must": [
+        "empty stats -> sort candidate pool by produced_at_utc desc, take K",
+        "logged at INFO with message indicating fallback engaged",
+        "not a hard error"
+      ]
+    },
+    {
+      "id": "PLP-006",
+      "name": "read_only_stats",
+      "description": "Prefetcher MUST NOT mutate stats while reading. Stats remain authoritative for autogrowth scheduling.",
+      "must": [
+        "no calls into autogrowth_scheduler.stats.set_* / .reset / .increment from the prefetch code path",
+        "tests verify by snapshot-before / snapshot-after equality on the stats object"
+      ]
+    },
+    {
+      "id": "PLP-007",
+      "name": "missing_card_skip",
+      "description": "If a card pointed to by stats is absent from the card store (GC'd or never written), prefetcher skips and continues. No hard failure.",
+      "must": [
+        "missing card_id -> log at DEBUG, continue to next candidate",
+        "metric counter incremented (prefetch_missing_card_total) for ops visibility",
+        "no exception propagates out of the prefetch path"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of L1Prefetcher (separate PR)",
+    "Stats-source contract -- what fields does autogrowth_scheduler.stats expose? (separate ADR)",
+    "Per-profile K tuning UI (separate PR)",
+    "Adaptive K based on miss rate (future, not L14)"
+  ],
+  "related_adrs": ["021", "024"],
+  "related_leaps_50_menu": ["L11", "L12", "L14", "L15"],
+  "depends_on_contracts": ["progressive_replay_l0_l4.json", "compact_decision_card.json"]
+}

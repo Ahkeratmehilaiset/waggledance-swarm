@@ -1,0 +1,12 @@
+{
+  "schema": "eig2-autonomous-merge-snapshot-v1",
+  "source": ".eig2.autonomous_merge",
+  "exists_at_start": false,
+  "content_hash": null,
+  "enabled": false,
+  "read_at": "2026-05-11T21:13:58.0054905Z",
+  "must_ignore_later_changes": true,
+  "effect": "label_only_per_adr_017",
+  "adr": "docs/eig2/adr/017-eig2-autonomous-merge-label-only.md",
+  "source_commit": "2cc6fec28d4103b8c7deab6aad8488866b5e3ba6"
+}

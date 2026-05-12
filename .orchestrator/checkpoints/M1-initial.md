@@ -100,6 +100,8 @@ Startup snapshot:
 - B18: hybrid collection count fallback can create state from a GET read path.
 - B19: hologram secret redactor over-redacts benign metric fields.
 - B26: prompt builder language switching lock does not cover the full critical section.
+- B32: BridgeLLM drops model/temperature/max_tokens on the provider path; tracked by PR #272.
+- B35/B37: BridgeLLM redactor misses expanded HETU separators and lowercase IBAN; tracked by PR #271.
 
 These are not M1.0 blockers because this PR is documentation/orchestrator only.
 They become higher priority before M3/M4 load-bearing runtime work.
@@ -115,6 +117,9 @@ Completed before PR:
 
 ## Unresolved risks
 
+- The first M1.x topology-provider PR may define only the interface shape for
+  `topology_provider.py`; M2 completes the interface set with tunnel registry
+  and compact-card schema before any production caller import.
 - The first runtime topology-provider PR must decide how to expose the 7-cell
   agent mesh and 8-cell solver topology without presenting them as one graph.
 - The post-M0 hardening backlog should be fixed before EIG2 depends on the

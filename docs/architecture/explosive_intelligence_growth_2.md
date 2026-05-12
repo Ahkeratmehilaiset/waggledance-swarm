@@ -168,11 +168,19 @@ authority remain governed by the standing repo rules.
 | M7 | Regression loop and adversarial checkpoints | Fixes only after classified evidence |
 | M8 | Finalization, report, rollback notes, release naming | Governed by ADR-018 and existing release rules |
 
+M1.x vs M2 boundary: an M1.x PR may introduce only the first
+`topology_provider.py` interface shape for review under ADR-012, with no
+production caller import. M2 is the milestone where the interface set becomes
+complete enough to include topology provider, in-memory tunnel registry, and
+compact-card schema together. Routing integration still waits for M4 evidence.
+
 ## Known post-M0 hardening backlog
 
 These are inherited substrate risks reported by Claude RCO audit events. They
 do not block M1.0 because this PR has no runtime effect, but they should be
-tracked before M3/M4 consume the affected paths under load.
+tracked before M3/M4 consume the affected paths under load. Items marked with a
+PR number are already being fixed in parallel and remain listed here so the
+M1.0 snapshot is historically complete.
 
 | ID | Area | Risk | Smallest safe direction |
 |---|---|---|---|
@@ -181,11 +189,15 @@ tracked before M3/M4 consume the affected paths under load.
 | B18 | `hybrid.py` | GET topology/cell reads can create collections through `get_or_create` fallback. | Refuse read-path mutation when no non-mutating count API exists. |
 | B19 | `hologram.py` | Secret redaction substring matching drops benign metrics such as token counts. | Use exact marker, boundary, or suffix matching and preserve metric fields in tests. |
 | B26 | `prompt_builder.py` | `set_language` and `build_system_prompt` are not locked as the docstring claims. | Lock the full critical section or use per-language bridge instances, with a concurrent multilingual test. |
+| B32 | BridgeLLM request path | `model`, `temperature`, and `max_tokens` can be silently dropped before providers. | Fix in PR #272 by lifting generation params into `LLMRequest` and provider/cache usage. |
+| B35/B37 | BridgeLLM PII redactor | Modern Finnish HETU separators and lowercase IBANs can miss the intended classifier. | Fix in PR #271 by expanding HETU separator coverage and making IBAN matching case-insensitive. |
 
 Tracking source: bridge findings `claude-rco-audit-pr261-autogrowth-scheduler-2026-05-11`,
 `claude-rco-audit-pr260-chat-gap-write-2026-05-11`,
-`claude-rco-audit-pr244-hexacon-harden-2026-05-11`, and
-`claude-rco-audit-pr252-prompt-builder-2026-05-11`.
+`claude-rco-audit-pr244-hexacon-harden-2026-05-11`,
+`claude-rco-audit-pr252-prompt-builder-2026-05-11`,
+`claude-rco-audit-pr257-bridge-llm-silent-drop-2026-05-11`, and
+`claude-rco-audit-pr240-hetu-b-f-separators-2026-05-11`.
 
 ## M1.0 exit criteria
 

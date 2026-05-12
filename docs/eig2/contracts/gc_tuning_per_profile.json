@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "GC tuning per profile contract (L39)",
+  "description": "Python gc module tuning per profile. See ADR-056.",
+  "version": 1,
+  "profile_enum": ["GADGET", "COTTAGE", "HOME", "FACTORY"],
+  "gen2_thresholds": {
+    "GADGET": [700, 10, 10],
+    "COTTAGE": [1500, 20, 20],
+    "HOME": [3000, 30, 30],
+    "FACTORY": [5000, 50, 50]
+  },
+  "off_peak_windows_local": {"HOME": "02:00-04:00", "FACTORY": "02:00-04:00"},
+  "invariants": [
+    {"id": "GTP-001", "name": "profile_specific_thresholds", "description": "gen-2 thresholds per profile pinned.", "must": ["values match contract exactly", "no auto-tuning at runtime"]},
+    {"id": "GTP-002", "name": "off_peak_window_respected", "description": "HOME/FACTORY suppress gen-2 during peak.", "must": ["gc.disable() for gen-2 outside off-peak window", "re-enable for window"]},
+    {"id": "GTP-003", "name": "manual_collect_during_window", "description": "Nightly forced gen-2 at 02:00 local.", "must": ["gc.collect(2) called at start of off-peak", "scheduled by autogrowth_background_ticker"]},
+    {"id": "GTP-004", "name": "gadget_preserves_defaults", "description": "GADGET keeps Python defaults.", "must": ["thresholds [700, 10, 10] = Python defaults", "no behavior change vs untuned"]},
+    {"id": "GTP-005", "name": "monotonic_by_profile_size", "description": "Larger profile -> larger thresholds.", "must": ["GADGET[0] <= COTTAGE[0] <= HOME[0] <= FACTORY[0]", "matches PAB-002 monotonicity"]},
+    {"id": "GTP-006", "name": "telemetry_on_collect", "description": "Pause duration logged at gen-2 events.", "must": ["events.jsonl entry on gen-2 collect", "duration_ms field included"]},
+    {"id": "GTP-007", "name": "disable_enable_atomic", "description": "Gen-2 suppression + re-enable use lock.", "must": ["asyncio.Lock or threading.Lock", "no race on state transition"]}
+  ],
+  "out_of_scope": ["Implementation (separate PR)", "gen-1 tuning (less impact, not pursued)"],
+  "related_adrs": ["055"],
+  "related_leaps_50_menu": ["L39"]
+}

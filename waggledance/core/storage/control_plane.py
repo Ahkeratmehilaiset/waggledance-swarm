@@ -60,7 +60,7 @@ class SolverFamilyRecord:
     updated_at: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SolverRecord:
     id: int
     family_id: Optional[int]
@@ -73,7 +73,7 @@ class SolverRecord:
     updated_at: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CapabilityRecord:
     id: int
     name: str
@@ -195,7 +195,7 @@ class SolverCapabilityFeatureRecord:
 # -- schema v3 — Phase 12 self-starting autogrowth intake -----------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RuntimeGapSignalRecord:
     id: int
     kind: str
@@ -207,7 +207,7 @@ class RuntimeGapSignalRecord:
     created_at: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GrowthIntentRecord:
     id: int
     family_kind: str
@@ -223,7 +223,7 @@ class GrowthIntentRecord:
     updated_at: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AutogrowthQueueRecord:
     id: int
     intent_id: int
@@ -347,7 +347,7 @@ class PromotionDecisionRecord:
     created_at: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AutonomyKPISnapshot:
     id: int
     snapshot_at: str

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Negative tunnel mining contract (L5)",
+  "description": "Detection of negative routing edges from contradiction events. See ADR-040.",
+  "version": 1,
+  "policy_defaults": {
+    "mining_window_hours": 24,
+    "mining_window_range_hours": [1, 168],
+    "min_contradictions": 5,
+    "min_contradiction_rate": 0.30,
+    "mining_cadence_seconds": 3600
+  },
+  "invariants": [
+    {
+      "id": "NTU-001",
+      "name": "mining_window_24h",
+      "description": "Default 24h window. Range [1, 168] (1 hour to 1 week).",
+      "must": [
+        "mining_window_hours default 24",
+        "validator accepts range [1, 168]"
+      ]
+    },
+    {
+      "id": "NTU-002",
+      "name": "min_contradictions_5",
+      "description": "Below 5 contradictions in window, no tunnel mined (too few signals).",
+      "must": [
+        "min_contradictions default 5",
+        "below threshold: no candidate tunnel produced",
+        "threshold operator-tunable"
+      ]
+    },
+    {
+      "id": "NTU-003",
+      "name": "min_contradiction_rate_30pct",
+      "description": "Pair must have >= 30% contradiction rate vs successful invocations to mine.",
+      "must": [
+        "min_contradiction_rate default 0.30",
+        "denominator includes BOTH successful and failed invocations",
+        "rate computed as contradictions / total_invocations"
+      ]
+    },
+    {
+      "id": "NTU-004",
+      "name": "hard_veto_semantics",
+      "description": "Negative tunnel for (from_cell, to_solver) prevents routing regardless of forward tunnel trust.",
+      "must": [
+        "routing path checks negative tunnels FIRST",
+        "match -> skip route, no fallthrough to forward tunnel",
+        "operator log when veto applied"
+      ]
+    },
+    {
+      "id": "NTU-005",
+      "name": "provenance_required",
+      "description": "Negative tunnel cites provenance_event_id of most recent contradiction event.",
+      "must": [
+        "provenance_event_id is required and non-null",
+        "field is the most recent contradiction_event id in the mining window",
+        "matches ADR-038 TUN-002 invariant for forward tunnels"
+      ]
+    },
+    {
+      "id": "NTU-006",
+      "name": "hourly_mining_cadence",
+      "description": "Default mining cadence hourly. Configurable [600, 86400].",
+      "must": [
+        "mining_cadence_seconds default 3600",
+        "validator accepts [600, 86400]",
+        "miner scheduled by autogrowth_background_ticker"
+      ]
+    },
+    {
+      "id": "NTU-007",
+      "name": "lifecycle_alignment",
+      "description": "Same revalidation/archive lifecycle as forward tunnels (ADR-038 TUN-007). Stale negative tunnels auto-archive.",
+      "must": [
+        "revalidation interval matches forward tunnel default 30 days",
+        "archive after 90 days stale (no contradiction events)",
+        "archived tunnels have active=false in YAML, not deleted"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of NegativeTunnelMiner (separate PR)",
+    "contradiction_event schema (assumed pre-existing in bridge)",
+    "Cross-agent negative-tunnel sharing (future ADR)"
+  ],
+  "related_adrs": ["031", "032", "038"],
+  "related_leaps_50_menu": ["L2", "L3", "L5", "L22"]
+}

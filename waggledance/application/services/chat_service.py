@@ -292,7 +292,7 @@ class ChatService:
         # v1.18.0: record telemetry + ledger
         self._record_telemetry(
             route.route_type, result.confidence, elapsed, True, req.query)
-        self._record_low_confidence_gap(
+        await self._record_low_confidence_gap(
             query=req.query,
             confidence=result.confidence,
             latency_ms=elapsed,
@@ -320,7 +320,7 @@ class ChatService:
             hybrid_trace=hybrid_trace,
         )
 
-    def _record_low_confidence_gap(
+    async def _record_low_confidence_gap(
         self,
         *,
         query: str,
@@ -341,8 +341,6 @@ class ChatService:
         if detector is None:
             return
         try:
-            from waggledance.core.autonomy_growth.gap_intake import GapSignal
-
             query_hash = hashlib.sha256(
                 query.encode("utf-8", errors="replace")
             ).hexdigest()[:16]
@@ -357,14 +355,22 @@ class ChatService:
                 "query_hash": query_hash,
                 "query_length": len(query),
             }
-            detector.record(GapSignal(
-                kind="low_confidence_chat",
-                family_kind=None,
-                cell_coord=cell_coord,
-                intent_seed=query_hash,
-                weight=max(0.1, LOW_CONFIDENCE_GAP_THRESHOLD - float(confidence)),
-                payload=payload,
-            ))
+            def _record_signal() -> None:
+                from waggledance.core.autonomy_growth.gap_intake import GapSignal
+
+                detector.record(GapSignal(
+                    kind="low_confidence_chat",
+                    family_kind=None,
+                    cell_coord=cell_coord,
+                    intent_seed=query_hash,
+                    weight=max(
+                        0.1,
+                        LOW_CONFIDENCE_GAP_THRESHOLD - float(confidence),
+                    ),
+                    payload=payload,
+                ))
+
+            await asyncio.to_thread(_record_signal)
         except Exception:
             log.debug("Failed to record low-confidence chat gap", exc_info=True)
 
@@ -493,7 +499,7 @@ class ChatService:
                     self._hot_cache.set(cache_key, response, ttl=3600)
 
                 self._record_telemetry(source, confidence, elapsed, True, query)
-                self._record_low_confidence_gap(
+                await self._record_low_confidence_gap(
                     query=query,
                     confidence=confidence,
                     latency_ms=elapsed,

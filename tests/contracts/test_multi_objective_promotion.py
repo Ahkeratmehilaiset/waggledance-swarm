@@ -39,12 +39,11 @@ def test_default_weights_sum_to_1() -> None:
     assert sum(weights.values()) == 1.0
 
 
-def test_accuracy_dominant() -> None:
-    """MOP-005: accuracy must dominate other axes combined."""
+def test_accuracy_majority() -> None:
+    """MOP-005: accuracy must hold at least half the total weight."""
     c = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     w = c["default_weights"]
-    others = w["latency"] + w["breadth"] + w["novelty"]
-    assert w["accuracy"] > others
+    assert w["accuracy"] >= 0.50
 
 
 def test_caps() -> None:

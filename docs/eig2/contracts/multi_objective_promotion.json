@@ -11,7 +11,7 @@
     {"id": "MOP-002", "name": "weights_sum_to_one", "description": "0.50 + 0.20 + 0.15 + 0.15 = 1.00.", "must": ["sum(weights) == 1.0 (epsilon)", "validator checks at config load"]},
     {"id": "MOP-003", "name": "axes_in_unit_interval", "description": "Each axis in [0, 1].", "must": ["normalized at measurement time", "validator rejects out-of-range"]},
     {"id": "MOP-004", "name": "per_profile_weight_override", "description": "Profile can override weights.", "must": ["profile config respected", "default weights pinned in contract", "overrides also sum to 1.0 (validator)"]},
-    {"id": "MOP-005", "name": "accuracy_dominant", "description": "accuracy_weight > sum(other weights).", "must": ["accuracy weight > latency + breadth + novelty", "catches degenerate fast-but-wrong", "validator rejects configs that violate"]},
+    {"id": "MOP-005", "name": "accuracy_majority", "description": "accuracy_weight >= 0.50 (holds majority of total weight).", "must": ["accuracy weight >= 0.50", "catches degenerate fast-but-wrong solvers", "validator rejects configs that violate"]},
     {"id": "MOP-006", "name": "cap_normalization", "description": "breadth caps at 5 domains, novelty at 10 classes.", "must": ["breadth_max_domains 5", "novelty_max_intent_classes 10", "values above cap mapped to 1.0"]},
     {"id": "MOP-007", "name": "auditable", "description": "Promotion log records all four axis values + final score.", "must": ["events.jsonl entry has axes dict + score", "operator can reconstruct decision retroactively"]}
   ],

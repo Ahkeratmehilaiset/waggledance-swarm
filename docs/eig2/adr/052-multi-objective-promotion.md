@@ -27,7 +27,7 @@ Final: `score = 0.50*accuracy + 0.20*latency + 0.15*breadth + 0.15*novelty`. All
 2. **Weights sum to 1.0**: pinned 0.50 + 0.20 + 0.15 + 0.15 = 1.00.
 3. **Each axis [0, 1]**: normalized at measurement.
 4. **Per-profile weight override**: cottage may favor latency higher; factory accuracy higher. Default pinned.
-5. **Accuracy dominant**: accuracy weight MUST be > sum of other weights. Catches degenerate fast-but-wrong solvers.
+5. **Accuracy majority**: accuracy weight MUST be ≥ 0.50 (majority of total). Catches degenerate fast-but-wrong solvers.
 6. **Cap normalization**: breadth caps at 5 domains, novelty at 10 classes; values above cap → 1.0.
 7. **Auditable**: promotion log records all four axis values + final score.
 

@@ -107,6 +107,42 @@ Before `v3.12.0` stable may be created:
 * Docker stable workflow and `:latest` move policy must be finalized.
 * Release notes must use the v3.12.0 template and include anti-claims.
 
+Executable gate:
+
+```text
+python tools/check_release_gate.py \
+  --release-readiness docs/release/RELEASE_READINESS.md \
+  --soak-evidence docs/runs/release_soak_evidence/v3.12.0.json
+```
+
+The command is fail-closed. It must return `"decision": "pass"` before
+a stable tag, GitHub release, GHCR `:stable`, or GHCR `:latest`
+promotion is created. Until a real soak artifact exists, the expected
+result is `"decision": "hold"`.
+
+Required soak evidence schema:
+
+```json
+{
+  "schema_version": "waggledance.release_soak.v1",
+  "target_version": "v3.12.0",
+  "commit": "<tag-commit-sha>",
+  "started_at_utc": "2026-05-10T00:00:00Z",
+  "ended_at_utc": "2026-05-24T00:00:00Z",
+  "duration_hours": 336,
+  "result": "pass",
+  "silent_failures": 0,
+  "error_log_clean": true,
+  "ci_status": "pass",
+  "profile_s_smoke": "pass",
+  "security_privacy_gate": "pass",
+  "axis_a_regression": "pass",
+  "axis_b_gate": "pass",
+  "docker_stable_policy": "finalized",
+  "release_notes_anti_claims": "pass"
+}
+```
+
 ## Docker Readiness
 
 Current stable Docker evidence is still the Phase 16F `v3.8.0` line:

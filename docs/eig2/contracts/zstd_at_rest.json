@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "zstd-at-rest contract (L18)",
+  "description": "Compression policy for older MAGMA events. See ADR-030.",
+  "version": 1,
+  "codec": "zstd",
+  "policy_defaults": {
+    "cold_threshold_days": 7,
+    "zstd_level": 3,
+    "zstd_at_rest_enabled": true
+  },
+  "compression_unit": "merkle_batch",
+  "invariants": [
+    {
+      "id": "ZAR-001",
+      "name": "age_threshold",
+      "description": "Events younger than cold_threshold_days=7 stored UNCOMPRESSED. Older go through compression pipeline.",
+      "must": [
+        "cold_threshold_days default = 7 (configurable)",
+        "age computed at compression-decision time as (now - event.produced_at_utc).days",
+        "threshold check happens at batch close OR snapshot rotation"
+      ]
+    },
+    {
+      "id": "ZAR-002",
+      "name": "zstd_level_default_3",
+      "description": "zstd_level=3 default (fast/medium balance). Per-profile override allowed in range 1-22.",
+      "must": [
+        "default 3",
+        "profile override accepts range 1..22",
+        "out-of-range value rejected by validator"
+      ]
+    },
+    {
+      "id": "ZAR-003",
+      "name": "batch_level_granularity",
+      "description": "Compression applied per ADR-028 Merkle batch (1024 events), not per-event. Maximizes shared dictionary.",
+      "must": [
+        "compression unit = 1 Merkle batch (1024 events)",
+        "per-event compression is explicitly forbidden (loses dictionary sharing)",
+        "batch boundary matches ADR-028 batch_size"
+      ]
+    },
+    {
+      "id": "ZAR-004",
+      "name": "hash_domain_unchanged",
+      "description": "sha256 hashes computed on UNCOMPRESSED event canonical bytes. Compression is storage-only.",
+      "must": [
+        "leaf hash = sha256(uncompressed_event_canonical_bytes)",
+        "Merkle interior hashes computed on uncompressed leaves per ADR-028",
+        "compression NEVER affects hash inputs"
+      ]
+    },
+    {
+      "id": "ZAR-005",
+      "name": "decompress_on_read",
+      "description": "Reads of compressed batches decompress lazily. Warm-promotion (ADR-029) caches decompressed form.",
+      "must": [
+        "read path: fetch compressed bytes -> decompress -> verify hash -> return",
+        "decompressed value is the value populated into ADR-029 warm cache",
+        "raw compressed bytes do NOT leak above the storage layer"
+      ]
+    },
+    {
+      "id": "ZAR-006",
+      "name": "decompression_fails_closed",
+      "description": "Decompression failure -> ERROR log + raw replay fallback per ADR-021. No data returned that has not been hash-verified.",
+      "must": [
+        "zstd.ZstdError -> ERROR log with batch_index + event_index + raise",
+        "fall back to raw replay path (ADR-021 fallback_contract)",
+        "no partial decompression result returned to caller"
+      ]
+    },
+    {
+      "id": "ZAR-007",
+      "name": "disable_per_profile",
+      "description": "Operator can set zstd_at_rest_enabled=false per profile to skip compression entirely.",
+      "must": [
+        "default enabled=true",
+        "profile config respected at compression-decision time",
+        "disabled profile stores all events uncompressed regardless of age"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of ZstdAtRestEncoder/Decoder (separate PR)",
+    "Migration tooling for existing uncompressed batches (separate PR)",
+    "zstd dictionary training (future ADR if benefit measured)",
+    "Alternative codecs lz4/snappy (explicitly NOT planned)"
+  ],
+  "related_adrs": ["021", "022", "024", "025", "028", "029"],
+  "related_leaps_50_menu": ["L13", "L17", "L18", "L19"],
+  "depends_on_contracts": [
+    "merkle_batched_hash_verification.json",
+    "cold_tier_read_through_cache.json"
+  ]
+}

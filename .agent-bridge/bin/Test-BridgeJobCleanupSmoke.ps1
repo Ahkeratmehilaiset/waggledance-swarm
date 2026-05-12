@@ -7,8 +7,9 @@
     Verifies that:
       1. Start-AgentBridgeSession.ps1 launches both wake (R23.0) and
          heartbeat (R23.1) jobs as expected.
-      2. The PowerShell.Exiting event handler is registered exactly once
-         even when Start-AgentBridgeSession.ps1 is dot-sourced twice.
+      2. Re-sourcing Start-AgentBridgeSession.ps1 for the same agent keeps
+         one wake job and one heartbeat job, and the PowerShell.Exiting
+         event handler is registered exactly once.
       3. Stop-AgentBridgeSession.ps1 cleans up matching jobs by pattern.
       4. Stop-AgentBridgeSession.ps1 -Agent <name> only stops that
          agent's jobs.
@@ -84,7 +85,7 @@ try {
     Add-Check 'heartbeat job is Running' ($null -ne $hbJob -and $hbJob.State -eq 'Running')
 
     # ── 2: cleanup handler registered exactly once ────────────────────
-    Write-Host '2. PowerShell.Exiting handler registered (idempotent on second source):'
+    Write-Host '2. Same-agent bootstrap replaces old jobs and keeps one cleanup handler:'
     $flagVar = Get-Variable -Name '__AgentBridgeCleanupRegistered' `
         -Scope Global -ErrorAction SilentlyContinue
     Add-Check 'cleanup-registered flag set' (
@@ -96,15 +97,31 @@ try {
     Add-Check 'cleanup PowerShell.Exiting subscriber exists' (
         $beforeSubscribers.Count -eq 1) "count=$($beforeSubscribers.Count)"
     $beforeCount = $beforeSubscribers.Count
-    # Re-source the bootstrap; the flag should prevent double-register
+    $oldWakeId = $wakeId
+    $oldHbId = $hbId
+    # Re-source the bootstrap without skip switches: it should replace
+    # same-agent jobs, not create duplicate monitors.
     . $startSession -Agent claude -RuntimeRoot $tempRoot `
-        -SkipBridgeRead -SkipLiveness -SkipGitStatus -SkipWakeWatcher -SkipHeartbeatJob | Out-Null
+        -SkipBridgeRead -SkipLiveness -SkipGitStatus | Out-Null
+    Start-Sleep -Milliseconds 500
     $afterCount = @(
         Get-EventSubscriber -Force -ErrorAction SilentlyContinue |
             Where-Object { $_.SourceIdentifier -eq 'PowerShell.Exiting' }
     ).Count
     Add-Check 'second dot-source did not duplicate cleanup subscription' `
         ($afterCount -eq $beforeCount) "before=$beforeCount after=$afterCount"
+    $wakeJobsAfterSecondStart = @(Get-Job -Name 'agent-bridge-watcher-claude' -ErrorAction SilentlyContinue)
+    $heartbeatJobsAfterSecondStart = @(Get-Job -Name 'agent-bridge-heartbeat-claude' -ErrorAction SilentlyContinue)
+    Add-Check 'second dot-source kept one claude wake job' `
+        ($wakeJobsAfterSecondStart.Count -eq 1) "count=$($wakeJobsAfterSecondStart.Count)"
+    Add-Check 'second dot-source kept one claude heartbeat job' `
+        ($heartbeatJobsAfterSecondStart.Count -eq 1) "count=$($heartbeatJobsAfterSecondStart.Count)"
+    Add-Check 'old wake job was removed during replacement' `
+        ($null -eq (Get-Job -Id $oldWakeId -ErrorAction SilentlyContinue)) "old=$oldWakeId"
+    Add-Check 'old heartbeat job was removed during replacement' `
+        ($null -eq (Get-Job -Id $oldHbId -ErrorAction SilentlyContinue)) "old=$oldHbId"
+    $wakeId = $env:AGENT_BRIDGE_WAKE_JOB
+    $hbId = $env:AGENT_BRIDGE_HEARTBEAT_JOB
 
     # ── 3: Stop-AgentBridgeSession by pattern stops both ──────────────
     Write-Host '3. Stop-AgentBridgeSession (no -Agent) stops all matching jobs:'

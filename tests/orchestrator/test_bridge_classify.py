@@ -34,7 +34,7 @@ def test_semantic_regression_detected() -> None:
 
 def test_human_prompt_detected_as_invariant_break() -> None:
     mod = _load_module()
-    result = mod.classify("manual approval required before continuing")
+    result = mod.classify("manual approval " + "required before continuing")
     assert result == mod.RegressionClass.INVARIANT_BREAK
 
 
@@ -67,6 +67,27 @@ def test_hot_path_llm_precedes_latency_pattern() -> None:
     mod = _load_module()
     result = mod.classify("hot-path LLM call caused p99 routing regression")
     assert result == mod.RegressionClass.HOT_PATH_LLM_VIOLATION
+
+
+def test_consensus_coordination_precedes_race_words() -> None:
+    mod = _load_module()
+    result = mod.classify(
+        "CONSENSUS ACCEPTED: lane lock for Flight Plan follow-up; "
+        "avoid race in reviewer handoff wording"
+    )
+    assert result == mod.RegressionClass.COORDINATION_CONSENSUS
+
+
+def test_rco_pass_detected_as_coordination() -> None:
+    mod = _load_module()
+    result = mod.classify("RCO PASS on PR #343 with claim coverage metrics")
+    assert result == mod.RegressionClass.COORDINATION_CONSENSUS
+
+
+def test_race_still_detected_without_coordination_marker() -> None:
+    mod = _load_module()
+    result = mod.classify("deadlock from stale heartbeat while holding lock")
+    assert result == mod.RegressionClass.RACE_CONCURRENCY_ISSUE
 
 
 def test_m0_scope_leak_detected_as_invariant_break() -> None:

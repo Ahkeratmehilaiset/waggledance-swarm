@@ -126,6 +126,41 @@ if (-not $SkipBridgeRead) {
     & $bridgeStatus -MaxUnresolved 15
 }
 
+function Stop-AgentBridgeExistingJob {
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $EnvName
+    )
+
+    $jobsById = @{}
+    $envJobId = [Environment]::GetEnvironmentVariable($EnvName, 'Process')
+    if ($envJobId -and $envJobId -match '^\d+$') {
+        try {
+            $job = Get-Job -Id ([int]$envJobId) -ErrorAction SilentlyContinue
+            if ($job -and $job.Name -eq $Name) {
+                $jobsById[[int]$job.Id] = $job
+            }
+        } catch {}
+    }
+
+    foreach ($job in @(Get-Job -Name $Name -ErrorAction SilentlyContinue)) {
+        $jobsById[[int]$job.Id] = $job
+    }
+
+    foreach ($job in @($jobsById.Values)) {
+        try {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Warning "Start-AgentBridgeSession: could not replace existing job '$($job.Name)' id=$($job.Id): $($_.Exception.Message)"
+        }
+    }
+
+    if ($jobsById.Count -gt 0) {
+        Remove-Item -Path ("Env:{0}" -f $EnvName) -ErrorAction SilentlyContinue
+    }
+}
+
 # R23.0: launch the wake-on-event watcher as a background job so the
 # agent's polling loop can react in <2 s instead of waiting on its own
 # cadence. Honors $env:WAGGLE_BRIDGE_WAKE_ENABLED=0 as a kill switch
@@ -137,7 +172,9 @@ if ((-not $SkipWakeWatcher) -and $wakeEnabled) {
     $watchScript = Join-Path $PSScriptRoot 'Watch-Bridge.ps1'
     if (Test-Path -LiteralPath $watchScript) {
         try {
-            $job = Start-Job -Name "agent-bridge-watcher-$Agent" -ScriptBlock {
+            $wakeJobName = "agent-bridge-watcher-$Agent"
+            Stop-AgentBridgeExistingJob -Name $wakeJobName -EnvName 'AGENT_BRIDGE_WAKE_JOB'
+            $job = Start-Job -Name $wakeJobName -ScriptBlock {
                 param($scriptPath, $agentArg, $runtimeArg)
                 & $scriptPath -Agent $agentArg -RuntimeRoot $runtimeArg
             } -ArgumentList $watchScript, $Agent, $runtimeFull
@@ -160,7 +197,9 @@ if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
     $heartbeatScript = Join-Path $PSScriptRoot 'Start-BridgeHeartbeat.ps1'
     if (Test-Path -LiteralPath $heartbeatScript) {
         try {
-            $job = Start-Job -Name "agent-bridge-heartbeat-$Agent" -ScriptBlock {
+            $heartbeatJobName = "agent-bridge-heartbeat-$Agent"
+            Stop-AgentBridgeExistingJob -Name $heartbeatJobName -EnvName 'AGENT_BRIDGE_HEARTBEAT_JOB'
+            $job = Start-Job -Name $heartbeatJobName -ScriptBlock {
                 param($scriptPath, $agentArg, $runtimeArg)
                 & $scriptPath -Agent $agentArg -RuntimeRoot $runtimeArg
             } -ArgumentList $heartbeatScript, $Agent, $runtimeFull

@@ -257,22 +257,35 @@ class TestFeatureFlag:
             hybrid_service_disabled.retrieve("test query"))
         assert trace.retrieval_mode == "global_only"
 
-    @pytest.mark.xfail(
-        reason=(
-            "Pre-existing: since Phase D-1 (2026-04-23, commit 3d0bd9f) "
-            "the runtime emits retrieval_mode='hybrid:<mode>' (e.g. "
-            "'hybrid:shadow') but this test still expects the bare string. "
-            "Ownership: Phase D-team — either flatten the label back or "
-            "update the test to accept 'hybrid:*'. Marked xfail on branch "
-            "phase8/honeycomb-solver-scaling-foundation per GPT R5 Q7 so "
-            "CI stays honest instead of silently red."
-        ),
-        strict=True,
-    )
     def test_enabled_returns_hybrid(self, hybrid_service):
+        """Retrieval mode must indicate hybrid-mode operation.
+
+        Since Phase D-1 (2026-04-23, commit 3d0bd9f) the runtime emits
+        `retrieval_mode='hybrid:<mode>'` where `<mode>` is one of
+        `shadow`, `candidate`, or `authoritative` (per
+        `hybrid_retrieval_service.py:202` + line 132 validation). This
+        test accepts any `hybrid:*` form rather than the pre-D-1 bare
+        `"hybrid"` string. The previous xfail marker is removed because
+        the bare-`"hybrid"` contract was deliberately superseded by the
+        more informative submode-tagged form; updating the test is the
+        smaller fix vs reverting the runtime change.
+        """
         trace = asyncio.run(
             hybrid_service.retrieve("calculate sum"))
-        assert trace.retrieval_mode == "hybrid"
+        assert trace.retrieval_mode.startswith("hybrid"), (
+            f"expected retrieval_mode to start with 'hybrid', "
+            f"got {trace.retrieval_mode!r}"
+        )
+        # Submode form: 'hybrid:shadow' / 'hybrid:candidate' /
+        # 'hybrid:authoritative'. Bare 'hybrid' is also accepted to
+        # remain compatible with future runtime simplification.
+        if ":" in trace.retrieval_mode:
+            submode = trace.retrieval_mode.split(":", 1)[1]
+            assert submode in {"shadow", "candidate", "authoritative"}, (
+                f"unexpected hybrid submode {submode!r}; valid set is "
+                f"shadow/candidate/authoritative per "
+                f"hybrid_retrieval_service.py:132"
+            )
 
     def test_enable_disable_toggle(self, hybrid_service):
         assert hybrid_service.enabled is True

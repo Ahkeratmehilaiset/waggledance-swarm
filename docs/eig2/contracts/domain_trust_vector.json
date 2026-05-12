@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Domain-specific trust vector contract (L48)",
+  "description": "Per-domain trust per agent. See ADR-059.",
+  "version": 1,
+  "field_name": "domain_trust",
+  "field_type": "dict[str, float]",
+  "policy_defaults": {"default_value": {}, "ema_alpha": 0.10, "max_keys": 10},
+  "invariants": [
+    {"id": "DTV-001", "name": "dict_str_float", "description": "Keys: domain strings; values [0,1].", "must": ["validator enforces types", "value clamped"]},
+    {"id": "DTV-002", "name": "default_empty_dict", "description": "New agents start empty.", "must": ["default_factory=dict", "composite fallback applies"]},
+    {"id": "DTV-003", "name": "update_on_dispatch", "description": "EMA with alpha=0.10.", "must": ["per-domain EMA update on dispatch", "alpha pinned at 0.10"]},
+    {"id": "DTV-004", "name": "fallback_to_composite", "description": "Missing domain -> scalar composite.", "must": ["routing path checks domain_trust first", "fallback to composite_score", "no exception on missing key"]},
+    {"id": "DTV-005", "name": "l51_contract_update", "description": "AgentTrust shape change needs L51 amendment.", "must": ["implementation PR amends L51 test", "matches STB-006 / LCO-006 / CVS-005 pattern"]},
+    {"id": "DTV-006", "name": "bounded_vector_size", "description": "<= 10 distinct domain keys per agent.", "must": ["validator caps at 10", "matches PAB breadth cap"]},
+    {"id": "DTV-007", "name": "domain_enum_keys", "description": "Keys must be valid agent.domain values.", "must": ["validator rejects unknown domain", "AliasRegistry-derived per H24"]}
+  ],
+  "out_of_scope": ["Implementation (separate PR)", "Cross-agent domain-trust aggregation (future ADR)"],
+  "related_adrs": ["037", "058"],
+  "related_leaps_50_menu": ["L48"]
+}

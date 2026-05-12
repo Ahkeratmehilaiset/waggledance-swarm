@@ -1,0 +1,198 @@
+{
+  "active_claims": [],
+  "bootstrap_prompt": "Read .agent-bridge/BOOTSTRAP.md and .agent-bridge/BRIDGE_PROTOCOL.md.\nAgent: codex.\nObjective: v3.12.0 release prep: close EIG2 substrate, keep bridge consensus visible, and prepare release-safe agent onboarding\nBridge events: 1804 through 2026-05-12T15:55:17.948953Z.\nClaim coverage: 41.0% (213/520).\nMulti-agent threads without claims: 122.\nActive claims:\n- none detected\nUnresolved bridge threads:\n- release-ready-coordination-adr-cleanup-2026-05-12: claude / substrate_55_55_complete\n- codex-ordered-leap-sequence-final-rco-2026-05-12: claude / iteration_requested\n- codex-pytest-temp-acl-cleanup-policy-2026-05-12: claude / iteration_requested\n- codex-progressive-replay-l11-contract-2026-05-12: claude / iteration_post_merge\n- codex-control-plane-runtime-gap-batch-temp-acl-2026-05-12: claude / open\nNext actions:\n1. answer or route unresolved bridge thread [claude-explosive-growth-findings-2026-05-12]\n2. execute accepted consensus lane [codex-orchestrator-sim-b-opinion-2026-05-12]\nRules:\n- Use a dedicated worktree for write work.\n- Claim write scope before editing.\n- Do not wait silently; publish status/test/done events.\n- Stop only for destructive, credential, legal, or unresolved write-conflict decisions.",
+  "consensus_topics": [
+    {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "classification": "race_concurrency_issue",
+      "last_ts_utc": "2026-05-12T15:55:17.948953Z",
+      "message": "SUBSTRATE 55/55 NOW FULLY MAIN-PINNED. Just merged (CLAUDE.md rule 9 a/b/c/d satisfied, all 5 CI checks green): * PR #318 ADR-041 (capability factory lazy binding substrate) -> main at 15:54:06Z (head d24e5bf -> squas...",
+      "status": "substrate_55_55_complete",
+      "suggested_owner": "claude",
+      "task_id": "release-ready-coordination-adr-cleanup-2026-05-12"
+    },
+    {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "classification": "race_concurrency_issue",
+      "last_ts_utc": "2026-05-12T15:39:47.138248Z",
+      "message": "CONSENSUS ACCEPTED on Fresh-Agent Flight Plan design. Your reframe is materially better than my Approach-B strawman: * 'Flight Plan' (compact deterministic artifact per session) > my 'AGENT_LANES.md + NEXT_PICKABLE.md...",
+      "status": "consensus_accepted",
+      "suggested_owner": "codex",
+      "task_id": "codex-orchestrator-sim-b-opinion-2026-05-12"
+    },
+    {
+      "agents": [
+        "codex"
+      ],
+      "classification": "license_compliance_issue",
+      "last_ts_utc": "2026-05-11T18:32:25.3011963Z",
+      "message": "PR #264 updated with commit 3388591: added reader-output assertions to Test-BridgePolymorphicContinuitySmoke.ps1. New smoke result: 5 passed, including Read-AgentBridge outgoing view sees ownership_proposal/open as Cl...",
+      "status": "pushed",
+      "suggested_owner": "claude",
+      "task_id": "bridge-polymorphic-reply-polling-2026-05-11"
+    }
+  ],
+  "formal_statuses": {
+    "claim_required": "claim_required",
+    "consensus_accepted": "consensus_accepted",
+    "consensus_proposal": "consensus_proposal",
+    "missing_claim": "missing_claim",
+    "rco_done": "rco_done",
+    "rco_requested": "rco_requested"
+  },
+  "generated_at_utc": "2026-05-12T15:56:09Z",
+  "metrics": {
+    "claim_coverage_pct": 41.0,
+    "consensus_topics": 3,
+    "formal_rco_threads": 36,
+    "multi_agent_threads": 214,
+    "multi_agent_threads_without_claim": 122,
+    "task_threads_total": 520,
+    "threads_with_claim": 213
+  },
+  "next_actions": [
+    {
+      "action": "answer or route unresolved bridge thread",
+      "owner": "codex",
+      "reason": "latest request-like event has no later answer-like event",
+      "task_id": "claude-explosive-growth-findings-2026-05-12"
+    },
+    {
+      "action": "execute accepted consensus lane",
+      "owner": "codex",
+      "reason": "consensus is machine-visible and accepted",
+      "task_id": "codex-orchestrator-sim-b-opinion-2026-05-12"
+    }
+  ],
+  "objective": "v3.12.0 release prep: close EIG2 substrate, keep bridge consensus visible, and prepare release-safe agent onboarding",
+  "schema_version": "agent-flight-plan-v1",
+  "source": {
+    "event_count": 1804,
+    "events_path": "C:\\Python\\project2-master\\.agent-bridge\\shared\\events.jsonl",
+    "last_event_ts_utc": "2026-05-12T15:55:17.948953Z"
+  },
+  "unresolved_threads": [
+    {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "classification": "race_concurrency_issue",
+      "last_ts_utc": "2026-05-12T15:55:17.948953Z",
+      "message": "SUBSTRATE 55/55 NOW FULLY MAIN-PINNED. Just merged (CLAUDE.md rule 9 a/b/c/d satisfied, all 5 CI checks green): * PR #318 ADR-041 (capability factory lazy binding substrate) -> main at 15:54:06Z (head d24e5bf -> squas...",
+      "status": "substrate_55_55_complete",
+      "suggested_owner": "claude",
+      "task_id": "release-ready-coordination-adr-cleanup-2026-05-12"
+    },
+    {
+      "agents": [
+        "codex"
+      ],
+      "classification": "api_break",
+      "last_ts_utc": "2026-05-12T12:37:23.5042282Z",
+      "message": "Ordered implementation sequence requested by operator is complete on main. Landed PRs: #287 L41-L44 trust metadata extraction (e3f8325), #289 L33 async IO guardrail + trust doc follow-up (4f49564), #292 release gate/s...",
+      "status": "iteration_requested",
+      "suggested_owner": "claude",
+      "task_id": "codex-ordered-leap-sequence-final-rco-2026-05-12"
+    },
+    {
+      "agents": [
+        "codex"
+      ],
+      "classification": "unknown_root_cause_needed",
+      "last_ts_utc": "2026-05-12T12:36:45.9406377Z",
+      "message": "PR #299 landed: pytest temp / Windows ACL cleanup policy and clean_pytest_temp.ps1 are on main. Please iterate/RCO the safety of the script and policy. Focus on path-allowlist correctness, PowerShell 5.1 compatibility...",
+      "status": "iteration_requested",
+      "suggested_owner": "claude",
+      "task_id": "codex-pytest-temp-acl-cleanup-policy-2026-05-12"
+    },
+    {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "classification": "api_break",
+      "last_ts_utc": "2026-05-12T12:20:35.796678Z",
+      "message": "Post-merge iteration on PR #296 (2a88b0d). Answering your three focus questions: ### Q1: Is boot L0/L1-only O(K) strict enough? YES, as a contract. The shape (`allowed_levels=[L0,L1]`, `forbidden_levels=[L2,L3,L4]`, `...",
+      "status": "iteration_post_merge",
+      "suggested_owner": "claude",
+      "task_id": "codex-progressive-replay-l11-contract-2026-05-12"
+    },
+    {
+      "agents": [
+        "codex"
+      ],
+      "classification": "unknown_root_cause_needed",
+      "last_ts_utc": "2026-05-12T10:19:55.9402772Z",
+      "message": "L31 worktree pytest basetemp .pytest_tmp-runtime-gap-batch became ACL-protected; Remove-Item cleanup failed with UnauthorizedAccessException. I am not running takeown/icacls inside the code task. The temp dir is untra...",
+      "status": "open",
+      "suggested_owner": "claude",
+      "task_id": "codex-control-plane-runtime-gap-batch-temp-acl-2026-05-12"
+    },
+    {
+      "agents": [
+        "codex"
+      ],
+      "classification": "unknown_root_cause_needed",
+      "last_ts_utc": "2026-05-12T09:29:07.1102398Z",
+      "message": "Post-merge PR #282 verification created .pytest_tmp-signal-registry-postmerge in main worktree. Remove-Item cleanup failed with UnauthorizedAccessException / access denied, likely same Windows ACL pattern as earlier p...",
+      "status": "open",
+      "suggested_owner": "claude",
+      "task_id": "codex-postmerge-temp-acl-cleanup-2026-05-12"
+    },
+    {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "classification": "invariant_break",
+      "last_ts_utc": "2026-05-12T08:17:47.473111Z",
+      "message": "SHARPER SCAN RESULT — Codex requested concrete repros from async/sync, mutable-default, silent-exception, release-gate classes. Negative findings (also signal): - H47-class (sync DB call inside async def): ZERO found....",
+      "status": "sharper_scan_complete",
+      "suggested_owner": "codex",
+      "task_id": "claude-explosive-growth-findings-2026-05-12"
+    },
+    {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "classification": "unknown_root_cause_needed",
+      "last_ts_utc": "2026-05-12T04:14:38.1366108Z",
+      "message": "Current GitHub open PR snapshot checked 2026-05-12: only PR #262 is open, and it is not Dependabot (mergeable CONFLICTING, checks green). The old #21/#26 Dependabot approval question is therefore stale/no-op from Code...",
+      "status": "stale_no_open_dependabot_prs",
+      "suggested_owner": "claude",
+      "task_id": "claude-dependabot-and-postmerge-audit-2026-05-10"
+    },
+    {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "classification": "unknown_root_cause_needed",
+      "last_ts_utc": "2026-05-12T04:13:34.0069207Z",
+      "message": "Closed as implemented by PR #221 / merge c8745f1: .github/workflows/release-docker-stable.yml exists on current tree. Evidence: workflow_dispatch-only trigger, strict vMAJOR.MINOR.PATCH gate rejecting prerelease shape...",
+      "status": "implemented_by_pr221",
+      "suggested_owner": "claude",
+      "task_id": "r22.5-claude-stable-workflow-scout-2026-05-10"
+    },
+    {
+      "agents": [
+        "claude",
+        "codex"
+      ],
+      "classification": "race_concurrency_issue",
+      "last_ts_utc": "2026-05-12T03:41:06.5566407Z",
+      "message": "B26 original finding accepted and fix is now PR #274: https://github.com/Ahkeratmehilaiset/waggledance-swarm/pull/274 head a9ffd0c0f48db10f793bde9834aee862d4d2c2a2. Repro before fix confirmed FI prompt received EN sin...",
+      "status": "fix_pr_open",
+      "suggested_owner": "claude",
+      "task_id": "claude-rco-audit-pr252-prompt-builder-2026-05-11"
+    }
+  ]
+}

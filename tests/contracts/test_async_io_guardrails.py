@@ -22,9 +22,34 @@ BLOCKING_FULL_NAMES = {
 }
 
 BLOCKING_METHOD_NAMES = {
+    # Initial set (PR #289, L33):
     "record_runtime_gap_signal",
     "record_runtime_gap_signal_many",
     "save_case",
+    # Expansion from L33 deep iteration: ControlPlaneDB write methods that
+    # also consume a sqlite write transaction. Adding to the set is purely
+    # additive -- it can only catch MORE violations, never introduce false
+    # positives, because the visit_Await/asyncio.to_thread exemption still
+    # applies. Verified clean against current main (0 violations) before
+    # adding.
+    "emit_growth_event",
+    "record_autogrowth_run",
+    "record_builder_job",
+    "record_cutover_state",
+    "record_promotion_decision",
+    "record_promotion_state",
+    "record_provider_job",
+    "record_shadow_evaluation",
+    "record_validation_run",
+    "set_growth_intent_status",
+    "set_meta",
+    "set_solver_capability_features",
+    "upsert_capability",
+    "upsert_family_policy",
+    "upsert_growth_intent",
+    "upsert_solver",
+    "upsert_solver_artifact",
+    "upsert_solver_family",
 }
 
 

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Cold-tier read-through cache contract (L17)",
+  "description": "Invariants for the warm-promotion cache layer between L4 forensic reads and cold-tier storage. See ADR-029.",
+  "version": 1,
+  "policy_defaults": {
+    "ttl_seconds": 86400,
+    "cold_promo_max_entries": 10000
+  },
+  "invariants": [
+    {
+      "id": "CTC-001",
+      "name": "read_through_semantics",
+      "description": "Cold read -> promote -> return. The read itself populates the cache atomically.",
+      "must": [
+        "read path: warm-cache check -> on miss, read cold tier, populate warm, return",
+        "no fire-and-forget population (cache is filled inside the read call)",
+        "single read call returns same value regardless of cache state"
+      ]
+    },
+    {
+      "id": "CTC-002",
+      "name": "ttl_24h",
+      "description": "Promotion timestamp stored per entry. Eviction at read time when now - entry_ts > 86400 seconds. TTL pinned at 24h.",
+      "must": [
+        "ttl_seconds default = 86400 (24h)",
+        "entry timestamp captured at promotion time",
+        "lookup checks (now - entry_ts) against TTL before returning hit",
+        "expired entries evicted lazily on next access OR by background sweep"
+      ]
+    },
+    {
+      "id": "CTC-003",
+      "name": "lru_bounded",
+      "description": "Max cold_promo_max_entries=10000. Oldest-by-access LRU eviction when full.",
+      "must": [
+        "size cap = 10000 entries default, configurable",
+        "implementation uses OrderedDict or equivalent LRU structure",
+        "eviction is by ACCESS time, not insertion time (most LRU semantics)"
+      ]
+    },
+    {
+      "id": "CTC-004",
+      "name": "no_write_side_population",
+      "description": "Writes to the raw chain (magma_append) do NOT populate this cache. Cache only fills via cold-tier reads.",
+      "must": [
+        "no write API on the cache",
+        "magma_append code path has no reference to the warm-promotion cache",
+        "tests verify by simulating writes and checking cache stays empty"
+      ]
+    },
+    {
+      "id": "CTC-005",
+      "name": "failure_invisible_to_caller",
+      "description": "Cache populate failure logs WARNING but does NOT propagate. The read still returns the cold value.",
+      "must": [
+        "OSError / MemoryError during cache populate -> WARNING + return cold value anyway",
+        "exception inside cache layer never propagates above L4 read API",
+        "test simulates populate failure and asserts cold read still succeeds"
+      ]
+    },
+    {
+      "id": "CTC-006",
+      "name": "hash_mismatch_invalidates",
+      "description": "A promoted entry whose hash mismatches the cold tier's stored hash is evicted; fresh read from cold tier.",
+      "must": [
+        "lookup verifies cached entry's hash before returning",
+        "mismatch -> evict entry, log WARNING, force fresh cold read",
+        "matches ADR-021 fallback_contract.hash_mismatch semantics"
+      ]
+    },
+    {
+      "id": "CTC-007",
+      "name": "layer_separation_from_adr_023",
+      "description": "This cache holds RAW FORENSIC EVENTS. ADR-023 (provenance tip cache) holds PROVENANCE RECORDS. Implementations MUST keep storage paths separate.",
+      "must": [
+        "ColdTierWarmPromoter does NOT share state with MagmaProvenanceAdapter._tip_cache",
+        "the two adapter classes have distinct LRU containers",
+        "cross-population is explicitly forbidden -- the layers serve different read patterns"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of ColdTierWarmPromoter (separate PR)",
+    "Predictive pre-promotion based on access patterns (future ADR if pursued)",
+    "Cross-process cache sharing (explicitly NOT planned)",
+    "zstd-at-rest interaction (covered when L18 ADR is authored)"
+  ],
+  "related_adrs": ["021", "022", "023"],
+  "related_leaps_50_menu": ["L17", "L18", "L19", "L20"],
+  "depends_on_contracts": ["progressive_replay_l0_l4.json", "forensic_snapshot_rotation.json"]
+}

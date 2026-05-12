@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Compact decision card schema contract (L12)",
+  "description": "Schema invariants for the compact-card-v1 record format used at MAGMA L1. See ADR-024.",
+  "version": 1,
+  "card_version_constant": "compact-card-v1",
+  "required_fields": [
+    "card_id",
+    "card_version",
+    "supersedes_card_id",
+    "source_event_hash",
+    "produced_at_utc",
+    "producer",
+    "decision_kind",
+    "subject_id",
+    "summary",
+    "card_hash"
+  ],
+  "allowed_decision_kinds": [
+    "solver_dispatch",
+    "promotion",
+    "rollback",
+    "snapshot_anchor",
+    "gap_signal",
+    "capability_bind"
+  ],
+  "size_limits": {
+    "summary_max_keys": 8,
+    "summary_value_max_bytes": 256,
+    "card_total_max_tokens": 512
+  },
+  "invariants": [
+    {
+      "id": "CDC-001",
+      "name": "stable_schema_name",
+      "description": "card_version='compact-card-v1' exactly. Bumping to v2 requires a new ADR and updated contract.",
+      "must": [
+        "every persisted card carries card_version field",
+        "validators reject any card_version other than the contract constant",
+        "v2 introduction requires explicit ADR amendment + contract version bump"
+      ]
+    },
+    {
+      "id": "CDC-002",
+      "name": "required_fields_present",
+      "description": "All required fields are present on every card (supersedes_card_id may be null).",
+      "must": [
+        "missing any required field -> validator rejects card",
+        "supersedes_card_id present even when null"
+      ]
+    },
+    {
+      "id": "CDC-003",
+      "name": "card_hash_deterministic",
+      "description": "card_hash = sha256(canonical_json(record minus card_hash field)). Two consumers computing the hash of the same card get the same value.",
+      "must": [
+        "canonical JSON serialization (sorted keys, UTF-8, no whitespace) before hashing",
+        "computed twice from same record -> identical hash",
+        "consumer verifies hash before trusting card"
+      ]
+    },
+    {
+      "id": "CDC-004",
+      "name": "source_event_hash_anchoring",
+      "description": "source_event_hash MUST equal sha256 of the referenced raw MAGMA event. Validators check before trusting the card.",
+      "must": [
+        "writer computes source_event_hash from the actual raw event",
+        "consumer verifies source_event_hash matches raw event hash at card boundary",
+        "mismatch -> fall back to raw replay (per ADR-021)"
+      ]
+    },
+    {
+      "id": "CDC-005",
+      "name": "immutability",
+      "description": "No in-place edits. Updates produce a new card with supersedes_card_id set.",
+      "must": [
+        "no writer API to mutate an existing card_id record",
+        "delta updates produce a NEW card with new card_id and supersedes_card_id=previous_card_id",
+        "store API is append-only"
+      ]
+    },
+    {
+      "id": "CDC-006",
+      "name": "bounded_summary",
+      "description": "summary dict has at most 8 keys, each value at most 256 bytes serialized. Total card <= 512 tokens (L1 budget per ADR-021).",
+      "must": [
+        "writer validates summary.keys() length <= 8",
+        "writer validates each summary value serialized length <= 256 bytes",
+        "writer validates full canonical_json(card) token count <= 512 (L1 budget)"
+      ]
+    },
+    {
+      "id": "CDC-007",
+      "name": "allowed_decision_kinds",
+      "description": "decision_kind value MUST be in the allowed set. Extensions require ADR amendment.",
+      "must": [
+        "validator rejects card with decision_kind not in allowed_decision_kinds",
+        "allowed_decision_kinds is read from this contract file, not hardcoded in Python",
+        "adding a new kind requires ADR-024 amendment + contract version bump"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of CompactCardWriter / CompactCardStore (separate PR)",
+    "Delta-encoding for supersedes chains (L13, separate ADR)",
+    "Predictive prefetch policy (L14, separate ADR)",
+    "Storage tier and zstd-at-rest (L18 / future ADR)"
+  ],
+  "related_adrs": ["011", "014", "021", "023"],
+  "related_leaps_50_menu": ["L12", "L13", "L14", "L18"]
+}

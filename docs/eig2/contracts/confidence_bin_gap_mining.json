@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Confidence-bin gap mining contract (L21)",
+  "description": "Bin-aware gap-mining strategies. See ADR-031.",
+  "version": 1,
+  "bin_enum": ["deep", "borderline", "marginal"],
+  "bin_ranges": {
+    "deep": [0.0, 0.2],
+    "borderline": [0.2, 0.4],
+    "marginal": [0.4, 0.6]
+  },
+  "no_signal_threshold": 0.6,
+  "policy_defaults": {
+    "bin_candidates_per_tick": 10
+  },
+  "bin_strategies": {
+    "deep": "new_capability_id",
+    "borderline": "new_solver_within_capability",
+    "marginal": "routing_tweak"
+  },
+  "invariants": [
+    {
+      "id": "CBG-001",
+      "name": "bin_enum_only",
+      "description": "confidence_bin value MUST be in {deep, borderline, marginal}.",
+      "must": [
+        "validator rejects unknown bin value",
+        "bin_enum read from this contract, not hardcoded in Python"
+      ]
+    },
+    {
+      "id": "CBG-002",
+      "name": "bin_ranges_fixed",
+      "description": "deep=[0.0,0.2), borderline=[0.2,0.4), marginal=[0.4,0.6).",
+      "must": [
+        "bin_ranges map matches contract values at module init",
+        "half-open intervals: lower inclusive, upper exclusive (except marginal upper which is exclusive 0.6)",
+        "boundary value 0.2 belongs to borderline (not deep); 0.4 to marginal"
+      ]
+    },
+    {
+      "id": "CBG-003",
+      "name": "no_signal_at_high_confidence",
+      "description": "confidence >= 0.6 produces NO gap signal. Bin not assigned.",
+      "must": [
+        "gap_intake skips signal generation when result.confidence >= 0.6",
+        "no_signal_threshold default 0.6 (configurable)",
+        "preserves current production behavior (confidence>=0.6 was already 'no gap')"
+      ]
+    },
+    {
+      "id": "CBG-004",
+      "name": "per_bin_candidate_budget",
+      "description": "Each bin has its own bin_candidates_per_tick budget. Default 10. Operator-tunable per profile.",
+      "must": [
+        "default 10 per bin",
+        "profile config may override per bin",
+        "budget enforced at autogrowth_scheduler tick boundary"
+      ]
+    },
+    {
+      "id": "CBG-005",
+      "name": "independent_pipelines",
+      "description": "Deep candidates do NOT crowd out borderline/marginal candidates. Each bin's budget is committed independently.",
+      "must": [
+        "scheduler runs three independent candidate-generation passes per tick",
+        "exhausting deep budget does NOT consume borderline budget",
+        "passes are deterministic order: deep -> borderline -> marginal"
+      ]
+    },
+    {
+      "id": "CBG-006",
+      "name": "bin_specific_strategy",
+      "description": "deep -> new capability_id; borderline -> new solver within capability; marginal -> routing tweak. Strategy registry maps bin -> generator.",
+      "must": [
+        "candidate generator registry implements all three strategies",
+        "deep generator MUST produce candidates with NEW capability_id (not in registry today)",
+        "borderline generator MUST reuse existing capability_id but produce a new solver_id",
+        "marginal generator MUST produce a routing artifact (signal-registry addition / tunnel hint), not a new solver"
+      ]
+    },
+    {
+      "id": "CBG-007",
+      "name": "backward_compat_default_borderline",
+      "description": "Existing gap signals without confidence_bin default to 'borderline'. Migration is non-breaking.",
+      "must": [
+        "signal record without confidence_bin field treated as bin='borderline'",
+        "no historical data migration required",
+        "old gap_intake call sites continue to work unchanged"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of bin-specific candidate generators (separate PRs)",
+    "Cross-bin candidate de-duplication (separate ADR if benefit measured)",
+    "Adaptive bin thresholds (future, currently pinned)"
+  ],
+  "related_adrs": ["024"],
+  "related_leaps_50_menu": ["L21", "L22", "L25"]
+}

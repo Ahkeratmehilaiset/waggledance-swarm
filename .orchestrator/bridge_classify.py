@@ -25,6 +25,7 @@ class RegressionClass(str, Enum):
     DETERMINISM_REGRESSION = "determinism_regression"
     LATENCY_PERFORMANCE_REGRESSION = "latency_performance_regression"
     RACE_CONCURRENCY_ISSUE = "race_concurrency_issue"
+    COORDINATION_CONSENSUS = "coordination_consensus"
     FLAKY_TEST = "flaky_test"
     DEPENDENCY_ENV_ISSUE = "dependency_env_issue"
     TYPE_LINT_ISSUE = "type_lint_issue"
@@ -82,6 +83,17 @@ PATTERNS: tuple[tuple[RegressionClass, tuple[str, ...]], ...] = (
             r"source_hash",
             r"event_hash",
             r"magma.*invariant",
+        ),
+    ),
+    (
+        RegressionClass.COORDINATION_CONSENSUS,
+        (
+            r"\bconsensus[_ -]?(proposal|accepted|delivery|topic)\b",
+            r"\brco[_ -]?(requested|done|pass|approved|gate)\b",
+            r"\blane lock\b",
+            r"\bflight plan\b",
+            r"\bclaim coverage\b",
+            r"\bformal status(?:es)?\b",
         ),
     ),
     (
@@ -250,7 +262,7 @@ def main() -> int:
         json.dumps(
             {
                 "classifier": "bridge_classify.py",
-                "version": "eig2-v1.1",
+                "version": "eig2-v1.2",
                 "classification": klass.value,
             },
             indent=2,

@@ -1,0 +1,29 @@
+{
+  "schema_version": "agent-flight-plan-statuses-v1",
+  "purpose": "Formal bridge statuses consumed by the Fresh-Agent Flight Plan builder.",
+  "statuses": {
+    "rco_requested": "rco_requested",
+    "rco_done": "rco_done",
+    "consensus_proposal": "consensus_proposal",
+    "consensus_accepted": "consensus_accepted",
+    "claim_required": "claim_required",
+    "missing_claim": "missing_claim"
+  },
+  "invariants": [
+    {
+      "id": "AFP-001",
+      "name": "formal_rco_visible",
+      "description": "Peer review requests and completions have machine-visible statuses."
+    },
+    {
+      "id": "AFP-002",
+      "name": "consensus_visible",
+      "description": "Consensus proposals and acceptances can be detected without keyword heuristics."
+    },
+    {
+      "id": "AFP-003",
+      "name": "claim_gap_visible",
+      "description": "Missing claims are a first-class coordination finding, not a transcript guess."
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waggledance.local/contracts/agent_flight_plan.schema.json",
+  "title": "Fresh-agent flight plan",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at_utc",
+    "objective",
+    "source",
+    "metrics",
+    "formal_statuses",
+    "active_claims",
+    "unresolved_threads",
+    "consensus_topics",
+    "next_actions",
+    "bootstrap_prompt"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "agent-flight-plan-v1"
+    },
+    "generated_at_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": ["events_path", "event_count", "last_event_ts_utc"],
+      "properties": {
+        "events_path": {"type": "string", "minLength": 1},
+        "event_count": {"type": "integer", "minimum": 0},
+        "last_event_ts_utc": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "task_threads_total",
+        "threads_with_claim",
+        "claim_coverage_pct",
+        "multi_agent_threads",
+        "multi_agent_threads_without_claim",
+        "formal_rco_threads",
+        "consensus_topics"
+      ],
+      "properties": {
+        "task_threads_total": {"type": "integer", "minimum": 0},
+        "threads_with_claim": {"type": "integer", "minimum": 0},
+        "claim_coverage_pct": {"type": "number", "minimum": 0, "maximum": 100},
+        "multi_agent_threads": {"type": "integer", "minimum": 0},
+        "multi_agent_threads_without_claim": {"type": "integer", "minimum": 0},
+        "formal_rco_threads": {"type": "integer", "minimum": 0},
+        "consensus_topics": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "formal_statuses": {
+      "type": "object",
+      "required": [
+        "rco_requested",
+        "rco_done",
+        "consensus_proposal",
+        "consensus_accepted",
+        "claim_required",
+        "missing_claim"
+      ],
+      "properties": {
+        "rco_requested": {"type": "string"},
+        "rco_done": {"type": "string"},
+        "consensus_proposal": {"type": "string"},
+        "consensus_accepted": {"type": "string"},
+        "claim_required": {"type": "string"},
+        "missing_claim": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "active_claims": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/thread_summary"}
+    },
+    "unresolved_threads": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/thread_summary"}
+    },
+    "consensus_topics": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/thread_summary"}
+    },
+    "next_actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["owner", "task_id", "action", "reason"],
+        "properties": {
+          "owner": {"enum": ["codex", "claude", "operator", "system", "unknown"]},
+          "task_id": {"type": "string"},
+          "action": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "bootstrap_prompt": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "thread_summary": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "last_ts_utc",
+        "agents",
+        "status",
+        "suggested_owner",
+        "message"
+      ],
+      "properties": {
+        "task_id": {"type": "string"},
+        "last_ts_utc": {"type": "string"},
+        "agents": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "status": {"type": "string"},
+        "suggested_owner": {
+          "enum": ["codex", "claude", "operator", "system", "unknown"]
+        },
+        "message": {"type": "string"},
+        "classification": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

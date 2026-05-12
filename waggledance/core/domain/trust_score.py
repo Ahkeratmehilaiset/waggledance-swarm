@@ -11,7 +11,7 @@ class TrustSignals:
     validation_rate: float  # 0.0-1.0, higher is better
     consensus_agreement: float  # 0.0-1.0
     correction_rate: float  # 0.0-1.0, lower is better
-    fact_production_rate: float  # facts/hour
+    fact_production_rate: float  # 0.0-1.0 normalized fact-production signal
     freshness_score: float  # 0.0-1.0, recency weight
 
 

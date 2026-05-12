@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Provenance tip cache contract (L20)",
+  "description": "Invariants for the L1 TTL'd warm cache layer in MagmaProvenanceAdapter. See ADR-023.",
+  "version": 1,
+  "tiers": [
+    {
+      "tier": "L0",
+      "name": "session_hot_dict",
+      "storage": "self._records (in-memory dict)",
+      "ttl_seconds": null,
+      "max_entries": null,
+      "authoritative_for": "facts written via record_provenance in this process"
+    },
+    {
+      "tier": "L1",
+      "name": "warm_ttl_cache",
+      "storage": "in-memory LRU",
+      "ttl_seconds": 5.0,
+      "max_entries": 1000,
+      "authoritative_for": "none -- read-through view of tracker"
+    },
+    {
+      "tier": "L2",
+      "name": "cold_tracker",
+      "storage": "DB-backed provenance chain via self._tracker",
+      "ttl_seconds": null,
+      "max_entries": null,
+      "authoritative_for": "all facts not in L0"
+    }
+  ],
+  "lookup_order": ["L0", "L1", "L2"],
+  "invariants": [
+    {
+      "id": "PTC-001",
+      "name": "tracker_authoritative",
+      "description": "L1 is a read-through view. Tracker is source of truth for non-L0 facts.",
+      "must": [
+        "TTL expiry forces fresh tracker read",
+        "L1 hit MUST NOT outlive its insertion timestamp + TTL_SECONDS",
+        "tracker delete + 5s wait + re-lookup MUST return None (not stale hit)"
+      ]
+    },
+    {
+      "id": "PTC-002",
+      "name": "L0_supersedes_L1",
+      "description": "Facts in self._records (session-local) are authoritative over any L1 cached entry with the same fact_id.",
+      "must": [
+        "get_provenance checks L0 before L1",
+        "record_provenance invalidates the L1 entry for that fact_id"
+      ]
+    },
+    {
+      "id": "PTC-003",
+      "name": "ttl_bound",
+      "description": "Cache entries expire after _TTL_SECONDS (default 5.0) and trigger fresh tracker read.",
+      "must": [
+        "entry timestamp captured at insertion",
+        "lookup compares now - entry_ts against TTL_SECONDS",
+        "TTL_SECONDS configurable via constructor (default 5.0)"
+      ]
+    },
+    {
+      "id": "PTC-004",
+      "name": "lru_bounded",
+      "description": "Cache size MUST NOT exceed _CACHE_MAX_ENTRIES (default 1000). Oldest-by-access eviction.",
+      "must": [
+        "size capped via collections.OrderedDict or functools.lru_cache or equivalent",
+        "size limit configurable via constructor (default 1000)",
+        "eviction is LRU (oldest by access, not by insertion)"
+      ]
+    },
+    {
+      "id": "PTC-005",
+      "name": "no_write_amplification",
+      "description": "Cache reads do NOT modify tracker state. Cache miss triggers exactly one tracker read.",
+      "must": [
+        "no calls back into record_provenance from get_provenance path",
+        "no double-fetch on cache miss",
+        "no eager tracker reads outside the explicit prewarm path"
+      ]
+    },
+    {
+      "id": "PTC-006",
+      "name": "boot_preload_optional",
+      "description": "Constructor option prewarm_on_init=True pulls last K tips from tracker. Default False so Container instantiation does no implicit DB read.",
+      "must": [
+        "prewarm_on_init defaults to False",
+        "prewarm uses bounded last-K query, not full tracker scan",
+        "prewarm failure logs WARNING and continues with empty L1 (does not crash __init__)"
+      ]
+    },
+    {
+      "id": "PTC-007",
+      "name": "invalidation_hook",
+      "description": "MagmaProvenanceAdapter.invalidate_cache(fact_id=None) MUST be available: None flushes all, specific id flushes that entry.",
+      "must": [
+        "invalidate_cache() (no arg or fact_id=None) clears L1 entirely",
+        "invalidate_cache(fact_id='X') removes that single entry",
+        "method exists on the adapter -- not buried in a private _TipCache instance"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of _TipCache class (separate PR)",
+    "Cache statistics admin endpoint (separate PR)",
+    "Cross-process / distributed cache (not planned)"
+  ],
+  "related_adrs": ["011", "021", "022"],
+  "related_leaps_50_menu": ["L17", "L20"]
+}

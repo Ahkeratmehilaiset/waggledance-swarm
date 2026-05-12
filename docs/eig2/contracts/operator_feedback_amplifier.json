@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Operator-feedback amplifier contract (L30)",
+  "description": "Fast-track operator feedback to canary in 15min. See ADR-053.",
+  "version": 1,
+  "event_type": "ops_feedback",
+  "feedback_kinds": ["needs_solver", "broken_route", "wrong_output"],
+  "priority_enum": ["high", "normal"],
+  "required_fields": ["event_type", "feedback_id", "feedback_kind", "query_class_hash", "operator_id", "priority", "submitted_at_utc"],
+  "policy_defaults": {"fast_track_canary_minutes": 15, "fast_track_per_hour_max": 10},
+  "invariants": [
+    {"id": "OFA-001", "name": "event_schema", "description": "7 required fields.", "must": ["validator rejects missing fields", "extra fields ignored"]},
+    {"id": "OFA-002", "name": "kind_enum", "description": "Kinds: needs_solver, broken_route, wrong_output.", "must": ["validator rejects other values", "kinds read from contract"]},
+    {"id": "OFA-003", "name": "priority_enum", "description": "Priorities: high, normal.", "must": ["validator rejects other values"]},
+    {"id": "OFA-004", "name": "high_priority_fast_track_15min", "description": "high priority -> canary in 15 min.", "must": ["fast_track_canary_minutes default 15", "scheduled before normal lane"]},
+    {"id": "OFA-005", "name": "operator_identity_required", "description": "Anonymous feedback rejected.", "must": ["operator_id field non-empty", "validator rejects null/empty"]},
+    {"id": "OFA-006", "name": "auditable_response", "description": "ops_feedback triggers feedback_action_taken event.", "must": ["echo event written to events.jsonl", "links feedback_id to action_id"]},
+    {"id": "OFA-007", "name": "bounded_amplification", "description": "fast_track_per_hour_max=10 to prevent storms.", "must": ["excess feedback queued normally", "rate limit per operator_id"]}
+  ],
+  "out_of_scope": ["Implementation (separate PR)", "Operator UI for feedback submission (separate PR)"],
+  "related_adrs": ["031", "040", "048", "049"],
+  "related_leaps_50_menu": ["L30"]
+}

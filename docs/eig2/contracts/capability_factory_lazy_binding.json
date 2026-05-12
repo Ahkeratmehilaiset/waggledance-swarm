@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Capability adapter factory lazy binding contract (L54-reframed)",
+  "description": "Defer adapter import + construct until first invocation. See ADR-041.",
+  "version": 1,
+  "new_api": {
+    "method": "register_executor_factory",
+    "signature": "register_executor_factory(capability_id: str, factory: Callable[[], Any]) -> None"
+  },
+  "empirical_baseline": {
+    "bind_executors_eager_median_ms": 6855,
+    "bind_executors_eager_outlier_max_ms": 21553,
+    "per_adapter_import_only_total_ms": 467,
+    "instantiation_overhead_pct": 93,
+    "target_lazy_bind_ms": 50
+  },
+  "invariants": [
+    {
+      "id": "CFB-001",
+      "name": "factory_signature",
+      "description": "register_executor_factory(capability_id, factory). Factory returns adapter instance on first call.",
+      "must": [
+        "method exists on CapabilityRegistry",
+        "factory is Callable[[], Any] (no args, returns adapter)",
+        "factory called at most twice per cap_id (first construct + retry on .available)"
+      ]
+    },
+    {
+      "id": "CFB-002",
+      "name": "defer_import_and_construct",
+      "description": "Factory MUST defer BOTH the adapter module import and the class instantiation.",
+      "must": [
+        "no `from waggledance.adapters.capabilities.X import Y` at module level in bootstrap/capability_loader.py for adapters in _ADAPTERS table",
+        "factory closure performs the import lazily on call",
+        "no AdapterX() at register time"
+      ]
+    },
+    {
+      "id": "CFB-003",
+      "name": "first_call_construction",
+      "description": "First get_executor(cap_id) triggers factory call. Subsequent return cached.",
+      "must": [
+        "first call: factory invoked, result stored in _executors",
+        "subsequent calls: O(1) dict lookup, no factory invocation",
+        "factory call count == 1 per cap_id under normal operation"
+      ]
+    },
+    {
+      "id": "CFB-004",
+      "name": "available_check_at_first_use",
+      "description": "If executor.available is False, cap_id added to _factory_failed; None returned. Subsequent calls short-circuit.",
+      "must": [
+        "_factory_failed set tracks unavailable cap_ids",
+        "second call for failed cap_id returns None without re-running factory",
+        "matches existing 'unavailable adapter skipped' semantics"
+      ]
+    },
+    {
+      "id": "CFB-005",
+      "name": "exception_safe",
+      "description": "Factory exceptions caught + logged at DEBUG + cap_id added to _factory_failed. No propagation.",
+      "must": [
+        "try/except wraps factory() call",
+        "exception type and message logged at DEBUG level",
+        "caller of get_executor never sees the exception",
+        "subsequent calls short-circuit via _factory_failed (no retry storm)"
+      ]
+    },
+    {
+      "id": "CFB-006",
+      "name": "no_regression_on_eager_api",
+      "description": "Existing register_executor(cap_id, executor) still works for callers that need eager binding.",
+      "must": [
+        "old API preserved, no signature change",
+        "old API call populates _executors directly (not _executor_factories)",
+        "tests that depend on register_executor continue to pass"
+      ]
+    },
+    {
+      "id": "CFB-007",
+      "name": "boot_saving_target",
+      "description": "Lazy bind_executors() must complete in < 100 ms (target_lazy_bind_ms).",
+      "must": [
+        "regression test asserts cold bind_executors() < 100 ms",
+        "compare to baseline ~6855 ms eager",
+        "99%+ reduction expected"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation PR (separate)",
+    "Migration of direct register_executor callers (none identified)",
+    "Predictive eager-warm-up at boot (future ADR if benefit measured)"
+  ],
+  "related_adrs": ["021"],
+  "related_leaps_50_menu": ["L54"]
+}

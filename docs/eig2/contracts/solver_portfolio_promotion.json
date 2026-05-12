@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Solver-portfolio promotion contract (L23)",
+  "description": "Top-N weighted solver portfolio for hedged correctness. See ADR-048.",
+  "version": 1,
+  "policy_defaults": {"portfolio_n_default": 3, "portfolio_n_range": [1, 5], "cottage_profile_n": 1, "vote_weight_normalizer": "softmax"},
+  "invariants": [
+    {"id": "SPP-001", "name": "portfolio_n_range", "description": "N in [1, 5] default 3.", "must": ["validator rejects N outside range", "default 3 in policy_defaults"]},
+    {"id": "SPP-002", "name": "vote_weight_sums_to_1", "description": "Normalized softmax weights.", "must": ["sum(vote_weights) == 1.0 (within float epsilon)", "negative weights forbidden"]},
+    {"id": "SPP-003", "name": "acc_pass_per_member", "description": "Each portfolio member passes ADR-034 anti-cargo-cult.", "must": ["ACC gate applied PER member at promotion time", "weak members rejected before being included"]},
+    {"id": "SPP-004", "name": "unanimous_for_high_risk", "description": "high_risk stage requires unanimous portfolio.", "must": ["per ADR-027 high_risk tier", "one disagreement -> BLOCK", "weighted majority NOT applied at high_risk"]},
+    {"id": "SPP-005", "name": "weighted_majority_for_routine_standard", "description": "Normal stages use weighted majority.", "must": ["weighted vote based on SPP-002 weights", "ties broken by member order"]},
+    {"id": "SPP-006", "name": "member_replaceable", "description": "Retirement (L27) does not dissolve portfolio.", "must": ["remaining members re-normalize", "no need to re-run anti-cargo-cult on remaining"]},
+    {"id": "SPP-007", "name": "portfolio_audit_trail", "description": "Dispatch logs member solver_ids + individual answers + aggregate.", "must": ["events.jsonl entry includes portfolio.members + portfolio.answers + portfolio.aggregate", "operator can audit weighted vote retroactively"]}
+  ],
+  "out_of_scope": ["Implementation of PortfolioRouter (separate PR)", "Adaptive N tuning (future ADR)"],
+  "related_adrs": ["027", "031", "034"],
+  "related_leaps_50_menu": ["L23"]
+}

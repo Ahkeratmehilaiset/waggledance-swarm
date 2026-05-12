@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Latency consistency trust signal contract (L47)",
+  "description": "Per-agent p50/p99 latency ratio over rolling 24h. See ADR-036.",
+  "version": 1,
+  "field_name": "latency_consistency",
+  "field_type": "float",
+  "field_range": [0.0, 1.0],
+  "convention": "higher_is_better",
+  "formula": "clamp(p50_ms / p99_ms, 0.0, 1.0)",
+  "policy_defaults": {
+    "rolling_window_hours": 24,
+    "sample_size_n": 100,
+    "min_samples_for_score": 20,
+    "default_on_insufficient_data": 0.5,
+    "refresh_cadence_seconds": 3600,
+    "latency_weight_in_composite": 0.10
+  },
+  "invariants": [
+    {
+      "id": "LCO-001",
+      "name": "field_name_latency_consistency",
+      "description": "Exact field name in TrustSignals. Type float, range [0.0, 1.0].",
+      "must": [
+        "field name == 'latency_consistency'",
+        "type annotation is float",
+        "value clamped to [0.0, 1.0]"
+      ]
+    },
+    {
+      "id": "LCO-002",
+      "name": "higher_is_better",
+      "description": "Convention matches stability_score (ADR-035).",
+      "must": [
+        "composite formula adds latency_consistency (not 1-X)",
+        "doc states higher_is_better explicitly"
+      ]
+    },
+    {
+      "id": "LCO-003",
+      "name": "window_24h_sample_100",
+      "description": "Last 100 responses within last 24h.",
+      "must": [
+        "rolling_window_hours default 24",
+        "sample_size_n default 100",
+        "older samples filtered out before computation"
+      ]
+    },
+    {
+      "id": "LCO-004",
+      "name": "p50_p99_formula",
+      "description": "latency_consistency = clamp(p50_ms / p99_ms, 0.0, 1.0).",
+      "must": [
+        "formula == clamp(p50_ms / p99_ms, 0.0, 1.0) exactly",
+        "p50 == p99 -> 1.0 (perfectly consistent)",
+        "p99 == 0 (impossible at samples > 0) -> 1.0 by clamp convention"
+      ]
+    },
+    {
+      "id": "LCO-005",
+      "name": "default_0_5_on_insufficient_data",
+      "description": "< 20 samples -> 0.5 neutral.",
+      "must": [
+        "min_samples_for_score default 20",
+        "below threshold -> 0.5",
+        "no false-confident extreme on cold start"
+      ]
+    },
+    {
+      "id": "LCO-006",
+      "name": "l51_contract_test_must_update",
+      "description": "L51 fan-in contract test MUST include this field when added.",
+      "must": [
+        "implementation PR amends L51 test together with TrustSignals dataclass",
+        "field tuple in test_autonomy_domain_core_dataclass_contracts includes 'latency_consistency'"
+      ]
+    },
+    {
+      "id": "LCO-007",
+      "name": "refresh_cache_1h",
+      "description": "1h refresh cadence (faster than stability_score 24h because latency drift is faster).",
+      "must": [
+        "refresh_cadence_seconds default 3600 (1h)",
+        "cached value reused for queries within the cadence window"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of LatencyConsistencyComputer (separate PR)",
+    "Per-domain latency baselines (future ADR)",
+    "Alternative formula (would require new ADR)"
+  ],
+  "related_adrs": ["035"],
+  "related_leaps_50_menu": ["L41", "L42", "L43", "L44", "L45", "L47", "L49"]
+}

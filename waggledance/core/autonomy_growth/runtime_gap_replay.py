@@ -395,6 +395,7 @@ def persist_runtime_gap_events(
     malformed_count = 0
     inserted: list[str] = []
     skipped: list[str] = []
+    pending_signals: list[dict[str, object]] = []
 
     existing_records = control_plane.list_runtime_gap_signals(
         kind=PHASE18E_RUNTIME_GAP_EVENT_KIND,
@@ -432,16 +433,21 @@ def persist_runtime_gap_events(
             continue
 
         signal_payload = _canonical_json(ev.to_dict())
-        control_plane.record_runtime_gap_signal(
-            kind=PHASE18E_RUNTIME_GAP_EVENT_KIND,
-            family_kind=ev.family_kind,
-            cell_coord=None,
-            signal_payload=signal_payload,
-            weight=float(ev.confidence_hint),
-            observed_at=ev.occurred_at_utc,
+        pending_signals.append(
+            {
+                "kind": PHASE18E_RUNTIME_GAP_EVENT_KIND,
+                "family_kind": ev.family_kind,
+                "cell_coord": None,
+                "signal_payload": signal_payload,
+                "weight": float(ev.confidence_hint),
+                "observed_at": ev.occurred_at_utc,
+            }
         )
         existing_ids.add(ev.event_id)
         inserted.append(ev.event_id)
+
+    if pending_signals:
+        control_plane.record_runtime_gap_signal_many(pending_signals)
 
     rejected_total = malformed_count + forbidden_field_rejections
     return GapPersistResult(

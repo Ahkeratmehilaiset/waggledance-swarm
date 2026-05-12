@@ -257,6 +257,47 @@ def test_persist_idempotent_on_repeat(temp_cp):
     )
 
 
+def test_persist_uses_runtime_gap_signal_batch(tmp_path: Path):
+    class BatchTrackingControlPlane(ControlPlaneDB):
+        def __init__(self, db_path: Path) -> None:
+            super().__init__(db_path)
+            self.batch_sizes: list[int] = []
+            self.single_calls = 0
+
+        def record_runtime_gap_signal(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            self.single_calls += 1
+            return super().record_runtime_gap_signal(*args, **kwargs)
+
+        def record_runtime_gap_signal_many(self, signals):  # type: ignore[no-untyped-def]
+            materialized = list(signals)
+            self.batch_sizes.append(len(materialized))
+            return super().record_runtime_gap_signal_many(materialized)
+
+    cp = BatchTrackingControlPlane(tmp_path / "phase18e_batch_control_plane.db")
+    try:
+        res = persist_runtime_gap_events(
+            cp,
+            [
+                _ev(
+                    family_kind="lookup_table",
+                    feature_dict=FAMILY_FEATURES["lookup_table"],
+                    signal_idx=1,
+                ),
+                _ev(
+                    family_kind="threshold_rule",
+                    feature_dict=FAMILY_FEATURES["threshold_rule"],
+                    signal_idx=2,
+                ),
+            ],
+        )
+
+        assert len(res.inserted_event_ids) == 2
+        assert cp.batch_sizes == [2]
+        assert cp.single_calls == 0
+    finally:
+        cp.close()
+
+
 def test_persist_rejects_malformed(temp_cp):
     bad = [
         # missing field

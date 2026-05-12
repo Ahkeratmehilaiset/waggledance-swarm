@@ -1,0 +1,71 @@
+{
+  "schema_version": "eig2-progressive-replay-v1",
+  "decision": "L11_MAGMA_PROGRESSIVE_REPLAY_L0_L4",
+  "source_of_truth": "raw_magma",
+  "levels": [
+    {
+      "level": "L0",
+      "name": "BootHeader",
+      "max_tokens": 128,
+      "load_timing": "boot",
+      "allowed_callers": ["runtime_boot", "readiness_probe"],
+      "may_load_at_boot": true,
+      "raw_fallback_required": true
+    },
+    {
+      "level": "L1",
+      "name": "CompactCardsTopK",
+      "max_tokens": 512,
+      "load_timing": "boot_top_k",
+      "allowed_callers": ["runtime_boot", "first_query_prefetch"],
+      "may_load_at_boot": true,
+      "raw_fallback_required": true
+    },
+    {
+      "level": "L2",
+      "name": "LocalReplayWindow",
+      "max_tokens": 2048,
+      "load_timing": "lazy_window",
+      "allowed_callers": ["query_hydration"],
+      "may_load_at_boot": false,
+      "raw_fallback_required": true
+    },
+    {
+      "level": "L3",
+      "name": "SelectiveHydration",
+      "max_tokens": 8192,
+      "load_timing": "selective_on_demand",
+      "allowed_callers": ["risk_tiered_query", "operator_inspection"],
+      "may_load_at_boot": false,
+      "raw_fallback_required": true
+    },
+    {
+      "level": "L4",
+      "name": "ForensicReplay",
+      "max_tokens": null,
+      "load_timing": "forensic",
+      "allowed_callers": ["audit", "rollback", "high_risk"],
+      "may_load_at_boot": false,
+      "raw_fallback_required": true
+    }
+  ],
+  "boot_contract": {
+    "allowed_levels": ["L0", "L1"],
+    "forbidden_levels": ["L2", "L3", "L4"],
+    "complexity": "O(K)",
+    "full_raw_replay_allowed": false
+  },
+  "fallback_contract": {
+    "missing_card": "raw_replay",
+    "stale_card": "raw_replay",
+    "malformed_card": "raw_replay",
+    "hash_mismatch": "fail_closed_to_raw_replay",
+    "raw_replay_must_verify_source_hash": true
+  },
+  "writer_contract": {
+    "new_writers_require_adrs": ["ADR-011", "ADR-014", "ADR-015"],
+    "derived_writes_optional": true,
+    "raw_append_authoritative": true,
+    "request_path_blocking_allowed": false
+  }
+}

@@ -94,6 +94,8 @@ state-space risks have dedicated tests.
 ### 3. MAGMA progressive replay and compact cards
 
 Future modules: `progressive_replay.py` and `compact_decision_card.py`.
+The binding L0-L4 replay contract is
+`docs/eig2/contracts/progressive_replay_l0_l4.json` (ADR-021).
 
 Raw MAGMA events stay the source of truth. Compact cards are derived pointers
 and summaries. Missing, stale, or malformed cards must fall back to raw replay.

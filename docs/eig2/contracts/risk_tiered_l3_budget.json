@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Risk-tiered L3 hydration budget contract (L15)",
+  "description": "Per-call L3 hydration budget tiers. See ADR-027.",
+  "version": 1,
+  "tier_enum": ["routine", "standard", "elevated", "high_risk"],
+  "tier_budgets_tokens": {
+    "routine": 0,
+    "standard": 2048,
+    "elevated": 8192,
+    "high_risk": 32768
+  },
+  "default_tier": "standard",
+  "invariants": [
+    {
+      "id": "RTB-001",
+      "name": "tier_enum_only",
+      "description": "RiskTier value MUST be in {routine, standard, elevated, high_risk}. No other values allowed.",
+      "must": [
+        "L3 query entrypoint validates the tier parameter against the enum",
+        "tier_enum is read from this contract file, not hardcoded in Python"
+      ]
+    },
+    {
+      "id": "RTB-002",
+      "name": "budget_mapping_fixed",
+      "description": "Tier-to-token mapping is fixed in this contract. Operator may override only elevated and high_risk per profile.",
+      "must": [
+        "tier_budgets_tokens map matches contract values exactly at module init",
+        "routine MUST equal 0, standard MUST equal 2048 (constants across profiles)",
+        "elevated and high_risk may be reduced via profile config but defaults match contract"
+      ]
+    },
+    {
+      "id": "RTB-003",
+      "name": "routine_skips_L3",
+      "description": "When tier=routine, L3 hydration is bypassed entirely. No DB read, no card walk.",
+      "must": [
+        "L3 query entrypoint short-circuits when tier=routine",
+        "caller gets L0+L1 result only",
+        "no telemetry of 'L3 attempted but found 0 cards' for routine -- it never enters L3"
+      ]
+    },
+    {
+      "id": "RTB-004",
+      "name": "default_tier_is_standard",
+      "description": "A call that does not declare a tier MUST default to 'standard' (2048), NOT 'elevated'. Prevents accidental footprint expansion.",
+      "must": [
+        "missing tier arg -> 'standard'",
+        "test asserts default_tier=='standard' in this contract",
+        "L3 query entrypoint signature has tier default to RiskTier.STANDARD"
+      ]
+    },
+    {
+      "id": "RTB-005",
+      "name": "caller_declares",
+      "description": "Tier is supplied at the L3 query entrypoint via a RiskTier parameter. No automatic inference.",
+      "must": [
+        "L3 query entrypoint has explicit tier parameter (positional or kw)",
+        "no runtime can change tier mid-query based on inferred signals",
+        "static grep of 'RiskTier.high_risk' MUST find every high-risk call site"
+      ]
+    },
+    {
+      "id": "RTB-006",
+      "name": "profile_override_scope",
+      "description": "Profile-level budget overrides apply ONLY to elevated and high_risk. routine=0 and standard=2048 are constants.",
+      "must": [
+        "profile config schema rejects overrides for 'routine' or 'standard' keys",
+        "only 'elevated' and 'high_risk' keys are tunable per profile",
+        "profile YAML validator catches and warns on disallowed override"
+      ]
+    },
+    {
+      "id": "RTB-007",
+      "name": "no_silent_escalation",
+      "description": "Tier cannot be implicitly bumped by the runtime. Escalation requires explicit caller annotation or operator-documented exception path.",
+      "must": [
+        "no code path within L3BudgetEnforcer or callers AUTO-bumps tier based on cache miss / latency / etc.",
+        "any tier change at runtime is from caller code, not framework",
+        "adaptive tier suggestion (future) is OUT of scope of this ADR"
+      ]
+    }
+  ],
+  "out_of_scope": [
+    "Implementation of L3BudgetEnforcer (separate PR)",
+    "Per-tier query distribution telemetry (separate PR)",
+    "Adaptive tier suggestion (explicitly NOT planned -- silent escalation forbidden by RTB-007)",
+    "Per-domain budget overrides (separate ADR if pursued)"
+  ],
+  "related_adrs": ["021", "024", "026"],
+  "related_leaps_50_menu": ["L11", "L14", "L15", "L16"],
+  "depends_on_contracts": ["progressive_replay_l0_l4.json"]
+}

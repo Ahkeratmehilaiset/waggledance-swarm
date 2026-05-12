@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Cell-pair traversal telemetry contract (L10)",
+  "description": "Per-edge routing event emission. See ADR-047.",
+  "version": 1,
+  "event_type": "cell_pair_traversal",
+  "required_fields": ["event_type", "from_cell", "to_solver", "query_class_hash", "success", "latency_ms", "ts_utc"],
+  "optional_fields": ["trust_at_dispatch", "color_class", "stage"],
+  "policy_defaults": {"sampling_rate": 1.0, "sampling_rate_min": 0.01, "retention_days": 30},
+  "invariants": [
+    {"id": "CPT-001", "name": "event_type_pinned", "description": "event_type='cell_pair_traversal'.", "must": ["exact string", "no synonyms"]},
+    {"id": "CPT-002", "name": "required_fields", "description": "7 required fields present on every event.", "must": ["validator rejects missing fields", "extra fields ignored"]},
+    {"id": "CPT-003", "name": "optional_fields", "description": "trust_at_dispatch, color_class, stage are optional.", "must": ["may be absent on minimal events", "presence preserved for analysis"]},
+    {"id": "CPT-004", "name": "emit_on_completion", "description": "Both success and failure path emit.", "must": ["success=true on hit, success=false on failure", "anti-tunnel mining depends on failure events"]},
+    {"id": "CPT-005", "name": "sampling_default_100pct", "description": "sampling_rate default 1.0.", "must": ["default 1.0", "profile can reduce down to 0.01", "validator rejects rate outside [0.01, 1.0]"]},
+    {"id": "CPT-006", "name": "no_on_path_overhead", "description": "Fire-and-forget bridge append.", "must": ["emission does NOT block routing return", "uses bridge async append", "routing latency unaffected"]},
+    {"id": "CPT-007", "name": "retention_30_days", "description": "events.jsonl rotation keeps cell-pair events >= 30 days.", "must": ["rotation policy honors retention", "tunnel mining (ADR-042) has full window data available"]}
+  ],
+  "out_of_scope": ["Implementation of CellPairTelemetryEmitter (separate PR)", "Per-domain sampling tuning (future ADR)"],
+  "related_adrs": ["038", "040", "042", "045", "046"],
+  "related_leaps_50_menu": ["L3", "L10"]
+}

@@ -569,14 +569,12 @@ class AutonomyService:
                 total_graded = result.gold_count + result.silver_count + \
                     result.bronze_count + result.quarantine_count
                 if total_graded > 0:
-                    for _ in range(result.gold_count):
-                        self._metrics.record_case_grade("gold")
-                    for _ in range(result.silver_count):
-                        self._metrics.record_case_grade("silver")
-                    for _ in range(result.bronze_count):
-                        self._metrics.record_case_grade("bronze")
-                    for _ in range(result.quarantine_count):
-                        self._metrics.record_case_grade("quarantine")
+                    self._metrics.record_case_grade("gold", count=result.gold_count)
+                    self._metrics.record_case_grade("silver", count=result.silver_count)
+                    self._metrics.record_case_grade("bronze", count=result.bronze_count)
+                    self._metrics.record_case_grade(
+                        "quarantine", count=result.quarantine_count,
+                    )
 
             # Advance watermark after successful cycle
             if watermark_before > 0 and case_store is not None and result.success:

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Sleep-time consolidation contract (L24)",
+  "description": "Overnight shadow-solver promotion gate. See ADR-049.",
+  "version": 1,
+  "policy_defaults": {"schedule_cron": "0 2 * * *", "rolling_window_days": 7, "shadow_ceiling_days": 14},
+  "invariants": [
+    {"id": "STC-001", "name": "nightly_schedule", "description": "Default 02:00 local.", "must": ["cron-compatible expression", "default '0 2 * * *'", "operator can override"]},
+    {"id": "STC-002", "name": "rolling_window_7d", "description": "Median + STDDEV over last 7 days.", "must": ["default 7", "window slides with current time"]},
+    {"id": "STC-003", "name": "median_dominance_required", "description": "Candidate median >= production median.", "must": ["strict ge required", "tied medians can pass", "below production median rejected"]},
+    {"id": "STC-004", "name": "stddev_non_regression", "description": "Candidate stddev <= production stddev.", "must": ["noisier candidates rejected", "matches L47 latency_consistency philosophy"]},
+    {"id": "STC-005", "name": "atomic_promotion", "description": "Shadow->prod swap is atomic.", "must": ["single transaction in control plane", "no partial state observable", "rollback on failure"]},
+    {"id": "STC-006", "name": "14_day_ceiling", "description": "Shadow not promoted for 14 days auto-archives.", "must": ["shadow_ceiling_days default 14", "archive state is 'retired', not 'deleted'", "operator can revive archived shadows"]},
+    {"id": "STC-007", "name": "audit_log_with_codes", "description": "Promotion + archive logged with reason codes.", "must": ["reason code enum: PROMOTE_MEDIAN_PASS, REJECT_MEDIAN_FAIL, REJECT_STDDEV_FAIL, ARCHIVE_14D_CEILING", "logged to events.jsonl"]}
+  ],
+  "out_of_scope": ["Implementation of SleepConsolidator (separate PR)", "Adaptive window sizing (future ADR)"],
+  "related_adrs": ["034", "048"],
+  "related_leaps_50_menu": ["L24"]
+}

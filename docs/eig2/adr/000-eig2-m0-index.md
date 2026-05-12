@@ -1,6 +1,6 @@
 # EIG2-M0 ADR set — index
 
-This file enumerates every ADR that constitutes the EIG2-M0 binding rule-set (R10–R19 + ADR 020). It is the single source of truth for ADR existence, authorship, peer-review state, and landing PR.
+This file enumerates every ADR that constitutes the EIG2-M0 binding rule-set (R10–R19 + ADR 020+) and later binding follow-ups. It is the single source of truth for ADR existence, authorship, peer-review state, and landing PR.
 
 Authorship convention: each ADR has an author (drafts the rule-text) and a peer reviewer (cross-signs). Per the M6 trust-filter (`docs/eig2/spikes/M0-200-option-summary.md` §6), no ADR transitions from `proposed` → `accepted` without both signatures. Ownership split agreed in bridge thread `eig2-m0-ownership-split-2026-05-11`.
 
@@ -21,6 +21,7 @@ Status: M0 complete 2026-05-11T21:00:25Z. PR #263, #265, #266, #267, #268, and #
 | 018 | R18 | Version monotonicity inside the sprint chain | Codex | Claude | **accepted** (Codex signed; Claude signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 018-version-monotonicity.md |
 | 019 | R19 | No-human policy scoped to implementation decisions | Claude | Codex | **accepted** (Claude signed; Codex signed 2026-05-11) | PR #269 -> main `2cc6fec` | `main` / 019-no-human-policy-scope.md |
 | 020 | (R3 fix) | Bridge `type` field is non-gating | Codex | Claude | **accepted** | PR #266 → main `ccd4d12`; PR #267 amendments → main `b10a95a` | `main` |
+| 021 | L11 | MAGMA progressive replay L0-L4 contract | Codex | Claude | **accepted** (Codex signed; Claude iteration requested 2026-05-12) | PR TBD | `main` / 021-progressive-replay-l0-l4-contract.md |
 
 ## Sequence of M0 PRs (ownership split §5)
 

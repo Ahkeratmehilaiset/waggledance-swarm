@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waggledance.local/contracts/eig2_progressive_replay_contract.schema.json",
+  "title": "EIG2 MAGMA progressive replay L0-L4 contract",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "decision",
+    "source_of_truth",
+    "levels",
+    "boot_contract",
+    "fallback_contract",
+    "writer_contract"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "eig2-progressive-replay-v1"
+    },
+    "decision": {
+      "const": "L11_MAGMA_PROGRESSIVE_REPLAY_L0_L4"
+    },
+    "source_of_truth": {
+      "const": "raw_magma"
+    },
+    "levels": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": [
+          "level",
+          "name",
+          "max_tokens",
+          "load_timing",
+          "allowed_callers",
+          "may_load_at_boot",
+          "raw_fallback_required"
+        ],
+        "properties": {
+          "level": {
+            "enum": ["L0", "L1", "L2", "L3", "L4"]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "max_tokens": {
+            "type": ["integer", "null"],
+            "minimum": 1
+          },
+          "load_timing": {
+            "enum": [
+              "boot",
+              "boot_top_k",
+              "lazy_window",
+              "selective_on_demand",
+              "forensic"
+            ]
+          },
+          "allowed_callers": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "may_load_at_boot": {
+            "type": "boolean"
+          },
+          "raw_fallback_required": {
+            "const": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "boot_contract": {
+      "type": "object",
+      "required": [
+        "allowed_levels",
+        "forbidden_levels",
+        "complexity",
+        "full_raw_replay_allowed"
+      ],
+      "properties": {
+        "allowed_levels": {
+          "const": ["L0", "L1"]
+        },
+        "forbidden_levels": {
+          "const": ["L2", "L3", "L4"]
+        },
+        "complexity": {
+          "const": "O(K)"
+        },
+        "full_raw_replay_allowed": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "fallback_contract": {
+      "type": "object",
+      "required": [
+        "missing_card",
+        "stale_card",
+        "malformed_card",
+        "hash_mismatch",
+        "raw_replay_must_verify_source_hash"
+      ],
+      "properties": {
+        "missing_card": {
+          "const": "raw_replay"
+        },
+        "stale_card": {
+          "const": "raw_replay"
+        },
+        "malformed_card": {
+          "const": "raw_replay"
+        },
+        "hash_mismatch": {
+          "const": "fail_closed_to_raw_replay"
+        },
+        "raw_replay_must_verify_source_hash": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "writer_contract": {
+      "type": "object",
+      "required": [
+        "new_writers_require_adrs",
+        "derived_writes_optional",
+        "raw_append_authoritative",
+        "request_path_blocking_allowed"
+      ],
+      "properties": {
+        "new_writers_require_adrs": {
+          "const": ["ADR-011", "ADR-014", "ADR-015"]
+        },
+        "derived_writes_optional": {
+          "const": true
+        },
+        "raw_append_authoritative": {
+          "const": true
+        },
+        "request_path_blocking_allowed": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -183,11 +183,11 @@ and AutoFixLoop bridge events use the existing `type=handoff` /
 
 ### Tests
 
-288 v3.13.0-bracketed tests pass on `6d2e59b`:
-* 9 module-test files under `tests/v3_13_0/`
+292 v3.13.0-bracketed tests pass on `6d2e59b`:
+* 9 module-test files under `tests/v3_13_0/` -- 243 tests
 * 3 contract-test files under `tests/contracts/` for the v3.13.0
-  schema bundle, inventory generators, and runbook examples
-* 1 streaming-mode test file under `tests/tools/`
+  schema bundle, inventory generators, and runbook examples -- 35 tests
+* sim_orchestrator retrospective + streaming under `tests/tools/` -- 14 tests
 
 ### Reproducible proof commands
 
@@ -200,7 +200,17 @@ python -m pytest tests/tools/test_sim_orchestrator_alignment.py \
                  tests/tools/test_sim_orchestrator_stream.py -q
 ```
 
-Expected: 288 passed total.
+Expected: 292 passed total (243 + 35 + 14).
+
+The MAGMA event surface added by v3.13.0 has 48 unique event types
+across `write.*`, `shadow.*`, `auto_fix_loop.*`, `solver.*`, `auth.*`,
+`behavior.*`, `divergence.*`, `parser.*`, `safety.*`, `schema.*`,
+`sqlite.*`, `api.*`, and `memory.*` prefixes. Reproducible:
+
+```bash
+python tools/audit_v3_13_0_event_surface.py            # full list
+python tools/audit_v3_13_0_event_surface.py --count-only  # just '48'
+```
 
 ## [EIG2 substrate 55/55 + L54-reframed impl + ADR-062 capstone / v3.12.0 candidate] — 2026-05-12
 

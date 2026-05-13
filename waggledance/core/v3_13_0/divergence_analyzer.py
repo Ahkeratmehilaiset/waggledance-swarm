@@ -224,7 +224,7 @@ def _value_hash(value: Any) -> str:
         return "sha256:" + hashlib.sha256(b"\x00null").hexdigest()[:16]
     if isinstance(value, (dict, list)):
         canonical = json.dumps(value, sort_keys=True, separators=(",", ":"),
-                                default=str).encode("utf-8")
+                                ensure_ascii=False).encode("utf-8")
     else:
         canonical = str(value).encode("utf-8")
     return "sha256:" + hashlib.sha256(canonical).hexdigest()[:16]

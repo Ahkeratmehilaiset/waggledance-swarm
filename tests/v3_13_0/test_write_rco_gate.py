@@ -633,6 +633,31 @@ class TestExternalEffectRoute:
         assert outcome.approved is False
         assert outcome.stop_condition == StopCondition.PEER_RCO_NONCONVERGENT
 
+    def test_wrt_003_peer_rco_changes_requested_emits_denied_audit(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=self._setup_wrt_003_state(),
+            connectors=self._setup_wrt_003_connector(),
+            capsules=self._setup_wrt_003_capsule(),
+            peer_verdict="changes_requested",
+            peer_rounds=1,
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+        )
+
+        outcome = gate.route(intent)
+
+        assert outcome.approved is False
+        assert outcome.stop_condition is None
+        assert outcome.denial_reason == "peer RCO did not pass"
+        event_types = [e["event_type"] for e in audit]
+        assert AuditEventType.DENIED.value in event_types
+        assert outcome.audit_event_ids[-1].startswith("evt_")
+
     def test_wrt_003_unresolved_state_denies(self):
         """Codex RCO round-2 fix #1: WRT-003 with unresolved target_state_ref
         must deny fail-closed even when scope policy would auto-approve."""
@@ -700,6 +725,9 @@ class TestExternalEffectRoute:
         outcome = gate.route(intent)
         assert outcome.approved is False
         assert "outside_pre_approved_scope" in (outcome.denial_reason or "")
+        assert outcome.stop_condition is None
+        event_types = [e["event_type"] for e in audit]
+        assert AuditEventType.DENIED.value in event_types
 
 
 # --------------------------------------------------------------------------
@@ -753,6 +781,71 @@ class TestExecution:
         result = gate.execute(intent, outcome)
         event_types = [e["event_type"] for e in audit]
         assert AuditEventType.EFFECT_OUTCOME_UNKNOWN.value in event_types
+
+    def test_execute_effect_started_audit_failure_returns_typed_result(self):
+        audit = []
+        gate = _make_gate(audit_collector=audit)
+        executed = []
+
+        def audit_emit(envelope: dict) -> str:
+            if envelope["event_type"] == AuditEventType.EFFECT_STARTED.value:
+                raise RuntimeError("audit down")
+            audit.append(envelope)
+            return f"evt_{len(audit):04d}"
+
+        gate.audit_emit = audit_emit
+        gate.write_executor = lambda intent: (
+            executed.append(intent)
+            or ExecutionResult(intent_id=intent.intent_id, success=True)
+        )
+        intent = _make_intent()
+        outcome = GateOutcome(
+            intent_id=intent.intent_id,
+            risk_class=WriteRiskClass.INTERNAL_MEMORY,
+            approved=True,
+        )
+
+        result = gate.execute(intent, outcome)
+
+        assert result.success is False
+        assert result.outcome_unknown is True
+        assert "audit emit failed: audit down" in (result.error_reason or "")
+        assert executed == []
+
+    def test_execute_effect_completed_audit_failure_returns_typed_result(self):
+        audit = []
+        gate = _make_gate(audit_collector=audit)
+        executed = []
+
+        def audit_emit(envelope: dict) -> str:
+            if envelope["event_type"] == AuditEventType.EFFECT_COMPLETED.value:
+                raise RuntimeError("audit down")
+            audit.append(envelope)
+            return f"evt_{len(audit):04d}"
+
+        gate.audit_emit = audit_emit
+        gate.write_executor = lambda intent: (
+            executed.append(intent)
+            or ExecutionResult(
+                intent_id=intent.intent_id,
+                success=True,
+                elapsed_ms=7,
+            )
+        )
+        intent = _make_intent()
+        outcome = GateOutcome(
+            intent_id=intent.intent_id,
+            risk_class=WriteRiskClass.INTERNAL_MEMORY,
+            approved=True,
+        )
+
+        result = gate.execute(intent, outcome)
+
+        assert result.success is False
+        assert result.outcome_unknown is True
+        assert result.elapsed_ms == 7
+        assert "audit emit failed: audit down" in (result.error_reason or "")
+        assert executed == [intent]
 
 
 # --------------------------------------------------------------------------

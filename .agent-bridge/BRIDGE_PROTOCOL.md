@@ -278,6 +278,16 @@ operation lock / lease for TOCTOU).
      `Read-AgentBridge.ps1` call; finding the file consumes it. End-
      to-end measured smoke latency (`Test-BridgeWakeOnEventSmoke.ps1`)
      is < 300 ms when the watcher is warm.
+   - **Cursor monitor for active conversation (R23.3).** Wake files are a
+     dirty bit, not a transcript. Agents with a chat/terminal monitor surface
+     should run `Monitor-AgentBridge.ps1 -Agent <me> -FromAgent <other>` to
+     print each new substantive event exactly once. The monitor stores a
+     line-count cursor under `shared/monitor_<agent>...cursor.json`, initializes
+     new cursors at "now" to avoid historical floods, and excludes
+     heartbeat/liveness/wake_request plus ACK-only `message/received` events.
+     This prevents the "same replay" failure mode where a shell loop keeps
+     showing the last old event forever. Verified by
+     `Test-BridgeMonitorCursorSmoke.ps1`.
    - **Background-job cleanup (R23.1.1).** The wake (R23.0) and
      heartbeat (R23.1) background jobs are stopped automatically on
      normal PowerShell shutdown via a `PowerShell.Exiting` event
@@ -317,6 +327,11 @@ cd $wt.worktree_path
 # Fast pre-check used by the agent's polling loop. Returns $true exactly once
 # after a targeted event arrives; the wake file is consumed on read.
 & .\.agent-bridge\bin\Test-BridgeWake.ps1 -Agent codex
+
+# Real-time/cursor monitor for the active conversation. Prints only new
+# substantive events from the other agent and advances a cursor so the same
+# event is not replayed on the next poll.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Monitor-AgentBridge.ps1 -Agent codex -FromAgent claude -PollIntervalMs 10000
 
 # Read without writing received ACKs.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent codex -ShowClaims -NoAckReceived -Tail 40
@@ -365,6 +380,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-Bri
 
 # End-to-end smoke test of per-agent worktree creation/isolation.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeWorktreeIsolationSmoke.ps1
+
+# End-to-end smoke test of cursor monitor semantics: no historical flood,
+# no ACK/heartbeat noise, no same-event replay, and live append detection.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeMonitorCursorSmoke.ps1
 
 # Release a task claim.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Release-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Status done -Message "Review complete; 2 medium findings"

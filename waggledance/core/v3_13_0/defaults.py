@@ -11,6 +11,7 @@ runtime; this module is the default floor shared by the runtime.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 
 # DEF-001: embedding model
@@ -141,4 +142,150 @@ def skip_subject_words(
         DEFAULT_SKIP_SUBJECT_WORDS_BY_LOCALE,
         locale=locale,
         extra_patterns=extra_words,
+    )
+
+
+# Polish item 14: profile-specific tuning.
+#
+# Per-profile recommended overlay values for the override fields that
+# ProfileConfig schema already exposes (retrieval_overrides,
+# embedding_overrides). Sprint 2+ may add per-profile values for the
+# other DEF-* areas; for v3.13.0 polish scope, only retrieval +
+# embedding are differentiated.
+#
+# Rationale for the per-profile retrieval values:
+#   home              -- universal defaults; mainstream interactive use.
+#   cottage           -- tighter threshold (0.62) and smaller top_n (6)
+#                        to keep retrieval cheap and noise-free on the
+#                        low-power local hardware typical of cottage
+#                        deployments; matches the COTTAGE dry-run
+#                        runbook's lean-substrate assumption.
+#   remote_dwelling   -- same as cottage; offline-first low-bandwidth
+#                        deployment shares the COTTAGE cost profile.
+#   factory           -- broader top_n (12) and lower threshold (0.55)
+#                        to support production-decision workflows where
+#                        recall matters more than per-call cost and the
+#                        host typically has more compute headroom.
+#
+# Embedding overlays for v3.13.0 polish: all profiles share the
+# DEF-001 universal embedding model. The resolver still threads
+# embedding overrides for the override-merge pattern so future polish
+# can differentiate without changing call sites.
+
+PROFILE_RETRIEVAL_DEFAULTS: dict[str, dict[str, Any]] = {
+    "home": {
+        "context_sim_threshold": DEFAULT_CONTEXT_SIM_THRESHOLD,
+        "context_top_n": DEFAULT_CONTEXT_TOP_N,
+    },
+    "cottage": {
+        "context_sim_threshold": 0.62,
+        "context_top_n": 6,
+    },
+    "remote_dwelling": {
+        "context_sim_threshold": 0.62,
+        "context_top_n": 6,
+    },
+    "factory": {
+        "context_sim_threshold": 0.55,
+        "context_top_n": 12,
+    },
+}
+
+PROFILE_EMBEDDING_DEFAULTS: dict[str, dict[str, Any]] = {
+    "home": {
+        "model_id": DEFAULT_EMBEDDING_MODEL,
+        "dims": DEFAULT_VECTOR_DIMS,
+    },
+    "cottage": {
+        "model_id": DEFAULT_EMBEDDING_MODEL,
+        "dims": DEFAULT_VECTOR_DIMS,
+    },
+    "remote_dwelling": {
+        "model_id": DEFAULT_EMBEDDING_MODEL,
+        "dims": DEFAULT_VECTOR_DIMS,
+    },
+    "factory": {
+        "model_id": DEFAULT_EMBEDDING_MODEL,
+        "dims": DEFAULT_VECTOR_DIMS,
+    },
+}
+
+_RETRIEVAL_KEYS = frozenset({"context_sim_threshold", "context_top_n"})
+_EMBEDDING_KEYS = frozenset({"model_id", "dims"})
+
+
+def _normalize_profile_kind(profile_kind: str | None) -> str:
+    """Lower/strip profile_kind; empty string means no per-profile overlay."""
+    if not profile_kind:
+        return ""
+    return profile_kind.strip().lower()
+
+
+def _resolve_with_overlay(
+    universal: dict[str, Any],
+    profile_map: dict[str, dict[str, Any]],
+    allowed_keys: frozenset[str],
+    profile_kind: str | None,
+    overrides: dict[str, Any] | None,
+) -> dict[str, Any]:
+    profile_defaults = profile_map.get(_normalize_profile_kind(profile_kind), {})
+    resolved = dict(universal)
+    resolved.update(profile_defaults)
+    if overrides:
+        for key, value in overrides.items():
+            if key not in allowed_keys:
+                continue
+            if value is None:
+                continue
+            resolved[key] = value
+    return resolved
+
+
+def resolve_retrieval_defaults(
+    profile_kind: str | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve retrieval defaults for a profile_kind with caller overrides.
+
+    Order of precedence (highest wins): overrides > per-profile defaults
+    > universal DEF-002 defaults. Unknown profile_kind falls back to
+    universal. Overrides whose value is ``None`` or whose key is outside
+    the ProfileConfig.retrieval_overrides slot are silently ignored.
+    """
+    universal = {
+        "context_sim_threshold": DEFAULT_CONTEXT_SIM_THRESHOLD,
+        "context_top_n": DEFAULT_CONTEXT_TOP_N,
+    }
+    return _resolve_with_overlay(
+        universal,
+        PROFILE_RETRIEVAL_DEFAULTS,
+        _RETRIEVAL_KEYS,
+        profile_kind,
+        overrides,
+    )
+
+
+def resolve_embedding_defaults(
+    profile_kind: str | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve embedding defaults for a profile_kind with caller overrides.
+
+    Order of precedence (highest wins): overrides > per-profile defaults
+    > universal DEF-001 defaults. For v3.13.0 polish all profiles share
+    the universal embedding model; the resolver threads the override
+    pattern so future polish can differentiate without changing call
+    sites. Overrides whose value is ``None`` or whose key is outside the
+    ProfileConfig.embedding_overrides slot are silently ignored.
+    """
+    universal = {
+        "model_id": DEFAULT_EMBEDDING_MODEL,
+        "dims": DEFAULT_VECTOR_DIMS,
+    }
+    return _resolve_with_overlay(
+        universal,
+        PROFILE_EMBEDDING_DEFAULTS,
+        _EMBEDDING_KEYS,
+        profile_kind,
+        overrides,
     )

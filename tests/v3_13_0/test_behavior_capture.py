@@ -205,6 +205,77 @@ class TestCaptureRefusal:
 
 
 # --------------------------------------------------------------------------
+# Secret-class retention boundary (Codex RCO round-2)
+# --------------------------------------------------------------------------
+
+
+class TestSecretRetentionBoundary:
+    """sensitive_class=secret MUST be hash-only; raw stdout/stderr/stdin
+    payloads must never reach persist_artifact."""
+
+    def test_secret_class_does_not_persist_raw_stdout(self):
+        tool = _capture_supporting_tool(sensitive_class="secret")
+        secret_stdout = b"SECRET_STDOUT_PAYLOAD_DO_NOT_LEAK"
+        artifacts = {}
+        capture = _make_capture(tool=tool,
+                                  subprocess_stdout=secret_stdout,
+                                  artifacts=artifacts)
+        record = capture.capture(_basic_invocation())
+        for content in artifacts.values():
+            assert secret_stdout not in content
+            assert b"SECRET_STDOUT_PAYLOAD" not in content
+        assert record.stdout_artifact_uri
+        stored = artifacts[record.stdout_artifact_uri]
+        assert len(stored) == 64           # sha256 hex length
+        assert "hash" in record.stdout_artifact_uri
+
+    def test_secret_class_does_not_persist_raw_stderr(self):
+        tool = _capture_supporting_tool(sensitive_class="secret")
+        secret_stderr = b"SECRET_STDERR_PAYLOAD_DO_NOT_LEAK"
+        artifacts = {}
+        capture = _make_capture(tool=tool,
+                                  subprocess_stderr=secret_stderr,
+                                  artifacts=artifacts)
+        record = capture.capture(_basic_invocation())
+        for content in artifacts.values():
+            assert secret_stderr not in content
+            assert b"SECRET_STDERR_PAYLOAD" not in content
+        stored = artifacts[record.stderr_artifact_uri]
+        assert len(stored) == 64
+        assert "hash" in record.stderr_artifact_uri
+
+    def test_secret_class_does_not_persist_raw_stdin(self):
+        tool = _capture_supporting_tool(sensitive_class="secret",
+                                           capture_stdin=True)
+        secret_stdin = b"SECRET_STDIN_PAYLOAD_DO_NOT_LEAK"
+        artifacts = {}
+        capture = _make_capture(tool=tool, consent_token_valid=True,
+                                  artifacts=artifacts)
+        record = capture.capture(
+            _basic_invocation(stdin_payload=secret_stdin),
+            stdin_consent_token="t1",
+        )
+        assert record.stdin_artifact_uri is None
+        assert record.stdin_hash_sha256 is not None
+        for content in artifacts.values():
+            assert secret_stdin not in content
+            assert b"SECRET_STDIN_PAYLOAD" not in content
+
+    def test_restricted_class_still_persists_payload(self):
+        """Boundary check: only secret + opaque are hash-only; restricted
+        still retains payload."""
+        tool = _capture_supporting_tool(sensitive_class="restricted")
+        artifacts = {}
+        capture = _make_capture(tool=tool,
+                                  subprocess_stdout=b"restricted payload here",
+                                  artifacts=artifacts)
+        record = capture.capture(_basic_invocation())
+        stored = artifacts[record.stdout_artifact_uri]
+        assert stored == b"restricted payload here"
+        assert "hash" not in record.stdout_artifact_uri
+
+
+# --------------------------------------------------------------------------
 # Happy path -- synthetic baseline, no operator data
 # --------------------------------------------------------------------------
 

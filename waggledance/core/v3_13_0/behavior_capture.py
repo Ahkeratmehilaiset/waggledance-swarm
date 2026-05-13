@@ -220,13 +220,22 @@ class BehaviorCapture:
             raise CaptureRefused(invocation.tool_descriptor_id,
                                   "operator scope policy denied")
 
+        # Per Codex RCO round-2 fix: secret sensitive_class is hash-only;
+        # raw payloads (stdin/stdout/stderr) must NEVER be passed to
+        # persist_artifact. Opaque is already refused above. The
+        # `is_payload_retained()` helper centralises the policy.
+        retain_payload = is_payload_retained(tool.sensitive_class)
+
         # Stdin handling: hash always; payload only if consent + opt-in
+        # AND sensitive_class permits payload retention.
         stdin_hash = None
         stdin_payload = invocation.stdin_payload
         stdin_artifact_uri = None
         if stdin_payload is not None:
             stdin_hash = hashlib.sha256(stdin_payload).hexdigest()
-            if tool.capture_stdin and stdin_consent_token:
+            if (retain_payload
+                    and tool.capture_stdin
+                    and stdin_consent_token):
                 if self.consent_token_validator(invocation.tool_descriptor_id,
                                                    stdin_consent_token):
                     stdin_artifact_uri = self.persist_artifact(
@@ -251,11 +260,27 @@ class BehaviorCapture:
         pii_hits.extend(self.pii_scan(completed.stderr or b""))
         review_status = "pending" if pii_hits else "approved"
 
-        # Persist stdout / stderr to restricted artifact dir.
-        # secret/opaque already refused; restricted+ stores under
-        # operator-only review.
-        stdout_uri = self.persist_artifact("stdout", completed.stdout or b"")
-        stderr_uri = self.persist_artifact("stderr", completed.stderr or b"")
+        # Persist stdout / stderr per sensitive_class retention policy.
+        # For public / internal / restricted: persist raw payload bytes.
+        # For secret: persist ONLY a deterministic hash marker; raw bytes
+        #   never reach persist_artifact (Codex RCO round-2 fix).
+        # Opaque: already refused upstream.
+        stdout_bytes = completed.stdout or b""
+        stderr_bytes = completed.stderr or b""
+        if retain_payload:
+            stdout_uri = self.persist_artifact("stdout", stdout_bytes)
+            stderr_uri = self.persist_artifact("stderr", stderr_bytes)
+        else:
+            stdout_hash = hashlib.sha256(stdout_bytes).hexdigest()
+            stderr_hash = hashlib.sha256(stderr_bytes).hexdigest()
+            # Persist only the hash hex (well-known non-payload) -- the
+            # raw payload never crosses this boundary.
+            stdout_uri = self.persist_artifact(
+                "stdout_hash", stdout_hash.encode("ascii")
+            )
+            stderr_uri = self.persist_artifact(
+                "stderr_hash", stderr_hash.encode("ascii")
+            )
 
         # Classification summary: redacted, one-line.
         # We do NOT include raw stdout content here; only the operator-

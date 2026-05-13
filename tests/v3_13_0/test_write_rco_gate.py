@@ -10,6 +10,7 @@ Covers:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 import pytest
@@ -154,6 +155,12 @@ class TestIntent:
         i1 = _make_intent(payload={"a": 1})
         i2 = _make_intent(payload={"a": 2})
         assert i1.payload_hash != i2.payload_hash
+
+    def test_intent_construct_rejects_non_json_native_payload(self):
+        with pytest.raises(TypeError):
+            _make_intent(payload={
+                "dt": datetime(2026, 5, 13, tzinfo=timezone.utc),
+            })
 
 
 # --------------------------------------------------------------------------

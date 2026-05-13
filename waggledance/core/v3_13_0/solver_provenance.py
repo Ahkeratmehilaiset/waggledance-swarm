@@ -262,8 +262,7 @@ class SolverProvenance:
         # activation happens via activate() (not here).
         if candidate.activation_state == ActivationState.UNACTIVATED.value:
             candidate.activation_state = ActivationState.AWAITING_SIGNING.value
-        if (self._has_signature(candidate, SigningRole.OWNER.value)
-                and self._has_signature(candidate, SigningRole.PEER.value)):
+        if self._has_independent_owner_peer_signatures(candidate):
             # Operator signature is required when:
             # * target_domain is sensitive (existing rule), OR
             # * target_write_risk == external_effect (Codex RCO
@@ -360,6 +359,8 @@ class SolverProvenance:
             result.reasons.append("missing_owner_signature")
         if not result.has_peer_signature:
             result.reasons.append("missing_peer_signature")
+        if self._owner_peer_agent_overlap(candidate):
+            result.reasons.append("owner_peer_same_agent")
 
         # Check: every signature's manifest_sha256 matches the current
         # candidate manifest hash. Mismatch invalidates the chain.
@@ -546,6 +547,30 @@ class SolverProvenance:
                           role: str) -> bool:
         return any(s.signing_role == role for s in candidate.signatures)
 
+    def _signing_agent_ids(self, candidate: SolverCandidateRecord,
+                              role: str) -> set[str]:
+        return {
+            s.signing_agent_id
+            for s in candidate.signatures
+            if s.signing_role == role
+        }
+
+    def _owner_peer_agent_overlap(self,
+                                    candidate: SolverCandidateRecord
+                                    ) -> set[str]:
+        return (
+            self._signing_agent_ids(candidate, SigningRole.OWNER.value)
+            & self._signing_agent_ids(candidate, SigningRole.PEER.value)
+        )
+
+    def _has_independent_owner_peer_signatures(
+            self, candidate: SolverCandidateRecord) -> bool:
+        return (
+            self._has_signature(candidate, SigningRole.OWNER.value)
+            and self._has_signature(candidate, SigningRole.PEER.value)
+            and not self._owner_peer_agent_overlap(candidate)
+        )
+
     def _auto_quarantine(self, candidate: SolverCandidateRecord) -> None:
         audit_ref = self.emit_magma_event({
             "event_type": "solver.quarantined",
@@ -576,9 +601,9 @@ class SolverProvenance:
 
 
 def canonicalize_manifest(manifest: dict) -> tuple[str, str]:
-    """Return (canonical_json, sha256_hex)."""
+    """Return (canonical_json, sha256_hex) for strict JSON-native data."""
     canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"),
-                              ensure_ascii=False, default=str)
+                              ensure_ascii=False)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return canonical, digest
 

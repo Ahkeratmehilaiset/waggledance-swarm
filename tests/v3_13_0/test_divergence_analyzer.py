@@ -10,6 +10,7 @@ Covers acceptance criteria from divergence_analyzer_spec.md:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 
 import pytest
@@ -30,6 +31,7 @@ from waggledance.core.v3_13_0.divergence_analyzer import (
     compare_text,
     inst_g09_aggregate,
     inst_g09_passes,
+    _value_hash,
 )
 
 
@@ -306,6 +308,12 @@ class TestPrivacyRedaction:
             for fld in (d.candidate_value_hash, d.baseline_value_hash,
                         d.justification, d.field_path):
                 assert secret not in fld
+
+    def test_value_hash_rejects_non_json_native_nested_values(self):
+        with pytest.raises(TypeError):
+            _value_hash({
+                "dt": datetime(2026, 5, 13, tzinfo=timezone.utc),
+            })
 
 
 # --------------------------------------------------------------------------

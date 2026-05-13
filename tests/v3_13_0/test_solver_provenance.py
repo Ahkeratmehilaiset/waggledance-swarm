@@ -15,6 +15,7 @@ Covers acceptance criteria from solver_rco_provenance_signing_spec.md:
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -106,6 +107,12 @@ class TestCanonicalManifest:
         _c2, d2 = canonicalize_manifest({"b": 2, "a": 1})
         assert d1 == d2
 
+    def test_non_json_native_manifest_rejected(self):
+        with pytest.raises(TypeError):
+            canonicalize_manifest({
+                "dt": datetime(2026, 5, 13, tzinfo=timezone.utc),
+            })
+
 
 # --------------------------------------------------------------------------
 # Successful owner + peer signing
@@ -137,6 +144,32 @@ class TestSigningChain:
         assert result.valid is True
         assert result.has_owner_signature is True
         assert result.has_peer_signature is True
+
+    def test_owner_and_peer_must_be_distinct_agents(self):
+        cand = _make_candidate()
+        prov, store = _make_provenance(candidate=cand)
+        prov.sign(
+            candidate_id=cand.candidate_id,
+            signing_agent_id="claude",
+            signing_role=SigningRole.OWNER.value,
+            bridge_event_ref="bridge:evt_owner_1",
+            operator_scope_policy_ref="policy:home_factory",
+        )
+        prov.sign(
+            candidate_id=cand.candidate_id,
+            signing_agent_id="claude",
+            signing_role=SigningRole.PEER.value,
+            bridge_event_ref="bridge:evt_peer_1",
+            operator_scope_policy_ref="policy:home_factory",
+        )
+
+        result = prov.verify_solver_provenance(cand.candidate_id)
+
+        assert result.valid is False
+        assert "owner_peer_same_agent" in result.reasons
+        assert store[cand.candidate_id].activation_state == (
+            ActivationState.AWAITING_SIGNING.value
+        )
 
     def test_invalid_signing_role_rejected(self):
         """Spec edit E13: signing_role must be EXPLICIT and valid."""

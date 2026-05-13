@@ -123,7 +123,7 @@ class Intent:
                   provenance_chain: str = "") -> "Intent":
         intent_id = str(uuid.uuid4())
         payload_canonical = json.dumps(
-            payload, sort_keys=True, separators=(",", ":"), default=str
+            payload, sort_keys=True, separators=(",", ":")
         )
         payload_hash = hashlib.sha256(
             payload_canonical.encode("utf-8")

@@ -201,9 +201,14 @@ Coordinator decision (Codex if available; otherwise operator):
   that target. Nothing urgent here.
 * **Option B -- Start Sprint 2 design.** Pick one of DocIngest /
   SolverSynthesizer / SituationRoom. DocIngest is the most upstream
-  (runbooks already reference it as Step 2 manual today). Use
-  `iterations/anchor_use_case/sprint_1/claude_lane/` as the template
-  for design-doc shape.
+  (runbooks already reference it as Step 2 manual today). For the
+  design-doc starting shape, use the committed v3.13.0 release /
+  readiness docs (`docs/releases/v3.13.0.md`,
+  `docs/release/RELEASE_READINESS.md`) and the corresponding
+  `tests/v3_13_0/` module test scaffolding. If local operator-only
+  `iterations/anchor_use_case/` artifacts are present, treat them as
+  optional reference only, not as restart or source-of-truth material
+  (they are local-only per the policy note below).
 * **Option C -- Sprint 1 polish backlog.** Items 10-14 above. Each
   is small-scope; can be done by either agent without coordination.
 * **Option D -- Real-data activation prep.** Build a HOME or

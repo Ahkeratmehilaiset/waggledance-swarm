@@ -88,3 +88,104 @@ def test_unknown_locale_keeps_universal_and_profile_additions() -> None:
         *defaults.DEFAULT_SKIP_SENDER_PATTERNS_UNIVERSAL,
         "local",
     )
+
+
+# Polish item 14 -- profile-specific tuning resolver tests.
+
+
+def test_resolve_retrieval_defaults_home_matches_universal() -> None:
+    resolved = defaults.resolve_retrieval_defaults("home")
+    assert resolved == {
+        "context_sim_threshold": defaults.DEFAULT_CONTEXT_SIM_THRESHOLD,
+        "context_top_n": defaults.DEFAULT_CONTEXT_TOP_N,
+    }
+
+
+def test_resolve_retrieval_defaults_cottage_tightens_threshold_and_lowers_top_n() -> None:
+    resolved = defaults.resolve_retrieval_defaults("cottage")
+    assert resolved["context_sim_threshold"] == 0.62
+    assert resolved["context_top_n"] == 6
+    assert resolved["context_sim_threshold"] > defaults.DEFAULT_CONTEXT_SIM_THRESHOLD
+    assert resolved["context_top_n"] < defaults.DEFAULT_CONTEXT_TOP_N
+
+
+def test_resolve_retrieval_defaults_remote_dwelling_matches_cottage() -> None:
+    cottage = defaults.resolve_retrieval_defaults("cottage")
+    remote = defaults.resolve_retrieval_defaults("remote_dwelling")
+    assert remote == cottage
+
+
+def test_resolve_retrieval_defaults_factory_broadens_top_n_and_lowers_threshold() -> None:
+    resolved = defaults.resolve_retrieval_defaults("factory")
+    assert resolved["context_sim_threshold"] == 0.55
+    assert resolved["context_top_n"] == 12
+    assert resolved["context_sim_threshold"] < defaults.DEFAULT_CONTEXT_SIM_THRESHOLD
+    assert resolved["context_top_n"] > defaults.DEFAULT_CONTEXT_TOP_N
+
+
+def test_resolve_retrieval_defaults_overrides_win_over_profile() -> None:
+    resolved = defaults.resolve_retrieval_defaults(
+        "cottage",
+        overrides={"context_top_n": 4, "context_sim_threshold": 0.71},
+    )
+    assert resolved == {"context_sim_threshold": 0.71, "context_top_n": 4}
+
+
+def test_resolve_retrieval_defaults_unknown_profile_falls_back_to_universal() -> None:
+    resolved = defaults.resolve_retrieval_defaults("custom")
+    assert resolved == {
+        "context_sim_threshold": defaults.DEFAULT_CONTEXT_SIM_THRESHOLD,
+        "context_top_n": defaults.DEFAULT_CONTEXT_TOP_N,
+    }
+
+
+def test_resolve_retrieval_defaults_none_profile_falls_back_to_universal() -> None:
+    resolved = defaults.resolve_retrieval_defaults(None)
+    assert resolved == {
+        "context_sim_threshold": defaults.DEFAULT_CONTEXT_SIM_THRESHOLD,
+        "context_top_n": defaults.DEFAULT_CONTEXT_TOP_N,
+    }
+
+
+def test_resolve_retrieval_defaults_normalizes_profile_kind_case_and_whitespace() -> None:
+    a = defaults.resolve_retrieval_defaults("FACTORY")
+    b = defaults.resolve_retrieval_defaults(" factory ")
+    expected = defaults.resolve_retrieval_defaults("factory")
+    assert a == b == expected
+
+
+def test_resolve_retrieval_defaults_ignores_none_value_and_unknown_override_keys() -> None:
+    resolved = defaults.resolve_retrieval_defaults(
+        "factory",
+        overrides={"context_top_n": None, "not_a_real_field": 999},
+    )
+    factory = defaults.resolve_retrieval_defaults("factory")
+    assert resolved == factory
+
+
+def test_resolve_embedding_defaults_all_profiles_share_universal_model_for_v1() -> None:
+    expected = {
+        "model_id": defaults.DEFAULT_EMBEDDING_MODEL,
+        "dims": defaults.DEFAULT_VECTOR_DIMS,
+    }
+    for profile_kind in ("home", "cottage", "remote_dwelling", "factory"):
+        assert defaults.resolve_embedding_defaults(profile_kind) == expected
+
+
+def test_resolve_embedding_defaults_overrides_win_and_unknown_keys_dropped() -> None:
+    resolved = defaults.resolve_embedding_defaults(
+        "home",
+        overrides={
+            "model_id": "custom/embedding-v1",
+            "dims": 1024,
+            "context_top_n": 7,
+        },
+    )
+    assert resolved == {"model_id": "custom/embedding-v1", "dims": 1024}
+
+
+def test_resolve_embedding_defaults_unknown_profile_falls_back_to_universal() -> None:
+    assert defaults.resolve_embedding_defaults("custom") == {
+        "model_id": defaults.DEFAULT_EMBEDDING_MODEL,
+        "dims": defaults.DEFAULT_VECTOR_DIMS,
+    }

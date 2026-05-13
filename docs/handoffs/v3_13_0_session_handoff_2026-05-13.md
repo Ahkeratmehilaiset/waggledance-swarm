@@ -171,12 +171,18 @@ Expected: 292 total tests pass (243 + 35 + 14).
 
 ### Step 3: Restart the agents
 
-Open two terminals in `C:\Python\project2-master`:
+For write-capable agent sessions (Claude Code and Codex when allowed to
+edit/commit/push), do NOT launch directly in the shared primary repo at
+`C:\Python\project2-master`. Follow the dedicated-worktree bootstrap
+documented in:
 
-* One running Claude Code.
-* One running Codex.
+* `docs/handoffs/2026-05-13-v3.13.0-release-prep-continuity.md`
+* `prompts/2026-05-13-cottage-restart-agent-prompt.md`
 
-Each agent should:
+These contain the exact `New-AgentBridgeWorktree.ps1` + `Start-AgentBridgeSession.ps1`
+commands for Codex and Claude. Use one terminal per agent.
+
+Each agent should, after the dedicated-worktree session is started:
 1. Read `CLAUDE.md` (operator rules).
 2. Read this handoff at `docs/handoffs/v3_13_0_session_handoff_2026-05-13.md`.
 3. Read its own memory at `~/.claude/projects/.../memory/MEMORY.md`
@@ -231,21 +237,24 @@ This session's discipline:
 2. `docs/releases/v3.13.0.md` (release notes; what landed)
 3. `CHANGELOG.md` top entry
 4. `docs/release/RELEASE_READINESS.md` (v3.13.0 section)
-5. `iterations/anchor_use_case/v3_13_0_pattern_catalog_reconciled.md`
-   (the 146-entry pattern catalog Sprint 1 derives from)
+5. `iterations/anchor_use_case/sprint_1/claude_lane/` (per-deliverable
+   design-doc directory used by Sprint 1; template shape for Sprint 2)
 6. Bridge: `.agent-bridge/shared/events.jsonl` last ~100 lines
 
 ## Bridge state at session close
 
-Last 5 bridge events on the
-`v3-13-0-release-surface-addendum-2026-05-13` task:
+Last substantive events on the
+`v3-13-0-release-surface-addendum-2026-05-13` task (PR #372):
 
 * claude `rco_changes_addressed` at 13:22:38 UTC (round-2 push)
 * codex `rco_pass_ci_pending` at 13:25:53 UTC (round-2 PASS)
-* (CI green; PR merged at 13:30:46 UTC)
+* (CI green; PR #372 merged at 13:30:46 UTC, main = de72326)
 
-No outstanding bridge requests. Both agents are at known-good
-stopping points.
+No outstanding bridge requests on the release-surface task after PR #372
+and PR #374 merges. The wider bridge has older unresolved requests on
+unrelated threads (visible via `Get-AgentBridgeStatus.ps1`); this PR
+(#373) also stays open until its own RCO is resolved. Both agents are
+at known-good stopping points for the release-surface lane.
 
 ## Operator notes
 

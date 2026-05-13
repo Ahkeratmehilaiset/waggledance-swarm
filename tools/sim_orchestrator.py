@@ -616,15 +616,38 @@ def get_current_metrics(
     *,
     statuses: dict[str, str] | None = None,
     profile_config_ref: str = "default",
+    events_path: Path | str | None = None,
+    snapshot_count: int | None = None,
 ) -> dict:
     """Compute the current metrics block + snapshot envelope.
 
     Equivalent to build_report() but operating on the live in-memory
     StreamState rather than a one-shot file read.
+
+    events_path -- the active tailed events path. Falls back to the
+    global default EVENTS_PATH only when not supplied; callers that
+    tail a custom file MUST pass it so the audit envelope's
+    source.events_path matches the actual source (Codex RCO round-2
+    fix #1: prior implementation reported the global default even
+    when stream() was tailing a different path).
+
+    snapshot_count -- override the count embedded in the envelope.
+    Defaults to state.snapshot_count. stream() now passes
+    state.snapshot_count + 1 so the emitted envelope's count matches
+    the post-emit StreamState (Codex RCO round-2 fix #2: prior
+    implementation emitted 0 for the first snapshot while the
+    StreamState ended at 1).
     """
     statuses = statuses if statuses is not None else _load_statuses()
     metrics = compute_aligned_metrics(state.threads, statuses)
     last_event_ts = state.events[-1].ts.isoformat() if state.events else ""
+    resolved_path = (
+        str(events_path) if events_path is not None else str(EVENTS_PATH)
+    )
+    resolved_count = (
+        snapshot_count if snapshot_count is not None
+        else state.snapshot_count
+    )
     return {
         "schema_version": STREAM_SCHEMA_VERSION,
         "schema_aligned_with": SCHEMA_ALIGNED_WITH,
@@ -632,14 +655,14 @@ def get_current_metrics(
         "mode": "live",
         "profile_config_ref": profile_config_ref,
         "source": {
-            "events_path": str(EVENTS_PATH),
+            "events_path": resolved_path,
             "event_count": len(state.events),
             "last_event_ts_utc": last_event_ts,
             "cursor_bytes": state.cursor_bytes,
         },
         "metrics": metrics,
         "formal_statuses": statuses,
-        "snapshot_count": state.snapshot_count,
+        "snapshot_count": resolved_count,
     }
 
 
@@ -690,12 +713,20 @@ def stream(
 
         now = clock()
         if now - last_emit >= emit_interval_s:
+            # Codex RCO round-2 fix #2: pass next count so the emitted
+            # envelope's snapshot_count matches the post-emit
+            # StreamState (was: emitted 0 while state ended at 1).
+            next_count = state.snapshot_count + 1
             snapshot = get_current_metrics(
                 state,
                 statuses=statuses,
                 profile_config_ref=profile_config_ref,
+                # Codex RCO round-2 fix #1: report the path actually
+                # being tailed, not the global default EVENTS_PATH.
+                events_path=path,
+                snapshot_count=next_count,
             )
-            state.snapshot_count += 1
+            state.snapshot_count = next_count
             state.last_snapshot_ts_utc = snapshot["generated_at_utc"]
             emit_snapshot(snapshot)
             last_emit = now

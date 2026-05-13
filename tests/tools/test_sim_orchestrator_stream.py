@@ -154,6 +154,61 @@ class TestStreamingMode:
         )
         assert len(snapshots) == 1
 
+    def test_source_events_path_matches_actual_path(self, tmp_path):
+        """Codex RCO round-2 fix #1: emitted snapshot's
+        source.events_path must reflect the path being tailed, not the
+        global default EVENTS_PATH."""
+        events_file = tmp_path / "custom_audit.jsonl"
+        events_file.touch()
+        _write_events(events_file, [
+            _ev(ts="2026-05-13T08:00:00Z", agent="claude",
+                event_type="claim", task_id="T1"),
+        ])
+        snapshots: list[dict] = []
+        ticks = iter([0.0, 6.0, 6.0])
+        sim.stream(
+            events_path=events_file,
+            emit_interval_s=5.0,
+            emit_snapshot=lambda e: snapshots.append(e) or "id",
+            clock_fn=lambda: next(ticks),
+            sleep_fn=lambda _t: None,
+            stop_after_snapshots=1,
+            poll_interval_s=0.01,
+        )
+        assert len(snapshots) == 1
+        assert snapshots[0]["source"]["events_path"] == str(events_file)
+        # And must NOT be the global default
+        from pathlib import Path
+        assert snapshots[0]["source"]["events_path"] != str(sim.EVENTS_PATH)
+
+    def test_emitted_snapshot_count_matches_state_count(self, tmp_path):
+        """Codex RCO round-2 fix #2: emitted envelope's snapshot_count
+        must match the post-emit StreamState.snapshot_count. Previous
+        behavior emitted 0 for the first snapshot while StreamState
+        ended at 1."""
+        events_file = tmp_path / "events.jsonl"
+        events_file.touch()
+        _write_events(events_file, [
+            _ev(ts="2026-05-13T08:00:00Z", agent="claude",
+                event_type="claim", task_id="T1"),
+        ])
+        snapshots: list[dict] = []
+        ticks = iter([0.0, 6.0, 12.0, 12.0])
+        final = sim.stream(
+            events_path=events_file,
+            emit_interval_s=5.0,
+            emit_snapshot=lambda e: snapshots.append(e) or "id",
+            clock_fn=lambda: next(ticks),
+            sleep_fn=lambda _t: None,
+            stop_after_snapshots=2,
+            poll_interval_s=0.01,
+        )
+        # First emitted snapshot is count 1; second is 2.
+        # State.snapshot_count after the loop ends == 2 (matches the
+        # last emitted snapshot).
+        assert [s["snapshot_count"] for s in snapshots] == [1, 2]
+        assert final.snapshot_count == snapshots[-1]["snapshot_count"]
+
 
 # --------------------------------------------------------------------------
 # Incremental update equivalence

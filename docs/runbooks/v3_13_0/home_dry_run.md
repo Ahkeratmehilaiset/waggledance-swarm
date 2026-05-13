@@ -114,20 +114,51 @@ Output is recommendation text + structured savings estimate.
 Baseline: a trivial heuristic ("charge during cheapest 3 hours")
 provides ground truth.
 
-```bash
-python -m waggledance.core.v3_13_0.shadow_runner \
-  --candidate electricity_spot_optimizer_home_demo_001 \
-  --profile-config home_demo \
-  --input synth_24h_winter \
-  --output-state state:dry_run_home_winter
+**No CLI wrapper ships in v3.13.0.** The runtime is wired by an
+operator-supplied harness (Sprint 2 `DocIngest` + CLI). For v3.13.0
+the equivalent is a direct Python call against the
+`ShadowRunner` API:
+
+```python
+# Pseudocode -- ShadowRunner has no __main__ in v3.13.0.
+# Operator wires the hooks and calls run() directly.
+from waggledance.core.v3_13_0.shadow_runner import (
+    ShadowRunner, ShadowRunInput,
+)
+
+runner = ShadowRunner(
+    fetch_tool_descriptor=...,           # operator-supplied
+    fetch_profile_config=...,
+    run_candidate=...,
+    run_baseline=...,                    # exit_code must be 0; non-zero
+                                         # aborts with shadow.baseline_failed
+    compare_outputs=...,                 # DivergenceAnalyzer.compare hook
+    emit_magma_event=...,
+    state_handle_is_operator_owned=...,
+)
+result = runner.run(ShadowRunInput(
+    candidate_manifest_id="electricity_spot_optimizer_home_demo_001",
+    shadow_input_set_ref="capture:synth_24h_winter",
+    profile_config_ref="profile:home_demo",
+    tool_descriptor_id="tool_electricity_spot_optimizer",
+    state_handles=["state:dry_run_home_winter"],
+    operator_baseline_command=["python", "tools/spot_baseline.py",
+                                "--input", "synth_24h_winter"],
+    expected_output_format="json",
+))
 ```
 
-Expected output:
-- `ShadowRunResult.divergence_score = 0.0` (identical) or
-  `near_match` (acceptable for noise)
+Expected `ShadowRunResult` on this synthetic input:
+- `divergence_score` numeric, low (typically `0.0` for identical
+  output or close to `0.0` for noise-only diff). The
+  `DivergenceCategory` (a separate field on the
+  `DivergenceArtifact`) classifies the score: `identical`,
+  `near_match`, `partial_match`, `divergent`, `incomparable`.
 - No `WRT-003 external_effect_blocked` events (this solver is
-  informational-only)
-- `shadow.run_completed` MAGMA event emitted
+  informational-only).
+- `shadow.run_completed` MAGMA event emitted (vs
+  `shadow.baseline_failed` if the operator's baseline command
+  exits non-zero).
 
 ### Step 5: DivergenceAnalyzer
 

@@ -196,3 +196,44 @@ def test_runbook_files_are_ascii_only() -> None:
             f"{path.name} contains non-ASCII characters "
             f"(first 5): {non_ascii[:5]}"
         )
+
+
+# --------------------------------------------------------------------------
+# Codex RCO round-2: forbid copy-pasteable commands for entry points
+# that do not exist as CLIs in v3.13.0. Silent no-op risk if an operator
+# literally copies the runbook command line.
+# --------------------------------------------------------------------------
+
+
+_FORBIDDEN_COMMAND_PATTERNS = (
+    "python -m waggledance.core.v3_13_0.shadow_runner",
+    "python -m waggledance.core.v3_13_0.write_rco_gate",
+    "python -m waggledance.core.v3_13_0.divergence_analyzer",
+    "python -m waggledance.core.v3_13_0.behavior_capture",
+    "python -m waggledance.core.v3_13_0.solver_provenance",
+    "python -m waggledance.core.v3_13_0.auto_fix_loop",
+    "python -m waggledance.core.v3_13_0.credential_vault",
+)
+
+
+@pytest.mark.parametrize(
+    "runbook_path",
+    [HOME_RUNBOOK, COTTAGE_RUNBOOK],
+    ids=["home", "cottage"],
+)
+def test_runbook_does_not_publish_non_existent_cli_commands(
+    runbook_path,
+) -> None:
+    """v3.13.0 ships no CLI / __main__ for waggledance.core.v3_13_0.*
+    modules. Documentation that tells an operator to invoke them via
+    'python -m ...' would silently no-op. Until a real CLI lands, the
+    runbooks must use API-level pseudocode instead.
+    """
+    content = runbook_path.read_text(encoding="utf-8")
+    hits = [pat for pat in _FORBIDDEN_COMMAND_PATTERNS if pat in content]
+    assert hits == [], (
+        f"{runbook_path.name} contains command lines for entry points "
+        f"that have no CLI in v3.13.0: {hits}. Use API-level "
+        f"pseudocode (ShadowRunner(...).run(...)) until a real CLI "
+        f"ships in a separate PR."
+    )

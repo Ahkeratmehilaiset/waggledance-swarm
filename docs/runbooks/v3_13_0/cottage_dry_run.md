@@ -115,18 +115,46 @@ cannot silently drift from the schema.
 
 ### Step 4: Shadow run
 
-```bash
-python -m waggledance.core.v3_13_0.shadow_runner \
-  --candidate frost_risk_predictor_cottage_demo_001 \
-  --profile-config cottage_demo \
-  --input synth_cold_snap_24h \
-  --output-state state:dry_run_cottage_coldsnap
+**No CLI wrapper ships in v3.13.0.** As in the HOME runbook, the
+operator invokes the `ShadowRunner` API directly via a Python
+harness; Sprint 2's `DocIngest` + CLI close that gap. Equivalent
+direct call:
+
+```python
+# Pseudocode -- ShadowRunner has no __main__ in v3.13.0.
+from waggledance.core.v3_13_0.shadow_runner import (
+    ShadowRunner, ShadowRunInput,
+)
+
+runner = ShadowRunner(
+    fetch_tool_descriptor=...,           # operator-supplied
+    fetch_profile_config=...,
+    run_candidate=...,
+    run_baseline=...,                    # exit_code must be 0; non-zero
+                                         # aborts with shadow.baseline_failed
+    compare_outputs=...,
+    emit_magma_event=...,
+    state_handle_is_operator_owned=...,
+)
+result = runner.run(ShadowRunInput(
+    candidate_manifest_id="frost_risk_predictor_cottage_demo_001",
+    shadow_input_set_ref="capture:synth_cold_snap_24h",
+    profile_config_ref="profile:cottage_demo",
+    tool_descriptor_id="tool_frost_risk_predictor",
+    state_handles=["state:dry_run_cottage_coldsnap"],
+    operator_baseline_command=["python", "tools/frost_baseline.py",
+                                "--input", "synth_cold_snap_24h"],
+    expected_output_format="json",
+))
 ```
 
 Expected:
-- Prediction issued for the synthetic 24h cold snap
-- Risk level + horizon hours documented in output
-- `shadow.run_completed` MAGMA event
+- Prediction issued for the synthetic 24h cold snap.
+- Risk level + horizon hours documented in `result` (the structured
+  output the candidate emits).
+- `shadow.run_completed` MAGMA event (or
+  `shadow.baseline_failed` if the baseline subprocess exited
+  non-zero).
 
 ### Step 5: DivergenceAnalyzer
 

@@ -30,7 +30,25 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
+
+
+# --------------------------------------------------------------------------
+# ComparisonResult -- comparator return type with real field counts
+# --------------------------------------------------------------------------
+
+
+class ComparisonResult(NamedTuple):
+    """One comparator's structured result.
+
+    Per Codex RCO round-2 fix: comparators must report real counts of
+    total comparable fields and matching fields, not placeholder values.
+    INST-G09 + audit consumers treat these as measurement evidence.
+    """
+
+    details: list                                 # list[DivergenceDetail]
+    n_compared: int                               # total comparable units
+    n_matching: int                               # of those, equal in both
 
 
 # --------------------------------------------------------------------------
@@ -244,12 +262,18 @@ def _flatten_json(obj: Any, prefix: str = "") -> dict[str, Any]:
 
 
 def compare_json(candidate: Any, baseline: Any, *,
-                  template_family: str) -> list[DivergenceDetail]:
-    """Per-field JSON-pointer diff. Caller does aggregate scoring."""
+                  template_family: str) -> ComparisonResult:
+    """Per-field JSON-pointer diff with real counts.
+
+    n_compared counts every leaf path in the union of candidate and
+    baseline. n_matching counts paths present in both AND with equal
+    values.
+    """
     flat_c = _flatten_json(candidate)
     flat_b = _flatten_json(baseline)
     paths = set(flat_c) | set(flat_b)
     details: list[DivergenceDetail] = []
+    n_matching = 0
     for path in sorted(paths):
         in_c = path in flat_c
         in_b = path in flat_b
@@ -289,17 +313,29 @@ def compare_json(candidate: Any, baseline: Any, *,
                 severity=sev,
                 justification=_redact_justification(path, diff, sev),
             ))
-    return details
+        else:
+            n_matching += 1
+    return ComparisonResult(details=details, n_compared=len(paths),
+                              n_matching=n_matching)
 
 
 def compare_csv(candidate_text: str, baseline_text: str, *,
-                  template_family: str) -> list[DivergenceDetail]:
-    """Per-row + per-cell CSV diff."""
+                  template_family: str) -> ComparisonResult:
+    """Per-row + per-cell CSV diff.
+
+    n_compared counts each row position in the union, plus each cell
+    position within rows present in both. n_matching counts cells
+    equal in both AND rows that are entirely matching.
+    """
     c_rows = list(csv.reader(io.StringIO(candidate_text)))
     b_rows = list(csv.reader(io.StringIO(baseline_text)))
     details: list[DivergenceDetail] = []
+    n_compared = 0
+    n_matching = 0
     max_rows = max(len(c_rows), len(b_rows))
     for r in range(max_rows):
+        n_compared += 1
+
         c_row = c_rows[r] if r < len(c_rows) else None
         b_row = b_rows[r] if r < len(b_rows) else None
         if c_row is None:
@@ -331,10 +367,13 @@ def compare_csv(candidate_text: str, baseline_text: str, *,
             ))
             continue
         max_cols = max(len(c_row), len(b_row))
+        row_all_match = True
         for col in range(max_cols):
+            n_compared += 1
             c_cell = c_row[col] if col < len(c_row) else None
             b_cell = b_row[col] if col < len(b_row) else None
             if c_cell != b_cell:
+                row_all_match = False
                 diff = DiffClass.CHANGED.value
                 sev = _severity_for(template_family, diff)
                 details.append(DivergenceDetail(
@@ -347,20 +386,29 @@ def compare_csv(candidate_text: str, baseline_text: str, *,
                         f"row[{r}].col[{col}]", diff, sev
                     ),
                 ))
-    return details
+            else:
+                n_matching += 1
+        if row_all_match:
+            # row-level match also counts (the row position unit)
+            n_matching += 1
+    return ComparisonResult(details=details, n_compared=n_compared,
+                              n_matching=n_matching)
 
 
 _SQL_STMT_RE = re.compile(r"\s*;\s*", re.MULTILINE)
 
 
 def compare_sql_diff(candidate_text: str, baseline_text: str, *,
-                       template_family: str) -> list[DivergenceDetail]:
+                       template_family: str) -> ComparisonResult:
     """Multi-statement SQL diff treated as set comparison.
 
     v1 normalizes whitespace + lowercase + strips trailing semicolons.
     Template families that require ordered execution should pre-process
     via ProfileConfig.divergence_overrides.canonicalization (not
     auto-applied here).
+
+    n_compared counts every distinct statement in the union; n_matching
+    counts statements present in BOTH sets (intersection).
     """
     def _normalize(text: str) -> list[str]:
         stmts = _SQL_STMT_RE.split(text.strip())
@@ -368,10 +416,11 @@ def compare_sql_diff(candidate_text: str, baseline_text: str, *,
             " ".join(s.lower().split()) for s in stmts if s.strip()
         ]
 
-    c_set = _normalize(candidate_text)
-    b_set = _normalize(baseline_text)
-    c_only = set(c_set) - set(b_set)
-    b_only = set(b_set) - set(c_set)
+    c_set = set(_normalize(candidate_text))
+    b_set = set(_normalize(baseline_text))
+    c_only = c_set - b_set
+    b_only = b_set - c_set
+    intersection = c_set & b_set
     details: list[DivergenceDetail] = []
     for i, stmt in enumerate(sorted(c_only)):
         sev = _severity_for(template_family, DiffClass.ADDED.value)
@@ -397,18 +446,25 @@ def compare_sql_diff(candidate_text: str, baseline_text: str, *,
                 f"sql_stmt_removed[{i}]", DiffClass.REMOVED.value, sev
             ),
         ))
-    return details
+    return ComparisonResult(
+        details=details,
+        n_compared=len(c_set | b_set),
+        n_matching=len(intersection),
+    )
 
 
 def compare_filesystem(candidate_tree: dict[str, str],
                         baseline_tree: dict[str, str], *,
-                        template_family: str) -> list[DivergenceDetail]:
+                        template_family: str) -> ComparisonResult:
     """Compare filesystem snapshots {path: content_sha256}.
 
     Caller computes hashes; analyzer only consumes the mapping.
+    n_compared counts every path in the union; n_matching counts
+    paths present in both with equal content hashes.
     """
     details: list[DivergenceDetail] = []
     paths = set(candidate_tree) | set(baseline_tree)
+    n_matching = 0
     for p in sorted(paths):
         in_c = p in candidate_tree
         in_b = p in baseline_tree
@@ -447,7 +503,10 @@ def compare_filesystem(candidate_tree: dict[str, str],
                     p, DiffClass.CHANGED.value, sev
                 ),
             ))
-    return details
+        else:
+            n_matching += 1
+    return ComparisonResult(details=details, n_compared=len(paths),
+                              n_matching=n_matching)
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -479,15 +538,18 @@ def compare_text(candidate_text: str, baseline_text: str, *,
                   template_family: str,
                   embedding_similarity: Optional[
                       Callable[[str, str], float]
-                  ] = None) -> list[DivergenceDetail]:
+                  ] = None) -> ComparisonResult:
     """Free-form text comparison.
 
     v1 uses Levenshtein-based edit ratio. Embedding similarity is
     optionally provided by the caller (spec edit E9: share the
     embedding service, do not load a second model).
+
+    n_compared is always 1 (a single text-blob comparison). n_matching
+    is 1 if identical, else 0.
     """
     if candidate_text == baseline_text:
-        return []
+        return ComparisonResult(details=[], n_compared=1, n_matching=1)
     edit = _levenshtein(candidate_text, baseline_text)
     max_len = max(len(candidate_text), len(baseline_text), 1)
     edit_ratio = edit / max_len
@@ -499,14 +561,15 @@ def compare_text(candidate_text: str, baseline_text: str, *,
         sev = Severity.MINOR.value
     else:
         sev = _severity_for(template_family, DiffClass.CHANGED.value)
-    return [DivergenceDetail(
+    detail = DivergenceDetail(
         field_path="/",
         candidate_value_hash=_value_hash(candidate_text),
         baseline_value_hash=_value_hash(baseline_text),
         diff_class=DiffClass.CHANGED.value,
         severity=sev,
         justification=f"edit_ratio={edit_ratio:.3f} sim={sim:.3f} sev={sev}",
-    )]
+    )
+    return ComparisonResult(details=[detail], n_compared=1, n_matching=0)
 
 
 # --------------------------------------------------------------------------
@@ -555,35 +618,45 @@ class DivergenceAnalyzer:
         """
         incomparable = False
         details: list[DivergenceDetail] = []
+        n_compared = 0
+        n_matching = 0
 
         try:
             if expected_output_format == "json":
-                details = compare_json(candidate_payload, baseline_payload,
+                result = compare_json(candidate_payload, baseline_payload,
                                          template_family=template_family)
             elif expected_output_format == "csv":
-                details = compare_csv(candidate_payload, baseline_payload,
+                result = compare_csv(candidate_payload, baseline_payload,
                                         template_family=template_family)
             elif expected_output_format == "sql_diff":
-                details = compare_sql_diff(candidate_payload, baseline_payload,
+                result = compare_sql_diff(candidate_payload, baseline_payload,
                                               template_family=template_family)
             elif expected_output_format == "filesystem":
-                details = compare_filesystem(candidate_payload,
+                result = compare_filesystem(candidate_payload,
                                                 baseline_payload,
                                                 template_family=template_family)
             elif expected_output_format == "text":
-                details = compare_text(
+                result = compare_text(
                     candidate_payload, baseline_payload,
                     template_family=template_family,
                     embedding_similarity=self.embedding_similarity,
                 )
             else:
                 incomparable = True
+                result = None
+            if result is not None:
+                details = result.details
+                n_compared = result.n_compared
+                n_matching = result.n_matching
         except (TypeError, ValueError, AttributeError):
             # Shape mismatch -> incomparable (spec edit E10)
             incomparable = True
             details = []
 
-        score = self._aggregate_score(details, incomparable=incomparable)
+        score = self._aggregate_score(
+            details, n_compared=n_compared, n_matching=n_matching,
+            incomparable=incomparable,
+        )
         has_material = any(d.severity in (Severity.MATERIAL.value,
                                               Severity.CRITICAL.value)
                               for d in details)
@@ -643,6 +716,7 @@ class DivergenceAnalyzer:
     # =========================================================================
 
     def _aggregate_score(self, details: list[DivergenceDetail], *,
+                           n_compared: int, n_matching: int,
                            incomparable: bool) -> DivergenceScore:
         if incomparable:
             return DivergenceScore(
@@ -656,11 +730,15 @@ class DivergenceAnalyzer:
             return DivergenceScore(
                 score=0.0,
                 category=DivergenceCategory.IDENTICAL.value,
-                n_fields_compared=0,
-                n_fields_matching=0,
+                n_fields_compared=n_compared,
+                n_fields_matching=n_matching,
                 n_fields_diverging=0,
             )
-        # Severity-weighted score
+        # Severity-weighted score normalised over the TOTAL comparable
+        # surface (not just the diverging subset). This lets a single
+        # diff in a 100-field payload yield a much lower score than the
+        # same diff in a 1-field payload, which is the correct INST-G09
+        # signal.
         weights = {
             Severity.NOISE.value: 0.01,
             Severity.MINOR.value: 0.05,
@@ -668,14 +746,15 @@ class DivergenceAnalyzer:
             Severity.CRITICAL.value: 0.50,
         }
         total = sum(weights.get(d.severity, 0.20) for d in details)
-        score = min(1.0, total / max(len(details), 1))
+        denom = max(n_compared, len(details), 1)
+        score = min(1.0, total / denom)
         n_div = sum(1 for d in details
                      if d.severity != Severity.NOISE.value)
         return DivergenceScore(
             score=score,
             category=DivergenceCategory.IDENTICAL.value,   # overwritten
-            n_fields_compared=len(details),
-            n_fields_matching=len(details) - len(details),  # placeholder
+            n_fields_compared=n_compared,
+            n_fields_matching=n_matching,
             n_fields_diverging=n_div,
         )
 

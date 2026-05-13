@@ -76,27 +76,31 @@ def _make_analyzer(*, events: list = None, artifacts: dict = None,
 class TestCompareJson:
 
     def test_identical_json_returns_no_details(self):
-        details = compare_json({"a": 1, "b": [2, 3]},
+        _result = compare_json({"a": 1, "b": [2, 3]},
                                   {"a": 1, "b": [2, 3]},
                                   template_family="RecordReconciler")
+        details = _result.details
         assert details == []
 
     def test_changed_value_yields_changed_diff(self):
-        details = compare_json({"a": 1}, {"a": 2},
+        _result = compare_json({"a": 1}, {"a": 2},
                                   template_family="ReportGenerator")
+        details = _result.details
         assert len(details) == 1
         assert details[0].diff_class == DiffClass.CHANGED.value
         assert details[0].severity == Severity.MATERIAL.value
 
     def test_added_field_yields_added_diff(self):
-        details = compare_json({"a": 1, "b": 2}, {"a": 1},
+        _result = compare_json({"a": 1, "b": 2}, {"a": 1},
                                   template_family="DocumentMiner")
+        details = _result.details
         assert any(d.diff_class == DiffClass.ADDED.value for d in details)
 
     def test_removed_field_yields_critical_default_for_unknown_template(self):
         """Unknown template + REMOVED diff class -> critical per fallback."""
-        details = compare_json({"a": 1}, {"a": 1, "b": 2},
+        _result = compare_json({"a": 1}, {"a": 1, "b": 2},
                                   template_family="UnknownTemplate")
+        details = _result.details
         rm = [d for d in details
               if d.diff_class == DiffClass.REMOVED.value]
         assert rm
@@ -109,8 +113,9 @@ class TestCompareJson:
                                    Severity.CRITICAL.value)
 
     def test_type_change_yields_type_changed(self):
-        details = compare_json({"a": "1"}, {"a": 1},
+        _result = compare_json({"a": "1"}, {"a": 1},
                                   template_family="ReportGenerator")
+        details = _result.details
         assert len(details) == 1
         assert details[0].diff_class == DiffClass.TYPE_CHANGED.value
 
@@ -124,23 +129,26 @@ class TestCompareCsv:
 
     def test_identical_csv_returns_no_details(self):
         text = "a,b,c\n1,2,3\n"
-        details = compare_csv(text, text,
+        _result = compare_csv(text, text,
                                 template_family="ScheduledIncrementalSync")
+        details = _result.details
         assert details == []
 
     def test_changed_cell_yields_changed_diff(self):
         c = "a,b\n1,2\n"
         b = "a,b\n1,3\n"
-        details = compare_csv(c, b,
+        _result = compare_csv(c, b,
                                 template_family="ScheduledIncrementalSync")
+        details = _result.details
         assert len(details) == 1
         assert details[0].diff_class == DiffClass.CHANGED.value
 
     def test_row_count_diff_yields_added_or_removed(self):
         c = "a\n1\n2\n3\n"
         b = "a\n1\n"
-        details = compare_csv(c, b,
+        _result = compare_csv(c, b,
                                 template_family="ScheduledIncrementalSync")
+        details = _result.details
         diff_classes = {d.diff_class for d in details}
         assert DiffClass.ADDED.value in diff_classes
 
@@ -154,19 +162,20 @@ class TestCompareSql:
 
     def test_identical_sql_returns_no_details(self):
         s = "INSERT INTO t VALUES (1, 'a'); UPDATE t SET b=2 WHERE a=1;"
-        assert compare_sql_diff(s, s, template_family="RecordReconciler") == []
+        assert compare_sql_diff(s, s, template_family="RecordReconciler").details == []
 
     def test_whitespace_normalisation_treats_equal(self):
         a = "INSERT INTO  t  VALUES (1, 'a');"
         b = "insert into t values (1, 'a');"
         assert compare_sql_diff(a, b,
-                                  template_family="RecordReconciler") == []
+                                  template_family="RecordReconciler").details == []
 
     def test_added_statement_yields_added(self):
         a = "INSERT INTO t VALUES (1, 'a'); INSERT INTO t VALUES (2, 'b');"
         b = "INSERT INTO t VALUES (1, 'a');"
-        details = compare_sql_diff(a, b,
+        _result = compare_sql_diff(a, b,
                                      template_family="RecordReconciler")
+        details = _result.details
         assert any(d.diff_class == DiffClass.ADDED.value for d in details)
 
 
@@ -180,13 +189,14 @@ class TestCompareFilesystem:
     def test_identical_trees(self):
         tree = {"/a": "h1", "/b": "h2"}
         assert compare_filesystem(tree, tree,
-                                    template_family="ReportGenerator") == []
+                                    template_family="ReportGenerator").details == []
 
     def test_added_and_removed_paths(self):
         c = {"/a": "h1", "/c": "h3"}
         b = {"/a": "h1", "/b": "h2"}
-        details = compare_filesystem(c, b,
+        _result = compare_filesystem(c, b,
                                        template_family="ReportGenerator")
+        details = _result.details
         diff_classes = {d.diff_class for d in details}
         assert DiffClass.ADDED.value in diff_classes
         assert DiffClass.REMOVED.value in diff_classes
@@ -194,8 +204,9 @@ class TestCompareFilesystem:
     def test_changed_hash_yields_changed(self):
         c = {"/a": "h1"}
         b = {"/a": "h2"}
-        details = compare_filesystem(c, b,
+        _result = compare_filesystem(c, b,
                                        template_family="ReportGenerator")
+        details = _result.details
         assert len(details) == 1
         assert details[0].diff_class == DiffClass.CHANGED.value
 
@@ -209,22 +220,24 @@ class TestCompareText:
 
     def test_identical_text_returns_no_details(self):
         assert compare_text("hello", "hello",
-                              template_family="ReportGenerator") == []
+                              template_family="ReportGenerator").details == []
 
     def test_near_match_text_uses_noise_severity(self):
-        details = compare_text(
+        _result = compare_text(
             "Hello world", "Hello world!",
             template_family="ReportGenerator",
         )
+        details = _result.details
         assert len(details) == 1
         assert details[0].severity == Severity.NOISE.value
 
     def test_embedding_similarity_can_be_injected(self):
-        details = compare_text(
+        _result = compare_text(
             "alpha beta", "completely different text",
             template_family="ReportGenerator",
             embedding_similarity=lambda a, b: 0.95,
         )
+        details = _result.details
         # Even with low edit-ratio similarity, embedding sim 0.95 -> noise
         assert details[0].severity == Severity.NOISE.value
 
@@ -253,8 +266,9 @@ class TestSeverityRules:
         assert SEVERITY_RULES[family]   # non-empty
 
     def test_unknown_family_defaults_material(self):
-        details = compare_json({"a": 1}, {"a": 2},
+        _result = compare_json({"a": 1}, {"a": 2},
                                   template_family="UnknownXYZ")
+        details = _result.details
         assert details[0].severity == Severity.MATERIAL.value
 
 
@@ -267,8 +281,9 @@ class TestPrivacyRedaction:
 
     def test_details_carry_value_hashes_not_raw(self):
         secret = "synthetic_secret_value_DO_NOT_LEAK"
-        details = compare_json({"a": secret}, {"a": "different"},
+        _result = compare_json({"a": secret}, {"a": "different"},
                                   template_family="RecordReconciler")
+        details = _result.details
         for d in details:
             assert secret not in d.candidate_value_hash
             assert secret not in d.justification
@@ -291,6 +306,74 @@ class TestPrivacyRedaction:
             for fld in (d.candidate_value_hash, d.baseline_value_hash,
                         d.justification, d.field_path):
                 assert secret not in fld
+
+
+# --------------------------------------------------------------------------
+# Field counts (Codex RCO round-2)
+# --------------------------------------------------------------------------
+
+
+class TestFieldCounts:
+    """Comparators must report real n_compared + n_matching counts,
+    not placeholder values. INST-G09 and audit consumers treat these as
+    measurement evidence."""
+
+    def test_json_one_matching_one_changed_field(self):
+        """The exact repro Codex named: two leaf fields, one matches."""
+        result = compare_json({"same": 1, "changed": 2},
+                                {"same": 1, "changed": 3},
+                                template_family="RecordReconciler")
+        assert result.n_compared == 2
+        assert result.n_matching == 1
+        assert len(result.details) == 1
+        assert result.details[0].field_path == "/changed"
+
+    def test_json_identical_multi_field_payload(self):
+        """All leaves match -> no details but real counts."""
+        result = compare_json({"a": 1, "b": [10, 20], "c": "x"},
+                                {"a": 1, "b": [10, 20], "c": "x"},
+                                template_family="RecordReconciler")
+        assert result.details == []
+        # union of leaf paths: /a, /b[0], /b[1], /c -> 4 leaves
+        assert result.n_compared == 4
+        assert result.n_matching == 4
+
+    def test_analyzer_score_propagates_real_counts(self):
+        analyzer = _make_analyzer()
+        artifact = analyzer.compare(
+            candidate_output_uri="art:c",
+            baseline_output_uri="art:b",
+            candidate_payload={"same": 1, "changed": 2},
+            baseline_payload={"same": 1, "changed": 3},
+            expected_output_format="json",
+            template_family="RecordReconciler",
+        )
+        assert artifact.score.n_fields_compared == 2
+        assert artifact.score.n_fields_matching == 1
+        assert artifact.score.n_fields_diverging == 1
+
+    def test_filesystem_real_match_count(self):
+        c = {"/a": "h1", "/b": "h2", "/c": "h3"}
+        b = {"/a": "h1", "/b": "X",  "/c": "h3"}
+        result = compare_filesystem(c, b, template_family="ReportGenerator")
+        assert result.n_compared == 3
+        assert result.n_matching == 2
+        assert len(result.details) == 1
+
+    def test_sql_real_match_count_via_intersection(self):
+        a = "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2);"
+        b = "INSERT INTO t VALUES (1); INSERT INTO t VALUES (3);"
+        result = compare_sql_diff(a, b,
+                                    template_family="RecordReconciler")
+        # union has 3 stmts; intersection has 1 (shared INSERT (1))
+        assert result.n_compared == 3
+        assert result.n_matching == 1
+
+    def test_text_identical_counts_one_matching(self):
+        result = compare_text("hello", "hello",
+                                template_family="ReportGenerator")
+        assert result.n_compared == 1
+        assert result.n_matching == 1
 
 
 # --------------------------------------------------------------------------

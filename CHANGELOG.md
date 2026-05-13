@@ -1,5 +1,207 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [v3.13.0 substrate-only landing: Shadow -> Hybrid -> Autonomous runtime] -- 2026-05-13
+
+Sprint 1 v3.13.0 runtime substrate landed on `main` HEAD `6d2e59b`.
+**Substrate-only.** No package version bump, no stable tag, no Docker
+`:latest` movement. v3.13.0 lives in `main` but no real-data
+activation has happened; all Sprint 1 runs are dry-run against
+synthetic data.
+
+Full release notes: `docs/releases/v3.13.0.md`.
+Readiness doc updated: `docs/release/RELEASE_READINESS.md`.
+
+### Mutual-RCO contract (Claude + Codex)
+
+* 14 PRs merged via bridge mutual RCO this session.
+* 9 round-2 cycles, every one resulting in a real fail-closed fix
+  (no stylistic round-trips).
+* 0 stop-condition escalations.
+* 0 destructive operations on `main`.
+
+### Wave 1 -- runtime substrate primitives
+
+* **PR #358 WriteRCOGate v1** -- single write choke point. Classifies
+  every write into informational / WRT-001 internal_memory /
+  WRT-002 local_artifact / WRT-003 external_effect. Emits a 12-event
+  audit envelope (intent_classified -> peer_rco_requested ->
+  peer_rco_completed -> scope_policy_decided -> intent_approved ->
+  effect_started -> effect_completed / failed / outcome_unknown ->
+  denied -> rollback_started -> rollback_completed). Five active
+  stop conditions (peer_rco_timeout, peer_rco_nonconvergent,
+  audit_write_failed, anti_pattern_violation, no_rollback_plan);
+  three reserved for v1.x. WRT-003 requires resolved StateInfo,
+  write_modes_allowed enforcement, recovery capsule rollback_command,
+  peer RCO, and operator scope policy.
+* **PR #359 Band B inventory generators** (Codex) --
+  `tools/build_v3_13_inventories.py` + contract test that the
+  generated inventories validate against the Band A schemas.
+* **PR #360 CredentialVault** -- `CredentialRef` URI parser,
+  refused-pickle `CredentialMaterial` (`__repr__` / `__str__` /
+  `__reduce__` / `__copy__` / `__deepcopy__` / `__eq__` all
+  refuse or redact), `InMemoryVault`, `OSKeyringVault` (lazy-imports
+  `keyring`), `NoOpVault` (raises loudly). `reveal(purpose=...)`
+  always audits via `auth.material_revealed`; vault binds emitter
+  at material construction so silent unwrap is impossible. ValueError
+  on invalid URI reports type + length only, no raw input echo.
+* **PR #361 ANTI-001..007 invariant catalog** -- seven concrete
+  invariant checks. Module-scope compiled regex (repo contract).
+  ANTI-002 normalises column metadata to lowercase + handles
+  table-qualified ORDER BY + double-quoted / backtick / bracket
+  identifiers. ANTI-004 credential scanner: 14 patterns
+  (openai/anthropic/github/slack/google/aws/pem/jwt/basic_auth/...)
+  with vault://+${ENV} allowlist (space-masked, not 'X'-masked,
+  to avoid the masked region retriggering `api_key_assignment`).
+  ANTI-005 parser wrapper records `parse_error_class: type(exc).__name__`
+  not `str(exc)` (built-in parsers like `int()` embed the raw input
+  in the error string).
+* **PR #362 BehaviorCapture + ShadowRunner** -- OPT-IN per
+  ToolDescriptor. Stdin payload requires `capture_stdin=True` AND
+  a valid single-use consent token. Sensitive-class retention floors:
+  public/internal 30d, restricted 7d, secret/opaque hash-only.
+  Pipeline linkage via `pipeline_id` + `parent_capture_id`.
+  ShadowRunner: 6 states + 5 initial abort reasons (later extended
+  with `BASELINE_FAILED` in #371). WRT-003 from candidate aborts.
+  `state_handle_is_operator_owned` hook refuses any operator-mutating
+  state binding. Pluggable `clock_fn` for deterministic timeout tests.
+* **PR #363 DivergenceAnalyzer + INST-G09** -- five format
+  comparators (json / csv / sql_diff / filesystem / text). Seven
+  template-family severity tables (RecordReconciler, DocumentMiner,
+  OfferComparator, ReportGenerator, ScheduledIncrementalSync,
+  PredictiveAnalyzer, CrossReferencer). Unknown template family
+  defaults to `material` (conservative; spec edit E8).
+  `ComparisonResult(details, n_compared, n_matching)` reports real
+  counts, not placeholder zeros. Severity-weighted score normalised
+  over the total comparable surface. `inst_g09_passes(agg,
+  pct_threshold=0.95)` requires non-divergent rate >= 95% AND no
+  critical-severity diffs.
+* **PR #364 savepoint.ps1 PS5.1 ASCII fix** (Codex) -- em-dash to
+  ASCII-hyphen in 7 display lines so PowerShell 5.1 parser doesn't
+  choke on the file.
+
+### Wave 2 -- solver provenance + gate wireup + DEF lock-in
+
+* **PR #365 SolverProvenance v1** -- `ProvenanceSignature` dataclass
+  with explicit `signing_role` (owner / peer / operator) per spec
+  edit E13. `sign()` rejects invalid roles, refuses on revoked
+  scope policy, refuses on round > 3, **refuses on REVOKED
+  candidates** (permanent revoke is one-way; reactivation requires
+  a fresh manifest sha256). `verify_solver_provenance()` short-circuits
+  invalid for QUARANTINED candidates (gives WriteRCOGate a fail-closed
+  signal). WRT-003 external_effect requires operator signature
+  always (not only for sensitive domains; spec edit E12/E14).
+  `record_run_result()` auto-quarantines after 5 consecutive runs
+  with divergence_score >= 0.40 (reversible; spec edit E15).
+  `revoke()` refuses `revoked_by=automatic_drift_detection` (that
+  path goes through `record_run_result` -> quarantine).
+* **PR #366 DEF-001..006 defaults lock-in** (Codex) --
+  `waggledance/core/v3_13_0/defaults.py`. Embedding model
+  `intfloat/multilingual-e5-small` (384 dims, 134 MB, CPU); context
+  sim_threshold=0.58, top_n=8; action TTL=14d with locale noise
+  filters for fi/sv/de; sync_overlap=7d; max_workers_shared_prod=3,
+  request_delay=0.15s; ISO-8601 + WAL + UNPARSED sentinel + foreign
+  keys ON. `locale_key()` normalises `fi-FI` / `sv_SE` / `DE`.
+* **PR #369 SolverProvenance + WriteRCOGate + SCH-005 schema**
+  (Codex) -- closes the integration gap. New
+  `solver_candidate_manifest.schema.json` (SCH-005) with
+  `provenance_signatures` array + `activation_state` enum.
+  WriteRCOGate WRT-003 Check #4 calls `verify_solver_provenance()`
+  when intent payload carries `solver_candidate_id` or
+  `provenance_chain` starts with `solver:`. Missing hook ->
+  ANTI_PATTERN_VIOLATION; invalid / quarantined / revoked
+  provenance -> deny. INTENT_APPROVED audit envelope now includes
+  `solver_candidate_id` + `solver_manifest_sha256` +
+  `solver_activation_state` when a solver candidate is in scope.
+
+### Wave 3 -- streaming metrics + auto-fix proposer
+
+* **PR #367 sim_orchestrator streaming-mode instrumentation** --
+  `tools/sim_orchestrator.py` gained `StreamState` dataclass,
+  `read_events_from_offset(path, offset)`, `update_state_with_event()`,
+  `get_current_metrics(state, profile_config_ref, events_path,
+  snapshot_count)`, `stream(emit_snapshot, clock_fn, sleep_fn,
+  stop_after_snapshots, ...)`. Schema version
+  `agent-flight-plan-live-v1` alongside the existing retrospective
+  schema. Backward-compatible: retrospective entry point + tests
+  unchanged. Round-2 fixes: emitted `source.events_path` matches
+  actual tailed path (was: global EVENTS_PATH default); emitted
+  `snapshot_count` matches post-emit `StreamState.snapshot_count`
+  (was: off-by-one).
+* **PR #368 AutoFixLoop v1** -- event consumer + repair proposer.
+  Synchronous `run_once(cursor)` (daemon harness operator-managed).
+  `acquire_lease()` / `release_lease()` enforce single-instance.
+  Stale lease (`lease_ttl_seconds > last_renewed`) is takeover-eligible
+  with `auto_fix_loop.lease_stale_takeover` audit event. Malformed
+  timestamps -> NOT stale (fail-closed). Sensitive (DOM-015,
+  DOM-021) + operator-only (PER-*) domains refuse repair. Idempotent
+  replay refused before gate routing. Per-event cursor chain in
+  `cursor_advanced` audit envelopes ([(start, A), (A, B), (B, C)]
+  not the previously-broken [(start, A), (start, B), (start, C)]).
+  `dry_run=True` emits `repair_proposed`, never executes.
+
+### Polish wave -- runbooks + baseline fail-closed
+
+* **PR #370 HOME + COTTAGE dry-run runbooks** --
+  `docs/runbooks/v3_13_0/home_dry_run.md` (electricity_spot_optimizer
+  against synthetic 24h winter + summer inputs) and
+  `docs/runbooks/v3_13_0/cottage_dry_run.md` (frost_risk_predictor
+  against 3 synthetic weather scenarios). Explicit "no CLI in v3.13.0"
+  preamble + API-level Python pseudocode (NOT copy-pasteable
+  `python -m waggledance.core.v3_13_0.shadow_runner` commands that
+  would silently no-op). Regression test
+  `tests/contracts/test_runbook_examples_v3_13_0.py` validates the
+  Step-3 SolverCandidateManifest examples against SCH-005, asserts
+  every ref_id in the fixture appears verbatim in the markdown,
+  enforces ASCII-only, and forbids `python -m
+  waggledance.core.v3_13_0.<module>` patterns across all 7 runtime
+  modules until a real CLI ships.
+* **PR #371 ShadowRunner baseline fail-closed** (Codex) -- new
+  `ShadowAbortReason.BASELINE_FAILED` enum value. ShadowRunner
+  aborts immediately when `BaselineOutput.exit_code != 0` instead
+  of flowing into `compare_outputs` and emitting
+  `shadow.run_completed`. Test asserts `shadow.baseline_failed`
+  is emitted and `shadow.run_completed` is NOT.
+
+### Explicit non-deliverables (Sprint 2+)
+
+* No new CLI entry points for any `waggledance.core.v3_13_0.*`
+  module. `tools/sim_orchestrator.py` retains its existing
+  retrospective CLI but gains NO new CLI flag for streaming mode.
+* No real-data activation. All Sprint 1 runs are dry-run with
+  synthetic data.
+* No DocIngest, SolverSynthesizer, SituationRoom.
+* No cryptographic / hardware-key operator signatures.
+* No autonomous AutoFixLoop daemon harness.
+* No Stage-2 cutover.
+
+### Bridge schema compatibility (spec edit E16)
+
+NO new dotted bridge type values were introduced. SolverProvenance
+and AutoFixLoop bridge events use the existing `type=handoff` /
+`type=decision` with `payload.kind=solver` as the discriminator.
+`Write-AgentEvent.ps1` schema is not touched in v3.13.0.
+
+### Tests
+
+288 v3.13.0-bracketed tests pass on `6d2e59b`:
+* 9 module-test files under `tests/v3_13_0/`
+* 3 contract-test files under `tests/contracts/` for the v3.13.0
+  schema bundle, inventory generators, and runbook examples
+* 1 streaming-mode test file under `tests/tools/`
+
+### Reproducible proof commands
+
+```bash
+python -m pytest tests/v3_13_0/ -q
+python -m pytest tests/contracts/test_v3_13_schema_bundle.py \
+                 tests/contracts/test_v3_13_inventory_generators.py \
+                 tests/contracts/test_runbook_examples_v3_13_0.py -q
+python -m pytest tests/tools/test_sim_orchestrator_alignment.py \
+                 tests/tools/test_sim_orchestrator_stream.py -q
+```
+
+Expected: 288 passed total.
+
 ## [EIG2 substrate 55/55 + L54-reframed impl + ADR-062 capstone / v3.12.0 candidate] — 2026-05-12
 
 Continuation of the 2026-05-11 audit-fix series under the same v3.12.0

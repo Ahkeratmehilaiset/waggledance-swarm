@@ -204,20 +204,34 @@ class AutoFixLoop:
     # =========================================================================
 
     def acquire_lease(self) -> LeaseRecord:
-        """Acquire the active-instance lease. If a non-stale lease is
-        already held by another instance, raises LeaseNotHeld."""
+        """Acquire the active-instance lease.
+
+        If a non-stale lease is held by another instance, raises
+        LeaseNotHeld. A stale lease (per Codex RCO round-2 fix: held
+        for longer than lease_ttl_seconds since last_renewed_at_utc)
+        is takeover-eligible: this instance claims it AND emits a
+        stale-lease audit event so the takeover is auditable.
+        """
         existing = self.fetch_lease()
         now = self.utc_iso_fn()
         if existing is not None and existing.instance_id != self.instance_id:
-            # Stale-lease check: compute elapsed from last_renewed_at_utc.
-            # For test simplicity, use string equality and explicit
-            # caller-driven stale detection via fetch_lease returning
-            # None when stale; here we trust the fetcher to return only
-            # active leases.
-            raise LeaseNotHeld(
-                f"lease held by {existing.instance_id}; "
-                f"refusing to acquire"
-            )
+            is_stale = self._lease_is_stale(existing, now)
+            if not is_stale:
+                raise LeaseNotHeld(
+                    f"lease held by {existing.instance_id}; "
+                    f"refusing to acquire"
+                )
+            # Stale takeover -- emit dedicated audit event before
+            # writing the new lease, so MAGMA records the
+            # superseded instance.
+            self.emit_magma_event({
+                "event_type": "auto_fix_loop.lease_stale_takeover",
+                "instance_id": self.instance_id,
+                "superseded_instance_id": existing.instance_id,
+                "superseded_last_renewed_at_utc": existing.last_renewed_at_utc,
+                "lease_ttl_seconds": self.lease_ttl_seconds,
+                "ts_utc": now,
+            })
         record = LeaseRecord(
             instance_id=self.instance_id,
             acquired_at_utc=now,
@@ -231,6 +245,25 @@ class AutoFixLoop:
             "audit_event_id": audit_ref,
         })
         return record
+
+    def _lease_is_stale(self, existing: LeaseRecord, now_utc: str) -> bool:
+        """True if existing.last_renewed_at_utc is older than now_utc
+        by more than lease_ttl_seconds.
+
+        Both timestamps are ISO-8601 UTC strings (the utc_iso_fn hook
+        format). Parses defensively: malformed timestamps are treated
+        as NOT stale so a corrupted row cannot be silently taken over.
+        """
+        from datetime import datetime as _dt
+        try:
+            then = _dt.fromisoformat(
+                existing.last_renewed_at_utc.replace("Z", "+00:00")
+            )
+            now = _dt.fromisoformat(now_utc.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return False
+        elapsed = (now - then).total_seconds()
+        return elapsed > self.lease_ttl_seconds
 
     def release_lease(self) -> None:
         """Release the active-instance lease."""
@@ -274,11 +307,18 @@ class AutoFixLoop:
         for ev in events:
             result = self._handle_event(ev)
             results.append(result)
+            # Codex RCO round-2 fix: cursor_before MUST track the
+            # current running cursor, not the original cursor passed
+            # into run_once. Otherwise multi-event runs emit
+            # [(start, A), (start, B), (start, C)] instead of
+            # [(start, A), (A, B), (B, C)] and downstream audit
+            # consumers cannot reconstruct the per-event chain.
+            cursor_before = new_cursor
             new_cursor = ev.event_id
             self.emit_magma_event({
                 "event_type": "auto_fix_loop.cursor_advanced",
                 "instance_id": self.instance_id,
-                "cursor_before": cursor,
+                "cursor_before": cursor_before,
                 "cursor_after": new_cursor,
                 "ts_utc": self.utc_iso_fn(),
             })

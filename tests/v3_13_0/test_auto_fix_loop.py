@@ -77,7 +77,9 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
                 idempotent: bool = False,
                 dry_run: bool = False,
                 magma_events: list = None,
-                instance_id: str = "instance_a"):
+                instance_id: str = "instance_a",
+                utc_iso_fn=lambda: "2026-05-13T08:10:00Z",
+                lease_ttl_seconds: int = 3600):
     magma_events = magma_events if magma_events is not None else []
     lease_state = {"current": lease}
     events_state = {"queue": list(events or [])}
@@ -112,8 +114,9 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
         emit_magma_event=_emit_collector(magma_events),
         idempotency_check=lambda _intent: idempotent,
         clock_fn=lambda: 0.0,
-        utc_iso_fn=lambda: "2026-05-13T08:10:00Z",
+        utc_iso_fn=utc_iso_fn,
         dry_run=dry_run,
+        lease_ttl_seconds=lease_ttl_seconds,
     )
 
 
@@ -158,6 +161,66 @@ class TestLease:
         loop = _make_loop()
         with pytest.raises(LeaseNotHeld):
             loop.run_once(cursor="")
+
+    def test_acquire_takes_over_stale_lease(self):
+        """Codex RCO round-2 fix: lease > lease_ttl_seconds since
+        last_renewed_at_utc is takeover-eligible. Emits a stale audit
+        event before writing the new lease."""
+        existing = LeaseRecord(
+            instance_id="instance_b",
+            acquired_at_utc="2026-05-13T07:00:00Z",
+            last_renewed_at_utc="2026-05-13T07:00:00Z",
+        )
+        events = []
+        loop = _make_loop(
+            lease=existing,
+            magma_events=events,
+            # now is 09:00:00, 2h after last renewal; ttl 1h -> stale
+            utc_iso_fn=lambda: "2026-05-13T09:00:00Z",
+            lease_ttl_seconds=3600,
+        )
+        rec = loop.acquire_lease()
+        assert rec.instance_id == "instance_a"
+        types = [e["event_type"] for e in events]
+        assert "auto_fix_loop.lease_stale_takeover" in types
+        assert "auto_fix_loop.lease_acquired" in types
+        # Stale takeover event records the superseded instance
+        stale_evt = [e for e in events
+                      if e["event_type"]
+                      == "auto_fix_loop.lease_stale_takeover"][0]
+        assert stale_evt["superseded_instance_id"] == "instance_b"
+
+    def test_acquire_refuses_fresh_other_instance_lease(self):
+        """Confirm the takeover gate doesn't fire for fresh leases."""
+        existing = LeaseRecord(
+            instance_id="instance_b",
+            acquired_at_utc="2026-05-13T08:55:00Z",
+            last_renewed_at_utc="2026-05-13T08:59:00Z",
+        )
+        loop = _make_loop(
+            lease=existing,
+            utc_iso_fn=lambda: "2026-05-13T09:00:00Z",
+            lease_ttl_seconds=3600,
+        )
+        with pytest.raises(LeaseNotHeld):
+            loop.acquire_lease()
+
+    def test_acquire_refuses_malformed_timestamp(self):
+        """Malformed last_renewed_at_utc is treated as NOT stale
+        (fail-closed: a corrupted lease row can't be silently taken
+        over)."""
+        existing = LeaseRecord(
+            instance_id="instance_b",
+            acquired_at_utc="not-a-valid-iso",
+            last_renewed_at_utc="not-a-valid-iso",
+        )
+        loop = _make_loop(
+            lease=existing,
+            utc_iso_fn=lambda: "2026-05-13T09:00:00Z",
+            lease_ttl_seconds=1,
+        )
+        with pytest.raises(LeaseNotHeld):
+            loop.acquire_lease()
 
 
 # --------------------------------------------------------------------------
@@ -368,3 +431,36 @@ class TestCursorAdvance:
         results, new_cursor = loop.run_once(cursor="evt_prev")
         assert results == []
         assert new_cursor == "evt_prev"
+
+    def test_cursor_advanced_chain_per_event(self):
+        """Codex RCO round-2 fix: cursor_before MUST track the running
+        cursor per event, NOT the original cursor passed to run_once.
+        Audit consumers reconstruct the per-event chain from these
+        events."""
+        lease = LeaseRecord(
+            instance_id="instance_a",
+            acquired_at_utc="2026-05-13T08:00:00Z",
+            last_renewed_at_utc="2026-05-13T08:00:00Z",
+        )
+        events = []
+        loop = _make_loop(
+            lease=lease,
+            capsule=_make_capsule(),
+            events=[
+                _make_event(event_id="evt_a"),
+                _make_event(event_id="evt_b"),
+                _make_event(event_id="evt_c"),
+            ],
+            magma_events=events,
+        )
+        loop.run_once(cursor="start")
+        cursor_chain = [
+            (e["cursor_before"], e["cursor_after"])
+            for e in events
+            if e["event_type"] == "auto_fix_loop.cursor_advanced"
+        ]
+        assert cursor_chain == [
+            ("start", "evt_a"),
+            ("evt_a", "evt_b"),
+            ("evt_b", "evt_c"),
+        ]

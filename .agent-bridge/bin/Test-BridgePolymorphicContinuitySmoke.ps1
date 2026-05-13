@@ -159,6 +159,29 @@ try {
         -Passed (-not ([string]$next.task_id -eq 'claude-codex-postchat-2026-05-11' -and [string]$next.action -eq 'answer_incoming')) `
         -Detail "action=$($next.action), task=$($next.task_id)"
 
+    Add-RawEvent -Root $tempRoot -TsUtc '2026-05-11T17:59:00.0000000Z' `
+        -Agent codex -Type handoff -TaskId monitor-rco-requested-2026-05-11 `
+        -Status rco_requested -To claude -Message 'RCO requested handoff'
+
+    $statusAfterRco = (& $statusScript -Json -Tail 100 | ConvertFrom-Json)
+    $waitingRcoForClaude = @(
+        $statusAfterRco.unresolved_requests |
+            Where-Object {
+                [string]$_.task_id -eq 'monitor-rco-requested-2026-05-11' -and
+                [string]$_.to -eq 'claude' -and
+                [string]$_.from -eq 'codex'
+            }
+    )
+    Add-Check -Name 'handoff/rco_requested is actionable request-like work' `
+        -Passed ($waitingRcoForClaude.Count -eq 1) `
+        -Detail "unresolved_rco_for_claude=$($waitingRcoForClaude.Count)"
+
+    $nextClaude = (& $nextActionScript -Agent claude -Json -Tail 100 | ConvertFrom-Json)
+    Add-Check -Name 'next-action routes rco_requested handoff to target agent' `
+        -Passed ([string]$nextClaude.action -eq 'answer_incoming' -and
+                 [string]$nextClaude.task_id -eq 'monitor-rco-requested-2026-05-11') `
+        -Detail "action=$($nextClaude.action), task=$($nextClaude.task_id)"
+
 } finally {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedEnv
     if (Test-Path -LiteralPath $tempRoot) {

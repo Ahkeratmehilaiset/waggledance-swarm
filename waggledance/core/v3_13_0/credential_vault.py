@@ -67,10 +67,17 @@ class CredentialRef:
     def parse(cls, uri: str) -> "CredentialRef":
         m = _REF_PATTERN.match(uri)
         if not m:
+            # Codex RCO non-blocking hardening: invalid URIs may contain
+            # material/PII (callers may accidentally pass a token); do
+            # not echo the raw input in the error message. Report only
+            # structural info: type, length, and a prefix-suffix sketch
+            # bounded to non-sensitive chars.
+            kind = type(uri).__name__
             raise ValueError(
-                f"invalid CredentialRef URI: {uri!r}; "
-                f"expected vault://impl/tenant/scope/name with "
-                f"lowercase alphanumeric + safe punctuation"
+                f"invalid CredentialRef URI: {kind} length={_safe_len(uri)} "
+                "(content redacted); expected "
+                "vault://impl/tenant/scope/name with lowercase "
+                "alphanumeric + safe punctuation"
             )
         return cls(
             uri=uri,
@@ -93,19 +100,26 @@ class CredentialMaterial:
     value via repr / str / pickle. Only reveal() unwraps, and reveal
     is audited via auth.material_revealed.
 
+    Vault implementations bind their audit emitter to the material at
+    construction time. Per Codex RCO round-2 fix: reveal() fails closed
+    when no emitter is bound AND none is passed by the caller, so a
+    silent unwrap path cannot exist.
+
     Construct only via CredentialVault.get(); callers should never
     construct directly outside vault implementations and tests.
     """
 
-    __slots__ = ("_value", "_ref")
+    __slots__ = ("_value", "_ref", "_audit_emit")
 
-    def __init__(self, _bytes: bytes, ref: Optional[CredentialRef] = None):
+    def __init__(self, _bytes: bytes, ref: Optional[CredentialRef] = None,
+                  *, audit_emit: Optional[Callable[[dict], Any]] = None):
         if not isinstance(_bytes, (bytes, bytearray, memoryview)):
             raise TypeError(
                 f"CredentialMaterial requires bytes-like; got {type(_bytes)}"
             )
         object.__setattr__(self, "_value", bytes(_bytes))
         object.__setattr__(self, "_ref", ref)
+        object.__setattr__(self, "_audit_emit", audit_emit)
 
     def __repr__(self) -> str:
         ref_part = f" ref={self._ref.uri}" if self._ref else ""
@@ -143,18 +157,29 @@ class CredentialMaterial:
 
         Callers MUST pass a non-empty purpose so the audit trail
         records why the material was unwrapped.
+
+        Per Codex RCO round-2 fix: emits audit ALWAYS. If neither a
+        bound audit_emit (from vault construction) nor a passed
+        audit_emit is available, reveal() raises RuntimeError so
+        material can never unwrap silently.
         """
         if not purpose or not isinstance(purpose, str):
             raise ValueError(
                 "reveal() requires a non-empty purpose string for audit"
             )
-        if audit_emit is not None:
-            audit_emit({
-                "event_type": "auth.material_revealed",
-                "ref": self._ref.uri if self._ref else None,
-                "purpose": purpose,
-                "ts_utc": _utc_iso(),
-            })
+        emitter = audit_emit if audit_emit is not None else self._audit_emit
+        if emitter is None:
+            raise RuntimeError(
+                "CredentialMaterial.reveal() refused: no audit emitter "
+                "bound at construction and none passed. reveal() must "
+                "always be audited; bind one or pass audit_emit=..."
+            )
+        emitter({
+            "event_type": "auth.material_revealed",
+            "ref": self._ref.uri if self._ref else None,
+            "purpose": purpose,
+            "ts_utc": _utc_iso(),
+        })
         return self._value
 
     @property
@@ -322,7 +347,8 @@ class InMemoryVault:
                 "purpose": purpose,
                 "ts_utc": now,
             })
-            return CredentialMaterial(value, ref=ref)
+            return CredentialMaterial(value, ref=ref,
+                                          audit_emit=self._audit_emit)
 
     def store(self, ref: CredentialRef, material: bytes,
                 metadata: VaultMetadata) -> StoreResult:
@@ -475,7 +501,8 @@ class OSKeyringVault:
             "purpose": purpose,
             "ts_utc": now,
         })
-        return CredentialMaterial(value.encode("utf-8"), ref=ref)
+        return CredentialMaterial(value.encode("utf-8"), ref=ref,
+                                       audit_emit=self._audit_emit)
 
     def store(self, ref: CredentialRef, material: bytes,
                 metadata: VaultMetadata) -> StoreResult:
@@ -575,6 +602,18 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(
         timespec="microseconds"
     ).replace("+00:00", "Z")
+
+
+def _safe_len(value: Any) -> int:
+    """Return len(value) if value supports it, else -1.
+
+    Used in error messages so we can report a non-PII length signal
+    without echoing potentially-sensitive raw content.
+    """
+    try:
+        return len(value)
+    except TypeError:
+        return -1
 
 
 __all__ = [

@@ -59,6 +59,18 @@ class TestCredentialRef:
                 "vault://os_keyring/jani@example.com/scope/name"
             )
 
+    def test_parse_error_does_not_echo_raw_input(self):
+        """Codex RCO round-2 non-blocking hardening: invalid URIs may
+        contain material/PII (callers may accidentally pass a token).
+        Error message must NOT echo the raw input."""
+        secret_like = "sk-AAAAAAAAAAAAAAAAAAAAAAAA"
+        with pytest.raises(ValueError) as exc_info:
+            CredentialRef.parse(secret_like)
+        msg = str(exc_info.value)
+        assert secret_like not in msg
+        assert "sk-" not in msg
+        assert "content redacted" in msg
+
     def test_ref_is_frozen(self):
         ref = CredentialRef.parse(
             "vault://os_keyring/profile_42/scope/name"
@@ -106,8 +118,18 @@ class TestCredentialMaterial:
             mat.reveal(purpose="")
 
     def test_reveal_returns_raw_bytes(self):
-        mat = CredentialMaterial(b"super-secret-token-xyz")
+        events = []
+        mat = CredentialMaterial(b"super-secret-token-xyz",
+                                    audit_emit=lambda env: events.append(env))
         assert mat.reveal(purpose="testing") == b"super-secret-token-xyz"
+        assert len(events) == 1
+        assert events[0]["event_type"] == "auth.material_revealed"
+
+    def test_reveal_without_bound_or_passed_emitter_refuses(self):
+        """Codex RCO round-2 fix: silent unwrap path eliminated."""
+        mat = CredentialMaterial(b"super-secret-token-xyz")
+        with pytest.raises(RuntimeError, match="no audit emitter"):
+            mat.reveal(purpose="testing")
 
     def test_reveal_emits_audit_event(self):
         events = []
@@ -191,11 +213,29 @@ class TestInMemoryVault:
         vault.store(ref, b"my-secret", VaultMetadata())
         mat = vault.get(ref, purpose="testing")
         assert mat.reveal(purpose="testing inner") == b"my-secret"
-        # store emits 1 event, get emits 1, reveal-test does not emit
-        # (because we didn't pass audit_emit to reveal)
+        # store emits 1 event, get emits 1, AND reveal also emits 1
+        # because the vault binds its audit emitter to the material
+        # (Codex RCO round-2 fix).
         event_types = [e["event_type"] for e in events]
         assert "auth.credential_stored" in event_types
         assert "auth.credential_retrieved" in event_types
+        assert "auth.material_revealed" in event_types
+
+    def test_vault_bound_reveal_emits_without_passing_emitter(self):
+        """Codex RCO round-2 regression: vault.get(...).reveal(purpose=...)
+        emits auth.material_revealed without caller passing audit_emit
+        separately."""
+        events = []
+        vault = InMemoryVault(audit_emit=lambda env: events.append(env))
+        ref = self._ref()
+        vault.store(ref, b"my-secret", VaultMetadata())
+        mat = vault.get(ref, purpose="checking binding")
+        events.clear()           # discard store+get events; focus on reveal
+        result = mat.reveal(purpose="use-secret")
+        assert result == b"my-secret"
+        assert len(events) == 1
+        assert events[0]["event_type"] == "auth.material_revealed"
+        assert events[0]["purpose"] == "use-secret"
 
     def test_get_requires_purpose(self):
         vault = InMemoryVault()

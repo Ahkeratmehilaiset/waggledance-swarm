@@ -79,7 +79,9 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
                 magma_events: list = None,
                 instance_id: str = "instance_a",
                 utc_iso_fn=lambda: "2026-05-13T08:10:00Z",
-                lease_ttl_seconds: int = 3600):
+                lease_ttl_seconds: int = 3600,
+                persist_empty_release: bool = False,
+                classify_raises_for: set[str] = None):
     magma_events = magma_events if magma_events is not None else []
     lease_state = {"current": lease}
     events_state = {"queue": list(events or [])}
@@ -88,11 +90,18 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
         return lease_state["current"]
 
     def write_lease(rec: LeaseRecord) -> str:
-        lease_state["current"] = rec if rec.instance_id else None
+        lease_state["current"] = (
+            rec if rec.instance_id or persist_empty_release else None
+        )
         return f"audit:lease_{rec.instance_id}"
 
     def fetch_actionable(cursor):
         return events_state["queue"]
+
+    def classify(intent: RepairIntent) -> str:
+        if classify_raises_for and intent.triggering_event_id in classify_raises_for:
+            raise RuntimeError("synthetic handler failure")
+        return risk_class
 
     return AutoFixLoop(
         instance_id=instance_id,
@@ -101,7 +110,7 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
         write_lease=write_lease,
         fetch_actionable_events=fetch_actionable,
         fetch_recovery_capsule=lambda _tid: capsule,
-        classify_intent=lambda _intent: risk_class,
+        classify_intent=classify,
         route_intent_through_gate=lambda _intent: {
             "approved": gate_approved,
             "reason": "auto_approved" if gate_approved else "peer_rco_denied",
@@ -156,6 +165,27 @@ class TestLease:
         loop.release_lease()
         types = [e["event_type"] for e in events]
         assert "auto_fix_loop.lease_released" in types
+
+    def test_release_tombstone_allows_next_acquire(self):
+        events = []
+        existing = LeaseRecord(
+            instance_id="instance_a",
+            acquired_at_utc="2026-05-13T08:00:00Z",
+            last_renewed_at_utc="2026-05-13T08:00:00Z",
+        )
+        loop = _make_loop(
+            lease=existing,
+            magma_events=events,
+            persist_empty_release=True,
+        )
+
+        loop.release_lease()
+        rec = loop.acquire_lease()
+
+        assert rec.instance_id == "instance_a"
+        types = [e["event_type"] for e in events]
+        assert "auto_fix_loop.lease_released" in types
+        assert "auto_fix_loop.lease_acquired" in types
 
     def test_run_once_refuses_without_lease(self):
         loop = _make_loop()
@@ -463,4 +493,47 @@ class TestCursorAdvance:
             ("start", "evt_a"),
             ("evt_a", "evt_b"),
             ("evt_b", "evt_c"),
+        ]
+
+    def test_handler_exception_records_failure_and_advances_cursor(self):
+        lease = LeaseRecord(
+            instance_id="instance_a",
+            acquired_at_utc="2026-05-13T08:00:00Z",
+            last_renewed_at_utc="2026-05-13T08:00:00Z",
+        )
+        events = []
+        loop = _make_loop(
+            lease=lease,
+            capsule=_make_capsule(),
+            events=[
+                _make_event(event_id="evt_poison"),
+                _make_event(event_id="evt_after"),
+            ],
+            magma_events=events,
+            classify_raises_for={"evt_poison"},
+        )
+
+        results, new_cursor = loop.run_once(cursor="start")
+
+        assert new_cursor == "evt_after"
+        assert [r.outcome for r in results] == [
+            RepairOutcome.FAILED.value,
+            RepairOutcome.APPLIED.value,
+        ]
+        assert results[0].reason == "handler_exception:RuntimeError"
+        failed_events = [
+            e for e in events
+            if e["event_type"] == "auto_fix_loop.repair_failed"
+            and e.get("reason") == "handler_exception"
+        ]
+        assert failed_events
+        assert failed_events[0]["exception_type"] == "RuntimeError"
+        cursor_chain = [
+            (e["cursor_before"], e["cursor_after"])
+            for e in events
+            if e["event_type"] == "auto_fix_loop.cursor_advanced"
+        ]
+        assert cursor_chain == [
+            ("start", "evt_poison"),
+            ("evt_poison", "evt_after"),
         ]

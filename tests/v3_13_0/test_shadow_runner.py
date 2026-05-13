@@ -3,7 +3,7 @@
 
 Covers acceptance criteria from shadow_runner_scaffold_spec.md:
 * Synthetic baseline shadow run (no real operator data)
-* All 5 abort paths
+* All fail-closed abort paths
 * MAGMA audit events emitted
 """
 from __future__ import annotations
@@ -212,6 +212,22 @@ class TestShadowAborts:
         )
         result = runner.run(_shadow_input())
         assert result.abort_reason == ShadowAbortReason.TIMEOUT_EXCEEDED.value
+
+    def test_baseline_nonzero_exit_aborts(self):
+        events = []
+        runner = _make_runner(
+            tool=_supported_tool(),
+            profile=_budget_profile(),
+            baseline_run=_baseline_runner(exit_code=2),
+            compare=_compare_returning(score=0.0),
+            events=events,
+        )
+        result = runner.run(_shadow_input())
+        assert result.abort_reason == ShadowAbortReason.BASELINE_FAILED.value
+        assert result.divergence_score == 1.0
+        event_types = [e["event_type"] for e in events]
+        assert ShadowAbortReason.BASELINE_FAILED.value in event_types
+        assert "shadow.run_completed" not in event_types
 
     def test_abort_records_audit_event(self):
         events = []

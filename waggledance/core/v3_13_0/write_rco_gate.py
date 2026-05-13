@@ -27,6 +27,8 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any, Callable, Optional
 
+from .solver_provenance import VerificationResult
+
 
 # --------------------------------------------------------------------------
 # Risk classes (per ANTI-* + WRT-001/002/003 in v3.13.0 reconciled catalog)
@@ -270,6 +272,14 @@ class WriteRCOGate:
     """Actually perform the write. v1 is a stub; production wires to
     AuthenticatedConnector / MemoryWriteProxy / filesystem."""
 
+    verify_solver_provenance: Optional[Callable[[str], VerificationResult]] = None
+    """Optional SCH-005 SolverCandidateManifest provenance verifier.
+
+    Required fail-closed when a WRT-003 intent carries solver_candidate_id.
+    Plain operator/tool writes without a solver candidate keep the existing
+    peer-RCO + scope-policy gate path.
+    """
+
     # --- gate config ----------------------------------------------------------
 
     peer_rco_timeout_seconds: int = 1800     # 30 min
@@ -494,7 +504,33 @@ class WriteRCOGate:
                 f"{state.write_modes_allowed!r}",
             )
 
-        # Check 4: rollback plan exists (RecoveryCapsule)
+        # Check 4: solver provenance for solver-driven WRT-003 writes.
+        # If a solver_candidate_id is present, the standalone
+        # SolverProvenance module must verify valid before the gate can
+        # continue. Missing hook or invalid/quarantined/revoked provenance
+        # fails closed.
+        solver_candidate_id = _solver_candidate_id(intent)
+        solver_provenance_result = None
+        if solver_candidate_id:
+            if self.verify_solver_provenance is None:
+                raise GateStopCondition(
+                    intent.intent_id,
+                    StopCondition.ANTI_PATTERN_VIOLATION,
+                    "WRT-003 solver write requires verify_solver_provenance hook",
+                )
+            solver_provenance_result = self.verify_solver_provenance(
+                solver_candidate_id
+            )
+            if not solver_provenance_result.valid:
+                reasons = ",".join(solver_provenance_result.reasons) or "invalid"
+                raise GateStopCondition(
+                    intent.intent_id,
+                    StopCondition.ANTI_PATTERN_VIOLATION,
+                    "WRT-003 solver provenance invalid for "
+                    f"{solver_candidate_id}: {reasons}",
+                )
+
+        # Check 5: rollback plan exists (RecoveryCapsule)
         capsule = self.fetch_recovery_capsule(intent.tool_descriptor_id)
         if capsule is None or not capsule.rollback_command:
             raise GateStopCondition(
@@ -503,7 +539,7 @@ class WriteRCOGate:
                 "WRT-003 requires RecoveryCapsule with rollback_command",
             )
 
-        # Check 5: peer RCO
+        # Check 6: peer RCO
         peer_audit = self._audit(AuditEventType.PEER_RCO_REQUESTED, intent, {})
         peer_result = self.peer_rco_solicit(intent)
         self._audit(AuditEventType.PEER_RCO_COMPLETED, intent, {
@@ -531,7 +567,7 @@ class WriteRCOGate:
                 audit_event_ids=[classify_audit_id, peer_audit],
             )
 
-        # Check 6: operator scope policy
+        # Check 7: operator scope policy
         scope_result = self.operator_scope_policy_check(intent, connector, state)
         self._audit(AuditEventType.SCOPE_POLICY_DECIDED, intent, {
             "decision": scope_result.decision,
@@ -546,11 +582,24 @@ class WriteRCOGate:
             )
 
         # All checks pass -- emit intent_approved
-        approved_audit = self._audit(AuditEventType.INTENT_APPROVED, intent, {
+        approved_detail = {
             "risk_class": "external_effect",
             "scope_policy": scope_result.decision,
             "rollback_plan_ref": capsule.capsule_id,
-        })
+        }
+        if solver_candidate_id and solver_provenance_result:
+            approved_detail.update({
+                "solver_candidate_id": solver_candidate_id,
+                "solver_manifest_sha256": (
+                    solver_provenance_result.manifest_sha256_observed
+                ),
+                "solver_activation_state": (
+                    solver_provenance_result.activation_state
+                ),
+            })
+        approved_audit = self._audit(
+            AuditEventType.INTENT_APPROVED, intent, approved_detail
+        )
         return GateOutcome(
             intent_id=intent.intent_id,
             risk_class=WriteRiskClass.EXTERNAL_EFFECT,
@@ -628,6 +677,17 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
         "+00:00", "Z"
     )
+
+
+def _solver_candidate_id(intent: Intent) -> str:
+    """Return a solver candidate id if the intent declares one."""
+    for key in ("solver_candidate_id", "candidate_id"):
+        value = intent.payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    if intent.provenance_chain.startswith("solver:"):
+        return intent.provenance_chain
+    return ""
 
 
 __all__ = [

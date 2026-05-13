@@ -28,6 +28,10 @@ from waggledance.core.v3_13_0.write_rco_gate import (
     PeerRCOResult,
     ScopePolicyResult,
 )
+from waggledance.core.v3_13_0.solver_provenance import (
+    ActivationState,
+    VerificationResult,
+)
 
 
 # --------------------------------------------------------------------------
@@ -64,7 +68,9 @@ def _make_gate(*, audit_collector: list,
                 scope_decision: str = "auto_approved",
                 scope_reason: str = "",
                 cred_scan=_no_cred_scan,
-                write_result: ExecutionResult = None) -> WriteRCOGate:
+                write_result: ExecutionResult = None,
+                solver_provenance_result: VerificationResult = None
+                ) -> WriteRCOGate:
     connectors = connectors or {}
     states = states or {}
     capsules = capsules or {}
@@ -85,6 +91,19 @@ def _make_gate(*, audit_collector: list,
         return ExecutionResult(intent_id=intent.intent_id, success=True,
                                 elapsed_ms=10)
 
+    def verify_solver_provenance(candidate_id: str) -> VerificationResult:
+        if solver_provenance_result is not None:
+            return solver_provenance_result
+        return VerificationResult(
+            valid=True,
+            candidate_id=candidate_id,
+            activation_state=ActivationState.ACTIVATED.value,
+            has_owner_signature=True,
+            has_peer_signature=True,
+            has_operator_signature=True,
+            manifest_sha256_observed="a" * 64,
+        )
+
     return WriteRCOGate(
         audit_emit=_audit_emit_collector(audit_collector),
         classify_payload_credential_scan=cred_scan,
@@ -94,6 +113,7 @@ def _make_gate(*, audit_collector: list,
         peer_rco_solicit=peer,
         operator_scope_policy_check=scope,
         write_executor=writer,
+        verify_solver_provenance=verify_solver_provenance,
     )
 
 
@@ -419,6 +439,121 @@ class TestExternalEffectRoute:
                           AuditEventType.SCOPE_POLICY_DECIDED.value,
                           AuditEventType.INTENT_APPROVED.value]:
             assert expected in event_types
+
+    def test_wrt_003_solver_write_requires_provenance_hook(self):
+        audit = []
+        gate = WriteRCOGate(
+            audit_emit=_audit_emit_collector(audit),
+            classify_payload_credential_scan=_no_cred_scan,
+            fetch_connector_info=lambda cid: self._setup_wrt_003_connector().get(cid),
+            fetch_state_info=lambda sid: self._setup_wrt_003_state().get(sid),
+            fetch_recovery_capsule=lambda tid: self._setup_wrt_003_capsule().get(tid),
+            peer_rco_solicit=lambda intent: PeerRCOResult(
+                verdict="pass", rounds=1, timed_out=False
+            ),
+            operator_scope_policy_check=lambda intent, conn, st: ScopePolicyResult(
+                decision="auto_approved", reason=""
+            ),
+            write_executor=lambda intent: ExecutionResult(
+                intent_id=intent.intent_id, success=True
+            ),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+            payload={"solver_candidate_id": "cand:spot_optimizer_001"},
+        )
+        outcome = gate.route(intent)
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
+        assert "verify_solver_provenance" in (outcome.denial_reason or "")
+
+    def test_wrt_003_solver_write_denies_invalid_provenance(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=self._setup_wrt_003_state(),
+            connectors=self._setup_wrt_003_connector(),
+            capsules=self._setup_wrt_003_capsule(),
+            solver_provenance_result=VerificationResult(
+                valid=False,
+                candidate_id="cand:spot_optimizer_001",
+                reasons=["external_effect_requires_operator_signature"],
+                activation_state=ActivationState.AWAITING_SIGNING.value,
+            ),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+            payload={"solver_candidate_id": "cand:spot_optimizer_001"},
+        )
+        outcome = gate.route(intent)
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
+        assert "external_effect_requires_operator_signature" in (
+            outcome.denial_reason or ""
+        )
+        event_types = [e["event_type"] for e in audit]
+        assert AuditEventType.PEER_RCO_REQUESTED.value not in event_types
+        assert AuditEventType.INTENT_APPROVED.value not in event_types
+
+    def test_wrt_003_solver_write_records_valid_provenance(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=self._setup_wrt_003_state(),
+            connectors=self._setup_wrt_003_connector(),
+            capsules=self._setup_wrt_003_capsule(),
+            solver_provenance_result=VerificationResult(
+                valid=True,
+                candidate_id="cand:spot_optimizer_001",
+                activation_state=ActivationState.ACTIVATED.value,
+                has_owner_signature=True,
+                has_peer_signature=True,
+                has_operator_signature=True,
+                manifest_sha256_observed="b" * 64,
+            ),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+            payload={"solver_candidate_id": "cand:spot_optimizer_001"},
+        )
+        outcome = gate.route(intent)
+        assert outcome.approved is True
+        approved = [
+            e for e in audit
+            if e["event_type"] == AuditEventType.INTENT_APPROVED.value
+        ][0]
+        assert approved["solver_candidate_id"] == "cand:spot_optimizer_001"
+        assert approved["solver_manifest_sha256"] == "b" * 64
+
+    def test_wrt_003_solver_write_denies_quarantined_provenance(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=self._setup_wrt_003_state(),
+            connectors=self._setup_wrt_003_connector(),
+            capsules=self._setup_wrt_003_capsule(),
+            solver_provenance_result=VerificationResult(
+                valid=False,
+                candidate_id="cand:spot_optimizer_001",
+                reasons=["solver_quarantined"],
+                activation_state=ActivationState.QUARANTINED.value,
+            ),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+            payload={"solver_candidate_id": "cand:spot_optimizer_001"},
+        )
+        outcome = gate.route(intent)
+        assert outcome.approved is False
+        assert "solver_quarantined" in (outcome.denial_reason or "")
 
     def test_wrt_003_no_connector_denies(self):
         audit = []

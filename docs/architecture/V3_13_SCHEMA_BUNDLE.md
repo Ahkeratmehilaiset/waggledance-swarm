@@ -12,6 +12,8 @@ Included schemas:
 - `recovery_capsule.schema.json` for rollback and rebuild contracts.
 - `provider_registry.schema.json` for seed/provider contribution records.
 - `profile_config.schema.json` for deployment profile context and overrides.
+- `solver_candidate_manifest.schema.json` for SCH-005 shadow/hybrid
+  candidate manifests, provenance signatures, and activation state.
 - `domain_catalog.schema.json` for generated domain projections.
 
 The `AuthenticatedConnector` schema deliberately stores `credential_ref` only.

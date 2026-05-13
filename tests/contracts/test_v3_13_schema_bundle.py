@@ -190,6 +190,60 @@ def good_profile_config() -> dict:
     }
 
 
+def good_solver_candidate_manifest() -> dict:
+    return {
+        "schema_version": 1,
+        "candidate_id": "electricity_spot_optimizer_home_demo_001",
+        "source_docs": ["doc:tariff_structure_pdf", "doc:consumption_sample_csv"],
+        "source_tools": [],
+        "training_contracts": ["ctr_date", "ctr_search", "ctr_vector"],
+        "state_handles": [
+            "state:spot_price_store",
+            "state:consumption_forecast",
+            "state:optimizer_recommendations",
+        ],
+        "connector_handles": ["conn:spot_price_public_feed"],
+        "shadow_inputs": ["synth_24h_winter", "synth_24h_summer"],
+        "shadow_expected_outputs": [
+            "recommendation_with_savings_estimate_winter",
+            "recommendation_with_savings_estimate_summer",
+        ],
+        "divergence_score": None,
+        "accepted_differences": [],
+        "rejected_differences": [],
+        "promotion_decision": "awaiting_shadow",
+        "rollback_plan": "recovery:spot_optimizer_v1",
+        "operator_review_id": "op_review_001",
+        "provenance_signatures": [
+            {
+                "signature_id": "sig:owner_001",
+                "solver_candidate_id": "electricity_spot_optimizer_home_demo_001",
+                "solver_manifest_canonical_json": "{\"schema_version\":1}",
+                "manifest_sha256": "a" * 64,
+                "signing_agent_id": "claude",
+                "signing_role": "owner",
+                "signing_timestamp_utc": "2026-05-13T08:30:00Z",
+                "bridge_event_ref": "bridge:evt_owner_001",
+                "audit_event_ref": "audit:evt_owner_001",
+                "operator_scope_policy_ref": "policy:home_no_external_writes",
+            },
+            {
+                "signature_id": "sig:peer_001",
+                "solver_candidate_id": "electricity_spot_optimizer_home_demo_001",
+                "solver_manifest_canonical_json": "{\"schema_version\":1}",
+                "manifest_sha256": "a" * 64,
+                "signing_agent_id": "codex",
+                "signing_role": "peer",
+                "signing_timestamp_utc": "2026-05-13T08:31:00Z",
+                "bridge_event_ref": "bridge:evt_peer_001",
+                "audit_event_ref": "audit:evt_peer_001",
+                "operator_scope_policy_ref": "policy:home_no_external_writes",
+            },
+        ],
+        "activation_state": "signed",
+    }
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -200,6 +254,7 @@ def good_profile_config() -> dict:
         "recovery_capsule.schema.json",
         "provider_registry.schema.json",
         "profile_config.schema.json",
+        "solver_candidate_manifest.schema.json",
         "domain_catalog.schema.json",
     ],
 )
@@ -217,6 +272,7 @@ def test_schema_is_valid_draft7(name: str) -> None:
         ("recovery_capsule.schema.json", good_recovery_capsule),
         ("provider_registry.schema.json", good_provider_registry),
         ("profile_config.schema.json", good_profile_config),
+        ("solver_candidate_manifest.schema.json", good_solver_candidate_manifest),
     ],
 )
 def test_good_examples_validate(schema_name: str, factory) -> None:
@@ -265,6 +321,22 @@ def test_domain_catalog_projection_is_generated_from_descriptors_and_state_handl
             "state_handle_ids": ["factory_logbook_state"],
         }
     ]
+
+
+def test_solver_candidate_manifest_requires_explicit_signing_role() -> None:
+    bad = good_solver_candidate_manifest()
+    del bad["provenance_signatures"][0]["signing_role"]
+    assert list(
+        _validator("solver_candidate_manifest.schema.json").iter_errors(bad)
+    )
+
+
+def test_solver_candidate_manifest_rejects_unknown_activation_state() -> None:
+    bad = good_solver_candidate_manifest()
+    bad["activation_state"] = "autonomous_without_signature"
+    assert list(
+        _validator("solver_candidate_manifest.schema.json").iter_errors(bad)
+    )
 
 
 def test_schema_bundle_has_no_absolute_local_paths_or_known_secret_prefixes() -> None:

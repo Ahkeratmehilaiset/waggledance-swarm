@@ -22,6 +22,12 @@ this bundle.
 `ToolDescriptor` and `StateHandle` inventories. The output is derived state;
 descriptor and state inventories remain the source records.
 
+`tools/build_v3_13_inventories.py` creates seed `ToolDescriptor` and
+`StateHandle` inventories from tracked path names. It does not read file
+contents. This keeps the first inventory pass useful for catalog projection
+without ingesting credentials, browser profiles, personal documents, or runtime
+data.
+
 Boundary decisions from the Sprint 1 RCO:
 
 - `external_readonly` state handles cannot declare writers or write modes.

@@ -70,16 +70,24 @@ class AuditEventType(str, Enum):
 
 
 class StopCondition(str, Enum):
-    """Eight stop-conditions that pause-and-escalate to operator."""
+    """Stop-conditions that pause-and-escalate to operator.
+
+    v1 actively routes 5: PEER_RCO_TIMEOUT, PEER_RCO_NONCONVERGENT,
+    AUDIT_WRITE_FAILED, ANTI_PATTERN_VIOLATION, NO_ROLLBACK_PLAN.
+    The remaining 3 (OPERATOR_UNAVAILABLE, COST_CEILING_REACHED,
+    IDEMPOTENCY_CAP_REACHED) are reserved enum values for future
+    runtime wiring (cost telemetry, idempotency replay, operator
+    presence) -- not yet active in v1 routing logic.
+    """
 
     PEER_RCO_TIMEOUT = "peer_rco_timeout"
     PEER_RCO_NONCONVERGENT = "peer_rco_nonconvergent"
     AUDIT_WRITE_FAILED = "audit_write_failed"
-    OPERATOR_UNAVAILABLE = "operator_unavailable"
+    OPERATOR_UNAVAILABLE = "operator_unavailable"          # reserved (v1.x)
     ANTI_PATTERN_VIOLATION = "anti_pattern_violation"
     NO_ROLLBACK_PLAN = "no_rollback_plan"
-    COST_CEILING_REACHED = "cost_ceiling_reached"
-    IDEMPOTENCY_CAP_REACHED = "idempotency_cap_reached"
+    COST_CEILING_REACHED = "cost_ceiling_reached"          # reserved (v1.x)
+    IDEMPOTENCY_CAP_REACHED = "idempotency_cap_reached"    # reserved (v1.x)
 
 
 # --------------------------------------------------------------------------
@@ -426,6 +434,17 @@ class WriteRCOGate:
                 "target_state_ref unresolved",
             )
 
+        # write_modes_allowed enforcement (Codex RCO round-2 fix #2):
+        # intent.action must be present in state.write_modes_allowed.
+        # Fail-closed: empty list -> deny all.
+        if intent.action not in (state.write_modes_allowed or []):
+            raise GateStopCondition(
+                intent.intent_id,
+                StopCondition.ANTI_PATTERN_VIOLATION,
+                f"action '{intent.action}' not in state.write_modes_allowed="
+                f"{state.write_modes_allowed!r}",
+            )
+
         approved_audit = self._audit(AuditEventType.INTENT_APPROVED, intent,
                                       {"risk_class": "local_artifact",
                                        "target_plane": state.plane})
@@ -452,7 +471,30 @@ class WriteRCOGate:
                 "connector write_risk does not match WRT-003 classification",
             )
 
-        # Check 2: rollback plan exists (RecoveryCapsule)
+        # Check 2: state must resolve (Codex RCO round-2 fix #1).
+        # WRT-003 cannot approve against an unresolved StateInfo; an
+        # unknown target plane makes write_modes_allowed and scope
+        # policy uncheckable -> deny fail-closed.
+        state = self.fetch_state_info(intent.target_state_ref)
+        if state is None:
+            raise GateStopCondition(
+                intent.intent_id,
+                StopCondition.ANTI_PATTERN_VIOLATION,
+                "WRT-003 requires resolved target_state_ref",
+            )
+
+        # Check 3: write_modes_allowed enforcement (Codex RCO round-2
+        # fix #2). intent.action must be present in
+        # state.write_modes_allowed. Fail-closed on empty list.
+        if intent.action not in (state.write_modes_allowed or []):
+            raise GateStopCondition(
+                intent.intent_id,
+                StopCondition.ANTI_PATTERN_VIOLATION,
+                f"action '{intent.action}' not in state.write_modes_allowed="
+                f"{state.write_modes_allowed!r}",
+            )
+
+        # Check 4: rollback plan exists (RecoveryCapsule)
         capsule = self.fetch_recovery_capsule(intent.tool_descriptor_id)
         if capsule is None or not capsule.rollback_command:
             raise GateStopCondition(
@@ -461,7 +503,7 @@ class WriteRCOGate:
                 "WRT-003 requires RecoveryCapsule with rollback_command",
             )
 
-        # Check 3: peer RCO
+        # Check 5: peer RCO
         peer_audit = self._audit(AuditEventType.PEER_RCO_REQUESTED, intent, {})
         peer_result = self.peer_rco_solicit(intent)
         self._audit(AuditEventType.PEER_RCO_COMPLETED, intent, {
@@ -489,8 +531,7 @@ class WriteRCOGate:
                 audit_event_ids=[classify_audit_id, peer_audit],
             )
 
-        # Check 4: operator scope policy
-        state = self.fetch_state_info(intent.target_state_ref)
+        # Check 6: operator scope policy
         scope_result = self.operator_scope_policy_check(intent, connector, state)
         self._audit(AuditEventType.SCOPE_POLICY_DECIDED, intent, {
             "decision": scope_result.decision,

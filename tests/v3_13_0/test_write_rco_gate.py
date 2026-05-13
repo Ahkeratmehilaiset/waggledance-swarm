@@ -299,6 +299,48 @@ class TestLocalArtifactRoute:
         assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
         assert "ANTI-004" in (outcome.denial_reason or "")
 
+    def test_wrt_002_action_not_in_write_modes_allowed_denies(self):
+        """Codex RCO round-2 fix #2: WRT-002 with action='delete' against
+        state.write_modes_allowed=['append'] must deny fail-closed
+        with ANTI_PATTERN_VIOLATION."""
+        audit = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:append_only_log": StateInfo(
+                state_id="state:append_only_log",
+                plane="filesystem_artifact",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=False,
+            ),
+        })
+        intent = _make_intent(target_state_ref="state:append_only_log",
+                               action="delete")
+        outcome = gate.route(intent)
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
+        assert "write_modes_allowed" in (outcome.denial_reason or "")
+        event_types = [e["event_type"] for e in audit]
+        assert AuditEventType.INTENT_APPROVED.value not in event_types
+
+    def test_wrt_002_empty_write_modes_allowed_denies(self):
+        """Fail-closed: state with empty write_modes_allowed denies all
+        writes."""
+        audit = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:read_only_dir": StateInfo(
+                state_id="state:read_only_dir",
+                plane="filesystem_artifact",
+                write_modes_allowed=[],
+                sensitive_class="internal",
+                single_writer_required=False,
+            ),
+        })
+        intent = _make_intent(target_state_ref="state:read_only_dir",
+                               action="insert")
+        outcome = gate.route(intent)
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
+
     def test_wrt_002_unknown_state_denies(self):
         audit = []
         gate = _make_gate(audit_collector=audit, states={
@@ -448,6 +490,55 @@ class TestExternalEffectRoute:
         outcome = gate.route(intent)
         assert outcome.approved is False
         assert outcome.stop_condition == StopCondition.PEER_RCO_NONCONVERGENT
+
+    def test_wrt_003_unresolved_state_denies(self):
+        """Codex RCO round-2 fix #1: WRT-003 with unresolved target_state_ref
+        must deny fail-closed even when scope policy would auto-approve."""
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states={},  # state lookup returns None
+            connectors=self._setup_wrt_003_connector(),
+            capsules=self._setup_wrt_003_capsule(),
+            scope_decision="auto_approved",
+        )
+        intent = _make_intent(
+            target_state_ref="state:does_not_exist",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+        )
+        outcome = gate.route(intent)
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
+        assert "target_state_ref" in (outcome.denial_reason or "")
+        # No INTENT_APPROVED event must have been emitted
+        event_types = [e["event_type"] for e in audit]
+        assert AuditEventType.INTENT_APPROVED.value not in event_types
+
+    def test_wrt_003_action_not_in_write_modes_allowed_denies(self):
+        """Codex RCO round-2 fix #2: WRT-003 with action='delete' against
+        state.write_modes_allowed=['insert', 'update'] must deny fail-closed
+        with ANTI_PATTERN_VIOLATION."""
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=self._setup_wrt_003_state(),  # allows insert/update only
+            connectors=self._setup_wrt_003_connector(),
+            capsules=self._setup_wrt_003_capsule(),
+            scope_decision="auto_approved",
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+            action="delete",  # not in write_modes_allowed
+        )
+        outcome = gate.route(intent)
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
+        assert "write_modes_allowed" in (outcome.denial_reason or "")
+        event_types = [e["event_type"] for e in audit]
+        assert AuditEventType.INTENT_APPROVED.value not in event_types
 
     def test_wrt_003_scope_policy_denied(self):
         audit = []

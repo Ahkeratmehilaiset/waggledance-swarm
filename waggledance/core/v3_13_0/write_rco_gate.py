@@ -344,13 +344,22 @@ class WriteRCOGate:
 
         try:
             if risk == WriteRiskClass.INFORMATIONAL:
-                return self._route_informational(intent, audit_id)
-            if risk == WriteRiskClass.INTERNAL_MEMORY:
-                return self._route_internal_memory(intent, audit_id)
-            if risk == WriteRiskClass.LOCAL_ARTIFACT:
-                return self._route_local_artifact(intent, audit_id)
-            if risk == WriteRiskClass.EXTERNAL_EFFECT:
-                return self._route_external_effect(intent, audit_id)
+                outcome = self._route_informational(intent, audit_id)
+            elif risk == WriteRiskClass.INTERNAL_MEMORY:
+                outcome = self._route_internal_memory(intent, audit_id)
+            elif risk == WriteRiskClass.LOCAL_ARTIFACT:
+                outcome = self._route_local_artifact(intent, audit_id)
+            elif risk == WriteRiskClass.EXTERNAL_EFFECT:
+                outcome = self._route_external_effect(intent, audit_id)
+            else:
+                raise RuntimeError(f"unhandled risk class: {risk}")
+            if not outcome.approved and outcome.stop_condition is None:
+                denied_audit = self._audit(AuditEventType.DENIED, intent, {
+                    "reason": outcome.denial_reason or "denied",
+                    "risk_class": risk.value,
+                })
+                outcome.audit_event_ids.append(denied_audit)
+            return outcome
         except GateStopCondition as stop:
             self._audit(AuditEventType.DENIED, intent, {
                 "stop_condition": stop.condition.value,
@@ -364,7 +373,6 @@ class WriteRCOGate:
                 stop_condition=stop.condition,
                 audit_event_ids=[audit_id],
             )
-        raise RuntimeError(f"unhandled risk class: {risk}")
 
     def execute(self, intent: Intent, outcome: GateOutcome) -> ExecutionResult:
         """Execute an approved intent. Caller checks outcome.approved first."""
@@ -372,7 +380,10 @@ class WriteRCOGate:
             return ExecutionResult(intent_id=intent.intent_id, success=False,
                                     error_reason="gate did not approve intent")
 
-        self._audit(AuditEventType.EFFECT_STARTED, intent, {})
+        try:
+            self._audit(AuditEventType.EFFECT_STARTED, intent, {})
+        except GateStopCondition as stop:
+            return _audit_failure_execution_result(intent, stop)
         t_start = time.perf_counter()
         try:
             result = self.write_executor(intent)
@@ -385,18 +396,33 @@ class WriteRCOGate:
             )
 
         if result.outcome_unknown:
-            self._audit(AuditEventType.EFFECT_OUTCOME_UNKNOWN, intent, {
-                "error": result.error_reason or "",
-            })
+            try:
+                self._audit(AuditEventType.EFFECT_OUTCOME_UNKNOWN, intent, {
+                    "error": result.error_reason or "",
+                })
+            except GateStopCondition as stop:
+                return _audit_failure_execution_result(
+                    intent, stop, elapsed_ms=result.elapsed_ms
+                )
             return result
         if not result.success:
-            self._audit(AuditEventType.EFFECT_FAILED, intent, {
-                "error": result.error_reason or "",
-            })
+            try:
+                self._audit(AuditEventType.EFFECT_FAILED, intent, {
+                    "error": result.error_reason or "",
+                })
+            except GateStopCondition as stop:
+                return _audit_failure_execution_result(
+                    intent, stop, elapsed_ms=result.elapsed_ms
+                )
             return result
-        self._audit(AuditEventType.EFFECT_COMPLETED, intent, {
-            "elapsed_ms": result.elapsed_ms,
-        })
+        try:
+            self._audit(AuditEventType.EFFECT_COMPLETED, intent, {
+                "elapsed_ms": result.elapsed_ms,
+            })
+        except GateStopCondition as stop:
+            return _audit_failure_execution_result(
+                intent, stop, elapsed_ms=result.elapsed_ms
+            )
         return result
 
     # =========================================================================
@@ -632,8 +658,7 @@ class WriteRCOGate:
         try:
             return self.audit_emit(envelope)
         except Exception as exc:
-            # For external_effect intents, audit failure is fail-closed.
-            # For informational / internal_memory we degrade visibly.
+            # Audit failure denies the write regardless of risk class.
             raise GateStopCondition(
                 intent.intent_id,
                 StopCondition.AUDIT_WRITE_FAILED,
@@ -688,6 +713,21 @@ def _solver_candidate_id(intent: Intent) -> str:
     if intent.provenance_chain.startswith("solver:"):
         return intent.provenance_chain
     return ""
+
+
+def _audit_failure_execution_result(
+    intent: Intent,
+    stop: GateStopCondition,
+    *,
+    elapsed_ms: int = 0,
+) -> ExecutionResult:
+    return ExecutionResult(
+        intent_id=intent.intent_id,
+        success=False,
+        outcome_unknown=True,
+        error_reason=f"audit failure: {stop.reason}",
+        elapsed_ms=elapsed_ms,
+    )
 
 
 __all__ = [

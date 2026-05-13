@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/provider_registry.schema.json",
+  "title": "v3.13.0 ProviderRegistry Seed",
+  "description": "Seed/contribution contract for providers. This is not a marketplace and does not include credential material.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "provider_id",
+    "display_name",
+    "status",
+    "domains",
+    "source_classes",
+    "auth_modes_supported",
+    "connector_templates",
+    "contribution_contract",
+    "rate_limit_defaults",
+    "data_residency",
+    "risk_notes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "provider_id": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "status": {
+      "type": "string",
+      "enum": ["seed", "unverified", "supported", "unsupported", "deprecated"]
+    },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^DOM-(00[1-9]|0[1-9][0-9]|[1-9][0-9]{2})$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "source_classes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "filesystem",
+          "sqlite",
+          "sql_database",
+          "rest_api",
+          "browser_only",
+          "browser_profile",
+          "web_app",
+          "document_corpus",
+          "message_stream",
+          "vector_corpus",
+          "device_telemetry",
+          "audio_stream",
+          "local_model",
+          "tests",
+          "archive",
+          "logs"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "auth_modes_supported": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "no_auth",
+          "env_key",
+          "local_secret_file",
+          "browser_profile",
+          "interactive_mfa",
+          "oauth_token",
+          "session_cookie",
+          "api_key",
+          "operator_prompt"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "connector_templates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "contribution_contract": {
+      "type": "object",
+      "required": ["requires_docs_source", "requires_shadow_run", "requires_operator_scope_policy"],
+      "additionalProperties": false,
+      "properties": {
+        "requires_docs_source": {
+          "type": "boolean"
+        },
+        "requires_shadow_run": {
+          "type": "boolean"
+        },
+        "requires_operator_scope_policy": {
+          "type": "boolean"
+        },
+        "minimum_soak_hours": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "rate_limit_defaults": {
+      "type": "object",
+      "required": ["max_workers", "request_delay_s"],
+      "additionalProperties": false,
+      "properties": {
+        "max_workers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "request_delay_s": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "data_residency": {
+      "type": "string",
+      "enum": ["unknown", "local_only", "eu", "us", "global", "operator_defined"]
+    },
+    "risk_notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 500
+      }
+    }
+  },
+  "definitions": {
+    "ref_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    }
+  }
+}

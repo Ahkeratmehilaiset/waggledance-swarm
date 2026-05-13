@@ -214,6 +214,8 @@ class AutoFixLoop:
         """
         existing = self.fetch_lease()
         now = self.utc_iso_fn()
+        if existing is not None and not existing.instance_id:
+            existing = None
         if existing is not None and existing.instance_id != self.instance_id:
             is_stale = self._lease_is_stale(existing, now)
             if not is_stale:
@@ -273,8 +275,8 @@ class AutoFixLoop:
                 "release_lease called but lease is not held by this instance"
             )
         now = self.utc_iso_fn()
-        # Write a None-equivalent lease (instance_id=""); operator-facing
-        # implementations typically clear the row.
+        # Write a release tombstone (instance_id=""). acquire_lease treats
+        # it as no active lease even if the persistence layer keeps the row.
         self.write_lease(LeaseRecord(instance_id="",
                                        acquired_at_utc=existing.acquired_at_utc,
                                        last_renewed_at_utc=now))
@@ -305,7 +307,27 @@ class AutoFixLoop:
         results: list[RepairResult] = []
         new_cursor = cursor
         for ev in events:
-            result = self._handle_event(ev)
+            try:
+                result = self._handle_event(ev)
+            except Exception as exc:
+                repair_id = str(uuid.uuid4())
+                audit_ref = self.emit_magma_event({
+                    "event_type": "auto_fix_loop.repair_failed",
+                    "instance_id": self.instance_id,
+                    "repair_id": repair_id,
+                    "triggering_event_id": ev.event_id,
+                    "reason": "handler_exception",
+                    "exception_type": exc.__class__.__name__,
+                    "error": str(exc)[:200],
+                    "ts_utc": self.utc_iso_fn(),
+                })
+                result = RepairResult(
+                    repair_id=repair_id,
+                    triggering_event_id=ev.event_id,
+                    outcome=RepairOutcome.FAILED.value,
+                    reason=f"handler_exception:{exc.__class__.__name__}",
+                    audit_event_refs=[audit_ref],
+                )
             results.append(result)
             # Codex RCO round-2 fix: cursor_before MUST track the
             # current running cursor, not the original cursor passed

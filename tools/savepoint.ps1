@@ -6,12 +6,12 @@
 #
 # What it does:
 #   1. Refuses to run off the C: drive (RAM-disks, temp folders, etc.
-#      are banned as sources of truth — see docs/RECOVERY_POLICY.md).
+#      are banned as sources of truth - see docs/RECOVERY_POLICY.md).
 #   2. Shows `git status` so the operator sees what will be included.
 #   3. Runs the tests you pass via -TestPath (default: the Phase 7
 #      regression suite). A test failure aborts the checkpoint.
 #   4. Commits the currently-staged changes with the message you pass.
-#      You must stage the files yourself first — the script will not
+#      You must stage the files yourself first - the script will not
 #      blanket `git add -A` to avoid pulling in secrets or gitignored
 #      runtime data.
 #   5. Pushes the current branch to `origin` so the green state is
@@ -80,14 +80,14 @@ if (-not $SkipTests) {
     if (-not (Test-Path $python)) {
         $python = "python"
     }
-    Write-Host "savepoint: running tests — $python -m pytest -q $TestPath" -ForegroundColor Cyan
+    Write-Host "savepoint: running tests - $python -m pytest -q $TestPath" -ForegroundColor Cyan
     & $python -m pytest -q $TestPath
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "savepoint: tests failed — aborting checkpoint."
+        Write-Error "savepoint: tests failed - aborting checkpoint."
         exit 1
     }
 } else {
-    Write-Host "savepoint: -SkipTests set — skipping tests (emergency mode)." -ForegroundColor Yellow
+    Write-Host "savepoint: -SkipTests set - skipping tests (emergency mode)." -ForegroundColor Yellow
 }
 
 # --- 6. Commit -----------------------------------------------------------
@@ -102,8 +102,8 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "savepoint: pushing $branch to origin" -ForegroundColor Cyan
 & git push -u origin $branch
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "savepoint: push failed — the commit exists locally but is NOT anchored on GitHub. Resolve and re-run 'git push -u origin $branch' before doing any other work."
+    Write-Error "savepoint: push failed - the commit exists locally but is NOT anchored on GitHub. Resolve and re-run 'git push -u origin $branch' before doing any other work."
     exit 1
 }
 
-Write-Host "savepoint: OK — $branch pushed to origin" -ForegroundColor Green
+Write-Host "savepoint: OK - $branch pushed to origin" -ForegroundColor Green

@@ -114,6 +114,40 @@ class TestAnti002TextDateSort:
         )
         assert result is None
 
+    def test_violation_on_uppercase_column_metadata(self):
+        """Codex RCO round-2 fix: column name in metadata may use any case;
+        normalise to lowercase for matching."""
+        result = anti_002_text_date_sort(
+            sql="SELECT * FROM t ORDER BY Date DESC",
+            column_types={"Date": "TEXT"},
+        )
+        assert result is not None
+        assert result.anti_id == "ANTI-002"
+
+    def test_violation_on_table_qualified_order_by(self):
+        """Codex RCO round-2 fix: support t.date / alias.column syntax."""
+        result = anti_002_text_date_sort(
+            sql="SELECT * FROM t ORDER BY t.date DESC",
+            column_types={"date": "TEXT"},
+        )
+        assert result is not None
+        assert result.anti_id == "ANTI-002"
+
+    def test_violation_on_mixed_case_alias_qualified(self):
+        result = anti_002_text_date_sort(
+            sql="SELECT * FROM logbook_entries le ORDER BY le.Date DESC",
+            column_types={"Date": "TEXT"},
+        )
+        assert result is not None
+
+    def test_violation_on_quoted_column_identifier(self):
+        """Double-quoted identifier should also match."""
+        result = anti_002_text_date_sort(
+            sql='SELECT MAX("date") FROM t',
+            column_types={"date": "TEXT"},
+        )
+        assert result is not None
+
 
 # ============================================================================
 # ANTI-003: parallel_writers

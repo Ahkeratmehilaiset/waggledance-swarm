@@ -24,6 +24,28 @@ from typing import Any, Callable, Optional
 
 
 # --------------------------------------------------------------------------
+# Module-scope compiled regex patterns
+# --------------------------------------------------------------------------
+# Repo contract test_regex_compile_outside_hot_path enforces that
+# re.compile() lives at module scope so patterns are not rebuilt per
+# call. All catalog patterns are defined here.
+
+# ANTI-005 silent-drop static lint pattern: try / parse / except /
+# continue|pass with no logging / quarantine / UNPARSED sentinel.
+_RE_ANTI_005_SILENT_DROP = re.compile(
+    r"try:\s*\n"
+    r"(?:[ \t]+[^\n]+\n)+"
+    r"[ \t]*except[^:]*:\s*\n"
+    r"[ \t]+(continue|pass)\s*\n",
+    re.MULTILINE,
+)
+
+_RE_ANTI_005_PARSE_CONTEXT = re.compile(
+    r"\b(parse|decode|json\.loads|fromisoformat)\b"
+)
+
+
+# --------------------------------------------------------------------------
 # Violation data type
 # --------------------------------------------------------------------------
 
@@ -132,8 +154,11 @@ def anti_002_text_date_sort(
           'created_at': 'TEXT').
     """
     sql_lower = sql.lower()
+    # Normalise column metadata: lowercase the column name for matching
+    # so callers can pass 'Date' / 'CreatedAt' / quoted variants and the
+    # check still fires. Per Codex RCO round-2 fix.
     text_date_cols = [
-        col for col, t in column_types.items()
+        col.lower() for col, t in column_types.items()
         if t.upper() == "TEXT"
         and col.lower() in {"date", "created_at", "updated_at",
                               "ts", "timestamp", "logged_at"}
@@ -142,12 +167,18 @@ def anti_002_text_date_sort(
     if not text_date_cols:
         return None
     for col in text_date_cols:
-        # Match ORDER BY <col>, MAX(<col>), MIN(<col>)
-        # Word-boundary aware to avoid false matches on substrings.
+        col_re = re.escape(col)
+        # Optional table-qualifier prefix (e.g. t.date, alias."date",
+        # `t`.`date`). The qualifier-and-dot is non-capturing and
+        # optional; the column itself can be bare, double-quoted,
+        # backtick-quoted, or bracket-quoted (SQL Server style).
+        qualifier = r"(?:[a-z0-9_]+\s*\.\s*)?"
+        bare_or_quoted = rf"(?:{col_re}|\"{col_re}\"|`{col_re}`|\[{col_re}\])"
+        col_pat = qualifier + bare_or_quoted
         patterns = [
-            rf"\border\s+by\s+{re.escape(col)}\b",
-            rf"\bmax\s*\(\s*{re.escape(col)}\s*\)",
-            rf"\bmin\s*\(\s*{re.escape(col)}\s*\)",
+            rf"\border\s+by\s+{col_pat}\b",
+            rf"\bmax\s*\(\s*{col_pat}\s*\)",
+            rf"\bmin\s*\(\s*{col_pat}\s*\)",
         ]
         for pat in patterns:
             if re.search(pat, sql_lower):
@@ -402,24 +433,15 @@ def anti_005_silent_drop_in_code(
     """
     if not source_code:
         return None
-    # Pattern: try/except with bare continue or pass and no logging,
-    # quarantine, or UNPARSED sentinel
-    silent_drop = re.compile(
-        r"try:\s*\n"
-        r"(?:[ \t]+[^\n]+\n)+"
-        r"[ \t]*except[^:]*:\s*\n"
-        r"[ \t]+(continue|pass)\s*\n",
-        re.MULTILINE,
-    )
-    matches = list(silent_drop.finditer(source_code))
+    # Pattern compiled at module scope; see _RE_ANTI_005_SILENT_DROP.
+    matches = list(_RE_ANTI_005_SILENT_DROP.finditer(source_code))
     if not matches:
         return None
     # Examine context for parse / decode / json calls
     relevant = []
     for m in matches:
         snippet = m.group(0)
-        if re.search(r"\b(parse|decode|json\.loads|fromisoformat)\b",
-                       snippet):
+        if _RE_ANTI_005_PARSE_CONTEXT.search(snippet):
             line_no = source_code[:m.start()].count("\n") + 1
             relevant.append((line_no, snippet[:200]))
     if not relevant:

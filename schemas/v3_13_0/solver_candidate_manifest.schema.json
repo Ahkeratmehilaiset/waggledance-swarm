@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/solver_candidate_manifest.schema.json",
+  "title": "v3.13.0 SolverCandidateManifest",
+  "description": "SCH-005 manifest for a solver candidate moving through shadow, hybrid, and activation gates.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "source_docs",
+    "source_tools",
+    "training_contracts",
+    "state_handles",
+    "connector_handles",
+    "shadow_inputs",
+    "shadow_expected_outputs",
+    "divergence_score",
+    "accepted_differences",
+    "rejected_differences",
+    "promotion_decision",
+    "rollback_plan",
+    "operator_review_id",
+    "provenance_signatures",
+    "activation_state"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "candidate_id": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "source_docs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "source_tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "training_contracts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "state_handles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "connector_handles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "shadow_inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "shadow_expected_outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "divergence_score": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "accepted_differences": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    },
+    "rejected_differences": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    },
+    "promotion_decision": {
+      "type": "string",
+      "enum": [
+        "awaiting_shadow",
+        "shadow_running",
+        "awaiting_rco",
+        "awaiting_operator",
+        "signed",
+        "activated",
+        "quarantined",
+        "revoked",
+        "rejected"
+      ]
+    },
+    "rollback_plan": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "operator_review_id": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "provenance_signatures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/provenance_signature"
+      },
+      "uniqueItems": true
+    },
+    "activation_state": {
+      "type": "string",
+      "enum": [
+        "unactivated",
+        "awaiting_signing",
+        "signed",
+        "activated",
+        "quarantined",
+        "revoked"
+      ]
+    }
+  },
+  "definitions": {
+    "ref_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "provenance_signature": {
+      "type": "object",
+      "required": [
+        "signature_id",
+        "solver_candidate_id",
+        "solver_manifest_canonical_json",
+        "manifest_sha256",
+        "signing_agent_id",
+        "signing_role",
+        "signing_timestamp_utc",
+        "bridge_event_ref",
+        "audit_event_ref",
+        "operator_scope_policy_ref"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "signature_id": {
+          "$ref": "#/definitions/ref_id"
+        },
+        "solver_candidate_id": {
+          "$ref": "#/definitions/ref_id"
+        },
+        "solver_manifest_canonical_json": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 200000
+        },
+        "manifest_sha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "signing_agent_id": {
+          "type": "string",
+          "enum": ["claude", "codex", "operator", "system"]
+        },
+        "signing_role": {
+          "type": "string",
+          "enum": ["owner", "peer", "operator"]
+        },
+        "signing_timestamp_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "bridge_event_ref": {
+          "$ref": "#/definitions/ref_id"
+        },
+        "audit_event_ref": {
+          "$ref": "#/definitions/ref_id"
+        },
+        "operator_scope_policy_ref": {
+          "$ref": "#/definitions/ref_id"
+        }
+      }
+    }
+  }
+}

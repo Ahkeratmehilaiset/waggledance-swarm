@@ -237,9 +237,15 @@ This session's discipline:
 2. `docs/releases/v3.13.0.md` (release notes; what landed)
 3. `CHANGELOG.md` top entry
 4. `docs/release/RELEASE_READINESS.md` (v3.13.0 section)
-5. `iterations/anchor_use_case/sprint_1/claude_lane/` (per-deliverable
-   design-doc directory used by Sprint 1; template shape for Sprint 2)
+5. `tools/audit_v3_13_0_event_surface.py` (machine-derives the 48
+   MAGMA event types; run with `--count-only` for the integer)
 6. Bridge: `.agent-bridge/shared/events.jsonl` last ~100 lines
+
+Note: the wider `iterations/anchor_use_case/` design tree (pattern
+catalog, Sprint 0 results, Sprint 1 claude_lane specs) is local-only
+by repo policy -- excluded via `.git/info/exclude`, not visible to a
+fresh `git ls-tree` even when the directory shows on disk. Resume the
+substrate from the committed sources above, not from `iterations/`.
 
 ## Bridge state at session close
 

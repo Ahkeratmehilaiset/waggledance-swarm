@@ -8,13 +8,91 @@ details live in `CHANGELOG.md` and `docs/runs/*`.
 * **Latest stable release**: `v3.8.0` (Phase 16F, released 2026-05-04).
 * **Latest R21 prerelease**:
   `v3.11.0-r20-axis-b-activated-alpha` (released 2026-05-10).
-* **Current mainline posture**: R22/R23 stable-candidate substrate on top
-  of the R21 alpha, no package-version bump.
-* **Next stable target**: `v3.12.0`, no earlier than 2026-05-24, after
-  the R22.5 soak and promotion gates.
+* **Current mainline posture**: **v3.13.0 substrate-only landing on
+  top of the v3.12.0 candidate substrate**; no package-version bump,
+  no stable tag, no Docker `:latest` movement. v3.13.0 runtime
+  substrate (Shadow -> Hybrid -> Autonomous migration layer) lives
+  in `main` HEAD `6d2e59b` but no real-data activation has happened.
+* **Next stable target**: `v3.12.0`, no earlier than 2026-05-24,
+  after the R22.5 soak and promotion gates. v3.13.0 substrate does
+  not move that target.
 * **Docker registry**: GHCR primary. No Docker Hub mirror yet.
 * **GitHub Latest**: remains `v3.8.0` until the stable promotion
   explicitly moves it.
+
+## v3.13.0 Substrate Landing (2026-05-13)
+
+Substrate-only landing, **NOT** a release. Runtime layer for the
+Shadow -> Hybrid -> Autonomous solver migration. Full release notes:
+`docs/releases/v3.13.0.md`.
+
+Status:
+* 14 PRs merged via mutual RCO (Claude + Codex), 9 round-2
+  fail-closed cycles, 0 stop-condition escalations.
+* Main HEAD `6d2e59b` (post #370 runbooks + #371 baseline-failclosed).
+* 292 v3.13.0-bracketed tests pass (243 + 35 + 14 across module,
+  contract, and tools test suites).
+
+Modules landed (`waggledance/core/v3_13_0/`):
+* `write_rco_gate.py` -- single write choke point; 12 audit event
+  types; 4 risk classes; WRT-003 calls verify_solver_provenance.
+* `credential_vault.py` -- refused-pickle CredentialMaterial;
+  `InMemoryVault`, `OSKeyringVault`, `NoOpVault`.
+* `anti_pattern_catalog.py` -- ANTI-001..007 with module-scope regex.
+* `behavior_capture.py` -- OPT-IN with sensitive-class retention.
+* `shadow_runner.py` -- 6 abort reasons including `BASELINE_FAILED`.
+* `divergence_analyzer.py` -- 5 format comparators + INST-G09.
+* `solver_provenance.py` -- signing chain + auto-quarantine +
+  permanent-revoke (one-way).
+* `auto_fix_loop.py` -- event consumer + repair proposer; lease.
+* `defaults.py` -- DEF-001..006 constants + locale noise filters.
+* `tools/sim_orchestrator.py` -- streaming-mode instrumentation.
+
+New schema: `solver_candidate_manifest.schema.json` (SCH-005) with
+`provenance_signatures` array + `activation_state` enum.
+
+Bridge protocol: unchanged. NO new dotted bridge types. Solver and
+AutoFixLoop bridge events use existing `type=handoff` / `type=decision`
+with `payload.kind=solver` (per spec edit E16).
+
+MAGMA event surface: 48 unique event types (machine-derived; see
+`tools/audit_v3_13_0_event_surface.py --count-only`). Grouped:
+* `write.*` (12): WriteRCOGate audit envelope
+* `shadow.*` (8): ShadowRunner state + abort reasons
+  (incl. `run_started`, `run_completed`, `baseline_failed`)
+* `auto_fix_loop.*` (8): lease, cursor, repair lifecycle
+* `auth.*` (6): credential_stored, retrieved, rotated, revoked,
+  material_revealed, and the ANTI-004 `credential_in_repo_blocked`
+* `solver.*` (5): provenance_signed, quarantined, activation_authorised,
+  activation_refused, activation_revoked
+* `parser.*` (2): `unparsed_recorded` (no-silent-fail wrapper) and
+  `silent_skip_lint` (ANTI-005 static lint finding)
+* `behavior.*` (1): `behavior.captured`
+* `divergence.*` (1): `divergence.scored`
+* `safety.*` (1): ANTI-001 `bulk_read_attempted`
+* `schema.*` (1): ANTI-002 `text_date_sort_blocked`
+* `sqlite.*` (1): ANTI-003 `parallel_writer_attempted`
+* `api.*` (1): ANTI-006 `rate_limit_violated`
+* `memory.*` (1): ANTI-007 `original_layer_modification_attempted`
+
+Reproducible: `python tools/audit_v3_13_0_event_surface.py` prints the
+full grouped list. The audit script is the single source of truth so
+the docs cannot silently drift from the code.
+
+Explicit non-deliverables (Sprint 2+):
+* No new CLI entry points. `tools/sim_orchestrator.py` gained
+  streaming Python API, not CLI flags.
+* No real-data activation. All runs are dry-run with synthetic data.
+* No DocIngest, SolverSynthesizer, SituationRoom.
+* No cryptographic operator signatures (bridge-event mechanism only).
+* No autonomous daemon harness for AutoFixLoop (`run_once(cursor)`
+  is operator-driven).
+* No Stage-2 cutover.
+
+Stable-promotion gate for v3.13.0:
+* Not active. v3.13.0 is substrate-only; stable promotion requires
+  Sprint 2 activation + operator-signed solver activation + INST-G09
+  on operator-real corpus. None of these are in scope for Sprint 1.
 
 ## Release-Ready Definition
 

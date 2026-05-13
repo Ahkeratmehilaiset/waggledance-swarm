@@ -35,9 +35,14 @@ from waggledance.core.v3_13_0.solver_provenance import (
 
 
 def _make_candidate(*, candidate_id: str = "cand:demo",
-                      target_domain: str = "DOM-006",
-                      target_write_risk: str = "external_effect"
+                      target_domain: str = "DOM-011",
+                      target_write_risk: str = "local_artifact"
                       ) -> SolverCandidateRecord:
+    """Default candidate is local_artifact in DOM-011 (factory logbook,
+    not sensitive). Happy-path tests demonstrate SIGNED -> ACTIVATED
+    with owner+peer alone. WRT-003 + sensitive-domain tests construct
+    explicit overrides so the operator-signature requirement is
+    exercised end-to-end."""
     canonical, digest = canonicalize_manifest({
         "candidate_id": candidate_id,
         "template_family": "RecordReconciler",
@@ -438,6 +443,120 @@ class TestBridgeSchemaCompatibility:
         evt = decision_events[0]
         assert evt["status"] == "activation_revoked"
         assert evt["payload"]["kind"] == "solver"
+
+
+# --------------------------------------------------------------------------
+# Codex round-2 fail-closed repros
+# --------------------------------------------------------------------------
+
+
+class TestWRT003RequiresOperatorSignature:
+    """Codex RCO round-2 fix #1: WRT-003 external_effect activation
+    ALWAYS requires operator signature, in addition to sensitive
+    domains (spec E12/E14)."""
+
+    def test_wrt_003_owner_peer_only_fails_verify(self):
+        cand = _make_candidate(target_domain="DOM-006",
+                                  target_write_risk="external_effect")
+        prov, store = _make_provenance(candidate=cand)
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="codex",
+                    signing_role=SigningRole.PEER.value,
+                    bridge_event_ref="b2",
+                    operator_scope_policy_ref="policy:home")
+        result = prov.verify_solver_provenance(cand.candidate_id)
+        assert result.valid is False
+        assert "external_effect_requires_operator_signature" in result.reasons
+        # State stays at AWAITING_SIGNING; not progressed to SIGNED
+        assert store[cand.candidate_id].activation_state == \
+            ActivationState.AWAITING_SIGNING.value
+
+    def test_wrt_003_with_operator_signature_verifies(self):
+        cand = _make_candidate(target_domain="DOM-006",
+                                  target_write_risk="external_effect")
+        prov, store = _make_provenance(candidate=cand)
+        for role, agent in [
+            (SigningRole.OWNER.value, "claude"),
+            (SigningRole.PEER.value, "codex"),
+            (SigningRole.OPERATOR.value, "operator"),
+        ]:
+            prov.sign(candidate_id=cand.candidate_id,
+                        signing_agent_id=agent,
+                        signing_role=role,
+                        bridge_event_ref=f"b:{role}",
+                        operator_scope_policy_ref="policy:home")
+        result = prov.verify_solver_provenance(cand.candidate_id)
+        assert result.valid is True
+        assert store[cand.candidate_id].activation_state == \
+            ActivationState.SIGNED.value
+
+
+class TestQuarantinedFailsVerification:
+    """Codex RCO round-2 fix #2: QUARANTINED solvers MUST verify as
+    invalid so WriteRCOGate has a fail-closed signal."""
+
+    def test_quarantined_solver_does_not_verify_valid(self):
+        cand = _make_candidate()  # local_artifact default
+        prov, store = _make_provenance(candidate=cand)
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="codex",
+                    signing_role=SigningRole.PEER.value,
+                    bridge_event_ref="b2",
+                    operator_scope_policy_ref="policy:home")
+        prov.activate(candidate_id=cand.candidate_id)
+        # Pre-quarantine: verify is valid
+        assert prov.verify_solver_provenance(cand.candidate_id).valid is True
+        # Trip auto-quarantine
+        for i in range(5):
+            prov.record_run_result(
+                candidate_id=cand.candidate_id,
+                divergence_score=0.5,
+                evidence_ref=f"art:div_{i}",
+            )
+        assert store[cand.candidate_id].activation_state == \
+            ActivationState.QUARANTINED.value
+        # Post-quarantine: verify is invalid even with owner+peer present
+        result = prov.verify_solver_provenance(cand.candidate_id)
+        assert result.valid is False
+        assert "solver_quarantined" in result.reasons
+
+
+class TestRevokeIsOneWay:
+    """Codex RCO round-2 fix #3: permanent revoke is one-way. Calling
+    sign() on a REVOKED candidate must NOT silently flip the state
+    back to SIGNED."""
+
+    def test_sign_refuses_revoked_candidate(self):
+        cand = _make_candidate()
+        prov, store = _make_provenance(candidate=cand)
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prov.revoke(candidate_id=cand.candidate_id,
+                      reason="superseded by v2")
+        assert store[cand.candidate_id].activation_state == \
+            ActivationState.REVOKED.value
+        with pytest.raises(PermissionError, match="REVOKED"):
+            prov.sign(candidate_id=cand.candidate_id,
+                        signing_agent_id="codex",
+                        signing_role=SigningRole.PEER.value,
+                        bridge_event_ref="b2",
+                        operator_scope_policy_ref="policy:home")
+        # State unchanged
+        assert store[cand.candidate_id].activation_state == \
+            ActivationState.REVOKED.value
 
 
 # --------------------------------------------------------------------------

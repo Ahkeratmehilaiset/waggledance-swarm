@@ -210,6 +210,15 @@ class SolverProvenance:
         candidate = self.fetch_candidate(candidate_id)
         if candidate is None:
             raise KeyError(f"unknown candidate: {candidate_id}")
+        if candidate.activation_state == ActivationState.REVOKED.value:
+            # Codex RCO round-2 fix #3: permanent revoke is one-way.
+            # Reactivation requires a fresh candidate with a new
+            # manifest_sha256, not re-signing the revoked one.
+            raise PermissionError(
+                f"candidate {candidate_id} is REVOKED; signing refused. "
+                "Reactivation requires a fresh candidate with new "
+                "manifest_sha256."
+            )
         if not self.operator_scope_policy_active(operator_scope_policy_ref):
             raise PermissionError(
                 f"operator scope policy {operator_scope_policy_ref} "
@@ -255,8 +264,16 @@ class SolverProvenance:
             candidate.activation_state = ActivationState.AWAITING_SIGNING.value
         if (self._has_signature(candidate, SigningRole.OWNER.value)
                 and self._has_signature(candidate, SigningRole.PEER.value)):
-            # If sensitive domain, require operator signature too.
-            if candidate.target_domain in self.sensitive_domains:
+            # Operator signature is required when:
+            # * target_domain is sensitive (existing rule), OR
+            # * target_write_risk == external_effect (Codex RCO
+            #   round-2 fix #1 -- spec E12/E14: WRT-003 activation
+            #   always needs operator scope/signature).
+            needs_operator = (
+                candidate.target_domain in self.sensitive_domains
+                or candidate.target_write_risk == "external_effect"
+            )
+            if needs_operator:
                 if self._has_signature(candidate, SigningRole.OPERATOR.value):
                     candidate.activation_state = ActivationState.SIGNED.value
                 # else stay in AWAITING_SIGNING
@@ -329,6 +346,16 @@ class SolverProvenance:
             result.reasons.append("solver_revoked")
             return result
 
+        # Codex RCO round-2 fix #2: QUARANTINED solvers MUST verify as
+        # invalid. WriteRCOGate's WRT-003 verify_solver_provenance call
+        # needs a fail-closed signal during the quarantine window.
+        # Reactivation requires explicit operator-driven flow (a new
+        # signing chain with a fresh manifest_sha256), not just
+        # waiting for the counter to reset.
+        if candidate.activation_state == ActivationState.QUARANTINED.value:
+            result.reasons.append("solver_quarantined")
+            return result
+
         if not result.has_owner_signature:
             result.reasons.append("missing_owner_signature")
         if not result.has_peer_signature:
@@ -348,6 +375,17 @@ class SolverProvenance:
                     sig.operator_scope_policy_ref):
                 result.reasons.append(
                     f"scope_policy_revoked:{sig.signature_id}"
+                )
+
+        # Codex RCO round-2 fix #1: WRT-003 external_effect ALWAYS
+        # requires operator signature, in addition to the existing
+        # sensitive-domain rule. Spec E12/E14 are explicit that
+        # activation of a WRT-003 solver needs operator scope /
+        # signature even when target_domain is not sensitive.
+        if candidate.target_write_risk == "external_effect":
+            if not result.has_operator_signature:
+                result.reasons.append(
+                    "external_effect_requires_operator_signature"
                 )
 
         # Sensitive-domain rule: needs operator signature

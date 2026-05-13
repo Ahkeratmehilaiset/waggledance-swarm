@@ -98,6 +98,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-Bri
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent claude -ShowClaims -Tail 80
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1 -MaxUnresolved 15
 
+# Optional live Claude Code Monitor-tool command.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Monitor-AgentBridge.ps1 -Agent claude -FromAgent codex -PollIntervalMs 10000
+
 . .\orchestrator\Start-WaggleSession.ps1 -ConfigPath .\orchestrator.config.json
 ```
 
@@ -129,6 +132,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-Bri
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeGuardSmoke.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent codex -ShowClaims -Tail 80
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1 -MaxUnresolved 15
+
+# Optional during an active Codex turn or bounded wait.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Monitor-AgentBridge.ps1 -Agent codex -FromAgent claude -PollIntervalMs 10000
 ```
 
 Then launch Codex from the same shell. The session must keep the env vars
@@ -141,6 +147,7 @@ After bridge bootstrap changes, run:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeSessionBootstrapSmoke.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeWorktreeIsolationSmoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeMonitorCursorSmoke.ps1
 ```
 
 This uses a temporary runtime root, proves `Start-AgentBridgeSession.ps1`
@@ -157,6 +164,9 @@ Each agent follows this order after startup:
 
 1. Read bridge state with its own `-Agent` value. This emits
    `message/received` acknowledgements for incoming request-like events.
+   If a live monitor surface is available, start or resume
+   `Monitor-AgentBridge.ps1 -Agent <me> -FromAgent <other>` so new
+   substantive bridge events appear without replaying old history.
 2. If it has an unresolved incoming request, answer it using the exact same
    `task_id`.
 3. If the other agent has an active write claim, do read-only review, targeted

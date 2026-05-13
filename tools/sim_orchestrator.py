@@ -491,6 +491,258 @@ def build_report(
     }
 
 
+# --- Streaming mode (Sprint 1 wave 3 instrumentation) --------------------
+#
+# Adds a streaming-mode counterpart to the existing retrospective scanner.
+# The retrospective mode reads the entire events.jsonl in one shot and
+# computes metrics; the streaming mode maintains in-memory thread state
+# and emits a metric snapshot at a configurable interval.
+#
+# Design spec:
+# iterations/anchor_use_case/sprint_1/claude_lane/sim_orchestrator_runtime_instrumentation_spec.md
+#
+# The streaming additions live under guard helpers so they do not
+# perturb the retrospective entry point.
+
+
+STREAM_SCHEMA_VERSION = "agent-flight-plan-live-v1"
+
+
+@dataclass
+class StreamState:
+    """In-memory metric state for incremental updates.
+
+    Tracked: byte cursor into events.jsonl (so resumed runs do not
+    re-scan from the start), per-task thread map (same shape as
+    retrospective TaskThread), all-events list (for convergence /
+    pr_lifecycle / finding_quality extensions if requested), last
+    snapshot timestamp, snapshot counter.
+    """
+
+    cursor_bytes: int = 0
+    threads: dict[str, TaskThread] = field(default_factory=dict)
+    events: list[Event] = field(default_factory=list)
+    last_snapshot_ts_utc: str | None = None
+    snapshot_count: int = 0
+
+
+def _parse_event_dict(d: dict) -> Event | None:
+    ts_raw = d.get("ts_utc", "")
+    try:
+        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return Event(
+        ts=ts,
+        agent=str(d.get("agent", "")),
+        type=str(d.get("type", "")),
+        task_id=str(d.get("task_id", "")),
+        status=str(d.get("status", "")),
+        message=str(d.get("message", "")),
+        payload=d.get("payload") if isinstance(d.get("payload"), dict) else {},
+        raw=d,
+    )
+
+
+def read_events_from_offset(
+    path: Path, offset_bytes: int
+) -> tuple[list[Event], int]:
+    """Read events appended after offset_bytes; return (events, new_offset).
+
+    Returns events in file order. If a line is partial (file mid-write),
+    that line is not consumed and the offset stays just before it so the
+    next call retries. The function never raises for missing path or
+    malformed lines -- malformed lines are skipped.
+    """
+    if not path.exists():
+        return [], offset_bytes
+    events: list[Event] = []
+    new_offset = offset_bytes
+    with path.open("rb") as f:
+        f.seek(offset_bytes)
+        remainder = b""
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            remainder += chunk
+            *complete_lines, remainder = remainder.split(b"\n")
+            for raw_line in complete_lines:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    new_offset += len(raw_line) + 1
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    new_offset += len(raw_line) + 1
+                    continue
+                ev = _parse_event_dict(d)
+                if ev is not None:
+                    events.append(ev)
+                new_offset += len(raw_line) + 1
+        # remainder stays in the file for the next call; do not advance
+    return events, new_offset
+
+
+def update_state_with_event(state: StreamState, event: Event) -> None:
+    """Incremental thread-state update.
+
+    Mirrors build_threads() semantics so a streaming run converges to the
+    same thread map a retrospective full-scan would produce on the same
+    event log (verified by test_incremental_update_matches_full_rescan).
+    """
+    if not event.task_id:
+        state.events.append(event)
+        return
+    th = state.threads.get(event.task_id)
+    if th is None:
+        th = TaskThread(
+            task_id=event.task_id,
+            first_agent=event.agent,
+            first_ts=event.ts,
+        )
+        state.threads[event.task_id] = th
+    th.participants.add(event.agent)
+    th.events.append(event)
+    if event.type == "claim" and th.claim_agent is None:
+        th.claim_agent = event.agent
+        th.claim_ts = event.ts
+    state.events.append(event)
+
+
+def get_current_metrics(
+    state: StreamState,
+    *,
+    statuses: dict[str, str] | None = None,
+    profile_config_ref: str = "default",
+    events_path: Path | str | None = None,
+    snapshot_count: int | None = None,
+) -> dict:
+    """Compute the current metrics block + snapshot envelope.
+
+    Equivalent to build_report() but operating on the live in-memory
+    StreamState rather than a one-shot file read.
+
+    events_path -- the active tailed events path. Falls back to the
+    global default EVENTS_PATH only when not supplied; callers that
+    tail a custom file MUST pass it so the audit envelope's
+    source.events_path matches the actual source (Codex RCO round-2
+    fix #1: prior implementation reported the global default even
+    when stream() was tailing a different path).
+
+    snapshot_count -- override the count embedded in the envelope.
+    Defaults to state.snapshot_count. stream() now passes
+    state.snapshot_count + 1 so the emitted envelope's count matches
+    the post-emit StreamState (Codex RCO round-2 fix #2: prior
+    implementation emitted 0 for the first snapshot while the
+    StreamState ended at 1).
+    """
+    statuses = statuses if statuses is not None else _load_statuses()
+    metrics = compute_aligned_metrics(state.threads, statuses)
+    last_event_ts = state.events[-1].ts.isoformat() if state.events else ""
+    resolved_path = (
+        str(events_path) if events_path is not None else str(EVENTS_PATH)
+    )
+    resolved_count = (
+        snapshot_count if snapshot_count is not None
+        else state.snapshot_count
+    )
+    return {
+        "schema_version": STREAM_SCHEMA_VERSION,
+        "schema_aligned_with": SCHEMA_ALIGNED_WITH,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "mode": "live",
+        "profile_config_ref": profile_config_ref,
+        "source": {
+            "events_path": resolved_path,
+            "event_count": len(state.events),
+            "last_event_ts_utc": last_event_ts,
+            "cursor_bytes": state.cursor_bytes,
+        },
+        "metrics": metrics,
+        "formal_statuses": statuses,
+        "snapshot_count": resolved_count,
+    }
+
+
+def stream(
+    *,
+    events_path: Path | str = EVENTS_PATH,
+    emit_interval_s: float = 30.0,
+    profile_config_ref: str = "default",
+    emit_snapshot: Callable[[dict], str],
+    initial_state: StreamState | None = None,
+    statuses: dict[str, str] | None = None,
+    clock_fn: Callable[[], float] | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
+    stop_after_snapshots: int | None = None,
+    poll_interval_s: float = 1.0,
+) -> StreamState:
+    """Tail events.jsonl + emit metric snapshots on an interval.
+
+    Pluggable hooks for deterministic testing:
+    * clock_fn -- monotonic time source (default time.monotonic).
+    * sleep_fn -- sleep between polls (default time.sleep).
+    * stop_after_snapshots -- bound the loop for tests; None = run
+      until KeyboardInterrupt.
+
+    Snapshot envelope is computed by get_current_metrics() and passed
+    to emit_snapshot(). Caller's emit_snapshot is responsible for
+    persisting the snapshot to MAGMA + StateHandle (see acceptance
+    criteria 2 and 3 of the spec).
+
+    Returns the final StreamState (useful for tests).
+    """
+    import time as _time
+
+    state = initial_state if initial_state is not None else StreamState()
+    path = Path(events_path)
+    statuses = statuses if statuses is not None else _load_statuses()
+    clock = clock_fn or _time.monotonic
+    sleep = sleep_fn or _time.sleep
+
+    last_emit = clock()
+    while True:
+        new_events, new_offset = read_events_from_offset(
+            path, state.cursor_bytes
+        )
+        state.cursor_bytes = new_offset
+        for ev in new_events:
+            update_state_with_event(state, ev)
+
+        now = clock()
+        if now - last_emit >= emit_interval_s:
+            # Codex RCO round-2 fix #2: pass next count so the emitted
+            # envelope's snapshot_count matches the post-emit
+            # StreamState (was: emitted 0 while state ended at 1).
+            next_count = state.snapshot_count + 1
+            snapshot = get_current_metrics(
+                state,
+                statuses=statuses,
+                profile_config_ref=profile_config_ref,
+                # Codex RCO round-2 fix #1: report the path actually
+                # being tailed, not the global default EVENTS_PATH.
+                events_path=path,
+                snapshot_count=next_count,
+            )
+            state.snapshot_count = next_count
+            state.last_snapshot_ts_utc = snapshot["generated_at_utc"]
+            emit_snapshot(snapshot)
+            last_emit = now
+            if (stop_after_snapshots is not None
+                    and state.snapshot_count >= stop_after_snapshots):
+                return state
+
+        try:
+            sleep(poll_interval_s)
+        except KeyboardInterrupt:
+            return state
+
+
+# --- end streaming mode --------------------------------------------------
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--events", default=str(EVENTS_PATH))

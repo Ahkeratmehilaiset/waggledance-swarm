@@ -49,6 +49,7 @@ class ShadowAbortReason(str, Enum):
     OPERATOR_STATE_WRITE_ATTEMPT = "shadow.operator_state_write_attempt"
     TIMEOUT_EXCEEDED = "shadow.timeout_exceeded"
     COST_EXCEEDED = "shadow.cost_exceeded"
+    BASELINE_FAILED = "shadow.baseline_failed"
     SHADOW_UNSUPPORTED = "shadow.tool_not_shadow_supported"
 
 
@@ -272,6 +273,11 @@ class ShadowRunner:
 
             # State: RUNNING_BASELINE
             baseline_out = self.run_baseline(run_input)
+            if baseline_out.exit_code != 0:
+                raise ShadowAborted(
+                    ShadowAbortReason.BASELINE_FAILED,
+                    f"baseline command exited with code {baseline_out.exit_code}",
+                )
 
             # Time-box check after baseline
             elapsed_so_far_ms = int((self.clock_fn() - t_start) * 1000)

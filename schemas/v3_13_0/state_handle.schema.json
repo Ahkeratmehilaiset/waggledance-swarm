@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/state_handle.schema.json",
+  "title": "v3.13.0 StateHandle",
+  "description": "Descriptor for current state or derived projections. It is not a new source of truth.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "state_id",
+    "kind",
+    "owner_tool",
+    "plane",
+    "readers",
+    "writers",
+    "single_writer_required",
+    "wal_required",
+    "freshness_query",
+    "integrity_query",
+    "backup_strategy",
+    "recovery_strategy",
+    "sensitive_class",
+    "read_only_uri",
+    "projection_of",
+    "high_watermark_ref"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "state_id": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "sqlite",
+        "faiss",
+        "npz",
+        "browser_profile",
+        "log",
+        "json",
+        "csv",
+        "artifact_dir",
+        "vector_index",
+        "message_stream",
+        "document_corpus",
+        "external_api"
+      ]
+    },
+    "owner_tool": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "plane": {
+      "type": "string",
+      "enum": [
+        "magma_history",
+        "control_state",
+        "retrieval_data",
+        "filesystem_artifact",
+        "browser_profile",
+        "external_readonly",
+        "external_system",
+        "audit_projection"
+      ]
+    },
+    "readers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "writers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "single_writer_required": {
+      "type": "boolean"
+    },
+    "wal_required": {
+      "type": "boolean"
+    },
+    "freshness_query": {
+      "type": ["string", "null"],
+      "maxLength": 1000
+    },
+    "integrity_query": {
+      "type": ["string", "null"],
+      "maxLength": 1000
+    },
+    "backup_strategy": {
+      "type": "string",
+      "enum": ["none", "snapshot", "wal_checkpoint", "export_bundle", "provider_native"]
+    },
+    "recovery_strategy": {
+      "type": "string",
+      "enum": ["none", "rebuild_from_magma", "restore_snapshot", "replay_overlap", "operator_review"]
+    },
+    "sensitive_class": {
+      "type": "string",
+      "enum": ["public", "internal", "restricted", "secret", "opaque"]
+    },
+    "read_only_uri": {
+      "type": ["string", "null"],
+      "pattern": "^(state|repo|artifact|magma|external):[A-Za-z0-9_./:-]{1,220}$"
+    },
+    "projection_of": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    },
+    "high_watermark_ref": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    },
+    "source_class": {
+      "type": "string",
+      "enum": [
+        "filesystem",
+        "sqlite",
+        "sql_database",
+        "rest_api",
+        "browser_only",
+        "browser_profile",
+        "web_app",
+        "document_corpus",
+        "message_stream",
+        "vector_corpus",
+        "device_telemetry",
+        "audio_stream",
+        "local_model",
+        "tests",
+        "archive",
+        "logs"
+      ]
+    },
+    "domain_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^DOM-(00[1-9]|0[1-9][0-9]|[1-9][0-9]{2})$"
+      },
+      "uniqueItems": true
+    },
+    "write_modes_allowed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["insert", "update", "delete", "post", "patch", "put", "append"]
+      },
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "plane": {
+            "const": "external_readonly"
+          }
+        },
+        "required": ["plane"]
+      },
+      "then": {
+        "properties": {
+          "write_modes_allowed": {
+            "maxItems": 0
+          },
+          "writers": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "ref_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    }
+  }
+}

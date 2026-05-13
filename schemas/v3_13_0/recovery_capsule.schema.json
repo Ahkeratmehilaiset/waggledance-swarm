@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/recovery_capsule.schema.json",
+  "title": "v3.13.0 RecoveryCapsule",
+  "description": "Rollback and rebuild contract used by WriteRCOGate and repair tools before local-artifact or external-effect writes.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "capsule_id",
+    "owner_tool",
+    "last_success_marker",
+    "high_watermark",
+    "overlap_window",
+    "source_window",
+    "dedupe_key",
+    "gap_detector",
+    "quarantine_target",
+    "rebuild_command",
+    "rollback_command",
+    "human_review_artifacts",
+    "known_corruption_modes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "capsule_id": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "owner_tool": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "last_success_marker": {
+      "type": ["string", "null"],
+      "maxLength": 500
+    },
+    "high_watermark": {
+      "type": ["string", "null"],
+      "maxLength": 500
+    },
+    "overlap_window": {
+      "type": "object",
+      "required": ["unit", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "unit": {
+          "type": "string",
+          "enum": ["seconds", "minutes", "hours", "days", "rows", "events"]
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "source_window": {
+      "type": ["string", "null"],
+      "maxLength": 500
+    },
+    "dedupe_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "gap_detector": {
+      "type": ["string", "null"],
+      "maxLength": 1000
+    },
+    "quarantine_target": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "rebuild_command": {
+      "type": ["string", "null"],
+      "maxLength": 1000
+    },
+    "rollback_command": {
+      "type": ["string", "null"],
+      "maxLength": 1000
+    },
+    "human_review_artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "known_corruption_modes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 500
+      },
+      "uniqueItems": true
+    },
+    "operator_review_required": {
+      "type": "boolean"
+    }
+  },
+  "definitions": {
+    "ref_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    }
+  }
+}

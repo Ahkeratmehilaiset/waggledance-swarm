@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/profile_config.schema.json",
+  "title": "v3.13.0 ProfileConfig",
+  "description": "Runtime-independent deployment context for factory, home, cottage, remote dwelling, and custom profiles.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_kind",
+    "country",
+    "timezone",
+    "language",
+    "currency",
+    "service_provider_refs",
+    "data_residency_policy",
+    "external_write_policy_ref",
+    "redaction_policy_ref",
+    "default_risk_policy",
+    "operator_review_required",
+    "credential_vault_impl"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "profile_id": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "profile_kind": {
+      "type": "string",
+      "enum": ["factory", "home", "cottage", "remote_dwelling", "custom"]
+    },
+    "country": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "region": {
+      "type": ["string", "null"],
+      "maxLength": 120
+    },
+    "timezone": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 80
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Z]{2})?$"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "climate_zone": {
+      "type": ["string", "null"],
+      "maxLength": 80
+    },
+    "regulatory_frameworks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 80
+      },
+      "uniqueItems": true
+    },
+    "service_provider_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ref_id"
+      },
+      "uniqueItems": true
+    },
+    "data_residency_policy": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "locale_formats": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 120
+      }
+    },
+    "external_write_policy_ref": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "redaction_policy_ref": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "default_risk_policy": {
+      "type": "string",
+      "enum": ["informational_only", "local_artifact_allowed", "external_effect_requires_rco"]
+    },
+    "operator_review_required": {
+      "type": "boolean"
+    },
+    "credential_vault_impl": {
+      "type": "string",
+      "enum": ["os_keyring", "hashicorp_vault", "aws_secrets_manager", "azure_key_vault", "encrypted_file", "operator_prompt"]
+    },
+    "retrieval_overrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context_sim_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "context_top_n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    },
+    "embedding_overrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "dims": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "shadow_overrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "divergence_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "per_family_thresholds": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "automatic_revocation_divergence_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "automatic_revocation_consecutive_runs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    },
+    "locale_extensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "uniqueItems": true
+      }
+    }
+  },
+  "definitions": {
+    "ref_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    }
+  }
+}

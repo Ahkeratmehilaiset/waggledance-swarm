@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/mfa_policy.schema.json",
+  "title": "v3.13.0 MfaPolicy",
+  "description": "Policy for MFA checkpoints referenced by secret-free authenticated connectors.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "policy_id",
+    "mode",
+    "requires_operator_presence",
+    "headless_allowed",
+    "max_wait_seconds",
+    "checkpoint_state_ref",
+    "failure_strategy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "policy_id": {
+      "$ref": "#/definitions/ref_id"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "none",
+        "interactive_totp",
+        "push_approval",
+        "sms",
+        "email",
+        "webauthn",
+        "browser_profile_checkpoint",
+        "operator_prompt"
+      ]
+    },
+    "requires_operator_presence": {
+      "type": "boolean"
+    },
+    "headless_allowed": {
+      "type": "boolean"
+    },
+    "max_wait_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3600
+    },
+    "checkpoint_state_ref": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    },
+    "failure_strategy": {
+      "type": "string",
+      "enum": ["fail_closed", "operator_retry", "defer_work", "shadow_only"]
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 1000
+    }
+  },
+  "definitions": {
+    "ref_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    }
+  }
+}

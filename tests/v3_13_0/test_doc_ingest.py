@@ -186,3 +186,68 @@ def test_profile_kind_mismatch_fails_closed(tmp_path: Path) -> None:
             profile_kind="cottage",
             candidate_id="frost_risk_predictor_cottage_demo_001",
         )
+
+
+def test_remote_dwelling_profile_kind_fails_closed(tmp_path: Path) -> None:
+    (tmp_path / "profile_config.json").write_text(
+        json.dumps({"profile_id": "remote_demo", "profile_kind": "remote_dwelling"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "sensor_history.csv").write_text("ts,value\n1,2\n", encoding="utf-8")
+
+    with pytest.raises(DocIngestError, match="unsupported profile_kind"):
+        build_doc_ingest_proposal(
+            tmp_path,
+            profile_kind="remote_dwelling",
+            candidate_id="remote_dwelling_demo_001",
+        )
+
+
+def test_profile_config_symlink_escape_fails_closed(tmp_path: Path) -> None:
+    external_profile = tmp_path.parent / f"{tmp_path.name}_profile_config.json"
+    external_profile.write_text(
+        json.dumps({"profile_id": "home_demo", "profile_kind": "home"}),
+        encoding="utf-8",
+    )
+    try:
+        (tmp_path / "profile_config.json").symlink_to(external_profile)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"file symlinks are unavailable in this environment: {exc}")
+    (tmp_path / "tariff.md").write_text("ok", encoding="utf-8")
+
+    with pytest.raises(DocIngestError, match="escapes input_root"):
+        build_doc_ingest_proposal(
+            tmp_path,
+            profile_kind="home",
+            candidate_id="electricity_spot_optimizer_home_demo_001",
+        )
+
+
+def test_oversized_text_fails_closed(tmp_path: Path) -> None:
+    (tmp_path / "profile_config.json").write_text(
+        json.dumps({"profile_id": "home_demo", "profile_kind": "home"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "tariff.md").write_text("x" * 200_001, encoding="utf-8")
+
+    with pytest.raises(DocIngestError, match="too large"):
+        build_doc_ingest_proposal(
+            tmp_path,
+            profile_kind="home",
+            candidate_id="electricity_spot_optimizer_home_demo_001",
+        )
+
+
+def test_non_utf8_text_fails_closed(tmp_path: Path) -> None:
+    (tmp_path / "profile_config.json").write_text(
+        json.dumps({"profile_id": "home_demo", "profile_kind": "home"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "tariff.csv").write_bytes(b"\xff\xfe\xfa")
+
+    with pytest.raises(DocIngestError, match="UTF-8"):
+        build_doc_ingest_proposal(
+            tmp_path,
+            profile_kind="home",
+            candidate_id="electricity_spot_optimizer_home_demo_001",
+        )

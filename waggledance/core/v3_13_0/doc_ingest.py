@@ -77,6 +77,8 @@ def build_doc_ingest_proposal(
 
     expected_profile_kind = _normalize_profile_kind(profile_kind)
     entries = _list_top_level_entries(root)
+    for path in entries:
+        _ensure_under_root(path, root)
     profile_path = _find_profile_config(entries)
     profile = _parse_profile_config(profile_path)
     profile_id = str(profile.get("profile_id", "")).strip()
@@ -94,7 +96,6 @@ def build_doc_ingest_proposal(
     warnings: list[str] = []
     seen_refs: set[str] = set()
     for path in entries:
-        _ensure_under_root(path, root)
         if path == profile_path:
             continue
         suffix = path.suffix.lower()
@@ -170,7 +171,13 @@ def _parse_profile_config(path: Path) -> dict[str, Any]:
 
 
 def _parse_yaml_lite(text: str) -> dict[str, Any]:
-    """Parse the small YAML subset used by v3.13.0 profile examples."""
+    """Parse the small YAML subset used by v3.13.0 profile examples.
+
+    Supported syntax is top-level ``key: value`` scalars and top-level
+    ``key:`` lists with ``- item`` entries. Nested mappings, nested lists,
+    flow style, anchors, tags, multiline strings, and indentation semantics
+    are intentionally unsupported.
+    """
     parsed: dict[str, Any] = {}
     current_list_key: str | None = None
     for raw_line in text.splitlines():
@@ -250,8 +257,6 @@ def _validate_ref_id(value: str, label: str) -> None:
 
 def _normalize_profile_kind(profile_kind: str) -> str:
     normalized = profile_kind.strip().lower()
-    if normalized == "remote_dwelling":
-        return normalized
     if normalized not in {"home", "cottage"}:
         raise DocIngestError(f"unsupported profile_kind: {profile_kind!r}")
     return normalized
@@ -312,25 +317,27 @@ def _profile_defaults(profile_kind: str) -> dict[str, tuple[str, ...]]:
                 "recommendation_with_savings_estimate_summer",
             ),
         }
-    return {
-        "training_contracts": ("ctr_date", "ctr_vector", "ctr_memory"),
-        "state_handles": (
-            "state:weather_forecast_cache",
-            "state:sensor_history",
-            "state:frost_risk_predictions",
-        ),
-        "connector_handles": ("conn:weather_forecast_public",),
-        "shadow_inputs": (
-            "synth_cold_snap_24h",
-            "synth_thaw_24h",
-            "synth_steady_freeze_72h",
-        ),
-        "shadow_expected_outputs": (
-            "high_risk_alert_within_6h",
-            "no_risk_within_24h",
-            "medium_risk_within_72h",
-        ),
-    }
+    if profile_kind == "cottage":
+        return {
+            "training_contracts": ("ctr_date", "ctr_vector", "ctr_memory"),
+            "state_handles": (
+                "state:weather_forecast_cache",
+                "state:sensor_history",
+                "state:frost_risk_predictions",
+            ),
+            "connector_handles": ("conn:weather_forecast_public",),
+            "shadow_inputs": (
+                "synth_cold_snap_24h",
+                "synth_thaw_24h",
+                "synth_steady_freeze_72h",
+            ),
+            "shadow_expected_outputs": (
+                "high_risk_alert_within_6h",
+                "no_risk_within_24h",
+                "medium_risk_within_72h",
+            ),
+        }
+    raise DocIngestError(f"unsupported profile_kind defaults: {profile_kind!r}")
 
 
 __all__ = [

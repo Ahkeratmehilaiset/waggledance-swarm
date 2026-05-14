@@ -208,15 +208,23 @@ class BehaviorCapture:
         """
         tool = self.fetch_tool_descriptor(invocation.tool_descriptor_id)
         if tool is None:
+            self._emit_refused(invocation.tool_descriptor_id,
+                                  "unknown tool descriptor")
             raise CaptureRefused(invocation.tool_descriptor_id,
                                   "unknown tool descriptor")
         if not tool.capture_supported:
+            self._emit_refused(invocation.tool_descriptor_id,
+                                  "ToolDescriptor.capture_supported is False")
             raise CaptureRefused(invocation.tool_descriptor_id,
                                   "ToolDescriptor.capture_supported is False")
         if tool.sensitive_class == SensitiveClass.OPAQUE.value:
+            self._emit_refused(invocation.tool_descriptor_id,
+                                  "sensitive_class=opaque refuses capture")
             raise CaptureRefused(invocation.tool_descriptor_id,
                                   "sensitive_class=opaque refuses capture")
         if not self.operator_scope_policy_check(invocation.tool_descriptor_id):
+            self._emit_refused(invocation.tool_descriptor_id,
+                                  "operator scope policy denied")
             raise CaptureRefused(invocation.tool_descriptor_id,
                                   "operator scope policy denied")
 
@@ -338,6 +346,28 @@ class BehaviorCapture:
     # =========================================================================
     # INTERNAL HELPERS
     # =========================================================================
+
+    def _emit_refused(self, tool_descriptor_id: str, reason: str) -> None:
+        """Emit a behavior.capture_refused MAGMA event before raising.
+
+        Per BC2 finding (claude-iter-review-behavior-capture-2026-05-13):
+        silent CaptureRefused exceptions deny operator-facing observability
+        of recurring refusal patterns (e.g., tool descriptor went missing,
+        scope policy regressed). Emitting an explicit MAGMA event keeps
+        the refusal auditable without changing the caller-visible
+        exception contract.
+        """
+        try:
+            self.emit_magma_event({
+                "event_type": "behavior.capture_refused",
+                "tool_descriptor_id": tool_descriptor_id,
+                "reason": reason,
+                "ts_utc": _utc_iso(),
+            })
+        except Exception:
+            # Defensive: MAGMA emit failure must not mask the original
+            # refusal. The CaptureRefused exception will still propagate.
+            pass
 
     def _build_classification_summary(self, *, tool_descriptor_id: str,
                                        exit_code: int, elapsed_ms: int,

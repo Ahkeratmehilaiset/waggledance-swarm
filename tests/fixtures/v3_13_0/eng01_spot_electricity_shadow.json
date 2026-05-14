@@ -1,0 +1,208 @@
+{
+  "fixture_id": "eng01_spot_electricity_shadow_v1_2026_05_14",
+  "fixture_version": 1,
+  "case_id": "ENG-01__spot_electricity_monitor__home",
+  "first_solver_slice": "fetch_next_24h_spot_prices_and_return_top_3_cheapest_hours",
+  "fixture_purpose": "Deterministic 24h spot-price shadow inputs for the ENG-01 first slice. Synthetic data only -- no live network, no credentials, no token files. Each scenario block carries an `input` synthesized to match what a real Fingrid public spot-price feed would produce in shape (UTC-hourly entries, EUR/kWh), an `expected_output` for the happy-path first-slice answer, and an `expected_audit_marker` naming the MAGMA event the substrate would emit. The fixture is consumable by ShadowRunner.compare_outputs as baseline, by DivergenceAnalyzer.compare_json as candidate-vs-baseline, and by a future SolverSynthesizer-generated solver as ground truth.",
+  "currency": "EUR_per_kwh",
+  "timezone_note": "All hour timestamps are UTC. The recommendation_text in expected outputs is rendered in operator local time (Europe/Helsinki) for display, but raw price input + raw output structure stay in UTC for substrate determinism.",
+  "scenarios": {
+    "happy_path__synthetic_24h_winter_with_known_min_at_02_00_local": {
+      "scenario_kind": "happy_path",
+      "description": "24-hour winter price curve with a deliberate low-cost trough 00:00-04:00 UTC (02:00-06:00 Europe/Helsinki) and a deliberate evening peak 16:00-19:00 UTC (18:00-21:00 Europe/Helsinki). Top-3 cheapest hours are 02:00, 01:00, 03:00 UTC. Recommendation should suggest those windows.",
+      "input": {
+        "fetched_at_utc": "2026-01-15T20:00:00Z",
+        "horizon_start_utc": "2026-01-16T00:00:00Z",
+        "horizon_hours": 24,
+        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "prices_eur_per_kwh": [
+          {"hour_utc": "2026-01-16T00:00:00Z", "price_eur_per_kwh": 0.067},
+          {"hour_utc": "2026-01-16T01:00:00Z", "price_eur_per_kwh": 0.038},
+          {"hour_utc": "2026-01-16T02:00:00Z", "price_eur_per_kwh": 0.031},
+          {"hour_utc": "2026-01-16T03:00:00Z", "price_eur_per_kwh": 0.042},
+          {"hour_utc": "2026-01-16T04:00:00Z", "price_eur_per_kwh": 0.055},
+          {"hour_utc": "2026-01-16T05:00:00Z", "price_eur_per_kwh": 0.078},
+          {"hour_utc": "2026-01-16T06:00:00Z", "price_eur_per_kwh": 0.094},
+          {"hour_utc": "2026-01-16T07:00:00Z", "price_eur_per_kwh": 0.112},
+          {"hour_utc": "2026-01-16T08:00:00Z", "price_eur_per_kwh": 0.128},
+          {"hour_utc": "2026-01-16T09:00:00Z", "price_eur_per_kwh": 0.135},
+          {"hour_utc": "2026-01-16T10:00:00Z", "price_eur_per_kwh": 0.142},
+          {"hour_utc": "2026-01-16T11:00:00Z", "price_eur_per_kwh": 0.138},
+          {"hour_utc": "2026-01-16T12:00:00Z", "price_eur_per_kwh": 0.131},
+          {"hour_utc": "2026-01-16T13:00:00Z", "price_eur_per_kwh": 0.125},
+          {"hour_utc": "2026-01-16T14:00:00Z", "price_eur_per_kwh": 0.128},
+          {"hour_utc": "2026-01-16T15:00:00Z", "price_eur_per_kwh": 0.141},
+          {"hour_utc": "2026-01-16T16:00:00Z", "price_eur_per_kwh": 0.165},
+          {"hour_utc": "2026-01-16T17:00:00Z", "price_eur_per_kwh": 0.187},
+          {"hour_utc": "2026-01-16T18:00:00Z", "price_eur_per_kwh": 0.192},
+          {"hour_utc": "2026-01-16T19:00:00Z", "price_eur_per_kwh": 0.178},
+          {"hour_utc": "2026-01-16T20:00:00Z", "price_eur_per_kwh": 0.149},
+          {"hour_utc": "2026-01-16T21:00:00Z", "price_eur_per_kwh": 0.115},
+          {"hour_utc": "2026-01-16T22:00:00Z", "price_eur_per_kwh": 0.089},
+          {"hour_utc": "2026-01-16T23:00:00Z", "price_eur_per_kwh": 0.071}
+        ]
+      },
+      "expected_output": {
+        "top_3_cheapest_hours_utc": [
+          {"hour_utc": "2026-01-16T02:00:00Z", "price_eur_per_kwh": 0.031, "rank": 1},
+          {"hour_utc": "2026-01-16T01:00:00Z", "price_eur_per_kwh": 0.038, "rank": 2},
+          {"hour_utc": "2026-01-16T03:00:00Z", "price_eur_per_kwh": 0.042, "rank": 3}
+        ],
+        "horizon_24h_min_price_eur_per_kwh": 0.031,
+        "horizon_24h_max_price_eur_per_kwh": 0.192,
+        "horizon_24h_avg_price_eur_per_kwh": 0.114,
+        "recommendation_text_template": "Halvimmat tunnit seuraavan 24h aikana: 02:00 (0.031 EUR/kWh), 01:00 (0.038 EUR/kWh), 03:00 (0.042 EUR/kWh) UTC. Suosittelen siirtamaan suuria kuormituksia (auto lataus, lampotyo, pesukone) naille tunneille.",
+        "expected_savings_eur_per_kwh_vs_peak": 0.161,
+        "recommendation_freshness_ttl_minutes": 60
+      },
+      "expected_audit_marker": "shadow.run_completed_with_low_divergence",
+      "writerco_risk_class": "informational",
+      "writerco_action": "insert"
+    },
+    "happy_path__synthetic_24h_summer_with_low_spread": {
+      "scenario_kind": "happy_path",
+      "description": "24-hour summer price curve with a flatter profile (less spread between peak and off-peak). Top-3 cheapest hours are clustered overnight 02:00-04:00 UTC; the savings vs peak are smaller than winter scenario. Tests that the first slice still produces a stable ranking when spread is narrow.",
+      "input": {
+        "fetched_at_utc": "2026-07-15T20:00:00Z",
+        "horizon_start_utc": "2026-07-16T00:00:00Z",
+        "horizon_hours": 24,
+        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "prices_eur_per_kwh": [
+          {"hour_utc": "2026-07-16T00:00:00Z", "price_eur_per_kwh": 0.029},
+          {"hour_utc": "2026-07-16T01:00:00Z", "price_eur_per_kwh": 0.022},
+          {"hour_utc": "2026-07-16T02:00:00Z", "price_eur_per_kwh": 0.018},
+          {"hour_utc": "2026-07-16T03:00:00Z", "price_eur_per_kwh": 0.021},
+          {"hour_utc": "2026-07-16T04:00:00Z", "price_eur_per_kwh": 0.025},
+          {"hour_utc": "2026-07-16T05:00:00Z", "price_eur_per_kwh": 0.033},
+          {"hour_utc": "2026-07-16T06:00:00Z", "price_eur_per_kwh": 0.041},
+          {"hour_utc": "2026-07-16T07:00:00Z", "price_eur_per_kwh": 0.048},
+          {"hour_utc": "2026-07-16T08:00:00Z", "price_eur_per_kwh": 0.053},
+          {"hour_utc": "2026-07-16T09:00:00Z", "price_eur_per_kwh": 0.056},
+          {"hour_utc": "2026-07-16T10:00:00Z", "price_eur_per_kwh": 0.058},
+          {"hour_utc": "2026-07-16T11:00:00Z", "price_eur_per_kwh": 0.059},
+          {"hour_utc": "2026-07-16T12:00:00Z", "price_eur_per_kwh": 0.057},
+          {"hour_utc": "2026-07-16T13:00:00Z", "price_eur_per_kwh": 0.055},
+          {"hour_utc": "2026-07-16T14:00:00Z", "price_eur_per_kwh": 0.058},
+          {"hour_utc": "2026-07-16T15:00:00Z", "price_eur_per_kwh": 0.062},
+          {"hour_utc": "2026-07-16T16:00:00Z", "price_eur_per_kwh": 0.071},
+          {"hour_utc": "2026-07-16T17:00:00Z", "price_eur_per_kwh": 0.078},
+          {"hour_utc": "2026-07-16T18:00:00Z", "price_eur_per_kwh": 0.082},
+          {"hour_utc": "2026-07-16T19:00:00Z", "price_eur_per_kwh": 0.079},
+          {"hour_utc": "2026-07-16T20:00:00Z", "price_eur_per_kwh": 0.068},
+          {"hour_utc": "2026-07-16T21:00:00Z", "price_eur_per_kwh": 0.055},
+          {"hour_utc": "2026-07-16T22:00:00Z", "price_eur_per_kwh": 0.044},
+          {"hour_utc": "2026-07-16T23:00:00Z", "price_eur_per_kwh": 0.036}
+        ]
+      },
+      "expected_output": {
+        "top_3_cheapest_hours_utc": [
+          {"hour_utc": "2026-07-16T02:00:00Z", "price_eur_per_kwh": 0.018, "rank": 1},
+          {"hour_utc": "2026-07-16T03:00:00Z", "price_eur_per_kwh": 0.021, "rank": 2},
+          {"hour_utc": "2026-07-16T01:00:00Z", "price_eur_per_kwh": 0.022, "rank": 3}
+        ],
+        "horizon_24h_min_price_eur_per_kwh": 0.018,
+        "horizon_24h_max_price_eur_per_kwh": 0.082,
+        "horizon_24h_avg_price_eur_per_kwh": 0.050,
+        "recommendation_text_template": "Halvimmat tunnit seuraavan 24h aikana: 02:00 (0.018 EUR/kWh), 03:00 (0.021 EUR/kWh), 01:00 (0.022 EUR/kWh) UTC. Kesalla hintaspread on pieni; siirron tuoma saasto on maltillinen.",
+        "expected_savings_eur_per_kwh_vs_peak": 0.064,
+        "recommendation_freshness_ttl_minutes": 60
+      },
+      "expected_audit_marker": "shadow.run_completed_with_low_divergence",
+      "writerco_risk_class": "informational",
+      "writerco_action": "insert"
+    },
+    "failure_mode__stale_data_refused": {
+      "scenario_kind": "failure_mode",
+      "description": "The feed was fetched > 12 hours before the horizon start. The first slice MUST refuse the recommendation rather than ship stale advice. Maps to recommendation_freshness_ttl_minutes guard at the solver layer; in substrate terms, the candidate solver returns an explicit stale_data marker and ShadowRunner records it as a non-divergent baseline refusal (not a substrate fail-closed event, since this is an upstream-data freshness signal, not an audit invariant).",
+      "input": {
+        "fetched_at_utc": "2026-01-15T06:00:00Z",
+        "horizon_start_utc": "2026-01-16T00:00:00Z",
+        "horizon_hours": 24,
+        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "stale_threshold_hours": 12,
+        "actual_age_at_horizon_start_hours": 18,
+        "prices_eur_per_kwh": [
+          {"hour_utc": "2026-01-16T00:00:00Z", "price_eur_per_kwh": 0.067},
+          {"hour_utc": "2026-01-16T01:00:00Z", "price_eur_per_kwh": 0.038}
+        ]
+      },
+      "expected_output": {
+        "result_marker": "STALE_DATA_REFUSED",
+        "stale_reason": "feed_age_18h_exceeds_threshold_12h",
+        "top_3_cheapest_hours_utc": [],
+        "recommendation_text_template": "Hintatieto on 18 tuntia vanha (kynnys 12 tuntia). En suosita siirtoja ilman tuoretta dataa. Pyyda Helen / Fingrid sync uudelleen ja yrita uudestaan."
+      },
+      "expected_audit_marker": "solver.advisory_refused_upstream_stale",
+      "writerco_risk_class": "informational",
+      "writerco_action": "insert"
+    },
+    "failure_mode__missing_hour_refused": {
+      "scenario_kind": "failure_mode",
+      "description": "The 24-hour window has a gap (hour 03:00 UTC missing from the feed). Could be a feed outage at that hour. The first slice MUST refuse to produce a top-3 ranking that silently ignores a missing hour; that would risk recommending a non-existent low-price slot. Maps to feed-integrity guard at the solver layer.",
+      "input": {
+        "fetched_at_utc": "2026-01-15T20:00:00Z",
+        "horizon_start_utc": "2026-01-16T00:00:00Z",
+        "horizon_hours": 24,
+        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "missing_hours_utc": ["2026-01-16T03:00:00Z"],
+        "prices_eur_per_kwh": [
+          {"hour_utc": "2026-01-16T00:00:00Z", "price_eur_per_kwh": 0.067},
+          {"hour_utc": "2026-01-16T01:00:00Z", "price_eur_per_kwh": 0.038},
+          {"hour_utc": "2026-01-16T02:00:00Z", "price_eur_per_kwh": 0.031},
+          {"hour_utc": "2026-01-16T04:00:00Z", "price_eur_per_kwh": 0.055}
+        ]
+      },
+      "expected_output": {
+        "result_marker": "MISSING_HOUR_REFUSED",
+        "missing_hours_utc": ["2026-01-16T03:00:00Z"],
+        "top_3_cheapest_hours_utc": [],
+        "recommendation_text_template": "Hintajaksossa puuttuu 1 tunti (2026-01-16T03:00 UTC). En suosita siirtoja epaeheasta datasta. Yrita uudelleen kun feed on taydellinen."
+      },
+      "expected_audit_marker": "solver.advisory_refused_upstream_gap",
+      "writerco_risk_class": "informational",
+      "writerco_action": "insert"
+    },
+    "failure_mode__non_monotonic_horizon_refused": {
+      "scenario_kind": "failure_mode",
+      "description": "The feed's hour timestamps are not monotonically increasing within the horizon (e.g., a duplicate hour or a backwards jump). Could be a feed-provider bug or a daylight-saving-boundary mishandling. The first slice MUST refuse rather than silently dedupe.",
+      "input": {
+        "fetched_at_utc": "2026-01-15T20:00:00Z",
+        "horizon_start_utc": "2026-01-16T00:00:00Z",
+        "horizon_hours": 24,
+        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "duplicate_hour_utc": "2026-01-16T02:00:00Z",
+        "prices_eur_per_kwh": [
+          {"hour_utc": "2026-01-16T00:00:00Z", "price_eur_per_kwh": 0.067},
+          {"hour_utc": "2026-01-16T01:00:00Z", "price_eur_per_kwh": 0.038},
+          {"hour_utc": "2026-01-16T02:00:00Z", "price_eur_per_kwh": 0.031},
+          {"hour_utc": "2026-01-16T02:00:00Z", "price_eur_per_kwh": 0.033}
+        ]
+      },
+      "expected_output": {
+        "result_marker": "NON_MONOTONIC_HORIZON_REFUSED",
+        "duplicate_hours_utc": ["2026-01-16T02:00:00Z"],
+        "top_3_cheapest_hours_utc": [],
+        "recommendation_text_template": "Hintajaksossa on duplikaattitunti (2026-01-16T02:00 UTC esiintyy kahdesti). En suosita siirtoja, koska data ei ole eheaa. Yrita uudelleen kun feed on korjattu."
+      },
+      "expected_audit_marker": "solver.advisory_refused_upstream_inconsistency",
+      "writerco_risk_class": "informational",
+      "writerco_action": "insert"
+    }
+  },
+  "invariants_locked_by_this_fixture": [
+    "Top-3 ranking is by ascending price_eur_per_kwh; ties broken by ascending hour_utc.",
+    "Output uses UTC for raw timestamps; local-time rendering belongs in the presentation layer, not the substrate.",
+    "Stale-data threshold default = 12 hours from fetched_at_utc to horizon_start_utc.",
+    "Missing-hour case must refuse rather than silently produce a top-3 from the partial window.",
+    "Duplicate-hour case must refuse rather than silently dedupe.",
+    "All failure modes map to WriteRCO risk class informational (read-only advisory; no operator approval needed to refuse, no external_effect)."
+  ],
+  "not_in_this_fixture": [
+    "No live Fingrid feed snapshots; all data synthetic.",
+    "No operator credentials, tokens, or account identifiers.",
+    "No real consumption profile from operator's actual past usage.",
+    "No HEEC / nordpool / other feed-provider-specific schema variants -- this fixture is shaped after the Fingrid public spot-price feed only.",
+    "No multi-day horizon (only 24h); future ENG-01 v2 slices may extend to 7-day forecast.",
+    "No solver candidate manifest -- this fixture is the SHADOW INPUT, not the candidate."
+  ]
+}

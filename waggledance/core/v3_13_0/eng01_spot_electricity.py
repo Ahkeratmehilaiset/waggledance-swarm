@@ -229,12 +229,19 @@ def _missing_hours(
 
 
 def _positive_int(raw: Any, label: str) -> int:
-    if not isinstance(raw, int) or raw <= 0:
+    # isinstance(True, int) is True in Python; reject bool explicitly so
+    # horizon_hours=True / stale_threshold_hours=True never silently mean 1.
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
         raise Eng01SpotElectricityError(f"{label} must be a positive integer")
     return raw
 
 
 def _parse_utc(value: str, label: str) -> datetime:
+    # Hour-aligned UTC Z is the contract for prices_eur_per_kwh[*].hour_utc:
+    # sub-hour or offset timestamps parse here but are then treated by the
+    # missing-hour check as not covering the expected hour-aligned slot, so
+    # they refuse safely with MISSING_HOUR_REFUSED rather than silently
+    # rounding. See test_sub_hour_timestamp_refuses_with_missing_hour_marker.
     if not value.endswith("Z"):
         raise Eng01SpotElectricityError(f"{label} must be a UTC Z timestamp")
     try:

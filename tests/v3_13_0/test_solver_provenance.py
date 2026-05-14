@@ -591,6 +591,32 @@ class TestRevokeIsOneWay:
         assert store[cand.candidate_id].activation_state == \
             ActivationState.REVOKED.value
 
+    def test_record_run_result_ignores_revoked_candidate(self):
+        cand = _make_candidate()
+        prov, store = _make_provenance(candidate=cand)
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prov.revoke(candidate_id=cand.candidate_id,
+                      reason="superseded by v2")
+        before = replace(store[cand.candidate_id])
+
+        state = prov.record_run_result(
+            candidate_id=cand.candidate_id,
+            divergence_score=0.9,
+            evidence_ref="art:after-revoke",
+        )
+
+        after = store[cand.candidate_id]
+        assert state == ActivationState.REVOKED
+        assert after.activation_state == ActivationState.REVOKED.value
+        assert after.consecutive_divergent_runs == \
+            before.consecutive_divergent_runs
+        assert after.quarantine_evidence_refs == \
+            before.quarantine_evidence_refs
+
 
 # --------------------------------------------------------------------------
 # Activation gates
@@ -605,6 +631,33 @@ class TestActivation:
         # No signatures -> activate refuses
         state = prov.activate(candidate_id=cand.candidate_id)
         assert state != ActivationState.ACTIVATED
+
+    def test_activate_requires_signed_state(self):
+        cand = _make_candidate()
+        events = []
+        prov, store = _make_provenance(candidate=cand, events=events)
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="codex",
+                    signing_role=SigningRole.PEER.value,
+                    bridge_event_ref="b2",
+                    operator_scope_policy_ref="policy:home")
+        store[cand.candidate_id].activation_state = \
+            ActivationState.UNACTIVATED.value
+
+        state = prov.activate(candidate_id=cand.candidate_id)
+
+        assert state == ActivationState.UNACTIVATED
+        assert store[cand.candidate_id].activation_state == \
+            ActivationState.UNACTIVATED.value
+        refused = [e for e in events
+                   if e["event_type"] == "solver.activation_refused"]
+        assert refused
+        assert refused[-1]["reasons"] == ["candidate_not_signed"]
 
     def test_activate_succeeds_when_signed(self):
         cand = _make_candidate()

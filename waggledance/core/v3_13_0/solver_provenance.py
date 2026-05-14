@@ -411,6 +411,8 @@ class SolverProvenance:
         candidate = self.fetch_candidate(candidate_id)
         if candidate is None:
             raise KeyError(f"unknown candidate: {candidate_id}")
+        if candidate.activation_state == ActivationState.REVOKED.value:
+            return ActivationState.REVOKED
         if (divergence_score
                 >= self.quarantine_divergence_score_threshold):
             candidate.consecutive_divergent_runs += 1
@@ -515,9 +517,20 @@ class SolverProvenance:
                 "ts_utc": _utc_iso(),
             })
             return ActivationState(candidate.activation_state)
+        if candidate.activation_state == ActivationState.ACTIVATED.value:
+            return ActivationState.ACTIVATED
         if candidate.activation_state in (
                 ActivationState.QUARANTINED.value,
                 ActivationState.REVOKED.value):
+            return ActivationState(candidate.activation_state)
+        if candidate.activation_state != ActivationState.SIGNED.value:
+            self.emit_magma_event({
+                "event_type": "solver.activation_refused",
+                "solver_candidate_id": candidate_id,
+                "reasons": ["candidate_not_signed"],
+                "activation_state": candidate.activation_state,
+                "ts_utc": _utc_iso(),
+            })
             return ActivationState(candidate.activation_state)
         candidate.activation_state = ActivationState.ACTIVATED.value
         self.update_candidate(candidate)

@@ -252,6 +252,230 @@ class TestClassification:
 
 
 # --------------------------------------------------------------------------
+# Classification matrix -- parametrized expansion (tests-only, no source).
+#
+# Locks the full classify() dispatch table across (action, plane, connector
+# write_risk, connector_present) combinations. The targeted rules from
+# write_rco_gate.py classify():
+#   Rule 1a: connector.write_risk == EXTERNAL_EFFECT -> EXTERNAL_EFFECT
+#   Rule 1b: state.plane == "external_system" -> EXTERNAL_EFFECT
+#   Rule 1c: action in {post,patch,put} and state.plane NOT in internal list
+#            -> EXTERNAL_EFFECT
+#   Rule 2:  state.plane in {filesystem_artifact, retrieval_data}
+#            -> LOCAL_ARTIFACT
+#   Rule 3:  state.plane in {magma_history, control_state, audit_projection}
+#            -> INTERNAL_MEMORY
+#   Default: conservative EXTERNAL_EFFECT
+#
+# Internal-plane list (per source line 312-314): magma_history, control_state,
+# retrieval_data, filesystem_artifact, audit_projection.
+#
+# Each row asserts the (intent, gate) -> expected_risk_class mapping. The
+# names are precise enough to debug a single failure without re-reading the
+# source.
+# --------------------------------------------------------------------------
+
+
+def _state(plane: str, *, write_modes_allowed: Optional[list] = None,
+           state_id: str = "state:p") -> StateInfo:
+    return StateInfo(
+        state_id=state_id,
+        plane=plane,
+        write_modes_allowed=write_modes_allowed or ["insert"],
+        sensitive_class="internal",
+        single_writer_required=False,
+    )
+
+
+def _connector(write_risk: WriteRiskClass,
+               *, connector_id: str = "conn:test") -> ConnectorInfo:
+    return ConnectorInfo(
+        connector_id=connector_id,
+        write_risk=write_risk,
+        auth_mode="oauth_pkce_user_visible",
+        can_run_headless=True,
+        rate_limit_max_workers=1,
+        rate_limit_request_delay_s=0.0,
+    )
+
+
+CLASSIFY_MATRIX = [
+    # ----- Rule 1a: connector.write_risk == EXTERNAL_EFFECT short-circuits
+    # all other rules, even for internal-plane state.
+    ("rule_1a__connector_external_overrides_internal_plane",
+     "insert", "magma_history", WriteRiskClass.EXTERNAL_EFFECT, True,
+     WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1a__connector_external_overrides_filesystem_plane",
+     "insert", "filesystem_artifact", WriteRiskClass.EXTERNAL_EFFECT, True,
+     WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1a__connector_external_overrides_unknown_plane",
+     "insert", None, WriteRiskClass.EXTERNAL_EFFECT, True,
+     WriteRiskClass.EXTERNAL_EFFECT),
+    # ----- Rule 1b: state.plane == "external_system" -> EXTERNAL_EFFECT
+    # regardless of action.
+    ("rule_1b__plane_external_system_with_insert",
+     "insert", "external_system", None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1b__plane_external_system_with_update",
+     "update", "external_system", None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1b__plane_external_system_with_delete",
+     "delete", "external_system", None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1b__plane_external_system_with_post",
+     "post", "external_system", None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    # ----- Rule 1c: HTTP action on plane NOT in internal list ->
+    # EXTERNAL_EFFECT. browser_profile and external_readonly are NOT in
+    # the internal list (see source line 312-314).
+    ("rule_1c__post_on_browser_profile",
+     "post", "browser_profile", None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1c__patch_on_browser_profile",
+     "patch", "browser_profile", None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1c__put_on_browser_profile",
+     "put", "browser_profile", None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1c__post_on_external_readonly",
+     "post", "external_readonly", None, False,
+     WriteRiskClass.EXTERNAL_EFFECT),
+    # ----- Rule 1c NEGATIVE: HTTP action on plane IN internal list does
+    # NOT trigger Rule 1c; falls through to Rule 2 or Rule 3.
+    ("rule_1c_negative__post_on_filesystem_artifact_is_LOCAL",
+     "post", "filesystem_artifact", None, False, WriteRiskClass.LOCAL_ARTIFACT),
+    ("rule_1c_negative__post_on_retrieval_data_is_LOCAL",
+     "post", "retrieval_data", None, False, WriteRiskClass.LOCAL_ARTIFACT),
+    ("rule_1c_negative__post_on_magma_history_is_INTERNAL",
+     "post", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    ("rule_1c_negative__patch_on_audit_projection_is_INTERNAL",
+     "patch", "audit_projection", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    ("rule_1c_negative__put_on_control_state_is_INTERNAL",
+     "put", "control_state", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    # ----- Rule 2: filesystem_artifact + retrieval_data both -> LOCAL_ARTIFACT
+    # for non-HTTP actions.
+    ("rule_2__insert_on_filesystem_artifact",
+     "insert", "filesystem_artifact", None, False,
+     WriteRiskClass.LOCAL_ARTIFACT),
+    ("rule_2__update_on_filesystem_artifact",
+     "update", "filesystem_artifact", None, False,
+     WriteRiskClass.LOCAL_ARTIFACT),
+    ("rule_2__delete_on_filesystem_artifact",
+     "delete", "filesystem_artifact", None, False,
+     WriteRiskClass.LOCAL_ARTIFACT),
+    ("rule_2__append_on_filesystem_artifact",
+     "append", "filesystem_artifact", None, False,
+     WriteRiskClass.LOCAL_ARTIFACT),
+    ("rule_2__insert_on_retrieval_data",
+     "insert", "retrieval_data", None, False, WriteRiskClass.LOCAL_ARTIFACT),
+    ("rule_2__update_on_retrieval_data",
+     "update", "retrieval_data", None, False, WriteRiskClass.LOCAL_ARTIFACT),
+    # ----- Rule 3: magma_history, control_state, audit_projection all
+    # -> INTERNAL_MEMORY for non-HTTP actions.
+    ("rule_3__insert_on_magma_history",
+     "insert", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    ("rule_3__update_on_magma_history",
+     "update", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    ("rule_3__delete_on_magma_history",
+     "delete", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    ("rule_3__append_on_magma_history",
+     "append", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    ("rule_3__insert_on_control_state",
+     "insert", "control_state", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    ("rule_3__update_on_audit_projection",
+     "update", "audit_projection", None, False,
+     WriteRiskClass.INTERNAL_MEMORY),
+    # ----- Conservative default: unresolved state, no connector -> EXTERNAL.
+    # Also: HTTP action with no state at all -> EXTERNAL (rule 1c short-
+    # circuits on `state and`).
+    ("default__no_state_no_connector_insert",
+     "insert", None, None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    ("default__no_state_no_connector_post",
+     "post", None, None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    ("default__no_state_no_connector_delete",
+     "delete", None, None, False, WriteRiskClass.EXTERNAL_EFFECT),
+    # ----- Connector non-EXTERNAL write_risk: connector is consulted by
+    # Rule 1a but does NOT match, so the rest of the dispatch runs.
+    ("connector_local_artifact_does_not_short_circuit__plane_magma",
+     "insert", "magma_history", WriteRiskClass.LOCAL_ARTIFACT, True,
+     WriteRiskClass.INTERNAL_MEMORY),
+    ("connector_internal_memory_does_not_short_circuit__plane_filesystem",
+     "insert", "filesystem_artifact", WriteRiskClass.INTERNAL_MEMORY, True,
+     WriteRiskClass.LOCAL_ARTIFACT),
+    ("connector_informational_does_not_short_circuit__plane_external_system",
+     "insert", "external_system", WriteRiskClass.INFORMATIONAL, True,
+     WriteRiskClass.EXTERNAL_EFFECT),
+    # ----- Empty connector_ref means no fetch; same as no connector.
+    ("empty_connector_ref_is_treated_as_none__plane_magma",
+     "insert", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
+    ("empty_connector_ref_is_treated_as_none__plane_external_system",
+     "insert", "external_system", None, False,
+     WriteRiskClass.EXTERNAL_EFFECT),
+]
+
+
+@pytest.mark.parametrize(
+    "label,action,plane,connector_risk,connector_present,expected",
+    CLASSIFY_MATRIX,
+    ids=[row[0] for row in CLASSIFY_MATRIX],
+)
+def test_classify_matrix(
+    label: str,
+    action: str,
+    plane: Optional[str],
+    connector_risk: Optional[WriteRiskClass],
+    connector_present: bool,
+    expected: WriteRiskClass,
+) -> None:
+    """Parametrized matrix expansion of WriteRCOGate.classify() dispatch.
+
+    Covers all four risk classes and the conservative default across a
+    grid of (action, state.plane, connector.write_risk, connector_present).
+    Each row asserts one dispatch outcome and is named so a single failure
+    points directly at the failing rule.
+    """
+    states: dict[str, StateInfo] = {}
+    target_state_ref = "state:matrix"
+    if plane is not None:
+        states[target_state_ref] = _state(plane, state_id=target_state_ref)
+
+    connectors: dict[str, ConnectorInfo] = {}
+    connector_ref: Optional[str] = None
+    if connector_present:
+        assert connector_risk is not None, (
+            f"row {label!r} declares connector_present=True but "
+            "connector_risk=None; fixture invariant"
+        )
+        connector_ref = "conn:matrix"
+        connectors[connector_ref] = _connector(connector_risk,
+                                                 connector_id=connector_ref)
+
+    gate = _make_gate(audit_collector=[], states=states,
+                       connectors=connectors)
+    intent = _make_intent(
+        target_state_ref=target_state_ref,
+        connector_ref=connector_ref,
+        action=action,
+    )
+    assert gate.classify(intent) == expected, (
+        f"row {label!r}: expected {expected.value}, "
+        f"got {gate.classify(intent).value}"
+    )
+
+
+def test_classify_matrix_covers_all_risk_classes() -> None:
+    """Sanity check on the parametrize matrix: every WriteRiskClass enum
+    member appears as an expected outcome at least once. Guards against
+    accidentally dropping a class when editing the matrix."""
+    expected_classes = {row[5] for row in CLASSIFY_MATRIX}
+    assert expected_classes >= {
+        WriteRiskClass.INFORMATIONAL.value
+        and WriteRiskClass.INFORMATIONAL,
+        WriteRiskClass.INTERNAL_MEMORY,
+        WriteRiskClass.LOCAL_ARTIFACT,
+        WriteRiskClass.EXTERNAL_EFFECT,
+    } - {WriteRiskClass.INFORMATIONAL}, (
+        "classify() matrix should cover INTERNAL_MEMORY, LOCAL_ARTIFACT, "
+        "EXTERNAL_EFFECT outcomes; INFORMATIONAL is not produced by the "
+        "current dispatch rules (it is a passthrough class for the route()-"
+        "level handling, not classify())"
+    )
+
+
+# --------------------------------------------------------------------------
 # WRT-001 internal_memory happy path
 # --------------------------------------------------------------------------
 

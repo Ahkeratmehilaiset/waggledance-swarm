@@ -1,0 +1,598 @@
+{
+  "bundle_id": "v3_13_0_operator_case_seed_bundle_2026_05_14",
+  "bundle_version": 1,
+  "bundle_purpose": "Sanitized seed input for the unified case -> capability -> solver pipeline. 18 operator cases across HOME / COTTAGE / FACTORY profiles, derived from the v3.13.0 domain catalog evidence at iterations/anchor_use_case/v3_13_0_domain_catalog_claude.md (which itself respected the read-only contract on C:\\Python\\project). No credential / token / personal correspondence content; only file-path references as evidence of a domain.",
+  "schema_version": 1,
+  "source_evidence": [
+    "iterations/anchor_use_case/v3_13_0_domain_catalog_claude.md",
+    "iterations/anchor_use_case/v3_13_0_domain_catalog_codex.md",
+    "iterations/anchor_use_case/v3_13_0_pattern_catalog_reconciled.md"
+  ],
+  "cases": [
+    {
+      "case_id": "FIN-01__bank_balance_aggregator__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__danske_manual_sync",
+        "doc:operator__danske_transfer",
+        "doc:operator__holvi_login_test",
+        "doc:operator__backfill_holvi_saldo",
+        "state:pankit_db"
+      ],
+      "connector_handles": [
+        "conn:danske_browser_session",
+        "conn:holvi_browser_session"
+      ],
+      "required_capabilities": [
+        "browser_session_persistent",
+        "rest_api_no_oauth",
+        "sql_query_local",
+        "date_normalisation_iso8601"
+      ],
+      "failure_modes": [
+        "session_expired_silent",
+        "two_factor_re_auth_required",
+        "schema_drift_account_balance_format",
+        "currency_mismatch_eur_local"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "dict[account_id -> {balance_eur, ts_utc, source}]",
+        "freshness_max_minutes": 1440
+      },
+      "risk_class": "local_artifact",
+      "first_solver_slice": "fetch_balance_for_one_known_account_with_existing_session",
+      "shadow_expected_output": "synthetic_bank_balance_dump_with_3_accounts_known_fixed_values"
+    },
+    {
+      "case_id": "FIN-04__expense_receipt_aggregator__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__selvittelytili_kuitit",
+        "doc:operator__kuittihaku_2v",
+        "doc:operator__receipt_finder"
+      ],
+      "connector_handles": [
+        "conn:gmail_api",
+        "conn:filesystem_pdf_corpus"
+      ],
+      "required_capabilities": [
+        "document_corpus_index_faiss",
+        "ocr_pdf_fallback",
+        "sql_query_local",
+        "embedding_multilingual_e5_small"
+      ],
+      "failure_modes": [
+        "duplicate_receipt_across_email_and_pdf_corpus",
+        "non_utf8_pdf_extraction",
+        "vendor_name_variant_not_resolved",
+        "receipt_outside_date_window"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "list[{vendor, amount_eur, ts, source_uri, confidence}]",
+        "completeness_min_pct": 90
+      },
+      "risk_class": "local_artifact",
+      "first_solver_slice": "list_receipts_from_one_email_label_in_known_period",
+      "shadow_expected_output": "synthetic_receipt_set_20_items_3_vendors_2_amount_anomalies"
+    },
+    {
+      "case_id": "FIN-09__payment_terminal_sync__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__zettle_sync",
+        "doc:operator__zettle_check_state",
+        "doc:operator__zettle_kuitit_ja_holvi",
+        "doc:operator__gen_paypal_zettle_pdf"
+      ],
+      "connector_handles": [
+        "conn:zettle_rest_api",
+        "conn:holvi_rest_api",
+        "conn:filesystem_pdf_archive"
+      ],
+      "required_capabilities": [
+        "rest_api_oauth",
+        "cross_system_id_reconciliation",
+        "pdf_render_summary",
+        "sql_query_local"
+      ],
+      "failure_modes": [
+        "rate_limit_zettle_15_req_per_min",
+        "missing_transaction_id_on_holvi_side",
+        "tax_period_boundary_double_count"
+      ],
+      "decision_kind": "advisory_with_optional_write",
+      "expected_output": {
+        "shape": "reconciliation_report{matched_count, unmatched_zettle, unmatched_holvi, suspect_duplicates}"
+      },
+      "risk_class": "local_artifact",
+      "first_solver_slice": "list_zettle_transactions_for_one_day_no_holvi_match",
+      "shadow_expected_output": "synthetic_zettle_day_50_txns_2_unmatched"
+    },
+    {
+      "case_id": "FIN-10__cottage_bookkeeping_separator__cottage",
+      "profiles": ["cottage"],
+      "source_refs": [
+        "doc:operator__JKH_mokki_kirjanpitokorjaukset_2025",
+        "doc:operator__vektoroi_mokki",
+        "doc:operator__vektoroi_mokki_session"
+      ],
+      "connector_handles": [
+        "conn:filesystem_pdf_corpus",
+        "conn:holvi_rest_api"
+      ],
+      "required_capabilities": [
+        "document_corpus_index_faiss",
+        "ocr_pdf_fallback",
+        "tag_classification_cottage_vs_home"
+      ],
+      "failure_modes": [
+        "ambiguous_receipt_location_cottage_or_home",
+        "fuel_purchase_mid_route_unclassifiable",
+        "wrong_tax_period_attribution"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "list[{receipt_id, suggested_tag: cottage|home|mixed, confidence, rationale_summary}]"
+      },
+      "risk_class": "informational",
+      "first_solver_slice": "classify_one_receipt_with_clear_geo_signal",
+      "shadow_expected_output": "synthetic_10_receipts_6_clear_4_ambiguous"
+    },
+    {
+      "case_id": "ENG-01__spot_electricity_monitor__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__sahko_lasku",
+        "doc:operator__helen_password_reset",
+        "doc:operator__7pv_ennuste",
+        "doc:operator__historia_7pv",
+        "doc:operator__viimeisin_tunti",
+        "doc:operator__saastoanalyysi",
+        "state:vektoroi_sahko"
+      ],
+      "connector_handles": [
+        "conn:helen_browser_session",
+        "conn:fingrid_spot_price_public_feed"
+      ],
+      "required_capabilities": [
+        "browser_session_persistent",
+        "rest_api_no_oauth",
+        "time_series_aggregation_hourly",
+        "alert_recommendation_routing"
+      ],
+      "failure_modes": [
+        "helen_session_invalidated_after_password_reset",
+        "spot_price_feed_outage_60min",
+        "daylight_saving_boundary_hour_skip"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "{cheapest_hours_next_24h: list[hour_iso], recommendation_text, expected_savings_eur}"
+      },
+      "risk_class": "informational",
+      "first_solver_slice": "fetch_next_24h_spot_prices_and_return_top_3_cheapest_hours",
+      "shadow_expected_output": "synthetic_24h_winter_with_known_min_at_02_00_local"
+    },
+    {
+      "case_id": "ENG-05__hvac_optimizer__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__melcloud_test",
+        "doc:operator__melcloud_deep"
+      ],
+      "connector_handles": [
+        "conn:melcloud_rest_api"
+      ],
+      "required_capabilities": [
+        "rest_api_oauth",
+        "time_series_aggregation_hourly",
+        "external_effect_setpoint_write"
+      ],
+      "failure_modes": [
+        "device_offline_unreachable_via_cloud",
+        "setpoint_clamp_outside_safe_range",
+        "schedule_conflict_with_user_manual_override"
+      ],
+      "decision_kind": "advisory_with_operator_approval_for_write",
+      "expected_output": {
+        "shape": "{recommended_schedule: list[{hour, setpoint_c, mode}], estimated_kwh_saving}"
+      },
+      "risk_class": "external_effect",
+      "first_solver_slice": "read_current_setpoint_and_recent_24h_temperature_log_no_write",
+      "shadow_expected_output": "synthetic_24h_hvac_log_with_known_3kwh_overshoot_window"
+    },
+    {
+      "case_id": "ENG-07__boiler_cottage_scheduler__cottage",
+      "profiles": ["cottage"],
+      "source_refs": [
+        "doc:operator__boileri_ajastin"
+      ],
+      "connector_handles": [
+        "conn:cottage_boiler_rest_api_local"
+      ],
+      "required_capabilities": [
+        "rest_api_no_oauth_local_lan",
+        "scheduled_task_per_calendar",
+        "external_effect_setpoint_write"
+      ],
+      "failure_modes": [
+        "lan_unreachable_when_operator_off_site",
+        "calendar_schedule_conflict_with_visit_window",
+        "frost_risk_override_must_take_precedence"
+      ],
+      "decision_kind": "advisory_with_operator_approval_for_write",
+      "expected_output": {
+        "shape": "{next_planned_visit_iso, recommended_pre_heat_start_iso, frost_risk_window_iso_or_null}"
+      },
+      "risk_class": "external_effect",
+      "first_solver_slice": "read_current_boiler_setpoint_and_calendar_for_known_visit",
+      "shadow_expected_output": "synthetic_visit_in_72h_with_synthetic_frost_overlap"
+    },
+    {
+      "case_id": "ENG-06__cottage_fireplace_advisor__cottage",
+      "profiles": ["cottage"],
+      "source_refs": [
+        "doc:operator__takka_analyysi"
+      ],
+      "connector_handles": [
+        "conn:local_sqlite_takka_history",
+        "conn:weather_forecast_public_api"
+      ],
+      "required_capabilities": [
+        "sql_query_local",
+        "time_series_aggregation_daily",
+        "weather_forecast_integration"
+      ],
+      "failure_modes": [
+        "chimney_temp_sensor_data_gap_over_winter",
+        "weather_forecast_provider_unavailable",
+        "wood_inventory_unknown_assume_sufficient"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "{recommendation_text, suggested_burn_count, expected_indoor_temp_min_c}"
+      },
+      "risk_class": "informational",
+      "first_solver_slice": "summarize_last_30_days_burn_log_with_no_forecast",
+      "shadow_expected_output": "synthetic_30_day_log_with_3_cold_snaps"
+    },
+    {
+      "case_id": "COM-01__inbox_knowledge_base__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__gmail_bulk_sync",
+        "doc:operator__dedup_gmail",
+        "doc:operator__local_search",
+        "state:emails_db"
+      ],
+      "connector_handles": [
+        "conn:gmail_api",
+        "conn:local_sqlite_emails_db",
+        "conn:faiss_emails_vector_index"
+      ],
+      "required_capabilities": [
+        "rest_api_oauth",
+        "sql_query_local",
+        "embedding_multilingual_e5_small",
+        "document_corpus_index_faiss",
+        "language_aware_normalization_fi_en"
+      ],
+      "failure_modes": [
+        "gmail_label_rename_breaks_filter",
+        "duplicate_message_id_across_pst_and_imap",
+        "non_utf8_attachment_body_extraction_fails"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "list[{thread_id, snippet, sender, ts, relevance_score, source}]"
+      },
+      "risk_class": "local_artifact",
+      "first_solver_slice": "search_known_keyword_in_single_label_return_top_10",
+      "shadow_expected_output": "synthetic_inbox_100_msgs_5_matches_known_ids"
+    },
+    {
+      "case_id": "COM-04__personalized_draft_generator__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__create_jani_gmail_draft",
+        "doc:operator__create_julia_draft",
+        "doc:operator__create_matias_draft"
+      ],
+      "connector_handles": [
+        "conn:gmail_api",
+        "conn:llm_provider_local_or_claude_api"
+      ],
+      "required_capabilities": [
+        "rest_api_oauth",
+        "llm_generation_chat_completion",
+        "draft_create_no_send"
+      ],
+      "failure_modes": [
+        "recipient_style_drift_across_drafts",
+        "gmail_quota_drafts_per_hour",
+        "llm_hallucination_about_prior_thread_context"
+      ],
+      "decision_kind": "advisory_create_draft_no_send",
+      "expected_output": {
+        "shape": "{draft_id, subject, body_text, recipient, style_notes}"
+      },
+      "risk_class": "local_artifact",
+      "first_solver_slice": "create_one_draft_from_template_no_prior_context_lookup",
+      "shadow_expected_output": "synthetic_draft_for_known_recipient_template"
+    },
+    {
+      "case_id": "PROP-01__cottage_operations_dashboard__cottage",
+      "profiles": ["cottage"],
+      "source_refs": [
+        "doc:operator__etsi_mokki",
+        "doc:operator__etsi_mokki2",
+        "doc:operator__win_copy_mokki",
+        "doc:operator__vektoroi_mokki",
+        "doc:operator__vektoroi_mokki_session",
+        "doc:operator__if_mokki_maksu"
+      ],
+      "connector_handles": [
+        "conn:local_sqlite_mokki_db",
+        "conn:faiss_mokki_vector_index",
+        "conn:filesystem_pdf_corpus"
+      ],
+      "required_capabilities": [
+        "sql_query_local",
+        "document_corpus_index_faiss",
+        "time_series_aggregation_monthly",
+        "expense_categorisation"
+      ],
+      "failure_modes": [
+        "no_recent_visit_data_dashboard_goes_stale",
+        "ambiguous_expense_cottage_vs_home_attribution",
+        "insurance_policy_renewal_date_drift"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "{next_visit_iso, recent_expenses_summary, insurance_status, maintenance_due_list}"
+      },
+      "risk_class": "local_artifact",
+      "first_solver_slice": "render_summary_from_last_known_visit_and_3_months_expenses",
+      "shadow_expected_output": "synthetic_3_month_cottage_log_4_visits_12_expenses"
+    },
+    {
+      "case_id": "PROP-02__housing_company_audit_helper__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__rukkilantie_raportti",
+        "doc:operator__vektoroi_rukkilantie_kaikki",
+        "doc:operator__Rukkilantie2c20_hallitus",
+        "doc:operator__Rukkilantie2_epaselvyydet_2022_2025"
+      ],
+      "connector_handles": [
+        "conn:filesystem_pdf_corpus",
+        "conn:faiss_rukkilantie_vector_index"
+      ],
+      "required_capabilities": [
+        "document_corpus_index_faiss",
+        "cross_year_discrepancy_finder",
+        "evidence_citation_with_page_ref"
+      ],
+      "failure_modes": [
+        "missing_year_in_corpus_breaks_cross_year_compare",
+        "scanned_pdf_ocr_quality_below_threshold",
+        "ambiguous_charge_line_item_classification"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "list[{discrepancy_id, year_a, year_b, description, evidence_refs[]}]"
+      },
+      "risk_class": "informational",
+      "first_solver_slice": "list_top_5_recurring_charges_from_one_year",
+      "shadow_expected_output": "synthetic_housing_company_3_years_with_2_known_discrepancies"
+    },
+    {
+      "case_id": "INS-01__insurance_offer_comparator__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__EHDOT_Fenniakasko",
+        "doc:operator__EHDOT_Liikennevakuutus",
+        "doc:operator__ESITE_Ajoneuvovakuutukset",
+        "doc:operator__Tarjous_SP",
+        "doc:operator__Sopimus_SP",
+        "doc:operator__Ehdot_SP",
+        "doc:operator__vakuutusvertailu",
+        "doc:operator__vektoroi_vakuutusvertailu",
+        "doc:operator__insurance_comparator_py"
+      ],
+      "connector_handles": [
+        "conn:filesystem_pdf_corpus",
+        "conn:faiss_insurance_vector_index"
+      ],
+      "required_capabilities": [
+        "document_corpus_index_faiss",
+        "structured_term_extraction_pdf",
+        "policy_clause_alignment",
+        "score_weighted_ranking"
+      ],
+      "failure_modes": [
+        "term_ambiguity_across_provider_lexicons",
+        "missing_clause_in_one_provider_offer",
+        "currency_or_period_unit_mismatch"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "ranked_list[{provider, score, key_diffs, missing_clauses, evidence_refs[]}]"
+      },
+      "risk_class": "informational",
+      "first_solver_slice": "extract_premium_and_deductible_from_one_offer_pdf",
+      "shadow_expected_output": "synthetic_3_provider_offers_with_known_winner_by_total_cost"
+    },
+    {
+      "case_id": "CRY-02__multi_llm_consultation_pipeline__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__crypto_review_2026-05-04",
+        "doc:operator__crypto_review_claude47",
+        "doc:operator__crypto_review_GPT5_5_pro",
+        "doc:operator__crypto_review_gemini",
+        "doc:operator__crypto_review_grok",
+        "doc:operator__crypto_review_synthesis",
+        "doc:operator__crypto_review_prompt_for_external_llm"
+      ],
+      "connector_handles": [
+        "conn:claude_api",
+        "conn:openai_api",
+        "conn:gemini_api",
+        "conn:grok_api",
+        "conn:filesystem_review_markdown_corpus"
+      ],
+      "required_capabilities": [
+        "llm_generation_chat_completion",
+        "multi_model_disagreement_detection",
+        "synthesis_with_evidence_citation",
+        "rate_limit_per_provider_budget"
+      ],
+      "failure_modes": [
+        "single_provider_outage_skews_synthesis",
+        "rate_limit_exhaustion_mid_consultation",
+        "provider_response_format_drift"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "{question, per_provider_answers[], synthesis_text, disagreement_points[], confidence}"
+      },
+      "risk_class": "informational",
+      "first_solver_slice": "ask_one_question_to_two_providers_no_synthesis",
+      "shadow_expected_output": "synthetic_question_with_known_2_provider_disagreement"
+    },
+    {
+      "case_id": "MTG-01__meeting_orchestrator__home",
+      "profiles": ["home"],
+      "source_refs": [
+        "doc:operator__yhtiokokous_audio",
+        "doc:operator__yhtiokokous_multichannel",
+        "doc:operator__yhtiokokous_transcribe",
+        "doc:operator__yhtiokokous_voikko_pipe",
+        "doc:operator__yhtiokokous_claude_live",
+        "doc:operator__yhtiokokous_query_claude",
+        "doc:operator__yhtiokokous_query_local",
+        "doc:operator__yhtiokokous_latenssi_benchmark"
+      ],
+      "connector_handles": [
+        "conn:local_audio_capture",
+        "conn:local_voikko_normalizer",
+        "conn:claude_api_streaming",
+        "conn:local_sqlite_session_db"
+      ],
+      "required_capabilities": [
+        "audio_capture_multichannel",
+        "speech_to_text_fi_en",
+        "speaker_diarization",
+        "llm_generation_streaming",
+        "sub_second_latency_budget"
+      ],
+      "failure_modes": [
+        "audio_device_drift_speaker_silence_misread",
+        "transcription_latency_exceeds_2s_budget",
+        "speaker_swap_mid_sentence",
+        "claude_api_streaming_disconnect"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "{transcript_segments[], per_speaker_summaries, live_q_and_a_log[]}"
+      },
+      "risk_class": "local_artifact",
+      "first_solver_slice": "transcribe_one_pre_recorded_meeting_no_live_qa",
+      "shadow_expected_output": "synthetic_5_minute_pre_recorded_meeting_with_2_speakers_known_text"
+    },
+    {
+      "case_id": "BEE-01__bee_apiary_tracker__cottage_adjacent",
+      "profiles": ["cottage", "home"],
+      "source_refs": [
+        "doc:operator__vektoroi_mehilainen_pit",
+        "doc:operator__lainat_db_mehilainen_pitopaikat",
+        "doc:operator__hae_itis_hunaja"
+      ],
+      "connector_handles": [
+        "conn:local_sqlite_apiary_db",
+        "conn:faiss_apiary_vector_index"
+      ],
+      "required_capabilities": [
+        "sql_query_local",
+        "calendar_visit_scheduling",
+        "weather_forecast_integration",
+        "regulatory_report_generation"
+      ],
+      "failure_modes": [
+        "hive_inspection_log_gap_over_winter",
+        "swarm_detection_missing_event",
+        "regulatory_filing_deadline_missed"
+      ],
+      "decision_kind": "advisory",
+      "expected_output": {
+        "shape": "{next_inspection_due_iso, swarm_risk_alerts[], regulatory_filings_due[]}"
+      },
+      "risk_class": "informational",
+      "first_solver_slice": "list_hives_with_no_inspection_in_30_days",
+      "shadow_expected_output": "synthetic_5_hives_2_overdue_inspections"
+    },
+    {
+      "case_id": "FACTORY-01__production_line_incident_triage__factory",
+      "profiles": ["factory"],
+      "source_refs": [
+        "doc:synthetic__factory_incident_log_template"
+      ],
+      "connector_handles": [
+        "conn:factory_mes_rest_api",
+        "conn:factory_local_sqlite_incident_db",
+        "conn:operator_review_queue"
+      ],
+      "required_capabilities": [
+        "rest_api_oauth_machine_to_machine",
+        "sql_query_local",
+        "incident_severity_classification",
+        "operator_escalation_routing"
+      ],
+      "failure_modes": [
+        "mes_session_timeout_during_long_running_query",
+        "ambiguous_incident_severity_classification",
+        "operator_pager_unreachable_after_shift_change"
+      ],
+      "decision_kind": "advisory_with_optional_operator_alert",
+      "expected_output": {
+        "shape": "{incident_id, severity, recommended_response, evidence_refs[], operator_alert_required}"
+      },
+      "risk_class": "external_effect",
+      "first_solver_slice": "classify_one_known_severity_3_incident_no_alert",
+      "shadow_expected_output": "synthetic_incident_record_with_known_severity_2"
+    },
+    {
+      "case_id": "FACTORY-02__regulatory_compliance_filer__factory",
+      "profiles": ["factory"],
+      "source_refs": [
+        "doc:synthetic__factory_compliance_template_evira_pattern"
+      ],
+      "connector_handles": [
+        "conn:regulator_filing_portal_browser_session",
+        "conn:factory_local_sqlite_compliance_db",
+        "conn:filesystem_pdf_corpus"
+      ],
+      "required_capabilities": [
+        "browser_session_persistent",
+        "structured_form_filling",
+        "document_evidence_attachment",
+        "deadline_calendar_management"
+      ],
+      "failure_modes": [
+        "portal_form_field_renamed_silently",
+        "evidence_pdf_size_exceeds_portal_limit",
+        "deadline_miss_due_to_holiday_calendar_offset"
+      ],
+      "decision_kind": "advisory_with_operator_approval_for_submit",
+      "expected_output": {
+        "shape": "{filing_id, prefilled_form_state, evidence_refs[], deadline_iso, submit_ready}"
+      },
+      "risk_class": "external_effect",
+      "first_solver_slice": "prefill_one_known_quarterly_filing_form_no_submit",
+      "shadow_expected_output": "synthetic_compliance_filing_with_known_evidence_pack"
+    }
+  ]
+}

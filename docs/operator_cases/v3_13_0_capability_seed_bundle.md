@@ -28,13 +28,17 @@ case bodies themselves).
 
 | Profile  | Case count | Cases |
 |----------|------------|-------|
-| home     | 10         | FIN-01, FIN-04, FIN-09, ENG-01, ENG-05, COM-01, COM-04, PROP-02, INS-01, CRY-02, MTG-01 (11 listed; CRY-02 + MTG-01 are cross-profile but primarily home; BEE-01 lists both home and cottage) |
+| home     | 11         | FIN-01, FIN-04, FIN-09, ENG-01, ENG-05, COM-01, COM-04, PROP-02, INS-01, CRY-02, MTG-01 (CRY-02 + MTG-01 are cross-profile but primarily home) |
 | cottage  | 5          | FIN-10, ENG-06, ENG-07, PROP-01, BEE-01 |
 | factory  | 2          | FACTORY-01, FACTORY-02 (synthetic templates; the v3_13_0 domain catalog has no committed factory-specific operator data, so these are pattern-derived) |
-| (overlap)| 2          | BEE-01 (cottage + home), CRY-02 (home but cross), MTG-01 (home but cross) |
+| (overlap)| 1          | BEE-01 lists both home and cottage in the `profiles` array |
 
-Counts: 18 distinct case_ids; some cases declare multiple profiles in
-the `profiles` array.
+Counts: 18 distinct case_ids. BEE-01 declares two profiles in its
+`profiles` array (cottage + home) but is counted only once above (in
+the cottage row, as its primary profile by intended deployment
+context). Per-profile sum 11 + 5 + 2 = 18 matches the distinct-case
+total. The matrix-totals row at the bottom of this document shows the
+same 11/5/2 split and an 18-case grand total.
 
 ## Capability graph (top-level)
 

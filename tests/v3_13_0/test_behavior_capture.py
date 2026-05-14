@@ -203,6 +203,85 @@ class TestCaptureRefusal:
                             match="operator scope policy denied"):
             capture.capture(_basic_invocation())
 
+    def test_refusal_emits_behavior_capture_refused_magma_event(self):
+        """BC2 (claude-iter-review-behavior-capture-2026-05-13): each
+        CaptureRefused path must emit a behavior.capture_refused MAGMA
+        event BEFORE raising, so operator-facing observability surfaces
+        recurring refusal patterns instead of swallowing them silently."""
+        cases = [
+            ("unknown tool descriptor", None, True, "internal"),
+            ("ToolDescriptor.capture_supported is False",
+             ToolDescriptorCaptureView(
+                 tool_descriptor_id="tool_synth_baseline",
+                 capture_supported=False,
+                 capture_stdin=False,
+                 capture_payloads=False,
+                 sensitive_class="internal",
+                 auth_mode=None,
+             ), True, "internal"),
+            ("sensitive_class=opaque refuses capture",
+             _capture_supporting_tool(sensitive_class="opaque"), True,
+             "opaque"),
+            ("operator scope policy denied",
+             _capture_supporting_tool(), False, "internal"),
+        ]
+        for reason, tool, scope_allows, _sensitive in cases:
+            events: list = []
+            if tool is None:
+                capture = BehaviorCapture(
+                    fetch_tool_descriptor=lambda _tid: None,
+                    operator_scope_policy_check=lambda _tid: scope_allows,
+                    pii_scan=_no_pii,
+                    persist_artifact=_artifact_persister({}),
+                    emit_magma_event=_emit_collector(events),
+                    consent_token_validator=lambda _tid, _tok: True,
+                    subprocess_runner=_fake_runner(),
+                )
+            else:
+                capture = _make_capture(
+                    tool=tool,
+                    scope_allows=scope_allows,
+                    events=events,
+                )
+
+            with pytest.raises(CaptureRefused):
+                capture.capture(_basic_invocation())
+
+            refused_events = [
+                e for e in events
+                if e.get("event_type") == "behavior.capture_refused"
+            ]
+            assert len(refused_events) == 1, (
+                f"expected one capture_refused event for reason {reason!r}, "
+                f"got {[e.get('event_type') for e in events]}"
+            )
+            assert refused_events[0]["reason"] == reason
+            assert refused_events[0]["tool_descriptor_id"] == (
+                "tool_synth_baseline"
+            )
+            assert "ts_utc" in refused_events[0]
+
+    def test_refusal_magma_emit_failure_does_not_mask_capture_refused(self):
+        """Defensive: if emit_magma_event raises during the refusal-audit
+        emit, the original CaptureRefused must still propagate."""
+        tool = _capture_supporting_tool(sensitive_class="opaque")
+
+        def emit_that_explodes(_envelope: dict) -> str:
+            raise RuntimeError("MAGMA down")
+
+        capture = BehaviorCapture(
+            fetch_tool_descriptor=lambda _tid: tool,
+            operator_scope_policy_check=lambda _tid: True,
+            pii_scan=_no_pii,
+            persist_artifact=_artifact_persister({}),
+            emit_magma_event=emit_that_explodes,
+            consent_token_validator=lambda _tid, _tok: True,
+            subprocess_runner=_fake_runner(),
+        )
+
+        with pytest.raises(CaptureRefused, match="opaque"):
+            capture.capture(_basic_invocation())
+
 
 # --------------------------------------------------------------------------
 # Secret-class retention boundary (Codex RCO round-2)

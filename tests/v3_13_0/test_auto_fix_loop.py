@@ -537,3 +537,269 @@ class TestCursorAdvance:
             ("start", "evt_poison"),
             ("evt_poison", "evt_after"),
         ]
+
+
+# --------------------------------------------------------------------------
+# AFL4 / PR #378 handler_exception forensics -- regression coverage
+# --------------------------------------------------------------------------
+#
+# These tests lock the bounded-error-string + exception_type + cursor-advance
+# + per-failure repair_id contract added in PR #378 auto_fix_loop_resilience.
+# Without these locks, a future refactor could:
+#   * drop the str(exc)[:200] truncation and leak full stack traces into
+#     MAGMA envelopes (operator forensics gets noisy + risks PII leak in
+#     exception args), or
+#   * lose the exception_type field and force operators to parse free-text
+#     error messages to triage handler failures by class, or
+#   * reuse a single repair_id across multiple poison events in one run
+#     and break audit-trail correlation, or
+#   * silently halt the cursor on the first poison event and let the loop
+#     stall instead of poison-quarantining and advancing.
+# --------------------------------------------------------------------------
+
+
+def _make_loop_with_custom_classify_raise(
+    *,
+    lease: LeaseRecord,
+    events: list,
+    magma_events: list,
+    classify_exc_factory,
+    raise_for: set[str],
+) -> AutoFixLoop:
+    """Build an AutoFixLoop whose classify_intent raises a custom exception
+    (factory-produced) for a given set of triggering_event_ids.
+
+    Used by the forensics regression tests; the production _make_loop
+    helper hardcodes RuntimeError. We need to vary the exception class
+    + the message length to exercise the truncation + exception_type
+    contracts independently."""
+    lease_state = {"current": lease}
+    events_state = {"queue": list(events)}
+
+    def fetch_lease():
+        return lease_state["current"]
+
+    def write_lease(rec):
+        lease_state["current"] = rec if rec.instance_id else None
+        return f"audit:lease_{rec.instance_id}"
+
+    def classify(intent):
+        if intent.triggering_event_id in raise_for:
+            raise classify_exc_factory(intent.triggering_event_id)
+        return "local_artifact"
+
+    return AutoFixLoop(
+        instance_id="instance_a",
+        profile_config_ref="profile:test",
+        fetch_lease=fetch_lease,
+        write_lease=write_lease,
+        fetch_actionable_events=lambda _cursor: events_state["queue"],
+        fetch_recovery_capsule=lambda _tid: _make_capsule(),
+        classify_intent=classify,
+        route_intent_through_gate=lambda _intent: {
+            "approved": True,
+            "reason": "auto_approved",
+            "audit_event_id": "audit:gate",
+        },
+        execute_repair=lambda _intent: {"success": True, "error": ""},
+        emit_magma_event=_emit_collector(magma_events),
+        idempotency_check=lambda _intent: False,
+        clock_fn=lambda: 0.0,
+        utc_iso_fn=lambda: "2026-05-14T06:30:00Z",
+    )
+
+
+class TestHandlerExceptionForensics:
+    """PR #378 AFL4 fix added handler_exception forensics. These tests
+    lock the audit envelope contract: bounded error string, exception_type
+    field, per-failure repair_id, cursor advances past every poison event."""
+
+    LEASE = LeaseRecord(
+        instance_id="instance_a",
+        acquired_at_utc="2026-05-14T06:00:00Z",
+        last_renewed_at_utc="2026-05-14T06:00:00Z",
+    )
+
+    def test_handler_exception_error_string_is_truncated_to_200_chars(self):
+        """str(exc)[:200] truncation contract: very long exception messages
+        must not leak full text into the MAGMA envelope's `error` field."""
+        long_message = "X" * 1000  # 1000 chars; expect bounded to 200
+        events_list = []
+        loop = _make_loop_with_custom_classify_raise(
+            lease=self.LEASE,
+            events=[_make_event(event_id="evt_poison_long")],
+            magma_events=events_list,
+            classify_exc_factory=lambda _evt: RuntimeError(long_message),
+            raise_for={"evt_poison_long"},
+        )
+
+        results, _new_cursor = loop.run_once(cursor="start")
+
+        assert results[0].outcome == RepairOutcome.FAILED.value
+        failed = [
+            e for e in events_list
+            if e["event_type"] == "auto_fix_loop.repair_failed"
+            and e.get("reason") == "handler_exception"
+        ]
+        assert failed, f"expected one handler_exception event; got {events_list}"
+        error_field = failed[0]["error"]
+        # Bound at 200 chars per source line 321 of auto_fix_loop.py.
+        assert len(error_field) == 200, (
+            f"error field must be truncated to 200 chars; got {len(error_field)}"
+        )
+        # The truncated content must be a prefix of the original message
+        # (no reordering / encoding alteration), so operator forensics can
+        # still match against the original exception text by prefix.
+        assert long_message.startswith(error_field), (
+            "truncated error must be a prefix of the original exception "
+            "message"
+        )
+        # repair_id is non-empty UUID-shaped; locks the per-failure id.
+        assert failed[0]["repair_id"] and len(failed[0]["repair_id"]) == 36
+
+    def test_handler_exception_records_exception_class_name_distinctly(self):
+        """Different exception classes must surface as distinct
+        `exception_type` field values so operator triage can filter by
+        class without parsing free-text error messages."""
+
+        class CustomDomainError(Exception):
+            """Operator-defined exception used only by this test."""
+
+        for exc_cls in (RuntimeError, TypeError, KeyError, ValueError,
+                         CustomDomainError):
+            events_list = []
+            loop = _make_loop_with_custom_classify_raise(
+                lease=self.LEASE,
+                events=[_make_event(event_id=f"evt_for_{exc_cls.__name__}")],
+                magma_events=events_list,
+                classify_exc_factory=lambda _evt, _exc_cls=exc_cls:
+                    _exc_cls("synthetic"),
+                raise_for={f"evt_for_{exc_cls.__name__}"},
+            )
+
+            loop.run_once(cursor="start")
+
+            failed = [
+                e for e in events_list
+                if e["event_type"] == "auto_fix_loop.repair_failed"
+                and e.get("reason") == "handler_exception"
+            ]
+            assert failed, (
+                f"expected handler_exception event for {exc_cls.__name__}; "
+                f"got {[e['event_type'] for e in events_list]}"
+            )
+            assert failed[0]["exception_type"] == exc_cls.__name__, (
+                f"exception_type field must equal class name "
+                f"{exc_cls.__name__!r}; got "
+                f"{failed[0].get('exception_type')!r}"
+            )
+
+    def test_multiple_poison_events_each_get_unique_repair_id_and_advance(self):
+        """Three poison events in a row: each must get a distinct
+        repair_id (uuid4) + the cursor must advance through every poison
+        (not stall on the first one) + 3 repair_failed events emitted."""
+        events_list = []
+        loop = _make_loop_with_custom_classify_raise(
+            lease=self.LEASE,
+            events=[
+                _make_event(event_id="evt_poison_1"),
+                _make_event(event_id="evt_poison_2"),
+                _make_event(event_id="evt_poison_3"),
+            ],
+            magma_events=events_list,
+            classify_exc_factory=lambda evt: RuntimeError(f"fail_{evt}"),
+            raise_for={"evt_poison_1", "evt_poison_2", "evt_poison_3"},
+        )
+
+        results, new_cursor = loop.run_once(cursor="start")
+
+        # All three poisoned events processed; cursor reached the last one.
+        assert new_cursor == "evt_poison_3"
+        assert [r.outcome for r in results] == [
+            RepairOutcome.FAILED.value,
+            RepairOutcome.FAILED.value,
+            RepairOutcome.FAILED.value,
+        ]
+
+        failed = [
+            e for e in events_list
+            if e["event_type"] == "auto_fix_loop.repair_failed"
+            and e.get("reason") == "handler_exception"
+        ]
+        assert len(failed) == 3, (
+            f"expected 3 repair_failed events; got {len(failed)}"
+        )
+
+        # Distinct repair_ids per failure (no reuse across the run).
+        repair_ids = [e["repair_id"] for e in failed]
+        assert len(set(repair_ids)) == 3, (
+            f"repair_id must be unique per failure; got duplicates in "
+            f"{repair_ids}"
+        )
+
+        # Each failed event's triggering_event_id maps 1:1 to its poison.
+        triggering_ids = [e["triggering_event_id"] for e in failed]
+        assert triggering_ids == [
+            "evt_poison_1", "evt_poison_2", "evt_poison_3",
+        ]
+
+        # Cursor advances chain through every poison.
+        cursor_chain = [
+            (e["cursor_before"], e["cursor_after"])
+            for e in events_list
+            if e["event_type"] == "auto_fix_loop.cursor_advanced"
+        ]
+        assert cursor_chain == [
+            ("start", "evt_poison_1"),
+            ("evt_poison_1", "evt_poison_2"),
+            ("evt_poison_2", "evt_poison_3"),
+        ]
+
+    def test_handler_exception_audit_envelope_has_all_forensic_fields(self):
+        """Locks the exact field set on the repair_failed audit envelope so
+        a future emit refactor cannot silently drop any forensic field."""
+        events_list = []
+        loop = _make_loop_with_custom_classify_raise(
+            lease=self.LEASE,
+            events=[_make_event(event_id="evt_envelope_shape")],
+            magma_events=events_list,
+            classify_exc_factory=lambda _evt:
+                TypeError("synthetic envelope shape"),
+            raise_for={"evt_envelope_shape"},
+        )
+
+        loop.run_once(cursor="start")
+
+        failed = [
+            e for e in events_list
+            if e["event_type"] == "auto_fix_loop.repair_failed"
+            and e.get("reason") == "handler_exception"
+        ]
+        assert failed
+        envelope = failed[0]
+
+        # Required forensic fields per source line 314-323 of auto_fix_loop.py.
+        required_fields = {
+            "event_type",
+            "instance_id",
+            "repair_id",
+            "triggering_event_id",
+            "reason",
+            "exception_type",
+            "error",
+            "ts_utc",
+        }
+        missing = required_fields - set(envelope.keys())
+        assert not missing, (
+            f"repair_failed audit envelope is missing forensic fields: "
+            f"{sorted(missing)}; full envelope keys: {sorted(envelope)}"
+        )
+
+        # Concrete values match the source contract.
+        assert envelope["event_type"] == "auto_fix_loop.repair_failed"
+        assert envelope["instance_id"] == "instance_a"
+        assert envelope["reason"] == "handler_exception"
+        assert envelope["exception_type"] == "TypeError"
+        assert envelope["triggering_event_id"] == "evt_envelope_shape"
+        assert envelope["ts_utc"]  # non-empty
+        assert isinstance(envelope["error"], str)

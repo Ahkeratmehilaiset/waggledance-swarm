@@ -693,3 +693,124 @@ class TestActivation:
         prov.revoke(candidate_id=cand.candidate_id, reason="bad")
         state = prov.activate(candidate_id=cand.candidate_id)
         assert state == ActivationState.REVOKED
+
+    def test_activate_is_idempotent_on_already_activated(self):
+        """Locks the ACTIVATED-idempotent early-return added in PR #380.
+
+        After a candidate is ACTIVATED, calling activate() again must
+        return ACTIVATED WITHOUT emitting a second solver.activation_authorised
+        audit event. Idempotent caller behaviour.
+        """
+        cand = _make_candidate()
+        events = []
+        prov, store = _make_provenance(candidate=cand, events=events)
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="codex",
+                    signing_role=SigningRole.PEER.value,
+                    bridge_event_ref="b2",
+                    operator_scope_policy_ref="policy:home")
+
+        # First activate transitions SIGNED -> ACTIVATED and emits the
+        # authorised event exactly once.
+        first_state = prov.activate(candidate_id=cand.candidate_id)
+        assert first_state == ActivationState.ACTIVATED
+        authorised_after_first = [
+            e for e in events
+            if e["event_type"] == "solver.activation_authorised"
+        ]
+        assert len(authorised_after_first) == 1, (
+            f"first activate() should emit exactly one "
+            f"solver.activation_authorised; got "
+            f"{[e['event_type'] for e in events]}"
+        )
+
+        # Second activate() on the same already-ACTIVATED candidate must
+        # be a no-op observable to callers: same return, no new event.
+        events_count_before_second = len(events)
+        second_state = prov.activate(candidate_id=cand.candidate_id)
+        assert second_state == ActivationState.ACTIVATED
+
+        # No new authorised event after the second activate.
+        authorised_after_second = [
+            e for e in events
+            if e["event_type"] == "solver.activation_authorised"
+        ]
+        assert len(authorised_after_second) == 1, (
+            f"second activate() must NOT emit another "
+            f"solver.activation_authorised; events emitted between calls: "
+            f"{[e['event_type'] for e in events[events_count_before_second:]]}"
+        )
+
+        # No event of any kind emitted on the second call (early-return).
+        assert len(events) == events_count_before_second, (
+            f"second activate() on an already-ACTIVATED candidate must "
+            f"early-return without emitting any audit event; emitted: "
+            f"{[e['event_type'] for e in events[events_count_before_second:]]}"
+        )
+
+        # State remains ACTIVATED.
+        assert store[cand.candidate_id].activation_state == \
+            ActivationState.ACTIVATED.value
+
+    def test_activate_refused_event_includes_activation_state_field(self):
+        """Locks the activation_state field added to the solver.activation_refused
+        envelope in PR #380. Operator forensics need to know WHICH non-SIGNED
+        state the candidate was in when activation was refused (UNACTIVATED
+        vs AWAITING_SIGNING vs other future states), not just the reason
+        code.
+
+        Companion to test_activate_requires_signed_state which already asserts
+        the reasons code; this test asserts the state-field carrier.
+        """
+        cand = _make_candidate()
+        events = []
+        prov, store = _make_provenance(candidate=cand, events=events)
+        # Owner + peer signatures bring the candidate to a state where
+        # verify_solver_provenance returns valid=True.
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="codex",
+                    signing_role=SigningRole.PEER.value,
+                    bridge_event_ref="b2",
+                    operator_scope_policy_ref="policy:home")
+        # Then we artificially knock the state back to UNACTIVATED to
+        # simulate the bulk-import / migration code path the PR #380
+        # precondition guards against.
+        store[cand.candidate_id].activation_state = \
+            ActivationState.UNACTIVATED.value
+
+        prov.activate(candidate_id=cand.candidate_id)
+
+        refused = [
+            e for e in events
+            if e["event_type"] == "solver.activation_refused"
+        ]
+        assert refused, (
+            f"activate() on non-SIGNED candidate must emit "
+            f"solver.activation_refused; got "
+            f"{[e['event_type'] for e in events]}"
+        )
+        last_refused = refused[-1]
+        assert last_refused["reasons"] == ["candidate_not_signed"], (
+            f"reasons must include candidate_not_signed; got "
+            f"{last_refused.get('reasons')}"
+        )
+        assert "activation_state" in last_refused, (
+            f"activation_state field must be present in the refused event "
+            f"envelope (PR #380 added this); got keys {sorted(last_refused)}"
+        )
+        assert last_refused["activation_state"] == \
+            ActivationState.UNACTIVATED.value, (
+            f"activation_state field must echo the candidate's current "
+            f"state at refusal time (UNACTIVATED in this scenario); got "
+            f"{last_refused.get('activation_state')}"
+        )

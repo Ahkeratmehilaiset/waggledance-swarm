@@ -503,6 +503,117 @@ class TestStdinCapture:
         assert record.stdin_hash_sha256 is not None
         assert record.stdin_artifact_uri is None
 
+    def test_stdin_pii_scanned_before_persist_routes_pending_review(self):
+        """BC1 (claude-iter-review-behavior-capture-2026-05-13): consented
+        retained stdin payloads must be PII-scanned BEFORE persist so that
+        PII categories contribute to pii_scan_hits + operator_review_status
+        flips to pending. Per option B (Codex coordinator decision): persist
+        still happens; the pending flag routes operator review."""
+        tool = _capture_supporting_tool(capture_stdin=True)
+        capture = _make_capture(
+            tool=tool,
+            consent_token_valid=True,
+            pii_scan=_pii_finds("synthetic_email_like"),
+        )
+        record = capture.capture(
+            _basic_invocation(stdin_payload=b"contact me at user@example.com"),
+            stdin_consent_token="t1",
+        )
+        # Option B: artifact IS persisted (storage is access-controlled-
+        # until-approved; the pending flag routes operator review).
+        assert record.stdin_artifact_uri is not None
+        assert record.stdin_artifact_uri.startswith("artifact://test/stdin_")
+        # Stdin categories appear in the aggregate pii_scan_hits (alongside
+        # stdout + stderr scans which also fire on the synthetic fake pii_scan).
+        # The pii_scan fixture returns ["synthetic_email_like"] for ANY
+        # non-empty input, so 3 scans (stdin + stdout + stderr) each contribute
+        # one hit -- the count is 3 when stdin contributes.
+        assert record.pii_scan_hits == [
+            "synthetic_email_like",  # stdin scan
+            "synthetic_email_like",  # stdout scan
+            "synthetic_email_like",  # stderr scan
+        ]
+        assert record.operator_review_status == "pending"
+
+    def test_stdin_pii_scan_not_called_when_consent_refuses_persist(self):
+        """When stdin is present but capture_stdin=False (no opt-in), the
+        BC1 scan must NOT fire -- stdin is hash-only, no artifact, no
+        contribution to pii_scan_hits. Locks the gate: scan only happens
+        on the persist path, not just because stdin was present."""
+        tool = _capture_supporting_tool(capture_stdin=False)
+        scan_calls: list[bytes] = []
+
+        def recording_pii_scan(payload: bytes) -> list[str]:
+            scan_calls.append(payload)
+            return ["synthetic_email_like"]
+
+        capture = _make_capture(
+            tool=tool,
+            consent_token_valid=True,
+            pii_scan=recording_pii_scan,
+            subprocess_stdout=b"OK",
+            subprocess_stderr=b"",
+        )
+        capture.capture(
+            _basic_invocation(stdin_payload=b"contact me at user@example.com"),
+            stdin_consent_token="t1",
+        )
+        # stdin payload must NOT be in scan_calls (no consent path).
+        assert b"contact me at user@example.com" not in scan_calls
+        # Only stdout + stderr were scanned.
+        assert len(scan_calls) == 2
+
+    def test_stdin_pii_scan_runs_before_persist_artifact_call(self):
+        """Locks the call order: pii_scan(stdin_payload) MUST be called
+        before persist_artifact("stdin", ...). Uses synchronous fakes that
+        record their invocation order; ensures option B's ordering invariant
+        is not silently reordered by a future refactor."""
+        tool = _capture_supporting_tool(capture_stdin=True)
+        events: list[str] = []
+
+        def recording_pii_scan(payload: bytes) -> list[str]:
+            events.append(f"pii_scan(len={len(payload)})")
+            return []
+
+        def recording_persist(kind: str, content: bytes) -> str:
+            events.append(f"persist_artifact({kind!r}, len={len(content)})")
+            return f"artifact://test/{kind}_0001"
+
+        capture = BehaviorCapture(
+            fetch_tool_descriptor=lambda _tid: tool,
+            operator_scope_policy_check=lambda _tid: True,
+            pii_scan=recording_pii_scan,
+            persist_artifact=recording_persist,
+            emit_magma_event=_emit_collector([]),
+            consent_token_validator=lambda _tid, _tok: True,
+            subprocess_runner=_fake_runner(stdout=b"out", stderr=b"err"),
+        )
+        capture.capture(
+            _basic_invocation(stdin_payload=b"stdin-bytes-12345"),
+            stdin_consent_token="t1",
+        )
+        # The stdin pii_scan call must precede the stdin persist call.
+        stdin_scan_idx = next(
+            (i for i, e in enumerate(events)
+             if e == f"pii_scan(len={len(b'stdin-bytes-12345')})"
+             and "persist_artifact" not in e),
+            None,
+        )
+        stdin_persist_idx = next(
+            (i for i, e in enumerate(events) if e.startswith("persist_artifact('stdin'")),
+            None,
+        )
+        assert stdin_scan_idx is not None, (
+            f"stdin pii_scan was not invoked; events={events}"
+        )
+        assert stdin_persist_idx is not None, (
+            f"stdin persist was not invoked; events={events}"
+        )
+        assert stdin_scan_idx < stdin_persist_idx, (
+            f"stdin pii_scan (index {stdin_scan_idx}) must precede stdin "
+            f"persist (index {stdin_persist_idx}); full event order: {events}"
+        )
+
 
 # --------------------------------------------------------------------------
 # Pipeline linkage (per spec edit E2)

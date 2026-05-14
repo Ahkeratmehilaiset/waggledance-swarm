@@ -236,6 +236,15 @@ class BehaviorCapture:
 
         # Stdin handling: hash always; payload only if consent + opt-in
         # AND sensitive_class permits payload retention.
+        #
+        # BC1 (claude-iter-review-behavior-capture-2026-05-13): when stdin
+        # is retained, scan for PII BEFORE persist_artifact so the
+        # categories are surfaced in pii_scan_hits and operator_review_status
+        # routes the artifact through pending review -- consistent with the
+        # stdout/stderr ordering at line 267-269. Without the scan, an
+        # operator-consented stdin payload could carry PII straight into
+        # restricted-class storage with no review flag.
+        pii_hits: list[str] = []
         stdin_hash = None
         stdin_payload = invocation.stdin_payload
         stdin_artifact_uri = None
@@ -246,6 +255,14 @@ class BehaviorCapture:
                     and stdin_consent_token):
                 if self.consent_token_validator(invocation.tool_descriptor_id,
                                                    stdin_consent_token):
+                    # BC1: scan stdin BEFORE persisting so PII categories
+                    # contribute to the aggregate pii_scan_hits + review
+                    # status. Per Codex's coordinator decision (option B),
+                    # we persist regardless and let the review flag route
+                    # operator attention; we do NOT introduce a new event
+                    # type for stdin-PII-detected.
+                    stdin_pii_hits = list(self.pii_scan(stdin_payload))
+                    pii_hits.extend(stdin_pii_hits)
                     stdin_artifact_uri = self.persist_artifact(
                         "stdin", stdin_payload
                     )
@@ -263,8 +280,10 @@ class BehaviorCapture:
         elapsed_ms = int((time.perf_counter() - t_start) * 1000)
 
         # PII / credential scan -- run on stdout + stderr; hits route to
-        # operator review queue (sets operator_review_status=pending)
-        pii_hits = list(self.pii_scan(completed.stdout or b""))
+        # operator review queue (sets operator_review_status=pending).
+        # Stdin contributions, if any, were already appended to pii_hits
+        # above (BC1).
+        pii_hits.extend(self.pii_scan(completed.stdout or b""))
         pii_hits.extend(self.pii_scan(completed.stderr or b""))
         review_status = "pending" if pii_hits else "approved"
 

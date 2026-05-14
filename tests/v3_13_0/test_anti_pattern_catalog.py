@@ -239,6 +239,26 @@ class TestCredentialPatternScan:
         # ${ENV_VAR} should be masked by allowlist
         assert not any(h.pattern_name == "api_key_assignment" for h in hits)
 
+    def test_allowlist_skips_contextual_git_commit_sha(self):
+        sha = "de723261a40927f73c14669e5fd23aa373af4e1e"
+        hits = scan_for_credential_patterns(
+            f"merge commit was {sha} on main"
+        )
+        assert not any(h.pattern_name == "aws_secret_key" for h in hits)
+
+    def test_lowercase_hex_secret_assignment_still_detected(self):
+        token = "de723261a40927f73c14669e5fd23aa373af4e1e"
+        hits = scan_for_credential_patterns(
+            f'aws_secret_access_key="{token}"'
+        )
+        assert any(h.pattern_name == "aws_secret_key" for h in hits)
+
+    def test_secret_like_aws_key_still_detected(self):
+        token = "AbCdEfGhIjKlMnOpQrStUvWxYz1234567890ABCD"
+        assert len(token) == 40
+        hits = scan_for_credential_patterns(f"secret token {token}")
+        assert any(h.pattern_name == "aws_secret_key" for h in hits)
+
     def test_empty_content_returns_no_hits(self):
         assert scan_for_credential_patterns("") == []
 
@@ -282,6 +302,14 @@ class TestAnti004CredentialInRepo:
     def test_no_violation_vault_uri_only(self):
         result = anti_004_credential_in_content(
             content="ref: vault://os_keyring/p_42/scope/name\n",
+            tracked_for_commit=True,
+        )
+        assert result is None
+
+    def test_no_violation_contextual_git_commit_sha(self):
+        sha = "de723261a40927f73c14669e5fd23aa373af4e1e"
+        result = anti_004_credential_in_content(
+            content=f"merge_commit: {sha}\n",
             tracked_for_commit=True,
         )
         assert result is None

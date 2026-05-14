@@ -273,6 +273,12 @@ _CREDENTIAL_PATTERNS: tuple[tuple[str, str], ...] = (
 _CREDENTIAL_ALLOWLIST: tuple[str, ...] = (
     # vault://impl/tenant/scope/name -- a CredentialRef URI, not material
     r"vault://[a-z0-9_-]+/[a-z0-9_-]+/[a-z0-9_.-]+/[a-z0-9_.-]+",
+    # Git commit SHAs are 40 lowercase hex chars and otherwise collide
+    # with the broad AWS secret-key heuristic. Keep this contextual so
+    # a bare hex credential assignment is still blocked.
+    r"(?i)\b(?:git\s+)?(?:commit|commit[_ -]?sha|merge[_ -]?commit|"
+    r"merge[_ -]?sha|headref(?:oid)?|head[_ -]?ref[_ -]?oid|sha1?|oid)"
+    r"\b(?:\s+was)?[\s:=#\"'`-]+[a-f0-9]{40}\b",
     # Pure placeholder env-var references
     r"\$\{[A-Z_][A-Z0-9_]*\}",
     r"\$[A-Z_][A-Z0-9_]*\b",

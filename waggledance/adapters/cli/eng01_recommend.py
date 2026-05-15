@@ -21,6 +21,9 @@ from waggledance.core.v3_13_0.eng01_price_feed_adapter import (
     PRICE_UNIT_EUR_PER_MWH,
     build_eng01_price_feed,
 )
+from waggledance.core.v3_13_0.eng01_advisory_card import (
+    render_eng01_advisory_card,
+)
 from waggledance.core.v3_13_0.eng01_price_feed_http_transport import (
     DEFAULT_MAX_RESPONSE_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
@@ -124,6 +127,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Print indented JSON instead of compact JSON",
+    )
+    parser.add_argument(
+        "--render-card",
+        action="store_true",
+        default=False,
+        help="Print an operator advisory card instead of the raw payload",
     )
     return parser.parse_args(argv)
 
@@ -247,9 +256,10 @@ def main(
         )
         return 2
 
+    rendered = render_eng01_advisory_card(result) if args.render_card else result
     print(
         json.dumps(
-            result,
+            rendered,
             indent=2 if args.pretty else None,
             sort_keys=True,
         ),

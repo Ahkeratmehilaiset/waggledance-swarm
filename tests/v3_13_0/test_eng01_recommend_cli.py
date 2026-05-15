@@ -135,6 +135,24 @@ def test_example_input_file_runs_through_cli() -> None:
     ]
 
 
+def test_main_can_render_operator_advisory_card() -> None:
+    stdout = io.StringIO()
+
+    exit_code = main(
+        ["--input", str(EXAMPLE_INPUT), "--render-card"],
+        stdout=stdout,
+    )
+    output = json.loads(stdout.getvalue())
+
+    assert exit_code == 0
+    assert output["schema_version"] == "eng01_advisory_card.v1"
+    assert output["case_id"] == "ENG-01__spot_electricity_monitor__home"
+    assert output["risk_class"] == "informational"
+    assert output["write_intent"] == "none"
+    assert output["status"] == "ok"
+    assert output["top_hours"][0]["hour_utc"] == "2026-01-16T02:00:00Z"
+
+
 def test_main_fetches_url_with_injected_transport() -> None:
     calls: list[tuple[str, Mapping[str, str], float]] = []
 

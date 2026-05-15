@@ -145,10 +145,20 @@ def test_bool_text_and_secret_source_name_refuse() -> None:
         extract_pdf01_invoice_fields(payload)
 
     payload = _payload()
-    payload["documents"][0]["source_name"] = "tokenized_invoice.pdf"
+    payload["documents"][0]["source_name"] = "invoice_token.pdf"
     with pytest.raises(Pdf01InvoiceFieldExtractorError,
                        match="source_name must not contain secrets"):
         extract_pdf01_invoice_fields(payload)
+
+
+def test_tokenized_filename_is_not_a_secret_marker_false_positive() -> None:
+    payload = _payload()
+    payload["documents"][0]["source_name"] = "tokenized_invoice.pdf"
+
+    result = extract_pdf01_invoice_fields(payload).to_payload()
+    by_id = {item["document_id"]: item for item in result["documents"]}
+
+    assert by_id["invoice-001"]["source_name"] == "tokenized_invoice.pdf"
 
 
 def test_cli_prints_compact_json() -> None:

@@ -47,12 +47,21 @@ _SECRET_MARKERS = (
     "bearer",
     "cookie",
     "credential",
+    "credentials",
     "passwd",
     "password",
     "secret",
+    "secrets",
     "token",
+    "tokens",
     "x-api-key",
     "api_key",
+)
+_SECRET_MARKER_RE = re.compile(
+    r"(?:^|[\\/._?&=\-\s])(?:"
+    + "|".join(re.escape(marker) for marker in _SECRET_MARKERS)
+    + r")(?:$|[\\/._?&=\-\s])",
+    re.IGNORECASE,
 )
 
 
@@ -418,8 +427,7 @@ def _optional_safe_str(value: Any, label: str) -> str | None:
 
 
 def _has_secret_marker(value: str) -> bool:
-    lowered = value.casefold()
-    return any(marker in lowered for marker in _SECRET_MARKERS)
+    return _SECRET_MARKER_RE.search(value) is not None
 
 
 __all__ = [

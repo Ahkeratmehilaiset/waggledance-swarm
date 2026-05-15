@@ -35,6 +35,9 @@ Boundary decisions from the Sprint 1 RCO:
 - `external_readonly` state handles cannot declare writers or write modes.
 - External-effect write classification is driven by connector risk or
   `external_system`, not by a contradictory read-only state plane.
+- `informational_artifact` state handles are writable advisory outputs that
+  classify as informational in `WriteRCOGate`; they still require state
+  resolution, credential scanning, and `write_modes_allowed` checks.
 - Runtime audit event names such as `write.intent_approved` are MAGMA/domain
   events. Bridge messages remain coordination events such as
   `handoff/rco_requested`.

@@ -299,6 +299,32 @@ def test_external_readonly_state_cannot_declare_writers() -> None:
     assert list(_validator("state_handle.schema.json").iter_errors(bad))
 
 
+def test_informational_artifact_state_handle_validates() -> None:
+    advisory = copy.deepcopy(good_state_handle())
+    advisory.update({
+        "state_id": "eng01_advisory_output",
+        "kind": "json",
+        "plane": "informational_artifact",
+        "owner_tool": "eng01_spot_electricity_monitor",
+        "readers": ["eng01_spot_electricity_monitor"],
+        "writers": ["eng01_spot_electricity_monitor"],
+        "single_writer_required": False,
+        "wal_required": False,
+        "freshness_query": None,
+        "integrity_query": "result_marker_present",
+        "backup_strategy": "export_bundle",
+        "recovery_strategy": "operator_review",
+        "read_only_uri": "artifact:eng01/advisory_output",
+        "projection_of": "eng01_spot_price_feed",
+        "high_watermark_ref": "eng01_price_feed_hour_utc",
+        "source_class": "tests",
+        "domain_refs": ["DOM-007"],
+        "write_modes_allowed": ["insert", "append"],
+    })
+
+    _validator("state_handle.schema.json").validate(advisory)
+
+
 def test_domain_catalog_projection_is_generated_from_descriptors_and_state_handles() -> None:
     generator = _load_generator()
     catalog = generator.build_domain_catalog(

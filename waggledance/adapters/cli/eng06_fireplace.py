@@ -14,6 +14,14 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence, TextIO
 
+from waggledance.core.v3_13_0.eng06_burn_log_adapter import (
+    DEFAULT_AVERAGE_TEMP_KEY,
+    DEFAULT_DAY_KEY,
+    DEFAULT_FIRE_EVENT_COUNT_KEY,
+    DEFAULT_PEAK_TEMP_KEY,
+    TEMP_UNIT_CELSIUS,
+    normalize_burn_log_rows,
+)
 from waggledance.core.v3_13_0.eng06_fireplace_advisor import (
     summarize_burn_log,
 )
@@ -45,6 +53,31 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Override stale_threshold_hours for the burn-log solver",
     )
     parser.add_argument(
+        "--day-key",
+        default=DEFAULT_DAY_KEY,
+        help="Input row key containing the burn-log day",
+    )
+    parser.add_argument(
+        "--fire-count-key",
+        default=DEFAULT_FIRE_EVENT_COUNT_KEY,
+        help="Input row key containing the daily fire event count",
+    )
+    parser.add_argument(
+        "--peak-temp-key",
+        default=DEFAULT_PEAK_TEMP_KEY,
+        help="Input row key containing the daily peak chimney temperature",
+    )
+    parser.add_argument(
+        "--average-temp-key",
+        default=DEFAULT_AVERAGE_TEMP_KEY,
+        help="Input row key containing the daily average chimney temperature",
+    )
+    parser.add_argument(
+        "--temp-unit",
+        default=TEMP_UNIT_CELSIUS,
+        help="Temperature unit for input rows: celsius, fahrenheit, or kelvin",
+    )
+    parser.add_argument(
         "--pretty",
         action="store_true",
         default=False,
@@ -59,19 +92,32 @@ def run_from_payload(
     horizon_start_utc: str | None = None,
     horizon_end_utc: str | None = None,
     stale_threshold_hours: int | None = None,
+    day_key: str = DEFAULT_DAY_KEY,
+    fire_count_key: str = DEFAULT_FIRE_EVENT_COUNT_KEY,
+    peak_temp_key: str = DEFAULT_PEAK_TEMP_KEY,
+    average_temp_key: str = DEFAULT_AVERAGE_TEMP_KEY,
+    temp_unit: str = TEMP_UNIT_CELSIUS,
 ) -> dict[str, Any]:
     burn_log = payload.get("burn_log")
     if not isinstance(burn_log, list):
         raise ValueError("input JSON must contain burn_log list")
+    normalized_burn_log = normalize_burn_log_rows(
+        burn_log,
+        day_key=day_key,
+        fire_count_key=fire_count_key,
+        peak_temp_key=peak_temp_key,
+        average_temp_key=average_temp_key,
+        temp_unit=temp_unit,
+    )
     resolved_horizon_start = (
         horizon_start_utc
         or _optional_str(payload, "horizon_start_utc")
-        or _burn_log_day(burn_log, 0, "first burn_log row")
+        or _burn_log_day(normalized_burn_log, 0, "first burn_log row")
     )
     resolved_horizon_end = (
         horizon_end_utc
         or _optional_str(payload, "horizon_end_utc")
-        or _burn_log_day(burn_log, -1, "last burn_log row")
+        or _burn_log_day(normalized_burn_log, -1, "last burn_log row")
     )
     resolved_stale_threshold = (
         stale_threshold_hours
@@ -79,7 +125,7 @@ def run_from_payload(
         else payload.get("stale_threshold_hours")
     )
     result = summarize_burn_log(
-        burn_log,
+        normalized_burn_log,
         horizon_start_utc=resolved_horizon_start,
         horizon_end_utc=resolved_horizon_end,
         stale_threshold_hours=resolved_stale_threshold,
@@ -107,6 +153,11 @@ def main(
             horizon_start_utc=args.horizon_start_utc,
             horizon_end_utc=args.horizon_end_utc,
             stale_threshold_hours=args.stale_threshold_hours,
+            day_key=args.day_key,
+            fire_count_key=args.fire_count_key,
+            peak_temp_key=args.peak_temp_key,
+            average_temp_key=args.average_temp_key,
+            temp_unit=args.temp_unit,
         )
     except Exception as exc:
         print(

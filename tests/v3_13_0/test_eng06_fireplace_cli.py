@@ -42,6 +42,33 @@ def test_run_from_payload_defaults_horizon_to_first_and_last_row() -> None:
     assert result["horizon_end_utc"] == "2026-01-30T00:00:00Z"
 
 
+def test_run_from_payload_accepts_source_shaped_fahrenheit_rows() -> None:
+    result = run_from_payload(
+        {
+            "burn_log": [
+                {
+                    "day": "2026-01-11",
+                    "fires": 1,
+                    "peak_f": 212.0,
+                    "avg_f": 122.0,
+                },
+            ],
+        },
+        day_key="day",
+        fire_count_key="fires",
+        peak_temp_key="peak_f",
+        average_temp_key="avg_f",
+        temp_unit="fahrenheit",
+    )
+
+    assert result["result_marker"] == "OK"
+    assert result["horizon_start_utc"] == "2026-01-11T00:00:00Z"
+    assert result["horizon_end_utc"] == "2026-01-11T00:00:00Z"
+    assert result["fire_event_count_30d"] == 1
+    assert result["average_chimney_temp_c"] == 50.0
+    assert result["peak_chimney_temp_c"] == 100.0
+
+
 def test_main_prints_compact_json() -> None:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -54,6 +81,85 @@ def test_main_prints_compact_json() -> None:
     assert stderr.getvalue() == ""
     assert output["result_marker"] == "OK"
     assert output["fire_event_count_30d"] == 4
+
+
+def test_main_accepts_adapter_key_and_unit_flags(tmp_path: Path) -> None:
+    input_path = tmp_path / "source_burn_log.json"
+    input_path.write_text(
+        json.dumps({
+            "burn_log": [
+                {
+                    "day": "2026-01-11",
+                    "fires": 1,
+                    "peak_f": 212.0,
+                    "avg_f": 122.0,
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        [
+            "--input", str(input_path),
+            "--day-key", "day",
+            "--fire-count-key", "fires",
+            "--peak-temp-key", "peak_f",
+            "--average-temp-key", "avg_f",
+            "--temp-unit", "fahrenheit",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stdout.getvalue())
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    assert output["result_marker"] == "OK"
+    assert output["horizon_start_utc"] == "2026-01-11T00:00:00Z"
+    assert output["average_chimney_temp_c"] == 50.0
+    assert output["peak_chimney_temp_c"] == 100.0
+
+
+def test_main_accepts_kelvin_adapter_unit_flag(tmp_path: Path) -> None:
+    input_path = tmp_path / "source_burn_log.json"
+    input_path.write_text(
+        json.dumps({
+            "burn_log": [
+                {
+                    "day": "2026-01-11",
+                    "fires": 1,
+                    "peak_k": 373.15,
+                    "avg_k": 323.15,
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        [
+            "--input", str(input_path),
+            "--day-key", "day",
+            "--fire-count-key", "fires",
+            "--peak-temp-key", "peak_k",
+            "--average-temp-key", "avg_k",
+            "--temp-unit", "kelvin",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stdout.getvalue())
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    assert output["result_marker"] == "OK"
+    assert output["average_chimney_temp_c"] == 50.0
+    assert output["peak_chimney_temp_c"] == 100.0
 
 
 def test_main_pretty_output(tmp_path: Path) -> None:
@@ -194,6 +300,62 @@ def test_main_refuses_missing_burn_log_with_json_error(
     assert stdout.getvalue() == ""
     assert output["result_marker"] == "INVALID_INPUT_REFUSED"
     assert output["error"] == "input JSON must contain burn_log list"
+
+
+def test_main_refuses_missing_custom_adapter_key(tmp_path: Path) -> None:
+    input_path = tmp_path / "burn_log.json"
+    input_path.write_text(
+        json.dumps({
+            "burn_log": [
+                {
+                    "day": "2026-01-11",
+                    "fires": 1,
+                    "peak": 176.8,
+                    "average": 96.5,
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        [
+            "--input", str(input_path),
+            "--day-key", "missing_day",
+            "--fire-count-key", "fires",
+            "--peak-temp-key", "peak",
+            "--average-temp-key", "average",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert stdout.getvalue() == ""
+    assert output["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "missing_day" in output["error"]
+
+
+def test_main_refuses_unknown_temperature_unit(tmp_path: Path) -> None:
+    input_path = tmp_path / "burn_log.json"
+    input_path.write_text(json.dumps(_payload()), encoding="utf-8")
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["--input", str(input_path), "--temp-unit", "rankine"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert stdout.getvalue() == ""
+    assert output["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "temp_unit" in output["error"]
 
 
 def test_main_refuses_non_list_burn_log_with_json_error(

@@ -1,0 +1,188 @@
+{
+  "case_id": "ENG-06__cottage_fireplace_advisor__cottage",
+  "horizon_start_utc": "2026-01-01T00:00:00Z",
+  "horizon_end_utc": "2026-01-30T00:00:00Z",
+  "stale_threshold_hours": 48,
+  "burn_log": [
+    {
+      "day_utc": "2026-01-01T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-02T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-03T00:00:00Z",
+      "fire_event_count": 1,
+      "peak_chimney_temp_c": 142.4,
+      "average_chimney_temp_c": 88.2
+    },
+    {
+      "day_utc": "2026-01-04T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-05T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-06T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-07T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-08T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-09T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-10T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-11T00:00:00Z",
+      "fire_event_count": 2,
+      "peak_chimney_temp_c": 176.8,
+      "average_chimney_temp_c": 96.5
+    },
+    {
+      "day_utc": "2026-01-12T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-13T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-14T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-15T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-16T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-17T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-18T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-19T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-20T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-21T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-22T00:00:00Z",
+      "fire_event_count": 1,
+      "peak_chimney_temp_c": 131.2,
+      "average_chimney_temp_c": 84.1
+    },
+    {
+      "day_utc": "2026-01-23T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-24T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-25T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-26T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-27T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-28T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-29T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    },
+    {
+      "day_utc": "2026-01-30T00:00:00Z",
+      "fire_event_count": 0,
+      "peak_chimney_temp_c": 40.0,
+      "average_chimney_temp_c": 24.0
+    }
+  ]
+}

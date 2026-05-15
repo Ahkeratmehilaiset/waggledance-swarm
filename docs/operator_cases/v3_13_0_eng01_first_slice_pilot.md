@@ -24,10 +24,11 @@ substrate.
 
 * **Risk class**: `informational`. Read-only advisory output; no
   external_effect; no operator approval needed per WriteRCOGate.
-* **Connector dependencies**: the operator's existing pattern may use
-  private account state, but the first shipped path consumes an
-  already-fetched local spot-price JSON through the provider-neutral
-  adapter -- no credential dependency and no live network call.
+* **Connector dependencies**: the first shipped path can consume either
+  an already-fetched local spot-price JSON file or an operator-selected
+  public HTTP JSON feed through the provider-neutral parser, transport,
+  adapter, and solver. No provider catalog, credential store, or vendor
+  support claim is built into ENG-01.
 * **First-slice scope**: a list of 3 hours. Easy to verify the output
   by hand against any spot-price source the operator already trusts.
 * **Synthetic shadow exists**: the seed bundle entry already named
@@ -84,13 +85,16 @@ are upstream-data signals, not substrate invariant violations.
 
 ## Current boundaries
 
-* **No live spot-price network connector**. The pilot and offline CLI
-  consume already-fetched local JSON. Production wiring (operator-chosen
-  HTTP provider + parse) is a separate Sprint 2+ deliverable.
-* **Offline operator CLI exists**. The current operator invocation is:
+* **Operator-selected feed only**. The CLI accepts a URL chosen by the
+  operator, but the project does not certify a real provider endpoint or
+  include a provider catalog. The operator owns provider selection and
+  field mapping.
+* **Offline and URL operator CLI exist**. The offline invocation is:
   `python -m waggledance.adapters.cli.eng01_recommend --input examples/eng01/offline_prices_sample.json --pretty`.
-  The CLI reads local JSON only; it performs no live network calls and
-  does not read credentials.
+  The URL invocation is:
+  `python -m waggledance.adapters.cli.eng01_recommend --url https://prices.example.test/day-ahead.json --pretty`.
+  The URL path uses the fail-closed HTTP transport and response parser;
+  tests use injected transports and do not call live services.
 * **No operator-facing UI / dashboard**. The advisory output is a
   written local artifact; production rendering belongs to the
   SituationRoom Sprint 2 deliverable.
@@ -112,12 +116,26 @@ Expected top-3 hours from the sample are 02:00, 01:00, and 03:00 UTC.
 The sample is synthetic and provider-neutral; it is shaped as
 already-fetched hourly spot-price rows in EUR/MWh.
 
+Use the URL mode when the operator has selected and verified a public
+JSON feed:
+
+```powershell
+python -m waggledance.adapters.cli.eng01_recommend --url https://prices.example.test/day-ahead.json --pretty
+```
+
+For nested or differently named feed rows, pass `--rows-path`,
+`--hour-key`, and `--price-key`. See
+`docs/operator_cases/v3_13_0_eng01_feed_selection_guide.md` for the
+operator feed-selection contract and refusal boundaries.
+
 ## Suggested next concrete step
 
-Select the live provider contract for the operator's current spot-price
-source, then add a fetcher that produces the same local JSON shape as
-`examples/eng01/offline_prices_sample.json`. Keep credential/session
-handling outside ENG-01 until the chosen provider actually requires it.
+Run one operator-selected public JSON feed through the URL mode, compare
+the printed top-3 hours against the same provider's human-readable view,
+and record the mapping (`--rows-path`, `--hour-key`, `--price-key`,
+`--price-unit`) in the operator's local runbook. Keep credential/session
+handling outside committed ENG-01 docs unless a future scoped provider
+integration explicitly requires it.
 
 ## Operator delivery checklist (when this pilot is fully wired)
 
@@ -131,7 +149,11 @@ A future session can check off:
 * [x] Solver core + fail-closed hardening (PR #392, PR #393).
 * [x] Provider-neutral already-fetched feed adapter (PR #394).
 * [x] Offline operator CLI + sample JSON (PR #395 and follow-up docs).
-* [ ] Live operator-selected spot-price HTTP fetcher (Sprint 2+).
+* [x] Provider-neutral HTTP response parser (PR #398).
+* [x] Fail-closed HTTP transport for operator-selected public feeds
+      (PR #399).
+* [x] URL mode in the operator CLI (PR #400).
+* [x] Operator feed-selection guide (this follow-up).
 * [ ] SituationRoom render of the advisory (Sprint 2+).
 * [ ] One operator session at mokki where the operator reads the
       advisory and acts on it. (First true operator-facing value
@@ -153,3 +175,11 @@ and `tests/fixtures/v3_13_0/eng01_spot_electricity_shadow.json`.
 2026-05-15 follow-up: Codex updated this document and the ENG-01 fixtures to
 use provider-neutral spot-price feed naming after the offline CLI and
 provider-neutral adapter landed.
+
+2026-05-15 follow-up: Codex updated this document after the provider-neutral
+response parser, fail-closed HTTP transport, and CLI URL mode landed.
+
+After the feed-selection guide lands, the ENG-01 first slice is
+shippable end-to-end as a provider-neutral advisory CLI path. The next
+delivery layer is operator-visible rendering and scheduling, not another
+ENG-01 parser/transport/CLI step.

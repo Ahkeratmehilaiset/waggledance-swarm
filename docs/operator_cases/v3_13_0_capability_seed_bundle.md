@@ -72,7 +72,7 @@ must be able to compose; missing capabilities are the v3.13.0 gap-list.
   pattern for outdoor / off-site operations.
 * `operator_selected_spot_price_public_feed` -- 1 case (ENG-01).
   Anchor for time-of-use energy decisions; the live provider is selected
-  separately from the seed.
+  by the operator and mapped through the provider-neutral CLI URL mode.
 * `operator_review_queue` + `regulator_filing_portal_browser_session` --
   2 cases (FACTORY-01, FACTORY-02). External-effect path with explicit
   operator approval gate.
@@ -290,7 +290,8 @@ fetch_next_24h_spot_prices_and_return_top_3_cheapest_hours**.
 * synthetic shadow input exists (synthetic_24h_winter_with_known_min_at_02_00_local)
 * operator-facing-value visible in one sentence
 * first shipped path consumes an already-fetched local spot-price JSON;
-  live provider selection remains separate
+  URL mode can also consume an operator-selected public JSON feed through
+  the provider-neutral parser and fail-closed HTTP transport
 * first-slice output shape is simple (list of 3 hours)
 
 If that slice ships in one sprint with one operator using it once on

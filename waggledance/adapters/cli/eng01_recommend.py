@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence, TextIO
@@ -36,6 +38,9 @@ from waggledance.core.v3_13_0.eng01_price_feed_response_parser import (
 from waggledance.core.v3_13_0.eng01_spot_electricity import (
     recommend_top_3_cheapest_hours,
 )
+
+
+OUTPUT_ROOT = Path("data") / "eng01"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -133,6 +138,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Print an operator advisory card instead of the raw payload",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Also write JSON atomically to a relative data/eng01 path",
     )
     return parser.parse_args(argv)
 
@@ -246,6 +256,17 @@ def main(
                 allow_credential_headers=args.allow_credential_headers,
                 transport=transport,
             )
+
+        rendered = (
+            render_eng01_advisory_card(result) if args.render_card else result
+        )
+        output_text = json.dumps(
+            rendered,
+            indent=2 if args.pretty else None,
+            sort_keys=True,
+        )
+        if args.output is not None:
+            _write_output_file(args.output, output_text)
     except Exception as exc:
         print(
             json.dumps({
@@ -256,15 +277,7 @@ def main(
         )
         return 2
 
-    rendered = render_eng01_advisory_card(result) if args.render_card else result
-    print(
-        json.dumps(
-            rendered,
-            indent=2 if args.pretty else None,
-            sort_keys=True,
-        ),
-        file=out,
-    )
+    print(output_text, file=out)
     return 0
 
 
@@ -312,6 +325,56 @@ def _ensure_url_only_args_are_absent(args: argparse.Namespace) -> None:
         raise ValueError("--feed-source requires --url")
     if args.allow_credential_headers:
         raise ValueError("--allow-credential-headers requires --url")
+
+
+def _write_output_file(raw_path: str, output_text: str) -> None:
+    output_path = _resolve_output_path(raw_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.{os.getpid()}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_name = temp_file.name
+            temp_file.write(output_text + "\n")
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_name, output_path)
+        temp_name = None
+    finally:
+        if temp_name is not None:
+            temp_path = Path(temp_name)
+            if temp_path.exists():
+                temp_path.unlink()
+
+
+def _resolve_output_path(raw_path: str) -> Path:
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        raise ValueError("--output must be a relative path under data/eng01")
+    if any(part == ".." for part in candidate.parts):
+        raise ValueError("--output must be a relative path under data/eng01")
+    unresolved = Path.cwd() / candidate
+    base = (Path.cwd() / OUTPUT_ROOT).resolve()
+    resolved = unresolved.resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(
+            "--output must be a relative path under data/eng01"
+        ) from exc
+    if resolved == base or not resolved.name:
+        raise ValueError("--output must include a file name")
+    if unresolved.is_symlink():
+        raise ValueError("--output must not be a symbolic link")
+    if unresolved.exists() and not unresolved.is_file():
+        raise ValueError("--output must target a regular file")
+    return resolved
 
 
 def _utc_now_timestamp() -> str:

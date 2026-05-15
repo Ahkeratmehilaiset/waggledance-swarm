@@ -1,0 +1,69 @@
+{
+  "case_id": "FIN-10__cottage_bookkeeping_separator__cottage",
+  "cottage_signals": [
+    "cottage road",
+    "lake supply",
+    "north cabin",
+    "wood delivery"
+  ],
+  "home_signals": [
+    "home street",
+    "city center",
+    "home supply",
+    "urban grocery"
+  ],
+  "receipts": [
+    {
+      "receipt_id": "r-001",
+      "vendor_name": "Lake Supply",
+      "address": "12 Cottage Road",
+      "description": "Repair materials"
+    },
+    {
+      "receipt_id": "r-002",
+      "vendor_name": "Urban Grocery",
+      "address": "44 Home Street",
+      "description": "Kitchen supplies"
+    },
+    {
+      "receipt_id": "r-003",
+      "vendor_name": "North Cabin Hardware",
+      "description": "North cabin lock replacement"
+    },
+    {
+      "receipt_id": "r-004",
+      "vendor_name": "City Center Parking",
+      "description": "Home office visit"
+    },
+    {
+      "receipt_id": "r-005",
+      "vendor_name": "Wood Delivery Service",
+      "description": "Wood delivery for cottage road storage"
+    },
+    {
+      "receipt_id": "r-006",
+      "vendor_name": "Home Supply Example",
+      "description": "Home street shelf brackets"
+    },
+    {
+      "receipt_id": "r-007",
+      "vendor_name": "Fuel Stop",
+      "description": "Fuel between home street and cottage road"
+    },
+    {
+      "receipt_id": "r-008",
+      "vendor_name": "General Store",
+      "description": "No clear location signal"
+    },
+    {
+      "receipt_id": "r-009",
+      "vendor_name": "Shared Supplies",
+      "description": "Urban grocery and lake supply in same receipt"
+    },
+    {
+      "receipt_id": "r-010",
+      "vendor_name": "Cash Receipt",
+      "description": "Handwritten generic materials"
+    }
+  ]
+}

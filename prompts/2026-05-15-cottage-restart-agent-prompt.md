@@ -20,31 +20,25 @@ Release rule:
   no_earlier_than=2026-05-24.
 
 Immediate task:
-1. Check PR #410:
-   gh pr view 410 --json number,state,headRefOid,mergeable,mergeStateStatus,statusCheckRollup,url
-2. PR #410 is ENG-06 advisory card:
-   branch codex/eng06-advisory-card-20260515
-   head a43a9cf268ab14681b14ea03a5759f56ca5c88ea
-   files:
-   - waggledance/core/v3_13_0/eng06_advisory_card.py
-   - tests/v3_13_0/test_eng06_advisory_card.py
-3. Wait for GitHub CI 5/5 SUCCESS and Claude RCO PASS on bridge task:
-   claude-rco-pr410-eng06-advisory-card-2026-05-15
-4. Merge exact head only:
-   gh pr merge 410 --merge --delete-branch --match-head-commit a43a9cf268ab14681b14ea03a5759f56ca5c88ea
-5. If local branch deletion fails because it is checked out in a worktree, verify GitHub state before doing anything else:
+1. Check that PR #410 is already merged:
    gh pr view 410 --json number,state,mergedAt,mergeCommit,headRefOid,title,url
-6. After merge:
-   git pull --ff-only
-   run postmerge sanity:
-   .\.venv\Scripts\python.exe -B -m pytest tests\v3_13_0 -q -p no:cacheprovider --basetemp .pytest-tmp-postmerge-pr410-v313
-   .\.venv\Scripts\python.exe -B -m pytest tests\contracts -q -p no:cacheprovider --basetemp .pytest-tmp-postmerge-pr410-contracts
-   .\.venv\Scripts\python.exe -B -m pytest tests\tools -q -p no:cacheprovider --basetemp .pytest-tmp-postmerge-pr410-tools
-   .\.venv\Scripts\python.exe -B tools\audit_v3_13_0_event_surface.py --count-only
-   .\.venv\Scripts\python.exe -B tools\check_release_gate.py --allow-hold
-7. Record bridge done/postmerge event.
+   Expected merge commit: db4ef940be364bd93ce338c24419735af50452cc.
+2. Confirm PR #410 postmerge sanity is already recorded on bridge task:
+   postmerge-sanity-after-pr410-2026-05-15
+   Expected result:
+   - tests/v3_13_0: 532 passed, 1 skipped
+   - tests/contracts: 486 passed
+   - tests/tools: 37 passed
+   - event surface: 49
+   - release gate: HOLD
+3. Finish this handoff if PR #411 is still open:
+   gh pr view 411 --json number,state,headRefOid,mergeable,mergeStateStatus,statusCheckRollup,url
+   Verify CI and Claude RCO after the latest commit, then merge exact current head.
+4. Treat PR #412 as complementary Claude long-form handoff/history:
+   gh pr view 412 --json number,state,headRefOid,mergeable,mergeStateStatus,statusCheckRollup,url
+   Review separately; do not merge just because PR #411 is ready.
 
-After PR #410:
+After the handoff is on main:
 - Check bridge scout task claude-scout-next-operator-value-after-pr409-2026-05-15.
 - Choose the next smallest operator-value PR.
 - Likely options:

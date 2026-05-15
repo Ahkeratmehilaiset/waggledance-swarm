@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from pytest import MonkeyPatch
+
 from waggledance.adapters.cli.eng01_recommend import main, run_from_payload
 from waggledance.core.v3_13_0.eng01_price_feed_http_transport import (
     Eng01PriceFeedHttpResponse,
@@ -151,6 +153,179 @@ def test_main_can_render_operator_advisory_card() -> None:
     assert output["write_intent"] == "none"
     assert output["status"] == "ok"
     assert output["top_hours"][0]["hour_utc"] == "2026-01-16T02:00:00Z"
+
+
+def test_main_writes_output_snapshot_under_data_eng01(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    output_path = Path("data/eng01/latest_advisory.json")
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        [
+            "--input", str(EXAMPLE_INPUT),
+            "--render-card",
+            "--pretty",
+            "--output", str(output_path),
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    printed = json.loads(stdout.getvalue())
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    assert written == printed
+    assert written["schema_version"] == "eng01_advisory_card.v1"
+    assert written["result_marker"] == "OK"
+    assert list(output_path.parent.glob(".latest_advisory.json.*.tmp")) == []
+
+
+def test_main_url_mode_writes_output_snapshot(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    output_path = Path("data/eng01/latest_advisory.json")
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        [
+            "--url", URL,
+            "--fetched-at-utc", "2026-01-15T20:00:00Z",
+            "--horizon-start-utc", "2026-01-16T00:00:00Z",
+            "--horizon-hours", "3",
+            "--output", str(output_path),
+        ],
+        stdout=stdout,
+        stderr=stderr,
+        transport=lambda url, *_: _http_response(url),
+    )
+    printed = json.loads(stdout.getvalue())
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    assert written == printed
+    assert written["result_marker"] == "OK"
+    assert written["feed_source"] == "operator_selected_prices_example_test"
+
+
+def test_main_refuses_output_outside_data_eng01(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["--input", str(EXAMPLE_INPUT), "--output", "latest.json"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert stdout.getvalue() == ""
+    assert output["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "--output must be a relative path under data/eng01" in \
+        output["error"]
+
+
+def test_main_refuses_absolute_output_path(tmp_path: Path) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        [
+            "--input", str(EXAMPLE_INPUT),
+            "--output", str(tmp_path / "latest_advisory.json"),
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert stdout.getvalue() == ""
+    assert output["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "--output must be a relative path under data/eng01" in \
+        output["error"]
+
+
+def test_main_refuses_output_path_traversal(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        [
+            "--input", str(EXAMPLE_INPUT),
+            "--output", "data/eng01/../latest_advisory.json",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert stdout.getvalue() == ""
+    assert output["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "--output must be a relative path under data/eng01" in \
+        output["error"]
+
+
+def test_main_refuses_output_root_without_file_name(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["--input", str(EXAMPLE_INPUT), "--output", "data/eng01"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert stdout.getvalue() == ""
+    assert output["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "--output must include a file name" in output["error"]
+
+
+def test_main_refuses_output_directory_target(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    output_path = Path("data/eng01/latest_advisory.json")
+    output_path.mkdir(parents=True)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["--input", str(EXAMPLE_INPUT), "--output", str(output_path)],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    output = json.loads(stderr.getvalue())
+
+    assert exit_code == 2
+    assert stdout.getvalue() == ""
+    assert output["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "--output must target a regular file" in output["error"]
 
 
 def test_main_fetches_url_with_injected_transport() -> None:

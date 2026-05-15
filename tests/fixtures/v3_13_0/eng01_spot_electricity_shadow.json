@@ -3,7 +3,7 @@
   "fixture_version": 1,
   "case_id": "ENG-01__spot_electricity_monitor__home",
   "first_solver_slice": "fetch_next_24h_spot_prices_and_return_top_3_cheapest_hours",
-  "fixture_purpose": "Deterministic 24h spot-price shadow inputs for the ENG-01 first slice. Synthetic data only -- no live network, no credentials, no token files. Each scenario block carries an `input` synthesized to match what a real Fingrid public spot-price feed would produce in shape (UTC-hourly entries, EUR/kWh), an `expected_output` for the happy-path first-slice answer, and an `expected_audit_marker` naming the MAGMA event the substrate would emit. The fixture is consumable by ShadowRunner.compare_outputs as baseline, by DivergenceAnalyzer.compare_json as candidate-vs-baseline, and by a future SolverSynthesizer-generated solver as ground truth.",
+  "fixture_purpose": "Deterministic 24h spot-price shadow inputs for the ENG-01 first slice. Synthetic data only -- no live network, no credentials, no token files. Each scenario block carries an `input` synthesized to match an operator-selected public spot-price feed shape (UTC-hourly entries, EUR/kWh), an `expected_output` for the happy-path first-slice answer, and an `expected_audit_marker` naming the MAGMA event the substrate would emit. The fixture is consumable by ShadowRunner.compare_outputs as baseline, by DivergenceAnalyzer.compare_json as candidate-vs-baseline, and by a future SolverSynthesizer-generated solver as ground truth.",
   "currency": "EUR_per_kwh",
   "timezone_note": "All hour timestamps are UTC. The recommendation_text in expected outputs is rendered in operator local time (Europe/Helsinki) for display, but raw price input + raw output structure stay in UTC for substrate determinism.",
   "scenarios": {
@@ -14,7 +14,7 @@
         "fetched_at_utc": "2026-01-15T20:00:00Z",
         "horizon_start_utc": "2026-01-16T00:00:00Z",
         "horizon_hours": 24,
-        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "feed_source": "operator_selected_spot_price_public_feed_synthetic",
         "prices_eur_per_kwh": [
           {"hour_utc": "2026-01-16T00:00:00Z", "price_eur_per_kwh": 0.067},
           {"hour_utc": "2026-01-16T01:00:00Z", "price_eur_per_kwh": 0.038},
@@ -66,7 +66,7 @@
         "fetched_at_utc": "2026-07-15T20:00:00Z",
         "horizon_start_utc": "2026-07-16T00:00:00Z",
         "horizon_hours": 24,
-        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "feed_source": "operator_selected_spot_price_public_feed_synthetic",
         "prices_eur_per_kwh": [
           {"hour_utc": "2026-07-16T00:00:00Z", "price_eur_per_kwh": 0.029},
           {"hour_utc": "2026-07-16T01:00:00Z", "price_eur_per_kwh": 0.022},
@@ -118,7 +118,7 @@
         "fetched_at_utc": "2026-01-15T06:00:00Z",
         "horizon_start_utc": "2026-01-16T00:00:00Z",
         "horizon_hours": 24,
-        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "feed_source": "operator_selected_spot_price_public_feed_synthetic",
         "stale_threshold_hours": 12,
         "actual_age_at_horizon_start_hours": 18,
         "prices_eur_per_kwh": [
@@ -130,7 +130,7 @@
         "result_marker": "STALE_DATA_REFUSED",
         "stale_reason": "feed_age_18h_exceeds_threshold_12h",
         "top_3_cheapest_hours_utc": [],
-        "recommendation_text_template": "Hintatieto on 18 tuntia vanha (kynnys 12 tuntia). En suosita siirtoja ilman tuoretta dataa. Pyyda Helen / Fingrid sync uudelleen ja yrita uudestaan."
+        "recommendation_text_template": "Hintatieto on 18 tuntia vanha (kynnys 12 tuntia). En suosita siirtoja ilman tuoretta dataa. Pyyda price-feed sync uudelleen ja yrita uudestaan."
       },
       "expected_audit_marker": "solver.advisory_refused_upstream_stale",
       "writerco_risk_class": "informational",
@@ -143,7 +143,7 @@
         "fetched_at_utc": "2026-01-15T20:00:00Z",
         "horizon_start_utc": "2026-01-16T00:00:00Z",
         "horizon_hours": 24,
-        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "feed_source": "operator_selected_spot_price_public_feed_synthetic",
         "missing_hours_utc": ["2026-01-16T03:00:00Z"],
         "prices_eur_per_kwh": [
           {"hour_utc": "2026-01-16T00:00:00Z", "price_eur_per_kwh": 0.067},
@@ -169,7 +169,7 @@
         "fetched_at_utc": "2026-01-15T20:00:00Z",
         "horizon_start_utc": "2026-01-16T00:00:00Z",
         "horizon_hours": 24,
-        "feed_source": "fingrid_spot_price_public_feed_synthetic",
+        "feed_source": "operator_selected_spot_price_public_feed_synthetic",
         "duplicate_hour_utc": "2026-01-16T02:00:00Z",
         "prices_eur_per_kwh": [
           {"hour_utc": "2026-01-16T00:00:00Z", "price_eur_per_kwh": 0.067},
@@ -198,10 +198,10 @@
     "All failure modes map to WriteRCO risk class informational (read-only advisory; no operator approval needed to refuse, no external_effect)."
   ],
   "not_in_this_fixture": [
-    "No live Fingrid feed snapshots; all data synthetic.",
+    "No live provider feed snapshots; all data synthetic.",
     "No operator credentials, tokens, or account identifiers.",
     "No real consumption profile from operator's actual past usage.",
-    "No HEEC / nordpool / other feed-provider-specific schema variants -- this fixture is shaped after the Fingrid public spot-price feed only.",
+    "No HEEC / Nord Pool / other feed-provider-specific schema variants -- this fixture stays provider-neutral.",
     "No multi-day horizon (only 24h); future ENG-01 v2 slices may extend to 7-day forecast.",
     "No solver candidate manifest -- this fixture is the SHADOW INPUT, not the candidate."
   ]

@@ -9,6 +9,10 @@ from pathlib import Path
 from waggledance.adapters.cli.eng01_recommend import main, run_from_payload
 
 
+ROOT = Path(__file__).resolve().parents[2]
+EXAMPLE_INPUT = ROOT / "examples" / "eng01" / "offline_prices_sample.json"
+
+
 def _payload() -> dict:
     return {
         "fetched_at_utc": "2026-01-15T20:00:00Z",
@@ -104,3 +108,23 @@ def test_main_preserves_bool_horizon_for_fail_closed_adapter_check(
     assert exit_code == 2
     assert output["result_marker"] == "INVALID_INPUT_REFUSED"
     assert "horizon_hours must be a positive integer" in output["error"]
+
+
+def test_example_input_file_runs_through_cli() -> None:
+    stdout = io.StringIO()
+
+    exit_code = main(["--input", str(EXAMPLE_INPUT)], stdout=stdout)
+    output = json.loads(stdout.getvalue())
+
+    assert exit_code == 0
+    assert output["result_marker"] == "OK"
+    assert output["feed_source"] == \
+        "operator_selected_spot_price_public_feed_sample"
+    assert output["top_3_cheapest_hours_utc"] == [
+        {"hour_utc": "2026-01-16T02:00:00Z", "price_eur_per_kwh": 0.031,
+         "rank": 1},
+        {"hour_utc": "2026-01-16T01:00:00Z", "price_eur_per_kwh": 0.038,
+         "rank": 2},
+        {"hour_utc": "2026-01-16T03:00:00Z", "price_eur_per_kwh": 0.042,
+         "rank": 3},
+    ]

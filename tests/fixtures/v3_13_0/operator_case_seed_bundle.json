@@ -154,7 +154,7 @@
       ],
       "connector_handles": [
         "conn:helen_browser_session",
-        "conn:fingrid_spot_price_public_feed"
+        "conn:operator_selected_spot_price_public_feed"
       ],
       "required_capabilities": [
         "browser_session_persistent",

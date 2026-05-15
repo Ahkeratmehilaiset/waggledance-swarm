@@ -24,10 +24,10 @@ substrate.
 
 * **Risk class**: `informational`. Read-only advisory output; no
   external_effect; no operator approval needed per WriteRCOGate.
-* **Connector dependencies**: the operator's existing pattern uses
-  `helen_browser_session` (private, requires credentials) AND the
-  public `fingrid_spot_price_public_feed` (no credentials). The first
-  slice uses ONLY the public feed -- no credential dependency.
+* **Connector dependencies**: the operator's existing pattern may use
+  private account state, but the first shipped path consumes an
+  already-fetched local spot-price JSON through the provider-neutral
+  adapter -- no credential dependency and no live network call.
 * **First-slice scope**: a list of 3 hours. Easy to verify the output
   by hand against any spot-price source the operator already trusts.
 * **Synthetic shadow exists**: the seed bundle entry already named
@@ -82,19 +82,15 @@ deterministic scenarios:
 All scenarios share `writerco_risk_class: informational` -- failures
 are upstream-data signals, not substrate invariant violations.
 
-## What is NOT in this pilot
+## Current boundaries
 
-* **No live Fingrid network connector**. The pilot consumes the
-  shadow fixture only. Production wiring (HTTP fetch + parse) is a
-  separate Sprint 2+ deliverable.
-* **No operator CLI**. The pilot does not add a `python -m
-  waggledance.solver.eng01` entry point. Operator invocation in the
-  pilot is the e2e smoke harness extension (test code path).
-* **No SolverSynthesizer**. The candidate manifest in the smoke harness
-  is hand-crafted from the seed bundle entry. A real SolverSynthesizer
-  pass would generate it from the seed bundle + the runbook context;
-  that is the immediate next deliverable AFTER the first slice runs
-  end-to-end with a hand-crafted manifest.
+* **No live spot-price network connector**. The pilot and offline CLI
+  consume already-fetched local JSON. Production wiring (operator-chosen
+  HTTP provider + parse) is a separate Sprint 2+ deliverable.
+* **Offline operator CLI exists**. The current operator invocation is:
+  `python -m waggledance.adapters.cli.eng01_recommend --input examples/eng01/offline_prices_sample.json --pretty`.
+  The CLI reads local JSON only; it performs no live network calls and
+  does not read credentials.
 * **No operator-facing UI / dashboard**. The advisory output is a
   written local artifact; production rendering belongs to the
   SituationRoom Sprint 2 deliverable.
@@ -104,49 +100,46 @@ are upstream-data signals, not substrate invariant violations.
   `external_effect` risk class write through `WriteRCOGate`, which is
   out of scope for the first slice.
 
-## Suggested next concrete step (after this PR lands)
+## Current operator invocation
 
-Extend `tests/v3_13_0/test_e2e_solver_rco_smoke.py` (the e2e smoke
-harness merged in PR #387) with a new test
-`test_e2e_eng01_first_slice_with_shadow_fixture` that:
+Use the checked-in sample to exercise the shipped offline path:
 
-1. Loads the case `ENG-01__spot_electricity_monitor__home` from the
-   seed bundle (`tests/fixtures/v3_13_0/operator_case_seed_bundle.json`,
-   in main).
-2. Loads the shadow fixture's `happy_path__synthetic_24h_winter`
-   scenario from `tests/fixtures/v3_13_0/eng01_spot_electricity_shadow.json`
-   (this PR).
-3. Hand-crafts a SCH-005 manifest using the case + a synthetic
-   candidate_id.
-4. Drives all 8 stages from the mapping table above.
-5. Asserts that the candidate solver's top-3 output matches the
-   fixture's `expected_output.top_3_cheapest_hours_utc` exactly.
-6. Repeats for the 3 failure-mode scenarios, asserting refusal markers.
+```powershell
+python -m waggledance.adapters.cli.eng01_recommend --input examples/eng01/offline_prices_sample.json --pretty
+```
 
-That extension is tests-only (uses the existing substrate). It is the
-SMALLEST viable step toward "operator gets a real recommendation from
-a real-shape solver", short of actually shipping the Fingrid connector.
+Expected top-3 hours from the sample are 02:00, 01:00, and 03:00 UTC.
+The sample is synthetic and provider-neutral; it is shaped as
+already-fetched hourly spot-price rows in EUR/MWh.
+
+## Suggested next concrete step
+
+Select the live provider contract for the operator's current spot-price
+source, then add a fetcher that produces the same local JSON shape as
+`examples/eng01/offline_prices_sample.json`. Keep credential/session
+handling outside ENG-01 until the chosen provider actually requires it.
 
 ## Operator delivery checklist (when this pilot is fully wired)
 
 A future session can check off:
 
-* [x] Seed bundle case ENG-01 in main (PR #388, this PR's parent).
-* [x] Shadow fixture in main (this PR).
-* [x] Pilot doc in main (this PR).
-* [ ] e2e smoke test extension consuming the fixture (next PR after
-      this lands; suggested step above).
-* [ ] SolverSynthesizer v1 that turns the seed bundle entry into the
-      manifest automatically (Sprint 2).
-* [ ] Real Fingrid public-feed HTTP connector (Sprint 2).
-* [ ] Operator CLI / SituationRoom render of the advisory (Sprint 2+).
+* [x] Seed bundle case ENG-01 in main (PR #388).
+* [x] Shadow fixture in main (PR #390).
+* [x] Pilot doc in main (PR #390).
+* [x] SolverSynthesizer v1 for seed-to-manifest flow (PR #389).
+* [x] e2e smoke test extension consuming the fixture (PR #391).
+* [x] Solver core + fail-closed hardening (PR #392, PR #393).
+* [x] Provider-neutral already-fetched feed adapter (PR #394).
+* [x] Offline operator CLI + sample JSON (PR #395 and follow-up docs).
+* [ ] Live operator-selected spot-price HTTP fetcher (Sprint 2+).
+* [ ] SituationRoom render of the advisory (Sprint 2+).
 * [ ] One operator session at mokki where the operator reads the
       advisory and acts on it. (First true operator-facing value
       delivery.)
 
 The checklist gives the operator a visible roadmap from "substrate
-exists" to "operator gets value", with this pilot landing the first 3
-items in a single release-pipeline PR.
+exists" to "operator gets value" and separates the shipped offline path
+from the remaining live-provider and SituationRoom work.
 
 ## Authority
 
@@ -156,3 +149,7 @@ T09:47:42Z on `claude-release-eng01-first-slice-pilot-2026-05-14`. PR
 `done/merged` (implicit) and `decision/rco_pass` 09:49:00Z. Write scope
 honored: exactly `docs/operator_cases/v3_13_0_eng01_first_slice_pilot.md`
 and `tests/fixtures/v3_13_0/eng01_spot_electricity_shadow.json`.
+
+2026-05-15 follow-up: Codex updated this document and the ENG-01 fixtures to
+use provider-neutral spot-price feed naming after the offline CLI and
+provider-neutral adapter landed.

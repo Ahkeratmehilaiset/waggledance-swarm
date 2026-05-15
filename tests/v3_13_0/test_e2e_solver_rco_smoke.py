@@ -728,7 +728,7 @@ def test_e2e_eng01_first_slice_winter_full_substrate_chain(
 
     state_info = StateInfo(
         state_id=ENG01_TARGET_STATE_REF,
-        plane="filesystem_artifact",
+        plane="informational_artifact",
         write_modes_allowed=["insert"],
         sensitive_class="internal",
         single_writer_required=False,
@@ -778,17 +778,7 @@ def test_e2e_eng01_first_slice_winter_full_substrate_chain(
         f"gate refused ENG-01 advisory intent: "
         f"denial_reason={outcome.denial_reason}"
     )
-    # SUBSTRATE-TRUE NOTE: the ENG-01 seed bundle declares
-    # risk_class="informational", but WriteRCOGate.classify() does NOT
-    # currently produce INFORMATIONAL -- per test_write_rco_gate.py the
-    # INFORMATIONAL class is "a passthrough class for the route()-level
-    # handling, not classify()". A filesystem_artifact plane is mapped to
-    # LOCAL_ARTIFACT today. This is the smallest e2e proof of a real
-    # seed-vs-gate semantic gap: future Sprint 2 design needs to either
-    # add a plane that classifies to INFORMATIONAL, or accept that
-    # "informational" seeds become "local_artifact" writes in practice.
-    # Until then, assert the SUBSTRATE-TRUE classification.
-    assert outcome.risk_class == WriteRiskClass.LOCAL_ARTIFACT
+    assert outcome.risk_class == WriteRiskClass.INFORMATIONAL
 
     exec_result = gate.execute(intent, outcome)
     assert exec_result.success

@@ -58,6 +58,7 @@
         "control_state",
         "retrieval_data",
         "filesystem_artifact",
+        "informational_artifact",
         "browser_profile",
         "external_readonly",
         "external_system",

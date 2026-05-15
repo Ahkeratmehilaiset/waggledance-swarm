@@ -198,6 +198,20 @@ class TestClassification:
         intent = _make_intent(target_state_ref="state:report_dir")
         assert gate.classify(intent) == WriteRiskClass.LOCAL_ARTIFACT
 
+    def test_classify_informational_when_plane_informational_artifact(self):
+        audit = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:advisory": StateInfo(
+                state_id="state:advisory",
+                plane="informational_artifact",
+                write_modes_allowed=["insert"],
+                sensitive_class="internal",
+                single_writer_required=False,
+            ),
+        })
+        intent = _make_intent(target_state_ref="state:advisory")
+        assert gate.classify(intent) == WriteRiskClass.INFORMATIONAL
+
     def test_classify_external_effect_when_plane_external_system(self):
         audit = []
         gate = _make_gate(audit_collector=audit, states={
@@ -261,14 +275,16 @@ class TestClassification:
 #   Rule 1b: state.plane == "external_system" -> EXTERNAL_EFFECT
 #   Rule 1c: action in {post,patch,put} and state.plane NOT in internal list
 #            -> EXTERNAL_EFFECT
-#   Rule 2:  state.plane in {filesystem_artifact, retrieval_data}
+#   Rule 2:  state.plane == informational_artifact -> INFORMATIONAL
+#   Rule 3:  state.plane in {filesystem_artifact, retrieval_data}
 #            -> LOCAL_ARTIFACT
-#   Rule 3:  state.plane in {magma_history, control_state, audit_projection}
+#   Rule 4:  state.plane in {magma_history, control_state, audit_projection}
 #            -> INTERNAL_MEMORY
 #   Default: conservative EXTERNAL_EFFECT
 #
 # Internal-plane list (per source line 312-314): magma_history, control_state,
-# retrieval_data, filesystem_artifact, audit_projection.
+# retrieval_data, filesystem_artifact, informational_artifact,
+# audit_projection.
 #
 # Each row asserts the (intent, gate) -> expected_risk_class mapping. The
 # names are precise enough to debug a single failure without re-reading the
@@ -308,6 +324,9 @@ CLASSIFY_MATRIX = [
     ("rule_1a__connector_external_overrides_filesystem_plane",
      "insert", "filesystem_artifact", WriteRiskClass.EXTERNAL_EFFECT, True,
      WriteRiskClass.EXTERNAL_EFFECT),
+    ("rule_1a__connector_external_overrides_informational_plane",
+     "insert", "informational_artifact", WriteRiskClass.EXTERNAL_EFFECT, True,
+     WriteRiskClass.EXTERNAL_EFFECT),
     ("rule_1a__connector_external_overrides_unknown_plane",
      "insert", None, WriteRiskClass.EXTERNAL_EFFECT, True,
      WriteRiskClass.EXTERNAL_EFFECT),
@@ -334,48 +353,59 @@ CLASSIFY_MATRIX = [
      "post", "external_readonly", None, False,
      WriteRiskClass.EXTERNAL_EFFECT),
     # ----- Rule 1c NEGATIVE: HTTP action on plane IN internal list does
-    # NOT trigger Rule 1c; falls through to Rule 2 or Rule 3.
+    # NOT trigger Rule 1c; falls through to Rule 2, 3, or 4.
     ("rule_1c_negative__post_on_filesystem_artifact_is_LOCAL",
      "post", "filesystem_artifact", None, False, WriteRiskClass.LOCAL_ARTIFACT),
     ("rule_1c_negative__post_on_retrieval_data_is_LOCAL",
      "post", "retrieval_data", None, False, WriteRiskClass.LOCAL_ARTIFACT),
+    ("rule_1c_negative__post_on_informational_artifact_is_INFORMATIONAL",
+     "post", "informational_artifact", None, False,
+     WriteRiskClass.INFORMATIONAL),
     ("rule_1c_negative__post_on_magma_history_is_INTERNAL",
      "post", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
     ("rule_1c_negative__patch_on_audit_projection_is_INTERNAL",
      "patch", "audit_projection", None, False, WriteRiskClass.INTERNAL_MEMORY),
     ("rule_1c_negative__put_on_control_state_is_INTERNAL",
      "put", "control_state", None, False, WriteRiskClass.INTERNAL_MEMORY),
-    # ----- Rule 2: filesystem_artifact + retrieval_data both -> LOCAL_ARTIFACT
+    # ----- Rule 2: informational_artifact -> INFORMATIONAL for advisory
+    # artifact writes.
+    ("rule_2__insert_on_informational_artifact",
+     "insert", "informational_artifact", None, False,
+     WriteRiskClass.INFORMATIONAL),
+    ("rule_2__append_on_informational_artifact",
+     "append", "informational_artifact", None, False,
+     WriteRiskClass.INFORMATIONAL),
+    # ----- Rule 3: filesystem_artifact + retrieval_data both -> LOCAL_ARTIFACT
     # for non-HTTP actions.
-    ("rule_2__insert_on_filesystem_artifact",
+    ("rule_3__insert_on_filesystem_artifact",
      "insert", "filesystem_artifact", None, False,
      WriteRiskClass.LOCAL_ARTIFACT),
-    ("rule_2__update_on_filesystem_artifact",
+    ("rule_3__update_on_filesystem_artifact",
      "update", "filesystem_artifact", None, False,
      WriteRiskClass.LOCAL_ARTIFACT),
-    ("rule_2__delete_on_filesystem_artifact",
+    ("rule_3__delete_on_filesystem_artifact",
      "delete", "filesystem_artifact", None, False,
      WriteRiskClass.LOCAL_ARTIFACT),
-    ("rule_2__append_on_filesystem_artifact",
+    ("rule_3__append_on_filesystem_artifact",
      "append", "filesystem_artifact", None, False,
      WriteRiskClass.LOCAL_ARTIFACT),
-    ("rule_2__insert_on_retrieval_data",
+    ("rule_3__insert_on_retrieval_data",
      "insert", "retrieval_data", None, False, WriteRiskClass.LOCAL_ARTIFACT),
-    ("rule_2__update_on_retrieval_data",
+    ("rule_3__update_on_retrieval_data",
      "update", "retrieval_data", None, False, WriteRiskClass.LOCAL_ARTIFACT),
-    # ----- Rule 3: magma_history, control_state, audit_projection all
+    # ----- Rule 4: magma_history, control_state, audit_projection all
     # -> INTERNAL_MEMORY for non-HTTP actions.
-    ("rule_3__insert_on_magma_history",
+    ("rule_4__insert_on_magma_history",
      "insert", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
-    ("rule_3__update_on_magma_history",
+    ("rule_4__update_on_magma_history",
      "update", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
-    ("rule_3__delete_on_magma_history",
+    ("rule_4__delete_on_magma_history",
      "delete", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
-    ("rule_3__append_on_magma_history",
+    ("rule_4__append_on_magma_history",
      "append", "magma_history", None, False, WriteRiskClass.INTERNAL_MEMORY),
-    ("rule_3__insert_on_control_state",
+    ("rule_4__insert_on_control_state",
      "insert", "control_state", None, False, WriteRiskClass.INTERNAL_MEMORY),
-    ("rule_3__update_on_audit_projection",
+    ("rule_4__update_on_audit_projection",
      "update", "audit_projection", None, False,
      WriteRiskClass.INTERNAL_MEMORY),
     # ----- Conservative default: unresolved state, no connector -> EXTERNAL.
@@ -395,6 +425,9 @@ CLASSIFY_MATRIX = [
     ("connector_internal_memory_does_not_short_circuit__plane_filesystem",
      "insert", "filesystem_artifact", WriteRiskClass.INTERNAL_MEMORY, True,
      WriteRiskClass.LOCAL_ARTIFACT),
+    ("connector_local_artifact_does_not_short_circuit__plane_informational",
+     "insert", "informational_artifact", WriteRiskClass.LOCAL_ARTIFACT, True,
+     WriteRiskClass.INFORMATIONAL),
     ("connector_informational_does_not_short_circuit__plane_external_system",
      "insert", "external_system", WriteRiskClass.INFORMATIONAL, True,
      WriteRiskClass.EXTERNAL_EFFECT),
@@ -462,17 +495,93 @@ def test_classify_matrix_covers_all_risk_classes() -> None:
     accidentally dropping a class when editing the matrix."""
     expected_classes = {row[5] for row in CLASSIFY_MATRIX}
     assert expected_classes >= {
-        WriteRiskClass.INFORMATIONAL.value
-        and WriteRiskClass.INFORMATIONAL,
+        WriteRiskClass.INFORMATIONAL,
         WriteRiskClass.INTERNAL_MEMORY,
         WriteRiskClass.LOCAL_ARTIFACT,
         WriteRiskClass.EXTERNAL_EFFECT,
-    } - {WriteRiskClass.INFORMATIONAL}, (
-        "classify() matrix should cover INTERNAL_MEMORY, LOCAL_ARTIFACT, "
-        "EXTERNAL_EFFECT outcomes; INFORMATIONAL is not produced by the "
-        "current dispatch rules (it is a passthrough class for the route()-"
-        "level handling, not classify())"
+    }, (
+        "classify() matrix should cover INFORMATIONAL, INTERNAL_MEMORY, "
+        "LOCAL_ARTIFACT, and EXTERNAL_EFFECT outcomes"
     )
+
+
+# --------------------------------------------------------------------------
+# INFORMATIONAL advisory artifact route
+# --------------------------------------------------------------------------
+
+
+class TestInformationalRoute:
+
+    def test_informational_artifact_happy_path_emits_classify_and_approved(self):
+        audit = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:advisory": StateInfo(
+                state_id="state:advisory",
+                plane="informational_artifact",
+                write_modes_allowed=["insert"],
+                sensitive_class="internal",
+                single_writer_required=False,
+            ),
+        })
+        intent = _make_intent(target_state_ref="state:advisory")
+        outcome = gate.route(intent)
+
+        assert outcome.approved is True
+        assert outcome.risk_class == WriteRiskClass.INFORMATIONAL
+        event_types = [e["event_type"] for e in audit]
+        assert AuditEventType.INTENT_CLASSIFIED.value in event_types
+        assert AuditEventType.INTENT_APPROVED.value in event_types
+        assert AuditEventType.PEER_RCO_REQUESTED.value not in event_types
+        approved = [
+            e for e in audit
+            if e["event_type"] == AuditEventType.INTENT_APPROVED.value
+        ][0]
+        assert approved["risk_class"] == "informational"
+        assert approved["target_plane"] == "informational_artifact"
+
+    def test_informational_artifact_action_not_allowed_denies(self):
+        audit = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:advisory": StateInfo(
+                state_id="state:advisory",
+                plane="informational_artifact",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=False,
+            ),
+        })
+        intent = _make_intent(target_state_ref="state:advisory",
+                              action="delete")
+        outcome = gate.route(intent)
+
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
+        assert "write_modes_allowed" in (outcome.denial_reason or "")
+        event_types = [e["event_type"] for e in audit]
+        assert AuditEventType.INTENT_APPROVED.value not in event_types
+
+    def test_informational_artifact_credential_pattern_scan_denies(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states={
+                "state:advisory": StateInfo(
+                    state_id="state:advisory",
+                    plane="informational_artifact",
+                    write_modes_allowed=["insert"],
+                    sensitive_class="internal",
+                    single_writer_required=False,
+                ),
+            },
+            cred_scan=_cred_scan_finds("api_key:sk-abcd1234"),
+        )
+        intent = _make_intent(target_state_ref="state:advisory",
+                              payload={"contents": "...secret..."})
+        outcome = gate.route(intent)
+
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION
+        assert "ANTI-004" in (outcome.denial_reason or "")
 
 
 # --------------------------------------------------------------------------

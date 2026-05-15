@@ -193,6 +193,7 @@ class StateInfo:
     state_id: str
     plane: str                               # magma_history / control_state
                                               # / retrieval_data / filesystem_artifact
+                                              # / informational_artifact
                                               # / browser_profile / external_readonly
                                               # / external_system / audit_projection
     write_modes_allowed: list[str]
@@ -311,16 +312,21 @@ class WriteRCOGate:
         if intent.action in ("post", "patch", "put") and state and \
                 state.plane not in ("magma_history", "control_state",
                                      "retrieval_data", "filesystem_artifact",
+                                     "informational_artifact",
                                      "audit_projection"):
             return WriteRiskClass.EXTERNAL_EFFECT
 
-        # Rule 2: WRT-002 local_artifact
+        # Rule 2: operator advisory artifact with informational write risk
+        if state and state.plane == "informational_artifact":
+            return WriteRiskClass.INFORMATIONAL
+
+        # Rule 3: WRT-002 local_artifact
         if state and state.plane == "filesystem_artifact":
             return WriteRiskClass.LOCAL_ARTIFACT
         if state and state.plane == "retrieval_data":
             return WriteRiskClass.LOCAL_ARTIFACT
 
-        # Rule 3: WRT-001 internal_memory
+        # Rule 4: WRT-001 internal_memory
         if state and state.plane in ("magma_history", "control_state",
                                       "audit_projection"):
             return WriteRiskClass.INTERNAL_MEMORY
@@ -430,8 +436,32 @@ class WriteRCOGate:
     # =========================================================================
 
     def _route_informational(self, intent: Intent, classify_audit_id: str) -> GateOutcome:
+        cred_hits = self.classify_payload_credential_scan(intent.payload)
+        if cred_hits:
+            raise GateStopCondition(
+                intent.intent_id,
+                StopCondition.ANTI_PATTERN_VIOLATION,
+                f"ANTI-004 credential pattern detected: {cred_hits[:3]}",
+            )
+
+        state = self.fetch_state_info(intent.target_state_ref)
+        if state is None:
+            raise GateStopCondition(
+                intent.intent_id,
+                StopCondition.ANTI_PATTERN_VIOLATION,
+                "target_state_ref unresolved",
+            )
+        if intent.action not in (state.write_modes_allowed or []):
+            raise GateStopCondition(
+                intent.intent_id,
+                StopCondition.ANTI_PATTERN_VIOLATION,
+                f"action '{intent.action}' not in state.write_modes_allowed="
+                f"{state.write_modes_allowed!r}",
+            )
+
         approved_audit = self._audit(AuditEventType.INTENT_APPROVED, intent,
-                                      {"risk_class": "informational"})
+                                      {"risk_class": "informational",
+                                       "target_plane": state.plane})
         return GateOutcome(
             intent_id=intent.intent_id,
             risk_class=WriteRiskClass.INFORMATIONAL,

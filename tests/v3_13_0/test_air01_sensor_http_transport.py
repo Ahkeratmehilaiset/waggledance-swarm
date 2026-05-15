@@ -140,6 +140,19 @@ def test_localhost_refused_even_with_injected_transport_by_default() -> None:
         )
 
 
+@pytest.mark.parametrize("url", [
+    "http://0.0.0.0/current.json",
+    "http://[::]/current.json",
+])
+def test_unspecified_ip_refused_by_default(url: str) -> None:
+    with pytest.raises(Air01SensorHttpTransportError,
+                       match="URL_LOCAL_HOST_REFUSED"):
+        fetch_air_quality_sensor_response(
+            url,
+            transport=lambda *_: _response(source_url=url),
+        )
+
+
 def test_refuses_secret_query_and_credential_header_by_default() -> None:
     with pytest.raises(Air01SensorHttpTransportError, match="URL_SECRET_REFUSED"):
         fetch_air_quality_sensor_response(

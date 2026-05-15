@@ -161,7 +161,7 @@ def _validate_host(hostname: str, allowed_private_hosts: frozenset[str]) -> None
         parsed_ip = ip_address(normalized)
     except ValueError:
         return
-    if parsed_ip.is_loopback or parsed_ip.is_link_local:
+    if parsed_ip.is_loopback or parsed_ip.is_link_local or parsed_ip.is_unspecified:
         if normalized not in allowed_private_hosts:
             raise Air01SensorHttpTransportError("URL_LOCAL_HOST_REFUSED")
         return

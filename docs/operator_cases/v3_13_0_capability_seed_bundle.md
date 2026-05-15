@@ -277,12 +277,10 @@ primarily home but cross multiple capability groups). Total cases: 18.
   (PR #387) currently hand-crafts that manifest inline; a real
   SolverSynthesizer would generate it from this bundle.
 
-## Next concrete release-pipeline step (suggested, not implemented here)
+## Current concrete release-pipeline slice
 
-Pick **ONE** case from the seed bundle (smallest first slice + lowest
-risk class) and ship its first slice end-to-end through the existing
-substrate (DocIngest -> hand-crafted manifest from seed -> sign ->
-shadow -> activate -> WriteRCOGate -> execute). Suggested candidate:
+The first selected case from the seed bundle (smallest first slice +
+lowest risk class) is:
 **ENG-01 spot_electricity_monitor first_solver_slice =
 fetch_next_24h_spot_prices_and_return_top_3_cheapest_hours**.
 
@@ -292,8 +290,9 @@ fetch_next_24h_spot_prices_and_return_top_3_cheapest_hours**.
 * first shipped path consumes an already-fetched local spot-price JSON;
   URL mode can also consume an operator-selected public JSON feed through
   the provider-neutral parser and fail-closed HTTP transport
+* `--render-card --output data/eng01/latest_advisory.json` can publish a
+  read-only advisory snapshot for `GET /api/eng01/advisory/latest`
 * first-slice output shape is simple (list of 3 hours)
 
-If that slice ships in one sprint with one operator using it once on
-mokki, that is the FIRST CONCRETE OPERATOR-FACING VALUE delivery for
-the project.
+The remaining operator-value milestone is one operator using the shipped
+path once at mokki and acting on the advisory.

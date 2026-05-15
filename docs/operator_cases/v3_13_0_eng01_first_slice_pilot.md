@@ -95,9 +95,10 @@ are upstream-data signals, not substrate invariant violations.
   `python -m waggledance.adapters.cli.eng01_recommend --url https://prices.example.test/day-ahead.json --pretty`.
   The URL path uses the fail-closed HTTP transport and response parser;
   tests use injected transports and do not call live services.
-* **No operator-facing UI / dashboard**. The advisory output is a
-  written local artifact; production rendering belongs to the
-  SituationRoom Sprint 2 deliverable.
+* **No full dashboard UI**. The CLI can render a read-only advisory card
+  and atomically write `data/eng01/latest_advisory.json`; the HTTP route
+  `GET /api/eng01/advisory/latest` serves that operator-written JSON
+  snapshot. A richer dashboard remains outside the first slice.
 * **No recommendation execution**. The first slice STOPS at "here are
   the 3 cheapest hours"; it does NOT automatically schedule a water
   boiler, car charger, or anything else. Automation would require a
@@ -122,6 +123,20 @@ JSON feed:
 ```powershell
 python -m waggledance.adapters.cli.eng01_recommend --url https://prices.example.test/day-ahead.json --pretty
 ```
+
+Write the latest read-only advisory card for the HTTP snapshot route:
+
+```powershell
+python -m waggledance.adapters.cli.eng01_recommend `
+  --url https://prices.example.test/day-ahead.json `
+  --render-card `
+  --pretty `
+  --output data/eng01/latest_advisory.json
+```
+
+The snapshot can then be read from `GET /api/eng01/advisory/latest`.
+The route only reads the operator-written file; it does not fetch a URL
+or run the solver from the request handler.
 
 For nested or differently named feed rows, pass `--rows-path`,
 `--hour-key`, and `--price-key`. See
@@ -153,8 +168,10 @@ A future session can check off:
 * [x] Fail-closed HTTP transport for operator-selected public feeds
       (PR #399).
 * [x] URL mode in the operator CLI (PR #400).
-* [x] Operator feed-selection guide (this follow-up).
-* [ ] SituationRoom render of the advisory (Sprint 2+).
+* [x] Operator feed-selection guide (PR #401).
+* [x] Advisory card + read-only latest-advisory route (PR #402).
+* [x] Atomic CLI `--output` snapshot writer (PR #403).
+* [ ] Full dashboard UI beyond the JSON snapshot endpoint (Sprint 2+).
 * [ ] One operator session at mokki where the operator reads the
       advisory and acts on it. (First true operator-facing value
       delivery.)
@@ -179,7 +196,11 @@ provider-neutral adapter landed.
 2026-05-15 follow-up: Codex updated this document after the provider-neutral
 response parser, fail-closed HTTP transport, and CLI URL mode landed.
 
-After the feed-selection guide lands, the ENG-01 first slice is
-shippable end-to-end as a provider-neutral advisory CLI path. The next
-delivery layer is operator-visible rendering and scheduling, not another
-ENG-01 parser/transport/CLI step.
+2026-05-15 follow-up: Codex updated this document after the advisory card,
+read-only latest-advisory route, and atomic CLI `--output` writer landed.
+
+After the feed-selection guide, advisory card, read-only route, and
+atomic `--output` writer landed, the ENG-01 first slice is shippable
+end-to-end as a provider-neutral advisory CLI plus JSON snapshot path.
+The next delivery layer is one operator-run at mokki and any richer
+dashboard/scheduling work, not another ENG-01 parser/transport/CLI step.

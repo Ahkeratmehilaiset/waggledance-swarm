@@ -3,8 +3,9 @@
 **Case id**: `ENG-01__spot_electricity_monitor__home`.
 **Release lane**: v3.13.0 ENG-01 first slice.
 **Risk class**: informational.
-**Status**: CLI supports both local sample input and operator-selected HTTP
-JSON feed input.
+**Status**: CLI supports local sample input, operator-selected HTTP JSON feed
+input, advisory-card rendering, and atomic snapshot output under
+`data/eng01/`.
 
 ## Purpose
 
@@ -29,10 +30,24 @@ Use `--url` for an operator-selected public HTTP JSON feed:
 python -m waggledance.adapters.cli.eng01_recommend --url https://prices.example.test/day-ahead.json --pretty
 ```
 
+Use `--render-card --output data/eng01/latest_advisory.json` when the
+operator wants the read-only HTTP snapshot route to serve the latest card:
+
+```powershell
+python -m waggledance.adapters.cli.eng01_recommend `
+  --url https://prices.example.test/day-ahead.json `
+  --render-card `
+  --pretty `
+  --output data/eng01/latest_advisory.json
+```
+
 The `--input` path is best for repeatable release checks, one-shot
 manual experiments, and offline debugging. The `--url` path is best when
 the operator has verified a stable public JSON feed and knows how to map
-its response fields.
+its response fields. The `--output` path is best when an operator-run
+process wants to publish the latest advisory for
+`GET /api/eng01/advisory/latest`; the route reads the file and never
+fetches the feed itself.
 
 ## Provider selection checklist
 
@@ -134,6 +149,24 @@ values. Credential-like headers are refused by default.
 `--allow-credential-headers` is an explicit opt-in and should be treated
 as a last resort, not the normal public-feed path.
 
+## Publishing a latest-advisory snapshot
+
+The operator-visible snapshot workflow is:
+
+1. Run the CLI with `--render-card --output data/eng01/latest_advisory.json`.
+2. Let the CLI atomically replace the JSON file under `data/eng01/`.
+3. Read the snapshot with `GET /api/eng01/advisory/latest`.
+
+`--output` accepts only relative paths under `data/eng01/`. Absolute
+paths, `..` traversal segments, paths outside `data/eng01/`, the
+`data/eng01` directory itself, symbolic links, and directory targets are
+refused. On success, the CLI also prints the same JSON to stdout so an
+operator can inspect the advisory immediately.
+
+The HTTP route is intentionally read-only. It does not accept a URL
+parameter, does not call the transport, does not run the solver, and
+does not create external effects.
+
 ## Refusal boundaries
 
 The URL path is intentionally fail-closed:
@@ -155,6 +188,7 @@ The URL path is intentionally fail-closed:
 | stale data refused | Feed freshness exceeded `--stale-threshold-hours`. |
 | missing hour refused | Required hourly data is incomplete. |
 | non-monotonic horizon refused | Duplicate or out-of-order hours were detected. |
+| output path refused | `--output` was outside the relative `data/eng01/` allowlist or targeted an unsafe path. |
 
 On refusal the CLI exits with code 2 and prints JSON on stderr with
 `result_marker` set to `INVALID_INPUT_REFUSED`.
@@ -185,11 +219,12 @@ This guide does not cover:
 * specific provider URLs, schemas, or authentication flows
 * private portal or browser-session scraping
 * storing credentials between invocations
-* scheduled execution or SituationRoom rendering
+* scheduled execution or a full dashboard UI
 * controlling chargers, boilers, relays, or any other external effect
 
-ENG-01 still stops at advisory output. Automation belongs behind the
-appropriate WriteRCOGate risk class and operator approval policy.
+ENG-01 still stops at advisory output and read-only snapshot serving.
+Automation belongs behind the appropriate WriteRCOGate risk class and
+operator approval policy.
 
 ## Source evidence
 
@@ -198,6 +233,10 @@ path:
 
 * CLI flags and smart defaults:
   `waggledance/adapters/cli/eng01_recommend.py`
+* Advisory-card rendering:
+  `waggledance/core/v3_13_0/eng01_advisory_card.py`
+* Read-only latest-advisory route:
+  `waggledance/adapters/http/routes/eng01_advisory.py`
 * HTTP transport refusal boundaries:
   `waggledance/core/v3_13_0/eng01_price_feed_http_transport.py`
 * Response parser refusal boundaries:

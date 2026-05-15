@@ -1,0 +1,33 @@
+{
+  "case_id": "PDF-01__invoice_field_extractor__home",
+  "documents": [
+    {
+      "document_id": "invoice-001",
+      "source_name": "synthetic_telco_invoice.pdf",
+      "text": "Saaja: Example Telco Oy\nLaskun numero 12604312657\nP\u00e4iv\u00e4ys 15.01.2026\nEr\u00e4p\u00e4iv\u00e4 29.01.2026\nMaksettava yhteens\u00e4 EUR 65,00\nViitenumero 1234 5678 9012\nFI12 3456 7890 1234 56\nBIC OKOYFIHH"
+    },
+    {
+      "document_id": "invoice-002",
+      "source_name": "synthetic_utility_invoice.pdf",
+      "ocr_lines": [
+        "Mottagare Example Energy Ab",
+        "Laskunumero 2026-00077",
+        "Laskun pvm 03.02.2026",
+        "Erapaiva 17.02.2026",
+        "LASKUN LOPPUSUMMA YHTEENSA 1 234,56",
+        "Viite 9876 5432 1098 7654",
+        "IBAN FI98 7654 3210 9876 54",
+        "NDEAFIHH"
+      ]
+    },
+    {
+      "document_id": "invoice-003",
+      "source_name": "synthetic_service_invoice.pdf",
+      "pages": [
+        {
+          "text": "Recipient: Example Services Ltd\nInvoice number A-2026-42\nInvoice date 05.03.2026\nDue date 19.03.2026\nTotal EUR 88.40\nViitenumero 1111 2222 3333\nFI11 2222 3333 4444 55\nBIC DABAFIHH"
+        }
+      ]
+    }
+  ]
+}

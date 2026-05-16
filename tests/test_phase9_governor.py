@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 from waggledance.core.autonomy import (
     governor as gov,
     kernel_state as ks,
+    mission_queue as mq,
 )
 
 
@@ -248,6 +249,7 @@ def test_cli_help_exits_zero_and_lists_flags():
     assert result.returncode == 0
     assert result.stdout.strip()
     for flag in ("--constitution", "--kernel-state", "--signals",
+                  "--missions", "--max-dispatched",
                   "--apply", "--dry-run", "--json"):
         assert flag in result.stdout
 
@@ -285,6 +287,93 @@ def test_cli_apply_persists_state(tmp_path):
     summary = json.loads(result.stdout)
     assert summary["dry_run"] is False
     assert summary["tick_id"] == 1
+
+
+def test_cli_missions_dry_run_does_not_persist_queue(tmp_path):
+    kernel_state = tmp_path / "kernel_state.json"
+    missions_path = tmp_path / "missions.jsonl"
+    high = mq.make_mission(kind="ingest_request", lane="ingestion",
+                             priority=0.9, intent="A intent",
+                             rationale="A rationale", created_tick_id=1)
+    low = mq.make_mission(kind="ingest_request", lane="ingestion",
+                            priority=0.1, intent="B intent",
+                            rationale="B rationale", created_tick_id=1)
+    mq.save_missions([high, low], missions_path)
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "wd_kernel_tick.py"),
+         "--kernel-state", str(kernel_state),
+         "--missions", str(missions_path),
+         "--max-dispatched", "1",
+         "--ts", "2026-04-26T03:00:00+00:00",
+         "--json"],
+        capture_output=True, text=True, timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "A intent" not in result.stdout
+    assert "A rationale" not in result.stdout
+    summary = json.loads(result.stdout)
+    assert summary["dry_run"] is True
+    assert summary["missions_loaded"] == 2
+    assert summary["missions_selected"] == 1
+    assert summary["mission_queue_path"] is None
+    assert not kernel_state.exists()
+    loaded = mq.load_missions(missions_path)
+    assert all(m.lifecycle_status == "queued" for m in loaded)
+
+
+def test_cli_missing_missions_file_returns_2_without_persisting(tmp_path):
+    kernel_state = tmp_path / "kernel_state.json"
+    missions_path = tmp_path / "missing-missions.jsonl"
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "wd_kernel_tick.py"),
+         "--kernel-state", str(kernel_state),
+         "--missions", str(missions_path),
+         "--ts", "2026-04-26T03:00:00+00:00",
+         "--apply", "--json"],
+        capture_output=True, text=True, timeout=30,
+    )
+
+    assert result.returncode == 2
+    assert "missions file not found" in result.stderr
+    assert not kernel_state.exists()
+    assert not missions_path.exists()
+
+
+def test_cli_apply_persists_mission_queue_lifecycle(tmp_path):
+    kernel_state = tmp_path / "kernel_state.json"
+    missions_path = tmp_path / "missions.jsonl"
+    high = mq.make_mission(kind="ingest_request", lane="ingestion",
+                             priority=0.9, intent="A intent",
+                             rationale="A rationale", created_tick_id=1)
+    low = mq.make_mission(kind="ingest_request", lane="ingestion",
+                            priority=0.1, intent="B intent",
+                            rationale="B rationale", created_tick_id=1)
+    mq.save_missions([high, low], missions_path)
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "wd_kernel_tick.py"),
+         "--kernel-state", str(kernel_state),
+         "--missions", str(missions_path),
+         "--max-dispatched", "1",
+         "--ts", "2026-04-26T03:00:00+00:00",
+         "--apply", "--json"],
+        capture_output=True, text=True, timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "A intent" not in result.stdout
+    assert "A rationale" not in result.stdout
+    summary = json.loads(result.stdout)
+    assert summary["dry_run"] is False
+    assert summary["missions_loaded"] == 2
+    assert summary["missions_selected"] == 1
+    assert summary["mission_queue_path"] == missions_path.as_posix()
+    loaded_by_id = {m.mission_id: m for m in mq.load_missions(missions_path)}
+    assert loaded_by_id[high.mission_id].lifecycle_status == "scheduled"
+    assert loaded_by_id[low.mission_id].lifecycle_status == "queued"
 
 
 # ── 8. recommendation schema-shape conforms ──────────────────────-

@@ -30,8 +30,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from waggledance.core.autonomy import (  # noqa: E402
+    background_scheduler as bg,
     governor as gov,
     kernel_state as ks,
+    mission_queue as mq,
+    policy_core as pc,
 )
 
 
@@ -60,6 +63,10 @@ def main() -> int:
     ap.add_argument("--kernel-state", type=Path, default=DEFAULT_KERNEL_STATE)
     ap.add_argument("--signals", type=Path, default=None,
                     help="Optional JSONL of inbound signals to route")
+    ap.add_argument("--missions", type=Path, default=None,
+                    help="Optional JSONL mission queue to schedule for this tick")
+    ap.add_argument("--max-dispatched", type=int, default=20,
+                    help="Maximum missions selected from --missions")
     ap.add_argument("--ts", type=str, default=None,
                     help="Override the tick timestamp (UTC ISO 8601). "
                          "Defaults to datetime.now(UTC). The ts is never "
@@ -72,6 +79,9 @@ def main() -> int:
 
     if not args.constitution.exists():
         print(f"constitution not found: {args.constitution}", file=sys.stderr)
+        return 2
+    if args.missions is not None and not args.missions.exists():
+        print(f"missions file not found: {args.missions}", file=sys.stderr)
         return 2
     constitution_sha = gov.load_constitution_sha256(args.constitution)
     constitution_id = gov.load_constitution_id(args.constitution)
@@ -95,6 +105,38 @@ def main() -> int:
         kernel_state_path=args.kernel_state,
     )
 
+    mission_summary = {
+        "mission_queue_input_path": args.missions.as_posix() if args.missions else None,
+        "mission_queue_path": None,
+        "missions_loaded": 0,
+        "missions_selected": 0,
+        "missions_deferred": 0,
+        "missions_blocked": 0,
+    }
+    if args.missions is not None:
+        missions = mq.load_missions(args.missions)
+        hard_rules = pc.load_hard_rules(args.constitution)
+        dispatch_report = bg.schedule_one_tick(
+            state=report.state_after,
+            missions=missions,
+            hard_rules=hard_rules,
+            max_dispatched=args.max_dispatched,
+        )
+        updated_missions = bg.apply_dispatch_report(missions, dispatch_report)
+        mission_queue_path = None
+        if args.apply:
+            mission_queue_path = mq.save_missions(updated_missions, args.missions)
+        mission_summary = {
+            "mission_queue_input_path": args.missions.as_posix(),
+            "mission_queue_path": (
+                mission_queue_path.as_posix() if mission_queue_path else None
+            ),
+            "missions_loaded": len(missions),
+            "missions_selected": len(dispatch_report.selected_missions),
+            "missions_deferred": len(dispatch_report.deferred_missions),
+            "missions_blocked": len(dispatch_report.blocked_missions),
+        }
+
     summary = {
         "tick_id": report.state_after.last_tick.tick_id if report.state_after.last_tick else None,
         "next_tick_id": report.state_after.next_tick_id,
@@ -106,6 +148,7 @@ def main() -> int:
                                 if report.kernel_state_path else None),
         "notes": list(report.notes),
         "dry_run": not args.apply,
+        **mission_summary,
     }
     if args.json:
         out = dict(summary)

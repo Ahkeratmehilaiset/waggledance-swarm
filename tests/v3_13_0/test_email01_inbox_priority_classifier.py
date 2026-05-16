@@ -1,0 +1,205 @@
+# SPDX-License-Identifier: BUSL-1.1
+# SPDX-FileCopyrightText: Jani Korpi / Ahkerat Mehilaiset / JKH Service
+"""Tests for EMAIL-01 inbox priority classification first slice."""
+from __future__ import annotations
+
+from io import StringIO
+import json
+from pathlib import Path
+
+import pytest
+
+from waggledance.adapters.cli.email01_classify_inbox import main
+from waggledance.core.v3_13_0.email01_inbox_priority_classifier import (
+    BUCKET_NOISE,
+    BUCKET_OTHER,
+    BUCKET_REVIEW,
+    BUCKET_WATCH,
+    CASE_ID,
+    Email01InboxPriorityClassifierError,
+    OK,
+    classify_email01_inbox_messages,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+EXAMPLE_INPUT = ROOT / "examples" / "email01" / "inbox_priority_sample.json"
+
+
+def _payload() -> dict:
+    return json.loads(EXAMPLE_INPUT.read_text(encoding="utf-8"))
+
+
+def test_sample_inbox_priority_matches_expected_summary() -> None:
+    result = classify_email01_inbox_messages(_payload()).to_payload()
+
+    assert result["case_id"] == CASE_ID
+    assert result["result_marker"] == OK
+    assert result["write_intent"] == "none"
+    assert result["summary"] == {
+        "total_messages": 7,
+        "watch": 2,
+        "review": 2,
+        "noise": 2,
+        "other": 1,
+        "actionable_messages": 4,
+        "matched_watchlist_messages": 3,
+        "priority_messages": 2,
+        "noise_keyword_messages": 4,
+    }
+
+
+def test_sample_bucket_assignments_are_deterministic() -> None:
+    result = classify_email01_inbox_messages(_payload()).to_payload()
+    by_id = {item["message_id"]: item for item in result["classifications"]}
+
+    assert by_id["mail-001"]["suggested_bucket"] == BUCKET_WATCH
+    assert by_id["mail-001"]["match_type"] == "watch_priority"
+    assert by_id["mail-001"]["matched_watch_id"] == "core_project"
+
+    assert by_id["mail-003"]["suggested_bucket"] == BUCKET_REVIEW
+    assert by_id["mail-003"]["match_type"] == "watch_with_noise"
+    assert by_id["mail-005"]["suggested_bucket"] == BUCKET_REVIEW
+    assert by_id["mail-005"]["match_type"] == "priority_with_noise"
+
+    assert by_id["mail-002"]["suggested_bucket"] == BUCKET_NOISE
+    assert by_id["mail-006"]["suggested_bucket"] == BUCKET_OTHER
+
+
+def test_email_free_text_sender_local_part_and_config_terms_are_not_echoed() -> None:
+    payload = _payload()
+    payload["messages"][0]["subject"] = "Hidden release blocker text"
+    payload["messages"][0]["snippet"] = "Operator-only project alpha details"
+    payload["messages"][0]["body_text"] = "Do not leak this message body"
+
+    result = classify_email01_inbox_messages(payload).to_payload()
+    encoded = json.dumps(result, sort_keys=True)
+
+    assert "Hidden release blocker text" not in encoded
+    assert "Operator-only project alpha details" not in encoded
+    assert "Do not leak this message body" not in encoded
+    assert "lead@core.example" not in encoded
+    assert "project alpha" not in encoded
+    assert "unsubscribe" not in encoded
+    assert "core.example" in encoded
+    assert "core_project" in encoded
+
+
+def test_watch_domain_precedes_cross_watchlist_term_match() -> None:
+    payload = {
+        "as_of_date": "2026-05-16",
+        "watchlist": [
+            {
+                "watch_id": "alpha",
+                "terms": ["alpha"],
+                "domains": ["alpha.example"],
+            },
+            {
+                "watch_id": "beta",
+                "terms": ["beta"],
+                "domains": ["beta.example"],
+            },
+        ],
+        "priority_keywords": ["urgent"],
+        "noise_keywords": ["newsletter"],
+        "messages": [
+            {
+                "message_id": "m-1",
+                "thread_id": "t-1",
+                "date": "2026-05-16",
+                "from": "Sender <sender@alpha.example>",
+                "subject": "urgent beta update",
+            }
+        ],
+    }
+
+    result = classify_email01_inbox_messages(payload).to_payload()
+    item = result["classifications"][0]
+
+    assert item["matched_watch_id"] == "alpha"
+    assert item["matched_watch_domain_count"] == 1
+    assert item["ambiguous_watchlist_count"] == 2
+
+
+def test_duplicate_watch_and_message_ids_refuse() -> None:
+    payload = _payload()
+    payload["watchlist"][1]["watch_id"] = "core_project"
+    with pytest.raises(Email01InboxPriorityClassifierError,
+                       match="duplicate watch_id: core_project"):
+        classify_email01_inbox_messages(payload)
+
+    payload = _payload()
+    payload["messages"][1]["message_id"] = "mail-001"
+    with pytest.raises(Email01InboxPriorityClassifierError,
+                       match="duplicate message_id: mail-001"):
+        classify_email01_inbox_messages(payload)
+
+
+def test_fail_closed_for_invalid_date_domain_and_bool_text() -> None:
+    payload = _payload()
+    payload["messages"][0]["date"] = "2026-05-16T12:00:00"
+    with pytest.raises(Email01InboxPriorityClassifierError,
+                       match="date must be an ISO date"):
+        classify_email01_inbox_messages(payload)
+
+    payload = _payload()
+    payload["watchlist"][0]["domains"] = ["lead@core.example"]
+    with pytest.raises(Email01InboxPriorityClassifierError,
+                       match="must be a domain name"):
+        classify_email01_inbox_messages(payload)
+
+    payload = _payload()
+    payload["messages"][0]["subject"] = True
+    with pytest.raises(Email01InboxPriorityClassifierError,
+                       match="subject must be a string"):
+        classify_email01_inbox_messages(payload)
+
+
+def test_priority_or_noise_keywords_are_required() -> None:
+    payload = _payload()
+    payload["priority_keywords"] = []
+    payload["noise_keywords"] = []
+
+    with pytest.raises(Email01InboxPriorityClassifierError,
+                       match="priority_keywords or noise_keywords"):
+        classify_email01_inbox_messages(payload)
+
+
+def test_text_length_limit_refuses_giant_body() -> None:
+    payload = _payload()
+    payload["messages"][0]["body_text"] = "x" * 20001
+
+    with pytest.raises(Email01InboxPriorityClassifierError,
+                       match="body_text is too long"):
+        classify_email01_inbox_messages(payload)
+
+
+def test_cli_pretty_prints_json() -> None:
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = main([
+        "--input",
+        str(EXAMPLE_INPUT),
+        "--pretty",
+    ], stdout=stdout, stderr=stderr)
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    payload = json.loads(stdout.getvalue())
+    assert payload["summary"]["actionable_messages"] == 4
+
+
+def test_cli_invalid_input_writes_error_to_stderr(tmp_path: Path) -> None:
+    input_path = tmp_path / "inbox_priority.json"
+    input_path.write_text(json.dumps({"messages": []}), encoding="utf-8")
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = main(["--input", str(input_path)], stdout=stdout, stderr=stderr)
+
+    assert exit_code == 2
+    assert stdout.getvalue() == ""
+    error = json.loads(stderr.getvalue())
+    assert error["result_marker"] == "INVALID_INPUT_REFUSED"
+    assert "as_of_date must be a non-empty string" in error["error"]

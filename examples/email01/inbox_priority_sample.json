@@ -1,0 +1,87 @@
+{
+  "as_of_date": "2026-05-16",
+  "watchlist": [
+    {
+      "watch_id": "core_project",
+      "terms": ["project alpha", "release blocker"],
+      "domains": ["core.example"]
+    },
+    {
+      "watch_id": "family_admin",
+      "terms": ["family trip", "school pickup"],
+      "domains": ["family.example"]
+    }
+  ],
+  "priority_keywords": [
+    "urgent",
+    "reply needed",
+    "action required",
+    "invoice"
+  ],
+  "noise_keywords": [
+    "newsletter",
+    "unsubscribe",
+    "marketing",
+    "promo",
+    "noreply"
+  ],
+  "messages": [
+    {
+      "message_id": "mail-001",
+      "thread_id": "thread-001",
+      "date": "2026-05-16",
+      "from": "Core Project <lead@core.example>",
+      "subject": "Urgent project alpha reply needed",
+      "snippet": "Please check the release blocker before noon",
+      "labels": ["Inbox"]
+    },
+    {
+      "message_id": "mail-002",
+      "thread_id": "thread-002",
+      "date": "2026-05-15",
+      "from": "Weekly Shop <newsletter@shop.example>",
+      "subject": "Marketing newsletter",
+      "snippet": "Promo codes inside, unsubscribe at the footer"
+    },
+    {
+      "message_id": "mail-003",
+      "thread_id": "thread-003",
+      "date": "2026-05-15",
+      "from": "Family Admin <updates@family.example>",
+      "subject": "Family trip newsletter",
+      "snippet": "Logistics note with unsubscribe footer"
+    },
+    {
+      "message_id": "mail-004",
+      "thread_id": "thread-004",
+      "date": "2026-05-14",
+      "from": "Teammate <member@work.example>",
+      "subject": "Project alpha notes",
+      "snippet": "No decision needed yet"
+    },
+    {
+      "message_id": "mail-005",
+      "thread_id": "thread-005",
+      "date": "2026-05-14",
+      "from": "Service <noreply@service.example>",
+      "subject": "Invoice ready",
+      "snippet": "This automated notice includes unsubscribe information"
+    },
+    {
+      "message_id": "mail-006",
+      "thread_id": "thread-006",
+      "date": "2026-05-13",
+      "from": "Friend <hello@personal.example>",
+      "subject": "Coffee later",
+      "snippet": "No urgency"
+    },
+    {
+      "message_id": "mail-007",
+      "thread_id": "thread-007",
+      "date": "2026-05-12",
+      "from": "Promo Desk <promo@ads.example>",
+      "subject": "Promo newsletter",
+      "snippet": "Marketing offer"
+    }
+  ]
+}

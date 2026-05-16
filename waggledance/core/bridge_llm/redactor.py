@@ -70,7 +70,7 @@ _URL_MASK_OPEN = "\x00URL\x00"
 _URL_MASK_CLOSE = "\x00ENDURL\x00"
 HETU_HINT_RE: Pattern[str] = re.compile(r"\d{6}[+\-A-FYXWVU]")
 IBAN_HINT_RE: Pattern[str] = re.compile(r"[A-Z]{2}\d{2}", re.IGNORECASE)
-PHONE_HINT_RE: Pattern[str] = re.compile(r"(?:\D*\d){9}")
+PHONE_HINT_RE: Pattern[str] = re.compile(r"\d[\d\s-]{8}")
 
 
 # Placeholder names per master prompt §2.6

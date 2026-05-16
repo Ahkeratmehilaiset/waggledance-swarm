@@ -435,6 +435,37 @@ class TestAnalyzerCompare:
             DivergenceCategory.INCOMPARABLE.value
         assert artifact.score.score == 1.0
 
+    def test_incomparable_exception_records_sanitized_detail(self):
+        events = []
+        artifacts = {}
+        analyzer = _make_analyzer(events=events, artifacts=artifacts)
+        secret = "synthetic_secret_value_DO_NOT_LEAK"
+
+        artifact = analyzer.compare(
+            candidate_output_uri="art:c",
+            baseline_output_uri="art:b",
+            candidate_payload={"not_csv": secret},
+            baseline_payload="a,b\n1,2\n",
+            expected_output_format="csv",
+            template_family="ReportGenerator",
+        )
+
+        assert artifact.score.category == \
+            DivergenceCategory.INCOMPARABLE.value
+        assert artifact.score.score == 1.0
+        assert artifact.operator_review_required is True
+        assert len(artifact.details) == 1
+        detail = artifact.details[0]
+        assert detail.field_path == "/"
+        assert detail.diff_class == "incomparable_input"
+        assert detail.severity == Severity.CRITICAL.value
+        assert "TypeError" in detail.justification
+        assert secret not in detail.justification
+        assert secret not in detail.candidate_value_hash
+        assert events[0]["n_details"] == 1
+        assert events[0]["n_critical"] == 1
+        assert artifact.delta_summary_ref in artifacts
+
     def test_compare_emits_magma_event(self):
         events = []
         analyzer = _make_analyzer(events=events)

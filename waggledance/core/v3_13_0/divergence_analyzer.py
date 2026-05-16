@@ -70,6 +70,7 @@ class DiffClass(str, Enum):
     CHANGED = "changed"
     REORDERED = "reordered"
     TYPE_CHANGED = "type_changed"
+    INCOMPARABLE_INPUT = "incomparable_input"
 
 
 class Severity(str, Enum):
@@ -234,6 +235,26 @@ def _redact_justification(field_path: str, diff_class: str,
                             severity: str) -> str:
     """Build a one-line justification with NO raw payload content."""
     return f"path={field_path} diff={diff_class} sev={severity}"
+
+
+def _incomparable_detail(exc: Exception) -> DivergenceDetail:
+    """Build sanitized forensic evidence for an incomparable payload."""
+    diff = DiffClass.INCOMPARABLE_INPUT.value
+    severity = Severity.CRITICAL.value
+    arg_types = ",".join(type(arg).__name__ for arg in exc.args[:3])
+    reason = f"reason={exc.__class__.__name__}"
+    if arg_types:
+        reason = f"{reason} arg_types={arg_types}"
+    return DivergenceDetail(
+        field_path="/",
+        candidate_value_hash=_value_hash(None),
+        baseline_value_hash=_value_hash(None),
+        diff_class=diff,
+        severity=severity,
+        justification=(
+            f"{_redact_justification('/', diff, severity)} {reason}"
+        ),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -648,10 +669,10 @@ class DivergenceAnalyzer:
                 details = result.details
                 n_compared = result.n_compared
                 n_matching = result.n_matching
-        except (TypeError, ValueError, AttributeError):
+        except (TypeError, ValueError, AttributeError) as exc:
             # Shape mismatch -> incomparable (spec edit E10)
             incomparable = True
-            details = []
+            details = [_incomparable_detail(exc)]
 
         score = self._aggregate_score(
             details, n_compared=n_compared, n_matching=n_matching,

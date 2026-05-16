@@ -121,7 +121,8 @@ def test_scheduler_dispatches_clean_missions():
     )
     assert len(report.selected_missions) == 2
     assert report.tick_id == 1
-    assert all(m.lifecycle_status == "queued" for m in report.selected_missions)
+    assert all(m.lifecycle_status == "scheduled" for m in report.selected_missions)
+    assert all(m.lifecycle_status == "queued" for m in missions)
 
 
 def test_scheduler_can_emit_selected_lifecycle_to_audit_and_replay_sinks():

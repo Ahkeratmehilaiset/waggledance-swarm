@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "registry_id": "v3_13_0.first_slice_solver_registry",
+  "solvers": [
+    {
+      "case_id": "ENG-01__spot_electricity_monitor__home",
+      "name": "ENG-01",
+      "human_name": "Spot Electricity Monitor",
+      "module": "waggledance.core.v3_13_0.eng01_spot_electricity",
+      "entry_function": "recommend_top_3_cheapest_hours",
+      "result_class": "Eng01FirstSliceResult",
+      "case_id_source_module": "waggledance.core.v3_13_0.eng01_advisory_card",
+      "advisory_card_module": "waggledance.core.v3_13_0.eng01_advisory_card",
+      "adapter_modules": [
+        "waggledance.core.v3_13_0.eng01_price_feed_adapter",
+        "waggledance.core.v3_13_0.eng01_price_feed_response_parser"
+      ],
+      "transport_modules": [
+        "waggledance.core.v3_13_0.eng01_price_feed_http_transport"
+      ],
+      "cli_module": "waggledance.adapters.cli.eng01_recommend",
+      "risk_class": "informational",
+      "write_intent": "none",
+      "marker_class": "fail_closed",
+      "result_markers": [
+        "OK",
+        "STALE_DATA_REFUSED",
+        "MISSING_HOUR_REFUSED",
+        "NON_MONOTONIC_HORIZON_REFUSED",
+        "INVALID_PRICE_FEED_REFUSED"
+      ],
+      "input_shape": "feed mapping with fetched_at_utc, horizon_start_utc, horizon_hours, and prices_eur_per_kwh",
+      "output_shape": "Eng01FirstSliceResult payload with top_3_cheapest_hours_utc, horizon price stats, savings, TTL, and explicit refusal details",
+      "knowledge_refs": []
+    },
+    {
+      "case_id": "ENG-06__cottage_fireplace_advisor__cottage",
+      "name": "ENG-06",
+      "human_name": "Cottage Fireplace Advisor",
+      "module": "waggledance.core.v3_13_0.eng06_fireplace_advisor",
+      "entry_function": "summarize_burn_log",
+      "result_class": "Eng06FireplaceSummary",
+      "case_id_source_module": "waggledance.core.v3_13_0.eng06_fireplace_advisor",
+      "advisory_card_module": "waggledance.core.v3_13_0.eng06_advisory_card",
+      "adapter_modules": [
+        "waggledance.core.v3_13_0.eng06_burn_log_adapter"
+      ],
+      "transport_modules": [],
+      "cli_module": "waggledance.adapters.cli.eng06_fireplace",
+      "risk_class": "informational",
+      "write_intent": "none",
+      "marker_class": "fail_closed",
+      "result_markers": [
+        "OK",
+        "NO_FIRES_IN_HORIZON_REFUSED",
+        "STALE_LOG_REFUSED",
+        "MISSING_DAY_REFUSED",
+        "INVALID_LOG_FEED_REFUSED",
+        "NON_MONOTONIC_HORIZON_REFUSED"
+      ],
+      "input_shape": "burn-log row iterable plus horizon_start_utc, horizon_end_utc, and optional stale_threshold_hours",
+      "output_shape": "Eng06FireplaceSummary payload with 30-day fire count, days_with_fire, chimney temperature metrics, TTL, and explicit refusal details",
+      "knowledge_refs": []
+    },
+    {
+      "case_id": "AIR-01__indoor_air_quality_advisor__cottage",
+      "name": "AIR-01",
+      "human_name": "Indoor Air Quality Advisor",
+      "module": "waggledance.core.v3_13_0.air01_air_quality_advisor",
+      "entry_function": "assess_air_quality",
+      "result_class": "Air01AirQualityAdvisory",
+      "case_id_source_module": "waggledance.core.v3_13_0.air01_air_quality_advisor",
+      "adapter_modules": [
+        "waggledance.core.v3_13_0.air01_digheran_adapter"
+      ],
+      "transport_modules": [
+        "waggledance.core.v3_13_0.air01_sensor_http_transport"
+      ],
+      "risk_class": "informational",
+      "write_intent": "none",
+      "marker_class": "informational_with_severity",
+      "result_markers": [
+        "OK",
+        "AIR_QUALITY_WARNING",
+        "AIR_QUALITY_EMERGENCY",
+        "STALE_OBSERVATION_REFUSED",
+        "MISSING_REQUIRED_READING_REFUSED",
+        "INVALID_OBSERVATION_REFUSED"
+      ],
+      "input_shape": "observation mapping with schema_version, readings, observed_at_utc, fetched_at_utc, and optional threshold overrides",
+      "output_shape": "Air01AirQualityAdvisory payload with risk_level, advice, triggered_metrics, source metadata, TTL, and refusal details",
+      "knowledge_refs": [
+        "knowledge/air_quality/core.yaml#DECISION_METRICS_AND_THRESHOLDS.pm25_ug",
+        "knowledge/air_quality/core.yaml#DECISION_METRICS_AND_THRESHOLDS.co_ppm_indoor",
+        "knowledge/air_quality/core.yaml#DECISION_METRICS_AND_THRESHOLDS.radon_bq"
+      ]
+    },
+    {
+      "case_id": "PDF-01__invoice_field_extractor__home",
+      "name": "PDF-01",
+      "human_name": "Invoice Field Extractor",
+      "module": "waggledance.core.v3_13_0.pdf01_invoice_field_extractor",
+      "entry_function": "extract_pdf01_invoice_fields",
+      "result_class": "Pdf01InvoiceExtractionResult",
+      "case_id_source_module": "waggledance.core.v3_13_0.pdf01_invoice_field_extractor",
+      "adapter_modules": [],
+      "transport_modules": [],
+      "cli_module": "waggledance.adapters.cli.pdf01_extract_invoice",
+      "risk_class": "informational",
+      "write_intent": "none",
+      "marker_class": "fail_closed",
+      "result_markers": [
+        "OK",
+        "INVOICE_FIELDS_INCOMPLETE",
+        "DOCUMENT_UNPARSEABLE_REFUSED"
+      ],
+      "input_shape": "payload mapping with documents containing text, text_raw, raw_text, ocr_lines, or pages",
+      "output_shape": "Pdf01InvoiceExtractionResult payload with per-document extracted invoice fields, confidence, missing fields, and summary counts",
+      "knowledge_refs": []
+    },
+    {
+      "case_id": "ACCT-01__unpaid_bill_reconciler__home",
+      "name": "ACCT-01",
+      "human_name": "Unpaid Bill Reconciler",
+      "module": "waggledance.core.v3_13_0.acct01_unpaid_bill_reconciler",
+      "entry_function": "reconcile_acct01_unpaid_bills",
+      "result_class": "Acct01ReconciliationResult",
+      "case_id_source_module": "waggledance.core.v3_13_0.acct01_unpaid_bill_reconciler",
+      "adapter_modules": [],
+      "transport_modules": [],
+      "cli_module": "waggledance.adapters.cli.acct01_reconcile_bills",
+      "risk_class": "informational",
+      "write_intent": "none",
+      "marker_class": "status_buckets",
+      "result_markers": [
+        "OK"
+      ],
+      "input_shape": "payload mapping with as_of_date, invoices, bank_transactions, and optional match tolerance/window settings",
+      "output_shape": "Acct01ReconciliationResult payload with per-invoice paid/unpaid/excluded reconciliation rows and unpaid summary",
+      "knowledge_refs": []
+    },
+    {
+      "case_id": "EMAIL-01__inbox_priority_classifier__home",
+      "name": "EMAIL-01",
+      "human_name": "Inbox Priority Classifier",
+      "module": "waggledance.core.v3_13_0.email01_inbox_priority_classifier",
+      "entry_function": "classify_email01_inbox_messages",
+      "result_class": "Email01InboxPriorityClassificationResult",
+      "case_id_source_module": "waggledance.core.v3_13_0.email01_inbox_priority_classifier",
+      "adapter_modules": [],
+      "transport_modules": [],
+      "cli_module": "waggledance.adapters.cli.email01_classify_inbox",
+      "risk_class": "informational",
+      "write_intent": "none",
+      "marker_class": "status_buckets",
+      "result_markers": [
+        "OK"
+      ],
+      "input_shape": "payload mapping with as_of_date, watchlist, priority_keywords, noise_keywords, and sanitized message rows",
+      "output_shape": "Email01InboxPriorityClassificationResult payload with sorted per-message buckets, match counts, confidence, and summary",
+      "knowledge_refs": []
+    },
+    {
+      "case_id": "EMAIL-02__vendor_email_indexer__home",
+      "name": "EMAIL-02",
+      "human_name": "Vendor Email Indexer",
+      "module": "waggledance.core.v3_13_0.email02_vendor_email_indexer",
+      "entry_function": "index_email02_vendor_messages",
+      "result_class": "Email02VendorEmailIndexResult",
+      "case_id_source_module": "waggledance.core.v3_13_0.email02_vendor_email_indexer",
+      "adapter_modules": [],
+      "transport_modules": [],
+      "cli_module": "waggledance.adapters.cli.email02_index_vendor_emails",
+      "risk_class": "informational",
+      "write_intent": "none",
+      "marker_class": "status_buckets",
+      "result_markers": [
+        "OK"
+      ],
+      "input_shape": "payload mapping with as_of_date, vendors, messages, and optional max_messages_per_vendor",
+      "output_shape": "Email02VendorEmailIndexResult payload with per-vendor latest message evidence, billing counts, match confidence, and summary",
+      "knowledge_refs": []
+    },
+    {
+      "case_id": "FIN-10__cottage_bookkeeping_separator__cottage",
+      "name": "FIN-10",
+      "human_name": "Cottage Bookkeeping Separator",
+      "module": "waggledance.core.v3_13_0.fin10_receipt_classifier",
+      "entry_function": "classify_fin10_receipts",
+      "result_class": "Fin10ReceiptClassificationResult",
+      "case_id_source_module": "waggledance.core.v3_13_0.fin10_receipt_classifier",
+      "adapter_modules": [],
+      "transport_modules": [],
+      "cli_module": "waggledance.adapters.cli.fin10_classify_receipts",
+      "risk_class": "informational",
+      "write_intent": "none",
+      "marker_class": "status_buckets",
+      "result_markers": [
+        "OK"
+      ],
+      "input_shape": "payload mapping with receipts, cottage_signals, and home_signals",
+      "output_shape": "Fin10ReceiptClassificationResult payload with per-receipt cottage/home/mixed tag, confidence, matched signals, and summary",
+      "knowledge_refs": []
+    }
+  ]
+}

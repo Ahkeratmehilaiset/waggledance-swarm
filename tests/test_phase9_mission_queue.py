@@ -198,6 +198,76 @@ def test_with_lifecycle_can_increment_retry():
     assert s2.lifecycle_status == "queued"
 
 
+def test_lifecycle_change_without_sinks_matches_pure_lifecycle_update():
+    m = _m()
+    s2 = mq.lifecycle_change(m, status="scheduled", retry_count=1)
+    expected = mq.with_lifecycle(m, status="scheduled", retry_count=1)
+
+    assert s2 == expected
+    assert m.lifecycle_status == "queued"
+
+
+def test_lifecycle_change_emits_canonical_event_to_audit_sink():
+    from waggledance.core.magma.audit_projector import AuditProjector
+
+    events = []
+    m = _m()
+
+    s2 = mq.lifecycle_change(
+        m,
+        status="completed",
+        completed_tick_id=7,
+        audit_sink=events.append,
+    )
+
+    assert "mission.lifecycle_changed" in AuditProjector.AUTONOMY_EVENTS
+    assert len(events) == 1
+    assert events[0] == {
+        "event_type": "mission.lifecycle_changed",
+        "mission_id": m.mission_id,
+        "kind": m.kind,
+        "lane": m.lane,
+        "from_status": "queued",
+        "to_status": "completed",
+        "created_tick_id": m.created_tick_id,
+        "completed_tick_id": 7,
+        "retry_count": m.retry_count,
+    }
+    assert s2.lifecycle_status == "completed"
+    assert s2.completed_tick_id == 7
+
+
+def test_lifecycle_change_emits_to_both_sinks_consistently():
+    audit_events = []
+    replay_events = []
+    m = _m()
+
+    mq.lifecycle_change(
+        m,
+        status="failed",
+        completed_tick_id=9,
+        retry_count=2,
+        audit_sink=audit_events.append,
+        replay_sink=replay_events.append,
+    )
+
+    assert audit_events == replay_events
+    assert audit_events[0] is not replay_events[0]
+    assert audit_events[0]["to_status"] == "failed"
+    assert audit_events[0]["retry_count"] == 2
+
+
+def test_lifecycle_change_event_does_not_leak_intent_or_rationale_text():
+    sensitive = "operator_secret_goal_marker_DO_NOT_LEAK"
+    events = []
+    m = _m(intent=sensitive, rationale=f"{sensitive} rationale")
+
+    mq.lifecycle_change(m, status="scheduled", audit_sink=events.append)
+
+    encoded = json.dumps(events[0], sort_keys=True)
+    assert sensitive not in encoded
+
+
 # ── 7. open_missions filter ──────────────────────────────────────-
 
 def test_open_missions_excludes_completed_and_failed():

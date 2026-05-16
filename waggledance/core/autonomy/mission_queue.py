@@ -20,7 +20,7 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 MISSION_SCHEMA_VERSION = 1
 
@@ -210,6 +210,48 @@ def with_lifecycle(mission: Mission, *,
                       else mission.retry_count),
         circuit_breaker_lane=mission.circuit_breaker_lane,
     )
+
+
+def _mission_lifecycle_event(before: Mission, after: Mission) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "event_type": "mission.lifecycle_changed",
+        "mission_id": after.mission_id,
+        "kind": after.kind,
+        "lane": after.lane,
+        "from_status": before.lifecycle_status,
+        "to_status": after.lifecycle_status,
+        "created_tick_id": after.created_tick_id,
+        "completed_tick_id": after.completed_tick_id,
+        "retry_count": after.retry_count,
+    }
+    if after.circuit_breaker_lane is not None:
+        event["circuit_breaker_lane"] = after.circuit_breaker_lane
+    return event
+
+
+def lifecycle_change(mission: Mission, *,
+                     status: str,
+                     completed_tick_id: int | None = None,
+                     retry_count: int | None = None,
+                     audit_sink: Callable[[dict[str, Any]], None] | None = None,
+                     replay_sink: Callable[[dict[str, Any]], None] | None = None,
+                     ) -> Mission:
+    """Return a lifecycle-updated mission and optionally emit a canonical event."""
+    updated = with_lifecycle(
+        mission,
+        status=status,
+        completed_tick_id=completed_tick_id,
+        retry_count=retry_count,
+    )
+    if audit_sink is None and replay_sink is None:
+        return updated
+
+    event = _mission_lifecycle_event(mission, updated)
+    if audit_sink is not None:
+        audit_sink(dict(event))
+    if replay_sink is not None:
+        replay_sink(dict(event))
+    return updated
 
 
 # ── Atomic persistence ────────────────────────────────────────────

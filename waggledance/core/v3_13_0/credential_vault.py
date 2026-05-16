@@ -491,9 +491,20 @@ class OSKeyringVault:
                 )
         value = kr.get_password(self._service(ref), ref.name)
         if value is None:
+            with self._lock:
+                status = self._statuses.get(ref.uri, "active")
+                if status != "active":
+                    raise PermissionError(
+                        f"credential at {ref.uri} status={status}"
+                    )
             raise KeyError(f"no credential at {ref.uri}")
         now = _utc_iso()
         with self._lock:
+            status = self._statuses.get(ref.uri, "active")
+            if status != "active":
+                raise PermissionError(
+                    f"credential at {ref.uri} status={status}"
+                )
             self._last_used[ref.uri] = now
         self._audit_emit({
             "event_type": "auth.credential_retrieved",
@@ -508,10 +519,21 @@ class OSKeyringVault:
                 metadata: VaultMetadata) -> StoreResult:
         kr = self._keyring()
         try:
-            kr.set_password(self._service(ref), ref.name,
-                             material.decode("utf-8")
-                             if isinstance(material, (bytes, bytearray))
-                             else material)
+            material_text = (
+                material.decode("utf-8")
+                if isinstance(material, (bytes, bytearray))
+                else material
+            )
+        except UnicodeDecodeError:
+            return StoreResult(
+                success=False,
+                error=(
+                    "material is not valid UTF-8; use base64-encoded "
+                    "UTF-8 for binary credentials"
+                ),
+            )
+        try:
+            kr.set_password(self._service(ref), ref.name, material_text)
         except Exception as exc:
             return StoreResult(success=False, error=str(exc))
         now = _utc_iso()

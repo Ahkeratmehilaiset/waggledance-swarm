@@ -535,7 +535,10 @@ class OSKeyringVault:
         try:
             kr.set_password(self._service(ref), ref.name, material_text)
         except Exception as exc:
-            return StoreResult(success=False, error=str(exc))
+            return StoreResult(
+                success=False,
+                error=f"keyring backend error: {exc.__class__.__name__}",
+            )
         now = _utc_iso()
         with self._lock:
             self._known_metadata[ref.uri] = metadata

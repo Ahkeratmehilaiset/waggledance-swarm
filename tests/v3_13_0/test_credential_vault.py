@@ -451,6 +451,29 @@ class TestOSKeyringVault:
         assert "binary-secret" not in result.error
         mock_kr.set_password.assert_not_called()
 
+    def test_store_backend_exception_error_is_redacted(self):
+        vault = OSKeyringVault()
+        ref = self._ref()
+        mock_kr = MagicMock()
+
+        def mock_set(service, name, value):
+            raise RuntimeError("backend failed while storing sk-test-material")
+
+        mock_kr.set_password = mock_set
+
+        with patch.object(OSKeyringVault, "_keyring",
+                            return_value=mock_kr):
+            result = vault.store(
+                ref,
+                b"safe-text",
+                VaultMetadata(provider="test"),
+            )
+
+        assert result.success is False
+        assert result.error == "keyring backend error: RuntimeError"
+        assert "sk-test-material" not in result.error
+        assert "safe-text" not in result.error
+
 
 # ============================================================================
 # Cross-cutting: no material in any logging path

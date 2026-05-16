@@ -126,3 +126,13 @@ def schedule_one_tick(*,
         attention_weights=weights,
         gate_report=gate_report,
     )
+
+
+def apply_dispatch_report(missions: list[mq.Mission],
+                          report: DispatchReport) -> list[mq.Mission]:
+    """Return a queue snapshot with selected-mission lifecycle updates applied."""
+    updates = {
+        m.mission_id: m
+        for m in report.selected_missions
+    }
+    return [updates.get(m.mission_id, m) for m in missions]

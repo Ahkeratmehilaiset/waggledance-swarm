@@ -203,6 +203,21 @@ a stable tag, GitHub release, GHCR `:stable`, or GHCR `:latest`
 promotion is created. Until a real soak artifact exists, the expected
 result is `"decision": "hold"`.
 
+Optional evidence draft collection:
+
+```text
+python tools/collect_soak_evidence.py \
+  --output docs/runs/release_soak_evidence/v3.12.0.json \
+  --history docs/release/soak_evidence_history.jsonl
+```
+
+The collector is fail-closed: incomplete signals are written as
+`"unknown"` or conservative defaults, and only `check_release_gate.py`
+decides whether the evidence passes. Operators must supply explicit
+pass evidence for CI, smoke, security/privacy, Axis A/B, Docker policy,
+release-note anti-claims, silent failures, and clean logs before stable
+promotion.
+
 Required soak evidence schema:
 
 ```json

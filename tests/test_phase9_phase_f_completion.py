@@ -222,6 +222,37 @@ def test_apply_dispatch_report_updates_queue_snapshot_without_mutation():
     assert all(m.lifecycle_status == "queued" for m in missions)
 
 
+def test_scheduler_lifecycle_update_survives_queue_save_load(tmp_path):
+    s = _state()
+    s = ks.with_tick(s, ts_iso="t1")
+    missions = [
+        mq.make_mission(kind="ingest_request", lane="ingestion",
+                          priority=0.9, intent="A intent",
+                          rationale="A rationale", created_tick_id=1),
+        mq.make_mission(kind="ingest_request", lane="ingestion",
+                          priority=0.1, intent="B intent",
+                          rationale="B rationale", created_tick_id=1),
+    ]
+
+    report = bg.schedule_one_tick(
+        state=s,
+        missions=missions,
+        hard_rules=_hard_rules(),
+        max_dispatched=1,
+    )
+    updated = bg.apply_dispatch_report(missions, report)
+    path = tmp_path / "missions.jsonl"
+
+    mq.save_missions(updated, path)
+    loaded_by_id = {m.mission_id: m for m in mq.load_missions(path)}
+
+    selected_id = report.selected_missions[0].mission_id
+    unselected_id = missions[1].mission_id
+    assert loaded_by_id[selected_id].lifecycle_status == "scheduled"
+    assert loaded_by_id[unselected_id].lifecycle_status == "queued"
+    assert all(m.lifecycle_status == "queued" for m in missions)
+
+
 def test_scheduler_excludes_completed():
     s = _state()
     s = ks.with_tick(s, ts_iso="t1")

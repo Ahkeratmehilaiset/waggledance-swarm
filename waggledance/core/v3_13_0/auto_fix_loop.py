@@ -395,7 +395,7 @@ class AutoFixLoop:
             triggering_event_id=event.event_id,
             target_tool_id=event.target_tool_id,
             target_state_refs=list(event.target_state_refs),
-            repair_command=capsule.rebuild_command or capsule.rollback_command,
+            repair_command=capsule.rollback_command or capsule.rebuild_command,
             risk_class="",      # filled by classify_intent below
             idempotency_key=f"{event.target_tool_id}:{event.event_id}",
             rollback_plan_ref=capsule.capsule_id,

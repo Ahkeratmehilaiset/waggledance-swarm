@@ -81,7 +81,8 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
                 utc_iso_fn=lambda: "2026-05-13T08:10:00Z",
                 lease_ttl_seconds: int = 3600,
                 persist_empty_release: bool = False,
-                classify_raises_for: set[str] = None):
+                classify_raises_for: set[str] = None,
+                executed_intents: list[RepairIntent] = None):
     magma_events = magma_events if magma_events is not None else []
     lease_state = {"current": lease}
     events_state = {"queue": list(events or [])}
@@ -103,6 +104,14 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
             raise RuntimeError("synthetic handler failure")
         return risk_class
 
+    def execute(intent: RepairIntent) -> dict:
+        if executed_intents is not None:
+            executed_intents.append(intent)
+        return {
+            "success": exec_success,
+            "error": "" if exec_success else "exec error",
+        }
+
     return AutoFixLoop(
         instance_id=instance_id,
         profile_config_ref="profile:test",
@@ -116,10 +125,7 @@ def _make_loop(*, lease: Optional[LeaseRecord] = None,
             "reason": "auto_approved" if gate_approved else "peer_rco_denied",
             "audit_event_id": "audit:gate",
         },
-        execute_repair=lambda _intent: {
-            "success": exec_success,
-            "error": "" if exec_success else "exec error",
-        },
+        execute_repair=execute,
         emit_magma_event=_emit_collector(magma_events),
         idempotency_check=lambda _intent: idempotent,
         clock_fn=lambda: 0.0,
@@ -287,6 +293,28 @@ class TestRepairByRiskClass:
         )
         results, _ = loop.run_once(cursor="")
         assert results[0].outcome == RepairOutcome.APPLIED.value
+
+    def test_wrt_002_prefers_rollback_when_rebuild_also_exists(self):
+        executed = []
+        capsule = RecoveryCapsuleView(
+            capsule_id="capsule:tool_logbook_repair",
+            target_tool_id="tool_logbook_repair",
+            rollback_command="logbook.delete_entry_by_id",
+            rebuild_command="logbook.repair_entry",
+        )
+        loop = _make_loop(
+            lease=self._setup_lease(),
+            capsule=capsule,
+            events=[_make_event()],
+            risk_class="local_artifact",
+            executed_intents=executed,
+        )
+
+        results, _ = loop.run_once(cursor="")
+
+        assert results[0].outcome == RepairOutcome.APPLIED.value
+        assert len(executed) == 1
+        assert executed[0].repair_command == "logbook.delete_entry_by_id"
 
     def test_wrt_003_routes_through_gate_and_denies_when_gate_blocks(self):
         loop = _make_loop(

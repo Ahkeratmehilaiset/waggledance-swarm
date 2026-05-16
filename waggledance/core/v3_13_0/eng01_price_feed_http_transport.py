@@ -182,6 +182,7 @@ def _validate_headers(
             raise Eng01PriceFeedHttpTransportError("HEADER_CONTROL_REFUSED")
         if not allow_credential_headers and (
             lowered_key in _CREDENTIAL_HEADER_NAMES
+            or contains_secret_marker_substring(clean_key)
             or lowered_key.endswith("-token")
             or contains_secret_marker_substring(clean_value)
         ):

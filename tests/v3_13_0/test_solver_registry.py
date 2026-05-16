@@ -128,6 +128,49 @@ def test_registry_rejects_unsafe_manifest_strings(tmp_path: Path) -> None:
         load_solver_registry(path)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "tokenized parser output is safe metadata",
+        "authorized advisory text is not credentialed data",
+        "credentialed review flow without private material",
+    ],
+)
+def test_registry_allows_secret_marker_substrings_inside_words(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    manifest = _default_registry_mapping()
+    manifest["solvers"][0]["input_shape"] = value
+    path = _write_registry(tmp_path, manifest)
+
+    solvers = load_solver_registry(path)
+
+    assert solvers[0].input_shape == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "bearer",
+        "metadata with x-api-key marker",
+        "contains api_key field",
+        "relative/secrets.json",
+        "credential:operator-session",
+    ],
+)
+def test_registry_rejects_bounded_secret_markers(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    manifest = _default_registry_mapping()
+    manifest["solvers"][0]["knowledge_refs"] = [value]
+    path = _write_registry(tmp_path, manifest)
+
+    with pytest.raises(SolverRegistryError, match="secret-like marker"):
+        load_solver_registry(path)
+
+
 def test_registry_rejects_unknown_schema_version(tmp_path: Path) -> None:
     manifest = _default_registry_mapping()
     manifest["schema_version"] = SCHEMA_VERSION + 1

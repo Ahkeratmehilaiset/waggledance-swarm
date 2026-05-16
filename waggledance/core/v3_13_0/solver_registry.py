@@ -44,7 +44,7 @@ MARKER_CLASSES = frozenset({
     "informational_with_severity",
     "status_buckets",
 })
-SECRET_TOKENS = (
+_SECRET_MARKERS = (
     "authorization",
     "bearer",
     "cookie",
@@ -53,9 +53,17 @@ SECRET_TOKENS = (
     "passwd",
     "password",
     "secret",
+    "secrets",
     "token",
+    "tokens",
     "x-api-key",
     "api_key",
+)
+_SECRET_MARKER_RE = re.compile(
+    r"(?:^|[\\/._?&=:\-\s])(?:"
+    + "|".join(re.escape(marker) for marker in _SECRET_MARKERS)
+    + r")(?:$|[\\/._?&=:\-\s])",
+    re.IGNORECASE,
 )
 
 
@@ -346,8 +354,12 @@ def _safe_text(value: str, label: str) -> None:
     lower = value.casefold()
     if ":\\" in value or lower.startswith(("u:\\", "file://", "/")):
         raise SolverRegistryError(f"{label} contains an unsafe path")
-    if any(token in lower for token in SECRET_TOKENS):
+    if _has_secret_marker(value):
         raise SolverRegistryError(f"{label} contains a secret-like marker")
+
+
+def _has_secret_marker(value: str) -> bool:
+    return _SECRET_MARKER_RE.search(value) is not None
 
 
 __all__ = [

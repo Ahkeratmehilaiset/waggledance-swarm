@@ -417,13 +417,33 @@ class SolverProvenance:
                 >= self.quarantine_divergence_score_threshold):
             candidate.consecutive_divergent_runs += 1
             candidate.quarantine_evidence_refs.append(evidence_ref)
+            above_threshold = True
         else:
             # Reset on any below-threshold run
             candidate.consecutive_divergent_runs = 0
             candidate.quarantine_evidence_refs = []
+            above_threshold = False
 
-        if (candidate.consecutive_divergent_runs
-                >= self.quarantine_consecutive_threshold
+        quarantine_threshold_reached = (
+            candidate.consecutive_divergent_runs
+            >= self.quarantine_consecutive_threshold
+        )
+        self.emit_magma_event({
+            "event_type": "solver.run_result_recorded",
+            "solver_candidate_id": candidate_id,
+            "divergence_score": divergence_score,
+            "evidence_ref": evidence_ref,
+            "threshold": self.quarantine_divergence_score_threshold,
+            "above_threshold": above_threshold,
+            "consecutive_divergent_runs": (
+                candidate.consecutive_divergent_runs
+            ),
+            "quarantine_threshold_reached": quarantine_threshold_reached,
+            "activation_state": candidate.activation_state,
+            "ts_utc": _utc_iso(),
+        })
+
+        if (quarantine_threshold_reached
                 and candidate.activation_state
                 != ActivationState.QUARANTINED.value
                 and candidate.activation_state

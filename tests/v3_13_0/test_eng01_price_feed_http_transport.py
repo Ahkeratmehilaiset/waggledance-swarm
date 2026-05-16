@@ -301,6 +301,21 @@ def test_refuses_union_secret_markers_in_header_values() -> None:
         )
 
 
+@pytest.mark.parametrize("header_name", [
+    "X-Access-Key",
+    "X-Private-Key",
+    "X-My-Tokens",
+])
+def test_refuses_union_secret_markers_in_header_names(header_name: str) -> None:
+    with pytest.raises(Eng01PriceFeedHttpTransportError,
+                       match="CREDENTIAL_HEADER_REFUSED"):
+        fetch_price_feed_http_response(
+            URL,
+            headers={header_name: "trace-value"},
+            transport=lambda *_: _response(),
+        )
+
+
 def test_allows_credential_header_only_with_explicit_opt_in() -> None:
     seen_headers: list[Mapping[str, str]] = []
 

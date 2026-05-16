@@ -44,7 +44,12 @@ def contains_secret_marker(value: str) -> bool:
 def contains_secret_marker_substring(value: str) -> bool:
     """Return True for any marker substring in URL/header-like fields."""
     lowered = value.casefold()
-    return any(marker in lowered for marker in _SECRET_MARKERS)
+    separator_normalized = lowered.replace("-", "_")
+    return any(
+        marker in lowered
+        or marker.replace("-", "_") in separator_normalized
+        for marker in _SECRET_MARKERS
+    )
 
 
 __all__ = [

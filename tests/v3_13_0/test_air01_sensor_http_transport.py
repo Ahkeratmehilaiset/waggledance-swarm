@@ -193,6 +193,21 @@ def test_refuses_union_secret_markers_in_header_values() -> None:
         )
 
 
+@pytest.mark.parametrize("header_name", [
+    "X-Access-Key",
+    "X-Private-Key",
+    "X-My-Tokens",
+])
+def test_refuses_union_secret_markers_in_header_names(header_name: str) -> None:
+    with pytest.raises(Air01SensorHttpTransportError,
+                       match="CREDENTIAL_HEADER_REFUSED"):
+        fetch_air_quality_sensor_response(
+            PUBLIC_URL,
+            headers={header_name: "trace-value"},
+            transport=lambda *_: _response(),
+        )
+
+
 def test_refuses_redirect_or_html_response_from_transport() -> None:
     with pytest.raises(Air01SensorHttpTransportError, match="HTTP_STATUS_302"):
         fetch_air_quality_sensor_response(

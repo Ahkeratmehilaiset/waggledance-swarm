@@ -57,9 +57,12 @@ def test_contains_secret_marker_substring_is_stricter(value: str) -> None:
     "value",
     [
         "query access_key=abc",
+        "query access-key=abc",
         "source has private_key material",
+        "source has private-key material",
         "relative/secrets.json",
         "tokens=abc",
+        "x_api_key header alias",
     ],
 )
 def test_contains_secret_marker_substring_uses_union_markers(value: str) -> None:

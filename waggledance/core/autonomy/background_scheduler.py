@@ -105,16 +105,12 @@ def schedule_one_tick(*,
             deferred.append(m)
             continue
         if v.verdict == "ADMIT_TO_LANE" and len(selected) < max_dispatched:
-            if (lifecycle_audit_sink is not None
-                    or lifecycle_replay_sink is not None):
-                selected.append(mq.lifecycle_change(
-                    m,
-                    status="scheduled",
-                    audit_sink=lifecycle_audit_sink,
-                    replay_sink=lifecycle_replay_sink,
-                ))
-            else:
-                selected.append(m)
+            selected.append(mq.lifecycle_change(
+                m,
+                status="scheduled",
+                audit_sink=lifecycle_audit_sink,
+                replay_sink=lifecycle_replay_sink,
+            ))
         elif v.verdict == "DEFER":
             deferred.append(m)
         elif v.verdict in ("REJECT_HARD", "REJECT_SOFT"):

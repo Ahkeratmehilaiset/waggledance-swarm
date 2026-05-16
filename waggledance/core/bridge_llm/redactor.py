@@ -68,6 +68,9 @@ POSIX_PATH_RE: Pattern[str] = re.compile(
 URL_RE: Pattern[str] = re.compile(r"https?://[^\s<>\"']+")
 _URL_MASK_OPEN = "\x00URL\x00"
 _URL_MASK_CLOSE = "\x00ENDURL\x00"
+HETU_HINT_RE: Pattern[str] = re.compile(r"\d{6}[+\-A-FYXWVU]")
+IBAN_HINT_RE: Pattern[str] = re.compile(r"[A-Z]{2}\d{2}", re.IGNORECASE)
+PHONE_HINT_RE: Pattern[str] = re.compile(r"\d[\d\s-]{8}")
 
 
 # Placeholder names per master prompt §2.6
@@ -181,21 +184,30 @@ class BridgeLLMRedactor:
         def _mask_url(m: re.Match[str]) -> str:
             url_masks.append(m.group(0))
             return f"{_URL_MASK_OPEN}{len(url_masks) - 1}{_URL_MASK_CLOSE}"
-        text = URL_RE.sub(_mask_url, text)
+        if "://" in text:
+            text = URL_RE.sub(_mask_url, text)
 
         # Order matters: paths first (to avoid the email regex chewing
         # paths that contain `@`); specific Finnish identifiers before
         # generic digit patterns; credit-card before phone (digit
         # patterns overlap); email before phone (digit-only phone might
         # catch part of a numeric local-part).
-        text = WINDOWS_PATH_RE.sub(make_replacer(PATH_PLACEHOLDER), text)
-        text = POSIX_PATH_RE.sub(make_replacer(PATH_PLACEHOLDER), text)
-        text = HETU_RE.sub(make_replacer(HETU_PLACEHOLDER), text)
-        text = IBAN_RE.sub(make_replacer(IBAN_PLACEHOLDER), text)
-        text = Y_TUNNUS_RE.sub(make_replacer(BUSINESS_ID_PLACEHOLDER), text)
-        text = EMAIL_RE.sub(make_replacer(EMAIL_PLACEHOLDER), text)
-        text = CREDIT_CARD_RE.sub(make_replacer(TOKEN_PLACEHOLDER), text)
-        text = PHONE_RE.sub(make_replacer(PHONE_PLACEHOLDER), text)
+        if ":\\" in text:
+            text = WINDOWS_PATH_RE.sub(make_replacer(PATH_PLACEHOLDER), text)
+        if "/" in text:
+            text = POSIX_PATH_RE.sub(make_replacer(PATH_PLACEHOLDER), text)
+        if HETU_HINT_RE.search(text):
+            text = HETU_RE.sub(make_replacer(HETU_PLACEHOLDER), text)
+        if IBAN_HINT_RE.search(text):
+            text = IBAN_RE.sub(make_replacer(IBAN_PLACEHOLDER), text)
+        if "-" in text:
+            text = Y_TUNNUS_RE.sub(make_replacer(BUSINESS_ID_PLACEHOLDER), text)
+        if "@" in text:
+            text = EMAIL_RE.sub(make_replacer(EMAIL_PLACEHOLDER), text)
+        if CREDIT_CARD_RE.search(text):
+            text = CREDIT_CARD_RE.sub(make_replacer(TOKEN_PLACEHOLDER), text)
+        if PHONE_HINT_RE.search(text):
+            text = PHONE_RE.sub(make_replacer(PHONE_PLACEHOLDER), text)
 
         # Restore masked URLs verbatim — they were never PII to begin
         # with for redaction purposes (the operator's decision-4

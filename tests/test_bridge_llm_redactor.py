@@ -76,6 +76,14 @@ def test_redactor_scrubs_phone():
     assert "<PHONE_1>" in result.text
 
 
+def test_redactor_phone_hint_preserves_operator_regex_shape():
+    from waggledance.core.bridge_llm import BridgeLLMRedactor
+    r = BridgeLLMRedactor()
+    result = r.redact("Call +1 234-567 today")
+    assert "+1 234-567" not in result.text
+    assert "<PHONE_1>" in result.text
+
+
 def test_redactor_scrubs_finnish_hetu_before_phone():
     from waggledance.core.bridge_llm import BridgeLLMRedactor
     r = BridgeLLMRedactor()

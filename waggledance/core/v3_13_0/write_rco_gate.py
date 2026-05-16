@@ -745,6 +745,77 @@ def _solver_candidate_id(intent: Intent) -> str:
     return ""
 
 
+def build_gate_decision_card(
+    intent: Intent,
+    outcome: GateOutcome,
+) -> dict[str, Any]:
+    """Build a payload-free operator/UI summary for a gate decision.
+
+    The write gate may see sensitive payloads. This card intentionally echoes
+    only identifiers, hashes, risk class, audit refs, and the next action needed
+    to unblock or execute the intent.
+    """
+    return {
+        "schema_version": "write_gate_decision_card.v1",
+        "intent_id": outcome.intent_id,
+        "agent_id": intent.agent_id,
+        "session_id": intent.session_id,
+        "tool_descriptor_id": intent.tool_descriptor_id,
+        "connector_ref": intent.connector_ref or "",
+        "target_state_ref": intent.target_state_ref,
+        "action": intent.action,
+        "payload_hash": intent.payload_hash,
+        "risk_class": outcome.risk_class.value,
+        "approved": outcome.approved,
+        "operator_status": _decision_operator_status(outcome),
+        "denial_reason": outcome.denial_reason or "",
+        "stop_condition": (
+            outcome.stop_condition.value if outcome.stop_condition else ""
+        ),
+        "required_action": _decision_required_action(outcome),
+        "audit_event_ids": list(outcome.audit_event_ids),
+        "diff_preview_uri": outcome.diff_preview_uri or "",
+        "rollback_plan_ref": outcome.rollback_plan_ref or "",
+    }
+
+
+def _decision_operator_status(outcome: GateOutcome) -> str:
+    if outcome.approved:
+        return "approved"
+    if outcome.stop_condition is not None:
+        return "blocked_stop_condition"
+    return "blocked_policy_denied"
+
+
+def _decision_required_action(outcome: GateOutcome) -> str:
+    if outcome.approved:
+        if outcome.risk_class == WriteRiskClass.EXTERNAL_EFFECT:
+            return "execute_with_rollback_plan"
+        return "execute_or_record_effect"
+    if outcome.stop_condition == StopCondition.NO_ROLLBACK_PLAN:
+        return "attach_recovery_capsule"
+    if outcome.stop_condition == StopCondition.AUDIT_WRITE_FAILED:
+        return "restore_audit_log_before_retry"
+    if outcome.stop_condition == StopCondition.PEER_RCO_TIMEOUT:
+        return "rerun_peer_rco_or_pause"
+    if outcome.stop_condition == StopCondition.PEER_RCO_NONCONVERGENT:
+        return "resolve_peer_rco_findings"
+    if outcome.stop_condition == StopCondition.ANTI_PATTERN_VIOLATION:
+        return "fix_intent_or_scope"
+    if outcome.stop_condition == StopCondition.OPERATOR_UNAVAILABLE:
+        return "wait_for_operator"
+    if outcome.stop_condition == StopCondition.COST_CEILING_REACHED:
+        return "raise_or_reduce_cost_budget"
+    if outcome.stop_condition == StopCondition.IDEMPOTENCY_CAP_REACHED:
+        return "manual_reconciliation_required"
+    reason = outcome.denial_reason or ""
+    if reason.startswith("operator scope policy denied"):
+        return "update_operator_scope_or_request_confirmation"
+    if reason == "peer RCO did not pass":
+        return "address_peer_rco_findings"
+    return "review_denial_reason"
+
+
 def _audit_failure_execution_result(
     intent: Intent,
     stop: GateStopCondition,
@@ -774,4 +845,5 @@ __all__ = [
     "GateStopCondition",
     "PeerRCOResult",
     "ScopePolicyResult",
+    "build_gate_decision_card",
 ]

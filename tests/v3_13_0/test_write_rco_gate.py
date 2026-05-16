@@ -28,6 +28,7 @@ from waggledance.core.v3_13_0.write_rco_gate import (
     StopCondition,
     PeerRCOResult,
     ScopePolicyResult,
+    build_gate_decision_card,
 )
 from waggledance.core.v3_13_0.solver_provenance import (
     ActivationState,
@@ -1061,6 +1062,97 @@ class TestExternalEffectRoute:
         assert outcome.stop_condition is None
         event_types = [e["event_type"] for e in audit]
         assert AuditEventType.DENIED.value in event_types
+
+
+# --------------------------------------------------------------------------
+# Operator decision cards
+# --------------------------------------------------------------------------
+
+
+class TestGateDecisionCard:
+
+    def test_decision_card_for_scope_denial_explains_block_without_payload(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+            capsules=TestExternalEffectRoute()._setup_wrt_003_capsule(),
+            scope_decision="denied",
+            scope_reason="outside_pre_approved_scope",
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+            payload={
+                "body": "customer secret text",
+                "api_key": "sk-should-not-appear",
+            },
+        )
+
+        outcome = gate.route(intent)
+        card = build_gate_decision_card(intent, outcome)
+
+        assert card["schema_version"] == "write_gate_decision_card.v1"
+        assert card["approved"] is False
+        assert card["operator_status"] == "blocked_policy_denied"
+        assert card["required_action"] == (
+            "update_operator_scope_or_request_confirmation"
+        )
+        assert card["denial_reason"] == (
+            "operator scope policy denied: outside_pre_approved_scope"
+        )
+        encoded = repr(card)
+        assert "customer secret text" not in encoded
+        assert "sk-should-not-appear" not in encoded
+        assert card["payload_hash"] == intent.payload_hash
+
+    def test_decision_card_for_no_rollback_stop_names_next_action(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_missing_capsule",
+        )
+
+        outcome = gate.route(intent)
+        card = build_gate_decision_card(intent, outcome)
+
+        assert card["approved"] is False
+        assert card["operator_status"] == "blocked_stop_condition"
+        assert card["stop_condition"] == StopCondition.NO_ROLLBACK_PLAN.value
+        assert card["required_action"] == "attach_recovery_capsule"
+        assert card["rollback_plan_ref"] == ""
+
+    def test_decision_card_for_approved_external_effect_keeps_audit_refs(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+            capsules=TestExternalEffectRoute()._setup_wrt_003_capsule(),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+        )
+
+        outcome = gate.route(intent)
+        card = build_gate_decision_card(intent, outcome)
+
+        assert card["approved"] is True
+        assert card["operator_status"] == "approved"
+        assert card["risk_class"] == WriteRiskClass.EXTERNAL_EFFECT.value
+        assert card["required_action"] == "execute_with_rollback_plan"
+        assert card["rollback_plan_ref"] == "recovery:logbook_update_v1"
+        assert card["audit_event_ids"] == outcome.audit_event_ids
 
 
 # --------------------------------------------------------------------------

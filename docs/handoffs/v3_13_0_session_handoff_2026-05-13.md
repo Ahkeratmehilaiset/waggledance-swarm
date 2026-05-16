@@ -27,9 +27,10 @@ Sprint 1 v3.13.0 substraatti on mainissa. **15 PR mergetty** mutual
 RCO:lla Claudeen ja Codexin valisesti. **0 stop-condition-eskalaatiota.**
 **10 round-2-bugia** Codex nappasi Clauden PR:eista (kaikki todellisia
 fail-closed-bugeja, ei tyylimuutoksia). 292 v3.13.0-testia menee
-lapi. 50 MAGMA-event-tyyppia kaytossa (48 Sprint 1 substrate-landingissa,
+lapi. 51 MAGMA-event-tyyppia kaytossa (48 Sprint 1 substrate-landingissa,
 +1 BC2 follow-upissa: behavior.capture_refused, +1 SolverProvenance M4
-follow-upissa: solver.run_result_recorded).
+follow-upissa: solver.run_result_recorded, +1 AutoFixLoop AFL5 follow-upissa:
+auto_fix_loop.lease_record_unparseable).
 
 **Mitaan ei tarvitse heti tehda.** v3.12.0 stable target (2026-05-24)
 ei liiku, v3.13.0 on substrate-only landing -- ei version bumpia, ei
@@ -88,8 +89,9 @@ Plus `tools/sim_orchestrator.py` gained streaming-mode (`stream()`,
 `tests/tools/test_sim_orchestrator_*.py`.
 
 Plus `tools/audit_v3_13_0_event_surface.py` -- machine-derived count
-of the 50 MAGMA event types (48 at substrate landing + 1 from BC2
-follow-up + 1 from SolverProvenance M4 follow-up). Run `python tools/audit_v3_13_0_event_surface.py`
+of the 51 MAGMA event types (48 at substrate landing + 1 from BC2
+follow-up + 1 from SolverProvenance M4 follow-up + 1 from AutoFixLoop
+AFL5 follow-up). Run `python tools/audit_v3_13_0_event_surface.py`
 for grouped output; `--count-only` for the integer.
 
 ## Schema surface (schemas/v3_13_0/)
@@ -167,7 +169,7 @@ python -m pytest tests/contracts/test_v3_13_schema_bundle.py `
                  tests/contracts/test_runbook_examples_v3_13_0.py -q
 python -m pytest tests/tools/test_sim_orchestrator_alignment.py `
                  tests/tools/test_sim_orchestrator_stream.py -q
-python tools/audit_v3_13_0_event_surface.py --count-only   # expect: 50 (post-M4 follow-up; was 48 at substrate landing)
+python tools/audit_v3_13_0_event_surface.py --count-only   # expect: 51 (post-AFL5 follow-up; was 48 at substrate landing)
 ```
 
 Expected: 292 total tests pass (243 + 35 + 14).
@@ -245,8 +247,8 @@ This session's discipline:
 2. `docs/releases/v3.13.0.md` (release notes; what landed)
 3. `CHANGELOG.md` top entry
 4. `docs/release/RELEASE_READINESS.md` (v3.13.0 section)
-5. `tools/audit_v3_13_0_event_surface.py` (machine-derives the 50
-   MAGMA event types post-M4; was 48 at substrate landing; run with
+5. `tools/audit_v3_13_0_event_surface.py` (machine-derives the 51
+   MAGMA event types post-AFL5; was 48 at substrate landing; run with
    `--count-only` for the integer)
 6. Bridge: `.agent-bridge/shared/events.jsonl` last ~100 lines
 

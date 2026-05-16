@@ -244,19 +244,34 @@ class TestLease:
     def test_acquire_refuses_malformed_timestamp(self):
         """Malformed last_renewed_at_utc is treated as NOT stale
         (fail-closed: a corrupted lease row can't be silently taken
-        over)."""
+        over) while still leaving audit evidence."""
         existing = LeaseRecord(
             instance_id="instance_b",
             acquired_at_utc="not-a-valid-iso",
             last_renewed_at_utc="not-a-valid-iso",
         )
+        events = []
         loop = _make_loop(
             lease=existing,
+            magma_events=events,
             utc_iso_fn=lambda: "2026-05-13T09:00:00Z",
             lease_ttl_seconds=1,
         )
         with pytest.raises(LeaseNotHeld):
             loop.acquire_lease()
+
+        unparseable = [
+            e for e in events
+            if e["event_type"] == "auto_fix_loop.lease_record_unparseable"
+        ]
+        assert len(unparseable) == 1
+        event = unparseable[0]
+        assert event["instance_id"] == "instance_a"
+        assert event["held_instance_id"] == "instance_b"
+        assert event["field"] == "lease_record"
+        assert event["exception_type"] == "ValueError"
+        assert event["ts_utc"] == "2026-05-13T09:00:00Z"
+        assert "not-a-valid-iso" not in repr(event)
 
 
 # --------------------------------------------------------------------------

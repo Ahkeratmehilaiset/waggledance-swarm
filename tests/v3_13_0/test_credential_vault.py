@@ -395,6 +395,62 @@ class TestOSKeyringVault:
             with pytest.raises(PermissionError):
                 vault.get(ref, purpose="post-revoke")
 
+    def test_get_rechecks_status_after_keyring_fetch_before_return(self):
+        events = []
+        vault = OSKeyringVault(audit_emit=lambda env: events.append(env))
+        ref = self._ref()
+        mock_kr = MagicMock()
+        storage = {}
+        did_revoke = {"value": False}
+
+        def mock_set(service, name, value):
+            storage[(service, name)] = value
+
+        def mock_get(service, name):
+            value = storage.get((service, name))
+            if value is not None and not did_revoke["value"]:
+                did_revoke["value"] = True
+                vault.revoke(ref, "race during retrieval")
+                return value
+            return value
+
+        def mock_delete(service, name):
+            storage.pop((service, name), None)
+
+        mock_kr.set_password = mock_set
+        mock_kr.get_password = mock_get
+        mock_kr.delete_password = mock_delete
+
+        with patch.object(OSKeyringVault, "_keyring",
+                            return_value=mock_kr):
+            vault.store(ref, b"v1", VaultMetadata())
+            with pytest.raises(PermissionError, match="status=revoked"):
+                vault.get(ref, purpose="race-window")
+
+        event_types = [event["event_type"] for event in events]
+        assert "auth.credential_revoked" in event_types
+        assert "auth.credential_retrieved" not in event_types
+
+    def test_store_non_utf8_material_error_is_redacted(self):
+        vault = OSKeyringVault()
+        ref = self._ref()
+        mock_kr = MagicMock()
+
+        with patch.object(OSKeyringVault, "_keyring",
+                            return_value=mock_kr):
+            result = vault.store(
+                ref,
+                b"\xffbinary-secret",
+                VaultMetadata(provider="test"),
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert "not valid UTF-8" in result.error
+        assert "0xff" not in result.error
+        assert "binary-secret" not in result.error
+        mock_kr.set_password.assert_not_called()
+
 
 # ============================================================================
 # Cross-cutting: no material in any logging path

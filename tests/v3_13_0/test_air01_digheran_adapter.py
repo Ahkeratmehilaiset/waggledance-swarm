@@ -120,3 +120,17 @@ def test_bool_values_and_secret_source_refs_refuse() -> None:
             _payload(),
             source_url="http://192.168.1.44/api/current?token=abc",
         )
+
+
+@pytest.mark.parametrize("source_url", [
+    "http://192.168.1.44/api/current?access_key=abc",
+    "http://192.168.1.44/api/current?private_key=abc",
+    "http://192.168.1.44/api/current?secrets=abc",
+    "http://192.168.1.44/api/current?tokens=abc",
+])
+def test_union_secret_source_refs_refuse(source_url: str) -> None:
+    with pytest.raises(Air01DigheranAdapterError, match="secrets"):
+        normalize_digheran_air_quality_payload(
+            _payload(),
+            source_url=source_url,
+        )

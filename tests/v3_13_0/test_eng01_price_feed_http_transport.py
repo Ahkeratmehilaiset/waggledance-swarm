@@ -243,11 +243,18 @@ def test_refuses_url_credentials() -> None:
         )
 
 
-def test_refuses_secret_like_url_query() -> None:
+@pytest.mark.parametrize("query", [
+    "api_key=abc",
+    "access_key=abc",
+    "private_key=abc",
+    "secrets=abc",
+    "tokens=abc",
+])
+def test_refuses_secret_like_url_query(query: str) -> None:
     with pytest.raises(Eng01PriceFeedHttpTransportError,
                        match="URL_SECRET_REFUSED"):
         fetch_price_feed_http_response(
-            "https://prices.example.test/feed.json?api_key=abc",
+            f"https://prices.example.test/feed.json?{query}",
             transport=lambda *_: _response(),
         )
 
@@ -280,6 +287,16 @@ def test_refuses_secret_like_header_name_by_default() -> None:
         fetch_price_feed_http_response(
             URL,
             headers={"Authorization": "Bearer abc"},
+            transport=lambda *_: _response(),
+        )
+
+
+def test_refuses_union_secret_markers_in_header_values() -> None:
+    with pytest.raises(Eng01PriceFeedHttpTransportError,
+                       match="CREDENTIAL_HEADER_REFUSED"):
+        fetch_price_feed_http_response(
+            URL,
+            headers={"X-Trace": "private_key material"},
             transport=lambda *_: _response(),
         )
 

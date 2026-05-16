@@ -13,6 +13,10 @@ import json
 import math
 from typing import Any, Mapping
 
+from waggledance.core.v3_13_0.secret_markers import (
+    contains_secret_marker_substring,
+)
+
 
 CASE_ID = "AIR-01__indoor_air_quality_advisor__cottage"
 OBSERVATION_SCHEMA_VERSION = "air01.observation.v1"
@@ -32,20 +36,6 @@ _METRIC_ALIASES: tuple[tuple[str, tuple[str, ...], str, tuple[str, ...]], ...] =
     (RADON_BQ_M3, ("radon", "radon_bq", "radon_bq_m3"), "Bq/m3",
      ("bq/m3", "bq/m^3")),
 )
-_SECRET_MARKERS = (
-    "authorization",
-    "bearer",
-    "cookie",
-    "credential",
-    "passwd",
-    "password",
-    "secret",
-    "token",
-    "x-api-key",
-    "api_key",
-)
-
-
 class Air01DigheranAdapterError(ValueError):
     """Invalid caller input for AIR-01 observation adaptation."""
 
@@ -215,8 +205,7 @@ def _safe_source_ref(value: str, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise Air01DigheranAdapterError(f"{label} must be a non-empty string")
     normalized = value.strip()
-    lowered = normalized.lower()
-    if any(marker in lowered for marker in _SECRET_MARKERS):
+    if contains_secret_marker_substring(normalized):
         raise Air01DigheranAdapterError(f"{label} must not contain secrets")
     return normalized
 

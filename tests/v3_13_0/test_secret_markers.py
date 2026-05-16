@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from waggledance.core.v3_13_0.secret_markers import contains_secret_marker
+from waggledance.core.v3_13_0.secret_markers import (
+    contains_secret_marker,
+    contains_secret_marker_substring,
+)
 
 
 @pytest.mark.parametrize(
@@ -35,3 +38,29 @@ def test_contains_secret_marker_allows_substrings_inside_words(value: str) -> No
 )
 def test_contains_secret_marker_rejects_bounded_markers(value: str) -> None:
     assert contains_secret_marker(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "tokenized parser output",
+        "authorizationized advisory text",
+        "private_keyed value",
+    ],
+)
+def test_contains_secret_marker_substring_is_stricter(value: str) -> None:
+    assert contains_secret_marker(value) is False
+    assert contains_secret_marker_substring(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "query access_key=abc",
+        "source has private_key material",
+        "relative/secrets.json",
+        "tokens=abc",
+    ],
+)
+def test_contains_secret_marker_substring_uses_union_markers(value: str) -> None:
+    assert contains_secret_marker_substring(value) is True

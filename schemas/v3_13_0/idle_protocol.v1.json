@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/idle_protocol.v1.json",
+  "title": "v3.13.0 Idle Protocol v1 Event Payload",
+  "description": "Payload contract for opt-in bridge idle-protocol deliberation events. This schema does not define the bridge event envelope and does not enable automatic execution.",
+  "type": "object",
+  "required": [
+    "protocol_version",
+    "event_type",
+    "proposal_id",
+    "round_number",
+    "proposes_substrate_change",
+    "problem_statement",
+    "tradeoff_axis",
+    "simulation_evidence",
+    "charter_alignment"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "idle-protocol.v1"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "idle_proposal",
+        "idle_counter_proposal",
+        "idle_adversarial_review",
+        "idle_consensus_reached",
+        "idle_low_quality_response",
+        "idle_charter_violation"
+      ]
+    },
+    "proposal_id": {
+      "$ref": "#/definitions/proposal_ref"
+    },
+    "round_number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "proposes_substrate_change": {
+      "type": "boolean"
+    },
+    "problem_statement": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 4000
+    },
+    "proposal": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 8000
+    },
+    "alternative_proposal": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 8000
+    },
+    "responds_to": {
+      "$ref": "#/definitions/proposal_ref"
+    },
+    "reasoning_points": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "minLength": 20,
+        "maxLength": 2000
+      }
+    },
+    "counterexamples": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "minLength": 20,
+        "maxLength": 2000
+      }
+    },
+    "tradeoff_axis": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 2000
+    },
+    "simulation_evidence": {
+      "$ref": "#/definitions/simulation_evidence"
+    },
+    "charter_alignment": {
+      "$ref": "#/definitions/charter_alignment"
+    },
+    "consensus_target_proposal_id": {
+      "$ref": "#/definitions/proposal_ref"
+    },
+    "operator_gate_required": {
+      "type": "boolean"
+    },
+    "auto_execute": {
+      "type": "boolean"
+    },
+    "rejected_event_id": {
+      "$ref": "#/definitions/proposal_ref"
+    },
+    "quality_errors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 5,
+        "maxLength": 1000
+      }
+    },
+    "violating_proposal_id": {
+      "$ref": "#/definitions/proposal_ref"
+    },
+    "violation_reason": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 4000
+    },
+    "terminate_protocol": {
+      "type": "boolean"
+    },
+    "operator_escalation_required": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "idle_proposal"
+          }
+        },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["proposal"],
+        "properties": {
+          "round_number": {
+            "const": 1
+          },
+          "charter_alignment": {
+            "properties": {
+              "compatible": {
+                "const": true
+              }
+            }
+          }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["alternative_proposal"] },
+            { "required": ["counterexamples"] },
+            { "required": ["consensus_target_proposal_id"] },
+            { "required": ["violating_proposal_id"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "idle_counter_proposal"
+          }
+        },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["responds_to", "alternative_proposal", "reasoning_points"],
+        "properties": {
+          "charter_alignment": {
+            "properties": {
+              "compatible": {
+                "const": true
+              }
+            }
+          }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["proposal"] },
+            { "required": ["counterexamples"] },
+            { "required": ["consensus_target_proposal_id"] },
+            { "required": ["violating_proposal_id"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "idle_adversarial_review"
+          }
+        },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["responds_to", "counterexamples"],
+        "properties": {
+          "round_number": {
+            "const": 3
+          },
+          "charter_alignment": {
+            "properties": {
+              "compatible": {
+                "const": true
+              }
+            }
+          }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["proposal"] },
+            { "required": ["alternative_proposal"] },
+            { "required": ["consensus_target_proposal_id"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "idle_consensus_reached"
+          }
+        },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": [
+          "consensus_target_proposal_id",
+          "operator_gate_required",
+          "auto_execute"
+        ],
+        "properties": {
+          "operator_gate_required": {
+            "const": true
+          },
+          "auto_execute": {
+            "const": false
+          },
+          "charter_alignment": {
+            "properties": {
+              "compatible": {
+                "const": true
+              }
+            }
+          }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["proposal"] },
+            { "required": ["alternative_proposal"] },
+            { "required": ["counterexamples"] },
+            { "required": ["violating_proposal_id"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "idle_low_quality_response"
+          }
+        },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": [
+          "rejected_event_id",
+          "quality_errors",
+          "operator_escalation_required"
+        ],
+        "properties": {
+          "operator_escalation_required": {
+            "const": true
+          }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["proposal"] },
+            { "required": ["alternative_proposal"] },
+            { "required": ["counterexamples"] },
+            { "required": ["consensus_target_proposal_id"] },
+            { "required": ["violating_proposal_id"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "idle_charter_violation"
+          }
+        },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": [
+          "violating_proposal_id",
+          "violation_reason",
+          "terminate_protocol",
+          "operator_escalation_required"
+        ],
+        "properties": {
+          "terminate_protocol": {
+            "const": true
+          },
+          "operator_escalation_required": {
+            "const": true
+          },
+          "charter_alignment": {
+            "properties": {
+              "compatible": {
+                "const": false
+              }
+            }
+          }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["proposal"] },
+            { "required": ["alternative_proposal"] },
+            { "required": ["counterexamples"] },
+            { "required": ["consensus_target_proposal_id"] }
+          ]
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "proposal_ref": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+    },
+    "simulation_evidence": {
+      "type": "object",
+      "required": ["kind", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "code_sketch",
+            "corpus_diff",
+            "scenario_simulation",
+            "runtime_trace",
+            "test_case"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 4000
+        },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "required": ["path", "description"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 260
+              },
+              "description": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 1000
+              }
+            }
+          }
+        }
+      }
+    },
+    "charter_alignment": {
+      "type": "object",
+      "required": ["compatible", "reasoning"],
+      "additionalProperties": false,
+      "properties": {
+        "compatible": {
+          "type": "boolean"
+        },
+        "reasoning": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 4000
+        }
+      }
+    }
+  }
+}

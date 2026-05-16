@@ -118,12 +118,25 @@ class AutonomyRuntime:
         case_builder: Optional[CaseTrajectoryBuilder] = None,
         working_memory: Optional[WorkingMemory] = None,
         resource_kernel=None,
+        enable_magma: bool = True,
+        enable_persistence: bool = True,
     ):
         self.profile = profile
 
         # Core components — let WorldModel use _UNSET sentinel for proper
-        # CognitiveGraph lazy-init (passing None explicitly disables it)
-        self.world_model = world_model or WorldModel(profile=profile)
+        # CognitiveGraph lazy-init when persistence is enabled. Dry-run-safe
+        # callers can disable persistence to avoid implicit data/*.db writes.
+        if world_model is not None:
+            self.world_model = world_model
+        elif enable_persistence:
+            self.world_model = WorldModel(profile=profile)
+        else:
+            from waggledance.core.world.baseline_store import BaselineStore
+            self.world_model = WorldModel(
+                cognitive_graph=None,
+                baseline_store=BaselineStore(":memory:"),
+                profile=profile,
+            )
         self.capability_registry = capability_registry or CapabilityRegistry()
         self.policy_engine = policy_engine or PolicyEngine(profile=profile)
         self.action_bus = SafeActionBus(self.policy_engine)
@@ -177,59 +190,63 @@ class AutonomyRuntime:
         self.audit = None
         self.event_log = None
         self.trust = None
-        try:
-            from waggledance.core.magma.audit_projector import AuditProjector
-            self.audit = AuditProjector()
-        except Exception as exc:
-            log.debug("AuditProjector unavailable: %s", exc)
-        try:
-            from waggledance.core.magma.event_log_adapter import EventLogAdapter
-            self.event_log = EventLogAdapter()
-        except Exception as exc:
-            log.debug("EventLogAdapter unavailable: %s", exc)
-        try:
-            from waggledance.core.magma.trust_adapter import TrustAdapter
-            self.trust = TrustAdapter()
-        except Exception as exc:
-            log.debug("TrustAdapter unavailable: %s", exc)
+        if enable_magma:
+            try:
+                from waggledance.core.magma.audit_projector import AuditProjector
+                self.audit = AuditProjector()
+            except Exception as exc:
+                log.debug("AuditProjector unavailable: %s", exc)
+            try:
+                from waggledance.core.magma.event_log_adapter import EventLogAdapter
+                self.event_log = EventLogAdapter()
+            except Exception as exc:
+                log.debug("EventLogAdapter unavailable: %s", exc)
+            try:
+                from waggledance.core.magma.trust_adapter import TrustAdapter
+                self.trust = TrustAdapter()
+            except Exception as exc:
+                log.debug("TrustAdapter unavailable: %s", exc)
         self.replay = None
-        try:
-            from waggledance.core.magma.replay_engine import ReplayAdapter
-            self.replay = ReplayAdapter()
-        except Exception as exc:
-            log.debug("ReplayAdapter unavailable: %s", exc)
+        if enable_magma:
+            try:
+                from waggledance.core.magma.replay_engine import ReplayAdapter
+                self.replay = ReplayAdapter()
+            except Exception as exc:
+                log.debug("ReplayAdapter unavailable: %s", exc)
         self.provenance = None
-        try:
-            from waggledance.core.magma.provenance import ProvenanceAdapter
-            self.provenance = ProvenanceAdapter()
-        except Exception as exc:
-            log.debug("ProvenanceAdapter unavailable: %s", exc)
+        if enable_magma:
+            try:
+                from waggledance.core.magma.provenance import ProvenanceAdapter
+                self.provenance = ProvenanceAdapter()
+            except Exception as exc:
+                log.debug("ProvenanceAdapter unavailable: %s", exc)
 
         # Persistence adapters
         self.world_store = None
         self.procedural_store = None
         self.case_store = None
         self.verifier_store = None
-        try:
-            from waggledance.adapters.persistence.sqlite_world_store import SQLiteWorldStore
-            self.world_store = SQLiteWorldStore()
-        except Exception as exc:
-            log.debug("SQLiteWorldStore unavailable: %s", exc)
-        try:
-            from waggledance.adapters.persistence.sqlite_procedural_store import SQLiteProceduralStore
-            self.procedural_store = SQLiteProceduralStore()
-        except Exception as exc:
-            log.debug("SQLiteProceduralStore unavailable: %s", exc)
-        try:
-            from waggledance.adapters.persistence.sqlite_case_store import SQLiteCaseStore
-            self.case_store = SQLiteCaseStore()
-        except Exception as exc:
-            log.debug("SQLiteCaseStore unavailable: %s", exc)
-        try:
-            from waggledance.adapters.persistence.sqlite_verifier_store import SQLiteVerifierStore
-            self.verifier_store = SQLiteVerifierStore()
-        except Exception as exc:
-            log.debug("SQLiteVerifierStore unavailable: %s", exc)
+        if enable_persistence:
+            try:
+                from waggledance.adapters.persistence.sqlite_world_store import SQLiteWorldStore
+                self.world_store = SQLiteWorldStore()
+            except Exception as exc:
+                log.debug("SQLiteWorldStore unavailable: %s", exc)
+            try:
+                from waggledance.adapters.persistence.sqlite_procedural_store import SQLiteProceduralStore
+                self.procedural_store = SQLiteProceduralStore()
+            except Exception as exc:
+                log.debug("SQLiteProceduralStore unavailable: %s", exc)
+            try:
+                from waggledance.adapters.persistence.sqlite_case_store import SQLiteCaseStore
+                self.case_store = SQLiteCaseStore()
+            except Exception as exc:
+                log.debug("SQLiteCaseStore unavailable: %s", exc)
+            try:
+                from waggledance.adapters.persistence.sqlite_verifier_store import SQLiteVerifierStore
+                self.verifier_store = SQLiteVerifierStore()
+            except Exception as exc:
+                log.debug("SQLiteVerifierStore unavailable: %s", exc)
 
         # Domain capsule (profile-specific reasoning config)
         self.capsule = None
@@ -255,16 +272,17 @@ class AutonomyRuntime:
         # Prediction Error Ledger + Capability Confidence
         self.prediction_ledger = None
         self.capability_confidence = None
-        try:
-            from waggledance.core.learning.prediction_error_ledger import PredictionErrorLedger
-            self.prediction_ledger = PredictionErrorLedger()
-        except Exception as exc:
-            log.debug("PredictionErrorLedger unavailable: %s", exc)
-        try:
-            from waggledance.core.learning.capability_confidence import CapabilityConfidenceTracker
-            self.capability_confidence = CapabilityConfidenceTracker()
-        except Exception as exc:
-            log.debug("CapabilityConfidenceTracker unavailable: %s", exc)
+        if enable_persistence:
+            try:
+                from waggledance.core.learning.prediction_error_ledger import PredictionErrorLedger
+                self.prediction_ledger = PredictionErrorLedger()
+            except Exception as exc:
+                log.debug("PredictionErrorLedger unavailable: %s", exc)
+            try:
+                from waggledance.core.learning.capability_confidence import CapabilityConfidenceTracker
+                self.capability_confidence = CapabilityConfidenceTracker()
+            except Exception as exc:
+                log.debug("CapabilityConfidenceTracker unavailable: %s", exc)
 
         # ResourceKernel + AdmissionControl (load management)
         self.resource_kernel = None

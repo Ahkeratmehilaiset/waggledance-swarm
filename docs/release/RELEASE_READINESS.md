@@ -55,15 +55,17 @@ Bridge protocol: unchanged. NO new dotted bridge types. Solver and
 AutoFixLoop bridge events use existing `type=handoff` / `type=decision`
 with `payload.kind=solver` (per spec edit E16).
 
-MAGMA event surface: 50 unique event types (machine-derived; see
+MAGMA event surface: 51 unique event types (machine-derived; see
 `tools/audit_v3_13_0_event_surface.py --count-only`). Was 48 at
 Sprint 1 substrate landing; BC2 follow-up added `behavior.capture_refused`
-and SolverProvenance M4 follow-up added `solver.run_result_recorded`.
+and SolverProvenance M4 follow-up added `solver.run_result_recorded`;
+AutoFixLoop AFL5 added `auto_fix_loop.lease_record_unparseable`.
 Grouped:
 * `write.*` (12): WriteRCOGate audit envelope
 * `shadow.*` (8): ShadowRunner state + abort reasons
   (incl. `run_started`, `run_completed`, `baseline_failed`)
-* `auto_fix_loop.*` (8): lease, cursor, repair lifecycle
+* `auto_fix_loop.*` (9): lease, cursor, repair lifecycle,
+  including `lease_record_unparseable`
 * `auth.*` (6): credential_stored, retrieved, rotated, revoked,
   material_revealed, and the ANTI-004 `credential_in_repo_blocked`
 * `solver.*` (6): provenance_signed, run_result_recorded, quarantined,

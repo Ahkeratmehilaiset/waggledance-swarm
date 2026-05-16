@@ -262,7 +262,15 @@ class AutoFixLoop:
                 existing.last_renewed_at_utc.replace("Z", "+00:00")
             )
             now = _dt.fromisoformat(now_utc.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError) as exc:
+            self.emit_magma_event({
+                "event_type": "auto_fix_loop.lease_record_unparseable",
+                "instance_id": self.instance_id,
+                "held_instance_id": existing.instance_id,
+                "field": "lease_record",
+                "exception_type": exc.__class__.__name__,
+                "ts_utc": self.utc_iso_fn(),
+            })
             return False
         elapsed = (now - then).total_seconds()
         return elapsed > self.lease_ttl_seconds

@@ -16,6 +16,10 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from waggledance.core.v3_13_0.secret_markers import (
+    contains_secret_marker_substring,
+)
+
 
 DEFAULT_TIMEOUT_SECONDS = 5.0
 DEFAULT_MAX_RESPONSE_BYTES = 2_000_000
@@ -32,20 +36,6 @@ _CREDENTIAL_HEADER_NAMES = frozenset({
     "proxy-authorization",
     "x-api-key",
 })
-_SECRET_MARKERS = (
-    "authorization",
-    "bearer",
-    "cookie",
-    "credential",
-    "passwd",
-    "password",
-    "secret",
-    "token",
-    "x-api-key",
-    "api_key",
-)
-
-
 @dataclass(frozen=True)
 class Air01SensorHttpResponse:
     """Raw HTTP response data for the AIR-01 parser layer."""
@@ -143,7 +133,7 @@ def _validate_url(
         raise Air01SensorHttpTransportError("URL_SCHEME_REFUSED")
     if parsed.username or parsed.password:
         raise Air01SensorHttpTransportError("URL_USERINFO_REFUSED")
-    if _contains_secret_marker(parsed.query):
+    if contains_secret_marker_substring(parsed.query):
         raise Air01SensorHttpTransportError("URL_SECRET_REFUSED")
     _validate_host(parsed.hostname or "", allowed_private_hosts)
     return normalized
@@ -217,7 +207,7 @@ def _validate_headers(
         if not allow_credential_headers and (
             lowered_key in _CREDENTIAL_HEADER_NAMES
             or lowered_key.endswith("-token")
-            or _contains_secret_marker(clean_value)
+            or contains_secret_marker_substring(clean_value)
         ):
             raise Air01SensorHttpTransportError("CREDENTIAL_HEADER_REFUSED")
         normalized[clean_key] = clean_value
@@ -277,11 +267,6 @@ def _validate_response(
     if response.source_url != expected_url:
         raise Air01SensorHttpTransportError("RESPONSE_SOURCE_URL_REFUSED")
     return response
-
-
-def _contains_secret_marker(value: str) -> bool:
-    lowered = value.lower()
-    return any(marker in lowered for marker in _SECRET_MARKERS)
 
 
 def _has_header_injection(value: str) -> bool:

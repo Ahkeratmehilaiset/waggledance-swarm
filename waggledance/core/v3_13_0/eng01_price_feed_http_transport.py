@@ -19,6 +19,9 @@ import httpx
 from waggledance.core.v3_13_0.eng01_price_feed_response_parser import (
     SUPPORTED_CONTENT_TYPES,
 )
+from waggledance.core.v3_13_0.secret_markers import (
+    contains_secret_marker_substring,
+)
 
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -35,20 +38,6 @@ _CREDENTIAL_HEADER_NAMES = frozenset({
     "proxy-authorization",
     "x-api-key",
 })
-_SECRET_MARKERS = (
-    "authorization",
-    "bearer",
-    "cookie",
-    "credential",
-    "passwd",
-    "password",
-    "secret",
-    "token",
-    "x-api-key",
-    "api_key",
-)
-
-
 @dataclass(frozen=True)
 class Eng01PriceFeedHttpResponse:
     """Raw HTTP response data for the ENG-01 parser layer."""
@@ -146,7 +135,7 @@ def _validate_url(url: str) -> str:
         raise Eng01PriceFeedHttpTransportError("URL_SCHEME_REFUSED")
     if parsed.username or parsed.password:
         raise Eng01PriceFeedHttpTransportError("URL_USERINFO_REFUSED")
-    if _contains_secret_marker(parsed.query):
+    if contains_secret_marker_substring(parsed.query):
         raise Eng01PriceFeedHttpTransportError("URL_SECRET_REFUSED")
     _validate_public_host(parsed.hostname or "")
     return normalized
@@ -194,7 +183,7 @@ def _validate_headers(
         if not allow_credential_headers and (
             lowered_key in _CREDENTIAL_HEADER_NAMES
             or lowered_key.endswith("-token")
-            or _contains_secret_marker(clean_value)
+            or contains_secret_marker_substring(clean_value)
         ):
             raise Eng01PriceFeedHttpTransportError(
                 "CREDENTIAL_HEADER_REFUSED"
@@ -258,11 +247,6 @@ def _validate_response(
     if response.source_url != expected_url:
         raise Eng01PriceFeedHttpTransportError("RESPONSE_SOURCE_URL_REFUSED")
     return response
-
-
-def _contains_secret_marker(value: str) -> bool:
-    lowered = value.lower()
-    return any(marker in lowered for marker in _SECRET_MARKERS)
 
 
 def _has_header_injection(value: str) -> bool:

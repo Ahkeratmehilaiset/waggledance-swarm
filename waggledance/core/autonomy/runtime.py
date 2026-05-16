@@ -23,6 +23,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from waggledance.core.actions.action_bus import SafeActionBus
+from waggledance.core.autonomy import background_scheduler as bg
 from waggledance.core.autonomy_growth.runtime_hint_extractor import (
     RESULT_DERIVED,
     derive_low_risk_autonomy_hint,
@@ -333,6 +334,65 @@ class AutonomyRuntime:
         except Exception as exc:
             log.debug("Persist %s failed: %s", label, exc)
             return None
+
+    def _record_mission_lifecycle_audit(self, event: dict[str, Any]) -> None:
+        """Project a mission-queue lifecycle event into MAGMA audit."""
+        if not self.audit or AuditEntry is None:
+            return
+        payload = dict(event)
+        event_type = str(payload.pop("event_type", "mission.lifecycle_changed"))
+        mission_id = str(payload.get("mission_id") or "")
+        self._magma_safe(
+            "audit.mission.lifecycle",
+            self.audit.record,
+            AuditEntry(
+                event_type=event_type,
+                payload=payload,
+                goal_id=mission_id,
+            ),
+        )
+
+    def _record_mission_lifecycle_replay(self, event: dict[str, Any]) -> None:
+        """Project a mission-queue lifecycle event into MAGMA replay."""
+        if not self.replay:
+            return
+        payload = dict(event)
+        event_type = str(payload.pop("event_type", "mission.lifecycle_changed"))
+        mission_id = str(payload.get("mission_id") or "")
+        self._magma_safe(
+            "replay.mission.lifecycle",
+            self.replay.record_mission_event,
+            mission_id,
+            event_type,
+            payload=payload,
+            step_order=0,
+        )
+
+    def schedule_missions(self, *,
+                          state,
+                          missions,
+                          hard_rules,
+                          adaptive_rules=(),
+                          max_dispatched: int = 20) -> bg.DispatchReport:
+        """Schedule mission-queue entries through runtime observability.
+
+        This wraps the Phase 9 scheduler and records lifecycle transitions to
+        MAGMA sinks when they are available. It does not execute missions.
+        """
+        audit_sink = (
+            self._record_mission_lifecycle_audit
+            if self.audit and AuditEntry is not None else None
+        )
+        replay_sink = self._record_mission_lifecycle_replay if self.replay else None
+        return bg.schedule_one_tick(
+            state=state,
+            missions=missions,
+            hard_rules=hard_rules,
+            adaptive_rules=adaptive_rules,
+            max_dispatched=max_dispatched,
+            lifecycle_audit_sink=audit_sink,
+            lifecycle_replay_sink=replay_sink,
+        )
 
     # ── Query path ────────────────────────────────────────
 

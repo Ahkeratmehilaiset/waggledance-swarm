@@ -160,12 +160,22 @@ def test_fail_closed_for_invalid_dates_domains_and_bool_text() -> None:
         index_email02_vendor_messages(payload)
 
 
-def test_vendor_config_secret_markers_refuse() -> None:
+@pytest.mark.parametrize("display_name", ["Helen token", "Helen bearer"])
+def test_vendor_config_secret_markers_refuse(display_name: str) -> None:
     payload = _payload()
-    payload["vendors"][0]["display_name"] = "Helen token"
+    payload["vendors"][0]["display_name"] = display_name
     with pytest.raises(Email02VendorEmailIndexerError,
                        match="display_name must not contain secrets"):
         index_email02_vendor_messages(payload)
+
+
+def test_vendor_config_secret_marker_substrings_inside_words_are_allowed() -> None:
+    payload = _payload()
+    payload["vendors"][0]["display_name"] = "Tokenized Energy"
+
+    result = index_email02_vendor_messages(payload).to_payload()
+
+    assert result["vendor_indexes"][0]["display_name"] == "Tokenized Energy"
 
 
 def test_max_messages_per_vendor_bounds_and_limits_output() -> None:

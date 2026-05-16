@@ -15,6 +15,8 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Mapping
 
+from waggledance.core.v3_13_0.secret_markers import contains_secret_marker
+
 
 SCHEMA_VERSION = 1
 DEFAULT_REGISTRY_PATH = (
@@ -44,27 +46,6 @@ MARKER_CLASSES = frozenset({
     "informational_with_severity",
     "status_buckets",
 })
-_SECRET_MARKERS = (
-    "authorization",
-    "bearer",
-    "cookie",
-    "credential",
-    "credentials",
-    "passwd",
-    "password",
-    "secret",
-    "secrets",
-    "token",
-    "tokens",
-    "x-api-key",
-    "api_key",
-)
-_SECRET_MARKER_RE = re.compile(
-    r"(?:^|[\\/._?&=:\-\s])(?:"
-    + "|".join(re.escape(marker) for marker in _SECRET_MARKERS)
-    + r")(?:$|[\\/._?&=:\-\s])",
-    re.IGNORECASE,
-)
 
 
 class SolverRegistryError(ValueError):
@@ -359,7 +340,7 @@ def _safe_text(value: str, label: str) -> None:
 
 
 def _has_secret_marker(value: str) -> bool:
-    return _SECRET_MARKER_RE.search(value) is not None
+    return contains_secret_marker(value)
 
 
 __all__ = [

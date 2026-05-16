@@ -17,6 +17,8 @@ import re
 import unicodedata
 from typing import Any, Mapping
 
+from waggledance.core.v3_13_0.secret_markers import contains_secret_marker
+
 
 CASE_ID = "PDF-01__invoice_field_extractor__home"
 OK = "OK"
@@ -42,27 +44,6 @@ REQUIRED_FIELDS = (
 )
 
 _DATE_FI_RE = r"(\d{1,2}\.\d{1,2}\.\d{4})"
-_SECRET_MARKERS = (
-    "authorization",
-    "bearer",
-    "cookie",
-    "credential",
-    "credentials",
-    "passwd",
-    "password",
-    "secret",
-    "secrets",
-    "token",
-    "tokens",
-    "x-api-key",
-    "api_key",
-)
-_SECRET_MARKER_RE = re.compile(
-    r"(?:^|[\\/._?&=\-\s])(?:"
-    + "|".join(re.escape(marker) for marker in _SECRET_MARKERS)
-    + r")(?:$|[\\/._?&=\-\s])",
-    re.IGNORECASE,
-)
 
 
 class Pdf01InvoiceFieldExtractorError(ValueError):
@@ -427,7 +408,7 @@ def _optional_safe_str(value: Any, label: str) -> str | None:
 
 
 def _has_secret_marker(value: str) -> bool:
-    return _SECRET_MARKER_RE.search(value) is not None
+    return contains_secret_marker(value)
 
 
 __all__ = [

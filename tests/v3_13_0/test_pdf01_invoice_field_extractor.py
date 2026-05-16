@@ -161,6 +161,21 @@ def test_tokenized_filename_is_not_a_secret_marker_false_positive() -> None:
     assert by_id["invoice-001"]["source_name"] == "tokenized_invoice.pdf"
 
 
+def test_access_key_filename_marker_is_boundary_aware() -> None:
+    payload = _payload()
+    payload["documents"][0]["source_name"] = "my_access_key.pdf"
+    with pytest.raises(Pdf01InvoiceFieldExtractorError,
+                       match="source_name must not contain secrets"):
+        extract_pdf01_invoice_fields(payload)
+
+    payload = _payload()
+    payload["documents"][0]["source_name"] = "access_keyed_invoice.pdf"
+    result = extract_pdf01_invoice_fields(payload).to_payload()
+    by_id = {item["document_id"]: item for item in result["documents"]}
+
+    assert by_id["invoice-001"]["source_name"] == "access_keyed_invoice.pdf"
+
+
 def test_cli_prints_compact_json() -> None:
     stdout = io.StringIO()
     stderr = io.StringIO()

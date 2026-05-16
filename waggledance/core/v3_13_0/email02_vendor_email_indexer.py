@@ -15,6 +15,8 @@ from email.utils import parseaddr
 import re
 from typing import Any, Mapping
 
+from waggledance.core.v3_13_0.secret_markers import contains_secret_marker
+
 
 CASE_ID = "EMAIL-02__vendor_email_indexer__home"
 OK = "OK"
@@ -29,24 +31,6 @@ MAX_MESSAGES_PER_VENDOR_LIMIT = 50
 MAX_TEXT_LENGTH = 20000
 
 _MESSAGE_TEXT_KEYS = ("subject", "snippet", "body_text", "text")
-_SECRET_MARKERS = (
-    "password",
-    "passwd",
-    "token",
-    "secret",
-    "credential",
-    "credentials",
-    "api_key",
-    "access_key",
-    "private_key",
-    "authorization",
-)
-_SECRET_MARKER_RE = re.compile(
-    r"(^|[\\/._?&=\-\s])("
-    + "|".join(re.escape(marker) for marker in _SECRET_MARKERS)
-    + r")($|[\\/._?&=\-\s])",
-    re.IGNORECASE,
-)
 _DOMAIN_RE = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
@@ -474,7 +458,7 @@ def _list_str(value: Any, label: str) -> str:
 
 def _safe_config_str(value: str, label: str) -> str:
     normalized = " ".join(value.split())
-    if _SECRET_MARKER_RE.search(normalized):
+    if contains_secret_marker(normalized):
         raise Email02VendorEmailIndexerError(f"{label} must not contain secrets")
     return normalized
 

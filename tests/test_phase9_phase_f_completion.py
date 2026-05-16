@@ -121,6 +121,37 @@ def test_scheduler_dispatches_clean_missions():
     )
     assert len(report.selected_missions) == 2
     assert report.tick_id == 1
+    assert all(m.lifecycle_status == "queued" for m in report.selected_missions)
+
+
+def test_scheduler_can_emit_selected_lifecycle_to_audit_and_replay_sinks():
+    s = _state()
+    s = ks.with_tick(s, ts_iso="t1")
+    mission = mq.make_mission(kind="ingest_request", lane="ingestion",
+                                priority=0.8, intent="A intent here",
+                                rationale="A rationale text",
+                                created_tick_id=1)
+    audit_events = []
+    replay_events = []
+
+    report = bg.schedule_one_tick(
+        state=s,
+        missions=[mission],
+        hard_rules=_hard_rules(),
+        lifecycle_audit_sink=audit_events.append,
+        lifecycle_replay_sink=replay_events.append,
+    )
+
+    assert report.selected_missions[0].lifecycle_status == "scheduled"
+    assert audit_events == replay_events
+    assert audit_events[0] is not replay_events[0]
+    assert audit_events[0]["event_type"] == "mission.lifecycle_changed"
+    assert audit_events[0]["mission_id"] == mission.mission_id
+    assert audit_events[0]["from_status"] == "queued"
+    assert audit_events[0]["to_status"] == "scheduled"
+    encoded = str(audit_events[0])
+    assert "A intent here" not in encoded
+    assert "A rationale text" not in encoded
 
 
 def test_scheduler_blocks_when_breaker_open():

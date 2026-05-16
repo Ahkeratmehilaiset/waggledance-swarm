@@ -213,6 +213,8 @@ class ShadowRunner:
         audit_ids: list[str] = []
         audit_ids.append(self._audit("shadow.run_started", run_input, {}))
         t_start = self.clock_fn()
+        candidate_out: Optional[CandidateOutput] = None
+        baseline_out: Optional[BaselineOutput] = None
 
         try:
             # State: LOADING -- resolve tool + profile views
@@ -313,18 +315,25 @@ class ShadowRunner:
 
         except ShadowAborted as exc:
             elapsed_ms = int((self.clock_fn() - t_start) * 1000)
+            cost_consumed = (
+                candidate_out.cost_consumed if candidate_out is not None else 0.0
+            )
             audit_ids.append(self._audit(exc.reason.value, run_input, {
                 "detail": exc.detail,
                 "elapsed_ms": elapsed_ms,
             }))
             return ShadowRunResult(
                 shadow_run_id=run_input.shadow_run_id,
-                candidate_output_artifact_uri=None,
-                baseline_output_artifact_uri=None,
+                candidate_output_artifact_uri=(
+                    candidate_out.artifact_uri if candidate_out is not None else None
+                ),
+                baseline_output_artifact_uri=(
+                    baseline_out.artifact_uri if baseline_out is not None else None
+                ),
                 divergence_score=1.0,        # max -- treat as fail
                 divergence_summary_ref=None,
                 elapsed_ms=elapsed_ms,
-                cost_consumed=0.0,
+                cost_consumed=cost_consumed,
                 abort_reason=exc.reason.value,
                 audit_event_ids=audit_ids,
             )

@@ -190,10 +190,17 @@ class TestShadowAborts:
         runner = _make_runner(
             tool=_supported_tool(),
             profile=_budget_profile(cap_usd=0.01),
-            candidate_run=_candidate_runner(cost=0.50),
+            candidate_run=_candidate_runner(
+                cost=0.50,
+                artifact_uri="artifact://shadow/cand_expensive",
+            ),
         )
         result = runner.run(_shadow_input())
         assert result.abort_reason == ShadowAbortReason.COST_EXCEEDED.value
+        assert result.cost_consumed == 0.50
+        assert result.candidate_output_artifact_uri == \
+            "artifact://shadow/cand_expensive"
+        assert result.baseline_output_artifact_uri is None
 
     def test_timeout_exceeded_aborts(self):
         """Inject a fake clock that simulates 60s elapsed after the
@@ -203,7 +210,10 @@ class TestShadowAborts:
         runner = ShadowRunner(
             fetch_tool_descriptor=lambda _tid: _supported_tool(),
             fetch_profile_config=lambda _pid: _budget_profile(budget_s=30),
-            run_candidate=_candidate_runner(),
+            run_candidate=_candidate_runner(
+                cost=0.02,
+                artifact_uri="artifact://shadow/cand_timeout",
+            ),
             run_baseline=_baseline_runner(),
             compare_outputs=_compare_returning(),
             emit_magma_event=_emit_collector(events),
@@ -212,19 +222,35 @@ class TestShadowAborts:
         )
         result = runner.run(_shadow_input())
         assert result.abort_reason == ShadowAbortReason.TIMEOUT_EXCEEDED.value
+        assert result.cost_consumed == 0.02
+        assert result.candidate_output_artifact_uri == \
+            "artifact://shadow/cand_timeout"
+        assert result.baseline_output_artifact_uri is None
 
     def test_baseline_nonzero_exit_aborts(self):
         events = []
         runner = _make_runner(
             tool=_supported_tool(),
             profile=_budget_profile(),
-            baseline_run=_baseline_runner(exit_code=2),
+            candidate_run=_candidate_runner(
+                cost=0.03,
+                artifact_uri="artifact://shadow/cand_before_baseline_fail",
+            ),
+            baseline_run=_baseline_runner(
+                exit_code=2,
+                artifact_uri="artifact://shadow/base_failed",
+            ),
             compare=_compare_returning(score=0.0),
             events=events,
         )
         result = runner.run(_shadow_input())
         assert result.abort_reason == ShadowAbortReason.BASELINE_FAILED.value
         assert result.divergence_score == 1.0
+        assert result.cost_consumed == 0.03
+        assert result.candidate_output_artifact_uri == \
+            "artifact://shadow/cand_before_baseline_fail"
+        assert result.baseline_output_artifact_uri == \
+            "artifact://shadow/base_failed"
         event_types = [e["event_type"] for e in events]
         assert ShadowAbortReason.BASELINE_FAILED.value in event_types
         assert "shadow.run_completed" not in event_types

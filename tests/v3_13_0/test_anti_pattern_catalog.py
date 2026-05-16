@@ -259,6 +259,16 @@ class TestCredentialPatternScan:
         hits = scan_for_credential_patterns(f"secret token {token}")
         assert any(h.pattern_name == "aws_secret_key" for h in hits)
 
+    def test_test_fixture_password_assignment_still_detected(self):
+        hits = scan_for_credential_patterns('password = "supersecret"\n')
+        assert any(h.pattern_name == "password_assignment" for h in hits)
+
+    def test_test_fixture_api_key_assignment_still_detected(self):
+        hits = scan_for_credential_patterns(
+            'api_key = "test_api_key_1234567890"\n'
+        )
+        assert any(h.pattern_name == "api_key_assignment" for h in hits)
+
     def test_empty_content_returns_no_hits(self):
         assert scan_for_credential_patterns("") == []
 
@@ -313,6 +323,29 @@ class TestAnti004CredentialInRepo:
             tracked_for_commit=True,
         )
         assert result is None
+
+    def test_test_fixture_credentials_not_blocked_when_marked_untracked(self):
+        result = anti_004_credential_in_content(
+            content=(
+                'password = "supersecret"\n'
+                'api_key = "test_api_key_1234567890"\n'
+            ),
+            tracked_for_commit=False,
+        )
+        assert result is None
+
+    def test_test_fixture_credentials_blocked_when_marked_tracked(self):
+        result = anti_004_credential_in_content(
+            content=(
+                'password = "supersecret"\n'
+                'api_key = "test_api_key_1234567890"\n'
+            ),
+            tracked_for_commit=True,
+        )
+        assert result is not None
+        assert result.blocked is True
+        assert "password_assignment" in result.detail["pattern_names"]
+        assert "api_key_assignment" in result.detail["pattern_names"]
 
 
 # ============================================================================

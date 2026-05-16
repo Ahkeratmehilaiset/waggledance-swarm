@@ -372,6 +372,53 @@ class TestAutoQuarantine:
         assert state == ActivationState.ACTIVATED
         assert store[cand.candidate_id].consecutive_divergent_runs == 0
 
+    def test_record_run_result_emits_per_run_audit_evidence(self):
+        cand = _make_candidate()
+        events = []
+        prov, store = _make_provenance(candidate=cand, events=events)
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="codex",
+                    signing_role=SigningRole.PEER.value,
+                    bridge_event_ref="b2",
+                    operator_scope_policy_ref="policy:home")
+        prov.activate(candidate_id=cand.candidate_id)
+
+        first_state = prov.record_run_result(
+            candidate_id=cand.candidate_id,
+            divergence_score=0.5,
+            evidence_ref="art:div_0",
+        )
+        second_state = prov.record_run_result(
+            candidate_id=cand.candidate_id,
+            divergence_score=0.03,
+            evidence_ref="art:ok",
+        )
+
+        assert first_state == ActivationState.ACTIVATED
+        assert second_state == ActivationState.ACTIVATED
+        recorded = [
+            e for e in events
+            if e["event_type"] == "solver.run_result_recorded"
+        ]
+        assert len(recorded) == 2
+        assert recorded[0]["solver_candidate_id"] == cand.candidate_id
+        assert recorded[0]["divergence_score"] == 0.5
+        assert recorded[0]["evidence_ref"] == "art:div_0"
+        assert recorded[0]["above_threshold"] is True
+        assert recorded[0]["consecutive_divergent_runs"] == 1
+        assert recorded[0]["quarantine_threshold_reached"] is False
+        assert recorded[1]["divergence_score"] == 0.03
+        assert recorded[1]["evidence_ref"] == "art:ok"
+        assert recorded[1]["above_threshold"] is False
+        assert recorded[1]["consecutive_divergent_runs"] == 0
+        assert recorded[1]["quarantine_threshold_reached"] is False
+        assert store[cand.candidate_id].consecutive_divergent_runs == 0
+
 
 # --------------------------------------------------------------------------
 # Permanent revocation

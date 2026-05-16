@@ -14,6 +14,7 @@ CRITICAL CONTRACT:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Callable
 
 from . import (
     action_gate as ag,
@@ -61,6 +62,10 @@ def schedule_one_tick(*,
                           hard_rules: tuple[pc.HardRule, ...],
                           adaptive_rules: tuple[pc.PolicyRule, ...] = (),
                           max_dispatched: int = 20,
+                          lifecycle_audit_sink:
+                              Callable[[dict[str, Any]], None] | None = None,
+                          lifecycle_replay_sink:
+                              Callable[[dict[str, Any]], None] | None = None,
                           ) -> DispatchReport:
     """Run one scheduling pass.
 
@@ -100,7 +105,16 @@ def schedule_one_tick(*,
             deferred.append(m)
             continue
         if v.verdict == "ADMIT_TO_LANE" and len(selected) < max_dispatched:
-            selected.append(m)
+            if (lifecycle_audit_sink is not None
+                    or lifecycle_replay_sink is not None):
+                selected.append(mq.lifecycle_change(
+                    m,
+                    status="scheduled",
+                    audit_sink=lifecycle_audit_sink,
+                    replay_sink=lifecycle_replay_sink,
+                ))
+            else:
+                selected.append(m)
         elif v.verdict == "DEFER":
             deferred.append(m)
         elif v.verdict in ("REJECT_HARD", "REJECT_SOFT"):

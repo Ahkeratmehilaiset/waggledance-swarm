@@ -1,0 +1,150 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""Contracts for the runtime bridge event schema validator."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from waggledance.core.bridge_event_schema import (
+    BRIDGE_EVENT_SCHEMA_VERSION,
+    BridgeEvent,
+    validate_event,
+    validate_event_file,
+    validate_event_line,
+)
+
+
+def _good_event(**overrides: object) -> dict[str, object]:
+    event: dict[str, object] = {
+        "ts_utc": "2026-05-16T05:39:57.9995496Z",
+        "agent": "codex",
+        "type": "handoff",
+        "task_id": "claude-rco-pr420-sqlite-read-transport-2026-05-16",
+        "status": "assigned_rco_review",
+        "severity": "",
+        "to": "claude",
+        "message": "RCO review requested.",
+        "paths": [
+            "waggledance/core/v3_13_0/sqlite_read_transport.py",
+            "tests/v3_13_0/test_sqlite_read_transport.py",
+        ],
+        "write_scope": [],
+        "run_id": "",
+        "pid": 23492,
+        "cwd": "C:\\Python\\project2-master",
+        "payload": {},
+    }
+    event.update(overrides)
+    return event
+
+
+def test_valid_write_agent_event_shape_validates() -> None:
+    model = validate_event(_good_event(extra_future_field="allowed"))
+
+    assert isinstance(model, BridgeEvent)
+    assert model.agent == "codex"
+    assert model.type == "handoff"
+    assert model.paths == [
+        "waggledance/core/v3_13_0/sqlite_read_transport.py",
+        "tests/v3_13_0/test_sqlite_read_transport.py",
+    ]
+    assert model.model_extra == {"extra_future_field": "allowed"}
+
+
+def test_comma_separated_targets_are_validated_per_agent() -> None:
+    model = validate_event(_good_event(type="message", to="claude,operator"))
+
+    assert model.to == "claude,operator"
+
+
+def test_custom_event_types_remain_valid_for_polymorphic_continuity() -> None:
+    model = validate_event(_good_event(type="ownership_proposal", status="open"))
+
+    assert model.type == "ownership_proposal"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"agent": "gpt"}, "agent"),
+        ({"type": ""}, "type"),
+        ({"type": "bad\ntype"}, "type"),
+        ({"to": "claude,unknown"}, "to"),
+        ({"paths": "not-a-list"}, "paths"),
+        ({"pid": True}, "pid"),
+        ({"ts_utc": "2026-05-16T05:39:57"}, "ts_utc"),
+    ],
+)
+def test_invalid_event_fields_raise_clear_validation_errors(
+    overrides: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(Exception, match=match):
+        validate_event(_good_event(**overrides))
+
+
+def test_wake_request_requires_explicit_target() -> None:
+    with pytest.raises(Exception, match="wake_request requires to"):
+        validate_event(_good_event(type="wake_request", to=""))
+
+
+def test_claim_like_events_require_task_id() -> None:
+    with pytest.raises(Exception, match="claim requires task_id"):
+        validate_event(_good_event(type="claim", task_id="", to=""))
+
+
+def test_payload_parse_error_objects_remain_valid() -> None:
+    model = validate_event(
+        _good_event(payload={"raw": "{not-json}", "parse_error": "bad JSON"})
+    )
+
+    assert model.payload["raw"] == "{not-json}"
+
+
+def test_validate_event_line_rejects_non_object_json() -> None:
+    with pytest.raises(ValueError, match="event must be a JSON object"):
+        validate_event_line("[]", line_no=7)
+
+
+def test_validate_event_file_reports_line_numbers_without_throwing(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        "\n".join([
+            json.dumps(_good_event()),
+            "{not-json}",
+            json.dumps(_good_event(type="wake_request", to="")),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = validate_event_file(events_path)
+
+    assert result.schema_version == BRIDGE_EVENT_SCHEMA_VERSION
+    assert result.checked == 3
+    assert result.valid == 1
+    assert result.invalid == 2
+    assert result.issues[0].line_no == 2
+    assert result.issues[1].line_no == 3
+
+
+def test_validate_event_file_tail_limits_physical_lines(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        "\n".join([
+            "{not-json}",
+            json.dumps(_good_event(type="done", to="", status="done")),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = validate_event_file(events_path, tail=1)
+
+    assert result.ok
+    assert result.checked == 1
+    assert result.valid == 1

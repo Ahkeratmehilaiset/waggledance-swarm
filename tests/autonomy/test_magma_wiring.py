@@ -221,6 +221,25 @@ class TestMissionPathAudit:
         # Goal lifecycle (4-5) + plan (1) + case (1) = 6+ entries
         assert stats["total_entries"] >= 5
 
+    def test_mission_step_checkpoint_emitted_without_raw_query(self):
+        from waggledance.core.magma.audit_projector import AuditProjector
+
+        rt = AutonomyRuntime()
+        query = "Check private greenhouse note 12345"
+        result = rt.execute_mission("observe", query)
+        checkpoints = rt.audit.query_by_event_type("mission.step_checkpoint")
+
+        assert "mission.step_checkpoint" in AuditProjector.AUTONOMY_EVENTS
+        assert checkpoints
+        checkpoint = checkpoints[0]
+        assert checkpoint.goal_id == result["goal_id"]
+        assert checkpoint.payload["step_index"] >= 1
+        assert checkpoint.payload["step_count"] >= checkpoint.payload["step_index"]
+        assert checkpoint.payload["status"] in {"executed", "denied"}
+        assert "capability_id" in checkpoint.payload
+        assert "action_id" in checkpoint.payload
+        assert query not in repr(checkpoint.to_dict())
+
 
 class TestMissionPathReplay:
     """Verify execute_mission produces replay entries."""

@@ -76,6 +76,7 @@ class AuditProjector:
         "goal.proposed", "goal.accepted", "goal.planned",
         "goal.executing", "goal.verified", "goal.failed",
         "goal.rolled_back", "goal.archived",
+        "mission.step_checkpoint",
         "plan.created", "plan.step_started", "plan.step_completed",
         "action.requested", "action.executed", "action.denied",
         "action.rolled_back",

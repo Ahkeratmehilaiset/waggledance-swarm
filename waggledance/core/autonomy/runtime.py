@@ -807,6 +807,22 @@ class AutonomyRuntime:
                     capability_id=step.capability_id,
                     action_id=action.action_id,
                     result="ok" if result.executed else "failed")
+            if self.audit and AuditEntry is not None:
+                self._magma_safe("audit.mission.step_checkpoint",
+                    self.audit.record,
+                    AuditEntry(
+                        event_type="mission.step_checkpoint",
+                        payload={
+                            "step_index": step_idx + 1,
+                            "step_count": len(plan.steps),
+                            "status": action_status,
+                            "capability_id": step.capability_id,
+                            "action_id": action.action_id,
+                        },
+                        goal_id=goal.goal_id,
+                        action_id=action.action_id,
+                        capability_id=step.capability_id,
+                    ))
 
             if result.executed:
                 step.completed = True

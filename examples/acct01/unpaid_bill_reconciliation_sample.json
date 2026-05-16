@@ -1,0 +1,141 @@
+{
+  "case_id": "ACCT-01__unpaid_bill_reconciler__home",
+  "as_of_date": "2026-05-16",
+  "amount_tolerance_eur": 0.01,
+  "match_window_before_days": 14,
+  "match_window_after_days": 7,
+  "invoices": [
+    {
+      "invoice_id": "inv-001",
+      "vendor": "Example Telco",
+      "invoice_number": "T-1001",
+      "due_date": "2026-05-10",
+      "amount_eur": 65.0,
+      "reference_number": "1234 5678 9012",
+      "status": "open",
+      "source": "telecom"
+    },
+    {
+      "invoice_id": "inv-002",
+      "vendor": "Example Energy",
+      "invoice_number": "E-2001",
+      "due_date": "2026-05-12",
+      "amount_eur": 120.5,
+      "reference_number": "9876 5432 1098",
+      "status": "open",
+      "source": "utility"
+    },
+    {
+      "invoice_id": "inv-003",
+      "vendor": "Example Hosting",
+      "invoice_number": "H-3001",
+      "due_date": "2026-05-14",
+      "amount_eur": 24.99,
+      "status": "open",
+      "source": "hosting"
+    },
+    {
+      "invoice_id": "inv-004",
+      "vendor": "Example Insurance",
+      "invoice_number": "I-4001",
+      "due_date": "2026-05-01",
+      "amount_eur": 88.4,
+      "reference_number": "5555 6666 7777",
+      "status": "open",
+      "source": "insurance"
+    },
+    {
+      "invoice_id": "inv-005",
+      "vendor": "Example Water",
+      "invoice_number": "W-5001",
+      "due_date": "2026-05-20",
+      "amount_eur": 33.3,
+      "reference_number": "2222 3333 4444",
+      "status": "maksettu",
+      "source": "utility"
+    },
+    {
+      "invoice_id": "inv-006",
+      "vendor": "Example Read Archive",
+      "invoice_number": "A-6001",
+      "due_date": "2026-05-25",
+      "amount_eur": 15.0,
+      "reference_number": "3333 4444 5555",
+      "status": "luettu",
+      "source": "archive"
+    },
+    {
+      "invoice_id": "inv-007",
+      "vendor": "Example Road Service",
+      "invoice_number": "R-7001",
+      "due_date": "2026-05-15",
+      "amount_eur": 42.0,
+      "status": "open",
+      "source": "service"
+    },
+    {
+      "invoice_id": "inv-008",
+      "vendor": "Example Tolerance",
+      "invoice_number": "T-8001",
+      "due_date": "2026-05-15",
+      "amount_eur": 50.0,
+      "reference_number": "7777 8888 9999",
+      "status": "open",
+      "source": "test"
+    },
+    {
+      "invoice_id": "inv-009",
+      "vendor": "Example Date Window",
+      "invoice_number": "D-9001",
+      "due_date": "2026-05-15",
+      "amount_eur": 70.0,
+      "status": "open",
+      "source": "test"
+    }
+  ],
+  "bank_transactions": [
+    {
+      "transaction_id": "tx-001",
+      "account_name": "holvi",
+      "booked_date": "2026-05-09",
+      "amount_eur": -65.0,
+      "reference_number": "123456789012",
+      "message": "Example Telco payment"
+    },
+    {
+      "transaction_id": "tx-002",
+      "account_name": "danske",
+      "booked_date": "2026-05-11",
+      "amount_eur": -120.5,
+      "message": "Utility invoice ref 9876 5432 1098"
+    },
+    {
+      "transaction_id": "tx-003",
+      "account_name": "danske",
+      "booked_date": "2026-05-13",
+      "amount_eur": -24.99,
+      "description": "Card payment"
+    },
+    {
+      "transaction_id": "tx-004",
+      "account_name": "holvi",
+      "booked_date": "2026-05-14",
+      "amount_eur": -42.0,
+      "description": "Road service"
+    },
+    {
+      "transaction_id": "tx-005",
+      "account_name": "holvi",
+      "booked_date": "2026-05-15",
+      "amount_eur": -50.03,
+      "description": "Amount outside tolerance"
+    },
+    {
+      "transaction_id": "tx-006",
+      "account_name": "danske",
+      "booked_date": "2026-04-01",
+      "amount_eur": -70.0,
+      "description": "Outside due-date window"
+    }
+  ]
+}

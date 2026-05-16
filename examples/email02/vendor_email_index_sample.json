@@ -1,0 +1,78 @@
+{
+  "as_of_date": "2026-05-16",
+  "max_messages_per_vendor": 5,
+  "vendors": [
+    {
+      "vendor_id": "helen",
+      "display_name": "Helen",
+      "domains": ["helen.fi"],
+      "name_signals": ["helen"],
+      "billing_keywords": ["lasku", "invoice", "due date"]
+    },
+    {
+      "vendor_id": "dna",
+      "display_name": "DNA",
+      "domains": ["dna.fi"],
+      "name_signals": ["dna"],
+      "billing_keywords": ["lasku", "invoice", "subscription"]
+    },
+    {
+      "vendor_id": "insureco",
+      "display_name": "InsureCo",
+      "domains": ["insure.example"],
+      "name_signals": ["insureco"],
+      "billing_keywords": ["policy", "premium", "invoice"]
+    }
+  ],
+  "messages": [
+    {
+      "message_id": "msg-001",
+      "thread_id": "thr-001",
+      "date": "2026-05-01",
+      "from": "Helen Billing <billing@helen.fi>",
+      "subject": "Helen lasku May",
+      "snippet": "Due date 2026-05-14",
+      "labels": ["Bills"]
+    },
+    {
+      "message_id": "msg-002",
+      "thread_id": "thr-002",
+      "date": "2026-04-25",
+      "from": "Helen Notices <news@news.helen.fi>",
+      "subject": "Service notice",
+      "snippet": "Maintenance window for the area"
+    },
+    {
+      "message_id": "msg-003",
+      "thread_id": "thr-003",
+      "date": "2026-05-03",
+      "from": "DNA <no-reply@dna.fi>",
+      "subject": "Subscription invoice",
+      "snippet": "Your monthly subscription invoice is ready"
+    },
+    {
+      "message_id": "msg-004",
+      "thread_id": "thr-004",
+      "date": "2026-05-04",
+      "from": "Reminder <alerts@mail.example>",
+      "subject": "InsureCo policy premium due",
+      "snippet": "Policy premium reminder"
+    },
+    {
+      "message_id": "msg-005",
+      "thread_id": "thr-005",
+      "date": "2026-05-05",
+      "from": "Shop <receipt@shop.example>",
+      "subject": "Receipt",
+      "snippet": "Card purchase receipt"
+    },
+    {
+      "message_id": "msg-006",
+      "thread_id": "thr-006",
+      "date": "2026-05-06",
+      "from": "Billing <billing@service.example>",
+      "subject": "DNA reminder",
+      "snippet": "Lasku reminder for subscription"
+    }
+  ]
+}

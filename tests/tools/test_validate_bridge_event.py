@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -78,7 +79,9 @@ def test_cli_returns_one_for_invalid_file_and_reports_issue(
     assert payload["ok"] is False
     assert payload["valid"] == 1
     assert payload["invalid"] == 1
+    assert payload["waived_invalid"] == 0
     assert payload["issues"][0]["line_no"] == 2
+    assert payload["issues"][0]["raw_sha256"].startswith("sha256:")
 
 
 def test_cli_tail_can_validate_recent_clean_lines_only(
@@ -96,6 +99,209 @@ def test_cli_tail_can_validate_recent_clean_lines_only(
     assert rc == 0
     assert payload["checked"] == 1
     assert payload["ok"] is True
+
+
+def test_cli_waives_matching_historical_issue_by_line_and_hash(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(
+        events_path,
+        [
+            _good_event(),
+            _good_event(type="handoff", task_id=""),
+        ],
+    )
+    raw_bad_line = events_path.read_text(encoding="utf-8").splitlines()[1]
+    waiver_path = tmp_path / "waivers.json"
+    waiver_path.write_text(
+        json.dumps({
+            "schema_version": "agent-bridge-event-waivers.v1",
+            "waivers": [{
+                "line_no": 2,
+                "raw_line_sha256": "sha256:"
+                + hashlib.sha256(raw_bad_line.encode("utf-8")).hexdigest(),
+                "error": "line 2: <event>: Value error, handoff requires task_id",
+                "reason": "known historical fixture",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--waivers",
+        str(waiver_path),
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["valid"] == 1
+    assert payload["invalid"] == 0
+    assert payload["waived_invalid"] == 1
+    assert payload["issues"] == []
+    assert payload["waived_issues"][0]["line_no"] == 2
+
+
+def test_cli_rejects_stale_waiver_hash(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(events_path, [_good_event(type="handoff", task_id="")])
+    waiver_path = tmp_path / "waivers.json"
+    waiver_path.write_text(
+        json.dumps({
+            "schema_version": "agent-bridge-event-waivers.v1",
+            "waivers": [{
+                "line_no": 1,
+                "raw_line_sha256": "sha256:" + ("0" * 64),
+                "error": "line 1: <event>: Value error, handoff requires task_id",
+                "reason": "stale hash",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--waivers",
+        str(waiver_path),
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 1
+    assert payload["ok"] is False
+    assert payload["invalid"] == 1
+    assert payload["waived_invalid"] == 0
+
+
+def test_cli_rejects_stale_waiver_error(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(events_path, [_good_event(type="handoff", task_id="")])
+    raw_bad_line = events_path.read_text(encoding="utf-8").splitlines()[0]
+    waiver_path = tmp_path / "waivers.json"
+    waiver_path.write_text(
+        json.dumps({
+            "schema_version": "agent-bridge-event-waivers.v1",
+            "waivers": [{
+                "line_no": 1,
+                "raw_line_sha256": "sha256:"
+                + hashlib.sha256(raw_bad_line.encode("utf-8")).hexdigest(),
+                "error": "line 1: some other historical error",
+                "reason": "stale error",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--waivers",
+        str(waiver_path),
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 1
+    assert payload["ok"] is False
+    assert payload["invalid"] == 1
+    assert payload["waived_invalid"] == 0
+
+
+def test_cli_rejects_matching_hash_on_wrong_line(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(
+        events_path,
+        [
+            _good_event(),
+            _good_event(type="handoff", task_id=""),
+        ],
+    )
+    raw_bad_line = events_path.read_text(encoding="utf-8").splitlines()[1]
+    waiver_path = tmp_path / "waivers.json"
+    waiver_path.write_text(
+        json.dumps({
+            "schema_version": "agent-bridge-event-waivers.v1",
+            "waivers": [{
+                "line_no": 1,
+                "raw_line_sha256": "sha256:"
+                + hashlib.sha256(raw_bad_line.encode("utf-8")).hexdigest(),
+                "error": "line 2: <event>: Value error, handoff requires task_id",
+                "reason": "wrong line",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--waivers",
+        str(waiver_path),
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 1
+    assert payload["ok"] is False
+    assert payload["invalid"] == 1
+    assert payload["waived_invalid"] == 0
+
+
+def test_cli_rejects_malformed_waiver_digest(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = importlib.import_module("tools.validate_bridge_event")
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(events_path, [_good_event()])
+    waiver_path = tmp_path / "waivers.json"
+    waiver_path.write_text(
+        json.dumps({
+            "schema_version": "agent-bridge-event-waivers.v1",
+            "waivers": [{
+                "line_no": 1,
+                "raw_line_sha256": "sha256:not-a-real-digest",
+                "error": "line 1: fixture",
+                "reason": "bad config",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    rc = mod.main([
+        "--events",
+        str(events_path),
+        "--waivers",
+        str(waiver_path),
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "raw_line_sha256" in captured.err
 
 
 def test_cli_missing_events_file_is_a_nonzero_schema_failure(

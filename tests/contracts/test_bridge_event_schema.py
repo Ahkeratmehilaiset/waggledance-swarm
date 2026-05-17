@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import hashlib
 
 import pytest
 
@@ -128,8 +129,10 @@ def test_validate_event_file_reports_line_numbers_without_throwing(
     assert result.checked == 3
     assert result.valid == 1
     assert result.invalid == 2
+    assert result.waived_invalid == 0
     assert result.issues[0].line_no == 2
     assert result.issues[1].line_no == 3
+    assert result.issues[0].raw_sha256.startswith("sha256:")
 
 
 def test_validate_event_file_tail_limits_physical_lines(tmp_path: Path) -> None:
@@ -148,3 +151,30 @@ def test_validate_event_file_tail_limits_physical_lines(tmp_path: Path) -> None:
     assert result.ok
     assert result.checked == 1
     assert result.valid == 1
+
+
+def test_validate_event_file_applies_hash_bound_waiver(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        json.dumps(_good_event(type="handoff", task_id="")) + "\n",
+        encoding="utf-8",
+    )
+    raw_line = events_path.read_text(encoding="utf-8").splitlines()[0]
+
+    result = validate_event_file(
+        events_path,
+        waived_line_sha256={
+            1: "sha256:" + hashlib.sha256(raw_line.encode("utf-8")).hexdigest(),
+        },
+        waived_line_errors={
+            1: "line 1: <event>: Value error, handoff requires task_id",
+        },
+    )
+
+    assert result.ok
+    assert result.checked == 1
+    assert result.valid == 0
+    assert result.invalid == 0
+    assert result.waived_invalid == 1
+    assert result.issues == ()
+    assert result.waived_issues[0].line_no == 1

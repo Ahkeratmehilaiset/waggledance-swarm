@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -132,12 +133,14 @@ class BridgeEventValidationIssue:
     line_no: int
     error: str
     raw_excerpt: str = ""
+    raw_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "line_no": self.line_no,
             "error": self.error,
             "raw_excerpt": self.raw_excerpt,
+            "raw_sha256": self.raw_sha256,
         }
 
 
@@ -150,6 +153,8 @@ class BridgeEventValidationResult:
     valid: int
     invalid: int
     issues: tuple[BridgeEventValidationIssue, ...]
+    waived_invalid: int = 0
+    waived_issues: tuple[BridgeEventValidationIssue, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -161,8 +166,10 @@ class BridgeEventValidationResult:
             "checked": self.checked,
             "valid": self.valid,
             "invalid": self.invalid,
+            "waived_invalid": self.waived_invalid,
             "ok": self.ok,
             "issues": [issue.to_dict() for issue in self.issues],
+            "waived_issues": [issue.to_dict() for issue in self.waived_issues],
         }
 
 
@@ -190,13 +197,19 @@ def validate_event_file(
     *,
     tail: int | None = None,
     max_errors: int = 20,
+    waived_line_sha256: Mapping[int, str] | None = None,
+    waived_line_errors: Mapping[int, str] | None = None,
 ) -> BridgeEventValidationResult:
     """Validate a bridge JSONL file and return a non-throwing summary."""
     path = Path(events_path)
+    waivers = dict(waived_line_sha256 or {})
+    waived_errors = dict(waived_line_errors or {})
     lines = _select_lines(path.read_text(encoding="utf-8").splitlines(), tail=tail)
     checked = 0
     valid = 0
+    waived_invalid = 0
     issues: list[BridgeEventValidationIssue] = []
+    waived_issues: list[BridgeEventValidationIssue] = []
     for line_no, line in lines:
         if not line.strip():
             continue
@@ -204,20 +217,32 @@ def validate_event_file(
         try:
             validate_event_line(line, line_no=line_no)
         except ValueError as exc:
+            issue = BridgeEventValidationIssue(
+                line_no=line_no,
+                error=str(exc),
+                raw_excerpt=line[:200],
+                raw_sha256=_line_sha256(line),
+            )
+            if (
+                waivers.get(line_no) == issue.raw_sha256
+                and waived_errors.get(line_no) == issue.error
+            ):
+                waived_invalid += 1
+                if len(waived_issues) < max_errors:
+                    waived_issues.append(issue)
+                continue
             if len(issues) < max_errors:
-                issues.append(BridgeEventValidationIssue(
-                    line_no=line_no,
-                    error=str(exc),
-                    raw_excerpt=line[:200],
-                ))
+                issues.append(issue)
             continue
         valid += 1
     return BridgeEventValidationResult(
         schema_version=BRIDGE_EVENT_SCHEMA_VERSION,
         checked=checked,
         valid=valid,
-        invalid=checked - valid,
+        invalid=checked - valid - waived_invalid,
         issues=tuple(issues),
+        waived_invalid=waived_invalid,
+        waived_issues=tuple(waived_issues),
     )
 
 
@@ -238,6 +263,10 @@ def _format_validation_error(error: ValidationError) -> str:
     first = error.errors()[0]
     loc = ".".join(str(item) for item in first.get("loc", ())) or "<event>"
     return f"{loc}: {first.get('msg', 'validation failed')}"
+
+
+def _line_sha256(line: str) -> str:
+    return "sha256:" + hashlib.sha256(line.encode("utf-8")).hexdigest()
 
 
 __all__ = [

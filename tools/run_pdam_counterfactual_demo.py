@@ -317,8 +317,8 @@ def _parse_utc(value: str) -> datetime:
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
     parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("--now requires a UTC timestamp with Z or +00:00 suffix")
     return parsed.astimezone(timezone.utc)
 
 

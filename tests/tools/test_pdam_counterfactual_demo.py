@@ -146,6 +146,52 @@ def test_cli_emits_receipt_bundle_only_when_out_dir_is_requested(tmp_path: Path)
     assert (out_dir / "manifest.json").exists()
 
 
+def test_cli_accepts_now_with_explicit_zero_offset(tmp_path: Path) -> None:
+    out_dir = tmp_path / "pdam-receipts"
+
+    result = _run_demo(
+        "--out-dir",
+        str(out_dir),
+        "--now",
+        "2026-05-18T01:02:03+00:00",
+    )
+
+    assert result.returncode == 0, result.stderr
+    first_receipt = json.loads((out_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
+    assert first_receipt["ts_utc"] == "2026-05-18T01:02:04Z"
+
+
+@pytest.mark.parametrize(
+    "now_value",
+    [
+        "2026-05-18T01:02:03",
+        "2026-05-18T03:02:03+02:00",
+        "not-a-timestamp",
+    ],
+)
+def test_cli_rejects_non_utc_now_values(tmp_path: Path, now_value: str) -> None:
+    out_dir = tmp_path / f"pdam-receipts-{len(now_value)}"
+
+    result = _run_demo("--out-dir", str(out_dir), "--now", now_value)
+
+    assert result.returncode == 1
+    assert "PDAM counterfactual demo FAILED" in result.stderr
+    assert not out_dir.exists()
+
+
+def test_fixed_now_reproduces_receipt_bytes(tmp_path: Path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+
+    build_demo_report(out_dir=first_dir, now_utc=FIXED_NOW)
+    build_demo_report(out_dir=second_dir, now_utc=FIXED_NOW)
+
+    first_receipt = json.loads((first_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
+    second_receipt = json.loads((second_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
+    assert first_receipt == second_receipt
+    assert sha256_digest(first_receipt) == sha256_digest(second_receipt)
+
+
 def test_receipt_bundle_refuses_non_empty_output_directory(tmp_path: Path) -> None:
     out_dir = tmp_path / "pdam-receipts"
     out_dir.mkdir()

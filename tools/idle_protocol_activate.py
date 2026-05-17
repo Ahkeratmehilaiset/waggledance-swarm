@@ -38,6 +38,12 @@ DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
 DEFAULT_AGENT = "codex"
 DEFAULT_MAX_INSTANCES_PER_DAY = 5
 AGENTS = {"codex", "claude"}
+REFERENCE_FIELDS = (
+    "responds_to",
+    "consensus_target_proposal_id",
+    "rejected_event_id",
+    "violating_proposal_id",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -154,6 +160,16 @@ def activate_idle_protocol(
     events = _read_bridge_events(events_path)
     event_type = str(payload["event_type"])
     round_number = int(payload["round_number"])
+    sequence_errors = _sequence_errors(payload, events)
+    if sequence_errors:
+        raise ActivationError(
+            "payload failed idle-protocol sequence validation",
+            {
+                "decision": "invalid_sequence",
+                "errors": sequence_errors,
+                "exit_code": 4,
+            },
+        )
     if event_type == "idle_proposal" or round_number == 1:
         try:
             idle_report = evaluate_idle_state(
@@ -314,12 +330,121 @@ def _read_bridge_events(path: Path) -> list[dict[str, Any]]:
 
 def _has_prior_idle_payload(events: Sequence[Mapping[str, Any]]) -> bool:
     for event in events:
-        if event.get("protocol_version") == "idle-protocol.v1":
-            return True
-        payload = event.get("payload")
-        if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
+        if _idle_payload(event) is not None:
             return True
     return False
+
+
+def _sequence_errors(
+    payload: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    prior_payloads = [
+        prior for event in events if (prior := _idle_payload(event)) is not None
+    ]
+    by_id = {
+        str(prior.get("proposal_id", "")): prior
+        for prior in prior_payloads
+        if prior.get("proposal_id")
+    }
+    prior_ids = set(by_id)
+    event_type = str(payload.get("event_type", ""))
+    proposal_id = str(payload.get("proposal_id", ""))
+    round_number = int(payload.get("round_number", 0))
+    instance_root = _instance_root(payload, by_id)
+    instance_payloads = [
+        prior
+        for prior in prior_payloads
+        if instance_root is not None and _instance_root(prior, by_id) == instance_root
+    ]
+    errors: list[str] = []
+
+    if proposal_id in prior_ids:
+        errors.append("proposal_id: already present in bridge events")
+    if any(prior.get("event_type") == "idle_charter_violation" for prior in instance_payloads):
+        errors.append("instance: previous idle_charter_violation terminated this instance")
+    if round_number == 1 and event_type != "idle_proposal":
+        errors.append("round_number: round 1 must be an idle_proposal")
+
+    if prior_payloads:
+        for field in REFERENCE_FIELDS:
+            _require_prior_reference(payload, field, prior_ids, errors)
+
+    if event_type == "idle_consensus_reached" and round_number < 5:
+        errors.append("round_number: idle_consensus_reached requires round 5 or later")
+    if (
+        round_number > 3
+        and event_type in {"idle_counter_proposal", "idle_consensus_reached"}
+        and not any(
+            prior.get("event_type") == "idle_adversarial_review"
+            and int(prior.get("round_number", 0)) == 3
+            for prior in instance_payloads
+        )
+    ):
+        errors.append(
+            "round_number: round 4+ continuation requires a prior round-3 "
+            "idle_adversarial_review in the same instance"
+        )
+    return errors
+
+
+def _instance_root(
+    payload: Mapping[str, Any],
+    by_id: Mapping[str, Mapping[str, Any]],
+) -> str | None:
+    proposal_id = str(payload.get("proposal_id", ""))
+    try:
+        if int(payload.get("round_number", 0)) == 1:
+            return proposal_id or None
+    except (TypeError, ValueError):
+        return None
+
+    target = _first_reference(payload)
+    if not target:
+        return None
+    seen: set[str] = set()
+    while target and target not in seen:
+        seen.add(target)
+        prior = by_id.get(target)
+        if prior is None:
+            return None
+        try:
+            if int(prior.get("round_number", 0)) == 1:
+                return str(prior.get("proposal_id", "")) or None
+        except (TypeError, ValueError):
+            return None
+        target = _first_reference(prior)
+    return None
+
+
+def _first_reference(payload: Mapping[str, Any]) -> str | None:
+    for field in REFERENCE_FIELDS:
+        target = payload.get(field)
+        if target:
+            return str(target)
+    return None
+
+
+def _require_prior_reference(
+    payload: Mapping[str, Any],
+    field: str,
+    prior_ids: set[str],
+    errors: list[str],
+) -> None:
+    if field not in payload:
+        return
+    target = str(payload.get(field, ""))
+    if target not in prior_ids:
+        errors.append(f"{field}: target not found in bridge events")
+
+
+def _idle_payload(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if event.get("protocol_version") == "idle-protocol.v1":
+        return event
+    payload = event.get("payload")
+    if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
+        return payload
+    return None
 
 
 def _idle_instances_for_utc_day(

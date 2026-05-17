@@ -1,0 +1,13 @@
+{
+  "schema_version": "agent-bridge-event-waivers.v1",
+  "waivers": [
+    {
+      "line_no": 2824,
+      "raw_line_sha256": "sha256:5283a8c01af6641ccf9d2e75f20bab7b638fcf006abfa8177da91e287235a67b",
+      "error": "line 2824: <event>: Value error, handoff requires task_id",
+      "reason": "pre-guard historical handoff emitted without task_id on 2026-05-17; append-only bridge history is not rewritten",
+      "created_at_utc": "2026-05-17T11:40:00Z",
+      "ticket_ref": "bridge-event-hygiene-2026-05-17"
+    }
+  ]
+}

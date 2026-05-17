@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/magma_receipt.v1.json",
+  "title": "MAGMA Receipt v1",
+  "description": "Tamper-evident MAGMA receipt envelope. v1 binds payload, policy, charter, RCO decision, world snapshot, solver contract, and EvaluationResult digests without requiring a signing dependency.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receipt_version",
+    "event_id",
+    "ts_utc",
+    "risk_class",
+    "payload_visibility",
+    "canonical_payload_digest",
+    "prev_receipt_hash",
+    "policy_digest",
+    "charter_digest",
+    "rco_decision_digest",
+    "world_snapshot_digest",
+    "solver_contract_digest",
+    "evaluation_result_digest",
+    "approval_id",
+    "operator_gate_required",
+    "signature_algorithm",
+    "signature",
+    "key_id",
+    "anchored_at"
+  ],
+  "properties": {
+    "receipt_version": {
+      "const": "magma.receipt.v1"
+    },
+    "event_id": {
+      "$ref": "#/definitions/event_ref"
+    },
+    "ts_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "risk_class": {
+      "$ref": "#/definitions/risk_class"
+    },
+    "payload_visibility": {
+      "type": "string",
+      "enum": ["full_payload", "redacted_payload", "digest_only"]
+    },
+    "canonical_payload_digest": {
+      "description": "sha256 digest over RFC 8785 / JCS canonical JSON payload bytes.",
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "prev_receipt_hash": {
+      "description": "Previous receipt hash. Null is allowed only to make the genesis receipt explicit.",
+      "anyOf": [
+        { "$ref": "#/definitions/sha256_digest" },
+        { "type": "null" }
+      ]
+    },
+    "policy_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "charter_digest": {
+      "description": "Digest of the active charter-as-code/policy artifact used for this decision.",
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "rco_decision_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "world_snapshot_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "solver_contract_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "evaluation_result_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "approval_id": {
+      "anyOf": [
+        { "$ref": "#/definitions/event_ref" },
+        { "type": "null" }
+      ]
+    },
+    "operator_gate_required": {
+      "type": "boolean"
+    },
+    "signature_algorithm": {
+      "type": ["string", "null"],
+      "enum": ["Ed25519", "ML-DSA-65", null]
+    },
+    "signature": {
+      "type": ["string", "null"],
+      "pattern": "^base64url:[A-Za-z0-9_-]{16,}$"
+    },
+    "key_id": {
+      "type": ["string", "null"],
+      "pattern": "^(did:[A-Za-z0-9:._-]{3,200}|key:[A-Za-z0-9:._-]{3,200})$"
+    },
+    "anchored_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 240
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "risk_class": {
+            "const": "external_effect"
+          }
+        },
+        "required": ["risk_class"]
+      },
+      "then": {
+        "properties": {
+          "operator_gate_required": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "signature_algorithm": { "type": "null" },
+            "signature": { "type": "null" },
+            "key_id": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "signature_algorithm": {
+              "type": "string",
+              "enum": ["Ed25519", "ML-DSA-65"]
+            },
+            "signature": {
+              "type": "string",
+              "pattern": "^base64url:[A-Za-z0-9_-]{16,}$"
+            },
+            "key_id": {
+              "type": "string",
+              "pattern": "^(did:[A-Za-z0-9:._-]{3,200}|key:[A-Za-z0-9:._-]{3,200})$"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "definitions": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "event_ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{2,180}$"
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": [
+        "informational",
+        "internal_memory",
+        "local_artifact",
+        "external_effect"
+      ]
+    }
+  }
+}

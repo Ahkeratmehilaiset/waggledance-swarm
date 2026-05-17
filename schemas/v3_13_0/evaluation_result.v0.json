@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/evaluation_result.v0.json",
+  "title": "MAGMA EvaluationResult v0",
+  "description": "Canonical result shape for solver, policy, counterfactual, promotion, and peer-review evaluations. This contract lets MAGMA receipts bind what happened to why it mattered.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evaluation_version",
+    "case_id",
+    "subject_type",
+    "target_digest",
+    "risk_class",
+    "expected_gate",
+    "actual_gate",
+    "verifier_path",
+    "solver_selection",
+    "policy_version",
+    "charter_version",
+    "domain_threshold_version",
+    "verdict",
+    "reason_codes",
+    "operator_required",
+    "confidence_score",
+    "uncertainty_sources"
+  ],
+  "properties": {
+    "evaluation_version": {
+      "const": "magma.evaluation_result.v0"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{2,180}$"
+    },
+    "subject_type": {
+      "type": "string",
+      "enum": ["solver", "policy", "counterfactual", "promotion", "peer_review"]
+    },
+    "target_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "risk_class": {
+      "$ref": "#/definitions/risk_class"
+    },
+    "expected_gate": {
+      "$ref": "#/definitions/gate_decision"
+    },
+    "actual_gate": {
+      "$ref": "#/definitions/gate_decision"
+    },
+    "verifier_path": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "solver_selection": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "policy_version": {
+      "$ref": "#/definitions/ref"
+    },
+    "charter_version": {
+      "$ref": "#/definitions/ref"
+    },
+    "domain_threshold_version": {
+      "$ref": "#/definitions/ref"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "review", "refuse", "insufficient_evidence", "abstain"]
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "operator_required": {
+      "type": "boolean"
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "uncertainty_sources": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["kind", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "data_sparsity",
+              "model_disagreement",
+              "domain_drift",
+              "limited_evidence",
+              "operator_override",
+              "unknown"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 500
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "risk_class": {
+            "const": "external_effect"
+          }
+        },
+        "required": ["risk_class"]
+      },
+      "then": {
+        "properties": {
+          "operator_required": {
+            "const": true
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{1,160}$"
+    },
+    "gate_decision": {
+      "type": "string",
+      "enum": ["allow", "refuse", "review", "require_approval"]
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": [
+        "informational",
+        "internal_memory",
+        "local_artifact",
+        "external_effect"
+      ]
+    }
+  }
+}

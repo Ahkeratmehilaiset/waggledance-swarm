@@ -106,6 +106,30 @@ def test_rejects_evaluation_result_for_different_payload() -> None:
         receipt_for(payload, evaluation)
 
 
+def test_rejects_evaluation_result_for_different_risk_class() -> None:
+    payload = {"action": "would_write_logbook"}
+    evaluation = build_evaluation_result(
+        case_id="case:magma:receipt-emitter:risk-mismatch",
+        subject_type="counterfactual",
+        target_payload=payload,
+        risk_class="external_effect",
+        expected_gate="require_approval",
+        actual_gate="require_approval",
+        verifier_path=["unit_test"],
+        solver_selection=["fixture_solver"],
+        policy_version="policy:fixture:v1",
+        charter_version="charter:v1",
+        domain_threshold_version="threshold:fixture:v1",
+        verdict="pass",
+        reason_codes=["fixture:risk_mismatch"],
+        confidence_score=1.0,
+        allow_external_effect=True,
+    )
+
+    with pytest.raises(ValueError, match="risk_class"):
+        receipt_for(payload, evaluation, risk_class="internal_memory")
+
+
 def test_external_effect_forces_operator_gate_and_rejects_missing_approval() -> None:
     payload = {"action": "would_write_logbook"}
     evaluation = build_evaluation_result(
@@ -189,11 +213,11 @@ def test_receipt_does_not_copy_payload_content() -> None:
     assert "operator_secret_marker_DO_NOT_LEAK" not in json.dumps(receipt, sort_keys=True)
 
 
-def test_schema_rejects_invalid_risk_class_and_external_digest_shape() -> None:
+def test_rejects_invalid_risk_class_and_external_digest_shape() -> None:
     payload = {"action": "schema_guard"}
     evaluation = evaluation_for(payload)
 
-    with pytest.raises(ValueError, match="invalid MAGMA receipt v1"):
+    with pytest.raises(ValueError, match="risk_class"):
         receipt_for(payload, evaluation, risk_class="made_up_tier")
 
     with pytest.raises(ValueError, match="invalid MAGMA receipt v1"):

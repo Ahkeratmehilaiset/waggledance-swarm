@@ -53,6 +53,8 @@ def build_magma_receipt(
     payload_digest = sha256_digest(payload)
     if evaluation_result.get("target_digest") != payload_digest:
         raise ValueError("EvaluationResult target_digest must match receipt payload")
+    if evaluation_result.get("risk_class") != risk_class:
+        raise ValueError("EvaluationResult risk_class must match receipt risk_class")
 
     signature_fields = _signature_fields(signature_envelope)
     receipt = {

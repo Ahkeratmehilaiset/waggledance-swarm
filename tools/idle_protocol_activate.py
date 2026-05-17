@@ -9,6 +9,7 @@ one bridge event only when ``--emit`` is passed.
 from __future__ import annotations
 
 import argparse
+from contextlib import suppress
 from datetime import datetime, timezone
 import json
 import os
@@ -337,10 +338,22 @@ def _append_bridge_event(bridge_root: Path, event: Mapping[str, Any]) -> Path:
     line = json.dumps(event, separators=(",", ":"), sort_keys=False) + "\n"
     events_path = shared_dir / "events.jsonl"
     outbox_path = outbox_dir / (_date_name(str(event["ts_utc"])))
-    for path in (events_path, outbox_path):
-        _append_line_with_retry(path, line)
     last_path = shared_dir / f"last_{event['agent']}.json"
-    _write_json_atomic(last_path, json.dumps(event, indent=2))
+    old_last = last_path.read_text(encoding="utf-8") if last_path.exists() else None
+    outbox_written = False
+    last_written = False
+    try:
+        _append_line_with_retry(outbox_path, line)
+        outbox_written = True
+        _write_json_atomic(last_path, json.dumps(event, indent=2))
+        last_written = True
+        _append_line_with_retry(events_path, line)
+    except Exception:
+        if last_written:
+            _restore_last_file(last_path, old_last)
+        if outbox_written:
+            _remove_trailing_line_if_exact(outbox_path, line)
+        raise
     return events_path
 
 
@@ -360,6 +373,27 @@ def _write_json_atomic(path: Path, payload: str) -> None:
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(path)
+
+
+def _restore_last_file(path: Path, previous: str | None) -> None:
+    with suppress(OSError):
+        if previous is None:
+            if path.exists():
+                path.unlink()
+            return
+        _write_json_atomic(path, previous)
+
+
+def _remove_trailing_line_if_exact(path: Path, line: str) -> None:
+    with suppress(OSError):
+        text = path.read_text(encoding="utf-8")
+        if not text.endswith(line):
+            return
+        remaining = text[: -len(line)]
+        if remaining:
+            path.write_text(remaining, encoding="utf-8")
+        else:
+            path.unlink()
 
 
 def _date_name(ts_utc: str) -> str:

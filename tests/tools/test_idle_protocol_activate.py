@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+import tools.idle_protocol_activate as activator
 from tools.idle_check import _is_substantive_agent_message
 from tools.idle_protocol_activate import ActivationError, activate_idle_protocol
 from waggledance.core.bridge_event_schema import validate_event
@@ -270,6 +271,49 @@ def test_bridge_event_schema_is_validated_before_append(tmp_path: Path) -> None:
 
     assert excinfo.value.report["decision"] == "invalid_bridge_event"
     assert not (bridge_root / "shared" / "events.jsonl").exists()
+
+
+def test_outbox_append_failure_does_not_write_shared_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_append = activator._append_line_with_retry
+
+    def fail_outbox(path: Path, line: str) -> None:
+        if "outbox" in path.parts:
+            raise PermissionError("simulated outbox failure")
+        original_append(path, line)
+
+    monkeypatch.setattr(activator, "_append_line_with_retry", fail_outbox)
+
+    with pytest.raises(PermissionError):
+        _activate(tmp_path, _proposal(), emit=True)
+
+    bridge_root = tmp_path / "bridge"
+    assert not (bridge_root / "shared" / "events.jsonl").exists()
+    assert not (bridge_root / "shared" / "last_codex.json").exists()
+
+
+def test_shared_append_failure_rolls_back_outbox_and_last_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_append = activator._append_line_with_retry
+
+    def fail_shared(path: Path, line: str) -> None:
+        if path.name == "events.jsonl":
+            raise PermissionError("simulated shared failure")
+        original_append(path, line)
+
+    monkeypatch.setattr(activator, "_append_line_with_retry", fail_shared)
+
+    with pytest.raises(PermissionError):
+        _activate(tmp_path, _proposal(), emit=True)
+
+    bridge_root = tmp_path / "bridge"
+    assert not (bridge_root / "shared" / "events.jsonl").exists()
+    assert not (bridge_root / "shared" / "last_codex.json").exists()
+    assert not (bridge_root / "outbox" / "codex" / "2026-05-17.jsonl").exists()
 
 
 def test_round_two_continues_after_prior_idle_event_even_when_bridge_is_active(

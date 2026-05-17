@@ -36,6 +36,10 @@ from waggledance.core.bridge_event_schema import validate_event
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.receipt import build_magma_receipt
+from waggledance.core.magma.receipt_bundle import (
+    ReceiptBundleEntry,
+    write_receipt_bundle,
+)
 
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -544,7 +548,6 @@ def _emit_receipt_bundle(
     out_dir: Path,
     now_utc: datetime,
 ) -> dict[str, Any]:
-    _prepare_out_dir(out_dir)
     idle_payload = dict(bridge_event.get("payload", {}))
     evaluation = _evaluation_for_idle_payload(idle_payload, convergence)
     operator_required = _operator_required_for_idle_event(
@@ -587,38 +590,19 @@ def _emit_receipt_bundle(
     )
     if operator_required:
         receipt["operator_gate_required"] = True
-    payload_name = "payload-001-idle.json"
-    evaluation_name = "evaluation-001-idle.json"
-    receipt_name = "receipt-001-idle.json"
-    _write_json(out_dir / payload_name, idle_payload)
-    _write_json(out_dir / evaluation_name, evaluation)
-    _write_json(out_dir / receipt_name, receipt)
-    manifest = {
-        "chain_id": f"magma:idle_protocol:{proposal_id}:v0",
-        "entries": [
-            {
-                "payload": payload_name,
-                "evaluation_result": evaluation_name,
-                "receipt": receipt_name,
-            }
+    return write_receipt_bundle(
+        out_dir=out_dir,
+        chain_id=f"magma:idle_protocol:{proposal_id}:v0",
+        entries=[
+            ReceiptBundleEntry(
+                label="idle",
+                payload=idle_payload,
+                evaluation_result=evaluation,
+                receipt=receipt,
+            )
         ],
-    }
-    manifest_path = out_dir / "manifest.json"
-    _write_json(manifest_path, manifest)
-    verifier_report = verify_manifest(manifest_path)
-    if not verifier_report["ok"]:
-        errors = "; ".join(str(error) for error in verifier_report["errors"])
-        raise ValueError(f"receipt bundle verification failed: {errors}")
-    return {
-        "out_dir": str(out_dir),
-        "manifest": str(manifest_path),
-        "receipt_count": 1,
-        "verifier_report": {
-            "ok": verifier_report["ok"],
-            "receipt_count": verifier_report["receipt_count"],
-            "errors": verifier_report["errors"],
-        },
-    }
+        verify_manifest=verify_manifest,
+    )
 
 
 def _evaluation_for_idle_payload(
@@ -705,12 +689,6 @@ def _reason_codes_for_idle_event(
     return reason_codes
 
 
-def _prepare_out_dir(out_dir: Path) -> None:
-    if out_dir.exists():
-        raise ValueError(f"receipt_out_dir must not exist: {out_dir}")
-    out_dir.mkdir(parents=True, exist_ok=False)
-
-
 def _append_bridge_event(bridge_root: Path, event: Mapping[str, Any]) -> Path:
     shared_dir = bridge_root / "shared"
     outbox_dir = bridge_root / "outbox" / str(event["agent"])
@@ -755,13 +733,6 @@ def _write_json_atomic(path: Path, payload: str) -> None:
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(path)
-
-
-def _write_json(path: Path, value: object) -> None:
-    path.write_text(
-        json.dumps(value, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _restore_last_file(path: Path, previous: str | None) -> None:

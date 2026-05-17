@@ -329,21 +329,22 @@ def _idle_instances_for_utc_day(
     target_date = _utc_date(now_utc)
     instances: list[str] = []
     for event in events:
-        payload = _idle_payload(event)
+        payload = _quota_payload(event)
         if payload is None or payload.get("event_type") != "idle_proposal":
+            continue
+        round_number = payload.get("round_number")
+        if round_number is not None and round_number != 1:
             continue
         try:
             event_date = _utc_date(_parse_utc(str(event["ts_utc"])))
         except (KeyError, TypeError, ValueError):
-            event_date = target_date
+            continue
         if event_date == target_date:
             instances.append(str(payload.get("proposal_id", "")))
     return instances
 
 
-def _idle_payload(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    if event.get("protocol_version") == "idle-protocol.v1":
-        return event
+def _quota_payload(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
     payload = event.get("payload")
     if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
         return payload

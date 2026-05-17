@@ -18,8 +18,9 @@ consensus.
 
 Round 1 requires `idle_check` to report idle. Round 2 and later require a prior
 idle-protocol payload in the bridge stream, because the first proposal itself
-makes the bridge active. Round 1 also respects the v1 daily instance limit:
-at most five `idle_proposal` instances per UTC day.
+makes the bridge active. Round 1 also respects the fixed v1 daily instance
+limit: at most five `idle_proposal` instances per UTC day. The quota resets at
+UTC midnight; v1 intentionally has no `--force` override.
 
 ## Manual Use
 

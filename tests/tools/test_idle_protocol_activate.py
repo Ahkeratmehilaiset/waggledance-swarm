@@ -238,6 +238,35 @@ def test_round_one_rate_limit_uses_utc_day_boundary(tmp_path: Path) -> None:
     assert report["emitted"] is False
 
 
+def test_quota_counter_skips_malformed_timestamps() -> None:
+    malformed = _event(
+        ts_utc="not-a-date",
+        status="idle_proposal",
+        payload=_proposal("idle-prop-20260517-malformed"),
+    )
+
+    instances = activator._idle_instances_for_utc_day(
+        [*_idle_instance_events(4), malformed],
+        NOW,
+    )
+
+    assert instances == [
+        "idle-prop-20260517-rate-000",
+        "idle-prop-20260517-rate-001",
+        "idle-prop-20260517-rate-002",
+        "idle-prop-20260517-rate-003",
+    ]
+
+
+def test_quota_counter_only_counts_idle_payloads_inside_bridge_envelope() -> None:
+    flat_payload = _proposal("idle-prop-20260517-flat")
+    flat_payload["ts_utc"] = "2026-05-17T09:30:00Z"
+
+    instances = activator._idle_instances_for_utc_day([flat_payload], NOW)
+
+    assert instances == []
+
+
 def test_emit_appends_bridge_event_outbox_and_last_file(tmp_path: Path) -> None:
     report = _activate(tmp_path, _proposal(), emit=True)
 

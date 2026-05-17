@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -17,6 +18,7 @@ from waggledance.core.magma.canonical import sha256_digest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "run_pdam_counterfactual_demo.py"
 SCHEMA = ROOT / "schemas" / "v3_13_0" / "evaluation_result.v0.json"
+FIXED_NOW = datetime(2026, 5, 18, 1, 2, 3, tzinfo=timezone.utc)
 
 
 def _run_demo(*args: str) -> subprocess.CompletedProcess[str]:
@@ -99,7 +101,7 @@ def test_demo_does_not_leak_private_operator_marker() -> None:
 def test_opt_in_receipt_bundle_verifies_and_binds_counterfactual_chain(tmp_path: Path) -> None:
     out_dir = tmp_path / "pdam-receipts"
 
-    report = build_demo_report(out_dir=out_dir)
+    report = build_demo_report(out_dir=out_dir, now_utc=FIXED_NOW)
 
     bundle = report["receipt_bundle"]
     assert report["writes_applied"] is False
@@ -109,6 +111,8 @@ def test_opt_in_receipt_bundle_verifies_and_binds_counterfactual_chain(tmp_path:
 
     first_receipt = json.loads((out_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
     second_receipt = json.loads((out_dir / "receipt-002-counterfactual.json").read_text(encoding="utf-8"))
+    assert first_receipt["ts_utc"] == "2026-05-18T01:02:04Z"
+    assert second_receipt["ts_utc"] == "2026-05-18T01:02:05Z"
     assert first_receipt["prev_receipt_hash"] is None
     assert second_receipt["prev_receipt_hash"] == sha256_digest(first_receipt)
 
@@ -127,12 +131,65 @@ def test_opt_in_receipt_bundle_verifies_and_binds_counterfactual_chain(tmp_path:
 def test_cli_emits_receipt_bundle_only_when_out_dir_is_requested(tmp_path: Path) -> None:
     out_dir = tmp_path / "pdam-receipts"
 
-    result = _run_demo("--out-dir", str(out_dir))
+    result = _run_demo(
+        "--out-dir",
+        str(out_dir),
+        "--now",
+        "2026-05-18T01:02:03Z",
+    )
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
     assert report["receipt_bundle"]["verifier_report"]["ok"] is True
+    first_receipt = json.loads((out_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
+    assert first_receipt["ts_utc"] == "2026-05-18T01:02:04Z"
     assert (out_dir / "manifest.json").exists()
+
+
+def test_cli_accepts_now_with_explicit_zero_offset(tmp_path: Path) -> None:
+    out_dir = tmp_path / "pdam-receipts"
+
+    result = _run_demo(
+        "--out-dir",
+        str(out_dir),
+        "--now",
+        "2026-05-18T01:02:03+00:00",
+    )
+
+    assert result.returncode == 0, result.stderr
+    first_receipt = json.loads((out_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
+    assert first_receipt["ts_utc"] == "2026-05-18T01:02:04Z"
+
+
+@pytest.mark.parametrize(
+    "now_value",
+    [
+        "2026-05-18T01:02:03",
+        "2026-05-18T03:02:03+02:00",
+        "not-a-timestamp",
+    ],
+)
+def test_cli_rejects_non_utc_now_values(tmp_path: Path, now_value: str) -> None:
+    out_dir = tmp_path / f"pdam-receipts-{len(now_value)}"
+
+    result = _run_demo("--out-dir", str(out_dir), "--now", now_value)
+
+    assert result.returncode == 1
+    assert "PDAM counterfactual demo FAILED" in result.stderr
+    assert not out_dir.exists()
+
+
+def test_fixed_now_reproduces_receipt_bytes(tmp_path: Path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+
+    build_demo_report(out_dir=first_dir, now_utc=FIXED_NOW)
+    build_demo_report(out_dir=second_dir, now_utc=FIXED_NOW)
+
+    first_receipt = json.loads((first_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
+    second_receipt = json.loads((second_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
+    assert first_receipt == second_receipt
+    assert sha256_digest(first_receipt) == sha256_digest(second_receipt)
 
 
 def test_receipt_bundle_refuses_non_empty_output_directory(tmp_path: Path) -> None:

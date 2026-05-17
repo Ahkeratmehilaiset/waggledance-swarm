@@ -6,7 +6,9 @@ import subprocess
 import sys
 
 import jsonschema
+import pytest
 
+from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.canonical import sha256_digest
 
 
@@ -52,8 +54,9 @@ def test_counterfactual_changes_decision_and_gate_without_applying_write() -> No
     assert report["factual"]["action"]["kind"] == "KEEP_WIP"
     assert report["counterfactual"]["action"]["kind"] == "CLOSE_OK"
     assert report["factual"]["evaluation_result"]["actual_gate"] == "review"
-    assert report["counterfactual"]["evaluation_result"]["actual_gate"] == "require_approval"
-    assert report["counterfactual"]["evaluation_result"]["operator_required"] is True
+    assert report["factual"]["evaluation_result"]["risk_class"] == "internal_memory"
+    assert report["counterfactual"]["evaluation_result"]["actual_gate"] == "allow"
+    assert report["counterfactual"]["evaluation_result"]["operator_required"] is False
     assert report["writes_applied"] is False
 
 
@@ -71,6 +74,46 @@ def test_demo_reports_counterfactual_delta() -> None:
 
     assert report["delta"] == {
         "kind": ["KEEP_WIP", "CLOSE_OK"],
-        "actual_gate": ["review", "require_approval"],
-        "verdict": ["review", "pass"],
+        "actual_gate": ["review", "allow"],
+        "verdict": ["pass", "review"],
     }
+
+
+def test_counterfactual_reason_codes_capture_mutation_and_gate_drift() -> None:
+    report = _report()
+    reason_codes = report["counterfactual"]["evaluation_result"]["reason_codes"]
+
+    assert "mutation:subtool_state:DOWNTIME_to_IDLE" in reason_codes
+    assert "gate_drift:review_to_allow" in reason_codes
+
+
+def test_demo_does_not_leak_private_operator_marker() -> None:
+    result = _run_demo()
+
+    assert result.returncode == 0, result.stderr
+    assert "operator_secret_goal_marker_DO_NOT_LEAK" not in result.stdout + result.stderr
+
+
+def test_build_evaluation_result_enforces_schema_and_pure_solver_risk_class() -> None:
+    base = {
+        "case_id": "case:pdam:helper:001",
+        "subject_type": "counterfactual",
+        "target_payload": {"action": "noop"},
+        "risk_class": "internal_memory",
+        "expected_gate": "review",
+        "actual_gate": "review",
+        "verifier_path": ["pdam_close_solver"],
+        "solver_selection": ["pdam_close_solver"],
+        "policy_version": "policy:pdam_close_solver:v1",
+        "charter_version": "charter:v1",
+        "domain_threshold_version": "threshold:pdam_close_solver:v1",
+        "verdict": "pass",
+        "reason_codes": ["pdam:noop"],
+        "confidence_score": 1.0,
+    }
+
+    assert build_evaluation_result(**base)["operator_required"] is False
+    with pytest.raises(ValueError, match="external_effect"):
+        build_evaluation_result(**{**base, "risk_class": "external_effect"})
+    with pytest.raises(ValueError, match="confidence_score"):
+        build_evaluation_result(**{**base, "confidence_score": 1.5})

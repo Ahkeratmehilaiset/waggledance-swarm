@@ -25,17 +25,18 @@ from waggledance.core.pdam_close_solver import (  # noqa: E402
 
 
 BASE = datetime(2026, 5, 15, 8, 0)
+PRIVATE_MARKER = "operator_secret_goal_marker_DO_NOT_LEAK"
 PDAM_GATE_BY_KIND = {
-    "CLOSE_OK": "require_approval",
-    "CLOSE_DUPLICATE": "require_approval",
+    "CLOSE_OK": "allow",
+    "CLOSE_DUPLICATE": "allow",
     "KEEP_WIP": "review",
     "REVIEW": "review",
 }
-PDAM_VERDICT_BY_KIND = {
-    "CLOSE_OK": "pass",
-    "CLOSE_DUPLICATE": "pass",
-    "KEEP_WIP": "review",
-    "REVIEW": "review",
+PDAM_CONFIDENCE_BY_KIND = {
+    "CLOSE_OK": 1.0,
+    "CLOSE_DUPLICATE": 0.9,
+    "KEEP_WIP": 0.7,
+    "REVIEW": 0.4,
 }
 
 
@@ -62,6 +63,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def build_demo_report() -> dict[str, Any]:
+    # Privacy canary: this operator-local metadata must never enter output.
+    _private_metadata = {"operator_note": PRIVATE_MARKER}
     factual = _run_scenario(
         label="factual",
         depb_state=ToolState("SPUT_02_DEPB", "DOWNTIME", comment="DepB still locked"),
@@ -69,6 +72,8 @@ def build_demo_report() -> dict[str, Any]:
     counterfactual = _run_scenario(
         label="counterfactual",
         depb_state=ToolState("SPUT_02_DEPB", "IDLE"),
+        expected_gate=factual["evaluation_result"]["actual_gate"],
+        mutation_reason="mutation:subtool_state:DOWNTIME_to_IDLE",
     )
     return {
         "demo_version": "pdam.counterfactual_evaluation.v0",
@@ -93,7 +98,13 @@ def build_demo_report() -> dict[str, Any]:
     }
 
 
-def _run_scenario(*, label: str, depb_state: ToolState) -> dict[str, Any]:
+def _run_scenario(
+    *,
+    label: str,
+    depb_state: ToolState,
+    expected_gate: str | None = None,
+    mutation_reason: str | None = None,
+) -> dict[str, Any]:
     entry = LogbookEntry(
         entry_id=5101,
         local_id=5101,
@@ -133,6 +144,8 @@ def _run_scenario(*, label: str, depb_state: ToolState) -> dict[str, Any]:
             action,
             payload=payload,
             case_id=f"case:pdam:counterfactual:001:{label}",
+            expected_gate=expected_gate,
+            mutation_reason=mutation_reason,
         ),
     }
 
@@ -142,15 +155,26 @@ def _evaluation_for_action(
     *,
     payload: dict[str, Any],
     case_id: str,
+    expected_gate: str | None = None,
+    mutation_reason: str | None = None,
 ) -> dict[str, Any]:
     actual_gate = PDAM_GATE_BY_KIND.get(action.kind, "review")
-    verdict = PDAM_VERDICT_BY_KIND.get(action.kind, "review")
+    expected = expected_gate or actual_gate
+    verdict = "pass" if expected == actual_gate else "review"
+    reason_codes = [
+        f"pdam:{action.kind.lower()}",
+        f"gate:{actual_gate}",
+        "evidence:windowed_comments",
+    ]
+    if mutation_reason:
+        reason_codes.append(mutation_reason)
+        reason_codes.append(f"gate_drift:{expected}_to_{actual_gate}")
     return build_evaluation_result(
         case_id=case_id,
         subject_type="counterfactual",
         target_payload=payload,
-        risk_class="external_effect",
-        expected_gate=actual_gate,
+        risk_class="internal_memory",
+        expected_gate=expected,
         actual_gate=actual_gate,
         verifier_path=[
             "pdam_close_solver",
@@ -162,9 +186,8 @@ def _evaluation_for_action(
         charter_version="charter:v1",
         domain_threshold_version="threshold:pdam_close_solver:v1",
         verdict=verdict,
-        reason_codes=[f"pdam:{action.kind.lower()}", f"gate:{actual_gate}"],
-        operator_required=True,
-        confidence_score=0.95 if verdict == "pass" else 0.72,
+        reason_codes=reason_codes,
+        confidence_score=PDAM_CONFIDENCE_BY_KIND.get(action.kind, 0.4),
         uncertainty_sources=[],
     )
 

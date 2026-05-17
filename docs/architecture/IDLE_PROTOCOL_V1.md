@@ -72,10 +72,42 @@ manifest, and the offline verifier summary. The receipt risk class is
 artifacts. The directory must not already exist. If bundle emission fails,
 activation fails before any bridge append.
 
+## One-Shot Runner
+
+`tools/run_idle_protocol_once.py` is a manual smoke runner for the round-1
+activation chain. It first calls `idle_check`; if the bridge is active or the
+idle state cannot be proven, it emits nothing. If the bridge is idle, it builds
+one deterministic `idle_proposal` payload and delegates validation, quota,
+sequence checks, receipt-bundle emission, and bridge append to
+`idle_protocol_activate`.
+
+Dry run the one-shot runner:
+
+```powershell
+.\.venv\Scripts\python.exe tools\run_idle_protocol_once.py `
+  --dry-run `
+  --json
+```
+
+Emit one round-1 idle proposal only after the dry run is clean:
+
+```powershell
+.\.venv\Scripts\python.exe tools\run_idle_protocol_once.py `
+  --emit `
+  --json
+```
+
+The runner is not a strategic decision maker. It generates a fixed health-check
+proposal that asks the peer agent to continue deliberation with a concrete
+counter-proposal. It is not cron-driven, does not synthesize consensus, and does
+not convert convergence into implementation work.
+
 ## Safeguards
 
 - No cron or background activation in v1.
 - No model-generated payloads inside the tool.
+- `run_idle_protocol_once.py` is dry-run by default and requires both
+  `--emit` and a proven idle bridge before any bridge write.
 - No consensus-to-scout conversion.
 - Consensus reports keep `operator_gate_required=true` and `auto_execute=false`.
 - Invalid or low-quality payloads fail before any bridge write.

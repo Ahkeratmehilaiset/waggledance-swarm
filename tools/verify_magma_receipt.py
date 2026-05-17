@@ -294,16 +294,13 @@ def _validate_chain_topology(
         if prev_hash is None:
             continue
         if prev_hash not in by_hash:
-            errors.append(
-                f"chain: missing_parent for {node['node_id']} "
-                f"prev_receipt_hash {prev_hash}"
-            )
+            errors.append(f"chain: missing_parent for {node['node_id']}")
         children_by_prev.setdefault(str(prev_hash), []).append(node)
 
     for prev_hash, children in sorted(children_by_prev.items()):
         if len(children) > 1:
             node_ids = ", ".join(str(node["node_id"]) for node in children)
-            errors.append(f"chain: ambiguous_child {prev_hash} -> {node_ids}")
+            errors.append(f"chain: ambiguous_child -> {node_ids}")
 
     _detect_parent_cycle(nodes, by_hash, errors)
     if len(genesis) != 1:

@@ -317,6 +317,25 @@ def test_cli_redacts_raw_digest_field_values_in_mismatch_errors(tmp_path: Path) 
     assert "sk-test" not in combined
 
 
+def test_cli_redacts_raw_prev_receipt_hash_in_topology_errors(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    receipt_path = manifest.parent / "receipt-002.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["prev_receipt_hash"] = (
+        "sha256:_DO_NOT_LEAK_sk-test_https://example.invalid/canary"
+    )
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest, "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "missing_parent" in combined
+    assert "_DO_NOT_LEAK" not in combined
+    assert "https://example.invalid" not in combined
+    assert "sk-test" not in combined
+
+
 def test_cli_rejects_policy_surface_argument_digest_conflict(tmp_path: Path) -> None:
     manifest = _write_chain(tmp_path / "chain")
     policy_surface = _write_policy_surface(manifest.parent)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
@@ -53,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional empty output directory for a MAGMA receipt bundle.",
     )
+    parser.add_argument(
+        "--now",
+        default=None,
+        help="Optional UTC timestamp override for receipt bundle emission.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -60,7 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        report = build_demo_report(out_dir=args.out_dir)
+        report = build_demo_report(
+            out_dir=args.out_dir,
+            now_utc=_parse_utc(args.now) if args.now else None,
+        )
     except ValueError as exc:
         print(f"PDAM counterfactual demo FAILED: {exc}", file=sys.stderr)
         return 1
@@ -81,7 +89,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def build_demo_report(*, out_dir: Path | None = None) -> dict[str, Any]:
+def build_demo_report(
+    *,
+    out_dir: Path | None = None,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
     # Privacy canary: this operator-local metadata must never enter output.
     _private_metadata = {"operator_note": PRIVATE_MARKER}
     factual = _run_scenario(
@@ -116,7 +128,12 @@ def build_demo_report(*, out_dir: Path | None = None) -> dict[str, Any]:
         },
     }
     if out_dir is not None:
-        report["receipt_bundle"] = _emit_receipt_bundle(report, out_dir)
+        receipt_now = now_utc or datetime.now(timezone.utc)
+        report["receipt_bundle"] = _emit_receipt_bundle(
+            report,
+            out_dir,
+            receipt_now.astimezone(timezone.utc),
+        )
     return report
 
 
@@ -214,7 +231,11 @@ def _evaluation_for_action(
     )
 
 
-def _emit_receipt_bundle(report: dict[str, Any], out_dir: Path) -> dict[str, Any]:
+def _emit_receipt_bundle(
+    report: dict[str, Any],
+    out_dir: Path,
+    now_utc: datetime,
+) -> dict[str, Any]:
     _prepare_out_dir(out_dir)
     entries: list[dict[str, str]] = []
     previous_receipt: dict[str, Any] | None = None
@@ -224,7 +245,7 @@ def _emit_receipt_bundle(report: dict[str, Any], out_dir: Path) -> dict[str, Any
         evaluation = scenario["evaluation_result"]
         receipt = build_magma_receipt(
             event_id=f"magma:pdam_counterfactual:{index:03d}:{label}",
-            ts_utc=f"2026-05-17T12:{index:02d}:00Z",
+            ts_utc=_iso(now_utc + timedelta(seconds=index)),
             risk_class=evaluation["risk_class"],
             payload=payload,
             evaluation_result=evaluation,
@@ -289,6 +310,20 @@ def _write_json(path: Path, value: object) -> None:
         json.dumps(value, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _parse_utc(value: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 if __name__ == "__main__":

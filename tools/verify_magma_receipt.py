@@ -3,9 +3,9 @@
 
 v1 intentionally avoids signing, anchoring, network calls, and runtime
 integration. It verifies the thin spine: schema shape, canonical digest
-bindings, EvaluationResult binding, and manifest-ordered receipt hash-chain
-continuity. Unsigned v1 detects in-chain receipt tampering; tail receipt field
-tamper needs a successor receipt or a future signature verifier.
+bindings, EvaluationResult binding, and receipt hash-chain topology.
+Unsigned v1 detects in-chain receipt tampering; tail receipt field tamper needs
+a successor receipt or a future signature verifier.
 """
 from __future__ import annotations
 
@@ -72,8 +72,8 @@ def verify_manifest(
     entries = _entries(manifest, errors)
     receipt_validator = _validator("magma_receipt.v1.json")
     evaluation_validator = _validator("evaluation_result.v0.json")
-    previous_receipt_hash: str | None = None
     verified = 0
+    nodes: list[dict[str, str | None]] = []
 
     for index, entry in enumerate(entries, 1):
         label = f"entry {index}"
@@ -113,11 +113,6 @@ def verify_manifest(
                 f"(expected {receipt.get('evaluation_result_digest')}, got {evaluation_digest})"
             )
 
-        if receipt.get("prev_receipt_hash") != previous_receipt_hash:
-            errors.append(
-                f"{label}: prev_receipt_hash mismatch "
-                f"(expected {previous_receipt_hash}, got {receipt.get('prev_receipt_hash')})"
-            )
         if (
             expected_charter_digest is not None
             and receipt.get("charter_digest") != expected_charter_digest
@@ -135,8 +130,16 @@ def verify_manifest(
                 f"(expected {expected_policy_digest}, got {receipt.get('policy_digest')})"
             )
 
-        previous_receipt_hash = sha256_digest(receipt)
+        nodes.append(
+            {
+                "event_id": str(receipt.get("event_id", label)),
+                "receipt_hash": sha256_digest(receipt),
+                "prev_receipt_hash": receipt.get("prev_receipt_hash"),
+            }
+        )
         verified += 1
+
+    _validate_chain_topology(nodes, errors)
 
     return {
         "ok": not errors,
@@ -200,6 +203,93 @@ def _entries(manifest: Any, errors: list[str]) -> list[dict[str, str]]:
 
 def _entry_path(manifest_path: Path, entry: dict[str, str], field: str) -> Path:
     return (manifest_path.parent / entry[field]).resolve()
+
+
+def _validate_chain_topology(
+    nodes: list[dict[str, str | None]],
+    errors: list[str],
+) -> None:
+    if not nodes:
+        return
+
+    by_hash: dict[str, dict[str, str | None]] = {}
+    duplicate_hashes: set[str] = set()
+    for node in nodes:
+        receipt_hash = str(node["receipt_hash"])
+        if receipt_hash in by_hash:
+            duplicate_hashes.add(receipt_hash)
+        by_hash[receipt_hash] = node
+    for receipt_hash in sorted(duplicate_hashes):
+        errors.append(f"chain: duplicate_receipt_hash {receipt_hash}")
+
+    genesis = [node for node in nodes if node["prev_receipt_hash"] is None]
+    if not genesis:
+        errors.append("chain: no_genesis")
+    elif len(genesis) > 1:
+        event_ids = ", ".join(str(node["event_id"]) for node in genesis)
+        errors.append(f"chain: multiple_genesis {event_ids}")
+
+    children_by_prev: dict[str, list[dict[str, str | None]]] = {}
+    for node in nodes:
+        prev_hash = node["prev_receipt_hash"]
+        if prev_hash is None:
+            continue
+        if prev_hash not in by_hash:
+            errors.append(
+                f"chain: missing_parent for {node['event_id']} "
+                f"prev_receipt_hash {prev_hash}"
+            )
+        children_by_prev.setdefault(str(prev_hash), []).append(node)
+
+    for prev_hash, children in sorted(children_by_prev.items()):
+        if len(children) > 1:
+            event_ids = ", ".join(str(node["event_id"]) for node in children)
+            errors.append(f"chain: ambiguous_child {prev_hash} -> {event_ids}")
+
+    _detect_parent_cycle(nodes, by_hash, errors)
+    if len(genesis) != 1:
+        return
+
+    visited: set[str] = set()
+    current = genesis[0]
+    while True:
+        receipt_hash = str(current["receipt_hash"])
+        if receipt_hash in visited:
+            errors.append(f"chain: cycle_detected at {current['event_id']}")
+            break
+        visited.add(receipt_hash)
+        children = children_by_prev.get(receipt_hash, [])
+        if len(children) != 1:
+            break
+        current = children[0]
+
+    orphans = [
+        str(node["event_id"])
+        for node in nodes
+        if str(node["receipt_hash"]) not in visited
+    ]
+    if orphans:
+        errors.append(f"chain: orphan_receipt {', '.join(orphans)}")
+
+
+def _detect_parent_cycle(
+    nodes: list[dict[str, str | None]],
+    by_hash: dict[str, dict[str, str | None]],
+    errors: list[str],
+) -> None:
+    for node in nodes:
+        seen: set[str] = set()
+        current = node
+        while True:
+            receipt_hash = str(current["receipt_hash"])
+            if receipt_hash in seen:
+                errors.append(f"chain: cycle_detected at {current['event_id']}")
+                return
+            seen.add(receipt_hash)
+            prev_hash = current["prev_receipt_hash"]
+            if prev_hash is None or prev_hash not in by_hash:
+                break
+            current = by_hash[str(prev_hash)]
 
 
 def _validate_schema(

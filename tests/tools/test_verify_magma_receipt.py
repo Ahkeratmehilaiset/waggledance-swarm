@@ -147,6 +147,17 @@ def test_cli_writes_json_report_for_valid_chain(tmp_path: Path) -> None:
     assert report["errors"] == []
 
 
+def test_cli_verifies_manifest_entries_out_of_chain_order(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_json["entries"] = list(reversed(manifest_json["entries"]))
+    _write_json(manifest, manifest_json)
+
+    result = _run_verify(manifest)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_cli_can_check_expected_charter_and_policy_digests(tmp_path: Path) -> None:
     manifest = _write_chain(tmp_path / "chain")
 
@@ -196,6 +207,33 @@ def test_cli_rejects_changed_evaluation_result(tmp_path: Path) -> None:
     assert "evaluation_result_digest mismatch" in result.stderr
 
 
+def test_cli_rejects_intermediate_receipt_tamper(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    receipt_path = manifest.parent / "receipt-001.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["policy_digest"] = "sha256:" + "6" * 64
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest)
+
+    assert result.returncode == 1
+    assert "missing_parent" in result.stderr
+    assert "orphan_receipt" in result.stderr
+
+
+def test_cli_rejects_multiple_genesis_receipts(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    receipt_path = manifest.parent / "receipt-002.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["prev_receipt_hash"] = None
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest)
+
+    assert result.returncode == 1
+    assert "multiple_genesis" in result.stderr
+
+
 def test_cli_rejects_broken_prev_receipt_hash(tmp_path: Path) -> None:
     manifest = _write_chain(tmp_path / "chain")
     receipt_path = manifest.parent / "receipt-002.json"
@@ -206,4 +244,5 @@ def test_cli_rejects_broken_prev_receipt_hash(tmp_path: Path) -> None:
     result = _run_verify(manifest)
 
     assert result.returncode == 1
-    assert "prev_receipt_hash mismatch" in result.stderr
+    assert "missing_parent" in result.stderr
+    assert "orphan_receipt" in result.stderr

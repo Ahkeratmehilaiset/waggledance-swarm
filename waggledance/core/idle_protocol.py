@@ -6,7 +6,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import jsonschema
 
@@ -45,12 +45,121 @@ def validate_idle_proposal(event: dict[str, Any]) -> tuple[bool, list[str]]:
     return (not errors, errors)
 
 
+def detect_idle_convergence(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    max_round: int = 10,
+    soft_round: int = 5,
+) -> dict[str, Any] | None:
+    """Detect idle-protocol convergence from recent payloads or bridge events.
+
+    Returns ``None`` while deliberation is still open. Reports are deliberately
+    operator-gated: even convergence reports carry ``auto_execute=False``.
+    """
+    payloads = [_idle_payload(event) for event in events]
+    payloads = [payload for payload in payloads if payload is not None]
+    if not payloads:
+        return None
+
+    for payload in payloads:
+        ok, errors = validate_idle_proposal(dict(payload))
+        if not ok:
+            return {
+                "status": "invalid_event",
+                "proposal_id": payload.get("proposal_id", ""),
+                "round_number": payload.get("round_number"),
+                "errors": errors,
+                "operator_escalation_required": True,
+            }
+
+    for payload in payloads:
+        if payload.get("event_type") == "idle_charter_violation":
+            return {
+                "status": "charter_violation",
+                "round_number": payload["round_number"],
+                "violating_proposal_id": payload["violating_proposal_id"],
+                "violation_event_id": payload["proposal_id"],
+                "terminate_protocol": True,
+                "operator_escalation_required": True,
+            }
+
+    soft = _soft_convergence(payloads, soft_round=soft_round)
+    if soft is not None:
+        return soft
+
+    latest_round = max(int(payload["round_number"]) for payload in payloads)
+    if latest_round >= max_round:
+        return {
+            "status": "hard_convergence",
+            "round_number": latest_round,
+            "finalist_proposal_ids": _finalists(payloads),
+            "operator_gate_required": True,
+            "auto_execute": False,
+        }
+    return None
+
+
 def _schema_errors(event: Mapping[str, Any]) -> list[str]:
     validator = _validator()
     return [
         f"schema.{_error_path(error)}: {error.message}"
         for error in sorted(validator.iter_errors(event), key=lambda item: item.path)
     ]
+
+
+def _idle_payload(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if event.get("protocol_version") == "idle-protocol.v1":
+        return event
+    payload = event.get("payload")
+    if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
+        return payload
+    return None
+
+
+def _soft_convergence(
+    payloads: Sequence[Mapping[str, Any]],
+    *,
+    soft_round: int,
+) -> dict[str, Any] | None:
+    by_target: dict[str, list[str]] = {}
+    round_by_target: dict[str, int] = {}
+    for payload in payloads:
+        if payload.get("event_type") != "idle_consensus_reached":
+            continue
+        round_number = int(payload["round_number"])
+        if round_number < soft_round:
+            continue
+        target = str(payload["consensus_target_proposal_id"])
+        by_target.setdefault(target, []).append(str(payload["proposal_id"]))
+        round_by_target[target] = max(round_by_target.get(target, 0), round_number)
+    for target, supporters in by_target.items():
+        if len(set(supporters)) >= 2:
+            return {
+                "status": "soft_convergence",
+                "round_number": round_by_target[target],
+                "target_proposal_id": target,
+                "supporting_consensus_ids": supporters,
+                "operator_gate_required": True,
+                "auto_execute": False,
+            }
+    return None
+
+
+def _finalists(payloads: Sequence[Mapping[str, Any]]) -> list[str]:
+    candidates: list[str] = []
+    for payload in sorted(payloads, key=lambda item: int(item["round_number"]), reverse=True):
+        event_type = str(payload.get("event_type", ""))
+        if event_type not in {
+            "idle_proposal",
+            "idle_counter_proposal",
+        }:
+            continue
+        proposal_id = str(payload.get("proposal_id", ""))
+        if proposal_id and proposal_id not in candidates:
+            candidates.append(proposal_id)
+        if len(candidates) == 3:
+            break
+    return candidates[:3]
 
 
 @lru_cache(maxsize=1)

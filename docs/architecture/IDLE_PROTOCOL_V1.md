@@ -24,8 +24,11 @@ UTC midnight; v1 intentionally has no `--force` override.
 Continuation rounds are sequence-checked before any bridge write: proposal ids
 must be unique, reference fields must point at prior idle-protocol payloads,
 round 4+ proposal/consensus continuation requires a prior round-3 adversarial
-review, consensus can only be reported at round 5 or later, and any prior
-`idle_charter_violation` terminates the instance.
+review in the same instance, consensus can only be reported at round 5 or
+later, and any prior `idle_charter_violation` terminates only that instance.
+An instance is the chain rooted at one round-1 `idle_proposal`; a fresh round-1
+proposal can still start a new opt-in deliberation after an older instance was
+terminated.
 
 ## Manual Use
 
@@ -60,8 +63,9 @@ the idle event type, and targets the other bridge agent by default.
 - A sixth round-1 idle instance in the same UTC day fails before any bridge
   write; continuation rounds do not start new instances.
 - Duplicate proposal ids, missing proposal references, consensus before round
-  5, round 4+ continuation without the mandatory adversarial review, and
-  continuation after charter violation fail before any bridge write.
+  5, round 4+ continuation without the same-instance mandatory adversarial
+  review, and continuation after same-instance charter violation fail before
+  any bridge write.
 - Payloads containing `_DO_NOT_LEAK` are refused before the proposed bridge
   event is printed or emitted.
 - Round 1 is blocked while CI, claims, scout/RCO requests, recent merges,

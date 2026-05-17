@@ -482,7 +482,7 @@ def test_duplicate_proposal_id_is_refused_before_emit(tmp_path: Path) -> None:
         _activate(tmp_path, _proposal(), events=events, emit=True)
 
     assert excinfo.value.report["decision"] == "invalid_sequence"
-    assert any("duplicate" in error for error in excinfo.value.report["errors"])
+    assert any("already present" in error for error in excinfo.value.report["errors"])
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
 
 
@@ -563,6 +563,43 @@ def test_round_four_plus_continues_after_prior_adversarial_review(
     assert report["emitted"] is True
 
 
+def test_round_four_requires_adversarial_review_in_same_instance(
+    tmp_path: Path,
+) -> None:
+    proposal_a = _proposal("idle-prop-20260517-a01")
+    counter_a = _counter()
+    counter_a["proposal_id"] = "idle-prop-20260517-a02"
+    counter_a["responds_to"] = "idle-prop-20260517-a01"
+    adversarial_a = _adversarial("idle-prop-20260517-a03")
+    adversarial_a["responds_to"] = "idle-prop-20260517-a02"
+    proposal_b = _proposal("idle-prop-20260517-b01")
+    counter_b = _counter()
+    counter_b["proposal_id"] = "idle-prop-20260517-b02"
+    counter_b["responds_to"] = "idle-prop-20260517-b01"
+    round_four_b = _counter()
+    round_four_b["proposal_id"] = "idle-prop-20260517-b04"
+    round_four_b["round_number"] = 4
+    round_four_b["responds_to"] = "idle-prop-20260517-b02"
+    events = _base_events() + [
+        _event(ts_utc="2026-05-17T10:40:00Z", status="idle_proposal", payload=proposal_a),
+        _event(ts_utc="2026-05-17T10:45:00Z", status="idle_counter_proposal", payload=counter_a),
+        _event(
+            ts_utc="2026-05-17T10:50:00Z",
+            status="idle_adversarial_review",
+            payload=adversarial_a,
+        ),
+        _event(ts_utc="2026-05-17T10:55:00Z", status="idle_proposal", payload=proposal_b),
+        _event(ts_utc="2026-05-17T10:58:00Z", status="idle_counter_proposal", payload=counter_b),
+    ]
+
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(tmp_path, round_four_b, events=events, emit=True)
+
+    assert excinfo.value.report["decision"] == "invalid_sequence"
+    assert any("same instance" in error for error in excinfo.value.report["errors"])
+    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
 def test_prior_charter_violation_terminates_continuation_before_emit(
     tmp_path: Path,
 ) -> None:
@@ -588,8 +625,40 @@ def test_prior_charter_violation_terminates_continuation_before_emit(
         _activate(tmp_path, _adversarial(), events=events, emit=True)
 
     assert excinfo.value.report["decision"] == "invalid_sequence"
-    assert any("terminates continuation" in error for error in excinfo.value.report["errors"])
+    assert any("terminated this instance" in error for error in excinfo.value.report["errors"])
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_prior_charter_violation_does_not_block_new_round_one_instance(
+    tmp_path: Path,
+) -> None:
+    events = _base_events() + [
+        _event(
+            ts_utc="2026-05-17T10:00:00Z",
+            status="idle_proposal",
+            payload=_proposal(),
+        ),
+        _event(
+            ts_utc="2026-05-17T10:05:00Z",
+            status="idle_counter_proposal",
+            payload=_counter(),
+        ),
+        _event(
+            ts_utc="2026-05-17T10:10:00Z",
+            status="idle_charter_violation",
+            payload=_charter_violation(),
+        ),
+    ]
+
+    report = _activate(
+        tmp_path,
+        _proposal("idle-prop-20260517-new"),
+        events=events,
+        emit=False,
+    )
+
+    assert report["decision"] == "ready"
+    assert report["event_type"] == "idle_proposal"
 
 
 def test_consensus_report_is_operator_gated_and_not_auto_execute(tmp_path: Path) -> None:

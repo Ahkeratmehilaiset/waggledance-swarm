@@ -8,12 +8,13 @@ from pathlib import Path
 import sys
 from typing import Any, Sequence
 
+import jsonschema
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.validate_synthetic_adversarial_corpus import validate_corpus  # noqa: E402
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.evaluation_result import build_evaluation_result  # noqa: E402
@@ -21,10 +22,25 @@ from waggledance.core.magma.receipt import build_magma_receipt  # noqa: E402
 
 
 DEFAULT_CORPUS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
-DEFAULT_EXPECTATIONS = (
-    ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0_expectations.json"
-)
+CASE_SCHEMA = ROOT / "schemas" / "v3_13_0" / "synthetic_adversarial_case.v0.json"
 DEMO_VERSION = "magma.composition_demo.v0"
+DEMO_POLICY_BY_DEFECT = {
+    "subtle_drift": {
+        "actual_gate": "review",
+        "verdict": "review",
+        "reason_codes": ["demo:subtle_drift", "gate:review"],
+    },
+    "payload_leak": {
+        "actual_gate": "refuse",
+        "verdict": "refuse",
+        "reason_codes": ["demo:payload_leak", "privacy:digest_only"],
+    },
+    "correlated_review_trap": {
+        "actual_gate": "review",
+        "verdict": "abstain",
+        "reason_codes": ["demo:correlated_review_trap", "review:needs_adversarial_round"],
+    },
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,7 +48,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="Build and verify a local MAGMA composition demo chain.",
     )
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
-    parser.add_argument("--expectations", type=Path, default=DEFAULT_EXPECTATIONS)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--case-limit", type=int, default=3)
     parser.add_argument("--json", action="store_true")
@@ -44,7 +59,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         report = build_composition_demo(
             corpus_path=args.corpus,
-            expectations_path=args.expectations,
             out_dir=args.out_dir,
             case_limit=args.case_limit,
         )
@@ -68,7 +82,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 def build_composition_demo(
     *,
     corpus_path: Path = DEFAULT_CORPUS,
-    expectations_path: Path = DEFAULT_EXPECTATIONS,
     out_dir: Path,
     case_limit: int = 3,
 ) -> dict[str, Any]:
@@ -76,20 +89,26 @@ def build_composition_demo(
         raise ValueError("case_limit must be at least 1")
     _prepare_out_dir(out_dir)
 
-    validation = validate_corpus(corpus_path, expectations_path)
-    if not validation["ok"]:
-        raise ValueError("; ".join(validation["errors"]))
+    cases = _load_corpus_cases(corpus_path)
+    skipped_external_effect_count = sum(
+        1 for case in cases if case["risk_class"] == "external_effect"
+    )
+    eligible_cases = [
+        case
+        for case in cases
+        if case["risk_class"] != "external_effect"
+        and case["defect_type"] in DEMO_POLICY_BY_DEFECT
+    ][:case_limit]
+    if not eligible_cases:
+        raise ValueError("corpus contains no non-external_effect demo-eligible cases")
 
-    corpus = _read_json(corpus_path)
-    expectations = _expectations_by_case(_read_json(expectations_path))
     entries: list[dict[str, str]] = []
-    cases_report: list[dict[str, Any]] = []
+    case_ids: list[str] = []
     previous_receipt: dict[str, Any] | None = None
 
-    for index, case in enumerate(corpus["cases"][:case_limit], 1):
-        expectation = expectations[case["case_id"]]
+    for index, case in enumerate(eligible_cases, 1):
         payload = _payload_for_case(case)
-        evaluation = _evaluation_for_case(case, expectation, payload)
+        evaluation = _evaluation_for_case(case, payload)
         receipt = _receipt_for_case(index, case, payload, evaluation, previous_receipt)
         previous_receipt = receipt
 
@@ -106,15 +125,7 @@ def build_composition_demo(
                 "receipt": receipt_name,
             }
         )
-        cases_report.append(
-            {
-                "case_id": case["case_id"],
-                "risk_class": case["risk_class"],
-                "expected_gate": expectation["expected_gate"],
-                "verdict": expectation["expected_verdict"],
-                "operator_gate_required": receipt["operator_gate_required"],
-            }
-        )
+        case_ids.append(case["case_id"])
 
     manifest = {
         "chain_id": "magma:composition_demo:v0",
@@ -129,21 +140,46 @@ def build_composition_demo(
         "writes_applied": False,
         "out_dir": str(out_dir),
         "manifest": str(manifest_path),
-        "case_count": len(cases_report),
-        "receipt_count": verifier_report["receipt_count"],
-        "verify_ok": verifier_report["ok"],
-        "verifier_errors": verifier_report["errors"],
-        "operator_gate_required_count": sum(
-            1 for case in cases_report if case["operator_gate_required"]
-        ),
-        "cases": cases_report,
+        "case_count": len(case_ids),
+        "chain_length": len(entries),
+        "case_ids": case_ids,
+        "skipped_external_effect_count": skipped_external_effect_count,
+        "verifier_report": {
+            "ok": verifier_report["ok"],
+            "receipt_count": verifier_report["receipt_count"],
+            "errors": verifier_report["errors"],
+        },
     }
 
 
 def _prepare_out_dir(out_dir: Path) -> None:
-    if out_dir.exists() and any(out_dir.iterdir()):
-        raise ValueError(f"out_dir must be empty: {out_dir}")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if out_dir.exists():
+        raise ValueError(f"out_dir must not exist: {out_dir}")
+    out_dir.mkdir(parents=True, exist_ok=False)
+
+
+def _load_corpus_cases(corpus_path: Path) -> list[dict[str, Any]]:
+    corpus = _read_json(corpus_path)
+    if corpus.get("corpus_version") != "magma.synthetic_adversarial_corpus.v0":
+        raise ValueError("corpus_version must be magma.synthetic_adversarial_corpus.v0")
+    cases = corpus.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("corpus cases must be a non-empty array")
+    validator = _case_validator()
+    errors: list[str] = []
+    for index, case in enumerate(cases, 1):
+        for error in sorted(validator.iter_errors(case), key=lambda item: list(item.path)):
+            path = ".".join(str(part) for part in error.path) or "<root>"
+            errors.append(f"case {index}: schema error at {path}: {error.message}")
+    if errors:
+        raise ValueError("; ".join(errors))
+    return cases
+
+
+def _case_validator() -> jsonschema.Draft7Validator:
+    schema = _read_json(CASE_SCHEMA)
+    jsonschema.Draft7Validator.check_schema(schema)
+    return jsonschema.Draft7Validator(schema)
 
 
 def _payload_for_case(case: dict[str, Any]) -> dict[str, Any]:
@@ -159,16 +195,16 @@ def _payload_for_case(case: dict[str, Any]) -> dict[str, Any]:
 
 def _evaluation_for_case(
     case: dict[str, Any],
-    expectation: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    policy = DEMO_POLICY_BY_DEFECT[case["defect_type"]]
     return build_evaluation_result(
         case_id=case["case_id"],
         subject_type="peer_review",
         target_payload=payload,
         risk_class=case["risk_class"],
-        expected_gate=expectation["expected_gate"],
-        actual_gate=expectation["expected_gate"],
+        expected_gate=policy["actual_gate"],
+        actual_gate=policy["actual_gate"],
         verifier_path=[
             "synthetic_adversarial_corpus_v0",
             "magma_evaluation_result_v0",
@@ -179,11 +215,10 @@ def _evaluation_for_case(
         policy_version="policy:synthetic_adversarial_oracle:v0",
         charter_version="charter:v1",
         domain_threshold_version="threshold:synthetic_adversarial:v0",
-        verdict=expectation["expected_verdict"],
-        reason_codes=expectation["expected_reason_codes"],
+        verdict=policy["verdict"],
+        reason_codes=policy["reason_codes"],
         confidence_score=1.0,
         uncertainty_sources=[],
-        allow_external_effect=case["risk_class"] == "external_effect",
     )
 
 
@@ -195,9 +230,6 @@ def _receipt_for_case(
     previous_receipt: dict[str, Any] | None,
 ) -> dict[str, Any]:
     risk_class = case["risk_class"]
-    approval_id = None
-    if risk_class == "external_effect":
-        approval_id = f"bridge:demo_approval_required:{index:03d}"
     return build_magma_receipt(
         event_id=f"magma:composition:{index:03d}",
         ts_utc=f"2026-05-17T07:{index:02d}:00Z",
@@ -210,13 +242,7 @@ def _receipt_for_case(
         rco_decision_digest=sha256_digest({"rco": "composition_demo", "index": index}),
         world_snapshot_digest=sha256_digest({"case_id": case["case_id"], "v": 0}),
         solver_contract_digest=sha256_digest({"solver": "synthetic_adversarial_oracle_v0"}),
-        approval_id=approval_id,
-        allow_external_effect=risk_class == "external_effect",
     )
-
-
-def _expectations_by_case(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {expectation["case_id"]: expectation for expectation in doc["expectations"]}
 
 
 def _read_json(path: Path) -> dict[str, Any]:

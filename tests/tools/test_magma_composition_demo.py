@@ -35,8 +35,15 @@ def test_builds_receipt_chain_that_offline_verifier_accepts(tmp_path: Path) -> N
     assert report["demo_version"] == "magma.composition_demo.v0"
     assert report["writes_applied"] is False
     assert report["case_count"] == 3
-    assert report["receipt_count"] == 3
-    assert report["verify_ok"] is True
+    assert report["chain_length"] == 3
+    assert report["case_ids"] == [
+        "case:adv:subtle_drift:001",
+        "case:adv:payload_leak:001",
+        "case:adv:correlated_review_trap:001",
+    ]
+    assert report["skipped_external_effect_count"] >= 1
+    assert report["verifier_report"]["ok"] is True
+    assert report["verifier_report"]["receipt_count"] == 3
     assert verify_manifest(out_dir / "manifest.json")["ok"] is True
 
 
@@ -61,20 +68,17 @@ def test_receipts_bind_payload_evaluation_and_previous_receipt(tmp_path: Path) -
     assert third["prev_receipt_hash"] is not None
 
 
-def test_external_effect_demo_receipts_still_require_operator_gate(tmp_path: Path) -> None:
+def test_external_effect_cases_are_skipped_in_pure_demo(tmp_path: Path) -> None:
     out_dir = tmp_path / "composition"
 
     report = build_composition_demo(out_dir=out_dir)
 
-    assert report["operator_gate_required_count"] == 2
-    external_receipts = [
-        _read_json(out_dir / "receipt-001.json"),
-        _read_json(out_dir / "receipt-002.json"),
-    ]
-    for receipt in external_receipts:
-        assert receipt["risk_class"] == "external_effect"
-        assert receipt["operator_gate_required"] is True
-        assert receipt["approval_id"].startswith("bridge:demo_approval_required:")
+    assert report["skipped_external_effect_count"] >= 1
+    for index in range(1, 4):
+        receipt = _read_json(out_dir / f"receipt-{index:03d}.json")
+        assert receipt["risk_class"] != "external_effect"
+        assert receipt["operator_gate_required"] is False
+        assert receipt["approval_id"] is None
 
 
 def test_demo_output_does_not_leak_privacy_or_hidden_expectation_fields(tmp_path: Path) -> None:
@@ -91,6 +95,7 @@ def test_demo_output_does_not_leak_privacy_or_hidden_expectation_fields(tmp_path
     assert "should_codex_catch" not in combined
     assert "peer_review_trap_marker" not in combined
     assert "approval_wording_trap" not in combined
+    assert "v0_expectations" not in combined
 
 
 def test_cli_refuses_non_empty_output_directory(tmp_path: Path) -> None:
@@ -101,4 +106,14 @@ def test_cli_refuses_non_empty_output_directory(tmp_path: Path) -> None:
     result = _run_demo(out_dir)
 
     assert result.returncode == 1
-    assert "out_dir must be empty" in result.stderr
+    assert "out_dir must not exist" in result.stderr
+
+
+def test_output_directory_parent_is_created(tmp_path: Path) -> None:
+    out_dir = tmp_path / "nested" / "composition"
+
+    report = build_composition_demo(out_dir=out_dir)
+
+    assert out_dir.exists()
+    assert (out_dir / "manifest.json").exists()
+    assert report["verifier_report"]["ok"] is True

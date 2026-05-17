@@ -116,6 +116,16 @@ def test_external_effect_policy_requires_operator_approval_gate() -> None:
     assert list(_validator("policy_surface.v0.json").iter_errors(policy))
 
 
+def test_external_effect_rules_cannot_allow_or_disable_operator_gate() -> None:
+    policy = _fixture()
+    rule = policy["rule_sets"][0]["rules"][0]
+    rule["effect"] = "allow"
+    rule["constraint"]["operator_required"] = False
+    rule["constraint"]["receipt_required"] = False
+
+    assert list(_validator("policy_surface.v0.json").iter_errors(policy))
+
+
 def test_policy_surface_requires_all_four_risk_classes() -> None:
     policy = _fixture()
     policy["risk_classes"] = [
@@ -140,6 +150,30 @@ def test_policy_surface_rejects_runtime_action_fields_in_rules() -> None:
     policy["rule_sets"][0]["rules"][0]["constraint"]["auto_execute"] = True
 
     assert list(_validator("policy_surface.v0.json").iter_errors(policy))
+
+
+def test_policy_surface_rejects_secret_url_payload_literals_in_rules() -> None:
+    validator = _validator("policy_surface.v0.json")
+
+    endpoint_key = _fixture()
+    endpoint_key["rule_sets"][1]["rules"][0]["constraint"]["endpoint"] = "offline"
+    assert list(validator.iter_errors(endpoint_key))
+
+    secret_key = _fixture()
+    secret_key["rule_sets"][1]["rules"][0]["constraint"]["secret"] = "redacted"
+    assert list(validator.iter_errors(secret_key))
+
+    payload_key = _fixture()
+    payload_key["rule_sets"][1]["rules"][0]["constraint"]["payload"] = "redacted"
+    assert list(validator.iter_errors(payload_key))
+
+    url_value = _fixture()
+    url_value["rule_sets"][1]["rules"][0]["constraint"]["note"] = "https://example.invalid"
+    assert list(validator.iter_errors(url_value))
+
+    secret_value = _fixture()
+    secret_value["rule_sets"][1]["rules"][0]["constraint"]["note"] = "sk-test"
+    assert list(validator.iter_errors(secret_value))
 
 
 def test_policy_surface_rule_ids_are_unique_in_fixture() -> None:

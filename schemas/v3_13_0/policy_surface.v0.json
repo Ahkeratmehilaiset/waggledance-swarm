@@ -225,10 +225,56 @@
                   "maxItems": 20,
                   "items": { "$ref": "#/definitions/ref" }
                 }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "match": {
+                        "type": "object",
+                        "properties": {
+                          "risk_class": { "const": "external_effect" }
+                        },
+                        "required": ["risk_class"]
+                      }
+                    },
+                    "required": ["match"]
+                  },
+                  "then": {
+                    "properties": {
+                      "effect": { "const": "require_approval" },
+                      "constraint": { "$ref": "#/definitions/external_effect_constraint_guard" }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "applies_to_risk_classes": {
+                  "contains": { "const": "external_effect" }
+                }
+              },
+              "required": ["applies_to_risk_classes"]
+            },
+            "then": {
+              "properties": {
+                "rules": {
+                  "items": {
+                    "properties": {
+                      "effect": { "const": "require_approval" },
+                      "constraint": { "$ref": "#/definitions/external_effect_constraint_guard" }
+                    }
+                  }
+                }
               }
             }
           }
-        }
+        ]
       }
     },
     "planned_export_targets": {
@@ -278,11 +324,63 @@
                 "writes_when_satisfied"
               ]
             }
+          },
+          {
+            "not": {
+              "pattern": "(^|[:._-])([Ss][Ee][Cc][Rr][Ee][Tt][Ss]?|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]?|[Tt][Oo][Kk][Ee][Nn]|[Aa][Cc][Cc][Ee][Ss][Ss][-_]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][-_]?[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Yy][Ll][Oo][Aa][Dd]|[Rr][Aa][Ww][-_]?[Pp][Aa][Yy][Ll][Oo][Aa][Dd]|[Ee][Nn][Dd][Pp][Oo][Ii][Nn][Tt]|[Uu][Rr][Ll]|[Uu][Rr][Ii])($|[:._-])"
+            }
           }
         ]
       },
       "additionalProperties": {
-        "type": ["boolean", "string", "number", "null"]
+        "oneOf": [
+          { "type": "boolean" },
+          { "type": "number" },
+          { "type": "null" },
+          {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "not": {
+              "anyOf": [
+                { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://" },
+                { "pattern": "^(sk-|ghp_|gho_|github_pat_|xox[baprs]-|AKIA|ASIA)" },
+                { "pattern": "^[Bb]earer[ ]+" }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "external_effect_constraint_guard": {
+      "type": "object",
+      "not": {
+        "anyOf": [
+          {
+            "properties": { "operator_required": { "const": false } },
+            "required": ["operator_required"]
+          },
+          {
+            "properties": { "operator_gate_required": { "const": false } },
+            "required": ["operator_gate_required"]
+          },
+          {
+            "properties": { "approval_id_required": { "const": false } },
+            "required": ["approval_id_required"]
+          },
+          {
+            "properties": { "receipt_required": { "const": false } },
+            "required": ["receipt_required"]
+          },
+          {
+            "properties": { "external_effect_operator_gate": { "const": false } },
+            "required": ["external_effect_operator_gate"]
+          },
+          {
+            "properties": { "no_auto_execute_grant": { "const": false } },
+            "required": ["no_auto_execute_grant"]
+          }
+        ]
       }
     }
   }

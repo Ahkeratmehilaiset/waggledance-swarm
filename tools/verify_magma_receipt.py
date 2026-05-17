@@ -163,7 +163,7 @@ def verify_manifest(
 
         nodes.append(
             {
-                "event_id": str(receipt.get("event_id", label)),
+                "node_id": label,
                 "receipt_hash": sha256_digest(receipt),
                 "prev_receipt_hash": receipt.get("prev_receipt_hash"),
             }
@@ -174,8 +174,8 @@ def verify_manifest(
 
     return {
         "ok": not errors,
-        "manifest": str(manifest_path),
-        "chain_id": manifest.get("chain_id") if isinstance(manifest, dict) else None,
+        "manifest": "<redacted>",
+        "chain_id": "<redacted>" if isinstance(manifest, dict) and "chain_id" in manifest else None,
         "receipt_count": verified,
         "policy_surface": policy_surface,
         "errors": errors,
@@ -194,7 +194,7 @@ def _validator(schema_name: str) -> jsonschema.Draft7Validator:
 def _policy_surface_binding(
     policy_surface_path: Path | None,
     errors: list[str],
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     if policy_surface_path is None:
         return None
     path = policy_surface_path.resolve()
@@ -228,8 +228,8 @@ def _policy_surface_binding(
         errors.append("policy_surface: charter_sections must be an array")
         return None
     return {
-        "path": str(path),
-        "policy_id": str(policy.get("policy_id", "")),
+        "provided": True,
+        "policy_id": "<redacted>",
         "canonicalization": str(canonicalization),
         "policy_digest": sha256_digest(policy),
         "charter_digest": sha256_digest(charter_sections),
@@ -240,9 +240,9 @@ def _read_json(path: Path, errors: list[str], label: str) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        errors.append(f"{label}: cannot read {path}: {exc}")
+        errors.append(f"{label}: cannot read JSON file ({exc.__class__.__name__})")
     except json.JSONDecodeError as exc:
-        errors.append(f"{label}: invalid JSON in {path}: {exc}")
+        errors.append(f"{label}: invalid JSON at line {exc.lineno} column {exc.colno}")
     return None
 
 
@@ -303,8 +303,8 @@ def _validate_chain_topology(
     if not genesis:
         errors.append("chain: no_genesis")
     elif len(genesis) > 1:
-        event_ids = ", ".join(str(node["event_id"]) for node in genesis)
-        errors.append(f"chain: multiple_genesis {event_ids}")
+        node_ids = ", ".join(str(node["node_id"]) for node in genesis)
+        errors.append(f"chain: multiple_genesis {node_ids}")
 
     children_by_prev: dict[str, list[dict[str, str | None]]] = {}
     for node in nodes:
@@ -313,15 +313,15 @@ def _validate_chain_topology(
             continue
         if prev_hash not in by_hash:
             errors.append(
-                f"chain: missing_parent for {node['event_id']} "
+                f"chain: missing_parent for {node['node_id']} "
                 f"prev_receipt_hash {prev_hash}"
             )
         children_by_prev.setdefault(str(prev_hash), []).append(node)
 
     for prev_hash, children in sorted(children_by_prev.items()):
         if len(children) > 1:
-            event_ids = ", ".join(str(node["event_id"]) for node in children)
-            errors.append(f"chain: ambiguous_child {prev_hash} -> {event_ids}")
+            node_ids = ", ".join(str(node["node_id"]) for node in children)
+            errors.append(f"chain: ambiguous_child {prev_hash} -> {node_ids}")
 
     _detect_parent_cycle(nodes, by_hash, errors)
     if len(genesis) != 1:
@@ -332,7 +332,7 @@ def _validate_chain_topology(
     while True:
         receipt_hash = str(current["receipt_hash"])
         if receipt_hash in visited:
-            errors.append(f"chain: cycle_detected at {current['event_id']}")
+            errors.append(f"chain: cycle_detected at {current['node_id']}")
             break
         visited.add(receipt_hash)
         children = children_by_prev.get(receipt_hash, [])
@@ -341,7 +341,7 @@ def _validate_chain_topology(
         current = children[0]
 
     orphans = [
-        str(node["event_id"])
+        str(node["node_id"])
         for node in nodes
         if str(node["receipt_hash"]) not in visited
     ]
@@ -360,7 +360,7 @@ def _detect_parent_cycle(
         while True:
             receipt_hash = str(current["receipt_hash"])
             if receipt_hash in seen:
-                errors.append(f"chain: cycle_detected at {current['event_id']}")
+                errors.append(f"chain: cycle_detected at {current['node_id']}")
                 return
             seen.add(receipt_hash)
             prev_hash = current["prev_receipt_hash"]
@@ -377,7 +377,7 @@ def _validate_schema(
 ) -> None:
     for error in sorted(validator.iter_errors(value), key=lambda item: list(item.path)):
         path = ".".join(str(part) for part in error.path) or "<root>"
-        errors.append(f"{label}: schema error at {path}: {error.message}")
+        errors.append(f"{label}: schema error at {path}")
 
 
 if __name__ == "__main__":

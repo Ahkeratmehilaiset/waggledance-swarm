@@ -218,10 +218,15 @@ def test_cli_cross_validates_policy_surface_digests(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
     assert report["ok"] is True
-    assert report["policy_surface"]["policy_id"] == "policy:wd:surface:v0"
+    assert report["manifest"] == "<redacted>"
+    assert report["chain_id"] == "<redacted>"
+    assert report["policy_surface"]["provided"] is True
+    assert report["policy_surface"]["policy_id"] == "<redacted>"
     assert report["policy_surface"]["canonicalization"] == "magma-jcs-subset-v1"
     assert report["policy_surface"]["policy_digest"] == policy_digest
     assert report["policy_surface"]["charter_digest"] == charter_digest
+    assert str(tmp_path) not in result.stdout
+    assert "policy_surface_v0.json" not in result.stdout
 
 
 def test_cli_rejects_policy_surface_digest_mismatch(tmp_path: Path) -> None:
@@ -251,6 +256,46 @@ def test_cli_rejects_invalid_policy_surface_before_digest_binding(tmp_path: Path
     assert result.returncode == 1
     assert "policy_surface" in result.stderr
     assert "canonicalization" in result.stderr
+
+
+def test_cli_redacts_invalid_policy_surface_schema_values(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    policy_surface = _write_policy_surface(manifest.parent)
+    policy = json.loads(policy_surface.read_text(encoding="utf-8"))
+    policy["title"] = "Leak _DO_NOT_LEAK https://example.invalid sk-test"
+    _write_json(policy_surface, policy)
+
+    result = _run_verify(manifest, "--policy-surface", str(policy_surface), "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "policy_surface" in combined
+    assert "_DO_NOT_LEAK" not in combined
+    assert "https://example.invalid" not in combined
+    assert "sk-test" not in combined
+
+
+def test_cli_redacts_missing_paths_and_schema_instance_values(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_json["chain_id"] = "chain_DO_NOT_LEAK"
+    manifest_json["entries"][0]["receipt"] = "missing_receipt_DO_NOT_LEAK.json"
+    _write_json(manifest, manifest_json)
+
+    missing = _run_verify(manifest, "--json")
+    assert missing.returncode == 1
+    assert "_DO_NOT_LEAK" not in missing.stdout + missing.stderr
+    assert str(tmp_path) not in missing.stdout + missing.stderr
+
+    manifest = _write_chain(tmp_path / "schema-chain")
+    receipt_path = manifest.parent / "receipt-001.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["event_id"] = "bad value sk-DO_NOT_LEAK"
+    _write_json(receipt_path, receipt)
+
+    schema_error = _run_verify(manifest, "--json")
+    assert schema_error.returncode == 1
+    assert "sk-DO_NOT_LEAK" not in schema_error.stdout + schema_error.stderr
 
 
 def test_cli_rejects_policy_surface_argument_digest_conflict(tmp_path: Path) -> None:

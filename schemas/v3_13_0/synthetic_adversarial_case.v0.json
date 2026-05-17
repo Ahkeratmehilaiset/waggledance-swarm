@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "$id": "https://waggledance.local/schemas/v3_13_0/synthetic_adversarial_case.v0.json",
   "title": "MAGMA Synthetic Adversarial Case v0",
-  "description": "Typed synthetic adversarial case for measuring solver/review failure modes without model calls or runtime integration.",
+  "description": "Reviewer-visible adversarial case. Expected reviewer/model outcomes live in the paired expectation file to preserve review blindness.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,13 +11,7 @@
     "defect_type",
     "intent",
     "risk_class",
-    "expected_gate",
-    "expected_verdict",
-    "expected_reason_codes",
     "peer_review_trap_marker",
-    "should_claude_catch",
-    "should_codex_catch",
-    "historical_replay_required",
     "privacy_canary",
     "tags"
   ],
@@ -27,7 +21,7 @@
     },
     "case_id": {
       "type": "string",
-      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{2,180}$"
+      "pattern": "^case:adv:[a-z0-9_]{4,48}:[0-9]{3}$"
     },
     "defect_type": {
       "type": "string",
@@ -57,23 +51,6 @@
         "external_effect"
       ]
     },
-    "expected_gate": {
-      "type": "string",
-      "enum": ["allow", "refuse", "review", "require_approval"]
-    },
-    "expected_verdict": {
-      "type": "string",
-      "enum": ["pass", "fail", "review", "refuse", "insufficient_evidence", "abstain"]
-    },
-    "expected_reason_codes": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 20,
-      "items": {
-        "type": "string",
-        "pattern": "^[A-Za-z][A-Za-z0-9:._-]{1,160}$"
-      }
-    },
     "peer_review_trap_marker": {
       "type": "string",
       "enum": [
@@ -87,18 +64,14 @@
         "privacy_redaction_trap"
       ]
     },
-    "should_claude_catch": {
-      "type": "boolean"
-    },
-    "should_codex_catch": {
-      "type": "boolean"
-    },
-    "historical_replay_required": {
-      "type": "boolean"
-    },
     "privacy_canary": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_:-]{8,120}$"
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{16,80}_DO_NOT_LEAK$"
+        }
+      ]
     },
     "tags": {
       "type": "array",
@@ -106,7 +79,7 @@
       "maxItems": 12,
       "items": {
         "type": "string",
-        "pattern": "^[A-Za-z][A-Za-z0-9._-]{1,80}$"
+        "pattern": "^[a-z][a-z0-9._-]{1,80}$"
       }
     }
   }

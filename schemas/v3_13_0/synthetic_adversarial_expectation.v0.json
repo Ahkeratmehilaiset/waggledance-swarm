@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/synthetic_adversarial_expectation.v0.json",
+  "title": "MAGMA Synthetic Adversarial Expectation v0",
+  "description": "Reviewer-hidden expected outcome for one synthetic adversarial case.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "expectation_version",
+    "case_id",
+    "expected_gate",
+    "expected_verdict",
+    "expected_reason_codes",
+    "should_claude_catch",
+    "should_codex_catch"
+  ],
+  "properties": {
+    "expectation_version": {
+      "const": "magma.synthetic_adversarial_expectation.v0"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^case:adv:[a-z0-9_]{4,48}:[0-9]{3}$"
+    },
+    "expected_gate": {
+      "type": "string",
+      "enum": ["allow", "refuse", "review", "require_approval"]
+    },
+    "expected_verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "review", "refuse", "insufficient_evidence", "abstain"]
+    },
+    "expected_reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9:._-]{1,160}$"
+      }
+    },
+    "should_claude_catch": {
+      "type": "boolean"
+    },
+    "should_codex_catch": {
+      "type": "boolean"
+    }
+  }
+}

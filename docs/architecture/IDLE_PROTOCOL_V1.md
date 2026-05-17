@@ -15,6 +15,8 @@ consensus.
   convergence.
 - `tools/idle_protocol_activate.py` validates one provided payload and emits
   it to the bridge only with `--apply` (`--emit` is accepted as an alias).
+  It can also write an opt-in local MAGMA receipt bundle for the proposed
+  bridge event with `--receipt-out-dir`.
 
 Round 1 requires `idle_check` to report idle. Round 2 and later require a prior
 idle-protocol payload in the bridge stream, because the first proposal itself
@@ -53,6 +55,23 @@ Emit after the dry run is clean:
 The emitted bridge event uses the idle payload as `payload`, sets `status` to
 the idle event type, and targets the other bridge agent by default.
 
+Write a local MAGMA receipt bundle for a clean dry-run:
+
+```powershell
+.\tools\idle_protocol_activate.ps1 `
+  --payload .codex-audit\idle_proposal.json `
+  --receipt-out-dir .codex-audit\idle-receipt-bundle `
+  --dry-run `
+  --json
+```
+
+The receipt bundle is a local artifact only. It contains the proposed bridge
+event's idle payload, one EvaluationResult v0, one MAGMA receipt v1, a
+manifest, and the offline verifier summary. The receipt risk class is
+`local_artifact`, because activation produces persistent local bridge/MAGMA
+artifacts. The directory must not already exist. If bundle emission fails,
+activation fails before any bridge append.
+
 ## Safeguards
 
 - No cron or background activation in v1.
@@ -60,6 +79,8 @@ the idle event type, and targets the other bridge agent by default.
 - No consensus-to-scout conversion.
 - Consensus reports keep `operator_gate_required=true` and `auto_execute=false`.
 - Invalid or low-quality payloads fail before any bridge write.
+- Optional MAGMA receipt-bundle emission is opt-in and fails before any bridge
+  write if its output directory already exists or verification fails.
 - A sixth round-1 idle instance in the same UTC day fails before any bridge
   write; continuation rounds do not start new instances.
 - Duplicate proposal ids, missing proposal references, consensus before round
@@ -75,5 +96,4 @@ the idle event type, and targets the other bridge agent by default.
 
 - Production two-agent activation loop.
 - Automatic payload generation.
-- MAGMA receipt formatting for idle events.
 - Auto-conversion from consensus to implementation work.

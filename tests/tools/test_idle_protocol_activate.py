@@ -12,7 +12,9 @@ import pytest
 import tools.idle_protocol_activate as activator
 from tools.idle_check import _is_substantive_agent_message
 from tools.idle_protocol_activate import ActivationError, activate_idle_protocol
+from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.bridge_event_schema import validate_event
+from waggledance.core.magma.canonical import sha256_digest
 
 
 NOW = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
@@ -202,6 +204,7 @@ def _activate(
     *,
     events: list[dict[str, object]] | None = None,
     emit: bool = False,
+    receipt_out_dir: Path | None = None,
 ) -> dict:
     payload_path = tmp_path / "payload.json"
     events_path = tmp_path / "events.jsonl"
@@ -223,6 +226,7 @@ def _activate(
         open_request_max_age_hours=12.0,
         now_utc=NOW,
         emit=emit,
+        receipt_out_dir=receipt_out_dir,
     )
 
 
@@ -321,6 +325,101 @@ def test_emit_appends_bridge_event_outbox_and_last_file(tmp_path: Path) -> None:
     assert "auto_execute" not in emitted["payload"]
     validate_event(emitted)
     assert _is_substantive_agent_message(emitted) is True
+
+
+def test_receipt_out_dir_writes_verified_bundle_without_bridge_emit(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "idle-receipt-bundle"
+
+    report = _activate(tmp_path, _proposal(), receipt_out_dir=out_dir)
+
+    bundle = report["receipt_bundle"]
+    assert report["emitted"] is False
+    assert bundle["receipt_count"] == 1
+    assert bundle["verifier_report"] == {
+        "ok": True,
+        "receipt_count": 1,
+        "errors": [],
+    }
+    assert verify_manifest(out_dir / "manifest.json")["ok"] is True
+    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+    payload = json.loads((out_dir / "payload-001-idle.json").read_text(encoding="utf-8"))
+    evaluation = json.loads(
+        (out_dir / "evaluation-001-idle.json").read_text(encoding="utf-8")
+    )
+    receipt = json.loads((out_dir / "receipt-001-idle.json").read_text(encoding="utf-8"))
+
+    assert payload == report["proposed_bridge_event"]["payload"]
+    assert evaluation["subject_type"] == "peer_review"
+    assert evaluation["risk_class"] == "local_artifact"
+    assert evaluation["actual_gate"] == "review"
+    assert evaluation["target_digest"] == sha256_digest(payload)
+    assert receipt["risk_class"] == "local_artifact"
+    assert receipt["operator_gate_required"] is False
+    assert receipt["prev_receipt_hash"] is None
+    assert receipt["canonical_payload_digest"] == sha256_digest(payload)
+    assert receipt["evaluation_result_digest"] == sha256_digest(evaluation)
+    assert report["proposed_bridge_event"]["payload"]["proposal_id"] in receipt["event_id"]
+    assert receipt["ts_utc"] == "2026-05-17T12:00:01Z"
+
+
+def test_receipt_out_dir_refuses_existing_directory_before_emit(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "existing-bundle"
+    out_dir.mkdir()
+
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(tmp_path, _proposal(), emit=True, receipt_out_dir=out_dir)
+
+    assert excinfo.value.report["decision"] == "invalid_receipt_bundle"
+    assert any("must not exist" in error for error in excinfo.value.report["errors"])
+    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_receipt_out_dir_verifier_failure_blocks_bridge_emit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out_dir = tmp_path / "bad-bundle"
+
+    def fake_verify_manifest(path: Path) -> dict[str, object]:
+        return {
+            "ok": False,
+            "receipt_count": 1,
+            "errors": [f"manifest check failed at {path.name}"],
+        }
+
+    monkeypatch.setattr(activator, "verify_manifest", fake_verify_manifest)
+
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(tmp_path, _proposal(), emit=True, receipt_out_dir=out_dir)
+
+    assert excinfo.value.report["decision"] == "invalid_receipt_bundle"
+    assert any(
+        "receipt bundle verification failed" in error
+        for error in excinfo.value.report["errors"]
+    )
+    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_receipt_out_dir_with_emit_writes_bundle_and_bridge_event(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "emit-bundle"
+
+    report = _activate(tmp_path, _proposal(), emit=True, receipt_out_dir=out_dir)
+
+    assert report["emitted"] is True
+    assert report["receipt_bundle"]["verifier_report"]["ok"] is True
+    assert (out_dir / "manifest.json").exists()
+    events_path = tmp_path / "bridge" / "shared" / "events.jsonl"
+    emitted = json.loads(events_path.read_text(encoding="utf-8").splitlines()[-1])
+    payload = json.loads((out_dir / "payload-001-idle.json").read_text(encoding="utf-8"))
+    assert emitted == report["proposed_bridge_event"]
+    assert payload == emitted["payload"]
 
 
 def test_privacy_canary_refuses_before_bridge_event_output(tmp_path: Path) -> None:
@@ -697,6 +796,53 @@ def test_consensus_report_is_operator_gated_and_not_auto_execute(tmp_path: Path)
     assert report["convergence"]["auto_execute"] is False
 
 
+def test_consensus_receipt_bundle_requires_approval_gate(tmp_path: Path) -> None:
+    events = _base_events() + [
+        _event(
+            ts_utc="2026-05-17T11:00:00Z",
+            status="idle_proposal",
+            payload=_proposal(),
+        ),
+        _event(
+            ts_utc="2026-05-17T11:05:00Z",
+            status="idle_counter_proposal",
+            payload=_counter(),
+        ),
+        _event(
+            ts_utc="2026-05-17T11:10:00Z",
+            status="idle_adversarial_review",
+            payload=_adversarial(),
+        ),
+        _event(
+            ts_utc="2026-05-17T11:15:00Z",
+            status="idle_consensus_reached",
+            payload=_consensus("idle-prop-20260517-005a"),
+        ),
+    ]
+    out_dir = tmp_path / "idle-consensus-receipt"
+
+    report = _activate(
+        tmp_path,
+        _consensus("idle-prop-20260517-005b"),
+        events=events,
+        receipt_out_dir=out_dir,
+    )
+
+    evaluation = json.loads(
+        (out_dir / "evaluation-001-idle.json").read_text(encoding="utf-8")
+    )
+    assert report["convergence"]["status"] == "soft_convergence"
+    assert evaluation["actual_gate"] == "require_approval"
+    assert evaluation["operator_required"] is True
+    assert evaluation["verdict"] == "review"
+    assert "convergence:soft_convergence" in evaluation["reason_codes"]
+    receipt = json.loads((out_dir / "receipt-001-idle.json").read_text(encoding="utf-8"))
+    payload = json.loads((out_dir / "payload-001-idle.json").read_text(encoding="utf-8"))
+    assert payload["operator_gate_required"] is True
+    assert receipt["operator_gate_required"] is True
+    assert receipt["approval_id"] is None
+
+
 def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     payload_path = tmp_path / "payload.json"
@@ -733,6 +879,48 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     report = json.loads(completed.stdout)
     assert report["decision"] == "ready"
     assert report["emitted"] is False
+
+
+def test_cli_receipt_out_dir_writes_verified_bundle(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    payload_path = tmp_path / "payload.json"
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    out_dir = tmp_path / "cli-receipt-bundle"
+    claims_dir.mkdir()
+    _write_json(payload_path, _proposal())
+    _write_events(events_path, _base_events())
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_protocol_activate.py"),
+            "--payload",
+            str(payload_path),
+            "--events",
+            str(events_path),
+            "--claims-dir",
+            str(claims_dir),
+            "--bridge-root",
+            str(tmp_path / "bridge"),
+            "--receipt-out-dir",
+            str(out_dir),
+            "--now",
+            "2026-05-17T12:00:00Z",
+            "--dry-run",
+            "--json",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["receipt_bundle"]["verifier_report"]["ok"] is True
+    assert (out_dir / "manifest.json").exists()
+    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
 
 
 def test_cli_rejects_dry_run_and_apply_together(tmp_path: Path) -> None:

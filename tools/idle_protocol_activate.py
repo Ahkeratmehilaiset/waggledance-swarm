@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -27,11 +27,15 @@ from tools.idle_check import (
     DEFAULT_EVENTS_PATH,
     evaluate_idle_state,
 )
+from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.idle_protocol import (
     detect_idle_convergence,
     validate_idle_proposal,
 )
 from waggledance.core.bridge_event_schema import validate_event
+from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.evaluation_result import build_evaluation_result
+from waggledance.core.magma.receipt import build_magma_receipt
 
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -61,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pending-ci-count", type=int, default=0)
     parser.add_argument("--open-request-max-age-hours", type=float, default=12.0)
     parser.add_argument("--now", default=None)
+    parser.add_argument(
+        "--receipt-out-dir",
+        type=Path,
+        default=None,
+        help="Optional non-existing output directory for a local MAGMA receipt bundle.",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--apply",
@@ -94,6 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             open_request_max_age_hours=args.open_request_max_age_hours,
             now_utc=_parse_utc(args.now) if args.now else datetime.now(timezone.utc),
             emit=args.emit,
+            receipt_out_dir=args.receipt_out_dir,
         )
     except ActivationError as exc:
         if args.json:
@@ -129,6 +140,7 @@ def activate_idle_protocol(
     open_request_max_age_hours: float,
     now_utc: datetime,
     emit: bool,
+    receipt_out_dir: Path | None = None,
 ) -> dict[str, Any]:
     payload = _load_payload(payload_path)
     if "_DO_NOT_LEAK" in json.dumps(payload, sort_keys=True):
@@ -266,6 +278,23 @@ def activate_idle_protocol(
         },
         "proposed_bridge_event": bridge_event,
     }
+    if receipt_out_dir is not None:
+        try:
+            report["receipt_bundle"] = _emit_receipt_bundle(
+                bridge_event=bridge_event,
+                convergence=convergence,
+                out_dir=receipt_out_dir,
+                now_utc=now_utc,
+            )
+        except ValueError as exc:
+            raise ActivationError(
+                "idle MAGMA receipt bundle failed",
+                {
+                    "decision": "invalid_receipt_bundle",
+                    "errors": [str(exc)],
+                    "exit_code": 2,
+                },
+            ) from exc
     if emit:
         event_path = _append_bridge_event(bridge_root, bridge_event)
         report["emitted"] = True
@@ -508,6 +537,180 @@ def _bridge_event(
     }
 
 
+def _emit_receipt_bundle(
+    *,
+    bridge_event: Mapping[str, Any],
+    convergence: Mapping[str, Any] | None,
+    out_dir: Path,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    _prepare_out_dir(out_dir)
+    idle_payload = dict(bridge_event.get("payload", {}))
+    evaluation = _evaluation_for_idle_payload(idle_payload, convergence)
+    operator_required = _operator_required_for_idle_event(
+        str(idle_payload.get("event_type", bridge_event.get("status", ""))),
+        convergence,
+    )
+    if operator_required:
+        evaluation["operator_required"] = True
+    proposal_id = str(idle_payload.get("proposal_id", "unknown"))
+    receipt = build_magma_receipt(
+        event_id=f"magma:idle_protocol:{proposal_id}",
+        ts_utc=_iso(now_utc + timedelta(seconds=1)),
+        risk_class=evaluation["risk_class"],
+        payload=idle_payload,
+        evaluation_result=evaluation,
+        previous_receipt=None,
+        policy_digest=sha256_digest({"policy_version": evaluation["policy_version"]}),
+        charter_digest=sha256_digest({
+            "charter_version": evaluation["charter_version"],
+            "payload_charter_alignment": idle_payload.get(
+                "charter_alignment",
+                {},
+            ),
+        }),
+        rco_decision_digest=sha256_digest({
+            "actual_gate": evaluation["actual_gate"],
+            "convergence": convergence,
+            "event_status": bridge_event["status"],
+        }),
+        world_snapshot_digest=sha256_digest({
+            "agent": bridge_event["agent"],
+            "task_id": bridge_event["task_id"],
+            "to": bridge_event["to"],
+            "ts_utc": bridge_event["ts_utc"],
+        }),
+        solver_contract_digest=sha256_digest({
+            "solver_selection": evaluation["solver_selection"],
+            "policy_version": evaluation["policy_version"],
+        }),
+    )
+    if operator_required:
+        receipt["operator_gate_required"] = True
+    payload_name = "payload-001-idle.json"
+    evaluation_name = "evaluation-001-idle.json"
+    receipt_name = "receipt-001-idle.json"
+    _write_json(out_dir / payload_name, idle_payload)
+    _write_json(out_dir / evaluation_name, evaluation)
+    _write_json(out_dir / receipt_name, receipt)
+    manifest = {
+        "chain_id": f"magma:idle_protocol:{proposal_id}:v0",
+        "entries": [
+            {
+                "payload": payload_name,
+                "evaluation_result": evaluation_name,
+                "receipt": receipt_name,
+            }
+        ],
+    }
+    manifest_path = out_dir / "manifest.json"
+    _write_json(manifest_path, manifest)
+    verifier_report = verify_manifest(manifest_path)
+    if not verifier_report["ok"]:
+        errors = "; ".join(str(error) for error in verifier_report["errors"])
+        raise ValueError(f"receipt bundle verification failed: {errors}")
+    return {
+        "out_dir": str(out_dir),
+        "manifest": str(manifest_path),
+        "receipt_count": 1,
+        "verifier_report": {
+            "ok": verifier_report["ok"],
+            "receipt_count": verifier_report["receipt_count"],
+            "errors": verifier_report["errors"],
+        },
+    }
+
+
+def _evaluation_for_idle_payload(
+    payload: Mapping[str, Any],
+    convergence: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    event_type = str(payload.get("event_type", ""))
+    actual_gate = _gate_for_idle_event(event_type, convergence)
+    return build_evaluation_result(
+        case_id=f"case:idle_protocol:{payload.get('proposal_id', 'unknown')}",
+        subject_type="peer_review",
+        target_payload=dict(payload),
+        risk_class="local_artifact",
+        expected_gate=actual_gate,
+        actual_gate=actual_gate,
+        verifier_path=[
+            "idle_protocol_schema_v1",
+            "idle_protocol_quality_validator",
+            "idle_protocol_sequence_guard",
+            "bridge_event_schema_v1",
+            "magma_receipt_verifier_v1",
+        ],
+        solver_selection=[
+            "idle_protocol_validator",
+            "idle_protocol_convergence_detector",
+        ],
+        policy_version="policy:idle_protocol:v1",
+        charter_version="charter:v1",
+        domain_threshold_version="threshold:idle_protocol:v1",
+        verdict=_verdict_for_idle_event(event_type, convergence),
+        reason_codes=_reason_codes_for_idle_event(event_type, convergence),
+        confidence_score=1.0,
+        uncertainty_sources=[],
+    )
+
+
+def _gate_for_idle_event(
+    event_type: str,
+    convergence: Mapping[str, Any] | None,
+) -> str:
+    if event_type == "idle_consensus_reached":
+        return "require_approval"
+    if event_type == "idle_charter_violation":
+        return "refuse"
+    if convergence and convergence.get("status") in {
+        "soft_convergence",
+        "hard_convergence",
+    }:
+        return "require_approval"
+    return "review"
+
+
+def _verdict_for_idle_event(
+    event_type: str,
+    convergence: Mapping[str, Any] | None,
+) -> str:
+    if event_type == "idle_charter_violation":
+        return "refuse"
+    if convergence and convergence.get("status") == "invalid_event":
+        return "fail"
+    if event_type == "idle_consensus_reached":
+        return "review"
+    return "pass"
+
+
+def _operator_required_for_idle_event(
+    event_type: str,
+    convergence: Mapping[str, Any] | None,
+) -> bool:
+    return _gate_for_idle_event(event_type, convergence) == "require_approval"
+
+
+def _reason_codes_for_idle_event(
+    event_type: str,
+    convergence: Mapping[str, Any] | None,
+) -> list[str]:
+    reason_codes = [
+        f"idle_protocol:{event_type}",
+        f"gate:{_gate_for_idle_event(event_type, convergence)}",
+        "receipt_bundle:opt_in",
+    ]
+    if convergence:
+        reason_codes.append(f"convergence:{convergence.get('status', 'none')}")
+    return reason_codes
+
+
+def _prepare_out_dir(out_dir: Path) -> None:
+    if out_dir.exists():
+        raise ValueError(f"receipt_out_dir must not exist: {out_dir}")
+    out_dir.mkdir(parents=True, exist_ok=False)
+
+
 def _append_bridge_event(bridge_root: Path, event: Mapping[str, Any]) -> Path:
     shared_dir = bridge_root / "shared"
     outbox_dir = bridge_root / "outbox" / str(event["agent"])
@@ -552,6 +755,13 @@ def _write_json_atomic(path: Path, payload: str) -> None:
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(path)
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _restore_last_file(path: Path, previous: str | None) -> None:

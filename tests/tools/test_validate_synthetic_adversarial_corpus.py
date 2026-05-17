@@ -154,6 +154,26 @@ def test_validator_rejects_duplicate_privacy_canaries(tmp_path: Path) -> None:
     assert "duplicate privacy_canary" in result.stderr
 
 
+def test_validator_redacts_schema_error_values(tmp_path: Path) -> None:
+    corpus = _load_corpus()
+    broken = copy.deepcopy(corpus)
+    broken["cases"][0]["defect_type"] = (
+        "bad_DO_NOT_LEAK https://example.invalid sk-test"
+    )
+    path = tmp_path / "schema_redaction.json"
+    _write_json(path, broken)
+
+    result = _run_validator(path)
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "case 1: schema error at defect_type" in combined
+    assert "_DO_NOT_LEAK" not in combined
+    assert "https://example.invalid" not in combined
+    assert "sk-test" not in combined
+    assert "is not one of" not in combined
+
+
 def test_validator_json_report_includes_coverage() -> None:
     result = subprocess.run(
         [

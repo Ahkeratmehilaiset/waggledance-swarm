@@ -142,6 +142,22 @@ def _base_events() -> list[dict[str, object]]:
     ]
 
 
+def _idle_instance_events(
+    count: int,
+    *,
+    date: str = "2026-05-17",
+) -> list[dict[str, object]]:
+    return [
+        _event(
+            ts_utc=f"{date}T09:{index:02d}:00Z",
+            status="idle_proposal",
+            message="Prior idle protocol proposal emitted outside the current quiet window.",
+            payload=_proposal(f"idle-prop-20260517-rate-{index:03d}"),
+        )
+        for index in range(count)
+    ]
+
+
 def _activate(
     tmp_path: Path,
     payload: dict,
@@ -196,6 +212,30 @@ def test_round_one_refuses_active_bridge_before_emitting(tmp_path: Path) -> None
     assert excinfo.value.report["decision"] == "active"
     assert "recent_agent_message" in excinfo.value.report["blockers"]
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_round_one_rate_limit_blocks_sixth_daily_instance(tmp_path: Path) -> None:
+    events = _base_events() + _idle_instance_events(5)
+
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(tmp_path, _proposal(), events=events, emit=True)
+
+    assert excinfo.value.report["decision"] == "rate_limited"
+    assert excinfo.value.report["rate_limit"] == {
+        "max_instances_per_day": 5,
+        "instances_today": 5,
+        "utc_date": "2026-05-17",
+    }
+    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_round_one_rate_limit_uses_utc_day_boundary(tmp_path: Path) -> None:
+    events = _base_events() + _idle_instance_events(5, date="2026-05-16")
+
+    report = _activate(tmp_path, _proposal(), events=events, emit=False)
+
+    assert report["decision"] == "ready"
+    assert report["emitted"] is False
 
 
 def test_emit_appends_bridge_event_outbox_and_last_file(tmp_path: Path) -> None:
@@ -327,6 +367,18 @@ def test_round_two_continues_after_prior_idle_event_even_when_bridge_is_active(
             payload=prior_payload,
         )
     ]
+
+    report = _activate(tmp_path, _counter(), events=events, emit=True)
+
+    assert report["decision"] == "ready"
+    assert report["event_type"] == "idle_counter_proposal"
+    assert report["emitted"] is True
+
+
+def test_round_two_continues_when_daily_instance_limit_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    events = _base_events() + _idle_instance_events(5)
 
     report = _activate(tmp_path, _counter(), events=events, emit=True)
 

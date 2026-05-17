@@ -18,7 +18,8 @@ consensus.
 
 Round 1 requires `idle_check` to report idle. Round 2 and later require a prior
 idle-protocol payload in the bridge stream, because the first proposal itself
-makes the bridge active.
+makes the bridge active. Round 1 also respects the v1 daily instance limit:
+at most five `idle_proposal` instances per UTC day.
 
 ## Manual Use
 
@@ -50,6 +51,8 @@ the idle event type, and targets the other bridge agent by default.
 - No consensus-to-scout conversion.
 - Consensus reports keep `operator_gate_required=true` and `auto_execute=false`.
 - Invalid or low-quality payloads fail before any bridge write.
+- A sixth round-1 idle instance in the same UTC day fails before any bridge
+  write; continuation rounds do not start new instances.
 - Payloads containing `_DO_NOT_LEAK` are refused before the proposed bridge
   event is printed or emitted.
 - Round 1 is blocked while CI, claims, scout/RCO requests, recent merges,

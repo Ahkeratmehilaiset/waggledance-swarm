@@ -18,6 +18,10 @@ if str(ROOT) not in sys.path:
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.evaluation_result import build_evaluation_result  # noqa: E402
+from waggledance.core.magma.receipt_bundle import (  # noqa: E402
+    ReceiptBundleEntry,
+    write_receipt_bundle,
+)
 from waggledance.core.magma.receipt import build_magma_receipt  # noqa: E402
 from waggledance.core.pdam_close_solver import (  # noqa: E402
     LogbookEntry,
@@ -236,8 +240,7 @@ def _emit_receipt_bundle(
     out_dir: Path,
     now_utc: datetime,
 ) -> dict[str, Any]:
-    _prepare_out_dir(out_dir)
-    entries: list[dict[str, str]] = []
+    entries: list[ReceiptBundleEntry] = []
     previous_receipt: dict[str, Any] | None = None
     for index, label in enumerate(("factual", "counterfactual"), 1):
         scenario = report[label]
@@ -268,47 +271,20 @@ def _emit_receipt_bundle(
             }),
         )
         previous_receipt = receipt
-        payload_name = f"payload-{index:03d}-{label}.json"
-        evaluation_name = f"evaluation-{index:03d}-{label}.json"
-        receipt_name = f"receipt-{index:03d}-{label}.json"
-        _write_json(out_dir / payload_name, payload)
-        _write_json(out_dir / evaluation_name, evaluation)
-        _write_json(out_dir / receipt_name, receipt)
-        entries.append({
-            "payload": payload_name,
-            "evaluation_result": evaluation_name,
-            "receipt": receipt_name,
-        })
+        entries.append(
+            ReceiptBundleEntry(
+                label=label,
+                payload=payload,
+                evaluation_result=evaluation,
+                receipt=receipt,
+            )
+        )
 
-    manifest = {
-        "chain_id": "magma:pdam_counterfactual:v0",
-        "entries": entries,
-    }
-    manifest_path = out_dir / "manifest.json"
-    _write_json(manifest_path, manifest)
-    verifier_report = verify_manifest(manifest_path)
-    return {
-        "out_dir": str(out_dir),
-        "manifest": str(manifest_path),
-        "receipt_count": len(entries),
-        "verifier_report": {
-            "ok": verifier_report["ok"],
-            "receipt_count": verifier_report["receipt_count"],
-            "errors": verifier_report["errors"],
-        },
-    }
-
-
-def _prepare_out_dir(out_dir: Path) -> None:
-    if out_dir.exists():
-        raise ValueError(f"out_dir must not exist: {out_dir}")
-    out_dir.mkdir(parents=True, exist_ok=False)
-
-
-def _write_json(path: Path, value: object) -> None:
-    path.write_text(
-        json.dumps(value, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    return write_receipt_bundle(
+        out_dir=out_dir,
+        chain_id="magma:pdam_counterfactual:v0",
+        entries=entries,
+        verify_manifest=verify_manifest,
     )
 
 

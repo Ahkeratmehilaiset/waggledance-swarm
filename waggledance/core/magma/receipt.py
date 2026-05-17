@@ -50,6 +50,10 @@ def build_magma_receipt(
     if operator_gate_required and approval_id is None:
         raise ValueError("external_effect MAGMA receipt requires approval_id")
 
+    payload_digest = sha256_digest(payload)
+    if evaluation_result.get("target_digest") != payload_digest:
+        raise ValueError("EvaluationResult target_digest must match receipt payload")
+
     signature_fields = _signature_fields(signature_envelope)
     receipt = {
         "receipt_version": "magma.receipt.v1",
@@ -57,7 +61,7 @@ def build_magma_receipt(
         "ts_utc": ts_utc,
         "risk_class": risk_class,
         "payload_visibility": payload_visibility,
-        "canonical_payload_digest": sha256_digest(payload),
+        "canonical_payload_digest": payload_digest,
         "prev_receipt_hash": (
             sha256_digest(previous_receipt)
             if previous_receipt is not None

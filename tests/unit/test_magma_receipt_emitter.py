@@ -98,6 +98,14 @@ def test_child_receipt_binds_previous_receipt_hash() -> None:
     assert second["prev_receipt_hash"] == sha256_digest(first)
 
 
+def test_rejects_evaluation_result_for_different_payload() -> None:
+    payload = {"action": "receipt_payload"}
+    evaluation = evaluation_for({"action": "other_payload"})
+
+    with pytest.raises(ValueError, match="target_digest"):
+        receipt_for(payload, evaluation)
+
+
 def test_external_effect_forces_operator_gate_and_rejects_missing_approval() -> None:
     payload = {"action": "would_write_logbook"}
     evaluation = build_evaluation_result(

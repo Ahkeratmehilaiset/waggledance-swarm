@@ -36,6 +36,7 @@ from waggledance.core.bridge_event_schema import validate_event
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
 DEFAULT_AGENT = "codex"
+DEFAULT_MAX_INSTANCES_PER_DAY = 5
 AGENTS = {"codex", "claude"}
 
 
@@ -182,6 +183,26 @@ def activate_idle_protocol(
                     "exit_code": 3,
                 },
             )
+        instances_today = _idle_instances_for_utc_day(events, now_utc)
+        if len(instances_today) >= DEFAULT_MAX_INSTANCES_PER_DAY:
+            raise ActivationError(
+                "idle protocol daily instance limit exhausted",
+                {
+                    "decision": "rate_limited",
+                    "errors": [
+                        (
+                            "daily idle-protocol instance limit exhausted: "
+                            f"{len(instances_today)}/{DEFAULT_MAX_INSTANCES_PER_DAY}"
+                        )
+                    ],
+                    "rate_limit": {
+                        "max_instances_per_day": DEFAULT_MAX_INSTANCES_PER_DAY,
+                        "instances_today": len(instances_today),
+                        "utc_date": _utc_date(now_utc),
+                    },
+                    "exit_code": 5,
+                },
+            )
     else:
         if not _has_prior_idle_payload(events):
             raise ActivationError(
@@ -223,6 +244,10 @@ def activate_idle_protocol(
         "to": target,
         "task_id": bridge_event["task_id"],
         "convergence": convergence,
+        "rate_limit": {
+            "max_instances_per_day": DEFAULT_MAX_INSTANCES_PER_DAY,
+            "utc_date": _utc_date(now_utc),
+        },
         "proposed_bridge_event": bridge_event,
     }
     if emit:
@@ -295,6 +320,35 @@ def _has_prior_idle_payload(events: Sequence[Mapping[str, Any]]) -> bool:
         if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
             return True
     return False
+
+
+def _idle_instances_for_utc_day(
+    events: Sequence[Mapping[str, Any]],
+    now_utc: datetime,
+) -> list[str]:
+    target_date = _utc_date(now_utc)
+    instances: list[str] = []
+    for event in events:
+        payload = _quota_payload(event)
+        if payload is None or payload.get("event_type") != "idle_proposal":
+            continue
+        round_number = payload.get("round_number")
+        if round_number is not None and round_number != 1:
+            continue
+        try:
+            event_date = _utc_date(_parse_utc(str(event["ts_utc"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if event_date == target_date:
+            instances.append(str(payload.get("proposal_id", "")))
+    return instances
+
+
+def _quota_payload(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    payload = event.get("payload")
+    if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
+        return payload
+    return None
 
 
 def _bridge_event(
@@ -412,6 +466,10 @@ def _parse_utc(value: str) -> datetime:
 
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _utc_date(value: datetime) -> str:
+    return value.astimezone(timezone.utc).date().isoformat()
 
 
 if __name__ == "__main__":

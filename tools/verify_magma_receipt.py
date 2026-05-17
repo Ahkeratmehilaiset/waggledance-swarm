@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
-from waggledance.core.magma.schema_errors import redacted_schema_errors  # noqa: E402
+from waggledance.core.magma.schema_validation import redacted_schema_errors  # noqa: E402
 
 
 SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"

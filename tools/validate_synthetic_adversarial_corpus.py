@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from waggledance.core.magma.schema_errors import redacted_schema_errors  # noqa: E402
+from waggledance.core.magma.schema_validation import redacted_schema_errors  # noqa: E402
 
 SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"
 CASE_SCHEMA = SCHEMA_DIR / "synthetic_adversarial_case.v0.json"

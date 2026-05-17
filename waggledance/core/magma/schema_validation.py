@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Redacted JSON schema validation error helpers for MAGMA CLIs."""
+"""Shared JSON schema validation helpers for MAGMA CLIs."""
 from __future__ import annotations
 
 from typing import Any

@@ -17,6 +17,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$taskScopedTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
+$ackStatuses = @('acknowledged', 'received', 'seen')
+if (($taskScopedTypes -contains $Type) -and [string]::IsNullOrWhiteSpace($TaskId)) {
+    throw "$Type requires -TaskId before writing bridge event"
+}
+if (($Type -eq 'message') -and ($ackStatuses -contains $Status) -and [string]::IsNullOrWhiteSpace($TaskId)) {
+    throw "ack message requires -TaskId before writing bridge event"
+}
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {

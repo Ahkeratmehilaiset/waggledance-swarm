@@ -27,7 +27,6 @@ from waggledance.core.magma.evaluation_result import build_evaluation_result  # 
 
 
 EVAL_VERSION = "magma.adversarial_eval.v0"
-FAILURE_BUCKETS = ("both", "claude_only", "codex_only", "neither")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,7 +82,6 @@ def build_adversarial_eval_report(
     expectations = _expectations_by_case(_read_json(expectations_path))
     cases = []
     failures = []
-    failure_buckets = {bucket: 0 for bucket in FAILURE_BUCKETS}
     gate_matches = 0
     verdict_matches = 0
     reason_matches = 0
@@ -118,7 +116,6 @@ def build_adversarial_eval_report(
         cases.append(case_report)
         if not case_ok:
             failures.append(case_report)
-            failure_buckets[_failure_bucket(expectation)] += 1
 
     case_count = len(cases)
     fail_count = len(failures)
@@ -137,7 +134,7 @@ def build_adversarial_eval_report(
         "gate_accuracy": _ratio(gate_matches, case_count),
         "verdict_accuracy": _ratio(verdict_matches, case_count),
         "reason_code_accuracy": _ratio(reason_matches, case_count),
-        "failure_buckets": failure_buckets,
+        "catch_agent_bucket_status": "redacted_hidden_expectations_v0",
         "cases": cases,
         "failures": failures,
     }
@@ -182,18 +179,6 @@ def _evaluation_for_case(
         uncertainty_sources=[],
         allow_external_effect=case["risk_class"] == "external_effect",
     )
-
-
-def _failure_bucket(expectation: dict[str, Any]) -> str:
-    claude = bool(expectation["should_claude_catch"])
-    codex = bool(expectation["should_codex_catch"])
-    if claude and codex:
-        return "both"
-    if claude:
-        return "claude_only"
-    if codex:
-        return "codex_only"
-    return "neither"
 
 
 def _ratio(numerator: int, denominator: int) -> float:

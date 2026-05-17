@@ -47,12 +47,8 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["mismatch_count"] == 0
     assert report["corpus_digest"].startswith("sha256:")
     assert report["expectations_digest"].startswith("sha256:")
-    assert report["failure_buckets"] == {
-        "both": 0,
-        "claude_only": 0,
-        "codex_only": 0,
-        "neither": 0,
-    }
+    assert report["catch_agent_bucket_status"] == "redacted_hidden_expectations_v0"
+    assert "failure_buckets" not in report
 
 
 def test_external_effect_cases_are_scored_without_writes() -> None:
@@ -85,6 +81,10 @@ def test_report_does_not_leak_privacy_canaries_or_review_traps(tmp_path: Path) -
     assert "hidden_write_intent" not in combined
     assert "privacy_redaction_trap" not in combined
     assert "state_window_blindspot" not in combined
+    assert "claude_only" not in combined
+    assert "codex_only" not in combined
+    assert "both" not in combined
+    assert "neither" not in combined
     assert "should_claude_catch" not in combined
     assert "should_codex_catch" not in combined
     assert "v0_expectations" not in combined
@@ -136,7 +136,7 @@ def test_mismatched_expectation_reports_failure_and_bucket(tmp_path: Path) -> No
 
     assert report["ok"] is False
     assert report["fail_count"] == 1
-    assert report["failure_buckets"]["both"] == 1
+    assert "failure_buckets" not in report
     failure = report["failures"][0]
     assert failure["case_id"] == "case:adv:charter_violation:001"
     assert failure["status"] == "mismatch"

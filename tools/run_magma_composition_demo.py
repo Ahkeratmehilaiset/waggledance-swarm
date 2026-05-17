@@ -159,7 +159,7 @@ def _load_corpus_cases(corpus_path: Path) -> list[dict[str, Any]]:
     for index, case in enumerate(cases, 1):
         for error in sorted(validator.iter_errors(case), key=lambda item: list(item.path)):
             path = ".".join(str(part) for part in error.path) or "<root>"
-            errors.append(f"case {index}: schema error at {path}: {error.message}")
+            errors.append(f"case {index}: schema error at {path}")
     if errors:
         raise ValueError("; ".join(errors))
     return cases

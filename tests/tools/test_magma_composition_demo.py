@@ -14,9 +14,9 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "run_magma_composition_demo.py"
 
 
-def _run_demo(out_dir: Path) -> subprocess.CompletedProcess[str]:
+def _run_demo(out_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--out-dir", str(out_dir), "--json"],
+        [sys.executable, str(SCRIPT), "--out-dir", str(out_dir), "--json", *args],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -132,6 +132,25 @@ def test_cli_refuses_non_empty_output_directory(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "out_dir must not exist" in result.stderr
+
+
+def test_schema_errors_do_not_leak_canaries_or_trap_values(tmp_path: Path) -> None:
+    corpus = _read_json(ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json")
+    corpus["cases"][0]["privacy_canary"] = "secret_DO_NOT_LEAK!"
+    corpus["cases"][0]["peer_review_trap_marker"] = "hidden_write_intent_DO_NOT_LEAK"
+    corpus_path = tmp_path / "broken_corpus.json"
+    corpus_path.write_text(json.dumps(corpus), encoding="utf-8")
+
+    result = _run_demo(tmp_path / "composition", "--corpus", str(corpus_path))
+
+    assert result.returncode == 1
+    combined = result.stdout + result.stderr
+    assert "_DO_NOT_LEAK" not in combined
+    assert "hidden_write_intent_DO_NOT_LEAK" not in combined
+    assert "approval_wording_trap" not in combined
+    assert "privacy_redaction_trap" not in combined
+    assert "schema error at privacy_canary" in combined
+    assert "is not one of" not in combined
 
 
 def test_output_directory_parent_is_created(tmp_path: Path) -> None:

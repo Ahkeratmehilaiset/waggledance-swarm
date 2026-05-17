@@ -172,8 +172,16 @@ def test_policy_surface_rejects_secret_url_payload_literals_in_rules() -> None:
     assert list(validator.iter_errors(url_value))
 
     secret_value = _fixture()
-    secret_value["rule_sets"][1]["rules"][0]["constraint"]["note"] = "sk-test"
+    secret_value["rule_sets"][1]["rules"][0]["constraint"]["note"] = "contains sk-test"
     assert list(validator.iter_errors(secret_value))
+
+    summary_url = _fixture()
+    summary_url["charter_sections"][0]["summary"] = "External URL https://example.invalid must not be digest-bound."
+    assert list(validator.iter_errors(summary_url))
+
+    summary_secret = _fixture()
+    summary_secret["charter_sections"][0]["summary"] = "Secret sk-test must not be digest-bound."
+    assert list(validator.iter_errors(summary_secret))
 
 
 def test_policy_surface_rule_ids_are_unique_in_fixture() -> None:

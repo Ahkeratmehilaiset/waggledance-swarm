@@ -27,9 +27,13 @@
       "$ref": "#/definitions/ref"
     },
     "title": {
-      "type": "string",
-      "minLength": 5,
-      "maxLength": 120
+      "allOf": [
+        { "$ref": "#/definitions/safe_text" },
+        {
+          "minLength": 5,
+          "maxLength": 120
+        }
+      ]
     },
     "status": {
       "type": "string",
@@ -94,9 +98,13 @@
         "properties": {
           "section_id": { "$ref": "#/definitions/ref" },
           "summary": {
-            "type": "string",
-            "minLength": 10,
-            "maxLength": 400
+            "allOf": [
+              { "$ref": "#/definitions/safe_text" },
+              {
+                "minLength": 10,
+                "maxLength": 400
+              }
+            ]
           },
           "hard_invariant": { "type": "boolean" }
         }
@@ -338,16 +346,13 @@
           { "type": "number" },
           { "type": "null" },
           {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 240,
-            "not": {
-              "anyOf": [
-                { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://" },
-                { "pattern": "^(sk-|ghp_|gho_|github_pat_|xox[baprs]-|AKIA|ASIA)" },
-                { "pattern": "^[Bb]earer[ ]+" }
-              ]
-            }
+            "allOf": [
+              { "$ref": "#/definitions/safe_text" },
+              {
+                "minLength": 1,
+                "maxLength": 240
+              }
+            ]
           }
         ]
       }
@@ -380,6 +385,16 @@
             "properties": { "no_auto_execute_grant": { "const": false } },
             "required": ["no_auto_execute_grant"]
           }
+        ]
+      }
+    },
+    "safe_text": {
+      "type": "string",
+      "not": {
+        "anyOf": [
+          { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://" },
+          { "pattern": "(^|[^A-Za-z0-9])(sk-|ghp_|gho_|github_pat_|xox[baprs]-|AKIA|ASIA)" },
+          { "pattern": "(^|[^A-Za-z0-9])[Bb]earer[ ]+" }
         ]
       }
     }

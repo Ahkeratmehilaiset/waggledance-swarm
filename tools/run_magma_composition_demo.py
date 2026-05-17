@@ -17,6 +17,11 @@ if str(ROOT) not in sys.path:
 
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
+from waggledance.core.magma.demo_policy import (  # noqa: E402
+    DEMO_POLICY_VERSION,
+    demo_policy_for_case,
+    demo_policy_supports_case,
+)
 from waggledance.core.magma.evaluation_result import build_evaluation_result  # noqa: E402
 from waggledance.core.magma.receipt import build_magma_receipt  # noqa: E402
 
@@ -24,23 +29,6 @@ from waggledance.core.magma.receipt import build_magma_receipt  # noqa: E402
 DEFAULT_CORPUS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
 CASE_SCHEMA = ROOT / "schemas" / "v3_13_0" / "synthetic_adversarial_case.v0.json"
 DEMO_VERSION = "magma.composition_demo.v0"
-DEMO_POLICY_BY_DEFECT = {
-    "subtle_drift": {
-        "actual_gate": "review",
-        "verdict": "review",
-        "reason_codes": ["demo:subtle_drift", "gate:review"],
-    },
-    "payload_leak": {
-        "actual_gate": "refuse",
-        "verdict": "refuse",
-        "reason_codes": ["demo:payload_leak", "privacy:digest_only"],
-    },
-    "correlated_review_trap": {
-        "actual_gate": "review",
-        "verdict": "abstain",
-        "reason_codes": ["demo:correlated_review_trap", "review:needs_adversarial_round"],
-    },
-}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,7 +86,7 @@ def build_composition_demo(
         case
         for case in cases
         if case["risk_class"] != "external_effect"
-        and case["defect_type"] in DEMO_POLICY_BY_DEFECT
+        and demo_policy_supports_case(case)
     ][:case_limit]
     if not eligible_cases:
         raise ValueError("corpus contains no non-external_effect demo-eligible cases")
@@ -171,7 +159,7 @@ def _load_corpus_cases(corpus_path: Path) -> list[dict[str, Any]]:
     for index, case in enumerate(cases, 1):
         for error in sorted(validator.iter_errors(case), key=lambda item: list(item.path)):
             path = ".".join(str(part) for part in error.path) or "<root>"
-            errors.append(f"case {index}: schema error at {path}: {error.message}")
+            errors.append(f"case {index}: schema error at {path}")
     if errors:
         raise ValueError("; ".join(errors))
     return cases
@@ -198,7 +186,7 @@ def _evaluation_for_case(
     case: dict[str, Any],
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    policy = DEMO_POLICY_BY_DEFECT[case["defect_type"]]
+    policy = demo_policy_for_case(case)
     return build_evaluation_result(
         case_id=case["case_id"],
         subject_type="peer_review",
@@ -213,7 +201,7 @@ def _evaluation_for_case(
             "offline_receipt_verifier",
         ],
         solver_selection=["synthetic_adversarial_oracle_v0"],
-        policy_version="policy:synthetic_adversarial_oracle:v0",
+        policy_version=DEMO_POLICY_VERSION,
         charter_version="charter:v1",
         domain_threshold_version="threshold:synthetic_adversarial:v0",
         verdict=policy["verdict"],
@@ -238,7 +226,7 @@ def _receipt_for_case(
         payload=payload,
         evaluation_result=evaluation,
         previous_receipt=previous_receipt,
-        policy_digest=sha256_digest({"policy": "synthetic_adversarial_oracle", "v": 0}),
+        policy_digest=sha256_digest({"policy_version": DEMO_POLICY_VERSION}),
         charter_digest=sha256_digest({"charter": "v1"}),
         rco_decision_digest=sha256_digest({"rco": "composition_demo", "index": index}),
         world_snapshot_digest=sha256_digest({"case_id": case["case_id"], "v": 0}),

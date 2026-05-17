@@ -8,6 +8,8 @@ import sys
 import jsonschema
 import pytest
 
+from tools.run_pdam_counterfactual_demo import build_demo_report
+from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.canonical import sha256_digest
 
@@ -17,9 +19,9 @@ SCRIPT = ROOT / "tools" / "run_pdam_counterfactual_demo.py"
 SCHEMA = ROOT / "schemas" / "v3_13_0" / "evaluation_result.v0.json"
 
 
-def _run_demo() -> subprocess.CompletedProcess[str]:
+def _run_demo(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--json"],
+        [sys.executable, str(SCRIPT), "--json", *args],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -92,6 +94,68 @@ def test_demo_does_not_leak_private_operator_marker() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "operator_secret_goal_marker_DO_NOT_LEAK" not in result.stdout + result.stderr
+
+
+def test_opt_in_receipt_bundle_verifies_and_binds_counterfactual_chain(tmp_path: Path) -> None:
+    out_dir = tmp_path / "pdam-receipts"
+
+    report = build_demo_report(out_dir=out_dir)
+
+    bundle = report["receipt_bundle"]
+    assert report["writes_applied"] is False
+    assert bundle["receipt_count"] == 2
+    assert bundle["verifier_report"]["ok"] is True
+    assert verify_manifest(out_dir / "manifest.json")["ok"] is True
+
+    first_receipt = json.loads((out_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
+    second_receipt = json.loads((out_dir / "receipt-002-counterfactual.json").read_text(encoding="utf-8"))
+    assert first_receipt["prev_receipt_hash"] is None
+    assert second_receipt["prev_receipt_hash"] == sha256_digest(first_receipt)
+
+    for index, label in ((1, "factual"), (2, "counterfactual")):
+        payload = json.loads((out_dir / f"payload-{index:03d}-{label}.json").read_text(encoding="utf-8"))
+        evaluation = json.loads((out_dir / f"evaluation-{index:03d}-{label}.json").read_text(encoding="utf-8"))
+        receipt = json.loads((out_dir / f"receipt-{index:03d}-{label}.json").read_text(encoding="utf-8"))
+        assert evaluation["target_digest"] == sha256_digest(payload)
+        assert receipt["canonical_payload_digest"] == sha256_digest(payload)
+        assert receipt["evaluation_result_digest"] == sha256_digest(evaluation)
+        assert receipt["risk_class"] == "internal_memory"
+        assert receipt["operator_gate_required"] is False
+        assert receipt["approval_id"] is None
+
+
+def test_cli_emits_receipt_bundle_only_when_out_dir_is_requested(tmp_path: Path) -> None:
+    out_dir = tmp_path / "pdam-receipts"
+
+    result = _run_demo("--out-dir", str(out_dir))
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["receipt_bundle"]["verifier_report"]["ok"] is True
+    assert (out_dir / "manifest.json").exists()
+
+
+def test_receipt_bundle_refuses_non_empty_output_directory(tmp_path: Path) -> None:
+    out_dir = tmp_path / "pdam-receipts"
+    out_dir.mkdir()
+    (out_dir / "existing.txt").write_text("keep\n", encoding="utf-8")
+
+    result = _run_demo("--out-dir", str(out_dir))
+
+    assert result.returncode == 1
+    assert "out_dir must not exist" in result.stderr
+
+
+def test_receipt_bundle_does_not_leak_private_operator_marker(tmp_path: Path) -> None:
+    out_dir = tmp_path / "pdam-receipts"
+
+    result = _run_demo("--out-dir", str(out_dir))
+
+    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    for path in out_dir.glob("*.json"):
+        combined += path.read_text(encoding="utf-8")
+    assert "operator_secret_goal_marker_DO_NOT_LEAK" not in combined
 
 
 def test_build_evaluation_result_enforces_schema_and_pure_solver_risk_class() -> None:

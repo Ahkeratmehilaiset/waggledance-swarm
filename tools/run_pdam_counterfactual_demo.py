@@ -15,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.verify_magma_receipt import verify_manifest  # noqa: E402
+from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.evaluation_result import build_evaluation_result  # noqa: E402
+from waggledance.core.magma.receipt import build_magma_receipt  # noqa: E402
 from waggledance.core.pdam_close_solver import (  # noqa: E402
     LogbookEntry,
     MesComment,
@@ -44,13 +47,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the local PDAM counterfactual EvaluationResult demo.",
     )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Optional empty output directory for a MAGMA receipt bundle.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    report = build_demo_report()
+    try:
+        report = build_demo_report(out_dir=args.out_dir)
+    except ValueError as exc:
+        print(f"PDAM counterfactual demo FAILED: {exc}", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
@@ -59,10 +72,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{report['factual']['action']['kind']} -> "
             f"{report['counterfactual']['action']['kind']}"
         )
+        if "receipt_bundle" in report:
+            print(
+                "MAGMA receipt bundle: "
+                f"{report['receipt_bundle']['receipt_count']} receipts in "
+                f"{report['receipt_bundle']['out_dir']}"
+            )
     return 0
 
 
-def build_demo_report() -> dict[str, Any]:
+def build_demo_report(*, out_dir: Path | None = None) -> dict[str, Any]:
     # Privacy canary: this operator-local metadata must never enter output.
     _private_metadata = {"operator_note": PRIVATE_MARKER}
     factual = _run_scenario(
@@ -75,7 +94,7 @@ def build_demo_report() -> dict[str, Any]:
         expected_gate=factual["evaluation_result"]["actual_gate"],
         mutation_reason="mutation:subtool_state:DOWNTIME_to_IDLE",
     )
-    return {
+    report = {
         "demo_version": "pdam.counterfactual_evaluation.v0",
         "case_id": "case:pdam:counterfactual:001",
         "writes_applied": False,
@@ -96,6 +115,9 @@ def build_demo_report() -> dict[str, Any]:
             ],
         },
     }
+    if out_dir is not None:
+        report["receipt_bundle"] = _emit_receipt_bundle(report, out_dir)
+    return report
 
 
 def _run_scenario(
@@ -189,6 +211,83 @@ def _evaluation_for_action(
         reason_codes=reason_codes,
         confidence_score=PDAM_CONFIDENCE_BY_KIND.get(action.kind, 0.4),
         uncertainty_sources=[],
+    )
+
+
+def _emit_receipt_bundle(report: dict[str, Any], out_dir: Path) -> dict[str, Any]:
+    _prepare_out_dir(out_dir)
+    entries: list[dict[str, str]] = []
+    previous_receipt: dict[str, Any] | None = None
+    for index, label in enumerate(("factual", "counterfactual"), 1):
+        scenario = report[label]
+        payload = scenario["action"]
+        evaluation = scenario["evaluation_result"]
+        receipt = build_magma_receipt(
+            event_id=f"magma:pdam_counterfactual:{index:03d}:{label}",
+            ts_utc=f"2026-05-17T12:{index:02d}:00Z",
+            risk_class=evaluation["risk_class"],
+            payload=payload,
+            evaluation_result=evaluation,
+            previous_receipt=previous_receipt,
+            policy_digest=sha256_digest({"policy_version": evaluation["policy_version"]}),
+            charter_digest=sha256_digest({"charter_version": evaluation["charter_version"]}),
+            rco_decision_digest=sha256_digest({
+                "actual_gate": evaluation["actual_gate"],
+                "case_id": evaluation["case_id"],
+                "verdict": evaluation["verdict"],
+            }),
+            world_snapshot_digest=sha256_digest({
+                "case_id": report["case_id"],
+                "scenario": label,
+                "subtool_state": scenario["subtool_state"],
+            }),
+            solver_contract_digest=sha256_digest({
+                "solver_selection": evaluation["solver_selection"],
+                "policy_version": evaluation["policy_version"],
+            }),
+        )
+        previous_receipt = receipt
+        payload_name = f"payload-{index:03d}-{label}.json"
+        evaluation_name = f"evaluation-{index:03d}-{label}.json"
+        receipt_name = f"receipt-{index:03d}-{label}.json"
+        _write_json(out_dir / payload_name, payload)
+        _write_json(out_dir / evaluation_name, evaluation)
+        _write_json(out_dir / receipt_name, receipt)
+        entries.append({
+            "payload": payload_name,
+            "evaluation_result": evaluation_name,
+            "receipt": receipt_name,
+        })
+
+    manifest = {
+        "chain_id": "magma:pdam_counterfactual:v0",
+        "entries": entries,
+    }
+    manifest_path = out_dir / "manifest.json"
+    _write_json(manifest_path, manifest)
+    verifier_report = verify_manifest(manifest_path)
+    return {
+        "out_dir": str(out_dir),
+        "manifest": str(manifest_path),
+        "receipt_count": len(entries),
+        "verifier_report": {
+            "ok": verifier_report["ok"],
+            "receipt_count": verifier_report["receipt_count"],
+            "errors": verifier_report["errors"],
+        },
+    }
+
+
+def _prepare_out_dir(out_dir: Path) -> None:
+    if out_dir.exists():
+        raise ValueError(f"out_dir must not exist: {out_dir}")
+    out_dir.mkdir(parents=True, exist_ok=False)
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
 

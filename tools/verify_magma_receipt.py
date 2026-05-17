@@ -33,6 +33,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Verify an offline MAGMA receipt manifest.",
     )
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument(
+        "--policy-surface",
+        type=Path,
+        default=None,
+        help=(
+            "Validate a Policy Surface v0 artifact and require each receipt "
+            "to bind its policy_digest and charter_digest."
+        ),
+    )
     parser.add_argument("--expected-charter-digest", default=None)
     parser.add_argument("--expected-policy-digest", default=None)
     parser.add_argument("--json", action="store_true")
@@ -43,6 +52,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report = verify_manifest(
         args.manifest,
+        policy_surface_path=args.policy_surface,
         expected_charter_digest=args.expected_charter_digest,
         expected_policy_digest=args.expected_policy_digest,
     )
@@ -63,6 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def verify_manifest(
     manifest_path: Path,
     *,
+    policy_surface_path: Path | None = None,
     expected_charter_digest: str | None = None,
     expected_policy_digest: str | None = None,
 ) -> dict[str, Any]:
@@ -72,6 +83,26 @@ def verify_manifest(
     entries = _entries(manifest, errors)
     receipt_validator = _validator("magma_receipt.v1.json")
     evaluation_validator = _validator("evaluation_result.v0.json")
+    policy_surface = _policy_surface_binding(policy_surface_path, errors)
+    if policy_surface is not None:
+        if (
+            expected_policy_digest is not None
+            and expected_policy_digest != policy_surface["policy_digest"]
+        ):
+            errors.append(
+                "policy_surface: expected_policy_digest argument mismatch "
+                f"(argument {expected_policy_digest}, artifact {policy_surface['policy_digest']})"
+            )
+        if (
+            expected_charter_digest is not None
+            and expected_charter_digest != policy_surface["charter_digest"]
+        ):
+            errors.append(
+                "policy_surface: expected_charter_digest argument mismatch "
+                f"(argument {expected_charter_digest}, artifact {policy_surface['charter_digest']})"
+            )
+        expected_policy_digest = policy_surface["policy_digest"]
+        expected_charter_digest = policy_surface["charter_digest"]
     verified = 0
     nodes: list[dict[str, str | None]] = []
 
@@ -146,6 +177,7 @@ def verify_manifest(
         "manifest": str(manifest_path),
         "chain_id": manifest.get("chain_id") if isinstance(manifest, dict) else None,
         "receipt_count": verified,
+        "policy_surface": policy_surface,
         "errors": errors,
     }
 
@@ -157,6 +189,51 @@ def _validator(schema_name: str) -> jsonschema.Draft7Validator:
         schema,
         format_checker=jsonschema.FormatChecker(),
     )
+
+
+def _policy_surface_binding(
+    policy_surface_path: Path | None,
+    errors: list[str],
+) -> dict[str, str] | None:
+    if policy_surface_path is None:
+        return None
+    path = policy_surface_path.resolve()
+    policy = _read_json(path, errors, "policy_surface")
+    if not isinstance(policy, dict):
+        return None
+
+    before_errors = len(errors)
+    _validate_schema(
+        _validator("policy_surface.v0.json"),
+        policy,
+        errors,
+        "policy_surface",
+    )
+    if errors[before_errors:]:
+        return None
+
+    bindings = policy.get("digest_bindings", {})
+    if not isinstance(bindings, dict):
+        errors.append("policy_surface: digest_bindings must be an object")
+        return None
+    canonicalization = bindings.get("canonicalization")
+    if canonicalization != "magma-jcs-subset-v1":
+        errors.append(
+            "policy_surface: canonicalization must be magma-jcs-subset-v1"
+        )
+        return None
+
+    charter_sections = policy.get("charter_sections")
+    if not isinstance(charter_sections, list):
+        errors.append("policy_surface: charter_sections must be an array")
+        return None
+    return {
+        "path": str(path),
+        "policy_id": str(policy.get("policy_id", "")),
+        "canonicalization": str(canonicalization),
+        "policy_digest": sha256_digest(policy),
+        "charter_digest": sha256_digest(charter_sections),
+    }
 
 
 def _read_json(path: Path, errors: list[str], label: str) -> Any:

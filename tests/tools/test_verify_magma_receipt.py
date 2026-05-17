@@ -12,6 +12,7 @@ from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "verify_magma_receipt.py"
+POLICY_SURFACE_FIXTURE = ROOT / "tests" / "fixtures" / "policy_surface_v0.json"
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -49,6 +50,8 @@ def _receipt(
     payload_digest: str,
     evaluation_digest: str,
     prev_hash: str | None,
+    policy_digest: str | None = None,
+    charter_digest: str | None = None,
 ) -> dict:
     return {
         "receipt_version": "magma.receipt.v1",
@@ -58,8 +61,8 @@ def _receipt(
         "payload_visibility": "digest_only",
         "canonical_payload_digest": payload_digest,
         "prev_receipt_hash": prev_hash,
-        "policy_digest": "sha256:" + "1" * 64,
-        "charter_digest": "sha256:" + "2" * 64,
+        "policy_digest": policy_digest or "sha256:" + "1" * 64,
+        "charter_digest": charter_digest or "sha256:" + "2" * 64,
         "rco_decision_digest": "sha256:" + "3" * 64,
         "world_snapshot_digest": "sha256:" + "4" * 64,
         "solver_contract_digest": "sha256:" + "5" * 64,
@@ -108,6 +111,29 @@ def _write_chain(root: Path) -> Path:
     manifest = {"chain_id": "magma:fixture:valid_chain", "entries": entries}
     _write_json(root / "manifest.json", manifest)
     return root / "manifest.json"
+
+
+def _write_policy_surface(root: Path) -> Path:
+    policy = json.loads(POLICY_SURFACE_FIXTURE.read_text(encoding="utf-8"))
+    _write_json(root / "policy_surface_v0.json", policy)
+    return root / "policy_surface_v0.json"
+
+
+def _bind_receipts_to_policy_surface(manifest: Path, policy_path: Path) -> tuple[str, str]:
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy_digest = sha256_digest(policy)
+    charter_digest = sha256_digest(policy["charter_sections"])
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    prev_hash: str | None = None
+    for entry in manifest_json["entries"]:
+        receipt_path = manifest.parent / entry["receipt"]
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["policy_digest"] = policy_digest
+        receipt["charter_digest"] = charter_digest
+        receipt["prev_receipt_hash"] = prev_hash
+        _write_json(receipt_path, receipt)
+        prev_hash = sha256_digest(receipt)
+    return policy_digest, charter_digest
 
 
 def _run_verify(manifest: Path, *extra: str) -> subprocess.CompletedProcess[str]:
@@ -177,6 +203,71 @@ def test_cli_can_check_expected_charter_and_policy_digests(tmp_path: Path) -> No
     assert matching.returncode == 0, matching.stderr
     assert mismatched.returncode == 1
     assert "charter_digest mismatch" in mismatched.stderr
+
+
+def test_cli_cross_validates_policy_surface_digests(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    policy_surface = _write_policy_surface(manifest.parent)
+    policy_digest, charter_digest = _bind_receipts_to_policy_surface(
+        manifest,
+        policy_surface,
+    )
+
+    result = _run_verify(manifest, "--policy-surface", str(policy_surface), "--json")
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+    assert report["policy_surface"]["policy_id"] == "policy:wd:surface:v0"
+    assert report["policy_surface"]["canonicalization"] == "magma-jcs-subset-v1"
+    assert report["policy_surface"]["policy_digest"] == policy_digest
+    assert report["policy_surface"]["charter_digest"] == charter_digest
+
+
+def test_cli_rejects_policy_surface_digest_mismatch(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    policy_surface = _write_policy_surface(manifest.parent)
+    _bind_receipts_to_policy_surface(manifest, policy_surface)
+    receipt_path = manifest.parent / "receipt-002.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["policy_digest"] = "sha256:" + "9" * 64
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest, "--policy-surface", str(policy_surface))
+
+    assert result.returncode == 1
+    assert "policy_digest mismatch" in result.stderr
+
+
+def test_cli_rejects_invalid_policy_surface_before_digest_binding(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    policy_surface = _write_policy_surface(manifest.parent)
+    policy = json.loads(policy_surface.read_text(encoding="utf-8"))
+    policy["digest_bindings"]["canonicalization"] = "unknown-json-canonical"
+    _write_json(policy_surface, policy)
+
+    result = _run_verify(manifest, "--policy-surface", str(policy_surface))
+
+    assert result.returncode == 1
+    assert "policy_surface" in result.stderr
+    assert "canonicalization" in result.stderr
+
+
+def test_cli_rejects_policy_surface_argument_digest_conflict(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    policy_surface = _write_policy_surface(manifest.parent)
+    _bind_receipts_to_policy_surface(manifest, policy_surface)
+
+    result = _run_verify(
+        manifest,
+        "--policy-surface",
+        str(policy_surface),
+        "--expected-policy-digest",
+        "sha256:" + "8" * 64,
+    )
+
+    assert result.returncode == 1
+    assert "expected_policy_digest argument mismatch" in result.stderr
 
 
 def test_cli_rejects_tampered_payload(tmp_path: Path) -> None:

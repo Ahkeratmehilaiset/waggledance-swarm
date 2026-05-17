@@ -298,6 +298,25 @@ def test_cli_redacts_missing_paths_and_schema_instance_values(tmp_path: Path) ->
     assert "sk-DO_NOT_LEAK" not in schema_error.stdout + schema_error.stderr
 
 
+def test_cli_redacts_raw_digest_field_values_in_mismatch_errors(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    receipt_path = manifest.parent / "receipt-001.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["canonical_payload_digest"] = (
+        "sha256:_DO_NOT_LEAK_sk-test_https://example.invalid/canary"
+    )
+    _write_json(receipt_path, receipt)
+
+    result = _run_verify(manifest, "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "canonical_payload_digest mismatch" in combined
+    assert "_DO_NOT_LEAK" not in combined
+    assert "https://example.invalid" not in combined
+    assert "sk-test" not in combined
+
+
 def test_cli_rejects_policy_surface_argument_digest_conflict(tmp_path: Path) -> None:
     manifest = _write_chain(tmp_path / "chain")
     policy_surface = _write_policy_surface(manifest.parent)

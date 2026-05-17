@@ -89,18 +89,12 @@ def verify_manifest(
             expected_policy_digest is not None
             and expected_policy_digest != policy_surface["policy_digest"]
         ):
-            errors.append(
-                "policy_surface: expected_policy_digest argument mismatch "
-                f"(argument {expected_policy_digest}, artifact {policy_surface['policy_digest']})"
-            )
+            errors.append("policy_surface: expected_policy_digest argument mismatch")
         if (
             expected_charter_digest is not None
             and expected_charter_digest != policy_surface["charter_digest"]
         ):
-            errors.append(
-                "policy_surface: expected_charter_digest argument mismatch "
-                f"(argument {expected_charter_digest}, artifact {policy_surface['charter_digest']})"
-            )
+            errors.append("policy_surface: expected_charter_digest argument mismatch")
         expected_policy_digest = policy_surface["policy_digest"]
         expected_charter_digest = policy_surface["charter_digest"]
     verified = 0
@@ -132,34 +126,22 @@ def verify_manifest(
 
         payload_digest = sha256_digest(payload)
         if receipt.get("canonical_payload_digest") != payload_digest:
-            errors.append(
-                f"{label}: canonical_payload_digest mismatch "
-                f"(expected {receipt.get('canonical_payload_digest')}, got {payload_digest})"
-            )
+            errors.append(f"{label}: canonical_payload_digest mismatch")
 
         evaluation_digest = sha256_digest(evaluation)
         if receipt.get("evaluation_result_digest") != evaluation_digest:
-            errors.append(
-                f"{label}: evaluation_result_digest mismatch "
-                f"(expected {receipt.get('evaluation_result_digest')}, got {evaluation_digest})"
-            )
+            errors.append(f"{label}: evaluation_result_digest mismatch")
 
         if (
             expected_charter_digest is not None
             and receipt.get("charter_digest") != expected_charter_digest
         ):
-            errors.append(
-                f"{label}: charter_digest mismatch "
-                f"(expected {expected_charter_digest}, got {receipt.get('charter_digest')})"
-            )
+            errors.append(f"{label}: charter_digest mismatch")
         if (
             expected_policy_digest is not None
             and receipt.get("policy_digest") != expected_policy_digest
         ):
-            errors.append(
-                f"{label}: policy_digest mismatch "
-                f"(expected {expected_policy_digest}, got {receipt.get('policy_digest')})"
-            )
+            errors.append(f"{label}: policy_digest mismatch")
 
         nodes.append(
             {

@@ -21,6 +21,11 @@ idle-protocol payload in the bridge stream, because the first proposal itself
 makes the bridge active. Round 1 also respects the fixed v1 daily instance
 limit: at most five `idle_proposal` instances per UTC day. The quota resets at
 UTC midnight; v1 intentionally has no `--force` override.
+Continuation rounds are sequence-checked before any bridge write: proposal ids
+must be unique, reference fields must point at prior idle-protocol payloads,
+round 4+ proposal/consensus continuation requires a prior round-3 adversarial
+review, consensus can only be reported at round 5 or later, and any prior
+`idle_charter_violation` terminates the instance.
 
 ## Manual Use
 
@@ -54,6 +59,9 @@ the idle event type, and targets the other bridge agent by default.
 - Invalid or low-quality payloads fail before any bridge write.
 - A sixth round-1 idle instance in the same UTC day fails before any bridge
   write; continuation rounds do not start new instances.
+- Duplicate proposal ids, missing proposal references, consensus before round
+  5, round 4+ continuation without the mandatory adversarial review, and
+  continuation after charter violation fail before any bridge write.
 - Payloads containing `_DO_NOT_LEAK` are refused before the proposed bridge
   event is printed or emitted.
 - Round 1 is blocked while CI, claims, scout/RCO requests, recent merges,

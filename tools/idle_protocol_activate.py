@@ -154,6 +154,16 @@ def activate_idle_protocol(
     events = _read_bridge_events(events_path)
     event_type = str(payload["event_type"])
     round_number = int(payload["round_number"])
+    sequence_errors = _sequence_errors(payload, events)
+    if sequence_errors:
+        raise ActivationError(
+            "payload failed idle-protocol sequence validation",
+            {
+                "decision": "invalid_sequence",
+                "errors": sequence_errors,
+                "exit_code": 4,
+            },
+        )
     if event_type == "idle_proposal" or round_number == 1:
         try:
             idle_report = evaluate_idle_state(
@@ -314,12 +324,75 @@ def _read_bridge_events(path: Path) -> list[dict[str, Any]]:
 
 def _has_prior_idle_payload(events: Sequence[Mapping[str, Any]]) -> bool:
     for event in events:
-        if event.get("protocol_version") == "idle-protocol.v1":
-            return True
-        payload = event.get("payload")
-        if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
+        if _idle_payload(event) is not None:
             return True
     return False
+
+
+def _sequence_errors(
+    payload: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    prior_payloads = [
+        prior for event in events if (prior := _idle_payload(event)) is not None
+    ]
+    prior_ids = {str(prior.get("proposal_id", "")) for prior in prior_payloads}
+    event_type = str(payload.get("event_type", ""))
+    proposal_id = str(payload.get("proposal_id", ""))
+    round_number = int(payload.get("round_number", 0))
+    errors: list[str] = []
+
+    if proposal_id in prior_ids:
+        errors.append(f"proposal_id: duplicate idle proposal id {proposal_id!r}")
+    if any(prior.get("event_type") == "idle_charter_violation" for prior in prior_payloads):
+        errors.append("protocol: prior idle_charter_violation terminates continuation")
+    if round_number == 1 and event_type != "idle_proposal":
+        errors.append("round_number: round 1 must be an idle_proposal")
+
+    if prior_payloads:
+        _require_prior_reference(payload, "responds_to", prior_ids, errors)
+        _require_prior_reference(payload, "consensus_target_proposal_id", prior_ids, errors)
+        _require_prior_reference(payload, "rejected_event_id", prior_ids, errors)
+        _require_prior_reference(payload, "violating_proposal_id", prior_ids, errors)
+
+    if event_type == "idle_consensus_reached" and round_number < 5:
+        errors.append("round_number: idle_consensus_reached requires round 5 or later")
+    if (
+        round_number > 3
+        and event_type in {"idle_counter_proposal", "idle_consensus_reached"}
+        and not any(
+            prior.get("event_type") == "idle_adversarial_review"
+            and int(prior.get("round_number", 0)) == 3
+            for prior in prior_payloads
+        )
+    ):
+        errors.append(
+            "round_number: round 4+ continuation requires a prior round-3 "
+            "idle_adversarial_review"
+        )
+    return errors
+
+
+def _require_prior_reference(
+    payload: Mapping[str, Any],
+    field: str,
+    prior_ids: set[str],
+    errors: list[str],
+) -> None:
+    if field not in payload:
+        return
+    target = str(payload.get(field, ""))
+    if target not in prior_ids:
+        errors.append(f"{field}: referenced proposal id {target!r} was not found")
+
+
+def _idle_payload(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if event.get("protocol_version") == "idle-protocol.v1":
+        return event
+    payload = event.get("payload")
+    if isinstance(payload, Mapping) and payload.get("protocol_version") == "idle-protocol.v1":
+        return payload
+    return None
 
 
 def _idle_instances_for_utc_day(

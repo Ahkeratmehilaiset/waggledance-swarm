@@ -66,17 +66,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"magma composition demo FAILED: {exc}", file=sys.stderr)
         return 1
 
+    verifier_ok = bool(report["verifier_report"]["ok"])
     if args.json:
         print(json.dumps(report, sort_keys=True))
-    elif report["verify_ok"]:
+    elif verifier_ok:
         print(
             "magma composition demo OK: "
-            f"{report['receipt_count']} receipts in {report['out_dir']}"
+            f"{report['verifier_report']['receipt_count']} receipts in {report['out_dir']}"
         )
     else:
         print("magma composition demo FAILED: verifier errors", file=sys.stderr)
         return 1
-    return 0
+    return 0 if verifier_ok else 1
 
 
 def build_composition_demo(

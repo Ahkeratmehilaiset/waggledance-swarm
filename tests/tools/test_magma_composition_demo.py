@@ -23,6 +23,16 @@ def _run_demo(out_dir: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_demo_text(out_dir: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "--out-dir", str(out_dir)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -45,6 +55,16 @@ def test_builds_receipt_chain_that_offline_verifier_accepts(tmp_path: Path) -> N
     assert report["verifier_report"]["ok"] is True
     assert report["verifier_report"]["receipt_count"] == 3
     assert verify_manifest(out_dir / "manifest.json")["ok"] is True
+
+
+def test_default_cli_path_reports_success_without_json(tmp_path: Path) -> None:
+    out_dir = tmp_path / "composition"
+
+    result = _run_demo_text(out_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "magma composition demo OK: 3 receipts" in result.stdout
+    assert (out_dir / "manifest.json").exists()
 
 
 def test_receipts_bind_payload_evaluation_and_previous_receipt(tmp_path: Path) -> None:

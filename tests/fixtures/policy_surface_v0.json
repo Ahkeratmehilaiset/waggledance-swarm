@@ -1,0 +1,100 @@
+{
+  "policy_surface_version": "wd.policy_surface.v0",
+  "policy_id": "policy:wd:surface:v0",
+  "title": "WD policy surface v0 fixture",
+  "status": "candidate",
+  "authority": "declarative_audit_only_v0",
+  "authority_mode": "declarative_mirror",
+  "enforcement_boundary": {
+    "kernel_authoritative": true,
+    "no_runtime_enforcement_change": true,
+    "no_auto_execute_grant": true,
+    "external_effect_operator_gate": true,
+    "offline_profile_s_supported": true
+  },
+  "digest_bindings": {
+    "canonicalization": "magma-jcs-subset-v1",
+    "receipt_policy_digest_target": "entire_policy_surface_artifact",
+    "receipt_charter_digest_target": "charter_sections"
+  },
+  "charter_sections": [
+    {
+      "section_id": "charter:operator_gate",
+      "summary": "External effects require operator-owned approval before execution.",
+      "hard_invariant": true
+    },
+    {
+      "section_id": "charter:local_first",
+      "summary": "Profile S offline operation remains valid without network services.",
+      "hard_invariant": true
+    }
+  ],
+  "risk_classes": [
+    {
+      "risk_class": "informational",
+      "default_gate": "allow",
+      "operator_required": false,
+      "receipt_required": false,
+      "reason_codes": ["risk:informational"]
+    },
+    {
+      "risk_class": "internal_memory",
+      "default_gate": "review",
+      "operator_required": false,
+      "receipt_required": true,
+      "reason_codes": ["risk:internal_memory", "audit:receipt_required"]
+    },
+    {
+      "risk_class": "local_artifact",
+      "default_gate": "review",
+      "operator_required": false,
+      "receipt_required": true,
+      "reason_codes": ["risk:local_artifact", "audit:receipt_required"]
+    },
+    {
+      "risk_class": "external_effect",
+      "default_gate": "require_approval",
+      "operator_required": true,
+      "receipt_required": true,
+      "reason_codes": ["risk:external_effect", "charter:operator_gate_required"]
+    }
+  ],
+  "rule_sets": [
+    {
+      "rule_set_id": "rules:external_effect_gate",
+      "applies_to_risk_classes": ["external_effect"],
+      "rules": [
+        {
+          "rule_id": "rule:external_effect_requires_approval",
+          "effect": "require_approval",
+          "match": {
+            "risk_class": "external_effect"
+          },
+          "constraint": {
+            "operator_gate_required": true,
+            "approval_id_required": true
+          },
+          "reason_codes": ["charter:operator_gate_required"]
+        }
+      ]
+    },
+    {
+      "rule_set_id": "rules:offline_profile_s",
+      "applies_to_risk_classes": ["informational", "internal_memory", "local_artifact"],
+      "rules": [
+        {
+          "rule_id": "rule:profile_s_no_network_dependency",
+          "effect": "review",
+          "match": {
+            "profile": "profile_s"
+          },
+          "constraint": {
+            "network_required": false
+          },
+          "reason_codes": ["profile_s:offline_required"]
+        }
+      ]
+    }
+  ],
+  "planned_export_targets": ["rego", "cedar", "mcp_gateway"]
+}

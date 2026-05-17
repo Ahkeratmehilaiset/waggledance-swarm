@@ -1,0 +1,402 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/policy_surface.v0.json",
+  "title": "WD Policy Surface v0",
+  "description": "Declarative, digestable policy artifact for audit and future adapter export. v0 is not a runtime enforcement engine; the code-level charter kernel remains authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_surface_version",
+    "policy_id",
+    "title",
+    "status",
+    "authority",
+    "authority_mode",
+    "enforcement_boundary",
+    "digest_bindings",
+    "charter_sections",
+    "risk_classes",
+    "rule_sets",
+    "planned_export_targets"
+  ],
+  "properties": {
+    "policy_surface_version": {
+      "const": "wd.policy_surface.v0"
+    },
+    "policy_id": {
+      "$ref": "#/definitions/ref"
+    },
+    "title": {
+      "allOf": [
+        { "$ref": "#/definitions/safe_text" },
+        {
+          "minLength": 5,
+          "maxLength": 120
+        }
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "candidate", "active", "deprecated"]
+    },
+    "authority": {
+      "description": "Structural reminder that v0 is audit-only and not the runtime authority layer.",
+      "const": "declarative_audit_only_v0"
+    },
+    "authority_mode": {
+      "description": "v0 is an auditable mirror and digest target. It must not claim runtime authority.",
+      "const": "declarative_mirror"
+    },
+    "enforcement_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kernel_authoritative",
+        "no_runtime_enforcement_change",
+        "no_auto_execute_grant",
+        "external_effect_operator_gate",
+        "offline_profile_s_supported"
+      ],
+      "properties": {
+        "kernel_authoritative": { "const": true },
+        "no_runtime_enforcement_change": { "const": true },
+        "no_auto_execute_grant": { "const": true },
+        "external_effect_operator_gate": { "const": true },
+        "offline_profile_s_supported": { "const": true }
+      }
+    },
+    "digest_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonicalization",
+        "receipt_policy_digest_target",
+        "receipt_charter_digest_target"
+      ],
+      "properties": {
+        "canonicalization": {
+          "const": "magma-jcs-subset-v1"
+        },
+        "receipt_policy_digest_target": {
+          "description": "What MAGMA receipt policy_digest should hash when this surface is active.",
+          "const": "entire_policy_surface_artifact"
+        },
+        "receipt_charter_digest_target": {
+          "description": "What MAGMA receipt charter_digest should hash when charter sections are mirrored.",
+          "const": "charter_sections"
+        }
+      }
+    },
+    "charter_sections": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["section_id", "summary", "hard_invariant"],
+        "properties": {
+          "section_id": { "$ref": "#/definitions/ref" },
+          "summary": {
+            "allOf": [
+              { "$ref": "#/definitions/safe_text" },
+              {
+                "minLength": 10,
+                "maxLength": 400
+              }
+            ]
+          },
+          "hard_invariant": { "type": "boolean" }
+        }
+      }
+    },
+    "risk_classes": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "risk_class": { "const": "informational" } },
+            "required": ["risk_class"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "risk_class": { "const": "internal_memory" } },
+            "required": ["risk_class"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "risk_class": { "const": "local_artifact" } },
+            "required": ["risk_class"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "risk_class": { "const": "external_effect" } },
+            "required": ["risk_class"]
+          }
+        }
+      ],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "risk_class",
+          "default_gate",
+          "operator_required",
+          "receipt_required",
+          "reason_codes"
+        ],
+        "properties": {
+          "risk_class": { "$ref": "#/definitions/risk_class" },
+          "default_gate": { "$ref": "#/definitions/gate_decision" },
+          "operator_required": { "type": "boolean" },
+          "receipt_required": { "type": "boolean" },
+          "reason_codes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": { "$ref": "#/definitions/ref" }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "risk_class": { "const": "external_effect" } },
+              "required": ["risk_class"]
+            },
+            "then": {
+              "properties": {
+                "operator_required": { "const": true },
+                "default_gate": { "const": "require_approval" },
+                "receipt_required": { "const": true }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "rule_sets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule_set_id",
+          "applies_to_risk_classes",
+          "rules"
+        ],
+        "properties": {
+          "rule_set_id": { "$ref": "#/definitions/ref" },
+          "applies_to_risk_classes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": { "$ref": "#/definitions/risk_class" }
+          },
+          "rules": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 40,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "rule_id",
+                "effect",
+                "match",
+                "constraint",
+                "reason_codes"
+              ],
+              "properties": {
+                "rule_id": { "$ref": "#/definitions/ref" },
+                "effect": { "$ref": "#/definitions/gate_decision" },
+                "match": {
+                  "$ref": "#/definitions/literal_map"
+                },
+                "constraint": {
+                  "$ref": "#/definitions/literal_map"
+                },
+                "reason_codes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "items": { "$ref": "#/definitions/ref" }
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "match": {
+                        "type": "object",
+                        "properties": {
+                          "risk_class": { "const": "external_effect" }
+                        },
+                        "required": ["risk_class"]
+                      }
+                    },
+                    "required": ["match"]
+                  },
+                  "then": {
+                    "properties": {
+                      "effect": { "const": "require_approval" },
+                      "constraint": { "$ref": "#/definitions/external_effect_constraint_guard" }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "applies_to_risk_classes": {
+                  "contains": { "const": "external_effect" }
+                }
+              },
+              "required": ["applies_to_risk_classes"]
+            },
+            "then": {
+              "properties": {
+                "rules": {
+                  "items": {
+                    "properties": {
+                      "effect": { "const": "require_approval" },
+                      "constraint": { "$ref": "#/definitions/external_effect_constraint_guard" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "planned_export_targets": {
+      "description": "Export surfaces this artifact may later compile to. v0 does not execute these targets.",
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "string",
+        "enum": ["rego", "cedar", "yaml", "mcp_gateway", "openai_agents", "langgraph"]
+      },
+      "uniqueItems": true
+    }
+  },
+  "definitions": {
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{1,160}$"
+    },
+    "gate_decision": {
+      "type": "string",
+      "enum": ["allow", "refuse", "review", "require_approval"]
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": [
+        "informational",
+        "internal_memory",
+        "local_artifact",
+        "external_effect"
+      ]
+    },
+    "literal_map": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 20,
+      "propertyNames": {
+        "allOf": [
+          {
+            "pattern": "^[A-Za-z][A-Za-z0-9:._-]{1,80}$"
+          },
+          {
+            "not": {
+              "enum": [
+                "auto_execute",
+                "execute_on_match",
+                "apply",
+                "writes_when_satisfied"
+              ]
+            }
+          },
+          {
+            "not": {
+              "pattern": "(^|[:._-])([Ss][Ee][Cc][Rr][Ee][Tt][Ss]?|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]?|[Tt][Oo][Kk][Ee][Nn]|[Aa][Cc][Cc][Ee][Ss][Ss][-_]?[Tt][Oo][Kk][Ee][Nn]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh][-_]?[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Yy][Ll][Oo][Aa][Dd]|[Rr][Aa][Ww][-_]?[Pp][Aa][Yy][Ll][Oo][Aa][Dd]|[Ee][Nn][Dd][Pp][Oo][Ii][Nn][Tt]|[Uu][Rr][Ll]|[Uu][Rr][Ii])($|[:._-])"
+            }
+          }
+        ]
+      },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "boolean" },
+          { "type": "number" },
+          { "type": "null" },
+          {
+            "allOf": [
+              { "$ref": "#/definitions/safe_text" },
+              {
+                "minLength": 1,
+                "maxLength": 240
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "external_effect_constraint_guard": {
+      "type": "object",
+      "not": {
+        "anyOf": [
+          {
+            "properties": { "operator_required": { "const": false } },
+            "required": ["operator_required"]
+          },
+          {
+            "properties": { "operator_gate_required": { "const": false } },
+            "required": ["operator_gate_required"]
+          },
+          {
+            "properties": { "approval_id_required": { "const": false } },
+            "required": ["approval_id_required"]
+          },
+          {
+            "properties": { "receipt_required": { "const": false } },
+            "required": ["receipt_required"]
+          },
+          {
+            "properties": { "external_effect_operator_gate": { "const": false } },
+            "required": ["external_effect_operator_gate"]
+          },
+          {
+            "properties": { "no_auto_execute_grant": { "const": false } },
+            "required": ["no_auto_execute_grant"]
+          }
+        ]
+      }
+    },
+    "safe_text": {
+      "type": "string",
+      "not": {
+        "anyOf": [
+          { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://" },
+          { "pattern": "(^|[^A-Za-z0-9])(sk-|ghp_|gho_|github_pat_|xox[baprs]-|AKIA|ASIA)" },
+          { "pattern": "(^|[^A-Za-z0-9])[Bb]earer[ ]+" }
+        ]
+      }
+    }
+  }
+}

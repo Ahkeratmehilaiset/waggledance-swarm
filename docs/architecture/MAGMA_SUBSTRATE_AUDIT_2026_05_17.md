@@ -16,11 +16,13 @@ surface digests (#456)`.
 WD is now more than a write-action gate, but it is not yet a fleet-learning
 substrate. The current proven core is:
 
-1. A MAGMA receipt v1 envelope that binds payload, policy, charter, RCO
-   decision, world snapshot, solver contract, and EvaluationResult digests.
+1. A MAGMA receipt v1 envelope that binds payload, policy, charter, and
+   EvaluationResult digests when those artifacts are supplied, and requires
+   caller-provided digest fields for RCO decision, world snapshot, and solver
+   contract references.
 2. A canonical EvaluationResult v0 contract for verifier and promotion
    evidence.
-3. An offline verifier that detects manifest, payload, evaluation-result,
+3. An offline verifier that detects manifest-shape, payload, evaluation-result,
    chain-topology, and optional policy-surface binding failures.
 4. A Policy Surface v0 declarative mirror whose digests can be bound into
    receipts while preserving the existing charter-as-code authority path.
@@ -33,12 +35,35 @@ The strategic shape is therefore:
 > receipts, replayable evidence, RCO decisions, and operator-owned promotion
 > gates.
 
+## Evidence Inventory
+
+This report treats a claim as proven only when it has a repo artifact and local
+test or verifier evidence. The current audit spine is:
+
+| Area | Artifact | Evidence |
+| --- | --- | --- |
+| Canonical digest helper and receipt verification | `waggledance/core/magma/canonical.py`, `tools/verify_magma_receipt.py` | `tests/tools/test_verify_magma_receipt.py` |
+| MAGMA receipt v1 schema | `schemas/v3_13_0/magma_receipt.v1.json` | `tests/contracts/test_magma_receipt_schemas.py` |
+| EvaluationResult v0 schema | `schemas/v3_13_0/evaluation_result.v0.json` | `tests/contracts/test_magma_receipt_schemas.py` |
+| Receipt emitter helper | `waggledance/core/magma/receipt.py` | `tests/unit/test_magma_receipt_emitter.py` |
+| Policy Surface v0 | `schemas/v3_13_0/policy_surface.v0.json`, `docs/architecture/POLICY_SURFACE_V0.md` | `tests/contracts/test_policy_surface_schema.py` |
+| Synthetic adversarial corpus v0 | `schemas/v3_13_0/synthetic_adversarial_case.v0.json`, `schemas/v3_13_0/synthetic_adversarial_expectation.v0.json` | `tests/tools/test_validate_synthetic_adversarial_corpus.py` |
+| Idle Protocol v1 | `schemas/v3_13_0/idle_protocol.v1.json`, `docs/architecture/IDLE_PROTOCOL_V1.md` | `tests/tools/test_idle_protocol_activate.py`, `tests/unit/test_idle_protocol_validator.py`, `tests/unit/test_idle_protocol_convergence.py` |
+
+The PR sequence that produced this spine is #449 through #456 class work plus
+the adjacent synthetic-corpus and PDAM EvaluationResult demo commits. The exact
+local verification for this report was:
+
+- MAGMA, policy, and idle related tests: 87 passed.
+- Bridge event validation: 2812/2812 valid before this report's RCO event.
+- Savepoint focused verifier tests: 18 passed.
+
 ## What Is Proven
 
 ### MAGMA Receipt v1
 
 `schemas/v3_13_0/magma_receipt.v1.json` defines a tamper-evident envelope for
-per-action audit evidence. The schema requires:
+per-action audit evidence. The schema requires digest fields for:
 
 - `canonical_payload_digest`
 - `prev_receipt_hash`
@@ -55,6 +80,11 @@ For `external_effect`, `operator_gate_required=true` is schema-enforced.
 
 Signing fields are present, but v1 does not require a signing dependency:
 `signature_algorithm`, `signature`, and `key_id` may all be null together.
+
+Important limit: `rco_decision_digest`, `world_snapshot_digest`, and
+`solver_contract_digest` are opaque caller-provided digest fields today. The
+receipt schema can require their presence and shape; the current verifier does
+not recompute those underlying external artifacts.
 
 ### EvaluationResult v0
 
@@ -73,7 +103,7 @@ policy, or solver expectation.
 `tools/verify_magma_receipt.py` verifies receipt manifests locally. The current
 tool checks:
 
-- manifest and receipt schema validity;
+- manifest shape and receipt schema validity;
 - payload digest binding;
 - EvaluationResult digest binding;
 - previous-receipt chain topology;
@@ -117,8 +147,10 @@ policy engine.
 
 The synthetic adversarial corpus adds typed, local cases for early reviewer and
 solver-evaluation pressure. Its important design choice is separating
-reviewer-visible cases from hidden expectations, preserving review blindness
-while still allowing validator-driven coverage checks.
+reviewer-visible cases from expectation fixtures, which supports review-blind
+workflows when reviewer tooling loads only the cases. The repository layout
+does not enforce blindness by itself because the expectation fixtures are still
+available locally to validator and evaluator tooling.
 
 The corpus is a substrate input, not a production evaluator by itself. It
 becomes strategically important when paired with historical replay and
@@ -136,8 +168,11 @@ primitive:
 - `tools/idle_protocol_activate.py` emits only when manually invoked with
   `--apply` or `--emit`; dry-run is the default.
 
-The current idle protocol is opt-in and operator-gated. Consensus does not
-become implementation work automatically.
+The current idle activation path is opt-in and manual-apply gated. Consensus
+reports keep `operator_gate_required=true` and `auto_execute=false`; ordinary
+idle emissions are controlled by explicit `--apply` or `--emit`, idle/prior
+event checks, and payload validation rather than a separate approval service.
+Consensus does not become implementation work automatically.
 
 ## What Is Not Proven
 
@@ -152,10 +187,30 @@ yet:
 - no automatic consensus-to-scout conversion from idle protocol output;
 - no automatic solver promotion to live traffic;
 - no operator-out-of-loop path for `external_effect`;
+- no enforced reviewer blindness for synthetic corpus users who can read both
+  case and expectation fixtures;
 - no proof that the synthetic corpus predicts real production failure rates.
 
 These are deliberate exclusions. They keep v1 local-first, auditable, and
 charter-aligned while the receipt and evaluation spine matures.
+
+## In Question
+
+These are known uncertainties or follow-up observations, not current blockers:
+
+- `tools/verify_magma_receipt.py` still has tool-local schema validation
+  reporting. The current tests protect known privacy-canary paths, but a shared
+  redacted schema-error helper would make the pattern consistent across MAGMA
+  CLIs.
+- The bridge-consensus loop has been operationally useful across the May 2026
+  hardening PRs, but it is not a formal guarantee. It should be measured with
+  catch-rate, disagreement, latency, and post-merge-regression metrics before it
+  is described as a proven governance model.
+- Policy Surface v0 is intentionally a declarative mirror. A future authority
+  transfer needs its own RFC, tests, and receipt digest semantics.
+- The synthetic adversarial corpus provides pressure cases. It does not yet
+  estimate real-world production failure probability or correlated-review risk
+  without replay and observed reviewer outcomes.
 
 ## Residual Risks
 
@@ -224,8 +279,11 @@ transfer.
 
 Scope: replay one historical external-effect-style case through three variants:
 policy v1, policy v2, and one domain-threshold change. Emit an
-EvaluationResult for each and show the diff in RCO decision, solver selection,
-verifier path, risk class, and final outcome.
+EvaluationResult for each and show the diff in expected/actual gate, solver
+selection, verifier path, risk class, verdict, and final outcome. A
+human-readable RCO decision diff requires a paired RCO artifact; the current
+EvaluationResult v0 schema only binds RCO evidence indirectly through the
+receipt's `rco_decision_digest`.
 
 Why second: this is the concrete demo that separates MAGMA from a generic audit
 log. It shows how WD can reason about capability changes before promotion.
@@ -243,6 +301,25 @@ exists. A contract can be reviewed and tested locally before any pilot exchange.
 
 Non-goals: no network protocol, no multi-operator pilot, no public verify
 service.
+
+## Glossary
+
+- `magma-jcs-subset-v1`: the local canonicalization contract used by the MAGMA
+  digest helper. This report does not claim full external RFC 8785 coverage.
+- `sha256_digest`: the shared canonical digest helper used by receipt, policy,
+  and verifier tests.
+- `EvaluationResult v0`: the canonical output shape for solver, policy,
+  counterfactual, promotion, and peer-review evidence.
+- `declarative_audit_only_v0`: the Policy Surface authority constant meaning
+  "audit mirror only, no runtime enforcement transfer".
+- `declarative_mirror`: the Policy Surface v0 authority mode. Runtime refusal
+  and approval still remain in the charter-as-code kernel.
+- `external_effect`: the highest WD risk class in this audit. Receipts and
+  policy fixtures require the operator gate for this class.
+- `operator_gate_required`: the receipt-level flag that must be true for
+  `external_effect` receipts.
+- `idle_protocol.v1`: the bridge deliberation payload contract for strategic
+  design discussion when implementation flow is idle.
 
 ## Audit Position
 

@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from tools.run_magma_adversarial_eval import build_adversarial_eval_report
+from waggledance.core.magma.demo_policy import demo_policy_for_case
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,7 +41,10 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["fail_count"] == 0
     assert report["gate_accuracy"] == 1.0
     assert report["verdict_accuracy"] == 1.0
-    assert report["reason_code_recall"] == 1.0
+    assert report["reason_code_accuracy"] == 1.0
+    assert report["full_match_count"] == 9
+    assert report["partial_match_count"] == 0
+    assert report["mismatch_count"] == 0
     assert report["corpus_digest"].startswith("sha256:")
     assert report["expectations_digest"].startswith("sha256:")
     assert report["failure_buckets"] == {
@@ -61,18 +65,26 @@ def test_external_effect_cases_are_scored_without_writes() -> None:
     assert report["writes_applied"] is False
     for case in external_cases:
         assert case["operator_required"] is True
-        assert case["actual_gate"] in {"refuse", "review", "require_approval"}
+        assert case["status"] in {"full_match", "partial_match", "mismatch"}
+        assert "actual_gate" not in case
 
 
-def test_report_does_not_leak_privacy_canaries_or_review_traps() -> None:
-    result = _run_eval("--json")
+def test_report_does_not_leak_privacy_canaries_or_review_traps(tmp_path: Path) -> None:
+    out = tmp_path / "eval.json"
+
+    result = _run_eval("--json", "--out", str(out))
 
     assert result.returncode == 0, result.stderr
-    combined = result.stdout + result.stderr
+    combined = result.stdout + result.stderr + out.read_text(encoding="utf-8")
     assert "_DO_NOT_LEAK" not in combined
     assert "peer_review_trap_marker" not in combined
+    assert "ambiguous_allow_language" not in combined
     assert "approval_wording_trap" not in combined
+    assert "authority_confusion" not in combined
+    assert "digest_without_payload" not in combined
     assert "hidden_write_intent" not in combined
+    assert "privacy_redaction_trap" not in combined
+    assert "state_window_blindspot" not in combined
     assert "should_claude_catch" not in combined
     assert "should_codex_catch" not in combined
     assert "v0_expectations" not in combined
@@ -80,6 +92,7 @@ def test_report_does_not_leak_privacy_canaries_or_review_traps() -> None:
 
 def test_cli_text_mode_and_out_report(tmp_path: Path) -> None:
     out = tmp_path / "reports" / "eval.json"
+    out.parent.mkdir()
 
     result = _run_eval("--out", str(out))
 
@@ -100,6 +113,15 @@ def test_cli_refuses_to_overwrite_out_report(tmp_path: Path) -> None:
     assert "out report already exists" in result.stderr
 
 
+def test_cli_refuses_missing_out_parent(tmp_path: Path) -> None:
+    out = tmp_path / "missing" / "eval.json"
+
+    result = _run_eval("--out", str(out))
+
+    assert result.returncode == 1
+    assert "out report parent does not exist" in result.stderr
+
+
 def test_mismatched_expectation_reports_failure_and_bucket(tmp_path: Path) -> None:
     expectations = json.loads(EXPECTATIONS.read_text(encoding="utf-8"))
     broken = copy.deepcopy(expectations)
@@ -117,8 +139,15 @@ def test_mismatched_expectation_reports_failure_and_bucket(tmp_path: Path) -> No
     assert report["failure_buckets"]["both"] == 1
     failure = report["failures"][0]
     assert failure["case_id"] == "case:adv:charter_violation:001"
-    assert failure["expected_gate"] == "allow"
-    assert failure["actual_gate"] == "refuse"
+    assert failure["status"] == "mismatch"
+    assert failure["gate_mismatch"] is True
+    assert failure["verdict_mismatch"] is False
+    assert failure["reason_codes_mismatch"] is False
+    assert "expected_gate" not in failure
+    assert "expected_verdict" not in failure
+    assert "actual_gate" not in failure
+    assert "actual_verdict" not in failure
+    assert "missing_reason_codes" not in failure
 
 
 def test_passing_cases_do_not_dump_expected_values() -> None:
@@ -128,4 +157,32 @@ def test_passing_cases_do_not_dump_expected_values() -> None:
     for case in report["cases"]:
         assert "expected_gate" not in case
         assert "expected_verdict" not in case
+        assert "actual_gate" not in case
+        assert "actual_verdict" not in case
         assert "missing_reason_codes" not in case
+
+
+def test_validation_errors_are_redacted_on_cli_error(tmp_path: Path) -> None:
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    broken = copy.deepcopy(corpus)
+    broken["cases"][1]["privacy_canary"] = broken["cases"][0]["privacy_canary"]
+    corpus_path = tmp_path / "broken_corpus.json"
+    _write_json(corpus_path, broken)
+
+    result = _run_eval("--corpus", str(corpus_path), "--expectations", str(EXPECTATIONS))
+
+    assert result.returncode == 1
+    combined = result.stdout + result.stderr
+    assert "corpus validation failed" in result.stderr
+    assert "_DO_NOT_LEAK" not in combined
+    assert broken["cases"][0]["privacy_canary"] not in combined
+    assert "duplicate privacy_canary" not in combined
+
+
+def test_demo_policy_is_visible_field_derived_not_case_id_keyed() -> None:
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    first = corpus["cases"][0]
+    renamed = copy.deepcopy(first)
+    renamed["case_id"] = "case:adv:charter_violation:renamed"
+
+    assert demo_policy_for_case(renamed) == demo_policy_for_case(first)

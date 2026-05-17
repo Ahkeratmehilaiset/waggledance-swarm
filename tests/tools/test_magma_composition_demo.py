@@ -7,6 +7,7 @@ import sys
 
 from tools.run_magma_composition_demo import build_composition_demo
 from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.magma.demo_policy import DEMO_POLICY_VERSION, demo_policy_for_case
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,8 +80,12 @@ def test_receipts_bind_payload_evaluation_and_previous_receipt(tmp_path: Path) -
         payload = _read_json(out_dir / f"payload-{index:03d}.json")
         evaluation = _read_json(out_dir / f"evaluation-{index:03d}.json")
         receipt = _read_json(out_dir / f"receipt-{index:03d}.json")
+        expected_policy = demo_policy_for_case(payload)
         assert evaluation["target_digest"] == receipt["canonical_payload_digest"]
         assert evaluation["risk_class"] == receipt["risk_class"]
+        assert evaluation["policy_version"] == DEMO_POLICY_VERSION
+        assert evaluation["actual_gate"] == expected_policy["actual_gate"]
+        assert evaluation["reason_codes"] == expected_policy["reason_codes"]
         assert payload["payload_version"] == "magma.composition_payload.v0"
 
     assert first["prev_receipt_hash"] is None

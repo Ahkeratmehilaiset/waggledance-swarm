@@ -30,6 +30,7 @@ from waggledance.core.idle_protocol import (
     detect_idle_convergence,
     validate_idle_proposal,
 )
+from waggledance.core.bridge_event_schema import validate_event
 
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -137,6 +138,16 @@ def activate_idle_protocol(
             "payload failed idle-protocol validation",
             {"decision": "invalid_payload", "errors": errors, "exit_code": 2},
         )
+    control_errors = _execution_control_errors(payload)
+    if control_errors:
+        raise ActivationError(
+            "non-consensus idle payload contains execution-control fields",
+            {
+                "decision": "invalid_payload",
+                "errors": control_errors,
+                "exit_code": 2,
+            },
+        )
 
     events = _read_bridge_events(events_path)
     event_type = str(payload["event_type"])
@@ -189,6 +200,17 @@ def activate_idle_protocol(
         task_id=task_id or f"idle-protocol-{payload['proposal_id']}",
         now_utc=now_utc,
     )
+    try:
+        validate_event(bridge_event)
+    except Exception as exc:
+        raise ActivationError(
+            "bridge event failed schema validation",
+            {
+                "decision": "invalid_bridge_event",
+                "errors": [str(exc)],
+                "exit_code": 2,
+            },
+        ) from exc
     convergence = detect_idle_convergence([*events, bridge_event])
     report: dict[str, Any] = {
         "decision": "ready",
@@ -213,6 +235,18 @@ class ActivationError(ValueError):
     def __init__(self, message: str, report: dict[str, Any]) -> None:
         super().__init__(message)
         self.report = report
+
+
+def _execution_control_errors(payload: Mapping[str, Any]) -> list[str]:
+    if payload.get("event_type") == "idle_consensus_reached":
+        return []
+    errors: list[str] = []
+    for field in ("auto_execute", "operator_gate_required"):
+        if field in payload:
+            errors.append(
+                f"{field}: only idle_consensus_reached may carry execution-control fields"
+            )
+    return errors
 
 
 def _load_payload(path: Path) -> dict[str, Any]:

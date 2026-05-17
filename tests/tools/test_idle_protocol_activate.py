@@ -227,6 +227,51 @@ def test_privacy_canary_refuses_before_bridge_event_output(tmp_path: Path) -> No
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
 
 
+def test_non_consensus_payload_cannot_carry_execution_control_fields(
+    tmp_path: Path,
+) -> None:
+    payload = _proposal()
+    payload["auto_execute"] = True
+    payload["operator_gate_required"] = False
+
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(tmp_path, payload, emit=True)
+
+    assert excinfo.value.report["decision"] == "invalid_payload"
+    assert any("auto_execute" in error for error in excinfo.value.report["errors"])
+    assert any("operator_gate_required" in error for error in excinfo.value.report["errors"])
+    assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_bridge_event_schema_is_validated_before_append(tmp_path: Path) -> None:
+    payload_path = tmp_path / "payload.json"
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    bridge_root = tmp_path / "bridge"
+    claims_dir.mkdir()
+    _write_json(payload_path, _proposal())
+    _write_events(events_path, _base_events())
+
+    with pytest.raises(ActivationError) as excinfo:
+        activate_idle_protocol(
+            payload_path=payload_path,
+            events_path=events_path,
+            claims_dir=claims_dir,
+            bridge_root=bridge_root,
+            from_agent="mallory",
+            to_agent="claude",
+            task_id=None,
+            idle_minutes=60,
+            pending_ci_count=0,
+            open_request_max_age_hours=12.0,
+            now_utc=NOW,
+            emit=True,
+        )
+
+    assert excinfo.value.report["decision"] == "invalid_bridge_event"
+    assert not (bridge_root / "shared" / "events.jsonl").exists()
+
+
 def test_round_two_continues_after_prior_idle_event_even_when_bridge_is_active(
     tmp_path: Path,
 ) -> None:

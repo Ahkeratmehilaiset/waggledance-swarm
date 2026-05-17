@@ -17,6 +17,23 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
+$ackStatuses = @('acknowledged', 'received', 'seen')
+# Keep this guard in lock-step with waggledance/core/bridge_event_schema.py.
+# It must run before any bridge file I/O so invalid events fail closed.
+$requiresTaskId = (
+    ($taskIdRequiredTypes -contains $Type) -or
+    (($Type -eq 'message') -and ($ackStatuses -contains $Status))
+)
+if ($requiresTaskId -and [string]::IsNullOrWhiteSpace($TaskId)) {
+    $reason = if ($Type -eq 'message') {
+        "type=message status=$Status"
+    } else {
+        "type=$Type"
+    }
+    throw "Bridge event $reason requires non-empty -TaskId before writing"
+}
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {

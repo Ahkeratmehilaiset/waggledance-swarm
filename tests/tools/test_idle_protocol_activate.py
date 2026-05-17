@@ -316,3 +316,40 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     report = json.loads(completed.stdout)
     assert report["decision"] == "ready"
     assert report["emitted"] is False
+
+
+def test_cli_rejects_dry_run_and_apply_together(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    payload_path = tmp_path / "payload.json"
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    bridge_root = tmp_path / "bridge"
+    claims_dir.mkdir()
+    _write_json(payload_path, _proposal())
+    _write_events(events_path, _base_events())
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_protocol_activate.py"),
+            "--payload",
+            str(payload_path),
+            "--events",
+            str(events_path),
+            "--claims-dir",
+            str(claims_dir),
+            "--bridge-root",
+            str(bridge_root),
+            "--now",
+            "2026-05-17T12:00:00Z",
+            "--dry-run",
+            "--apply",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert not (bridge_root / "shared" / "events.jsonl").exists()

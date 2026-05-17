@@ -52,14 +52,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pending-ci-count", type=int, default=0)
     parser.add_argument("--open-request-max-age-hours", type=float, default=12.0)
     parser.add_argument("--now", default=None)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--apply",
         "--emit",
         dest="emit",
         action="store_true",
         help="Append the bridge event. Default is dry-run validation only.",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate only. This is the default and is accepted for clarity.",

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -45,6 +46,7 @@ OPEN_STATUS_FRAGMENTS = (
     "open",
     "proposal",
     "request",
+    "requested",
     "ready",
     "pushed",
     "active",
@@ -277,16 +279,21 @@ def _idle_protocol_progressed(
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
     status = _event_status(event)
-    return _event_type(event) in REQUEST_TYPES and any(
-        fragment in status for fragment in OPEN_STATUS_FRAGMENTS
+    return _event_type(event) in REQUEST_TYPES and _status_has_any(
+        status, OPEN_STATUS_FRAGMENTS
     )
 
 
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
     status = _event_status(event)
-    return _event_type(event) in ANSWER_TYPES and any(
-        fragment in status for fragment in ANSWER_STATUS_FRAGMENTS
+    return _event_type(event) in ANSWER_TYPES and _status_has_any(
+        status, ANSWER_STATUS_FRAGMENTS
     )
+
+
+def _status_has_any(status: str, candidates: Sequence[str]) -> bool:
+    tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+    return any(candidate in tokens for candidate in candidates)
 
 
 def _addressed_to(event: Mapping[str, Any], agent: str) -> bool:

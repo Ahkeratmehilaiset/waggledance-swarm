@@ -86,6 +86,44 @@ def test_recommends_answering_latest_unanswered_incoming_request() -> None:
     assert report["open_incoming_count"] == 1
 
 
+def test_rco_requested_status_is_open_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "rco-task",
+            "status": "rco_requested",
+            "message": "please review",
+        }
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "rco-task"
+
+
+def test_ack_status_with_already_substring_is_not_open_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-17T08:27:29Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "wake-ack-task",
+            "status": "wake_ack_corrected_rco_pass_already_posted_clear_to_merge",
+            "message": "already answered",
+        }
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_recommends_parallel_read_only_when_foreign_write_claim_exists(
     tmp_path: Path,
 ) -> None:

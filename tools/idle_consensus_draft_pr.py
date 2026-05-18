@@ -33,6 +33,9 @@ from waggledance.core.idle_consensus_charter import DEFAULT_CHARTER_PATH  # noqa
 
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$")
+SAFE_HEAD_RE = re.compile(
+    r"^[a-z][a-z0-9_-]{1,32}/idle-consensus-[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$"
+)
 
 Runner = Callable[[Sequence[str]], Any]
 
@@ -139,7 +142,7 @@ def build_draft_pr_plan(
     )
     _validate_ref("base", base)
     if head:
-        _validate_ref("head", head)
+        _validate_head_ref(head)
     if repo:
         _validate_repo(repo)
 
@@ -159,9 +162,11 @@ def build_draft_pr_plan(
         )
 
     draft_title = title or _default_title(gate_report)
+    transcript = _read_idle_transcript(events_path)
     draft_body = body or _default_body(
         gate_report=gate_report,
         changed_paths=changed_paths,
+        transcript=transcript,
         artifact_path=artifact_path,
         receipt_manifest=receipt_manifest,
     )
@@ -190,6 +195,8 @@ def build_draft_pr_plan(
                 "repo": repo,
                 "artifact_path": artifact_path,
                 "receipt_manifest": receipt_manifest,
+                "consensus_artifact_path": artifact_path or None,
+                "artifact_receipt_path": receipt_manifest or None,
                 "gh_command": command,
             },
             "would_create_pr": True,
@@ -290,6 +297,7 @@ def _default_body(
     *,
     gate_report: Mapping[str, Any],
     changed_paths: Sequence[str],
+    transcript: Sequence[Mapping[str, Any]],
     artifact_path: str,
     receipt_manifest: str,
 ) -> str:
@@ -316,6 +324,18 @@ def _default_body(
             "",
             f"- Artifact path: {artifact_path or 'required before merge'}",
             f"- Receipt manifest: {receipt_manifest or 'required before merge'}",
+            "",
+            "## Gate Report",
+            "",
+            "```json",
+            json.dumps(gate_report, indent=2, sort_keys=True),
+            "```",
+            "",
+            "## Transcript",
+            "",
+            "```json",
+            json.dumps(list(transcript), indent=2, sort_keys=True),
+            "```",
         ]
     )
     return "\n".join(lines)
@@ -345,6 +365,21 @@ def _validate_ref(label: str, value: str) -> None:
         )
 
 
+def _validate_head_ref(value: str) -> None:
+    if not SAFE_HEAD_RE.fullmatch(value) or value.startswith("-"):
+        raise DraftPrPlanError(
+            {
+                **_base_report(
+                    decision="invalid_head_ref",
+                    gate_report={},
+                    operator_review_required=True,
+                ),
+                "errors": ["head ref must use <agent>/idle-consensus-* namespace"],
+                "exit_code": 2,
+            }
+        )
+
+
 def _validate_repo(value: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
         raise DraftPrPlanError(
@@ -358,6 +393,19 @@ def _validate_repo(value: str) -> None:
                 "exit_code": 2,
             }
         )
+
+
+def _read_idle_transcript(events_path: Path) -> list[dict[str, Any]]:
+    transcript: list[dict[str, Any]] = []
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        payload = event.get("payload") if isinstance(event, Mapping) else None
+        if isinstance(payload, dict) and payload.get("protocol_version") == "idle-protocol.v1":
+            transcript.append(payload)
+    _assert_no_private_markers(transcript)
+    return transcript
 
 
 def _assert_no_private_markers(value: object) -> None:

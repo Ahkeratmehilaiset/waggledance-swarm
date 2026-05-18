@@ -240,9 +240,39 @@ def _open_requests_for_agent(
             and _is_answer_like(event)
             for event in events
         )
+        if not answered and _idle_protocol_progressed(request, events):
+            answered = True
         if not answered:
             open_requests.append(request)
     return open_requests
+
+
+def _idle_protocol_progressed(
+    request: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+) -> bool:
+    payload = _payload(request)
+    if payload.get("protocol_version") != "idle-protocol.v1":
+        return False
+    proposal_id = str(payload.get("proposal_id") or "")
+    if not proposal_id:
+        return False
+    request_ts = _event_ts(request)
+    for event in events:
+        if _event_ts(event) <= request_ts:
+            continue
+        later = _payload(event)
+        if later.get("protocol_version") != "idle-protocol.v1":
+            continue
+        if str(later.get("responds_to") or "") == proposal_id:
+            return True
+        if str(later.get("consensus_target_proposal_id") or "") == proposal_id:
+            return True
+        if str(later.get("violating_proposal_id") or "") == proposal_id:
+            return True
+        if str(later.get("rejected_event_id") or "") == proposal_id:
+            return True
+    return False
 
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
@@ -281,6 +311,11 @@ def _event_type(event: Mapping[str, Any]) -> str:
 
 def _event_ts(event: Mapping[str, Any]) -> str:
     return str(event.get("ts_utc") or event.get("timestamp") or "")
+
+
+def _payload(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    payload = event.get("payload")
+    return payload if isinstance(payload, Mapping) else {}
 
 
 def _message(event: Mapping[str, Any], *, limit: int = 220) -> str:

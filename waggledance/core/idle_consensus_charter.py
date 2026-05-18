@@ -166,15 +166,15 @@ def _section_bullets(section_text: str) -> list[str]:
         if stripped.startswith("* "):
             bullet = stripped[2:].strip()
             if bullet:
-                bullets.append(_strip_backticks(bullet))
+                bullets.extend(_bullet_values(bullet))
     return bullets
 
 
-def _strip_backticks(text: str) -> str:
-    match = re.match(r"^`([^`]+)`(.*)$", text)
-    if match:
-        return match.group(1).strip()
-    return text
+def _bullet_values(text: str) -> list[str]:
+    backtick_values = [value.strip() for value in re.findall(r"`([^`]+)`", text)]
+    if backtick_values:
+        return [value for value in backtick_values if value]
+    return [text]
 
 
 def _matches_any(path: str, patterns: Sequence[str]) -> bool:

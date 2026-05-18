@@ -34,6 +34,9 @@ def test_charter_denylist_contains_known_charter_paths() -> None:
     assert "CLAUDE.md" in charter.file_denylist
     assert "memory/**" in charter.file_denylist
     assert ".agent-bridge/bin/**" in charter.file_denylist
+    assert "README.md" in charter.file_denylist
+    assert "pyproject.toml" in charter.file_denylist
+    assert "**/*secret*" in charter.file_denylist
 
 
 def test_evaluate_paths_allows_substrate_path() -> None:
@@ -55,6 +58,20 @@ def test_evaluate_paths_blocks_memory_subpath() -> None:
     decision = evaluate_paths(charter, ["memory/some_file.md"])
     assert decision.allowed is False
     assert decision.blocked_paths == ("memory/some_file.md",)
+
+
+def test_evaluate_paths_blocks_secret_like_allowlisted_path() -> None:
+    charter = load_charter()
+    decision = evaluate_paths(charter, ["tools/secret_token.py"])
+    assert decision.allowed is False
+    assert decision.blocked_paths == ("tools/secret_token.py",)
+
+
+def test_evaluate_paths_blocks_top_level_manual_review_paths() -> None:
+    charter = load_charter()
+    decision = evaluate_paths(charter, ["README.md", "pyproject.toml"])
+    assert decision.allowed is False
+    assert decision.blocked_paths == ("README.md", "pyproject.toml")
 
 
 def test_evaluate_paths_rejects_unmatched_path() -> None:

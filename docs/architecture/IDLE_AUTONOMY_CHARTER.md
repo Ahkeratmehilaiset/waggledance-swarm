@@ -59,7 +59,19 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `docs/architecture/POLICY_SURFACE_V0.md` (charter-essential policy)
 * `docs/architecture/IDLE_AUTONOMY_CHARTER.md` (this file — self-modification banned)
 * `docs/architecture/IDLE_CONSENSUS_ARTIFACT_V1.md` (companion charter doc)
-* All credentials / secrets / deployment-config files
+* `.env`
+* `.env.*`
+* `**/.env`
+* `**/.env.*`
+* `*secret*`
+* `**/*secret*`
+* `*token*`
+* `**/*token*`
+* `*credential*`
+* `**/*credential*`
+* `deploy/**`
+* `deployment/**`
+* `configs/deployment/**`
 * `LICENSE`, `README.md`, `pyproject.toml` top-level (manual operator review)
 
 ## Denylist (code patterns)

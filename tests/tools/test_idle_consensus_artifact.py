@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from tools.idle_consensus_artifact import ArtifactError, write_idle_consensus_artifact
+from tools.verify_magma_receipt import verify_manifest
 
 
 NOW = datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
@@ -153,6 +154,17 @@ def _write_artifact(tmp_path: Path, payloads: list[dict]) -> dict:
     )
 
 
+def _write_artifact_with_receipt(tmp_path: Path, payloads: list[dict]) -> dict:
+    events_path = tmp_path / "events.jsonl"
+    _write_events(events_path, payloads)
+    return write_idle_consensus_artifact(
+        events_path=events_path,
+        out_dir=tmp_path / "artifacts",
+        receipt_out_dir=tmp_path / "receipt-bundle",
+        now_utc=NOW,
+    )
+
+
 def test_soft_consensus_writes_operator_review_artifact(tmp_path: Path) -> None:
     report = _write_artifact(tmp_path, _soft_events())
 
@@ -167,6 +179,93 @@ def test_soft_consensus_writes_operator_review_artifact(tmp_path: Path) -> None:
     assert "Operator review required" in markdown
     assert "no task creation" in markdown
     assert all(hint not in markdown.lower() for hint in PROHIBITED_HINTS)
+
+
+def test_soft_consensus_receipt_bundle_is_verified_and_bound_to_artifact(
+    tmp_path: Path,
+) -> None:
+    report = _write_artifact_with_receipt(tmp_path, _soft_events())
+
+    bundle = report["receipt_bundle"]
+    assert bundle["verifier_report"] == {
+        "ok": True,
+        "receipt_count": 1,
+        "errors": [],
+    }
+    assert verify_manifest(Path(bundle["manifest"]))["ok"] is True
+    artifact = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+    payload = json.loads(
+        (tmp_path / "receipt-bundle" / "payload-001-artifact.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    evaluation = json.loads(
+        (tmp_path / "receipt-bundle" / "evaluation-001-artifact.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    receipt = json.loads(
+        (tmp_path / "receipt-bundle" / "receipt-001-artifact.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload == artifact
+    assert evaluation["actual_gate"] == "review"
+    assert evaluation["operator_required"] is True
+    assert receipt["risk_class"] == "local_artifact"
+    assert receipt["operator_gate_required"] is True
+    assert receipt["approval_id"] is None
+
+
+def test_no_receipt_bundle_by_default(tmp_path: Path) -> None:
+    report = _write_artifact(tmp_path, _soft_events())
+
+    assert "receipt_bundle" not in report
+    assert not (tmp_path / "receipt-bundle").exists()
+
+
+def test_existing_receipt_dir_refuses_before_artifact_write(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    receipt_dir = tmp_path / "receipt-bundle"
+    receipt_dir.mkdir()
+    _write_events(events_path, _soft_events())
+
+    with pytest.raises(ArtifactError) as excinfo:
+        write_idle_consensus_artifact(
+            events_path=events_path,
+            out_dir=tmp_path / "artifacts",
+            receipt_out_dir=receipt_dir,
+            now_utc=NOW,
+        )
+
+    assert excinfo.value.report["decision"] == "refuse_receipt_overwrite"
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_receipt_verifier_failure_blocks_artifact_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.idle_consensus_artifact as artifact_tool
+
+    events_path = tmp_path / "events.jsonl"
+    _write_events(events_path, _soft_events())
+
+    def fake_verify_manifest(path: Path) -> dict[str, object]:
+        return {"ok": False, "receipt_count": 1, "errors": ["simulated receipt failure"]}
+
+    monkeypatch.setattr(artifact_tool, "verify_manifest", fake_verify_manifest)
+
+    with pytest.raises(ArtifactError) as excinfo:
+        write_idle_consensus_artifact(
+            events_path=events_path,
+            out_dir=tmp_path / "artifacts",
+            receipt_out_dir=tmp_path / "receipt-bundle",
+            now_utc=NOW,
+        )
+
+    assert excinfo.value.report["decision"] == "invalid_receipt_bundle"
+    assert not (tmp_path / "artifacts").exists()
 
 
 def test_hard_consensus_writes_finalist_artifact(tmp_path: Path) -> None:
@@ -257,6 +356,8 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
             str(events_path),
             "--out-dir",
             str(tmp_path / "artifacts"),
+            "--receipt-out-dir",
+            str(tmp_path / "receipt-bundle"),
             "--now",
             "2026-05-18T09:00:00Z",
             "--json",
@@ -271,3 +372,4 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     report = json.loads(completed.stdout)
     assert report["decision"] == "operator_review_required"
     assert Path(report["json_path"]).exists()
+    assert report["receipt_bundle"]["verifier_report"]["ok"] is True

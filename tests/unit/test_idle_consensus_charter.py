@@ -123,6 +123,13 @@ def test_evaluate_diff_content_blocks_second_sequence_marker() -> None:
     assert decision.allowed is False
 
 
+def test_evaluate_diff_content_blocks_receipt_bundle_write_marker() -> None:
+    charter = load_charter()
+    diff = "- write_receipt_bundle(...)\n"
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+
+
 def test_evaluate_diff_content_blocks_private_marker() -> None:
     charter = load_charter()
     diff = "+ PRIVATE_MARKER = 'something'\n"

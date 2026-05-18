@@ -84,7 +84,7 @@ Even within allowlisted file paths, an autonomous merge **must refuse** if the d
 * Changes to `verify_manifest` ok-check or canonical digest logic in `tools/verify_magma_receipt.py` or `waggledance/core/magma/`
 * Changes to denylist or allowlist content in `tools/idle_consensus_to_pr.py` (self-modification ban)
 * Changes to `PRIVATE_MARKER` constant or `_DO_NOT_LEAK` detection logic anywhere
-* Changes that REMOVE existing receipt-bundle verification calls
+* Changes that REMOVE existing `write_receipt_bundle` or `verify_manifest` calls
 
 ## Parallel conditions for autonomous merge
 

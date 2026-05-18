@@ -214,6 +214,7 @@ def _pattern_markers(bullet: str) -> tuple[str, ...]:
         "_safe_label",
         "_sequence_errors",
         "verify_manifest",
+        "write_receipt_bundle",
         "PRIVATE_MARKER",
         "_DO_NOT_LEAK",
     ):

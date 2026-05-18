@@ -1,0 +1,430 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""Multi-agent work-queue primitive for the agent bridge.
+
+The bridge already ships PowerShell entry points
+(`.agent-bridge/bin/Claim-AgentTask.ps1` and `Release-AgentTask.ps1`) that
+manage per-task claim files under `.agent-bridge/work_queue/claims/`. This
+module exposes the same primitive as a Python API that agents can call without
+spawning PowerShell, plus extra helpers (heartbeat, list, stale detection)
+needed for true multi-agent parallel operation.
+
+The claim file schema is:
+
+```json
+{
+  "agent": "claude-1",
+  "task_id": "slice-foo",
+  "summary": "...",
+  "mode": "write" | "read-only",
+  "write_scope": ["tools/foo.py"],
+  "run_id": "",
+  "claimed_at_utc": "2026-05-18T07:50:00Z",
+  "last_heartbeat_utc": "2026-05-18T07:50:00Z",
+  "lease_seconds": 900
+}
+```
+
+The module is intentionally read/write with respect to the work-queue
+directory only. It does not touch git, the bridge event stream, or any
+external service. It is the substrate primitive that the higher-level
+`tools/work_queue.py` CLI and future active-task generator (Slice 8c) compose
+with.
+
+Charter alignment: work-queue operations are operator-bounded autonomy
+authorized via `IDLE_AUTONOMY_CHARTER.md` — allow agents to claim and release
+substrate work in parallel, but never bypass the file allowlist or denylist
+checked by `tools/idle_consensus_to_pr.py` (Slice 5b).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
+import re
+from typing import Sequence
+from uuid import uuid4
+
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_BRIDGE_ROOT = ROOT / ".agent-bridge"
+DEFAULT_CLAIMS_DIR = DEFAULT_BRIDGE_ROOT / "work_queue" / "claims"
+DEFAULT_DONE_DIR = DEFAULT_BRIDGE_ROOT / "work_queue" / "done"
+DEFAULT_LEASE_SECONDS = 900
+DEFAULT_STALE_MAX_SECONDS = 12 * 60 * 60  # 12h matches bridge-event waiver window
+
+AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,120}$")
+ALLOWED_MODES = ("read-only", "write")
+
+
+class WorkQueueError(ValueError):
+    """Recoverable work-queue contract violation."""
+
+
+@dataclass(frozen=True)
+class Claim:
+    """One active work-queue claim."""
+
+    agent: str
+    task_id: str
+    summary: str
+    mode: str
+    write_scope: tuple[str, ...]
+    run_id: str
+    claimed_at_utc: str
+    last_heartbeat_utc: str
+    lease_seconds: int
+
+
+@dataclass(frozen=True)
+class ReleaseRecord:
+    """Result of a released claim, persisted under done/."""
+
+    agent: str
+    task_id: str
+    summary: str
+    release_status: str
+    release_message: str
+    claimed_at_utc: str
+    released_at_utc: str
+
+
+def claim_task(
+    *,
+    agent: str,
+    task_id: str,
+    summary: str,
+    mode: str = "read-only",
+    write_scope: Sequence[str] = (),
+    run_id: str = "",
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    bridge_root: Path | None = None,
+    now_utc: datetime | None = None,
+    force: bool = False,
+) -> Claim:
+    """Atomically claim a task for the given agent.
+
+    Raises WorkQueueError if a claim already exists for this task_id (unless
+    ``force=True`` and the existing claim belongs to the same agent — that
+    case is treated as a refresh and the file is overwritten).
+    """
+    _validate_agent(agent)
+    _validate_task_id(task_id)
+    if not summary or not summary.strip():
+        raise WorkQueueError("summary required")
+    if mode not in ALLOWED_MODES:
+        raise WorkQueueError(f"mode must be one of {ALLOWED_MODES}, got {mode!r}")
+    if mode == "write" and not write_scope:
+        raise WorkQueueError("write claims require at least one write_scope path")
+    if lease_seconds <= 0:
+        raise WorkQueueError("lease_seconds must be positive")
+
+    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True, exist_ok=True)
+    claim_path = claims_dir / f"{_safe_name(task_id)}.json"
+
+    existing: Claim | None = None
+    if claim_path.exists():
+        existing = _read_claim_file(claim_path)
+        if existing.agent != agent and not force:
+            raise WorkQueueError(
+                f"task {task_id} already claimed by {existing.agent}"
+            )
+        if existing.agent != agent and force:
+            raise WorkQueueError(
+                f"force claim across agents refused: existing={existing.agent}"
+            )
+    if mode == "write":
+        conflicts = [
+            claim
+            for claim in check_scope_overlap(
+                bridge_root=bridge,
+                write_scope=write_scope,
+            )
+            if claim.task_id != task_id
+        ]
+        if conflicts:
+            conflict = conflicts[0]
+            raise WorkQueueError(
+                "write-scope conflict with active claim "
+                f"{conflict.task_id} by {conflict.agent}: "
+                f"{', '.join(conflict.write_scope)}"
+            )
+
+    timestamp = _iso(now_utc or datetime.now(timezone.utc))
+    claim = Claim(
+        agent=agent,
+        task_id=task_id,
+        summary=summary.strip(),
+        mode=mode,
+        write_scope=tuple(write_scope),
+        run_id=run_id,
+        claimed_at_utc=timestamp,
+        last_heartbeat_utc=timestamp,
+        lease_seconds=int(lease_seconds),
+    )
+    _write_claim_file(claim_path, claim, create_new=existing is None)
+    return claim
+
+
+def release_task(
+    *,
+    agent: str,
+    task_id: str,
+    release_status: str = "done",
+    release_message: str = "",
+    bridge_root: Path | None = None,
+    now_utc: datetime | None = None,
+) -> ReleaseRecord:
+    """Release a previously claimed task and archive the record under done/."""
+    _validate_agent(agent)
+    _validate_task_id(task_id)
+    if not release_status or not release_status.strip():
+        raise WorkQueueError("release_status required")
+
+    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    claims_dir = bridge / "work_queue" / "claims"
+    done_dir = bridge / "work_queue" / "done"
+    done_dir.mkdir(parents=True, exist_ok=True)
+    claim_path = claims_dir / f"{_safe_name(task_id)}.json"
+    if not claim_path.exists():
+        raise WorkQueueError(f"no active claim for task {task_id}")
+
+    existing = _read_claim_file(claim_path)
+    if existing.agent != agent:
+        raise WorkQueueError(
+            f"release rejected: claim held by {existing.agent}, not {agent}"
+        )
+
+    released_at = _iso(now_utc or datetime.now(timezone.utc))
+    record = ReleaseRecord(
+        agent=agent,
+        task_id=task_id,
+        summary=existing.summary,
+        release_status=release_status.strip(),
+        release_message=release_message.strip(),
+        claimed_at_utc=existing.claimed_at_utc,
+        released_at_utc=released_at,
+    )
+    done_path = done_dir / f"{_safe_name(task_id)}-{_safe_name(released_at)}.json"
+    _write_release_file(done_path, record)
+    claim_path.unlink()
+    return record
+
+
+def heartbeat(
+    *,
+    agent: str,
+    task_id: str,
+    bridge_root: Path | None = None,
+    now_utc: datetime | None = None,
+    lease_seconds: int | None = None,
+) -> Claim:
+    """Refresh the lease on an existing claim."""
+    _validate_agent(agent)
+    _validate_task_id(task_id)
+    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    claim_path = bridge / "work_queue" / "claims" / f"{_safe_name(task_id)}.json"
+    if not claim_path.exists():
+        raise WorkQueueError(f"no active claim for task {task_id}")
+
+    existing = _read_claim_file(claim_path)
+    if existing.agent != agent:
+        raise WorkQueueError(
+            f"heartbeat rejected: claim held by {existing.agent}, not {agent}"
+        )
+
+    timestamp = _iso(now_utc or datetime.now(timezone.utc))
+    refreshed = Claim(
+        agent=existing.agent,
+        task_id=existing.task_id,
+        summary=existing.summary,
+        mode=existing.mode,
+        write_scope=existing.write_scope,
+        run_id=existing.run_id,
+        claimed_at_utc=existing.claimed_at_utc,
+        last_heartbeat_utc=timestamp,
+        lease_seconds=int(lease_seconds) if lease_seconds else existing.lease_seconds,
+    )
+    _write_claim_file(claim_path, refreshed)
+    return refreshed
+
+
+def list_claims(bridge_root: Path | None = None) -> list[Claim]:
+    """Return all active claims in the work-queue."""
+    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    claims_dir = bridge / "work_queue" / "claims"
+    if not claims_dir.exists():
+        return []
+    claims: list[Claim] = []
+    for path in sorted(claims_dir.glob("*.json")):
+        try:
+            claims.append(_read_claim_file(path))
+        except WorkQueueError:
+            continue
+    return claims
+
+
+def detect_stale_claims(
+    *,
+    bridge_root: Path | None = None,
+    now_utc: datetime | None = None,
+    max_age_seconds: int = DEFAULT_STALE_MAX_SECONDS,
+) -> list[Claim]:
+    """Return claims whose last heartbeat is older than max_age_seconds."""
+    cutoff = (now_utc or datetime.now(timezone.utc)) - timedelta(seconds=max_age_seconds)
+    stale: list[Claim] = []
+    for claim in list_claims(bridge_root=bridge_root):
+        try:
+            last = _parse_utc(claim.last_heartbeat_utc)
+        except (ValueError, TypeError):
+            stale.append(claim)
+            continue
+        if last < cutoff:
+            stale.append(claim)
+    return stale
+
+
+def check_scope_overlap(
+    bridge_root: Path | None = None,
+    write_scope: Sequence[str] = (),
+) -> list[Claim]:
+    """Return active write-mode claims that overlap with the given write_scope."""
+    if not write_scope:
+        return []
+    normalized_request = {_normalize_scope_entry(s) for s in write_scope if s}
+    if not normalized_request:
+        return []
+    overlapping: list[Claim] = []
+    for claim in list_claims(bridge_root=bridge_root):
+        if claim.mode != "write":
+            continue
+        existing_scope = {_normalize_scope_entry(s) for s in claim.write_scope if s}
+        if any(
+            _scope_entries_overlap(existing, requested)
+            for existing in existing_scope
+            for requested in normalized_request
+        ):
+            overlapping.append(claim)
+    return overlapping
+
+
+def _validate_agent(agent: str) -> None:
+    if not agent or not AGENT_ID_PATTERN.fullmatch(agent):
+        raise WorkQueueError(f"agent must match {AGENT_ID_PATTERN.pattern}, got {agent!r}")
+
+
+def _validate_task_id(task_id: str) -> None:
+    if not task_id or not TASK_ID_PATTERN.fullmatch(task_id):
+        raise WorkQueueError(f"task_id invalid: {task_id!r}")
+
+
+def _safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", value).strip("_") or "claim"
+
+
+def _normalize_scope_entry(scope: str) -> str:
+    return scope.replace("\\", "/").strip("/").lower()
+
+
+def _scope_entries_overlap(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == "*" or right == "*":
+        return True
+    if left == right:
+        return True
+    return left.startswith(right + "/") or right.startswith(left + "/")
+
+
+def _read_claim_file(path: Path) -> Claim:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkQueueError(f"unreadable claim file: {path}") from exc
+    if not isinstance(data, dict):
+        raise WorkQueueError(f"claim file must be JSON object: {path}")
+    return Claim(
+        agent=str(data.get("agent", "")),
+        task_id=str(data.get("task_id", "")),
+        summary=str(data.get("summary", "")),
+        mode=str(data.get("mode", "read-only")),
+        write_scope=tuple(str(s) for s in data.get("write_scope", []) if s),
+        run_id=str(data.get("run_id", "")),
+        claimed_at_utc=str(data.get("claimed_at_utc", "")),
+        last_heartbeat_utc=str(data.get("last_heartbeat_utc", "")),
+        lease_seconds=int(data.get("lease_seconds", DEFAULT_LEASE_SECONDS)),
+    )
+
+
+def _write_claim_file(path: Path, claim: Claim, *, create_new: bool = False) -> None:
+    payload = {
+        "agent": claim.agent,
+        "task_id": claim.task_id,
+        "summary": claim.summary,
+        "mode": claim.mode,
+        "write_scope": list(claim.write_scope),
+        "run_id": claim.run_id,
+        "claimed_at_utc": claim.claimed_at_utc,
+        "last_heartbeat_utc": claim.last_heartbeat_utc,
+        "lease_seconds": claim.lease_seconds,
+    }
+    _write_json_file(path, payload, create_new=create_new)
+
+
+def _write_release_file(path: Path, record: ReleaseRecord) -> None:
+    payload = {
+        "agent": record.agent,
+        "task_id": record.task_id,
+        "summary": record.summary,
+        "release_status": record.release_status,
+        "release_message": record.release_message,
+        "claimed_at_utc": record.claimed_at_utc,
+        "released_at_utc": record.released_at_utc,
+    }
+    _write_json_file(path, payload, create_new=True)
+
+
+def _write_json_file(
+    path: Path,
+    payload: dict[str, object],
+    *,
+    create_new: bool = False,
+) -> None:
+    body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if create_new:
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(body)
+        except FileExistsError as exc:
+            raise WorkQueueError(
+                f"could not create claim, likely already exists: {path}"
+            ) from exc
+        return
+
+    tmp = path.with_name(f"{path.name}.tmp.{uuid4().hex}")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def _parse_utc(value: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

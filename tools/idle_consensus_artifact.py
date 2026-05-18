@@ -20,7 +20,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_check import DEFAULT_EVENTS_PATH
+from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.idle_protocol import detect_idle_convergence, validate_idle_proposal
+from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.evaluation_result import build_evaluation_result
+from waggledance.core.magma.receipt import build_magma_receipt
+from waggledance.core.magma.receipt_bundle import (
+    ReceiptBundleEntry,
+    write_receipt_bundle,
+)
 
 
 DEFAULT_OUT_DIR = Path("docs") / "architecture" / "consensus_artifacts"
@@ -43,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument(
+        "--receipt-out-dir",
+        type=Path,
+        default=None,
+        help="Optional non-existing output directory for a local MAGMA receipt bundle.",
+    )
     parser.add_argument("--now", default=None)
     parser.add_argument("--json", action="store_true")
     return parser
@@ -54,6 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = write_idle_consensus_artifact(
             events_path=args.events,
             out_dir=args.out_dir,
+            receipt_out_dir=args.receipt_out_dir,
             now_utc=_parse_utc(args.now) if args.now else datetime.now(timezone.utc),
         )
     except ArtifactError as exc:
@@ -78,6 +93,7 @@ def write_idle_consensus_artifact(
     *,
     events_path: Path,
     out_dir: Path,
+    receipt_out_dir: Path | None = None,
     now_utc: datetime,
 ) -> dict[str, Any]:
     events = _read_events(events_path)
@@ -138,7 +154,6 @@ def write_idle_consensus_artifact(
         )
 
     artifact_id = _artifact_id(convergence, payloads)
-    out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / f"{artifact_id}.json"
     markdown_path = out_dir / f"{artifact_id}.md"
     if json_path.exists() or markdown_path.exists():
@@ -147,6 +162,15 @@ def write_idle_consensus_artifact(
             {
                 "decision": "refuse_overwrite",
                 "errors": [f"artifact already exists: {artifact_id}"],
+                "exit_code": 5,
+            },
+        )
+    if receipt_out_dir is not None and receipt_out_dir.exists():
+        raise ArtifactError(
+            "receipt output already exists",
+            {
+                "decision": "refuse_receipt_overwrite",
+                "errors": [f"receipt output already exists: {receipt_out_dir}"],
                 "exit_code": 5,
             },
         )
@@ -169,9 +193,28 @@ def write_idle_consensus_artifact(
     }
     markdown = _markdown(artifact)
     _assert_no_implementation_hints(markdown)
+    receipt_bundle = None
+    if receipt_out_dir is not None:
+        try:
+            receipt_bundle = _emit_receipt_bundle(
+                artifact=artifact,
+                out_dir=receipt_out_dir,
+                now_utc=now_utc,
+            )
+        except ValueError as exc:
+            raise ArtifactError(
+                "idle consensus artifact receipt bundle failed",
+                {
+                    "decision": "invalid_receipt_bundle",
+                    "errors": [str(exc)],
+                    "exit_code": 2,
+                },
+            ) from exc
+
+    out_dir.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(artifact, indent=2, sort_keys=True), encoding="utf-8")
     markdown_path.write_text(markdown, encoding="utf-8")
-    return {
+    report = {
         "decision": "operator_review_required",
         "artifact_id": artifact_id,
         "json_path": str(json_path),
@@ -180,6 +223,9 @@ def write_idle_consensus_artifact(
         "auto_execute": False,
         "operator_gate_required": True,
     }
+    if receipt_bundle is not None:
+        report["receipt_bundle"] = receipt_bundle
+    return report
 
 
 class ArtifactError(ValueError):
@@ -301,6 +347,87 @@ def _markdown(artifact: Mapping[str, Any]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _emit_receipt_bundle(
+    *,
+    artifact: Mapping[str, Any],
+    out_dir: Path,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    artifact_id = str(artifact["artifact_id"])
+    evaluation = build_evaluation_result(
+        case_id=f"case:idle_consensus_artifact:{artifact_id}",
+        subject_type="peer_review",
+        target_payload=dict(artifact),
+        risk_class="local_artifact",
+        expected_gate="review",
+        actual_gate="review",
+        verifier_path=[
+            "idle_protocol_quality_validator",
+            "idle_protocol_convergence_detector",
+            "idle_consensus_artifact_guard",
+            "magma_receipt_verifier_v1",
+        ],
+        solver_selection=[
+            "idle_protocol_convergence_detector",
+            "idle_consensus_artifact_writer",
+        ],
+        policy_version="policy:idle_consensus_artifact:v1",
+        charter_version="charter:v1",
+        domain_threshold_version="threshold:idle_protocol:v1",
+        verdict="review",
+        reason_codes=[
+            "idle_consensus_artifact:operator_review_required",
+            f"convergence:{artifact['convergence']['status']}",
+            "receipt_bundle:opt_in",
+        ],
+        confidence_score=1.0,
+        uncertainty_sources=[],
+    )
+    evaluation["operator_required"] = True
+    receipt = build_magma_receipt(
+        event_id=f"magma:idle_consensus_artifact:{artifact_id}",
+        ts_utc=_iso(now_utc),
+        risk_class="local_artifact",
+        payload=artifact,
+        evaluation_result=evaluation,
+        previous_receipt=None,
+        policy_digest=sha256_digest({"policy_version": evaluation["policy_version"]}),
+        charter_digest=sha256_digest({
+            "charter_version": evaluation["charter_version"],
+            "operator_gate_required": artifact["operator_gate_required"],
+            "auto_execute": artifact["auto_execute"],
+        }),
+        rco_decision_digest=sha256_digest({
+            "actual_gate": evaluation["actual_gate"],
+            "decision": artifact["decision"],
+            "prohibited_actions": artifact["prohibited_actions"],
+        }),
+        world_snapshot_digest=sha256_digest({
+            "artifact_id": artifact_id,
+            "created_at_utc": artifact["created_at_utc"],
+            "convergence_status": artifact["convergence"]["status"],
+        }),
+        solver_contract_digest=sha256_digest({
+            "solver_selection": evaluation["solver_selection"],
+            "policy_version": evaluation["policy_version"],
+        }),
+    )
+    receipt["operator_gate_required"] = True
+    return write_receipt_bundle(
+        out_dir=out_dir,
+        chain_id=f"magma:idle_consensus_artifact:{artifact_id}:v0",
+        entries=[
+            ReceiptBundleEntry(
+                label="artifact",
+                payload=dict(artifact),
+                evaluation_result=evaluation,
+                receipt=receipt,
+            )
+        ],
+        verify_manifest=verify_manifest,
+    )
 
 
 def _assert_no_implementation_hints(markdown: str) -> None:

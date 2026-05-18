@@ -29,6 +29,7 @@ from waggledance.core.work_queue import (  # noqa: E402
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bridge work-queue CLI.")
     parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
     claim = sub.add_parser("claim")
@@ -76,10 +77,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "decision": "work_queue_error",
             "errors": [str(exc)],
         }
-        exit_code = 2
+        exit_code = _exit_code_for_error(str(exc))
     else:
-        exit_code = 0
-    print(json.dumps(report, sort_keys=True))
+        exit_code = int(report.pop("exit_code", 0))
+    if args.json:
+        print(json.dumps(report, sort_keys=True))
+    else:
+        _print_human(report)
     return exit_code
 
 
@@ -122,16 +126,18 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             "claims": [_to_jsonable(claim) for claim in list_claims(bridge_root=bridge_root)],
         }
     if args.command == "stale":
+        stale_claims = [
+            _to_jsonable(claim)
+            for claim in detect_stale_claims(
+                bridge_root=bridge_root,
+                max_age_seconds=args.max_age_seconds,
+            )
+        ]
         return {
             "ok": True,
             "decision": "stale_claims",
-            "claims": [
-                _to_jsonable(claim)
-                for claim in detect_stale_claims(
-                    bridge_root=bridge_root,
-                    max_age_seconds=args.max_age_seconds,
-                )
-            ],
+            "claims": stale_claims,
+            "exit_code": 3 if stale_claims else 0,
         }
     if args.command == "check-overlap":
         return {
@@ -156,6 +162,38 @@ def _to_jsonable(value: object) -> Any:
             for key, item in data.items()
         }
     return value
+
+
+def _exit_code_for_error(message: str) -> int:
+    lowered = message.lower()
+    invalid_markers = (
+        "invalid",
+        "require",
+        "required",
+        "must ",
+        "positive",
+        "does not produce",
+    )
+    if any(marker in lowered for marker in invalid_markers):
+        return 2
+    return 1
+
+
+def _print_human(report: dict[str, Any]) -> None:
+    print(report.get("decision", "unknown"))
+    if not report.get("ok", False):
+        for error in report.get("errors", []):
+            print(f"- {error}", file=sys.stderr)
+        return
+    claims = report.get("claims")
+    if isinstance(claims, list):
+        print(f"claims: {len(claims)}")
+    claim = report.get("claim")
+    if isinstance(claim, dict):
+        print(f"task_id: {claim.get('task_id', '')}")
+    release = report.get("release")
+    if isinstance(release, dict):
+        print(f"task_id: {release.get('task_id', '')}")
 
 
 if __name__ == "__main__":

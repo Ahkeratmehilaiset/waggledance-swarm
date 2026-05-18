@@ -42,7 +42,8 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
-from typing import Iterable, Sequence
+from typing import Sequence
+from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -114,6 +115,8 @@ def claim_task(
         raise WorkQueueError("summary required")
     if mode not in ALLOWED_MODES:
         raise WorkQueueError(f"mode must be one of {ALLOWED_MODES}, got {mode!r}")
+    if mode == "write" and not write_scope:
+        raise WorkQueueError("write claims require at least one write_scope path")
     if lease_seconds <= 0:
         raise WorkQueueError("lease_seconds must be positive")
 
@@ -122,6 +125,7 @@ def claim_task(
     claims_dir.mkdir(parents=True, exist_ok=True)
     claim_path = claims_dir / f"{_safe_name(task_id)}.json"
 
+    existing: Claim | None = None
     if claim_path.exists():
         existing = _read_claim_file(claim_path)
         if existing.agent != agent and not force:
@@ -131,6 +135,22 @@ def claim_task(
         if existing.agent != agent and force:
             raise WorkQueueError(
                 f"force claim across agents refused: existing={existing.agent}"
+            )
+    if mode == "write":
+        conflicts = [
+            claim
+            for claim in check_scope_overlap(
+                bridge_root=bridge,
+                write_scope=write_scope,
+            )
+            if claim.task_id != task_id
+        ]
+        if conflicts:
+            conflict = conflicts[0]
+            raise WorkQueueError(
+                "write-scope conflict with active claim "
+                f"{conflict.task_id} by {conflict.agent}: "
+                f"{', '.join(conflict.write_scope)}"
             )
 
     timestamp = _iso(now_utc or datetime.now(timezone.utc))
@@ -145,7 +165,7 @@ def claim_task(
         last_heartbeat_utc=timestamp,
         lease_seconds=int(lease_seconds),
     )
-    _write_claim_file(claim_path, claim)
+    _write_claim_file(claim_path, claim, create_new=existing is None)
     return claim
 
 
@@ -282,7 +302,11 @@ def check_scope_overlap(
         if claim.mode != "write":
             continue
         existing_scope = {_normalize_scope_entry(s) for s in claim.write_scope if s}
-        if existing_scope & normalized_request:
+        if any(
+            _scope_entries_overlap(existing, requested)
+            for existing in existing_scope
+            for requested in normalized_request
+        ):
             overlapping.append(claim)
     return overlapping
 
@@ -305,6 +329,16 @@ def _normalize_scope_entry(scope: str) -> str:
     return scope.replace("\\", "/").strip("/").lower()
 
 
+def _scope_entries_overlap(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == "*" or right == "*":
+        return True
+    if left == right:
+        return True
+    return left.startswith(right + "/") or right.startswith(left + "/")
+
+
 def _read_claim_file(path: Path) -> Claim:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -325,7 +359,7 @@ def _read_claim_file(path: Path) -> Claim:
     )
 
 
-def _write_claim_file(path: Path, claim: Claim) -> None:
+def _write_claim_file(path: Path, claim: Claim, *, create_new: bool = False) -> None:
     payload = {
         "agent": claim.agent,
         "task_id": claim.task_id,
@@ -337,10 +371,7 @@ def _write_claim_file(path: Path, claim: Claim) -> None:
         "last_heartbeat_utc": claim.last_heartbeat_utc,
         "lease_seconds": claim.lease_seconds,
     }
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _write_json_file(path, payload, create_new=create_new)
 
 
 def _write_release_file(path: Path, record: ReleaseRecord) -> None:
@@ -353,10 +384,36 @@ def _write_release_file(path: Path, record: ReleaseRecord) -> None:
         "claimed_at_utc": record.claimed_at_utc,
         "released_at_utc": record.released_at_utc,
     }
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _write_json_file(path, payload, create_new=True)
+
+
+def _write_json_file(
+    path: Path,
+    payload: dict[str, object],
+    *,
+    create_new: bool = False,
+) -> None:
+    body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if create_new:
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(body)
+        except FileExistsError as exc:
+            raise WorkQueueError(
+                f"could not create claim, likely already exists: {path}"
+            ) from exc
+        return
+
+    tmp = path.with_name(f"{path.name}.tmp.{uuid4().hex}")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def _parse_utc(value: str) -> datetime:

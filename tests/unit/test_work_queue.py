@@ -66,6 +66,18 @@ def test_claim_rejects_invalid_mode(tmp_path: Path) -> None:
         )
 
 
+def test_claim_write_mode_requires_scope(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    with pytest.raises(WorkQueueError, match="write claims require"):
+        claim_task(
+            agent="claude-1",
+            task_id="task-001",
+            summary="edit without scope",
+            mode="write",
+            bridge_root=bridge,
+        )
+
+
 def test_claim_refuses_overlapping_agent_claim(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
@@ -98,6 +110,27 @@ def test_claim_refreshable_by_same_agent(tmp_path: Path) -> None:
         bridge_root=bridge,
     )
     assert refreshed.summary == "refresh"
+
+
+def test_claim_refuses_write_scope_conflict_across_tasks(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-001",
+        summary="edit tools",
+        mode="write",
+        write_scope=["tools"],
+        bridge_root=bridge,
+    )
+    with pytest.raises(WorkQueueError, match="write-scope conflict"):
+        claim_task(
+            agent="codex-1",
+            task_id="task-002",
+            summary="edit nested file",
+            mode="write",
+            write_scope=["tools/foo.py"],
+            bridge_root=bridge,
+        )
 
 
 def test_release_archives_to_done_dir(tmp_path: Path) -> None:
@@ -244,6 +277,42 @@ def test_scope_overlap_detected_for_write_mode(tmp_path: Path) -> None:
         summary="edit foo",
         mode="write",
         write_scope=["tools/foo.py"],
+        bridge_root=bridge,
+    )
+    overlapping = check_scope_overlap(
+        bridge_root=bridge,
+        write_scope=["tools/foo.py"],
+    )
+    assert len(overlapping) == 1
+    assert overlapping[0].agent == "claude-1"
+
+
+def test_scope_overlap_detects_parent_child_paths(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-001",
+        summary="edit tools tree",
+        mode="write",
+        write_scope=["tools"],
+        bridge_root=bridge,
+    )
+    overlapping = check_scope_overlap(
+        bridge_root=bridge,
+        write_scope=["tools/foo.py"],
+    )
+    assert len(overlapping) == 1
+    assert overlapping[0].task_id == "task-001"
+
+
+def test_scope_overlap_detects_wildcard_scope(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-001",
+        summary="edit everything",
+        mode="write",
+        write_scope=["*"],
         bridge_root=bridge,
     )
     overlapping = check_scope_overlap(

@@ -1,0 +1,69 @@
+{
+  "name": "charter_violation",
+  "expected_status": "charter_violation",
+  "events": [
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_proposal",
+      "proposal_id": "idle-charter-001",
+      "round_number": 1,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle deliberation must terminate when a charter violation appears.",
+      "proposal": "Allow consensus to create implementation tasks automatically after both agents agree.",
+      "tradeoff_axis": "Fast implementation throughput versus operator owned approval.",
+      "simulation_evidence": {
+        "kind": "scenario_simulation",
+        "summary": "A proposal that creates tasks from consensus bypasses the operator gate."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "This first message is intentionally plausible so the violation can be caught later."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-charter-002",
+      "round_number": 2,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle deliberation must terminate when a charter violation appears.",
+      "alternative_proposal": "Keep consensus as an operator review artifact rather than a work generator.",
+      "responds_to": "idle-charter-001",
+      "reasoning_points": [
+        "If consensus creates tasks, operator approval is bypassed.",
+        "When review artifacts are manual, the operator can reject subtle mistakes.",
+        "If the proposal changes external effects, approval must remain explicit."
+      ],
+      "tradeoff_axis": "Operator review pause versus faster implementation handoff.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "The counter proposal shows the safer operator gated alternative."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The counter proposal restores explicit operator approval."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_charter_violation",
+      "proposal_id": "idle-charter-003",
+      "round_number": 3,
+      "proposes_substrate_change": false,
+      "problem_statement": "Idle deliberation must terminate when a charter violation appears.",
+      "violating_proposal_id": "idle-charter-001",
+      "violation_reason": "The original proposal converts consensus into automatic implementation work.",
+      "terminate_protocol": true,
+      "operator_escalation_required": true,
+      "tradeoff_axis": "Immediate termination versus continued deliberation on an unsafe path.",
+      "simulation_evidence": {
+        "kind": "scenario_simulation",
+        "summary": "The violation event terminates the instance before any consensus can be used."
+      },
+      "charter_alignment": {
+        "compatible": false,
+        "reasoning": "Automatic task creation bypasses the operator owned gate."
+      }
+    }
+  ]
+}

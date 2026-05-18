@@ -12,7 +12,7 @@ from waggledance.core.work_queue import (
     PRIVILEGED_AGENTS,
     WorkQueueError,
     archive_stale_claims,
-    claim_task,
+    claim_task as _claim_task,
     heartbeat,
     list_claims,
 )
@@ -24,6 +24,10 @@ def _now() -> datetime:
 
 def _stale_now() -> datetime:
     return _now() + timedelta(hours=1)
+
+
+def claim_task(*args, now_utc: datetime | None = None, **kwargs):
+    return _claim_task(*args, now_utc=now_utc or _now(), **kwargs)
 
 
 def test_dry_run_returns_planned_archives_without_mutating_fs(tmp_path: Path) -> None:

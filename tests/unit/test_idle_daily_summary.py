@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from waggledance.core.idle_daily_summary import (
     DEFAULT_DAILY_QUOTA,
     AutoMergeEntry,
     DailySummary,
     PendingDraftEntry,
+    SummaryPrivacyError,
     build_daily_summary,
     read_bridge_events,
     render_summary_markdown,
@@ -246,3 +249,47 @@ def test_event_without_pr_number_skipped() -> None:
     ]
     summary = build_daily_summary(utc_date="2026-05-18", events=events)
     assert summary.quota_used == 0
+
+
+def test_private_marker_in_auto_merge_event_refused() -> None:
+    events = [
+        _auto_merge_event(
+            ts="2026-05-18T01:00:00Z",
+            pr=470,
+            title="feat(idle): PRIVATE_MARKER",
+        )
+    ]
+    with pytest.raises(SummaryPrivacyError):
+        build_daily_summary(utc_date="2026-05-18", events=events)
+
+
+def test_private_marker_in_pending_draft_event_refused() -> None:
+    events = [
+        _pending_draft_event(
+            ts="2026-05-18T01:00:00Z",
+            pr=471,
+            reason="_DO_NOT_LEAK in candidate diff",
+        )
+    ]
+    with pytest.raises(SummaryPrivacyError):
+        build_daily_summary(utc_date="2026-05-18", events=events)
+
+
+def test_render_refuses_private_marker_in_manual_summary() -> None:
+    summary = DailySummary(
+        utc_date="2026-05-18",
+        auto_merges=(
+            AutoMergeEntry(
+                pr_number=470,
+                consensus_proposal_id="idle-prop-001",
+                pr_title="feat(idle): PRIVATE_MARKER",
+                merged_at_utc="2026-05-18T03:18:45Z",
+                merge_commit_sha="abc1234",
+            ),
+        ),
+        pending_drafts=(),
+        quota_used=1,
+        quota_total=5,
+    )
+    with pytest.raises(SummaryPrivacyError):
+        render_summary_markdown(summary)

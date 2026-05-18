@@ -17,7 +17,7 @@ and shows only DRAFT pull requests pending operator review.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVENTS_PATH = ROOT / ".agent-bridge" / "shared" / "events.jsonl"
 DEFAULT_HANDOFF_DIR = ROOT / "docs" / "handoffs"
 DEFAULT_DAILY_QUOTA = 5
+PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 
 
 @dataclass(frozen=True)
@@ -88,10 +89,12 @@ def build_daily_summary(
         payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
         kind = _classify_event(event, payload)
         if kind == "auto_merge":
+            _assert_no_private_markers(event)
             entry = _build_auto_merge_entry(event, payload)
             if entry is not None:
                 auto_merges.append(entry)
         elif kind == "pending_draft":
+            _assert_no_private_markers(event)
             draft = _build_pending_draft_entry(event, payload)
             if draft is not None:
                 pending_drafts.append(draft)
@@ -107,6 +110,7 @@ def build_daily_summary(
 
 def render_summary_markdown(summary: DailySummary) -> str:
     """Render the daily summary into operator-readable markdown."""
+    _assert_no_private_markers(summary)
     lines: list[str] = []
     lines.append(f"# Idle Auto-Merges: {summary.utc_date}")
     lines.append("")
@@ -189,6 +193,41 @@ def read_bridge_events(events_path: Path) -> list[dict[str, object]]:
 def today_utc_iso() -> str:
     """Return the current UTC date as an ISO-8601 calendar date string."""
     return datetime.now(timezone.utc).date().isoformat()
+
+
+class SummaryPrivacyError(ValueError):
+    """Raised when a daily summary input contains a private canary marker."""
+
+
+def _assert_no_private_markers(value: object) -> None:
+    marker = _find_private_marker(value)
+    if marker is not None:
+        raise SummaryPrivacyError(f"privacy marker refused in daily summary input: {marker}")
+
+
+def _find_private_marker(value: object) -> str | None:
+    if isinstance(value, str):
+        for marker in PRIVATE_MARKERS:
+            if marker in value:
+                return marker
+        return None
+    if is_dataclass(value) and not isinstance(value, type):
+        return _find_private_marker(asdict(value))
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            marker = _find_private_marker(key)
+            if marker is not None:
+                return marker
+            marker = _find_private_marker(item)
+            if marker is not None:
+                return marker
+        return None
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        for item in value:
+            marker = _find_private_marker(item)
+            if marker is not None:
+                return marker
+    return None
 
 
 def _classify_event(

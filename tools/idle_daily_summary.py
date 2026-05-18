@@ -28,6 +28,7 @@ from waggledance.core.idle_daily_summary import (  # noqa: E402
     DEFAULT_DAILY_QUOTA,
     DEFAULT_EVENTS_PATH,
     DEFAULT_HANDOFF_DIR,
+    SummaryPrivacyError,
     build_daily_summary,
     read_bridge_events,
     render_summary_markdown,
@@ -84,13 +85,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     events = read_bridge_events(args.events)
-    summary = build_daily_summary(
-        utc_date=utc_date,
-        events=events,
-        daily_quota=args.daily_quota,
-    )
-
-    markdown = render_summary_markdown(summary)
+    try:
+        summary = build_daily_summary(
+            utc_date=utc_date,
+            events=events,
+            daily_quota=args.daily_quota,
+        )
+        markdown = render_summary_markdown(summary)
+    except SummaryPrivacyError as exc:
+        report = {
+            "decision": "privacy_marker_refused",
+            "error": str(exc),
+            "exit_code": 2,
+        }
+        if args.json:
+            print(json.dumps(report, sort_keys=True))
+        else:
+            print(f"daily summary FAILED: {exc}", file=sys.stderr)
+        return 2
 
     if args.emit:
         out_path = write_summary_file(summary, args.handoff_dir)

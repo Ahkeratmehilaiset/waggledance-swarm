@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('codex','claude','operator','system','')] [string] $Agent = '',
+    [ValidateScript({ $_ -eq '' -or $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent = '',
     [int] $Tail = 40,
     [switch] $OtherOnly,
     [switch] $ShowClaims,

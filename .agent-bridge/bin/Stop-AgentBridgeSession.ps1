@@ -37,7 +37,7 @@
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateSet('codex','claude','operator','system','')]
+    [ValidateScript({ $_ -eq '' -or $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent = ''
 )
 

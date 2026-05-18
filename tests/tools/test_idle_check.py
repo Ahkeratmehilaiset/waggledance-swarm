@@ -234,6 +234,18 @@ def test_short_cron_poll_is_ignored_but_recent_substantive_message_is_active(
     assert payload["decision"] == "active"
     assert "recent_agent_message" in payload["blockers"]
 
+    multi_agent = cron_only + [
+        _event(
+            ts_utc="2026-05-17T11:55:00Z",
+            agent="codex-2",
+            status="request_scout",
+            message="Substantive multi-agent bridge note with concrete scope and risks.",
+        )
+    ]
+    payload = _run(tmp_path, multi_agent)
+    assert payload["decision"] == "active"
+    assert "recent_agent_message" in payload["blockers"]
+
 
 def test_recent_merge_and_recent_operator_activity_keep_bridge_active(
     tmp_path: Path,

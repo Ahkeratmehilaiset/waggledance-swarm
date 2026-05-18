@@ -205,6 +205,8 @@ def _activate(
     events: list[dict[str, object]] | None = None,
     emit: bool = False,
     receipt_out_dir: Path | None = None,
+    from_agent: str = "codex",
+    to_agent: str | None = None,
 ) -> dict:
     payload_path = tmp_path / "payload.json"
     events_path = tmp_path / "events.jsonl"
@@ -218,8 +220,8 @@ def _activate(
         events_path=events_path,
         claims_dir=claims_dir,
         bridge_root=bridge_root,
-        from_agent="codex",
-        to_agent=None,
+        from_agent=from_agent,
+        to_agent=to_agent,
         task_id=None,
         idle_minutes=60,
         pending_ci_count=0,
@@ -238,6 +240,23 @@ def test_round_one_dry_run_requires_idle_and_does_not_emit(tmp_path: Path) -> No
     assert report["proposed_bridge_event"]["status"] == "idle_proposal"
     assert report["to"] == "claude"
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
+
+
+def test_round_one_accepts_regex_agent_ids_when_target_is_explicit(
+    tmp_path: Path,
+) -> None:
+    report = _activate(
+        tmp_path,
+        _proposal(),
+        from_agent="codex-2",
+        to_agent="claude-1",
+    )
+
+    assert report["from_agent"] == "codex-2"
+    assert report["to"] == "claude-1"
+    assert report["proposed_bridge_event"]["agent"] == "codex-2"
+    assert report["proposed_bridge_event"]["to"] == "claude-1"
+    validate_event(report["proposed_bridge_event"])
 
 
 def test_round_one_refuses_active_bridge_before_emitting(tmp_path: Path) -> None:
@@ -465,7 +484,7 @@ def test_bridge_event_schema_is_validated_before_append(tmp_path: Path) -> None:
             events_path=events_path,
             claims_dir=claims_dir,
             bridge_root=bridge_root,
-            from_agent="mallory",
+            from_agent="Mallory",
             to_agent="claude",
             task_id=None,
             idle_minutes=60,

@@ -60,6 +60,15 @@ def test_comma_separated_targets_are_validated_per_agent() -> None:
     assert model.to == "claude,operator"
 
 
+def test_regex_agent_ids_are_valid_for_multi_agent_bridge() -> None:
+    model = validate_event(
+        _good_event(agent="codex-2", type="message", to="claude-1,gemini_1")
+    )
+
+    assert model.agent == "codex-2"
+    assert model.to == "claude-1,gemini_1"
+
+
 def test_custom_event_types_remain_valid_for_polymorphic_continuity() -> None:
     model = validate_event(_good_event(type="ownership_proposal", status="open"))
 
@@ -69,10 +78,13 @@ def test_custom_event_types_remain_valid_for_polymorphic_continuity() -> None:
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
-        ({"agent": "gpt"}, "agent"),
+        ({"agent": "Gpt"}, "agent"),
+        ({"agent": "x"}, "agent"),
+        ({"agent": "gpt.5"}, "agent"),
         ({"type": ""}, "type"),
         ({"type": "bad\ntype"}, "type"),
-        ({"to": "claude,unknown"}, "to"),
+        ({"to": "claude,Gpt"}, "to"),
+        ({"to": "claude,gpt.5"}, "to"),
         ({"paths": "not-a-list"}, "paths"),
         ({"pid": True}, "pid"),
         ({"ts_utc": "2026-05-16T05:39:57"}, "ts_utc"),

@@ -27,9 +27,9 @@ from tools.idle_check import (
 from tools.idle_protocol_activate import (
     DEFAULT_AGENT,
     DEFAULT_BRIDGE_ROOT,
-    AGENTS,
     ActivationError,
     activate_idle_protocol,
+    parse_agent_id,
 )
 
 
@@ -43,8 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
     parser.add_argument("--claims-dir", type=Path, default=DEFAULT_CLAIMS_DIR)
     parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
-    parser.add_argument("--from-agent", choices=sorted(AGENTS), default=DEFAULT_AGENT)
-    parser.add_argument("--to", choices=sorted(AGENTS), default=None)
+    parser.add_argument("--from-agent", type=parse_agent_id, default=DEFAULT_AGENT)
+    parser.add_argument("--to", type=parse_agent_id, default=None)
     parser.add_argument("--task-id", default=None)
     parser.add_argument("--proposal-id", default=None)
     parser.add_argument("--idle-minutes", type=int, default=60)

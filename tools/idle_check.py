@@ -10,8 +10,15 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Sequence
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waggledance.core.bridge_event_schema import AGENT_ID_PATTERN
 
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
@@ -263,7 +270,8 @@ def _is_merge_event(event: dict[str, Any]) -> bool:
 
 
 def _is_substantive_agent_message(event: dict[str, Any]) -> bool:
-    if str(event.get("agent", "")).lower() not in {"claude", "codex"}:
+    agent = str(event.get("agent", "")).lower()
+    if agent in {"operator", "system"} or not re.fullmatch(AGENT_ID_PATTERN, agent):
         return False
     if str(event.get("type", "")).lower() != "message":
         return False

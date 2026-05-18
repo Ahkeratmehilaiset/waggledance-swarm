@@ -92,9 +92,30 @@ def test_evaluate_diff_content_blocks_auto_execute_constant() -> None:
     assert len(decision.code_pattern_hits) >= 1
 
 
+def test_evaluate_diff_content_blocks_second_gate_constant() -> None:
+    charter = load_charter()
+    diff = "+ operator_gate_required=True\n"
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+
+
+def test_evaluate_diff_content_blocks_second_sequence_marker() -> None:
+    charter = load_charter()
+    diff = "+ _sequence_errors = []\n"
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+
+
 def test_evaluate_diff_content_blocks_private_marker() -> None:
     charter = load_charter()
     diff = "+ PRIVATE_MARKER = 'something'\n"
+    decision = evaluate_diff_content(charter, diff)
+    assert decision.allowed is False
+
+
+def test_evaluate_diff_content_blocks_second_privacy_marker() -> None:
+    charter = load_charter()
+    diff = "+ _DO_NOT_LEAK = 'secret-test-marker'\n"
     decision = evaluate_diff_content(charter, diff)
     assert decision.allowed is False
 

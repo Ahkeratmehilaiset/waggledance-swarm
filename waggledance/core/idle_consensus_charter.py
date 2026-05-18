@@ -128,8 +128,8 @@ def evaluate_diff_content(
 
     hits: list[str] = []
     for pattern in charter.code_pattern_denylist:
-        marker = _pattern_marker(pattern)
-        if marker and marker in diff_text:
+        markers = _pattern_markers(pattern)
+        if any(marker in diff_text for marker in markers):
             hits.append(pattern)
     if hits:
         return GateDecision(
@@ -204,28 +204,22 @@ def _matches_glob(path: str, pattern: str) -> bool:
     return False
 
 
-def _pattern_marker(bullet: str) -> str:
-    """Extract a probe substring from a charter code-pattern bullet."""
-    backtick = re.findall(r"`([^`]+)`", bullet)
-    if backtick:
-        return backtick[0]
-    if "auto_execute=False" in bullet:
-        return "auto_execute=False"
-    if "operator_gate_required=True" in bullet:
-        return "operator_gate_required=True"
-    if "DEFAULT_MAX_INSTANCES_PER_DAY" in bullet:
-        return "DEFAULT_MAX_INSTANCES_PER_DAY"
-    if "_safe_label" in bullet:
-        return "_safe_label"
-    if "_sequence_errors" in bullet:
-        return "_sequence_errors"
-    if "verify_manifest" in bullet:
-        return "verify_manifest"
-    if "PRIVATE_MARKER" in bullet:
-        return "PRIVATE_MARKER"
-    if "_DO_NOT_LEAK" in bullet:
-        return "_DO_NOT_LEAK"
-    return ""
+def _pattern_markers(bullet: str) -> tuple[str, ...]:
+    """Extract all probe substrings from a charter code-pattern bullet."""
+    markers = list(re.findall(r"`([^`]+)`", bullet))
+    for known_marker in (
+        "auto_execute=False",
+        "operator_gate_required=True",
+        "DEFAULT_MAX_INSTANCES_PER_DAY",
+        "_safe_label",
+        "_sequence_errors",
+        "verify_manifest",
+        "PRIVATE_MARKER",
+        "_DO_NOT_LEAK",
+    ):
+        if known_marker in bullet and known_marker not in markers:
+            markers.append(known_marker)
+    return tuple(marker for marker in markers if marker)
 
 
 def _extract_operator_quotes(text: str) -> list[str]:

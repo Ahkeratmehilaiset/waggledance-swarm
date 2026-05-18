@@ -90,6 +90,17 @@ class ReleaseRecord:
     released_at_utc: str
 
 
+@dataclass(frozen=True)
+class ArchivedClaim:
+    """Outcome of a stale-claim sweep entry (dry-run or applied)."""
+
+    claim: Claim
+    archived_path: Path
+    age_seconds: int
+    release_reason: str
+    applied: bool
+
+
 def claim_task(
     *,
     agent: str,
@@ -285,6 +296,99 @@ def detect_stale_claims(
         if last < cutoff:
             stale.append(claim)
     return stale
+
+
+PRIVILEGED_AGENTS = frozenset({"operator", "system"})
+
+
+def archive_stale_claims(
+    *,
+    bridge_root: Path | None = None,
+    now_utc: datetime | None = None,
+    max_age_seconds: int = DEFAULT_STALE_MAX_SECONDS,
+    apply: bool = False,
+) -> list[ArchivedClaim]:
+    """Sweep stale claims; dry-run unless apply=True.
+
+    Parity with `.agent-bridge/bin/Invoke-StaleClaimSweep.ps1`:
+
+    * Claims whose `last_heartbeat_utc` (falling back to `claimed_at_utc`)
+      is older than ``max_age_seconds`` relative to ``now_utc`` are
+      candidates.
+    * Claims owned by ``operator`` or ``system`` are never swept.
+    * Each swept claim is archived to
+      ``work_queue/done/<safe_task>.<utc_stamp>.stale_lease.json`` with
+      ``release_status="stale_lease"``, ``release_reason`` describing the
+      lease age, and ``released_at_utc`` set to ``now_utc``.
+    * With ``apply=False`` (the default) no files are moved or written;
+      the returned ``ArchivedClaim`` records describe the planned action.
+
+    The primitive intentionally does not emit bridge events; the CLI
+    wrapper in ``tools/work_queue_sweep_stale.py`` is responsible for
+    observability.
+    """
+    bridge = bridge_root or DEFAULT_BRIDGE_ROOT
+    now = now_utc or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=max_age_seconds)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+
+    done_dir = bridge / "work_queue" / "done"
+    archived: list[ArchivedClaim] = []
+    for claim in list_claims(bridge_root=bridge):
+        if claim.agent in PRIVILEGED_AGENTS:
+            continue
+        ts_string = claim.last_heartbeat_utc or claim.claimed_at_utc
+        if not ts_string:
+            continue
+        try:
+            last = _parse_utc(ts_string)
+        except (ValueError, TypeError):
+            age_seconds = max_age_seconds
+        else:
+            if last >= cutoff:
+                continue
+            age_seconds = int((now - last).total_seconds())
+
+        safe_task = _safe_name(claim.task_id)
+        if not safe_task:
+            continue
+        archive_path = done_dir / f"{safe_task}.{stamp}.stale_lease.json"
+        reason = (
+            f"last_heartbeat_utc was {age_seconds}s old; "
+            f"lease threshold {max_age_seconds}s"
+        )
+        if apply:
+            done_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "agent": claim.agent,
+                "task_id": claim.task_id,
+                "summary": claim.summary,
+                "mode": claim.mode,
+                "write_scope": list(claim.write_scope),
+                "run_id": claim.run_id,
+                "claimed_at_utc": claim.claimed_at_utc,
+                "last_heartbeat_utc": claim.last_heartbeat_utc,
+                "lease_seconds": claim.lease_seconds,
+                "released_at_utc": _iso(now),
+                "release_status": "stale_lease",
+                "release_reason": reason,
+            }
+            _write_json_file(archive_path, payload, create_new=True)
+            claim_file = bridge / "work_queue" / "claims" / f"{safe_task}.json"
+            try:
+                claim_file.unlink()
+            except FileNotFoundError:
+                pass
+        archived.append(
+            ArchivedClaim(
+                claim=claim,
+                archived_path=archive_path,
+                age_seconds=age_seconds,
+                release_reason=reason,
+                applied=apply,
+            )
+        )
+    return archived
 
 
 def check_scope_overlap(

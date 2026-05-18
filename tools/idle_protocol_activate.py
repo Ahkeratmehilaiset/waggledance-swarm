@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any, Mapping, Sequence
@@ -32,7 +33,7 @@ from waggledance.core.idle_protocol import (
     detect_idle_convergence,
     validate_idle_proposal,
 )
-from waggledance.core.bridge_event_schema import validate_event
+from waggledance.core.bridge_event_schema import AGENT_ID_PATTERN, validate_event
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.receipt import build_magma_receipt
@@ -45,7 +46,6 @@ from waggledance.core.magma.receipt_bundle import (
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
 DEFAULT_AGENT = "codex"
 DEFAULT_MAX_INSTANCES_PER_DAY = 5
-AGENTS = {"codex", "claude"}
 REFERENCE_FIELDS = (
     "responds_to",
     "consensus_target_proposal_id",
@@ -62,8 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
     parser.add_argument("--claims-dir", type=Path, default=DEFAULT_CLAIMS_DIR)
     parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
-    parser.add_argument("--from-agent", choices=sorted(AGENTS), default=DEFAULT_AGENT)
-    parser.add_argument("--to", choices=sorted(AGENTS), default=None)
+    parser.add_argument("--from-agent", type=parse_agent_id, default=DEFAULT_AGENT)
+    parser.add_argument("--to", type=parse_agent_id, default=None)
     parser.add_argument("--task-id", default=None)
     parser.add_argument("--idle-minutes", type=int, default=60)
     parser.add_argument("--pending-ci-count", type=int, default=0)
@@ -246,7 +246,7 @@ def activate_idle_protocol(
                 },
             )
 
-    target = to_agent or ("claude" if from_agent == "codex" else "codex")
+    target = to_agent or _default_peer(from_agent)
     bridge_event = _bridge_event(
         payload=payload,
         from_agent=from_agent,
@@ -539,6 +539,22 @@ def _bridge_event(
         "cwd": str(Path.cwd()),
         "payload": dict(payload),
     }
+
+
+def parse_agent_id(value: str) -> str:
+    if not re.fullmatch(AGENT_ID_PATTERN, value):
+        raise argparse.ArgumentTypeError(
+            "agent id must match ^[a-z][a-z0-9_-]{1,32}$"
+        )
+    return value
+
+
+def _default_peer(from_agent: str) -> str:
+    if from_agent == "codex":
+        return "claude"
+    if from_agent == "claude":
+        return "codex"
+    return "codex"
 
 
 def _emit_receipt_bundle(

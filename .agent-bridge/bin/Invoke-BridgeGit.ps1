@@ -60,7 +60,7 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('codex','claude','operator','system')]
+    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [switch] $Force,

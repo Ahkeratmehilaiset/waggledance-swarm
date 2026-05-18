@@ -70,7 +70,12 @@ function Format-BridgeText {
 
 $events = @(Read-EventObjects -Path $eventsPath -MaxLines $Tail)
 $claims = @(Read-ClaimObjects)
-$agents = @('claude','codex')
+$agents = @(
+    @($events | ForEach-Object { [string]$_.agent })
+    @($claims | ForEach-Object { [string]$_.agent })
+    'claude'
+    'codex'
+) | Where-Object { $_ } | Sort-Object -Unique
 
 $contributions = @()
 foreach ($agent in $agents) {

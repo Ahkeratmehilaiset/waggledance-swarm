@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
@@ -22,7 +23,9 @@ from pydantic import ValidationError, field_validator, model_validator
 
 
 BRIDGE_EVENT_SCHEMA_VERSION = "agent-bridge-event.v1"
-KNOWN_AGENTS = frozenset({"codex", "claude", "operator", "system"})
+AGENT_ID_PATTERN = r"^[a-z][a-z0-9_-]{1,32}$"
+LEGACY_AGENTS = frozenset({"codex", "claude", "operator", "system"})
+KNOWN_AGENTS = LEGACY_AGENTS
 KNOWN_EVENT_TYPES = frozenset({
     "blocked",
     "claim",
@@ -76,9 +79,9 @@ class BridgeEvent(BaseModel):
 
     @field_validator("agent")
     @classmethod
-    def _agent_must_be_known(cls, value: str) -> str:
-        if value not in KNOWN_AGENTS:
-            raise ValueError("agent must be one of the bridge agents")
+    def _agent_must_be_valid_id(cls, value: str) -> str:
+        if not _is_valid_agent_id(value):
+            raise ValueError("agent must match bridge agent id pattern")
         return value
 
     @field_validator("type")
@@ -105,9 +108,9 @@ class BridgeEvent(BaseModel):
         targets = [item.strip() for item in value.split(",") if item.strip()]
         if not targets:
             raise ValueError("to must be empty or comma-separated agents")
-        unknown = sorted(set(targets) - KNOWN_AGENTS)
-        if unknown:
-            raise ValueError(f"to contains unknown bridge agent: {unknown[0]}")
+        invalid = sorted(target for target in set(targets) if not _is_valid_agent_id(target))
+        if invalid:
+            raise ValueError(f"to contains invalid bridge agent id: {invalid[0]}")
         return value
 
     @model_validator(mode="after")
@@ -176,6 +179,10 @@ class BridgeEventValidationResult:
 def validate_event(event: Mapping[str, Any]) -> BridgeEvent:
     """Validate one decoded bridge event mapping."""
     return BridgeEvent.model_validate(event)
+
+
+def _is_valid_agent_id(value: str) -> bool:
+    return bool(re.fullmatch(AGENT_ID_PATTERN, value))
 
 
 def validate_event_line(line: str, *, line_no: int = 1) -> BridgeEvent:
@@ -271,10 +278,12 @@ def _line_sha256(line: str) -> str:
 
 __all__ = [
     "BRIDGE_EVENT_SCHEMA_VERSION",
+    "AGENT_ID_PATTERN",
     "BridgeEvent",
     "BridgeEventValidationIssue",
     "BridgeEventValidationResult",
     "KNOWN_AGENTS",
+    "LEGACY_AGENTS",
     "KNOWN_EVENT_TYPES",
     "KNOWN_SEVERITIES",
     "validate_event",

@@ -115,6 +115,84 @@ def test_recommends_claiming_unblocked_work_when_bridge_is_clear() -> None:
     assert report["safe_mode"] == "write-or-read-only"
 
 
+def test_idle_protocol_counter_is_closed_by_later_consensus_target() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T06:57:22Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "idle-protocol-round4",
+            "status": "idle_counter_proposal",
+            "message": "round 4 counter",
+            "payload": {
+                "protocol_version": "idle-protocol.v1",
+                "event_type": "idle_counter_proposal",
+                "proposal_id": "idle-counter-round4",
+            },
+        },
+        {
+            "ts_utc": "2026-05-18T07:16:40Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "message",
+            "task_id": "idle-protocol-round5",
+            "status": "idle_consensus_reached",
+            "message": "round 5 consensus",
+            "payload": {
+                "protocol_version": "idle-protocol.v1",
+                "event_type": "idle_consensus_reached",
+                "proposal_id": "idle-consensus-round5",
+                "consensus_target_proposal_id": "idle-counter-round4",
+            },
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+def test_idle_protocol_proposal_is_closed_by_later_response() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T05:53:31Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "idle-protocol-round1",
+            "status": "idle_proposal",
+            "message": "round 1 proposal",
+            "payload": {
+                "protocol_version": "idle-protocol.v1",
+                "event_type": "idle_proposal",
+                "proposal_id": "idle-proposal-round1",
+            },
+        },
+        {
+            "ts_utc": "2026-05-18T06:34:58Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "message",
+            "task_id": "idle-protocol-round2",
+            "status": "idle_counter_proposal",
+            "message": "round 2 response",
+            "payload": {
+                "protocol_version": "idle-protocol.v1",
+                "event_type": "idle_counter_proposal",
+                "proposal_id": "idle-counter-round2",
+                "responds_to": "idle-proposal-round1",
+            },
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_read_events_ignores_malformed_lines_and_honors_tail(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     events_path.write_text(

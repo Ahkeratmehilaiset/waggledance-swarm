@@ -28,6 +28,7 @@ from waggledance.core.idle_daily_summary import (  # noqa: E402
     DEFAULT_DAILY_QUOTA,
     DEFAULT_EVENTS_PATH,
     DEFAULT_HANDOFF_DIR,
+    SummaryEventError,
     SummaryPrivacyError,
     build_daily_summary,
     read_bridge_events,
@@ -92,9 +93,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             daily_quota=args.daily_quota,
         )
         markdown = render_summary_markdown(summary)
-    except SummaryPrivacyError as exc:
+    except (SummaryEventError, SummaryPrivacyError) as exc:
         report = {
-            "decision": "privacy_marker_refused",
+            "decision": "summary_input_refused",
             "error": str(exc),
             "exit_code": 2,
         }

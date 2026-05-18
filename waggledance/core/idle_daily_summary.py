@@ -178,13 +178,15 @@ def read_bridge_events(events_path: Path) -> list[dict[str, object]]:
     if not events_path.exists():
         return []
     events: list[dict[str, object]] = []
-    for line in events_path.read_text(encoding="utf-8").splitlines():
+    for line_no, line in enumerate(events_path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
             event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as exc:
+            raise SummaryEventError(
+                f"invalid bridge event JSON at line {line_no}: {exc.msg}"
+            ) from exc
         if isinstance(event, dict):
             events.append(event)
     return events
@@ -197,6 +199,10 @@ def today_utc_iso() -> str:
 
 class SummaryPrivacyError(ValueError):
     """Raised when a daily summary input contains a private canary marker."""
+
+
+class SummaryEventError(ValueError):
+    """Raised when bridge events cannot be parsed safely."""
 
 
 def _assert_no_private_markers(value: object) -> None:

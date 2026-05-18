@@ -9,6 +9,7 @@ from waggledance.core.idle_daily_summary import (
     AutoMergeEntry,
     DailySummary,
     PendingDraftEntry,
+    SummaryEventError,
     SummaryPrivacyError,
     build_daily_summary,
     read_bridge_events,
@@ -191,7 +192,7 @@ def test_write_summary_file_creates_handoff_with_expected_name(tmp_path: Path) -
     assert "Idle Auto-Merges: 2026-05-18" in content
 
 
-def test_read_bridge_events_skips_malformed_lines(tmp_path: Path) -> None:
+def test_read_bridge_events_refuses_malformed_lines(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     events_path.write_text(
         '{"ts_utc": "2026-05-18T01:00:00Z", "agent": "claude"}\n'
@@ -199,8 +200,8 @@ def test_read_bridge_events_skips_malformed_lines(tmp_path: Path) -> None:
         '{"ts_utc": "2026-05-18T02:00:00Z", "agent": "codex"}\n',
         encoding="utf-8",
     )
-    events = read_bridge_events(events_path)
-    assert len(events) == 2
+    with pytest.raises(SummaryEventError, match="line 2"):
+        read_bridge_events(events_path)
 
 
 def test_read_bridge_events_missing_file_returns_empty(tmp_path: Path) -> None:

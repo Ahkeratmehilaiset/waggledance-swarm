@@ -1,5 +1,89 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [10-agent substrate wave: bridge parity + worktree isolation] -- 2026-05-18
+
+Eight PRs merged via Claude + Codex mutual RCO + autonomous-merge in
+a single session (~3 hours). All PRs land on `main` HEAD `fb5dad7`.
+Substrate-only; no version bump, no stable tag.
+
+This wave moves the bridge from a "two agents share one shell"
+substrate to a "N agents in dedicated worktrees with parity Python
+primitives" substrate. The four invariants discovered today are
+recorded in `docs/architecture/SUBSTRATE_INVARIANTS.md`.
+
+### Wave summary
+
+* **PR #481 — Slice 8f agent identity profiles.** Local-only
+  `.agent-bridge/agents/<agent>.json` provisioning CLI
+  (`tools/agent_identity.py`). Recursive `PRIVATE_MARKERS` /
+  `SENSITIVE_MARKERS` refusal, atomic write, agent-id regex shared
+  with work_queue, `operator_approved=false` default,
+  `write_scope_policy=claim_required` default. Foundation for the
+  10-agent vision: each agent identifies itself via a versioned
+  profile before claiming work.
+* **PR #482 — Slice 8d Python `archive_stale_claims` + sweep CLI.**
+  Adds `waggledance.core.work_queue.archive_stale_claims(*, apply=
+  False)` plus `tools/work_queue_sweep_stale.py`. Parity with
+  `Invoke-StaleClaimSweep.ps1`: skips operator/system claims, archives
+  to `done/<task>.<utc-stamp>.stale_lease.json`, falls back from
+  `last_heartbeat_utc` to `claimed_at_utc`. Closes the gap where a
+  Python-side agent could not auto-recover a crashed peer's claim
+  without shelling into PowerShell.
+* **PR #483 — Slice 8e `bridge_next_action` primitive.** Read-only
+  `tools/bridge_next_action.py` that recommends the next safe action
+  for an agent (`continue_claim`, `answer_incoming`,
+  `parallel_read_only`, `claim_unblocked_work`). Reads bridge JSONL
+  plus active claims; never writes. Per-fresh-session bootstrap so
+  agents do not need operator relay to know what to do next.
+* **PR #484 — `bridge_next_action` ignores progressed idle proposals.**
+  When a later `idle-protocol.v1` event carries `responds_to`,
+  `consensus_target_proposal_id`, `violating_proposal_id`, or
+  `rejected_event_id` matching an earlier proposal_id, that proposal
+  is no longer "open incoming". Fixes a real bug from this session
+  where stale round-4 counters surfaced as open after round-5
+  consensus.
+* **PR #485 — Deterministic stale-archive tests.** Wraps `claim_task`
+  in test-local helper so fixed `_now()` flows through to
+  `last_heartbeat_utc` even when the underlying primitive's default
+  is `datetime.now(timezone.utc)`. Discovered after PR #482 merged
+  and real wall-clock passed the test's `_stale_now()`. Codified as
+  INV-01 (rebase before merge after any clock-fix lands).
+* **PR #486 — Token-based status matching.** `bridge_next_action`'s
+  open-request and answer detectors now tokenize status on
+  `[^a-z0-9]+` and compare whole tokens. Eliminates the
+  `"already"` → `"ready"` substring collision that classified a
+  closed wake-ack as still-open. Codified as INV-02.
+* **PR #487 — `docs/architecture/SUBSTRATE_INVARIANTS.md`.** Records
+  INV-01..INV-04 with rule, empirical observation (PR/date/SHA),
+  failure mode prevented, and operator action. Numbered `INV-NN` and
+  never renumbered. Doc-only.
+* **PR #488 — One-command dedicated worktree bootstrap.**
+  `.agent-bridge/bin/Start-AgentBridgeWorktreeSession.ps1` composes
+  `New-AgentBridgeWorktree.ps1` + `Start-AgentBridgeSession.ps1
+  -RequireDedicatedWorktree`. Smoke test verifies env vars persist
+  in caller scope, source-repo branch never moves, dedicated_worktree
+  is reported true. Operationally closes INV-04 for new sessions.
+
+### Mutual-RCO contract (Claude + Codex)
+
+* 8 PRs merged via bridge mutual RCO this session.
+* 2 round-2 cycles, both produced real fail-closed fixes:
+  PR #482 fix-1 (claimed_at_utc fallback) and PR #482 fix-2
+  (non-positive `max_age_seconds` validation).
+* 1 force-push with operator authorization (PR #486 rebase onto
+  PR #485 wall-clock fix — INV-01 in action).
+* 0 charter privacy denylist hits (`*creds*`, `*secret*`, `.env*`).
+* 0 self-modification of charter, gates, or auto-merge primitives.
+
+### Substrate invariants discovered (forensic record)
+
+* **INV-01** — Rebase before merge after any clock-fix lands.
+* **INV-02** — Status matching is by whole token, never substring.
+* **INV-03** — Force-push to a peer agent's branch requires explicit
+  authorization (operator or branch-owner).
+* **INV-04** — Shared-worktree HEAD-switch is a real concurrency
+  hazard; mitigation is per-agent worktree bootstrap (PR #488).
+
 ## [v3.13.0 substrate-only landing: Shadow -> Hybrid -> Autonomous runtime] -- 2026-05-13
 
 Sprint 1 v3.13.0 runtime substrate landed on `main` HEAD `6d2e59b`.

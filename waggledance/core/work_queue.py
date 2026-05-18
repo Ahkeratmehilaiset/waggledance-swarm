@@ -327,6 +327,10 @@ def archive_stale_claims(
     wrapper in ``tools/work_queue_sweep_stale.py`` is responsible for
     observability.
     """
+    if max_age_seconds <= 0:
+        raise WorkQueueError(
+            f"max_age_seconds must be positive, got {max_age_seconds}"
+        )
     bridge = bridge_root or DEFAULT_BRIDGE_ROOT
     now = now_utc or datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=max_age_seconds)

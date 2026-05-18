@@ -27,6 +27,7 @@ from pathlib import Path
 from waggledance.core.work_queue import (
     DEFAULT_BRIDGE_ROOT,
     ArchivedClaim,
+    WorkQueueError,
     archive_stale_claims,
 )
 
@@ -98,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
             max_age_seconds=args.max_age_seconds,
             apply=args.apply,
         )
+    except WorkQueueError as exc:
+        sys.stderr.write(f"sweep refused: {exc}\n")
+        return 1
     except OSError as exc:
         sys.stderr.write(f"sweep failed: {exc}\n")
         return 1

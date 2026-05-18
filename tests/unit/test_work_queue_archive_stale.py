@@ -10,6 +10,7 @@ from waggledance.core.work_queue import (
     ArchivedClaim,
     Claim,
     PRIVILEGED_AGENTS,
+    WorkQueueError,
     archive_stale_claims,
     claim_task,
     heartbeat,
@@ -255,6 +256,44 @@ def test_unparseable_heartbeat_falls_back_to_stale_claimed_at(tmp_path: Path) ->
     )
     assert len(archived) == 1
     assert 590 <= archived[0].age_seconds <= 610
+
+
+def test_negative_max_age_seconds_raises(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-negative",
+        summary="must not be archived under negative threshold",
+        bridge_root=bridge,
+        now_utc=_stale_now() - timedelta(seconds=30),
+    )
+    with pytest.raises(WorkQueueError, match="max_age_seconds must be positive"):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=-1,
+            apply=True,
+        )
+    # Fresh claim untouched.
+    assert (bridge / "work_queue" / "claims" / "task-negative.json").exists()
+
+
+def test_zero_max_age_seconds_raises(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-zero",
+        summary="zero threshold also refused",
+        bridge_root=bridge,
+    )
+    with pytest.raises(WorkQueueError, match="max_age_seconds must be positive"):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=0,
+            apply=True,
+        )
+    assert (bridge / "work_queue" / "claims" / "task-zero.json").exists()
 
 
 def test_apply_archive_includes_original_metadata(tmp_path: Path) -> None:

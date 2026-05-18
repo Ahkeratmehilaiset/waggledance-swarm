@@ -179,7 +179,7 @@ def test_apply_creates_done_directory_when_missing(tmp_path: Path) -> None:
     assert done_dir.exists()
 
 
-def test_unparseable_heartbeat_falls_back_to_max_age(tmp_path: Path) -> None:
+def test_both_timestamps_unparseable_falls_back_to_max_age(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
         agent="claude-1",
@@ -201,6 +201,60 @@ def test_unparseable_heartbeat_falls_back_to_max_age(tmp_path: Path) -> None:
     )
     assert len(archived) == 1
     assert archived[0].age_seconds == 60
+
+
+def test_unparseable_heartbeat_falls_back_to_fresh_claimed_at(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-fallback",
+        summary="heartbeat broken but claimed_at fresh",
+        bridge_root=bridge,
+    )
+    claim_file = bridge / "work_queue" / "claims" / "task-fallback.json"
+    payload = json.loads(claim_file.read_text(encoding="utf-8"))
+    fresh_claimed_at = (_stale_now() - timedelta(seconds=10)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    payload["last_heartbeat_utc"] = "garbage-not-a-timestamp"
+    payload["claimed_at_utc"] = fresh_claimed_at
+    claim_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_stale_now(),
+        max_age_seconds=60,
+        apply=False,
+    )
+    assert archived == []
+    assert claim_file.exists()
+
+
+def test_unparseable_heartbeat_falls_back_to_stale_claimed_at(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="task-fallback-stale",
+        summary="heartbeat broken and claimed_at stale",
+        bridge_root=bridge,
+    )
+    claim_file = bridge / "work_queue" / "claims" / "task-fallback-stale.json"
+    payload = json.loads(claim_file.read_text(encoding="utf-8"))
+    stale_claimed_at = (_stale_now() - timedelta(seconds=600)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    payload["last_heartbeat_utc"] = "garbage-not-a-timestamp"
+    payload["claimed_at_utc"] = stale_claimed_at
+    claim_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_stale_now(),
+        max_age_seconds=60,
+        apply=False,
+    )
+    assert len(archived) == 1
+    assert 590 <= archived[0].age_seconds <= 610
 
 
 def test_apply_archive_includes_original_metadata(tmp_path: Path) -> None:

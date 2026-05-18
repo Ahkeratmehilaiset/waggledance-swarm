@@ -337,12 +337,21 @@ def archive_stale_claims(
     for claim in list_claims(bridge_root=bridge):
         if claim.agent in PRIVILEGED_AGENTS:
             continue
-        ts_string = claim.last_heartbeat_utc or claim.claimed_at_utc
-        if not ts_string:
+        candidates: list[str] = []
+        if claim.last_heartbeat_utc:
+            candidates.append(claim.last_heartbeat_utc)
+        if claim.claimed_at_utc and claim.claimed_at_utc not in candidates:
+            candidates.append(claim.claimed_at_utc)
+        if not candidates:
             continue
-        try:
-            last = _parse_utc(ts_string)
-        except (ValueError, TypeError):
+        last: datetime | None = None
+        for candidate in candidates:
+            try:
+                last = _parse_utc(candidate)
+                break
+            except (ValueError, TypeError):
+                continue
+        if last is None:
             age_seconds = max_age_seconds
         else:
             if last >= cutoff:

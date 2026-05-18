@@ -117,8 +117,8 @@ observed ≥3 unexpected branch switches today. Examples:
 unintended HEAD; force-push targeting the wrong upstream. None of these
 are corrupting if caught, but each costs minutes of recovery.
 
-**Operator action.** This is currently a *known operational hazard*, not
-a fully-diagnosed bug. Mitigations available now:
+**Operator action.** This is a confirmed operational hazard. Mitigations
+available now:
 
 1. Re-assert your branch before every `git commit`, `git push`, or
    `gh pr create`.
@@ -127,10 +127,21 @@ a fully-diagnosed bug. Mitigations available now:
 3. After any cross-branch operation (`git fetch`, `git show`,
    `gh pr view`), explicitly `git switch` back to your working branch
    before resuming work.
+4. For every new write-capable agent session, start through the dedicated
+   worktree bootstrap:
 
-A deeper fix (per-agent worktrees, separate `.git/HEAD` per session, or
-a `flock` around branch-switching commands) is open work — tracked
-under the substrate hardening backlog.
+   ```powershell
+   cd C:\Python\project2-master
+   . .\.agent-bridge\bin\Start-AgentBridgeWorktreeSession.ps1 -Agent codex
+   ```
+
+   Claude uses the same command with `-Agent claude`. This creates or
+   reuses a physical per-agent worktree, then calls
+   `Start-AgentBridgeSession.ps1 -RequireDedicatedWorktree` inside it.
+
+The cooperative branch guard remains useful for manual maintenance, but the
+worktree bootstrap is the structural mitigation for autonomous parallel
+implementation.
 
 ## Maintaining this file
 

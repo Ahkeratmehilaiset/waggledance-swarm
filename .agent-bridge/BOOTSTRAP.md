@@ -57,8 +57,28 @@ Run from the primary source repo:
 
 ```powershell
 cd C:\Python\project2-master
-git fetch origin main
+. .\.agent-bridge\bin\Start-AgentBridgeWorktreeSession.ps1 -Agent codex
+```
 
+Claude uses the same command with `-Agent claude`. Dot-source it so the shell
+that launches the agent keeps the new worktree location plus
+`AGENT_BRIDGE_RUNTIME_ROOT` and `AGENT_BRIDGE_RUN_ID`.
+
+If you need an explicit base refresh first:
+
+```powershell
+cd C:\Python\project2-master
+git fetch origin main
+. .\.agent-bridge\bin\Start-AgentBridgeWorktreeSession.ps1 -Agent codex -Fetch
+```
+
+Both worktrees still write to the same
+`C:\Python\project2-master\.agent-bridge` runtime root, so bridge events,
+claims, wake files, and heartbeat state remain shared.
+
+The lower-level two-step primitive remains available for debugging:
+
+```powershell
 $wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 `
   -Agent codex `
   -TaskId "codex-session-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))" `
@@ -67,10 +87,6 @@ $wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 `
 cd $wt.worktree_path
 . .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex -RequireDedicatedWorktree
 ```
-
-Claude uses the same pattern with `-Agent claude`. Both worktrees still write
-to the same `C:\Python\project2-master\.agent-bridge` runtime root, so bridge
-events, claims, wake files, and heartbeat state remain shared.
 
 ## Claude Code shell
 
@@ -147,6 +163,7 @@ After bridge bootstrap changes, run:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeSessionBootstrapSmoke.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeWorktreeIsolationSmoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeWorktreeBootstrapSmoke.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeMonitorCursorSmoke.ps1
 ```
 

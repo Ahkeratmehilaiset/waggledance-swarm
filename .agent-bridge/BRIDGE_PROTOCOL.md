@@ -320,6 +320,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-Age
 # R23.2 preferred write-capable startup: create a dedicated worktree first,
 # then require that the agent session is not running in the primary shared
 # repo.
+. .\.agent-bridge\bin\Start-AgentBridgeWorktreeSession.ps1 -Agent codex
+
+# Lower-level debug path:
 $wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 -Agent codex -TaskId "r22.1a-hotpath-benchmark" -Base origin/main
 cd $wt.worktree_path
 . .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex -RequireDedicatedWorktree
@@ -380,6 +383,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-Bri
 
 # End-to-end smoke test of per-agent worktree creation/isolation.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeWorktreeIsolationSmoke.ps1
+
+# End-to-end smoke test of the one-command worktree session bootstrap.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Test-BridgeWorktreeBootstrapSmoke.ps1
 
 # End-to-end smoke test of cursor monitor semantics: no historical flood,
 # no ACK/heartbeat noise, no same-event replay, and live append detection.

@@ -102,12 +102,34 @@ proposal that asks the peer agent to continue deliberation with a concrete
 counter-proposal. It is not cron-driven, does not synthesize consensus, and does
 not convert convergence into implementation work.
 
+## Session Status
+
+`tools/idle_protocol_session.py` is the manual read-only status primitive for
+an existing idle-protocol instance. It reads the bridge stream, summarizes the
+latest idle session, and reports the next required protocol event:
+`idle_counter_proposal`, the mandatory round-3 `idle_adversarial_review`, or an
+operator-gated consensus review. It does not append bridge events, does not
+generate the peer agent's substantive payload, and does not convert consensus
+into work.
+
+```powershell
+.\.venv\Scripts\python.exe tools\idle_protocol_session.py `
+  --dry-run `
+  --json
+```
+
+Terminal states (`soft_convergence`, `hard_convergence`,
+`idle_charter_violation`, invalid payloads, and low-quality responses) report
+operator review/escalation and still write nothing.
+
 ## Safeguards
 
 - No cron or background activation in v1.
 - No model-generated payloads inside the tool.
 - `run_idle_protocol_once.py` is dry-run by default and requires both
   `--emit` and a proven idle bridge before any bridge write.
+- `idle_protocol_session.py` is read-only; it cannot emit idle payloads,
+  request events, or implementation tasks.
 - No consensus-to-scout conversion.
 - Consensus reports keep `operator_gate_required=true` and `auto_execute=false`.
 - Invalid or low-quality payloads fail before any bridge write.

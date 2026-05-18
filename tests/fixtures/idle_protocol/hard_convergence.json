@@ -1,0 +1,238 @@
+{
+  "name": "hard_convergence",
+  "expected_status": "hard_convergence",
+  "events": [
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_proposal",
+      "proposal_id": "idle-hard-001",
+      "round_number": 1,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "proposal": "Cap unresolved idle deliberation at round ten and hand finalists to operator review.",
+      "tradeoff_axis": "Bounded deliberation versus open ended peer discussion.",
+      "simulation_evidence": {
+        "kind": "scenario_simulation",
+        "summary": "Ten rounds without matching consensus markers should hard converge."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The hard stop prevents resource burn and still requires operator judgment."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-hard-002",
+      "round_number": 2,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "alternative_proposal": "Use a lower round limit and require earlier operator review.",
+      "responds_to": "idle-hard-001",
+      "reasoning_points": [
+        "If round limits are absent, deliberation can burn resources indefinitely.",
+        "When operator review happens earlier, fewer ungrounded rounds accumulate.",
+        "If consensus is weak, finalists provide safer evidence than auto execution."
+      ],
+      "tradeoff_axis": "Shorter deliberation versus more peer exploration.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "A round two counter proposal should not be terminal by itself."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The counter proposal preserves the operator gate."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_adversarial_review",
+      "proposal_id": "idle-hard-003",
+      "round_number": 3,
+      "proposes_substrate_change": false,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "responds_to": "idle-hard-002",
+      "counterexamples": [
+        "If both agents repeatedly rephrase the same idea, round limits are necessary.",
+        "When finalists are missing, operator review lacks a concrete comparison set."
+      ],
+      "tradeoff_axis": "Mandatory adversarial review versus fast consensus.",
+      "simulation_evidence": {
+        "kind": "scenario_simulation",
+        "summary": "Round three tests the hard convergence path before later rounds continue."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The adversarial round only searches for counterexamples."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-hard-004",
+      "round_number": 4,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "alternative_proposal": "Track unresolved tradeoffs instead of trying to choose one winner.",
+      "responds_to": "idle-hard-003",
+      "reasoning_points": [
+        "If tradeoffs remain unresolved, a winner label can hide disagreement.",
+        "When uncertainty is explicit, operator review has better evidence.",
+        "If a proposal lacks tests, the hard stop should preserve it only as a finalist."
+      ],
+      "tradeoff_axis": "Uncertainty ledger versus winner selection.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "Round four remains non terminal and keeps deliberation bounded."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "No implementation is triggered by the continuing counter proposal."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-hard-005",
+      "round_number": 5,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "alternative_proposal": "Require each later round to narrow finalists without declaring consensus.",
+      "responds_to": "idle-hard-004",
+      "reasoning_points": [
+        "If finalists are too many, operator review becomes noisy.",
+        "When narrowing is explicit, hard convergence produces useful output.",
+        "If consensus markers disagree, finalist tracking should still pass review."
+      ],
+      "tradeoff_axis": "Finalist narrowing versus consensus declaration.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "Round five without two matching consensus markers stays unresolved."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The later counter proposal remains advisory only."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-hard-006",
+      "round_number": 6,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "alternative_proposal": "Move unresolved finalists to operator review after more evidence is collected.",
+      "responds_to": "idle-hard-005",
+      "reasoning_points": [
+        "If evidence remains thin, more rounds can still add useful tests.",
+        "When evidence repeats, the hard stop should prevent padding.",
+        "If operator review is required, no live traffic should be changed."
+      ],
+      "tradeoff_axis": "Evidence depth versus resource cost.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "Round six continues the unresolved transcript without consensus."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The proposal is still inside the non executing deliberation lane."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-hard-007",
+      "round_number": 7,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "alternative_proposal": "Require later proposals to cite which finalist they replace.",
+      "responds_to": "idle-hard-006",
+      "reasoning_points": [
+        "If replacement is unnamed, the transcript cannot show progress.",
+        "When every proposal names a replaced finalist, comparison is falsifiable.",
+        "If no finalist improves, the hard stop should preserve the previous set."
+      ],
+      "tradeoff_axis": "Replacement traceability versus simpler transcript shape.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "Round seven remains below the hard convergence limit."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "Traceability improves review without bypassing approval."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-hard-008",
+      "round_number": 8,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "alternative_proposal": "Prefer the simplest finalist that preserves all hard safeguards.",
+      "responds_to": "idle-hard-007",
+      "reasoning_points": [
+        "If a simpler finalist preserves safeguards, complexity is unnecessary.",
+        "When safeguards differ, simplicity alone cannot decide.",
+        "If operator review sees equal evidence, conservative scope should win."
+      ],
+      "tradeoff_axis": "Conservative simplicity versus capability breadth.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "Round eight still has no matching soft convergence markers."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The finalist preference is advisory and operator gated."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-hard-009",
+      "round_number": 9,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "alternative_proposal": "Stop at round ten unless both agents converge on the same finalist.",
+      "responds_to": "idle-hard-008",
+      "reasoning_points": [
+        "If no shared finalist exists by round ten, consensus has failed.",
+        "When one more round can select finalists, hard convergence remains useful.",
+        "If agents agree before round ten, soft convergence should take precedence."
+      ],
+      "tradeoff_axis": "Last chance convergence versus bounded termination.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "Round nine prepares for the hard convergence boundary."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The boundary still prevents automatic execution."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-hard-010",
+      "round_number": 10,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle protocol needs a bounded hard stop when consensus does not form.",
+      "alternative_proposal": "Hand the latest finalists to the operator without declaring consensus.",
+      "responds_to": "idle-hard-009",
+      "reasoning_points": [
+        "If round ten is reached, hard convergence should return finalists.",
+        "When finalists are returned, no implementation work should be created.",
+        "If the operator rejects all finalists, the protocol can restart later."
+      ],
+      "tradeoff_axis": "Hard stop operator handoff versus endless deliberation.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "Round ten triggers hard convergence with finalist proposal ids."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The final round explicitly hands control back to the operator."
+      }
+    }
+  ]
+}

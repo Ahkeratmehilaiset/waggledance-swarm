@@ -1,0 +1,110 @@
+{
+  "name": "soft_convergence",
+  "expected_status": "soft_convergence",
+  "events": [
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_proposal",
+      "proposal_id": "idle-soft-001",
+      "round_number": 1,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle deliberation needs status visibility without starting implementation work.",
+      "proposal": "Add a read only session status view before considering any action surface.",
+      "tradeoff_axis": "Observability first bridge hardening versus faster direct automation.",
+      "simulation_evidence": {
+        "kind": "scenario_simulation",
+        "summary": "A transcript with one proposal and peer review can be summarized without writes."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The proposal improves visibility and keeps operator approval unchanged."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_counter_proposal",
+      "proposal_id": "idle-soft-002",
+      "round_number": 2,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle deliberation needs status visibility without starting implementation work.",
+      "alternative_proposal": "Represent idle progress as transcript fixtures before adding runtime status output.",
+      "responds_to": "idle-soft-001",
+      "reasoning_points": [
+        "If fixtures fail, runtime status logic should not be trusted.",
+        "When transcripts are stable, later tools can assert exact convergence.",
+        "If operator review remains required, consensus cannot create tasks automatically."
+      ],
+      "tradeoff_axis": "Fixture first confidence versus immediate runtime observability.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "The fixture should converge only when both agents link the same proposal."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The counter proposal is test data and creates no execution path."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_adversarial_review",
+      "proposal_id": "idle-soft-003",
+      "round_number": 3,
+      "proposes_substrate_change": false,
+      "problem_statement": "Idle deliberation needs status visibility without starting implementation work.",
+      "responds_to": "idle-soft-002",
+      "counterexamples": [
+        "If the status view includes an emit flag, it becomes an action surface.",
+        "When consensus text implies implementation, operator review is bypassed in practice."
+      ],
+      "tradeoff_axis": "Adversarial falsification versus premature convergence.",
+      "simulation_evidence": {
+        "kind": "scenario_simulation",
+        "summary": "The adversarial round blocks convergence before round five."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The review searches only for failures and does not execute changes."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_consensus_reached",
+      "proposal_id": "idle-soft-005a",
+      "round_number": 5,
+      "proposes_substrate_change": false,
+      "problem_statement": "Idle deliberation needs status visibility without starting implementation work.",
+      "consensus_target_proposal_id": "idle-soft-002",
+      "operator_gate_required": true,
+      "auto_execute": false,
+      "tradeoff_axis": "Operator gated convergence versus automatic implementation.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "One consensus marker alone must not be enough for soft convergence."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "Consensus is reported only for operator review."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_consensus_reached",
+      "proposal_id": "idle-soft-005b",
+      "round_number": 5,
+      "proposes_substrate_change": false,
+      "problem_statement": "Idle deliberation needs status visibility without starting implementation work.",
+      "consensus_target_proposal_id": "idle-soft-002",
+      "operator_gate_required": true,
+      "auto_execute": false,
+      "tradeoff_axis": "Operator gated convergence versus automatic implementation.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "Two consensus markers link the same target and trigger soft convergence."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "The second marker still requires operator approval before any work."
+      }
+    }
+  ]
+}

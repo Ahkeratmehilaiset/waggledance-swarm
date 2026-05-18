@@ -1,0 +1,71 @@
+{
+  "name": "low_quality_response",
+  "expected_status": null,
+  "rejected_payload": {
+    "protocol_version": "idle-protocol.v1",
+    "event_type": "idle_counter_proposal",
+    "proposal_id": "idle-low-bad-002",
+    "round_number": 2,
+    "proposes_substrate_change": true,
+    "problem_statement": "Too vague.",
+    "alternative_proposal": "Looks good.",
+    "responds_to": "idle-low-001",
+    "reasoning_points": [
+      "No evidence here.",
+      "Still no test.",
+      "Another padded item."
+    ],
+    "tradeoff_axis": "None.",
+    "simulation_evidence": {
+      "kind": "scenario_simulation",
+      "summary": "No simulation."
+    },
+    "charter_alignment": {
+      "compatible": true,
+      "reasoning": "Fine."
+    }
+  },
+  "events": [
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_proposal",
+      "proposal_id": "idle-low-001",
+      "round_number": 1,
+      "proposes_substrate_change": true,
+      "problem_statement": "Idle deliberation needs low quality rejection to be explicit.",
+      "proposal": "Emit a low quality response event when a peer answer lacks evidence.",
+      "tradeoff_axis": "Strict response quality versus accepting fast but weak replies.",
+      "simulation_evidence": {
+        "kind": "scenario_simulation",
+        "summary": "A weak counter proposal is rejected before it can influence convergence."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "Quality rejection escalates uncertainty without creating implementation work."
+      }
+    },
+    {
+      "protocol_version": "idle-protocol.v1",
+      "event_type": "idle_low_quality_response",
+      "proposal_id": "idle-low-003",
+      "round_number": 3,
+      "proposes_substrate_change": false,
+      "problem_statement": "Idle deliberation needs low quality rejection to be explicit.",
+      "rejected_event_id": "idle-low-bad-002",
+      "quality_errors": [
+        "problem_statement: must contain at least 5 words",
+        "simulation_evidence.summary: must contain concrete evidence"
+      ],
+      "operator_escalation_required": true,
+      "tradeoff_axis": "Explicit escalation versus silent acceptance of weak evidence.",
+      "simulation_evidence": {
+        "kind": "test_case",
+        "summary": "The rejected payload fails quality validation and convergence remains open."
+      },
+      "charter_alignment": {
+        "compatible": true,
+        "reasoning": "Rejecting low quality content prevents padded convergence."
+      }
+    }
+  ]
+}

@@ -288,6 +288,7 @@ def format_proof(report: dict[str, Any]) -> str:
     lines.append("")
     lines.append("COMPETITOR-AXIS PILOT  (docs/benchmarks/2026_05_20_competitor_axis_pilot.md)")
     lines.append(f"  bridge-consensus-sealed          : {pilot['bridge_consensus_sealed']}")
+    lines.append(f"  pilot status                     : {pilot['pilot_status']}")
     lines.append(f"  consensus grade                  : {pilot['consensus_grade']}")
     lines.append(f"  must-win axes                    : {', '.join(pilot['must_win_axes'])}")
     lines.append(f"  ceded axes                       : {', '.join(pilot['ceded_axes'])}")
@@ -457,6 +458,7 @@ def _read_pilot_summary() -> dict[str, Any]:
             "available": False,
             "bridge_consensus_sealed": "unknown",
             "consensus_grade": "unknown",
+            "pilot_status": "unknown",
             "must_win_axes": [],
             "ceded_axes": [],
             "rivals": [],
@@ -470,6 +472,7 @@ def _read_pilot_summary() -> dict[str, Any]:
             "error": str(exc),
             "bridge_consensus_sealed": "unknown",
             "consensus_grade": "unknown",
+            "pilot_status": "unknown",
             "must_win_axes": [],
             "ceded_axes": [],
             "rivals": [],
@@ -516,7 +519,8 @@ def _read_pilot_summary() -> dict[str, Any]:
     return {
         "available": True,
         "bridge_consensus_sealed": sealed,
-        "consensus_grade": data.get("status", "unknown"),
+        "consensus_grade": bool(data.get("consensus_grade", False)),
+        "pilot_status": data.get("status", "unknown"),
         "must_win_axes": must_win,
         "ceded_axes": ceded,
         "rivals": rivals,

@@ -66,9 +66,19 @@ def test_competitor_pilot_section_resolves_axes_from_doc() -> None:
 
     assert pilot["available"] is True, pilot
     assert pilot["bridge_consensus_sealed"] is True
+    assert pilot["pilot_status"] == "scope_ready_not_consensus_grade"
+    assert pilot["consensus_grade"] is False
     assert any("A3" in axis for axis in pilot["must_win_axes"]), pilot["must_win_axes"]
     assert any("A4" in axis for axis in pilot["must_win_axes"]), pilot["must_win_axes"]
     assert pilot["rivals"], "expected at least one rival"
+
+
+def test_competitor_pilot_text_separates_status_from_consensus_grade() -> None:
+    result = _run()
+
+    assert result.returncode in {0, 1}, result.stderr
+    assert "pilot status                     : scope_ready_not_consensus_grade" in result.stdout
+    assert "consensus grade                  : False" in result.stdout
 
 
 def test_adoption_high_gap_count_is_zero_on_current_main() -> None:

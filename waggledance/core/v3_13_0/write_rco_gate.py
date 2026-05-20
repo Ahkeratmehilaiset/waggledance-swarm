@@ -779,6 +779,93 @@ def build_gate_decision_card(
     }
 
 
+def build_rco_decision_artifact_for_gate(
+    intent: Intent,
+    outcome: GateOutcome,
+    *,
+    ts_utc: str | None = None,
+    policy_version: str = "policy:write_rco_gate:v1",
+    charter_version: str = "charter:v1",
+    scope_policy_decision: str = "not_applicable",
+    peer_rco_verdict: str = "not_requested",
+) -> dict[str, Any]:
+    """Build a payload-free MAGMA RCO decision artifact for a gate outcome.
+
+    This is an opt-in adapter. It does not emit MAGMA events, write receipt
+    bundles, or change ``WriteRCOGate.route`` behavior.
+    """
+    from waggledance.core.magma.rco_decision_artifact import (
+        build_rco_decision_artifact as _build_rco_artifact,
+    )
+
+    gate_decision = _artifact_gate_decision(outcome)
+    return _build_rco_artifact(
+        decision_id=f"rco:decision:{_safe_ref(intent.intent_id)}",
+        ts_utc=ts_utc or _utc_iso(),
+        intent=_artifact_intent_summary(intent),
+        write_payload=intent.payload,
+        risk_class=outcome.risk_class.value,
+        gate_decision=gate_decision,
+        approved=outcome.approved,
+        operator_required=outcome.risk_class == WriteRiskClass.EXTERNAL_EFFECT,
+        policy_version=policy_version,
+        charter_version=charter_version,
+        scope_policy_decision=scope_policy_decision,
+        peer_rco_verdict=peer_rco_verdict,
+        verifier_path=["write_rco_gate_v1", "rco_decision_artifact_v0"],
+        reason_codes=_artifact_reason_codes(outcome, gate_decision),
+        audit_event_ids=[_safe_ref(f"audit:{event_id}") for event_id in outcome.audit_event_ids],
+        stop_condition=outcome.stop_condition.value if outcome.stop_condition else None,
+    )
+
+
+def _artifact_intent_summary(intent: Intent) -> dict[str, Any]:
+    return {
+        "intent_id": intent.intent_id,
+        "agent_id": intent.agent_id,
+        "session_id": intent.session_id,
+        "tool_descriptor_id": intent.tool_descriptor_id,
+        "connector_ref": intent.connector_ref or "",
+        "target_state_ref": intent.target_state_ref,
+        "action": intent.action,
+        "payload_hash": intent.payload_hash,
+        "provenance_chain": intent.provenance_chain,
+        "proposed_at_utc": intent.proposed_at_utc,
+    }
+
+
+def _artifact_gate_decision(outcome: GateOutcome) -> str:
+    if outcome.approved:
+        return "allow"
+    if outcome.stop_condition is not None:
+        return "review"
+    return "refuse"
+
+
+def _artifact_reason_codes(outcome: GateOutcome, gate_decision: str) -> list[str]:
+    reason_codes = [
+        f"rco:risk:{outcome.risk_class.value}",
+        f"rco:gate:{gate_decision}",
+    ]
+    if outcome.approved:
+        reason_codes.append("rco:approved")
+    elif outcome.stop_condition is not None:
+        reason_codes.append(f"rco:stop:{outcome.stop_condition.value}")
+    else:
+        reason_codes.append("rco:denied")
+    return reason_codes
+
+
+def _safe_ref(value: str) -> str:
+    safe = "".join(
+        char if char.isalnum() or char in ":._-" else "_"
+        for char in str(value)
+    ).strip("_")
+    if not safe or not safe[0].isalpha():
+        safe = f"ref:{safe or 'unknown'}"
+    return safe[:180]
+
+
 def _decision_operator_status(outcome: GateOutcome) -> str:
     if outcome.approved:
         return "approved"
@@ -846,4 +933,5 @@ __all__ = [
     "PeerRCOResult",
     "ScopePolicyResult",
     "build_gate_decision_card",
+    "build_rco_decision_artifact_for_gate",
 ]

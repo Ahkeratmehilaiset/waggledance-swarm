@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/rco_decision_artifact.v0.json",
+  "title": "MAGMA RCO Decision Artifact v0",
+  "description": "Canonical, payload-free RCO decision artifact that MAGMA receipts can bind through rco_decision_digest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rco_decision_version",
+    "decision_id",
+    "ts_utc",
+    "intent_digest",
+    "write_payload_digest",
+    "risk_class",
+    "gate_decision",
+    "approved",
+    "operator_required",
+    "approval_id",
+    "policy_version",
+    "charter_version",
+    "scope_policy_decision",
+    "peer_rco_verdict",
+    "verifier_path",
+    "reason_codes",
+    "audit_event_ids",
+    "stop_condition"
+  ],
+  "properties": {
+    "rco_decision_version": {
+      "const": "magma.rco_decision_artifact.v0"
+    },
+    "decision_id": {
+      "$ref": "#/definitions/ref"
+    },
+    "ts_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "intent_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "write_payload_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "risk_class": {
+      "$ref": "#/definitions/risk_class"
+    },
+    "gate_decision": {
+      "$ref": "#/definitions/gate_decision"
+    },
+    "approved": {
+      "type": "boolean"
+    },
+    "operator_required": {
+      "type": "boolean"
+    },
+    "approval_id": {
+      "anyOf": [
+        { "$ref": "#/definitions/ref" },
+        { "type": "null" }
+      ]
+    },
+    "policy_version": {
+      "$ref": "#/definitions/ref"
+    },
+    "charter_version": {
+      "$ref": "#/definitions/ref"
+    },
+    "scope_policy_decision": {
+      "type": "string",
+      "enum": [
+        "auto_approved",
+        "operator_confirmed",
+        "denied",
+        "requires_operator",
+        "not_applicable"
+      ]
+    },
+    "peer_rco_verdict": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "changes_requested",
+        "blocked",
+        "timeout",
+        "not_requested"
+      ]
+    },
+    "verifier_path": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "audit_event_ids": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "stop_condition": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "peer_rco_timeout",
+            "peer_rco_nonconvergent",
+            "audit_write_failed",
+            "operator_unavailable",
+            "anti_pattern_violation",
+            "no_rollback_plan",
+            "cost_ceiling_reached",
+            "idempotency_cap_reached"
+          ]
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "risk_class": {
+            "const": "external_effect"
+          }
+        },
+        "required": ["risk_class"]
+      },
+      "then": {
+        "properties": {
+          "operator_required": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "gate_decision": {
+            "const": "refuse"
+          }
+        },
+        "required": ["gate_decision"]
+      },
+      "then": {
+        "properties": {
+          "approved": {
+            "const": false
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{1,180}$"
+    },
+    "gate_decision": {
+      "type": "string",
+      "enum": ["allow", "refuse", "review", "require_approval"]
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": [
+        "informational",
+        "internal_memory",
+        "local_artifact",
+        "external_effect"
+      ]
+    }
+  }
+}

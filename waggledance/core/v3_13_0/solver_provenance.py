@@ -38,6 +38,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional
 
+from waggledance.core.magma.canonical import sha256_digest
+
+
+SOLVER_PROVENANCE_POLICY_VERSION = "policy:solver_provenance:v1"
+SOLVER_PROVENANCE_CHARTER_VERSION = "charter:v1"
+SOLVER_PROVENANCE_DOMAIN_THRESHOLD_VERSION = "threshold:solver_provenance:v1"
+
 
 # --------------------------------------------------------------------------
 # Signing roles + activation states
@@ -168,6 +175,14 @@ class SolverProvenance:
 
     operator_scope_policy_active: Callable[[str], bool]
     """Resolve operator_scope_policy_ref -> True if still in force."""
+
+    emit_receipt_bundle: Optional[Callable[[dict], None]] = None
+    """Optional hook for MAGMA receipt-bound transition bundles.
+
+    If configured, authority transitions build and emit a payload-free
+    RCO/EvaluationResult/receipt bundle before durable state changes.
+    Hook failure propagates so the transition fails closed.
+    """
 
     # --- gate config ---------------------------------------------------------
 
@@ -491,6 +506,18 @@ class SolverProvenance:
                                             for s in candidate.signatures],
             "ts_utc": _utc_iso(),
         })
+        bridge_event_ref = _transition_bridge_ref(
+            "activation_revoked", candidate_id, audit_ref
+        )
+        self._emit_transition_receipt_bundle(
+            candidate=candidate,
+            transition="activation_revoked",
+            audit_event_ref=audit_ref,
+            bridge_event_ref=bridge_event_ref,
+            revoked_by=revoked_by,
+            reason=reason,
+            new_state=ActivationState.REVOKED.value,
+        )
         candidate.activation_state = ActivationState.REVOKED.value
         candidate.revocation_audit_ref = audit_ref
         self.update_candidate(candidate)
@@ -506,6 +533,7 @@ class SolverProvenance:
                 "revoked_by": revoked_by,
                 "supersedes_signature_ids": [s.signature_id
                                                 for s in candidate.signatures],
+                "bridge_event_ref": bridge_event_ref,
                 "audit_event_id": audit_ref,
             },
             "ts_utc": _utc_iso(),
@@ -530,12 +558,18 @@ class SolverProvenance:
             raise KeyError(f"unknown candidate: {candidate_id}")
         result = self.verify_solver_provenance(candidate_id)
         if not result.valid:
-            self.emit_magma_event({
+            audit_ref = self.emit_magma_event({
                 "event_type": "solver.activation_refused",
                 "solver_candidate_id": candidate_id,
                 "reasons": result.reasons,
                 "ts_utc": _utc_iso(),
             })
+            self._emit_transition_receipt_bundle(
+                candidate=candidate,
+                transition="activation_refused",
+                audit_event_ref=audit_ref,
+                verification=result,
+            )
             return ActivationState(candidate.activation_state)
         if candidate.activation_state == ActivationState.ACTIVATED.value:
             return ActivationState.ACTIVATED
@@ -544,21 +578,39 @@ class SolverProvenance:
                 ActivationState.REVOKED.value):
             return ActivationState(candidate.activation_state)
         if candidate.activation_state != ActivationState.SIGNED.value:
-            self.emit_magma_event({
+            audit_ref = self.emit_magma_event({
                 "event_type": "solver.activation_refused",
                 "solver_candidate_id": candidate_id,
                 "reasons": ["candidate_not_signed"],
                 "activation_state": candidate.activation_state,
                 "ts_utc": _utc_iso(),
             })
+            self._emit_transition_receipt_bundle(
+                candidate=candidate,
+                transition="activation_refused",
+                audit_event_ref=audit_ref,
+                verification=result,
+                reason_codes=["candidate_not_signed"],
+            )
             return ActivationState(candidate.activation_state)
-        candidate.activation_state = ActivationState.ACTIVATED.value
-        self.update_candidate(candidate)
         audit_ref = self.emit_magma_event({
             "event_type": "solver.activation_authorised",
             "solver_candidate_id": candidate_id,
             "ts_utc": _utc_iso(),
         })
+        bridge_event_ref = _transition_bridge_ref(
+            "activation_authorised", candidate_id, audit_ref
+        )
+        self._emit_transition_receipt_bundle(
+            candidate=candidate,
+            transition="activation_authorised",
+            audit_event_ref=audit_ref,
+            bridge_event_ref=bridge_event_ref,
+            verification=result,
+            new_state=ActivationState.ACTIVATED.value,
+        )
+        candidate.activation_state = ActivationState.ACTIVATED.value
+        self.update_candidate(candidate)
         self.emit_bridge_event({
             "type": "handoff",
             "status": "activation_authorised",
@@ -566,6 +618,7 @@ class SolverProvenance:
             "payload": {
                 "kind": "solver",
                 "solver_candidate_id": candidate_id,
+                "bridge_event_ref": bridge_event_ref,
                 "audit_event_id": audit_ref,
             },
             "ts_utc": _utc_iso(),
@@ -604,6 +657,34 @@ class SolverProvenance:
             and not self._owner_peer_agent_overlap(candidate)
         )
 
+    def _emit_transition_receipt_bundle(
+        self,
+        *,
+        candidate: SolverCandidateRecord,
+        transition: str,
+        audit_event_ref: str,
+        bridge_event_ref: str = "",
+        verification: VerificationResult | None = None,
+        reason_codes: list[str] | None = None,
+        revoked_by: str = "",
+        reason: str = "",
+        new_state: str | None = None,
+    ) -> None:
+        if self.emit_receipt_bundle is None:
+            return
+        bundle = build_solver_provenance_transition_receipt(
+            candidate=candidate,
+            transition=transition,
+            audit_event_ref=audit_event_ref,
+            bridge_event_ref=bridge_event_ref,
+            verification=verification,
+            reason_codes=reason_codes,
+            revoked_by=revoked_by,
+            reason=reason,
+            new_state=new_state,
+        )
+        self.emit_receipt_bundle(bundle)
+
     def _auto_quarantine(self, candidate: SolverCandidateRecord) -> None:
         audit_ref = self.emit_magma_event({
             "event_type": "solver.quarantined",
@@ -613,6 +694,17 @@ class SolverProvenance:
             "consecutive_runs": candidate.consecutive_divergent_runs,
             "ts_utc": _utc_iso(),
         })
+        bridge_event_ref = _transition_bridge_ref(
+            "quarantined", candidate.candidate_id, audit_ref
+        )
+        self._emit_transition_receipt_bundle(
+            candidate=candidate,
+            transition="quarantined",
+            audit_event_ref=audit_ref,
+            bridge_event_ref=bridge_event_ref,
+            reason_codes=["quarantine_threshold_reached"],
+            new_state=ActivationState.QUARANTINED.value,
+        )
         candidate.activation_state = ActivationState.QUARANTINED.value
         self.emit_bridge_event({
             "type": "decision",
@@ -622,6 +714,7 @@ class SolverProvenance:
                 "kind": "solver",
                 "solver_candidate_id": candidate.candidate_id,
                 "evidence_refs": list(candidate.quarantine_evidence_refs),
+                "bridge_event_ref": bridge_event_ref,
                 "audit_event_id": audit_ref,
             },
             "ts_utc": _utc_iso(),
@@ -639,6 +732,339 @@ def canonicalize_manifest(manifest: dict) -> tuple[str, str]:
                               ensure_ascii=False)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return canonical, digest
+
+
+# --------------------------------------------------------------------------
+# MAGMA receipt binding helpers
+# --------------------------------------------------------------------------
+
+
+def build_solver_provenance_transition_artifact(
+    *,
+    candidate: SolverCandidateRecord,
+    transition: str,
+    audit_event_ref: str,
+    bridge_event_ref: str = "",
+    verification: VerificationResult | None = None,
+    reason_codes: list[str] | None = None,
+    revoked_by: str = "",
+    reason: str = "",
+    new_state: str | None = None,
+    ts_utc: str | None = None,
+    policy_version: str = SOLVER_PROVENANCE_POLICY_VERSION,
+    charter_version: str = SOLVER_PROVENANCE_CHARTER_VERSION,
+) -> dict[str, Any]:
+    """Build a payload-free RCO artifact for a provenance transition."""
+    from waggledance.core.magma.rco_decision_artifact import (
+        build_rco_decision_artifact,
+    )
+
+    gate_decision = _transition_gate_decision(transition)
+    approved = gate_decision == "allow"
+    intent = {
+        "subject_type": "solver",
+        "candidate_id": candidate.candidate_id,
+        "transition": transition,
+        "target_domain": candidate.target_domain,
+        "target_write_risk": candidate.target_write_risk,
+    }
+    return build_rco_decision_artifact(
+        decision_id=_safe_ref(
+            "rco:solver_provenance:"
+            f"{transition}:{candidate.candidate_id}"
+        ),
+        ts_utc=ts_utc or _utc_iso(),
+        intent=intent,
+        write_payload=_transition_artifact_payload(
+            candidate=candidate,
+            transition=transition,
+            audit_event_ref=audit_event_ref,
+            bridge_event_ref=bridge_event_ref,
+            verification=verification,
+            reason=reason,
+            revoked_by=revoked_by,
+            new_state=new_state,
+        ),
+        risk_class="local_artifact",
+        gate_decision=gate_decision,
+        approved=approved,
+        operator_required=False,
+        policy_version=policy_version,
+        charter_version=charter_version,
+        scope_policy_decision="auto_approved" if approved else "denied",
+        peer_rco_verdict=(
+            "pass" if transition == "activation_authorised"
+            else "not_requested"
+        ),
+        verifier_path=[
+            "solver_provenance_v1",
+            "rco_decision_artifact_v0",
+        ],
+        reason_codes=_transition_reason_codes(
+            candidate=candidate,
+            transition=transition,
+            gate_decision=gate_decision,
+            verification=verification,
+            reason_codes=reason_codes,
+            revoked_by=revoked_by,
+        ),
+        audit_event_ids=[_safe_ref(f"audit:{audit_event_ref}")],
+    )
+
+
+def build_solver_provenance_transition_receipt(
+    *,
+    candidate: SolverCandidateRecord,
+    transition: str,
+    audit_event_ref: str,
+    bridge_event_ref: str = "",
+    verification: VerificationResult | None = None,
+    reason_codes: list[str] | None = None,
+    revoked_by: str = "",
+    reason: str = "",
+    new_state: str | None = None,
+    ts_utc: str | None = None,
+    policy_digest: str | None = None,
+    charter_digest: str | None = None,
+    world_snapshot_digest: str | None = None,
+    solver_contract_digest: str | None = None,
+    previous_receipt: dict[str, Any] | None = None,
+    domain_threshold_version: str = SOLVER_PROVENANCE_DOMAIN_THRESHOLD_VERSION,
+) -> dict[str, Any]:
+    """Build EvaluationResult + MAGMA receipt for a provenance transition.
+
+    The returned bundle intentionally omits raw manifests, revocation reasons,
+    and quarantine evidence payloads. It binds only IDs, state metadata, and
+    digests so callers can emit it safely into MAGMA.
+    """
+    from waggledance.core.magma.evaluation_result import build_evaluation_result
+    from waggledance.core.magma.receipt import build_magma_receipt
+
+    effective_ts = ts_utc or _utc_iso()
+    artifact = build_solver_provenance_transition_artifact(
+        candidate=candidate,
+        transition=transition,
+        audit_event_ref=audit_event_ref,
+        bridge_event_ref=bridge_event_ref,
+        verification=verification,
+        reason_codes=reason_codes,
+        revoked_by=revoked_by,
+        reason=reason,
+        new_state=new_state,
+        ts_utc=effective_ts,
+    )
+    artifact_digest = sha256_digest(artifact)
+    payload = _transition_receipt_payload(
+        candidate=candidate,
+        transition=transition,
+        audit_event_ref=audit_event_ref,
+        bridge_event_ref=bridge_event_ref,
+        verification=verification,
+        reason=reason,
+        revoked_by=revoked_by,
+        new_state=new_state,
+        rco_decision_digest=artifact_digest,
+    )
+    gate_decision = str(artifact["gate_decision"])
+    evaluation = build_evaluation_result(
+        case_id=_safe_ref(
+            "case:solver_provenance:"
+            f"{transition}:{candidate.candidate_id}"
+        ),
+        subject_type="solver",
+        target_payload=payload,
+        risk_class="local_artifact",
+        expected_gate=gate_decision,
+        actual_gate=gate_decision,
+        verifier_path=[
+            "solver_provenance_v1",
+            "rco_decision_artifact_v0",
+            "magma_receipt_v1",
+        ],
+        solver_selection=[f"solver:{_safe_ref(candidate.candidate_id)}"],
+        policy_version=str(artifact["policy_version"]),
+        charter_version=str(artifact["charter_version"]),
+        domain_threshold_version=domain_threshold_version,
+        verdict=_transition_verdict(gate_decision),
+        reason_codes=list(artifact["reason_codes"]),
+        confidence_score=0.95 if gate_decision == "allow" else 0.85,
+        uncertainty_sources=[],
+    )
+    receipt = build_magma_receipt(
+        event_id=_safe_ref(
+            "magma:solver_provenance:"
+            f"{transition}:{candidate.candidate_id}"
+        ),
+        ts_utc=effective_ts,
+        risk_class="local_artifact",
+        payload=payload,
+        evaluation_result=evaluation,
+        policy_digest=policy_digest or sha256_digest({
+            "policy_version": artifact["policy_version"],
+        }),
+        charter_digest=charter_digest or sha256_digest({
+            "charter_version": artifact["charter_version"],
+        }),
+        rco_decision_digest=artifact_digest,
+        world_snapshot_digest=world_snapshot_digest or sha256_digest({
+            "candidate_id": candidate.candidate_id,
+            "transition": transition,
+            "activation_state": candidate.activation_state,
+            "new_state": new_state or candidate.activation_state,
+            "audit_event_ref": audit_event_ref,
+            "bridge_event_ref": bridge_event_ref,
+        }),
+        solver_contract_digest=solver_contract_digest or sha256_digest({
+            "candidate_id": candidate.candidate_id,
+            "manifest_sha256": candidate.manifest_sha256,
+            "target_domain": candidate.target_domain,
+            "target_write_risk": candidate.target_write_risk,
+        }),
+        previous_receipt=previous_receipt,
+    )
+    return {
+        "solver_provenance_transition_artifact": artifact,
+        "evaluation_result": evaluation,
+        "receipt": receipt,
+    }
+
+
+def _transition_artifact_payload(
+    *,
+    candidate: SolverCandidateRecord,
+    transition: str,
+    audit_event_ref: str,
+    bridge_event_ref: str,
+    verification: VerificationResult | None,
+    reason: str,
+    revoked_by: str,
+    new_state: str | None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "solver_provenance_transition_payload.v1",
+        "candidate_id": candidate.candidate_id,
+        "transition": transition,
+        "manifest_sha256": candidate.manifest_sha256,
+        "target_domain": candidate.target_domain,
+        "target_write_risk": candidate.target_write_risk,
+        "activation_state": candidate.activation_state,
+        "new_state": new_state or candidate.activation_state,
+        "audit_event_ref": audit_event_ref,
+        "bridge_event_ref": bridge_event_ref,
+        "signature_count": len(candidate.signatures),
+        "verification_valid": (
+            verification.valid if verification is not None else None
+        ),
+        "verification_reasons_digest": (
+            sha256_digest({"reasons": verification.reasons})
+            if verification is not None
+            else None
+        ),
+        "quarantine_evidence_digest": (
+            sha256_digest({
+                "evidence_refs": list(candidate.quarantine_evidence_refs),
+            })
+            if candidate.quarantine_evidence_refs
+            else None
+        ),
+        "revoked_by": revoked_by,
+        "reason_digest": (
+            sha256_digest({"reason": reason}) if reason else None
+        ),
+    }
+
+
+def _transition_receipt_payload(
+    *,
+    candidate: SolverCandidateRecord,
+    transition: str,
+    audit_event_ref: str,
+    bridge_event_ref: str,
+    verification: VerificationResult | None,
+    reason: str,
+    revoked_by: str,
+    new_state: str | None,
+    rco_decision_digest: str,
+) -> dict[str, Any]:
+    payload = _transition_artifact_payload(
+        candidate=candidate,
+        transition=transition,
+        audit_event_ref=audit_event_ref,
+        bridge_event_ref=bridge_event_ref,
+        verification=verification,
+        reason=reason,
+        revoked_by=revoked_by,
+        new_state=new_state,
+    )
+    payload["rco_decision_digest"] = rco_decision_digest
+    return payload
+
+
+def _transition_gate_decision(transition: str) -> str:
+    if transition == "activation_refused":
+        return "refuse"
+    return "allow"
+
+
+def _transition_verdict(gate_decision: str) -> str:
+    if gate_decision == "allow":
+        return "pass"
+    if gate_decision == "refuse":
+        return "refuse"
+    return "review"
+
+
+def _transition_reason_codes(
+    *,
+    candidate: SolverCandidateRecord,
+    transition: str,
+    gate_decision: str,
+    verification: VerificationResult | None,
+    reason_codes: list[str] | None,
+    revoked_by: str,
+) -> list[str]:
+    codes = [
+        f"solver_provenance:transition:{_safe_ref(transition)}",
+        f"solver_provenance:gate:{_safe_ref(gate_decision)}",
+        f"solver_provenance:target_risk:{_safe_ref(candidate.target_write_risk)}",
+        f"solver_provenance:target_domain:{_safe_ref(candidate.target_domain)}",
+    ]
+    if reason_codes:
+        codes.extend(f"solver_provenance:reason:{_safe_ref(code)}"
+                     for code in reason_codes)
+    if verification is not None:
+        codes.append(
+            "solver_provenance:verification:pass"
+            if verification.valid
+            else "solver_provenance:verification:fail"
+        )
+        codes.extend(
+            f"solver_provenance:verify_reason:{_safe_ref(reason)}"
+            for reason in verification.reasons[:8]
+        )
+    if revoked_by:
+        codes.append(f"solver_provenance:revoked_by:{_safe_ref(revoked_by)}")
+    return codes[:30]
+
+
+def _transition_bridge_ref(
+    transition: str,
+    candidate_id: str,
+    audit_event_ref: str,
+) -> str:
+    return _safe_ref(
+        f"bridge:solver_provenance:{transition}:{candidate_id}:{audit_event_ref}"
+    )
+
+
+def _safe_ref(value: str) -> str:
+    safe = "".join(
+        char if char.isalnum() or char in ":._-" else "_"
+        for char in str(value)
+    ).strip("_")
+    if not safe or not safe[0].isalpha():
+        safe = f"ref:{safe or 'unknown'}"
+    return safe[:160]
 
 
 # --------------------------------------------------------------------------
@@ -662,5 +1088,10 @@ __all__ = [
     "RevocationResult",
     "SolverCandidateRecord",
     "SolverProvenance",
+    "SOLVER_PROVENANCE_POLICY_VERSION",
+    "SOLVER_PROVENANCE_CHARTER_VERSION",
+    "SOLVER_PROVENANCE_DOMAIN_THRESHOLD_VERSION",
+    "build_solver_provenance_transition_artifact",
+    "build_solver_provenance_transition_receipt",
     "canonicalize_manifest",
 ]

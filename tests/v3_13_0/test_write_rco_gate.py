@@ -29,7 +29,9 @@ from waggledance.core.v3_13_0.write_rco_gate import (
     PeerRCOResult,
     ScopePolicyResult,
     build_gate_decision_card,
+    build_rco_decision_artifact_for_gate,
 )
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.v3_13_0.solver_provenance import (
     ActivationState,
     VerificationResult,
@@ -1153,6 +1155,107 @@ class TestGateDecisionCard:
         assert card["required_action"] == "execute_with_rollback_plan"
         assert card["rollback_plan_ref"] == "recovery:logbook_update_v1"
         assert card["audit_event_ids"] == outcome.audit_event_ids
+
+
+# --------------------------------------------------------------------------
+# MAGMA RCO decision artifact adapter
+# --------------------------------------------------------------------------
+
+
+class TestRcoDecisionArtifactAdapter:
+
+    def test_artifact_adapter_binds_payload_hash_without_raw_payload(self):
+        audit = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
+        intent = _make_intent(
+            target_state_ref="state:audit_log",
+            payload={"body": "secret operator text"},
+        )
+
+        outcome = gate.route(intent)
+        artifact = build_rco_decision_artifact_for_gate(
+            intent,
+            outcome,
+            ts_utc="2026-05-20T12:00:00Z",
+        )
+
+        assert artifact["rco_decision_version"] == (
+            "magma.rco_decision_artifact.v0"
+        )
+        assert artifact["risk_class"] == WriteRiskClass.INTERNAL_MEMORY.value
+        assert artifact["gate_decision"] == "allow"
+        assert artifact["approved"] is True
+        assert artifact["operator_required"] is False
+        assert artifact["write_payload_digest"] == sha256_digest(intent.payload)
+        assert artifact["intent_digest"].startswith("sha256:")
+        assert "secret operator text" not in repr(artifact)
+
+    def test_artifact_adapter_maps_policy_denial_to_refuse(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+            capsules=TestExternalEffectRoute()._setup_wrt_003_capsule(),
+            scope_decision="denied",
+            scope_reason="outside_pre_approved_scope",
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+        )
+
+        outcome = gate.route(intent)
+        artifact = build_rco_decision_artifact_for_gate(
+            intent,
+            outcome,
+            ts_utc="2026-05-20T12:00:00Z",
+            scope_policy_decision="denied",
+            peer_rco_verdict="pass",
+        )
+
+        assert artifact["gate_decision"] == "refuse"
+        assert artifact["approved"] is False
+        assert artifact["operator_required"] is True
+        assert artifact["scope_policy_decision"] == "denied"
+        assert "rco:denied" in artifact["reason_codes"]
+
+    def test_artifact_adapter_maps_stop_condition_to_review(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_missing_capsule",
+        )
+
+        outcome = gate.route(intent)
+        artifact = build_rco_decision_artifact_for_gate(
+            intent,
+            outcome,
+            ts_utc="2026-05-20T12:00:00Z",
+        )
+
+        assert artifact["gate_decision"] == "review"
+        assert artifact["approved"] is False
+        assert artifact["operator_required"] is True
+        assert artifact["stop_condition"] == StopCondition.NO_ROLLBACK_PLAN.value
+        assert f"rco:stop:{StopCondition.NO_ROLLBACK_PLAN.value}" in (
+            artifact["reason_codes"]
+        )
 
 
 # --------------------------------------------------------------------------

@@ -54,6 +54,17 @@ from waggledance.core.work_queue import (  # noqa: E402
 
 DEFER_ACTIONS = {"continue_claim", "answer_incoming"}
 PICK_ACTIONS = {"claim_unblocked_work", "parallel_read_only"}
+SUCCESSFUL_COMPLETION_TYPES = {"done", "release", "test"}
+SUCCESSFUL_COMPLETION_STATUSES = {
+    "done",
+    "merged",
+    "merged_verified",
+    "pass",
+    "passed",
+    "resolved",
+    "success",
+    "verified",
+}
 
 
 # A small, stable, charter-safe pool of always-available read-only
@@ -219,7 +230,46 @@ def evaluate_agent_next_task(
         }
 
     if bridge_action in PICK_ACTIONS:
-        candidate = _pick_substrate_smoke(agent=agent, now_utc=now_utc)
+        completed_task_ids = _completed_substrate_smoke_task_ids(
+            agent=agent,
+            events=events,
+            bridge_root=Path(bridge_root),
+            now_utc=now_utc,
+        )
+        candidate = _pick_substrate_smoke(
+            agent=agent,
+            now_utc=now_utc,
+            completed_task_ids=completed_task_ids,
+        )
+        if candidate is None:
+            return {
+                "decision": "substrate_smoke_pool_exhausted",
+                "next_action": "claim_non_smoke_work",
+                "exit_code": 0,
+                "agent": agent,
+                "underlying_bridge_action": bridge_action,
+                "bridge_recommendation": bridge_recommendation,
+                "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
+                "notes": [
+                    (
+                        "bridge_next_action left the next-work choice open, but "
+                        "every substrate-smoke candidate for this agent is "
+                        "already completed today"
+                    ),
+                    (
+                        "the scheduler should claim a non-smoke WD-mission task "
+                        "instead of rerunning an already-completed daily smoke"
+                    ),
+                ],
+            }
+        skip_note = []
+        if candidate["rotation"]["offset"] > 0:
+            skip_note = [
+                (
+                    "the initial daily smoke candidate was already completed, "
+                    "so the picker advanced to the next pool entry"
+                )
+            ]
         return {
             "decision": "claim_substrate_smoke",
             "next_action": "claim_and_run",
@@ -240,6 +290,7 @@ def evaluate_agent_next_task(
                     "the candidate is a recommendation only; the caller is "
                     "responsible for claiming it before running"
                 ),
+                *skip_note,
             ],
         }
 
@@ -262,17 +313,43 @@ def _pick_substrate_smoke(
     *,
     agent: str,
     now_utc: datetime,
-) -> dict[str, Any]:
+    completed_task_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
     """Pick one substrate-smoke candidate deterministically for ``agent``."""
     pool = SUBSTRATE_SMOKE_CANDIDATES
     day_of_year = now_utc.timetuple().tm_yday
     agent_salt = sum(ord(c) for c in agent) % len(pool)
-    index = (day_of_year + agent_salt) % len(pool)
+    start_index = (day_of_year + agent_salt) % len(pool)
+    completed = completed_task_ids or set()
+    legacy_task_id = _legacy_daily_smoke_task_id(agent=agent, now_utc=now_utc)
+
+    index = start_index
+    offset = 0
+    for candidate_offset in range(len(pool)):
+        candidate_index = (start_index + candidate_offset) % len(pool)
+        candidate_task_id = _substrate_smoke_task_id(
+            agent=agent,
+            now_utc=now_utc,
+            index=candidate_index,
+        )
+        is_legacy_completion = (
+            candidate_offset == 0 and legacy_task_id in completed
+        )
+        if candidate_task_id not in completed and not is_legacy_completion:
+            index = candidate_index
+            offset = candidate_offset
+            break
+    else:
+        return None
+
     chosen = pool[index]
     target = chosen["target"]
     rationale = chosen["rationale"]
-    utc_date = now_utc.strftime("%Y-%m-%d")
-    task_id = f"{agent}-substrate-smoke-{utc_date}"
+    task_id = _substrate_smoke_task_id(
+        agent=agent,
+        now_utc=now_utc,
+        index=index,
+    )
     return {
         "kind": "run_substrate_smoke",
         "target": target,
@@ -289,9 +366,98 @@ def _pick_substrate_smoke(
             "day_of_year": day_of_year,
             "agent_salt": agent_salt,
             "pool_size": len(pool),
+            "start_index": start_index,
             "index": index,
+            "offset": offset,
+            "skipped_completed_task_ids": sorted(
+                task_id
+                for task_id in completed
+                if task_id == legacy_task_id
+                or task_id.startswith(_daily_smoke_task_prefix(agent, now_utc))
+            ),
         },
     }
+
+
+def _daily_smoke_task_prefix(agent: str, now_utc: datetime) -> str:
+    return f"{agent}-substrate-smoke-{now_utc.strftime('%Y-%m-%d')}-"
+
+
+def _legacy_daily_smoke_task_id(agent: str, now_utc: datetime) -> str:
+    return f"{agent}-substrate-smoke-{now_utc.strftime('%Y-%m-%d')}"
+
+
+def _substrate_smoke_task_id(
+    *,
+    agent: str,
+    now_utc: datetime,
+    index: int,
+) -> str:
+    return f"{_daily_smoke_task_prefix(agent, now_utc)}{index}"
+
+
+def _completed_substrate_smoke_task_ids(
+    *,
+    agent: str,
+    events: Sequence[Mapping[str, Any]],
+    bridge_root: Path,
+    now_utc: datetime,
+) -> set[str]:
+    prefix = _daily_smoke_task_prefix(agent, now_utc)
+    legacy_task_id = _legacy_daily_smoke_task_id(agent=agent, now_utc=now_utc)
+    completed: set[str] = set()
+
+    for event in events:
+        if str(event.get("agent", "")) != agent:
+            continue
+        task_id = str(event.get("task_id", ""))
+        if task_id != legacy_task_id and not task_id.startswith(prefix):
+            continue
+        if _is_successful_completion_event(event):
+            completed.add(task_id)
+
+    done_dir = bridge_root / "work_queue" / "done"
+    try:
+        done_files = list(done_dir.glob("*.json")) if done_dir.exists() else []
+    except OSError:
+        done_files = []
+
+    for done_file in done_files:
+        try:
+            payload = json.loads(done_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(payload.get("agent", "")) != agent:
+            continue
+        task_id = str(payload.get("task_id", ""))
+        if task_id != legacy_task_id and not task_id.startswith(prefix):
+            continue
+        status = str(
+            payload.get("release_status")
+            or payload.get("status")
+            or payload.get("release_message")
+            or ""
+        )
+        if _status_is_successful(status):
+            completed.add(task_id)
+
+    return completed
+
+
+def _is_successful_completion_event(event: Mapping[str, Any]) -> bool:
+    event_type = str(event.get("type", "")).lower()
+    if event_type not in SUCCESSFUL_COMPLETION_TYPES:
+        return False
+    return _status_is_successful(str(event.get("status", "")))
+
+
+def _status_is_successful(status: str) -> bool:
+    tokens = {
+        token
+        for token in status.lower().replace("-", "_").split("_")
+        if token
+    }
+    return any(token in SUCCESSFUL_COMPLETION_STATUSES for token in tokens)
 
 
 def _parse_utc(value: str) -> datetime:

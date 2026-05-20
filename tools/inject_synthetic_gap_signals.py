@@ -38,6 +38,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import sqlite3
 import sys
 from typing import Any, Sequence
 
@@ -332,14 +333,23 @@ def inject_synthetic_signals(
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with ControlPlaneDB(db_path) as cp:
-        records = cp.record_runtime_gap_signal_many(plan)
+    # We bypass ControlPlaneDB.record_runtime_gap_signal_many here because that
+    # production path sets ``created_at`` to the batch insert time, which would
+    # collapse the synthetic staggered observed_at schedule into a single
+    # window when read by ``tools/runtime_gap_signal_concurrency_histogram``
+    # (which reads ``created_at``). Codex RCO finding 2026-05-20T11:47:16Z.
+    # Schema is still migrated through ControlPlaneDB construction so we do
+    # not encode schema knowledge into this tool; only the timestamp choice
+    # differs.
+    with ControlPlaneDB(db_path):
+        pass  # __init__ runs migrate(); close-via-__exit__ flushes WAL.
+    wrote = _apply_synthetic_plan_direct(db_path, plan)
 
     return {
         "decision": "applied",
         "ok": True,
         "apply": True,
-        "wrote_rows": len(records),
+        "wrote_rows": wrote,
         "db_path": str(db_path),
         "run_id": run_id_resolved,
         "source": source,
@@ -359,6 +369,50 @@ def inject_synthetic_signals(
     }
 
 
+def _apply_synthetic_plan_direct(
+    db_path: Path,
+    plan: list[dict[str, Any]],
+) -> int:
+    """Write synthetic rows directly to ``runtime_gap_signals`` with explicit
+    ``created_at`` matching ``observed_at``.
+
+    This bypass is required so the R25 concurrency histogram (which reads
+    ``created_at``) sees the staggered synthetic schedule. The production
+    write path used by real agents sets ``created_at`` to batch insert time
+    and stays unchanged. Only this synthetic-injection tool routes around it.
+
+    Codex RCO PR #499 follow-up 2026-05-20.
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute("BEGIN")
+        for row in plan:
+            conn.execute(
+                """
+                INSERT INTO runtime_gap_signals(
+                    kind, family_kind, cell_coord, signal_payload,
+                    weight, observed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["kind"],
+                    row["family_kind"],
+                    row["cell_coord"],
+                    row["signal_payload"],
+                    float(row["weight"]),
+                    row["observed_at"],
+                    row["created_at"],
+                ),
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+    return len(plan)
+
+
 def _build_signal_plan(
     *,
     cells: Sequence[str],
@@ -369,7 +423,13 @@ def _build_signal_plan(
     run_id: str,
     source: str,
 ) -> list[dict[str, Any]]:
-    """Build the deterministic list of synthetic signal rows to insert."""
+    """Build the deterministic list of synthetic signal rows to insert.
+
+    Each plan item carries an explicit ``created_at`` matching its
+    ``observed_at``. The R25 concurrency histogram reads ``created_at``;
+    aligning the two is what lets the synthetic schedule actually drive the
+    histogram. The production write path is unchanged.
+    """
     plan: list[dict[str, Any]] = []
     base_ts = now_utc.astimezone(timezone.utc).replace(microsecond=0)
     for row_index in range(rows_per_cell):
@@ -384,7 +444,7 @@ def _build_signal_plan(
                     row_index * window_seconds
                     + (cell_pos - concurrent_cells + 1) * window_seconds
                 )
-            observed_at = (base_ts + timedelta(seconds=offset_seconds)).isoformat()
+            scheduled_ts = (base_ts + timedelta(seconds=offset_seconds)).isoformat()
             payload = json.dumps(
                 {
                     "synthetic": True,
@@ -404,7 +464,8 @@ def _build_signal_plan(
                     "cell_coord": cell,
                     "signal_payload": payload,
                     "weight": 1.0,
-                    "observed_at": observed_at,
+                    "observed_at": scheduled_ts,
+                    "created_at": scheduled_ts,
                 }
             )
     return plan

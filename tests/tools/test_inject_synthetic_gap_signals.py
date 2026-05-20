@@ -190,6 +190,54 @@ def test_r25_histogram_sees_synthetic_concurrency(tmp_path: Path) -> None:
     assert summary["sla_thresholds"]["N_ge_4"]["windows"] > 0
 
 
+def test_r25_full_verdict_with_60_rows_4_cells_is_strongly_recommended(
+    tmp_path: Path,
+) -> None:
+    """Codex RCO regression 2026-05-20T11:47:16Z: with rows_per_cell>=60 and
+    concurrent_cells=4, the synthetic schedule must drive the R25 histogram
+    far enough that total_observation_windows>=60 (above the insufficient-
+    data floor) AND the verdict reads r25-strongly-recommended.
+
+    This locks down the fix: created_at now matches observed_at, so the
+    histogram (which reads created_at) sees the staggered schedule rather
+    than collapsing every row into a single batch-now window.
+
+    The verdict comes from a DB containing synthetic-tagged rows; downstream
+    consumers must still treat it as test-substrate evidence (validated by
+    test_applied_report_carries_substrate_evidence_warning)."""
+    report = inject_synthetic_signals(
+        **_kwargs(
+            tmp_path,
+            cells=("hub", "bee_ops", "environment", "home_comfort"),
+            rows_per_cell=60,
+            concurrent_cells=4,
+            window_seconds=1,
+            apply=True,
+        )
+    )
+    assert report["decision"] == "applied"
+    assert report["wrote_rows"] == 240  # 60 * 4
+
+    from tools.runtime_gap_signal_concurrency_histogram import build_histogram
+
+    summary = build_histogram(
+        tmp_path / "test_control_plane.db", window_seconds=1
+    )
+    # The synthetic schedule spans 60 windows; histogram must see all 60.
+    assert summary["total_observation_windows"] >= 60, (
+        f"expected >=60 windows after fix, got "
+        f"{summary['total_observation_windows']}"
+    )
+    # All 4 cells co-emit in each window -> N>=4 must hit 100% of active
+    # windows.
+    assert summary["sla_thresholds"]["N_ge_4"]["windows"] >= 60
+    # Verdict must NOT be insufficient-data anymore.
+    verdict = summary["r25_decision_signal"]["verdict"]
+    assert verdict == "r25-strongly-recommended", (
+        f"expected r25-strongly-recommended after fix, got {verdict!r}"
+    )
+
+
 def test_r25_histogram_with_one_cell_only_does_not_show_concurrency(
     tmp_path: Path,
 ) -> None:

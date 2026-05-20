@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from tools.magma_receipt_adoption_report import (
+    AcceptedException,
     AdoptionTarget,
     build_adoption_report,
     main,
@@ -54,7 +55,46 @@ def test_build_adoption_report_classifies_receipt_and_gap_paths(
     assert statuses["waggledance/core/autonomy/runtime.py"] == "magma_event_only"
     assert statuses["missing.py"] == "missing"
     assert report["status_counts"]["receipt_bound"] == 1
+    assert report["action_required_gap_count"] == 2
+    assert report["accepted_exception_count"] == 0
     assert report["high_criticality_gap_count"] == 1
+
+
+def test_accepted_exception_marks_reviewed_observability_path(
+    tmp_path: Path,
+) -> None:
+    runtime_path = tmp_path / "waggledance" / "core" / "autonomy" / "runtime.py"
+    runtime_path.parent.mkdir(parents=True)
+    runtime_path.write_text(
+        "_magma_safe('audit.action', self.audit.record_action_event)\n",
+        encoding="utf-8",
+    )
+
+    report = build_adoption_report(
+        root=tmp_path,
+        targets=(
+            AdoptionTarget(
+                "waggledance/core/autonomy/runtime.py",
+                "runtime",
+                "medium",
+                "fixture",
+                AcceptedException(
+                    applies_to_status="magma_event_only",
+                    status="accepted_observability_path",
+                    reason="post-decision observability, not authority",
+                    follow_up="use opt-in summary receipt if needed",
+                ),
+            ),
+        ),
+    )
+
+    entry = report["entries"][0]
+    assert entry["status"] == "magma_event_only"
+    assert entry["accepted_exception"]["status"] == "accepted_observability_path"
+    assert "post-decision observability" in entry["accepted_exception"]["reason"]
+    assert report["accepted_exception_count"] == 1
+    assert report["action_required_gap_count"] == 0
+    assert report["high_criticality_gap_count"] == 0
 
 
 def test_render_markdown_includes_gap_count(tmp_path: Path) -> None:
@@ -69,6 +109,8 @@ def test_render_markdown_includes_gap_count(tmp_path: Path) -> None:
 
     assert "MAGMA receipt adoption report" in markdown
     assert "high criticality gaps" in markdown
+    assert "action-required gaps" in markdown
+    assert "accepted exceptions" in markdown
     assert "`missing.py`" in markdown
 
 

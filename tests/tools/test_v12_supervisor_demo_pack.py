@@ -35,6 +35,8 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert result["receipt_count"] == 1
     assert result["high_criticality_gap_count"] == 0
     assert result["status_counts"]["receipt_bound"] >= 6
+    assert result["a3_counterfactual_delta_proven"] is True
+    assert result["a3_receipt_chain_verified"] is True
     assert result["rival_local_check_pass_count"] == 0
     assert result["rival_local_check_required_count"] == 4
     assert result["competitor_consensus_grade"] is False
@@ -43,6 +45,9 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert (out_dir / "adversarial_receipts" / "manifest.json").exists()
     assert (out_dir / "receipt_verifier_report.json").exists()
     assert (out_dir / "receipt_adoption_report.md").exists()
+    assert (out_dir / "a3_counterfactual_axis_proof.json").exists()
+    assert (out_dir / "a3_counterfactual_axis_proof.md").exists()
+    assert (out_dir / "a3_counterfactual_receipts" / "manifest.json").exists()
     assert (out_dir / "rival_local_check_matrix.json").exists()
     assert (out_dir / "rival_local_check_matrix.md").exists()
 
@@ -53,11 +58,16 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     rival_matrix = json.loads((out_dir / "rival_local_check_matrix.json").read_text(encoding="utf-8"))
     assert rival_matrix["consensus_grade"] is False
     assert rival_matrix["rival_local_checks_status"] == "0/4 rival local checks passed"
+    a3_proof = json.loads((out_dir / "a3_counterfactual_axis_proof.json").read_text(encoding="utf-8"))
+    assert a3_proof["counterfactual_delta_proven"] is True
+    assert a3_proof["receipt_chain_verified"] is True
 
     summary = (out_dir / "summary.md").read_text(encoding="utf-8")
     assert "WD V12 Supervisor Demo Pack" in summary
     assert "15/15" in summary
     assert "writes_applied: `false`" in summary
+    assert "A3 counterfactual delta proven: `true`" in summary
+    assert "A3 receipt chain verified: `true`" in summary
     assert "rival local checks passed: `0/4`" in summary
     assert "competitor consensus grade: `false`" in summary
 
@@ -98,6 +108,8 @@ def test_cli_json_reports_demo_pack(tmp_path: Path) -> None:
     assert payload["demo_version"] == "wd.v12.supervisor_demo_pack.v0"
     assert payload["adversarial_case_count"] == 15
     assert payload["receipt_verifier_ok"] is True
+    assert payload["a3_counterfactual_delta_proven"] is True
+    assert payload["a3_receipt_chain_verified"] is True
     assert payload["rival_local_check_pass_count"] == 0
     assert payload["competitor_consensus_grade"] is False
     assert (out_dir / "summary.md").exists()

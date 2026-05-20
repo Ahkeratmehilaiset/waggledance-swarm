@@ -1,0 +1,313 @@
+{
+  "artifact_version": "v12.competitor_axis_pilot.v0",
+  "generated_at_utc": "2026-05-20T16:35:00Z",
+  "task_id": "strat-direction-consensus-v12-2026-05-20",
+  "status": "scope_ready_not_consensus_grade",
+  "consensus_grade": false,
+  "consensus_grade_blocker": "At least one locally reproducible rival-side check per rival has not yet been run.",
+  "strategy_identity": "verifiable_solver_growth_substrate",
+  "fallback_identity_if_threshold_fails": "MAGMA-backed governance recorder/gateway for existing agent stacks",
+  "bridge_consensus": {
+    "round_1_agent": "claude",
+    "round_2_agent": "codex",
+    "round_3_agent": "claude",
+    "round_5_agent": "codex",
+    "decision": "Run a substrate-first competitor-axis pilot only with the six adversarial preconditions embedded before scoring."
+  },
+  "sources": [
+    {
+      "rival": "JamJet",
+      "urls": [
+        "https://jamjet.dev/",
+        "https://docs.jamjet.dev/"
+      ],
+      "evidence_type": "public_doc_claim",
+      "fresh_until_utc": "2026-06-03T23:59:59Z"
+    },
+    {
+      "rival": "Asqav",
+      "urls": [
+        "https://www.asqav.com/",
+        "https://pypi.org/project/asqav/"
+      ],
+      "evidence_type": "public_doc_claim",
+      "fresh_until_utc": "2026-06-03T23:59:59Z"
+    },
+    {
+      "rival": "Microsoft AGT",
+      "urls": [
+        "https://github.com/microsoft/agent-governance-toolkit"
+      ],
+      "evidence_type": "public_doc_claim",
+      "fresh_until_utc": "2026-06-03T23:59:59Z"
+    },
+    {
+      "rival": "Preloop",
+      "urls": [
+        "https://preloop.ai/",
+        "https://docs.preloop.ai/"
+      ],
+      "evidence_type": "public_doc_claim",
+      "fresh_until_utc": "2026-06-03T23:59:59Z"
+    }
+  ],
+  "preconditions": [
+    {
+      "id": "P1",
+      "description": "Include at least two WD weak axes labelled NOT_CLAIMED or INFERRED.",
+      "status": "satisfied_by_scope",
+      "evidence": [
+        "A5 governance throughput is in-progress because PR #500 needs fixes.",
+        "A6 adapter adoption friction is ceded today.",
+        "A7 public cryptographic verification is ceded today.",
+        "A8 policy language portability is ceded today."
+      ]
+    },
+    {
+      "id": "P2",
+      "description": "Include one locally reproducible rival-side check per rival or mark the pilot non-consensus-grade.",
+      "status": "not_satisfied_yet",
+      "effect": "consensus_grade=false"
+    },
+    {
+      "id": "P3",
+      "description": "Declare staleness and refresh cadence.",
+      "status": "satisfied_by_scope"
+    },
+    {
+      "id": "P4",
+      "description": "Include Microsoft AGT in the rival set.",
+      "status": "satisfied_by_scope"
+    },
+    {
+      "id": "P5",
+      "description": "Declare ceded vs contested axes before scoring.",
+      "status": "satisfied_by_scope"
+    },
+    {
+      "id": "P6",
+      "description": "Predeclare a rejection threshold for the 60-75 percent full-substrate uniqueness claim.",
+      "status": "satisfied_by_scope"
+    }
+  ],
+  "freshness_policy": {
+    "rival_public_doc_claim_days": 14,
+    "wd_local_proven_days": 30,
+    "measured_result_days": 14,
+    "rival_public_doc_claim_expires_utc": "2026-06-03T23:59:59Z",
+    "wd_local_proven_expires_utc": "2026-06-19T23:59:59Z"
+  },
+  "rejection_threshold": {
+    "claim_under_test": "WD is 60-75 percent unique as a full substrate for this measurement window.",
+    "must_win_axes": [
+      "A3",
+      "A4"
+    ],
+    "contested_axes": [
+      "A1",
+      "A2",
+      "A3",
+      "A4",
+      "A5",
+      "A9"
+    ],
+    "support_conditions": [
+      "WD has local PROVEN or MEASURED evidence on both must-win axes A3 and A4.",
+      "WD has local PROVEN or MEASURED evidence on at least 4 of the 6 contested axes.",
+      "At least two close rivals lack locally reproducible equivalent evidence on A3 or A4 during the same window.",
+      "No ceded axis is reinterpreted as a WD win after scoring."
+    ],
+    "reject_if": [
+      "Either must-win axis fails.",
+      "WD wins fewer than 4 contested axes.",
+      "AGT is excluded from the rival set.",
+      "Rival-side local checks are not run and the report nevertheless claims consensus-grade."
+    ]
+  },
+  "axes": [
+    {
+      "id": "A1",
+      "name": "pre_execution_action_gate",
+      "declared_position": "contested",
+      "wd_current_label": "PROVEN_PARTIAL",
+      "wd_evidence": [
+        "waggledance/core/v3_13_0/write_rco_gate.py",
+        "tools/run_write_rco_gate_receipt_demo.py",
+        "PR #501 commit 1ce22de5"
+      ],
+      "rival_public_doc_claims": {
+        "JamJet": "action-control layer with policy, approval, audit, adapters",
+        "Microsoft AGT": "policy evaluation before every tool call/resource/inter-agent message",
+        "Preloop": "MCP policy evaluation allow/deny/require approval",
+        "Asqav": "policy gates and three-tier enforcement claims"
+      },
+      "current_interpretation": "No uniqueness claim; action gating is crowded."
+    },
+    {
+      "id": "A2",
+      "name": "receipt_binding_and_tamper_evidence",
+      "declared_position": "contested",
+      "wd_current_label": "PROVEN_PARTIAL",
+      "wd_evidence": [
+        "schemas/v3_13_0/magma_receipt.v1.json",
+        "schemas/v3_13_0/evaluation_result.v0.json",
+        "schemas/v3_13_0/rco_decision_artifact.v0.json",
+        "tools/verify_magma_receipt.py",
+        "tools/run_rco_receipt_binding_demo.py"
+      ],
+      "rival_public_doc_claims": {
+        "Asqav": "ML-DSA-65 signatures, chain hash, public verification URL, compliance receipts",
+        "Microsoft AGT": "identity and audit claims including Ed25519 and ML-DSA-65",
+        "JamJet": "audit JSONL and action-control policy trail",
+        "Preloop": "audit trail and session observability"
+      },
+      "current_interpretation": "WD has binding spine; Asqav is ahead on public cryptographic envelope."
+    },
+    {
+      "id": "A3",
+      "name": "counterfactual_evaluation_delta",
+      "declared_position": "must_win",
+      "wd_current_label": "INFERRED_TO_PROVEN_PARTIAL",
+      "wd_evidence": [
+        "tools/run_pdam_counterfactual_demo.py",
+        "tools/run_magma_composition_demo.py",
+        "tools/run_magma_adversarial_eval.py",
+        "schemas/v3_13_0/evaluation_result.v0.json"
+      ],
+      "rival_public_doc_claims": {
+        "JamJet": "checkpoint replay and durable runtime claims",
+        "Asqav": "forensic receipt/audit replay style claims",
+        "Microsoft AGT": "replay debugging/SRE claims",
+        "Preloop": "runtime session observability claims"
+      },
+      "current_interpretation": "Must become a clean measured row; this is the main substrate differentiator."
+    },
+    {
+      "id": "A4",
+      "name": "solver_growth_shadow_canary_live_lifecycle",
+      "declared_position": "must_win",
+      "wd_current_label": "PROVEN_LOW_RISK_PARTIAL_LIFECYCLE",
+      "wd_evidence": [
+        "docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md",
+        "docs/benchmarks/MINED_SOLVER_RUNTIME_DISPATCH_2026.md",
+        "tools/run_phase18c_mined_solver_runtime_dispatch_proof.py"
+      ],
+      "rival_public_doc_claims": {
+        "JamJet": "eval/replay and memory claims, not solver-growth substrate as primary identity",
+        "Asqav": "evidence layer, not solver-growth substrate",
+        "Microsoft AGT": "governance kernel, not WD-style solver lifecycle as primary identity",
+        "Preloop": "control plane/gateway, not solver-growth substrate"
+      },
+      "current_interpretation": "Likely strongest WD axis, but shadow/canary/live transition metrics need more wiring."
+    },
+    {
+      "id": "A5",
+      "name": "governance_throughput_and_peer_review_metrics",
+      "declared_position": "contested_weak_today",
+      "wd_current_label": "IN_PROGRESS_NOT_CLAIMED",
+      "wd_evidence": [
+        "PR #500 is open and Codex requested metric correctness fixes on 2026-05-20"
+      ],
+      "rival_public_doc_claims": {
+        "JamJet": "approval queue/audit/cloud control-plane claims",
+        "Asqav": "multi-party approval and compliance evidence claims",
+        "Microsoft AGT": "SRE and compliance claims",
+        "Preloop": "approval workflows and dashboards"
+      },
+      "current_interpretation": "Not a WD win until PR #500 is fixed, merged, and run."
+    },
+    {
+      "id": "A6",
+      "name": "adapter_distribution_friction",
+      "declared_position": "ceded_today",
+      "wd_current_label": "INFERRED_WEAK",
+      "wd_evidence": [
+        "WD adapter strategy exists as direction, not dominant measured distribution path"
+      ],
+      "rival_public_doc_claims": {
+        "JamJet": "keep your stack; Claude Code, MCP, OpenAI Agents SDK, LangChain/CrewAI style adapters",
+        "Preloop": "one-command onboarding/rewiring for local agents",
+        "Microsoft AGT": "multi-language SDKs and many framework integrations",
+        "Asqav": "drop-in SDK and framework tags"
+      },
+      "current_interpretation": "Ceded today; do not reinterpret as WD win."
+    },
+    {
+      "id": "A7",
+      "name": "public_cryptographic_verification",
+      "declared_position": "ceded_today",
+      "wd_current_label": "INFERRED_WEAK",
+      "wd_evidence": [
+        "MAGMA receipt signature fields exist but may be null/optional in current local spine"
+      ],
+      "rival_public_doc_claims": {
+        "Asqav": "ML-DSA-65, chain hash, public verification URL, RFC 3161/OpenTimestamps claims",
+        "Microsoft AGT": "Ed25519 plus ML-DSA-65 identity claims",
+        "JamJet": "audit/action proof claims",
+        "Preloop": "audit trail claims without the same crypto emphasis"
+      },
+      "current_interpretation": "Ceded to Asqav/AGT until WD has a concrete signature envelope and offline/public verifier story."
+    },
+    {
+      "id": "A8",
+      "name": "standard_policy_language_portability",
+      "declared_position": "ceded_today",
+      "wd_current_label": "INFERRED_WEAK",
+      "wd_evidence": [
+        "schemas/v3_13_0/policy_surface.v0.json exists, but no OPA/Rego/Cedar parity claim is made"
+      ],
+      "rival_public_doc_claims": {
+        "Microsoft AGT": "YAML, OPA/Rego, and Cedar policy language claims",
+        "Preloop": "CEL policy/control-plane claims",
+        "JamJet": "policy.yaml claims",
+        "Asqav": "tool policy and approval policy claims"
+      },
+      "current_interpretation": "Ceded today; enterprise policy portability is not yet WD's strongest surface."
+    },
+    {
+      "id": "A9",
+      "name": "local_offline_solver_substrate",
+      "declared_position": "contested",
+      "wd_current_label": "PROVEN",
+      "wd_evidence": [
+        "docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md",
+        "docs/benchmarks/CLAIM_EVIDENCE_LEDGER.md",
+        "zero-provider and Docker/network-none claims in existing WD evidence matrix"
+      ],
+      "rival_public_doc_claims": {
+        "JamJet": "OSS runtime plus hosted cloud claims",
+        "Asqav": "evidence layer SDK claims, some server-side signing claims",
+        "Microsoft AGT": "runtime governance toolkit claims",
+        "Preloop": "hosted/self-hosted control-plane claims"
+      },
+      "current_interpretation": "Likely WD-favorable but still needs same-window rival local checks."
+    }
+  ],
+  "rival_side_local_checks_required": [
+    {
+      "rival": "JamJet",
+      "check": "Install or inspect a pinned OSS package/repo revision and run one policy/audit/replay smoke with no cloud dependency.",
+      "status": "not_run"
+    },
+    {
+      "rival": "Asqav",
+      "check": "Install or inspect a pinned SDK revision and run one local signing/verify or hash-chain smoke; if server dependency is required, mark cloud-dependent.",
+      "status": "not_run"
+    },
+    {
+      "rival": "Microsoft AGT",
+      "check": "Install or inspect a pinned repo/package revision and run one policy deny smoke plus one fail-closed/error-path smoke.",
+      "status": "not_run"
+    },
+    {
+      "rival": "Preloop",
+      "check": "Install or inspect a pinned OSS component/repo revision and run one MCP allow/deny/approval smoke; if hosted service is required, mark cloud-dependent.",
+      "status": "not_run"
+    }
+  ],
+  "current_directional_conclusion": {
+    "substrate_first_supported_provisionally": true,
+    "why": "The strongest WD direction is not write-action governance alone; it is MAGMA receipt binding plus EvaluationResult, counterfactual evaluation, solver-growth lifecycle, offline solver substrate, and operator-owned promotion evidence.",
+    "why_not_final": "Rival-side local checks are not run, PR #500 governance-throughput metrics need fixes, and A3 needs a clean measured counterfactual row."
+  }
+}

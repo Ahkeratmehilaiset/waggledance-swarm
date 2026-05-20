@@ -27,6 +27,8 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any, Callable, Optional
 
+from waggledance.core.magma.canonical import sha256_digest
+
 from .solver_provenance import VerificationResult
 
 
@@ -154,6 +156,8 @@ class GateOutcome:
     audit_event_ids: list[str] = field(default_factory=list)
     diff_preview_uri: Optional[str] = None
     rollback_plan_ref: Optional[str] = None
+    rco_decision_artifact: Optional[dict[str, Any]] = None
+    rco_decision_digest: Optional[str] = None
 
 
 @dataclass
@@ -365,20 +369,23 @@ class WriteRCOGate:
                     "risk_class": risk.value,
                 })
                 outcome.audit_event_ids.append(denied_audit)
+            self._attach_rco_decision_artifact(intent, outcome)
             return outcome
         except GateStopCondition as stop:
-            self._audit(AuditEventType.DENIED, intent, {
+            denied_audit = self._audit(AuditEventType.DENIED, intent, {
                 "stop_condition": stop.condition.value,
                 "reason": stop.reason,
             })
-            return GateOutcome(
+            outcome = GateOutcome(
                 intent_id=intent.intent_id,
                 risk_class=risk,
                 approved=False,
                 denial_reason=stop.reason,
                 stop_condition=stop.condition,
-                audit_event_ids=[audit_id],
+                audit_event_ids=[audit_id, denied_audit],
             )
+            self._attach_rco_decision_artifact(intent, outcome)
+            return outcome
 
     def execute(self, intent: Intent, outcome: GateOutcome) -> ExecutionResult:
         """Execute an approved intent. Caller checks outcome.approved first."""
@@ -695,6 +702,23 @@ class WriteRCOGate:
                 f"audit emit failed: {exc}",
             )
 
+    def _attach_rco_decision_artifact(
+        self,
+        intent: Intent,
+        outcome: GateOutcome,
+    ) -> None:
+        """Bind every route outcome to a payload-free RCO decision artifact."""
+        try:
+            artifact = build_rco_decision_artifact_for_gate(intent, outcome)
+        except Exception as exc:
+            raise GateStopCondition(
+                intent.intent_id,
+                StopCondition.AUDIT_WRITE_FAILED,
+                f"RCO decision artifact build failed: {exc}",
+            ) from exc
+        outcome.rco_decision_artifact = artifact
+        outcome.rco_decision_digest = sha256_digest(artifact)
+
 
 # --------------------------------------------------------------------------
 # Helper result types for hook return values
@@ -819,6 +843,93 @@ def build_rco_decision_artifact_for_gate(
     )
 
 
+def build_rco_decision_receipt_for_gate(
+    intent: Intent,
+    outcome: GateOutcome,
+    *,
+    ts_utc: str | None = None,
+    approval_id: str | None = None,
+    policy_digest: str | None = None,
+    charter_digest: str | None = None,
+    world_snapshot_digest: str | None = None,
+    solver_contract_digest: str | None = None,
+    previous_receipt: dict[str, Any] | None = None,
+    domain_threshold_version: str = "threshold:write_rco_gate:v1",
+) -> dict[str, Any]:
+    """Build payload-free RCO decision, EvaluationResult, and receipt objects.
+
+    This helper does not write files or execute the intent. It gives callers a
+    receipt-ready bundle for the already-computed gate route. External effects
+    still require an explicit approval_id because MAGMA receipt v1 is
+    operator-gated for that risk tier.
+    """
+    from waggledance.core.magma.evaluation_result import build_evaluation_result
+    from waggledance.core.magma.receipt import build_magma_receipt
+
+    if outcome.risk_class == WriteRiskClass.EXTERNAL_EFFECT and not approval_id:
+        raise ValueError("external_effect WriteRCOGate receipt requires approval_id")
+
+    rco_decision = outcome.rco_decision_artifact or build_rco_decision_artifact_for_gate(
+        intent,
+        outcome,
+        ts_utc=ts_utc,
+    )
+    intent_payload = _artifact_intent_summary(intent)
+    gate_decision = str(rco_decision["gate_decision"])
+    risk_class = outcome.risk_class.value
+    evaluation = build_evaluation_result(
+        case_id=f"case:write_rco_gate:{_safe_ref(intent.intent_id)}",
+        subject_type="policy",
+        target_payload=intent_payload,
+        risk_class=risk_class,
+        expected_gate=gate_decision,
+        actual_gate=gate_decision,
+        verifier_path=[
+            "write_rco_gate_route",
+            "rco_decision_artifact_v0",
+            "magma_receipt_v1",
+        ],
+        solver_selection=[],
+        policy_version=str(rco_decision["policy_version"]),
+        charter_version=str(rco_decision["charter_version"]),
+        domain_threshold_version=domain_threshold_version,
+        verdict="pass" if outcome.approved else "review",
+        reason_codes=list(rco_decision["reason_codes"]),
+        confidence_score=0.95 if outcome.approved else 0.75,
+        uncertainty_sources=[],
+        allow_external_effect=(risk_class == WriteRiskClass.EXTERNAL_EFFECT.value),
+    )
+    receipt = build_magma_receipt(
+        event_id=f"magma:write_rco_gate:{_safe_ref(intent.intent_id)}",
+        ts_utc=ts_utc or _utc_iso(),
+        risk_class=risk_class,
+        payload=intent_payload,
+        evaluation_result=evaluation,
+        policy_digest=policy_digest or sha256_digest({
+            "policy_version": rco_decision["policy_version"],
+        }),
+        charter_digest=charter_digest or sha256_digest({
+            "charter_version": rco_decision["charter_version"],
+        }),
+        rco_decision_digest=sha256_digest(rco_decision),
+        world_snapshot_digest=world_snapshot_digest or sha256_digest({
+            "target_state_ref": intent.target_state_ref,
+            "risk_class": risk_class,
+        }),
+        solver_contract_digest=solver_contract_digest or sha256_digest({
+            "solver_candidate_id": _solver_candidate_id(intent),
+        }),
+        previous_receipt=previous_receipt,
+        approval_id=approval_id,
+        allow_external_effect=(risk_class == WriteRiskClass.EXTERNAL_EFFECT.value),
+    )
+    return {
+        "rco_decision_artifact": rco_decision,
+        "evaluation_result": evaluation,
+        "receipt": receipt,
+    }
+
+
 def _artifact_intent_summary(intent: Intent) -> dict[str, Any]:
     return {
         "intent_id": intent.intent_id,
@@ -934,4 +1045,5 @@ __all__ = [
     "ScopePolicyResult",
     "build_gate_decision_card",
     "build_rco_decision_artifact_for_gate",
+    "build_rco_decision_receipt_for_gate",
 ]

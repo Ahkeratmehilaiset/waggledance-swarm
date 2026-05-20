@@ -10,6 +10,7 @@ Covers:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,6 +31,7 @@ from waggledance.core.v3_13_0.write_rco_gate import (
     ScopePolicyResult,
     build_gate_decision_card,
     build_rco_decision_artifact_for_gate,
+    build_rco_decision_receipt_for_gate,
 )
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.v3_13_0.solver_provenance import (
@@ -1197,6 +1199,11 @@ class TestRcoDecisionArtifactAdapter:
         assert artifact["write_payload_digest"] == sha256_digest(intent.payload)
         assert artifact["intent_digest"].startswith("sha256:")
         assert "secret operator text" not in repr(artifact)
+        assert outcome.rco_decision_artifact is not None
+        assert outcome.rco_decision_digest == sha256_digest(
+            outcome.rco_decision_artifact
+        )
+        assert "secret operator text" not in repr(outcome.rco_decision_artifact)
 
     def test_artifact_adapter_maps_policy_denial_to_refuse(self):
         audit = []
@@ -1256,6 +1263,67 @@ class TestRcoDecisionArtifactAdapter:
         assert f"rco:stop:{StopCondition.NO_ROLLBACK_PLAN.value}" in (
             artifact["reason_codes"]
         )
+
+    def test_route_receipt_binding_builds_payload_free_receipt(self):
+        audit = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
+        intent = _make_intent(
+            target_state_ref="state:audit_log",
+            action="append",
+            payload={"body": "secret operator text"},
+        )
+
+        outcome = gate.route(intent)
+        bundle = build_rco_decision_receipt_for_gate(
+            intent,
+            outcome,
+            ts_utc="2026-05-20T12:00:00Z",
+        )
+
+        receipt = bundle["receipt"]
+        evaluation = bundle["evaluation_result"]
+        assert receipt["receipt_version"] == "magma.receipt.v1"
+        assert receipt["rco_decision_digest"] == outcome.rco_decision_digest
+        assert receipt["canonical_payload_digest"] == evaluation["target_digest"]
+        assert evaluation["actual_gate"] == "allow"
+        assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
+
+    def test_external_effect_receipt_binding_requires_approval_id(self):
+        audit = []
+        gate = _make_gate(
+            audit_collector=audit,
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+            capsules=TestExternalEffectRoute()._setup_wrt_003_capsule(),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+        )
+
+        outcome = gate.route(intent)
+        with pytest.raises(ValueError, match="requires approval_id"):
+            build_rco_decision_receipt_for_gate(intent, outcome)
+
+        bundle = build_rco_decision_receipt_for_gate(
+            intent,
+            outcome,
+            ts_utc="2026-05-20T12:00:00Z",
+            approval_id="approval:operator:001",
+        )
+
+        assert bundle["receipt"]["operator_gate_required"] is True
+        assert bundle["receipt"]["approval_id"] == "approval:operator:001"
+        assert bundle["evaluation_result"]["operator_required"] is True
 
 
 # --------------------------------------------------------------------------

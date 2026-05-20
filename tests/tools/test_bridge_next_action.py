@@ -84,6 +84,103 @@ def test_recommends_answering_latest_unanswered_incoming_request() -> None:
     assert report["safe_mode"] == "read-only"
     assert report["incoming"]["agent"] == "claude"
     assert report["open_incoming_count"] == 1
+    assert report["stale_incoming_count"] == 0
+
+
+def test_ignores_stale_incoming_request_when_bridge_has_moved_on() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "old-task",
+            "status": "request",
+            "message": "old request",
+        },
+        {
+            "ts_utc": "2026-05-20T10:30:00Z",
+            "agent": "claude",
+            "type": "heartbeat",
+            "task_id": "heartbeat",
+            "status": "active",
+            "message": "bridge moved on",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 1
+    assert report["stale_incoming_task_ids"] == ["old-task"]
+
+
+def test_ignores_stale_incoming_request_with_powershell_fractional_timestamp() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00.1234567Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "old-task",
+            "status": "request",
+            "message": "old request",
+        },
+        {
+            "ts_utc": "2026-05-20T10:30:00.7654321Z",
+            "agent": "claude",
+            "type": "heartbeat",
+            "task_id": "heartbeat",
+            "status": "active",
+            "message": "bridge moved on",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+    assert report["stale_incoming_count"] == 1
+    assert report["stale_incoming_task_ids"] == ["old-task"]
+
+
+def test_fresh_incoming_request_wins_over_stale_backlog() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "old-task",
+            "status": "request",
+            "message": "old request",
+        },
+        {
+            "ts_utc": "2026-05-20T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "fresh-task",
+            "status": "request",
+            "message": "fresh request",
+        },
+        {
+            "ts_utc": "2026-05-20T10:30:00Z",
+            "agent": "claude",
+            "type": "heartbeat",
+            "task_id": "heartbeat",
+            "status": "active",
+            "message": "bridge still active",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "fresh-task"
+    assert report["open_incoming_count"] == 1
+    assert report["stale_incoming_count"] == 1
 
 
 def test_rco_requested_status_is_open_request() -> None:
@@ -276,6 +373,8 @@ def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:
             str(bridge),
             "--events",
             str(events_path),
+            "--now",
+            "2026-05-18T10:15:00Z",
             "--json",
         ]
     )
@@ -284,6 +383,83 @@ def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "bridge_next_action"
     assert report["action"] == "answer_incoming"
+
+
+def test_cli_human_output_reports_stale_incoming(tmp_path: Path, capsys) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-18T10:10:00Z",
+                "agent": "claude",
+                "to": "codex",
+                "type": "message",
+                "task_id": "old-task",
+                "status": "request",
+                "message": "old request",
+            }
+        ],
+    )
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex",
+            "--bridge-root",
+            str(bridge),
+            "--events",
+            str(events_path),
+            "--now",
+            "2026-05-20T10:15:00Z",
+        ]
+    )
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "action: claim_unblocked_work" in out
+    assert "stale_incoming_count: 1" in out
+    assert "stale_incoming_task_ids: old-task" in out
+
+
+def test_cli_rejects_non_finite_open_request_max_age(
+    tmp_path: Path, capsys
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-18T10:10:00Z",
+                "agent": "claude",
+                "to": "codex",
+                "type": "message",
+                "task_id": "old-task",
+                "status": "request",
+                "message": "old request",
+            }
+        ],
+    )
+
+    for value in ("nan", "inf"):
+        exit_code = main(
+            [
+                "--agent",
+                "codex",
+                "--bridge-root",
+                str(bridge),
+                "--events",
+                str(events_path),
+                "--open-request-max-age-hours",
+                value,
+                "--json",
+            ]
+        )
+
+        assert exit_code == 2
+        report = json.loads(capsys.readouterr().out)
+        assert report["decision"] == "bridge_next_action_error"
+        assert report["errors"] == ["open_request_max_age_hours must be positive"]
 
 
 def test_private_marker_in_selected_output_is_refused() -> None:

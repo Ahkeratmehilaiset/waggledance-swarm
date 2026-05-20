@@ -145,6 +145,40 @@ def test_defers_when_open_incoming_request(tmp_path: Path) -> None:
     assert report["bridge_recommendation"]["action"] == "answer_incoming"
 
 
+def test_ignores_stale_incoming_request_using_agent_now(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-18T10:10:00Z",
+                "agent": "codex",
+                "to": "claude",
+                "type": "message",
+                "task_id": "stale-request",
+                "status": "request",
+                "message": "old request",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="claude",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["bridge_recommendation"]["action"] == "claim_unblocked_work"
+    assert report["bridge_recommendation"]["open_incoming_count"] == 0
+    assert report["bridge_recommendation"]["stale_incoming_count"] == 1
+    assert report["bridge_recommendation"]["stale_incoming_task_ids"] == [
+        "stale-request"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # substrate-smoke pick branches
 # ---------------------------------------------------------------------------

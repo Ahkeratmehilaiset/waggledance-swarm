@@ -121,9 +121,18 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
             "target_count": adoption.get("target_count"),
             "status_counts": adoption.get("status_counts"),
             "medium_gap_targets": [
-                {"label": entry.get("label"), "path": entry.get("path"), "status": entry.get("status")}
+                {
+                    "label": entry.get("label"),
+                    "path": entry.get("path"),
+                    "status": entry.get("status"),
+                    "accepted_exception": (
+                        (entry.get("accepted_exception") or {}).get("status")
+                    ),
+                }
                 for entry in medium_gap_targets
             ],
+            "action_required_gap_count": adoption.get("action_required_gap_count"),
+            "accepted_exception_count": adoption.get("accepted_exception_count"),
             "available": adoption.get("ok") is not False,
         },
         "adversarial_eval": {
@@ -170,10 +179,16 @@ def format_proof(report: dict[str, Any]) -> str:
             + ", ".join(f"{k}={v}" for k, v in sorted(sc.items()))
         )
         if adoption.get("medium_gap_targets"):
-            lines.append("     medium accepted-exception paths :")
+            lines.append("     medium non-receipt paths        :")
             for entry in adoption["medium_gap_targets"]:
+                exception = (
+                    f", exception={entry['accepted_exception']}"
+                    if entry.get("accepted_exception")
+                    else ""
+                )
                 lines.append(
-                    f"       - {entry['label']} ({entry['path']}) [{entry['status']}]"
+                    f"       - {entry['label']} ({entry['path']}) "
+                    f"[{entry['status']}{exception}]"
                 )
     else:
         lines.append("")

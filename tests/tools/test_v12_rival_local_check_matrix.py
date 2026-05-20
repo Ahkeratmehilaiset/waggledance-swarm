@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+from tools.run_v12_rival_local_check_matrix import (
+    build_rival_local_check_matrix,
+    render_markdown,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "tools" / "run_v12_rival_local_check_matrix.py"
+
+
+def _run_matrix(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_default_matrix_reports_required_rivals_as_not_configured() -> None:
+    report = build_rival_local_check_matrix()
+
+    assert report["report_version"] == "wd.v12.rival_local_check_matrix.v0"
+    assert report["ok"] is True
+    assert report["required_count"] == 4
+    assert report["passed_count"] == 0
+    assert report["blocked_count"] == 4
+    assert report["consensus_grade"] is False
+    assert {row["rival"] for row in report["checks"]} == {
+        "JamJet",
+        "Asqav",
+        "Microsoft AGT",
+        "Preloop",
+    }
+    assert {row["local_status"] for row in report["checks"]} == {"not_configured"}
+
+
+def test_markdown_output_preserves_no_benchmark_guardrail() -> None:
+    report = build_rival_local_check_matrix()
+    markdown = render_markdown(report)
+
+    assert "V12 Rival Local Check Matrix" in markdown
+    assert "rival local checks passed: `0/4`" in markdown
+    assert "This is not a competitor benchmark" in markdown
+    assert "consensus_grade: `false`" in markdown
+
+
+def test_cli_json_reports_non_consensus_grade() -> None:
+    result = _run_matrix("--json", "--now", "2026-05-20T19:30:00Z")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["generated_at_utc"] == "2026-05-20T19:30:00Z"
+    assert payload["required_count"] == 4
+    assert payload["passed_count"] == 0
+    assert payload["consensus_grade"] is False
+
+
+def test_cli_writes_markdown_report(tmp_path: Path) -> None:
+    out = tmp_path / "rival_matrix.md"
+
+    result = _run_matrix("--markdown-out", str(out))
+
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+    text = out.read_text(encoding="utf-8")
+    assert "V12 Rival Local Check Matrix" in text
+    assert "not a competitor benchmark" in text
+
+
+def test_valid_local_evidence_manifest_marks_one_rival_passed(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "jamjet.json").write_text(
+        json.dumps(
+            {
+                "rival": "JamJet",
+                "pinned_revision": "jamjet-test-rev",
+                "local_artifact_path": "third_party/jamjet",
+                "smoke_command": "jamjet smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    assert report["passed_count"] == 1
+    assert report["blocked_count"] == 3
+    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    assert jamjet["local_status"] == "passed"
+    assert jamjet["consensus_grade_contribution"] is True
+    assert report["consensus_grade"] is False
+
+
+def test_cloud_dependent_manifest_does_not_pass(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "asqav.json").write_text(
+        json.dumps(
+            {
+                "rival": "Asqav",
+                "pinned_revision": "asqav-test-rev",
+                "local_artifact_path": "third_party/asqav",
+                "smoke_command": "asqav verify --online",
+                "smoke_result": "passed",
+                "cloud_dependency": True,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    assert report["passed_count"] == 0
+    asqav = next(row for row in report["checks"] if row["rival"] == "Asqav")
+    assert asqav["local_status"] == "cloud_dependent"
+    assert asqav["blocker"] == "cloud_dependency is not false"

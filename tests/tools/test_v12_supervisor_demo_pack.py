@@ -35,21 +35,31 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert result["receipt_count"] == 1
     assert result["high_criticality_gap_count"] == 0
     assert result["status_counts"]["receipt_bound"] >= 6
+    assert result["rival_local_check_pass_count"] == 0
+    assert result["rival_local_check_required_count"] == 4
+    assert result["competitor_consensus_grade"] is False
     assert (out_dir / "summary.md").exists()
     assert (out_dir / "adversarial_eval_report.json").exists()
     assert (out_dir / "adversarial_receipts" / "manifest.json").exists()
     assert (out_dir / "receipt_verifier_report.json").exists()
     assert (out_dir / "receipt_adoption_report.md").exists()
+    assert (out_dir / "rival_local_check_matrix.json").exists()
+    assert (out_dir / "rival_local_check_matrix.md").exists()
 
     report = json.loads((out_dir / "adversarial_eval_report.json").read_text(encoding="utf-8"))
     assert report["receipt_bundle"]["verifier_report"]["ok"] is True
     assert report["writes_applied"] is False
     assert report["full_match_count"] == 15
+    rival_matrix = json.loads((out_dir / "rival_local_check_matrix.json").read_text(encoding="utf-8"))
+    assert rival_matrix["consensus_grade"] is False
+    assert rival_matrix["rival_local_checks_status"] == "0/4 rival local checks passed"
 
     summary = (out_dir / "summary.md").read_text(encoding="utf-8")
     assert "WD V12 Supervisor Demo Pack" in summary
     assert "15/15" in summary
     assert "writes_applied: `false`" in summary
+    assert "rival local checks passed: `0/4`" in summary
+    assert "competitor consensus grade: `false`" in summary
 
 
 def test_demo_pack_does_not_leak_hidden_expectations_or_canaries(
@@ -88,6 +98,8 @@ def test_cli_json_reports_demo_pack(tmp_path: Path) -> None:
     assert payload["demo_version"] == "wd.v12.supervisor_demo_pack.v0"
     assert payload["adversarial_case_count"] == 15
     assert payload["receipt_verifier_ok"] is True
+    assert payload["rival_local_check_pass_count"] == 0
+    assert payload["competitor_consensus_grade"] is False
     assert (out_dir / "summary.md").exists()
 
 

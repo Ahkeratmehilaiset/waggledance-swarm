@@ -48,11 +48,20 @@ MAGMA_EVENT_PATTERNS = (
 
 
 @dataclass(frozen=True)
+class AcceptedException:
+    applies_to_status: str
+    status: str
+    reason: str
+    follow_up: str
+
+
+@dataclass(frozen=True)
 class AdoptionTarget:
     path: str
     label: str
     criticality: str
     reason: str
+    accepted_exception: AcceptedException | None = None
 
 
 DEFAULT_TARGETS: tuple[AdoptionTarget, ...] = (
@@ -79,6 +88,19 @@ DEFAULT_TARGETS: tuple[AdoptionTarget, ...] = (
         "Autonomy runtime MAGMA append path",
         "medium",
         "Runtime MAGMA events are useful but not equivalent to receipt bundles.",
+        AcceptedException(
+            applies_to_status="magma_event_only",
+            status="accepted_observability_path",
+            reason=(
+                "AutonomyRuntime projects post-decision MAGMA observability "
+                "events through fail-open adapters; authority gates are "
+                "receipt-bound elsewhere."
+            ),
+            follow_up=(
+                "Add a separate opt-in runtime_summary_receipt module only "
+                "if per-query or per-mission summary receipts are needed."
+            ),
+        ),
     ),
     AdoptionTarget(
         "tools/run_pdam_counterfactual_demo.py",
@@ -145,17 +167,31 @@ def build_adoption_report(
         for entry in entries
         if entry["criticality"] == "high" and entry["status"] != "receipt_bound"
     ]
+    action_required_gaps = [
+        entry
+        for entry in entries
+        if entry["status"] != "receipt_bound" and entry["accepted_exception"] is None
+    ]
+    accepted_exceptions = [
+        entry
+        for entry in entries
+        if entry["accepted_exception"] is not None
+    ]
     return {
         "report_version": "magma.receipt_adoption_report.v0",
         "root": str(root),
         "target_count": len(entries),
         "status_counts": dict(sorted(counts.items())),
         "high_criticality_gap_count": len(high_gaps),
+        "action_required_gap_count": len(action_required_gaps),
+        "accepted_exception_count": len(accepted_exceptions),
         "entries": entries,
         "interpretation": (
             "Static adoption signal only. A receipt_bound status means the "
             "file contains direct receipt/bundle hooks; it does not prove every "
-            "runtime branch emits a valid verified receipt."
+            "runtime branch emits a valid verified receipt. An accepted_exception "
+            "marks a reviewed non-authority path where the current non-receipt "
+            "status is intentional rather than an action-required gap."
         ),
     }
 
@@ -196,15 +232,23 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- version: `{report['report_version']}`",
         f"- targets: `{report['target_count']}`",
         f"- high criticality gaps: `{report['high_criticality_gap_count']}`",
+        f"- action-required gaps: `{report['action_required_gap_count']}`",
+        f"- accepted exceptions: `{report['accepted_exception_count']}`",
         "",
-        "| status | criticality | path | label |",
-        "| --- | --- | --- | --- |",
+        "| status | criticality | exception | path | label |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for entry in report["entries"]:
+        exception = entry["accepted_exception"]
         lines.append(
-            "| {status} | {criticality} | `{path}` | {label} |".format(
+            "| {status} | {criticality} | {exception} | `{path}` | {label} |".format(
                 status=entry["status"],
                 criticality=entry["criticality"],
+                exception=(
+                    exception["status"]
+                    if exception is not None
+                    else ""
+                ),
                 path=entry["path"],
                 label=entry["label"],
             )
@@ -229,8 +273,30 @@ def _entry(
         "reason": target.reason,
         "path_exists": path_exists,
         "status": status,
+        "accepted_exception": _accepted_exception_for(
+            target=target,
+            status=status,
+            path_exists=path_exists,
+        ),
         "pattern_hits": pattern_hits,
         "line_hits": line_hits,
+    }
+
+
+def _accepted_exception_for(
+    *,
+    target: AdoptionTarget,
+    status: str,
+    path_exists: bool,
+) -> dict[str, str] | None:
+    exception = target.accepted_exception
+    if exception is None or not path_exists or status != exception.applies_to_status:
+        return None
+    return {
+        "applies_to_status": exception.applies_to_status,
+        "status": exception.status,
+        "reason": exception.reason,
+        "follow_up": exception.follow_up,
     }
 
 

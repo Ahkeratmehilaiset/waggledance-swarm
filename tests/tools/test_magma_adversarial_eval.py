@@ -38,13 +38,13 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["eval_version"] == "magma.adversarial_eval.v0"
     assert report["writes_applied"] is False
     assert report["ok"] is True
-    assert report["case_count"] == 9
-    assert report["pass_count"] == 9
+    assert report["case_count"] == 15
+    assert report["pass_count"] == 15
     assert report["fail_count"] == 0
     assert report["gate_accuracy"] == 1.0
     assert report["verdict_accuracy"] == 1.0
     assert report["reason_code_accuracy"] == 1.0
-    assert report["full_match_count"] == 9
+    assert report["full_match_count"] == 15
     assert report["partial_match_count"] == 0
     assert report["mismatch_count"] == 0
     assert report["corpus_digest"].startswith("sha256:")
@@ -100,10 +100,10 @@ def test_cli_text_mode_and_out_report(tmp_path: Path) -> None:
     result = _run_eval("--out", str(out))
 
     assert result.returncode == 0, result.stderr
-    assert "magma adversarial eval OK: 9/9 cases passed" in result.stdout
+    assert "magma adversarial eval OK: 15/15 cases passed" in result.stdout
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["ok"] is True
-    assert report["case_count"] == 9
+    assert report["case_count"] == 15
 
 
 def test_opt_in_receipt_bundle_verifies_report(tmp_path: Path) -> None:
@@ -136,8 +136,8 @@ def test_opt_in_receipt_bundle_verifies_report(tmp_path: Path) -> None:
     assert evaluation["target_digest"] == sha256_digest(payload)
     assert receipt["canonical_payload_digest"] == sha256_digest(payload)
     assert receipt["evaluation_result_digest"] == sha256_digest(evaluation)
-    assert payload["case_count"] == 9
-    assert len(payload["case_evaluation_result_digests"]) == 9
+    assert payload["case_count"] == 15
+    assert len(payload["case_evaluation_result_digests"]) == 15
 
 
 def test_cli_emits_receipt_bundle_only_when_requested(tmp_path: Path) -> None:

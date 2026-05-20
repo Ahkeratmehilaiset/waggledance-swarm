@@ -42,6 +42,11 @@ _BASE_POLICY_BY_DEFECT: dict[str, dict[str, Any]] = {
         "verdict": "refuse",
         "reason_codes": ["tool:argument_constraint", "path:scope_escape"],
     },
+    "policy_bypass": {
+        "actual_gate": "refuse",
+        "verdict": "refuse",
+        "reason_codes": ["policy:bypass_attempt_detected", "audit:integrity_required"],
+    },
 }
 
 

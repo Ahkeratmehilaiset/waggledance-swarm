@@ -11,6 +11,7 @@ from waggledance.core.autonomy_growth.auto_promotion_engine import (
     AutoPromotionEngine,
     PROMOTION_DECIDED_BY,
     PromotionRequest,
+    build_promotion_decision_receipt,
 )
 from waggledance.core.autonomy_growth.solver_dispatcher import (
     DispatchQuery,
@@ -19,7 +20,8 @@ from waggledance.core.autonomy_growth.solver_dispatcher import (
 from waggledance.core.solver_synthesis.declarative_solver_spec import (
     SolverSpec,
 )
-from waggledance.core.storage.control_plane import ControlPlaneDB
+from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.storage.control_plane import ControlPlaneDB, ControlPlaneError
 
 
 @pytest.fixture()
@@ -82,6 +84,10 @@ def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None
     assert outcome.validation is not None and outcome.validation.all_passed
     assert outcome.shadow is not None
     assert outcome.shadow.agreement_rate == 1.0
+    assert outcome.promotion_decision_artifact is not None
+    assert outcome.promotion_decision_digest == sha256_digest(
+        outcome.promotion_decision_artifact
+    )
 
     # Solver row reflects auto_promoted
     solver = cp.get_solver("celsius_to_kelvin_v1")
@@ -91,6 +97,11 @@ def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None
     decisions = cp.list_promotion_decisions(solver_id=solver.id)
     assert any(d.decision == "auto_promoted" for d in decisions)
     assert all(d.decided_by == PROMOTION_DECIDED_BY for d in decisions)
+    decision = next(d for d in decisions if d.decision == "auto_promoted")
+    evidence = json.loads(decision.evidence or "{}")
+    assert evidence["promotion_decision_digest"] == (
+        outcome.promotion_decision_digest
+    )
 
     # Artifact persisted and dispatcher can use it
     artifact = cp.get_solver_artifact(solver.id)
@@ -100,6 +111,75 @@ def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None
         family_kind="scalar_unit_conversion", inputs={"x": 0.0}
     ))
     assert res.matched and res.output == pytest.approx(273.15)
+
+
+def test_auto_promotion_receipt_binding_is_payload_free(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    base = _scalar_unit_conversion_spec("secret_solver")
+    spec = SolverSpec(
+        schema_version=base.schema_version,
+        spec_id=base.spec_id,
+        family_kind=base.family_kind,
+        solver_name=base.solver_name,
+        cell_id=base.cell_id,
+        spec={**base.spec, "private_note": "secret operator text"},
+        source=base.source,
+        source_kind=base.source_kind,
+    )
+    eng = AutoPromotionEngine(cp)
+    outcome = eng.evaluate_candidate(PromotionRequest(
+        spec=spec,
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=_scalar_unit_conversion_oracle,
+        oracle_kind="formula_recompute",
+    ))
+
+    bundle = build_promotion_decision_receipt(
+        outcome,
+        ts_utc="2026-05-20T17:10:00Z",
+    )
+
+    assert bundle["receipt"]["risk_class"] == "local_artifact"
+    assert bundle["receipt"]["rco_decision_digest"] == (
+        outcome.promotion_decision_digest
+    )
+    assert bundle["evaluation_result"]["subject_type"] == "promotion"
+    assert bundle["evaluation_result"]["verdict"] == "pass"
+    assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
+
+
+def test_auto_promotion_artifact_failure_blocks_commit(
+    cp: ControlPlaneDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+
+    def boom(**_kwargs):
+        raise ValueError("artifact boom")
+
+    monkeypatch.setattr(
+        "waggledance.core.autonomy_growth.auto_promotion_engine."
+        "build_promotion_decision_artifact",
+        boom,
+    )
+    eng = AutoPromotionEngine(cp)
+
+    with pytest.raises(ControlPlaneError, match="artifact build failed"):
+        eng.evaluate_candidate(PromotionRequest(
+            spec=_scalar_unit_conversion_spec("artifact_fail"),
+            validation_cases=_validation_cases_for_celsius_to_kelvin(),
+            shadow_samples=_shadow_samples_simple(),
+            oracle=_scalar_unit_conversion_oracle,
+            oracle_kind="formula_recompute",
+        ))
+
+    assert cp.get_solver("artifact_fail") is None
+    stats = cp.stats()
+    assert stats.table_counts["solvers"] == 0
+    assert stats.table_counts["promotion_decisions"] == 0
 
 
 def test_rejects_when_family_not_in_allowlist(cp: ControlPlaneDB) -> None:
@@ -257,12 +337,18 @@ def test_rollback_flips_status_and_records_decision(cp: ControlPlaneDB) -> None:
 
     rb = eng.rollback("celsius_to_kelvin_v1", "shadow_drift_in_field")
     assert rb.decision == "rolled_back"
+    assert rb.promotion_decision_artifact is not None
+    assert rb.promotion_decision_digest == sha256_digest(
+        rb.promotion_decision_artifact
+    )
     assert cp.get_solver("celsius_to_kelvin_v1").status == "deactivated"
     decisions = cp.list_promotion_decisions(
         solver_id=rb.solver_id, decision="rollback"
     )
     assert len(decisions) == 1
     assert decisions[0].rollback_reason == "shadow_drift_in_field"
+    evidence = json.loads(decisions[0].evidence or "{}")
+    assert evidence["promotion_decision_digest"] == rb.promotion_decision_digest
 
     # Dispatcher must not return a deactivated solver
     disp = LowRiskSolverDispatcher(cp)

@@ -13,7 +13,7 @@ from tools.agent_next_task import (
     evaluate_agent_next_task,
     main,
 )
-from waggledance.core.work_queue import claim_task
+from waggledance.core.work_queue import claim_task, release_task
 
 
 NOW = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
@@ -208,6 +208,9 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
         entry["target"] for entry in SUBSTRATE_SMOKE_CANDIDATES
     }
     assert candidate["task_id_suggestion"].startswith("claude-substrate-smoke-")
+    assert candidate["task_id_suggestion"].endswith(
+        f"-{candidate['rotation']['index']}"
+    )
     assert "pytest" in candidate["recommended_command"]
 
 
@@ -234,6 +237,135 @@ def test_picks_substrate_smoke_when_bridge_says_parallel_read_only(
 
     assert report["decision"] == "claim_substrate_smoke"
     assert report["underlying_bridge_action"] == "parallel_read_only"
+
+
+def test_completed_same_day_test_pass_event_advances_to_next_candidate(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    first = _pick_substrate_smoke(agent="codex", now_utc=NOW)
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            },
+            {
+                "ts_utc": "2026-05-20T12:10:00Z",
+                "agent": "codex",
+                "type": "test",
+                "task_id": first["task_id_suggestion"],
+                "status": "pass",
+                "message": "daily substrate smoke passed",
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    candidate = report["candidate"]
+    assert candidate["target"] != first["target"]
+    assert candidate["task_id_suggestion"] != first["task_id_suggestion"]
+    assert candidate["rotation"]["start_index"] == first["rotation"]["index"]
+    assert candidate["rotation"]["offset"] == 1
+    assert (
+        first["task_id_suggestion"]
+        in candidate["rotation"]["skipped_completed_task_ids"]
+    )
+
+
+def test_legacy_completed_same_day_smoke_claim_advances_to_next_candidate(
+    tmp_path: Path,
+) -> None:
+    bridge, events_path, claims_dir = _empty_bridge(tmp_path)
+    first = _pick_substrate_smoke(agent="codex", now_utc=NOW)
+    legacy_task_id = "codex-substrate-smoke-2026-05-20"
+    claim_task(
+        agent="codex",
+        task_id=legacy_task_id,
+        summary="legacy daily smoke claim before task ids had pool indexes",
+        mode="read-only",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+    release_task(
+        agent="codex",
+        task_id=legacy_task_id,
+        release_status="done",
+        release_message="legacy substrate smoke passed",
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+    assert sorted(p.name for p in claims_dir.iterdir()) == []
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    candidate = report["candidate"]
+    assert candidate["target"] != first["target"]
+    assert candidate["rotation"]["offset"] == 1
+    assert legacy_task_id in candidate["rotation"]["skipped_completed_task_ids"]
+
+
+def test_all_completed_same_day_smokes_returns_exhausted_decision(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    completed_events = [
+        {
+            "ts_utc": "2026-05-20T12:10:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": f"codex-substrate-smoke-2026-05-20-{index}",
+            "status": "done",
+            "message": "daily substrate smoke passed",
+        }
+        for index in range(len(SUBSTRATE_SMOKE_CANDIDATES))
+    ]
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            },
+            *completed_events,
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "substrate_smoke_pool_exhausted"
+    assert report["next_action"] == "claim_non_smoke_work"
+    assert "candidate" not in report
+    assert len(report["completed_substrate_smoke_task_ids"]) == len(
+        SUBSTRATE_SMOKE_CANDIDATES
+    )
 
 
 # ---------------------------------------------------------------------------

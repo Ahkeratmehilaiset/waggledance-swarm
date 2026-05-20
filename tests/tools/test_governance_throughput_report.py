@@ -310,6 +310,103 @@ def test_postmerge_failure_rate_counts_reverts(monkeypatch=None) -> None:
     assert pm["rate_pct"] == 20.0
 
 
+def test_postmerge_failure_rate_caps_at_100_pct_when_revert_out_of_window() -> None:
+    """Codex RCO regression 2026-05-20T16:28:03Z: a revert whose merged PR
+    is outside the window must not push the rate above 100%. The out-of-
+    window revert reports as a separate field for visibility."""
+    events = []
+    # 5 in-window merged PRs; only 1 in-window revert (= 20%).
+    for i in range(5):
+        events.extend(_pr_thread(
+            task_id=f"task-{i}", pr_number=700 + i,
+            start=NOW - timedelta(hours=i + 1),
+            add_merge=True,
+            add_revert=(i == 0),
+        ))
+    # Plus 3 EXTRA reverts referencing PRs whose merge events are NOT
+    # in the window. Earlier buggy version counted these in numerator
+    # and pushed rate over 100%.
+    for stranded_pr in (900, 901, 902):
+        events.append(_ev(
+            ts=NOW - timedelta(hours=1),
+            agent="claude", type_="done",
+            status="revert",
+            task_id=f"revert-stranded-{stranded_pr}",
+            message=f"pr#{stranded_pr} reverted; merge happened before window",
+        ))
+    report = compute_governance_throughput_report(
+        events=events, now_utc=NOW, insufficient_threshold=5,
+    )
+    pm = next(
+        m for m in report["metrics"]
+        if m["name"] == "postmerge_failure_rate"
+    )
+    assert pm["status"] == "ok"
+    assert pm["merged_pr_count"] == 5
+    assert pm["reverted_pr_count"] == 1
+    assert pm["reverted_out_of_window_pr_count"] == 3
+    # Rate is in-window-reverts / merged. Capped at 100%.
+    assert pm["rate_pct"] == 20.0
+    assert pm["rate_pct"] <= 100.0
+
+
+def test_regression_catch_rate_requires_changes_before_pass_in_time() -> None:
+    """Codex RCO regression 2026-05-20T16:28:03Z: event order matters.
+    A pass-then-changes_requested thread is NOT catch-and-revise and
+    must not score. Only changes_requested STRICTLY BEFORE a subsequent
+    rco_pass counts."""
+    events = []
+    # Three PR threads:
+    #  - thread A,B,C,D,E: pass happens BEFORE any changes_requested
+    #    -> NOT catch-and-revise, must not count
+    #  - To reach the threshold we also add 5 valid catch-and-revise.
+    # Inverted: pass first, changes_requested later (must NOT count)
+    for i in range(5):
+        task_id = f"inverted-{i}"
+        start = NOW - timedelta(hours=i + 1)
+        events.append(_ev(
+            ts=start, agent="claude", type_="message",
+            status="proposal",
+            task_id=task_id,
+            message=f"pr#{2000 + i} proposed",
+        ))
+        # pass FIRST
+        events.append(_ev(
+            ts=start + timedelta(minutes=5),
+            agent="codex", type_="decision",
+            status="rco_approved",
+            task_id=task_id,
+            message=f"pr#{2000 + i} early pass",
+        ))
+        # then changes_requested LATER (should be ignored as catch-revise)
+        events.append(_ev(
+            ts=start + timedelta(minutes=30),
+            agent="codex", type_="finding",
+            status="changes_requested",
+            task_id=task_id,
+            message=f"pr#{2000 + i} late changes",
+        ))
+    # Valid catch-and-revise (changes first, pass later) x5:
+    for i in range(5):
+        events.extend(_pr_thread(
+            task_id=f"valid-{i}", pr_number=2100 + i,
+            start=NOW - timedelta(hours=i + 1, minutes=30),
+            add_changes_round=True,
+        ))
+    report = compute_governance_throughput_report(
+        events=events, now_utc=NOW, insufficient_threshold=5,
+    )
+    catch = next(
+        m for m in report["metrics"]
+        if m["name"] == "regression_catch_rate"
+    )
+    assert catch["status"] == "ok"
+    # 10 PR threads total (5 inverted + 5 valid); only 5 valid count.
+    assert catch["sample_size"] == 10
+    assert catch["catch_and_revise_count"] == 5
+    assert catch["rate_pct"] == 50.0
+
+
 def test_promotion_reversal_rate_requires_promotion_vocabulary() -> None:
     events = []
     for i in range(5):

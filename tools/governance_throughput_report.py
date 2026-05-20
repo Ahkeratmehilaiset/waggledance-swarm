@@ -300,15 +300,25 @@ def _metric_regression_catch_rate(
         if not any(_extract_pr_numbers(e) for e in events):
             continue
         pr_tasks.add(task_id)
-        has_changes = any(
-            _status_has_any(e, CHANGES_REQUESTED_TOKENS) for e in events
-        )
+        # Codex RCO finding 2026-05-20T16:28:03Z: must check timestamp
+        # order. Earliest changes_requested timestamp must strictly precede
+        # at least one rco_pass timestamp on the same task_id; otherwise a
+        # pass-then-changes thread would falsely score as catch-then-fix.
+        change_times = [
+            _event_ts(e) for e in events
+            if _status_has_any(e, CHANGES_REQUESTED_TOKENS) and _event_ts(e)
+        ]
+        if not change_times:
+            continue
+        earliest_change = min(change_times)
         has_subsequent_pass = any(
-            _status_has_any(e, RCO_STATUS_TOKENS)
+            _event_ts(e) is not None
+            and _event_ts(e) > earliest_change
+            and _status_has_any(e, RCO_STATUS_TOKENS)
             and not _status_has_any(e, CHANGES_REQUESTED_TOKENS)
             for e in events
         )
-        if has_changes and has_subsequent_pass:
+        if has_subsequent_pass:
             catch_and_revise_tasks.add(task_id)
     sample_size = len(pr_tasks)
     if sample_size < threshold:
@@ -407,6 +417,15 @@ def _metric_postmerge_failure_rate(
             for token in ("revert", "rolled back", "reverted")
         ):
             reverted_prs.update(prs)
+    # Codex RCO finding 2026-05-20T16:28:03Z: rate must not exceed 100%.
+    # Reverts can reference PRs whose merge event is outside the window
+    # (or never emitted to the bridge). Counting them in the numerator
+    # while their merge is absent from the denominator pushed the ratio
+    # over 1.0. Intersect first: only reverts of in-window-merged PRs
+    # count toward the rate. The out-of-window reverts surface as their
+    # own field for visibility.
+    reverted_in_window = reverted_prs & merged_prs
+    reverted_out_of_window = reverted_prs - merged_prs
     sample_size = len(merged_prs)
     if sample_size < threshold:
         return _insufficient(
@@ -414,8 +433,8 @@ def _metric_postmerge_failure_rate(
             sample_size=sample_size,
             threshold=threshold,
             unit_note=(
-                "reverted_prs / merged_prs from bridge events containing "
-                "PR-number references and revert/rollback status tokens"
+                "in-window reverted_prs / merged_prs from bridge events "
+                "(only reverts whose merge is also in window)"
             ),
         )
     return {
@@ -423,13 +442,17 @@ def _metric_postmerge_failure_rate(
         "status": "ok",
         "sample_size": sample_size,
         "merged_pr_count": len(merged_prs),
-        "reverted_pr_count": len(reverted_prs),
+        "reverted_pr_count": len(reverted_in_window),
+        "reverted_out_of_window_pr_count": len(reverted_out_of_window),
         "rate_pct": round(
-            100.0 * len(reverted_prs) / sample_size, 3
+            100.0 * len(reverted_in_window) / sample_size, 3
         ),
         "notes": [
             "if reverted_pr_count = 0, value is 0% but that does NOT prove "
-            "good substrate — it can mean low coverage of revert detection"
+            "good substrate — it can mean low coverage of revert detection",
+            "reverted_out_of_window_pr_count reports reverts whose merge "
+            "is outside the window; they are excluded from rate to keep "
+            "rate <= 100%",
         ],
     }
 

@@ -153,12 +153,7 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
         },
         "a3_counterfactual_axis": _summarize_a3_counterfactual_axis(a3_report),
         "a4_solver_growth_axis": _summarize_a4_solver_growth_axis(a4_report),
-        "governance_throughput": {
-            "available": governance is not None,
-            "metric_count": (
-                len(governance.get("metrics", {})) if governance else 0
-            ),
-        },
+        "governance_throughput": _summarize_governance_throughput(governance),
         "competitor_pilot": pilot,
         "substrate_velocity": velocity,
     }
@@ -278,6 +273,14 @@ def format_proof(report: dict[str, Any]) -> str:
     if gov["available"]:
         lines.append("GOVERNANCE THROUGHPUT  (tools/governance_throughput_report.py)")
         lines.append(f"  OK metrics available             : {gov['metric_count']}")
+        lines.append(f"     event count in window         : {gov['event_count_in_window']}")
+        lines.append(f"     task count in window          : {gov['task_count_in_window']}")
+        lines.append(
+            "     metric statuses               : "
+            + ", ".join(
+                f"{k}={v}" for k, v in sorted(gov["status_counts"].items())
+            )
+        )
     else:
         lines.append("GOVERNANCE THROUGHPUT            : tool unavailable")
 
@@ -385,6 +388,35 @@ def _summarize_a4_solver_growth_axis(report: dict[str, Any]) -> dict[str, Any]:
             "families_covered": 0,
         },
         "receipt_chain_verified": bool(report.get("receipt_chain_verified")),
+    }
+
+
+def _summarize_governance_throughput(
+    report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not report:
+        return {
+            "available": False,
+            "metric_count": 0,
+            "event_count_in_window": 0,
+            "task_count_in_window": 0,
+            "window_label": "unknown",
+            "status_counts": {},
+        }
+    metrics = report.get("metrics") or []
+    status_counts: dict[str, int] = {}
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        status = str(metric.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    return {
+        "available": True,
+        "metric_count": len(metrics),
+        "event_count_in_window": int(report.get("event_count_in_window") or 0),
+        "task_count_in_window": int(report.get("task_count_in_window") or 0),
+        "window_label": report.get("window_label") or "unknown",
+        "status_counts": status_counts,
     }
 
 

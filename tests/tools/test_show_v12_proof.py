@@ -142,6 +142,21 @@ def test_a4_solver_growth_axis_section_reports_measured_synthetic() -> None:
     assert a4["receipt_chain_verified"] is False
 
 
+def test_governance_throughput_section_reports_status_counts() -> None:
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+    gov = payload["governance_throughput"]
+
+    assert gov["available"] is True, gov
+    assert gov["metric_count"] == 8
+    assert isinstance(gov["event_count_in_window"], int)
+    assert gov["event_count_in_window"] >= 0
+    assert isinstance(gov["task_count_in_window"], int)
+    assert gov["task_count_in_window"] >= 0
+    assert isinstance(gov["status_counts"], dict)
+    assert sum(gov["status_counts"].values()) == gov["metric_count"]
+
+
 def test_substrate_velocity_returns_a_non_negative_count() -> None:
     result = _run("--json", "--since-utc-days", "1")
     payload = json.loads(result.stdout)

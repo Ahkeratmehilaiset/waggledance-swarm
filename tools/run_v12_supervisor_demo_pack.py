@@ -19,6 +19,10 @@ from tools.magma_receipt_adoption_report import (  # noqa: E402
     render_markdown as render_adoption_markdown,
 )
 from tools.run_magma_adversarial_eval import build_adversarial_eval_report  # noqa: E402
+from tools.run_v12_a3_counterfactual_axis_proof import (  # noqa: E402
+    build_a3_counterfactual_axis_proof,
+    render_markdown as render_a3_axis_markdown,
+)
 from tools.run_v12_rival_local_check_matrix import (  # noqa: E402
     build_rival_local_check_matrix,
     render_markdown as render_rival_matrix_markdown,
@@ -92,20 +96,28 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
 
     adoption_report = build_adoption_report(root=ROOT)
     adoption_markdown = render_adoption_markdown(adoption_report)
+    a3_proof = build_a3_counterfactual_axis_proof(
+        receipt_out_dir=out_dir / "a3_counterfactual_receipts",
+        now_utc=now_utc,
+    )
+    a3_markdown = render_a3_axis_markdown(a3_proof)
     rival_matrix = build_rival_local_check_matrix(now_utc=now_utc)
     rival_matrix_markdown = render_rival_matrix_markdown(rival_matrix)
     summary = _summary_markdown(
         adversarial_report=adversarial_report,
         adoption_report=adoption_report,
         verifier_report=verifier_report,
+        a3_proof=a3_proof,
         rival_matrix=rival_matrix,
     )
 
     _write_json(out_dir / "adversarial_eval_report.json", adversarial_report)
     _write_json(out_dir / "receipt_verifier_report.json", verifier_report)
     _write_json(out_dir / "receipt_adoption_report.json", adoption_report)
+    _write_json(out_dir / "a3_counterfactual_axis_proof.json", a3_proof)
     _write_json(out_dir / "rival_local_check_matrix.json", rival_matrix)
     _write_text(out_dir / "receipt_adoption_report.md", adoption_markdown)
+    _write_text(out_dir / "a3_counterfactual_axis_proof.md", a3_markdown)
     _write_text(out_dir / "rival_local_check_matrix.md", rival_matrix_markdown)
     _write_text(out_dir / "summary.md", summary)
 
@@ -120,6 +132,8 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
         "receipt_count": verifier_report["receipt_count"],
         "high_criticality_gap_count": adoption_report["high_criticality_gap_count"],
         "status_counts": adoption_report["status_counts"],
+        "a3_counterfactual_delta_proven": a3_proof["counterfactual_delta_proven"],
+        "a3_receipt_chain_verified": a3_proof["receipt_chain_verified"],
         "rival_local_check_pass_count": rival_matrix["passed_count"],
         "rival_local_check_required_count": rival_matrix["required_count"],
         "competitor_consensus_grade": rival_matrix["consensus_grade"],
@@ -131,6 +145,7 @@ def _summary_markdown(
     adversarial_report: dict[str, Any],
     adoption_report: dict[str, Any],
     verifier_report: dict[str, Any],
+    a3_proof: dict[str, Any],
     rival_matrix: dict[str, Any],
 ) -> str:
     action_required = adoption_report.get("action_required_gap_count", "not_available")
@@ -149,6 +164,8 @@ def _summary_markdown(
             f"- action-required adoption gaps: `{action_required}`",
             f"- accepted observability exceptions: `{accepted_exceptions}`",
             f"- adoption status counts: `{json.dumps(adoption_report['status_counts'], sort_keys=True)}`",
+            f"- A3 counterfactual delta proven: `{str(a3_proof['counterfactual_delta_proven']).lower()}`",
+            f"- A3 receipt chain verified: `{str(a3_proof['receipt_chain_verified']).lower()}`",
             f"- rival local checks passed: `{rival_matrix['passed_count']}/{rival_matrix['required_count']}`",
             f"- competitor consensus grade: `{str(rival_matrix['consensus_grade']).lower()}`",
             "",
@@ -167,6 +184,9 @@ def _summary_markdown(
             "- `receipt_verifier_report.json`",
             "- `receipt_adoption_report.json`",
             "- `receipt_adoption_report.md`",
+            "- `a3_counterfactual_axis_proof.json`",
+            "- `a3_counterfactual_axis_proof.md`",
+            "- `a3_counterfactual_receipts/manifest.json`",
             "- `rival_local_check_matrix.json`",
             "- `rival_local_check_matrix.md`",
         ]

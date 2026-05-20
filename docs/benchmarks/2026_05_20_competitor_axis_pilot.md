@@ -55,7 +55,7 @@ Staleness policy:
 | A2 receipt binding and tamper evidence | contested | WD has MAGMA receipt/eval/RCO binding; Asqav is stronger on cryptographic signing. |
 | A3 counterfactual evaluation delta | must-win | This is the main substrate differentiator over forensic replay and audit trails. |
 | A4 solver-growth lifecycle | must-win | Shadow/canary/live solver promotion is WD identity, not firewall identity. |
-| A5 governance throughput | contested, weak today | PR #500 is not merged; current claim remains in-progress. |
+| A5 governance throughput | contested, measured partial today | Governance metrics are now surfaced, but insufficient/deferred statuses remain visible. |
 | A6 adapter adoption friction | ceded today | JamJet and Preloop currently have stronger "keep your stack" posture. |
 | A7 public cryptographic verification | ceded today | Asqav and AGT public claims are ahead of WD's current optional/null signature envelope. |
 | A8 standard policy language portability | ceded today | AGT claims YAML/OPA/Rego/Cedar; Preloop claims CEL; WD policy surface is not yet equivalent. |
@@ -89,9 +89,9 @@ with full substrate as an upgrade path.
 |---|---|---|---|
 | A1 action gate | local evidence exists via WriteRCOGate and PR #501 receipt adapter | AGT, JamJet, Preloop all claim pre-execution policy/gating | contested, no uniqueness claim |
 | A2 receipt/tamper evidence | MAGMA receipt v1, EvaluationResult v0, RCO artifact v0, verifier and demos exist | Asqav claims ML-DSA-65 signatures, chain hash, public verify, policy gates | WD is improving, Asqav ahead on cryptographic envelope |
-| A3 counterfactual delta | counterfactual/adversarial demo surfaces exist, but needs one clean benchmark row | rivals mostly claim audit/replay, not solver-policy counterfactual deltas | must-win; next demo should target this |
-| A4 solver-growth lifecycle | existing evidence matrix claims low-risk autogrowth and mined solver runtime dispatch | rivals do not center solver-growth lifecycle | must-win and likely strongest WD axis |
-| A5 governance throughput | PR #500 in review; Codex requested fixes on two metrics | rivals have approval/audit UX claims, but not WD bridge metrics | in-progress; not a win yet |
+| A3 counterfactual delta | `tools/run_v12_a3_counterfactual_axis_proof.py` now reports one `MEASURED_LOCAL_PARTIAL` counterfactual row; supervisor demo pack verifies the receipt chain | rivals mostly claim audit/replay, not solver-policy counterfactual deltas | must-win; locally measured partial, not broad rival benchmark |
+| A4 solver-growth lifecycle | `tools/run_v12_a4_solver_growth_axis_proof.py` reports `MEASURED_LOCAL_SYNTHETIC`: 6 registered solvers and 18/18 dispatch hits in a temporary ControlPlaneDB | rivals do not center solver-growth lifecycle | must-win and currently strongest WD axis, with shadow/canary/live metrics still incomplete |
+| A5 governance throughput | `tools/governance_throughput_report.py` and `tools/show_v12_proof.py` surface event/task counts and metric status counts | rivals have approval/audit UX claims, but not WD bridge metrics | measured partial; not a WD win while some metrics remain insufficient/deferred |
 | A6 adoption friction | WD adapter strategy not yet the leading path | JamJet and Preloop strongly claim drop-in onboarding/adapters | ceded today |
 | A7 crypto public verification | WD signature fields exist but can be null/optional | Asqav and AGT claim stronger identity/signature stories | ceded today |
 | A8 policy portability | WD has policy surface artifacts, but not public OPA/Cedar parity | AGT claims YAML/OPA/Rego/Cedar; Preloop claims CEL | ceded today |
@@ -113,11 +113,10 @@ Until then, competitor cells are `public_doc_claim`, not measured results.
 
 ## Next Work
 
-1. Fix PR #500 before using governance-throughput results.
-2. Run or explicitly waive the rival-side local checks above.
-3. Produce the first measured axis table with separate columns for
+1. Run or explicitly waive the rival-side local checks above.
+2. Produce the first measured axis table with separate columns for
    `wd_local_evidence`, `rival_public_doc_claim`, and `rival_local_check`.
-4. Only then decide whether the 60-75 percent full-substrate uniqueness claim
+3. Only then decide whether the 60-75 percent full-substrate uniqueness claim
    survives the window.
 
 ## Current Directional Conclusion

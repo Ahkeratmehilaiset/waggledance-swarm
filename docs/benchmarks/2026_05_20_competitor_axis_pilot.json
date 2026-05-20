@@ -57,7 +57,7 @@
       "description": "Include at least two WD weak axes labelled NOT_CLAIMED or INFERRED.",
       "status": "satisfied_by_scope",
       "evidence": [
-        "A5 governance throughput is in-progress because PR #500 needs fixes.",
+        "A5 governance throughput is measured-partial because metric statuses still include insufficient/deferred rows.",
         "A6 adapter adoption friction is ceded today.",
         "A7 public cryptographic verification is ceded today.",
         "A8 policy language portability is ceded today."
@@ -167,12 +167,16 @@
       "id": "A3",
       "name": "counterfactual_evaluation_delta",
       "declared_position": "must_win",
-      "wd_current_label": "INFERRED_TO_PROVEN_PARTIAL",
+      "wd_current_label": "MEASURED_LOCAL_PARTIAL",
       "wd_evidence": [
+        "tools/run_v12_a3_counterfactual_axis_proof.py",
+        "tools/run_v12_supervisor_demo_pack.py",
         "tools/run_pdam_counterfactual_demo.py",
         "tools/run_magma_composition_demo.py",
         "tools/run_magma_adversarial_eval.py",
-        "schemas/v3_13_0/evaluation_result.v0.json"
+        "schemas/v3_13_0/evaluation_result.v0.json",
+        "PR #515 commit 635b19a0",
+        "PR #516 commit b119e440"
       ],
       "rival_public_doc_claims": {
         "JamJet": "checkpoint replay and durable runtime claims",
@@ -180,17 +184,20 @@
         "Microsoft AGT": "replay debugging/SRE claims",
         "Preloop": "runtime session observability claims"
       },
-      "current_interpretation": "Must become a clean measured row; this is the main substrate differentiator."
+      "current_interpretation": "One local measured partial counterfactual row exists and the supervisor demo pack verifies its receipt chain; still not a broad rival benchmark."
     },
     {
       "id": "A4",
       "name": "solver_growth_shadow_canary_live_lifecycle",
       "declared_position": "must_win",
-      "wd_current_label": "PROVEN_LOW_RISK_PARTIAL_LIFECYCLE",
+      "wd_current_label": "MEASURED_LOCAL_SYNTHETIC",
       "wd_evidence": [
+        "tools/run_v12_a4_solver_growth_axis_proof.py",
+        "tools/run_v12_supervisor_demo_pack.py",
         "docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md",
         "docs/benchmarks/MINED_SOLVER_RUNTIME_DISPATCH_2026.md",
-        "tools/run_phase18c_mined_solver_runtime_dispatch_proof.py"
+        "tools/run_phase18c_mined_solver_runtime_dispatch_proof.py",
+        "PR #517 commit 1b2e0208"
       ],
       "rival_public_doc_claims": {
         "JamJet": "eval/replay and memory claims, not solver-growth substrate as primary identity",
@@ -198,15 +205,17 @@
         "Microsoft AGT": "governance kernel, not WD-style solver lifecycle as primary identity",
         "Preloop": "control plane/gateway, not solver-growth substrate"
       },
-      "current_interpretation": "Likely strongest WD axis, but shadow/canary/live transition metrics need more wiring."
+      "current_interpretation": "A measured local synthetic row now proves six allowlisted solvers and 18/18 dispatch hits in a temporary ControlPlaneDB; shadow/canary/live transition metrics still need more wiring."
     },
     {
       "id": "A5",
       "name": "governance_throughput_and_peer_review_metrics",
       "declared_position": "contested_weak_today",
-      "wd_current_label": "IN_PROGRESS_NOT_CLAIMED",
+      "wd_current_label": "MEASURED_LOCAL_PARTIAL_NOT_WIN",
       "wd_evidence": [
-        "PR #500 is open and Codex requested metric correctness fixes on 2026-05-20"
+        "tools/governance_throughput_report.py",
+        "tools/show_v12_proof.py",
+        "PR #518 commit fd959b84"
       ],
       "rival_public_doc_claims": {
         "JamJet": "approval queue/audit/cloud control-plane claims",
@@ -214,7 +223,7 @@
         "Microsoft AGT": "SRE and compliance claims",
         "Preloop": "approval workflows and dashboards"
       },
-      "current_interpretation": "Not a WD win until PR #500 is fixed, merged, and run."
+      "current_interpretation": "Measured partial: show_v12_proof now surfaces event/task counts and metric status counts, but insufficient/deferred metrics remain visible, so this is not a WD win yet."
     },
     {
       "id": "A6",
@@ -308,6 +317,6 @@
   "current_directional_conclusion": {
     "substrate_first_supported_provisionally": true,
     "why": "The strongest WD direction is not write-action governance alone; it is MAGMA receipt binding plus EvaluationResult, counterfactual evaluation, solver-growth lifecycle, offline solver substrate, and operator-owned promotion evidence.",
-    "why_not_final": "Rival-side local checks are not run, PR #500 governance-throughput metrics need fixes, and A3 needs a clean measured counterfactual row."
+    "why_not_final": "Rival-side local checks are not run, A5 still has insufficient/deferred governance metrics, and A3/A4 are measured local partial/synthetic rows rather than broad rival benchmarks."
   }
 }

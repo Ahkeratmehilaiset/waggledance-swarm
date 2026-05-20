@@ -15,6 +15,23 @@ The intended production cadence is every 30 minutes. Shorter intervals are
 allowed only for local smoke testing because idle detection deliberately treats
 recent substantive bridge traffic as active work.
 
+## WD Mission Boundary
+
+The idle and dream loops exist only to help the large development models keep
+improving WaggleDance and its project domains without waiting for the operator
+to manually say "continue." They are not a general-purpose autonomous browsing,
+research, or task-execution loop.
+
+Valid idle/dream work must produce or refine at least one WD artifact:
+architecture, code, tests, security hardening, threat models, reliability
+evidence, competitor-informed product gaps, documented risks, or concrete
+backlog candidates. Competitor monitoring is allowed only as evidence for WD
+strategy and implementation decisions. Security stewardship is allowed only for
+WD-owned code, dependencies, configuration, secrets handling, bridge/runtime
+protocols, and defensive analysis. The loop must not probe, attack, scrape,
+or automate against third-party systems unless a separate operator-approved
+tooling path explicitly authorizes that external side effect.
+
 ## Invariants
 
 - `idle_loop_once.py` is the only scheduled idle entrypoint.
@@ -156,7 +173,9 @@ selection loop:
    scout, or review task.
 6. Use alternate review loops before merge: one agent implements, the other
    reviews, then roles swap on the next slice.
-7. Escalate only for protected paths, credentials, destructive operations,
+7. Keep every scout or dream output tied to WD advantage: a repo change,
+   test gap, security risk, competitor-informed design note, or backlog item.
+8. Escalate only for protected paths, credentials, destructive operations,
    external side effects, unresolved write-scope conflict, or explicit charter
    stop conditions.
 

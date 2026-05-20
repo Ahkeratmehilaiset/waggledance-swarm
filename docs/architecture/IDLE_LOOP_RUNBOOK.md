@@ -7,9 +7,9 @@
 ## Purpose
 
 This runbook defines how to run the idle loop without waiting for a manual
-operator prompt. The scheduled command runs one bounded tick, exits, and lets
-the bridge state decide the next tick. It is not a daemon, not a hidden model
-loop, and not a bypass around the Idle Autonomy Charter.
+operator prompt. The scheduled command runs one bounded read-only tick, exits,
+and lets the bridge state decide the next agent action. It is not a daemon, not
+a hidden model loop, and not a bypass around the Idle Autonomy Charter.
 
 The intended production cadence is every 30 minutes. Shorter intervals are
 allowed only for local smoke testing because idle detection deliberately treats
@@ -19,8 +19,9 @@ recent substantive bridge traffic as active work.
 
 - `idle_loop_once.py` is the only scheduled idle entrypoint.
 - Each invocation runs once and exits.
-- `--dry-run` is the default local validation mode.
-- `--apply` may be scheduled only after the dry run is clean.
+- The tool is read-only and has no `--apply` mode.
+- Follow-up bridge writes, payload generation, PR drafting, and auto-merge
+  attempts remain owned by the existing purpose-built tools and the live agents.
 - The scheduler never edits the charter, bridge gate scripts, credentials, or
   protected operator policy files.
 - Merge decisions still pass through the seven parallel charter conditions:
@@ -40,7 +41,7 @@ $env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1 -MaxUnresolved 15
 
-.\.venv\Scripts\python.exe tools\idle_loop_once.py --dry-run --json
+.\.venv\Scripts\python.exe tools\idle_loop_once.py --json
 ```
 
 Expected preflight shape:
@@ -48,10 +49,10 @@ Expected preflight shape:
 - No active overlapping write claims.
 - Claude and Codex have recent bridge liveness or heartbeat from their active
   interactive shells, when shells are expected to be online.
-- `idle_loop_once.py --dry-run --json` exits cleanly.
+- `idle_loop_once.py --json` exits cleanly.
 - Any result of `operator_review_required`, `charter_violation`,
   `invalid_event`, or `low_quality` is treated as a stop condition, not as a
-  reason to schedule `--apply`.
+  reason for the scheduler to run any follow-up mutating command.
 
 ## Windows Task Scheduler
 
@@ -64,7 +65,7 @@ $taskName = 'WaggleDance Idle Loop Once'
 
 $action = New-ScheduledTaskAction `
   -Execute $python `
-  -Argument 'tools\idle_loop_once.py --apply --json' `
+  -Argument 'tools\idle_loop_once.py --json' `
   -WorkingDirectory $repo
 
 $trigger = New-ScheduledTaskTrigger `
@@ -83,7 +84,7 @@ Register-ScheduledTask `
   -Action $action `
   -Trigger $trigger `
   -Settings $settings `
-  -Description 'Runs one charter-gated WaggleDance idle loop tick every 30 minutes.'
+  -Description 'Runs one read-only WaggleDance idle loop status tick every 30 minutes.'
 ```
 
 Operational notes:
@@ -120,7 +121,7 @@ Unregister-ScheduledTask -TaskName 'WaggleDance Idle Loop Once' -Confirm:$false
 On Linux or WSL deployments, use cron with the same one-tick contract:
 
 ```cron
-*/30 * * * * cd /srv/waggledance && ./.venv/bin/python tools/idle_loop_once.py --apply --json >> logs/idle_loop_once.log 2>&1
+*/30 * * * * cd /srv/waggledance && ./.venv/bin/python tools/idle_loop_once.py --json >> logs/idle_loop_once.log 2>&1
 ```
 
 For systemd timer deployments, keep the service `Type=oneshot` and set
@@ -135,9 +136,9 @@ interpret it; the agents do through the bridge.
 | Result | Action |
 | --- | --- |
 | `not_idle` | Exit. Existing work continues. |
-| `no_instance_emit_round_1` | The tick may emit the first idle proposal only when the tool is run with `--apply` and idle predicates still hold. |
-| `mid_protocol_waiting_for_peer` | Exit. The peer agent should answer the open idle-protocol event through the bridge. |
-| `soft_convergence` or `hard_convergence` | Run the charter-gated consensus artifact, draft PR, and auto-merge chain. |
+| `no_session` | Exit after reporting the recommended `run_idle_protocol_once.py --emit --json` command. A live agent must decide whether to run it. |
+| `mid_protocol` | Exit. The peer agent should compose and emit the next idle-protocol payload through the existing activation tool. |
+| `convergence_reached` | Exit after reporting the implementer-chain route. A live agent converts consensus into a candidate diff before artifact, draft PR, status snapshot, and auto-merge tools can run. |
 | `operator_review_required` | Stop automated progression and leave the evidence in bridge artifacts. |
 | `charter_violation`, `invalid_event`, `low_quality` | Stop automated progression for that instance. |
 
@@ -177,8 +178,8 @@ If a scheduled tick fails:
 2. Run `Get-AgentBridgeStatus.ps1` and inspect active claims.
 3. Release only stale claims through the bridge scripts; do not delete claim
    files manually.
-4. Run `idle_loop_once.py --dry-run --json`.
-5. Re-enable the schedule only after the dry run is clean.
+4. Run `idle_loop_once.py --json`.
+5. Re-enable the schedule only after the read-only tick exits cleanly.
 
 If the agent CLI shells are down, restart them from interactive terminals. The
 scheduled task is not a replacement for Codex or Claude Code sessions; it only

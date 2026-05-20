@@ -191,6 +191,7 @@ def evaluate_agent_next_task(
             agent=agent,
             events=events,
             claims=claims,
+            now_utc=now_utc,
         )
     except BridgeNextActionError as exc:
         return {

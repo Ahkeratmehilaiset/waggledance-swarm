@@ -10,7 +10,9 @@ continue a claim, answer an incoming request, or claim new work.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -31,6 +33,7 @@ from waggledance.core.work_queue import (  # noqa: E402
 
 
 DEFAULT_EVENTS_PATH = DEFAULT_BRIDGE_ROOT / "shared" / "events.jsonl"
+DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS = 12.0
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 REQUEST_TYPES = {
     "message",
@@ -84,6 +87,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=50000,
         help="Maximum event lines to read from the end of the JSONL file; <=0 reads all.",
     )
+    parser.add_argument(
+        "--open-request-max-age-hours",
+        type=float,
+        default=DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS,
+        help=(
+            "Ignore unanswered incoming requests older than this many hours "
+            "when choosing the next action."
+        ),
+    )
+    parser.add_argument(
+        "--now",
+        default=None,
+        help="Override current UTC time for request-age evaluation.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -94,10 +111,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         events_path = args.events or (Path(args.bridge_root) / "shared" / "events.jsonl")
         events = read_events(events_path, tail=args.tail)
         claims = list_claims(bridge_root=Path(args.bridge_root))
+        now_utc = datetime.now(timezone.utc)
+        if args.now:
+            now_utc = _parse_utc(args.now)
+            if now_utc is None:
+                raise BridgeNextActionError(
+                    {
+                        "ok": False,
+                        "decision": "bridge_next_action_error",
+                        "errors": ["now must be an ISO-8601 timestamp"],
+                    }
+                )
         report = recommend_next_action(
             agent=args.agent,
             events=events,
             claims=claims,
+            now_utc=now_utc,
+            open_request_max_age_hours=args.open_request_max_age_hours,
         )
     except (BridgeNextActionError, WorkQueueError) as exc:
         if isinstance(exc, BridgeNextActionError):
@@ -151,6 +181,8 @@ def recommend_next_action(
     agent: str,
     events: Sequence[Mapping[str, Any]],
     claims: Sequence[Claim],
+    now_utc: datetime | None = None,
+    open_request_max_age_hours: float | None = DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS,
 ) -> dict[str, Any]:
     """Return a deterministic next-action recommendation for ``agent``."""
     if not AGENT_ID_PATTERN.fullmatch(agent):
@@ -161,12 +193,32 @@ def recommend_next_action(
                 "errors": [f"agent must match {AGENT_ID_PATTERN.pattern}"],
             }
         )
+    if (
+        open_request_max_age_hours is not None
+        and (
+            not math.isfinite(open_request_max_age_hours)
+            or open_request_max_age_hours <= 0
+        )
+    ):
+        raise BridgeNextActionError(
+            {
+                "ok": False,
+                "decision": "bridge_next_action_error",
+                "errors": ["open_request_max_age_hours must be positive"],
+            }
+        )
 
     own_claims = [claim for claim in claims if claim.agent == agent]
     foreign_write_claims = [
         claim for claim in claims if claim.agent != agent and claim.mode == "write"
     ]
-    open_requests = _open_requests_for_agent(agent=agent, events=events)
+    all_open_requests = _open_requests_for_agent(agent=agent, events=events)
+    effective_now = now_utc or _latest_event_time(events) or datetime.now(timezone.utc)
+    open_requests, stale_open_requests = _split_fresh_and_stale_requests(
+        all_open_requests,
+        now_utc=effective_now,
+        max_age_hours=open_request_max_age_hours,
+    )
 
     if own_claims:
         claim = own_claims[0]
@@ -178,6 +230,7 @@ def recommend_next_action(
             summary=f"continue active claim {claim.task_id}",
             claims=claims,
             open_requests=open_requests,
+            stale_open_requests=stale_open_requests,
             foreign_write_claims=foreign_write_claims,
         )
     if open_requests:
@@ -193,6 +246,7 @@ def recommend_next_action(
             summary=summary,
             claims=claims,
             open_requests=open_requests,
+            stale_open_requests=stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             request=request,
         )
@@ -207,6 +261,7 @@ def recommend_next_action(
             summary=f"foreign write claim active; take read-only work outside scope: {scope}",
             claims=claims,
             open_requests=open_requests,
+            stale_open_requests=stale_open_requests,
             foreign_write_claims=foreign_write_claims,
         )
     return _report(
@@ -217,6 +272,7 @@ def recommend_next_action(
         summary="no active claim or incoming blocker; claim the highest-value unblocked work",
         claims=claims,
         open_requests=open_requests,
+        stale_open_requests=stale_open_requests,
         foreign_write_claims=foreign_write_claims,
     )
 
@@ -247,6 +303,26 @@ def _open_requests_for_agent(
         if not answered:
             open_requests.append(request)
     return open_requests
+
+
+def _split_fresh_and_stale_requests(
+    requests: Sequence[Mapping[str, Any]],
+    *,
+    now_utc: datetime,
+    max_age_hours: float | None,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    if max_age_hours is None:
+        return list(requests), []
+    cutoff = now_utc.astimezone(timezone.utc) - timedelta(hours=max_age_hours)
+    fresh: list[Mapping[str, Any]] = []
+    stale: list[Mapping[str, Any]] = []
+    for request in requests:
+        request_ts = _parse_utc(_event_ts(request))
+        if request_ts is not None and request_ts < cutoff:
+            stale.append(request)
+        else:
+            fresh.append(request)
+    return fresh, stale
 
 
 def _idle_protocol_progressed(
@@ -320,6 +396,38 @@ def _event_ts(event: Mapping[str, Any]) -> str:
     return str(event.get("ts_utc") or event.get("timestamp") or "")
 
 
+def _latest_event_time(events: Sequence[Mapping[str, Any]]) -> datetime | None:
+    parsed = [
+        value
+        for value in (_parse_utc(_event_ts(event)) for event in events)
+        if value is not None
+    ]
+    return max(parsed) if parsed else None
+
+
+def _parse_utc(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    normalized = _trim_fractional_seconds(normalized)
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _trim_fractional_seconds(value: str) -> str:
+    return re.sub(
+        r"(\.\d{6})\d+((?:[+-]\d{2}:\d{2})?)$",
+        r"\1\2",
+        value,
+    )
+
+
 def _payload(event: Mapping[str, Any]) -> Mapping[str, Any]:
     payload = event.get("payload")
     return payload if isinstance(payload, Mapping) else {}
@@ -341,6 +449,7 @@ def _report(
     summary: str,
     claims: Sequence[Claim],
     open_requests: Sequence[Mapping[str, Any]],
+    stale_open_requests: Sequence[Mapping[str, Any]],
     foreign_write_claims: Sequence[Claim],
     request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -354,8 +463,13 @@ def _report(
         "summary": summary,
         "active_claim_count": len(claims),
         "open_incoming_count": len(open_requests),
+        "stale_incoming_count": len(stale_open_requests),
         "foreign_write_claim_count": len(foreign_write_claims),
     }
+    if stale_open_requests:
+        payload["stale_incoming_task_ids"] = [
+            _task_id(request) for request in stale_open_requests
+        ]
     if request is not None:
         payload["incoming"] = {
             "agent": _event_agent(request),
@@ -390,6 +504,14 @@ def _print_human(report: Mapping[str, Any]) -> None:
     print(f"action: {report.get('action', '')}")
     print(f"task_id: {report.get('task_id', '')}")
     print(f"safe_mode: {report.get('safe_mode', '')}")
+    stale_count = int(report.get("stale_incoming_count", 0) or 0)
+    if stale_count:
+        print(f"stale_incoming_count: {stale_count}")
+        task_ids = ", ".join(
+            str(item) for item in report.get("stale_incoming_task_ids", [])
+        )
+        if task_ids:
+            print(f"stale_incoming_task_ids: {task_ids}")
     print(f"summary: {report.get('summary', '')}")
 
 

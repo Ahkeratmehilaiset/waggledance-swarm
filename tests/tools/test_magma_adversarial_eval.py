@@ -7,6 +7,8 @@ import subprocess
 import sys
 
 from tools.run_magma_adversarial_eval import build_adversarial_eval_report
+from tools.verify_magma_receipt import verify_manifest
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.demo_policy import demo_policy_for_case
 
 
@@ -49,6 +51,7 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["expectations_digest"].startswith("sha256:")
     assert report["catch_agent_bucket_status"] == "redacted_hidden_expectations_v0"
     assert "failure_buckets" not in report
+    assert "receipt_bundle" not in report
 
 
 def test_external_effect_cases_are_scored_without_writes() -> None:
@@ -101,6 +104,100 @@ def test_cli_text_mode_and_out_report(tmp_path: Path) -> None:
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["ok"] is True
     assert report["case_count"] == 9
+
+
+def test_opt_in_receipt_bundle_verifies_report(tmp_path: Path) -> None:
+    out_dir = tmp_path / "adversarial-receipts"
+
+    report = build_adversarial_eval_report(
+        receipt_out_dir=out_dir,
+        now_utc=_fixed_now(),
+    )
+
+    bundle = report["receipt_bundle"]
+    assert report["writes_applied"] is False
+    assert bundle["receipt_count"] == 1
+    assert bundle["verifier_report"]["ok"] is True
+    assert verify_manifest(out_dir / "manifest.json")["ok"] is True
+
+    payload = json.loads(
+        (out_dir / "payload-001-report.json").read_text(encoding="utf-8")
+    )
+    evaluation = json.loads(
+        (out_dir / "evaluation-001-report.json").read_text(encoding="utf-8")
+    )
+    receipt = json.loads(
+        (out_dir / "receipt-001-report.json").read_text(encoding="utf-8")
+    )
+    assert receipt["ts_utc"] == "2026-05-20T18:20:00Z"
+    assert receipt["risk_class"] == "local_artifact"
+    assert receipt["operator_gate_required"] is False
+    assert receipt["approval_id"] is None
+    assert evaluation["target_digest"] == sha256_digest(payload)
+    assert receipt["canonical_payload_digest"] == sha256_digest(payload)
+    assert receipt["evaluation_result_digest"] == sha256_digest(evaluation)
+    assert payload["case_count"] == 9
+    assert len(payload["case_evaluation_result_digests"]) == 9
+
+
+def test_cli_emits_receipt_bundle_only_when_requested(tmp_path: Path) -> None:
+    out_dir = tmp_path / "adversarial-receipts"
+
+    result = _run_eval(
+        "--json",
+        "--receipt-out-dir",
+        str(out_dir),
+        "--now",
+        "2026-05-20T18:20:00Z",
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["receipt_bundle"]["verifier_report"]["ok"] is True
+    assert (out_dir / "manifest.json").exists()
+    receipt = json.loads(
+        (out_dir / "receipt-001-report.json").read_text(encoding="utf-8")
+    )
+    assert receipt["ts_utc"] == "2026-05-20T18:20:00Z"
+
+
+def test_receipt_bundle_refuses_existing_output_directory(tmp_path: Path) -> None:
+    out_dir = tmp_path / "adversarial-receipts"
+    out_dir.mkdir()
+
+    result = _run_eval("--receipt-out-dir", str(out_dir))
+
+    assert result.returncode == 1
+    assert "out_dir must not exist" in result.stderr
+
+
+def test_receipt_bundle_does_not_leak_hidden_expectations(tmp_path: Path) -> None:
+    out_dir = tmp_path / "adversarial-receipts"
+
+    result = _run_eval("--json", "--receipt-out-dir", str(out_dir))
+
+    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    for path in out_dir.glob("*.json"):
+        combined += path.read_text(encoding="utf-8")
+    assert "_DO_NOT_LEAK" not in combined
+    assert "peer_review_trap_marker" not in combined
+    assert "should_claude_catch" not in combined
+    assert "should_codex_catch" not in combined
+    assert "expected_verdict" not in combined
+
+
+def test_cli_rejects_non_utc_receipt_timestamp(tmp_path: Path) -> None:
+    result = _run_eval(
+        "--json",
+        "--receipt-out-dir",
+        str(tmp_path / "adversarial-receipts"),
+        "--now",
+        "2026-05-20T21:20:00+03:00",
+    )
+
+    assert result.returncode == 1
+    assert "--now requires a UTC timestamp" in result.stderr
 
 
 def test_cli_refuses_to_overwrite_out_report(tmp_path: Path) -> None:
@@ -186,3 +283,9 @@ def test_demo_policy_is_visible_field_derived_not_case_id_keyed() -> None:
     renamed["case_id"] = "case:adv:charter_violation:renamed"
 
     assert demo_policy_for_case(renamed) == demo_policy_for_case(first)
+
+
+def _fixed_now():
+    from datetime import datetime, timezone
+
+    return datetime(2026, 5, 20, 18, 20, tzinfo=timezone.utc)

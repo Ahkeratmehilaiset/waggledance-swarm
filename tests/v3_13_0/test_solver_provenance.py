@@ -14,11 +14,13 @@ Covers acceptance criteria from solver_rco_provenance_signing_spec.md:
 """
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
 
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.v3_13_0.solver_provenance import (
     ActivationState,
     ProvenanceSignature,
@@ -26,6 +28,7 @@ from waggledance.core.v3_13_0.solver_provenance import (
     SigningRole,
     SolverCandidateRecord,
     SolverProvenance,
+    build_solver_provenance_transition_receipt,
     canonicalize_manifest,
 )
 
@@ -73,22 +76,58 @@ def _bridge_collector(collector: list):
     return emit
 
 
+def _receipt_collector(collector: list):
+    def emit(bundle: dict) -> None:
+        collector.append(bundle)
+    return emit
+
+
 def _make_provenance(*, candidate: SolverCandidateRecord,
                       events: list = None,
                       bridge_events: list = None,
+                      receipt_bundles: list = None,
+                      receipt_emit=None,
                       scope_active: bool = True
                       ) -> tuple[SolverProvenance, dict[str, SolverCandidateRecord]]:
     store: dict[str, SolverCandidateRecord] = {candidate.candidate_id: candidate}
     events = events if events is not None else []
     bridge_events = bridge_events if bridge_events is not None else []
+    if receipt_emit is None and receipt_bundles is not None:
+        receipt_emit = _receipt_collector(receipt_bundles)
     prov = SolverProvenance(
         fetch_candidate=lambda cid: store.get(cid),
         update_candidate=lambda rec: store.__setitem__(rec.candidate_id, rec),
         emit_magma_event=_emit_collector(events),
         emit_bridge_event=_bridge_collector(bridge_events),
         operator_scope_policy_active=lambda _ref: scope_active,
+        emit_receipt_bundle=receipt_emit,
     )
     return prov, store
+
+
+def _sign_owner_peer(
+    prov: SolverProvenance,
+    cand: SolverCandidateRecord,
+) -> None:
+    prov.sign(candidate_id=cand.candidate_id,
+                signing_agent_id="claude",
+                signing_role=SigningRole.OWNER.value,
+                bridge_event_ref="b1",
+                operator_scope_policy_ref="policy:home")
+    prov.sign(candidate_id=cand.candidate_id,
+                signing_agent_id="codex",
+                signing_role=SigningRole.PEER.value,
+                bridge_event_ref="b2",
+                operator_scope_policy_ref="policy:home")
+
+
+def _bundle_for_transition(bundles: list[dict], transition: str) -> dict:
+    matches = [
+        bundle for bundle in bundles
+        if f":{transition}:" in bundle["receipt"]["event_id"]
+    ]
+    assert matches
+    return matches[-1]
 
 
 # --------------------------------------------------------------------------
@@ -523,6 +562,220 @@ class TestBridgeSchemaCompatibility:
         evt = decision_events[0]
         assert evt["status"] == "activation_revoked"
         assert evt["payload"]["kind"] == "solver"
+
+
+# --------------------------------------------------------------------------
+# MAGMA receipt-bound provenance transitions
+# --------------------------------------------------------------------------
+
+
+class TestProvenanceTransitionReceipts:
+
+    def test_transition_receipt_helper_builds_payload_free_bundle(self):
+        canonical, digest = canonicalize_manifest({
+            "candidate_id": "cand:secret",
+            "template_family": "RecordReconciler",
+            "private_note": "secret operator text",
+        })
+        cand = SolverCandidateRecord(
+            candidate_id="cand:secret",
+            manifest_canonical_json=canonical,
+            manifest_sha256=digest,
+            target_domain="DOM-011",
+            target_write_risk="local_artifact",
+            activation_state=ActivationState.SIGNED.value,
+        )
+
+        bundle = build_solver_provenance_transition_receipt(
+            candidate=cand,
+            transition="activation_authorised",
+            audit_event_ref="evt_auth_1",
+            bridge_event_ref="bridge:auth:1",
+            new_state=ActivationState.ACTIVATED.value,
+            ts_utc="2026-05-20T17:50:00Z",
+        )
+
+        artifact = bundle["solver_provenance_transition_artifact"]
+        receipt = bundle["receipt"]
+        evaluation = bundle["evaluation_result"]
+        assert receipt["receipt_version"] == "magma.receipt.v1"
+        assert receipt["risk_class"] == "local_artifact"
+        assert receipt["rco_decision_digest"] == sha256_digest(artifact)
+        assert receipt["canonical_payload_digest"] == evaluation["target_digest"]
+        assert evaluation["subject_type"] == "solver"
+        assert evaluation["actual_gate"] == "allow"
+        assert evaluation["verdict"] == "pass"
+        assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
+
+    def test_activation_authorised_emits_receipt_before_bridge(self):
+        cand = _make_candidate()
+        bundles = []
+        bridge_events = []
+
+        def receipt_emit(bundle: dict) -> None:
+            assert not [
+                event for event in bridge_events
+                if event["status"] == "activation_authorised"
+            ]
+            bundles.append(bundle)
+
+        prov, store = _make_provenance(
+            candidate=cand,
+            bridge_events=bridge_events,
+            receipt_emit=receipt_emit,
+        )
+        _sign_owner_peer(prov, cand)
+
+        state = prov.activate(candidate_id=cand.candidate_id)
+
+        assert state == ActivationState.ACTIVATED
+        assert store[cand.candidate_id].activation_state == (
+            ActivationState.ACTIVATED.value
+        )
+        bundle = _bundle_for_transition(bundles, "activation_authorised")
+        assert bundle["evaluation_result"]["actual_gate"] == "allow"
+        activation_events = [
+            event for event in bridge_events
+            if event["status"] == "activation_authorised"
+        ]
+        assert activation_events
+        assert activation_events[-1]["payload"]["bridge_event_ref"].startswith(
+            "bridge:solver_provenance:activation_authorised"
+        )
+
+    def test_activation_refused_emits_refusal_receipt(self):
+        cand = _make_candidate()
+        bundles = []
+        prov, store = _make_provenance(
+            candidate=cand,
+            receipt_bundles=bundles,
+        )
+
+        state = prov.activate(candidate_id=cand.candidate_id)
+
+        assert state == ActivationState.UNACTIVATED
+        assert store[cand.candidate_id].activation_state == (
+            ActivationState.UNACTIVATED.value
+        )
+        bundle = _bundle_for_transition(bundles, "activation_refused")
+        assert bundle["evaluation_result"]["actual_gate"] == "refuse"
+        assert bundle["evaluation_result"]["verdict"] == "refuse"
+        assert "solver_provenance:verification:fail" in (
+            bundle["evaluation_result"]["reason_codes"]
+        )
+
+    def test_activation_receipt_failure_blocks_state_transition(self):
+        cand = _make_candidate()
+        bridge_events = []
+
+        def boom(_bundle: dict) -> None:
+            raise RuntimeError("receipt boom")
+
+        prov, store = _make_provenance(
+            candidate=cand,
+            bridge_events=bridge_events,
+            receipt_emit=boom,
+        )
+        _sign_owner_peer(prov, cand)
+
+        with pytest.raises(RuntimeError, match="receipt boom"):
+            prov.activate(candidate_id=cand.candidate_id)
+
+        assert store[cand.candidate_id].activation_state == (
+            ActivationState.SIGNED.value
+        )
+        assert not [
+            event for event in bridge_events
+            if event["status"] == "activation_authorised"
+        ]
+
+    def test_revocation_receipt_is_payload_free(self):
+        cand = _make_candidate()
+        bundles = []
+        prov, store = _make_provenance(
+            candidate=cand,
+            receipt_bundles=bundles,
+        )
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+
+        result = prov.revoke(
+            candidate_id=cand.candidate_id,
+            reason="secret operator text",
+        )
+
+        assert result.success is True
+        assert store[cand.candidate_id].activation_state == (
+            ActivationState.REVOKED.value
+        )
+        bundle = _bundle_for_transition(bundles, "activation_revoked")
+        assert bundle["evaluation_result"]["actual_gate"] == "allow"
+        assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
+
+    def test_revocation_receipt_failure_blocks_revocation(self):
+        cand = _make_candidate()
+        bridge_events = []
+
+        def boom(_bundle: dict) -> None:
+            raise RuntimeError("receipt boom")
+
+        prov, store = _make_provenance(
+            candidate=cand,
+            bridge_events=bridge_events,
+            receipt_emit=boom,
+        )
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+
+        with pytest.raises(RuntimeError, match="receipt boom"):
+            prov.revoke(
+                candidate_id=cand.candidate_id,
+                reason="superseded by v2",
+            )
+
+        assert store[cand.candidate_id].activation_state != (
+            ActivationState.REVOKED.value
+        )
+        assert not [
+            event for event in bridge_events
+            if event["status"] == "activation_revoked"
+        ]
+
+    def test_quarantine_emits_receipt_without_evidence_payload(self):
+        cand = _make_candidate()
+        bundles = []
+        prov, store = _make_provenance(
+            candidate=cand,
+            receipt_bundles=bundles,
+        )
+        _sign_owner_peer(prov, cand)
+        prov.activate(candidate_id=cand.candidate_id)
+        bundles.clear()
+
+        for i in range(5):
+            state = prov.record_run_result(
+                candidate_id=cand.candidate_id,
+                divergence_score=0.5,
+                evidence_ref=f"art:div_{i}",
+            )
+
+        assert state == ActivationState.QUARANTINED
+        assert store[cand.candidate_id].activation_state == (
+            ActivationState.QUARANTINED.value
+        )
+        bundle = _bundle_for_transition(bundles, "quarantined")
+        assert bundle["evaluation_result"]["actual_gate"] == "allow"
+        assert "quarantine_threshold_reached" in json.dumps(
+            bundle["evaluation_result"]["reason_codes"],
+            sort_keys=True,
+        )
+        assert "art:div_4" not in json.dumps(bundle, sort_keys=True)
 
 
 # --------------------------------------------------------------------------

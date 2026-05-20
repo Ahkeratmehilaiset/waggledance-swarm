@@ -50,6 +50,8 @@ def _empty_bridge(tmp_path: Path) -> tuple[Path, Path, Path]:
             }
         ],
     )
+    # Ensure the canonical claims dir under bridge_root exists so list_claims
+    # finds an empty (not missing) directory.
     claims_dir = _claims_dir(bridge)
     return bridge, events_path, claims_dir
 
@@ -65,7 +67,7 @@ def test_invalid_agent_id_is_rejected(tmp_path: Path) -> None:
     report = evaluate_agent_next_task(
         agent="Invalid Agent!",
         events_path=events_path,
-        claims_dir=claims_dir,
+
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -94,7 +96,7 @@ def test_defers_when_agent_has_active_claim(tmp_path: Path) -> None:
     report = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-        claims_dir=claims_dir,
+
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -134,7 +136,7 @@ def test_defers_when_open_incoming_request(tmp_path: Path) -> None:
     report = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-        claims_dir=claims_dir,
+
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -156,7 +158,7 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
     report = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-        claims_dir=claims_dir,
+
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -191,7 +193,7 @@ def test_picks_substrate_smoke_when_bridge_says_parallel_read_only(
     report = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-        claims_dir=claims_dir,
+
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -264,7 +266,7 @@ def test_tick_does_not_write_bridge_events_or_claims(tmp_path: Path) -> None:
     evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-        claims_dir=claims_dir,
+
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -278,14 +280,14 @@ def test_evaluation_is_deterministic_for_identical_inputs(tmp_path: Path) -> Non
     first = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-        claims_dir=claims_dir,
+
         bridge_root=bridge,
         now_utc=NOW,
     )
     second = evaluate_agent_next_task(
         agent="claude",
         events_path=events_path,
-        claims_dir=claims_dir,
+
         bridge_root=bridge,
         now_utc=NOW,
     )
@@ -309,8 +311,6 @@ def test_cli_main_emits_json(
             "claude",
             "--events",
             str(events_path),
-            "--claims-dir",
-            str(claims_dir),
             "--bridge-root",
             str(bridge),
             "--now",
@@ -324,3 +324,130 @@ def test_cli_main_emits_json(
     parsed = json.loads(out)
     assert parsed["decision"] == "claim_substrate_smoke"
     assert parsed["candidate"]["kind"] == "run_substrate_smoke"
+
+
+# ---------------------------------------------------------------------------
+# regression: bridge_root is the authoritative source for claim loading
+# ---------------------------------------------------------------------------
+
+
+def test_bridge_root_is_authoritative_for_claims_not_some_external_dir(
+    tmp_path: Path,
+) -> None:
+    """The tool MUST honor the active claim under bridge_root/work_queue/claims.
+
+    Earlier the CLI accepted a separate ``--claims-dir`` argument that the
+    evaluator silently ignored, so a wrapper that pointed ``claims_dir`` at the
+    real bridge state while passing an empty ``bridge_root`` would receive a
+    bogus ``claim_substrate_smoke`` recommendation instead of
+    ``continue_claim``. This regression locks down the single-source contract:
+    claims are loaded only from ``bridge_root/work_queue/claims``.
+    """
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            }
+        ],
+    )
+    # An orphan claims directory that does NOT live under bridge_root.
+    # Earlier code would have happily consulted it; the contract is now to
+    # ignore it entirely.
+    orphan_claims = tmp_path / "orphan_claims"
+    orphan_claims.mkdir()
+    (orphan_claims / "claude-shadow-claim.json").write_text(
+        json.dumps(
+            {
+                "task_id": "claude-shadow-claim",
+                "agent": "claude",
+                "summary": "shadow claim that lives outside bridge_root",
+                "mode": "write",
+                "write_scope": ["tools/x.py"],
+                "claimed_at_utc": "2026-05-20T11:00:00Z",
+                "last_heartbeat_utc": "2026-05-20T11:59:00Z",
+                "lease_seconds": 900,
+                "run_id": "claude-test",
+                "pid": 0,
+                "cwd": "",
+                "git_branch": "main",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    # bridge_root has no real claim — the canonical claims dir is empty.
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="claude",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    # Because the active claim lives outside bridge_root, the tool must NOT
+    # see it; the bridge state is "no active claim" and the recommendation
+    # is to pick a substrate-smoke candidate. The earlier bug would have
+    # returned defer_to_bridge_next_action / continue_claim by reading the
+    # orphan directory through a separate --claims-dir parameter.
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["bridge_recommendation"]["active_claim_count"] == 0
+
+
+def test_active_claim_under_bridge_root_yields_continue_claim_regardless_of_external_dirs(
+    tmp_path: Path,
+) -> None:
+    """Mirror of the regression above with the situation reversed.
+
+    When the real active claim DOES live under ``bridge_root``, the tool
+    must defer to ``continue_claim`` even if an unrelated directory tree
+    happens to exist nearby. This proves the bridge_root path is read
+    correctly and that no external state can shadow it.
+    """
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-01-01T00:00:00Z",
+                "agent": "codex",
+                "type": "heartbeat",
+                "task_id": "baseline",
+                "status": "active",
+                "message": "background heartbeat",
+            }
+        ],
+    )
+    _claims_dir(bridge)
+    claim_task(
+        agent="claude",
+        task_id="claude-real-bridge-root-claim",
+        summary="canonical claim under bridge_root",
+        mode="write",
+        write_scope=["tools/y.py"],
+        bridge_root=bridge,
+    )
+    # An unrelated directory tree that should be ignored.
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+
+    report = evaluate_agent_next_task(
+        agent="claude",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "defer_to_bridge_next_action"
+    assert report["bridge_recommendation"]["action"] == "continue_claim"
+    assert (
+        report["bridge_recommendation"]["task_id"]
+        == "claude-real-bridge-root-claim"
+    )

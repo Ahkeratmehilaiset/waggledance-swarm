@@ -43,7 +43,7 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
     recommend_next_action,
 )
-from tools.idle_check import DEFAULT_CLAIMS_DIR, DEFAULT_EVENTS_PATH  # noqa: E402
+from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
     DEFAULT_BRIDGE_ROOT,
@@ -106,7 +106,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--agent", required=True)
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
-    parser.add_argument("--claims-dir", type=Path, default=DEFAULT_CLAIMS_DIR)
     parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
     parser.add_argument(
         "--tail",
@@ -125,7 +124,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = evaluate_agent_next_task(
         agent=args.agent,
         events_path=args.events,
-        claims_dir=args.claims_dir,
         bridge_root=args.bridge_root,
         tail=args.tail,
         now_utc=now_utc,
@@ -152,12 +150,20 @@ def evaluate_agent_next_task(
     *,
     agent: str,
     events_path: Path,
-    claims_dir: Path,
     bridge_root: Path = DEFAULT_BRIDGE_ROOT,
     tail: int = 50000,
     now_utc: datetime,
 ) -> dict[str, Any]:
-    """Return one deterministic continuous-loop recommendation for ``agent``."""
+    """Return one deterministic continuous-loop recommendation for ``agent``.
+
+    Claims are always loaded from ``bridge_root/work_queue/claims`` via
+    ``waggledance.core.work_queue.list_claims``. The caller does not pass a
+    separate claims directory because the bridge protocol treats
+    ``bridge_root`` as the single source of truth for active claims; honoring
+    a separate ``claims_dir`` would let a wrapper silently disagree with the
+    bridge runtime root and miss an active claim that should defer to
+    ``bridge_next_action.continue_claim``.
+    """
     if not AGENT_ID_PATTERN.fullmatch(agent):
         return {
             "decision": "agent_invalid",

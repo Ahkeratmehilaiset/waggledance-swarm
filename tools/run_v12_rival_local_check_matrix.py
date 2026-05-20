@@ -1,0 +1,310 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""Build the V12 rival-side local-check matrix.
+
+This tool makes the competitor-axis pilot's rival-local-check blocker
+machine-readable. It deliberately does not install rival SDKs or execute
+untrusted rival commands. Future local checks can be recorded as pinned evidence
+manifests under an evidence directory, and this tool validates whether those
+manifests are sufficient to upgrade a rival row from "not configured" to
+"passed".
+"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
+import re
+import sys
+from typing import Any, Sequence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PILOT_JSON = (
+    ROOT / "docs" / "benchmarks" / "2026_05_20_competitor_axis_pilot.json"
+)
+REPORT_VERSION = "wd.v12.rival_local_check_matrix.v0"
+REQUIRED_EVIDENCE_FIELDS = (
+    "rival",
+    "pinned_revision",
+    "local_artifact_path",
+    "smoke_command",
+    "smoke_result",
+    "cloud_dependency",
+    "evidence_type",
+)
+PASSING_SMOKE_RESULT = "passed"
+ALLOWED_EVIDENCE_TYPES = {"local_inspection", "local_smoke"}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Report the V12 competitor pilot's rival-side local-check status "
+            "without installing SDKs or running cloud-dependent checks."
+        ),
+    )
+    parser.add_argument(
+        "--pilot-json",
+        type=Path,
+        default=DEFAULT_PILOT_JSON,
+        help="Competitor-axis pilot JSON to read.",
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional directory containing pinned rival evidence manifests "
+            "named by rival slug, e.g. microsoft-agt.json."
+        ),
+    )
+    parser.add_argument(
+        "--markdown-out",
+        type=Path,
+        default=None,
+        help="Optional markdown report path to write.",
+    )
+    parser.add_argument(
+        "--now",
+        default=None,
+        help="Optional UTC timestamp override for deterministic output.",
+    )
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        report = build_rival_local_check_matrix(
+            pilot_json_path=args.pilot_json,
+            evidence_dir=args.evidence_dir,
+            now_utc=_parse_utc(args.now) if args.now else None,
+        )
+    except ValueError as exc:
+        print(f"rival local check matrix FAILED: {exc}", file=sys.stderr)
+        return 1
+
+    markdown = render_markdown(report)
+    if args.markdown_out:
+        args.markdown_out.parent.mkdir(parents=True, exist_ok=True)
+        args.markdown_out.write_text(markdown, encoding="utf-8")
+
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(markdown, end="")
+    return 0
+
+
+def build_rival_local_check_matrix(
+    *,
+    pilot_json_path: Path = DEFAULT_PILOT_JSON,
+    evidence_dir: Path | None = None,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    pilot_json_path = pilot_json_path.resolve()
+    if not pilot_json_path.exists():
+        raise ValueError(f"pilot_json does not exist: {pilot_json_path}")
+    try:
+        pilot = json.loads(pilot_json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"pilot_json is not valid JSON: {exc}") from exc
+
+    checks = pilot.get("rival_side_local_checks_required")
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("pilot_json has no rival_side_local_checks_required list")
+
+    evidence_root = evidence_dir.resolve() if evidence_dir else None
+    generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    rows = [
+        _build_check_row(check, evidence_root=evidence_root)
+        for check in checks
+    ]
+    passed_count = sum(1 for row in rows if row["local_status"] == "passed")
+    required_count = len(rows)
+    blocked_count = required_count - passed_count
+    consensus_grade = required_count > 0 and passed_count == required_count
+
+    return {
+        "report_version": REPORT_VERSION,
+        "generated_at_utc": generated_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "ok": True,
+        "pilot_json": str(pilot_json_path),
+        "pilot_status": pilot.get("status"),
+        "pilot_consensus_grade_before": bool(pilot.get("consensus_grade")),
+        "strategy_identity": pilot.get("strategy_identity"),
+        "evidence_dir": str(evidence_root) if evidence_root else None,
+        "evidence_dir_exists": bool(evidence_root and evidence_root.exists()),
+        "required_count": required_count,
+        "passed_count": passed_count,
+        "blocked_count": blocked_count,
+        "consensus_grade": consensus_grade,
+        "rival_local_checks_status": (
+            f"{passed_count}/{required_count} rival local checks passed"
+        ),
+        "no_overclaim_guardrails": {
+            "not_a_competitor_benchmark": True,
+            "does_not_install_rival_sdks": True,
+            "does_not_execute_untrusted_rival_commands": True,
+            "public_doc_claims_remain_public_doc_claims_until_local_evidence_passes": True,
+        },
+        "required_evidence_fields": list(REQUIRED_EVIDENCE_FIELDS),
+        "checks": rows,
+    }
+
+
+def render_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# V12 Rival Local Check Matrix",
+        "",
+        f"- report_version: `{report['report_version']}`",
+        f"- generated_at_utc: `{report['generated_at_utc']}`",
+        f"- pilot_status: `{report.get('pilot_status')}`",
+        f"- consensus_grade: `{str(report['consensus_grade']).lower()}`",
+        f"- rival local checks passed: `{report['passed_count']}/{report['required_count']}`",
+        f"- blocked rival local checks: `{report['blocked_count']}`",
+        "",
+        "This is not a competitor benchmark. It is a local evidence gate for the",
+        "competitor-axis pilot. Rows remain non-consensus-grade until pinned local",
+        "evidence manifests prove a rival-side smoke or inspection without a cloud",
+        "dependency.",
+        "",
+        "| Rival | Local status | Evidence manifest | Blocker | Required check |",
+        "|---|---|---|---|---|",
+    ]
+    for row in report["checks"]:
+        manifest = row.get("evidence_manifest") or "-"
+        blocker = row.get("blocker") or "-"
+        lines.append(
+            "| {rival} | {status} | `{manifest}` | {blocker} | {check} |".format(
+                rival=_md(row["rival"]),
+                status=_md(row["local_status"]),
+                manifest=_md(manifest),
+                blocker=_md(blocker),
+                check=_md(row["required_check"]),
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## Required Evidence Manifest Fields",
+            "",
+            ", ".join(f"`{field}`" for field in REQUIRED_EVIDENCE_FIELDS),
+            "",
+            "A row only passes when `cloud_dependency=false`, `smoke_result=passed`,",
+            "`evidence_type` is `local_inspection` or `local_smoke`, and all required",
+            "fields are present.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_check_row(
+    check: dict[str, Any],
+    *,
+    evidence_root: Path | None,
+) -> dict[str, Any]:
+    rival = str(check.get("rival") or "unknown")
+    required_check = str(check.get("check") or "")
+    slug = _slugify(rival)
+    manifest_path = evidence_root / f"{slug}.json" if evidence_root else None
+    base = {
+        "rival": rival,
+        "rival_slug": slug,
+        "required_check": required_check,
+        "pilot_status": check.get("status", "unknown"),
+        "expected_manifest_name": f"{slug}.json",
+        "evidence_manifest": str(manifest_path) if manifest_path else None,
+        "consensus_grade_contribution": False,
+    }
+    if manifest_path is None:
+        return {
+            **base,
+            "local_status": "not_configured",
+            "blocker": "no evidence_dir provided",
+        }
+    if not manifest_path.exists():
+        return {
+            **base,
+            "local_status": "not_configured",
+            "blocker": "evidence manifest missing",
+        }
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": f"manifest JSON parse error: {exc.msg}",
+        }
+
+    missing = [
+        field
+        for field in REQUIRED_EVIDENCE_FIELDS
+        if manifest.get(field) in {None, ""}
+    ]
+    if missing:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": "missing required fields: " + ", ".join(missing),
+        }
+    if str(manifest.get("rival")) != rival:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": "manifest rival does not match pilot row",
+        }
+    if manifest.get("cloud_dependency") is not False:
+        return {
+            **base,
+            "local_status": "cloud_dependent",
+            "blocker": "cloud_dependency is not false",
+        }
+    if str(manifest.get("evidence_type")) not in ALLOWED_EVIDENCE_TYPES:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": "evidence_type is not local_inspection or local_smoke",
+        }
+    if str(manifest.get("smoke_result")) != PASSING_SMOKE_RESULT:
+        return {
+            **base,
+            "local_status": "not_passed",
+            "blocker": "smoke_result is not passed",
+        }
+    return {
+        **base,
+        "local_status": "passed",
+        "blocker": None,
+        "pinned_revision": manifest.get("pinned_revision"),
+        "local_artifact_path": manifest.get("local_artifact_path"),
+        "evidence_type": manifest.get("evidence_type"),
+        "consensus_grade_contribution": True,
+    }
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "unknown"
+
+
+def _parse_utc(value: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("--now requires a UTC timestamp with Z or +00:00 suffix")
+    return parsed.astimezone(timezone.utc)
+
+
+def _md(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -16,9 +16,13 @@ if str(ROOT) not in sys.path:
 
 from tools.magma_receipt_adoption_report import (  # noqa: E402
     build_adoption_report,
-    render_markdown,
+    render_markdown as render_adoption_markdown,
 )
 from tools.run_magma_adversarial_eval import build_adversarial_eval_report  # noqa: E402
+from tools.run_v12_rival_local_check_matrix import (  # noqa: E402
+    build_rival_local_check_matrix,
+    render_markdown as render_rival_matrix_markdown,
+)
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 
 
@@ -87,17 +91,22 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
         raise ValueError("receipt verifier failed for generated demo pack")
 
     adoption_report = build_adoption_report(root=ROOT)
-    adoption_markdown = render_markdown(adoption_report)
+    adoption_markdown = render_adoption_markdown(adoption_report)
+    rival_matrix = build_rival_local_check_matrix(now_utc=now_utc)
+    rival_matrix_markdown = render_rival_matrix_markdown(rival_matrix)
     summary = _summary_markdown(
         adversarial_report=adversarial_report,
         adoption_report=adoption_report,
         verifier_report=verifier_report,
+        rival_matrix=rival_matrix,
     )
 
     _write_json(out_dir / "adversarial_eval_report.json", adversarial_report)
     _write_json(out_dir / "receipt_verifier_report.json", verifier_report)
     _write_json(out_dir / "receipt_adoption_report.json", adoption_report)
+    _write_json(out_dir / "rival_local_check_matrix.json", rival_matrix)
     _write_text(out_dir / "receipt_adoption_report.md", adoption_markdown)
+    _write_text(out_dir / "rival_local_check_matrix.md", rival_matrix_markdown)
     _write_text(out_dir / "summary.md", summary)
 
     return {
@@ -111,6 +120,9 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
         "receipt_count": verifier_report["receipt_count"],
         "high_criticality_gap_count": adoption_report["high_criticality_gap_count"],
         "status_counts": adoption_report["status_counts"],
+        "rival_local_check_pass_count": rival_matrix["passed_count"],
+        "rival_local_check_required_count": rival_matrix["required_count"],
+        "competitor_consensus_grade": rival_matrix["consensus_grade"],
     }
 
 
@@ -119,6 +131,7 @@ def _summary_markdown(
     adversarial_report: dict[str, Any],
     adoption_report: dict[str, Any],
     verifier_report: dict[str, Any],
+    rival_matrix: dict[str, Any],
 ) -> str:
     action_required = adoption_report.get("action_required_gap_count", "not_available")
     accepted_exceptions = adoption_report.get("accepted_exception_count", "not_available")
@@ -136,6 +149,8 @@ def _summary_markdown(
             f"- action-required adoption gaps: `{action_required}`",
             f"- accepted observability exceptions: `{accepted_exceptions}`",
             f"- adoption status counts: `{json.dumps(adoption_report['status_counts'], sort_keys=True)}`",
+            f"- rival local checks passed: `{rival_matrix['passed_count']}/{rival_matrix['required_count']}`",
+            f"- competitor consensus grade: `{str(rival_matrix['consensus_grade']).lower()}`",
             "",
             "## What This Proves",
             "",
@@ -143,7 +158,7 @@ def _summary_markdown(
             "",
             "## What This Does Not Prove",
             "",
-            "This pack does not claim semantic attack detection by an ML classifier, cryptographic signing, or that every runtime observability event emits a receipt. It proves the current local evidence spine.",
+            "This pack does not claim semantic attack detection by an ML classifier, cryptographic signing, competitor-local benchmark results, or that every runtime observability event emits a receipt. It proves the current local evidence spine.",
             "",
             "## Files",
             "",
@@ -152,6 +167,8 @@ def _summary_markdown(
             "- `receipt_verifier_report.json`",
             "- `receipt_adoption_report.json`",
             "- `receipt_adoption_report.md`",
+            "- `rival_local_check_matrix.json`",
+            "- `rival_local_check_matrix.md`",
         ]
     ) + "\n"
 

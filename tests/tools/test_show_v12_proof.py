@@ -33,6 +33,7 @@ def test_default_text_output_includes_expected_sections() -> None:
         "WaggleDance V12 substrate proof",
         "AUTHORITY-RECEIPT ADOPTION",
         "ADVERSARIAL CORPUS",
+        "A3 COUNTERFACTUAL AXIS",
         "GOVERNANCE THROUGHPUT",
         "COMPETITOR-AXIS PILOT",
         "SUBSTRATE VELOCITY",
@@ -49,6 +50,7 @@ def test_json_output_is_parseable_and_has_expected_keys() -> None:
     assert payload["report_version"] == "waggledance.v12_substrate_proof.v0"
     assert "adoption" in payload
     assert "adversarial_eval" in payload
+    assert "a3_counterfactual_axis" in payload
     assert "governance_throughput" in payload
     assert "competitor_pilot" in payload
     assert "substrate_velocity" in payload
@@ -106,6 +108,19 @@ def test_adversarial_corpus_section_reports_fifteen_cases() -> None:
     assert adv["pass_count"] == 15
     assert adv["fail_count"] == 0
     assert adv["ok"] is True
+
+
+def test_a3_counterfactual_axis_section_reports_measured_partial() -> None:
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+    a3 = payload["a3_counterfactual_axis"]
+
+    assert a3["available"] is True, a3
+    assert a3["counterfactual_delta_proven"] is True, a3
+    assert a3["claim_label"] == "MEASURED_LOCAL_PARTIAL"
+    assert a3["delta"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
+    assert a3["delta"]["actual_gate"] == ["review", "allow"]
+    assert a3["receipt_chain_verified"] is False
 
 
 def test_substrate_velocity_returns_a_non_negative_count() -> None:

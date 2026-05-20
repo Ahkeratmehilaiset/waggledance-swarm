@@ -46,6 +46,7 @@ PILOT_JSON_PATH = ROOT / "docs" / "benchmarks" / "2026_05_20_competitor_axis_pil
 
 ADOPTION_REPORT = ROOT / "tools" / "magma_receipt_adoption_report.py"
 ADVERSARIAL_EVAL = ROOT / "tools" / "run_magma_adversarial_eval.py"
+A3_COUNTERFACTUAL_PROOF = ROOT / "tools" / "run_v12_a3_counterfactual_axis_proof.py"
 GOVERNANCE_REPORT = ROOT / "tools" / "governance_throughput_report.py"
 
 
@@ -86,6 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
     adoption = _run_tool_json(["--json"], ADOPTION_REPORT)
     eval_report = _run_tool_json(["--json"], ADVERSARIAL_EVAL)
+    a3_report = _run_tool_json(["--json"], A3_COUNTERFACTUAL_PROOF)
     governance = _run_tool_json(["--json"], GOVERNANCE_REPORT, optional=True)
     pilot = _read_pilot_summary()
     velocity = _read_substrate_velocity(repo_root=repo_root, since_days=since_days)
@@ -109,6 +111,7 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
     ok = (
         adoption.get("ok") is not False
         and eval_report.get("ok") is True
+        and a3_report.get("ok") is True
         and high_gap == 0
     )
 
@@ -145,6 +148,7 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
             "ok": eval_report.get("ok"),
             "available": eval_report.get("ok") is not None,
         },
+        "a3_counterfactual_axis": _summarize_a3_counterfactual_axis(a3_report),
         "governance_throughput": {
             "available": governance is not None,
             "metric_count": (
@@ -213,6 +217,30 @@ def format_proof(report: dict[str, Any]) -> str:
         lines.append("")
         lines.append("ADVERSARIAL CORPUS               : tool unavailable")
 
+    a3 = report["a3_counterfactual_axis"]
+    if a3["available"]:
+        delta = a3["delta"]
+        lines.append("")
+        lines.append("A3 COUNTERFACTUAL AXIS  (tools/run_v12_a3_counterfactual_axis_proof.py)")
+        marker = "OK " if a3["counterfactual_delta_proven"] else "** "
+        lines.append(
+            f"  {marker}delta proven                    : {a3['counterfactual_delta_proven']}"
+        )
+        lines.append(f"     claim label                    : {a3['claim_label']}")
+        lines.append(
+            f"     action kind                    : {delta['kind'][0]} -> {delta['kind'][1]}"
+        )
+        lines.append(
+            f"     actual gate                    : {delta['actual_gate'][0]} -> {delta['actual_gate'][1]}"
+        )
+        lines.append(
+            f"     receipt chain in this command  : {a3['receipt_chain_verified']}"
+        )
+        lines.append("     receipt-backed pack            : tools/run_v12_supervisor_demo_pack.py")
+    else:
+        lines.append("")
+        lines.append("A3 COUNTERFACTUAL AXIS           : tool unavailable")
+
     gov = report["governance_throughput"]
     lines.append("")
     if gov["available"]:
@@ -255,6 +283,7 @@ def format_proof(report: dict[str, Any]) -> str:
     lines.append("-" * 72)
     lines.append("  python tools/magma_receipt_adoption_report.py --json")
     lines.append("  python tools/run_magma_adversarial_eval.py --json")
+    lines.append("  python tools/run_v12_a3_counterfactual_axis_proof.py --json")
     lines.append("  python tools/governance_throughput_report.py --json")
     lines.append("  cat docs/benchmarks/2026_05_20_competitor_axis_pilot.md")
     lines.append(
@@ -262,6 +291,32 @@ def format_proof(report: dict[str, Any]) -> str:
     )
     lines.append(bar)
     return "\n".join(lines)
+
+
+def _summarize_a3_counterfactual_axis(report: dict[str, Any]) -> dict[str, Any]:
+    if report.get("ok") is None:
+        return {
+            "available": False,
+            "counterfactual_delta_proven": False,
+            "claim_label": "unknown",
+            "delta": {
+                "kind": ["unknown", "unknown"],
+                "actual_gate": ["unknown", "unknown"],
+                "verdict": ["unknown", "unknown"],
+            },
+            "receipt_chain_verified": False,
+        }
+    return {
+        "available": report.get("ok") is not None,
+        "counterfactual_delta_proven": bool(report.get("counterfactual_delta_proven")),
+        "claim_label": report.get("claim_label", "unknown"),
+        "delta": report.get("delta") or {
+            "kind": ["unknown", "unknown"],
+            "actual_gate": ["unknown", "unknown"],
+            "verdict": ["unknown", "unknown"],
+        },
+        "receipt_chain_verified": bool(report.get("receipt_chain_verified")),
+    }
 
 
 def _run_tool_json(args: list[str], tool: Path, optional: bool = False) -> dict[str, Any]:

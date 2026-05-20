@@ -37,6 +37,11 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert result["status_counts"]["receipt_bound"] >= 6
     assert result["a3_counterfactual_delta_proven"] is True
     assert result["a3_receipt_chain_verified"] is True
+    assert result["a4_solver_growth_proven"] is True
+    assert result["a4_receipt_chain_verified"] is True
+    assert result["a4_dispatch_success_count"] == 18
+    assert result["a4_dispatch_case_count"] == 18
+    assert result["a4_registered_solver_count"] == 6
     assert result["rival_local_check_pass_count"] == 0
     assert result["rival_local_check_required_count"] == 4
     assert result["competitor_consensus_grade"] is False
@@ -48,6 +53,11 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert (out_dir / "a3_counterfactual_axis_proof.json").exists()
     assert (out_dir / "a3_counterfactual_axis_proof.md").exists()
     assert (out_dir / "a3_counterfactual_receipts" / "manifest.json").exists()
+    assert (out_dir / "a4_solver_growth_axis_proof.json").exists()
+    assert (out_dir / "a4_solver_growth_axis_proof.md").exists()
+    assert (
+        out_dir / "a4_solver_growth_axis" / "a4_solver_growth_receipts" / "manifest.json"
+    ).exists()
     assert (out_dir / "rival_local_check_matrix.json").exists()
     assert (out_dir / "rival_local_check_matrix.md").exists()
 
@@ -61,6 +71,9 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     a3_proof = json.loads((out_dir / "a3_counterfactual_axis_proof.json").read_text(encoding="utf-8"))
     assert a3_proof["counterfactual_delta_proven"] is True
     assert a3_proof["receipt_chain_verified"] is True
+    a4_proof = json.loads((out_dir / "a4_solver_growth_axis_proof.json").read_text(encoding="utf-8"))
+    assert a4_proof["solver_growth_proven"] is True
+    assert a4_proof["receipt_chain_verified"] is True
 
     summary = (out_dir / "summary.md").read_text(encoding="utf-8")
     assert "WD V12 Supervisor Demo Pack" in summary
@@ -68,6 +81,9 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert "writes_applied: `false`" in summary
     assert "A3 counterfactual delta proven: `true`" in summary
     assert "A3 receipt chain verified: `true`" in summary
+    assert "A4 solver growth proven: `true`" in summary
+    assert "A4 dispatch success: `18/18`" in summary
+    assert "A4 receipt chain verified: `true`" in summary
     assert "rival local checks passed: `0/4`" in summary
     assert "competitor consensus grade: `false`" in summary
 
@@ -110,6 +126,9 @@ def test_cli_json_reports_demo_pack(tmp_path: Path) -> None:
     assert payload["receipt_verifier_ok"] is True
     assert payload["a3_counterfactual_delta_proven"] is True
     assert payload["a3_receipt_chain_verified"] is True
+    assert payload["a4_solver_growth_proven"] is True
+    assert payload["a4_receipt_chain_verified"] is True
+    assert payload["a4_dispatch_success_count"] == 18
     assert payload["rival_local_check_pass_count"] == 0
     assert payload["competitor_consensus_grade"] is False
     assert (out_dir / "summary.md").exists()

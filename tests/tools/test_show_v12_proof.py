@@ -34,6 +34,7 @@ def test_default_text_output_includes_expected_sections() -> None:
         "AUTHORITY-RECEIPT ADOPTION",
         "ADVERSARIAL CORPUS",
         "A3 COUNTERFACTUAL AXIS",
+        "A4 SOLVER-GROWTH AXIS",
         "GOVERNANCE THROUGHPUT",
         "COMPETITOR-AXIS PILOT",
         "SUBSTRATE VELOCITY",
@@ -51,6 +52,7 @@ def test_json_output_is_parseable_and_has_expected_keys() -> None:
     assert "adoption" in payload
     assert "adversarial_eval" in payload
     assert "a3_counterfactual_axis" in payload
+    assert "a4_solver_growth_axis" in payload
     assert "governance_throughput" in payload
     assert "competitor_pilot" in payload
     assert "substrate_velocity" in payload
@@ -121,6 +123,23 @@ def test_a3_counterfactual_axis_section_reports_measured_partial() -> None:
     assert a3["delta"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
     assert a3["delta"]["actual_gate"] == ["review", "allow"]
     assert a3["receipt_chain_verified"] is False
+
+
+def test_a4_solver_growth_axis_section_reports_measured_synthetic() -> None:
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+    a4 = payload["a4_solver_growth_axis"]
+
+    assert a4["available"] is True, a4
+    assert a4["solver_growth_proven"] is True, a4
+    assert a4["claim_label"] == "MEASURED_LOCAL_SYNTHETIC"
+    assert a4["registration"]["registered_solver_count"] == 6
+    assert a4["registration"]["rejected_registration_count"] == 8
+    assert a4["dispatch"]["dispatch_success_count"] == 18
+    assert a4["dispatch"]["dispatch_case_count"] == 18
+    assert a4["dispatch"]["dispatch_failure_count"] == 0
+    assert a4["dispatch"]["families_covered"] == 6
+    assert a4["receipt_chain_verified"] is False
 
 
 def test_substrate_velocity_returns_a_non_negative_count() -> None:

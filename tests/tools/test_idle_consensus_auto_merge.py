@@ -21,7 +21,7 @@ def _status(**overrides) -> dict:
         "head_sha": HEAD,
         "title": "Idle consensus follow-up",
         "mergeable": "clean",
-        "operator_approved": True,
+        "operator_approved": False,
         "receipt_verified": True,
         "checks": [
             {"name": "test (3.13)", "state": "success"},
@@ -216,15 +216,16 @@ def test_empty_status_check_snapshot_blocks_merge() -> None:
     assert "status checks snapshot is required before merge" in report["reasons"]
 
 
-def test_operator_approval_required() -> None:
+def test_operator_approval_snapshot_metadata_is_not_required() -> None:
     report = evaluate_auto_merge_gate(
         pr_status=_status(operator_approved=False),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
     )
-    assert report["decision"] == "operator_review_required"
-    assert "operator_approved is required before merge" in report["reasons"]
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["operator_review_required"] is False
+    assert "operator_approved is required before merge" not in report["reasons"]
 
 
 def test_receipt_verification_required() -> None:

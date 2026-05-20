@@ -46,7 +46,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--operator-approved",
         action="store_true",
-        help="Set operator_approved=true in the snapshot.",
+        help=(
+            "Record operator_approved=true as snapshot metadata. "
+            "Idle-charter auto-merge does not require this flag."
+        ),
     )
     parser.add_argument(
         "--receipt-verified",

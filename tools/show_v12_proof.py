@@ -47,6 +47,7 @@ PILOT_JSON_PATH = ROOT / "docs" / "benchmarks" / "2026_05_20_competitor_axis_pil
 ADOPTION_REPORT = ROOT / "tools" / "magma_receipt_adoption_report.py"
 ADVERSARIAL_EVAL = ROOT / "tools" / "run_magma_adversarial_eval.py"
 A3_COUNTERFACTUAL_PROOF = ROOT / "tools" / "run_v12_a3_counterfactual_axis_proof.py"
+A4_SOLVER_GROWTH_PROOF = ROOT / "tools" / "run_v12_a4_solver_growth_axis_proof.py"
 GOVERNANCE_REPORT = ROOT / "tools" / "governance_throughput_report.py"
 
 
@@ -88,6 +89,7 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
     adoption = _run_tool_json(["--json"], ADOPTION_REPORT)
     eval_report = _run_tool_json(["--json"], ADVERSARIAL_EVAL)
     a3_report = _run_tool_json(["--json"], A3_COUNTERFACTUAL_PROOF)
+    a4_report = _run_tool_json(["--json"], A4_SOLVER_GROWTH_PROOF)
     governance = _run_tool_json(["--json"], GOVERNANCE_REPORT, optional=True)
     pilot = _read_pilot_summary()
     velocity = _read_substrate_velocity(repo_root=repo_root, since_days=since_days)
@@ -112,6 +114,7 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
         adoption.get("ok") is not False
         and eval_report.get("ok") is True
         and a3_report.get("ok") is True
+        and a4_report.get("ok") is True
         and high_gap == 0
     )
 
@@ -149,6 +152,7 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
             "available": eval_report.get("ok") is not None,
         },
         "a3_counterfactual_axis": _summarize_a3_counterfactual_axis(a3_report),
+        "a4_solver_growth_axis": _summarize_a4_solver_growth_axis(a4_report),
         "governance_throughput": {
             "available": governance is not None,
             "metric_count": (
@@ -241,6 +245,34 @@ def format_proof(report: dict[str, Any]) -> str:
         lines.append("")
         lines.append("A3 COUNTERFACTUAL AXIS           : tool unavailable")
 
+    a4 = report["a4_solver_growth_axis"]
+    if a4["available"]:
+        dispatch = a4["dispatch"]
+        registration = a4["registration"]
+        lines.append("")
+        lines.append("A4 SOLVER-GROWTH AXIS  (tools/run_v12_a4_solver_growth_axis_proof.py)")
+        marker = "OK " if a4["solver_growth_proven"] else "** "
+        lines.append(
+            f"  {marker}solver growth proven           : {a4['solver_growth_proven']}"
+        )
+        lines.append(f"     claim label                    : {a4['claim_label']}")
+        lines.append(
+            f"     registered solvers             : {registration['registered_solver_count']}"
+        )
+        lines.append(
+            f"     dispatch success               : {dispatch['dispatch_success_count']}/{dispatch['dispatch_case_count']}"
+        )
+        lines.append(
+            f"     families covered               : {dispatch['families_covered']}"
+        )
+        lines.append(
+            f"     receipt chain in this command  : {a4['receipt_chain_verified']}"
+        )
+        lines.append("     receipt-backed pack            : tools/run_v12_supervisor_demo_pack.py")
+    else:
+        lines.append("")
+        lines.append("A4 SOLVER-GROWTH AXIS            : tool unavailable")
+
     gov = report["governance_throughput"]
     lines.append("")
     if gov["available"]:
@@ -284,6 +316,7 @@ def format_proof(report: dict[str, Any]) -> str:
     lines.append("  python tools/magma_receipt_adoption_report.py --json")
     lines.append("  python tools/run_magma_adversarial_eval.py --json")
     lines.append("  python tools/run_v12_a3_counterfactual_axis_proof.py --json")
+    lines.append("  python tools/run_v12_a4_solver_growth_axis_proof.py --json")
     lines.append("  python tools/governance_throughput_report.py --json")
     lines.append("  cat docs/benchmarks/2026_05_20_competitor_axis_pilot.md")
     lines.append(
@@ -314,6 +347,42 @@ def _summarize_a3_counterfactual_axis(report: dict[str, Any]) -> dict[str, Any]:
             "kind": ["unknown", "unknown"],
             "actual_gate": ["unknown", "unknown"],
             "verdict": ["unknown", "unknown"],
+        },
+        "receipt_chain_verified": bool(report.get("receipt_chain_verified")),
+    }
+
+
+def _summarize_a4_solver_growth_axis(report: dict[str, Any]) -> dict[str, Any]:
+    if report.get("ok") is None:
+        return {
+            "available": False,
+            "solver_growth_proven": False,
+            "claim_label": "unknown",
+            "registration": {
+                "registered_solver_count": 0,
+                "rejected_registration_count": 0,
+            },
+            "dispatch": {
+                "dispatch_case_count": 0,
+                "dispatch_success_count": 0,
+                "dispatch_failure_count": 0,
+                "families_covered": 0,
+            },
+            "receipt_chain_verified": False,
+        }
+    return {
+        "available": report.get("ok") is not None,
+        "solver_growth_proven": bool(report.get("solver_growth_proven")),
+        "claim_label": report.get("claim_label", "unknown"),
+        "registration": report.get("registration") or {
+            "registered_solver_count": 0,
+            "rejected_registration_count": 0,
+        },
+        "dispatch": report.get("dispatch") or {
+            "dispatch_case_count": 0,
+            "dispatch_success_count": 0,
+            "dispatch_failure_count": 0,
+            "families_covered": 0,
         },
         "receipt_chain_verified": bool(report.get("receipt_chain_verified")),
     }

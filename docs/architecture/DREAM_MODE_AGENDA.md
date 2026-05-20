@@ -38,12 +38,48 @@ this file.
 * Operator interaction (dream-mode is agent-to-agent only; operator
   monitors, merges, overrides — but does not drive each cycle).
 * End-to-end neural-net training of charter constraints. The 5-
-  ingredient roadmap is explicit: WD's V12-equivalent is *primitive
-  substrate → fleet-learning substrate*, **not** modular → end-to-end.
-  See `memory/wd-fsd-v12-five-ingredient-roadmap.md` and
+  ingredient roadmap below is explicit: WD's V12-equivalent is
+  *primitive substrate → fleet-learning substrate*, **not** modular →
+  end-to-end. See §"Five-ingredient roadmap" below and
   `IDLE_AUTONOMY_CHARTER.md` for why end-to-end would destroy
   audit-truth.
 * Topics outside the WD sub-area map below.
+
+## Five-ingredient roadmap
+
+Operator-authorized strategic backbone (2026-05-20). The dream-mode
+cycle drives WD toward fleet-learning parity by advancing these five
+ingredients, **without** collapsing into an end-to-end model that
+would swallow charter constraints:
+
+1. **MAGMA receipt v1** — signed evaluation/runtime receipts.
+   *Status:* SHIPPED. Code: `waggledance/core/magma/receipt.py`,
+   schema: `schemas/v3_13_0/magma_receipt.v1.json`, tests:
+   `tests/unit/test_magma_receipt_emitter.py`.
+2. **Multi-instance replay flywheel** — cross-instance signed MAGMA
+   share with sanitization contract. *Status:* not yet built; design
+   surface only (see §C / §D seeds below).
+3. **Counterfactual eval pipeline** — replay a stored consensus
+   against a candidate diff. *Status:* partial; see
+   `tools/run_pdam_counterfactual_demo.py`,
+   `tests/night_learning_v2/test_dream_counterfactual.py`,
+   `schemas/v3_13_0/evaluation_result.v0.json`.
+4. **Hex-cell competitive promotion** — promotion lifecycle within a
+   hex cell driven by measured wins, not single-solver hand-promotion.
+   *Status:* partial; provenance surface exists
+   (`waggledance/core/v3_13_0/solver_provenance.py`,
+   `waggledance/core/solver_synthesis/solver_candidate_store.py`);
+   competitive step still missing.
+5. **Synthetic adversarial corpus** — minimal adversarial example set
+   both agents must catch before a candidate solver is promoted.
+   *Status:* seed fixtures only
+   (`tests/fixtures/magma_adversarial_corpus/v0.json`,
+   `tools/validate_synthetic_adversarial_corpus.py`,
+   `tools/run_magma_adversarial_eval.py`).
+
+The roadmap exists to keep dream-mode iterations narrow: each idle
+round should move exactly one ingredient one step, not branch into
+unrelated agent-framework features.
 
 ## WD sub-area map
 
@@ -83,9 +119,10 @@ adjacent files. Allowed seeds:
   llama.cpp, MLC-LLM, OpenLLM, Aphrodite, ...) against the WD
   matrix's axes A–N; mark which axis if any becomes
   NOT CLAIMED for WD."
-* "Map a newly published Tesla FSD release note onto the 5-ingredient
-  roadmap (`memory/wd-fsd-v12-five-ingredient-roadmap.md`) and report
-  whether any ingredient's smallest-safe-step needs to change order."
+* "Map a newly published Tesla FSD release note onto the
+  five-ingredient roadmap (see §Five-ingredient roadmap above) and
+  report whether any ingredient's smallest-safe-step needs to change
+  order."
 * "Compare a newly published rival agent framework (LangGraph,
   AutoGen, LangChain, LlamaIndex, OpenAI Agents SDK, Crew, …) against
   WD's bridge / idle-protocol substrate; flag missing primitives."
@@ -149,8 +186,8 @@ demonstrable improvement that ships as a PR ≤ 400 LoC and passes the
 
 ### D. 5-ingredient roadmap drive
 
-This is the strategic backbone (see
-`memory/wd-fsd-v12-five-ingredient-roadmap.md`). Allowed seeds:
+This is the strategic backbone (see §Five-ingredient roadmap above for
+the enumeration and current per-ingredient status). Allowed seeds:
 
 * Ingredient #2 (multi-instance flywheel): "Sketch a sanitization
   contract for cross-instance MAGMA share that survives charter

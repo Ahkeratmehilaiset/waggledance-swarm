@@ -4,6 +4,22 @@ Idle Protocol v1 is the opt-in bridge deliberation path for strategic design
 work when no PR vehicle exists. It is not a daemon and it does not execute
 consensus.
 
+## Mission Boundary
+
+Idle Protocol v1 is scoped to WaggleDance evolution. Its purpose is to let
+Claude and Codex keep improving WD during quiet windows: better architecture,
+tests, security posture, reliability, product capability, and competitor-aware
+strategy for WD's own domains. It is not a general autonomous agent loop and it
+is not a license to perform unrelated research or external actions.
+
+Competitor tracking may inform an idle proposal only when the proposal names
+the WD component, capability gap, risk, or backlog decision it affects.
+Security analysis may inform an idle proposal only when it concerns WD-owned
+code, dependencies, configuration, bridge/runtime protocol, credential
+handling, or defensive threat modeling. Any payload that cannot identify its
+WD artifact or decision target is low-quality for v1 and should be rewritten or
+rejected before bridge emission.
+
 ## Current Shape
 
 - `tools/idle_check.py` reports `idle` only when all quiet-window predicates
@@ -135,6 +151,9 @@ operator review/escalation and still write nothing.
 - Invalid or low-quality payloads fail before any bridge write.
 - Optional MAGMA receipt-bundle emission is opt-in and fails before any bridge
   write if its output directory already exists or verification fails.
+- Idle proposals must name the WD artifact, domain, risk, or backlog decision
+  they intend to improve. Generic "keep researching" proposals do not satisfy
+  the mission boundary.
 - A sixth round-1 idle instance in the same UTC day fails before any bridge
   write; continuation rounds do not start new instances.
 - Duplicate proposal ids, missing proposal references, consensus before round

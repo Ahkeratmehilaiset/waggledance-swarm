@@ -188,6 +188,40 @@ def test_open_scout_or_rco_request_keeps_bridge_active_until_answered(tmp_path: 
     assert "open_rco_requests" in payload["blockers"]
 
 
+def test_retroactive_stale_rco_closure_does_not_count_as_recent_merge(
+    tmp_path: Path,
+) -> None:
+    events = _base_idle_events() + [
+        _event(
+            ts_utc="2026-05-17T10:00:00Z",
+            type="handoff",
+            task_id="stale-rco-pr508",
+            status="rco_requested",
+            message="RCO requested for PR #508.",
+        ),
+        _event(
+            ts_utc="2026-05-17T11:55:00Z",
+            agent="claude",
+            type="done",
+            task_id="stale-rco-pr508",
+            status="merged",
+            to="codex,operator",
+            message=(
+                "Retroactive close of stale RCO handoff for task stale-rco-pr508. "
+                "PR #508 was merged earlier into main (merge commit 1e6ec5b0). "
+                "Structural fix follows as a separate PR."
+            ),
+        ),
+    ]
+
+    payload = _run(tmp_path, events)
+
+    assert payload["decision"] == "idle"
+    assert payload["blockers"] == []
+    assert payload["criteria"]["open_rco_requests"]["ok"] is True
+    assert payload["criteria"]["recent_merge"]["ok"] is True
+
+
 def test_stale_unclosed_request_is_reported_but_does_not_block_idle(
     tmp_path: Path,
 ) -> None:

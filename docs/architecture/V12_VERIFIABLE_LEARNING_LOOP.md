@@ -12,8 +12,9 @@ action firewall.** JamJet, Asqav, Microsoft AGT, Preloop, PolicyLayer
 Intercept, and SidClaw all do action governance; if WD positioned
 itself only as a "write gate" it would be commoditized.
 
-The pilot named six contested or ceded axes (A1, A2, A5, A6, A7, A8,
-A9) where rivals can match WD or are ahead, and two must-win evidence
+The pilot named seven contested or ceded axes (A1, A2, A5, A6, A7,
+A8, A9) where rivals can match WD or are ahead, and two must-win
+evidence
 axes (A3 counterfactual delta, A4 solver-growth lifecycle) where the
 strategy depends on WD producing locally measurable proof-tool output
 that no rival publicly exposes inside the same freshness window.
@@ -218,16 +219,20 @@ payload; autonomous-merge guardrails (CLAUDE.md Rule 9) + bridge
 peer-block preflight (PR #530, hardened #531-#536) that prevent
 race-past-peer-block.
 
-**Rival semi-presence.** Asqav and Preloop expose
+**Rival semi-presence (2026-05-20 verbatim snapshot, expires
+2026-06-03).** Asqav and Preloop (per snapshot) expose
 `require_approval` and `require_justification` policy verbs;
-JamJet has approval flows. None of them expose
-**operator-owned charter-versioned gates that are code-enforced and
-audit-trailed via per-decision digests**. The rival pattern is
-"operator approves once per action"; WD's pattern is "operator owns
-the charter, the substrate proves every action against the charter
-version digest carried in the receipt." This is qualitatively
-different in audit-time but operationally similar enough that the
-A1 (pre-execution gate) axis is `contested`, not `must-win`.
+JamJet (per snapshot) has approval flows. **No rival in the
+four-rival snapshot window publicly exposed operator-owned
+charter-versioned gates that are code-enforced and audit-trailed
+via per-decision digests at retrieval time.** The rival pattern in
+the snapshot is "operator approves once per action"; WD's pattern
+is "operator owns the charter, the substrate proves every action
+against the charter version digest carried in the receipt." This
+is qualitatively different in audit-time but operationally similar
+enough that the A1 (pre-execution gate) axis is `contested`, not
+`must-win`. The claim is brittle to a rival publishing a charter-
+versioned code-enforced gate during the freshness window.
 
 **Composition.** Operator-owned gates envelop the other four
 elements. The charter version digest is one of the five binding

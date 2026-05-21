@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -54,6 +55,7 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert result["competitor_consensus_grade"] is False
     assert result["rival_evidence_template_count"] == 4
     assert Path(result["rival_evidence_template_dir"]) == out_dir / "rival_evidence_templates"
+    assert Path(result["artifact_manifest"]) == out_dir / "demo_pack_artifact_manifest.json"
     assert (out_dir / "summary.md").exists()
     assert (out_dir / "adversarial_eval_report.json").exists()
     assert (out_dir / "adversarial_receipts" / "manifest.json").exists()
@@ -74,6 +76,7 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert (out_dir / "rival_evidence_templates" / "preloop.json").exists()
     assert (out_dir / "rival_local_check_matrix.json").exists()
     assert (out_dir / "rival_local_check_matrix.md").exists()
+    assert (out_dir / "demo_pack_artifact_manifest.json").exists()
 
     report = json.loads((out_dir / "adversarial_eval_report.json").read_text(encoding="utf-8"))
     assert report["receipt_bundle"]["verifier_report"]["ok"] is True
@@ -114,6 +117,31 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert "rival local checks passed: `0/4`" in summary
     assert "competitor consensus grade: `false`" in summary
     assert "rival evidence templates: `4` safe non-passing manifests" in summary
+    assert "artifact manifest: `demo_pack_artifact_manifest.json`" in summary
+
+    artifact_manifest = json.loads(
+        (out_dir / "demo_pack_artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    assert (
+        artifact_manifest["manifest_version"]
+        == "wd.v12.supervisor_demo_pack.artifact_manifest.v0"
+    )
+    assert artifact_manifest["demo_version"] == "wd.v12.supervisor_demo_pack.v0"
+    assert artifact_manifest["generated_at_utc"] == "2026-05-20T18:50:00Z"
+    assert artifact_manifest["file_count"] == result["artifact_manifest_file_count"]
+    manifest_paths = {entry["path"] for entry in artifact_manifest["files"]}
+    assert "demo_pack_artifact_manifest.json" not in manifest_paths
+    assert "summary.md" in manifest_paths
+    assert "rival_evidence_templates/jamjet.json" in manifest_paths
+    assert "a3_counterfactual_axis_proof.json" in manifest_paths
+    summary_entry = next(
+        entry for entry in artifact_manifest["files"] if entry["path"] == "summary.md"
+    )
+    summary_digest = hashlib.sha256(
+        (out_dir / "summary.md").read_bytes()
+    ).hexdigest()
+    assert summary_entry["sha256"] == "sha256:" + summary_digest
+    assert f"artifact manifest file count: `{artifact_manifest['file_count']}`" in summary
 
 
 def test_demo_pack_does_not_leak_hidden_expectations_or_canaries(
@@ -161,7 +189,10 @@ def test_cli_json_reports_demo_pack(tmp_path: Path) -> None:
     assert payload["rival_local_check_pass_count"] == 0
     assert payload["competitor_consensus_grade"] is False
     assert payload["rival_evidence_template_count"] == 4
+    assert payload["artifact_manifest_file_count"] > 0
     assert (out_dir / "summary.md").exists()
+    assert Path(payload["artifact_manifest"]) == out_dir / "demo_pack_artifact_manifest.json"
+    assert (out_dir / "demo_pack_artifact_manifest.json").exists()
 
 
 def test_cli_refuses_existing_output_directory(tmp_path: Path) -> None:

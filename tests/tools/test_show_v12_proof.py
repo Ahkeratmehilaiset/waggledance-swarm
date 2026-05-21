@@ -139,7 +139,9 @@ def test_a3_counterfactual_axis_section_reports_measured_partial() -> None:
     assert a3["claim_label"] == "MEASURED_LOCAL_PARTIAL"
     assert a3["delta"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
     assert a3["delta"]["actual_gate"] == ["review", "allow"]
-    assert a3["receipt_chain_verified"] is False
+    # show_v12_proof now runs the A3 proof tool with --out-dir, so the
+    # receipt bundle is built and verified end-to-end.
+    assert a3["receipt_chain_verified"] is True
 
 
 def test_a4_solver_growth_axis_section_reports_measured_synthetic() -> None:
@@ -156,7 +158,9 @@ def test_a4_solver_growth_axis_section_reports_measured_synthetic() -> None:
     assert a4["dispatch"]["dispatch_case_count"] == 18
     assert a4["dispatch"]["dispatch_failure_count"] == 0
     assert a4["dispatch"]["families_covered"] == 6
-    assert a4["receipt_chain_verified"] is False
+    # show_v12_proof now runs the A4 proof tool with --out-dir, so the
+    # receipt bundle is built and verified end-to-end.
+    assert a4["receipt_chain_verified"] is True
 
 
 def test_governance_throughput_section_reports_status_counts() -> None:

@@ -64,6 +64,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--init-evidence-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Write non-passing rival evidence manifest templates to this "
+            "directory, then report that evidence directory. Existing "
+            "manifest files are not overwritten unless --overwrite-templates "
+            "is also set."
+        ),
+    )
+    parser.add_argument(
+        "--overwrite-templates",
+        action="store_true",
+        help="Allow --init-evidence-dir to overwrite existing template manifests.",
+    )
+    parser.add_argument(
         "--markdown-out",
         type=Path,
         default=None,
@@ -81,11 +97,22 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        template_init = None
+        evidence_dir = args.evidence_dir
+        if args.init_evidence_dir is not None:
+            template_init = write_evidence_manifest_templates(
+                pilot_json_path=args.pilot_json,
+                evidence_dir=args.init_evidence_dir,
+                overwrite=args.overwrite_templates,
+            )
+            evidence_dir = args.init_evidence_dir
         report = build_rival_local_check_matrix(
             pilot_json_path=args.pilot_json,
-            evidence_dir=args.evidence_dir,
+            evidence_dir=evidence_dir,
             now_utc=_parse_utc(args.now) if args.now else None,
         )
+        if template_init is not None:
+            report["template_init"] = template_init
     except ValueError as exc:
         print(f"rival local check matrix FAILED: {exc}", file=sys.stderr)
         return 1
@@ -157,6 +184,64 @@ def build_rival_local_check_matrix(
         "evidence_manifest_contract_version": EVIDENCE_MANIFEST_CONTRACT_VERSION,
         "required_evidence_fields": list(REQUIRED_EVIDENCE_FIELDS),
         "checks": rows,
+    }
+
+
+def write_evidence_manifest_templates(
+    *,
+    pilot_json_path: Path = DEFAULT_PILOT_JSON,
+    evidence_dir: Path,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    pilot_json_path = pilot_json_path.resolve()
+    if not pilot_json_path.exists():
+        raise ValueError(f"pilot_json does not exist: {pilot_json_path}")
+    try:
+        pilot = json.loads(pilot_json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"pilot_json is not valid JSON: {exc}") from exc
+
+    checks = pilot.get("rival_side_local_checks_required")
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("pilot_json has no rival_side_local_checks_required list")
+
+    evidence_root = evidence_dir.resolve()
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    existing = []
+    template_paths = []
+    for check in checks:
+        rival = str(check.get("rival") or "unknown")
+        slug = _slugify(rival)
+        manifest_path = evidence_root / f"{slug}.json"
+        if manifest_path.exists():
+            existing.append(str(manifest_path))
+        template_paths.append((manifest_path, _build_manifest_template(check)))
+    if existing and not overwrite:
+        raise ValueError(
+            "template manifest already exists; use --overwrite-templates to replace: "
+            + ", ".join(existing)
+        )
+
+    written = []
+    for manifest_path, template in template_paths:
+        manifest_path.write_text(
+            json.dumps(template, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        written.append(str(manifest_path))
+
+    return {
+        "evidence_dir": str(evidence_root),
+        "created_count": len(written),
+        "overwrite_requested": overwrite,
+        "overwrote_existing": bool(existing),
+        "overwritten_count": len(existing),
+        "manifest_paths": written,
+        "safe_defaults": {
+            "smoke_result": "not_run",
+            "consensus_grade_contribution": False,
+            "requires_local_artifact_digest_before_pass": True,
+        },
     }
 
 
@@ -310,6 +395,26 @@ def _build_check_row(
         "local_artifact_sha256": artifact_result["sha256"],
         "evidence_type": manifest.get("evidence_type"),
         "consensus_grade_contribution": True,
+    }
+
+
+def _build_manifest_template(check: dict[str, Any]) -> dict[str, Any]:
+    rival = str(check.get("rival") or "unknown")
+    slug = _slugify(rival)
+    return {
+        "evidence_manifest_contract_version": EVIDENCE_MANIFEST_CONTRACT_VERSION,
+        "rival": rival,
+        "pinned_revision": "TODO_PINNED_REVISION",
+        "local_artifact_path": f"artifacts/{slug}-evidence.json",
+        "local_artifact_sha256": "sha256:" + ("0" * 64),
+        "smoke_command": "TODO_OFFLINE_LOCAL_COMMAND",
+        "smoke_result": "not_run",
+        "cloud_dependency": False,
+        "evidence_type": "local_inspection",
+        "notes": (
+            "Template only. Replace TODO values and write the local artifact "
+            "under evidence_dir before setting smoke_result to passed."
+        ),
     }
 
 

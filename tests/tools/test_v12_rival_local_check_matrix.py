@@ -9,6 +9,7 @@ import sys
 from tools.run_v12_rival_local_check_matrix import (
     build_rival_local_check_matrix,
     render_markdown,
+    write_evidence_manifest_templates,
 )
 
 
@@ -81,6 +82,82 @@ def test_cli_writes_markdown_report(tmp_path: Path) -> None:
     text = out.read_text(encoding="utf-8")
     assert "V12 Rival Local Check Matrix" in text
     assert "not a competitor benchmark" in text
+
+
+def test_init_evidence_templates_are_non_passing(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+
+    init = write_evidence_manifest_templates(evidence_dir=evidence_dir)
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    assert init["created_count"] == 4
+    assert init["overwrote_existing"] is False
+    assert init["overwritten_count"] == 0
+    assert init["safe_defaults"]["smoke_result"] == "not_run"
+    assert init["safe_defaults"]["consensus_grade_contribution"] is False
+    assert report["passed_count"] == 0
+    assert report["blocked_count"] == 4
+    assert report["consensus_grade"] is False
+    assert {row["local_status"] for row in report["checks"]} == {"not_passed"}
+    for manifest_path in init["manifest_paths"]:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert manifest["evidence_manifest_contract_version"] == (
+            "wd.v12.rival_local_evidence_manifest.v1"
+        )
+        assert manifest["smoke_result"] == "not_run"
+        assert manifest["cloud_dependency"] is False
+        assert manifest["local_artifact_sha256"] == "sha256:" + ("0" * 64)
+
+
+def test_cli_init_evidence_templates_reports_non_consensus(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+
+    result = _run_matrix("--json", "--init-evidence-dir", str(evidence_dir))
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["template_init"]["created_count"] == 4
+    assert payload["template_init"]["overwrote_existing"] is False
+    assert payload["passed_count"] == 0
+    assert payload["blocked_count"] == 4
+    assert payload["consensus_grade"] is False
+    assert {row["local_status"] for row in payload["checks"]} == {"not_passed"}
+
+
+def test_init_evidence_templates_refuse_overwrite_without_flag(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    write_evidence_manifest_templates(evidence_dir=evidence_dir)
+
+    result = _run_matrix("--json", "--init-evidence-dir", str(evidence_dir))
+
+    assert result.returncode == 1
+    assert "template manifest already exists" in result.stderr
+    assert "--overwrite-templates" in result.stderr
+
+
+def test_init_evidence_templates_overwrite_still_non_passing(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    write_evidence_manifest_templates(evidence_dir=evidence_dir)
+    jamjet_manifest = evidence_dir / "jamjet.json"
+    jamjet_manifest.write_text('{"smoke_result": "passed"}\n', encoding="utf-8")
+
+    result = _run_matrix(
+        "--json",
+        "--init-evidence-dir",
+        str(evidence_dir),
+        "--overwrite-templates",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["template_init"]["overwrote_existing"] is True
+    assert payload["template_init"]["overwritten_count"] == 4
+    assert payload["passed_count"] == 0
+    assert payload["consensus_grade"] is False
+    assert {row["local_status"] for row in payload["checks"]} == {"not_passed"}
+    manifest = json.loads(jamjet_manifest.read_text(encoding="utf-8"))
+    assert manifest["smoke_result"] == "not_run"
+    assert manifest["local_artifact_sha256"] == "sha256:" + ("0" * 64)
 
 
 def test_valid_local_evidence_manifest_marks_one_rival_passed(tmp_path: Path) -> None:

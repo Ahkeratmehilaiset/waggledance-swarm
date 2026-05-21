@@ -41,6 +41,25 @@ def _events_path(tmp_path: Path, events: list[dict] | None = None) -> Path:
     return path
 
 
+def _bridge_event(
+    *,
+    agent: str,
+    type_: str,
+    status: str,
+    task_id: str = "idle-consensus-001",
+    ts: str = "2026-05-18T01:00:00Z",
+) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "type": type_,
+        "status": status,
+        "task_id": task_id,
+        "message": "",
+        "payload": {},
+    }
+
+
 def _auto_merge_event(index: int, *, ts: str = "2026-05-18T01:00:00Z") -> dict:
     return {
         "ts_utc": ts,
@@ -81,7 +100,7 @@ def test_dry_run_ready_never_invokes_runner() -> None:
     assert report["receipt_gate"]["verified"] is True
 
 
-def test_apply_invokes_exact_head_merge_command() -> None:
+def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
     calls: list[list[str]] = []
 
     def runner(command: list[str]) -> SimpleNamespace:
@@ -93,6 +112,8 @@ def test_apply_invokes_exact_head_merge_command() -> None:
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path),
+        bridge_task_id="idle-consensus-001",
         apply=True,
         runner=runner,
     )
@@ -105,7 +126,7 @@ def test_apply_invokes_exact_head_merge_command() -> None:
     assert report["auto_merge_event_payload"]["merge_commit_sha"] == "abcdef"
 
 
-def test_apply_runs_artifact_hook_before_exact_head_merge() -> None:
+def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> None:
     calls: list[str] = []
 
     def artifact_writer() -> dict:
@@ -125,6 +146,8 @@ def test_apply_runs_artifact_hook_before_exact_head_merge() -> None:
         pr_status=_status(receipt_verified=False),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
+        events_path=_events_path(tmp_path),
+        bridge_task_id="idle-consensus-001",
         apply=True,
         runner=runner,
         artifact_writer=artifact_writer,
@@ -190,6 +213,170 @@ def test_pending_check_blocks_merge() -> None:
     assert "status checks not green: unified" in report["reasons"]
 
 
+def test_bridge_peer_block_blocks_automerge_without_runner(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(
+            tmp_path,
+            [
+                _bridge_event(
+                    agent="claude",
+                    type_="handoff",
+                    status="rco_requested",
+                    task_id="rule9-task",
+                ),
+                _bridge_event(
+                    agent="codex",
+                    type_="decision",
+                    status="changes_requested",
+                    task_id="rule9-task",
+                    ts="2026-05-18T01:05:00Z",
+                ),
+            ],
+        ),
+        from_agent="claude",
+        bridge_task_id="rule9-task",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is False
+    assert "unresolved peer bridge block: agent=codex status=changes_requested" in (
+        report["reasons"]
+    )
+
+
+def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def artifact_writer() -> dict:
+        calls.append("artifact")
+        return {
+            "receipt_bundle": {
+                "manifest": "docs/receipts/manifest.json",
+                "verifier_report": {"ok": True, "receipt_count": 1, "errors": []},
+            }
+        }
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(receipt_verified=False),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        events_path=_events_path(
+            tmp_path,
+            [
+                _bridge_event(
+                    agent="codex",
+                    type_="decision",
+                    status="changes_requested",
+                    task_id="rule9-task",
+                ),
+            ],
+        ),
+        from_agent="claude",
+        bridge_task_id="rule9-task",
+        apply=True,
+        runner=lambda command: calls.append("merge"),
+        artifact_writer=artifact_writer,
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is False
+
+
+def test_apply_requires_bridge_events_path() -> None:
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert "bridge events path is required before merge" in report["reasons"]
+    assert "bridge task id is required before merge" in report["reasons"]
+
+
+def test_apply_requires_explicit_bridge_task_id(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path),
+        apply=True,
+        runner=lambda command: calls.append(list(command)),
+    )
+    assert calls == []
+    assert report["decision"] == "operator_review_required"
+    assert "bridge task id is required before merge" in report["reasons"]
+
+
+def test_bridge_peer_approval_clears_same_peer_block(tmp_path: Path) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(
+            tmp_path,
+            [
+                _bridge_event(
+                    agent="codex",
+                    type_="decision",
+                    status="changes_requested",
+                    ts="2026-05-18T01:05:00Z",
+                ),
+                _bridge_event(
+                    agent="codex",
+                    type_="decision",
+                    status="rco_pass_pr531",
+                    ts="2026-05-18T01:20:00Z",
+                ),
+            ],
+        ),
+        from_agent="claude",
+        bridge_task_id="idle-consensus-001",
+    )
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is True
+    assert report["bridge_peer_gate"]["latest_approval_event"]["status"] == (
+        "rco_pass_pr531"
+    )
+
+
+def test_missing_from_agent_treats_all_bridge_decisions_as_peer_signals(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(
+            tmp_path,
+            [
+                _bridge_event(
+                    agent="claude",
+                    type_="decision",
+                    status="changes_requested",
+                ),
+            ],
+        ),
+    )
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_peer_gate"]["latest_blocking_event"]["agent"] == "claude"
+
+
 def test_status_check_rollup_is_supported() -> None:
     status = _status()
     status.pop("checks")
@@ -249,7 +436,7 @@ def test_receipt_bundle_required() -> None:
     assert "receipt_bundle_path is required before merge" in report["reasons"]
 
 
-def test_runner_failure_fails_closed_without_stderr_echo() -> None:
+def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None:
     def runner(command: list[str]) -> SimpleNamespace:
         return SimpleNamespace(returncode=7, stdout="", stderr="PRIVATE_MARKER")
 
@@ -259,6 +446,8 @@ def test_runner_failure_fails_closed_without_stderr_echo() -> None:
             expected_head=HEAD,
             consensus_proposal_id="idle-consensus-001",
             receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path),
+            bridge_task_id="idle-consensus-001",
             apply=True,
             runner=runner,
         )
@@ -267,7 +456,7 @@ def test_runner_failure_fails_closed_without_stderr_echo() -> None:
     assert "PRIVATE_MARKER" not in " ".join(report["errors"])
 
 
-def test_artifact_hook_failure_blocks_merge_without_runner() -> None:
+def test_artifact_hook_failure_blocks_merge_without_runner(tmp_path: Path) -> None:
     calls: list[list[str]] = []
 
     def artifact_writer() -> dict:
@@ -283,6 +472,8 @@ def test_artifact_hook_failure_blocks_merge_without_runner() -> None:
             pr_status=_status(receipt_verified=False),
             expected_head=HEAD,
             consensus_proposal_id="idle-consensus-001",
+            events_path=_events_path(tmp_path),
+            bridge_task_id="idle-consensus-001",
             apply=True,
             runner=lambda command: calls.append(list(command)),
             artifact_writer=artifact_writer,

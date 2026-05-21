@@ -202,6 +202,60 @@ def test_rco_requested_status_is_open_request() -> None:
     assert report["task_id"] == "rco-task"
 
 
+def test_done_postmerge_validated_closes_incoming_handoff() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-21T11:56:07Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "handoff",
+            "task_id": "idle-convergence-precedence-over-invalid-2026-05-21",
+            "status": "rco_requested",
+            "message": "please review PR #524",
+        },
+        {
+            "ts_utc": "2026-05-21T12:09:22Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": "idle-convergence-precedence-over-invalid-2026-05-21",
+            "status": "postmerge_validated",
+            "message": "PR #524 merged to main and postmerge validated.",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+def test_done_verified_closes_incoming_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "smoke-request",
+            "status": "request",
+            "message": "please run the smoke check",
+        },
+        {
+            "ts_utc": "2026-05-18T10:12:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": "smoke-request",
+            "status": "verified",
+            "message": "smoke check passed",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_ack_status_with_already_substring_is_not_open_request() -> None:
     events = [
         {

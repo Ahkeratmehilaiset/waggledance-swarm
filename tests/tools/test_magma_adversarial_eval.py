@@ -32,19 +32,25 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _expected_case_count() -> int:
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    return len(corpus["cases"])
+
+
 def test_scores_fixture_corpus_against_hidden_expectations() -> None:
+    expected_case_count = _expected_case_count()
     report = build_adversarial_eval_report()
 
     assert report["eval_version"] == "magma.adversarial_eval.v0"
     assert report["writes_applied"] is False
     assert report["ok"] is True
-    assert report["case_count"] == 20
-    assert report["pass_count"] == 20
+    assert report["case_count"] == expected_case_count
+    assert report["pass_count"] == expected_case_count
     assert report["fail_count"] == 0
     assert report["gate_accuracy"] == 1.0
     assert report["verdict_accuracy"] == 1.0
     assert report["reason_code_accuracy"] == 1.0
-    assert report["full_match_count"] == 20
+    assert report["full_match_count"] == expected_case_count
     assert report["partial_match_count"] == 0
     assert report["mismatch_count"] == 0
     assert report["corpus_digest"].startswith("sha256:")
@@ -94,19 +100,24 @@ def test_report_does_not_leak_privacy_canaries_or_review_traps(tmp_path: Path) -
 
 
 def test_cli_text_mode_and_out_report(tmp_path: Path) -> None:
+    expected_case_count = _expected_case_count()
     out = tmp_path / "reports" / "eval.json"
     out.parent.mkdir()
 
     result = _run_eval("--out", str(out))
 
     assert result.returncode == 0, result.stderr
-    assert "magma adversarial eval OK: 20/20 cases passed" in result.stdout
+    assert (
+        f"magma adversarial eval OK: {expected_case_count}/{expected_case_count} cases passed"
+        in result.stdout
+    )
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["ok"] is True
-    assert report["case_count"] == 20
+    assert report["case_count"] == expected_case_count
 
 
 def test_opt_in_receipt_bundle_verifies_report(tmp_path: Path) -> None:
+    expected_case_count = _expected_case_count()
     out_dir = tmp_path / "adversarial-receipts"
 
     report = build_adversarial_eval_report(
@@ -136,8 +147,8 @@ def test_opt_in_receipt_bundle_verifies_report(tmp_path: Path) -> None:
     assert evaluation["target_digest"] == sha256_digest(payload)
     assert receipt["canonical_payload_digest"] == sha256_digest(payload)
     assert receipt["evaluation_result_digest"] == sha256_digest(evaluation)
-    assert payload["case_count"] == 20
-    assert len(payload["case_evaluation_result_digests"]) == 20
+    assert payload["case_count"] == expected_case_count
+    assert len(payload["case_evaluation_result_digests"]) == expected_case_count
 
 
 def test_cli_emits_receipt_bundle_only_when_requested(tmp_path: Path) -> None:

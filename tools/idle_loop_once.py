@@ -23,7 +23,7 @@ deferral as an operator/implementer escalation rather than performing it.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
@@ -64,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pending-ci-count", type=int, default=0)
     parser.add_argument("--open-request-max-age-hours", type=float, default=12.0)
     parser.add_argument("--operator-last-activity-utc", default=None)
+    parser.add_argument(
+        "--agent",
+        default=None,
+        help=(
+            "Optional agent id used only to make stale-terminal-session "
+            "recommendations concrete."
+        ),
+    )
     parser.add_argument("--now", default=None)
     parser.add_argument("--json", action="store_true")
     return parser
@@ -83,6 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.operator_last_activity_utc
             else None
         ),
+        agent=args.agent,
     )
     if args.json:
         print(json.dumps(report, sort_keys=True))
@@ -108,6 +117,7 @@ def evaluate_idle_loop_tick(
     pending_ci_count: int,
     open_request_max_age_hours: float,
     operator_last_activity_utc: datetime | None = None,
+    agent: str | None = None,
 ) -> dict[str, Any]:
     """Return one read-only decision token for the idle-loop tick."""
     try:
@@ -218,6 +228,40 @@ def evaluate_idle_loop_tick(
         )
 
     if status in OPERATOR_REVIEW_STATUSES:
+        stale_terminal = _stale_terminal_session(
+            events,
+            now_utc=now_utc,
+            max_age_hours=open_request_max_age_hours,
+        )
+        if stale_terminal["stale"]:
+            recommended = (
+                f"python tools/agent_next_task.py --agent {agent} --json"
+                if agent
+                else "python tools/agent_next_task.py --agent <agent> --json"
+            )
+            return _report(
+                decision="stale_terminal_session",
+                next_action="run_agent_next_task",
+                recommended_command=recommended,
+                idle_report=idle_report,
+                session_summary={
+                    **summary,
+                    "stale_terminal_session": stale_terminal,
+                },
+                notes=[
+                    f"idle-protocol terminal status is stale: {status}",
+                    (
+                        "operator review remains recorded for that old "
+                        "idle-protocol instance, but it no longer blocks "
+                        "new safe work selection while idle_check has no "
+                        "blockers"
+                    ),
+                    (
+                        "the next live agent should use agent_next_task.py "
+                        "to claim deterministic unblocked work"
+                    ),
+                ],
+            )
         reason_codes = summary.get("reason_codes") or []
         return _report(
             decision="operator_review_required",
@@ -283,6 +327,47 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
     return events
 
 
+def _stale_terminal_session(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    now_utc: datetime,
+    max_age_hours: float,
+) -> dict[str, Any]:
+    latest = _latest_idle_payload_ts(events)
+    cutoff = now_utc.astimezone(timezone.utc) - timedelta(hours=max_age_hours)
+    stale = latest is not None and latest < cutoff
+    return {
+        "stale": stale,
+        "latest_idle_payload_utc": _iso(latest) if latest is not None else None,
+        "cutoff_utc": _iso(cutoff),
+        "max_age_hours": max_age_hours,
+    }
+
+
+def _latest_idle_payload_ts(events: Sequence[Mapping[str, Any]]) -> datetime | None:
+    latest: datetime | None = None
+    for event in events:
+        payload = event.get("payload")
+        is_idle_payload = (
+            event.get("protocol_version") == "idle-protocol.v1"
+            or (
+                isinstance(payload, Mapping)
+                and payload.get("protocol_version") == "idle-protocol.v1"
+            )
+        )
+        if not is_idle_payload:
+            continue
+        ts_raw = str(event.get("ts_utc", "")).strip()
+        if not ts_raw:
+            continue
+        try:
+            ts = _parse_utc(ts_raw)
+        except ValueError:
+            continue
+        latest = ts if latest is None or ts > latest else latest
+    return latest
+
+
 def _parse_utc(value: str) -> datetime:
     normalized = value.strip()
     if normalized.endswith("Z"):
@@ -291,6 +376,10 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 if __name__ == "__main__":

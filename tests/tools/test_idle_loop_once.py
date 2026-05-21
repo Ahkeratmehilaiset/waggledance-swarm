@@ -189,6 +189,7 @@ def _tick(
     *,
     now_utc: datetime = NOW,
     idle_minutes: int = 60,
+    agent: str | None = None,
 ) -> dict:
     return evaluate_idle_loop_tick(
         events_path=_write_events(tmp_path, events),
@@ -198,6 +199,7 @@ def _tick(
         pending_ci_count=0,
         open_request_max_age_hours=12.0,
         operator_last_activity_utc=None,
+        agent=agent,
     )
 
 
@@ -310,9 +312,9 @@ def test_operator_review_on_charter_violation(tmp_path: Path) -> None:
         _bridge_event(),
         _wrap(_proposal()),
         _wrap(_counter(), agent="claude"),
-        _wrap(_charter_violation()),
+        _wrap(_charter_violation(), ts_utc=RECENT_TS),
     ]
-    report = _tick(tmp_path, events)
+    report = _tick(tmp_path, events, idle_minutes=1)
 
     assert report["decision"] == "operator_review_required"
     assert report["next_action"] == "operator_handles"
@@ -323,9 +325,9 @@ def test_operator_review_on_low_quality(tmp_path: Path) -> None:
     events = [
         _bridge_event(),
         _wrap(_proposal()),
-        _wrap(_low_quality(), agent="claude"),
+        _wrap(_low_quality(), agent="claude", ts_utc=RECENT_TS),
     ]
-    report = _tick(tmp_path, events)
+    report = _tick(tmp_path, events, idle_minutes=1)
 
     assert report["decision"] == "operator_review_required"
     assert report["session_summary"]["status"] == "operator_escalation"
@@ -334,11 +336,29 @@ def test_operator_review_on_low_quality(tmp_path: Path) -> None:
 def test_operator_review_on_invalid_payload(tmp_path: Path) -> None:
     bad = _proposal()
     del bad["simulation_evidence"]
-    events = [_bridge_event(), _wrap(bad)]
-    report = _tick(tmp_path, events)
+    events = [_bridge_event(), _wrap(bad, ts_utc=RECENT_TS)]
+    report = _tick(tmp_path, events, idle_minutes=1)
 
     assert report["decision"] == "operator_review_required"
     assert report["session_summary"]["status"] == "invalid_event"
+
+
+def test_stale_terminal_invalid_payload_routes_to_agent_next_task(
+    tmp_path: Path,
+) -> None:
+    bad = _proposal()
+    del bad["simulation_evidence"]
+    events = [_bridge_event(), _wrap(bad, ts_utc="2026-05-19T23:00:00Z")]
+
+    report = _tick(tmp_path, events, agent="codex")
+
+    assert report["decision"] == "stale_terminal_session"
+    assert report["next_action"] == "run_agent_next_task"
+    assert report["session_summary"]["status"] == "invalid_event"
+    stale = report["session_summary"]["stale_terminal_session"]
+    assert stale["stale"] is True
+    assert stale["latest_idle_payload_utc"] == "2026-05-19T23:00:00Z"
+    assert "agent_next_task.py --agent codex" in report["recommended_command"]
 
 
 # ---------------------------------------------------------------------------

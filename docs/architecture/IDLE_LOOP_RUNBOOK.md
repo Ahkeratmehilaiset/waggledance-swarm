@@ -156,6 +156,7 @@ interpret it; the agents do through the bridge.
 | `no_session` | Exit after reporting the recommended `run_idle_protocol_once.py --emit --json` command. A live agent must decide whether to run it. |
 | `mid_protocol` | Exit. The peer agent should compose and emit the next idle-protocol payload through the existing activation tool. |
 | `convergence_reached` | Exit after reporting the implementer-chain route. A live agent converts consensus into a candidate diff before artifact, draft PR, status snapshot, and auto-merge tools can run. |
+| `stale_terminal_session` | Exit after reporting `agent_next_task.py`. The old terminal idle-protocol instance remains recorded, but it no longer blocks new safe work selection after the configured stale window. |
 | `operator_review_required` | Stop automated progression and leave the evidence in bridge artifacts. |
 | `charter_violation`, `invalid_event`, `low_quality` | Stop automated progression for that instance. |
 

@@ -349,15 +349,37 @@ def _read_bridge_events(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     events: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
             event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            events.append(event)
+        except json.JSONDecodeError as exc:
+            raise ActivationError(
+                "bridge events file is not valid JSONL",
+                {
+                    "decision": "invalid_events_file",
+                    "errors": [
+                        f"invalid JSON in bridge events at line {line_no}: {exc.msg}"
+                    ],
+                    "exit_code": 2,
+                },
+            ) from exc
+        if not isinstance(event, dict):
+            raise ActivationError(
+                "bridge events file contains a non-object event",
+                {
+                    "decision": "invalid_events_file",
+                    "errors": [
+                        (
+                            f"invalid bridge event at line {line_no}: "
+                            "event must be a JSON object"
+                        )
+                    ],
+                    "exit_code": 2,
+                },
+            )
+        events.append(event)
     return events
 
 

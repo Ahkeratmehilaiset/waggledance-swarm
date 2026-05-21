@@ -275,6 +275,36 @@ def test_round_one_refuses_active_bridge_before_emitting(tmp_path: Path) -> None
     assert not (tmp_path / "bridge" / "shared" / "events.jsonl").exists()
 
 
+def test_refuses_malformed_bridge_events_before_emitting(tmp_path: Path) -> None:
+    payload_path = tmp_path / "payload.json"
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    bridge_root = tmp_path / "bridge"
+    claims_dir.mkdir()
+    _write_json(payload_path, _proposal())
+    events_path.write_text("{not-json}\n", encoding="utf-8")
+
+    with pytest.raises(ActivationError) as excinfo:
+        activate_idle_protocol(
+            payload_path=payload_path,
+            events_path=events_path,
+            claims_dir=claims_dir,
+            bridge_root=bridge_root,
+            from_agent="codex",
+            to_agent="claude",
+            task_id=None,
+            idle_minutes=60,
+            pending_ci_count=0,
+            open_request_max_age_hours=12.0,
+            now_utc=NOW,
+            emit=True,
+        )
+
+    assert excinfo.value.report["decision"] == "invalid_events_file"
+    assert "line 1" in excinfo.value.report["errors"][0]
+    assert not (bridge_root / "shared" / "events.jsonl").exists()
+
+
 def test_round_one_rate_limit_blocks_sixth_daily_instance(tmp_path: Path) -> None:
     events = _base_events() + _idle_instance_events(5)
 
@@ -898,6 +928,46 @@ def test_cli_runs_by_file_path_from_repo_root(tmp_path: Path) -> None:
     report = json.loads(completed.stdout)
     assert report["decision"] == "ready"
     assert report["emitted"] is False
+
+
+def test_cli_fails_closed_on_non_object_bridge_events(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    payload_path = tmp_path / "payload.json"
+    events_path = tmp_path / "events.jsonl"
+    claims_dir = tmp_path / "claims"
+    bridge_root = tmp_path / "bridge"
+    claims_dir.mkdir()
+    _write_json(payload_path, _proposal())
+    events_path.write_text("[]\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "idle_protocol_activate.py"),
+            "--payload",
+            str(payload_path),
+            "--events",
+            str(events_path),
+            "--claims-dir",
+            str(claims_dir),
+            "--bridge-root",
+            str(bridge_root),
+            "--now",
+            "2026-05-17T12:00:00Z",
+            "--apply",
+            "--json",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    report = json.loads(completed.stdout)
+    assert report["decision"] == "invalid_events_file"
+    assert "JSON object" in report["errors"][0]
+    assert not (bridge_root / "shared" / "events.jsonl").exists()
 
 
 def test_cli_receipt_out_dir_writes_verified_bundle(tmp_path: Path) -> None:

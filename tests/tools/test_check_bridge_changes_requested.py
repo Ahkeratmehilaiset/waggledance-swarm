@@ -1,0 +1,221 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""Tests for tools/check_bridge_changes_requested.py."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "tools" / "check_bridge_changes_requested.py"
+
+sys.path.insert(0, str(ROOT))
+
+from tools.check_bridge_changes_requested import (  # noqa: E402
+    check_bridge_clear_to_merge,
+)
+
+
+def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
+    bridge_root = tmp_path / ".agent-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    events_path = shared / "events.jsonl"
+    with events_path.open("w", encoding="utf-8", newline="\n") as fh:
+        for event in events:
+            fh.write(json.dumps(event) + "\n")
+    return bridge_root
+
+
+def _event(ts_utc: str, agent: str, type_: str, status: str, task_id: str = "T") -> dict:
+    return {
+        "ts_utc": ts_utc,
+        "agent": agent,
+        "type": type_,
+        "task_id": task_id,
+        "status": status,
+        "severity": "",
+        "to": "",
+        "message": "",
+        "paths": [],
+        "write_scope": [],
+        "run_id": "",
+        "pid": 0,
+        "cwd": "",
+    }
+
+
+def test_clear_when_no_peer_signal_for_task() -> None:
+    events = [_event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested")]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
+def test_blocked_when_peer_changes_requested_is_latest() -> None:
+    events = [
+        _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+        _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "codex"
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
+
+
+def test_cleared_when_peer_approves_after_earlier_block() -> None:
+    events = [
+        _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+        _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+        _event("2026-05-21T10:30:00Z", "codex", "decision", "rco_pass"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
+def test_self_events_are_ignored() -> None:
+    """The merging agent's own decisions should not count as peer block."""
+    events = [
+        _event("2026-05-21T10:00:00Z", "claude", "decision", "changes_requested"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is True
+
+
+def test_other_task_blocks_do_not_affect_this_task() -> None:
+    events = [
+        _event(
+            "2026-05-21T10:00:00Z", "codex", "decision", "changes_requested",
+            task_id="other-task",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is True
+
+
+def test_unrelated_event_types_are_ignored() -> None:
+    """Heartbeats, claims, handoffs etc. should not affect the gate."""
+    events = [
+        _event("2026-05-21T10:00:00Z", "codex", "heartbeat", "active"),
+        _event("2026-05-21T10:01:00Z", "codex", "claim", "active"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is True
+
+
+def test_cli_smoke_returns_exit_3_on_block(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [
+            _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+            _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+        ],
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["clear_to_merge"] is False
+    assert payload["decision"] == "blocked"
+
+
+def test_cli_smoke_returns_exit_0_when_clear(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested")],
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["clear_to_merge"] is True
+
+
+def test_cli_smoke_reproduces_pr_527_race_pattern(tmp_path: Path) -> None:
+    """Reproduce the 2026-05-21 PR #527 race: Codex blocked at 13:32, claude
+    autonomous-merged at 13:34. This tool must catch that block.
+    """
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [
+            _event(
+                "2026-05-21T13:21:57Z",
+                "claude",
+                "handoff",
+                "rco_requested",
+                task_id="idle-protocol-late-round-invariant-2026-05-21",
+            ),
+            _event(
+                "2026-05-21T13:32:05Z",
+                "codex",
+                "decision",
+                "changes_requested",
+                task_id="idle-protocol-late-round-invariant-2026-05-21",
+            ),
+        ],
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "idle-protocol-late-round-invariant-2026-05-21",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 3, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["latest_blocking_event"]["agent"] == "codex"

@@ -36,6 +36,16 @@ def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
     return bridge_root
 
 
+def _seed_bridge_raw(tmp_path: Path, lines: list[str]) -> Path:
+    bridge_root = tmp_path / ".agent-bridge"
+    shared = bridge_root / "shared"
+    claims = bridge_root / "work_queue" / "claims"
+    shared.mkdir(parents=True)
+    claims.mkdir(parents=True)
+    (shared / "events.jsonl").write_text("".join(lines), encoding="utf-8")
+    return bridge_root
+
+
 def _opening_handoff(task_id: str, ts: str, agent: str = "claude") -> dict:
     return {
         "ts_utc": ts,
@@ -174,6 +184,42 @@ def test_refuses_when_no_open_rco_for_task(tmp_path: Path) -> None:
     assert excinfo.value.exit_code == 3
 
 
+def test_refuses_malformed_events_file(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge_raw(tmp_path, ["{not-json}\n"])
+
+    with pytest.raises(CloseRcoError) as excinfo:
+        close_bridge_rco_request(
+            task_id="task-malformed",
+            pr_number=1,
+            from_agent="codex",
+            bridge_root=bridge_root,
+            now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+            emit=False,
+        )
+
+    assert excinfo.value.decision == "invalid_events_file"
+    assert excinfo.value.exit_code == 2
+    assert "line 1" in str(excinfo.value)
+
+
+def test_refuses_non_object_event_line(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge_raw(tmp_path, ["[]\n"])
+
+    with pytest.raises(CloseRcoError) as excinfo:
+        close_bridge_rco_request(
+            task_id="task-non-object",
+            pr_number=1,
+            from_agent="codex",
+            bridge_root=bridge_root,
+            now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+            emit=False,
+        )
+
+    assert excinfo.value.decision == "invalid_events_file"
+    assert excinfo.value.exit_code == 2
+    assert "line 1" in str(excinfo.value)
+
+
 def test_refuses_when_rco_already_closed(tmp_path: Path) -> None:
     """Calling twice does not produce duplicate close events."""
     bridge_root = _seed_bridge(
@@ -224,6 +270,37 @@ def test_empty_task_id_rejected(tmp_path: Path) -> None:
             emit=True,
         )
     assert excinfo.value.decision == "invalid_args"
+
+
+def test_cli_reports_malformed_events_file(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge_raw(tmp_path, ["{not-json}\n"])
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "task-cli-malformed",
+            "--pr",
+            "1234",
+            "--from-agent",
+            "codex",
+            "--bridge-root",
+            str(bridge_root),
+            "--now",
+            "2026-05-21T06:00:00Z",
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["decision"] == "invalid_events_file"
 
 
 def test_cli_smoke(tmp_path: Path) -> None:

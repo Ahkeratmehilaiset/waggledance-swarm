@@ -296,15 +296,31 @@ def _closes_open_rco(event: Mapping[str, Any]) -> bool:
 
 def _read_events(events_path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for line in events_path.read_text(encoding="utf-8").splitlines():
+    for line_no, line in enumerate(
+        events_path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
         if not line.strip():
             continue
         try:
             event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            events.append(event)
+        except json.JSONDecodeError as exc:
+            raise CloseRcoError(
+                (
+                    f"invalid JSON in bridge events file {events_path} "
+                    f"at line {line_no}: {exc.msg}"
+                ),
+                "invalid_events_file",
+            ) from exc
+        if not isinstance(event, dict):
+            raise CloseRcoError(
+                (
+                    f"invalid bridge event in {events_path} at line {line_no}: "
+                    "event must be a JSON object"
+                ),
+                "invalid_events_file",
+            )
+        events.append(event)
     return events
 
 

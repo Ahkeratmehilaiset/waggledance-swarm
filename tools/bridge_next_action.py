@@ -65,6 +65,8 @@ ANSWER_STATUS_FRAGMENTS = (
     "pass",
     "resolved",
     "superseded",
+    "validated",
+    "verified",
 )
 
 

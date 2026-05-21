@@ -258,6 +258,35 @@ def test_cli_smoke_fails_closed_on_invalid_jsonl(tmp_path: Path) -> None:
     assert payload["decision"] == "invalid_events_file"
 
 
+def test_cli_smoke_fails_closed_on_non_object_jsonl(tmp_path: Path) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    (shared / "events.jsonl").write_text("[]\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    payload = json.loads(result.stdout)
+    assert payload["decision"] == "invalid_events_file"
+    assert "JSON object" in payload["error"]
+
+
 def test_cli_smoke_reproduces_pr_527_race_pattern(tmp_path: Path) -> None:
     """Reproduce the 2026-05-21 PR #527 race: Codex blocked at 13:32, claude
     autonomous-merged at 13:34. This tool must catch that block.

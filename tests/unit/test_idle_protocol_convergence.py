@@ -248,3 +248,56 @@ def test_invalid_idle_event_reports_validation_error() -> None:
     assert report["status"] == "invalid_event"
     assert report["proposal_id"] == "idle-prop-20260517-001"
     assert any("simulation_evidence" in error for error in report["errors"])
+
+
+def test_soft_convergence_takes_precedence_over_old_invalid_event() -> None:
+    """A schema-invalid payload elsewhere in the chain must not block soft
+    convergence detection when valid round-5 consensus events exist.
+
+    Regression for bug observed 2026-05-21 11:47Z: yesterday's bridge events
+    contained a malformed `idle_counter_proposal_shape` round-2 payload, and
+    detect_idle_convergence returned `invalid_event` even though a valid
+    `idle_consensus_reached` x2 had been emitted at round 5. The dispatcher
+    routed to operator_review_required and could never auto-emit again until
+    the operator intervened.
+    """
+    proposal = good_idle_proposal()
+    counter = good_counter_proposal()
+    review = good_adversarial_review()
+    invalid = copy.deepcopy(counter)
+    # Break the schema by removing a required field
+    del invalid["alternative_proposal"]
+    invalid["proposal_id"] = "idle-prop-20260517-002-broken"
+    consensus_a = _consensus(
+        "idle-prop-20260517-005a", "idle-prop-20260517-002", 5
+    )
+    consensus_b = _consensus(
+        "idle-prop-20260517-005b", "idle-prop-20260517-002", 5
+    )
+
+    report = detect_idle_convergence(
+        [proposal, counter, invalid, review, consensus_a, consensus_b]
+    )
+
+    assert report is not None
+    assert report["status"] == "soft_convergence"
+    assert report["target_proposal_id"] == "idle-prop-20260517-002"
+    assert sorted(report["supporting_consensus_ids"]) == [
+        "idle-prop-20260517-005a",
+        "idle-prop-20260517-005b",
+    ]
+
+
+def test_invalid_event_still_reported_when_no_convergence() -> None:
+    """If there is no soft/hard convergence and no charter violation, an
+    invalid payload is still surfaced so the operator can investigate.
+    """
+    proposal = good_idle_proposal()
+    invalid = copy.deepcopy(good_counter_proposal())
+    del invalid["alternative_proposal"]
+
+    report = detect_idle_convergence([proposal, invalid])
+
+    assert report is not None
+    assert report["status"] == "invalid_event"
+    assert report["operator_escalation_required"] is True

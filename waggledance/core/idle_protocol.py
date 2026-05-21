@@ -61,18 +61,16 @@ def detect_idle_convergence(
     if not payloads:
         return None
 
+    valid_payloads: list[Mapping[str, Any]] = []
+    invalid_payloads: list[tuple[Mapping[str, Any], list[str]]] = []
     for payload in payloads:
         ok, errors = validate_idle_proposal(dict(payload))
-        if not ok:
-            return {
-                "status": "invalid_event",
-                "proposal_id": payload.get("proposal_id", ""),
-                "round_number": payload.get("round_number"),
-                "errors": errors,
-                "operator_escalation_required": True,
-            }
+        if ok:
+            valid_payloads.append(payload)
+        else:
+            invalid_payloads.append((payload, errors))
 
-    for payload in payloads:
+    for payload in valid_payloads:
         if payload.get("event_type") == "idle_charter_violation":
             return {
                 "status": "charter_violation",
@@ -83,16 +81,29 @@ def detect_idle_convergence(
                 "operator_escalation_required": True,
             }
 
-    soft = _soft_convergence(payloads, soft_round=soft_round)
+    soft = _soft_convergence(valid_payloads, soft_round=soft_round)
     if soft is not None:
         return soft
 
-    latest_round = max(int(payload["round_number"]) for payload in payloads)
+    if invalid_payloads:
+        first_invalid, errors = invalid_payloads[0]
+        return {
+            "status": "invalid_event",
+            "proposal_id": first_invalid.get("proposal_id", ""),
+            "round_number": first_invalid.get("round_number"),
+            "errors": errors,
+            "operator_escalation_required": True,
+        }
+
+    if not valid_payloads:
+        return None
+
+    latest_round = max(int(payload["round_number"]) for payload in valid_payloads)
     if latest_round >= max_round:
         return {
             "status": "hard_convergence",
             "round_number": latest_round,
-            "finalist_proposal_ids": _finalists(payloads),
+            "finalist_proposal_ids": _finalists(valid_payloads),
             "operator_gate_required": True,
             "auto_execute": False,
         }

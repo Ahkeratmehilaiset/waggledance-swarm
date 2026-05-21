@@ -49,6 +49,7 @@ from typing import Any, Mapping, Sequence
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
 RCO_CLOSE_STATUS = "rco_closed_postmerge"
 RCO_OPEN_STATUS = "rco_requested"
+DEFAULT_TO_AGENTS = "codex,claude"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,8 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--to",
-        default="codex,operator",
-        help="Comma-separated bridge audience.",
+        default=DEFAULT_TO_AGENTS,
+        help=(
+            "Comma-separated bridge audience. Defaults to peer agents, not "
+            "operator; pass operator explicitly when a human-facing close is "
+            "intended."
+        ),
     )
     parser.add_argument(
         "--now",
@@ -151,7 +156,7 @@ def close_bridge_rco_request(
     bridge_root: Path,
     merge_commit: str = "",
     merged_at: str = "",
-    to_agents: str = "codex,operator",
+    to_agents: str = DEFAULT_TO_AGENTS,
     note: str = "",
     now_utc: datetime,
     emit: bool,

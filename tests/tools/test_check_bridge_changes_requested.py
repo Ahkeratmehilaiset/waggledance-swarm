@@ -82,6 +82,60 @@ def test_cleared_when_peer_approves_after_earlier_block() -> None:
     assert result["latest_approval_event"]["status"] == "rco_pass"
 
 
+def test_different_peer_approval_does_not_clear_block() -> None:
+    events = [
+        _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+        _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+        _event("2026-05-21T10:30:00Z", "mynhos", "decision", "rco_pass"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "codex"
+
+
+def test_prefixed_rco_pass_clears_same_peer_block() -> None:
+    events = [
+        _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),
+        _event("2026-05-21T10:05:00Z", "codex", "decision", "changes_requested"),
+        _event("2026-05-21T10:30:00Z", "codex", "decision", "rco_pass_pr529"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is True
+    assert result["latest_approval_event"]["status"] == "rco_pass_pr529"
+
+
+def test_prefixed_changes_requested_status_blocks() -> None:
+    events = [
+        _event(
+            "2026-05-21T10:05:00Z",
+            "codex",
+            "decision",
+            "rco_changes_requested_pr530",
+        ),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["status"] == "rco_changes_requested_pr530"
+
+
+def test_append_order_not_timestamp_string_order_decides_latest_signal() -> None:
+    events = [
+        _event("2026-05-21T10:05:00Z", "codex", "decision", "rco_pass"),
+        _event("2026-05-21T10:05:00.100000Z", "codex", "decision", "changes_requested"),
+    ]
+    result = check_bridge_clear_to_merge(
+        events=events, task_id="T", merging_agent="claude"
+    )
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
+
+
 def test_self_events_are_ignored() -> None:
     """The merging agent's own decisions should not count as peer block."""
     events = [
@@ -174,6 +228,34 @@ def test_cli_smoke_returns_exit_0_when_clear(tmp_path: Path) -> None:
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["clear_to_merge"] is True
+
+
+def test_cli_smoke_fails_closed_on_invalid_jsonl(tmp_path: Path) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    (shared / "events.jsonl").write_text("{not-json}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    payload = json.loads(result.stdout)
+    assert payload["decision"] == "invalid_events_file"
 
 
 def test_cli_smoke_reproduces_pr_527_race_pattern(tmp_path: Path) -> None:

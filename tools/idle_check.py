@@ -202,11 +202,7 @@ def _claim_state(claims_dir: Path) -> tuple[list[str], list[dict[str, str]]]:
             claim = {"task_id": path.stem}
         task_id = str(claim.get("task_id", path.stem))
         task_ids.append(task_id)
-        text = " ".join(
-            str(claim.get(field, ""))
-            for field in ("task_id", "summary", "release_status", "release_message")
-        ).lower()
-        kind = "scout" if "scout" in text else "rco" if "rco" in text else None
+        kind = _claim_kind(claim)
         if kind:
             requests.append(
                 {
@@ -216,6 +212,38 @@ def _claim_state(claims_dir: Path) -> tuple[list[str], list[dict[str, str]]]:
                 }
             )
     return sorted(task_ids), requests
+
+
+def _claim_kind(claim: dict[str, Any]) -> str | None:
+    """Classify a claim as a deliberation request ('scout'/'rco') or None.
+
+    Honors the 2026-05-18 bridge-consensus substrate-invariant #1 (phase A):
+    deliberation locks and active-work locks must be distinguishable. A claim
+    may set an explicit ``claim_kind`` field:
+
+      - ``claim_kind == "active_work"``  -> never a deliberation request
+        (returns None) even if its free text contains "scout"/"rco".
+      - ``claim_kind == "deliberation"`` -> a deliberation request; the
+        subtype is read from ``deliberation_kind`` ("scout"/"rco"), falling
+        back to the free-text heuristic if that subfield is absent.
+
+    When ``claim_kind`` is absent (legacy claims, and any writer that has not
+    yet adopted the field), the original free-text substring heuristic is used
+    so behavior is unchanged. This makes the field opt-in on the write side.
+    """
+    explicit = str(claim.get("claim_kind", "")).lower()
+    if explicit == "active_work":
+        return None
+    text = " ".join(
+        str(claim.get(field, ""))
+        for field in ("task_id", "summary", "release_status", "release_message")
+    ).lower()
+    if explicit == "deliberation":
+        subtype = str(claim.get("deliberation_kind", "")).lower()
+        if subtype in {"scout", "rco"}:
+            return subtype
+        return "scout" if "scout" in text else "rco"
+    return "scout" if "scout" in text else "rco" if "rco" in text else None
 
 
 def _request_kind(event: dict[str, Any]) -> str | None:

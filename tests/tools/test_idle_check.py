@@ -149,6 +149,86 @@ def test_open_work_claim_keeps_bridge_active_without_pr_or_rco(
     ]
 
 
+def test_active_work_claim_kind_is_not_misclassified_as_deliberation(
+    tmp_path: Path,
+) -> None:
+    """2026-05-18 substrate-invariant #1 (phase A): an explicit active_work
+    claim must NOT be read as a scout/rco deliberation request even if its
+    free text happens to contain 'rco' or 'scout'.
+    """
+    payload = _run(
+        tmp_path,
+        _base_idle_events(),
+        claims=[
+            {
+                "task_id": "implementing-rco-feedback-from-pr999",
+                "summary": "Incorporating scout review notes into the impl.",
+                "claim_kind": "active_work",
+                "claimed_at_utc": "2026-05-17T10:45:00Z",
+            }
+        ],
+    )
+
+    # It still counts as an open work claim (blocks idle), but it must NOT
+    # appear as an open_scout_requests or open_rco_requests deliberation lock.
+    assert payload["criteria"]["open_scout_requests"]["task_ids"] == []
+    assert payload["criteria"]["open_rco_requests"]["task_ids"] == []
+    assert payload["criteria"]["open_work_claims"]["task_ids"] == [
+        "implementing-rco-feedback-from-pr999"
+    ]
+
+
+def test_deliberation_claim_kind_with_subtype_is_authoritative(
+    tmp_path: Path,
+) -> None:
+    """An explicit deliberation claim with deliberation_kind=rco is read as an
+    rco request regardless of free text.
+    """
+    payload = _run(
+        tmp_path,
+        _base_idle_events(),
+        claims=[
+            {
+                "task_id": "neutral-task-name",
+                "summary": "No keyword in this summary at all.",
+                "claim_kind": "deliberation",
+                "deliberation_kind": "rco",
+                "claimed_at_utc": "2026-05-17T10:45:00Z",
+            }
+        ],
+    )
+
+    assert payload["decision"] == "active"
+    assert payload["criteria"]["open_rco_requests"]["task_ids"] == [
+        "neutral-task-name"
+    ]
+
+
+def test_legacy_claim_without_claim_kind_uses_text_heuristic(
+    tmp_path: Path,
+) -> None:
+    """Backward compatibility: a claim with no claim_kind field still uses the
+    free-text scout/rco substring heuristic, so existing writers are
+    unaffected.
+    """
+    payload = _run(
+        tmp_path,
+        _base_idle_events(),
+        claims=[
+            {
+                "task_id": "claude-scout-something",
+                "summary": "Legacy scout claim with no claim_kind field.",
+                "claimed_at_utc": "2026-05-17T10:45:00Z",
+            }
+        ],
+    )
+
+    assert payload["decision"] == "active"
+    assert payload["criteria"]["open_scout_requests"]["task_ids"] == [
+        "claude-scout-something"
+    ]
+
+
 def test_open_scout_or_rco_request_keeps_bridge_active_until_answered(tmp_path: Path) -> None:
     open_scout = _base_idle_events() + [
         _event(

@@ -95,6 +95,43 @@ def test_cli_json_reports_a4_axis(tmp_path: Path) -> None:
     assert payload["registration"]["registered_solver_count"] == 6
 
 
+def test_cli_can_pin_recorded_base_main_sha(tmp_path: Path) -> None:
+    recorded_sha = "f5498d4f69fcbb764529f006325292178926ab58"
+    out_dir = tmp_path / "a4-proof"
+
+    result = _run(
+        "--json",
+        "--out-dir",
+        str(out_dir),
+        "--now",
+        "2026-05-21T18:55:00Z",
+        "--recorded-base-main-sha",
+        recorded_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["base_main_sha"] == recorded_sha
+    assert payload["base_main_sha_source"] == "recorded_override"
+
+    raw_phase18c = json.loads(
+        (out_dir / "phase18c" / "mined_solver_runtime_dispatch_proof.json")
+        .read_text(encoding="utf-8")
+    )
+    assert raw_phase18c["base_main_sha"] == recorded_sha
+    assert raw_phase18c["base_main_sha_source"] == "recorded_override"
+
+
+def test_cli_rejects_invalid_recorded_base_main_sha() -> None:
+    result = _run("--json", "--recorded-base-main-sha", "not-a-sha")
+
+    assert result.returncode == 1
+    assert (
+        "--recorded-base-main-sha must be a 40-character hexadecimal git SHA"
+        in result.stderr
+    )
+
+
 def test_cli_rejects_existing_output_directory(tmp_path: Path) -> None:
     out_dir = tmp_path / "a4-proof"
     out_dir.mkdir()

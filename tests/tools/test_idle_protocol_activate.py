@@ -1006,8 +1006,12 @@ def _full_chain_through_round_five() -> list[dict]:
     proposal = _proposal("idle-prop-20260517-001")
     counter = _counter()
     review = _adversarial()
+    round_four = _counter()
+    round_four["proposal_id"] = "idle-prop-20260517-004"
+    round_four["round_number"] = 4
+    round_four["responds_to"] = "idle-prop-20260517-003"
     consensus_a = _consensus("idle-prop-20260517-005a")
-    return [proposal, counter, review, consensus_a]
+    return [proposal, counter, review, round_four, consensus_a]
 
 
 def test_round_six_refuses_when_round_one_root_missing(tmp_path: Path) -> None:
@@ -1034,12 +1038,8 @@ def test_round_six_refuses_when_a_prior_round_is_validator_invalid(
     tmp_path: Path,
 ) -> None:
     # Round 2 in the instance is schema-invalid (missing alternative_proposal)
-    proposal = _proposal("idle-prop-20260517-001")
-    bad_counter = _counter()
-    del bad_counter["alternative_proposal"]
-    review = _adversarial()
-    consensus_a = _consensus("idle-prop-20260517-005a")
-    chain = [proposal, bad_counter, review, consensus_a]
+    chain = _full_chain_through_round_five()
+    del chain[1]["alternative_proposal"]
     events = _base_events() + [
         _event(
             ts_utc="2026-05-17T11:00:00Z",
@@ -1061,16 +1061,38 @@ def test_round_six_refuses_when_a_prior_round_is_validator_invalid(
     assert "2" in error_text
 
 
+def test_round_six_refuses_when_prior_round_is_missing(tmp_path: Path) -> None:
+    chain = [
+        payload
+        for payload in _full_chain_through_round_five()
+        if payload["round_number"] != 4
+    ]
+    events = _base_events() + [
+        _event(
+            ts_utc="2026-05-17T11:00:00Z",
+            status="idle_proposal",
+            payload=payload,
+        )
+        for payload in chain
+    ]
+    late_payload = _round_six_consensus()
+
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(tmp_path, late_payload, events=events)
+
+    assert excinfo.value.report["decision"] == "invalid_sequence"
+    error_text = "\n".join(excinfo.value.report["errors"])
+    assert "late round 6" in error_text
+    assert "rounds 1..5" in error_text
+    assert "4" in error_text
+
+
 def test_round_six_invariant_passes_when_chain_traces_to_round_one(
     tmp_path: Path,
 ) -> None:
     """A late-round event whose instance has a valid round-1 root and only
     validator-passing payloads passes the substrate-invariant-2 check."""
-    proposal = _proposal("idle-prop-20260517-001")
-    counter = _counter()
-    review = _adversarial()
-    consensus_a = _consensus("idle-prop-20260517-005a")
-    chain = [proposal, counter, review, consensus_a]
+    chain = _full_chain_through_round_five()
     events = _base_events() + [
         _event(
             ts_utc="2026-05-17T11:00:00Z",

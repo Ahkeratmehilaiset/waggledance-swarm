@@ -52,6 +52,8 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert result["rival_local_check_pass_count"] == 0
     assert result["rival_local_check_required_count"] == 4
     assert result["competitor_consensus_grade"] is False
+    assert result["rival_evidence_template_count"] == 4
+    assert Path(result["rival_evidence_template_dir"]) == out_dir / "rival_evidence_templates"
     assert (out_dir / "summary.md").exists()
     assert (out_dir / "adversarial_eval_report.json").exists()
     assert (out_dir / "adversarial_receipts" / "manifest.json").exists()
@@ -65,6 +67,11 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert (
         out_dir / "a4_solver_growth_axis" / "a4_solver_growth_receipts" / "manifest.json"
     ).exists()
+    assert (out_dir / "rival_evidence_template_init.json").exists()
+    assert (out_dir / "rival_evidence_templates" / "jamjet.json").exists()
+    assert (out_dir / "rival_evidence_templates" / "asqav.json").exists()
+    assert (out_dir / "rival_evidence_templates" / "microsoft-agt.json").exists()
+    assert (out_dir / "rival_evidence_templates" / "preloop.json").exists()
     assert (out_dir / "rival_local_check_matrix.json").exists()
     assert (out_dir / "rival_local_check_matrix.md").exists()
 
@@ -75,6 +82,19 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     rival_matrix = json.loads((out_dir / "rival_local_check_matrix.json").read_text(encoding="utf-8"))
     assert rival_matrix["consensus_grade"] is False
     assert rival_matrix["rival_local_checks_status"] == "0/4 rival local checks passed"
+    assert {row["local_status"] for row in rival_matrix["checks"]} == {"not_passed"}
+    assert rival_matrix["template_init"]["created_count"] == 4
+    assert rival_matrix["template_init"]["safe_defaults"]["smoke_result"] == "not_run"
+    template_init = json.loads((out_dir / "rival_evidence_template_init.json").read_text(encoding="utf-8"))
+    assert template_init["created_count"] == 4
+    assert template_init["safe_defaults"]["consensus_grade_contribution"] is False
+    jamjet_template = json.loads(
+        (out_dir / "rival_evidence_templates" / "jamjet.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert jamjet_template["smoke_result"] == "not_run"
+    assert jamjet_template["local_artifact_sha256"] == "sha256:" + ("0" * 64)
     a3_proof = json.loads((out_dir / "a3_counterfactual_axis_proof.json").read_text(encoding="utf-8"))
     assert a3_proof["counterfactual_delta_proven"] is True
     assert a3_proof["receipt_chain_verified"] is True
@@ -93,6 +113,7 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert "A4 receipt chain verified: `true`" in summary
     assert "rival local checks passed: `0/4`" in summary
     assert "competitor consensus grade: `false`" in summary
+    assert "rival evidence templates: `4` safe non-passing manifests" in summary
 
 
 def test_demo_pack_does_not_leak_hidden_expectations_or_canaries(
@@ -139,6 +160,7 @@ def test_cli_json_reports_demo_pack(tmp_path: Path) -> None:
     assert payload["a4_dispatch_success_count"] == 18
     assert payload["rival_local_check_pass_count"] == 0
     assert payload["competitor_consensus_grade"] is False
+    assert payload["rival_evidence_template_count"] == 4
     assert (out_dir / "summary.md").exists()
 
 

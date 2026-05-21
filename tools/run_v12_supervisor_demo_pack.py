@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -36,6 +37,8 @@ from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 
 
 DEMO_VERSION = "wd.v12.supervisor_demo_pack.v0"
+ARTIFACT_MANIFEST_VERSION = "wd.v12.supervisor_demo_pack.artifact_manifest.v0"
+ARTIFACT_MANIFEST_NAME = "demo_pack_artifact_manifest.json"
 DEFAULT_NOW = None
 
 
@@ -121,15 +124,6 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
     )
     rival_matrix["template_init"] = rival_template_init
     rival_matrix_markdown = render_rival_matrix_markdown(rival_matrix)
-    summary = _summary_markdown(
-        adversarial_report=adversarial_report,
-        adoption_report=adoption_report,
-        verifier_report=verifier_report,
-        a3_proof=a3_proof,
-        a4_proof=a4_proof,
-        rival_matrix=rival_matrix,
-        rival_template_init=rival_template_init,
-    )
 
     _write_json(out_dir / "adversarial_eval_report.json", adversarial_report)
     _write_json(out_dir / "receipt_verifier_report.json", verifier_report)
@@ -142,12 +136,30 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
     _write_text(out_dir / "a3_counterfactual_axis_proof.md", a3_markdown)
     _write_text(out_dir / "a4_solver_growth_axis_proof.md", a4_markdown)
     _write_text(out_dir / "rival_local_check_matrix.md", rival_matrix_markdown)
+    artifact_file_count = len(_pack_files_for_manifest(out_dir)) + 1
+    summary = _summary_markdown(
+        adversarial_report=adversarial_report,
+        adoption_report=adoption_report,
+        verifier_report=verifier_report,
+        a3_proof=a3_proof,
+        a4_proof=a4_proof,
+        rival_matrix=rival_matrix,
+        rival_template_init=rival_template_init,
+        artifact_file_count=artifact_file_count,
+    )
     _write_text(out_dir / "summary.md", summary)
+    artifact_manifest = _build_artifact_manifest(
+        out_dir=out_dir,
+        generated_at_utc=now_utc or datetime.now(timezone.utc),
+    )
+    _write_json(out_dir / ARTIFACT_MANIFEST_NAME, artifact_manifest)
 
     return {
         "demo_version": DEMO_VERSION,
         "out_dir": str(out_dir),
         "summary": str(out_dir / "summary.md"),
+        "artifact_manifest": str(out_dir / ARTIFACT_MANIFEST_NAME),
+        "artifact_manifest_file_count": artifact_manifest["file_count"],
         "adversarial_case_count": adversarial_report["case_count"],
         "adversarial_pass_count": adversarial_report["pass_count"],
         "writes_applied": adversarial_report["writes_applied"],
@@ -179,6 +191,7 @@ def _summary_markdown(
     a4_proof: dict[str, Any],
     rival_matrix: dict[str, Any],
     rival_template_init: dict[str, Any],
+    artifact_file_count: int,
 ) -> str:
     action_required = adoption_report.get("action_required_gap_count", "not_available")
     accepted_exceptions = adoption_report.get("accepted_exception_count", "not_available")
@@ -204,10 +217,12 @@ def _summary_markdown(
             f"- rival local checks passed: `{rival_matrix['passed_count']}/{rival_matrix['required_count']}`",
             f"- competitor consensus grade: `{str(rival_matrix['consensus_grade']).lower()}`",
             f"- rival evidence templates: `{rival_template_init['created_count']}` safe non-passing manifests",
+            f"- artifact manifest: `{ARTIFACT_MANIFEST_NAME}`",
+            f"- artifact manifest file count: `{artifact_file_count}`",
             "",
             "## What This Proves",
             "",
-            "WD can run a local adversarial corpus, bind the result to EvaluationResult digests, emit a MAGMA receipt bundle, and verify the bundle offline without applying writes.",
+            "WD can run a local adversarial corpus, bind the result to EvaluationResult digests, emit a MAGMA receipt bundle, verify the bundle offline without applying writes, and write a local SHA256 manifest for the generated demo artifacts.",
             "",
             "## What This Does Not Prove",
             "",
@@ -230,8 +245,54 @@ def _summary_markdown(
             "- `rival_evidence_templates/*.json`",
             "- `rival_local_check_matrix.json`",
             "- `rival_local_check_matrix.md`",
+            f"- `{ARTIFACT_MANIFEST_NAME}`",
         ]
     ) + "\n"
+
+
+def _build_artifact_manifest(
+    *,
+    out_dir: Path,
+    generated_at_utc: datetime,
+) -> dict[str, Any]:
+    files = []
+    for path in _pack_files_for_manifest(out_dir):
+        rel = path.relative_to(out_dir).as_posix()
+        payload = path.read_bytes()
+        files.append(
+            {
+                "path": rel,
+                "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                "size_bytes": len(payload),
+            }
+        )
+    return {
+        "manifest_version": ARTIFACT_MANIFEST_VERSION,
+        "demo_version": DEMO_VERSION,
+        "generated_at_utc": _format_utc(generated_at_utc),
+        "file_count": len(files),
+        "files": files,
+    }
+
+
+def _pack_files_for_manifest(out_dir: Path) -> list[Path]:
+    return sorted(
+        (
+            path
+            for path in out_dir.rglob("*")
+            if path.is_file() and path.name != ARTIFACT_MANIFEST_NAME
+        ),
+        key=lambda path: path.relative_to(out_dir).as_posix(),
+    )
+
+
+def _format_utc(value: datetime) -> str:
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _parse_utc(value: str) -> datetime:

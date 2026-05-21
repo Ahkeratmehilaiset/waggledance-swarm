@@ -56,6 +56,10 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert result["rival_evidence_template_count"] == 4
     assert Path(result["rival_evidence_template_dir"]) == out_dir / "rival_evidence_templates"
     assert Path(result["artifact_manifest"]) == out_dir / "demo_pack_artifact_manifest.json"
+    assert result["artifact_manifest_verifier_command"] == (
+        "python tools/verify_v12_demo_pack_artifact_manifest.py --manifest "
+        f"{out_dir / 'demo_pack_artifact_manifest.json'}"
+    )
     assert (out_dir / "summary.md").exists()
     assert (out_dir / "adversarial_eval_report.json").exists()
     assert (out_dir / "adversarial_receipts" / "manifest.json").exists()
@@ -118,6 +122,10 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert "competitor consensus grade: `false`" in summary
     assert "rival evidence templates: `4` safe non-passing manifests" in summary
     assert "artifact manifest: `demo_pack_artifact_manifest.json`" in summary
+    assert (
+        "artifact manifest verifier: `python tools/verify_v12_demo_pack_artifact_manifest.py "
+        "--manifest <demo-pack-dir>/demo_pack_artifact_manifest.json`"
+    ) in summary
 
     artifact_manifest = json.loads(
         (out_dir / "demo_pack_artifact_manifest.json").read_text(encoding="utf-8")
@@ -190,8 +198,14 @@ def test_cli_json_reports_demo_pack(tmp_path: Path) -> None:
     assert payload["competitor_consensus_grade"] is False
     assert payload["rival_evidence_template_count"] == 4
     assert payload["artifact_manifest_file_count"] > 0
+    assert payload["artifact_manifest_verifier_command"].startswith(
+        "python tools/verify_v12_demo_pack_artifact_manifest.py --manifest "
+    )
     assert (out_dir / "summary.md").exists()
     assert Path(payload["artifact_manifest"]) == out_dir / "demo_pack_artifact_manifest.json"
+    assert str(out_dir / "demo_pack_artifact_manifest.json") in payload[
+        "artifact_manifest_verifier_command"
+    ]
     assert (out_dir / "demo_pack_artifact_manifest.json").exists()
 
 

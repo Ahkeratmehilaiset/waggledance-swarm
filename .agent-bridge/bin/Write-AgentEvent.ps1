@@ -17,6 +17,36 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$privateMarkers = @('PRIVATE_MARKER', '_DO_NOT_LEAK')
+function Assert-NoPrivateMarker {
+    param(
+        [Parameter(Mandatory)] [string] $Label,
+        [AllowNull()] $Value
+    )
+    if ($null -eq $Value) {
+        return
+    }
+    $items = if ($Value -is [array]) { @($Value) } else { @($Value) }
+    foreach ($item in $items) {
+        $text = [string]$item
+        foreach ($marker in $privateMarkers) {
+            if ($text.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                throw "Bridge event $Label contains a private marker"
+            }
+        }
+    }
+}
+
+Assert-NoPrivateMarker -Label 'task_id' -Value $TaskId
+Assert-NoPrivateMarker -Label 'status' -Value $Status
+Assert-NoPrivateMarker -Label 'severity' -Value $Severity
+Assert-NoPrivateMarker -Label 'message' -Value $Message
+Assert-NoPrivateMarker -Label 'to' -Value $To
+Assert-NoPrivateMarker -Label 'paths' -Value $Paths
+Assert-NoPrivateMarker -Label 'write_scope' -Value $WriteScope
+Assert-NoPrivateMarker -Label 'run_id' -Value $RunId
+Assert-NoPrivateMarker -Label 'payload' -Value $PayloadJson
+
 $taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
 $ackStatuses = @('acknowledged', 'received', 'seen')
 # Keep this guard in lock-step with waggledance/core/bridge_event_schema.py.
@@ -33,6 +63,14 @@ if ($requiresTaskId -and [string]::IsNullOrWhiteSpace($TaskId)) {
     }
     throw "Bridge event $reason requires non-empty -TaskId before writing"
 }
+
+$payload = $null
+try {
+    $payload = $PayloadJson | ConvertFrom-Json
+} catch {
+    $payload = [pscustomobject]@{ raw = $PayloadJson; parse_error = $_.Exception.Message }
+}
+Assert-NoPrivateMarker -Label 'payload' -Value ($payload | ConvertTo-Json -Depth 12 -Compress)
 
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
@@ -54,13 +92,6 @@ foreach ($dir in @($sharedDir, $outboxDir)) {
 
 if (-not $RunId) {
     $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
-}
-
-$payload = $null
-try {
-    $payload = $PayloadJson | ConvertFrom-Json
-} catch {
-    $payload = [pscustomobject]@{ raw = $PayloadJson; parse_error = $_.Exception.Message }
 }
 
 $event = [ordered]@{

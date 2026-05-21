@@ -202,11 +202,7 @@ def _claim_state(claims_dir: Path) -> tuple[list[str], list[dict[str, str]]]:
             claim = {"task_id": path.stem}
         task_id = str(claim.get("task_id", path.stem))
         task_ids.append(task_id)
-        text = " ".join(
-            str(claim.get(field, ""))
-            for field in ("task_id", "summary", "release_status", "release_message")
-        ).lower()
-        kind = "scout" if "scout" in text else "rco" if "rco" in text else None
+        kind = _claim_kind(claim)
         if kind:
             requests.append(
                 {
@@ -216,6 +212,50 @@ def _claim_state(claims_dir: Path) -> tuple[list[str], list[dict[str, str]]]:
                 }
             )
     return sorted(task_ids), requests
+
+
+def _claim_kind(claim: dict[str, Any]) -> str | None:
+    """Classify a claim as a deliberation request ('scout'/'rco') or None.
+
+    Honors the 2026-05-18 bridge-consensus substrate-invariant #1 (phase A):
+    deliberation locks and active-work locks must be distinguishable. A claim
+    may set an explicit ``claim_kind`` field:
+
+      - ``claim_kind == "active_work"``  -> never a deliberation request
+        (returns None) even if its free text contains "scout"/"rco".
+      - ``claim_kind == "deliberation"`` -> ALWAYS a deliberation request
+        (an explicit declaration that this claim is a deliberation lock).
+        The subtype is resolved in this order: (1) ``deliberation_kind``
+        if it is "scout"/"rco"; (2) free-text hint ("scout" if the text
+        contains scout, else "rco" if it contains rco); (3) **fail closed
+        to "rco"** when neither is available. Failing closed to a
+        deliberation lock is intentional: a claim that declared itself a
+        deliberation must keep the bridge active until it is answered,
+        rather than silently dropping the lock.
+
+    When ``claim_kind`` is absent (legacy claims, and any writer that has not
+    yet adopted the field), the original free-text substring heuristic is used
+    (scout-if-text, rco-if-text, else None) so behavior is unchanged. This
+    makes the field opt-in on the write side.
+    """
+    explicit = str(claim.get("claim_kind", "")).lower()
+    if explicit == "active_work":
+        return None
+    text = " ".join(
+        str(claim.get(field, ""))
+        for field in ("task_id", "summary", "release_status", "release_message")
+    ).lower()
+    if explicit == "deliberation":
+        subtype = str(claim.get("deliberation_kind", "")).lower()
+        if subtype in {"scout", "rco"}:
+            return subtype
+        if "scout" in text:
+            return "scout"
+        # Fail closed to a deliberation lock: an explicitly-declared
+        # deliberation claim must keep the bridge active even when its
+        # subtype cannot be inferred from deliberation_kind or free text.
+        return "rco"
+    return "scout" if "scout" in text else "rco" if "rco" in text else None
 
 
 def _request_kind(event: dict[str, Any]) -> str | None:

@@ -110,14 +110,14 @@ def test_text_output_does_not_overstate_medium_non_receipt_paths() -> None:
     assert "medium accepted-exception paths" not in result.stdout
 
 
-def test_adversarial_corpus_section_reports_fifteen_cases() -> None:
+def test_adversarial_corpus_section_reports_twenty_cases() -> None:
     result = _run("--json")
     payload = json.loads(result.stdout)
     adv = payload["adversarial_eval"]
 
     assert adv["available"] is True, adv
-    assert adv["case_count"] == 15
-    assert adv["pass_count"] == 15
+    assert adv["case_count"] == 20
+    assert adv["pass_count"] == 20
     assert adv["fail_count"] == 0
     assert adv["ok"] is True
 

@@ -7,10 +7,13 @@ pilot. Until now the pilot's `rival_side_local_checks_required` table was
 
 It is recorded under the evidence-manifest contract
 (`wd.v12.rival_local_evidence_manifest.v1`, introduced in PR #544) at
-`docs/benchmarks/rival_local_checks/asqav/asqav.json`, with the
+`docs/benchmarks/rival_local_checks/asqav.json`, with the
 reproducible smoke artifact at
-`docs/benchmarks/rival_local_checks/asqav/artifacts/asqav-local-smoke.json`
+`docs/benchmarks/rival_local_checks/artifacts/asqav-local-smoke.json`
 (sha256 `4dce02020d877a9f43de06f5de86a6c13abb18c9fce0e68755b7daf1f7818bd6`).
+The flat `<evidence-dir>/<slug>.json` layout matches the matrix's manifest
+discovery convention, so `run_v12_rival_local_check_matrix --evidence-dir
+docs/benchmarks/rival_local_checks` discovers this manifest directly.
 
 ## What was run
 
@@ -90,7 +93,9 @@ to `consensus_grade`. The pilot remains `consensus_grade=false`.
 ## Reproduce
 
 ```
-python tools/run_v12_rival_local_check_matrix.py --json
-# then place this manifest + artifact under an evidence-dir and re-run
-# with --evidence-dir to see the cloud_dependent classification.
+# This manifest already lives in the flat evidence-dir layout, so the
+# matrix discovers it directly:
+python tools/run_v12_rival_local_check_matrix.py --json \
+    --evidence-dir docs/benchmarks/rival_local_checks
+# => Asqav local_status=cloud_dependent, consensus_grade=false
 ```

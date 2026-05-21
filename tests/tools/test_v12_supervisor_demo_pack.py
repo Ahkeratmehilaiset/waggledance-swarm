@@ -28,8 +28,8 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
 
     result = build_demo_pack(out_dir=out_dir, now_utc=_fixed_now())
 
-    assert result["adversarial_case_count"] == 15
-    assert result["adversarial_pass_count"] == 15
+    assert result["adversarial_case_count"] == 20
+    assert result["adversarial_pass_count"] == 20
     assert result["writes_applied"] is False
     assert result["receipt_verifier_ok"] is True
     assert result["receipt_count"] == 1
@@ -64,7 +64,7 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     report = json.loads((out_dir / "adversarial_eval_report.json").read_text(encoding="utf-8"))
     assert report["receipt_bundle"]["verifier_report"]["ok"] is True
     assert report["writes_applied"] is False
-    assert report["full_match_count"] == 15
+    assert report["full_match_count"] == 20
     rival_matrix = json.loads((out_dir / "rival_local_check_matrix.json").read_text(encoding="utf-8"))
     assert rival_matrix["consensus_grade"] is False
     assert rival_matrix["rival_local_checks_status"] == "0/4 rival local checks passed"
@@ -77,7 +77,7 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
 
     summary = (out_dir / "summary.md").read_text(encoding="utf-8")
     assert "WD V12 Supervisor Demo Pack" in summary
-    assert "15/15" in summary
+    assert "20/20" in summary
     assert "writes_applied: `false`" in summary
     assert "A3 counterfactual delta proven: `true`" in summary
     assert "A3 receipt chain verified: `true`" in summary
@@ -122,7 +122,7 @@ def test_cli_json_reports_demo_pack(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["demo_version"] == "wd.v12.supervisor_demo_pack.v0"
-    assert payload["adversarial_case_count"] == 15
+    assert payload["adversarial_case_count"] == 20
     assert payload["receipt_verifier_ok"] is True
     assert payload["a3_counterfactual_delta_proven"] is True
     assert payload["a3_receipt_chain_verified"] is True

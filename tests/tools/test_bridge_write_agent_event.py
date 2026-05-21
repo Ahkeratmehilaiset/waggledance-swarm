@@ -205,6 +205,101 @@ def test_invalid_agent_id_fails_before_runtime_write(tmp_path: Path) -> None:
     assert not runtime_root.exists()
 
 
+@pytest.mark.parametrize(
+    ("args", "label"),
+    [
+        (
+            [
+                "-Agent",
+                "codex",
+                "-Type",
+                "message",
+                "-Message",
+                "contains PRIVATE_MARKER",
+            ],
+            "message",
+        ),
+        (
+            [
+                "-Agent",
+                "codex",
+                "-Type",
+                "message",
+                "-Message",
+                "contains private_marker",
+            ],
+            "message",
+        ),
+        (
+            [
+                "-Agent",
+                "codex",
+                "-Type",
+                "message",
+                "-Message",
+                "safe public text",
+                "-PayloadJson",
+                '{"note":"synthetic_secret_DO_NOT_LEAK"}',
+            ],
+            "payload",
+        ),
+        (
+            [
+                "-Agent",
+                "codex",
+                "-Type",
+                "message",
+                "-Message",
+                "safe public text",
+                "-PayloadJson",
+                '{"note":"synthetic_secret_\\u005fDO_NOT_LEAK"}',
+            ],
+            "payload",
+        ),
+        (
+            [
+                "-Agent",
+                "codex",
+                "-Type",
+                "message",
+                "-Message",
+                "safe public text",
+                "-To",
+                "claude_PRIVATE_MARKER",
+            ],
+            "to",
+        ),
+        (
+            [
+                "-Agent",
+                "codex",
+                "-Type",
+                "message",
+                "-Message",
+                "safe public text",
+                "-TaskId",
+                "task_PRIVATE_MARKER",
+            ],
+            "task_id",
+        ),
+    ],
+)
+def test_private_markers_fail_before_runtime_write(
+    tmp_path: Path,
+    args: list[str],
+    label: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(root, runtime_root, *args)
+
+    assert completed.returncode != 0
+    assert f"Bridge event {label} contains a private marker" in completed.stderr
+    assert "synthetic_secret_DO_NOT_LEAK" not in completed.stderr
+    assert not runtime_root.exists()
+
+
 def test_claim_and_release_accept_regex_agent_id(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"

@@ -12,6 +12,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "show_v12_proof.py"
+CORPUS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -22,6 +23,11 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
     )
+
+
+def _expected_case_count() -> int:
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    return len(corpus["cases"])
 
 
 def test_default_text_output_includes_expected_sections() -> None:
@@ -110,14 +116,15 @@ def test_text_output_does_not_overstate_medium_non_receipt_paths() -> None:
     assert "medium accepted-exception paths" not in result.stdout
 
 
-def test_adversarial_corpus_section_reports_twenty_cases() -> None:
+def test_adversarial_corpus_section_reports_fixture_case_count() -> None:
+    expected_case_count = _expected_case_count()
     result = _run("--json")
     payload = json.loads(result.stdout)
     adv = payload["adversarial_eval"]
 
     assert adv["available"] is True, adv
-    assert adv["case_count"] == 20
-    assert adv["pass_count"] == 20
+    assert adv["case_count"] == expected_case_count
+    assert adv["pass_count"] == expected_case_count
     assert adv["fail_count"] == 0
     assert adv["ok"] is True
 

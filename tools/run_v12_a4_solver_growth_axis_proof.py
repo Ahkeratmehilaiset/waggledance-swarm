@@ -62,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional UTC timestamp override for deterministic receipt output.",
     )
+    parser.add_argument(
+        "--recorded-base-main-sha",
+        default=None,
+        help=(
+            "Optional 40-character git SHA to record as base_main_sha for a "
+            "previously observed pilot row. The report marks the value as a "
+            "recorded_override so audit reruns do not drift with current HEAD."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -72,6 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = build_a4_solver_growth_axis_proof(
             out_dir=args.out_dir,
             now_utc=_parse_utc(args.now) if args.now else None,
+            recorded_base_main_sha=args.recorded_base_main_sha,
         )
     except ValueError as exc:
         print(f"A4 solver-growth axis proof FAILED: {exc}", file=sys.stderr)
@@ -93,10 +103,12 @@ def build_a4_solver_growth_axis_proof(
     *,
     out_dir: Path | None = None,
     now_utc: datetime | None = None,
+    recorded_base_main_sha: str | None = None,
 ) -> dict[str, Any]:
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     generated_at_utc = generated_at.isoformat(timespec="seconds").replace("+00:00", "Z")
 
+    phase18c_dir: Path | None = None
     if out_dir is not None:
         out_dir = out_dir.resolve()
         if out_dir.exists():
@@ -105,6 +117,19 @@ def build_a4_solver_growth_axis_proof(
         phase18c_dir = out_dir / "phase18c"
         receipt_out_dir = out_dir / "a4_solver_growth_receipts"
         phase18c = build_phase18c_proof(out_dir=phase18c_dir)
+    else:
+        with tempfile.TemporaryDirectory(prefix="wd_v12_a4_solver_growth_") as tmp:
+            phase18c = build_phase18c_proof(out_dir=Path(tmp) / "phase18c")
+        receipt_out_dir = None
+
+    base_main_sha_source = "git_head"
+    if recorded_base_main_sha is not None:
+        phase18c = dict(phase18c)
+        phase18c["base_main_sha"] = _validate_git_sha(recorded_base_main_sha)
+        base_main_sha_source = "recorded_override"
+    phase18c["base_main_sha_source"] = base_main_sha_source
+
+    if phase18c_dir is not None:
         _write_json(
             phase18c_dir / "mined_solver_runtime_dispatch_proof.json",
             phase18c,
@@ -113,10 +138,6 @@ def build_a4_solver_growth_axis_proof(
             phase18c_dir / "mined_solver_runtime_dispatch_proof.md",
             render_phase18c_markdown(proof=phase18c),
         )
-    else:
-        with tempfile.TemporaryDirectory(prefix="wd_v12_a4_solver_growth_") as tmp:
-            phase18c = build_phase18c_proof(out_dir=Path(tmp) / "phase18c")
-        receipt_out_dir = None
 
     payload = _receipt_payload(phase18c)
     evaluation_result = _evaluation_result(
@@ -139,6 +160,7 @@ def build_a4_solver_growth_axis_proof(
         world_snapshot_digest=sha256_digest({
             "phase": phase18c["phase"],
             "base_main_sha": phase18c["base_main_sha"],
+            "base_main_sha_source": phase18c["base_main_sha_source"],
             "fixture_size": phase18c["fixture_size"],
         }),
         solver_contract_digest=sha256_digest({
@@ -170,6 +192,7 @@ def build_a4_solver_growth_axis_proof(
         "source_prerelease": phase18c["source_prerelease"],
         "candidate_prerelease": phase18c["candidate_prerelease"],
         "base_main_sha": phase18c["base_main_sha"],
+        "base_main_sha_source": phase18c["base_main_sha_source"],
         "solver_growth_proven": bool(solver_growth_proven),
         "fixture": {
             "is_synthetic_fixture": phase18c["is_synthetic_fixture"],
@@ -288,6 +311,7 @@ def _receipt_payload(phase18c: dict[str, Any]) -> dict[str, Any]:
         "source_phase": phase18c["phase"],
         "source_benchmark_version": phase18c["benchmark_version"],
         "base_main_sha": phase18c["base_main_sha"],
+        "base_main_sha_source": phase18c["base_main_sha_source"],
         "is_synthetic_fixture": phase18c["is_synthetic_fixture"],
         "signals_total": phase18c["signals_total"],
         "candidates_total": phase18c["candidates_total"],
@@ -412,6 +436,15 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
         raise ValueError("--now requires a UTC timestamp with Z or +00:00 suffix")
     return parsed.astimezone(timezone.utc)
+
+
+def _validate_git_sha(value: str) -> str:
+    candidate = value.strip().lower()
+    if len(candidate) != 40 or any(ch not in "0123456789abcdef" for ch in candidate):
+        raise ValueError(
+            "--recorded-base-main-sha must be a 40-character hexadecimal git SHA"
+        )
+    return candidate
 
 
 def _write_json(path: Path, value: object) -> None:

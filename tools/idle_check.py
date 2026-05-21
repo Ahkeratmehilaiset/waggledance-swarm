@@ -260,6 +260,8 @@ def _latest(
 
 
 def _is_merge_event(event: dict[str, Any]) -> bool:
+    if _is_retroactive_rco_closure(event):
+        return False
     status = str(event.get("status", "")).lower()
     if "merged" in status or "merge_commit" in status or "mergecommit" in status:
         return True
@@ -267,6 +269,19 @@ def _is_merge_event(event: dict[str, Any]) -> bool:
         return False
     message = str(event.get("message", "")).lower()
     return " merged " in f" {message} " or "merge commit" in message
+
+
+def _is_retroactive_rco_closure(event: dict[str, Any]) -> bool:
+    if str(event.get("type", "")).lower() != "done":
+        return False
+    text = (
+        f"{event.get('status', '')} "
+        f"{event.get('task_id', '')} "
+        f"{event.get('message', '')}"
+    ).lower()
+    return "stale rco" in text and (
+        "retroactive close" in text or "bookkeeping closure" in text
+    )
 
 
 def _is_substantive_agent_message(event: dict[str, Any]) -> bool:

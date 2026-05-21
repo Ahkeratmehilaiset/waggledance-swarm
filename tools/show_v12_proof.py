@@ -31,8 +31,10 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any, Sequence
 
 
@@ -88,8 +90,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
     adoption = _run_tool_json(["--json"], ADOPTION_REPORT)
     eval_report = _run_tool_json(["--json"], ADVERSARIAL_EVAL)
-    a3_report = _run_tool_json(["--json"], A3_COUNTERFACTUAL_PROOF)
-    a4_report = _run_tool_json(["--json"], A4_SOLVER_GROWTH_PROOF)
+    # A3 and A4 proof tools both build a verified MAGMA receipt bundle when
+    # given --out-dir. Without it they emit evaluation digests but report
+    # receipt_chain_verified=False. We run them with a per-invocation
+    # tempdir so the verifier output is captured and the receipt-chain claim
+    # in the summary actually reflects an end-to-end-verified run. The
+    # tempdir is cleaned up immediately after; auditors who want the bundle
+    # on disk should run the proof tools directly with their own --out-dir.
+    a3_report = _run_proof_tool_with_receipt(A3_COUNTERFACTUAL_PROOF)
+    a4_report = _run_proof_tool_with_receipt(A4_SOLVER_GROWTH_PROOF)
     governance = _run_tool_json(["--json"], GOVERNANCE_REPORT, optional=True)
     pilot = _read_pilot_summary()
     velocity = _read_substrate_velocity(repo_root=repo_root, since_days=since_days)
@@ -419,6 +428,21 @@ def _summarize_governance_throughput(
         "window_label": report.get("window_label") or "unknown",
         "status_counts": status_counts,
     }
+
+
+def _run_proof_tool_with_receipt(tool: Path) -> dict[str, Any]:
+    """Run an axis-proof tool with --out-dir <tempdir> so the receipt bundle
+    is built and verifier-checked, then return the parsed JSON report. The
+    tempdir is removed after the JSON is parsed; the receipt-chain-verified
+    flag in the returned dict reflects the verifier's pass/fail.
+    """
+    tmp_root = Path(tempfile.mkdtemp(prefix="v12-proof-receipt-"))
+    out_dir = tmp_root / "proof-out"
+    try:
+        result = _run_tool_json(["--json", "--out-dir", str(out_dir)], tool)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+    return result
 
 
 def _run_tool_json(args: list[str], tool: Path, optional: bool = False) -> dict[str, Any]:

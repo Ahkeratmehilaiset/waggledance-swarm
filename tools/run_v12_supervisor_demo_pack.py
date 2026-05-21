@@ -30,6 +30,7 @@ from tools.run_v12_a4_solver_growth_axis_proof import (  # noqa: E402
 from tools.run_v12_rival_local_check_matrix import (  # noqa: E402
     build_rival_local_check_matrix,
     render_markdown as render_rival_matrix_markdown,
+    write_evidence_manifest_templates,
 )
 from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 
@@ -110,7 +111,15 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
         now_utc=now_utc,
     )
     a4_markdown = render_a4_axis_markdown(a4_proof)
-    rival_matrix = build_rival_local_check_matrix(now_utc=now_utc)
+    rival_template_dir = out_dir / "rival_evidence_templates"
+    rival_template_init = write_evidence_manifest_templates(
+        evidence_dir=rival_template_dir,
+    )
+    rival_matrix = build_rival_local_check_matrix(
+        evidence_dir=rival_template_dir,
+        now_utc=now_utc,
+    )
+    rival_matrix["template_init"] = rival_template_init
     rival_matrix_markdown = render_rival_matrix_markdown(rival_matrix)
     summary = _summary_markdown(
         adversarial_report=adversarial_report,
@@ -119,6 +128,7 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
         a3_proof=a3_proof,
         a4_proof=a4_proof,
         rival_matrix=rival_matrix,
+        rival_template_init=rival_template_init,
     )
 
     _write_json(out_dir / "adversarial_eval_report.json", adversarial_report)
@@ -126,6 +136,7 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
     _write_json(out_dir / "receipt_adoption_report.json", adoption_report)
     _write_json(out_dir / "a3_counterfactual_axis_proof.json", a3_proof)
     _write_json(out_dir / "a4_solver_growth_axis_proof.json", a4_proof)
+    _write_json(out_dir / "rival_evidence_template_init.json", rival_template_init)
     _write_json(out_dir / "rival_local_check_matrix.json", rival_matrix)
     _write_text(out_dir / "receipt_adoption_report.md", adoption_markdown)
     _write_text(out_dir / "a3_counterfactual_axis_proof.md", a3_markdown)
@@ -154,6 +165,8 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
         "rival_local_check_pass_count": rival_matrix["passed_count"],
         "rival_local_check_required_count": rival_matrix["required_count"],
         "competitor_consensus_grade": rival_matrix["consensus_grade"],
+        "rival_evidence_template_count": rival_template_init["created_count"],
+        "rival_evidence_template_dir": str(rival_template_dir),
     }
 
 
@@ -165,6 +178,7 @@ def _summary_markdown(
     a3_proof: dict[str, Any],
     a4_proof: dict[str, Any],
     rival_matrix: dict[str, Any],
+    rival_template_init: dict[str, Any],
 ) -> str:
     action_required = adoption_report.get("action_required_gap_count", "not_available")
     accepted_exceptions = adoption_report.get("accepted_exception_count", "not_available")
@@ -189,6 +203,7 @@ def _summary_markdown(
             f"- A4 receipt chain verified: `{str(a4_proof['receipt_chain_verified']).lower()}`",
             f"- rival local checks passed: `{rival_matrix['passed_count']}/{rival_matrix['required_count']}`",
             f"- competitor consensus grade: `{str(rival_matrix['consensus_grade']).lower()}`",
+            f"- rival evidence templates: `{rival_template_init['created_count']}` safe non-passing manifests",
             "",
             "## What This Proves",
             "",
@@ -211,6 +226,8 @@ def _summary_markdown(
             "- `a4_solver_growth_axis_proof.json`",
             "- `a4_solver_growth_axis_proof.md`",
             "- `a4_solver_growth_axis/a4_solver_growth_receipts/manifest.json`",
+            "- `rival_evidence_template_init.json`",
+            "- `rival_evidence_templates/*.json`",
             "- `rival_local_check_matrix.json`",
             "- `rival_local_check_matrix.md`",
         ]

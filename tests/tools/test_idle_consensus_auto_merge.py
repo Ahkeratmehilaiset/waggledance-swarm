@@ -13,6 +13,7 @@ from tools.idle_consensus_auto_merge import (
 
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
+MERGE_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 
 
 def _status(**overrides) -> dict:
@@ -454,6 +455,73 @@ def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None
     report = excinfo.value.report
     assert report["decision"] == "auto_merge_failed"
     assert "PRIVATE_MARKER" not in " ".join(report["errors"])
+    assert report["merge_recovery"]["decision"] == "not_checked"
+
+
+def test_runner_failure_recovers_when_pr_view_confirms_merge(
+    tmp_path: Path,
+) -> None:
+    verifier_calls: list[tuple[int, str, str]] = []
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stdout="", stderr="Gateway Timeout")
+
+    def verifier(pr_number: int, expected_head: str, repo: str) -> dict:
+        verifier_calls.append((pr_number, expected_head, repo))
+        return {
+            "state": "MERGED",
+            "headRefOid": expected_head,
+            "mergeCommit": {"oid": MERGE_SHA},
+        }
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path),
+        bridge_task_id="idle-consensus-001",
+        repo="Ahkeratmehilaiset/waggledance-swarm",
+        apply=True,
+        runner=runner,
+        merge_verifier=verifier,
+    )
+    assert verifier_calls == [(477, HEAD, "Ahkeratmehilaiset/waggledance-swarm")]
+    assert report["decision"] == "auto_merged"
+    assert report["merge_recovery"]["decision"] == (
+        "merged_after_merge_command_failure"
+    )
+    assert report["auto_merge_event_payload"]["merge_commit_sha"] == MERGE_SHA
+
+
+def test_runner_failure_still_fails_when_merge_verifier_disagrees(
+    tmp_path: Path,
+) -> None:
+    def runner(command: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stdout="", stderr="Gateway Timeout")
+
+    def verifier(pr_number: int, expected_head: str, repo: str) -> dict:
+        return {
+            "state": "OPEN",
+            "headRefOid": expected_head,
+            "mergeCommit": None,
+        }
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        evaluate_auto_merge_gate(
+            pr_status=_status(),
+            expected_head=HEAD,
+            consensus_proposal_id="idle-consensus-001",
+            receipt_bundle_path="docs/receipts/manifest.json",
+            events_path=_events_path(tmp_path),
+            bridge_task_id="idle-consensus-001",
+            apply=True,
+            runner=runner,
+            merge_verifier=verifier,
+        )
+    report = excinfo.value.report
+    assert report["decision"] == "auto_merge_failed"
+    assert report["merge_recovery"]["decision"] == "pr_not_merged"
 
 
 def test_artifact_hook_failure_blocks_merge_without_runner(tmp_path: Path) -> None:

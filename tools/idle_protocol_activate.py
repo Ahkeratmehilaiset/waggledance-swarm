@@ -418,6 +418,66 @@ def _sequence_errors(
             "round_number: round 4+ continuation requires a prior round-3 "
             "idle_adversarial_review in the same instance"
         )
+
+    # 2026-05-18 bridge-consensus substrate-invariant #2: late agent joins
+    # cannot inject round 6+ unless the instance they reference has a
+    # round-1 root AND every payload in that instance is validator-passing.
+    # Without this, an agent could inject a round-6 idle_consensus_reached
+    # payload referencing an instance whose prior rounds were never emitted
+    # or were schema-invalid, bypassing peer review and adversarial scrutiny.
+    if round_number >= 6:
+        errors.extend(_late_round_predecessor_errors(
+            round_number, instance_root, instance_payloads
+        ))
+    return errors
+
+
+def _late_round_predecessor_errors(
+    round_number: int,
+    instance_root: str | None,
+    instance_payloads: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Return error strings if the late-round event lacks a complete instance.
+
+    Honors the 2026-05-18 bridge-consensus substrate-invariant #2: a round-6
+    or later event must reference an instance whose payloads are
+    bridge-resident (i.e., the responds_to chain reaches round 1) AND
+    validator-passing (each present payload conforms to idle_protocol.v1).
+    """
+    errors: list[str] = []
+    if instance_root is None:
+        errors.append(
+            f"round_number: late round {round_number} requires a "
+            "round-1 idle_proposal root that is bridge-resident in "
+            "the same instance"
+        )
+        return errors
+
+    has_round_one = any(
+        int(prior.get("round_number", 0)) == 1
+        and str(prior.get("event_type", "")) == "idle_proposal"
+        for prior in instance_payloads
+    )
+    if not has_round_one:
+        errors.append(
+            f"round_number: late round {round_number} requires a "
+            "round-1 idle_proposal to be bridge-resident in the same instance"
+        )
+
+    invalid_rounds: list[int] = []
+    for prior in instance_payloads:
+        ok, _validation_errors = validate_idle_proposal(dict(prior))
+        if not ok:
+            try:
+                invalid_rounds.append(int(prior.get("round_number", 0)))
+            except (TypeError, ValueError):
+                continue
+    if invalid_rounds:
+        errors.append(
+            f"round_number: late round {round_number} requires every prior "
+            f"round in the same instance to be validator-passing; rounds "
+            f"{sorted(set(invalid_rounds))} fail the idle_protocol.v1 schema"
+        )
     return errors
 
 

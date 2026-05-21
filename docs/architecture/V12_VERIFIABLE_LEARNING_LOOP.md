@@ -13,9 +13,18 @@ Intercept, and SidClaw all do action governance; if WD positioned
 itself only as a "write gate" it would be commoditized.
 
 The pilot named six contested or ceded axes (A1, A2, A5, A6, A7, A8,
-A9) where rivals can match WD or are ahead, and two must-win axes (A3
-counterfactual delta, A4 solver-growth lifecycle) where the strategy
-depends on WD being measurably ahead.
+A9) where rivals can match WD or are ahead, and two must-win evidence
+axes (A3 counterfactual delta, A4 solver-growth lifecycle) where the
+strategy depends on WD producing locally measurable proof-tool output
+that no rival publicly exposes inside the same freshness window.
+
+This is an **evidence claim, not a superiority claim**. The
+competitor pilot remains `consensus_grade=false` until at least one
+rival-side local check has been run; this doc inherits that honesty
+boundary. WD's edge on A3 / A4 is "measurably evidenced locally and
+not publicly claimed by any of the four rivals in the 2026-05-20
+snapshot window" — not "proven superior across all measurable
+dimensions".
 
 This doc captures the five-element loop that makes those must-win
 axes mean something. Each element is documented with its WD
@@ -104,14 +113,18 @@ PR #508) is evaluated through this contract and produces 15/15
 demo-policy pass for the report-level eval (PR #507's receipt-bound
 adversarial-eval).
 
-**Rival absence (2026-05-20 verbatim snapshot).** **No rival
-publicly exposes EvaluationResult v0 as a primitive.** JamJet,
-Preloop, and PolicyLayer Intercept have policy decisions but no
-typed verdict envelope binding decision + verifier path + reason
-codes + uncertainty + target digest in one canonical artifact. AGT
-exposes Decision BOMs reconstructed from logs (post-hoc) rather than
-a v0 typed contract carried with each decision. **This is the first
-of WD's unique-loop elements.**
+**Rival absence (2026-05-20 verbatim snapshot, expires 2026-06-03).**
+**No rival in the four-rival snapshot window publicly exposed
+EvaluationResult v0 as a primitive at retrieval time.** JamJet,
+Preloop, and PolicyLayer Intercept (per snapshot) have policy
+decisions but no typed verdict envelope binding decision + verifier
+path + reason codes + uncertainty + target digest in one canonical
+artifact. AGT exposes Decision BOMs reconstructed from logs
+(post-hoc) rather than a v0 typed contract carried with each
+decision. This is one of WD's locally-evidenced unique-loop
+elements **within the snapshot window**; the claim is brittle to a
+single rival publishing a typed-evaluation contract during the
+freshness window.
 
 **Composition.** Every counterfactual replay produces an
 EvaluationResult that names what it tested and what verdict it
@@ -136,14 +149,16 @@ Status as of 2026-05-21: **MEASURED_LOCAL_PARTIAL** per V12 demo
 tool output. The pdam_counterfactual_demo emits a verified
 receipt bundle that can be re-verified end-to-end.
 
-**Rival absence (2026-05-20 verbatim snapshot).** **No rival
-publicly claims counterfactual delta.** AGT mentions "replay
-debugging" under Agent SRE — same-state-same-action replay for
-post-hoc inspection, not delta. JamJet replays the event log "and
-resumes at the failed node" — crash recovery, not counterfactual.
-Asqav and Preloop do not mention replay at all in the snapshot
-window. **This is the second of WD's unique-loop elements and the
-A3 must-win axis.**
+**Rival absence (2026-05-20 verbatim snapshot, expires 2026-06-03).**
+**No rival in the four-rival snapshot window publicly claimed
+counterfactual delta at retrieval time.** AGT (per snapshot) mentions
+"replay debugging" under Agent SRE — same-state-same-action replay
+for post-hoc inspection, not delta. JamJet (per snapshot) replays the
+event log "and resumes at the failed node" — crash recovery, not
+counterfactual. Asqav and Preloop (per snapshot) do not mention
+replay at all in the window. This is the A3 must-win evidence axis;
+the claim is brittle to a single rival publishing a counterfactual-
+delta primitive during the freshness window.
 
 **Composition.** Counterfactual replay consumes the world snapshot
 implied by an existing MAGMA receipt (element 1), produces a new
@@ -168,13 +183,15 @@ activation_revoked, quarantined transitions); auto-promotion engine
 reports **MEASURED_LOCAL_SYNTHETIC**: 6 registered solvers / 18
 dispatch successes / 6 families covered.
 
-**Rival absence (2026-05-20 verbatim snapshot).** **No rival
-publicly claims a solver-growth lifecycle.** AGT has "Agent
-Lifecycle" (provisioning, rotation, orphan detection,
+**Rival absence (2026-05-20 verbatim snapshot, expires 2026-06-03).**
+**No rival in the four-rival snapshot window publicly claimed a
+solver-growth lifecycle at retrieval time.** AGT (per snapshot) has
+"Agent Lifecycle" (provisioning, rotation, orphan detection,
 decommissioning) — about the AGENT, not about candidate solvers
-inside the agent. JamJet, Asqav, Preloop do not expose a
-solver-promotion concept at all. **This is the third of WD's
-unique-loop elements and the A4 must-win axis.**
+inside the agent. JamJet, Asqav, Preloop (per snapshot) do not
+expose a solver-promotion concept at all in the window. This is the
+A4 must-win evidence axis; the claim is brittle to a single rival
+publishing a solver-promotion lifecycle during the freshness window.
 
 **Composition.** Solver-growth lifecycle reads
 EvaluationResults (element 2) from counterfactual replays
@@ -225,7 +242,11 @@ gate to cross shadow → canary → live.
 A solver candidate's promotion is gated by counterfactual
 evidence whose verdict is recorded as an EvaluationResult bound
 to a tamper-evident MAGMA receipt that names the charter version
-the operator owns. **No rival composes all five.**
+the operator owns. **No rival in the 2026-05-20 four-rival
+snapshot window publicly composed all five at retrieval time** —
+a claim explicitly scoped to that freshness window and brittle to
+any rival publishing a counterfactual + solver-growth + typed-
+evaluation combination during the window.
 
 ## What this doc is NOT
 

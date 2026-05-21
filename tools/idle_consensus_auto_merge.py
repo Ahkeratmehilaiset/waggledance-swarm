@@ -25,6 +25,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
+from tools.check_bridge_changes_requested import (  # noqa: E402
+    check_bridge_clear_to_merge,
+)
 from tools.idle_consensus_artifact import (  # noqa: E402
     DEFAULT_OUT_DIR as DEFAULT_ARTIFACT_OUT_DIR,
     write_idle_consensus_artifact,
@@ -73,6 +76,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="UTC timestamp for apply-time artifact writing. Defaults to now.",
     )
     parser.add_argument("--repo", default="")
+    parser.add_argument(
+        "--from-agent",
+        default="",
+        help=(
+            "Agent attempting the merge. When omitted, every bridge "
+            "decision for the task is treated as a peer signal."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-task-id",
+        default="",
+        help=(
+            "Bridge task_id whose peer review state must be clear before "
+            "autonomous --apply may merge."
+        ),
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
@@ -91,6 +110,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             charter_path=args.charter,
             utc_date=args.utc_date,
             repo=args.repo,
+            from_agent=args.from_agent,
+            bridge_task_id=args.bridge_task_id,
             apply=args.apply,
             artifact_writer=_cli_artifact_writer(args),
         )
@@ -131,6 +152,8 @@ def evaluate_auto_merge_gate(
     charter_path: Path = DEFAULT_CHARTER_PATH,
     utc_date: str | None = None,
     repo: str = "",
+    from_agent: str = "",
+    bridge_task_id: str = "",
     apply: bool = False,
     runner: Runner | None = None,
     artifact_writer: ArtifactWriter | None = None,
@@ -145,6 +168,8 @@ def evaluate_auto_merge_gate(
             "events_path": str(events_path) if events_path is not None else "",
             "charter_path": str(charter_path),
             "repo": repo,
+            "from_agent": from_agent,
+            "bridge_task_id": bridge_task_id,
         }
     )
     _validate_sha(expected_head, "expected_head")
@@ -152,6 +177,13 @@ def evaluate_auto_merge_gate(
         raise _invalid("invalid_repo", "repo must be OWNER/NAME")
 
     events = _read_bridge_events(events_path) if events_path is not None else []
+    bridge_gate_task_id = bridge_task_id.strip() or consensus_proposal_id
+    bridge_peer_gate = _bridge_peer_gate(
+        events=events,
+        task_id=bridge_gate_task_id,
+        from_agent=from_agent,
+        checked=events_path is not None,
+    )
     charter = load_charter(charter_path)
     rate_date = utc_date or _today_utc()
     quota_used = _count_daily_auto_merges(events, rate_date)
@@ -191,6 +223,20 @@ def evaluate_auto_merge_gate(
     if failing_checks:
         names = ", ".join(str(check.get("name", "")) for check in failing_checks)
         blockers.append(f"status checks not green: {names}")
+    if apply and events_path is None:
+        blockers.append("bridge events path is required before merge")
+    if apply and not bridge_task_id.strip():
+        blockers.append("bridge task id is required before merge")
+    if not bool(bridge_peer_gate.get("clear_to_merge", False)):
+        latest_block = bridge_peer_gate.get("latest_blocking_event")
+        if isinstance(latest_block, Mapping):
+            blockers.append(
+                "unresolved peer bridge block: "
+                f"agent={latest_block.get('agent')} "
+                f"status={latest_block.get('status')}"
+            )
+        else:
+            blockers.append("unresolved peer bridge block")
     if not receipt_bundle_path and not (apply and artifact_hook_configured):
         blockers.append("receipt_bundle_path is required before merge")
     if (
@@ -215,6 +261,7 @@ def evaluate_auto_merge_gate(
         rate_gate=rate_gate,
         receipt_verified=receipt_verified,
         artifact_hook_configured=artifact_hook_configured,
+        bridge_peer_gate=bridge_peer_gate,
     )
     if blockers:
         return {
@@ -291,6 +338,7 @@ def _base_report(
     rate_gate: Mapping[str, Any],
     receipt_verified: bool,
     artifact_hook_configured: bool,
+    bridge_peer_gate: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         "decision": "auto_merge_gate",
@@ -308,6 +356,7 @@ def _base_report(
             "verified": receipt_verified,
             "artifact_hook_configured": artifact_hook_configured,
         },
+        "bridge_peer_gate": dict(bridge_peer_gate),
         "rate_gate": dict(rate_gate),
         "gh_command": list(command),
     }
@@ -340,6 +389,30 @@ def _checks(pr_status: Mapping[str, Any]) -> list[Mapping[str, Any]]:
             raise _invalid("invalid_pr_status", "checks entries must be objects")
         normalized.append(check)
     return normalized
+
+
+def _bridge_peer_gate(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    from_agent: str,
+    checked: bool,
+) -> dict[str, Any]:
+    if not checked:
+        return {
+            "ok": True,
+            "clear_to_merge": True,
+            "decision": "not_checked",
+            "task_id": task_id,
+            "merging_agent": from_agent,
+            "latest_blocking_event": None,
+            "latest_approval_event": None,
+        }
+    return check_bridge_clear_to_merge(
+        events=events,
+        task_id=task_id,
+        merging_agent=from_agent,
+    )
 
 
 def _check_passed(check: Mapping[str, Any]) -> bool:

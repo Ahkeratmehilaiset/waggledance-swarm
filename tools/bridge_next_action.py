@@ -159,22 +159,47 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
-    """Read bridge JSONL events, ignoring malformed non-object lines."""
+    """Read bridge JSONL events, failing closed on malformed selected lines."""
     if not path.exists():
         return []
     lines = path.read_text(encoding="utf-8").splitlines()
+    start_line = 1
     if tail > 0:
+        start_line = max(1, len(lines) - tail + 1)
         lines = lines[-tail:]
     events: list[dict[str, Any]] = []
-    for raw in lines:
+    for line_no, raw in enumerate(lines, start=start_line):
         if not raw.strip():
             continue
         try:
             event = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            events.append(event)
+        except json.JSONDecodeError as exc:
+            raise BridgeNextActionError(
+                {
+                    "ok": False,
+                    "decision": "bridge_next_action_error",
+                    "errors": [
+                        (
+                            f"invalid JSON in bridge events at line "
+                            f"{line_no}: {exc.msg}"
+                        )
+                    ],
+                }
+            ) from exc
+        if not isinstance(event, dict):
+            raise BridgeNextActionError(
+                {
+                    "ok": False,
+                    "decision": "bridge_next_action_error",
+                    "errors": [
+                        (
+                            f"invalid bridge event at line {line_no}: "
+                            "event must be a JSON object"
+                        )
+                    ],
+                }
+            )
+        events.append(event)
     return events
 
 

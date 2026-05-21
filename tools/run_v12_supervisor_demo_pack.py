@@ -39,6 +39,10 @@ from tools.verify_magma_receipt import verify_manifest  # noqa: E402
 DEMO_VERSION = "wd.v12.supervisor_demo_pack.v0"
 ARTIFACT_MANIFEST_VERSION = "wd.v12.supervisor_demo_pack.artifact_manifest.v0"
 ARTIFACT_MANIFEST_NAME = "demo_pack_artifact_manifest.json"
+ARTIFACT_MANIFEST_VERIFIER_COMMAND_TEMPLATE = (
+    "python tools/verify_v12_demo_pack_artifact_manifest.py --manifest "
+    f"<demo-pack-dir>/{ARTIFACT_MANIFEST_NAME}"
+)
 DEFAULT_NOW = None
 
 
@@ -160,6 +164,9 @@ def build_demo_pack(*, out_dir: Path, now_utc: datetime | None = None) -> dict[s
         "summary": str(out_dir / "summary.md"),
         "artifact_manifest": str(out_dir / ARTIFACT_MANIFEST_NAME),
         "artifact_manifest_file_count": artifact_manifest["file_count"],
+        "artifact_manifest_verifier_command": _artifact_manifest_verifier_command(
+            out_dir / ARTIFACT_MANIFEST_NAME
+        ),
         "adversarial_case_count": adversarial_report["case_count"],
         "adversarial_pass_count": adversarial_report["pass_count"],
         "writes_applied": adversarial_report["writes_applied"],
@@ -219,10 +226,11 @@ def _summary_markdown(
             f"- rival evidence templates: `{rival_template_init['created_count']}` safe non-passing manifests",
             f"- artifact manifest: `{ARTIFACT_MANIFEST_NAME}`",
             f"- artifact manifest file count: `{artifact_file_count}`",
+            f"- artifact manifest verifier: `{ARTIFACT_MANIFEST_VERIFIER_COMMAND_TEMPLATE}`",
             "",
             "## What This Proves",
             "",
-            "WD can run a local adversarial corpus, bind the result to EvaluationResult digests, emit a MAGMA receipt bundle, verify the bundle offline without applying writes, and write a local SHA256 manifest for the generated demo artifacts.",
+            "WD can run a local adversarial corpus, bind the result to EvaluationResult digests, emit a MAGMA receipt bundle, verify the bundle offline without applying writes, write a local SHA256 manifest for the generated demo artifacts, and verify that artifact manifest offline.",
             "",
             "## What This Does Not Prove",
             "",
@@ -248,6 +256,19 @@ def _summary_markdown(
             f"- `{ARTIFACT_MANIFEST_NAME}`",
         ]
     ) + "\n"
+
+
+def _artifact_manifest_verifier_command(manifest_path: Path) -> str:
+    return (
+        "python tools/verify_v12_demo_pack_artifact_manifest.py --manifest "
+        f"{_quote_command_arg(str(manifest_path))}"
+    )
+
+
+def _quote_command_arg(value: str) -> str:
+    if not value or any(char.isspace() for char in value):
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
 
 
 def _build_artifact_manifest(

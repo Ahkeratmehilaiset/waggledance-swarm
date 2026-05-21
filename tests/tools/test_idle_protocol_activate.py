@@ -977,3 +977,119 @@ def test_cli_rejects_dry_run_and_apply_together(tmp_path: Path) -> None:
 
     assert completed.returncode == 2
     assert not (bridge_root / "shared" / "events.jsonl").exists()
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-18 substrate-invariant #2: late agent join (round >= 6) requires
+# rounds 1..5 to be bridge-resident AND validator-passing in same instance.
+# ---------------------------------------------------------------------------
+
+
+def _round_six_consensus(target_proposal_id: str = "idle-prop-20260517-002") -> dict:
+    event = _proposal("idle-prop-20260517-006")
+    event.update(
+        {
+            "event_type": "idle_consensus_reached",
+            "round_number": 6,
+            "proposes_substrate_change": False,
+            "consensus_target_proposal_id": target_proposal_id,
+            "operator_gate_required": True,
+            "auto_execute": False,
+        }
+    )
+    del event["proposal"]
+    return event
+
+
+def _full_chain_through_round_five() -> list[dict]:
+    """Five payloads forming a complete valid 1->5 idle-protocol chain."""
+    proposal = _proposal("idle-prop-20260517-001")
+    counter = _counter()
+    review = _adversarial()
+    consensus_a = _consensus("idle-prop-20260517-005a")
+    return [proposal, counter, review, consensus_a]
+
+
+def test_round_six_refuses_when_round_one_root_missing(tmp_path: Path) -> None:
+    # consensus_target_proposal_id points to a proposal that itself was
+    # never bridge-resident. The instance walker cannot reach a round-1 root.
+    events = _base_events() + [
+        _event(
+            ts_utc="2026-05-17T11:00:00Z",
+            status="idle_consensus_reached",
+            payload=_consensus("idle-prop-20260517-005a"),
+        )
+    ]
+    late_payload = _round_six_consensus(target_proposal_id="idle-prop-orphan-999")
+
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(tmp_path, late_payload, events=events)
+
+    assert excinfo.value.report["decision"] == "invalid_sequence"
+    error_text = "\n".join(excinfo.value.report["errors"])
+    assert "late round 6" in error_text
+
+
+def test_round_six_refuses_when_a_prior_round_is_validator_invalid(
+    tmp_path: Path,
+) -> None:
+    # Round 2 in the instance is schema-invalid (missing alternative_proposal)
+    proposal = _proposal("idle-prop-20260517-001")
+    bad_counter = _counter()
+    del bad_counter["alternative_proposal"]
+    review = _adversarial()
+    consensus_a = _consensus("idle-prop-20260517-005a")
+    chain = [proposal, bad_counter, review, consensus_a]
+    events = _base_events() + [
+        _event(
+            ts_utc="2026-05-17T11:00:00Z",
+            status="idle_proposal",
+            payload=payload,
+        )
+        for payload in chain
+    ]
+    late_payload = _round_six_consensus()
+
+    with pytest.raises(ActivationError) as excinfo:
+        _activate(tmp_path, late_payload, events=events)
+
+    assert excinfo.value.report["decision"] == "invalid_sequence"
+    error_text = "\n".join(excinfo.value.report["errors"])
+    assert "late round 6" in error_text
+    assert "validator-passing" in error_text
+    # Round 2 was the bad one
+    assert "2" in error_text
+
+
+def test_round_six_invariant_passes_when_chain_traces_to_round_one(
+    tmp_path: Path,
+) -> None:
+    """A late-round event whose instance has a valid round-1 root and only
+    validator-passing payloads passes the substrate-invariant-2 check."""
+    proposal = _proposal("idle-prop-20260517-001")
+    counter = _counter()
+    review = _adversarial()
+    consensus_a = _consensus("idle-prop-20260517-005a")
+    chain = [proposal, counter, review, consensus_a]
+    events = _base_events() + [
+        _event(
+            ts_utc="2026-05-17T11:00:00Z",
+            status="idle_proposal",
+            payload=payload,
+        )
+        for payload in chain
+    ]
+    late_payload = _round_six_consensus()
+
+    # Activation may still fail on idle gate / quota / rate limit, but it
+    # MUST NOT fail with invalid_sequence carrying the late-round message.
+    try:
+        report = _activate(tmp_path, late_payload, events=events)
+        assert report["decision"] in {"ready", "active", "rate_limited"}
+    except ActivationError as exc:
+        if exc.report.get("decision") == "invalid_sequence":
+            error_text = "\n".join(exc.report.get("errors") or [])
+            assert "late round" not in error_text, (
+                "round 6 should pass invariant when chain traces to round 1, "
+                f"errors: {error_text}"
+            )

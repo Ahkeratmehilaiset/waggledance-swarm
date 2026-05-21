@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -24,10 +25,13 @@ DEFAULT_PILOT_JSON = (
     ROOT / "docs" / "benchmarks" / "2026_05_20_competitor_axis_pilot.json"
 )
 REPORT_VERSION = "wd.v12.rival_local_check_matrix.v0"
+EVIDENCE_MANIFEST_CONTRACT_VERSION = "wd.v12.rival_local_evidence_manifest.v1"
 REQUIRED_EVIDENCE_FIELDS = (
+    "evidence_manifest_contract_version",
     "rival",
     "pinned_revision",
     "local_artifact_path",
+    "local_artifact_sha256",
     "smoke_command",
     "smoke_result",
     "cloud_dependency",
@@ -150,6 +154,7 @@ def build_rival_local_check_matrix(
             "does_not_execute_untrusted_rival_commands": True,
             "public_doc_claims_remain_public_doc_claims_until_local_evidence_passes": True,
         },
+        "evidence_manifest_contract_version": EVIDENCE_MANIFEST_CONTRACT_VERSION,
         "required_evidence_fields": list(REQUIRED_EVIDENCE_FIELDS),
         "checks": rows,
     }
@@ -160,6 +165,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "# V12 Rival Local Check Matrix",
         "",
         f"- report_version: `{report['report_version']}`",
+        f"- evidence_manifest_contract_version: `{report['evidence_manifest_contract_version']}`",
         f"- generated_at_utc: `{report['generated_at_utc']}`",
         f"- pilot_status: `{report.get('pilot_status')}`",
         f"- consensus_grade: `{str(report['consensus_grade']).lower()}`",
@@ -195,7 +201,9 @@ def render_markdown(report: dict[str, Any]) -> str:
             "",
             "A row only passes when `cloud_dependency=false`, `smoke_result=passed`,",
             "`evidence_type` is `local_inspection` or `local_smoke`, and all required",
-            "fields are present.",
+            "fields are present. The `local_artifact_path` must name an existing",
+            "file under the evidence directory and `local_artifact_sha256` must",
+            "match that file.",
             "",
         ]
     )
@@ -258,6 +266,12 @@ def _build_check_row(
             "local_status": "invalid_manifest",
             "blocker": "manifest rival does not match pilot row",
         }
+    if manifest.get("evidence_manifest_contract_version") != EVIDENCE_MANIFEST_CONTRACT_VERSION:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": "evidence_manifest_contract_version does not match v1",
+        }
     if manifest.get("cloud_dependency") is not False:
         return {
             **base,
@@ -276,14 +290,73 @@ def _build_check_row(
             "local_status": "not_passed",
             "blocker": "smoke_result is not passed",
         }
+    artifact_result = _validate_local_artifact(
+        evidence_root=evidence_root,
+        local_artifact_path=str(manifest.get("local_artifact_path")),
+        expected_digest=str(manifest.get("local_artifact_sha256")),
+    )
+    if artifact_result["blocker"]:
+        return {
+            **base,
+            "local_status": "invalid_artifact",
+            "blocker": artifact_result["blocker"],
+        }
     return {
         **base,
         "local_status": "passed",
         "blocker": None,
         "pinned_revision": manifest.get("pinned_revision"),
-        "local_artifact_path": manifest.get("local_artifact_path"),
+        "local_artifact_path": artifact_result["path"],
+        "local_artifact_sha256": artifact_result["sha256"],
         "evidence_type": manifest.get("evidence_type"),
         "consensus_grade_contribution": True,
+    }
+
+
+def _validate_local_artifact(
+    *,
+    evidence_root: Path | None,
+    local_artifact_path: str,
+    expected_digest: str,
+) -> dict[str, str | None]:
+    if evidence_root is None:
+        return {"blocker": "no evidence_dir provided", "path": None, "sha256": None}
+
+    rel = Path(local_artifact_path)
+    if rel.is_absolute():
+        return {
+            "blocker": "local_artifact_path must be relative to evidence_dir",
+            "path": None,
+            "sha256": None,
+        }
+
+    artifact_path = (evidence_root / rel).resolve()
+    try:
+        artifact_path.relative_to(evidence_root)
+    except ValueError:
+        return {
+            "blocker": "local_artifact_path escapes evidence_dir",
+            "path": None,
+            "sha256": None,
+        }
+    if not artifact_path.exists() or not artifact_path.is_file():
+        return {
+            "blocker": "local_artifact_path does not name an existing file",
+            "path": str(artifact_path),
+            "sha256": None,
+        }
+
+    actual_digest = "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    if expected_digest != actual_digest:
+        return {
+            "blocker": "local_artifact_sha256 does not match artifact",
+            "path": str(artifact_path),
+            "sha256": actual_digest,
+        }
+    return {
+        "blocker": None,
+        "path": str(artifact_path),
+        "sha256": actual_digest,
     }
 
 

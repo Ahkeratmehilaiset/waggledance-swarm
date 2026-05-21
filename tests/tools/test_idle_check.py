@@ -204,6 +204,60 @@ def test_deliberation_claim_kind_with_subtype_is_authoritative(
     ]
 
 
+def test_deliberation_claim_kind_fails_closed_to_rco_without_subtype(
+    tmp_path: Path,
+) -> None:
+    """A claim explicitly declared claim_kind=deliberation with no
+    deliberation_kind and no scout/rco free-text hint fails closed to an rco
+    deliberation lock (keeps the bridge active), rather than silently dropping
+    the lock. This is intentional per _claim_kind's documented semantics.
+    """
+    payload = _run(
+        tmp_path,
+        _base_idle_events(),
+        claims=[
+            {
+                "task_id": "neutral-task-no-keyword",
+                "summary": "Summary with no keyword and no deliberation_kind.",
+                "claim_kind": "deliberation",
+                "claimed_at_utc": "2026-05-17T10:45:00Z",
+            }
+        ],
+    )
+
+    assert payload["decision"] == "active"
+    assert payload["criteria"]["open_rco_requests"]["task_ids"] == [
+        "neutral-task-no-keyword"
+    ]
+    assert payload["criteria"]["open_scout_requests"]["task_ids"] == []
+
+
+def test_deliberation_claim_kind_scout_text_hint_without_subtype(
+    tmp_path: Path,
+) -> None:
+    """deliberation claim with no deliberation_kind but 'scout' in free text
+    resolves to scout (text hint precedes the rco fail-closed default).
+    """
+    payload = _run(
+        tmp_path,
+        _base_idle_events(),
+        claims=[
+            {
+                "task_id": "claude-scout-something-deliberation",
+                "summary": "A scout deliberation with no explicit subtype.",
+                "claim_kind": "deliberation",
+                "claimed_at_utc": "2026-05-17T10:45:00Z",
+            }
+        ],
+    )
+
+    assert payload["decision"] == "active"
+    assert payload["criteria"]["open_scout_requests"]["task_ids"] == [
+        "claude-scout-something-deliberation"
+    ]
+    assert payload["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
 def test_legacy_claim_without_claim_kind_uses_text_heuristic(
     tmp_path: Path,
 ) -> None:

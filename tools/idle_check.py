@@ -223,13 +223,20 @@ def _claim_kind(claim: dict[str, Any]) -> str | None:
 
       - ``claim_kind == "active_work"``  -> never a deliberation request
         (returns None) even if its free text contains "scout"/"rco".
-      - ``claim_kind == "deliberation"`` -> a deliberation request; the
-        subtype is read from ``deliberation_kind`` ("scout"/"rco"), falling
-        back to the free-text heuristic if that subfield is absent.
+      - ``claim_kind == "deliberation"`` -> ALWAYS a deliberation request
+        (an explicit declaration that this claim is a deliberation lock).
+        The subtype is resolved in this order: (1) ``deliberation_kind``
+        if it is "scout"/"rco"; (2) free-text hint ("scout" if the text
+        contains scout, else "rco" if it contains rco); (3) **fail closed
+        to "rco"** when neither is available. Failing closed to a
+        deliberation lock is intentional: a claim that declared itself a
+        deliberation must keep the bridge active until it is answered,
+        rather than silently dropping the lock.
 
     When ``claim_kind`` is absent (legacy claims, and any writer that has not
     yet adopted the field), the original free-text substring heuristic is used
-    so behavior is unchanged. This makes the field opt-in on the write side.
+    (scout-if-text, rco-if-text, else None) so behavior is unchanged. This
+    makes the field opt-in on the write side.
     """
     explicit = str(claim.get("claim_kind", "")).lower()
     if explicit == "active_work":
@@ -242,7 +249,12 @@ def _claim_kind(claim: dict[str, Any]) -> str | None:
         subtype = str(claim.get("deliberation_kind", "")).lower()
         if subtype in {"scout", "rco"}:
             return subtype
-        return "scout" if "scout" in text else "rco"
+        if "scout" in text:
+            return "scout"
+        # Fail closed to a deliberation lock: an explicitly-declared
+        # deliberation claim must keep the bridge active even when its
+        # subtype cannot be inferred from deliberation_kind or free text.
+        return "rco"
     return "scout" if "scout" in text else "rco" if "rco" in text else None
 
 

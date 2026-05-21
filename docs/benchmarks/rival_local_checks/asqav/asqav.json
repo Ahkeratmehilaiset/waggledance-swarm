@@ -1,0 +1,12 @@
+{
+  "evidence_manifest_contract_version": "wd.v12.rival_local_evidence_manifest.v1",
+  "rival": "Asqav",
+  "pinned_revision": "asqav==0.4.5",
+  "local_artifact_path": "artifacts/asqav-local-smoke.json",
+  "local_artifact_sha256": "sha256:4dce02020d877a9f43de06f5de86a6c13abb18c9fce0e68755b7daf1f7818bd6",
+  "smoke_command": "pip install asqav==0.4.5 cryptography; python -c \"from asqav.keys import generate_local_keypair, SUPPORTED_ALGORITHMS; from asqav.local import local_sign; generate_local_keypair('ed25519'); local_sign(agent_id='wd-rival-check', action_type='tool_call', context={'tool':'read_file','offline':True}, queue_dir=<tmp>)\"",
+  "smoke_result": "passed",
+  "cloud_dependency": true,
+  "evidence_type": "local_install_and_run",
+  "notes": "First real rival-local-check (2026-05-22). asqav 0.4.5 installs offline with only the optional `cryptography` dep. Local offline mode generates ed25519/es256 keypairs and QUEUES actions (queued_entry status=pending, no signature field). The headline ML-DSA-65 quantum-safe signature is NOT in SUPPORTED_ALGORITHMS for local keypairs (only ed25519/es256) and the queued entry carries no signature -- ML-DSA-65 signing and signed-receipt emission require the Asqav cloud service when the queue is flushed. cloud_dependency is therefore true: the offline path is real but does not produce the cryptographically-verified receipt that is Asqav's A2/A7 headline. This manifest deliberately does NOT contribute to consensus_grade (cloud_dependency=true => local_status=cloud_dependent in the matrix)."
+}

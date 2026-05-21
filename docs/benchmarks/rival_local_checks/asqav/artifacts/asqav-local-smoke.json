@@ -1,0 +1,36 @@
+{
+  "asqav_pinned": "asqav==0.4.5",
+  "asqav_version": "0.4.5",
+  "cloud_dependent_for": [
+    "ml_dsa_65_signature",
+    "signed_receipt_emission",
+    "public_verification"
+  ],
+  "finding": "Local offline mode generates ed25519/es256 keypairs and QUEUES actions, but does not produce an ML-DSA-65 signature locally. The queued entry has status=pending and no signature field; ML-DSA-65 signing requires the Asqav cloud service when the queue is flushed.",
+  "local_keypair_algorithm": "ed25519",
+  "local_keypair_generated": true,
+  "local_sign_receipt_id": "20260521215853_109e18b3",
+  "ml_dsa_65_constant_exported": "ml-dsa-65",
+  "ml_dsa_65_locally_supported": false,
+  "offline_capable_for": [
+    "ed25519_keypair_generation",
+    "es256_keypair_generation",
+    "action_queueing"
+  ],
+  "python": "3.13",
+  "queued_entry_has_signature": false,
+  "queued_entry_keys": [
+    "action_type",
+    "agent_id",
+    "context",
+    "queued_at",
+    "status"
+  ],
+  "queued_entry_status": "pending",
+  "retrieved_at_utc": "2026-05-22T00:00:00Z",
+  "smoke_name": "asqav_local_offline_signing_smoke",
+  "supported_local_algorithms": [
+    "ed25519",
+    "es256"
+  ]
+}

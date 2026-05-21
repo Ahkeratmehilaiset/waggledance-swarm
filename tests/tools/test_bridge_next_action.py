@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.bridge_next_action import main, read_events, recommend_next_action
+from tools.bridge_next_action import (
+    BridgeNextActionError,
+    main,
+    read_events,
+    recommend_next_action,
+)
 from waggledance.core.work_queue import claim_task
 
 
@@ -382,7 +387,7 @@ def test_idle_protocol_proposal_is_closed_by_later_response() -> None:
     assert report["open_incoming_count"] == 0
 
 
-def test_read_events_ignores_malformed_lines_and_honors_tail(tmp_path: Path) -> None:
+def test_read_events_honors_tail_before_validation(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     events_path.write_text(
         "\n".join(
@@ -390,16 +395,60 @@ def test_read_events_ignores_malformed_lines_and_honors_tail(tmp_path: Path) -> 
                 json.dumps({"task_id": "one"}),
                 "{not-json",
                 json.dumps({"task_id": "two"}),
-                json.dumps(["not-object"]),
                 json.dumps({"task_id": "three"}),
             ]
         ),
         encoding="utf-8",
     )
 
-    events = read_events(events_path, tail=3)
+    events = read_events(events_path, tail=2)
 
     assert [event["task_id"] for event in events] == ["two", "three"]
+
+
+def test_read_events_fails_closed_on_malformed_selected_line(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"task_id": "one"}),
+                "{not-json",
+                json.dumps({"task_id": "two"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        read_events(events_path, tail=3)
+    except BridgeNextActionError as exc:
+        assert exc.report["decision"] == "bridge_next_action_error"
+        assert "line 2" in exc.report["errors"][0]
+    else:
+        raise AssertionError("malformed selected bridge event should fail closed")
+
+
+def test_read_events_fails_closed_on_non_object_selected_line(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"task_id": "one"}),
+                json.dumps(["not-object"]),
+                json.dumps({"task_id": "two"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        read_events(events_path, tail=3)
+    except BridgeNextActionError as exc:
+        assert exc.report["decision"] == "bridge_next_action_error"
+        assert "line 2" in exc.report["errors"][0]
+        assert "JSON object" in exc.report["errors"][0]
+    else:
+        raise AssertionError("non-object selected bridge event should fail closed")
 
 
 def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:
@@ -437,6 +486,30 @@ def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "bridge_next_action"
     assert report["action"] == "answer_incoming"
+
+
+def test_cli_fails_closed_on_malformed_events_file(tmp_path: Path, capsys) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = bridge / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text("[]\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex",
+            "--bridge-root",
+            str(bridge),
+            "--events",
+            str(events_path),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "bridge_next_action_error"
+    assert "JSON object" in report["errors"][0]
 
 
 def test_cli_human_output_reports_stale_incoming(tmp_path: Path, capsys) -> None:

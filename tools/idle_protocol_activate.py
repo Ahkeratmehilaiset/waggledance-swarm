@@ -453,6 +453,13 @@ def _late_round_predecessor_errors(
         )
         return errors
 
+    instance_rounds: set[int] = set()
+    for prior in instance_payloads:
+        try:
+            instance_rounds.add(int(prior.get("round_number", 0)))
+        except (TypeError, ValueError):
+            continue
+
     has_round_one = any(
         int(prior.get("round_number", 0)) == 1
         and str(prior.get("event_type", "")) == "idle_proposal"
@@ -462,6 +469,14 @@ def _late_round_predecessor_errors(
         errors.append(
             f"round_number: late round {round_number} requires a "
             "round-1 idle_proposal to be bridge-resident in the same instance"
+        )
+    required_rounds = set(range(1, 6))
+    missing_rounds = sorted(required_rounds - instance_rounds)
+    if missing_rounds:
+        errors.append(
+            f"round_number: late round {round_number} requires rounds 1..5 "
+            "to be bridge-resident in the same instance; missing rounds "
+            f"{missing_rounds}"
         )
 
     invalid_rounds: list[int] = []

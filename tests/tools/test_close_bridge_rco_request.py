@@ -87,6 +87,8 @@ def test_close_emits_event_that_clears_open_rco(tmp_path: Path) -> None:
     assert result["proposed_event"]["type"] == "decision"
     assert result["proposed_event"]["status"] == "rco_closed_postmerge"
     assert result["proposed_event"]["task_id"] == "task-1"
+    assert result["proposed_event"]["to"] == "codex,claude"
+    assert "operator" not in result["proposed_event"]["to"]
 
     idle_after = evaluate_idle_state(
         events_path=bridge_root / "shared" / "events.jsonl",
@@ -260,3 +262,5 @@ def test_cli_smoke(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["decision"] == "closed"
     assert payload["proposed_event"]["status"] == "rco_closed_postmerge"
+    assert payload["proposed_event"]["to"] == "codex,claude"
+    assert "operator" not in payload["proposed_event"]["to"]

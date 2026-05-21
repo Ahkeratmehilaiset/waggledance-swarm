@@ -45,6 +45,7 @@ MERGEABLE_STATES = {"clean", "mergeable", "MERGEABLE", "CLEAN"}
 
 Runner = Callable[[Sequence[str]], Any]
 ArtifactWriter = Callable[[], Mapping[str, Any]]
+MergeVerifier = Callable[[int, str, str], Mapping[str, Any]]
 
 
 class AutoMergeGateError(ValueError):
@@ -156,6 +157,7 @@ def evaluate_auto_merge_gate(
     bridge_task_id: str = "",
     apply: bool = False,
     runner: Runner | None = None,
+    merge_verifier: MergeVerifier | None = None,
     artifact_writer: ArtifactWriter | None = None,
 ) -> dict[str, Any]:
     """Evaluate and optionally apply the final idle auto-merge gate."""
@@ -297,6 +299,28 @@ def evaluate_auto_merge_gate(
     result = run(command)
     return_code = int(getattr(result, "returncode", 0))
     if return_code != 0:
+        merge_recovery = _recover_merge_state_after_failure(
+            pr_number=pr_number,
+            expected_head=expected_head,
+            repo=repo,
+            return_code=return_code,
+            verifier=merge_verifier if merge_verifier is not None else (
+                None if runner is not None else _query_pr_merge_state
+            ),
+        )
+        if merge_recovery["merged"]:
+            report.update(
+                _auto_merged_fields(
+                    pr_number=pr_number,
+                    title=title,
+                    consensus_proposal_id=consensus_proposal_id,
+                    merge_commit_sha=str(merge_recovery["merge_commit_sha"]),
+                    receipt_bundle_path=receipt_bundle_path,
+                    rate_gate=rate_gate,
+                    merge_recovery=merge_recovery,
+                )
+            )
+            return report
         raise AutoMergeGateError(
             {
                 **base,
@@ -304,27 +328,99 @@ def evaluate_auto_merge_gate(
                 "ok": False,
                 "operator_review_required": True,
                 "errors": [f"gh pr merge failed with exit code {return_code}"],
+                "merge_recovery": merge_recovery,
                 "exit_code": 1,
             }
         )
 
     report.update(
-        {
-            "decision": "auto_merged",
-            "dry_run": False,
-            "external_effect": True,
-            "auto_merge_event_payload": {
-                "auto_merged": True,
-                "pr_number": pr_number,
-                "pr_title": title,
-                "consensus_proposal_id": consensus_proposal_id,
-                "merge_commit_sha": str(getattr(result, "stdout", "")).strip(),
-                "receipt_bundle_path": receipt_bundle_path,
-                "rate_gate": rate_gate,
-            },
-        }
+        _auto_merged_fields(
+            pr_number=pr_number,
+            title=title,
+            consensus_proposal_id=consensus_proposal_id,
+            merge_commit_sha=str(getattr(result, "stdout", "")).strip(),
+            receipt_bundle_path=receipt_bundle_path,
+            rate_gate=rate_gate,
+        )
     )
     return report
+
+
+def _auto_merged_fields(
+    *,
+    pr_number: int,
+    title: str,
+    consensus_proposal_id: str,
+    merge_commit_sha: str,
+    receipt_bundle_path: str,
+    rate_gate: Mapping[str, Any],
+    merge_recovery: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "auto_merged": True,
+        "pr_number": pr_number,
+        "pr_title": title,
+        "consensus_proposal_id": consensus_proposal_id,
+        "merge_commit_sha": merge_commit_sha,
+        "receipt_bundle_path": receipt_bundle_path,
+        "rate_gate": dict(rate_gate),
+    }
+    fields: dict[str, Any] = {
+        "decision": "auto_merged",
+        "dry_run": False,
+        "external_effect": True,
+        "auto_merge_event_payload": payload,
+    }
+    if merge_recovery is not None:
+        fields["merge_recovery"] = dict(merge_recovery)
+        payload["merge_recovery"] = dict(merge_recovery)
+    return fields
+
+
+def _recover_merge_state_after_failure(
+    *,
+    pr_number: int,
+    expected_head: str,
+    repo: str,
+    return_code: int,
+    verifier: MergeVerifier | None,
+) -> dict[str, Any]:
+    base = {
+        "merged": False,
+        "decision": "not_checked",
+        "return_code": return_code,
+        "merge_commit_sha": "",
+    }
+    if verifier is None:
+        return base
+    try:
+        state = verifier(pr_number, expected_head, repo)
+    except Exception as exc:  # pragma: no cover - verifier is external.
+        return {
+            **base,
+            "decision": "verifier_exception",
+            "error": exc.__class__.__name__,
+        }
+    if not isinstance(state, Mapping):
+        return {**base, "decision": "verifier_returned_non_object"}
+    _assert_no_private_markers(state)
+
+    if str(state.get("state", "")) != "MERGED":
+        return {**base, "decision": "pr_not_merged"}
+    if str(state.get("headRefOid", "")) != expected_head:
+        return {**base, "decision": "merged_head_mismatch"}
+    merge_commit = state.get("mergeCommit")
+    merge_commit_sha = ""
+    if isinstance(merge_commit, Mapping):
+        merge_commit_sha = str(merge_commit.get("oid", ""))
+    if not SHA_RE.fullmatch(merge_commit_sha):
+        return {**base, "decision": "missing_merge_commit_sha"}
+    return {
+        **base,
+        "merged": True,
+        "decision": "merged_after_merge_command_failure",
+        "merge_commit_sha": merge_commit_sha,
+    }
 
 
 def _base_report(
@@ -458,6 +554,53 @@ def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _query_pr_merge_state(
+    pr_number: int,
+    expected_head: str,
+    repo: str,
+) -> Mapping[str, Any]:
+    command = [
+        "gh",
+        "pr",
+        "view",
+        str(pr_number),
+        "--json",
+        "state,mergeCommit,headRefOid",
+    ]
+    if repo:
+        command.extend(["--repo", repo])
+    result = _run_command(command)
+    return_code = int(getattr(result, "returncode", 0))
+    if return_code != 0:
+        return {
+            "ok": False,
+            "decision": "merge_state_query_failed",
+            "return_code": return_code,
+        }
+    stdout = str(getattr(result, "stdout", ""))
+    _assert_no_private_markers(stdout)
+    try:
+        state = json.loads(stdout)
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "decision": "merge_state_query_invalid_json",
+        }
+    if not isinstance(state, Mapping):
+        return {
+            "ok": False,
+            "decision": "merge_state_query_non_object",
+        }
+    _assert_no_private_markers(state)
+    if str(state.get("headRefOid", "")) != expected_head:
+        return {
+            **dict(state),
+            "ok": False,
+            "decision": "merge_state_query_head_mismatch",
+        }
+    return state
 
 
 def _run_artifact_writer(artifact_writer: ArtifactWriter) -> Mapping[str, Any]:

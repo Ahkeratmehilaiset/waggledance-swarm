@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -107,7 +108,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(result["error"], file=sys.stderr)
         return 2
 
-    events = _read_events(events_path)
+    try:
+        events = _read_events(events_path)
+    except ValueError as exc:
+        result = {
+            "ok": False,
+            "decision": "invalid_events_file",
+            "error": str(exc),
+        }
+        if args.json:
+            print(json.dumps(result, sort_keys=True))
+        else:
+            print(result["error"], file=sys.stderr)
+        return 2
     result = check_bridge_clear_to_merge(
         events=events,
         task_id=args.task_id,
@@ -145,11 +158,9 @@ def check_bridge_clear_to_merge(
     or APPROVAL_STATUSES. If the most recent peer decision is blocking, we
     refuse. Otherwise we permit.
     """
-    latest_block: Mapping[str, Any] | None = None
-    latest_approval: Mapping[str, Any] | None = None
-    latest_signal_ts: str = ""
+    peer_signals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
 
-    for event in events:
+    for index, event in enumerate(events):
         if str(event.get("task_id", "")) != task_id:
             continue
         agent = str(event.get("agent", ""))
@@ -159,29 +170,67 @@ def check_bridge_clear_to_merge(
         event_type = str(event.get("type", "")).lower()
         if event_type not in {"decision", "rco_review", "finding"}:
             continue
-        if status in BLOCKING_STATUSES:
-            ts = str(event.get("ts_utc", ""))
-            if ts > latest_signal_ts:
-                latest_signal_ts = ts
-                latest_block = event
-                latest_approval = None
-        elif status in APPROVAL_STATUSES:
-            ts = str(event.get("ts_utc", ""))
-            if ts > latest_signal_ts:
-                latest_signal_ts = ts
-                latest_approval = event
-                latest_block = None
+        if _is_blocking_status(status):
+            peer_signals[agent] = (index, "block", event)
+        elif _is_approval_status(status):
+            peer_signals[agent] = (index, "approval", event)
 
+    blocking_events = [
+        (index, event)
+        for index, kind, event in peer_signals.values()
+        if kind == "block"
+    ]
+    approval_events = [
+        (index, event)
+        for index, kind, event in peer_signals.values()
+        if kind == "approval"
+    ]
+    latest_block = max(blocking_events, default=None, key=lambda item: item[0])
+    latest_approval = max(approval_events, default=None, key=lambda item: item[0])
     clear = latest_block is None
     return {
         "ok": True,
         "clear_to_merge": clear,
         "task_id": task_id,
         "merging_agent": merging_agent,
-        "latest_blocking_event": _summarize_event(latest_block),
-        "latest_approval_event": _summarize_event(latest_approval),
+        "latest_blocking_event": _summarize_event(
+            latest_block[1] if latest_block is not None else None
+        ),
+        "latest_approval_event": _summarize_event(
+            latest_approval[1] if latest_approval is not None else None
+        ),
         "decision": "clear" if clear else "blocked",
     }
+
+
+def _status_tokens(status: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", status.lower())
+        if token
+    }
+
+
+def _is_blocking_status(status: str) -> bool:
+    if status in BLOCKING_STATUSES:
+        return True
+    tokens = _status_tokens(status)
+    return (
+        {"changes", "requested"}.issubset(tokens)
+        or "blocked" in tokens
+        or "block" in tokens
+    )
+
+
+def _is_approval_status(status: str) -> bool:
+    if status in APPROVAL_STATUSES:
+        return True
+    tokens = _status_tokens(status)
+    return (
+        {"rco", "pass"}.issubset(tokens)
+        or "approved" in tokens
+        or "acknowledged" in tokens
+    )
 
 
 def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -197,13 +246,17 @@ def _summarize_event(event: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 def _read_events(events_path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for line in events_path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(
+        events_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         if not line.strip():
             continue
         try:
             event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"invalid JSON in bridge events at line {line_number}: {exc.msg}"
+            ) from exc
         if isinstance(event, dict):
             events.append(event)
     return events

@@ -1,6 +1,7 @@
 # WaggleDance pip freeze — 2026-04-10T00:13:05.175380+00:00Z
 # Python 3.13.7
 # Restore: pip install -r requirements.lock.txt
+--extra-index-url https://download.pytorch.org/whl/cu126
 
 absl-py==2.4.0
 accelerate==1.13.0
@@ -148,10 +149,11 @@ networkx==3.5
 nltk==3.9.3
 numba==0.64.0
 numpy==2.2.6
-# Phase 16F note: nvidia-cuda-* packages pinned at 12.9.x in original lock file
-# (Windows + cu118 torch). On Linux, plain torch==2.7.1 from PyPI is the CUDA
-# wheel and resolves its own nvidia-* deps; hard-pinning conflicts. Loosened
-# below to lower-bound only so the same lock file works for both platforms.
+# Phase 16F/R22.5 note: nvidia-cuda-* packages pinned at 12.9.x in an older
+# Windows CUDA lock. On Linux, plain torch from PyPI resolves its own nvidia-*
+# deps; hard-pinning conflicts. Loosened below to lower-bound only so the same
+# lock file works for both platforms. Windows CUDA wheels come from the cu126
+# PyTorch extra index declared above.
 nvidia-cublas-cu12>=12.6 ; sys_platform != "win32"
 nvidia-cuda-runtime-cu12>=12.6 ; sys_platform != "win32"
 nvidia-cudnn-cu12>=9.0 ; sys_platform != "win32"
@@ -298,13 +300,13 @@ toml==0.10.2
 tomli==2.4.0
 tomli_w==1.2.0
 tools==1.0.23
-torch==2.7.1+cu118 ; sys_platform == "win32"
-torch==2.7.1 ; sys_platform != "win32"
-torchao==0.16.0
-torchaudio==2.7.1+cu118 ; sys_platform == "win32"
-torchaudio==2.7.1 ; sys_platform != "win32"
-torchvision==0.22.1+cu118 ; sys_platform == "win32"
-torchvision==0.22.1 ; sys_platform != "win32"
+torch==2.11.0+cu126 ; sys_platform == "win32"
+torch==2.11.0 ; sys_platform != "win32"
+torchao==0.17.0
+torchaudio==2.11.0+cu126 ; sys_platform == "win32"
+torchaudio==2.11.0 ; sys_platform != "win32"
+torchvision==0.26.0+cu126 ; sys_platform == "win32"
+torchvision==0.26.0 ; sys_platform != "win32"
 tornado==6.5.5
 tqdm==4.67.3
 transformers==5.2.0

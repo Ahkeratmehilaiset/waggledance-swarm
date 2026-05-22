@@ -60,7 +60,7 @@ TORCH_DECISION_OPTIONS: dict[str, dict[str, Any]] = {
         "implementation_strategy": "cuda_12_6",
         "packages": [
             "torch==2.11.0+cu126",
-            "torchvision==0.27.0+cu126",
+            "torchvision==0.26.0+cu126",
             "torchaudio==2.11.0+cu126",
         ],
         "index_url": "https://download.pytorch.org/whl/cu126",

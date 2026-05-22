@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import subprocess
 import sys
@@ -79,6 +80,11 @@ SOAK_LOG_AUDIT_SCHEMA_VERSION = "waggledance.release_soak_log_audit.v1"
 SOAK_LOG_AUDIT_COUNT_BLOCKERS = {
     "errors_detected",
     "silent_failures_detected",
+    "undated_records_detected",
+}
+SOAK_LOG_REQUIRED_DEFAULT_SOURCES = {
+    "docs/runs/error_log.jsonl",
+    "docs/runs/release_soak_evidence/v3.12.0_history.jsonl",
 }
 REQUIRED_RELEASE_NOTE_ANTI_CLAIMS = (
     "Does **not** claim AGI, consciousness, model superiority",
@@ -135,6 +141,19 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return loaded if isinstance(loaded, dict) else None
+
+
+def _source_digest(path: Path) -> str | None:
+    try:
+        normalized = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    except (OSError, UnicodeDecodeError):
+        return None
+    digest = hashlib.sha256(normalized.encode("utf-8"))
+    return "sha256:" + digest.hexdigest()
+
+
+def _normalize_source_path(value: str) -> str:
+    return value.replace("\\", "/").strip()
 
 
 def _first_existing(root: Path, names: tuple[str, ...]) -> Path | None:
@@ -461,9 +480,23 @@ def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
         return fail_closed
     if not all(isinstance(item, str) and item.strip() for item in source_files):
         return fail_closed
+    normalized_sources = {_normalize_source_path(item) for item in source_files}
+    if _default_docker_evidence_root(evidence_root) and not (
+        SOAK_LOG_REQUIRED_DEFAULT_SOURCES <= normalized_sources
+    ):
+        return fail_closed
+    source_hashes = report.get("source_hashes")
+    if not isinstance(source_hashes, dict):
+        return fail_closed
     for item in source_files:
         source = Path(item)
         if not source.exists() or not source.is_file():
+            return fail_closed
+        expected_digest = source_hashes.get(item)
+        if not isinstance(expected_digest, str):
+            return fail_closed
+        actual_digest = _source_digest(source)
+        if actual_digest is None or actual_digest != expected_digest:
             return fail_closed
     if not isinstance(blockers, list):
         return fail_closed
@@ -477,10 +510,16 @@ def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
         ended_at = _parse_timestamp(str(report.get("ended_at_utc", "")))
         silent_failures = int(report.get("silent_failure_count"))
         error_count = int(report.get("error_count"))
+        undated_count = int(report.get("undated_record_count"))
     except (TypeError, ValueError):
         return fail_closed
 
-    if ended_at <= started_at or silent_failures < 0 or error_count < 0:
+    if (
+        ended_at <= started_at
+        or silent_failures < 0
+        or error_count < 0
+        or undated_count < 0
+    ):
         return fail_closed
 
     audit_result = report.get("audit_result")
@@ -488,6 +527,7 @@ def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
         audit_result == "pass"
         and silent_failures == 0
         and error_count == 0
+        and undated_count == 0
         and blockers == []
         and report.get("error_log_clean") is True
     )

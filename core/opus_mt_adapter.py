@@ -67,14 +67,20 @@ class OpusMTAdapter:
             model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
             if src == "fi" and tgt == "en":
                 if self._direct_fi_en is None:
-                    tok = MarianTokenizer.from_pretrained(model_name)
-                    mdl = MarianMTModel.from_pretrained(model_name)
+                    # local_files_only prevents unpinned Hub downloads.
+                    tok = MarianTokenizer.from_pretrained(  # nosec B615
+                        model_name, local_files_only=True)
+                    mdl = MarianMTModel.from_pretrained(  # nosec B615
+                        model_name, local_files_only=True)
                     self._direct_fi_en = (tok, mdl)
                 tok, mdl = self._direct_fi_en
             else:
                 if self._direct_en_fi is None:
-                    tok = MarianTokenizer.from_pretrained(model_name)
-                    mdl = MarianMTModel.from_pretrained(model_name)
+                    # local_files_only prevents unpinned Hub downloads.
+                    tok = MarianTokenizer.from_pretrained(  # nosec B615
+                        model_name, local_files_only=True)
+                    mdl = MarianMTModel.from_pretrained(  # nosec B615
+                        model_name, local_files_only=True)
                     self._direct_en_fi = (tok, mdl)
                 tok, mdl = self._direct_en_fi
             inputs = tok(text, return_tensors="pt", truncation=True, max_length=512)

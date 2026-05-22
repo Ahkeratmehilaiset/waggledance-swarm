@@ -6,6 +6,8 @@ Extracted from memory_engine.py (v1.17.0).
 import math
 import re
 
+from core.safe_eval import SafeEvalError, safe_eval
+
 
 class MathSolver:
     SAFE_NAMES = {
@@ -108,11 +110,11 @@ class MathSolver:
         clean = clean.replace("÷", "/").replace(",", ".")
         clean = re.sub(r'\s*(kg|g|ml|l|€|eur|kpl|pcs)\s*$', '', clean)
         try:
-            result = eval(clean, {"__builtins__": {}}, cls.SAFE_NAMES)  # noqa: S307 — sandboxed
+            result = safe_eval(clean)
             if isinstance(result, float):
                 if result == int(result):
                     return str(int(result))
                 return f"{result:.6g}"
             return str(result)
-        except Exception:
+        except (SafeEvalError, SyntaxError, TypeError, ValueError, ZeroDivisionError, OverflowError):
             return None

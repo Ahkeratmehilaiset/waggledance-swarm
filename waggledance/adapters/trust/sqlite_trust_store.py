@@ -106,7 +106,8 @@ class SQLiteTrustStore:
             return {}
         db = await self._ensure_db()
         placeholders = ",".join("?" for _ in ids)
-        sql = f"SELECT * FROM agent_trust WHERE agent_id IN ({placeholders})"
+        # placeholders are generated question marks; ids remain parameters.
+        sql = f"SELECT * FROM agent_trust WHERE agent_id IN ({placeholders})"  # nosec B608
         async with db.execute(sql, ids) as cursor:
             rows = await cursor.fetchall()
         return {row[0]: self._row_to_trust(row) for row in rows}

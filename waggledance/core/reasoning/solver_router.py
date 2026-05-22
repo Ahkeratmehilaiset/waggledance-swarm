@@ -218,8 +218,7 @@ def _load_solver_signal_sets(
     try:
         import yaml
 
-        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-        data = yaml.load(path.read_text(encoding="utf-8"), Loader=loader)
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
         return _normalize_signal_sets(data)
     except Exception as exc:
         log.warning(

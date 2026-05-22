@@ -57,6 +57,19 @@ class TestCheckHealth:
         db = next(d for d in report.databases if d.name == "test.db")
         assert db.row_counts.get("items") == 100
 
+    def test_quotes_table_names_from_sqlite_master(self, tmp_path):
+        db_path = tmp_path / "quoted.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('CREATE TABLE "items;still_safe" (id INTEGER PRIMARY KEY)')
+        conn.execute('INSERT INTO "items;still_safe" DEFAULT VALUES')
+        conn.commit()
+        conn.close()
+
+        svc = StorageHealthService(data_dir=str(tmp_path))
+        report = svc.check_health()
+        db = next(d for d in report.databases if d.name == "quoted.db")
+        assert db.row_counts.get("items;still_safe") == 1
+
     def test_total_size_is_sum(self, data_dir):
         svc = StorageHealthService(data_dir=str(data_dir))
         report = svc.check_health()

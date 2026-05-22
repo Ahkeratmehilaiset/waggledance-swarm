@@ -96,7 +96,8 @@ def _check_voikko_dict() -> None:
         url = "https://www.puimula.org/htp/testing/voikko-snapshot-v5/dict.zip"
         os.makedirs(project_voikko, exist_ok=True)
         tmp_zip = os.path.join(tempfile.gettempdir(), "voikko_dict.zip")
-        with urllib.request.urlopen(url, timeout=60) as resp:
+        # Constant HTTPS URL; no user-controlled scheme reaches urlopen.
+        with urllib.request.urlopen(url, timeout=60) as resp:  # nosec B310
             with open(tmp_zip, "wb") as out:
                 out.write(resp.read())
         with zipfile.ZipFile(tmp_zip, "r") as zf:

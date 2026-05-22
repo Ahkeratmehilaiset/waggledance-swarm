@@ -541,7 +541,7 @@ class ClassifierModel:
             import torch
             checkpoint = torch.load(self._model_path,
                                     map_location="cpu",
-                                    weights_only=False)
+                                    weights_only=True)
             input_dim = checkpoint.get("input_dim", 768)
             num_classes = checkpoint.get("num_classes", 0)
 
@@ -632,9 +632,11 @@ class LoRAModel:
             return
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
-            self._tokenizer = AutoTokenizer.from_pretrained(str(merged_path))
-            self._model = AutoModelForCausalLM.from_pretrained(
-                str(merged_path), device_map="cpu")
+            # local_files_only prevents unpinned Hub downloads.
+            self._tokenizer = AutoTokenizer.from_pretrained(  # nosec B615
+                str(merged_path), local_files_only=True)
+            self._model = AutoModelForCausalLM.from_pretrained(  # nosec B615
+                str(merged_path), device_map="cpu", local_files_only=True)
             self._model.eval()
             self._available = True
             log.info("V3 LoRA: loaded merged model from %s", merged_path)
@@ -714,7 +716,9 @@ class LoRAModel:
             log.info("V3 LoRA: starting training with %d pairs", len(training_pairs))
 
             # 1. Load base model
-            tokenizer = AutoTokenizer.from_pretrained(self._model_name)
+            # local_files_only prevents unpinned Hub downloads.
+            tokenizer = AutoTokenizer.from_pretrained(  # nosec B615
+                self._model_name, local_files_only=True)
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
 
@@ -726,13 +730,13 @@ class LoRAModel:
                     bnb_4bit_compute_dtype=torch.float16,
                     bnb_4bit_use_double_quant=True,
                     bnb_4bit_quant_type="nf4")
-                model = AutoModelForCausalLM.from_pretrained(
+                model = AutoModelForCausalLM.from_pretrained(  # nosec B615
                     self._model_name, quantization_config=bnb_config,
-                    device_map="auto")
+                    device_map="auto", local_files_only=True)
                 log.info("V3: loaded base model with 4-bit quantization")
             except Exception:
-                model = AutoModelForCausalLM.from_pretrained(
-                    self._model_name, device_map="cpu")
+                model = AutoModelForCausalLM.from_pretrained(  # nosec B615
+                    self._model_name, device_map="cpu", local_files_only=True)
                 log.info("V3: loaded base model in fp32 (no quantization)")
 
             # 2. Apply LoRA

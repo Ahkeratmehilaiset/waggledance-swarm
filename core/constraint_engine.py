@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
+from core.safe_eval import SafeEvalError, safe_eval
+
 _SEVERITY_ORDER = {"critical": 3, "high": 3, "warning": 2, "info": 1, "ok": 0}
 
 
@@ -172,10 +174,8 @@ class ConstraintEngine:
         expression = rule.get("expression", "")
         if expression and not conditions:
             try:
-                triggered = bool(eval(  # noqa: S307
-                    expression, {"__builtins__": {}},
-                    {**context, "True": True, "False": False}))
-            except Exception:
+                triggered = bool(safe_eval(expression, context))
+            except (SafeEvalError, SyntaxError, TypeError, ValueError, ZeroDivisionError, OverflowError):
                 triggered = False
             return RuleResult(
                 rule_id=rule_id,

@@ -92,6 +92,9 @@ class TestAxiomRegression:
         ctx = {"x": 100}
         assert safe_eval("log10(x)", ctx) == 2.0
 
+    def test_math_solver_function_compatibility(self):
+        assert safe_eval("ceil(1.2) + floor(3.8) + log2(8)", {}) == 8
+
     def test_nested_max_min(self):
         ctx = {"a": 5, "b": 10, "c": 3}
         assert safe_eval("max(min(a, b), c)", ctx) == 5

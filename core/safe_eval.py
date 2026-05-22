@@ -48,7 +48,8 @@ del _LEGACY, _name, _node
 ALLOWED_FUNCTIONS: Dict[str, Any] = {
     "abs": abs, "max": max, "min": min, "round": round, "pow": pow,
     "int": int, "float": float, "bool": bool,
-    "log10": math.log10, "log": math.log, "exp": math.exp,
+    "ceil": math.ceil, "floor": math.floor,
+    "log10": math.log10, "log2": math.log2, "log": math.log, "exp": math.exp,
     "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
 }
 
@@ -115,4 +116,5 @@ def safe_eval(expr: str, context: Optional[Dict[str, Any]] = None) -> Any:
 
     # 4. Compile and eval (safe because AST was validated)
     code = compile(tree, "<safe_eval>", "eval")
-    return eval(code, {"__builtins__": {}}, safe_ns)
+    # AST nodes and call targets are whitelist-validated above.
+    return eval(code, {"__builtins__": {}}, safe_ns)  # nosec B307

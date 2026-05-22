@@ -34,8 +34,10 @@ options:
       finalizes_policy: "marks docker_stable_policy=finalized as 'no-move this release'"
     agent_recommendation: false
 operator_signoff:
-  signed_by: ""
-  chosen_option: ""
+  signed_by: "operator:jani:2026-05-22T18:14:34Z"
+  chosen_option: "ghcr_stable_only"
+  recorded_by: "claude"
+  note: "Operator chose ghcr_stable_only (GHCR :stable + version tag, does NOT move :latest) and explicitly instructed Claude to record this signoff. Decision authority is the operator; Claude is the scribe. This finalizes docker_stable_policy with latest_move=false; the :latest move stays unauthorized."
 structural_invariants:
   no_main_branch_auto_merge: true
   latest_move_is_operator_only: true

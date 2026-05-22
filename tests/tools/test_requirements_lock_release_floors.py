@@ -32,6 +32,19 @@ BIG_JUMP_OSV_FIXED_FLOORS = {
     "starlette": Version("1.0.1"),
     "streamlit": Version("1.54.0"),
 }
+LOCK_CONSISTENCY_FLOORS = {
+    "safetensors": Version("0.8.0rc0"),
+}
+LOCK_CONSISTENCY_PINS = {
+    "cachetools": Version("6.2.6"),
+}
+UNUSED_INCOMPATIBLE_LOCK_BLOCKLIST = {
+    "moviepy",
+    "pipwin",
+    "pyjsparser",
+    "pyprind",
+    "pysmartdl",
+}
 NO_FIX_OSV_BLOCKLIST = {
     "deep-translator",
     "js2py",
@@ -103,8 +116,31 @@ def test_release_lock_uses_big_jump_osv_fixed_versions() -> None:
         assert lock[name] >= floor
 
 
+def test_release_lock_satisfies_diffusers_safetensors_floor() -> None:
+    lock = _lock_pins(ROOT / "requirements.lock.txt")
+
+    for package, floor in LOCK_CONSISTENCY_FLOORS.items():
+        name = canonicalize_name(package)
+        assert lock[name] >= floor
+
+
+def test_release_lock_satisfies_streamlit_cachetools_cap() -> None:
+    lock = _lock_pins(ROOT / "requirements.lock.txt")
+
+    for package, version in LOCK_CONSISTENCY_PINS.items():
+        name = canonicalize_name(package)
+        assert lock[name] == version
+
+
 def test_release_lock_excludes_no_fix_vulnerable_packages() -> None:
     lock = _lock_pins(ROOT / "requirements.lock.txt")
 
     for package in NO_FIX_OSV_BLOCKLIST:
+        assert canonicalize_name(package) not in lock
+
+
+def test_release_lock_excludes_unused_incompatible_packages() -> None:
+    lock = _lock_pins(ROOT / "requirements.lock.txt")
+
+    for package in UNUSED_INCOMPATIBLE_LOCK_BLOCKLIST:
         assert canonicalize_name(package) not in lock

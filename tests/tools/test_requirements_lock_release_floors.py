@@ -32,6 +32,11 @@ BIG_JUMP_OSV_FIXED_FLOORS = {
     "starlette": Version("1.0.1"),
     "streamlit": Version("1.54.0"),
 }
+NO_FIX_OSV_BLOCKLIST = {
+    "deep-translator",
+    "js2py",
+    "paramiko",
+}
 
 
 def _requirements(path: Path) -> dict[str, Requirement]:
@@ -96,3 +101,10 @@ def test_release_lock_uses_big_jump_osv_fixed_versions() -> None:
     for package, floor in BIG_JUMP_OSV_FIXED_FLOORS.items():
         name = canonicalize_name(package)
         assert lock[name] >= floor
+
+
+def test_release_lock_excludes_no_fix_vulnerable_packages() -> None:
+    lock = _lock_pins(ROOT / "requirements.lock.txt")
+
+    for package in NO_FIX_OSV_BLOCKLIST:
+        assert canonicalize_name(package) not in lock

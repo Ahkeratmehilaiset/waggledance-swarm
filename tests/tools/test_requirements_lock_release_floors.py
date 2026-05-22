@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: BUSL-1.1
+from __future__ import annotations
+
+from pathlib import Path
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
+
+
+ROOT = Path(__file__).resolve().parents[2]
+LOCKED_RELEASE_FLOORS = {
+    "aiohttp": Version("3.13.4"),
+    "pytest": Version("9.0.3"),
+}
+
+
+def _requirements(path: Path) -> dict[str, Requirement]:
+    requirements: dict[str, Requirement] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        try:
+            requirement = Requirement(line)
+        except InvalidRequirement:
+            continue
+        requirements[canonicalize_name(requirement.name)] = requirement
+    return requirements
+
+
+def _lock_pins(path: Path) -> dict[str, Version]:
+    pins: dict[str, Version] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        try:
+            requirement = Requirement(line)
+        except InvalidRequirement:
+            continue
+        exact_versions = [
+            spec.version
+            for spec in requirement.specifier
+            if spec.operator == "=="
+        ]
+        if len(exact_versions) == 1:
+            pins[canonicalize_name(requirement.name)] = Version(exact_versions[0])
+    return pins
+
+
+def test_release_lock_satisfies_security_floor_bumps() -> None:
+    primary = _requirements(ROOT / "requirements.txt")
+    ci = _requirements(ROOT / "requirements-ci.txt")
+    lock = _lock_pins(ROOT / "requirements.lock.txt")
+
+    for package, floor in LOCKED_RELEASE_FLOORS.items():
+        name = canonicalize_name(package)
+        assert name in primary
+        assert name in ci
+        assert primary[name].specifier.contains(floor, prereleases=True)
+        assert ci[name].specifier.contains(floor, prereleases=True)
+        assert lock[name] >= floor

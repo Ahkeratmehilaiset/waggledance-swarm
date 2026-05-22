@@ -255,17 +255,21 @@ def run_proof(
 
     # Cloud (Anthropic) availability surfaced for R22.3 Profile L A/B:
     # distinguishes "no operator API key" from "LLM measurably worse" when
-    # the treatment arm falls through to control. Import is best-effort so
-    # a Profile S machine without the anthropic SDK still produces evidence.
+    # the treatment arm falls through to control. Only a missing SDK
+    # (ImportError on a Profile S machine without the anthropic package) is
+    # swallowed into "unavailable"; any other error from constructing the
+    # provider or probing is_available() is a real regression and must
+    # surface loudly rather than be masked as "unavailable".
     try:
         from waggledance.core.bridge_llm.providers.anthropic import (
             AnthropicProvider,
         )
+    except ImportError:
+        anthropic_status = "unavailable"
+    else:
         anthropic_status = (
             "available" if AnthropicProvider().is_available() else "unavailable"
         )
-    except Exception:
-        anthropic_status = "unavailable"
 
     return {
         "schema_version": 1,

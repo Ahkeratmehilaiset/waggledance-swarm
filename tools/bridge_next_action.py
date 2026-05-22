@@ -68,6 +68,7 @@ ANSWER_STATUS_FRAGMENTS = (
     "accepted",
     "ack",
     "answered",
+    "approved",
     "closed",
     "done",
     "merged",

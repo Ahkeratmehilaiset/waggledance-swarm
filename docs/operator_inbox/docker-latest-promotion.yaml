@@ -1,0 +1,42 @@
+schema_version: waggledance.operator_decision_pack.v1
+decision_id: docker-latest-promotion
+category: docker_promotion
+created_utc: 2026-05-22T14:00:00Z
+author_agent: claude
+title: v3.12.0 Docker :stable / :latest promotion policy
+context: >
+  RELEASE_READINESS.md requires docker_stable_policy=finalized before the gate
+  can pass, and GHCR :latest must not move until the operator authorizes stable
+  promotion. The three entry points (Dockerfile CMD, docker-compose command,
+  pyproject [project.scripts]) are already canonicalized to
+  waggledance.adapters.cli.start_runtime:main. GHCR is primary; Docker Hub is
+  not configured. This decision is operator-gated: moving :latest is an
+  externally-visible, hard-to-reverse promotion.
+options:
+  - id: ghcr_stable_only
+    summary: On stable, push GHCR :stable + version tag; leave :latest at v3.8.0.
+    data:
+      moves_latest: false
+      registries: ["ghcr.io"]
+      reversible: "yes (tags can be retagged)"
+    agent_recommendation: true
+  - id: ghcr_stable_and_latest
+    summary: On stable, push GHCR :stable + version tag AND move :latest to v3.12.0.
+    data:
+      moves_latest: true
+      registries: ["ghcr.io"]
+      reversible: "harder (consumers pulling :latest shift immediately)"
+    agent_recommendation: false
+  - id: defer_docker
+    summary: Ship v3.12.0 stable without moving any Docker tag; Docker follows later.
+    data:
+      moves_latest: false
+      finalizes_policy: "marks docker_stable_policy=finalized as 'no-move this release'"
+    agent_recommendation: false
+operator_signoff:
+  signed_by: ""
+  chosen_option: ""
+structural_invariants:
+  no_main_branch_auto_merge: true
+  latest_move_is_operator_only: true
+  agent_must_not_self_resolve: true

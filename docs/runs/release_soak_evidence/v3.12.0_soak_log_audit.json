@@ -3,7 +3,7 @@
   "audit_result": "pass",
   "blockers": [],
   "command": "python tools/run_release_soak_log_audit.py",
-  "ended_at_utc": "2026-05-22T19:58:04Z",
+  "ended_at_utc": "2026-05-22T22:54:11Z",
   "error_count": 0,
   "error_log_clean": true,
   "schema_version": "waggledance.release_soak_log_audit.v1",
@@ -15,7 +15,7 @@
   ],
   "source_hashes": {
     "docs/runs/error_log.jsonl": "sha256:dd605e2020d6dfc7e3cd4a6af83fecb94def32bdd5ab05937eff0351f159f822",
-    "docs/runs/release_soak_evidence/v3.12.0_history.jsonl": "sha256:73a3ec9441ae5039f0faa1e5e936f2e7d8080109592f1072c7e3560f548a166d"
+    "docs/runs/release_soak_evidence/v3.12.0_history.jsonl": "sha256:78507354c17c0f17e3d3c8bb3ae7db33c8e71111f127cb6fecf70d0fb9df3258"
   },
   "started_at_utc": "2026-05-10T00:00:00Z",
   "target_version": "v3.12.0",

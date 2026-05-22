@@ -14,14 +14,14 @@ LOCKED_RELEASE_FLOORS = {
     "pytest": Version("9.0.3"),
 }
 LOW_RISK_OSV_FIXED_FLOORS = {
-    "cryptography": Version("46.0.6"),
+    "cryptography": Version("46.0.7"),
     "diffusers": Version("0.38.0"),
-    "gitpython": Version("3.1.48"),
+    "gitpython": Version("3.1.50"),
     "idna": Version("3.15"),
     "lxml": Version("6.1.0"),
     "nltk": Version("3.9.4"),
     "pygments": Version("2.20.0"),
-    "pypdf": Version("6.9.2"),
+    "pypdf": Version("6.10.2"),
     "python-dotenv": Version("1.2.2"),
     "requests": Version("2.33.0"),
     "urllib3": Version("2.7.0"),

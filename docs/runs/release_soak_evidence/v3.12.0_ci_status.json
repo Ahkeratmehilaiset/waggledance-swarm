@@ -1,0 +1,108 @@
+{
+  "blockers": [],
+  "ci_status": "pass",
+  "commit": "8a512ca17097f14ea72dc3e60e97e279fc886451",
+  "generated_at_utc": "2026-05-22T13:39:01Z",
+  "required_jobs": [
+    {
+      "job": "test (3.11)",
+      "workflow": "WaggleDance CI"
+    },
+    {
+      "job": "test (3.12)",
+      "workflow": "WaggleDance CI"
+    },
+    {
+      "job": "test (3.13)",
+      "workflow": "WaggleDance CI"
+    },
+    {
+      "job": "security-scan",
+      "workflow": "WaggleDance CI"
+    },
+    {
+      "job": "unified",
+      "workflow": "Tests"
+    }
+  ],
+  "runs": [
+    {
+      "conclusion": "success",
+      "created_at_utc": "2026-05-22T13:21:32Z",
+      "event": "push",
+      "head_sha": "8a512ca17097f14ea72dc3e60e97e279fc886451",
+      "jobs": [
+        {
+          "completed_at_utc": "2026-05-22T13:28:35Z",
+          "conclusion": "success",
+          "database_id": 77388390312,
+          "name": "test (3.11)",
+          "started_at_utc": "2026-05-22T13:21:34Z",
+          "status": "completed",
+          "url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/runs/26290282176/job/77388390312"
+        },
+        {
+          "completed_at_utc": "2026-05-22T13:21:40Z",
+          "conclusion": "success",
+          "database_id": 77388390371,
+          "name": "security-scan",
+          "started_at_utc": "2026-05-22T13:21:34Z",
+          "status": "completed",
+          "url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/runs/26290282176/job/77388390371"
+        },
+        {
+          "completed_at_utc": "2026-05-22T13:27:59Z",
+          "conclusion": "success",
+          "database_id": 77388390389,
+          "name": "test (3.13)",
+          "started_at_utc": "2026-05-22T13:21:35Z",
+          "status": "completed",
+          "url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/runs/26290282176/job/77388390389"
+        },
+        {
+          "completed_at_utc": "2026-05-22T13:29:10Z",
+          "conclusion": "success",
+          "database_id": 77388390642,
+          "name": "test (3.12)",
+          "started_at_utc": "2026-05-22T13:21:35Z",
+          "status": "completed",
+          "url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/runs/26290282176/job/77388390642"
+        }
+      ],
+      "run_id": 26290282176,
+      "status": "completed",
+      "updated_at_utc": "2026-05-22T13:29:11Z",
+      "url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/runs/26290282176",
+      "workflow_name": "WaggleDance CI"
+    },
+    {
+      "conclusion": "success",
+      "created_at_utc": "2026-05-22T13:21:32Z",
+      "event": "push",
+      "head_sha": "8a512ca17097f14ea72dc3e60e97e279fc886451",
+      "jobs": [
+        {
+          "completed_at_utc": "2026-05-22T13:29:53Z",
+          "conclusion": "success",
+          "database_id": 77388390211,
+          "name": "unified",
+          "started_at_utc": "2026-05-22T13:21:34Z",
+          "status": "completed",
+          "url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/runs/26290282179/job/77388390211"
+        }
+      ],
+      "run_id": 26290282179,
+      "status": "completed",
+      "updated_at_utc": "2026-05-22T13:29:54Z",
+      "url": "https://github.com/Ahkeratmehilaiset/waggledance-swarm/actions/runs/26290282179",
+      "workflow_name": "Tests"
+    }
+  ],
+  "schema_version": "waggledance.release_ci_status.v1",
+  "source": {
+    "collector": "gh run list + gh run view",
+    "repo": "Ahkeratmehilaiset/waggledance-swarm",
+    "type": "github_actions"
+  },
+  "target_version": "v3.12.0"
+}

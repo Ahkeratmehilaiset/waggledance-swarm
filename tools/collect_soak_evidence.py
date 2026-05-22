@@ -26,6 +26,9 @@ from tools.check_release_gate import (
     STATUS_PASS_FIELDS,
     parse_release_readiness,
 )
+from tools.run_release_ci_status_evidence import (
+    evaluate_report as evaluate_ci_status_report,
+)
 
 
 UNKNOWN_STATUS = "unknown"
@@ -63,6 +66,7 @@ AXIS_B_QUALITY_FLOOR = 0.74
 AXIS_B_MISMATCHED_BASELINE_QUALITY = 0.5
 AXIS_B_MINIMUM_BASELINE_DELTA = 0.20
 AXIS_B_PER_CELL_QUALITY_FLOOR = 0.6
+CI_STATUS_EVIDENCE = "v3.12.0_ci_status.json"
 SOAK_LOG_AUDIT = "v3.12.0_soak_log_audit.json"
 SOAK_LOG_AUDIT_SCHEMA_VERSION = "waggledance.release_soak_log_audit.v1"
 SOAK_LOG_AUDIT_COUNT_BLOCKERS = {
@@ -381,6 +385,17 @@ def _axis_b_hex_eval_status(evidence_root: Path) -> str:
     return "pass"
 
 
+def _ci_status(evidence_root: Path, expected_commit: str | None) -> str:
+    report = _read_json(evidence_root / CI_STATUS_EVIDENCE)
+    if report is None:
+        return UNKNOWN_STATUS
+    blockers = evaluate_ci_status_report(
+        report,
+        expected_commit=expected_commit if expected_commit else None,
+    )
+    return "pass" if not blockers else BLOCKED_STATUS
+
+
 def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
     fail_closed = {"silent_failures": None, "error_log_clean": False}
     report = _read_json(evidence_root / SOAK_LOG_AUDIT)
@@ -442,12 +457,14 @@ def local_artifact_evidence_fields(
     *,
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
+    commit: str | None = None,
 ) -> dict[str, Any]:
     """Derive release evidence fields from local artifacts without manual stubs."""
 
     evidence_root = Path(evidence_root)
     release_notes = Path(release_notes)
     return {
+        "ci_status": _ci_status(evidence_root, commit),
         "profile_s_smoke": _profile_s_smoke_status(evidence_root),
         "security_privacy_gate": _security_privacy_status(evidence_root),
         "axis_a_regression": _axis_a_solver_scale_status(evidence_root),
@@ -463,12 +480,14 @@ def local_artifact_statuses(
     *,
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
+    commit: str | None = None,
 ) -> dict[str, str]:
     """Derive release statuses from local artifacts without manual stubs."""
 
     fields = local_artifact_evidence_fields(
         evidence_root=evidence_root,
         release_notes=release_notes,
+        commit=commit,
     )
     return {
         field: value
@@ -522,6 +541,7 @@ def build_soak_evidence(
     readiness = _read_readiness(Path(release_readiness))
     started_at_utc = started_at_utc or _utc_midnight(readiness.soak_start)
     ended_at_utc = ended_at_utc or dt.datetime.now(dt.UTC)
+    evidence_commit = commit if commit is not None else _current_commit()
     status_values = {field: UNKNOWN_STATUS for field in STATUS_PASS_FIELDS}
 
     for field, value in (status_overrides or {}).items():
@@ -532,6 +552,7 @@ def build_soak_evidence(
         local_fields = local_artifact_evidence_fields(
             evidence_root=evidence_root,
             release_notes=release_notes,
+            commit=evidence_commit,
         )
         status_values.update({
             field: value
@@ -547,7 +568,7 @@ def build_soak_evidence(
     evidence: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "target_version": readiness.target_version,
-        "commit": commit if commit is not None else _current_commit(),
+        "commit": evidence_commit,
         "started_at_utc": _format_utc(started_at_utc),
         "ended_at_utc": _format_utc(ended_at_utc),
         "duration_hours": _duration_hours(started_at_utc, ended_at_utc),

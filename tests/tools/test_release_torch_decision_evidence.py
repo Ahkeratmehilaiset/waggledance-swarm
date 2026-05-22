@@ -377,7 +377,7 @@ def test_main_uses_signed_pack(tmp_path) -> None:
     assert report["implementation_authorization"]["pip_audit_skip_is_not_clean"] is True
 
 
-def test_main_current_unsigned_pack_stays_draft(tmp_path) -> None:
+def test_main_current_signed_pack_authorizes_implementation_not_gate(tmp_path) -> None:
     output = tmp_path / "torch_decision.json"
 
     rc = main([
@@ -392,5 +392,13 @@ def test_main_current_unsigned_pack_stays_draft(tmp_path) -> None:
 
     assert rc == 0
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["torch_decision_status"] == "draft"
-    assert report["blockers"] == ["operator_decision_pack_unsigned_or_invalid"]
+    assert report["torch_decision_status"] == "implementation_authorized"
+    assert report["release_gate_effect"] == "none"
+    assert report["security_privacy_gate_status"] == "unchanged"
+    assert report["blockers"] == []
+    auth = report["implementation_authorization"]
+    assert auth["chosen_option"] == "A2_cu126"
+    assert auth["implementation_authorized"] is True
+    assert auth["security_privacy_gate_pass_authorized"] is False
+    assert auth["clean_osv_or_pip_audit_required"] is True
+    assert auth["operator_id"] == "jani"

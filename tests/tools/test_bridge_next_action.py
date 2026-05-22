@@ -309,6 +309,34 @@ def test_reported_handoff_closes_round_two_request() -> None:
     assert report["open_incoming_count"] == 0
 
 
+def test_approved_decision_closes_review_requested_handoff() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-22T09:19:29Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "handoff",
+            "task_id": "bridge-loop-root-parity-fixes-2026-05-22",
+            "status": "review_requested",
+            "message": "requesting RCO",
+        },
+        {
+            "ts_utc": "2026-05-22T09:30:53Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "decision",
+            "task_id": "bridge-loop-root-parity-fixes-2026-05-22",
+            "status": "approved",
+            "message": "RCO approved",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_ack_status_with_already_substring_is_not_open_request() -> None:
     events = [
         {

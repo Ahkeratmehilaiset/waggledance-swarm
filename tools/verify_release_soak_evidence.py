@@ -21,6 +21,8 @@ from tools.collect_soak_evidence import (
     build_soak_evidence,
 )
 
+_MISSING = object()
+
 
 def _parse_timestamp(value: object) -> dt.datetime:
     if not isinstance(value, str) or not value.strip():
@@ -81,7 +83,9 @@ def build_report(
         }
 
     for field in sorted(set(actual) | set(expected)):
-        if actual.get(field) != expected.get(field):
+        actual_value = actual[field] if field in actual else _MISSING
+        expected_value = expected[field] if field in expected else _MISSING
+        if actual_value != expected_value:
             mismatched_fields.append(field)
             blockers.append(f"field_mismatch:{field}")
 

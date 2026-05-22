@@ -1,0 +1,12 @@
+{
+  "evidence_manifest_contract_version": "wd.v12.rival_local_evidence_manifest.v1",
+  "rival": "Microsoft AGT",
+  "pinned_revision": "github:microsoft/agent-governance-toolkit@e122e47180d618b546b825c0c3103132e00ada3c",
+  "local_artifact_path": "artifacts/microsoft-agt-local-smoke.json",
+  "local_artifact_sha256": "sha256:47dc69984c462a61d3559781ee1c4f733d0b3475ebe729f741552e5feb4def75",
+  "smoke_command": "C:\\Python\\emailknow-venv\\Scripts\\python.exe -c \"import sys; sys.path.insert(0, r'C:\\tmp\\wd-rival-sources\\agent-governance-toolkit\\agent-governance-python\\agent-os\\src'); from agent_os.policies import PolicyEvaluator, PolicyDocument, PolicyRule, PolicyCondition, PolicyAction, PolicyOperator, PolicyDefaults; doc=PolicyDocument(name='wd-agt-smoke', version='1.0', defaults=PolicyDefaults(action=PolicyAction.ALLOW), rules=[PolicyRule(name='block-dangerous-tools', condition=PolicyCondition(field='tool_name', operator=PolicyOperator.IN, value=['delete_file','execute_code']), action=PolicyAction.DENY, priority=100)]); ev=PolicyEvaluator(policies=[doc]); allow=ev.evaluate({'tool_name':'web_search'}); deny=ev.evaluate({'tool_name':'delete_file'}); BrokenList=type('BrokenList',(list,), {'__iter__': lambda self: (_ for _ in ()).throw(RuntimeError('forced smoke failure'))}); failed=PolicyEvaluator(); failed.policies=BrokenList(); fail=failed.evaluate({'tool_name':'web_search'}); assert allow.allowed is True and deny.allowed is False and deny.action == 'deny' and deny.matched_rule == 'block-dangerous-tools' and fail.allowed is False and fail.action == 'deny'\"",
+  "smoke_result": "passed",
+  "cloud_dependency": false,
+  "evidence_type": "local_smoke",
+  "notes": "Pinned Microsoft AGT local smoke against official repo HEAD e122e47180d618b546b825c0c3103132e00ada3c. The smoke imports the local Python agent-os policy engine from the cloned source tree, verifies a deny rule for delete_file, verifies a benign allow control path, and forces an evaluator iteration error to confirm deny/fail-closed behavior. It does not validate AGT identity, sandbox, SRE, MCP, OPA, Cedar, cloud, or multi-language claims."
+}

@@ -46,9 +46,16 @@ REQUIRED_EVIDENCE_ARTIFACT_FIELDS = (
     "offline",
     "ok",
     "evidence_type",
+    "observations",
 )
 PASSING_SMOKE_RESULT = "passed"
 ALLOWED_EVIDENCE_TYPES = {"local_inspection", "local_smoke"}
+REQUIRED_OBSERVATIONS_BY_RIVAL = {
+    "JamJet": ("policy_audit_or_replay_smoke",),
+    "Asqav": ("local_sign_or_hash_chain_smoke",),
+    "Microsoft AGT": ("policy_deny_smoke", "fail_closed_error_path_smoke"),
+    "Preloop": ("mcp_allow_deny_approval_smoke",),
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -196,6 +203,10 @@ def build_rival_local_check_matrix(
         "evidence_artifact_contract_version": EVIDENCE_ARTIFACT_CONTRACT_VERSION,
         "required_evidence_fields": list(REQUIRED_EVIDENCE_FIELDS),
         "required_evidence_artifact_fields": list(REQUIRED_EVIDENCE_ARTIFACT_FIELDS),
+        "required_observations_by_rival": {
+            rival: list(observations)
+            for rival, observations in REQUIRED_OBSERVATIONS_BY_RIVAL.items()
+        },
         "checks": rows,
     }
 
@@ -303,11 +314,18 @@ def render_markdown(report: dict[str, Any]) -> str:
             "file under the evidence directory and `local_artifact_sha256` must",
             "match that file. The artifact itself must be a machine-readable",
             "offline evidence JSON whose rival, pinned revision, evidence type,",
-            "and pass status match the manifest.",
+            "pass status, and rival-specific observations match the manifest.",
             "",
             "## Required Evidence Artifact Fields",
             "",
             ", ".join(f"`{field}`" for field in REQUIRED_EVIDENCE_ARTIFACT_FIELDS),
+            "",
+            "## Required Rival Observations",
+            "",
+            ", ".join(
+                f"`{rival}: {', '.join(observations)}`"
+                for rival, observations in REQUIRED_OBSERVATIONS_BY_RIVAL.items()
+            ),
             "",
         ]
     )
@@ -440,6 +458,14 @@ def _build_manifest_template(check: dict[str, Any]) -> dict[str, Any]:
             "offline": True,
             "ok": True,
             "evidence_type": "same as manifest evidence_type",
+            "observations": {
+                observation: {
+                    "ok": True,
+                    "offline": True,
+                    "summary": "TODO_OBSERVATION_SUMMARY",
+                }
+                for observation in REQUIRED_OBSERVATIONS_BY_RIVAL.get(rival, ())
+            },
         },
         "notes": (
             "Template only. Replace TODO values and write the local artifact "
@@ -552,6 +578,30 @@ def _validate_artifact_payload(
         return "local artifact offline is not true"
     if artifact.get("ok") is not True:
         return "local artifact ok is not true"
+    observations = artifact.get("observations")
+    if not isinstance(observations, dict):
+        return "local artifact observations must be an object"
+    required_observations = REQUIRED_OBSERVATIONS_BY_RIVAL.get(
+        str(manifest.get("rival")),
+        (),
+    )
+    missing_observations = [
+        name
+        for name in required_observations
+        if name not in observations
+    ]
+    if missing_observations:
+        return "local artifact missing required observations: " + ", ".join(
+            missing_observations
+        )
+    for name in required_observations:
+        observation = observations.get(name)
+        if not isinstance(observation, dict):
+            return f"local artifact observation {name} must be an object"
+        if observation.get("ok") is not True:
+            return f"local artifact observation {name} ok is not true"
+        if observation.get("offline") is not True:
+            return f"local artifact observation {name} offline is not true"
     return None
 
 

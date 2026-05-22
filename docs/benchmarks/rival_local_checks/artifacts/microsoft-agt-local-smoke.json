@@ -1,0 +1,53 @@
+{
+  "evidence_artifact_contract_version": "wd.v12.rival_local_evidence_artifact.v1",
+  "rival": "Microsoft AGT",
+  "pinned_revision": "github:microsoft/agent-governance-toolkit@e122e47180d618b546b825c0c3103132e00ada3c",
+  "smoke_result": "passed",
+  "offline": true,
+  "ok": true,
+  "evidence_type": "local_smoke",
+  "retrieved_at_utc": "2026-05-22T18:21:56Z",
+  "source": {
+    "official_repository": "https://github.com/microsoft/agent-governance-toolkit",
+    "local_clone_path": "C:/tmp/wd-rival-sources/agent-governance-toolkit",
+    "source_paths": [
+      "agent-governance-python/agent-os/src/agent_os/policies/evaluator.py",
+      "agent-governance-python/agent-os/src/agent_os/policies/schema.py",
+      "agent-governance-python/agent-os/tests/test_spec_policy_engine_conformance.py"
+    ]
+  },
+  "runtime": {
+    "python": "3.13.7",
+    "pydantic": "2.13.4",
+    "network_required": false,
+    "api_keys_required": false
+  },
+  "observations": {
+    "policy_deny_smoke": {
+      "ok": true,
+      "offline": true,
+      "summary": "Pinned AGT PolicyEvaluator denied a dangerous tool while allowing a benign control action.",
+      "policy_name": "wd-agt-smoke",
+      "rule_name": "block-dangerous-tools",
+      "dangerous_tool": "delete_file",
+      "dangerous_tool_allowed": false,
+      "dangerous_tool_action": "deny",
+      "dangerous_tool_matched_rule": "block-dangerous-tools",
+      "control_tool": "web_search",
+      "control_tool_allowed": true
+    },
+    "fail_closed_error_path_smoke": {
+      "ok": true,
+      "offline": true,
+      "summary": "A forced evaluator iteration error returned deny instead of allow.",
+      "forced_error": "BrokenList.__iter__ raised RuntimeError",
+      "actual_allowed": false,
+      "actual_action": "deny",
+      "reason_contains": [
+        "access denied",
+        "fail closed"
+      ]
+    }
+  },
+  "honesty_boundary": "This is one local policy-engine smoke against a pinned AGT clone. It proves the observed Python PolicyEvaluator deny and fail-closed paths only; it does not validate AGT identity, sandbox, SRE, MCP, OPA, Cedar, cloud, or multi-language claims."
+}

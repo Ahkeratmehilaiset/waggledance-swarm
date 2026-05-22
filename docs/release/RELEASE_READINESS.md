@@ -220,13 +220,23 @@ pass evidence for CI, smoke, security/privacy, Axis A/B, Docker policy,
 release-note anti-claims, silent failures, and clean logs before stable
 promotion.
 
+The soak evidence `commit` field is the audited evidence-subject commit:
+the source tree whose CI, smoke, security/privacy, Axis A/B, Docker, and
+release-note evidence was collected. It is not required to equal the
+commit that merely stores the evidence file. This avoids an impossible
+self-reference loop where a committed evidence file would need to contain
+the SHA of the commit that includes that same file. If product/runtime
+code changes after the evidence-subject commit, collect fresh evidence.
+Evidence-only or documentation-only PRs do not reset the subject commit
+when their own CI is green and the release gate still validates.
+
 Required soak evidence schema:
 
 ```json
 {
   "schema_version": "waggledance.release_soak.v1",
   "target_version": "v3.12.0",
-  "commit": "<tag-commit-sha>",
+  "commit": "<evidence-subject-commit-sha>",
   "started_at_utc": "2026-05-10T00:00:00Z",
   "ended_at_utc": "2026-05-24T00:00:00Z",
   "duration_hours": 336,

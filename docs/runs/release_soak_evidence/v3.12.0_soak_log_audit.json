@@ -1,0 +1,17 @@
+{
+  "audit_id": "v3.12-soak-log-audit",
+  "audit_result": "blocked",
+  "blockers": [
+    "source_files_missing"
+  ],
+  "command": "python tools/run_release_soak_log_audit.py",
+  "ended_at_utc": "2026-05-22T12:54:32Z",
+  "error_count": 0,
+  "error_log_clean": false,
+  "schema_version": "waggledance.release_soak_log_audit.v1",
+  "silent_failure_count": 0,
+  "source_file_count": 0,
+  "source_files": [],
+  "started_at_utc": "2026-05-10T00:00:00Z",
+  "target_version": "v3.12.0"
+}

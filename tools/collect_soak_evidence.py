@@ -63,6 +63,12 @@ AXIS_B_QUALITY_FLOOR = 0.74
 AXIS_B_MISMATCHED_BASELINE_QUALITY = 0.5
 AXIS_B_MINIMUM_BASELINE_DELTA = 0.20
 AXIS_B_PER_CELL_QUALITY_FLOOR = 0.6
+SOAK_LOG_AUDIT = "v3.12.0_soak_log_audit.json"
+SOAK_LOG_AUDIT_SCHEMA_VERSION = "waggledance.release_soak_log_audit.v1"
+SOAK_LOG_AUDIT_COUNT_BLOCKERS = {
+    "errors_detected",
+    "silent_failures_detected",
+}
 REQUIRED_RELEASE_NOTE_ANTI_CLAIMS = (
     "Does **not** claim AGI, consciousness, model superiority",
     "States Docker `:latest` will remain `v3.8.0`",
@@ -375,12 +381,69 @@ def _axis_b_hex_eval_status(evidence_root: Path) -> str:
     return "pass"
 
 
-def local_artifact_statuses(
+def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
+    fail_closed = {"silent_failures": None, "error_log_clean": False}
+    report = _read_json(evidence_root / SOAK_LOG_AUDIT)
+    if report is None:
+        return fail_closed
+    if report.get("schema_version") != SOAK_LOG_AUDIT_SCHEMA_VERSION:
+        return fail_closed
+    if report.get("target_version") != "v3.12.0":
+        return fail_closed
+
+    source_files = report.get("source_files")
+    blockers = report.get("blockers")
+    if not isinstance(source_files, list) or not source_files:
+        return fail_closed
+    if not all(isinstance(item, str) and item.strip() for item in source_files):
+        return fail_closed
+    for item in source_files:
+        source = Path(item)
+        if not source.exists() or not source.is_file():
+            return fail_closed
+    if not isinstance(blockers, list):
+        return fail_closed
+    if not all(isinstance(item, str) for item in blockers):
+        return fail_closed
+    if any(item not in SOAK_LOG_AUDIT_COUNT_BLOCKERS for item in blockers):
+        return fail_closed
+
+    try:
+        started_at = _parse_timestamp(str(report.get("started_at_utc", "")))
+        ended_at = _parse_timestamp(str(report.get("ended_at_utc", "")))
+        silent_failures = int(report.get("silent_failure_count"))
+        error_count = int(report.get("error_count"))
+    except (TypeError, ValueError):
+        return fail_closed
+
+    if ended_at <= started_at or silent_failures < 0 or error_count < 0:
+        return fail_closed
+
+    audit_result = report.get("audit_result")
+    error_log_clean = (
+        audit_result == "pass"
+        and silent_failures == 0
+        and error_count == 0
+        and blockers == []
+        and report.get("error_log_clean") is True
+    )
+    if audit_result not in {"pass", "blocked"}:
+        return fail_closed
+    if audit_result == "pass" and not error_log_clean:
+        return fail_closed
+
+    return {
+        "silent_failures": silent_failures,
+        "error_log_clean": error_log_clean,
+    }
+
+
+def local_artifact_evidence_fields(
     *,
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
-) -> dict[str, str]:
-    """Derive release statuses from local artifacts without manual stubs."""
+) -> dict[str, Any]:
+    """Derive release evidence fields from local artifacts without manual stubs."""
 
     evidence_root = Path(evidence_root)
     release_notes = Path(release_notes)
@@ -392,6 +455,25 @@ def local_artifact_statuses(
         "release_notes_anti_claims": _release_notes_anti_claims_status(
             release_notes
         ),
+        **_soak_log_audit_fields(evidence_root),
+    }
+
+
+def local_artifact_statuses(
+    *,
+    evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
+    release_notes: Path | str = DEFAULT_RELEASE_NOTES,
+) -> dict[str, str]:
+    """Derive release statuses from local artifacts without manual stubs."""
+
+    fields = local_artifact_evidence_fields(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+    return {
+        field: value
+        for field, value in fields.items()
+        if field in STATUS_PASS_FIELDS and isinstance(value, str)
     }
 
 
@@ -447,12 +529,19 @@ def build_soak_evidence(
             raise ValueError(f"unknown release status field: {field}")
         status_values[field] = value
     if use_local_artifacts:
-        status_values.update(
-            local_artifact_statuses(
-                evidence_root=evidence_root,
-                release_notes=release_notes,
-            )
+        local_fields = local_artifact_evidence_fields(
+            evidence_root=evidence_root,
+            release_notes=release_notes,
         )
+        status_values.update({
+            field: value
+            for field, value in local_fields.items()
+            if field in STATUS_PASS_FIELDS and isinstance(value, str)
+        })
+        if "silent_failures" in local_fields:
+            silent_failures = local_fields["silent_failures"]
+        if "error_log_clean" in local_fields:
+            error_log_clean = bool(local_fields["error_log_clean"])
 
     required_hours = (readiness.soak_end - readiness.soak_start).days * 24
     evidence: dict[str, Any] = {

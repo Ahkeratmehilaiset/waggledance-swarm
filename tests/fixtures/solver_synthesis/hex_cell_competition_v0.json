@@ -1,0 +1,44 @@
+{
+  "capability_id": "frost-risk-detection",
+  "candidates": [
+    {
+      "candidate_id": "cand-alpha",
+      "solver_name": "alpha_threshold",
+      "cell_id": "thermal",
+      "score": 0.82,
+      "evidence_refs": ["eval:alpha", "replay:17"],
+      "spec_or_code": {
+        "kind": "threshold_rule",
+        "capability_id": "frost-risk-detection"
+      }
+    },
+    {
+      "candidate_id": "cand-beta",
+      "solver_name": "beta_threshold",
+      "cell_id": "thermal",
+      "score": 0.93,
+      "evidence_refs": ["eval:beta", "replay:17"],
+      "spec_or_code": {
+        "kind": "threshold_rule",
+        "capability_id": "frost-risk-detection"
+      }
+    },
+    {
+      "candidate_id": "cand-gamma",
+      "solver_name": "gamma_threshold",
+      "cell_id": "thermal",
+      "score": 0.93,
+      "evidence_refs": ["eval:gamma", "replay:17"],
+      "spec_or_code": {
+        "kind": "threshold_rule",
+        "capability_id": "frost-risk-detection"
+      }
+    }
+  ],
+  "expected": {
+    "competition_id": "hexcellcmp:thermal:frost-risk-detection:2096dcdf33be37da",
+    "evidence_digest": "sha256:2096dcdf33be37da1637ce6efdfbfe4f9c9cbab3d4570c71abdd5f8d6a9a4d6c",
+    "winner_id": "cand-beta",
+    "loser_ids": ["cand-gamma", "cand-alpha"]
+  }
+}

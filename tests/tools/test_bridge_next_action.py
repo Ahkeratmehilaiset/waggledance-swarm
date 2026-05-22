@@ -261,6 +261,54 @@ def test_done_verified_closes_incoming_request() -> None:
     assert report["open_incoming_count"] == 0
 
 
+def test_comma_separated_recipient_is_incoming_for_target_agent() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-22T08:52:04Z",
+            "agent": "claude",
+            "to": "codex,operator",
+            "type": "handoff",
+            "task_id": "multi-target-help",
+            "status": "help_requested",
+            "message": "codex and operator should see this",
+        }
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "multi-target-help"
+    assert report["open_incoming_count"] == 1
+
+
+def test_reported_handoff_closes_round_two_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-22T03:43:51Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "handoff",
+            "task_id": "idle-protocol-d4",
+            "status": "round_2_requested",
+            "message": "please answer round 2",
+        },
+        {
+            "ts_utc": "2026-05-22T08:55:06Z",
+            "agent": "codex",
+            "to": "claude,operator",
+            "type": "handoff",
+            "task_id": "idle-protocol-d4",
+            "status": "round_2_reported",
+            "message": "round 2 reported",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_ack_status_with_already_substring_is_not_open_request() -> None:
     events = [
         {

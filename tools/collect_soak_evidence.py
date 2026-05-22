@@ -30,7 +30,9 @@ from tools.run_release_ci_status_evidence import (
     evaluate_report as evaluate_ci_status_report,
 )
 from tools.run_release_docker_policy_evidence import (
+    build_report as build_docker_policy_report,
     evaluate_report as evaluate_docker_policy_report,
+    operator_authorization_from_decision_pack as docker_authorization_from_pack,
 )
 
 
@@ -71,6 +73,7 @@ AXIS_B_MINIMUM_BASELINE_DELTA = 0.20
 AXIS_B_PER_CELL_QUALITY_FLOOR = 0.6
 CI_STATUS_EVIDENCE = "v3.12.0_ci_status.json"
 DOCKER_POLICY_EVIDENCE = "v3.12.0_docker_policy.json"
+DOCKER_OPERATOR_DECISION_PACK = Path("docs/operator_inbox/docker-latest-promotion.yaml")
 SOAK_LOG_AUDIT = "v3.12.0_soak_log_audit.json"
 SOAK_LOG_AUDIT_SCHEMA_VERSION = "waggledance.release_soak_log_audit.v1"
 SOAK_LOG_AUDIT_COUNT_BLOCKERS = {
@@ -400,15 +403,46 @@ def _ci_status(evidence_root: Path, expected_commit: str | None) -> str:
     return "pass" if not blockers else BLOCKED_STATUS
 
 
-def _docker_stable_policy(evidence_root: Path, expected_commit: str | None) -> str:
-    report = _read_json(evidence_root / DOCKER_POLICY_EVIDENCE)
-    if report is None:
+def _default_docker_evidence_root(evidence_root: Path) -> bool:
+    normalized = evidence_root.as_posix().rstrip("/")
+    default = DEFAULT_EVIDENCE_ROOT.as_posix()
+    return normalized == default or normalized.endswith("/" + default)
+
+
+def _docker_stable_policy_from_operator_pack(expected_commit: str | None) -> str:
+    if not expected_commit or not DOCKER_OPERATOR_DECISION_PACK.exists():
         return "draft"
+    authorization = docker_authorization_from_pack(
+        DOCKER_OPERATOR_DECISION_PACK,
+        commit=expected_commit,
+        target_version="v3.12.0",
+    )
+    if authorization is None:
+        return "draft"
+    report = build_docker_policy_report(
+        source_root=Path("."),
+        commit=expected_commit,
+        operator_authorization=authorization,
+    )
     blockers = evaluate_docker_policy_report(
         report,
-        expected_commit=expected_commit if expected_commit else None,
+        expected_commit=expected_commit,
     )
     return "finalized" if not blockers else "draft"
+
+
+def _docker_stable_policy(evidence_root: Path, expected_commit: str | None) -> str:
+    report = _read_json(evidence_root / DOCKER_POLICY_EVIDENCE)
+    if report is not None:
+        blockers = evaluate_docker_policy_report(
+            report,
+            expected_commit=expected_commit if expected_commit else None,
+        )
+        if not blockers:
+            return "finalized"
+    if _default_docker_evidence_root(evidence_root):
+        return _docker_stable_policy_from_operator_pack(expected_commit)
+    return "draft"
 
 
 def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:

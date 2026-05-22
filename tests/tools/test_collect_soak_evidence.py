@@ -521,6 +521,16 @@ def test_local_artifacts_can_finalize_docker_policy_from_artifact(tmp_path) -> N
     assert evidence["docker_stable_policy"] == "finalized"
 
 
+def test_local_artifacts_can_finalize_docker_policy_from_signed_operator_pack() -> None:
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        use_local_artifacts=True,
+    )
+
+    assert evidence["docker_stable_policy"] == "finalized"
+
+
 def test_local_artifacts_override_manual_docker_policy_stub_when_artifact_missing(
     tmp_path,
 ) -> None:

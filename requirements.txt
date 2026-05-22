@@ -14,7 +14,7 @@ chromadb>=1.0.0
 
 # === TRANSLATION (Opus-MT Finnish <-> English) ===
 transformers>=4.40.0
-torch>=2.1.0
+torch>=2.11.0
 sentencepiece>=0.1.99
 
 # === SEARCH & WEB ===
@@ -30,7 +30,7 @@ anthropic>=0.30.0
 # peft>=0.11.0               # LoRA adapters
 # accelerate>=0.30.0         # Training acceleration
 # bitsandbytes>=0.43.0       # 4-bit quantization (QLoRA)
-# Note: requires torch>=2.1.0 (already in requirements)
+# Note: requires torch>=2.11.0 (already in requirements)
 
 # === OPTIONAL: Voice interface (Phase 7) ===
 # openai-whisper>=20231117     # STT

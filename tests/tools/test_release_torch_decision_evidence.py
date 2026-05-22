@@ -52,7 +52,7 @@ def _write_pack(
         "  - id: A2_cu126\n"
         "    summary: CUDA 12.6 wheels\n"
         "    data:\n"
-        '      packages: ["torch==2.11.0+cu126", "torchvision==0.27.0+cu126", "torchaudio==2.11.0+cu126"]\n'
+        '      packages: ["torch==2.11.0+cu126", "torchvision==0.26.0+cu126", "torchaudio==2.11.0+cu126"]\n'
         f'      index_url: "{a2_index_url}"\n'
         "      fixes_osv_vulns: true\n"
         "      keeps_gpu: true\n"
@@ -174,6 +174,11 @@ def test_signed_cu126_pack_requires_xformers_and_driver_verification(tmp_path) -
     assert auth["lock_followups_required"] == [
         "torchao_compatible_with_torch_2.11",
         "xformers_cu126_wheel_or_drop",
+    ]
+    assert auth["packages"] == [
+        "torch==2.11.0+cu126",
+        "torchvision==0.26.0+cu126",
+        "torchaudio==2.11.0+cu126",
     ]
     assert auth["index_url"] == "https://download.pytorch.org/whl/cu126"
 

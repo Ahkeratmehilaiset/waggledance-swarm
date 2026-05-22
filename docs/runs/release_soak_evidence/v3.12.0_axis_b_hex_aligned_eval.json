@@ -1,0 +1,113 @@
+{
+  "benchmark_id": "v3.12-axis-b-hex-aligned-eval",
+  "blockers": [],
+  "command": "python tools/run_release_axis_b_gate.py",
+  "corpus": {
+    "cells": [
+      "bee_ops",
+      "environment",
+      "home_comfort",
+      "hub",
+      "logistics",
+      "production",
+      "safety_security"
+    ],
+    "files": 7,
+    "oracle_dir": "tests\\oracle_hex",
+    "total_negative": 35,
+    "total_positive": 105
+  },
+  "micro_neg": 35,
+  "micro_neg_total": 35,
+  "micro_pos": 52,
+  "micro_pos_total": 105,
+  "per_file": [
+    {
+      "cell": "bee_ops",
+      "file": "bee_ops.yaml",
+      "file_score": 0.7,
+      "neg_correct": 5,
+      "neg_score": 1.0,
+      "neg_total": 5,
+      "pos_correct": 6,
+      "pos_score": 0.4,
+      "pos_total": 15
+    },
+    {
+      "cell": "environment",
+      "file": "environment.yaml",
+      "file_score": 0.7667,
+      "neg_correct": 5,
+      "neg_score": 1.0,
+      "neg_total": 5,
+      "pos_correct": 8,
+      "pos_score": 0.5333,
+      "pos_total": 15
+    },
+    {
+      "cell": "home_comfort",
+      "file": "home_comfort.yaml",
+      "file_score": 0.7,
+      "neg_correct": 5,
+      "neg_score": 1.0,
+      "neg_total": 5,
+      "pos_correct": 6,
+      "pos_score": 0.4,
+      "pos_total": 15
+    },
+    {
+      "cell": "hub",
+      "file": "hub.yaml",
+      "file_score": 1.0,
+      "neg_correct": 5,
+      "neg_score": 1.0,
+      "neg_total": 5,
+      "pos_correct": 15,
+      "pos_score": 1.0,
+      "pos_total": 15
+    },
+    {
+      "cell": "logistics",
+      "file": "logistics.yaml",
+      "file_score": 0.7333,
+      "neg_correct": 5,
+      "neg_score": 1.0,
+      "neg_total": 5,
+      "pos_correct": 7,
+      "pos_score": 0.4667,
+      "pos_total": 15
+    },
+    {
+      "cell": "production",
+      "file": "production.yaml",
+      "file_score": 0.6333,
+      "neg_correct": 5,
+      "neg_score": 1.0,
+      "neg_total": 5,
+      "pos_correct": 4,
+      "pos_score": 0.2667,
+      "pos_total": 15
+    },
+    {
+      "cell": "safety_security",
+      "file": "safety_security.yaml",
+      "file_score": 0.7,
+      "neg_correct": 5,
+      "neg_score": 1.0,
+      "neg_total": 5,
+      "pos_correct": 6,
+      "pos_score": 0.4,
+      "pos_total": 15
+    }
+  ],
+  "quality": 0.7476,
+  "result": "pass",
+  "schema_version": "waggledance.axis_b_hex_eval.v1",
+  "target_version": "v3.12.0",
+  "thresholds": {
+    "minimum_baseline_delta": 0.2,
+    "mismatched_baseline_quality": 0.5,
+    "per_cell_quality_floor": 0.6,
+    "quality_floor": 0.74
+  }
+}

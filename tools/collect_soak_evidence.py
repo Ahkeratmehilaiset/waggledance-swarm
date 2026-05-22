@@ -46,6 +46,23 @@ FINAL_PIP_AUDIT_REPORTS = (
     "v3.12.0_pip_audit_report.json",
 )
 PRIVACY_PRECHECK = "v3.12.0_security_privacy_precheck.md"
+AXIS_A_SOLVER_SCALE_PROOF = (
+    Path("v3.12.0_axis_a_solver_scale") / "solver_scale_proof.json"
+)
+AXIS_B_HEX_ALIGNED_EVAL = "v3.12.0_axis_b_hex_aligned_eval.json"
+AXIS_B_EXPECTED_CELLS = {
+    "bee_ops",
+    "environment",
+    "home_comfort",
+    "hub",
+    "logistics",
+    "production",
+    "safety_security",
+}
+AXIS_B_QUALITY_FLOOR = 0.74
+AXIS_B_MISMATCHED_BASELINE_QUALITY = 0.5
+AXIS_B_MINIMUM_BASELINE_DELTA = 0.20
+AXIS_B_PER_CELL_QUALITY_FLOOR = 0.6
 REQUIRED_RELEASE_NOTE_ANTI_CLAIMS = (
     "Does **not** claim AGI, consciousness, model superiority",
     "States Docker `:latest` will remain `v3.8.0`",
@@ -161,8 +178,15 @@ def _security_privacy_status(evidence_root: Path) -> str:
     bandit_report = _first_existing(evidence_root, FINAL_BANDIT_REPORTS)
     pip_audit_report = _first_existing(evidence_root, FINAL_PIP_AUDIT_REPORTS)
     privacy_precheck = evidence_root / PRIVACY_PRECHECK
+    partial_release_evidence = (
+        bandit_report is not None
+        or pip_audit_report is not None
+        or privacy_precheck.exists()
+    )
 
     if bandit_report is None or pip_audit_report is None:
+        if partial_release_evidence:
+            return BLOCKED_STATUS
         return UNKNOWN_STATUS
 
     bandit_clean = _bandit_high_medium_clean(bandit_report)
@@ -170,7 +194,7 @@ def _security_privacy_status(evidence_root: Path) -> str:
     privacy_ok = _privacy_precheck_ok(privacy_precheck)
 
     if bandit_clean is None or pip_blockers is None or privacy_ok is None:
-        return UNKNOWN_STATUS
+        return BLOCKED_STATUS if partial_release_evidence else UNKNOWN_STATUS
     if not bandit_clean or pip_blockers > 0 or not privacy_ok:
         return BLOCKED_STATUS
     return "pass"
@@ -196,6 +220,161 @@ def _release_notes_anti_claims_status(path: Path) -> str:
     return "pass"
 
 
+def _axis_a_solver_scale_status(evidence_root: Path) -> str:
+    proof = _read_json(evidence_root / AXIS_A_SOLVER_SCALE_PROOF)
+    if proof is None:
+        return UNKNOWN_STATUS
+
+    try:
+        descriptors = int(proof.get("synthetic_solver_descriptors_total", 0))
+        lookups = int(proof.get("lookup_pass_count", 0))
+        hits = int(proof.get("lookup_capability_hits_total", -1))
+        fallback = int(proof.get("lookup_fifo_fallback_total", -1))
+        misses = int(proof.get("lookup_miss_total", -1))
+        warm_p99 = float(proof.get("lookup_p99_ms"))
+        cold = proof.get("lookup_cold_after_attach")
+        cold_p99 = (
+            float(cold.get("lookup_p99_ms")) if isinstance(cold, dict) else None
+        )
+    except (TypeError, ValueError):
+        return UNKNOWN_STATUS
+
+    stats = proof.get("hot_path_cache_stats")
+    if not isinstance(stats, dict):
+        return UNKNOWN_STATUS
+    try:
+        warm_hits = int(stats.get("warm_hits", -1))
+        cold_hits = int(stats.get("cold_hits_warmed", -1))
+    except (TypeError, ValueError):
+        return UNKNOWN_STATUS
+
+    try:
+        provider_jobs_delta = int(proof.get("provider_jobs_delta", -1))
+        builder_jobs_delta = int(proof.get("builder_jobs_delta", -1))
+    except (TypeError, ValueError):
+        return UNKNOWN_STATUS
+
+    if (
+        proof.get("production_hot_path_cache_attached") is not True
+        or proof.get("lookup_benchmark_shape") != "hot_path_cache_attached_warm_pass"
+        or proof.get("no_provider_credentials_required") is not True
+        or proof.get("no_runtime_network_required") is not True
+        or provider_jobs_delta != 0
+        or builder_jobs_delta != 0
+    ):
+        return BLOCKED_STATUS
+    if descriptors < 10_000 or lookups < 1_000:
+        return BLOCKED_STATUS
+    if hits != lookups or fallback != 0 or misses != 0:
+        return BLOCKED_STATUS
+    if warm_hits < lookups or cold_hits < lookups:
+        return BLOCKED_STATUS
+    if warm_p99 > 1.0 or cold_p99 is None or cold_p99 > 50.0:
+        return BLOCKED_STATUS
+    return "pass"
+
+
+def _axis_b_hex_eval_status(evidence_root: Path) -> str:
+    report = _read_json(evidence_root / AXIS_B_HEX_ALIGNED_EVAL)
+    if report is None:
+        return UNKNOWN_STATUS
+
+    if report.get("schema_version") != "waggledance.axis_b_hex_eval.v1":
+        return UNKNOWN_STATUS
+    corpus = report.get("corpus")
+    thresholds = report.get("thresholds")
+    if not isinstance(corpus, dict) or not isinstance(thresholds, dict):
+        return UNKNOWN_STATUS
+    try:
+        files = int(corpus.get("files", 0))
+        total_positive = int(corpus.get("total_positive", 0))
+        total_negative = int(corpus.get("total_negative", 0))
+        quality = float(report.get("quality"))
+        quality_floor = float(thresholds.get("quality_floor"))
+        baseline = float(thresholds.get("mismatched_baseline_quality"))
+        min_delta = float(thresholds.get("minimum_baseline_delta"))
+        per_cell_floor = float(thresholds.get("per_cell_quality_floor"))
+        micro_pos = int(report.get("micro_pos"))
+        micro_pos_total = int(report.get("micro_pos_total"))
+        micro_neg = int(report.get("micro_neg"))
+        micro_neg_total = int(report.get("micro_neg_total"))
+    except (TypeError, ValueError):
+        return UNKNOWN_STATUS
+
+    cells = corpus.get("cells")
+    if not isinstance(cells, list):
+        return BLOCKED_STATUS
+    per_file = report.get("per_file")
+    if not isinstance(per_file, list):
+        return UNKNOWN_STATUS
+    blockers = report.get("blockers")
+    if not isinstance(blockers, list):
+        return UNKNOWN_STATUS
+    if blockers:
+        return BLOCKED_STATUS
+    if files != 7 or total_positive != 105 or total_negative != 35:
+        return BLOCKED_STATUS
+    if set(cells) != AXIS_B_EXPECTED_CELLS:
+        return BLOCKED_STATUS
+    if (
+        quality_floor != AXIS_B_QUALITY_FLOOR
+        or baseline != AXIS_B_MISMATCHED_BASELINE_QUALITY
+        or min_delta != AXIS_B_MINIMUM_BASELINE_DELTA
+        or per_cell_floor != AXIS_B_PER_CELL_QUALITY_FLOOR
+    ):
+        return BLOCKED_STATUS
+    if (
+        micro_pos_total != total_positive
+        or micro_neg_total != total_negative
+        or micro_neg != total_negative
+    ):
+        return BLOCKED_STATUS
+    if len(per_file) != files:
+        return BLOCKED_STATUS
+    if (
+        quality < AXIS_B_QUALITY_FLOOR
+        or quality <= AXIS_B_MISMATCHED_BASELINE_QUALITY
+        + AXIS_B_MINIMUM_BASELINE_DELTA
+    ):
+        return BLOCKED_STATUS
+    seen_cells: set[str] = set()
+    pos_correct_total = 0
+    pos_total_seen = 0
+    neg_correct_total = 0
+    neg_total_seen = 0
+    for row in per_file:
+        if not isinstance(row, dict):
+            return UNKNOWN_STATUS
+        try:
+            cell = str(row.get("cell"))
+            file_score = float(row.get("file_score"))
+            pos_correct = int(row.get("pos_correct"))
+            pos_total = int(row.get("pos_total"))
+            neg_correct = int(row.get("neg_correct"))
+            neg_total = int(row.get("neg_total"))
+        except (TypeError, ValueError):
+            return UNKNOWN_STATUS
+        seen_cells.add(cell)
+        pos_correct_total += pos_correct
+        pos_total_seen += pos_total
+        neg_correct_total += neg_correct
+        neg_total_seen += neg_total
+        if file_score < AXIS_B_PER_CELL_QUALITY_FLOOR or neg_correct != neg_total:
+            return BLOCKED_STATUS
+    if seen_cells != AXIS_B_EXPECTED_CELLS:
+        return BLOCKED_STATUS
+    if (
+        pos_correct_total != micro_pos
+        or pos_total_seen != micro_pos_total
+        or neg_correct_total != micro_neg
+        or neg_total_seen != micro_neg_total
+    ):
+        return BLOCKED_STATUS
+    if report.get("result") != "pass":
+        return BLOCKED_STATUS
+    return "pass"
+
+
 def local_artifact_statuses(
     *,
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
@@ -208,6 +387,8 @@ def local_artifact_statuses(
     return {
         "profile_s_smoke": _profile_s_smoke_status(evidence_root),
         "security_privacy_gate": _security_privacy_status(evidence_root),
+        "axis_a_regression": _axis_a_solver_scale_status(evidence_root),
+        "axis_b_gate": _axis_b_hex_eval_status(evidence_root),
         "release_notes_anti_claims": _release_notes_anti_claims_status(
             release_notes
         ),

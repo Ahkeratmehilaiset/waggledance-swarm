@@ -13,6 +13,8 @@ import pytest
 
 from tools.bridge_loop_tick import (
     WAKEUP_ACT_NOW,
+    WAKEUP_IN_FLIGHT,
+    WAKEUP_QUIET,
     build_loop_tick,
     emit_peer_activation_event,
     evaluate_merge_ready,
@@ -249,15 +251,15 @@ def test_loop_tick_merge_ready_short_wakeup(tmp_path):
     assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
 
 
-def test_loop_tick_unblocked_work_short_wakeup(tmp_path):
+def test_loop_tick_genuinely_quiet_uses_long_wakeup(tmp_path):
     report = build_loop_tick(
         agent="claude", events=[], claims=[], inbox_dir=tmp_path,
         now_utc=NOW, snapshot_fn=None,
     )
     assert report["next_action"] == "claim_unblocked_work"
     assert report["merge_ready"] == []
-    assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
-    assert report["wakeup_reason"] == "unblocked work can be claimed"
+    assert report["recommended_wakeup_seconds"] == WAKEUP_QUIET
+    assert report["wakeup_reason"] == "quiet; no pending bridge work"
 
 
 def test_loop_tick_open_operator_pack_does_not_park_unblocked_work(tmp_path):
@@ -287,8 +289,8 @@ operator_signoff:
         "torch-cuda-vs-cpu"
     ]
     assert report["next_action"] == "claim_unblocked_work"
-    assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
-    assert report["wakeup_reason"] == "unblocked work can be claimed"
+    assert report["recommended_wakeup_seconds"] == WAKEUP_IN_FLIGHT
+    assert report["wakeup_reason"] == "operator pack open; check unblocked work soon"
 
 
 def test_loop_tick_open_peer_rco_is_answer_incoming(tmp_path):

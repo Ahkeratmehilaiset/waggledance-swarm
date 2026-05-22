@@ -573,6 +573,8 @@ def _recommended_wakeup(
         return {"seconds": WAKEUP_ACT_NOW, "reason": "actionable merge/RCO work pending"}
     if peer_activation and peer_activation.get("needed"):
         return {"seconds": WAKEUP_ACT_NOW, "reason": "peer activation needed"}
+    if next_action == "claim_unblocked_work":
+        return {"seconds": WAKEUP_ACT_NOW, "reason": "unblocked work can be claimed"}
     candidate_in_flight = any(
         "checks_not_green" in item.get("blockers", [])
         or "pr_status_error" in " ".join(item.get("blockers", []))

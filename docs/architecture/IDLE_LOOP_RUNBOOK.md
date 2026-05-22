@@ -236,8 +236,10 @@ runs `gh pr merge`) and reports an ordered worklist:
    fail-closed.
 5. **Adaptive wakeup** — schedule the next wakeup from
    `recommended_wakeup_seconds`: ~90s when there is actionable merge/RCO work,
-   peer activation is needed, ~240s when CI is in flight or a claim is active,
-   ~1800s when quiet (respecting the ~5-minute prompt-cache TTL).
+   peer activation is needed, or unblocked work can be claimed; ~240s when CI
+   is in flight or a claim is active; ~1800s only when quiet (respecting the
+   ~5-minute prompt-cache TTL). Open operator packs remain fail-closed but do
+   not lengthen the wakeup while unrelated unblocked work is available.
 
 This removes the need for a human "continue" poke between ticks and lets an
 RCO-passed PR merge in the same tick it becomes ready — while every mutation

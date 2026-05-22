@@ -19,7 +19,7 @@ sentencepiece>=0.1.99
 
 # === SEARCH & WEB ===
 duckduckgo-search>=6.0     # Web learning agent (Phase 9)
-aiohttp>=3.9.0             # Weather + electricity APIs (Phase 8)
+aiohttp>=3.13.4            # Weather + electricity APIs (Phase 8)
 feedparser>=6.0.11         # RSS feed monitor (Phase 8)
 
 # === OPTIONAL: Claude API distillation (Phase 9 Layer 4) ===
@@ -60,5 +60,5 @@ prometheus-client>=0.20.0      # /metrics endpoint for Prometheus/Grafana
 # PyMuPDF>=1.23.0              # fitz — PDF knowledge import
 networkx>=3.0
 pydantic>=2.0
-pytest>=7.0
+pytest>=9.0.3
 pytest-asyncio>=0.23.0

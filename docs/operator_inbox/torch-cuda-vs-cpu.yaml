@@ -42,8 +42,10 @@ options:
       functional_impact: "stable loses torch-dependent features (micro-model, opus-mt translation, LoRA)"
     agent_recommendation: false
 operator_signoff:
-  signed_by: ""
-  chosen_option: ""
+  signed_by: "operator:jani:2026-05-22T18:14:34Z"
+  chosen_option: "A2_cu126"
+  recorded_by: "claude"
+  note: "Operator chose A2_cu126 (keep GPU + fix vulns) and explicitly instructed Claude to record this signoff. Decision authority is the operator; Claude is the scribe. This authorizes the implementation only -- security_privacy_gate flips to pass only after the torch 2.11.0+cu126 lock change lands via PR and a fresh OSV/pip-audit is clean (+ xformers cu126 reconciliation; requires a CUDA 12.6 capable driver)."
 structural_invariants:
   no_main_branch_auto_merge: true
   dependency_change_lands_via_pr: true

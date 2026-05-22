@@ -598,7 +598,8 @@ class ControlPlaneDB:
         with self._lock:
             for table in all_table_names():
                 row = self._conn.execute(
-                    f"SELECT COUNT(*) AS c FROM {table}"  # table names are static
+                    # table names come from the static schema list.
+                    f"SELECT COUNT(*) AS c FROM {table}"  # nosec B608
                 ).fetchone()
                 counts[table] = int(row["c"])
             return ControlPlaneStats(table_counts=counts, schema_version=self.schema_version())
@@ -1000,7 +1001,8 @@ class ControlPlaneDB:
         params.append(job_id)
         with self._lock:
             self._conn.execute(
-                f"UPDATE provider_jobs SET {', '.join(sets)} WHERE id = ?",
+                # sets are fixed column fragments from this method.
+                f"UPDATE provider_jobs SET {', '.join(sets)} WHERE id = ?",  # nosec B608
                 params,
             )
             row = self._conn.execute(
@@ -1718,7 +1720,8 @@ class ControlPlaneDB:
             "FROM solver_capability_features cf "
             "JOIN solvers s ON s.id = cf.solver_id "
             "WHERE cf.family_kind = ? "
-            f"  AND (cf.feature_name, cf.feature_value) IN ({placeholders}) "
+            # placeholders are generated question-mark tuples.
+            f"  AND (cf.feature_name, cf.feature_value) IN ({placeholders}) "  # nosec B608
             "  AND s.status = 'auto_promoted' "
             "GROUP BY cf.solver_id "
             "HAVING match_count = ? "

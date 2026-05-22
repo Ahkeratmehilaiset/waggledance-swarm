@@ -86,7 +86,8 @@ class BuilderJobQueue:
         params.append(int(job_id))
         with self._cp._lock:  # noqa: SLF001
             self._cp._conn.execute(
-                f"UPDATE builder_jobs SET {', '.join(sets)} WHERE id = ?",
+                # sets are fixed column fragments from this method.
+                f"UPDATE builder_jobs SET {', '.join(sets)} WHERE id = ?",  # nosec B608
                 params,
             )
             row = self._cp._conn.execute(

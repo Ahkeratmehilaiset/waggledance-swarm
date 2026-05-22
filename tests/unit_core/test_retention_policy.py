@@ -154,6 +154,22 @@ class TestRetentionPolicySafety:
         assert len(report.errors) == 1
         assert report.rows_deleted.get("good.db:events") == 1
 
+    def test_rule_table_identifier_is_quoted_not_executed(self, tmp_path):
+        db = tmp_path / "test.db"
+        _make_table(db, "events")
+        _insert_rows(db, "events", [time.time() - 100 * 86400])
+        rule = RetentionRule(
+            db,
+            "events; DROP TABLE events; --",
+            "timestamp",
+            keep_days=30,
+        )
+
+        report = RetentionPolicy([rule]).run_once(dry_run=False)
+
+        assert len(report.errors) == 1
+        assert _row_count(db, "events") == 1
+
 
 # ── default_rules() filter ────────────────────────────────────────
 

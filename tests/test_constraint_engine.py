@@ -147,6 +147,36 @@ def run():
     else:
         FAIL_MSG("ConstraintResult all-clear message", fi_clean)
 
+    # 9. Capsule expression rules use the AST safe evaluator.
+    expression_rule = [{
+        "id": "capsule_heat_risk",
+        "expression": "temperature > 60 and battery_pct < 30",
+        "severity": "critical",
+        "message": "Heat and low battery",
+    }]
+    engine3 = ConstraintEngine()
+    engine3.load_rules(expression_rule)
+    expression_result = engine3.evaluate({"temperature": 72, "battery_pct": 12})
+    if expression_result.triggered_rules and expression_result.triggered_rules[0].rule_id == "capsule_heat_risk":
+        OK("Expression rule triggers through safe_eval")
+    else:
+        FAIL_MSG("Expression rule triggers through safe_eval", str(expression_result.all_results))
+
+    # 10. Unsafe expression payloads fail closed instead of executing.
+    unsafe_rule = [{
+        "id": "unsafe_expression",
+        "expression": "__import__('os').system('echo blocked')",
+        "severity": "critical",
+        "message": "Should never execute",
+    }]
+    engine4 = ConstraintEngine()
+    engine4.load_rules(unsafe_rule)
+    unsafe_result = engine4.evaluate({})
+    if not unsafe_result.triggered_rules and unsafe_result.all_results[0].severity == "ok":
+        OK("Unsafe expression payload fails closed")
+    else:
+        FAIL_MSG("Unsafe expression payload fails closed", str(unsafe_result.all_results))
+
 
 def main():
     print("\n=== test_constraint_engine ===")

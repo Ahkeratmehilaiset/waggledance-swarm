@@ -88,6 +88,18 @@ def _ollama_probe_timeout() -> float:
     return val
 
 
+def _ollama_tags_url(host: str) -> str:
+    """Build the Ollama tags endpoint URL after scheme validation."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(host)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Ollama host must use http or https")
+    if not parsed.netloc:
+        raise ValueError("Ollama host must include a network location")
+    return host.rstrip("/") + "/api/tags"
+
+
 def _check_ollama(host: str) -> tuple[bool, str]:
     """Quick Ollama health check.
 
@@ -102,10 +114,14 @@ def _check_ollama(host: str) -> tuple[bool, str]:
     import urllib.error
     import urllib.request
 
-    url = f"{host}/api/tags"
+    try:
+        url = _ollama_tags_url(host)
+    except ValueError as exc:
+        return False, str(exc)
     timeout = _ollama_probe_timeout()
     try:
-        resp = urllib.request.urlopen(url, timeout=timeout)
+        # URL scheme and netloc are validated by _ollama_tags_url.
+        resp = urllib.request.urlopen(url, timeout=timeout)  # nosec B310
         if resp.status == 200:
             return True, ""
         return False, f"HTTP {resp.status}"
@@ -156,7 +172,8 @@ def _print_banner(
     local_url = f"http://localhost:{port}"
     bind_str = f"{host}:{port}"
     lan_line = ""
-    if host in ("0.0.0.0", "::"):
+    # Wildcard bind is intentional for Docker/production; this branch only formats the banner.
+    if host in ("0.0.0.0", "::"):  # nosec B104
         lan_ip = _resolve_lan_ip()
         if lan_ip:
             lan_line = f"\n  |  LAN URL:   http://{lan_ip}:{port:<17}|"
@@ -191,7 +208,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
+        # Default wildcard bind is intentional for Docker/production entrypoints.
+        default="0.0.0.0",  # nosec B104
         help="Bind address (default: 0.0.0.0)",
     )
     parser.add_argument(

@@ -996,8 +996,11 @@ class OpusMTFallback:
             import torch
             _dev = "cuda" if torch.cuda.is_available() else "cpu"
             self._fi_en = {
-                "tokenizer": MarianTokenizer.from_pretrained(model_name),
-                "model": MarianMTModel.from_pretrained(model_name).half().to(_dev),
+                # local_files_only prevents unpinned Hub downloads.
+                "tokenizer": MarianTokenizer.from_pretrained(  # nosec B615
+                    model_name, local_files_only=True),
+                "model": MarianMTModel.from_pretrained(  # nosec B615
+                    model_name, local_files_only=True).half().to(_dev),
                 "device": _dev,
             }
             logger.info(f"FI→EN malli ladattu ({_dev})")
@@ -1010,8 +1013,11 @@ class OpusMTFallback:
             import torch
             _dev = "cuda" if torch.cuda.is_available() else "cpu"
             self._en_fi = {
-                "tokenizer": MarianTokenizer.from_pretrained(model_name),
-                "model": MarianMTModel.from_pretrained(model_name).half().to(_dev),
+                # local_files_only prevents unpinned Hub downloads.
+                "tokenizer": MarianTokenizer.from_pretrained(  # nosec B615
+                    model_name, local_files_only=True),
+                "model": MarianMTModel.from_pretrained(  # nosec B615
+                    model_name, local_files_only=True).half().to(_dev),
                 "device": _dev,
             }
             logger.info(f"EN→FI malli ladattu ({_dev})")

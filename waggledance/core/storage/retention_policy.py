@@ -28,6 +28,14 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
+def _quote_sqlite_identifier(identifier: str) -> str:
+    """Return a safely quoted SQLite identifier."""
+
+    if not identifier:
+        raise ValueError("empty SQLite identifier")
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 @dataclass(frozen=True)
 class RetentionRule:
     """One pruning rule.
@@ -154,10 +162,13 @@ def _apply_rule(
         raise FileNotFoundError(f"DB not found: {rule.db_path}")
     con = sqlite3.connect(str(rule.db_path))
     try:
+        quoted_table = _quote_sqlite_identifier(rule.table)
+        quoted_timestamp_column = _quote_sqlite_identifier(rule.timestamp_column)
         # Verify table + column exist before issuing the DELETE so we
         # never accidentally drop the wrong column on a schema drift.
         cols = {r[1] for r in con.execute(
-            f"PRAGMA table_info({rule.table})"
+            # identifier is quoted.
+            f"PRAGMA table_info({quoted_table})"  # nosec B608
         ).fetchall()}
         if not cols:
             raise ValueError(f"Table {rule.table!r} not found in {rule.db_path.name}")
@@ -169,15 +180,17 @@ def _apply_rule(
 
         if dry_run:
             row = con.execute(
-                f"SELECT COUNT(*) FROM {rule.table} "
-                f"WHERE {rule.timestamp_column} < ?",
+                # identifiers are quoted.
+                f"SELECT COUNT(*) FROM {quoted_table} "  # nosec B608
+                f"WHERE {quoted_timestamp_column} < ?",
                 (cutoff,),
             ).fetchone()
             return int(row[0]) if row else 0
 
         cur = con.execute(
-            f"DELETE FROM {rule.table} "
-            f"WHERE {rule.timestamp_column} < ?",
+            # identifiers are quoted.
+            f"DELETE FROM {quoted_table} "  # nosec B608
+            f"WHERE {quoted_timestamp_column} < ?",
             (cutoff,),
         )
         deleted = cur.rowcount or 0

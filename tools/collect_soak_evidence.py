@@ -29,6 +29,33 @@ from tools.check_release_gate import (
 
 
 UNKNOWN_STATUS = "unknown"
+BLOCKED_STATUS = "blocked"
+
+DEFAULT_EVIDENCE_ROOT = Path("docs/runs/release_soak_evidence")
+DEFAULT_RELEASE_NOTES = Path("docs/releases/v3.12.0.md")
+
+FINAL_BANDIT_REPORTS = (
+    "v3.12.0_bandit_report_after_static_hardening_zero_medium.json",
+    "v3.12.0_bandit_report.json",
+)
+FINAL_PIP_AUDIT_REPORTS = (
+    "v3.12.0_pip_audit_report_lock_after_prune_osv.json",
+    "v3.12.0_pip_audit_report_lock_after_prune.json",
+    "v3.12.0_pip_audit_report_after_fixable_deps.json",
+    "v3.12.0_pip_audit_report_after_direct_ci_deps.json",
+    "v3.12.0_pip_audit_report.json",
+)
+PRIVACY_PRECHECK = "v3.12.0_security_privacy_precheck.md"
+REQUIRED_RELEASE_NOTE_ANTI_CLAIMS = (
+    "Does **not** claim AGI, consciousness, model superiority",
+    "States Docker `:latest` will remain `v3.8.0`",
+)
+FORBIDDEN_RELEASE_NOTE_CLAIMS = (
+    "beats all competitors",
+    "branch isolation is solved",
+    "3d topology ships",
+    "per-cell sharding ships",
+)
 
 
 def _parse_timestamp(value: str) -> dt.datetime:
@@ -68,6 +95,125 @@ def _current_commit() -> str:
     return completed.stdout.strip()
 
 
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _first_existing(root: Path, names: tuple[str, ...]) -> Path | None:
+    for name in names:
+        candidate = root / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _bandit_high_medium_clean(report_path: Path) -> bool | None:
+    report = _read_json(report_path)
+    if report is None:
+        return None
+    totals = report.get("metrics", {}).get("_totals", {})
+    if not isinstance(totals, dict):
+        return None
+    try:
+        high = int(totals.get("SEVERITY.HIGH", 0))
+        medium = int(totals.get("SEVERITY.MEDIUM", 0))
+    except (TypeError, ValueError):
+        return None
+    return high == 0 and medium == 0
+
+
+def _pip_audit_blocker_count(report_path: Path) -> int | None:
+    report = _read_json(report_path)
+    if report is None:
+        return None
+    dependencies = report.get("dependencies")
+    if not isinstance(dependencies, list):
+        return None
+    count = 0
+    for dependency in dependencies:
+        if not isinstance(dependency, dict):
+            return None
+        if "skip_reason" in dependency:
+            count += 1
+            continue
+        vulns = dependency.get("vulns")
+        if not isinstance(vulns, list):
+            return None
+        count += len(vulns)
+    return count
+
+
+def _privacy_precheck_ok(path: Path) -> bool | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if "74 passed" in text and "SMOKE_OK" in text:
+        return True
+    return False
+
+
+def _security_privacy_status(evidence_root: Path) -> str:
+    bandit_report = _first_existing(evidence_root, FINAL_BANDIT_REPORTS)
+    pip_audit_report = _first_existing(evidence_root, FINAL_PIP_AUDIT_REPORTS)
+    privacy_precheck = evidence_root / PRIVACY_PRECHECK
+
+    if bandit_report is None or pip_audit_report is None:
+        return UNKNOWN_STATUS
+
+    bandit_clean = _bandit_high_medium_clean(bandit_report)
+    pip_blockers = _pip_audit_blocker_count(pip_audit_report)
+    privacy_ok = _privacy_precheck_ok(privacy_precheck)
+
+    if bandit_clean is None or pip_blockers is None or privacy_ok is None:
+        return UNKNOWN_STATUS
+    if not bandit_clean or pip_blockers > 0 or not privacy_ok:
+        return BLOCKED_STATUS
+    return "pass"
+
+
+def _profile_s_smoke_status(evidence_root: Path) -> str:
+    privacy_ok = _privacy_precheck_ok(evidence_root / PRIVACY_PRECHECK)
+    if privacy_ok is None:
+        return UNKNOWN_STATUS
+    return "pass" if privacy_ok else BLOCKED_STATUS
+
+
+def _release_notes_anti_claims_status(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return UNKNOWN_STATUS
+    missing = [claim for claim in REQUIRED_RELEASE_NOTE_ANTI_CLAIMS if claim not in text]
+    lowered = text.lower()
+    forbidden = [claim for claim in FORBIDDEN_RELEASE_NOTE_CLAIMS if claim in lowered]
+    if missing or forbidden:
+        return BLOCKED_STATUS
+    return "pass"
+
+
+def local_artifact_statuses(
+    *,
+    evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
+    release_notes: Path | str = DEFAULT_RELEASE_NOTES,
+) -> dict[str, str]:
+    """Derive release statuses from local artifacts without manual stubs."""
+
+    evidence_root = Path(evidence_root)
+    release_notes = Path(release_notes)
+    return {
+        "profile_s_smoke": _profile_s_smoke_status(evidence_root),
+        "security_privacy_gate": _security_privacy_status(evidence_root),
+        "release_notes_anti_claims": _release_notes_anti_claims_status(
+            release_notes
+        ),
+    }
+
+
 def _read_readiness(readiness_path: Path) -> Any:
     text = readiness_path.read_text(encoding="utf-8")
     readiness, blockers = parse_release_readiness(text)
@@ -104,6 +250,9 @@ def build_soak_evidence(
     silent_failures: int | None = None,
     error_log_clean: bool = False,
     docker_stable_policy: str = "draft",
+    use_local_artifacts: bool = False,
+    evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
+    release_notes: Path | str = DEFAULT_RELEASE_NOTES,
 ) -> dict[str, Any]:
     """Build a soak evidence object in the release-gate schema."""
 
@@ -116,6 +265,13 @@ def build_soak_evidence(
         if field not in STATUS_PASS_FIELDS:
             raise ValueError(f"unknown release status field: {field}")
         status_values[field] = value
+    if use_local_artifacts:
+        status_values.update(
+            local_artifact_statuses(
+                evidence_root=evidence_root,
+                release_notes=release_notes,
+            )
+        )
 
     required_hours = (readiness.soak_end - readiness.soak_start).days * 24
     evidence: dict[str, Any] = {
@@ -188,6 +344,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--silent-failures", type=int, default=None)
     parser.add_argument("--error-log-clean", action="store_true")
     parser.add_argument("--docker-stable-policy", default="draft")
+    parser.add_argument(
+        "--use-local-artifacts",
+        action="store_true",
+        help=(
+            "Derive supported status fields from local evidence artifacts. "
+            "Local evidence overrides manual --status values for those fields."
+        ),
+    )
+    parser.add_argument("--evidence-root", default=DEFAULT_EVIDENCE_ROOT, type=Path)
+    parser.add_argument("--release-notes", default=DEFAULT_RELEASE_NOTES, type=Path)
     args = parser.parse_args(argv)
 
     status_overrides = dict(args.status)
@@ -201,6 +367,9 @@ def main(argv: list[str] | None = None) -> int:
             silent_failures=args.silent_failures,
             error_log_clean=args.error_log_clean,
             docker_stable_policy=args.docker_stable_policy,
+            use_local_artifacts=args.use_local_artifacts,
+            evidence_root=args.evidence_root,
+            release_notes=args.release_notes,
         )
         write_soak_evidence(evidence, output=args.output, history=args.history)
     except (OSError, ValueError) as exc:

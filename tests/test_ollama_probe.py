@@ -142,6 +142,28 @@ class TestCheckOllamaOK:
 
 
 class TestCheckOllamaFailure:
+    def test_rejects_non_http_scheme_before_urlopen(self, srt, monkeypatch):
+        def fake_urlopen(url, timeout):
+            raise AssertionError("urlopen must not run for invalid schemes")
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", fake_urlopen, raising=True
+        )
+        ok, reason = srt._check_ollama("file:///tmp/ollama")
+        assert ok is False
+        assert reason == "Ollama host must use http or https"
+
+    def test_rejects_host_without_network_location(self, srt, monkeypatch):
+        def fake_urlopen(url, timeout):
+            raise AssertionError("urlopen must not run without netloc")
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", fake_urlopen, raising=True
+        )
+        ok, reason = srt._check_ollama("http:///missing-host")
+        assert ok is False
+        assert reason == "Ollama host must include a network location"
+
     def test_timed_out_is_normalised(self, srt, monkeypatch):
         def fake_urlopen(url, timeout):
             raise urllib.error.URLError("urlopen error timed out")

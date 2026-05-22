@@ -32,6 +32,14 @@ _DEFAULT_WARN_FALLBACK_MB = 100.0
 _WAL_WARN_MB = 32.0
 
 
+def _quote_sqlite_identifier(identifier: str) -> str:
+    """Return a safely quoted SQLite identifier."""
+
+    if not identifier:
+        raise ValueError("empty SQLite identifier")
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 @dataclass
 class DatabaseInfo:
     """Health snapshot for a single SQLite database."""
@@ -175,7 +183,9 @@ class StorageHealthService:
             tables = [r[0] for r in cursor.fetchall()]
             for table in tables:
                 try:
-                    cnt = conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()
+                    quoted_table = _quote_sqlite_identifier(str(table))
+                    # table name is quoted from sqlite_master.
+                    cnt = conn.execute(f"SELECT COUNT(*) FROM {quoted_table}").fetchone()  # nosec B608
                     row_counts[table] = cnt[0] if cnt else 0
                 except Exception:
                     row_counts[table] = -1

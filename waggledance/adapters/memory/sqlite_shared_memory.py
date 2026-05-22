@@ -27,10 +27,12 @@ ALLOWED_UPDATE_COLUMNS = frozenset({
     "title", "description", "assigned_agent",
     "project_id", "priority", "started_at", "updated_at",
 })
+MEMORY_STATS_TABLES = ("memories", "events", "messages", "tasks", "agents", "projects")
 
 # Pre-built SQL to avoid f-string column interpolation (defense in depth)
 _UPDATE_TASK_SQL = {
-    col: f"UPDATE tasks SET {col} = ? WHERE id = ?"
+    # col is from ALLOWED_UPDATE_COLUMNS.
+    col: f"UPDATE tasks SET {col} = ? WHERE id = ?"  # nosec B608
     for col in ALLOWED_UPDATE_COLUMNS
 }
 
@@ -459,8 +461,9 @@ class SQLiteSharedMemory:
         """Return row counts for each table."""
         db = self._ensure_db()
         stats: dict[str, int] = {}
-        for table in ("memories", "events", "messages", "tasks", "agents", "projects"):
-            cursor = await db.execute(f"SELECT COUNT(*) FROM {table}")
+        for table in MEMORY_STATS_TABLES:
+            # table is from MEMORY_STATS_TABLES.
+            cursor = await db.execute(f"SELECT COUNT(*) FROM {table}")  # nosec B608
             row = await cursor.fetchone()
             stats[table] = row[0] if row else 0
         return stats

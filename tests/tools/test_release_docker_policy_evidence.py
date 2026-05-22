@@ -10,6 +10,7 @@ from tools.run_release_docker_policy_evidence import (
     SCHEMA_VERSION,
     build_report,
     main,
+    operator_authorization_from_decision_pack,
 )
 
 
@@ -122,6 +123,47 @@ def _authorization(*, commit: str = COMMIT) -> dict:
     }
 
 
+def _write_decision_pack(
+    root,
+    *,
+    chosen_option: str = "",
+    signed_by: str = "",
+    decision_id: str = "docker-latest-promotion",
+    category: str = "docker_promotion",
+    latest_move_is_operator_only: str = "true",
+    target_version: str | None = None,
+    commit: str | None = None,
+):
+    path = root / "docker-latest-promotion.yaml"
+    target_line = f"target_version: {target_version}\n" if target_version else ""
+    commit_line = f"commit: {commit}\n" if commit else ""
+    path.write_text(
+        "schema_version: waggledance.operator_decision_pack.v1\n"
+        f"decision_id: {decision_id}\n"
+        f"category: {category}\n"
+        "created_utc: 2026-05-22T14:00:00Z\n"
+        "author_agent: claude\n"
+        f"{target_line}"
+        f"{commit_line}"
+        "options:\n"
+        "  - id: ghcr_stable_only\n"
+        "    summary: Stable only\n"
+        "  - id: ghcr_stable_and_latest\n"
+        "    summary: Stable and latest\n"
+        "  - id: defer_docker\n"
+        "    summary: Defer Docker\n"
+        "operator_signoff:\n"
+        f'  signed_by: "{signed_by}"\n'
+        f'  chosen_option: "{chosen_option}"\n'
+        "structural_invariants:\n"
+        "  no_main_branch_auto_merge: true\n"
+        f"  latest_move_is_operator_only: {latest_move_is_operator_only}\n"
+        "  agent_must_not_self_resolve: true\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_build_report_is_draft_without_operator_authorization(tmp_path) -> None:
     _write_source_tree(tmp_path)
 
@@ -132,6 +174,186 @@ def test_build_report_is_draft_without_operator_authorization(tmp_path) -> None:
     assert report["operator_authorization"] is None
     assert report["docker_stable_policy"] == "draft"
     assert report["blockers"] == ["operator_authorization_missing"]
+
+
+def test_unsigned_decision_pack_does_not_authorize(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    pack = _write_decision_pack(tmp_path)
+
+    auth = operator_authorization_from_decision_pack(
+        pack,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    )
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=auth,
+    )
+
+    assert auth is None
+    assert report["docker_stable_policy"] == "draft"
+    assert report["blockers"] == ["operator_authorization_missing"]
+
+
+def test_signed_stable_only_decision_pack_authorizes_without_latest(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    pack = _write_decision_pack(
+        tmp_path,
+        chosen_option="ghcr_stable_only",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+    )
+
+    auth = operator_authorization_from_decision_pack(
+        pack,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    )
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=auth,
+    )
+
+    assert auth is not None
+    assert auth["stable_promotion_authorized"] is True
+    assert auth["docker_promotion_deferred"] is False
+    assert auth["move_latest"] == "no"
+    assert auth["authorized_at_utc"] == "2026-05-24T00:00:00Z"
+    assert report["docker_stable_policy"] == "finalized"
+    assert report["blockers"] == []
+
+
+def test_signed_stable_and_latest_decision_pack_authorizes_latest(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    pack = _write_decision_pack(
+        tmp_path,
+        chosen_option="ghcr_stable_and_latest",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+    )
+
+    auth = operator_authorization_from_decision_pack(
+        pack,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    )
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=auth,
+    )
+
+    assert auth is not None
+    assert auth["stable_promotion_authorized"] is True
+    assert auth["docker_promotion_deferred"] is False
+    assert auth["move_latest"] == "yes"
+    assert report["docker_stable_policy"] == "finalized"
+    assert report["blockers"] == []
+
+
+def test_signed_defer_docker_decision_pack_finalizes_no_move_policy(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    pack = _write_decision_pack(
+        tmp_path,
+        chosen_option="defer_docker",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+    )
+
+    auth = operator_authorization_from_decision_pack(
+        pack,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    )
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=auth,
+    )
+
+    assert auth is not None
+    assert auth["stable_promotion_authorized"] is False
+    assert auth["docker_promotion_deferred"] is True
+    assert auth["move_latest"] == "no"
+    assert report["docker_stable_policy"] == "finalized"
+    assert report["blockers"] == []
+
+
+def test_wrong_decision_pack_id_fails_closed(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    pack = _write_decision_pack(
+        tmp_path,
+        decision_id="wrong-decision",
+        chosen_option="ghcr_stable_only",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+    )
+
+    auth = operator_authorization_from_decision_pack(
+        pack,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    )
+
+    assert auth is None
+
+
+def test_flipped_decision_pack_invariant_fails_closed(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    pack = _write_decision_pack(
+        tmp_path,
+        chosen_option="ghcr_stable_only",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+        latest_move_is_operator_only="false",
+    )
+
+    auth = operator_authorization_from_decision_pack(
+        pack,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    )
+
+    assert auth is None
+
+
+def test_decision_pack_target_or_commit_mismatch_fails_closed(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    target_mismatch = _write_decision_pack(
+        tmp_path,
+        chosen_option="ghcr_stable_only",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+        target_version="v3.13.0",
+    )
+    assert operator_authorization_from_decision_pack(
+        target_mismatch,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    ) is None
+
+    commit_mismatch = _write_decision_pack(
+        tmp_path,
+        chosen_option="ghcr_stable_only",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+        commit="other",
+    )
+    assert operator_authorization_from_decision_pack(
+        commit_mismatch,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    ) is None
+
+
+def test_decision_pack_rejects_non_operator_timestamp_signoff(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    pack = _write_decision_pack(
+        tmp_path,
+        chosen_option="ghcr_stable_only",
+        signed_by="operator:janik",
+    )
+
+    assert operator_authorization_from_decision_pack(
+        pack,
+        commit=COMMIT,
+        target_version="v3.12.0",
+    ) is None
 
 
 def test_build_report_finalizes_with_operator_authorization(tmp_path) -> None:
@@ -185,3 +407,61 @@ def test_main_writes_draft_with_allow_draft(tmp_path) -> None:
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["docker_stable_policy"] == "draft"
     assert report["blockers"] == ["operator_authorization_missing"]
+
+
+def test_main_uses_signed_operator_decision_pack(tmp_path) -> None:
+    source_root = tmp_path / "repo"
+    source_root.mkdir()
+    _write_source_tree(source_root)
+    pack = _write_decision_pack(
+        tmp_path,
+        chosen_option="ghcr_stable_only",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+    )
+    output = tmp_path / "evidence.json"
+
+    rc = main([
+        "--source-root",
+        str(source_root),
+        "--commit",
+        COMMIT,
+        "--operator-decision-pack",
+        str(pack),
+        "--output",
+        str(output),
+    ])
+
+    assert rc == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["docker_stable_policy"] == "finalized"
+    assert report["operator_authorization"]["source"] == "operator_decision_pack"
+
+
+def test_main_rejects_ambiguous_authorization_sources(tmp_path) -> None:
+    source_root = tmp_path / "repo"
+    source_root.mkdir()
+    _write_source_tree(source_root)
+    pack = _write_decision_pack(
+        tmp_path,
+        chosen_option="ghcr_stable_only",
+        signed_by="operator:janik:2026-05-24T00:00:00Z",
+    )
+    auth = tmp_path / "authorization.json"
+    auth.write_text(json.dumps(_authorization()), encoding="utf-8")
+    output = tmp_path / "evidence.json"
+
+    rc = main([
+        "--source-root",
+        str(source_root),
+        "--commit",
+        COMMIT,
+        "--operator-authorization",
+        str(auth),
+        "--operator-decision-pack",
+        str(pack),
+        "--output",
+        str(output),
+    ])
+
+    assert rc == 2
+    assert not output.exists()

@@ -12,13 +12,42 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.operator_decision_pack import DecisionPackError, is_signed, load_pack
 
 
 SCHEMA_VERSION = "waggledance.release_docker_policy.v1"
 AUTH_SCHEMA_VERSION = "waggledance.operator_docker_stable_authorization.v1"
+DOCKER_DECISION_PACK_ID = "docker-latest-promotion"
+DOCKER_DECISION_PACK_CATEGORY = "docker_promotion"
+DOCKER_DECISION_OPTIONS = {
+    "ghcr_stable_only": {
+        "move_latest": "no",
+        "stable_promotion_authorized": True,
+        "docker_promotion_deferred": False,
+    },
+    "ghcr_stable_and_latest": {
+        "move_latest": "yes",
+        "stable_promotion_authorized": True,
+        "docker_promotion_deferred": False,
+    },
+    "defer_docker": {
+        "move_latest": "no",
+        "stable_promotion_authorized": False,
+        "docker_promotion_deferred": True,
+    },
+}
+REQUIRED_DECISION_PACK_INVARIANTS = (
+    "latest_move_is_operator_only",
+    "agent_must_not_self_resolve",
+)
 DEFAULT_OUTPUT = (
     Path("docs")
     / "runs"
@@ -93,6 +122,93 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return loaded if isinstance(loaded, dict) else None
+
+
+def _operator_signoff(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(":", 2)
+    if len(parts) != 3 or parts[0] != "operator" or not parts[1].strip():
+        return None
+    signed_at = _parse_utc(parts[2])
+    if signed_at is None:
+        return None
+    return parts[1].strip(), _format_utc(signed_at)
+
+
+def _pack_scalar(pack: Mapping[str, Any], names: tuple[str, ...]) -> str:
+    for name in names:
+        value = pack.get(name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def operator_authorization_from_decision_pack(
+    path: Path | str,
+    *,
+    commit: str,
+    target_version: str,
+) -> dict[str, Any] | None:
+    """Convert a signed Docker operator decision pack into authorization.
+
+    Draft, malformed, unsigned, wrong-scope, or structurally weakened packs
+    return None. That keeps the policy evidence in draft/fail-closed state.
+    """
+
+    try:
+        pack = load_pack(path)
+    except (OSError, DecisionPackError):
+        return None
+    if pack.get("decision_id") != DOCKER_DECISION_PACK_ID:
+        return None
+    if pack.get("category") != DOCKER_DECISION_PACK_CATEGORY:
+        return None
+    if not is_signed(pack):
+        return None
+
+    invariants = pack.get("structural_invariants")
+    if not isinstance(invariants, Mapping):
+        return None
+    if any(
+        invariants.get(name) is not True
+        for name in REQUIRED_DECISION_PACK_INVARIANTS
+    ):
+        return None
+
+    pack_target = _pack_scalar(pack, ("target_version", "release_version"))
+    if pack_target and pack_target != target_version:
+        return None
+    pack_commit = _pack_scalar(pack, ("commit", "target_commit", "subject_commit"))
+    if pack_commit and pack_commit != commit:
+        return None
+
+    signoff = pack.get("operator_signoff")
+    if not isinstance(signoff, Mapping):
+        return None
+    chosen = str(signoff.get("chosen_option", "") or "").strip()
+    option_policy = DOCKER_DECISION_OPTIONS.get(chosen)
+    signed = _operator_signoff(signoff.get("signed_by"))
+    if option_policy is None or signed is None:
+        return None
+    operator_id, authorized_at_utc = signed
+
+    return {
+        "schema_version": AUTH_SCHEMA_VERSION,
+        "target_version": target_version,
+        "commit": commit,
+        "stable_promotion_authorized": option_policy["stable_promotion_authorized"],
+        "docker_promotion_deferred": option_policy["docker_promotion_deferred"],
+        "move_latest": option_policy["move_latest"],
+        "authorization_id": (
+            f"decision-pack:{DOCKER_DECISION_PACK_ID}:{chosen}:{operator_id}"
+        ),
+        "authorized_at_utc": authorized_at_utc,
+        "source": "operator_decision_pack",
+        "decision_id": DOCKER_DECISION_PACK_ID,
+        "chosen_option": chosen,
+        "operator_id": operator_id,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -294,11 +410,18 @@ def evaluate_report(
             blockers.append("operator_authorization_target_mismatch")
         if expected_commit is not None and authorization.get("commit") != expected_commit:
             blockers.append("operator_authorization_commit_mismatch")
-        if authorization.get("stable_promotion_authorized") is not True:
+        stable_authorized = authorization.get("stable_promotion_authorized") is True
+        docker_deferred = authorization.get("docker_promotion_deferred") is True
+        if not stable_authorized and not docker_deferred:
             blockers.append("stable_promotion_not_authorized")
         if authorization.get("move_latest") not in {"yes", "no"}:
             blockers.append("move_latest_policy_missing")
-        if not isinstance(authorization.get("authorization_id"), str) or not authorization.get("authorization_id"):
+        if docker_deferred and authorization.get("move_latest") != "no":
+            blockers.append("deferred_docker_cannot_move_latest")
+        if not isinstance(
+            authorization.get("authorization_id"),
+            str,
+        ) or not authorization.get("authorization_id"):
             blockers.append("operator_authorization_id_missing")
         if _parse_utc(authorization.get("authorized_at_utc")) is None:
             blockers.append("operator_authorized_at_invalid")
@@ -347,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-version", default=DEFAULT_TARGET_VERSION)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--operator-authorization", type=Path)
+    parser.add_argument("--operator-decision-pack", type=Path)
     parser.add_argument(
         "--allow-draft",
         action="store_true",
@@ -355,11 +479,26 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     commit = args.commit or _current_commit()
-    authorization = (
-        _read_json(args.operator_authorization)
-        if args.operator_authorization is not None
-        else None
-    )
+    if (
+        args.operator_authorization is not None
+        and args.operator_decision_pack is not None
+    ):
+        print(
+            "run_release_docker_policy_evidence: use either "
+            "--operator-authorization or --operator-decision-pack, not both",
+            file=sys.stderr,
+        )
+        return 2
+    if args.operator_authorization is not None:
+        authorization = _read_json(args.operator_authorization)
+    elif args.operator_decision_pack is not None:
+        authorization = operator_authorization_from_decision_pack(
+            args.operator_decision_pack,
+            commit=commit,
+            target_version=args.target_version,
+        )
+    else:
+        authorization = None
     report = build_report(
         source_root=args.source_root,
         commit=commit,

@@ -1,0 +1,50 @@
+schema_version: waggledance.operator_decision_pack.v1
+decision_id: torch-cuda-vs-cpu
+category: dependency_security
+created_utc: 2026-05-22T14:00:00Z
+author_agent: claude
+title: v3.12.0 torch-family upgrade — keep CUDA, go CPU-only, or de-scope
+context: >
+  OSV reports torch 2.7.1+cu118 (the committed lock) has 5 vulnerability
+  entries, which blocks security_privacy_gate for v3.12.0. The cu118 index caps
+  at the vulnerable 2.7.1, so a fix requires moving torch. WaggleDance GPU code
+  paths (core/micro_model.py, core/translation_proxy.py, core/lora_readiness.py)
+  are opportunistic: they degrade to CPU when torch.cuda.is_available() is False,
+  EXCEPT LoRA fine-tuning which requires a GPU. A CPU-only torch op was verified
+  to run (functional, just slower). This decision is operator-gated because it
+  changes a security-relevant dependency and may drop GPU acceleration on the
+  operator's Windows machine.
+options:
+  - id: A1_cpu_only
+    summary: Upgrade to torch==2.11.0 (CPU wheels); fixes vulns, drops CUDA/GPU.
+    data:
+      packages: ["torch==2.11.0", "torchvision==0.26.0", "torchaudio==2.11.0"]
+      fixes_osv_vulns: true
+      keeps_gpu: false
+      functional_impact: "graceful CPU fallback verified; LoRA-on-GPU unavailable; slower local LLM/translation"
+      driver_change_required: false
+    agent_recommendation: false
+  - id: A2_cu126
+    summary: Upgrade to torch 2.11.0+cu126 (CUDA build); fixes vulns AND keeps GPU.
+    data:
+      packages: ["torch==2.11.0+cu126", "torchvision==0.27.0+cu126", "torchaudio==2.11.0+cu126"]
+      index_url: "https://download.pytorch.org/whl/cu126"
+      fixes_osv_vulns: true
+      keeps_gpu: true
+      driver_change_required: "CUDA runtime 11.8 -> 12.6 (needs NVIDIA driver supporting CUDA 12.6)"
+      caveat: "xformers must move to a cu126-compatible build (verify separately)"
+    agent_recommendation: true
+  - id: B_descope
+    summary: Drop the torch family from v3.12.0 stable (optional extra only).
+    data:
+      fixes_osv_vulns: true
+      keeps_gpu: false
+      functional_impact: "stable loses torch-dependent features (micro-model, opus-mt translation, LoRA)"
+    agent_recommendation: false
+operator_signoff:
+  signed_by: ""
+  chosen_option: ""
+structural_invariants:
+  no_main_branch_auto_merge: true
+  dependency_change_lands_via_pr: true
+  agent_must_not_self_resolve: true

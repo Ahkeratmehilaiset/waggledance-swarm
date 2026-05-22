@@ -190,6 +190,50 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 
 Claude uses the same command with `-Agent claude`.
 
+## Self-pacing tick (`tools/bridge_loop_tick.py`)
+
+For a session that self-paces via wakeups (no fixed external cron), the FIRST
+action of every tick is one read-only aggregator call that drains the inbox,
+detects already-approved merges, surfaces operator decision packs, and
+recommends the next wakeup interval:
+
+```text
+python tools/bridge_loop_tick.py --agent claude --check-prs --repo OWNER/NAME --json
+```
+
+It chains the existing primitives (read-only; no `--apply`, never runs
+`gh pr merge`) and reports an ordered worklist:
+
+1. **Drain inbox** — `next_action` from `recommend_next_action`; if
+   `answer_incoming`, handle the peer RCO request / handoff first.
+2. **Complete approved merges** — each entry in `merge_ready` with `ready:true`
+   is a PR this agent rco_pass'd that is now CI-green + mergeable clean +
+   preflight-clear + head-matched. Complete it in the SAME tick via the existing
+   gated flow, then record the close so the next tick does not re-detect it:
+   ```text
+   python tools/pr_status_snapshot.py <pr> --out snap.json
+   gh pr merge <pr> --squash --match-head-commit=<approved_head>   # Rule 9 peer-RCO
+   .\.agent-bridge\bin\Write-AgentEvent.ps1 -Agent <me> -Type done \
+       -TaskId <task> -Status merged -PayloadJson '{"pr":<pr>}'
+   ```
+   (Idle-consensus-protocol PRs instead go through
+   `idle_consensus_auto_merge.py --apply`, which adds the consensus + MAGMA
+   receipt + 5/day gates. `bridge_loop_tick` covers the direct peer-RCO path.)
+3. **Surface operator packs** — each `open_operator_packs` entry is a
+   charter-gated decision needing a one-step operator sign-off
+   (`docs/operator_inbox/<id>.yaml`, schema `OPERATOR_DECISION_PACK_V1.md`).
+   Emit `type=decision status=operator_signoff_requested to=operator` once per
+   new pack. The loop NEVER resolves a pack.
+4. **Adaptive wakeup** — schedule the next wakeup from
+   `recommended_wakeup_seconds`: ~90s when there is actionable merge/RCO work,
+   ~240s when CI is in flight or a claim is active, ~1800s when quiet (respecting
+   the ~5-minute prompt-cache TTL).
+
+This removes the need for a human "continue" poke between ticks and lets an
+RCO-passed PR merge in the same tick it becomes ready — while every mutation
+still flows through the existing charter-gated tools and escalation categories
+stay operator-gated.
+
 ## Recovery
 
 If a scheduled tick fails:

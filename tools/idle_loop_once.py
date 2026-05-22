@@ -205,6 +205,47 @@ def evaluate_idle_loop_tick(
         target = convergence.get("target_proposal_id") or convergence.get(
             "finalist_proposal_ids"
         )
+        # If the converged instance is stale (its latest payload is older than
+        # the configured window) and the operator has not actioned it, the
+        # auto-emit dispatcher would otherwise re-park on this old consensus
+        # forever -- it keeps deciding convergence_reached and never seeds a
+        # fresh strategic round 1. Observed 2026-05-22: a 2026-05-18
+        # soft_convergence kept the dream-mode loop parked for hours. When the
+        # convergence is stale, recycle: emit a fresh round-1 from the seed
+        # pool instead. A freshly-converged consensus (within the window)
+        # still routes to the operator so it is not silently skipped.
+        stale_converged = _stale_terminal_session(
+            events,
+            now_utc=now_utc,
+            max_age_hours=open_request_max_age_hours,
+        )
+        if stale_converged["stale"]:
+            return _report(
+                decision="stale_convergence_reseed",
+                next_action="emit_round_1",
+                recommended_command=(
+                    "python tools/run_idle_protocol_once.py --emit --json"
+                ),
+                idle_report=idle_report,
+                session_summary={
+                    **summary,
+                    "stale_terminal_session": stale_converged,
+                },
+                notes=[
+                    (
+                        f"idle-protocol {status} is stale "
+                        f"(latest payload {stale_converged['latest_idle_payload_utc']}, "
+                        f"older than {open_request_max_age_hours}h); the old "
+                        "consensus was never actioned and must not keep the "
+                        "auto-emit loop parked"
+                    ),
+                    (
+                        "recycle: emit a fresh round-1 strategic proposal from "
+                        "the seed pool so the dream-mode loop resumes; the old "
+                        "consensus stays recorded in bridge history for audit"
+                    ),
+                ],
+            )
         return _report(
             decision="convergence_reached",
             next_action="route_to_implementer_chain",

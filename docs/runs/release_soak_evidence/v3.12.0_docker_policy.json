@@ -1,0 +1,64 @@
+{
+  "blockers": [
+    "operator_authorization_missing"
+  ],
+  "commit": "bbb0cc371c19884317b07b03bcaf8b1e42a46667",
+  "docker_stable_policy": "draft",
+  "entrypoints": {
+    "compose_command": [
+      "python",
+      "-m",
+      "waggledance.adapters.cli.start_runtime"
+    ],
+    "dockerfile_cmd": [
+      "python",
+      "-m",
+      "waggledance.adapters.cli.start_runtime"
+    ],
+    "expected": [
+      "python",
+      "-m",
+      "waggledance.adapters.cli.start_runtime"
+    ],
+    "pyproject_script": "waggledance.adapters.cli.start_runtime:main"
+  },
+  "generated_at_utc": "2026-05-22T14:07:38Z",
+  "latest_move_requires_operator_opt_in": true,
+  "operator_authorization": null,
+  "post_tag_runtime_verification_required": true,
+  "schema_version": "waggledance.release_docker_policy.v1",
+  "source_files": [
+    ".github/workflows/release-docker-stable.yml",
+    "Dockerfile",
+    "docker-compose.yml",
+    "pyproject.toml",
+    "docs/deployment/DOCKER_QUICKSTART.md"
+  ],
+  "source_hashes": {
+    ".github/workflows/release-docker-stable.yml": "sha256:2a0084111e72c6217da6c6c83282f128a772d6bc6ee12bedbf55321b4a84c973",
+    "Dockerfile": "sha256:6b94d6a96d9ead68e7ecc5e628e209a67a9791d4dffd804f779cca144f414b58",
+    "docker-compose.yml": "sha256:dc81c7acb1cd33cff716e6cdd6e84a4b70ad03ad9be6380f8cc7b5d84c98c0e9",
+    "docs/deployment/DOCKER_QUICKSTART.md": "sha256:32c6be913396955654fcf15eabc04cbba8774e64d980fa46b79bc2682aa19ecc",
+    "pyproject.toml": "sha256:7049c85f7db84129e9f92ab0758e61bd32f83645554426f4fb4f8d82d7df22ae"
+  },
+  "static_checks": {
+    "canonical_image_pushed": true,
+    "compose_entrypoint_canonical": true,
+    "dockerfile_entrypoint_canonical": true,
+    "ghcr_primary": true,
+    "latest_alias_smoke_if_moved": true,
+    "move_latest_default_no": true,
+    "move_latest_operator_gated": true,
+    "prerelease_tag_refused": true,
+    "profile_aliases_opt_in": true,
+    "pyproject_script_canonical": true,
+    "stable_alias_fail_closed": true,
+    "stable_alias_smoke": true,
+    "stable_alias_tagged": true,
+    "stable_profile_s_smoke": true,
+    "stable_tag_shape_guard": true,
+    "tag_input_required": true,
+    "workflow_dispatch_only": true
+  },
+  "target_version": "v3.12.0"
+}

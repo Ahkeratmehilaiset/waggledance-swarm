@@ -147,7 +147,8 @@ jobs:
           CANONICAL_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
             ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-tag.outputs.tag }})
           if [ "$STABLE_DIGEST" != "$CANONICAL_DIGEST" ]; then
-            echo "::warning::stable alias does not resolve to canonical digest"
+            echo "::error::stable alias does not resolve to canonical digest"
+            exit 1
           fi
 
       - name: Smoke — :latest only if moved

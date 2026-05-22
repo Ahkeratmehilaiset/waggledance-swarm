@@ -10,6 +10,12 @@ from tools.collect_soak_evidence import (
     local_artifact_statuses,
     main,
 )
+from tools.run_release_docker_policy_evidence import (
+    AUTH_SCHEMA_VERSION as DOCKER_AUTH_SCHEMA_VERSION,
+    REQUIRED_SOURCE_FILES as DOCKER_REQUIRED_SOURCE_FILES,
+    REQUIRED_STATIC_CHECKS as DOCKER_REQUIRED_STATIC_CHECKS,
+    SCHEMA_VERSION as DOCKER_SCHEMA_VERSION,
+)
 
 
 def _write_bandit_report(root, *, high: int = 0, medium: int = 0) -> None:
@@ -250,6 +256,51 @@ def _write_ci_status(root, *, commit: str, report_commit: str | None = None) -> 
     )
 
 
+def _write_docker_policy(
+    root,
+    *,
+    commit: str,
+    operator_authorized: bool = True,
+    report_commit: str | None = None,
+) -> None:
+    report_commit = commit if report_commit is None else report_commit
+    authorization = None
+    if operator_authorized:
+        authorization = {
+            "schema_version": DOCKER_AUTH_SCHEMA_VERSION,
+            "target_version": "v3.12.0",
+            "commit": report_commit,
+            "stable_promotion_authorized": True,
+            "move_latest": "no",
+            "authorization_id": "operator-docker-stable-v3.12.0",
+            "authorized_at_utc": "2026-05-24T00:00:00Z",
+        }
+    blockers = [] if operator_authorized else ["operator_authorization_missing"]
+    (root / "v3.12.0_docker_policy.json").write_text(
+        json.dumps({
+            "schema_version": DOCKER_SCHEMA_VERSION,
+            "target_version": "v3.12.0",
+            "commit": report_commit,
+            "generated_at_utc": "2026-05-22T14:10:00Z",
+            "source_files": list(DOCKER_REQUIRED_SOURCE_FILES),
+            "source_hashes": {
+                path: f"sha256:{index:064x}"
+                for index, path in enumerate(DOCKER_REQUIRED_SOURCE_FILES, start=1)
+            },
+            "static_checks": {
+                check: True for check in DOCKER_REQUIRED_STATIC_CHECKS
+            },
+            "entrypoints": {},
+            "operator_authorization": authorization,
+            "post_tag_runtime_verification_required": True,
+            "latest_move_requires_operator_opt_in": True,
+            "blockers": blockers,
+            "docker_stable_policy": "finalized" if not blockers else "draft",
+        }),
+        encoding="utf-8",
+    )
+
+
 def test_collector_draft_is_fail_closed_until_evidence_is_explicit() -> None:
     evidence = build_soak_evidence(
         "docs/release/RELEASE_READINESS.md",
@@ -449,6 +500,67 @@ def test_local_artifacts_reject_ci_artifact_commit_mismatch(
     )
 
     assert statuses["ci_status"] == "blocked"
+
+
+def test_local_artifacts_can_finalize_docker_policy_from_artifact(tmp_path) -> None:
+    commit = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_docker_policy(evidence_root, commit=commit)
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit=commit,
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["docker_stable_policy"] == "finalized"
+
+
+def test_local_artifacts_override_manual_docker_policy_stub_when_artifact_missing(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        docker_stable_policy="finalized",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["docker_stable_policy"] == "draft"
+
+
+def test_local_artifacts_keep_docker_policy_draft_without_operator_authorization(
+    tmp_path,
+) -> None:
+    commit = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_docker_policy(evidence_root, commit=commit, operator_authorized=False)
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit=commit,
+        docker_stable_policy="finalized",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["docker_stable_policy"] == "draft"
 
 
 def test_local_artifacts_block_axis_a_when_hot_path_metrics_regress(

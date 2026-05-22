@@ -15,10 +15,12 @@ from pathlib import Path
 import pytest
 
 from tools.d1_pii_scrub import (
+    HISTORICAL_PLACEHOLDER,
     build_replacement_mapping,
     count_history_matches,
     detect_pii_fields,
     filter_repo_available,
+    load_known_values,
     main,
     run_detect,
     run_dry_run,
@@ -199,3 +201,79 @@ def test_dry_run_scrubs_to_zero_residual(tmp_path: Path) -> None:
     assert report["residual_clean"] is True
     assert all(count == 0 for count in report["residual_match_counts"].values())
     assert report["mapping_count"] == 3
+
+
+def _make_repo_redacted_head_dirty_history(tmp_path: Path) -> Path:
+    """Repo whose HEAD is scrubbed but an earlier commit still holds PII.
+
+    This is the case Codex's RCO flagged: detect must not report
+    scrub_needed=False just because HEAD is clean.
+    """
+    repo = _make_repo(tmp_path, SETTINGS_WITH_PII)
+    # Second commit redacts HEAD; the PII remains in the first commit.
+    (repo / "configs" / "settings.yaml").write_text(
+        SETTINGS_SCRUBBED, encoding="utf-8"
+    )
+    _git(["add", "."], repo)
+    _git(["commit", "-m", "redact settings at HEAD"], repo)
+    return repo
+
+
+def test_load_known_values_parses_bare_and_mapping(tmp_path: Path) -> None:
+    f = tmp_path / "known.txt"
+    f.write_text(
+        f"# prior values\n{FAKE_Y_TUNNUS}\n{FAKE_OWNER}==>CUSTOM_OWNER\n\n",
+        encoding="utf-8",
+    )
+    mapping = load_known_values(f)
+    assert mapping == [
+        (FAKE_Y_TUNNUS, HISTORICAL_PLACEHOLDER),
+        (FAKE_OWNER, "CUSTOM_OWNER"),
+    ]
+
+
+def test_detect_redacted_head_no_known_values_is_unverifiable(
+    tmp_path: Path,
+) -> None:
+    repo = _make_repo_redacted_head_dirty_history(tmp_path)
+    report = run_detect(_settings(repo), repo)
+    # HEAD shows no PII and we supplied no prior values: the tool must NOT
+    # claim history is clean — it had nothing to search for.
+    assert report["fields_present"] == {
+        "y_tunnus": False, "owner": False, "business_name": False,
+    }
+    assert report["head_redacted_history_unverifiable"] is True
+
+
+def test_detect_redacted_head_with_known_values_finds_history(
+    tmp_path: Path,
+) -> None:
+    repo = _make_repo_redacted_head_dirty_history(tmp_path)
+    known = [
+        (FAKE_Y_TUNNUS, HISTORICAL_PLACEHOLDER),
+        (FAKE_OWNER, HISTORICAL_PLACEHOLDER),
+        (FAKE_BUSINESS, HISTORICAL_PLACEHOLDER),
+    ]
+    report = run_detect(_settings(repo), repo, known_values=known)
+    assert report["head_redacted_history_unverifiable"] is False
+    # The PII is gone from HEAD but still in the first commit -> matches.
+    assert any(c > 0 for c in report["known_history_match_counts"].values())
+    assert report["scrub_needed"] is True
+
+
+@pytest.mark.skipif(
+    not filter_repo_available(),
+    reason="git-filter-repo CLI is not installed in this environment",
+)
+def test_dry_run_with_known_values_scrubs_dirty_history(tmp_path: Path) -> None:
+    repo = _make_repo_redacted_head_dirty_history(tmp_path)
+    known = [
+        (FAKE_Y_TUNNUS, HISTORICAL_PLACEHOLDER),
+        (FAKE_OWNER, HISTORICAL_PLACEHOLDER),
+        (FAKE_BUSINESS, HISTORICAL_PLACEHOLDER),
+    ]
+    report = run_dry_run(
+        _settings(repo), repo, run_smoke=False, known_values=known
+    )
+    assert report["residual_clean"] is True
+    assert all(c == 0 for c in report["residual_match_counts"].values())

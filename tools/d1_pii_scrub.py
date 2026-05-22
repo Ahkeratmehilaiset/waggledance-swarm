@@ -54,6 +54,10 @@ PII_FIELDS: dict[str, str] = {
 # REDACTED_* placeholder.
 _REDACTED_PREFIX = "REDACTED_"
 
+# Placeholder used for operator-supplied historical values that no longer
+# appear (in non-redacted form) at HEAD but may still live in old commits.
+HISTORICAL_PLACEHOLDER = "REDACTED_HISTORICAL_PII"
+
 DEFAULT_SETTINGS = ROOT / "configs" / "settings.yaml"
 SMOKE_TEST = "tests/test_hex_mesh.py"
 
@@ -138,6 +142,34 @@ def build_replacement_mapping(values: dict[str, str]) -> list[tuple[str, str]]:
     return mapping
 
 
+def load_known_values(path: Path | str) -> list[tuple[str, str]]:
+    """Load operator-supplied prior sensitive values for history detection.
+
+    The file lives OUTSIDE the repo (it holds raw PII) and is read at runtime
+    only. Each non-empty, non-comment line is either:
+      * ``OLD==>NEW`` — used verbatim as a filter-repo mapping, or
+      * ``OLD``       — mapped to HISTORICAL_PLACEHOLDER.
+
+    This exists because HEAD may already be scrubbed while old commits still
+    contain the PII; deriving search targets from HEAD alone would miss them.
+    Values are never logged by this function.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    mapping: list[tuple[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "==>" in line:
+            old, _, new = line.partition("==>")
+            old, new = old.strip(), new.strip()
+        else:
+            old, new = line, HISTORICAL_PLACEHOLDER
+        if old:
+            mapping.append((old, new))
+    return mapping
+
+
 def write_replacement_file(
     mapping: list[tuple[str, str]],
     *,
@@ -214,28 +246,63 @@ def filter_repo_available() -> bool:
     return completed.returncode == 0
 
 
-def run_detect(settings_path: Path, repo: Path) -> dict[str, Any]:
-    """Build the read-only detect report."""
+def run_detect(
+    settings_path: Path,
+    repo: Path,
+    *,
+    known_values: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Build the read-only detect report.
+
+    History detection searches both the values currently present (non-
+    redacted) at HEAD AND any operator-supplied prior values
+    (``known_values``). This matters because the whole point of a history
+    scrub is the case where HEAD is already clean but old commits are not:
+    deriving targets from HEAD alone would falsely report scrub_needed=False
+    exactly when the scrub is most needed.
+    """
+    known_values = known_values or []
     fields_present = detect_pii_fields(settings_path)
     values = _pii_values(settings_path)
     history_counts: dict[str, int] = {}
     for field in PII_FIELDS:
         value = values.get(field)
         history_counts[field] = count_history_matches(value, repo) if value else 0
-    scrub_needed = any(fields_present.values()) or any(
-        count > 0 for count in history_counts.values()
-    )
+
+    # Index-keyed counts for operator-supplied prior values; the values
+    # themselves are never echoed, only their match counts.
+    known_history_counts = {
+        f"known_{idx}": count_history_matches(old, repo)
+        for idx, (old, _new) in enumerate(known_values)
+    }
+
+    head_has_pii = any(fields_present.values())
+    head_history_dirty = any(count > 0 for count in history_counts.values())
+    known_history_dirty = any(count > 0 for count in known_history_counts.values())
+
+    # Honest fail-closed flag: if HEAD shows no PII and no prior values were
+    # supplied, we CANNOT confirm history is clean — the search had nothing to
+    # look for. Do not claim scrub_needed=False in that blind spot.
+    history_unverifiable = (not head_has_pii) and (not known_values)
+
+    scrub_needed = head_has_pii or head_history_dirty or known_history_dirty
     return {
         "fields_present": fields_present,
         "history_match_counts": history_counts,
+        "known_history_match_counts": known_history_counts,
+        "head_redacted_history_unverifiable": history_unverifiable,
         "scrub_needed": scrub_needed,
     }
 
 
-def run_plan(settings_path: Path) -> dict[str, Any]:
+def run_plan(
+    settings_path: Path,
+    *,
+    known_values: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
     """Build the replacement mapping file and report path + count only."""
     values = _pii_values(settings_path)
-    mapping = build_replacement_mapping(values)
+    mapping = build_replacement_mapping(values) + list(known_values or [])
     path = write_replacement_file(mapping)
     return {
         "replacement_file": str(path),
@@ -249,11 +316,14 @@ def run_dry_run(
     repo: Path,
     *,
     run_smoke: bool = True,
+    known_values: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Clone the repo to a temp dir, scrub it, verify zero residual matches.
 
     Never pushes. Cleans up the clone and the replacement file. Raises
-    FilterRepoMissing if the filter-repo CLI is not installed.
+    FilterRepoMissing if the filter-repo CLI is not installed. Operator-
+    supplied ``known_values`` are scrubbed and residual-checked alongside the
+    HEAD values, covering the redacted-HEAD/dirty-history case.
     """
     if not filter_repo_available():
         raise FilterRepoMissing(
@@ -262,8 +332,9 @@ def run_dry_run(
             "re-run. See " + RUNBOOK + "."
         )
 
+    known_values = known_values or []
     values = _pii_values(settings_path)
-    mapping = build_replacement_mapping(values)
+    mapping = build_replacement_mapping(values) + list(known_values)
     replacement_file = write_replacement_file(mapping)
 
     tmp_clone = Path(tempfile.mkdtemp(prefix="d1_dryrun_clone_"))
@@ -284,6 +355,8 @@ def run_dry_run(
         residual: dict[str, int] = {}
         for field, value in values.items():
             residual[field] = count_history_matches(value, clone_dir)
+        for idx, (old, _new) in enumerate(known_values):
+            residual[f"known_{idx}"] = count_history_matches(old, clone_dir)
         result["residual_match_counts"] = residual
         result["residual_clean"] = all(count == 0 for count in residual.values())
 
@@ -347,20 +420,42 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the pytest smoke test inside the dry-run clone.",
     )
+    parser.add_argument(
+        "--known-values-file",
+        type=Path,
+        default=None,
+        help=(
+            "Path (OUTSIDE the repo) to a file of prior sensitive values for "
+            "history detection/scrub, one per line as 'OLD' or 'OLD==>NEW'. "
+            "Use when HEAD is already redacted but old commits may still "
+            "contain the PII. Values are read at runtime, never logged."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.mode in ("push", "force-push"):
         print(json.dumps(_refuse_push(), indent=2, sort_keys=True))
         return 2
 
+    known_values = (
+        load_known_values(args.known_values_file)
+        if args.known_values_file is not None
+        else []
+    )
+
     try:
         if args.mode == "detect":
-            report = run_detect(args.settings, args.repo)
+            report = run_detect(
+                args.settings, args.repo, known_values=known_values
+            )
         elif args.mode == "plan":
-            report = run_plan(args.settings)
+            report = run_plan(args.settings, known_values=known_values)
         else:  # dry-run
             report = run_dry_run(
-                args.settings, args.repo, run_smoke=not args.no_smoke
+                args.settings,
+                args.repo,
+                run_smoke=not args.no_smoke,
+                known_values=known_values,
             )
     except FilterRepoMissing as exc:
         print(f"d1_pii_scrub: {exc}", file=sys.stderr)

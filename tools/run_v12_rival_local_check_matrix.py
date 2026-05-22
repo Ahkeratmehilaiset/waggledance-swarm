@@ -26,6 +26,7 @@ DEFAULT_PILOT_JSON = (
 )
 REPORT_VERSION = "wd.v12.rival_local_check_matrix.v0"
 EVIDENCE_MANIFEST_CONTRACT_VERSION = "wd.v12.rival_local_evidence_manifest.v1"
+EVIDENCE_ARTIFACT_CONTRACT_VERSION = "wd.v12.rival_local_evidence_artifact.v1"
 REQUIRED_EVIDENCE_FIELDS = (
     "evidence_manifest_contract_version",
     "rival",
@@ -35,6 +36,15 @@ REQUIRED_EVIDENCE_FIELDS = (
     "smoke_command",
     "smoke_result",
     "cloud_dependency",
+    "evidence_type",
+)
+REQUIRED_EVIDENCE_ARTIFACT_FIELDS = (
+    "evidence_artifact_contract_version",
+    "rival",
+    "pinned_revision",
+    "smoke_result",
+    "offline",
+    "ok",
     "evidence_type",
 )
 PASSING_SMOKE_RESULT = "passed"
@@ -180,9 +190,12 @@ def build_rival_local_check_matrix(
             "does_not_install_rival_sdks": True,
             "does_not_execute_untrusted_rival_commands": True,
             "public_doc_claims_remain_public_doc_claims_until_local_evidence_passes": True,
+            "requires_machine_readable_offline_artifact": True,
         },
         "evidence_manifest_contract_version": EVIDENCE_MANIFEST_CONTRACT_VERSION,
+        "evidence_artifact_contract_version": EVIDENCE_ARTIFACT_CONTRACT_VERSION,
         "required_evidence_fields": list(REQUIRED_EVIDENCE_FIELDS),
+        "required_evidence_artifact_fields": list(REQUIRED_EVIDENCE_ARTIFACT_FIELDS),
         "checks": rows,
     }
 
@@ -288,7 +301,13 @@ def render_markdown(report: dict[str, Any]) -> str:
             "`evidence_type` is `local_inspection` or `local_smoke`, and all required",
             "fields are present. The `local_artifact_path` must name an existing",
             "file under the evidence directory and `local_artifact_sha256` must",
-            "match that file.",
+            "match that file. The artifact itself must be a machine-readable",
+            "offline evidence JSON whose rival, pinned revision, evidence type,",
+            "and pass status match the manifest.",
+            "",
+            "## Required Evidence Artifact Fields",
+            "",
+            ", ".join(f"`{field}`" for field in REQUIRED_EVIDENCE_ARTIFACT_FIELDS),
             "",
         ]
     )
@@ -337,7 +356,7 @@ def _build_check_row(
     missing = [
         field
         for field in REQUIRED_EVIDENCE_FIELDS
-        if manifest.get(field) in {None, ""}
+        if _is_missing_required_value(manifest.get(field))
     ]
     if missing:
         return {
@@ -379,6 +398,7 @@ def _build_check_row(
         evidence_root=evidence_root,
         local_artifact_path=str(manifest.get("local_artifact_path")),
         expected_digest=str(manifest.get("local_artifact_sha256")),
+        manifest=manifest,
     )
     if artifact_result["blocker"]:
         return {
@@ -393,6 +413,7 @@ def _build_check_row(
         "pinned_revision": manifest.get("pinned_revision"),
         "local_artifact_path": artifact_result["path"],
         "local_artifact_sha256": artifact_result["sha256"],
+        "evidence_artifact_contract_version": artifact_result["contract_version"],
         "evidence_type": manifest.get("evidence_type"),
         "consensus_grade_contribution": True,
     }
@@ -411,6 +432,15 @@ def _build_manifest_template(check: dict[str, Any]) -> dict[str, Any]:
         "smoke_result": "not_run",
         "cloud_dependency": False,
         "evidence_type": "local_inspection",
+        "expected_artifact": {
+            "evidence_artifact_contract_version": EVIDENCE_ARTIFACT_CONTRACT_VERSION,
+            "rival": rival,
+            "pinned_revision": "same as manifest pinned_revision",
+            "smoke_result": PASSING_SMOKE_RESULT,
+            "offline": True,
+            "ok": True,
+            "evidence_type": "same as manifest evidence_type",
+        },
         "notes": (
             "Template only. Replace TODO values and write the local artifact "
             "under evidence_dir before setting smoke_result to passed."
@@ -423,46 +453,110 @@ def _validate_local_artifact(
     evidence_root: Path | None,
     local_artifact_path: str,
     expected_digest: str,
+    manifest: dict[str, Any],
 ) -> dict[str, str | None]:
     if evidence_root is None:
-        return {"blocker": "no evidence_dir provided", "path": None, "sha256": None}
+        return _artifact_error("no evidence_dir provided")
 
     rel = Path(local_artifact_path)
     if rel.is_absolute():
-        return {
-            "blocker": "local_artifact_path must be relative to evidence_dir",
-            "path": None,
-            "sha256": None,
-        }
+        return _artifact_error(
+            "local_artifact_path must be relative to evidence_dir",
+        )
 
     artifact_path = (evidence_root / rel).resolve()
     try:
         artifact_path.relative_to(evidence_root)
     except ValueError:
-        return {
-            "blocker": "local_artifact_path escapes evidence_dir",
-            "path": None,
-            "sha256": None,
-        }
+        return _artifact_error("local_artifact_path escapes evidence_dir")
     if not artifact_path.exists() or not artifact_path.is_file():
-        return {
-            "blocker": "local_artifact_path does not name an existing file",
-            "path": str(artifact_path),
-            "sha256": None,
-        }
+        return _artifact_error(
+            "local_artifact_path does not name an existing file",
+            path=str(artifact_path),
+        )
 
-    actual_digest = "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    payload = artifact_path.read_bytes()
+    actual_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
     if expected_digest != actual_digest:
-        return {
-            "blocker": "local_artifact_sha256 does not match artifact",
-            "path": str(artifact_path),
-            "sha256": actual_digest,
-        }
+        return _artifact_error(
+            "local_artifact_sha256 does not match artifact",
+            path=str(artifact_path),
+            sha256=actual_digest,
+        )
+    try:
+        artifact = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return _artifact_error(
+            f"local artifact is not valid UTF-8 JSON: {exc}",
+            path=str(artifact_path),
+            sha256=actual_digest,
+        )
+    payload_error = _validate_artifact_payload(
+        artifact=artifact,
+        manifest=manifest,
+    )
+    if payload_error:
+        return _artifact_error(
+            payload_error,
+            path=str(artifact_path),
+            sha256=actual_digest,
+        )
     return {
         "blocker": None,
         "path": str(artifact_path),
         "sha256": actual_digest,
+        "contract_version": str(artifact["evidence_artifact_contract_version"]),
     }
+
+
+def _artifact_error(
+    blocker: str,
+    *,
+    path: str | None = None,
+    sha256: str | None = None,
+) -> dict[str, str | None]:
+    return {
+        "blocker": blocker,
+        "path": path,
+        "sha256": sha256,
+        "contract_version": None,
+    }
+
+
+def _validate_artifact_payload(
+    *,
+    artifact: Any,
+    manifest: dict[str, Any],
+) -> str | None:
+    if not isinstance(artifact, dict):
+        return "local artifact JSON must be an object"
+
+    missing = [
+        field
+        for field in REQUIRED_EVIDENCE_ARTIFACT_FIELDS
+        if _is_missing_required_value(artifact.get(field))
+    ]
+    if missing:
+        return "local artifact missing required fields: " + ", ".join(missing)
+    if artifact.get("evidence_artifact_contract_version") != EVIDENCE_ARTIFACT_CONTRACT_VERSION:
+        return "evidence_artifact_contract_version does not match v1"
+    if artifact.get("rival") != manifest.get("rival"):
+        return "local artifact rival does not match manifest"
+    if artifact.get("pinned_revision") != manifest.get("pinned_revision"):
+        return "local artifact pinned_revision does not match manifest"
+    if artifact.get("evidence_type") != manifest.get("evidence_type"):
+        return "local artifact evidence_type does not match manifest"
+    if artifact.get("smoke_result") != PASSING_SMOKE_RESULT:
+        return "local artifact smoke_result is not passed"
+    if artifact.get("offline") is not True:
+        return "local artifact offline is not true"
+    if artifact.get("ok") is not True:
+        return "local artifact ok is not true"
+    return None
+
+
+def _is_missing_required_value(value: Any) -> bool:
+    return value is None or value == ""
 
 
 def _slugify(value: str) -> str:

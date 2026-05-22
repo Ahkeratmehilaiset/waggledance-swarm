@@ -40,6 +40,11 @@ def test_default_matrix_reports_required_rivals_as_not_configured() -> None:
     assert report["passed_count"] == 0
     assert report["blocked_count"] == 4
     assert report["consensus_grade"] is False
+    assert (
+        report["evidence_artifact_contract_version"]
+        == "wd.v12.rival_local_evidence_artifact.v1"
+    )
+    assert "offline" in report["required_evidence_artifact_fields"]
     assert {row["rival"] for row in report["checks"]} == {
         "JamJet",
         "Asqav",
@@ -58,6 +63,7 @@ def test_markdown_output_preserves_no_benchmark_guardrail() -> None:
     assert "rival local checks passed: `0/4`" in markdown
     assert "This is not a competitor benchmark" in markdown
     assert "consensus_grade: `false`" in markdown
+    assert "Required Evidence Artifact Fields" in markdown
 
 
 def test_cli_json_reports_non_consensus_grade() -> None:
@@ -107,6 +113,9 @@ def test_init_evidence_templates_are_non_passing(tmp_path: Path) -> None:
         assert manifest["smoke_result"] == "not_run"
         assert manifest["cloud_dependency"] is False
         assert manifest["local_artifact_sha256"] == "sha256:" + ("0" * 64)
+        assert manifest["expected_artifact"][
+            "evidence_artifact_contract_version"
+        ] == "wd.v12.rival_local_evidence_artifact.v1"
 
 
 def test_cli_init_evidence_templates_reports_non_consensus(tmp_path: Path) -> None:
@@ -165,7 +174,12 @@ def test_valid_local_evidence_manifest_marks_one_rival_passed(tmp_path: Path) ->
     evidence_dir.mkdir()
     artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
     artifact.parent.mkdir()
-    artifact.write_text('{"ok": true, "offline": true}\n', encoding="utf-8")
+    _write_valid_artifact(
+        artifact,
+        rival="JamJet",
+        pinned_revision="jamjet-test-rev",
+        evidence_type="local_smoke",
+    )
     (evidence_dir / "jamjet.json").write_text(
         json.dumps(
             {
@@ -193,7 +207,169 @@ def test_valid_local_evidence_manifest_marks_one_rival_passed(tmp_path: Path) ->
     assert jamjet["local_status"] == "passed"
     assert jamjet["consensus_grade_contribution"] is True
     assert jamjet["local_artifact_sha256"] == _sha256(artifact)
+    assert (
+        jamjet["evidence_artifact_contract_version"]
+        == "wd.v12.rival_local_evidence_artifact.v1"
+    )
     assert report["consensus_grade"] is False
+
+
+def test_weak_local_evidence_artifact_does_not_pass(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact.parent.mkdir()
+    artifact.write_text('{"ok": true, "offline": true}\n', encoding="utf-8")
+    (evidence_dir / "jamjet.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "JamJet",
+                "pinned_revision": "jamjet-test-rev",
+                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "jamjet smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    assert report["passed_count"] == 0
+    assert jamjet["local_status"] == "invalid_artifact"
+    assert "local artifact missing required fields" in jamjet["blocker"]
+
+
+def test_local_evidence_artifact_must_match_manifest(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact.parent.mkdir()
+    _write_valid_artifact(
+        artifact,
+        rival="JamJet",
+        pinned_revision="different-rev",
+        evidence_type="local_smoke",
+    )
+    (evidence_dir / "jamjet.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "JamJet",
+                "pinned_revision": "jamjet-test-rev",
+                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "jamjet smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    assert report["passed_count"] == 0
+    assert jamjet["local_status"] == "invalid_artifact"
+    assert jamjet["blocker"] == "local artifact pinned_revision does not match manifest"
+
+
+def test_malformed_manifest_field_fails_closed(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact.parent.mkdir()
+    _write_valid_artifact(
+        artifact,
+        rival="JamJet",
+        pinned_revision="jamjet-test-rev",
+        evidence_type="local_smoke",
+    )
+    (evidence_dir / "jamjet.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": ["JamJet"],
+                "pinned_revision": "jamjet-test-rev",
+                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "jamjet smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    assert report["passed_count"] == 0
+    assert jamjet["local_status"] == "invalid_manifest"
+    assert jamjet["blocker"] == "manifest rival does not match pilot row"
+
+
+def test_malformed_artifact_field_fails_closed(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact.parent.mkdir()
+    artifact.write_text(
+        json.dumps(
+            {
+                "evidence_artifact_contract_version": (
+                    "wd.v12.rival_local_evidence_artifact.v1"
+                ),
+                "rival": ["JamJet"],
+                "pinned_revision": "jamjet-test-rev",
+                "smoke_result": "passed",
+                "offline": True,
+                "ok": True,
+                "evidence_type": "local_smoke",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (evidence_dir / "jamjet.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "JamJet",
+                "pinned_revision": "jamjet-test-rev",
+                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "jamjet smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    assert report["passed_count"] == 0
+    assert jamjet["local_status"] == "invalid_artifact"
+    assert jamjet["blocker"] == "local artifact rival does not match manifest"
 
 
 def test_cloud_dependent_manifest_does_not_pass(tmp_path: Path) -> None:
@@ -355,3 +531,29 @@ def test_manifest_contract_version_must_match_v1(tmp_path: Path) -> None:
 
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_valid_artifact(
+    path: Path,
+    *,
+    rival: str,
+    pinned_revision: str,
+    evidence_type: str,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "evidence_artifact_contract_version": (
+                    "wd.v12.rival_local_evidence_artifact.v1"
+                ),
+                "rival": rival,
+                "pinned_revision": pinned_revision,
+                "smoke_result": "passed",
+                "offline": True,
+                "ok": True,
+                "evidence_type": evidence_type,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )

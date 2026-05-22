@@ -96,6 +96,16 @@ def test_stale_rco_pass_excluded_by_age():
     assert my_unmerged_rco_passes(events, agent="claude", now_utc=NOW) == []
 
 
+def test_merged_by_pr_number_excluded_despite_task_id_mismatch():
+    # rco_pass under one task id; done/merged for the SAME pr under a slightly
+    # different task id (20260522 vs 2026-05-22). The PR must clear anyway.
+    events = [
+        _rco_pass("t-20260522", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
+        _done_merged("t-2026-05-22", pr=900, ts="2026-05-22T13:40:00Z"),
+    ]
+    assert my_unmerged_rco_passes(events, agent="claude", now_utc=NOW) == []
+
+
 def test_pass_without_pr_skipped():
     ev = _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z")
     ev["payload"] = {"head": HEAD}  # no pr
@@ -117,6 +127,21 @@ def test_merge_ready_when_green_clean_headmatch():
     )
     assert r["ready"] is True
     assert r["merge_command"] == f"gh pr merge 900 --squash --match-head-commit={HEAD}"
+
+
+def test_merge_ready_with_short_approved_head_prefix():
+    # Real bridge rco_pass payloads carry a short head; gh returns the full sha.
+    short = "862d34bd"
+    full = "862d34bd27c15b870242faf333f7961629137cb8"
+    events = [_rco_pass("t1", pr=566, head=short, ts="2026-05-22T13:30:00Z")]
+    r = evaluate_merge_ready(
+        {"task_id": "t1", "pr": 566, "approved_head": short},
+        events=events, agent="claude",
+        snapshot_fn=lambda pr: _green_snapshot(pr, head=full),
+    )
+    assert r["ready"] is True
+    # Merge command pins the FULL sha, not the short approved head.
+    assert r["merge_command"] == f"gh pr merge 566 --squash --match-head-commit={full}"
 
 
 def test_not_ready_when_head_moved():

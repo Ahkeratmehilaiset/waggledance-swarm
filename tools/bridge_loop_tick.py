@@ -58,6 +58,28 @@ WAKEUP_QUIET = 1800  # nothing pending; operator's ball or idle
 
 SnapshotFn = Callable[[int], Mapping[str, Any]]
 
+# Bridge rco_pass payloads commonly carry a short head (e.g. "862d34bd") while
+# gh pr view returns the full 40-char head_sha. Treat the approved head as an
+# unambiguous prefix of the full sha, with a sane minimum length.
+MIN_HEAD_PREFIX = 7
+
+
+def head_matches(approved_head: str, full_head_sha: str) -> bool:
+    """True when the rco_pass approved head identifies the snapshot head.
+
+    Accepts an exact match or an unambiguous case-insensitive prefix of length
+    >= MIN_HEAD_PREFIX. The full snapshot sha is what the merge command should
+    pin (``--match-head-commit``); this only validates they refer to the same
+    commit.
+    """
+    approved = approved_head.strip().lower()
+    full = full_head_sha.strip().lower()
+    if not approved or not full:
+        return False
+    if len(approved) < MIN_HEAD_PREFIX:
+        return False
+    return full == approved or full.startswith(approved)
+
 
 def _event_agent(event: Mapping[str, Any]) -> str:
     return str(event.get("agent", ""))
@@ -141,16 +163,19 @@ def my_unmerged_rco_passes(
     """
     latest_pass: dict[str, Mapping[str, Any]] = {}
     merged_tasks: set[str] = set()
+    merged_prs: set[int] = set()
     for event in events:
         task = _task_id(event)
-        if not task:
-            continue
-        if _is_my_rco_pass(event, agent):
-            latest_pass[task] = event
-        elif _is_merged_done(event):
-            merged_tasks.add(task)
+        if _is_merged_done(event):
+            if task:
+                merged_tasks.add(task)
+            merged_pr = _payload_pr(event)
+            if merged_pr is not None:
+                merged_prs.add(merged_pr)
             # A merge after a pass clears it; drop any recorded pass.
             latest_pass.pop(task, None)
+        elif task and _is_my_rco_pass(event, agent):
+            latest_pass[task] = event
     effective_now = now_utc or datetime.now(timezone.utc)
     candidates: list[dict[str, Any]] = []
     for task, event in latest_pass.items():
@@ -158,6 +183,10 @@ def my_unmerged_rco_passes(
             continue
         pr = _payload_pr(event)
         if pr is None:
+            continue
+        # P2: a done/merged event for the same PR number clears the candidate
+        # even when its task_id differs (e.g. 20260522 vs 2026-05-22).
+        if pr in merged_prs:
             continue
         if max_age_hours is not None:
             passed_at = _parse_ts(str(event.get("ts_utc", "")))
@@ -231,10 +260,10 @@ def evaluate_merge_ready(
     result["mergeable"] = mergeable
     result["checks_green"] = _checks_green(snapshot)
 
-    if approved_head and head_sha and head_sha != approved_head:
-        result["blockers"].append("head_moved_since_rco_pass")
     if not approved_head:
         result["blockers"].append("rco_pass_missing_head")
+    elif not head_matches(approved_head, head_sha):
+        result["blockers"].append("head_moved_since_rco_pass")
     if mergeable not in MERGEABLE_STATES:
         result["blockers"].append(f"mergeable_not_clean:{mergeable}")
     if not result["checks_green"]:
@@ -242,8 +271,9 @@ def evaluate_merge_ready(
 
     result["ready"] = not result["blockers"]
     if result["ready"]:
+        # Pin the FULL snapshot sha, not the (possibly short) approved head.
         result["merge_command"] = (
-            f"gh pr merge {pr} --squash --match-head-commit={approved_head}"
+            f"gh pr merge {pr} --squash --match-head-commit={head_sha}"
         )
     return result
 

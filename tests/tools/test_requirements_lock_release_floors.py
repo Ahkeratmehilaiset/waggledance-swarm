@@ -27,7 +27,7 @@ LOW_RISK_OSV_FIXED_FLOORS = {
     "urllib3": Version("2.7.0"),
 }
 BIG_JUMP_OSV_FIXED_FLOORS = {
-    "pillow": Version("12.1.1"),
+    "pillow": Version("12.2.0"),
     "pyarrow": Version("23.0.1"),
     "starlette": Version("1.0.1"),
     "streamlit": Version("1.54.0"),

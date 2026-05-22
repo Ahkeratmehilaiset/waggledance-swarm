@@ -302,7 +302,7 @@ tomli_w==1.2.0
 tools==1.0.23
 torch==2.11.0+cu126 ; sys_platform == "win32"
 torch==2.11.0 ; sys_platform != "win32"
-torchao==0.17.0
+torchao==0.17.0+cu126
 torchaudio==2.11.0+cu126 ; sys_platform == "win32"
 torchaudio==2.11.0 ; sys_platform != "win32"
 torchvision==0.26.0+cu126 ; sys_platform == "win32"

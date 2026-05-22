@@ -140,16 +140,36 @@ def test_count_history_matches_counts_commits(tmp_path: Path) -> None:
 def test_run_detect_reports_scrub_needed(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path, SETTINGS_WITH_PII)
     report = run_detect(_settings(repo), repo)
+    assert report["decision"] == "scrub_needed"
     assert report["scrub_needed"] is True
     assert report["fields_present"]["y_tunnus"] is True
     assert report["history_match_counts"]["owner"] >= 1
 
 
-def test_run_detect_clean_when_scrubbed(tmp_path: Path) -> None:
+def test_run_detect_scrubbed_head_no_known_is_unverifiable_not_clean(
+    tmp_path: Path,
+) -> None:
+    """A redacted HEAD with no prior values supplied is NOT a clean result:
+    we had nothing to search history for. scrub_needed must stay fail-closed
+    (True) so the single operator-facing field can't read as clean."""
     repo = _make_repo(tmp_path, SETTINGS_SCRUBBED)
     report = run_detect(_settings(repo), repo)
+    assert report["decision"] == "unverifiable"
+    assert report["scrub_needed"] is True
+    assert report["head_redacted_history_unverifiable"] is True
+
+
+def test_run_detect_clean_only_when_verified(tmp_path: Path) -> None:
+    """A genuine 'clean' requires actually searching for real values and
+    finding none — here a scrubbed HEAD plus known values absent from
+    history."""
+    repo = _make_repo(tmp_path, SETTINGS_SCRUBBED)
+    known = [("never-committed-value-abc", HISTORICAL_PLACEHOLDER)]
+    report = run_detect(_settings(repo), repo, known_values=known)
+    assert report["decision"] == "clean"
     assert report["scrub_needed"] is False
     assert all(v == 0 for v in report["history_match_counts"].values())
+    assert all(v == 0 for v in report["known_history_match_counts"].values())
 
 
 def test_run_plan_reports_path_not_contents(tmp_path: Path, capsys) -> None:
@@ -243,6 +263,8 @@ def test_detect_redacted_head_no_known_values_is_unverifiable(
         "y_tunnus": False, "owner": False, "business_name": False,
     }
     assert report["head_redacted_history_unverifiable"] is True
+    assert report["decision"] == "unverifiable"
+    assert report["scrub_needed"] is True  # fail-closed, never clean-false
 
 
 def test_detect_redacted_head_with_known_values_finds_history(

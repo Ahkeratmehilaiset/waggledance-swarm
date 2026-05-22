@@ -280,17 +280,30 @@ def run_detect(
     head_history_dirty = any(count > 0 for count in history_counts.values())
     known_history_dirty = any(count > 0 for count in known_history_counts.values())
 
-    # Honest fail-closed flag: if HEAD shows no PII and no prior values were
-    # supplied, we CANNOT confirm history is clean — the search had nothing to
-    # look for. Do not claim scrub_needed=False in that blind spot.
+    # If HEAD shows no PII and no prior values were supplied, we CANNOT
+    # confirm history is clean — the search had nothing to look for.
     history_unverifiable = (not head_has_pii) and (not known_values)
 
-    scrub_needed = head_has_pii or head_history_dirty or known_history_dirty
+    # Tri-state authoritative signal. "clean" is only ever emitted when we
+    # actually verified (HEAD clean AND history searched for real values came
+    # back empty). The unverifiable blind spot must NOT read as clean.
+    if head_has_pii or head_history_dirty or known_history_dirty:
+        decision = "scrub_needed"
+    elif history_unverifiable:
+        decision = "unverifiable"
+    else:
+        decision = "clean"
+
+    # scrub_needed is fail-closed: it is only False on a verified "clean".
+    # An unverifiable result keeps scrub_needed True so an operator scanning
+    # this single field can never mistake the blind spot for a clean repo.
+    scrub_needed = decision != "clean"
     return {
         "fields_present": fields_present,
         "history_match_counts": history_counts,
         "known_history_match_counts": known_history_counts,
         "head_redacted_history_unverifiable": history_unverifiable,
+        "decision": decision,
         "scrub_needed": scrub_needed,
     }
 

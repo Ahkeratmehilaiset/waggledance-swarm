@@ -44,7 +44,16 @@ REQUEST_TYPES = {
     "sandbox_drop",
     "decision",
 }
-ANSWER_TYPES = {"message", "done", "decision", "blocked", "finding", "test", "release"}
+ANSWER_TYPES = {
+    "message",
+    "done",
+    "decision",
+    "blocked",
+    "finding",
+    "test",
+    "release",
+    "handoff",
+}
 OPEN_STATUS_FRAGMENTS = (
     "open",
     "proposal",
@@ -64,6 +73,7 @@ ANSWER_STATUS_FRAGMENTS = (
     "merged",
     "pass",
     "resolved",
+    "reported",
     "superseded",
     "validated",
     "verified",
@@ -400,7 +410,13 @@ def _status_has_any(status: str, candidates: Sequence[str]) -> bool:
 
 
 def _addressed_to(event: Mapping[str, Any], agent: str) -> bool:
-    return str(event.get("to") or "").lower() == agent
+    target = agent.lower()
+    recipients = [
+        item.strip().lower()
+        for item in re.split(r"[,;\s]+", str(event.get("to") or ""))
+        if item.strip()
+    ]
+    return target in recipients
 
 
 def _task_id(event: Mapping[str, Any]) -> str:

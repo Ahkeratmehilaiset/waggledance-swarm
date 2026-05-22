@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--agent", required=True)
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
-    parser.add_argument("--bridge-root", type=Path, default=DEFAULT_BRIDGE_ROOT)
+    parser.add_argument("--bridge-root", type=Path, default=None)
     parser.add_argument(
         "--tail",
         type=int,
@@ -135,7 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = evaluate_agent_next_task(
         agent=args.agent,
         events_path=args.events,
-        bridge_root=args.bridge_root,
+        bridge_root=_bridge_root_for_args(args.events, args.bridge_root),
         tail=args.tail,
         now_utc=now_utc,
     )
@@ -394,6 +394,14 @@ def _substrate_smoke_task_id(
     index: int,
 ) -> str:
     return f"{_daily_smoke_task_prefix(agent, now_utc)}{index}"
+
+
+def _bridge_root_for_args(events_path: Path, bridge_root: Path | None) -> Path:
+    if bridge_root is not None:
+        return bridge_root
+    if events_path.name == "events.jsonl" and events_path.parent.name == "shared":
+        return events_path.parent.parent
+    return DEFAULT_BRIDGE_ROOT
 
 
 def _completed_substrate_smoke_task_ids(

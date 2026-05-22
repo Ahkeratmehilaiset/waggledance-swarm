@@ -492,6 +492,42 @@ def test_cli_main_emits_json(
     assert parsed["candidate"]["kind"] == "run_substrate_smoke"
 
 
+def test_cli_infers_bridge_root_from_events_path_for_claims(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    bridge, events_path, claims_dir = _empty_bridge(tmp_path)
+    claim_task(
+        agent="claude",
+        task_id="claude-real-bridge-root-claim",
+        summary="canonical claim under inferred bridge_root",
+        mode="write",
+        write_scope=["tools/y.py"],
+        bridge_root=bridge,
+    )
+
+    exit_code = main(
+        [
+            "--agent",
+            "claude",
+            "--events",
+            str(events_path),
+            "--now",
+            "2026-05-20T12:00:00Z",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    out = capsys.readouterr().out.strip()
+    parsed = json.loads(out)
+    assert parsed["decision"] == "defer_to_bridge_next_action"
+    assert parsed["bridge_recommendation"]["action"] == "continue_claim"
+    assert (
+        parsed["bridge_recommendation"]["task_id"]
+        == "claude-real-bridge-root-claim"
+    )
+
+
 # ---------------------------------------------------------------------------
 # regression: bridge_root is the authoritative source for claim loading
 # ---------------------------------------------------------------------------

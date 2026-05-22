@@ -56,6 +56,22 @@ def test_release_gate_passes_with_valid_soak_evidence_after_window(tmp_path) -> 
     assert result["soak_window"]["required_hours"] == 336
 
 
+def test_release_gate_treats_commit_as_evidence_subject(tmp_path) -> None:
+    evidence = _valid_evidence()
+    evidence["commit"] = "1111111111111111111111111111111111111111"
+    evidence_path = tmp_path / "release_soak_evidence.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    result = evaluate_release_gate(
+        readiness_path="docs/release/RELEASE_READINESS.md",
+        soak_evidence_path=evidence_path,
+        today=dt.date(2026, 5, 24),
+    )
+
+    assert result["decision"] == "pass"
+    assert result["blockers"] == []
+
+
 def test_release_gate_rejects_partial_or_dirty_soak_evidence(tmp_path) -> None:
     evidence = _valid_evidence()
     evidence.update({

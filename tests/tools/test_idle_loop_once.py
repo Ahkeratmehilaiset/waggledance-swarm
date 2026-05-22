@@ -288,14 +288,19 @@ def test_mid_protocol_after_counter_requires_adversarial(tmp_path: Path) -> None
     )
 
 
-def test_convergence_reached_on_soft_convergence(tmp_path: Path) -> None:
+# A timestamp old enough to leave the bridge idle (>60 min before NOW) but
+# fresh enough NOT to trip the 12h stale-convergence recycle.
+MID_TS = "2026-05-20T09:00:00Z"
+
+
+def test_convergence_reached_on_fresh_soft_convergence(tmp_path: Path) -> None:
     events = [
         _bridge_event(),
-        _wrap(_proposal()),
-        _wrap(_counter(), agent="claude"),
-        _wrap(_adversarial()),
-        _wrap(_consensus("idle-prop-20260518-005a")),
-        _wrap(_consensus("idle-prop-20260518-005b"), agent="claude"),
+        _wrap(_proposal(), ts_utc=MID_TS),
+        _wrap(_counter(), agent="claude", ts_utc=MID_TS),
+        _wrap(_adversarial(), ts_utc=MID_TS),
+        _wrap(_consensus("idle-prop-20260518-005a"), ts_utc=MID_TS),
+        _wrap(_consensus("idle-prop-20260518-005b"), agent="claude", ts_utc=MID_TS),
     ]
     report = _tick(tmp_path, events)
 
@@ -305,6 +310,30 @@ def test_convergence_reached_on_soft_convergence(tmp_path: Path) -> None:
     assert any(
         "deferred in IDLE_PROTOCOL_V1.md" in note for note in report["notes"]
     )
+
+
+def test_stale_soft_convergence_recycles_to_reseed(tmp_path: Path) -> None:
+    """A converged instance whose latest payload is older than the stale
+    window must recycle to a fresh round-1 emit instead of re-parking on the
+    old consensus forever. Regression for the 2026-05-22 dream-mode stall
+    where a 2026-05-18 soft_convergence kept the auto-emit loop parked.
+    """
+    events = [
+        _bridge_event(),
+        _wrap(_proposal()),  # OLD_TS (2026-01-01) -> well past the 12h window
+        _wrap(_counter(), agent="claude"),
+        _wrap(_adversarial()),
+        _wrap(_consensus("idle-prop-20260518-005a")),
+        _wrap(_consensus("idle-prop-20260518-005b"), agent="claude"),
+    ]
+    report = _tick(tmp_path, events)
+
+    assert report["decision"] == "stale_convergence_reseed"
+    assert report["next_action"] == "emit_round_1"
+    assert report["session_summary"]["status"] == "soft_convergence"
+    stale = report["session_summary"]["stale_terminal_session"]
+    assert stale["stale"] is True
+    assert any("must not keep the auto-emit loop parked" in n for n in report["notes"])
 
 
 def test_operator_review_on_charter_violation(tmp_path: Path) -> None:

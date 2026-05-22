@@ -152,6 +152,37 @@ def _write_axis_b_hex_eval(root, *, quality: float = 0.7476) -> None:
     )
 
 
+def _write_soak_log_audit(
+    root,
+    *,
+    source_files: list[str] | None = None,
+    silent_failure_count: int = 0,
+    error_count: int = 0,
+    blockers: list[str] | None = None,
+) -> None:
+    source_files = (
+        ["docs/runs/release_soak_evidence/test_soak.log"]
+        if source_files is None
+        else source_files
+    )
+    blockers = [] if blockers is None else blockers
+    (root / "v3.12.0_soak_log_audit.json").write_text(
+        json.dumps({
+            "schema_version": "waggledance.release_soak_log_audit.v1",
+            "target_version": "v3.12.0",
+            "audit_result": "pass" if not blockers else "blocked",
+            "source_files": source_files,
+            "started_at_utc": "2026-05-10T00:00:00Z",
+            "ended_at_utc": "2026-05-22T12:49:00Z",
+            "silent_failure_count": silent_failure_count,
+            "error_count": error_count,
+            "error_log_clean": not blockers and error_count == 0,
+            "blockers": blockers,
+        }),
+        encoding="utf-8",
+    )
+
+
 def test_collector_draft_is_fail_closed_until_evidence_is_explicit() -> None:
     evidence = build_soak_evidence(
         "docs/release/RELEASE_READINESS.md",
@@ -421,6 +452,142 @@ def test_local_artifacts_block_axis_b_when_pass_artifact_lowers_thresholds(
 
     assert statuses["axis_a_regression"] == "pass"
     assert statuses["axis_b_gate"] == "blocked"
+
+
+def test_local_artifacts_can_derive_clean_soak_log_fields(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    source = tmp_path / "test_soak.log"
+    source.write_text("0 errors\nno silent failures\n", encoding="utf-8")
+    _write_soak_log_audit(evidence_root, source_files=[str(source)])
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        silent_failures=9,
+        error_log_clean=False,
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["silent_failures"] == 0
+    assert evidence["error_log_clean"] is True
+
+
+def test_local_artifacts_block_manual_soak_log_stub_when_artifact_missing(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        silent_failures=0,
+        error_log_clean=True,
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["silent_failures"] is None
+    assert evidence["error_log_clean"] is False
+
+
+def test_local_artifacts_keep_soak_log_blocked_when_errors_detected(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    source = tmp_path / "test_soak.log"
+    source.write_text("ERROR: backend unhealthy\n", encoding="utf-8")
+    _write_soak_log_audit(
+        evidence_root,
+        source_files=[str(source)],
+        error_count=2,
+        blockers=["errors_detected"],
+    )
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["silent_failures"] == 0
+    assert evidence["error_log_clean"] is False
+
+
+def test_local_artifacts_reject_soak_log_audit_without_sources(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_soak_log_audit(evidence_root, source_files=[])
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["silent_failures"] is None
+    assert evidence["error_log_clean"] is False
+
+
+def test_local_artifacts_reject_soak_log_audit_with_fake_source(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_soak_log_audit(evidence_root, source_files=[str(tmp_path / "fake.log")])
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["silent_failures"] is None
+    assert evidence["error_log_clean"] is False
+
+
+def test_local_artifacts_reject_soak_log_audit_with_source_blocker(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_soak_log_audit(
+        evidence_root,
+        source_files=["missing.log"],
+        blockers=["source_missing:missing.log"],
+    )
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["silent_failures"] is None
+    assert evidence["error_log_clean"] is False
 
 
 def test_local_artifacts_override_manual_axis_gate_stubs(tmp_path) -> None:

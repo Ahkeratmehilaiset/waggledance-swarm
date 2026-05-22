@@ -1,0 +1,89 @@
+{
+  "allowed_families": [
+    "scalar_unit_conversion",
+    "lookup_table",
+    "threshold_rule",
+    "interval_bucket_classifier",
+    "linear_arithmetic",
+    "bounded_interpolation"
+  ],
+  "branch_name": "phase17a/producer-fabric-scale",
+  "build_descriptors_per_second": 4960.9,
+  "build_index_time_seconds": 2.0158,
+  "builder_jobs_delta": 0,
+  "descriptors_per_family": {
+    "bounded_interpolation": 1666,
+    "interval_bucket_classifier": 1667,
+    "linear_arithmetic": 1666,
+    "lookup_table": 1667,
+    "scalar_unit_conversion": 1667,
+    "threshold_rule": 1667
+  },
+  "descriptors_per_hex_cell": {
+    "energy": 1252,
+    "general": 1254,
+    "learning": 1248,
+    "math": 1248,
+    "safety": 1248,
+    "seasonal": 1248,
+    "system": 1248,
+    "thermal": 1254
+  },
+  "families_total": 6,
+  "finished_at_utc": "2026-05-22T12:20:45Z",
+  "hex_cells": [
+    "general",
+    "thermal",
+    "energy",
+    "safety",
+    "seasonal",
+    "math",
+    "system",
+    "learning"
+  ],
+  "hex_cells_total": 8,
+  "hot_path_cache_stats": {
+    "artifact_cache_size_after_lookup": 1000,
+    "buffered_flushed_total": 0,
+    "buffered_pending_signals": 0,
+    "cold_hits_warmed": 1000,
+    "misses": 0,
+    "warm_hits": 1000,
+    "warm_index_size_after_lookup": 1000
+  },
+  "is_synthetic_scale": true,
+  "lookup_benchmark_shape": "hot_path_cache_attached_warm_pass",
+  "lookup_by_source": {
+    "auto_promoted_solver": 1000
+  },
+  "lookup_capability_hits_total": 1000,
+  "lookup_cold_after_attach": {
+    "by_source": {
+      "auto_promoted_solver": 1000
+    },
+    "lookup_capability_hits_total": 1000,
+    "lookup_fifo_fallback_total": 0,
+    "lookup_mean_ms": 2.4893,
+    "lookup_miss_total": 0,
+    "lookup_p50_ms": 1.9783,
+    "lookup_p95_ms": 4.3457,
+    "lookup_p99_ms": 6.633
+  },
+  "lookup_fifo_fallback_total": 0,
+  "lookup_mean_ms": 0.0143,
+  "lookup_miss_total": 0,
+  "lookup_p50_ms": 0.0149,
+  "lookup_p95_ms": 0.0167,
+  "lookup_p99_ms": 0.0214,
+  "lookup_pass_count": 1000,
+  "no_allowlist_widening": true,
+  "no_provider_credentials_required": true,
+  "no_runtime_network_required": true,
+  "not_canonical_corpus": true,
+  "phase": "phase17a_solver_scale",
+  "production_hot_path_cache_attached": true,
+  "provider_jobs_delta": 0,
+  "schema_version": 1,
+  "started_at_utc": "2026-05-22T12:20:41Z",
+  "synthetic_solver_descriptors_total": 10000
+}

@@ -71,6 +71,87 @@ def _write_release_notes(path, *, forbidden: bool = False) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _write_axis_a_scale_proof(
+    root,
+    *,
+    warm_p99: float = 0.05,
+    misses: int = 0,
+) -> None:
+    path = root / "v3.12.0_axis_a_solver_scale" / "solver_scale_proof.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            "synthetic_solver_descriptors_total": 10000,
+            "lookup_pass_count": 1000,
+            "lookup_capability_hits_total": 1000,
+            "lookup_fifo_fallback_total": 0,
+            "lookup_miss_total": misses,
+            "lookup_p99_ms": warm_p99,
+            "lookup_cold_after_attach": {"lookup_p99_ms": 20.0},
+            "production_hot_path_cache_attached": True,
+            "lookup_benchmark_shape": "hot_path_cache_attached_warm_pass",
+            "no_provider_credentials_required": True,
+            "no_runtime_network_required": True,
+            "provider_jobs_delta": 0,
+            "builder_jobs_delta": 0,
+            "hot_path_cache_stats": {
+                "warm_hits": 1000,
+                "cold_hits_warmed": 1000,
+            },
+        }),
+        encoding="utf-8",
+    )
+
+
+def _write_axis_b_hex_eval(root, *, quality: float = 0.7476) -> None:
+    cells = [
+        "bee_ops",
+        "environment",
+        "home_comfort",
+        "hub",
+        "logistics",
+        "production",
+        "safety_security",
+    ]
+    per_file = [
+        {
+            "cell": cell,
+            "file_score": 0.7,
+            "pos_correct": 8,
+            "pos_total": 15,
+            "neg_correct": 5,
+            "neg_total": 5,
+        }
+        for cell in cells
+    ]
+    (root / "v3.12.0_axis_b_hex_aligned_eval.json").write_text(
+        json.dumps({
+            "schema_version": "waggledance.axis_b_hex_eval.v1",
+            "result": "pass" if quality >= 0.74 else "blocked",
+            "corpus": {
+                "cells": cells,
+                "files": 7,
+                "total_positive": 105,
+                "total_negative": 35,
+            },
+            "thresholds": {
+                "quality_floor": 0.74,
+                "mismatched_baseline_quality": 0.5,
+                "minimum_baseline_delta": 0.2,
+                "per_cell_quality_floor": 0.6,
+            },
+            "quality": quality,
+            "micro_pos": 56,
+            "micro_pos_total": 105,
+            "micro_neg": 35,
+            "micro_neg_total": 35,
+            "per_file": per_file,
+            "blockers": [] if quality >= 0.74 else ["quality_below_floor"],
+        }),
+        encoding="utf-8",
+    )
+
+
 def test_collector_draft_is_fail_closed_until_evidence_is_explicit() -> None:
     evidence = build_soak_evidence(
         "docs/release/RELEASE_READINESS.md",
@@ -166,6 +247,26 @@ def test_local_artifacts_block_security_when_dependency_audit_has_vulns(
     assert statuses["release_notes_anti_claims"] == "pass"
 
 
+def test_local_artifacts_block_security_when_dependency_audit_missing(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_bandit_report(evidence_root)
+    _write_privacy_precheck(evidence_root)
+    _write_release_notes(release_notes)
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert statuses["profile_s_smoke"] == "pass"
+    assert statuses["security_privacy_gate"] == "blocked"
+    assert statuses["release_notes_anti_claims"] == "pass"
+
+
 def test_local_artifacts_can_pass_security_only_when_all_checks_are_clean(
     tmp_path,
 ) -> None:
@@ -190,6 +291,158 @@ def test_local_artifacts_can_pass_security_only_when_all_checks_are_clean(
     assert evidence["security_privacy_gate"] == "pass"
     assert evidence["release_notes_anti_claims"] == "pass"
     assert evidence["result"] == "hold"
+
+
+def test_local_artifacts_can_pass_axis_gates_from_metric_artifacts(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_axis_a_scale_proof(evidence_root)
+    _write_axis_b_hex_eval(evidence_root)
+    _write_release_notes(release_notes)
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert statuses["axis_a_regression"] == "pass"
+    assert statuses["axis_b_gate"] == "pass"
+
+
+def test_local_artifacts_block_axis_a_when_hot_path_metrics_regress(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_axis_a_scale_proof(evidence_root, warm_p99=5.0)
+    _write_axis_b_hex_eval(evidence_root)
+    _write_release_notes(release_notes)
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert statuses["axis_a_regression"] == "blocked"
+    assert statuses["axis_b_gate"] == "pass"
+
+
+def test_local_artifacts_block_axis_b_when_quality_below_floor(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_axis_a_scale_proof(evidence_root)
+    _write_axis_b_hex_eval(evidence_root, quality=0.7)
+    _write_release_notes(release_notes)
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert statuses["axis_a_regression"] == "pass"
+    assert statuses["axis_b_gate"] == "blocked"
+
+
+def test_local_artifacts_block_axis_b_when_pass_artifact_has_blockers(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_axis_a_scale_proof(evidence_root)
+    _write_axis_b_hex_eval(evidence_root)
+    _write_release_notes(release_notes)
+    report_path = evidence_root / "v3.12.0_axis_b_hex_aligned_eval.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["blockers"] = ["manual_pass_conflicts_with_blocker"]
+    report["result"] = "pass"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert statuses["axis_a_regression"] == "pass"
+    assert statuses["axis_b_gate"] == "blocked"
+
+
+def test_local_artifacts_block_axis_b_when_pass_artifact_is_incomplete(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_axis_a_scale_proof(evidence_root)
+    _write_axis_b_hex_eval(evidence_root)
+    _write_release_notes(release_notes)
+    report_path = evidence_root / "v3.12.0_axis_b_hex_aligned_eval.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["per_file"] = report["per_file"][:1]
+    report["result"] = "pass"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert statuses["axis_a_regression"] == "pass"
+    assert statuses["axis_b_gate"] == "blocked"
+
+
+def test_local_artifacts_block_axis_b_when_pass_artifact_lowers_thresholds(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_axis_a_scale_proof(evidence_root)
+    _write_axis_b_hex_eval(evidence_root)
+    _write_release_notes(release_notes)
+    report_path = evidence_root / "v3.12.0_axis_b_hex_aligned_eval.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["thresholds"]["quality_floor"] = 0.1
+    report["thresholds"]["per_cell_quality_floor"] = 0.1
+    report["result"] = "pass"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert statuses["axis_a_regression"] == "pass"
+    assert statuses["axis_b_gate"] == "blocked"
+
+
+def test_local_artifacts_override_manual_axis_gate_stubs(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        status_overrides={
+            "axis_a_regression": "pass",
+            "axis_b_gate": "pass",
+        },
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["axis_a_regression"] == "unknown"
+    assert evidence["axis_b_gate"] == "unknown"
 
 
 def test_local_artifacts_block_security_when_pip_audit_skips_dependency(

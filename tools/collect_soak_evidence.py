@@ -29,6 +29,9 @@ from tools.check_release_gate import (
 from tools.run_release_ci_status_evidence import (
     evaluate_report as evaluate_ci_status_report,
 )
+from tools.run_release_docker_policy_evidence import (
+    evaluate_report as evaluate_docker_policy_report,
+)
 
 
 UNKNOWN_STATUS = "unknown"
@@ -67,6 +70,7 @@ AXIS_B_MISMATCHED_BASELINE_QUALITY = 0.5
 AXIS_B_MINIMUM_BASELINE_DELTA = 0.20
 AXIS_B_PER_CELL_QUALITY_FLOOR = 0.6
 CI_STATUS_EVIDENCE = "v3.12.0_ci_status.json"
+DOCKER_POLICY_EVIDENCE = "v3.12.0_docker_policy.json"
 SOAK_LOG_AUDIT = "v3.12.0_soak_log_audit.json"
 SOAK_LOG_AUDIT_SCHEMA_VERSION = "waggledance.release_soak_log_audit.v1"
 SOAK_LOG_AUDIT_COUNT_BLOCKERS = {
@@ -396,6 +400,17 @@ def _ci_status(evidence_root: Path, expected_commit: str | None) -> str:
     return "pass" if not blockers else BLOCKED_STATUS
 
 
+def _docker_stable_policy(evidence_root: Path, expected_commit: str | None) -> str:
+    report = _read_json(evidence_root / DOCKER_POLICY_EVIDENCE)
+    if report is None:
+        return "draft"
+    blockers = evaluate_docker_policy_report(
+        report,
+        expected_commit=expected_commit if expected_commit else None,
+    )
+    return "finalized" if not blockers else "draft"
+
+
 def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
     fail_closed = {"silent_failures": None, "error_log_clean": False}
     report = _read_json(evidence_root / SOAK_LOG_AUDIT)
@@ -465,6 +480,7 @@ def local_artifact_evidence_fields(
     release_notes = Path(release_notes)
     return {
         "ci_status": _ci_status(evidence_root, commit),
+        "docker_stable_policy": _docker_stable_policy(evidence_root, commit),
         "profile_s_smoke": _profile_s_smoke_status(evidence_root),
         "security_privacy_gate": _security_privacy_status(evidence_root),
         "axis_a_regression": _axis_a_solver_scale_status(evidence_root),
@@ -563,6 +579,8 @@ def build_soak_evidence(
             silent_failures = local_fields["silent_failures"]
         if "error_log_clean" in local_fields:
             error_log_clean = bool(local_fields["error_log_clean"])
+        if "docker_stable_policy" in local_fields:
+            docker_stable_policy = str(local_fields["docker_stable_policy"])
 
     required_hours = (readiness.soak_end - readiness.soak_start).days * 24
     evidence: dict[str, Any] = {

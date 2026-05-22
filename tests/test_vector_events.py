@@ -427,10 +427,18 @@ def test_read_events_from_offset_skips_malformed_lines_but_advances(tmp_path):
 
 def test_read_events_from_offset_scaling_is_O_new(tmp_path):
     """Regression guard for the headline scaling property: reading 100
-    new events from a 5000-event log must NOT take the same time as a
-    full 5000-event scan. We don't pin a specific time (microbench
+    new events from a large log must NOT take the same time as a full
+    scan of the whole log. We don't pin a specific time (microbench
     does that) — just assert the incremental scan is at least an
-    order of magnitude faster than the full scan on the same log."""
+    order of magnitude faster than the full scan on the same log.
+
+    The base is 50_000 events on purpose. At 5_000 the full scan was
+    only ~40-80ms, so the incremental read's fixed per-call overhead
+    (file open + seek + parsing 100 lines, ~10ms) was 15-25% of the
+    full time and the 0.2 ratio flaked intermittently. At 50_000 the
+    full scan is ~400ms while the incremental read stays ~25ms, so the
+    asymptotic O(all) vs O(new) gap (ratio ~0.06) dominates timing
+    noise and the regression signal is unambiguous."""
     import time
     from waggledance.core.magma.vector_events import (
         emit_many, read_events_from_offset,
@@ -438,7 +446,7 @@ def test_read_events_from_offset_scaling_is_O_new(tmp_path):
     log = tmp_path / "events.jsonl"
     bulk = [
         solver_upserted("thermal", f"m{i}", f"s{i}", f"p{i}")
-        for i in range(5000)
+        for i in range(50_000)
     ]
     emit_many(bulk, log)
 
@@ -460,7 +468,7 @@ def test_read_events_from_offset_scaling_is_O_new(tmp_path):
     incremental_ms = (time.perf_counter() - t0) * 1000
 
     assert len(new_events) == 100
-    # 100 events / 5000 events ≈ 2% of the work; allow generous 20%
+    # 100 events / 50_000 events = 0.2% of the work; allow generous 20%
     # headroom for warmup variance, but anything close to full_ms
     # would mean the offset path is doing a full scan — regression.
     assert incremental_ms < full_ms * 0.2, (

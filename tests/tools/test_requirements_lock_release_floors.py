@@ -13,6 +13,19 @@ LOCKED_RELEASE_FLOORS = {
     "aiohttp": Version("3.13.4"),
     "pytest": Version("9.0.3"),
 }
+LOW_RISK_OSV_FIXED_FLOORS = {
+    "cryptography": Version("46.0.7"),
+    "diffusers": Version("0.38.0"),
+    "gitpython": Version("3.1.50"),
+    "idna": Version("3.15"),
+    "lxml": Version("6.1.0"),
+    "nltk": Version("3.9.4"),
+    "pygments": Version("2.20.0"),
+    "pypdf": Version("6.10.2"),
+    "python-dotenv": Version("1.2.2"),
+    "requests": Version("2.33.0"),
+    "urllib3": Version("2.7.0"),
+}
 
 
 def _requirements(path: Path) -> dict[str, Requirement]:
@@ -60,4 +73,12 @@ def test_release_lock_satisfies_security_floor_bumps() -> None:
         assert name in ci
         assert primary[name].specifier.contains(floor, prereleases=True)
         assert ci[name].specifier.contains(floor, prereleases=True)
+        assert lock[name] >= floor
+
+
+def test_release_lock_uses_low_risk_osv_fixed_versions() -> None:
+    lock = _lock_pins(ROOT / "requirements.lock.txt")
+
+    for package, floor in LOW_RISK_OSV_FIXED_FLOORS.items():
+        name = canonicalize_name(package)
         assert lock[name] >= floor

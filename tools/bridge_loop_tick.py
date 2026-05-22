@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Read-only autonomous-loop aggregator for one agent tick.
+"""Autonomous-loop aggregator for one agent tick.
 
 Chains the existing bridge primitives into a single ordered worklist plus a
 recommended self-pacing wakeup, so a Claude/Codex session can drain its bridge
 inbox and complete already-approved merges WITHOUT a human poke -- while every
 mutation still flows through the existing gated tools.
 
-This tool is strictly read-only: it has no ``--apply`` and never runs
-``gh pr merge`` or writes the bridge. It only REPORTS:
+By default this tool is read-only: it has no ``--apply`` and never runs
+``gh pr merge``. It only REPORTS:
   * the next-action recommendation (drain peer RCO requests / handoffs to me),
   * my own rco_pass'd PRs that are now CI-green + mergeable + preflight-clear +
     head-matched -- i.e. ready for me to complete the merge in this same tick
     via the existing ``gh pr merge --squash --match-head-commit`` flow,
   * open operator decision packs (surface-only; never auto-resolved),
+  * stale heartbeat-only peer sessions that need an explicit bridge activation,
   * a recommended ScheduleWakeup interval derived from bridge state.
+
+With ``--emit-peer-activation`` it may write exactly one validated
+``type=handoff status=scout_requested`` event when the peer is heartbeat-only.
+That opt-in mutation is intentionally limited to keeping the peer active; it
+does not resolve operator packs, merge PRs, or claim work.
 
 Merge-readiness here encodes the CLAUDE.md Rule 9 peer-RCO criteria (head-match
 + CI green + mergeable clean + no standing peer block), which is the flow used
@@ -26,7 +32,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -49,6 +57,7 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
     _check_passed,
 )
 from tools.operator_decision_pack import scan_inbox  # noqa: E402
+from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
 
 # Adaptive wakeup bands (seconds). Sub-300 only when there is actionable
 # merge/RCO work, to respect the ~5-minute prompt-cache TTL.
@@ -57,6 +66,10 @@ WAKEUP_IN_FLIGHT = 240  # CI pending on a candidate / active own claim
 WAKEUP_QUIET = 1800  # nothing pending; operator's ball or idle
 
 SnapshotFn = Callable[[int], Mapping[str, Any]]
+PEER_AGENT = {"claude": "codex", "codex": "claude"}
+SUBSTANTIVE_IDLE_MINUTES = 30.0
+PEER_ACTIVATION_RECENT_MINUTES = 30.0
+NON_SUBSTANTIVE_TYPES = {"heartbeat", "liveness"}
 
 # Bridge rco_pass payloads commonly carry a short head (e.g. "862d34bd") while
 # gh pr view returns the full 40-char head_sha. Treat the approved head as an
@@ -143,6 +156,277 @@ def _parse_ts(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _is_substantive_agent_event(event: Mapping[str, Any], agent: str) -> bool:
+    if _event_agent(event) != agent:
+        return False
+    event_type = str(event.get("type", "")).lower()
+    return event_type not in NON_SUBSTANTIVE_TYPES
+
+
+def _latest_agent_event(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    agent: str,
+    substantive_only: bool,
+) -> Mapping[str, Any] | None:
+    for event in reversed(events):
+        if _event_agent(event) != agent:
+            continue
+        if substantive_only and not _is_substantive_agent_event(event, agent):
+            continue
+        if _parse_ts(str(event.get("ts_utc", ""))) is None:
+            continue
+        return event
+    return None
+
+
+def _age_minutes(event: Mapping[str, Any] | None, now_utc: datetime) -> float | None:
+    if event is None:
+        return None
+    ts = _parse_ts(str(event.get("ts_utc", "")))
+    if ts is None:
+        return None
+    return round((now_utc - ts).total_seconds() / 60.0, 3)
+
+
+def _event_targets(event: Mapping[str, Any]) -> set[str]:
+    return {
+        item.strip()
+        for item in str(event.get("to", "")).split(",")
+        if item.strip()
+    }
+
+
+def _latest_peer_activation_sent(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    agent: str,
+    peer: str,
+) -> Mapping[str, Any] | None:
+    prefix = f"peer-activation-{peer}-"
+    for event in reversed(events):
+        if _event_agent(event) != agent:
+            continue
+        if str(event.get("type", "")).lower() != "handoff":
+            continue
+        if str(event.get("status", "")).lower() != "scout_requested":
+            continue
+        if peer not in _event_targets(event):
+            continue
+        if not str(event.get("task_id", "")).startswith(prefix):
+            continue
+        if _parse_ts(str(event.get("ts_utc", ""))) is None:
+            continue
+        return event
+    return None
+
+
+def _activation_task(
+    *,
+    agent: str,
+    peer: str,
+    open_packs: Sequence[Mapping[str, Any]],
+    now_utc: datetime,
+) -> dict[str, str]:
+    stamp = now_utc.strftime("%Y-%m-%d-%H-%M")
+    if open_packs:
+        pack_ids = ", ".join(str(pack.get("decision_id", "")) for pack in open_packs)
+        return {
+            "task_id": f"peer-activation-{peer}-unblocked-scout-{stamp}",
+            "summary": "Scout unblocked WD work while operator-gated packs wait",
+            "message": (
+                f"{peer}: heartbeat-only detected. Take a read-only scout now while "
+                f"{agent} continues implementation/merge work. Open operator packs "
+                f"({pack_ids}) must stay fail-closed; do not resolve them. Find the "
+                "highest-value unblocked WD slice: bridge reliability, release "
+                "evidence, MAGMA/evaluation proof, competitor gap, or test-gap "
+                "simulation. Return exact files, risks, tests, no-go criteria, and "
+                "one recommended next PR scope."
+            ),
+        }
+    return {
+        "task_id": f"peer-activation-{peer}-wd-advantage-scout-{stamp}",
+        "summary": "Scout the next WD advantage slice",
+        "message": (
+            f"{peer}: heartbeat-only detected. Take a read-only scout now while "
+            f"{agent} handles its current loop. Compare WD against current rival "
+            "control-plane/security/replay patterns, run local-only reasoning or "
+            "tests where possible, and report the next highest-value PR candidate "
+            "with concrete acceptance tests and no-go criteria."
+        ),
+    }
+
+
+def peer_activation_recommendation(
+    *,
+    agent: str,
+    events: Sequence[Mapping[str, Any]],
+    claims: Sequence[Any],
+    open_packs: Sequence[Mapping[str, Any]],
+    now_utc: datetime,
+) -> dict[str, Any]:
+    """Return a read-only recommendation for activating a heartbeat-only peer."""
+
+    peer = PEER_AGENT.get(agent, "")
+    base = {
+        "needed": False,
+        "peer": peer,
+        "reason": "",
+        "last_seen_at_utc": "",
+        "last_substantive_at_utc": "",
+        "substantive_age_minutes": None,
+        "bridge_event": None,
+    }
+    if not peer:
+        return base
+
+    for claim in claims:
+        claim_agent = getattr(claim, "agent", None)
+        if claim_agent is None and isinstance(claim, Mapping):
+            claim_agent = claim.get("agent")
+        if str(claim_agent or "") == peer:
+            base["reason"] = "peer_has_active_claim"
+            return base
+
+    latest = _latest_agent_event(events, agent=peer, substantive_only=False)
+    substantive = _latest_agent_event(events, agent=peer, substantive_only=True)
+    latest_age = _age_minutes(latest, now_utc)
+    substantive_age = _age_minutes(substantive, now_utc)
+    if latest is not None:
+        base["last_seen_at_utc"] = str(latest.get("ts_utc", ""))
+    if substantive is not None:
+        base["last_substantive_at_utc"] = str(substantive.get("ts_utc", ""))
+    base["substantive_age_minutes"] = substantive_age
+
+    sent_activation = _latest_peer_activation_sent(events, agent=agent, peer=peer)
+    sent_activation_age = _age_minutes(sent_activation, now_utc)
+    if (
+        sent_activation_age is not None
+        and sent_activation_age < PEER_ACTIVATION_RECENT_MINUTES
+    ):
+        base["reason"] = "peer_activation_recently_sent"
+        base["last_activation_sent_at_utc"] = str(sent_activation.get("ts_utc", ""))
+        base["last_activation_age_minutes"] = sent_activation_age
+        return base
+
+    latest_type = str(latest.get("type", "")).lower() if latest is not None else ""
+    heartbeat_only = latest_type in NON_SUBSTANTIVE_TYPES
+    stale_substantive = (
+        substantive_age is None or substantive_age >= SUBSTANTIVE_IDLE_MINUTES
+    )
+    if not heartbeat_only or not stale_substantive:
+        base["reason"] = "peer_recently_substantive"
+        return base
+
+    task = _activation_task(
+        agent=agent,
+        peer=peer,
+        open_packs=open_packs,
+        now_utc=now_utc,
+    )
+    return {
+        **base,
+        "needed": True,
+        "reason": "peer_heartbeat_only_without_recent_substantive_work",
+        "last_seen_age_minutes": latest_age,
+        "bridge_event": {
+            "to": peer,
+            "type": "handoff",
+            "status": "scout_requested",
+            "severity": "major",
+            "task_id": task["task_id"],
+            "summary": task["summary"],
+            "message": task["message"],
+        },
+    }
+
+
+def _event_timestamp(now_utc: datetime) -> str:
+    return now_utc.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def materialize_peer_activation_event(
+    *,
+    agent: str,
+    event_spec: Mapping[str, Any],
+    now_utc: datetime,
+) -> dict[str, Any]:
+    """Convert a peer-activation recommendation into a schema-valid event."""
+
+    event = {
+        "ts_utc": _event_timestamp(now_utc),
+        "agent": agent,
+        "type": str(event_spec.get("type", "")),
+        "task_id": str(event_spec.get("task_id", "")),
+        "status": str(event_spec.get("status", "")),
+        "severity": str(event_spec.get("severity", "")),
+        "to": str(event_spec.get("to", "")),
+        "message": str(event_spec.get("message", "")),
+        "paths": [],
+        "write_scope": [],
+        "run_id": "",
+        "pid": os.getpid(),
+        "cwd": str(Path.cwd()),
+        "payload": {
+            "summary": str(event_spec.get("summary", "")),
+            "source": "bridge_loop_tick.peer_activation",
+        },
+    }
+    validate_event(event)
+    return event
+
+
+def emit_peer_activation_event(
+    *,
+    bridge_root: Path,
+    agent: str,
+    event_spec: Mapping[str, Any],
+    now_utc: datetime,
+) -> Path:
+    """Append one validated peer-activation handoff to the bridge event stream."""
+
+    event = materialize_peer_activation_event(
+        agent=agent,
+        event_spec=event_spec,
+        now_utc=now_utc,
+    )
+    shared_dir = bridge_root / "shared"
+    outbox_dir = bridge_root / "outbox" / agent
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    outbox_dir.mkdir(parents=True, exist_ok=True)
+
+    line = json.dumps(event, separators=(",", ":"), sort_keys=False) + "\n"
+    events_path = shared_dir / "events.jsonl"
+    outbox_path = outbox_dir / f"{now_utc.astimezone(timezone.utc):%Y-%m-%d}.jsonl"
+    last_path = shared_dir / f"last_{agent}.json"
+    _append_line_with_retry(events_path, line)
+    _append_line_with_retry(outbox_path, line)
+    try:
+        _write_json_atomic(last_path, json.dumps(event, indent=2))
+    except OSError:
+        # last_<agent>.json is a convenience cache; events.jsonl is canonical.
+        pass
+    return events_path
+
+
+def _append_line_with_retry(path: Path, line: str) -> None:
+    for attempt in range(40):
+        try:
+            with path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(line)
+            return
+        except OSError:
+            if attempt == 39:
+                raise
+            time.sleep(0.025 + (attempt * 0.01))
+
+
+def _write_json_atomic(path: Path, payload: str) -> None:
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(path)
 
 
 def my_unmerged_rco_passes(
@@ -283,9 +567,12 @@ def _recommended_wakeup(
     next_action: str,
     merge_ready: Sequence[Mapping[str, Any]],
     open_packs_count: int,
+    peer_activation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if any(item.get("ready") for item in merge_ready) or next_action == "answer_incoming":
         return {"seconds": WAKEUP_ACT_NOW, "reason": "actionable merge/RCO work pending"}
+    if peer_activation and peer_activation.get("needed"):
+        return {"seconds": WAKEUP_ACT_NOW, "reason": "peer activation needed"}
     candidate_in_flight = any(
         "checks_not_green" in item.get("blockers", [])
         or "pr_status_error" in " ".join(item.get("blockers", []))
@@ -322,10 +609,19 @@ def build_loop_tick(
     ]
 
     packs = scan_inbox(inbox_dir)
+    effective_now = now_utc or datetime.now(timezone.utc)
+    peer_activation = peer_activation_recommendation(
+        agent=agent,
+        events=events,
+        claims=claims,
+        open_packs=packs["open"],
+        now_utc=effective_now,
+    )
     wakeup = _recommended_wakeup(
         next_action=next_action,
         merge_ready=merge_ready,
         open_packs_count=len(packs["open"]),
+        peer_activation=peer_activation,
     )
 
     return {
@@ -336,6 +632,7 @@ def build_loop_tick(
         "merge_ready": merge_ready,
         "open_operator_packs": packs["open"],
         "invalid_operator_packs": packs["invalid"],
+        "peer_activation": peer_activation,
         "recommended_wakeup_seconds": wakeup["seconds"],
         "wakeup_reason": wakeup["reason"],
     }
@@ -359,6 +656,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Query gh pr view for rco_pass'd candidates (read-only).",
     )
+    parser.add_argument(
+        "--emit-peer-activation",
+        action="store_true",
+        help=(
+            "Write the recommended peer activation handoff when needed. "
+            "All other actions remain report-only."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -376,14 +681,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         events = read_events(events_path)
         claims = list_claims(bridge_root=Path(args.bridge_root))
+        now_utc = datetime.now(timezone.utc)
         report = build_loop_tick(
             agent=args.agent,
             events=events,
             claims=claims,
             inbox_dir=args.inbox_dir,
-            now_utc=datetime.now(timezone.utc),
+            now_utc=now_utc,
             snapshot_fn=snapshot_fn,
         )
+        peer_activation = report.get("peer_activation", {})
+        if (
+            args.emit_peer_activation
+            and isinstance(peer_activation, dict)
+            and peer_activation.get("needed")
+            and isinstance(peer_activation.get("bridge_event"), Mapping)
+        ):
+            event_path = emit_peer_activation_event(
+                bridge_root=Path(args.bridge_root),
+                agent=args.agent,
+                event_spec=peer_activation["bridge_event"],
+                now_utc=now_utc,
+            )
+            peer_activation["emitted"] = True
+            peer_activation["emitted_path"] = str(event_path)
     except Exception as exc:  # noqa: BLE001
         report = {
             "ok": False,
@@ -402,6 +723,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         for m in report["merge_ready"]:
             mark = "READY" if m.get("ready") else "blocked:" + ",".join(m["blockers"])
             print(f"  PR #{m['pr']} ({m['task_id']}): {mark}")
+        peer_activation = report.get("peer_activation", {})
+        if isinstance(peer_activation, Mapping) and peer_activation.get("needed"):
+            event = peer_activation.get("bridge_event", {})
+            task = event.get("task_id") if isinstance(event, Mapping) else ""
+            print(f"peer activation needed: {peer_activation.get('peer')} {task}")
+            if peer_activation.get("emitted"):
+                print(f"peer activation emitted: {peer_activation.get('emitted_path')}")
         print(f"open operator packs: {len(report['open_operator_packs'])}")
         print(
             f"recommended wakeup: {report['recommended_wakeup_seconds']}s "

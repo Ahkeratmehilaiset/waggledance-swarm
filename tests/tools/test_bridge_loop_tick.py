@@ -6,6 +6,7 @@ no real GitHub call fires and the live repo is never touched.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -14,8 +15,10 @@ from tools.bridge_loop_tick import (
     WAKEUP_ACT_NOW,
     WAKEUP_QUIET,
     build_loop_tick,
+    emit_peer_activation_event,
     evaluate_merge_ready,
     my_unmerged_rco_passes,
+    peer_activation_recommendation,
 )
 
 NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
@@ -56,6 +59,40 @@ def _done_merged(task: str, *, pr: int, ts: str) -> dict:
         "task_id": task,
         "status": "merged",
         "payload": {"pr": pr},
+    }
+
+
+def _heartbeat(agent: str, ts: str) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "type": "heartbeat",
+        "task_id": f"{agent}-heartbeat",
+        "status": "active",
+        "message": f"{agent} heartbeat",
+    }
+
+
+def _finding(agent: str, ts: str) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "type": "finding",
+        "task_id": f"{agent}-finding",
+        "status": "reported",
+        "message": "substantive work",
+    }
+
+
+def _peer_activation_sent(agent: str, peer: str, ts: str) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "to": peer,
+        "type": "handoff",
+        "task_id": f"peer-activation-{peer}-wd-advantage-scout-2026-05-22-13-59",
+        "status": "scout_requested",
+        "message": "please scout",
     }
 
 
@@ -231,3 +268,146 @@ def test_loop_tick_open_peer_rco_is_answer_incoming(tmp_path):
     )
     assert report["next_action"] == "answer_incoming"
     assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
+
+
+# --- peer activation --------------------------------------------------------
+
+def test_peer_activation_needed_for_heartbeat_only_peer():
+    events = [
+        _finding("claude", "2026-05-22T13:00:00Z"),
+        _heartbeat("claude", "2026-05-22T13:55:00Z"),
+    ]
+
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=[],
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    assert rec["needed"] is True
+    assert rec["peer"] == "claude"
+    assert rec["reason"] == "peer_heartbeat_only_without_recent_substantive_work"
+    assert rec["bridge_event"]["to"] == "claude"
+    assert rec["bridge_event"]["status"] == "scout_requested"
+    assert "highest-value PR candidate" in rec["bridge_event"]["message"]
+
+
+def test_peer_activation_uses_operator_pack_safe_scout_when_packs_open():
+    events = [_heartbeat("claude", "2026-05-22T13:55:00Z")]
+    packs = [{"decision_id": "torch-cuda-vs-cpu", "category": "dependency_security"}]
+
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=[],
+        open_packs=packs,
+        now_utc=NOW,
+    )
+
+    assert rec["needed"] is True
+    assert "torch-cuda-vs-cpu" in rec["bridge_event"]["message"]
+    assert "must stay fail-closed" in rec["bridge_event"]["message"]
+
+
+def test_peer_activation_not_needed_when_peer_has_recent_substantive_work():
+    events = [
+        _finding("claude", "2026-05-22T13:45:00Z"),
+        _heartbeat("claude", "2026-05-22T13:55:00Z"),
+    ]
+
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=[],
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    assert rec["needed"] is False
+    assert rec["reason"] == "peer_recently_substantive"
+
+
+def test_peer_activation_not_needed_when_peer_has_claim():
+    events = [_heartbeat("claude", "2026-05-22T13:55:00Z")]
+    claims = [{"agent": "claude", "task_id": "active"}]
+
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=claims,
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    assert rec["needed"] is False
+    assert rec["reason"] == "peer_has_active_claim"
+
+
+def test_peer_activation_not_duplicated_when_recent_handoff_exists():
+    events = [
+        _heartbeat("claude", "2026-05-22T13:55:00Z"),
+        _peer_activation_sent("codex", "claude", "2026-05-22T13:59:00Z"),
+    ]
+
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=[],
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    assert rec["needed"] is False
+    assert rec["reason"] == "peer_activation_recently_sent"
+    assert rec["last_activation_sent_at_utc"] == "2026-05-22T13:59:00Z"
+
+
+def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
+    events = [_heartbeat("claude", "2026-05-22T13:55:00Z")]
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=[],
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    events_path = emit_peer_activation_event(
+        bridge_root=tmp_path,
+        agent="codex",
+        event_spec=rec["bridge_event"],
+        now_utc=NOW,
+    )
+
+    line = events_path.read_text(encoding="utf-8").strip()
+    event = json.loads(line)
+    assert event["agent"] == "codex"
+    assert event["to"] == "claude"
+    assert event["type"] == "handoff"
+    assert event["status"] == "scout_requested"
+    assert event["payload"]["source"] == "bridge_loop_tick.peer_activation"
+    assert (tmp_path / "outbox" / "codex" / "2026-05-22.jsonl").exists()
+    assert json.loads((tmp_path / "shared" / "last_codex.json").read_text())[
+        "task_id"
+    ] == event["task_id"]
+
+
+def test_loop_tick_short_wakeup_when_peer_activation_needed(tmp_path):
+    events = [
+        _finding("claude", "2026-05-22T13:00:00Z"),
+        _heartbeat("claude", "2026-05-22T13:55:00Z"),
+    ]
+    report = build_loop_tick(
+        agent="codex",
+        events=events,
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
+    )
+
+    assert report["peer_activation"]["needed"] is True
+    assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
+    assert report["wakeup_reason"] == "peer activation needed"

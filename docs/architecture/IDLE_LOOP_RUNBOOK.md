@@ -194,15 +194,19 @@ Claude uses the same command with `-Agent claude`.
 
 For a session that self-paces via wakeups (no fixed external cron), the FIRST
 action of every tick is one read-only aggregator call that drains the inbox,
-detects already-approved merges, surfaces operator decision packs, and
-recommends the next wakeup interval:
+detects already-approved merges, surfaces operator decision packs, detects
+heartbeat-only peer sessions, and recommends the next wakeup interval:
 
 ```text
 python tools/bridge_loop_tick.py --agent claude --check-prs --repo OWNER/NAME --json
 ```
 
-It chains the existing primitives (read-only; no `--apply`, never runs
-`gh pr merge`) and reports an ordered worklist:
+Self-wakeup harnesses that are allowed to keep the peer active pass
+`--emit-peer-activation`; without that flag the tick only reports the proposed
+handoff.
+
+By default it chains the existing primitives (read-only; no `--apply`, never
+runs `gh pr merge`) and reports an ordered worklist:
 
 1. **Drain inbox** — `next_action` from `recommend_next_action`; if
    `answer_incoming`, handle the peer RCO request / handoff first.
@@ -224,15 +228,26 @@ It chains the existing primitives (read-only; no `--apply`, never runs
    (`docs/operator_inbox/<id>.yaml`, schema `OPERATOR_DECISION_PACK_V1.md`).
    Emit `type=decision status=operator_signoff_requested to=operator` once per
    new pack. The loop NEVER resolves a pack.
-4. **Adaptive wakeup** — schedule the next wakeup from
+4. **Activate the peer** — when the other agent is only heartbeating and has no
+   recent substantive bridge event or active claim, `--emit-peer-activation`
+   writes the recommended `peer_activation.bridge_event` as
+   `type=handoff status=scout_requested`. The peer should take an unblocked
+   read-only scout/review/simulation slice while operator-gated packs remain
+   fail-closed.
+5. **Adaptive wakeup** — schedule the next wakeup from
    `recommended_wakeup_seconds`: ~90s when there is actionable merge/RCO work,
-   ~240s when CI is in flight or a claim is active, ~1800s when quiet (respecting
-   the ~5-minute prompt-cache TTL).
+   peer activation is needed, ~240s when CI is in flight or a claim is active,
+   ~1800s when quiet (respecting the ~5-minute prompt-cache TTL).
 
 This removes the need for a human "continue" poke between ticks and lets an
 RCO-passed PR merge in the same tick it becomes ready — while every mutation
 still flows through the existing charter-gated tools and escalation categories
 stay operator-gated.
+
+Peer activation is not an automatic mutation path. It is a bridge handoff that
+keeps the second agent busy on evidence, tests, competitor analysis, simulation,
+or next-PR scoping whenever it would otherwise only heartbeat and wait for the
+operator.
 
 ## Recovery
 

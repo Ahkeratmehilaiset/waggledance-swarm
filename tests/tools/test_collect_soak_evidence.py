@@ -183,6 +183,73 @@ def _write_soak_log_audit(
     )
 
 
+def _ci_run(
+    workflow: str,
+    jobs: list[str],
+    *,
+    commit: str,
+    status: str = "completed",
+    conclusion: str = "success",
+) -> dict:
+    return {
+        "workflow_name": workflow,
+        "run_id": 1000 + len(jobs),
+        "head_sha": commit,
+        "event": "push",
+        "status": status,
+        "conclusion": conclusion,
+        "created_at_utc": "2026-05-22T13:21:32Z",
+        "updated_at_utc": "2026-05-22T13:30:00Z",
+        "url": f"https://github.example/runs/{workflow}",
+        "jobs": [
+            {
+                "name": job,
+                "status": status,
+                "conclusion": conclusion,
+                "started_at_utc": "2026-05-22T13:21:34Z",
+                "completed_at_utc": "2026-05-22T13:30:00Z",
+                "url": f"https://github.example/jobs/{job}",
+            }
+            for job in jobs
+        ],
+    }
+
+
+def _write_ci_status(root, *, commit: str, report_commit: str | None = None) -> None:
+    report_commit = commit if report_commit is None else report_commit
+    (root / "v3.12.0_ci_status.json").write_text(
+        json.dumps({
+            "schema_version": "waggledance.release_ci_status.v1",
+            "target_version": "v3.12.0",
+            "commit": report_commit,
+            "source": {
+                "type": "github_actions",
+                "repo": "Ahkeratmehilaiset/waggledance-swarm",
+                "collector": "gh run list + gh run view",
+            },
+            "generated_at_utc": "2026-05-22T13:30:00Z",
+            "required_jobs": [
+                {"workflow": "WaggleDance CI", "job": "test (3.11)"},
+                {"workflow": "WaggleDance CI", "job": "test (3.12)"},
+                {"workflow": "WaggleDance CI", "job": "test (3.13)"},
+                {"workflow": "WaggleDance CI", "job": "security-scan"},
+                {"workflow": "Tests", "job": "unified"},
+            ],
+            "runs": [
+                _ci_run(
+                    "WaggleDance CI",
+                    ["test (3.11)", "test (3.12)", "test (3.13)", "security-scan"],
+                    commit=report_commit,
+                ),
+                _ci_run("Tests", ["unified"], commit=report_commit),
+            ],
+            "blockers": [],
+            "ci_status": "pass",
+        }),
+        encoding="utf-8",
+    )
+
+
 def test_collector_draft_is_fail_closed_until_evidence_is_explicit() -> None:
     evidence = build_soak_evidence(
         "docs/release/RELEASE_READINESS.md",
@@ -341,6 +408,47 @@ def test_local_artifacts_can_pass_axis_gates_from_metric_artifacts(
 
     assert statuses["axis_a_regression"] == "pass"
     assert statuses["axis_b_gate"] == "pass"
+
+
+def test_local_artifacts_can_pass_ci_from_github_actions_artifact(
+    tmp_path,
+) -> None:
+    commit = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_ci_status(evidence_root, commit=commit)
+    _write_release_notes(release_notes)
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+        commit=commit,
+    )
+
+    assert statuses["ci_status"] == "pass"
+
+
+def test_local_artifacts_reject_ci_artifact_commit_mismatch(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_ci_status(
+        evidence_root,
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        report_commit="1748c3104a61e2e14f65c38fa7c95c42237e04f9",
+    )
+    _write_release_notes(release_notes)
+
+    statuses = local_artifact_statuses(
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+    )
+
+    assert statuses["ci_status"] == "blocked"
 
 
 def test_local_artifacts_block_axis_a_when_hot_path_metrics_regress(
@@ -610,6 +718,26 @@ def test_local_artifacts_override_manual_axis_gate_stubs(tmp_path) -> None:
 
     assert evidence["axis_a_regression"] == "unknown"
     assert evidence["axis_b_gate"] == "unknown"
+
+
+def test_local_artifacts_override_manual_ci_stub_when_artifact_missing(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        status_overrides={"ci_status": "pass"},
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["ci_status"] == "unknown"
 
 
 def test_local_artifacts_block_security_when_pip_audit_skips_dependency(

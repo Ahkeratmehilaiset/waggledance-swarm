@@ -48,7 +48,6 @@ cut-cross-entropy==25.1.1
 cyclonedx-python-lib==11.7.0
 datasets==4.3.0
 decorator==5.2.1
-deep-translator==1.11.4
 defusedxml==0.7.1
 diffusers==0.38.0
 dill==0.4.0
@@ -112,7 +111,6 @@ invoke==2.2.1
 Jinja2==3.1.6
 jiter==0.10.0
 joblib==1.5.3
-Js2Py==0.74
 jsonschema==4.25.0
 jsonschema-specifications==2025.4.1
 keras==3.13.2
@@ -178,7 +176,6 @@ packageurl-python==0.17.6
 packaging==25.0
 paho-mqtt==2.1.0
 pandas==2.3.1
-paramiko==4.0.0
 pathspec==1.0.4
 pdfminer.six==20251230
 pdfplumber==0.11.9

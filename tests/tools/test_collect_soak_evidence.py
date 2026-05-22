@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
+from pathlib import Path
 
 from tools.check_release_gate import evaluate_release_gate
 from tools.collect_soak_evidence import (
@@ -172,16 +174,26 @@ def _write_soak_log_audit(
         else source_files
     )
     blockers = [] if blockers is None else blockers
+    source_hashes = {}
+    for source_file in source_files:
+        source_path = Path(source_file)
+        if source_path.exists() and source_path.is_file():
+            normalized = source_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+            source_hashes[source_file] = (
+                "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+            )
     (root / "v3.12.0_soak_log_audit.json").write_text(
         json.dumps({
             "schema_version": "waggledance.release_soak_log_audit.v1",
             "target_version": "v3.12.0",
             "audit_result": "pass" if not blockers else "blocked",
             "source_files": source_files,
+            "source_hashes": source_hashes,
             "started_at_utc": "2026-05-10T00:00:00Z",
             "ended_at_utc": "2026-05-22T12:49:00Z",
             "silent_failure_count": silent_failure_count,
             "error_count": error_count,
+            "undated_record_count": 0,
             "error_log_clean": not blockers and error_count == 0,
             "blockers": blockers,
         }),
@@ -781,6 +793,57 @@ def test_local_artifacts_reject_soak_log_audit_with_fake_source(tmp_path) -> Non
     evidence_root.mkdir()
     release_notes = tmp_path / "v3.12.0.md"
     _write_soak_log_audit(evidence_root, source_files=[str(tmp_path / "fake.log")])
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["silent_failures"] is None
+    assert evidence["error_log_clean"] is False
+
+
+def test_local_artifacts_reject_soak_log_audit_when_source_hash_changes(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    source = tmp_path / "test_soak.log"
+    source.write_text("2026-05-22T12:00:00Z INFO clean\n", encoding="utf-8")
+    _write_soak_log_audit(evidence_root, source_files=[str(source)])
+    source.write_text("2026-05-22T12:00:00Z ERROR changed\n", encoding="utf-8")
+    _write_release_notes(release_notes)
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert evidence["silent_failures"] is None
+    assert evidence["error_log_clean"] is False
+
+
+def test_local_artifacts_reject_soak_log_audit_without_source_hashes(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    source = tmp_path / "test_soak.log"
+    source.write_text("2026-05-22T12:00:00Z INFO clean\n", encoding="utf-8")
+    _write_soak_log_audit(evidence_root, source_files=[str(source)])
+    report_path = evidence_root / "v3.12.0_soak_log_audit.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    del report["source_hashes"]
+    report_path.write_text(json.dumps(report), encoding="utf-8")
     _write_release_notes(release_notes)
 
     evidence = build_soak_evidence(

@@ -212,6 +212,13 @@ def test_run_proof_emits_required_evidence_fields(tmp_path):
     assert result["configuration"]["local_llm_status"] in (
         "available", "unavailable",
     )
+    # R22.3 Profile L: cloud (Anthropic) availability must be surfaced too,
+    # so a zero-delta treatment can be read as "no operator API key" vs
+    # "LLM measurably worse".
+    assert "anthropic_status" in result["configuration"]
+    assert result["configuration"]["anthropic_status"] in (
+        "available", "unavailable",
+    )
     assert "fallthrough_uses" in result["treatment"]
     assert "local_llm_uses" in result["treatment"]
     assert "unparsed_responses" in result["treatment"]

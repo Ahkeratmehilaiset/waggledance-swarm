@@ -253,6 +253,24 @@ def run_proof(
         "available" if OllamaProvider().is_available() else "unavailable"
     )
 
+    # Cloud (Anthropic) availability surfaced for R22.3 Profile L A/B:
+    # distinguishes "no operator API key" from "LLM measurably worse" when
+    # the treatment arm falls through to control. Only a missing SDK
+    # (ImportError on a Profile S machine without the anthropic package) is
+    # swallowed into "unavailable"; any other error from constructing the
+    # provider or probing is_available() is a real regression and must
+    # surface loudly rather than be masked as "unavailable".
+    try:
+        from waggledance.core.bridge_llm.providers.anthropic import (
+            AnthropicProvider,
+        )
+    except ImportError:
+        anthropic_status = "unavailable"
+    else:
+        anthropic_status = (
+            "available" if AnthropicProvider().is_available() else "unavailable"
+        )
+
     return {
         "schema_version": 1,
         "benchmark_id": "r21-oracle-ab-proof-2026-05-10",
@@ -270,6 +288,7 @@ def run_proof(
             "client_is_enabled": client.is_enabled(),
             "fallback_chain": list(client.fallback_chain),
             "local_llm_status": local_llm_status,
+            "anthropic_status": anthropic_status,
             "rng_seed": 42,
         },
         "control": {
@@ -366,7 +385,8 @@ def main() -> int:
         f"  treatment local_llm_uses={result['treatment']['local_llm_uses']} "
         f"fallthrough={result['treatment']['fallthrough_uses']} "
         f"unparsed={result['treatment']['unparsed_responses']} "
-        f"local_llm_status={result['configuration']['local_llm_status']}"
+        f"local_llm_status={result['configuration']['local_llm_status']} "
+        f"anthropic_status={result['configuration']['anthropic_status']}"
     )
     return 0
 

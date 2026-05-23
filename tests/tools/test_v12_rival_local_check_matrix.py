@@ -467,6 +467,161 @@ def test_cloud_dependent_manifest_does_not_pass(tmp_path: Path) -> None:
     assert asqav["blocker"] == "cloud_dependency is not false"
 
 
+def test_cloud_dependent_manifest_surfaces_verified_artifact_proof(
+    tmp_path: Path,
+) -> None:
+    """A cloud-dependent rival with a valid digest-matching artifact must
+    remain non-passing (does NOT contribute to consensus_grade) but should
+    surface artifact_digest_verified=true so the operator sees the
+    local-proof receipt without mistaking it for consensus-grade."""
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "asqav-smoke.json"
+    artifact.parent.mkdir()
+    artifact.write_text(
+        '{"ok": true, "offline": true, "queued": true}\n', encoding="utf-8"
+    )
+    (evidence_dir / "asqav.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "Asqav",
+                "pinned_revision": "asqav-test-rev",
+                "local_artifact_path": "artifacts/asqav-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "asqav verify --online",
+                "smoke_result": "passed",
+                "cloud_dependency": True,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+    asqav = next(row for row in report["checks"] if row["rival"] == "Asqav")
+
+    # Cloud-dependent stays non-passing.
+    assert asqav["local_status"] == "cloud_dependent"
+    assert asqav["blocker"] == "cloud_dependency is not false"
+    assert asqav.get("consensus_grade_contribution") is False
+    assert asqav.get("blocked_artifact_reason") == "cloud_dependency"
+    assert report["passed_count"] == 0
+    # Aggregate consensus_grade stays False because cloud-dependent never
+    # contributes -- this is the key honesty invariant.
+    assert report["consensus_grade"] is False
+
+    # ...but the artifact proof IS surfaced.
+    proof = asqav["artifact_proof"]
+    assert proof["artifact_digest_verified"] is True
+    assert proof["artifact_digest_reason"] is None
+
+
+def test_cloud_dependent_manifest_with_digest_mismatch_surfaces_unverified(
+    tmp_path: Path,
+) -> None:
+    """A cloud-dependent rival whose manifest declares a digest that does
+    NOT match the on-disk artifact surfaces artifact_digest_verified=false
+    with a reason; this distinguishes 'cloud-dependent with audit-traceable
+    proof' from 'cloud-dependent with broken proof'."""
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "asqav-smoke.json"
+    artifact.parent.mkdir()
+    artifact.write_text('{"ok": true, "offline": true}\n', encoding="utf-8")
+    (evidence_dir / "asqav.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "Asqav",
+                "pinned_revision": "asqav-test-rev",
+                "local_artifact_path": "artifacts/asqav-smoke.json",
+                # Deliberately wrong digest:
+                "local_artifact_sha256": "sha256:" + "0" * 64,
+                "smoke_command": "asqav verify --online",
+                "smoke_result": "passed",
+                "cloud_dependency": True,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+    asqav = next(row for row in report["checks"] if row["rival"] == "Asqav")
+
+    assert asqav["local_status"] == "cloud_dependent"
+    assert asqav.get("consensus_grade_contribution") is False
+    proof = asqav["artifact_proof"]
+    assert proof["artifact_digest_verified"] is False
+    assert "does not match" in (proof["artifact_digest_reason"] or "")
+
+
+def test_repository_evidence_dir_asqav_cloud_dependent_with_verified_artifact() -> None:
+    """Regression: the committed Asqav manifest in
+    docs/benchmarks/rival_local_checks/ has cloud_dependency=true so it
+    must NOT contribute to consensus_grade, but its artifact MUST surface
+    artifact_digest_verified=true under the lightweight proof so the
+    operator sees the audit-traceable local receipt. The aggregate
+    consensus_grade must stay False because cloud-dependent never
+    contributes regardless of how many local proofs verify."""
+    report = build_rival_local_check_matrix(
+        evidence_dir=ROOT / "docs" / "benchmarks" / "rival_local_checks",
+    )
+
+    asqav = next(row for row in report["checks"] if row["rival"] == "Asqav")
+    assert asqav["local_status"] == "cloud_dependent"
+    assert asqav["consensus_grade_contribution"] is False
+    assert asqav["blocked_artifact_reason"] == "cloud_dependency"
+    proof = asqav["artifact_proof"]
+    assert proof["artifact_digest_verified"] is True
+    assert proof["artifact_digest_reason"] is None
+    assert report["consensus_grade"] is False
+
+
+def test_cloud_dependent_manifest_with_missing_artifact_file_surfaces_reason(
+    tmp_path: Path,
+) -> None:
+    """A cloud-dependent manifest pointing at a missing artifact file
+    must yield a structured artifact_proof block (digest_verified=false
+    with a reason that mentions the file does not exist), distinguishing
+    it from the digest-mismatch case."""
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "asqav.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "Asqav",
+                "pinned_revision": "asqav-test-rev",
+                "local_artifact_path": "artifacts/asqav-missing.json",
+                "local_artifact_sha256": "sha256:" + "0" * 64,
+                "smoke_command": "asqav verify --online",
+                "smoke_result": "passed",
+                "cloud_dependency": True,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+    asqav = next(row for row in report["checks"] if row["rival"] == "Asqav")
+
+    assert asqav["local_status"] == "cloud_dependent"
+    proof = asqav["artifact_proof"]
+    assert proof["artifact_digest_verified"] is False
+    assert "does not name an existing file" in (
+        proof["artifact_digest_reason"] or ""
+    )
+
+
 def test_missing_required_observation_does_not_pass(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()

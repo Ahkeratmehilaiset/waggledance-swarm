@@ -3,7 +3,7 @@
   "rival": "Asqav",
   "pinned_revision": "asqav==0.4.5",
   "local_artifact_path": "artifacts/asqav-local-smoke.json",
-  "local_artifact_sha256": "sha256:4dce02020d877a9f43de06f5de86a6c13abb18c9fce0e68755b7daf1f7818bd6",
+  "local_artifact_sha256": "sha256:663950d89d9b87b0ad8776ab0385e01a3827ea7d71a27aabcdff876d12b2bf1f",
   "smoke_command": "pip install asqav==0.4.5 cryptography; python -c \"from asqav.keys import generate_local_keypair, SUPPORTED_ALGORITHMS; from asqav.local import local_sign; generate_local_keypair('ed25519'); local_sign(agent_id='wd-rival-check', action_type='tool_call', context={'tool':'read_file','offline':True}, queue_dir=<tmp>)\"",
   "smoke_result": "passed",
   "cloud_dependency": true,

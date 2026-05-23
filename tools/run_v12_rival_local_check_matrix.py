@@ -396,10 +396,26 @@ def _build_check_row(
             "blocker": "evidence_manifest_contract_version does not match v1",
         }
     if manifest.get("cloud_dependency") is not False:
+        # Cloud-dependent rivals do NOT contribute to consensus_grade
+        # (the headline feature requires a cloud service). But if the
+        # manifest declares a local artifact AND that artifact exists,
+        # is valid UTF-8 JSON, and matches the manifest digest, we
+        # surface artifact_digest_verified=true so the operator can
+        # see audit-traceable local proof without mistaking it for
+        # a consensus-grade contribution. We deliberately apply only
+        # the LIGHTWEIGHT digest + UTF-8 + JSON-parse check; the
+        # full evidence-artifact contract validation is reserved
+        # for passing local checks (consensus-grade-contributing).
         return {
             **base,
             "local_status": "cloud_dependent",
             "blocker": "cloud_dependency is not false",
+            "blocked_artifact_reason": "cloud_dependency",
+            "consensus_grade_contribution": False,
+            "artifact_proof": _lightweight_artifact_proof(
+                evidence_root=evidence_root,
+                manifest=manifest,
+            ),
         }
     if str(manifest.get("evidence_type")) not in ALLOWED_EVIDENCE_TYPES:
         return {
@@ -473,6 +489,89 @@ def _build_manifest_template(check: dict[str, Any]) -> dict[str, Any]:
             "under evidence_dir before setting smoke_result to passed."
         ),
     }
+
+
+def _lightweight_artifact_proof(
+    *,
+    evidence_root: Path | None,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Run digest + UTF-8 + JSON-parse checks ONLY -- no contract validation.
+
+    Used by the cloud-dependent rival branch to surface audit-traceable
+    proof of a local artifact without claiming consensus-grade. Returns
+    ``{artifact_digest_verified: bool, artifact_digest_reason: str | None,
+    local_artifact_path?: str, local_artifact_sha256?: str}``.
+    """
+
+    base: dict[str, Any] = {
+        "artifact_digest_verified": False,
+        "artifact_digest_reason": None,
+    }
+    local_artifact_path = manifest.get("local_artifact_path")
+    expected_digest = str(manifest.get("local_artifact_sha256", ""))
+    if not local_artifact_path:
+        base["artifact_digest_reason"] = (
+            "manifest does not declare local_artifact_path"
+        )
+        return base
+    if evidence_root is None:
+        base["artifact_digest_reason"] = "no evidence_dir provided"
+        return base
+
+    rel = Path(local_artifact_path)
+    if rel.is_absolute():
+        base["artifact_digest_reason"] = (
+            "local_artifact_path must be relative to evidence_dir"
+        )
+        return base
+
+    artifact_path = (evidence_root / rel).resolve()
+    try:
+        artifact_path.relative_to(evidence_root)
+    except ValueError:
+        base["artifact_digest_reason"] = (
+            "local_artifact_path escapes evidence_dir"
+        )
+        return base
+    if not artifact_path.exists() or not artifact_path.is_file():
+        base["artifact_digest_reason"] = (
+            "local_artifact_path does not name an existing file"
+        )
+        return base
+
+    payload = artifact_path.read_bytes()
+    try:
+        artifact_text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        base["artifact_digest_reason"] = (
+            f"local artifact is not valid UTF-8 JSON: {exc}"
+        )
+        return base
+
+    actual_digest = _canonical_json_artifact_sha256(artifact_text)
+    if expected_digest != actual_digest:
+        base["artifact_digest_reason"] = (
+            "local_artifact_sha256 does not match artifact"
+        )
+        base["local_artifact_path"] = str(artifact_path)
+        base["local_artifact_sha256"] = actual_digest
+        return base
+
+    try:
+        json.loads(artifact_text)
+    except json.JSONDecodeError as exc:
+        base["artifact_digest_reason"] = (
+            f"local artifact is not valid UTF-8 JSON: {exc}"
+        )
+        base["local_artifact_path"] = str(artifact_path)
+        base["local_artifact_sha256"] = actual_digest
+        return base
+
+    base["artifact_digest_verified"] = True
+    base["local_artifact_path"] = str(artifact_path)
+    base["local_artifact_sha256"] = actual_digest
+    return base
 
 
 def _validate_local_artifact(

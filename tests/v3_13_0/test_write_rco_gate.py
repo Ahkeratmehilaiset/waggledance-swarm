@@ -1371,6 +1371,7 @@ class TestRcoDecisionArtifactAdapter:
         assert outcome.approved is True
         assert len(bundles) == 1
         bundle = bundles[0]
+        assert bundle["payload"]["intent_id"] == intent.intent_id
         assert bundle["rco_decision_artifact"] == outcome.rco_decision_artifact
         assert bundle["receipt"]["rco_decision_digest"] == (
             outcome.rco_decision_digest
@@ -1379,6 +1380,46 @@ class TestRcoDecisionArtifactAdapter:
             bundle["evaluation_result"]["target_digest"]
         )
         assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
+
+    def test_route_receipt_sink_chains_multiple_route_decisions(self):
+        audit = []
+        bundles = []
+        gate = _make_gate(
+            audit_collector=audit,
+            receipt_bundles=bundles,
+            states={
+                "state:audit_log": StateInfo(
+                    state_id="state:audit_log",
+                    plane="magma_history",
+                    write_modes_allowed=["append"],
+                    sensitive_class="internal",
+                    single_writer_required=True,
+                ),
+                "state:report": StateInfo(
+                    state_id="state:report",
+                    plane="filesystem_artifact",
+                    write_modes_allowed=["write"],
+                    sensitive_class="internal",
+                    single_writer_required=False,
+                ),
+            },
+        )
+
+        first = gate.route(
+            _make_intent(target_state_ref="state:audit_log", action="append")
+        )
+        second = gate.route(
+            _make_intent(target_state_ref="state:report", action="write")
+        )
+
+        assert first.approved is True
+        assert second.approved is True
+        assert len(bundles) == 2
+        assert bundles[0]["receipt"]["prev_receipt_hash"] is None
+        assert bundles[1]["receipt"]["prev_receipt_hash"] == sha256_digest(
+            bundles[0]["receipt"]
+        )
+        assert gate._last_emitted_receipt == bundles[1]["receipt"]
 
     def test_route_receipt_sink_failure_blocks_route(self):
         audit = []
@@ -1408,6 +1449,7 @@ class TestRcoDecisionArtifactAdapter:
         assert "receipt emit failed: receipt boom" in (
             outcome.denial_reason or ""
         )
+        assert gate._last_emitted_receipt is None
 
     def test_external_effect_receipt_sink_requires_approval_id_resolver(self):
         audit = []

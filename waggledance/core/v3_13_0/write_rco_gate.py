@@ -299,6 +299,11 @@ class WriteRCOGate:
     peer_rco_max_rounds: int = 3
     wrt_002_idempotency_cap: int = 3
     cost_ceiling_per_decision: float = 0.05  # USD; placeholder
+    _last_emitted_receipt: Optional[dict[str, Any]] = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     # =========================================================================
     # PUBLIC API
@@ -757,8 +762,10 @@ class WriteRCOGate:
                 intent,
                 outcome,
                 approval_id=approval_id,
+                previous_receipt=self._last_emitted_receipt,
             )
             self.emit_receipt_bundle(bundle)
+            self._last_emitted_receipt = bundle["receipt"]
         except GateStopCondition:
             raise
         except Exception as exc:
@@ -973,6 +980,7 @@ def build_rco_decision_receipt_for_gate(
         allow_external_effect=(risk_class == WriteRiskClass.EXTERNAL_EFFECT.value),
     )
     return {
+        "payload": intent_payload,
         "rco_decision_artifact": rco_decision,
         "evaluation_result": evaluation,
         "receipt": receipt,

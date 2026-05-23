@@ -493,10 +493,36 @@ def test_peer_active_claim_cleared_by_done_event():
     )
 
     assert result["active"] is False
-    # Closure surfaces as "latest event is not PR-producing" because
-    # ``_latest_agent_event(substantive_only=True)`` returns the most
-    # recent substantive event, which is the closing ``done``.
-    assert result["reason"] == "latest_peer_event_not_pr_producing"
+    assert result["reason"] == "peer_claim_closed_by_done"
+
+
+def test_peer_active_claim_survives_intervening_non_terminal_event():
+    """Per Codex RCO on PR #592: a later decision/clarification/finding from
+    the same peer MUST NOT clear an active PR-producing claim. Only a
+    terminal close (``type=done`` or status in PEER_TERMINAL_STATUSES) on
+    the same task_id clears it."""
+    events = [
+        _claim_active("codex", "magma-slice-1", ts="2026-05-22T13:55:00Z"),
+        {
+            "ts_utc": "2026-05-22T13:57:00Z",
+            "agent": "codex",
+            "type": "decision",
+            "task_id": "magma-slice-1",
+            "status": "clarification",
+            "message": "interim note, claim still open",
+        },
+        # An unrelated finding on a different task_id from the same peer
+        # must also not clear the claim.
+        _finding("codex", "2026-05-22T13:58:00Z"),
+    ]
+
+    result = peer_has_active_pr_producing_claim(
+        events, agent="claude", now_utc=NOW
+    )
+
+    assert result["active"] is True
+    assert result["task_id"] == "magma-slice-1"
+    assert result["reason"] == "peer_has_active_pr_producing_claim"
 
 
 def test_peer_active_claim_too_old_does_not_anticipate():

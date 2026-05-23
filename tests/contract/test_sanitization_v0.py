@@ -37,7 +37,7 @@ def test_clause_1_email_address_is_redacted(redactor):
 def test_clause_2_credit_card_digit_span_is_redacted(redactor):
     result = redactor.redact("Card number 4111111111111111 on file.")
     assert "4111111111111111" not in result.text
-    assert "<TOKEN_1>" in result.text or "<" in result.text
+    assert "<TOKEN_1>" in result.text
 
 
 # --- Clause 3: phone-like spans -------------------------------------------
@@ -46,7 +46,7 @@ def test_clause_3_phone_number_is_redacted(redactor):
     result = redactor.redact("Call +358 50 123 4567 for support.")
     # Phone digits must NOT survive
     assert "50 123 4567" not in result.text
-    assert "PHONE" in result.text
+    assert "<PHONE_1>" in result.text
 
 
 # --- Clause 4: Finnish HETU (personal identifier) -------------------------
@@ -55,14 +55,14 @@ def test_clause_4_finnish_hetu_is_redacted(redactor):
     # 1900s HETU pattern: ddmmyy-XXXY
     result = redactor.redact("Customer HETU 010180-123A registered.")
     assert "010180-123A" not in result.text
-    assert "HETU" in result.text
+    assert "<HETU_1>" in result.text
 
 
 def test_clause_4b_finnish_hetu_2000s_separator_is_redacted(redactor):
     # 2000s HETU uses A-F separators (e.g., 'A' for 2000-2009)
     result = redactor.redact("Customer HETU 010105A123B registered.")
     assert "010105A123B" not in result.text
-    assert "HETU" in result.text
+    assert "<HETU_1>" in result.text
 
 
 # --- Clause 5: IBAN -------------------------------------------------------
@@ -70,7 +70,7 @@ def test_clause_4b_finnish_hetu_2000s_separator_is_redacted(redactor):
 def test_clause_5_iban_is_redacted(redactor):
     result = redactor.redact("Pay to FI21 1234 5600 0007 85 by EOM.")
     assert "FI21 1234 5600 0007 85" not in result.text
-    assert "IBAN" in result.text
+    assert "<IBAN_1>" in result.text
 
 
 # --- Clause 6: Y-tunnus (Finnish business ID) -----------------------------
@@ -78,8 +78,10 @@ def test_clause_5_iban_is_redacted(redactor):
 def test_clause_6_y_tunnus_is_redacted(redactor):
     result = redactor.redact("Invoice from y-tunnus 1234567-8 today.")
     assert "1234567-8" not in result.text
-    # Some redactor implementations may merge Y-tunnus into TOKEN; the
-    # invariant is that the literal id does not survive.
+    # The redactor emits Y-tunnus under the BUSINESS_ID placeholder
+    # class. The contract requires the class label survives so
+    # downstream telemetry can attribute correctly.
+    assert "<BUSINESS_ID_1>" in result.text
 
 
 # --- Clause 7: Windows file paths -----------------------------------------
@@ -87,7 +89,7 @@ def test_clause_6_y_tunnus_is_redacted(redactor):
 def test_clause_7_windows_path_is_redacted(redactor):
     result = redactor.redact(r"Check C:\Users\jani\.claude\settings.json.")
     assert r"C:\Users\jani" not in result.text
-    assert "PATH" in result.text
+    assert "<PATH_1>" in result.text
 
 
 # --- Clause 8: POSIX file paths -------------------------------------------
@@ -95,7 +97,7 @@ def test_clause_7_windows_path_is_redacted(redactor):
 def test_clause_8_posix_path_is_redacted(redactor):
     result = redactor.redact("Edit /home/jani/.bashrc and reload.")
     assert "/home/jani/.bashrc" not in result.text
-    assert "PATH" in result.text
+    assert "<PATH_1>" in result.text
 
 
 # --- Clause 9: URLs are PRESERVED verbatim (NOT redacted) -----------------
@@ -121,23 +123,13 @@ def test_clause_10_default_is_redaction_on(redactor):
 
 def test_clause_10b_explicit_opt_in_preserves_pii(redactor):
     """When the caller explicitly passes accept_pii_to_cloud=True, the
-    redactor must NOT redact -- the opt-in surface is intentional and
-    auditable."""
+    redactor MUST NOT redact -- the opt-in surface is intentional and
+    auditable. This clause is fail-closed: if a future change causes
+    the redactor to strict-redact under opt-in, that is a contract
+    regression and a real finding, not an expected failure. No xfail
+    escape hatch."""
     text = "alice@example.com asked about pricing."
     result = redactor.redact(text, accept_pii_to_cloud=True)
-    # Note: implementations may still apply the redactor but mark the
-    # result as opt-in; the contract clause is that an explicit
-    # opt-in is honoured. The strict expectation is that the literal
-    # PII survives or the result is flagged as opt-in.
-    if "<EMAIL_1>" in result.text:
-        # Some redactor versions always redact and rely on the
-        # downstream gate. Surface this as a finding -- the contract
-        # says opt-in must let PII through.
-        pytest.xfail(
-            "Redactor still redacts under accept_pii_to_cloud=True; "
-            "contract clause 10b says opt-in must be honoured. "
-            "Treat as finding for follow-up."
-        )
     assert "alice@example.com" in result.text
 
 

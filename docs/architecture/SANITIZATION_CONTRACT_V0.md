@@ -33,7 +33,7 @@ test-weakening triggers.
 | 8 | POSIX file paths are redacted to `<PATH_n>` | `test_clause_8_posix_path_is_redacted` |
 | 9 | URLs are PRESERVED verbatim (R22.0 F1) | `test_clause_9_https_url_survives_redaction` |
 | 10 | Default `accept_pii_to_cloud=False` redacts | `test_clause_10_default_is_redaction_on` |
-| 10b | Explicit `accept_pii_to_cloud=True` is honoured | `test_clause_10b_explicit_opt_in_preserves_pii` (`xfail` allowed if implementation strict-redacts) |
+| 10b | Explicit `accept_pii_to_cloud=True` is honoured (fail-closed, no xfail) | `test_clause_10b_explicit_opt_in_preserves_pii` |
 | 11 | Placeholders are numbered sequentially per call | `test_clause_11_placeholders_are_numbered_per_call` |
 | 12 | Multiple classes in one call get distinct placeholders | `test_clause_12_multiple_classes_in_one_call_get_distinct_placeholders` |
 

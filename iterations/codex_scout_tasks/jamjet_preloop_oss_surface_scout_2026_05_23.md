@@ -358,20 +358,48 @@ by WD. The local-pass count stays at 1/4 (AGT only — #600 verified
 artifact digest). The honest reading is "we now know we *could* check
 JamJet + Preloop locally; we haven't yet."
 
-### Rival matrix outcome with the new registry (predicted, not measured)
+### Rival matrix outcome with the new registry (measured against the shipped implementation)
 
-Per the rival-matrix logic: a rival with `open_source_installable`
-surface AND no evidence manifest yields `local_status="not_configured"`
-(not `not_passed`, not `passed`). So:
+Three distinct invocation modes produce three distinct outcomes for an
+`open_source_installable` rival like JamJet or Preloop:
 
-- AGT: `passed` (unchanged)
-- Asqav: `not_passed` (cloud-dependent headline; #600 partial)
-- JamJet: `not_configured` ← was effectively hard-blocked
-- Preloop: `not_configured` ← was effectively hard-blocked
+1. **No `--evidence-dir`** (default `build_rival_local_check_matrix()`):
+   matrix surfaces `local_status="not_configured"` with the generic
+   `blocker="no evidence_dir provided"`. (Pre-correction: JamJet/Preloop
+   reported the specific `no_local_installable_surface_yet` blocker
+   from the early-exit; that early-exit no longer fires.)
+2. **`--evidence-dir` with init template manifest written**
+   (`write_evidence_manifest_templates(...)` ⇒ `smoke_result="not_run"`,
+   `cloud_dependency=False`, `evidence_type="local_inspection"`):
+   matrix surfaces `local_status="not_passed"` with the generic
+   `blocker="smoke_result is not passed"`. (Pre-correction: JamJet/Preloop
+   were hard-blocked at `not_configured`; AGT/Asqav templates already
+   surfaced as `not_passed`. The set used to be `{"not_passed",
+   "not_configured"}`; post-correction it collapses to
+   `{"not_passed"}` because all four rivals now reach the
+   smoke-result branch.)
+3. **`--evidence-dir` pointing at the real repo evidence dir**
+   (`docs/benchmarks/rival_local_checks/` which has AGT + Asqav
+   manifests but **no JamJet or Preloop manifests**): matrix surfaces
+   JamJet and Preloop as `local_status="not_configured"` with the
+   generic `blocker="evidence manifest missing"` (not the legacy
+   `no_local_installable_surface_yet`).
 
-The `local_status` set on the matrix remains `{"not_passed",
-"not_configured"}` (matches `tests/tools/test_v12_supervisor_demo_pack.py`
-line 95-98 assertion). No demo-pack test changes needed in this regard.
+Per-rival summary against (mode 2 init template):
+
+- AGT: `not_passed` (template smoke_result=not_run)
+- Asqav: `not_passed` (template smoke_result=not_run)
+- JamJet: `not_passed` ← was `not_configured`/hard-blocked pre-correction
+- Preloop: `not_passed` ← was `not_configured`/hard-blocked pre-correction
+
+The `local_status` set on the matrix (template-init mode) collapses
+from `{"not_passed", "not_configured"}` to `{"not_passed"}`. Both
+`tests/tools/test_v12_supervisor_demo_pack.py:95-98` and
+`tests/tools/test_v12_rival_local_check_matrix.py` set assertions
+require updating to `{"not_passed"}` — **demo-pack assertion DOES
+change**, contrary to pass-2 prediction earlier. AGT-passed mode (with
+the real evidence dir) keeps the per-rival status mix (passed,
+cloud_dependent, not_configured, not_configured).
 
 ### Falsifiability of the upstream-verified claims
 
@@ -403,19 +431,31 @@ Pass 2 strengthens the test spec from pass 1:
    - Preloop: `https://github.com/preloop/preloop` LICENSE + v0.9.3 tag
      (2026-05-19) + PyPI `preloop`.
 3. **Anti-overclaim test re-target**: `test_synthetic_jamjet_manifest_cannot_bypass_no_local_installable_block`
-   becomes `test_synthetic_rival_manifest_cannot_bypass_no_local_installable_block`
-   and uses a synthetic rival NAME (e.g. `"SyntheticHardBlockedRival"`
-   added to a test-only registry fixture with value
-   `no_local_installable_surface_yet`). The anti-overclaim teeth are
-   preserved; they just no longer target JamJet specifically since
-   JamJet is now upstream-verified OSS.
-4. **New test**: `test_open_source_installable_rival_without_manifest_yields_not_configured` —
-   confirms JamJet and Preloop without evidence manifest yield
-   `not_configured`, never silently `passed`.
+   renamed to `test_synthetic_manifest_cannot_bypass_no_local_installable_block`
+   and the hard-block invariant is exercised by **monkeypatching
+   `PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL["JamJet"]` back to
+   `"no_local_installable_surface_yet"`** within the test scope (using
+   pytest's `monkeypatch.setitem`). The anti-overclaim teeth are
+   preserved; the simulation reuses the JamJet pilot row to drive the
+   early-exit logic, but the live registry is unaffected. Synthetic-
+   rival-NAME approach considered and rejected as more disruptive (would
+   require a custom pilot JSON fixture for the four-row matrix).
+4. **New test**: `test_open_source_installable_rival_yields_not_passed_with_template_manifest`
+   — exercises mode 2 above: with an init template manifest written for
+   each rival (smoke_result=not_run), JamJet and Preloop surface as
+   `local_status="not_passed"`, `blocker="smoke_result is not passed"`,
+   `consensus_grade_contribution=False`. Confirms the open-source-installable
+   value never silently promotes a rival to `passed` with a template
+   manifest.
 5. **`tools/magma_slice_counter_read.py` invariant**: `release_boundary`
    all-false, `forbidden_claims` 7 entries intact, `consensus_grade=false`.
 6. **`tests/tools/test_v12_supervisor_demo_pack.py:95-98`** `local_status`
-   set assertion `{"not_passed", "not_configured"}` unchanged.
+   set assertion: **changes from `{"not_passed", "not_configured"}`
+   to `{"not_passed"}`** because all four rivals now reach the
+   smoke-result branch with init templates (no early-exit hard-block).
+   Same change applies to `tests/tools/test_v12_rival_local_check_matrix.py`
+   set assertions at lines 112/144/180. Comment blocks updated to cite
+   the 2026-05-23 upstream-verification scout (this file).
 7. **Baseline.json**: should NOT change as a result of this PR (rival
    matrix counts unchanged at 1-pass / 4-required).
 

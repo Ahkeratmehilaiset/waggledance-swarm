@@ -984,9 +984,10 @@ def test_repository_evidence_dir_jamjet_static_artifact_stays_not_passing() -> N
     """Production smoke: against the real docs/benchmarks/rival_local_checks
     evidence dir, JamJet has a digest-verified static-inspection artifact but
     remains not_passed because no policy/audit/replay smoke was run. Preloop
-    still reports 'evidence manifest missing'. AGT stays passed, Asqav stays
-    cloud_dependent. Aggregate consensus_grade stays False because only 1/4
-    rivals has actually passed a local check (AGT)."""
+    has a digest-verified static metadata artifact but remains not_passed
+    because no MCP allow/deny/approval smoke was run. AGT stays passed, Asqav
+    stays cloud_dependent. Aggregate consensus_grade stays False because only
+    1/4 rivals has actually passed a local check (AGT)."""
     report = build_rival_local_check_matrix(
         evidence_dir=ROOT / "docs" / "benchmarks" / "rival_local_checks",
     )
@@ -1005,7 +1006,15 @@ def test_repository_evidence_dir_jamjet_static_artifact_stays_not_passing() -> N
         == "sha256:9004288030d50c41da509d0e189a1f79aba5333e73c476f5ea3e817f64ba28bc"
     )
     assert jamjet["consensus_grade_contribution"] is False
-    assert preloop["blocker"] == "evidence manifest missing"
+    assert preloop["local_status"] == "not_passed"
+    assert preloop["blocker"] == "smoke_result is not passed"
+    assert preloop["blocked_artifact_reason"] == "smoke_result"
+    assert preloop["artifact_proof"]["artifact_digest_verified"] is True
+    assert (
+        preloop["artifact_proof"]["local_artifact_sha256"]
+        == "sha256:3dbf07f70b700a917be0afdcc893b6dfb22c59403763b369470f35d1d41e53ae"
+    )
+    assert preloop["consensus_grade_contribution"] is False
     assert agt["local_status"] == "passed"
     assert asqav["local_status"] == "cloud_dependent"
     assert report["passed_count"] == 1

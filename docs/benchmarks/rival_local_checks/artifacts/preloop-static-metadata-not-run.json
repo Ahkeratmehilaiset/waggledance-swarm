@@ -1,0 +1,49 @@
+{
+  "evidence_artifact_contract_version": "wd.v12.rival_local_evidence_artifact.v1",
+  "rival": "Preloop",
+  "pinned_revision": "pypi:preloop==0.9.3; wheel_sha256=sha256:a3077d4c91499eeb12fce9aaccbe88992b616315f954a5dd879b46ef7d61ea50; sdist_sha256=sha256:2371617713c13e5765568873c1edba8c253d7a15ee6cd0359174d4cfe98474d3",
+  "smoke_result": "not_run",
+  "offline": false,
+  "ok": false,
+  "evidence_type": "local_inspection",
+  "observations": {
+    "mcp_allow_deny_approval_smoke": {
+      "ok": false,
+      "offline": false,
+      "summary": "Not executed. Static public metadata inspection found a Preloop 0.9.3 PyPI release, Apache-2.0/self-hostable claims, MCP firewall and approval workflow claims, but no local MCP allow/deny/approval smoke was run in this artifact."
+    }
+  },
+  "static_inspection": {
+    "source": "https://pypi.org/project/preloop/ and https://github.com/preloop/preloop",
+    "package": {
+      "name": "preloop",
+      "version": "0.9.3",
+      "release_date": "2026-05-19",
+      "requires_python": ">=3.11",
+      "wheel": "preloop-0.9.3-py3-none-any.whl",
+      "wheel_sha256": "sha256:a3077d4c91499eeb12fce9aaccbe88992b616315f954a5dd879b46ef7d61ea50",
+      "sdist": "preloop-0.9.3.tar.gz",
+      "sdist_sha256": "sha256:2371617713c13e5765568873c1edba8c253d7a15ee6cd0359174d4cfe98474d3"
+    },
+    "metadata": {
+      "license": "Apache-2.0",
+      "repository": "https://github.com/preloop/preloop",
+      "summary": "open-source AI agent control plane with MCP firewall, model gateway, policy-as-code, human approvals, runtime observability, and audit trails",
+      "self_hostable_claim": "All shipped as Apache 2.0 software that runs on your infrastructure."
+    },
+    "inspected_sources": [
+      "https://pypi.org/project/preloop/",
+      "https://github.com/preloop/preloop"
+    ],
+    "inspection_commands": [
+      "WebFetch https://pypi.org/project/preloop/ on 2026-05-23",
+      "WebFetch https://github.com/preloop/preloop on 2026-05-23"
+    ],
+    "no_runtime_code_execution": true,
+    "no_install": true,
+    "no_import": true,
+    "package_downloaded": false,
+    "network_used_for_metadata_fetch": true,
+    "why_not_passing": "The required Preloop rival check needs an MCP allow/deny/approval smoke. This artifact only records pinned public package/source metadata and deliberately must not contribute to consensus_grade."
+  }
+}

@@ -216,6 +216,59 @@ def test_valid_local_evidence_manifest_marks_one_rival_passed(tmp_path: Path) ->
     assert report["consensus_grade"] is False
 
 
+def test_repository_evidence_dir_keeps_microsoft_agt_passed() -> None:
+    report = build_rival_local_check_matrix(
+        evidence_dir=ROOT / "docs" / "benchmarks" / "rival_local_checks",
+    )
+
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
+    assert agt["local_status"] == "passed"
+    assert agt["blocker"] is None
+    assert agt["consensus_grade_contribution"] is True
+    assert report["passed_count"] >= 1
+
+
+def test_local_artifact_digest_is_line_ending_stable(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact.parent.mkdir()
+    _write_valid_artifact(
+        artifact,
+        rival="JamJet",
+        pinned_revision="jamjet-test-rev",
+        evidence_type="local_smoke",
+    )
+    lf_digest = _sha256(artifact)
+    artifact.write_bytes(
+        artifact.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8"),
+    )
+    (evidence_dir / "jamjet.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "JamJet",
+                "pinned_revision": "jamjet-test-rev",
+                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "local_artifact_sha256": lf_digest,
+                "smoke_command": "jamjet smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    assert jamjet["local_status"] == "passed"
+    assert jamjet["local_artifact_sha256"] == lf_digest
+
+
 def test_weak_local_evidence_artifact_does_not_pass(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
@@ -586,7 +639,9 @@ def test_manifest_contract_version_must_match_v1(tmp_path: Path) -> None:
 
 
 def _sha256(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    text = path.read_text(encoding="utf-8")
+    canonical_text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "sha256:" + hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
 
 
 def _write_valid_artifact(

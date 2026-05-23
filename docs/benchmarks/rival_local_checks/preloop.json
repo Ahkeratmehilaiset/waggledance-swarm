@@ -1,0 +1,12 @@
+{
+  "evidence_manifest_contract_version": "wd.v12.rival_local_evidence_manifest.v1",
+  "rival": "Preloop",
+  "pinned_revision": "pypi:preloop==0.9.3; wheel_sha256=sha256:a3077d4c91499eeb12fce9aaccbe88992b616315f954a5dd879b46ef7d61ea50; sdist_sha256=sha256:2371617713c13e5765568873c1edba8c253d7a15ee6cd0359174d4cfe98474d3",
+  "local_artifact_path": "artifacts/preloop-static-metadata-not-run.json",
+  "local_artifact_sha256": "sha256:3dbf07f70b700a917be0afdcc893b6dfb22c59403763b369470f35d1d41e53ae",
+  "smoke_command": "static metadata inspection only: WebFetch PyPI/GitHub pages for preloop 0.9.3 on 2026-05-23; no package download, install, import, or execution",
+  "smoke_result": "not_run",
+  "cloud_dependency": false,
+  "evidence_type": "local_inspection",
+  "notes": "Preloop 0.9.3 PyPI/GitHub metadata was inspected without downloading, installing, importing, or executing rival code. This records audit-traceable evidence that the installable/self-hostable surface exists, but it deliberately does not pass the required Preloop local check because no MCP allow/deny/approval smoke was run. It must not contribute to consensus_grade."
+}

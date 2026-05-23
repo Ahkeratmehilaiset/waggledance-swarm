@@ -9,7 +9,10 @@ import sys
 import jsonschema
 import pytest
 
-from tools.run_pdam_counterfactual_demo import build_demo_report
+from tools.run_pdam_counterfactual_demo import (
+    build_demo_report,
+    build_variant_matrix_report,
+)
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.canonical import sha256_digest
@@ -190,6 +193,50 @@ def test_fixed_now_reproduces_receipt_bytes(tmp_path: Path) -> None:
     second_receipt = json.loads((second_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
     assert first_receipt == second_receipt
     assert sha256_digest(first_receipt) == sha256_digest(second_receipt)
+
+
+def test_variant_matrix_emits_three_counterfactual_rows_without_writes() -> None:
+    report = build_variant_matrix_report()
+
+    assert report["demo_version"] == "pdam.counterfactual_evaluation_matrix.v0"
+    assert report["writes_applied"] is False
+    assert report["variant_count"] == 3
+    assert [variant["variant_id"] for variant in report["variants"]] == [
+        "limited_to_idle",
+        "duplicate_to_clean_close",
+        "review_to_clean_close",
+    ]
+    deltas = {variant["variant_id"]: variant["delta"] for variant in report["variants"]}
+    assert deltas["limited_to_idle"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
+    assert deltas["duplicate_to_clean_close"]["kind"] == [
+        "CLOSE_DUPLICATE",
+        "CLOSE_OK",
+    ]
+    assert deltas["review_to_clean_close"]["kind"] == ["REVIEW", "CLOSE_OK"]
+    assert deltas["limited_to_idle"]["actual_gate"] == ["review", "allow"]
+    assert deltas["duplicate_to_clean_close"]["actual_gate"] == ["allow", "allow"]
+    assert deltas["review_to_clean_close"]["actual_gate"] == ["review", "allow"]
+    duplicate = report["variants"][1]["counterfactual"]["evaluation_result"]
+    assert "gate_stable:allow" in duplicate["reason_codes"]
+    assert "gate_drift:allow_to_allow" not in duplicate["reason_codes"]
+
+
+def test_variant_matrix_receipt_bundle_verifies_all_six_scenarios(tmp_path: Path) -> None:
+    out_dir = tmp_path / "pdam-matrix-receipts"
+
+    report = build_variant_matrix_report(out_dir=out_dir, now_utc=FIXED_NOW)
+
+    assert report["receipt_bundle"]["receipt_count"] == 6
+    assert report["receipt_bundle"]["verifier_report"]["ok"] is True
+    assert verify_manifest(out_dir / "manifest.json")["ok"] is True
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert len(manifest["entries"]) == 6
+    last_receipt = json.loads(
+        (out_dir / "receipt-006-review_to_clean_close-counterfactual.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert last_receipt["event_id"].endswith("review_to_clean_close:counterfactual")
 
 
 def test_receipt_bundle_refuses_non_empty_output_directory(tmp_path: Path) -> None:

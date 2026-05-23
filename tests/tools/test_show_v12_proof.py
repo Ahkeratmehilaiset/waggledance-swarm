@@ -149,6 +149,9 @@ def test_a3_counterfactual_axis_section_reports_measured_partial() -> None:
     assert a3["available"] is True, a3
     assert a3["counterfactual_delta_proven"] is True, a3
     assert a3["claim_label"] == "MEASURED_LOCAL_PARTIAL"
+    assert a3["variant_count"] == 3
+    assert a3["variants_with_kind_delta"] == 3
+    assert a3["variants_with_gate_delta"] == 2
     assert a3["delta"]["kind"] == ["KEEP_WIP", "CLOSE_OK"]
     assert a3["delta"]["actual_gate"] == ["review", "allow"]
     # show_v12_proof now runs the A3 proof tool with --out-dir, so the

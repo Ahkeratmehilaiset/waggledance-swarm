@@ -141,43 +141,222 @@ def build_demo_report(
     return report
 
 
+def build_variant_matrix_report(
+    *,
+    out_dir: Path | None = None,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    # Privacy canary: this operator-local metadata must never enter output.
+    _private_metadata = {"operator_note": PRIVATE_MARKER}
+    variants = [
+        _build_variant(
+            variant_id="limited_to_idle",
+            selected_entry_id=5101,
+            factual_state=ToolState("SPUT_02_DEPB", "DOWNTIME", comment="DepB still locked"),
+            counterfactual_state=ToolState("SPUT_02_DEPB", "IDLE"),
+            entries=[
+                LogbookEntry(
+                    entry_id=5101,
+                    local_id=5101,
+                    log_code="em-repair-wp1",
+                    device="SPUT_02",
+                    status="WIP",
+                    created_at=BASE,
+                    issue="DepB chamber fault",
+                )
+            ],
+            comments=[
+                MesComment(
+                    "SPUT_02_DEPB",
+                    BASE + timedelta(hours=1),
+                    "HSS",
+                    "DepB repair evidence selected for the incident window.",
+                )
+            ],
+            mutation_reason="mutation:subtool_state:DOWNTIME_to_IDLE",
+        ),
+        _build_variant(
+            variant_id="duplicate_to_clean_close",
+            selected_entry_id=5200,
+            factual_state=ToolState("SPUT_02_DEPB", "ENGINEERING", comment="DepB still locked"),
+            counterfactual_state=ToolState("SPUT_02_DEPB", "IDLE"),
+            entries=[
+                LogbookEntry(
+                    entry_id=5201,
+                    local_id=20,
+                    log_code="em-repair-wp1",
+                    device="SPUT_02",
+                    status="WIP",
+                    created_at=BASE + timedelta(hours=2),
+                    issue="DepB chamber fault",
+                ),
+                LogbookEntry(
+                    entry_id=5200,
+                    local_id=19,
+                    log_code="em-repair-wp1",
+                    device="SPUT_02",
+                    status="EQ_STOP",
+                    created_at=BASE,
+                    issue="DepB chamber fault",
+                ),
+            ],
+            comments=[
+                MesComment(
+                    "SPUT_02_DEPB",
+                    BASE + timedelta(hours=1),
+                    "HSS",
+                    "Work continues on DepB chamber.",
+                )
+            ],
+            mutation_reason="mutation:subtool_state:ENGINEERING_to_IDLE",
+        ),
+        _build_variant(
+            variant_id="review_to_clean_close",
+            selected_entry_id=5300,
+            factual_state=ToolState("SPUT_02_DEPB", "DOWNTIME"),
+            counterfactual_state=ToolState("SPUT_02_DEPB", "IDLE"),
+            entries=[
+                LogbookEntry(
+                    entry_id=5301,
+                    local_id=31,
+                    log_code="em-repair-wp1",
+                    device="SPUT_02",
+                    status="WIP",
+                    created_at=BASE + timedelta(days=3),
+                    issue="DepB chamber fault",
+                ),
+                LogbookEntry(
+                    entry_id=5300,
+                    local_id=30,
+                    log_code="em-repair-wp1",
+                    device="SPUT_02",
+                    status="EQ_STOP",
+                    created_at=BASE,
+                    issue="Earlier unrelated DepB chamber fault",
+                ),
+            ],
+            comments=[
+                MesComment(
+                    "SPUT_02_DEPB",
+                    BASE + timedelta(hours=1),
+                    "HSS",
+                    "Older work note.",
+                )
+            ],
+            mutation_reason="mutation:subtool_state:DOWNTIME_to_IDLE",
+        ),
+    ]
+    primary = variants[0]
+    report = {
+        "demo_version": "pdam.counterfactual_evaluation_matrix.v0",
+        "case_id": "case:pdam:counterfactual:matrix:001",
+        "writes_applied": False,
+        "variant_count": len(variants),
+        "variants": variants,
+        "factual": primary["factual"],
+        "counterfactual": primary["counterfactual"],
+        "delta": primary["delta"],
+    }
+    if out_dir is not None:
+        receipt_now = now_utc or datetime.now(timezone.utc)
+        report["receipt_bundle"] = _emit_variant_receipt_bundle(
+            report,
+            out_dir,
+            receipt_now.astimezone(timezone.utc),
+        )
+    return report
+
+
+def _build_variant(
+    *,
+    variant_id: str,
+    selected_entry_id: int,
+    factual_state: ToolState,
+    counterfactual_state: ToolState,
+    entries: list[LogbookEntry],
+    comments: list[MesComment],
+    mutation_reason: str,
+) -> dict[str, Any]:
+    factual = _run_scenario(
+        label=f"{variant_id}:factual",
+        depb_state=factual_state,
+        entries=entries,
+        comments=comments,
+        selected_entry_id=selected_entry_id,
+    )
+    counterfactual = _run_scenario(
+        label=f"{variant_id}:counterfactual",
+        depb_state=counterfactual_state,
+        entries=entries,
+        comments=comments,
+        selected_entry_id=selected_entry_id,
+        expected_gate=factual["evaluation_result"]["actual_gate"],
+        mutation_reason=mutation_reason,
+    )
+    return {
+        "variant_id": variant_id,
+        "case_id": f"case:pdam:counterfactual:matrix:001:{variant_id}",
+        "selected_entry_id": selected_entry_id,
+        "factual": factual,
+        "counterfactual": counterfactual,
+        "delta": _scenario_delta(factual, counterfactual),
+    }
+
+
 def _run_scenario(
     *,
     label: str,
     depb_state: ToolState,
+    entries: list[LogbookEntry] | None = None,
+    comments: list[MesComment] | None = None,
+    selected_entry_id: int | None = None,
     expected_gate: str | None = None,
     mutation_reason: str | None = None,
 ) -> dict[str, Any]:
-    entry = LogbookEntry(
-        entry_id=5101,
-        local_id=5101,
-        log_code="em-repair-wp1",
-        device="SPUT_02",
-        status="WIP",
-        created_at=BASE,
-        issue="DepB chamber fault",
-    )
+    scenario_entries = entries or [
+        LogbookEntry(
+            entry_id=5101,
+            local_id=5101,
+            log_code="em-repair-wp1",
+            device="SPUT_02",
+            status="WIP",
+            created_at=BASE,
+            issue="DepB chamber fault",
+        )
+    ]
+    scenario_comments = comments or [
+        MesComment(
+            "SPUT_02_DEPB",
+            BASE + timedelta(hours=1),
+            "HSS",
+            "DepB repair evidence selected for the incident window.",
+        )
+    ]
     actions = plan_close_actions(
-        entries=[entry],
-        repair_timeline=[entry],
+        entries=scenario_entries,
+        repair_timeline=scenario_entries,
         tool_states={
             "SPUT_02": ToolState("SPUT_02", "IDLE"),
             "SPUT_02_DEPB": depb_state,
         },
-        comments=[
-            MesComment(
-                "SPUT_02_DEPB",
-                BASE + timedelta(hours=1),
-                "HSS",
-                "DepB repair evidence selected for the incident window.",
-            )
-        ],
+        comments=scenario_comments,
         subtools={"SPUT_02": ["SPUT_02_DEPB"]},
         now=BASE + timedelta(hours=6),
     )
-    if len(actions) != 1:
-        raise RuntimeError(f"expected exactly one PDAM action, got {len(actions)}")
-    action = actions[0]
+    if selected_entry_id is None:
+        if len(actions) != 1:
+            raise RuntimeError(f"expected exactly one PDAM action, got {len(actions)}")
+        action = actions[0]
+    else:
+        action = next(
+            (item for item in actions if item.entry_id == selected_entry_id),
+            None,
+        )
+        if action is None:
+            raise RuntimeError(
+                f"expected PDAM action for entry {selected_entry_id}, got "
+                f"{[item.entry_id for item in actions]}"
+            )
     payload = asdict(action)
     return {
         "label": label,
@@ -190,6 +369,26 @@ def _run_scenario(
             expected_gate=expected_gate,
             mutation_reason=mutation_reason,
         ),
+    }
+
+
+def _scenario_delta(
+    factual: dict[str, Any],
+    counterfactual: dict[str, Any],
+) -> dict[str, list[str]]:
+    return {
+        "kind": [
+            factual["action"]["kind"],
+            counterfactual["action"]["kind"],
+        ],
+        "actual_gate": [
+            factual["evaluation_result"]["actual_gate"],
+            counterfactual["evaluation_result"]["actual_gate"],
+        ],
+        "verdict": [
+            factual["evaluation_result"]["verdict"],
+            counterfactual["evaluation_result"]["verdict"],
+        ],
     }
 
 
@@ -211,7 +410,10 @@ def _evaluation_for_action(
     ]
     if mutation_reason:
         reason_codes.append(mutation_reason)
-        reason_codes.append(f"gate_drift:{expected}_to_{actual_gate}")
+        if expected == actual_gate:
+            reason_codes.append(f"gate_stable:{actual_gate}")
+        else:
+            reason_codes.append(f"gate_drift:{expected}_to_{actual_gate}")
     return build_evaluation_result(
         case_id=case_id,
         subject_type="counterfactual",
@@ -283,6 +485,70 @@ def _emit_receipt_bundle(
     return write_receipt_bundle(
         out_dir=out_dir,
         chain_id="magma:pdam_counterfactual:v0",
+        entries=entries,
+        verify_manifest=verify_manifest,
+    )
+
+
+def _emit_variant_receipt_bundle(
+    report: dict[str, Any],
+    out_dir: Path,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    entries: list[ReceiptBundleEntry] = []
+    previous_receipt: dict[str, Any] | None = None
+    index = 0
+    for variant in report["variants"]:
+        variant_id = variant["variant_id"]
+        for side in ("factual", "counterfactual"):
+            index += 1
+            scenario = variant[side]
+            payload = scenario["action"]
+            evaluation = scenario["evaluation_result"]
+            receipt = build_magma_receipt(
+                event_id=(
+                    f"magma:pdam_counterfactual_matrix:{index:03d}:"
+                    f"{variant_id}:{side}"
+                ),
+                ts_utc=_iso(now_utc + timedelta(seconds=index)),
+                risk_class=evaluation["risk_class"],
+                payload=payload,
+                evaluation_result=evaluation,
+                previous_receipt=previous_receipt,
+                policy_digest=sha256_digest({
+                    "policy_version": evaluation["policy_version"],
+                }),
+                charter_digest=sha256_digest({
+                    "charter_version": evaluation["charter_version"],
+                }),
+                rco_decision_digest=sha256_digest({
+                    "actual_gate": evaluation["actual_gate"],
+                    "case_id": evaluation["case_id"],
+                    "verdict": evaluation["verdict"],
+                }),
+                world_snapshot_digest=sha256_digest({
+                    "case_id": variant["case_id"],
+                    "scenario": side,
+                    "subtool_state": scenario["subtool_state"],
+                }),
+                solver_contract_digest=sha256_digest({
+                    "solver_selection": evaluation["solver_selection"],
+                    "policy_version": evaluation["policy_version"],
+                }),
+            )
+            previous_receipt = receipt
+            entries.append(
+                ReceiptBundleEntry(
+                    label=f"{variant_id}-{side}",
+                    payload=payload,
+                    evaluation_result=evaluation,
+                    receipt=receipt,
+                )
+            )
+
+    return write_receipt_bundle(
+        out_dir=out_dir,
+        chain_id="magma:pdam_counterfactual_matrix:v0",
         entries=entries,
         verify_manifest=verify_manifest,
     )

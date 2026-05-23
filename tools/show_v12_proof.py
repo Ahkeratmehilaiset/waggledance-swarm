@@ -259,6 +259,7 @@ def format_proof(report: dict[str, Any]) -> str:
             f"  {marker}delta proven                    : {a3['counterfactual_delta_proven']}"
         )
         lines.append(f"     claim label                    : {a3['claim_label']}")
+        lines.append(f"     variants                       : {a3['variant_count']}")
         lines.append(
             f"     action kind                    : {delta['kind'][0]} -> {delta['kind'][1]}"
         )
@@ -390,14 +391,20 @@ def _summarize_a3_counterfactual_axis(report: dict[str, Any]) -> dict[str, Any]:
             "delta": {
                 "kind": ["unknown", "unknown"],
                 "actual_gate": ["unknown", "unknown"],
-                "verdict": ["unknown", "unknown"],
+            "verdict": ["unknown", "unknown"],
             },
             "receipt_chain_verified": False,
+            "variant_count": 0,
+            "variants_with_kind_delta": 0,
+            "variants_with_gate_delta": 0,
         }
     return {
         "available": report.get("ok") is not None,
         "counterfactual_delta_proven": bool(report.get("counterfactual_delta_proven")),
         "claim_label": report.get("claim_label", "unknown"),
+        "variant_count": int(report.get("variant_count") or 0),
+        "variants_with_kind_delta": int(report.get("variants_with_kind_delta") or 0),
+        "variants_with_gate_delta": int(report.get("variants_with_gate_delta") or 0),
         "delta": report.get("delta") or {
             "kind": ["unknown", "unknown"],
             "actual_gate": ["unknown", "unknown"],

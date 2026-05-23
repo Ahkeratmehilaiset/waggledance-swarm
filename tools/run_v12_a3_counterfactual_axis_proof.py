@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.run_pdam_counterfactual_demo import build_demo_report  # noqa: E402
+from tools.run_pdam_counterfactual_demo import build_variant_matrix_report  # noqa: E402
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 
 
@@ -78,7 +78,7 @@ def build_a3_counterfactual_axis_proof(
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    demo = build_demo_report(out_dir=receipt_out_dir, now_utc=now_utc)
+    demo = build_variant_matrix_report(out_dir=receipt_out_dir, now_utc=now_utc)
     factual = demo["factual"]
     counterfactual = demo["counterfactual"]
     delta = demo["delta"]
@@ -92,11 +92,25 @@ def build_a3_counterfactual_axis_proof(
     receipt_chain_verified = bool(
         receipt_bundle and receipt_bundle["verifier_report"]["ok"]
     )
+    variant_summaries = [_variant_summary(variant) for variant in demo["variants"]]
+    variant_count = len(variant_summaries)
+    variants_with_kind_delta = sum(
+        1 for variant in variant_summaries if "kind" in variant["delta_fields"]
+    )
+    variants_with_gate_delta = sum(
+        1 for variant in variant_summaries if "actual_gate" in variant["delta_fields"]
+    )
     counterfactual_delta_proven = (
         demo["writes_applied"] is False
+        and variant_count >= 3
+        and variants_with_kind_delta == variant_count
+        and variants_with_gate_delta >= 2
         and required_delta_fields.issubset(delta_fields)
-        and factual["evaluation_result"]["risk_class"] == "internal_memory"
-        and counterfactual["evaluation_result"]["risk_class"] == "internal_memory"
+        and all(
+            variant["factual"]["risk_class"] == "internal_memory"
+            and variant["counterfactual"]["risk_class"] == "internal_memory"
+            for variant in variant_summaries
+        )
     )
 
     return {
@@ -110,11 +124,15 @@ def build_a3_counterfactual_axis_proof(
         "source_demo_version": demo["demo_version"],
         "writes_applied": demo["writes_applied"],
         "counterfactual_delta_proven": bool(counterfactual_delta_proven),
+        "variant_count": variant_count,
+        "variants_with_kind_delta": variants_with_kind_delta,
+        "variants_with_gate_delta": variants_with_gate_delta,
         "delta_field_count": len(delta_fields),
         "delta_fields": delta_fields,
         "delta": delta,
         "factual": _scenario_summary(factual),
         "counterfactual": _scenario_summary(counterfactual),
+        "variants": variant_summaries,
         "receipt_chain_verified": receipt_chain_verified,
         "receipt_bundle": _receipt_summary(receipt_bundle),
         "evidence_sources": [
@@ -126,7 +144,8 @@ def build_a3_counterfactual_axis_proof(
             "not_a_rival_benchmark": True,
             "does_not_claim_external_effect_execution": True,
             "does_not_apply_writes": True,
-            "measures_one_local_fixture": True,
+            "measures_one_local_domain_fixture": True,
+            "measures_three_deterministic_variants": True,
         },
     }
 
@@ -142,6 +161,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- axis: `{report['axis_id']} {report['axis_name']}`",
         f"- claim_label: `{report['claim_label']}`",
         f"- counterfactual_delta_proven: `{str(report['counterfactual_delta_proven']).lower()}`",
+        f"- variant_count: `{report['variant_count']}`",
+        f"- variants_with_gate_delta: `{report['variants_with_gate_delta']}`",
         f"- writes_applied: `{str(report['writes_applied']).lower()}`",
         f"- receipt_chain_verified: `{receipt_state}`",
         "",
@@ -151,12 +172,40 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| actual gate | `{delta['actual_gate'][0]}` | `{delta['actual_gate'][1]}` |",
         f"| verdict | `{delta['verdict'][0]}` | `{delta['verdict'][1]}` |",
         "",
-        "This is one local measured counterfactual row. It is not a rival benchmark,",
+        "| Variant | Action delta | Gate delta | Verdict delta |",
+        "|---|---|---|---|",
+        *[
+            "| "
+            f"`{variant['variant_id']}` | "
+            f"`{variant['delta']['kind'][0]}` -> `{variant['delta']['kind'][1]}` | "
+            f"`{variant['delta']['actual_gate'][0]}` -> `{variant['delta']['actual_gate'][1]}` | "
+            f"`{variant['delta']['verdict'][0]}` -> `{variant['delta']['verdict'][1]}` |"
+            for variant in report["variants"]
+        ],
+        "",
+        "This is a three-variant local measured counterfactual row. It is not a rival benchmark,",
         "does not execute an external effect, and does not claim broad semantic",
         "counterfactual coverage beyond this fixture.",
         "",
     ]
     return "\n".join(lines)
+
+
+def _variant_summary(variant: dict[str, Any]) -> dict[str, Any]:
+    delta = variant["delta"]
+    return {
+        "variant_id": variant["variant_id"],
+        "case_id": variant["case_id"],
+        "selected_entry_id": variant["selected_entry_id"],
+        "delta_fields": [
+            field
+            for field, values in sorted(delta.items())
+            if values[0] != values[1]
+        ],
+        "delta": delta,
+        "factual": _scenario_summary(variant["factual"]),
+        "counterfactual": _scenario_summary(variant["counterfactual"]),
+    }
 
 
 def _scenario_summary(scenario: dict[str, Any]) -> dict[str, Any]:

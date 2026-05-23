@@ -37,11 +37,19 @@ def test_a3_axis_proof_reports_counterfactual_delta_without_writes() -> None:
     assert report["claim_label"] == "MEASURED_LOCAL_PARTIAL"
     assert report["writes_applied"] is False
     assert report["counterfactual_delta_proven"] is True
+    assert report["variant_count"] == 3
+    assert report["variants_with_kind_delta"] == 3
+    assert report["variants_with_gate_delta"] == 2
     assert report["delta"] == {
         "actual_gate": ["review", "allow"],
         "kind": ["KEEP_WIP", "CLOSE_OK"],
         "verdict": ["pass", "review"],
     }
+    assert [variant["variant_id"] for variant in report["variants"]] == [
+        "limited_to_idle",
+        "duplicate_to_clean_close",
+        "review_to_clean_close",
+    ]
     assert set(report["delta_fields"]) == {"actual_gate", "kind", "verdict"}
     assert report["receipt_chain_verified"] is False
 
@@ -56,11 +64,25 @@ def test_a3_axis_proof_writes_verified_receipt_chain(tmp_path: Path) -> None:
 
     assert report["receipt_chain_verified"] is True
     assert report["receipt_bundle"]["available"] is True
-    assert report["receipt_bundle"]["receipt_count"] == 2
+    assert report["receipt_bundle"]["receipt_count"] == 6
     assert (out_dir / "manifest.json").exists()
-    first_receipt = json.loads((out_dir / "receipt-001-factual.json").read_text(encoding="utf-8"))
-    second_receipt = json.loads((out_dir / "receipt-002-counterfactual.json").read_text(encoding="utf-8"))
+    first_receipt = json.loads(
+        (out_dir / "receipt-001-limited_to_idle-factual.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    second_receipt = json.loads(
+        (out_dir / "receipt-002-limited_to_idle-counterfactual.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    sixth_receipt = json.loads(
+        (out_dir / "receipt-006-review_to_clean_close-counterfactual.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert second_receipt["prev_receipt_hash"] == sha256_digest(first_receipt)
+    assert sixth_receipt["event_id"].endswith("review_to_clean_close:counterfactual")
 
 
 def test_a3_markdown_preserves_no_rival_benchmark_guardrail(tmp_path: Path) -> None:
@@ -72,6 +94,8 @@ def test_a3_markdown_preserves_no_rival_benchmark_guardrail(tmp_path: Path) -> N
 
     assert "V12 A3 Counterfactual Axis Proof" in markdown
     assert "counterfactual_delta_proven: `true`" in markdown
+    assert "variant_count: `3`" in markdown
+    assert "`review_to_clean_close`" in markdown
     assert "receipt_chain_verified: `true`" in markdown
     assert "not a rival benchmark" in markdown
 
@@ -91,8 +115,9 @@ def test_a3_cli_json_with_receipts_is_deterministic(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["generated_at_utc"] == "2026-05-20T19:50:00Z"
     assert payload["counterfactual_delta_proven"] is True
+    assert payload["variant_count"] == 3
     assert payload["receipt_chain_verified"] is True
-    assert payload["receipt_bundle"]["receipt_count"] == 2
+    assert payload["receipt_bundle"]["receipt_count"] == 6
 
 
 def test_a3_cli_rejects_non_utc_now(tmp_path: Path) -> None:

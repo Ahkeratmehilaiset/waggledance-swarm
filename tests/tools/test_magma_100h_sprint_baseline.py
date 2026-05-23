@@ -48,6 +48,9 @@ def _minimal_v12_proof() -> dict[str, object]:
             "claim_label": "MEASURED_LOCAL_PARTIAL",
             "counterfactual_delta_proven": True,
             "receipt_chain_verified": True,
+            "variant_count": 3,
+            "variants_with_kind_delta": 3,
+            "variants_with_gate_delta": 2,
         },
         "a4_solver_growth_axis": {
             "available": True,
@@ -112,6 +115,7 @@ def test_build_baseline_locks_honest_magma_sprint_state() -> None:
         "tag_creation": False,
     }
     assert baseline["current_state"]["competitor_pilot"]["consensus_grade"] is False
+    assert baseline["current_state"]["a3_counterfactual_axis"]["variant_count"] == 3
     assert (
         baseline["current_state"]["competitor_pilot"]["rival_local_checks_status"]
         == "1/4 rival local checks passed"

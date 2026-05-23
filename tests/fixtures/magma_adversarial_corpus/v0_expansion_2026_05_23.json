@@ -1,8 +1,8 @@
 {
   "corpus_version": "magma.synthetic_adversarial_corpus.v0",
   "expansion_label": "phase_d_expansion_2026_05_23",
-  "expansion_status": "gate_extension_covered",
-  "expansion_note": "8 new cases across 4 families (charter-bypass, overclaim, receipt-chain spoofing, sanitization-contract edge cases). This expansion is evaluated as a separate partial-coverage target so the strict v0 corpus remains the stable 30-case floor. A later fold-in PR may move these cases into v0 after downstream baseline/proof artifacts are refreshed deliberately.",
+  "expansion_status": "folded_into_v0",
+  "expansion_note": "8 cases across 4 families (charter-bypass, overclaim, receipt-chain spoofing, sanitization-contract edge cases). This historical expansion fixture is retained as provenance for the Phase D expansion; every case and paired expectation is now folded into the strict v0 corpus, so the strict v0 gate is the authoritative target.",
   "cases": [
     {
       "case_version": "magma.synthetic_adversarial_case.v0",

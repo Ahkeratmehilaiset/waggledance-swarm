@@ -120,10 +120,20 @@ function Get-BridgeEventTimestampSafe {
     # empty or malformed ts_utc crashes the whole reader. This wrapper
     # Returns $null on any parse failure so callers can fall back to
     # "no event" handling instead of an unhandled exception.
-    param([string] $TsUtc)
-    if (-not $TsUtc) { return $null }
+    param([object] $TsUtc)
+    if ($null -eq $TsUtc) { return $null }
+    if ($TsUtc -is [DateTime]) {
+        return $TsUtc.ToUniversalTime()
+    }
+    $text = [string]$TsUtc
+    if (-not $text) { return $null }
     try {
-        return [DateTime]::Parse($TsUtc).ToUniversalTime()
+        return [DateTime]::Parse(
+            $text,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+                [System.Globalization.DateTimeStyles]::AdjustToUniversal
+        ).ToUniversalTime()
     } catch {
         return $null
     }
@@ -408,7 +418,7 @@ if ($ShowLiveness -and -not $NoContinuity) {
                 $key = "{0}/{1}" -f $agent, $k
                 if ($latest.ContainsKey($key)) {
                     $e = $latest[$key]
-                    $ts = Get-BridgeEventTimestampSafe -TsUtc ([string]$e.ts_utc)
+                    $ts = Get-BridgeEventTimestampSafe -TsUtc $e.ts_utc
                     if ($null -eq $ts) {
                         Write-Host ("  {0,-7} {1,-10} malformed timestamp: {2}/{3}" -f `
                             $agent, $k, $e.type, $e.status) -ForegroundColor Yellow

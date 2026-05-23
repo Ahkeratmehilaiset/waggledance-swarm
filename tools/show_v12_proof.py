@@ -14,6 +14,8 @@ It prints:
     - Synthetic adversarial corpus pass rate
     - Governance throughput metric availability
     - Bridge-consensus-sealed competitor-axis pilot reference
+    - A4 SolverProvenance lifecycle receipt proof, separated from the
+      synthetic A4 axis proof
     - Today's merged-PR count from `git log` (substrate velocity)
 
 Independently verifiable: each row cites the underlying tool that produced
@@ -51,6 +53,9 @@ ADOPTION_REPORT = ROOT / "tools" / "magma_receipt_adoption_report.py"
 ADVERSARIAL_EVAL = ROOT / "tools" / "run_magma_adversarial_eval.py"
 A3_COUNTERFACTUAL_PROOF = ROOT / "tools" / "run_v12_a3_counterfactual_axis_proof.py"
 A4_SOLVER_GROWTH_PROOF = ROOT / "tools" / "run_v12_a4_solver_growth_axis_proof.py"
+A4_SOLVER_LIFECYCLE_PROOF = (
+    ROOT / "tools" / "run_solver_provenance_receipt_emission_proof.py"
+)
 GOVERNANCE_REPORT = ROOT / "tools" / "governance_throughput_report.py"
 RIVAL_LOCAL_CHECK_MATRIX = ROOT / "tools" / "run_v12_rival_local_check_matrix.py"
 RIVAL_LOCAL_CHECKS_DIR = ROOT / "docs" / "benchmarks" / "rival_local_checks"
@@ -120,6 +125,7 @@ def collect_proof(
     # on disk should run the proof tools directly with their own --out-dir.
     a3_report = _run_proof_tool_with_receipt(A3_COUNTERFACTUAL_PROOF)
     a4_report = _run_proof_tool_with_receipt(A4_SOLVER_GROWTH_PROOF)
+    a4_lifecycle_report = _run_proof_tool_with_receipt(A4_SOLVER_LIFECYCLE_PROOF)
     governance_args = ["--json"]
     if governance_events is not None:
         governance_args.extend(["--events", str(governance_events)])
@@ -148,6 +154,7 @@ def collect_proof(
         and eval_report.get("ok") is True
         and a3_report.get("ok") is True
         and a4_report.get("ok") is True
+        and a4_lifecycle_report.get("ok") is True
         and high_gap == 0
     )
 
@@ -187,6 +194,9 @@ def collect_proof(
         },
         "a3_counterfactual_axis": _summarize_a3_counterfactual_axis(a3_report),
         "a4_solver_growth_axis": _summarize_a4_solver_growth_axis(a4_report),
+        "a4_solver_lifecycle": _summarize_a4_solver_lifecycle(
+            a4_lifecycle_report
+        ),
         "governance_throughput": _summarize_governance_throughput(governance),
         "competitor_pilot": pilot,
         "substrate_velocity": velocity,
@@ -293,6 +303,7 @@ def format_proof(report: dict[str, Any]) -> str:
         lines.append(
             f"  {marker}solver growth proven           : {a4['solver_growth_proven']}"
         )
+        lines.append("     evidence scope                 : synthetic Phase 18C dispatch fixture")
         lines.append(f"     claim label                    : {a4['claim_label']}")
         lines.append(
             f"     registered solvers             : {registration['registered_solver_count']}"
@@ -310,6 +321,32 @@ def format_proof(report: dict[str, Any]) -> str:
     else:
         lines.append("")
         lines.append("A4 SOLVER-GROWTH AXIS            : tool unavailable")
+
+    lifecycle = report["a4_solver_lifecycle"]
+    if lifecycle["available"]:
+        lines.append("")
+        lines.append(
+            "A4 SOLVER LIFECYCLE RECEIPTS  "
+            "(tools/run_solver_provenance_receipt_emission_proof.py)"
+        )
+        marker = "OK " if lifecycle["ok"] else "** "
+        lines.append(
+            f"  {marker}opt-in lifecycle receipts      : {lifecycle['ok']}"
+        )
+        lines.append(f"     evidence scope                 : {lifecycle['evidence_scope']}")
+        lines.append(f"     claim label                    : {lifecycle['claim_label']}")
+        lines.append(f"     runtime path                   : {lifecycle['runtime_path']}")
+        lines.append(
+            "     transitions                    : "
+            + " -> ".join(lifecycle["transitions"])
+        )
+        lines.append(f"     receipt count                  : {lifecycle['receipt_count']}")
+        lines.append(
+            f"     receipt chain verified         : {lifecycle['receipt_chain_verified']}"
+        )
+    else:
+        lines.append("")
+        lines.append("A4 SOLVER LIFECYCLE RECEIPTS     : tool unavailable")
 
     gov = report["governance_throughput"]
     lines.append("")
@@ -377,6 +414,10 @@ def format_proof(report: dict[str, Any]) -> str:
     lines.append("  python tools/run_magma_adversarial_eval.py --json")
     lines.append("  python tools/run_v12_a3_counterfactual_axis_proof.py --json")
     lines.append("  python tools/run_v12_a4_solver_growth_axis_proof.py --json")
+    lines.append(
+        "  python tools/run_solver_provenance_receipt_emission_proof.py "
+        "--out-dir <new-output-dir> --json"
+    )
     lines.append("  python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>")
     lines.append(
         "  python tools/run_v12_rival_local_check_matrix.py "
@@ -456,6 +497,42 @@ def _summarize_a4_solver_growth_axis(report: dict[str, Any]) -> dict[str, Any]:
             "families_covered": 0,
         },
         "receipt_chain_verified": bool(report.get("receipt_chain_verified")),
+    }
+
+
+def _summarize_a4_solver_lifecycle(report: dict[str, Any]) -> dict[str, Any]:
+    if report.get("ok") is None:
+        return {
+            "available": False,
+            "ok": False,
+            "claim_label": "unknown",
+            "runtime_path": "unknown",
+            "transitions": [],
+            "receipt_count": 0,
+            "receipt_chain_verified": False,
+            "risk_class": "unknown",
+            "operator_gate_required": "unknown",
+            "external_writes_applied": "unknown",
+            "receipt_emission_mode": "unknown",
+            "evidence_scope": "unavailable",
+        }
+    transitions = report.get("transitions") or []
+    return {
+        "available": True,
+        "ok": report.get("ok") is True,
+        "claim_label": report.get("claim_label", "unknown"),
+        "runtime_path": report.get("runtime_path", "unknown"),
+        "transitions": list(transitions) if isinstance(transitions, list) else [],
+        "receipt_count": int(report.get("receipt_count") or 0),
+        "receipt_chain_verified": report.get("verifier_ok") is True,
+        "risk_class": report.get("risk_class", "unknown"),
+        "operator_gate_required": report.get("operator_gate_required"),
+        "external_writes_applied": report.get("external_writes_applied"),
+        "receipt_emission_mode": report.get("receipt_emission_mode", "unknown"),
+        "evidence_scope": (
+            "real opt-in SolverProvenance sign/activate/revoke path; "
+            "not production auto-promotion authority"
+        ),
     }
 
 

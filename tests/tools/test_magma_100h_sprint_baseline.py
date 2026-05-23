@@ -63,6 +63,24 @@ def _minimal_v12_proof() -> dict[str, object]:
             "solver_growth_proven": True,
             "receipt_chain_verified": True,
         },
+        "a4_solver_lifecycle": {
+            "available": True,
+            "ok": True,
+            "claim_label": "MEASURED_LOCAL_PARTIAL",
+            "runtime_path": "SolverProvenance.{sign,activate,revoke}",
+            "transitions": [
+                "activation_authorised",
+                "activation_revoked",
+            ],
+            "receipt_count": 2,
+            "receipt_chain_verified": True,
+            "evidence_scope": (
+                "real opt-in SolverProvenance sign/activate/revoke path; "
+                "not production auto-promotion authority"
+            ),
+            "external_writes_applied": False,
+            "receipt_emission_mode": "opt_in_disk_bundle_sink",
+        },
         "governance_throughput": {
             "available": True,
             "metric_count": 8,
@@ -126,6 +144,15 @@ def test_build_baseline_locks_honest_magma_sprint_state() -> None:
             "evaluation_result_case_count"
         ]
         == 3
+    )
+    assert (
+        baseline["current_state"]["a4_solver_lifecycle"]["claim_label"]
+        == "MEASURED_LOCAL_PARTIAL"
+    )
+    assert baseline["current_state"]["a4_solver_lifecycle"]["receipt_count"] == 2
+    assert (
+        baseline["current_state"]["a4_solver_lifecycle"]["transitions"]
+        == ["activation_authorised", "activation_revoked"]
     )
     assert (
         baseline["current_state"]["competitor_pilot"]["rival_local_checks_status"]
@@ -193,6 +220,17 @@ def test_baseline_rejects_competitor_consensus_grade_overclaim() -> None:
     assert "competitor_pilot_overclaims_consensus_grade" in baseline["blockers"]
 
 
+def test_baseline_fail_closes_on_missing_a4_lifecycle_receipt_chain() -> None:
+    proof = _minimal_v12_proof()
+    proof["a4_solver_lifecycle"] = dict(proof["a4_solver_lifecycle"])
+    proof["a4_solver_lifecycle"]["receipt_chain_verified"] = False
+
+    baseline = build_baseline(v12_proof=proof, generated_at_utc=FIXED_NOW)
+
+    assert baseline["ok"] is False
+    assert "a4_solver_lifecycle_receipt_chain_not_verified" in baseline["blockers"]
+
+
 def test_cli_writes_json_baseline(tmp_path: Path) -> None:
     output = tmp_path / "baseline.json"
 
@@ -208,4 +246,7 @@ def test_cli_writes_json_baseline(tmp_path: Path) -> None:
     )
     assert file_payload["current_state"]["a4_solver_growth_axis"]["claim_label"] == (
         "MEASURED_LOCAL_SYNTHETIC"
+    )
+    assert file_payload["current_state"]["a4_solver_lifecycle"]["claim_label"] == (
+        "MEASURED_LOCAL_PARTIAL"
     )

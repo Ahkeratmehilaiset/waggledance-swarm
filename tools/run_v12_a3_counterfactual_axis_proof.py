@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -15,10 +16,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.run_pdam_counterfactual_demo import build_variant_matrix_report  # noqa: E402
-from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
+from tools.verify_magma_receipt import verify_manifest  # noqa: E402
+from waggledance.core.magma.canonical import (  # noqa: E402
+    canonical_json_bytes,
+    sha256_digest,
+)
+from waggledance.core.magma.evaluation_result import build_evaluation_result_v1  # noqa: E402
+from waggledance.core.magma.receipt import build_magma_receipt  # noqa: E402
+from waggledance.core.magma.receipt_bundle import (  # noqa: E402
+    ReceiptBundleEntry,
+    write_receipt_bundle,
+)
 
 
 REPORT_VERSION = "wd.v12.a3_counterfactual_axis_proof.v0"
+EVALUATION_RESULT_VERSION = "magma.evaluation_result.v1"
+CHAIN_ID = "magma:v12_a3_counterfactual_axis:v1"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,7 +91,14 @@ def build_a3_counterfactual_axis_proof(
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    demo = build_variant_matrix_report(out_dir=receipt_out_dir, now_utc=now_utc)
+    demo = _bind_a3_evaluations_v1(build_variant_matrix_report())
+    if receipt_out_dir is not None:
+        receipt_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        demo["receipt_bundle"] = _emit_a3_v1_receipt_bundle(
+            demo,
+            receipt_out_dir,
+            receipt_now,
+        )
     factual = demo["factual"]
     counterfactual = demo["counterfactual"]
     delta = demo["delta"]
@@ -120,6 +140,8 @@ def build_a3_counterfactual_axis_proof(
         "axis_id": "A3",
         "axis_name": "counterfactual_evaluation_delta",
         "claim_label": "MEASURED_LOCAL_PARTIAL",
+        "evaluation_result_version": EVALUATION_RESULT_VERSION,
+        "receipt_chain_id": CHAIN_ID,
         "case_id": demo["case_id"],
         "source_demo_version": demo["demo_version"],
         "writes_applied": demo["writes_applied"],
@@ -137,7 +159,7 @@ def build_a3_counterfactual_axis_proof(
         "receipt_bundle": _receipt_summary(receipt_bundle),
         "evidence_sources": [
             "tools/run_pdam_counterfactual_demo.py",
-            "schemas/v3_13_0/evaluation_result.v0.json",
+            "schemas/v3_13_0/evaluation_result.v1.json",
             "tools/verify_magma_receipt.py",
         ],
         "no_overclaim_guardrails": {
@@ -160,6 +182,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- generated_at_utc: `{report['generated_at_utc']}`",
         f"- axis: `{report['axis_id']} {report['axis_name']}`",
         f"- claim_label: `{report['claim_label']}`",
+        f"- evaluation_result_version: `{report['evaluation_result_version']}`",
         f"- counterfactual_delta_proven: `{str(report['counterfactual_delta_proven']).lower()}`",
         f"- variant_count: `{report['variant_count']}`",
         f"- variants_with_gate_delta: `{report['variants_with_gate_delta']}`",
@@ -214,11 +237,16 @@ def _scenario_summary(scenario: dict[str, Any]) -> dict[str, Any]:
         "label": scenario["label"],
         "subtool_state": scenario["subtool_state"],
         "action_kind": scenario["action"]["kind"],
+        "evaluation_version": evaluation["evaluation_version"],
         "actual_gate": evaluation["actual_gate"],
         "expected_gate": evaluation["expected_gate"],
         "verdict": evaluation["verdict"],
         "risk_class": evaluation["risk_class"],
         "operator_required": evaluation["operator_required"],
+        "competitor_axis_reference": evaluation.get("competitor_axis_reference"),
+        "confidence_basis": evaluation.get("confidence_basis"),
+        "sanitization_audit": evaluation.get("sanitization_audit"),
+        "subject_payload_size_bytes": evaluation.get("subject_payload_size_bytes"),
         "target_digest": evaluation["target_digest"],
         "evaluation_result_digest": sha256_digest(evaluation),
         "reason_codes": evaluation["reason_codes"],
@@ -243,6 +271,131 @@ def _receipt_summary(receipt_bundle: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _bind_a3_evaluations_v1(demo: dict[str, Any]) -> dict[str, Any]:
+    bound = deepcopy(demo)
+    for variant in bound["variants"]:
+        for side in ("factual", "counterfactual"):
+            _upgrade_scenario_to_v1(variant[side])
+    primary = bound["variants"][0]
+    bound["factual"] = primary["factual"]
+    bound["counterfactual"] = primary["counterfactual"]
+    return bound
+
+
+def _upgrade_scenario_to_v1(scenario: dict[str, Any]) -> None:
+    payload = scenario["action"]
+    previous = scenario["evaluation_result"]
+    scenario["evaluation_result"] = build_evaluation_result_v1(
+        case_id=previous["case_id"],
+        subject_type=previous["subject_type"],
+        target_payload=payload,
+        risk_class=previous["risk_class"],
+        expected_gate=previous["expected_gate"],
+        actual_gate=previous["actual_gate"],
+        verifier_path=[
+            "v12_a3_counterfactual_axis_proof",
+            "pdam_close_solver",
+            "evaluation_result_schema_v1",
+            "operator_gate_model",
+        ],
+        solver_selection=previous["solver_selection"],
+        policy_version=previous["policy_version"],
+        charter_version=previous["charter_version"],
+        domain_threshold_version=previous["domain_threshold_version"],
+        verdict=previous["verdict"],
+        reason_codes=[
+            *previous["reason_codes"],
+            "axis:A3_counterfactual_evaluation_delta",
+            "claim_label:MEASURED_LOCAL_PARTIAL",
+        ],
+        confidence_score=previous["confidence_score"],
+        uncertainty_sources=[
+            {
+                "kind": "limited_evidence",
+                "detail": "A3 proof is a deterministic local three-variant fixture, not a statistical benchmark.",
+            }
+        ],
+        confidence_basis={
+            "method": "point_estimate",
+            "sample_count": 1,
+            "methodology_reference": "tools/run_v12_a3_counterfactual_axis_proof.py",
+        },
+        sanitization_audit={
+            "applied": ["locale_normalization"],
+            "redaction_count": 0,
+        },
+        competitor_axis_reference="A3",
+        subject_payload_size_bytes=len(canonical_json_bytes(payload)),
+    )
+
+
+def _emit_a3_v1_receipt_bundle(
+    demo: dict[str, Any],
+    out_dir: Path,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    entries: list[ReceiptBundleEntry] = []
+    previous_receipt: dict[str, Any] | None = None
+    index = 0
+    for variant in demo["variants"]:
+        variant_id = variant["variant_id"]
+        for side in ("factual", "counterfactual"):
+            index += 1
+            scenario = variant[side]
+            payload = scenario["action"]
+            evaluation = scenario["evaluation_result"]
+            receipt = build_magma_receipt(
+                event_id=(
+                    f"magma:v12_a3_counterfactual_axis:{index:03d}:"
+                    f"{variant_id}:{side}"
+                ),
+                ts_utc=_iso(now_utc + timedelta(seconds=index)),
+                risk_class=evaluation["risk_class"],
+                payload=payload,
+                evaluation_result=evaluation,
+                previous_receipt=previous_receipt,
+                policy_digest=sha256_digest({
+                    "policy_version": evaluation["policy_version"],
+                }),
+                charter_digest=sha256_digest({
+                    "charter_version": evaluation["charter_version"],
+                }),
+                rco_decision_digest=sha256_digest({
+                    "actual_gate": evaluation["actual_gate"],
+                    "case_id": evaluation["case_id"],
+                    "competitor_axis_reference": evaluation.get(
+                        "competitor_axis_reference"
+                    ),
+                    "verdict": evaluation["verdict"],
+                }),
+                world_snapshot_digest=sha256_digest({
+                    "case_id": variant["case_id"],
+                    "scenario": side,
+                    "subtool_state": scenario["subtool_state"],
+                }),
+                solver_contract_digest=sha256_digest({
+                    "solver_selection": evaluation["solver_selection"],
+                    "policy_version": evaluation["policy_version"],
+                }),
+            )
+            previous_receipt = receipt
+            entries.append(
+                ReceiptBundleEntry(
+                    label=f"{variant_id}-{side}",
+                    payload=payload,
+                    evaluation_result=evaluation,
+                    receipt=receipt,
+                )
+            )
+
+    return write_receipt_bundle(
+        out_dir=out_dir,
+        chain_id=CHAIN_ID,
+        entries=entries,
+        verify_manifest=verify_manifest,
+    )
+
+
 def _parse_utc(value: str) -> datetime:
     normalized = value.strip()
     if normalized.endswith("Z"):
@@ -251,6 +404,10 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
         raise ValueError("--now requires a UTC timestamp with Z or +00:00 suffix")
     return parsed.astimezone(timezone.utc)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 if __name__ == "__main__":

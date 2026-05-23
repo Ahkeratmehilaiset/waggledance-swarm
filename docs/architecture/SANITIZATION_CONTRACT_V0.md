@@ -28,7 +28,7 @@ test-weakening triggers.
 | 4 | Finnish HETU (1900s separators) is redacted | `test_clause_4_finnish_hetu_is_redacted` |
 | 4b | Finnish HETU (2000s separators A-F) is redacted | `test_clause_4b_finnish_hetu_2000s_separator_is_redacted` |
 | 5 | IBAN is redacted | `test_clause_5_iban_is_redacted` |
-| 6 | Y-tunnus is redacted (or merged into a generic token) | `test_clause_6_y_tunnus_is_redacted` |
+| 6 | Y-tunnus is redacted to `<BUSINESS_ID_n>` | `test_clause_6_y_tunnus_is_redacted` |
 | 7 | Windows file paths are redacted to `<PATH_n>` | `test_clause_7_windows_path_is_redacted` |
 | 8 | POSIX file paths are redacted to `<PATH_n>` | `test_clause_8_posix_path_is_redacted` |
 | 9 | URLs are PRESERVED verbatim (R22.0 F1) | `test_clause_9_https_url_survives_redaction` |

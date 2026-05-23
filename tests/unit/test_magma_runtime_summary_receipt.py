@@ -9,6 +9,7 @@ import pytest
 
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.runtime_summary_receipt import (
+    EVALUATION_VERSION_V1,
     PAYLOAD_VERSION,
     build_handle_query_runtime_summary,
     write_runtime_summary_receipt_bundle,
@@ -77,8 +78,56 @@ def test_runtime_summary_receipt_bundle_writes_and_verifies(tmp_path: Path) -> N
         (out_dir / "receipt-001-runtime-summary.json").read_text(encoding="utf-8")
     )
     assert evaluation["target_digest"] == receipt["canonical_payload_digest"]
+    assert evaluation["evaluation_version"] == "magma.evaluation_result.v0"
     assert evaluation["case_id"] == payload["case_id"]
     assert "DO_NOT_LEAK" not in _all_text(out_dir)
+
+
+def test_runtime_summary_receipt_bundle_can_emit_v1_evaluation_result(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "runtime-summary-v1"
+
+    report = write_runtime_summary_receipt_bundle(
+        out_dir=out_dir,
+        summary_payload=_summary(),
+        now_utc=datetime(2026, 5, 23, 3, 0, tzinfo=timezone.utc),
+        verify_manifest=verify_manifest,
+        evaluation_version=EVALUATION_VERSION_V1,
+    )
+
+    assert report["receipt_count"] == 1
+    assert report["verifier_report"]["ok"] is True
+    evaluation = json.loads(
+        (out_dir / "evaluation-001-runtime-summary.json").read_text(encoding="utf-8")
+    )
+    assert evaluation["evaluation_version"] == EVALUATION_VERSION_V1
+    assert evaluation["confidence_basis"] == {
+        "method": "point_estimate",
+        "methodology_reference": "runtime_summary_receipt_v0",
+        "sample_count": 1,
+    }
+    assert evaluation["sanitization_audit"] == {
+        "applied": ["reserved_domain_allowlist"],
+        "redaction_count": 0,
+    }
+    assert evaluation["subject_payload_size_bytes"] > 0
+    assert "DO_NOT_LEAK" not in _all_text(out_dir)
+
+
+def test_runtime_summary_receipt_bundle_rejects_unknown_evaluation_version(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="evaluation_version"):
+        write_runtime_summary_receipt_bundle(
+            out_dir=tmp_path / "bad-version",
+            summary_payload=_summary(),
+            now_utc=datetime(2026, 5, 23, 3, 0, tzinfo=timezone.utc),
+            verify_manifest=verify_manifest,
+            evaluation_version="magma.evaluation_result.v99",
+        )
+
+    assert not (tmp_path / "bad-version").exists()
 
 
 def test_runtime_summary_receipt_bundle_fails_closed_on_existing_dir(

@@ -75,7 +75,10 @@ def _make_gate(*, audit_collector: list,
                 scope_reason: str = "",
                 cred_scan=_no_cred_scan,
                 write_result: ExecutionResult = None,
-                solver_provenance_result: VerificationResult = None
+                solver_provenance_result: VerificationResult = None,
+                receipt_bundles: list = None,
+                receipt_emit=None,
+                external_effect_approval_id: str | None = None,
                 ) -> WriteRCOGate:
     connectors = connectors or {}
     states = states or {}
@@ -110,6 +113,16 @@ def _make_gate(*, audit_collector: list,
             manifest_sha256_observed="a" * 64,
         )
 
+    if receipt_emit is None and receipt_bundles is not None:
+        def receipt_emit(bundle: dict) -> None:
+            receipt_bundles.append(bundle)
+
+    def resolve_external_effect_approval_id(
+        intent: Intent,
+        outcome: GateOutcome,
+    ) -> str | None:
+        return external_effect_approval_id
+
     return WriteRCOGate(
         audit_emit=_audit_emit_collector(audit_collector),
         classify_payload_credential_scan=cred_scan,
@@ -119,6 +132,12 @@ def _make_gate(*, audit_collector: list,
         peer_rco_solicit=peer,
         operator_scope_policy_check=scope,
         write_executor=writer,
+        emit_receipt_bundle=receipt_emit,
+        resolve_external_effect_approval_id=(
+            resolve_external_effect_approval_id
+            if external_effect_approval_id is not None
+            else None
+        ),
         verify_solver_provenance=verify_solver_provenance,
     )
 
@@ -1324,6 +1343,120 @@ class TestRcoDecisionArtifactAdapter:
         assert bundle["receipt"]["operator_gate_required"] is True
         assert bundle["receipt"]["approval_id"] == "approval:operator:001"
         assert bundle["evaluation_result"]["operator_required"] is True
+
+    def test_route_receipt_sink_emits_payload_free_bundle(self):
+        audit = []
+        bundles = []
+        gate = _make_gate(
+            audit_collector=audit,
+            receipt_bundles=bundles,
+            states={
+                "state:audit_log": StateInfo(
+                    state_id="state:audit_log",
+                    plane="magma_history",
+                    write_modes_allowed=["append"],
+                    sensitive_class="internal",
+                    single_writer_required=True,
+                ),
+            },
+        )
+        intent = _make_intent(
+            target_state_ref="state:audit_log",
+            action="append",
+            payload={"body": "secret operator text"},
+        )
+
+        outcome = gate.route(intent)
+
+        assert outcome.approved is True
+        assert len(bundles) == 1
+        bundle = bundles[0]
+        assert bundle["rco_decision_artifact"] == outcome.rco_decision_artifact
+        assert bundle["receipt"]["rco_decision_digest"] == (
+            outcome.rco_decision_digest
+        )
+        assert bundle["receipt"]["canonical_payload_digest"] == (
+            bundle["evaluation_result"]["target_digest"]
+        )
+        assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
+
+    def test_route_receipt_sink_failure_blocks_route(self):
+        audit = []
+
+        def boom(_bundle: dict) -> None:
+            raise RuntimeError("receipt boom")
+
+        gate = _make_gate(
+            audit_collector=audit,
+            receipt_emit=boom,
+            states={
+                "state:audit_log": StateInfo(
+                    state_id="state:audit_log",
+                    plane="magma_history",
+                    write_modes_allowed=["append"],
+                    sensitive_class="internal",
+                    single_writer_required=True,
+                ),
+            },
+        )
+        intent = _make_intent(target_state_ref="state:audit_log", action="append")
+
+        outcome = gate.route(intent)
+
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.AUDIT_WRITE_FAILED
+        assert "receipt emit failed: receipt boom" in (
+            outcome.denial_reason or ""
+        )
+
+    def test_external_effect_receipt_sink_requires_approval_id_resolver(self):
+        audit = []
+        bundles = []
+        gate = _make_gate(
+            audit_collector=audit,
+            receipt_bundles=bundles,
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+            capsules=TestExternalEffectRoute()._setup_wrt_003_capsule(),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+        )
+
+        outcome = gate.route(intent)
+
+        assert outcome.approved is False
+        assert outcome.stop_condition == StopCondition.AUDIT_WRITE_FAILED
+        assert "resolve_external_effect_approval_id" in (
+            outcome.denial_reason or ""
+        )
+        assert bundles == []
+
+    def test_external_effect_receipt_sink_uses_approval_id_resolver(self):
+        audit = []
+        bundles = []
+        gate = _make_gate(
+            audit_collector=audit,
+            receipt_bundles=bundles,
+            external_effect_approval_id="approval:operator:001",
+            states=TestExternalEffectRoute()._setup_wrt_003_state(),
+            connectors=TestExternalEffectRoute()._setup_wrt_003_connector(),
+            capsules=TestExternalEffectRoute()._setup_wrt_003_capsule(),
+        )
+        intent = _make_intent(
+            target_state_ref="state:logbook",
+            connector_ref="conn:tomcat_rest",
+            tool_descriptor_id="tool_logbook_update",
+        )
+
+        outcome = gate.route(intent)
+
+        assert outcome.approved is True
+        assert len(bundles) == 1
+        assert bundles[0]["receipt"]["operator_gate_required"] is True
+        assert bundles[0]["receipt"]["approval_id"] == "approval:operator:001"
 
 
 # --------------------------------------------------------------------------

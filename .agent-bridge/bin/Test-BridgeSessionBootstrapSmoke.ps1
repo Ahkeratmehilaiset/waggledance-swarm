@@ -44,6 +44,7 @@ $tempParentFull = [System.IO.Path]::GetFullPath($env:TEMP)
 $savedRuntime = $env:AGENT_BRIDGE_RUNTIME_ROOT
 $savedRunId = $env:AGENT_BRIDGE_RUN_ID
 $savedLocation = (Get-Location).Path
+$agentUuid = '11111111-2222-3333-4444-555555555555'
 
 try {
     Write-Host 'Bridge session bootstrap smoke test' -ForegroundColor Cyan
@@ -59,6 +60,9 @@ try {
         -Agent codex `
         -RuntimeRoot $tempRootFull `
         -RunId 'codex-bootstrap-smoke' `
+        -Role impl `
+        -AgentUuid $agentUuid `
+        -Capabilities @('bridge_event','work_queue') `
         -SkipBridgeRead `
         -SkipGitStatus
 
@@ -71,6 +75,12 @@ try {
     Add-Check -Name 'AGENT_BRIDGE_RUN_ID set in process' `
         -Passed ([string]$env:AGENT_BRIDGE_RUN_ID -eq 'codex-bootstrap-smoke') `
         -Detail $env:AGENT_BRIDGE_RUN_ID
+    Add-Check -Name 'bootstrap returned role metadata' `
+        -Passed ([string]$bootstrap.role -eq 'impl') `
+        -Detail "role=$($bootstrap.role)"
+    Add-Check -Name 'bootstrap returned agent uuid metadata' `
+        -Passed ([string]$bootstrap.agent_uuid -eq $agentUuid) `
+        -Detail "agent_uuid=$($bootstrap.agent_uuid)"
 
     foreach ($relative in @(
         'shared',
@@ -96,11 +106,17 @@ try {
     if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
         $tail = Get-Content -Path $eventsPath -Tail 5 -Encoding UTF8
         $hasRunId = (($tail -join "`n") -match 'codex-bootstrap-smoke')
+        $hasRole = (($tail -join "`n") -match '"role":"impl"')
+        $hasUuid = (($tail -join "`n") -match $agentUuid)
         $hasActive = (($tail -join "`n") -match '"type":"liveness"' -and
                       ($tail -join "`n") -match '"status":"active"')
         Add-Check -Name 'liveness event carries run id' `
             -Passed $hasRunId `
             -Detail (($tail -join "`n") | ForEach-Object { $_.Substring(0, [Math]::Min(160, $_.Length)) })
+        Add-Check -Name 'liveness event carries role metadata' `
+            -Passed $hasRole
+        Add-Check -Name 'liveness event carries agent uuid metadata' `
+            -Passed $hasUuid
         Add-Check -Name 'liveness/active was emitted' `
             -Passed $hasActive
     }

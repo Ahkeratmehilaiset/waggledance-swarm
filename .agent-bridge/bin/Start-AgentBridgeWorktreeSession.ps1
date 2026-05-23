@@ -27,6 +27,9 @@ param(
     [string] $Branch = '',
     [string] $RuntimeRoot = 'C:\Python\project2-master\.agent-bridge',
     [string] $RunId = '',
+    [string] $Role = '',
+    [string] $AgentUuid = '',
+    [string[]] $Capabilities = @(),
 
     [switch] $Fetch,
     [switch] $SkipBridgeRead,
@@ -100,6 +103,15 @@ $sessionArgs = @{
 if ($RunId) {
     $sessionArgs.RunId = $RunId
 }
+if ($Role) {
+    $sessionArgs.Role = $Role
+}
+if ($AgentUuid) {
+    $sessionArgs.AgentUuid = $AgentUuid
+}
+if (@($Capabilities).Count -gt 0) {
+    $sessionArgs.Capabilities = @($Capabilities)
+}
 if ($SkipBridgeRead) {
     $sessionArgs.SkipBridgeRead = $true
 }
@@ -127,6 +139,9 @@ $session = . $startSession @sessionArgs
     created = [bool]$worktree.created
     runtime_root = $runtimeFull
     run_id = [string]$session.run_id
+    role = [string]$session.role
+    agent_uuid = [string]$session.agent_uuid
+    capabilities = @($session.capabilities)
     dedicated_worktree = [bool]$session.dedicated_worktree
     git_branch = [string]$session.git_branch
     wake_job_id = [string]$session.wake_job_id

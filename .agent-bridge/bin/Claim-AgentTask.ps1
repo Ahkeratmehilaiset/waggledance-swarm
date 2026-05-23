@@ -7,6 +7,10 @@ param(
     [ValidateSet('read-only','write')] [string] $Mode = 'read-only',
     [string[]] $WriteScope = @(),
     [string] $RunId = '',
+    [string] $Role = '',
+    [string] $AgentUuid = '',
+    [string[]] $Capabilities = @(),
+    [int] $LeaseSeconds = 0,
     [switch] $Force
 )
 
@@ -120,8 +124,42 @@ foreach ($file in $activeClaims) {
 if (-not $RunId) {
     $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
 }
+if (-not $Role -and $env:AGENT_BRIDGE_ROLE) {
+    $Role = [string]$env:AGENT_BRIDGE_ROLE
+}
+if (-not $AgentUuid -and $env:AGENT_BRIDGE_AGENT_UUID) {
+    $AgentUuid = [string]$env:AGENT_BRIDGE_AGENT_UUID
+}
+if (@($Capabilities).Count -eq 0 -and $env:AGENT_BRIDGE_CAPABILITIES) {
+    $Capabilities = @([string]$env:AGENT_BRIDGE_CAPABILITIES)
+}
+$Capabilities = @(
+    @($Capabilities) |
+        ForEach-Object { [string]$_ -split '[,;]' } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+if ($Role -and $Role -notmatch '^[a-z][a-z0-9_-]{1,32}$') {
+    throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
+}
+if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    throw "agent_uuid must be a UUID"
+}
+foreach ($capability in @($Capabilities)) {
+    if ($capability -notmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+        throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
+    }
+}
+if ($LeaseSeconds -le 0 -and $env:AGENT_BRIDGE_STALE_LEASE_SECONDS) {
+    $parsedLease = 0
+    if ([int]::TryParse([string]$env:AGENT_BRIDGE_STALE_LEASE_SECONDS, [ref]$parsedLease) -and $parsedLease -gt 0) {
+        $LeaseSeconds = $parsedLease
+    }
+}
+if ($LeaseSeconds -le 0) { $LeaseSeconds = 300 }
 
 $nowUtc = (Get-Date).ToUniversalTime().ToString('o')
+$leaseExpiresUtc = ([DateTime]::Parse($nowUtc).ToUniversalTime()).AddSeconds($LeaseSeconds).ToString('o')
 $claim = [ordered]@{
     claimed_at_utc      = $nowUtc
     # R15: stale-claim-lease. last_heartbeat_utc is bumped by
@@ -137,10 +175,15 @@ $claim = [ordered]@{
     mode                = $Mode
     write_scope         = @($WriteScope)
     run_id              = $RunId
+    lease_seconds       = $LeaseSeconds
+    claim_lease_expires_utc = $leaseExpiresUtc
     pid                 = $PID
     cwd                 = (Get-Location).Path
     git_branch          = Get-CurrentGitBranch
 }
+if ($Role) { $claim['role'] = $Role }
+if ($AgentUuid) { $claim['agent_uuid'] = $AgentUuid }
+if (@($Capabilities).Count -gt 0) { $claim['capabilities'] = @($Capabilities) }
 $json = ($claim | ConvertTo-Json -Depth 8)
 
 $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -183,5 +226,15 @@ try {
     }
 }
 
-& (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') -Agent $Agent -Type claim -TaskId $TaskId -Status active -Message $Summary -WriteScope $WriteScope -RunId $RunId | Out-Null
+& (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `
+    -Agent $Agent `
+    -Type claim `
+    -TaskId $TaskId `
+    -Status active `
+    -Message $Summary `
+    -WriteScope $WriteScope `
+    -RunId $RunId `
+    -Role $Role `
+    -AgentUuid $AgentUuid `
+    -Capabilities $Capabilities | Out-Null
 [pscustomobject]$claim

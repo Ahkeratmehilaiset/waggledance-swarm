@@ -48,7 +48,10 @@ param(
     [string] $TaskId = '',
     [string] $To = '',
     [string] $Severity = '',
-    [string[]] $Paths = @()
+    [string[]] $Paths = @(),
+    [string] $Role = '',
+    [string] $AgentUuid = '',
+    [string[]] $Capabilities = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -102,7 +105,10 @@ if (-not $TaskId) {
     -To $To `
     -Message $Message `
     -TaskId $TaskId `
-    -Paths $Paths
+    -Paths $Paths `
+    -Role $Role `
+    -AgentUuid $AgentUuid `
+    -Capabilities $Capabilities
 
 # R15: bump last_heartbeat_utc on this agent's active claims so
 # Invoke-StaleClaimSweep.ps1 doesn't auto-release them. Only
@@ -134,6 +140,14 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
             } else {
                 $obj | Add-Member -NotePropertyName last_heartbeat_utc `
                     -NotePropertyValue $heartbeatTs -Force
+            }
+            if ($obj.PSObject.Properties['lease_seconds']) {
+                $leaseSeconds = 0
+                if ([int]::TryParse([string]$obj.lease_seconds, [ref]$leaseSeconds) -and $leaseSeconds -gt 0) {
+                    $expires = (Get-Date).ToUniversalTime().AddSeconds($leaseSeconds).ToString('o')
+                    $obj | Add-Member -NotePropertyName claim_lease_expires_utc `
+                        -NotePropertyValue $expires -Force
+                }
             }
             try {
                 $json = ($obj | ConvertTo-Json -Depth 8)

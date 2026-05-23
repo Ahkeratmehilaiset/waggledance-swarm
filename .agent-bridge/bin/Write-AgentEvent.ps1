@@ -11,6 +11,10 @@ param(
     [string[]] $WriteScope = @(),
     [string] $Severity = '',
     [string] $RunId = '',
+    [string] $Role = '',
+    [string] $AgentUuid = '',
+    [string] $SessionId = '',
+    [string[]] $Capabilities = @(),
     [string] $PayloadJson = '{}'
 )
 
@@ -45,7 +49,63 @@ Assert-NoPrivateMarker -Label 'to' -Value $To
 Assert-NoPrivateMarker -Label 'paths' -Value $Paths
 Assert-NoPrivateMarker -Label 'write_scope' -Value $WriteScope
 Assert-NoPrivateMarker -Label 'run_id' -Value $RunId
+Assert-NoPrivateMarker -Label 'role' -Value $Role
+Assert-NoPrivateMarker -Label 'agent_uuid' -Value $AgentUuid
+Assert-NoPrivateMarker -Label 'session_id' -Value $SessionId
+Assert-NoPrivateMarker -Label 'capabilities' -Value $Capabilities
 Assert-NoPrivateMarker -Label 'payload' -Value $PayloadJson
+
+function Resolve-BridgeMetadataString {
+    param([string] $Explicit, [string] $EnvName)
+    if ($Explicit) { return $Explicit }
+    $value = [Environment]::GetEnvironmentVariable($EnvName, 'Process')
+    if ($value) { return [string]$value }
+    return ''
+}
+
+function Resolve-BridgeCapabilities {
+    param([string[]] $Explicit)
+    $source = @($Explicit)
+    if ($source.Count -eq 0) {
+        $value = [Environment]::GetEnvironmentVariable('AGENT_BRIDGE_CAPABILITIES', 'Process')
+        if ($value) { $source = @([string]$value) }
+    }
+    return @(
+        $source |
+            ForEach-Object { [string]$_ -split '[,;]' } |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
+}
+
+$Role = Resolve-BridgeMetadataString -Explicit $Role -EnvName 'AGENT_BRIDGE_ROLE'
+$AgentUuid = Resolve-BridgeMetadataString -Explicit $AgentUuid -EnvName 'AGENT_BRIDGE_AGENT_UUID'
+$SessionId = Resolve-BridgeMetadataString -Explicit $SessionId -EnvName 'AGENT_BRIDGE_SESSION_ID'
+$Capabilities = @(Resolve-BridgeCapabilities -Explicit $Capabilities)
+
+if (-not $SessionId -and $RunId) {
+    $SessionId = $RunId
+}
+
+Assert-NoPrivateMarker -Label 'role' -Value $Role
+Assert-NoPrivateMarker -Label 'agent_uuid' -Value $AgentUuid
+Assert-NoPrivateMarker -Label 'session_id' -Value $SessionId
+Assert-NoPrivateMarker -Label 'capabilities' -Value $Capabilities
+
+if ($Role -and $Role -notmatch '^[a-z][a-z0-9_-]{1,32}$') {
+    throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
+}
+if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    throw "agent_uuid must be a UUID"
+}
+if ($SessionId -and $SessionId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw "session_id must match ^[A-Za-z0-9._:-]{1,128}$"
+}
+foreach ($capability in @($Capabilities)) {
+    if ($capability -notmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+        throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
+    }
+}
 
 $taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
 $ackStatuses = @('acknowledged', 'received', 'seen')
@@ -110,6 +170,10 @@ $event = [ordered]@{
     cwd         = (Get-Location).Path
     payload     = $payload
 }
+if ($Role) { $event['role'] = $Role }
+if ($AgentUuid) { $event['agent_uuid'] = $AgentUuid }
+if ($SessionId) { $event['session_id'] = $SessionId }
+if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 
 $line = (($event | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine)
 

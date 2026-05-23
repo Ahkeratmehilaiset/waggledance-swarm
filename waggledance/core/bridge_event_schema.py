@@ -24,6 +24,12 @@ from pydantic import ValidationError, field_validator, model_validator
 
 BRIDGE_EVENT_SCHEMA_VERSION = "agent-bridge-event.v1"
 AGENT_ID_PATTERN = r"^[a-z][a-z0-9_-]{1,32}$"
+AGENT_UUID_PATTERN = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+SESSION_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
+CAPABILITY_PATTERN = r"^[a-z][a-z0-9_.:-]{1,64}$"
 LEGACY_AGENTS = frozenset({"codex", "claude", "operator", "system"})
 KNOWN_AGENTS = LEGACY_AGENTS
 KNOWN_EVENT_TYPES = frozenset({
@@ -62,6 +68,10 @@ class BridgeEvent(BaseModel):
     paths: list[StrictStr] = Field(default_factory=list)
     write_scope: list[StrictStr] = Field(default_factory=list)
     run_id: StrictStr = ""
+    role: StrictStr = ""
+    agent_uuid: StrictStr = ""
+    session_id: StrictStr = ""
+    capabilities: list[StrictStr] = Field(default_factory=list)
     pid: StrictInt
     cwd: StrictStr
     payload: Any = Field(default_factory=dict)
@@ -111,6 +121,35 @@ class BridgeEvent(BaseModel):
         invalid = sorted(target for target in set(targets) if not _is_valid_agent_id(target))
         if invalid:
             raise ValueError(f"to contains invalid bridge agent id: {invalid[0]}")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def _role_must_be_valid_id_or_empty(cls, value: str) -> str:
+        if value and not _is_valid_agent_id(value):
+            raise ValueError("role must match bridge agent id pattern")
+        return value
+
+    @field_validator("agent_uuid")
+    @classmethod
+    def _agent_uuid_must_be_uuid_or_empty(cls, value: str) -> str:
+        if value and not re.fullmatch(AGENT_UUID_PATTERN, value):
+            raise ValueError("agent_uuid must be a UUID")
+        return value
+
+    @field_validator("session_id")
+    @classmethod
+    def _session_id_must_be_safe_or_empty(cls, value: str) -> str:
+        if value and not re.fullmatch(SESSION_ID_PATTERN, value):
+            raise ValueError("session_id must match bridge session id pattern")
+        return value
+
+    @field_validator("capabilities")
+    @classmethod
+    def _capabilities_must_be_safe(cls, value: list[str]) -> list[str]:
+        for capability in value:
+            if not re.fullmatch(CAPABILITY_PATTERN, capability):
+                raise ValueError("capabilities must match bridge capability pattern")
         return value
 
     @model_validator(mode="after")

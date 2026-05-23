@@ -141,6 +141,15 @@ if ($ShowClaims) {
                 try {
                     $obj = Get-Content -Raw -Path $c.FullName -Encoding UTF8 | ConvertFrom-Json
                     Write-Host ("  {0} [{1}] by {2}: {3}" -f $obj.task_id, $obj.mode, $obj.agent, $obj.summary)
+                    if ($obj.PSObject.Properties['role'] -and [string]$obj.role) {
+                        Write-Host ("    role: {0}" -f [string]$obj.role)
+                    }
+                    if ($obj.PSObject.Properties['agent_uuid'] -and [string]$obj.agent_uuid) {
+                        Write-Host ("    agent_uuid: {0}" -f [string]$obj.agent_uuid)
+                    }
+                    if ($obj.PSObject.Properties['claim_lease_expires_utc'] -and [string]$obj.claim_lease_expires_utc) {
+                        Write-Host ("    lease_expires: {0}" -f [string]$obj.claim_lease_expires_utc)
+                    }
                     if ($obj.write_scope -and @($obj.write_scope).Count -gt 0) {
                         Write-Host ("    scope: {0}" -f ((@($obj.write_scope)) -join ', '))
                     }
@@ -556,9 +565,17 @@ foreach ($e in $events) {
     if ($e.PSObject.Properties['write_scope'] -and @($e.write_scope).Count -gt 0) {
         $scope = ' scope=' + ((@($e.write_scope)) -join ',')
     }
+    $role = ''
+    if ($e.PSObject.Properties['role'] -and [string]$e.role) {
+        $role = ' role=' + [string]$e.role
+    }
+    $uuid = ''
+    if ($e.PSObject.Properties['agent_uuid'] -and [string]$e.agent_uuid) {
+        $uuid = ' uuid=' + [string]$e.agent_uuid
+    }
     $target = ''
     if ($e.PSObject.Properties['to'] -and [string]$e.to) {
         $target = ' -> ' + [string]$e.to
     }
-    Write-Host ("{0} [{1}{2}] {3}/{4}: {5}{6}" -f $e.ts_utc, $e.agent, $target, $e.type, $e.status, $e.message, $scope)
+    Write-Host ("{0} [{1}{2}] {3}/{4}: {5}{6}{7}{8}" -f $e.ts_utc, $e.agent, $target, $e.type, $e.status, $e.message, $scope, $role, $uuid)
 }

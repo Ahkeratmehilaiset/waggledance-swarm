@@ -16,6 +16,8 @@ It prints:
     - Bridge-consensus-sealed competitor-axis pilot reference
     - A4 SolverProvenance lifecycle receipt proof, separated from the
       synthetic A4 axis proof
+    - A4 autogrowth scheduler lifecycle receipt proof, separated from the
+      SolverProvenance lifecycle proof
     - Today's merged-PR count from `git log` (substrate velocity)
 
 Independently verifiable: each row cites the underlying tool that produced
@@ -55,6 +57,9 @@ A3_COUNTERFACTUAL_PROOF = ROOT / "tools" / "run_v12_a3_counterfactual_axis_proof
 A4_SOLVER_GROWTH_PROOF = ROOT / "tools" / "run_v12_a4_solver_growth_axis_proof.py"
 A4_SOLVER_LIFECYCLE_PROOF = (
     ROOT / "tools" / "run_solver_provenance_receipt_emission_proof.py"
+)
+A4_AUTOGROWTH_LIFECYCLE_PROOF = (
+    ROOT / "tools" / "run_autogrowth_promotion_receipt_emission_proof.py"
 )
 GOVERNANCE_REPORT = ROOT / "tools" / "governance_throughput_report.py"
 RIVAL_LOCAL_CHECK_MATRIX = ROOT / "tools" / "run_v12_rival_local_check_matrix.py"
@@ -126,6 +131,9 @@ def collect_proof(
     a3_report = _run_proof_tool_with_receipt(A3_COUNTERFACTUAL_PROOF)
     a4_report = _run_proof_tool_with_receipt(A4_SOLVER_GROWTH_PROOF)
     a4_lifecycle_report = _run_proof_tool_with_receipt(A4_SOLVER_LIFECYCLE_PROOF)
+    a4_autogrowth_report = _run_proof_tool_with_receipt(
+        A4_AUTOGROWTH_LIFECYCLE_PROOF
+    )
     governance_args = ["--json"]
     if governance_events is not None:
         governance_args.extend(["--events", str(governance_events)])
@@ -155,6 +163,7 @@ def collect_proof(
         and a3_report.get("ok") is True
         and a4_report.get("ok") is True
         and a4_lifecycle_report.get("ok") is True
+        and a4_autogrowth_report.get("ok") is True
         and high_gap == 0
     )
 
@@ -196,6 +205,9 @@ def collect_proof(
         "a4_solver_growth_axis": _summarize_a4_solver_growth_axis(a4_report),
         "a4_solver_lifecycle": _summarize_a4_solver_lifecycle(
             a4_lifecycle_report
+        ),
+        "a4_autogrowth_lifecycle": _summarize_a4_autogrowth_lifecycle(
+            a4_autogrowth_report
         ),
         "governance_throughput": _summarize_governance_throughput(governance),
         "competitor_pilot": pilot,
@@ -348,6 +360,35 @@ def format_proof(report: dict[str, Any]) -> str:
         lines.append("")
         lines.append("A4 SOLVER LIFECYCLE RECEIPTS     : tool unavailable")
 
+    autogrowth = report["a4_autogrowth_lifecycle"]
+    if autogrowth["available"]:
+        lines.append("")
+        lines.append(
+            "A4 AUTOGROWTH LIFECYCLE RECEIPTS  "
+            "(tools/run_autogrowth_promotion_receipt_emission_proof.py)"
+        )
+        marker = "OK " if autogrowth["ok"] else "** "
+        lines.append(
+            f"  {marker}scheduler-path receipts    : {autogrowth['ok']}"
+        )
+        lines.append(f"     evidence scope                 : {autogrowth['evidence_scope']}")
+        lines.append(f"     claim label                    : {autogrowth['claim_label']}")
+        lines.append(f"     runtime path                   : {autogrowth['runtime_path']}")
+        lines.append(
+            "     transitions                    : "
+            + " -> ".join(autogrowth["transitions"])
+        )
+        lines.append(f"     receipt count                  : {autogrowth['receipt_count']}")
+        lines.append(
+            f"     receipt chain verified         : {autogrowth['receipt_chain_verified']}"
+        )
+        lines.append(
+            f"     sink=None preserved            : {autogrowth['sink_none_preserved']}"
+        )
+    else:
+        lines.append("")
+        lines.append("A4 AUTOGROWTH LIFECYCLE RECEIPTS : tool unavailable")
+
     gov = report["governance_throughput"]
     lines.append("")
     if gov["available"]:
@@ -416,6 +457,10 @@ def format_proof(report: dict[str, Any]) -> str:
     lines.append("  python tools/run_v12_a4_solver_growth_axis_proof.py --json")
     lines.append(
         "  python tools/run_solver_provenance_receipt_emission_proof.py "
+        "--out-dir <new-output-dir> --json"
+    )
+    lines.append(
+        "  python tools/run_autogrowth_promotion_receipt_emission_proof.py "
         "--out-dir <new-output-dir> --json"
     )
     lines.append("  python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>")
@@ -532,6 +577,46 @@ def _summarize_a4_solver_lifecycle(report: dict[str, Any]) -> dict[str, Any]:
         "evidence_scope": (
             "real opt-in SolverProvenance sign/activate/revoke path; "
             "not production auto-promotion authority"
+        ),
+    }
+
+
+def _summarize_a4_autogrowth_lifecycle(report: dict[str, Any]) -> dict[str, Any]:
+    if report.get("ok") is None:
+        return {
+            "available": False,
+            "ok": False,
+            "claim_label": "unknown",
+            "runtime_path": "unknown",
+            "transitions": [],
+            "receipt_count": 0,
+            "receipt_chain_verified": False,
+            "risk_class": "unknown",
+            "operator_gate_required": "unknown",
+            "external_writes_applied": "unknown",
+            "receipt_emission_mode": "unknown",
+            "default_sink_required": "unknown",
+            "sink_none_preserved": False,
+            "evidence_scope": "unavailable",
+        }
+    transitions = report.get("transitions") or []
+    return {
+        "available": True,
+        "ok": report.get("ok") is True,
+        "claim_label": report.get("claim_label", "unknown"),
+        "runtime_path": report.get("runtime_path", "unknown"),
+        "transitions": list(transitions) if isinstance(transitions, list) else [],
+        "receipt_count": int(report.get("receipt_count") or 0),
+        "receipt_chain_verified": report.get("verifier_ok") is True,
+        "risk_class": report.get("risk_class", "unknown"),
+        "operator_gate_required": report.get("operator_gate_required"),
+        "external_writes_applied": report.get("external_writes_applied"),
+        "receipt_emission_mode": report.get("receipt_emission_mode", "unknown"),
+        "default_sink_required": report.get("default_sink_required"),
+        "sink_none_preserved": report.get("sink_none_preserved") is True,
+        "evidence_scope": (
+            "real opt-in AutogrowthScheduler queue->grower->engine path; "
+            "proof fixture only; not long-running production auto-promotion authority"
         ),
     }
 

@@ -182,7 +182,14 @@ class SolverProvenance:
     If configured, authority transitions build and emit a payload-free
     RCO/EvaluationResult/receipt bundle before durable state changes.
     Hook failure propagates so the transition fails closed.
+
+    Successive emissions are chained via prev_receipt_hash so the sink
+    receives a verifiable receipt chain (single-genesis per provenance
+    instance). The chain head is reset when emit_receipt_bundle is None.
     """
+
+    _last_emitted_receipt: Optional[dict] = field(default=None, repr=False)
+    """Internal chain head for emit_receipt_bundle linkage. Not a config."""
 
     # --- gate config ---------------------------------------------------------
 
@@ -682,7 +689,9 @@ class SolverProvenance:
             revoked_by=revoked_by,
             reason=reason,
             new_state=new_state,
+            previous_receipt=self._last_emitted_receipt,
         )
+        self._last_emitted_receipt = bundle["receipt"]
         self.emit_receipt_bundle(bundle)
 
     def _auto_quarantine(self, candidate: SolverCandidateRecord) -> None:
@@ -926,6 +935,7 @@ def build_solver_provenance_transition_receipt(
         "solver_provenance_transition_artifact": artifact,
         "evaluation_result": evaluation,
         "receipt": receipt,
+        "payload": payload,
     }
 
 

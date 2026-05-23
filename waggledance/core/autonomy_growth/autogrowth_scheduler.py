@@ -33,7 +33,7 @@ import socket
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from waggledance.core.storage.control_plane import (
     AutogrowthQueueRecord,
@@ -100,13 +100,15 @@ class AutogrowthScheduler:
         control_plane: ControlPlaneDB,
         *,
         grower: Optional[LowRiskGrower] = None,
+        emit_receipt_bundle: Optional[Callable[[dict[str, Any]], None]] = None,
         scheduler_id: Optional[str] = None,
         failure_backoff_seconds: float = 60.0,
         max_attempts_before_park: int = 3,
     ) -> None:
         self._cp = control_plane
         self._grower = grower if grower is not None else LowRiskGrower(
-            control_plane
+            control_plane,
+            emit_receipt_bundle=emit_receipt_bundle,
         )
         self._scheduler_id = (
             scheduler_id

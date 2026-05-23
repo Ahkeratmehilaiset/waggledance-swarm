@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Phase D PR1 expansion fixture: schema + structure tests.
+"""Phase D expansion provenance fixture: schema + fold-in tests.
 
-The expansion lives in a separate fixture pair
+The expansion originally lived in a separate fixture pair
 (``tests/fixtures/magma_adversarial_corpus/v0_expansion_2026_05_23.json``
-plus its expectations) so the strict ``v0`` corpus accuracy assertion in
-``test_magma_adversarial_eval.py`` keeps protecting against regression on
-the original strict v0 floor. The expansion is evaluated separately; adding it
-to ``v0`` directly would also require deliberately refreshing downstream
-baseline/proof artifacts in a later fold-in PR.
+plus its expectations) while the strict ``v0`` baseline/proof artifacts were
+refreshed deliberately. It is now retained as provenance only: every expansion
+case and paired expectation must also exist in the strict ``v0`` fixture pair,
+and the strict ``v0`` adversarial eval is the authoritative gate.
 
-These tests validate the expansion fixture itself -- schema, case-id
-discipline, family coverage, paired expectations -- while the separate
-adversarial-eval test proves the deterministic gate now catches the new
-attack vectors.
+These tests validate the historical expansion fixture itself -- schema,
+case-id discipline, family coverage, paired expectations -- and prove the
+fold-in has not drifted from the strict corpus.
 """
 from __future__ import annotations
 
@@ -59,15 +57,13 @@ def test_expansion_fixture_exists():
     assert EXPANSION_EXPECTATIONS.exists()
 
 
-def test_expansion_carries_label_and_covered_status():
+def test_expansion_carries_label_and_folded_status():
     fixture = _read_json(EXPANSION)
     assert fixture["corpus_version"] == "magma.synthetic_adversarial_corpus.v0"
     assert fixture["expansion_label"] == "phase_d_expansion_2026_05_23"
-    assert fixture["expansion_status"] == "gate_extension_covered"
-    # The note must explicitly identify itself as a separate partial-coverage
-    # target kept out of the strict v0 floor until an intentional fold-in PR.
-    assert "separate partial-coverage target" in fixture["expansion_note"]
-    assert "strict v0 corpus remains" in fixture["expansion_note"]
+    assert fixture["expansion_status"] == "folded_into_v0"
+    assert "historical expansion fixture" in fixture["expansion_note"]
+    assert "folded into the strict v0 corpus" in fixture["expansion_note"]
 
 
 def test_expectations_carry_label():
@@ -106,19 +102,17 @@ def test_expansion_case_count_is_eight():
     assert len(fixture["cases"]) == 8
 
 
-def test_expansion_case_ids_unique_and_disjoint_from_v0():
-    """No case_id collides with the strict v0 corpus."""
+def test_expansion_case_ids_unique_and_folded_into_v0():
+    """Every historical expansion case_id is now present in strict v0."""
     v0 = _read_json(
         ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
     )
     fixture = _read_json(EXPANSION)
     v0_ids = {c["case_id"] for c in v0["cases"]}
     expansion_ids = [c["case_id"] for c in fixture["cases"]]
-    # uniqueness within the expansion
     assert len(expansion_ids) == len(set(expansion_ids)), expansion_ids
-    # disjointness from v0
-    overlap = set(expansion_ids) & v0_ids
-    assert overlap == set(), overlap
+    missing = sorted(set(expansion_ids) - v0_ids)
+    assert missing == []
 
 
 def test_expansion_covers_all_four_phase_d_families():
@@ -164,9 +158,18 @@ def test_expansion_uses_only_enum_trap_markers():
 def test_every_expansion_case_has_a_paired_expectation():
     fixture = _read_json(EXPANSION)
     expectations = _read_json(EXPANSION_EXPECTATIONS)
+    v0_expectations = _read_json(
+        ROOT
+        / "tests"
+        / "fixtures"
+        / "magma_adversarial_corpus"
+        / "v0_expectations.json"
+    )
     case_ids = {c["case_id"] for c in fixture["cases"]}
     expectation_ids = {e["case_id"] for e in expectations["expectations"]}
+    v0_expectation_ids = {e["case_id"] for e in v0_expectations["expectations"]}
     assert case_ids == expectation_ids, case_ids ^ expectation_ids
+    assert sorted(expectation_ids - v0_expectation_ids) == []
 
 
 def test_expectations_include_false_positive_allow_case():

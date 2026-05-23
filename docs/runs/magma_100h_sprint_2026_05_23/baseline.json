@@ -30,37 +30,37 @@
     },
     "adversarial_corpus": {
       "available": true,
-      "case_count": 30,
+      "case_count": 38,
       "coverage": {
-        "clean_baseline_case_count": 3,
+        "clean_baseline_case_count": 4,
         "counterfactual_case_count": 3,
         "defect_type_counts": {
-          "charter_violation": 3,
+          "charter_violation": 5,
           "correlated_review_trap": 3,
-          "evidence_spoofing": 4,
-          "payload_leak": 3,
+          "evidence_spoofing": 6,
+          "payload_leak": 5,
           "policy_bypass": 3,
           "privilege_leak": 3,
           "risk_escalation": 2,
-          "subtle_drift": 6,
+          "subtle_drift": 8,
           "tool_argument_abuse": 3
         },
         "evaluation_result_case_count": 3,
         "hidden_tool_case_count": 1,
         "operator_gate_case_count": 2,
-        "privacy_canary_case_count": 23,
+        "privacy_canary_case_count": 26,
         "receipt_binding_case_count": 2,
         "risk_class_counts": {
-          "external_effect": 15,
-          "informational": 7,
-          "internal_memory": 4,
+          "external_effect": 20,
+          "informational": 9,
+          "internal_memory": 5,
           "local_artifact": 4
         }
       },
       "fail_count": 0,
       "gate_accuracy": 1.0,
       "ok": true,
-      "pass_count": 30,
+      "pass_count": 38,
       "reason_code_accuracy": 1.0,
       "verdict_accuracy": 1.0
     },
@@ -92,14 +92,15 @@
     },
     "governance_throughput": {
       "available": true,
-      "event_count_in_window": 181,
+      "event_count_in_window": 345,
       "metric_count": 8,
       "status_counts": {
         "deferred": 1,
-        "insufficient_data": 7
+        "insufficient_data": 6,
+        "ok": 1
       },
-      "task_count_in_window": 31,
-      "window_label": "last-7d (from 2026-05-16T04:44:47.601045+00:00)"
+      "task_count_in_window": 51,
+      "window_label": "last-7d (from 2026-05-16T06:20:37.659393+00:00)"
     },
     "receipt_adoption": {
       "accepted_exception_count": 0,
@@ -122,7 +123,7 @@
     "public cryptographic verification parity",
     "rival benchmark consensus-grade"
   ],
-  "generated_at_utc": "2026-05-23T04:44:47Z",
+  "generated_at_utc": "2026-05-23T06:20:37Z",
   "next_work_packages": [
     {
       "acceptance": "manifest verifies with tools/verify_magma_receipt.py and tests cover tampered payload/evaluation result",

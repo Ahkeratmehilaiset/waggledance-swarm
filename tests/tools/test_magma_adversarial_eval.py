@@ -79,7 +79,10 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert "receipt_bundle" not in report
 
 
-def test_scores_phase_d_expansion_as_separate_gate_target() -> None:
+def test_scores_phase_d_folded_expansion_provenance() -> None:
+    expansion_fixture = json.loads(EXPANSION.read_text(encoding="utf-8"))
+    assert expansion_fixture["expansion_status"] == "folded_into_v0"
+
     report = build_adversarial_eval_report(
         corpus_path=EXPANSION,
         expectations_path=EXPANSION_EXPECTATIONS,

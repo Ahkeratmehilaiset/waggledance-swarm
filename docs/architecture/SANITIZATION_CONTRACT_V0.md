@@ -74,10 +74,10 @@ Plus one smoke clause:
 - `docs/architecture/EVALUATION_RESULT_V1_DRAFT.md` — the EvaluationResult
   v1 RFC that introduces `sanitization_audit` as a first-class
   receipt-bound record of which clauses ran.
-- `tests/fixtures/magma_adversarial_corpus/v0_expansion_2026_05_23.json`
-  cases `payload_leak:003` (multi-locale PII) and `payload_leak:004`
-  (RFC 2606 example-domain false-positive) — adversarial coverage of
-  the contract.
+- `tests/fixtures/magma_adversarial_corpus/v0.json` cases
+  `payload_leak:003` (multi-locale PII) and `payload_leak:004` (RFC
+  2606 example-domain false-positive) — adversarial coverage of the
+  contract, folded in from the Phase D expansion provenance fixture.
 - Operator decision 4 (2026-05-10) — original PII redaction policy.
 - R20 master prompt §2.6 — placeholder naming.
 - R22.0 finding F1 — URL pre-mask requirement.

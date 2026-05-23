@@ -89,7 +89,13 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     rival_matrix = json.loads((out_dir / "rival_local_check_matrix.json").read_text(encoding="utf-8"))
     assert rival_matrix["consensus_grade"] is False
     assert rival_matrix["rival_local_checks_status"] == "0/4 rival local checks passed"
-    assert {row["local_status"] for row in rival_matrix["checks"]} == {"not_passed"}
+    # Per Sprint 2 rival-axis hardening: JamJet + Preloop hard-block at
+    # not_configured/no_local_installable_surface_yet regardless of any
+    # template manifest, while AGT/Asqav templates surface as not_passed.
+    assert {row["local_status"] for row in rival_matrix["checks"]} == {
+        "not_passed",
+        "not_configured",
+    }
     assert rival_matrix["template_init"]["created_count"] == 4
     assert rival_matrix["template_init"]["safe_defaults"]["smoke_result"] == "not_run"
     template_init = json.loads((out_dir / "rival_evidence_template_init.json").read_text(encoding="utf-8"))

@@ -56,6 +56,19 @@ REQUIRED_OBSERVATIONS_BY_RIVAL = {
     "Microsoft AGT": ("policy_deny_smoke", "fail_closed_error_path_smoke"),
     "Preloop": ("mcp_allow_deny_approval_smoke",),
 }
+# Per-rival public-doc-claim surface assessment (sourced from
+# docs/benchmarks/2026_05_20_competitor_axis_pilot.md). Drives the
+# specific blocker reported in the matrix when no honest local-installable
+# surface exists for a rival. This is a HARD invariant against overclaim:
+# a rival flagged "no_local_installable_surface_yet" cannot be promoted
+# to passing even if a synthetic manifest is supplied later -- the
+# registry must be updated first with proof of an installable surface.
+PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL = {
+    "JamJet": "no_local_installable_surface_yet",
+    "Preloop": "no_local_installable_surface_yet",
+    "Microsoft AGT": "open_source_installable",
+    "Asqav": "pypi_installable_cloud_dependent_headline",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -351,6 +364,21 @@ def _build_check_row(
         "evidence_manifest": str(manifest_path) if manifest_path else None,
         "consensus_grade_contribution": False,
     }
+    # Anti-overclaim early exit (hard invariant per Codex RCO on #607):
+    # rivals whose public-doc-claim surface has no local-installable
+    # component cannot be promoted past not_configured regardless of
+    # any manifest someone might supply. Even a synthetic manifest
+    # with cloud_dependency=false and a "passing" smoke_result MUST
+    # NOT contribute to consensus_grade. Updating
+    # PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL is the only legitimate channel
+    # to unblock these rivals -- it forces the operator/agent to first
+    # prove the installable surface exists.
+    if PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL.get(rival) == "no_local_installable_surface_yet":
+        return {
+            **base,
+            "local_status": "not_configured",
+            "blocker": "no_local_installable_surface_yet",
+        }
     if manifest_path is None:
         return {
             **base,

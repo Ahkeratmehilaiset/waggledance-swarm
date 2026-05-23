@@ -471,6 +471,12 @@ def _build_check_row(
             **base,
             "local_status": "not_passed",
             "blocker": "smoke_result is not passed",
+            "blocked_artifact_reason": "smoke_result",
+            "consensus_grade_contribution": False,
+            "artifact_proof": _lightweight_artifact_proof(
+                evidence_root=evidence_root,
+                manifest=manifest,
+            ),
         }
     artifact_result = _validate_local_artifact(
         evidence_root=evidence_root,

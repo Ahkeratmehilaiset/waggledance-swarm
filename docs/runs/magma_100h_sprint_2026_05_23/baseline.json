@@ -1,0 +1,138 @@
+{
+  "blockers": [],
+  "claude_activation_contract": {
+    "heartbeat_only_timeout_minutes": 5,
+    "must_emit_substantive_event_per_phase": true,
+    "rco_timeout_minutes_after_ci_green": 10,
+    "required_roles": [
+      "independent_audit",
+      "adversarial_review",
+      "rco_before_merge",
+      "competitor_counter_read",
+      "phase_synthesis"
+    ]
+  },
+  "current_state": {
+    "a3_counterfactual_axis": {
+      "available": true,
+      "claim_label": "MEASURED_LOCAL_PARTIAL",
+      "counterfactual_delta_proven": true,
+      "receipt_chain_verified": true
+    },
+    "a4_solver_growth_axis": {
+      "available": true,
+      "claim_label": "MEASURED_LOCAL_SYNTHETIC",
+      "receipt_chain_verified": true,
+      "solver_growth_proven": true
+    },
+    "adversarial_corpus": {
+      "available": true,
+      "case_count": 20,
+      "fail_count": 0,
+      "gate_accuracy": 1.0,
+      "ok": true,
+      "pass_count": 20,
+      "reason_code_accuracy": 1.0,
+      "verdict_accuracy": 1.0
+    },
+    "competitor_pilot": {
+      "available": true,
+      "ceded_axes": [
+        "A6 adapter_distribution_friction",
+        "A7 public_cryptographic_verification",
+        "A8 standard_policy_language_portability"
+      ],
+      "consensus_grade": false,
+      "must_win_axes": [
+        "A3 counterfactual_evaluation_delta",
+        "A4 solver_growth_shadow_canary_live_lifecycle"
+      ],
+      "pilot_status": "scope_ready_not_consensus_grade",
+      "rival_local_checks_status": "all public_doc_claim, 0/4 rival local checks run yet",
+      "rivals": [
+        "JamJet",
+        "Asqav",
+        "Microsoft AGT",
+        "Preloop"
+      ]
+    },
+    "governance_throughput": {
+      "available": true,
+      "event_count_in_window": 0,
+      "metric_count": 8,
+      "status_counts": {
+        "deferred": 1,
+        "insufficient_data": 7
+      },
+      "task_count_in_window": 0,
+      "window_label": "last-7d (from 2026-05-16T02:31:32.384042+00:00)"
+    },
+    "receipt_adoption": {
+      "accepted_exception_count": 1,
+      "action_required_gap_count": 0,
+      "available": true,
+      "high_criticality_gap_count": 0,
+      "medium_gap_targets": [
+        {
+          "accepted_exception": "accepted_observability_path",
+          "label": "Autonomy runtime MAGMA append path",
+          "path": "waggledance/core/autonomy/runtime.py",
+          "status": "magma_event_only"
+        }
+      ],
+      "status_counts": {
+        "magma_event_only": 1,
+        "receipt_bound": 6
+      }
+    }
+  },
+  "forbidden_claims": [
+    "beats all competitors",
+    "world best AI",
+    "AGI",
+    "consciousness",
+    "production-ready fleet learning",
+    "public cryptographic verification parity",
+    "rival benchmark consensus-grade"
+  ],
+  "generated_at_utc": "2026-05-23T02:31:32Z",
+  "next_work_packages": [
+    {
+      "acceptance": "manifest verifies with tools/verify_magma_receipt.py and tests cover tampered payload/evaluation result",
+      "id": "runtime_receipt_emission_one_path",
+      "owner": "codex",
+      "peer": "claude",
+      "target": "one concrete solver/demo path emits verifiable receipt + EvaluationResult"
+    },
+    {
+      "acceptance": "diff includes gate, solver selection/verifier path or explicit unavailable guardrail, risk/verdict/reason codes",
+      "id": "counterfactual_evaluation_demo_a3",
+      "owner": "codex",
+      "peer": "claude",
+      "target": "three deterministic variants show receipt-bound EvaluationResult diffs"
+    },
+    {
+      "acceptance": "promotion proof fails closed without EvaluationResult, receipt, solver contract digest, and operator gate flag where required",
+      "id": "solver_growth_lifecycle_a4",
+      "owner": "codex",
+      "peer": "claude",
+      "target": "candidate -> shadow evaluation -> receipt-bound promotion evidence"
+    },
+    {
+      "acceptance": "A3/A4 WD evidence linked; rival local checks remain public-doc/not-run unless actually measured",
+      "id": "rival_axis_upgrade",
+      "owner": "claude",
+      "peer": "codex",
+      "target": "upgrade competitor matrix labels without claiming consensus-grade rival benchmark"
+    }
+  ],
+  "ok": true,
+  "release_boundary": {
+    "docker_latest_move": false,
+    "external_effect_authority_change": false,
+    "stable_release_claim": false,
+    "tag_creation": false
+  },
+  "schema_version": "waggledance.magma_100h_sprint_baseline.v0",
+  "sprint_id": "magma-100h-2026-05-23"
+}

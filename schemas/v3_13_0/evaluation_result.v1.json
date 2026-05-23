@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v3_13_0/evaluation_result.v1.json",
+  "title": "MAGMA EvaluationResult v1",
+  "description": "Strictly-additive superset of evaluation_result.v0. Adds confidence_basis, sanitization_audit, competitor_axis_reference, and subject_payload_size_bytes as OPTIONAL fields. All v0 required fields stay required. v1 is selected by evaluation_version=='magma.evaluation_result.v1'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evaluation_version",
+    "case_id",
+    "subject_type",
+    "target_digest",
+    "risk_class",
+    "expected_gate",
+    "actual_gate",
+    "verifier_path",
+    "solver_selection",
+    "policy_version",
+    "charter_version",
+    "domain_threshold_version",
+    "verdict",
+    "reason_codes",
+    "operator_required",
+    "confidence_score",
+    "uncertainty_sources"
+  ],
+  "properties": {
+    "evaluation_version": {
+      "const": "magma.evaluation_result.v1"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{2,180}$"
+    },
+    "subject_type": {
+      "type": "string",
+      "enum": ["solver", "policy", "counterfactual", "promotion", "peer_review"]
+    },
+    "target_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "risk_class": {
+      "$ref": "#/definitions/risk_class"
+    },
+    "expected_gate": {
+      "$ref": "#/definitions/gate_decision"
+    },
+    "actual_gate": {
+      "$ref": "#/definitions/gate_decision"
+    },
+    "verifier_path": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "solver_selection": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "policy_version": {
+      "$ref": "#/definitions/ref"
+    },
+    "charter_version": {
+      "$ref": "#/definitions/ref"
+    },
+    "domain_threshold_version": {
+      "$ref": "#/definitions/ref"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "review", "refuse", "insufficient_evidence", "abstain"]
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "$ref": "#/definitions/ref"
+      }
+    },
+    "operator_required": {
+      "type": "boolean"
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "uncertainty_sources": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["kind", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "data_sparsity",
+              "model_disagreement",
+              "domain_drift",
+              "limited_evidence",
+              "operator_override",
+              "unknown"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "confidence_basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "sample_count"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["bootstrap", "monte_carlo", "point_estimate", "heuristic"]
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "methodology_reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "sanitization_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applied", "redaction_count"],
+      "properties": {
+        "applied": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "enum": [
+              "pii_redaction",
+              "locale_normalization",
+              "max_length",
+              "reserved_domain_allowlist"
+            ]
+          }
+        },
+        "redaction_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "redaction_kinds": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{1,40}$"
+          }
+        },
+        "false_positive_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        }
+      }
+    },
+    "competitor_axis_reference": {
+      "type": ["string", "null"],
+      "enum": ["A3", "A4", "A6", "A7", "A8", null]
+    },
+    "subject_payload_size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1073741824
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "risk_class": {
+            "const": "external_effect"
+          }
+        },
+        "required": ["risk_class"]
+      },
+      "then": {
+        "properties": {
+          "operator_required": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["sanitization_audit"],
+        "properties": {
+          "sanitization_audit": {
+            "required": ["applied"],
+            "properties": {
+              "applied": {
+                "contains": {
+                  "const": "pii_redaction"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sanitization_audit": {
+            "properties": {
+              "redaction_count": {
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9:._-]{1,160}$"
+    },
+    "gate_decision": {
+      "type": "string",
+      "enum": ["allow", "refuse", "review", "require_approval"]
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": [
+        "informational",
+        "internal_memory",
+        "local_artifact",
+        "external_effect"
+      ]
+    }
+  }
+}

@@ -27,6 +27,10 @@ from waggledance.core.magma.schema_validation import redacted_schema_errors  # n
 
 
 SCHEMA_DIR = ROOT / "schemas" / "v3_13_0"
+EVALUATION_SCHEMA_BY_VERSION = {
+    "magma.evaluation_result.v0": "evaluation_result.v0.json",
+    "magma.evaluation_result.v1": "evaluation_result.v1.json",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,7 +87,6 @@ def verify_manifest(
     manifest = _read_json(manifest_path, errors, "manifest")
     entries = _entries(manifest, errors)
     receipt_validator = _validator("magma_receipt.v1.json")
-    evaluation_validator = _validator("evaluation_result.v0.json")
     policy_surface = _policy_surface_binding(policy_surface_path, errors)
     if policy_surface is not None:
         if (
@@ -118,12 +121,7 @@ def verify_manifest(
             continue
 
         _validate_schema(receipt_validator, receipt, errors, f"{label} receipt")
-        _validate_schema(
-            evaluation_validator,
-            evaluation,
-            errors,
-            f"{label} evaluation_result",
-        )
+        _validate_evaluation_result(evaluation, errors, f"{label} evaluation_result")
 
         payload_digest = sha256_digest(payload)
         if receipt.get("canonical_payload_digest") != payload_digest:
@@ -172,6 +170,20 @@ def _validator(schema_name: str) -> jsonschema.Draft7Validator:
         schema,
         format_checker=jsonschema.FormatChecker(),
     )
+
+
+def _validate_evaluation_result(
+    evaluation: dict[str, Any],
+    errors: list[str],
+    label: str,
+) -> None:
+    version = evaluation.get("evaluation_version")
+    schema_name = EVALUATION_SCHEMA_BY_VERSION.get(version)
+    if schema_name is None:
+        expected = ", ".join(sorted(EVALUATION_SCHEMA_BY_VERSION))
+        errors.append(f"{label}: unknown evaluation_version; expected one of: {expected}")
+        return
+    _validate_schema(_validator(schema_name), evaluation, errors, label)
 
 
 def _policy_surface_binding(

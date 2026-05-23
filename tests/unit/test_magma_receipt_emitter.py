@@ -7,7 +7,10 @@ import pytest
 
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.magma.canonical import sha256_digest
-from waggledance.core.magma.evaluation_result import build_evaluation_result
+from waggledance.core.magma.evaluation_result import (
+    build_evaluation_result,
+    build_evaluation_result_v1,
+)
 from waggledance.core.magma.receipt import build_magma_receipt
 
 
@@ -31,6 +34,32 @@ def evaluation_for(payload: dict, case_id: str = "case:magma:receipt-emitter:001
         verdict="pass",
         reason_codes=["fixture:receipt_emitter"],
         confidence_score=1.0,
+    )
+
+
+def evaluation_v1_for(
+    payload: dict,
+    case_id: str = "case:magma:receipt-emitter-v1:001",
+) -> dict:
+    return build_evaluation_result_v1(
+        case_id=case_id,
+        subject_type="counterfactual",
+        target_payload=payload,
+        risk_class="internal_memory",
+        expected_gate="review",
+        actual_gate="review",
+        verifier_path=["unit_test"],
+        solver_selection=["fixture_solver"],
+        policy_version="policy:fixture:v1",
+        charter_version="charter:v1",
+        domain_threshold_version="threshold:fixture:v1",
+        verdict="pass",
+        reason_codes=["fixture:receipt_emitter"],
+        confidence_score=1.0,
+        confidence_basis={
+            "method": "point_estimate",
+            "sample_count": 1,
+        },
     )
 
 
@@ -267,3 +296,70 @@ def test_emitted_chain_verifies_with_offline_verifier(tmp_path: Path) -> None:
 
     assert report["ok"] is True
     assert report["receipt_count"] == 2
+
+
+def test_emitted_v1_evaluation_chain_verifies_with_offline_verifier(tmp_path: Path) -> None:
+    payload = {"action": "v1_evaluation"}
+    evaluation = evaluation_v1_for(payload)
+    receipt = receipt_for(
+        payload,
+        evaluation,
+        event_id="magma:receipt:v1-chain:001",
+    )
+    chain_dir = tmp_path / "v1_chain"
+    chain_dir.mkdir()
+    write_json(chain_dir / "payload.json", payload)
+    write_json(chain_dir / "evaluation.json", evaluation)
+    write_json(chain_dir / "receipt.json", receipt)
+    write_json(
+        chain_dir / "manifest.json",
+        {
+            "chain_id": "magma:receipt:emitter:v1-test",
+            "entries": [
+                {
+                    "payload": "payload.json",
+                    "evaluation_result": "evaluation.json",
+                    "receipt": "receipt.json",
+                }
+            ],
+        },
+    )
+
+    report = verify_manifest(chain_dir / "manifest.json")
+
+    assert report["ok"] is True
+    assert report["receipt_count"] == 1
+
+
+def test_offline_verifier_rejects_unknown_evaluation_version(tmp_path: Path) -> None:
+    payload = {"action": "unknown_evaluation_version"}
+    evaluation = evaluation_v1_for(payload)
+    evaluation["evaluation_version"] = "magma.evaluation_result.v99"
+    receipt = receipt_for(
+        payload,
+        evaluation,
+        event_id="magma:receipt:unknown-eval-version:001",
+    )
+    chain_dir = tmp_path / "unknown_version_chain"
+    chain_dir.mkdir()
+    write_json(chain_dir / "payload.json", payload)
+    write_json(chain_dir / "evaluation.json", evaluation)
+    write_json(chain_dir / "receipt.json", receipt)
+    write_json(
+        chain_dir / "manifest.json",
+        {
+            "chain_id": "magma:receipt:emitter:unknown-version-test",
+            "entries": [
+                {
+                    "payload": "payload.json",
+                    "evaluation_result": "evaluation.json",
+                    "receipt": "receipt.json",
+                }
+            ],
+        },
+    )
+
+    report = verify_manifest(chain_dir / "manifest.json")
+
+    assert report["ok"] is False
+    assert any("unknown evaluation_version" in error for error in report["errors"])

@@ -64,3 +64,34 @@ jobs:
         path: |
           data/benchmark_v1_18.json
           data/benchmark_v1_18_summary.md
+
+  lock-resolver-check:
+    # Catches cross-package resolver conflicts in requirements.lock.txt at
+    # PR time (e.g. PR #584's moviepy<12.0 vs pillow==12.2.0 conflict that
+    # the static lock-floor tests cannot surface). See
+    # tools/check_lock_resolves.py for the implementation contract.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+        cache: 'pip'
+
+    - name: Run lock resolver gate (dry-run, fail-closed)
+      run: |
+        python tools/check_lock_resolves.py \
+          --lock-file requirements.lock.txt \
+          --extra-index-url https://download.pytorch.org/whl/cu126 \
+          --output /tmp/lock_resolver_report.json
+
+    - name: Upload resolver report
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: lock-resolver-report
+        path: /tmp/lock_resolver_report.json

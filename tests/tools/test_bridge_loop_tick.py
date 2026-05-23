@@ -20,6 +20,7 @@ from tools.bridge_loop_tick import (
     evaluate_merge_ready,
     my_unmerged_rco_passes,
     peer_activation_recommendation,
+    peer_has_active_pr_producing_claim,
 )
 
 NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
@@ -444,3 +445,112 @@ def test_loop_tick_short_wakeup_when_peer_activation_needed(tmp_path):
     assert report["peer_activation"]["needed"] is True
     assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
     assert report["wakeup_reason"] == "peer activation needed"
+
+
+# --- peer active PR-producing claim ----------------------------------------
+
+def _claim_active(agent: str, task: str, ts: str) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "type": "claim",
+        "task_id": task,
+        "status": "active",
+        "message": f"{agent} working on {task}",
+    }
+
+
+def test_peer_active_claim_detected_when_recent_and_unclosed():
+    events = [_claim_active("codex", "magma-slice-1", ts="2026-05-22T13:55:00Z")]
+
+    result = peer_has_active_pr_producing_claim(
+        events, agent="claude", now_utc=NOW
+    )
+
+    assert result["active"] is True
+    assert result["peer"] == "codex"
+    assert result["task_id"] == "magma-slice-1"
+    assert result["event_type"] == "claim"
+    assert result["event_status"] == "active"
+    assert result["reason"] == "peer_has_active_pr_producing_claim"
+
+
+def test_peer_active_claim_cleared_by_done_event():
+    events = [
+        _claim_active("codex", "magma-slice-1", ts="2026-05-22T13:55:00Z"),
+        {
+            "ts_utc": "2026-05-22T13:58:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": "magma-slice-1",
+            "status": "merged",
+            "payload": {"pr": 700},
+        },
+    ]
+
+    result = peer_has_active_pr_producing_claim(
+        events, agent="claude", now_utc=NOW
+    )
+
+    assert result["active"] is False
+    # Closure surfaces as "latest event is not PR-producing" because
+    # ``_latest_agent_event(substantive_only=True)`` returns the most
+    # recent substantive event, which is the closing ``done``.
+    assert result["reason"] == "latest_peer_event_not_pr_producing"
+
+
+def test_peer_active_claim_too_old_does_not_anticipate():
+    events = [_claim_active("codex", "magma-slice-1", ts="2026-05-22T13:20:00Z")]
+
+    result = peer_has_active_pr_producing_claim(
+        events, agent="claude", now_utc=NOW
+    )
+
+    assert result["active"] is False
+    assert result["reason"] == "peer_claim_event_too_old"
+
+
+def test_loop_tick_in_flight_when_peer_has_active_pr_producing_claim(tmp_path):
+    events = [_claim_active("codex", "magma-slice-2", ts="2026-05-22T13:55:00Z")]
+
+    report = build_loop_tick(
+        agent="claude",
+        events=events,
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
+    )
+
+    assert report["peer_active_claim"]["active"] is True
+    assert report["recommended_wakeup_seconds"] == WAKEUP_IN_FLIGHT
+    assert (
+        report["wakeup_reason"]
+        == "peer has active PR-producing claim; anticipate"
+    )
+
+
+def test_loop_tick_quiet_when_peer_claim_already_done(tmp_path):
+    events = [
+        _claim_active("codex", "magma-slice-2", ts="2026-05-22T13:55:00Z"),
+        {
+            "ts_utc": "2026-05-22T13:58:00Z",
+            "agent": "codex",
+            "type": "done",
+            "task_id": "magma-slice-2",
+            "status": "merged",
+            "payload": {"pr": 701},
+        },
+    ]
+
+    report = build_loop_tick(
+        agent="claude",
+        events=events,
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
+    )
+
+    assert report["peer_active_claim"]["active"] is False
+    assert report["recommended_wakeup_seconds"] == WAKEUP_QUIET

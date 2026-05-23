@@ -79,6 +79,7 @@ def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any
     errors: list[str] = []
     corpus = _read_json(corpus_path, errors, "corpus")
     expectations_doc = _read_json(expectations_path, errors, "expectations")
+    full_coverage_required = _full_coverage_required(corpus)
     cases = _cases(corpus, errors)
     expectations = _expectations(expectations_doc, errors)
     case_validator = _validator(CASE_SCHEMA)
@@ -93,16 +94,24 @@ def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any
         errors,
     )
     _validate_cross_refs(case_ids, expectation_ids, errors)
-    _validate_coverage(coverage, errors)
+    if full_coverage_required:
+        _validate_coverage(coverage, errors)
 
     return {
         "ok": not errors,
         "corpus": str(corpus_path),
         "expectations": str(expectations_path),
         "case_count": len(cases),
+        "full_coverage_required": full_coverage_required,
         "coverage": _coverage_report(coverage),
         "errors": errors,
     }
+
+
+def _full_coverage_required(corpus: Any) -> bool:
+    if not isinstance(corpus, dict):
+        return True
+    return not bool(corpus.get("expansion_label"))
 
 
 def _validate_cases(

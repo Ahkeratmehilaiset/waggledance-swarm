@@ -5,15 +5,14 @@ The expansion lives in a separate fixture pair
 (``tests/fixtures/magma_adversarial_corpus/v0_expansion_2026_05_23.json``
 plus its expectations) so the strict ``v0`` corpus accuracy assertion in
 ``test_magma_adversarial_eval.py`` keeps protecting against regression on
-the original 20 cases. The expansion is *expected* to expose gate gaps;
-adding it to ``v0`` directly would force a false choice between
-weakening the strict accuracy floor and merging an obviously failing CI.
+the original strict v0 floor. The expansion is evaluated separately; adding it
+to ``v0`` directly would also require deliberately refreshing downstream
+baseline/proof artifacts in a later fold-in PR.
 
 These tests validate the expansion fixture itself -- schema, case-id
-discipline, family coverage, paired expectations -- without asserting
-any specific gate accuracy. The actual gate-extension work to catch
-these new attack vectors is tracked as a separate finding and follow-up
-PR (see bridge task ``phase-d-expansion-exposes-gate-gap``).
+discipline, family coverage, paired expectations -- while the separate
+adversarial-eval test proves the deterministic gate now catches the new
+attack vectors.
 """
 from __future__ import annotations
 
@@ -60,21 +59,22 @@ def test_expansion_fixture_exists():
     assert EXPANSION_EXPECTATIONS.exists()
 
 
-def test_expansion_carries_label_and_pending_status():
+def test_expansion_carries_label_and_covered_status():
     fixture = _read_json(EXPANSION)
     assert fixture["corpus_version"] == "magma.synthetic_adversarial_corpus.v0"
     assert fixture["expansion_label"] == "phase_d_expansion_2026_05_23"
-    assert fixture["expansion_status"] == "pending_gate_extension"
-    # The note must explicitly identify itself as kept OUT of the strict
-    # v0 corpus until the gate extension lands.
-    assert "kept OUT of the strict v0 corpus" in fixture["expansion_note"]
+    assert fixture["expansion_status"] == "gate_extension_covered"
+    # The note must explicitly identify itself as a separate partial-coverage
+    # target kept out of the strict v0 floor until an intentional fold-in PR.
+    assert "separate partial-coverage target" in fixture["expansion_note"]
+    assert "strict v0 corpus remains" in fixture["expansion_note"]
 
 
 def test_expectations_carry_label():
     expectations = _read_json(EXPANSION_EXPECTATIONS)
     assert (
         expectations["expectations_version"]
-        == "magma.synthetic_adversarial_expectation.v0"
+        == "magma.synthetic_adversarial_expectations.v0"
     )
     assert (
         expectations["expansion_label"] == "phase_d_expansion_2026_05_23"

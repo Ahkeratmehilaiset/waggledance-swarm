@@ -258,14 +258,19 @@ unified CI green.
 Consequence for the peer (here, Claude) loop discipline: the heartbeat must
 already be cache-warm (`<=WAKEUP_IN_FLIGHT`, 240s) **before** the PR opens on
 GitHub, not just once the PR is visible. The code-side enforcer is
-`tools/bridge_loop_tick.py::peer_has_active_pr_producing_claim`: it returns
-`active=True` when the peer's latest substantive event is one of
-`(claim, active)`, `(claim, started)`, `(status, active)`, or
-`(handoff, active_requested)` within
-`PEER_ACTIVE_CLAIM_MAX_AGE_MINUTES` (default 15 min) and not superseded by a
-later `done`. `_recommended_wakeup` consumes that signal and returns
-`WAKEUP_IN_FLIGHT` so the next tick can catch the imminent PR with time to
-RCO before the self-merge.
+`tools/bridge_loop_tick.py::peer_has_active_pr_producing_claim`: it scans
+**backwards** for the peer's latest event with `(type, status)` in
+`PEER_PR_PRODUCING_SIGNALS` — `(claim, active)`, `(claim, started)`,
+`(status, active)`, or `(handoff, active_requested)` — within
+`PEER_ACTIVE_CLAIM_MAX_AGE_MINUTES` (default 15 min). The claim stays
+`active=True` even when the peer has emitted later non-closing substantive
+events (decision/clarification/finding/message) on the same or other tasks.
+It is cleared only when a strictly LATER peer event for the SAME `task_id`
+is terminal: `type=done` (any status) or `status` in
+`PEER_TERMINAL_STATUSES` = `{blocked, abandoned, released}`.
+`_recommended_wakeup` consumes that signal and returns `WAKEUP_IN_FLIGHT`
+so the next tick can catch the imminent PR with time to RCO before the
+self-merge.
 
 This codifies the lesson from PRs #584 and #585 (2026-05-22), where a
 peer-side 1200s and then 1800s heartbeat skipped over Codex's RCO requests

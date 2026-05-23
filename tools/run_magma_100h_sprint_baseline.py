@@ -235,12 +235,17 @@ def _adversarial_summary(v12_proof: dict[str, Any]) -> dict[str, Any]:
 
 
 def _axis_summary(axis: dict[str, Any], *, proven_field: str) -> dict[str, Any]:
-    return {
+    summary = {
         "available": axis.get("available") is True,
         "claim_label": axis.get("claim_label"),
         proven_field: axis.get(proven_field) is True,
         "receipt_chain_verified": axis.get("receipt_chain_verified") is True,
     }
+    if "variant_count" in axis:
+        summary["variant_count"] = axis.get("variant_count")
+        summary["variants_with_kind_delta"] = axis.get("variants_with_kind_delta")
+        summary["variants_with_gate_delta"] = axis.get("variants_with_gate_delta")
+    return summary
 
 
 def _competitor_summary(v12_proof: dict[str, Any]) -> dict[str, Any]:

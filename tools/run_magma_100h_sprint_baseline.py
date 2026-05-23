@@ -44,6 +44,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Merged-PR velocity window forwarded to show_v12_proof.",
     )
+    parser.add_argument(
+        "--governance-events",
+        type=Path,
+        default=None,
+        help=(
+            "Optional bridge events JSONL path forwarded to show_v12_proof "
+            "for governance-throughput metrics."
+        ),
+    )
     return parser
 
 
@@ -52,6 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     v12_proof = collect_proof(
         repo_root=args.repo_root,
         since_days=args.since_utc_days,
+        governance_events=args.governance_events,
     )
     baseline = build_baseline(
         v12_proof=v12_proof,
@@ -240,6 +250,19 @@ def _competitor_summary(v12_proof: dict[str, Any]) -> dict[str, Any]:
         "pilot_status": competitor.get("pilot_status"),
         "consensus_grade": competitor.get("consensus_grade") is True,
         "rival_local_checks_status": competitor.get("rival_local_checks_status"),
+        "rival_local_check_matrix_available": (
+            competitor.get("rival_local_check_matrix_available") is True
+        ),
+        "rival_local_check_pass_count": competitor.get("rival_local_check_pass_count"),
+        "rival_local_check_required_count": competitor.get(
+            "rival_local_check_required_count"
+        ),
+        "rival_local_check_blocked_count": competitor.get(
+            "rival_local_check_blocked_count"
+        ),
+        "rival_local_check_consensus_grade": (
+            competitor.get("rival_local_check_consensus_grade") is True
+        ),
         "must_win_axes": competitor.get("must_win_axes", []),
         "ceded_axes": competitor.get("ceded_axes", []),
         "rivals": competitor.get("rivals", []),

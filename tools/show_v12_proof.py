@@ -52,6 +52,8 @@ ADVERSARIAL_EVAL = ROOT / "tools" / "run_magma_adversarial_eval.py"
 A3_COUNTERFACTUAL_PROOF = ROOT / "tools" / "run_v12_a3_counterfactual_axis_proof.py"
 A4_SOLVER_GROWTH_PROOF = ROOT / "tools" / "run_v12_a4_solver_growth_axis_proof.py"
 GOVERNANCE_REPORT = ROOT / "tools" / "governance_throughput_report.py"
+RIVAL_LOCAL_CHECK_MATRIX = ROOT / "tools" / "run_v12_rival_local_check_matrix.py"
+RIVAL_LOCAL_CHECKS_DIR = ROOT / "docs" / "benchmarks" / "rival_local_checks"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,12 +77,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=ROOT,
         help="Repository root for git log queries.",
     )
+    parser.add_argument(
+        "--governance-events",
+        type=Path,
+        default=None,
+        help=(
+            "Optional bridge events JSONL path forwarded to "
+            "tools/governance_throughput_report.py."
+        ),
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    report = collect_proof(repo_root=args.repo_root, since_days=args.since_utc_days)
+    report = collect_proof(
+        repo_root=args.repo_root,
+        since_days=args.since_utc_days,
+        governance_events=args.governance_events,
+    )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
@@ -88,7 +103,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if report["ok"] else 1
 
 
-def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
+def collect_proof(
+    *,
+    repo_root: Path,
+    since_days: int,
+    governance_events: Path | None = None,
+) -> dict[str, Any]:
     adoption = _run_tool_json(["--json"], ADOPTION_REPORT)
     eval_report = _run_tool_json(["--json"], ADVERSARIAL_EVAL)
     # A3 and A4 proof tools both build a verified MAGMA receipt bundle when
@@ -100,7 +120,10 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
     # on disk should run the proof tools directly with their own --out-dir.
     a3_report = _run_proof_tool_with_receipt(A3_COUNTERFACTUAL_PROOF)
     a4_report = _run_proof_tool_with_receipt(A4_SOLVER_GROWTH_PROOF)
-    governance = _run_tool_json(["--json"], GOVERNANCE_REPORT, optional=True)
+    governance_args = ["--json"]
+    if governance_events is not None:
+        governance_args.extend(["--events", str(governance_events)])
+    governance = _run_tool_json(governance_args, GOVERNANCE_REPORT, optional=True)
     pilot = _read_pilot_summary()
     velocity = _read_substrate_velocity(repo_root=repo_root, since_days=since_days)
 
@@ -306,6 +329,12 @@ def format_proof(report: dict[str, Any]) -> str:
     lines.append(
         f"  rival-local checks status        : {pilot['rival_local_checks_status']}"
     )
+    if pilot.get("rival_local_check_matrix_available"):
+        lines.append(
+            "  rival-local checks passed        : "
+            f"{pilot['rival_local_check_pass_count']}/"
+            f"{pilot['rival_local_check_required_count']}"
+        )
     lines.append(
         "  rival evidence templates         : "
         f"{pilot['rival_evidence_template_count']} safe non-passing templates via supervisor demo pack"
@@ -339,6 +368,10 @@ def format_proof(report: dict[str, Any]) -> str:
     lines.append("  python tools/run_v12_a3_counterfactual_axis_proof.py --json")
     lines.append("  python tools/run_v12_a4_solver_growth_axis_proof.py --json")
     lines.append("  python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>")
+    lines.append(
+        "  python tools/run_v12_rival_local_check_matrix.py "
+        "--evidence-dir docs/benchmarks/rival_local_checks --json"
+    )
     lines.append("  python tools/governance_throughput_report.py --json")
     lines.append("  cat docs/benchmarks/2026_05_20_competitor_axis_pilot.md")
     lines.append(
@@ -555,6 +588,10 @@ def _read_pilot_summary() -> dict[str, Any]:
     else:
         rival_status = "no rival-local-checks declared"
     rival_template_count = len(rival_local_required)
+    rival_local_summary = _read_rival_local_check_summary(
+        fallback_status=rival_status,
+        fallback_required_count=rival_template_count,
+    )
     sealed = bool(
         bridge.get("round_1_agent")
         and bridge.get("round_2_agent")
@@ -568,7 +605,22 @@ def _read_pilot_summary() -> dict[str, Any]:
         "must_win_axes": must_win,
         "ceded_axes": ceded,
         "rivals": rivals,
-        "rival_local_checks_status": rival_status,
+        "rival_local_checks_status": rival_local_summary["rival_local_checks_status"],
+        "rival_local_check_matrix_available": rival_local_summary[
+            "rival_local_check_matrix_available"
+        ],
+        "rival_local_check_pass_count": rival_local_summary[
+            "rival_local_check_pass_count"
+        ],
+        "rival_local_check_required_count": rival_local_summary[
+            "rival_local_check_required_count"
+        ],
+        "rival_local_check_blocked_count": rival_local_summary[
+            "rival_local_check_blocked_count"
+        ],
+        "rival_local_check_consensus_grade": rival_local_summary[
+            "rival_local_check_consensus_grade"
+        ],
         "rival_evidence_template_count": rival_template_count,
         "rival_evidence_template_status": (
             "safe non-passing templates are generated by the supervisor demo pack; "
@@ -576,6 +628,48 @@ def _read_pilot_summary() -> dict[str, Any]:
         ),
         "supervisor_demo_pack_command": (
             "python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>"
+        ),
+    }
+
+
+def _read_rival_local_check_summary(
+    *,
+    fallback_status: str,
+    fallback_required_count: int,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "rival_local_checks_status": fallback_status,
+        "rival_local_check_matrix_available": False,
+        "rival_local_check_pass_count": 0,
+        "rival_local_check_required_count": fallback_required_count,
+        "rival_local_check_blocked_count": fallback_required_count,
+        "rival_local_check_consensus_grade": False,
+    }
+    if not RIVAL_LOCAL_CHECKS_DIR.exists():
+        return summary
+
+    matrix = _run_tool_json(
+        ["--json", "--evidence-dir", str(RIVAL_LOCAL_CHECKS_DIR)],
+        RIVAL_LOCAL_CHECK_MATRIX,
+        optional=True,
+    )
+    if matrix.get("ok") is not True:
+        return summary
+
+    required_count = int(matrix.get("required_count") or fallback_required_count)
+    passed_count = int(matrix.get("passed_count") or 0)
+    return {
+        "rival_local_checks_status": (
+            matrix.get("rival_local_checks_status") or fallback_status
+        ),
+        "rival_local_check_matrix_available": True,
+        "rival_local_check_pass_count": passed_count,
+        "rival_local_check_required_count": required_count,
+        "rival_local_check_blocked_count": int(
+            matrix.get("blocked_count") or max(required_count - passed_count, 0)
+        ),
+        "rival_local_check_consensus_grade": bool(
+            matrix.get("consensus_grade", False)
         ),
     }
 

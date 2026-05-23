@@ -77,6 +77,12 @@ def test_competitor_pilot_section_resolves_axes_from_doc() -> None:
     assert any("A3" in axis for axis in pilot["must_win_axes"]), pilot["must_win_axes"]
     assert any("A4" in axis for axis in pilot["must_win_axes"]), pilot["must_win_axes"]
     assert pilot["rivals"], "expected at least one rival"
+    assert pilot["rival_local_checks_status"] == "1/4 rival local checks passed"
+    assert pilot["rival_local_check_matrix_available"] is True
+    assert pilot["rival_local_check_pass_count"] == 1
+    assert pilot["rival_local_check_required_count"] == 4
+    assert pilot["rival_local_check_blocked_count"] == 3
+    assert pilot["rival_local_check_consensus_grade"] is False
     assert pilot["rival_evidence_template_count"] == 4
     assert "safe non-passing templates" in pilot["rival_evidence_template_status"]
     assert pilot["supervisor_demo_pack_command"] == (
@@ -90,6 +96,8 @@ def test_competitor_pilot_text_separates_status_from_consensus_grade() -> None:
     assert result.returncode in {0, 1}, result.stderr
     assert "pilot status                     : scope_ready_not_consensus_grade" in result.stdout
     assert "consensus grade                  : False" in result.stdout
+    assert "rival-local checks status        : 1/4 rival local checks passed" in result.stdout
+    assert "rival-local checks passed        : 1/4" in result.stdout
     assert "rival evidence templates         : 4 safe non-passing templates via supervisor demo pack" in result.stdout
     assert "demo pack command                : python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>" in result.stdout
     assert "python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>" in result.stdout

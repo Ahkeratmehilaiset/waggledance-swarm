@@ -295,6 +295,37 @@ Current state after R22.5 doc-surface cleanup:
 `WAGGLEDANCE_AI_BRIEF.md` is not present on current `origin/main`; no
 release-surface update is required for that file.
 
+## Accepted lock exceptions
+
+The v3.12.0 dependency lock carries exactly one documented exception
+to the otherwise-stable-only pin policy. The exception is honest,
+audit-traced, and time-bounded (tracked for upgrade to a final
+stable when one becomes available).
+
+* **`safetensors==0.8.0rc0`** — pre-release pin.
+  * **Cause.** `diffusers==0.38.0` was bumped in PR #581 to clear
+    four OSV vulnerabilities present in `diffusers==0.37.0`.
+    `diffusers==0.38.0` declares the floor
+    `safetensors>=0.8.0-rc.0`, so the previous `safetensors==0.7.0`
+    no longer satisfies the resolver.
+  * **Why not pin a later stable?** As of release-cut time, the only
+    `safetensors` releases at or above `0.8.0` are `0.8.0.dev0` and
+    `0.8.0rc0`. There is no stable `0.8.0` final on PyPI.
+    `0.8.0rc0` is the least-bad satisfier (vs the `.dev0` build).
+  * **Why not downgrade `diffusers`?** Downgrading reintroduces the
+    four OSV vulnerabilities, which is strictly worse for the
+    security gate.
+  * **Vulnerability surface.** Both `safetensors==0.7.0` and
+    `safetensors==0.8.0rc0` are OSV-clean (0 advisories).
+  * **Tracking.** Upgrade to stable `safetensors>=0.8.0` final as
+    soon as upstream cuts it; revisit at the next lock refresh.
+
+This exception does NOT confer any operator-side allowance to add
+more pre-release pins. New pre-release pins require a fresh
+documented exception with the same four points (cause,
+why-not-stable, why-not-downgrade, vulnerability surface) and an
+explicit tracking note.
+
 ## Anti-Claims
 
 * No consciousness, sentience, AGI, or human-like understanding claim.

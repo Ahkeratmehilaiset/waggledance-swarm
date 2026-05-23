@@ -56,6 +56,19 @@ REQUIRED_OBSERVATIONS_BY_RIVAL = {
     "Microsoft AGT": ("policy_deny_smoke", "fail_closed_error_path_smoke"),
     "Preloop": ("mcp_allow_deny_approval_smoke",),
 }
+# Per-rival public-doc-claim surface assessment (sourced from
+# docs/benchmarks/2026_05_20_competitor_axis_pilot.md). Drives the
+# specific blocker reported in the matrix when no honest local-installable
+# surface exists for a rival. This is a HARD invariant against overclaim:
+# a rival flagged "no_local_installable_surface_yet" cannot be promoted
+# to passing even if a synthetic manifest is supplied later -- the
+# registry must be updated first with proof of an installable surface.
+PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL = {
+    "JamJet": "no_local_installable_surface_yet",
+    "Preloop": "no_local_installable_surface_yet",
+    "Microsoft AGT": "open_source_installable",
+    "Asqav": "pypi_installable_cloud_dependent_headline",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -352,12 +365,38 @@ def _build_check_row(
         "consensus_grade_contribution": False,
     }
     if manifest_path is None:
+        # No evidence_dir at all. If the rival's public-doc-claim
+        # surface has no local-installable component, surface that as
+        # the specific blocker -- the operator/agent now sees the real
+        # reason rather than a generic "no evidence_dir" message.
+        if (
+            PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL.get(rival)
+            == "no_local_installable_surface_yet"
+        ):
+            return {
+                **base,
+                "local_status": "not_configured",
+                "blocker": "no_local_installable_surface_yet",
+            }
         return {
             **base,
             "local_status": "not_configured",
             "blocker": "no evidence_dir provided",
         }
     if not manifest_path.exists():
+        # evidence_dir provided but the rival manifest is absent. For
+        # rivals whose surface has no installable component, the
+        # absence is structural: no honest manifest can yet exist for
+        # them. Report the specific anti-overclaim blocker.
+        if (
+            PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL.get(rival)
+            == "no_local_installable_surface_yet"
+        ):
+            return {
+                **base,
+                "local_status": "not_configured",
+                "blocker": "no_local_installable_surface_yet",
+            }
         return {
             **base,
             "local_status": "not_configured",

@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from tools.run_v12_rival_local_check_matrix import (
+    PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL,
     build_rival_local_check_matrix,
     render_markdown,
     write_evidence_manifest_templates,
@@ -860,3 +861,115 @@ def _write_valid_artifact(
         + "\n",
         encoding="utf-8",
     )
+
+
+# --- public-doc-claim surface assessment (Sprint 2 rival-axis hardening) ---
+
+
+def test_public_doc_claim_surface_registry_lists_every_required_rival() -> None:
+    """Guard: every rival in REQUIRED_OBSERVATIONS_BY_RIVAL must have a
+    corresponding entry in PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL. A new rival
+    added without a surface assessment is a finding -- the registry is
+    the source of truth for the anti-overclaim blocker."""
+    from tools.run_v12_rival_local_check_matrix import (
+        REQUIRED_OBSERVATIONS_BY_RIVAL,
+    )
+
+    for rival in REQUIRED_OBSERVATIONS_BY_RIVAL:
+        assert rival in PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL, rival
+
+
+def test_jamjet_and_preloop_surface_marked_as_no_local_installable() -> None:
+    """Per the 2026-05-20 competitor pilot doc, JamJet and Preloop have
+    no public pypi/oss installable surface that exercises their headline
+    feature -- so the registry must mark them as
+    no_local_installable_surface_yet."""
+    assert (
+        PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL["JamJet"]
+        == "no_local_installable_surface_yet"
+    )
+    assert (
+        PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL["Preloop"]
+        == "no_local_installable_surface_yet"
+    )
+
+
+def test_agt_and_asqav_surface_marked_as_installable() -> None:
+    """AGT and Asqav have installable surfaces (open-source and pypi
+    respectively); their surface assessment must be specific so the
+    matrix does not lump them with the no_local_installable rivals."""
+    assert (
+        PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL["Microsoft AGT"]
+        == "open_source_installable"
+    )
+    assert (
+        PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL["Asqav"]
+        == "pypi_installable_cloud_dependent_headline"
+    )
+
+
+def test_jamjet_default_call_reports_no_local_installable_surface_yet() -> None:
+    """Without --evidence-dir, JamJet reports the specific anti-overclaim
+    blocker rather than the generic 'no evidence_dir provided'."""
+    report = build_rival_local_check_matrix()
+    jamjet = next(r for r in report["checks"] if r["rival"] == "JamJet")
+    assert jamjet["local_status"] == "not_configured"
+    assert jamjet["blocker"] == "no_local_installable_surface_yet"
+    assert jamjet["consensus_grade_contribution"] is False
+
+
+def test_preloop_default_call_reports_no_local_installable_surface_yet() -> None:
+    report = build_rival_local_check_matrix()
+    preloop = next(r for r in report["checks"] if r["rival"] == "Preloop")
+    assert preloop["local_status"] == "not_configured"
+    assert preloop["blocker"] == "no_local_installable_surface_yet"
+
+
+def test_agt_default_call_keeps_generic_blocker() -> None:
+    """AGT is open-source-installable per the registry, so when no
+    evidence_dir is given the matrix should still report the generic
+    'no evidence_dir provided' blocker -- AGT is NOT marked as
+    structurally unable to be tested locally."""
+    report = build_rival_local_check_matrix()
+    agt = next(r for r in report["checks"] if r["rival"] == "Microsoft AGT")
+    assert agt["local_status"] == "not_configured"
+    assert agt["blocker"] == "no evidence_dir provided"
+
+
+def test_evidence_dir_without_jamjet_manifest_keeps_specific_blocker(
+    tmp_path: Path,
+) -> None:
+    """Even when an evidence_dir is provided, if JamJet's manifest is
+    absent the specific 'no_local_installable_surface_yet' blocker
+    persists -- the anti-overclaim signal must not be silently
+    downgraded to a generic 'evidence manifest missing'."""
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    # Provide an empty evidence_dir -- no JamJet manifest.
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+    jamjet = next(r for r in report["checks"] if r["rival"] == "JamJet")
+    assert jamjet["local_status"] == "not_configured"
+    assert jamjet["blocker"] == "no_local_installable_surface_yet"
+    assert report["consensus_grade"] is False
+
+
+def test_repository_evidence_dir_jamjet_preloop_report_specific_blocker() -> None:
+    """Production smoke: against the real docs/benchmarks/rival_local_checks
+    evidence dir, JamJet + Preloop both report the new specific blocker
+    while AGT stays passed and Asqav stays cloud_dependent. Aggregate
+    consensus_grade stays False."""
+    report = build_rival_local_check_matrix(
+        evidence_dir=ROOT / "docs" / "benchmarks" / "rival_local_checks",
+    )
+
+    jamjet = next(r for r in report["checks"] if r["rival"] == "JamJet")
+    preloop = next(r for r in report["checks"] if r["rival"] == "Preloop")
+    agt = next(r for r in report["checks"] if r["rival"] == "Microsoft AGT")
+    asqav = next(r for r in report["checks"] if r["rival"] == "Asqav")
+
+    assert jamjet["blocker"] == "no_local_installable_surface_yet"
+    assert preloop["blocker"] == "no_local_installable_surface_yet"
+    assert agt["local_status"] == "passed"
+    assert asqav["local_status"] == "cloud_dependent"
+    assert report["consensus_grade"] is False

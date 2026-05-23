@@ -43,6 +43,7 @@ def test_default_text_output_includes_expected_sections() -> None:
         "A4 SOLVER-GROWTH AXIS",
         "A4 SOLVER LIFECYCLE RECEIPTS",
         "A4 AUTOGROWTH LIFECYCLE RECEIPTS",
+        "A4 AUTOGROWTH SOAK FIXTURE RECEIPTS",
         "GOVERNANCE THROUGHPUT",
         "COMPETITOR-AXIS PILOT",
         "SUBSTRATE VELOCITY",
@@ -63,6 +64,7 @@ def test_json_output_is_parseable_and_has_expected_keys() -> None:
     assert "a4_solver_growth_axis" in payload
     assert "a4_solver_lifecycle" in payload
     assert "a4_autogrowth_lifecycle" in payload
+    assert "a4_autogrowth_soak_fixture" in payload
     assert "governance_throughput" in payload
     assert "competitor_pilot" in payload
     assert "substrate_velocity" in payload
@@ -234,6 +236,34 @@ def test_a4_autogrowth_lifecycle_section_reports_scheduler_runtime_path() -> Non
     )
 
 
+def test_a4_autogrowth_soak_fixture_section_reports_local_boundary() -> None:
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+    soak = payload["a4_autogrowth_soak_fixture"]
+
+    assert soak["available"] is True, soak
+    assert soak["ok"] is True, soak
+    assert soak["claim_label"] == "MEASURED_LOCAL_PARTIAL"
+    assert soak["runtime_path"] == (
+        "AutogrowthScheduler.run_until_idle -> LowRiskGrower.grow_from_gap -> "
+        "AutoPromotionEngine.evaluate_candidate"
+    )
+    assert soak["round_count"] == 3
+    assert soak["ok_rounds"] == 3
+    assert soak["failed_rounds"] == 0
+    assert soak["intent_count_per_round"] == 6
+    assert soak["expected_receipt_count"] == 18
+    assert soak["total_receipt_count"] == 18
+    assert soak["pass_rate"] == 1.0
+    assert soak["receipt_chain_verified"] is True
+    assert soak["sink_none_preserved"] is True
+    assert soak["raw_payload_leak_check"] is True
+    assert soak["not_release_soak_evidence"] is True
+    assert soak["not_production_authority"] is True
+    assert "not release soak evidence" in soak["evidence_scope"]
+    assert "not long-running production" in soak["evidence_scope"]
+
+
 def test_text_output_separates_synthetic_a4_axis_from_lifecycle_path() -> None:
     result = _run()
 
@@ -245,6 +275,8 @@ def test_text_output_separates_synthetic_a4_axis_from_lifecycle_path() -> None:
     assert "A4 AUTOGROWTH LIFECYCLE RECEIPTS" in result.stdout
     assert "real opt-in AutogrowthScheduler queue->grower->engine path" in result.stdout
     assert "not long-running production auto-promotion authority" in result.stdout
+    assert "A4 AUTOGROWTH SOAK FIXTURE RECEIPTS" in result.stdout
+    assert "not release soak evidence" in result.stdout
 
 
 def test_governance_throughput_section_reports_status_counts() -> None:

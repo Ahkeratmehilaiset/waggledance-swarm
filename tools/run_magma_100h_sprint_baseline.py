@@ -120,6 +120,9 @@ def build_baseline(
             "a4_autogrowth_lifecycle": _a4_autogrowth_lifecycle_summary(
                 v12_proof.get("a4_autogrowth_lifecycle", {}),
             ),
+            "a4_autogrowth_soak_fixture": _a4_autogrowth_soak_fixture_summary(
+                v12_proof.get("a4_autogrowth_soak_fixture", {}),
+            ),
             "governance_throughput": v12_proof.get("governance_throughput", {}),
             "competitor_pilot": _competitor_summary(v12_proof),
         },
@@ -223,6 +226,20 @@ def _baseline_blockers(v12_proof: dict[str, Any]) -> list[str]:
     if a4_autogrowth.get("sink_none_preserved") is not True:
         blockers.append("a4_autogrowth_lifecycle_sink_none_not_preserved")
 
+    a4_autogrowth_soak = v12_proof.get("a4_autogrowth_soak_fixture", {})
+    if a4_autogrowth_soak.get("available") is not True:
+        blockers.append("a4_autogrowth_soak_fixture_unavailable")
+    if a4_autogrowth_soak.get("ok") is not True:
+        blockers.append("a4_autogrowth_soak_fixture_not_ok")
+    if a4_autogrowth_soak.get("receipt_chain_verified") is not True:
+        blockers.append("a4_autogrowth_soak_fixture_receipt_chain_not_verified")
+    if a4_autogrowth_soak.get("sink_none_preserved") is not True:
+        blockers.append("a4_autogrowth_soak_fixture_sink_none_not_preserved")
+    if a4_autogrowth_soak.get("raw_payload_leak_check") is not True:
+        blockers.append("a4_autogrowth_soak_fixture_privacy_check_failed")
+    if a4_autogrowth_soak.get("not_release_soak_evidence") is not True:
+        blockers.append("a4_autogrowth_soak_fixture_release_boundary_ambiguous")
+
     competitor = v12_proof.get("competitor_pilot", {})
     if competitor.get("available") is not True:
         blockers.append("competitor_pilot_unavailable")
@@ -302,6 +319,29 @@ def _a4_autogrowth_lifecycle_summary(lifecycle: dict[str, Any]) -> dict[str, Any
         "receipt_emission_mode": lifecycle.get("receipt_emission_mode"),
         "default_sink_required": lifecycle.get("default_sink_required"),
         "sink_none_preserved": lifecycle.get("sink_none_preserved") is True,
+    }
+
+
+def _a4_autogrowth_soak_fixture_summary(soak: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "available": soak.get("available") is True,
+        "ok": soak.get("ok") is True,
+        "claim_label": soak.get("claim_label"),
+        "runtime_path": soak.get("runtime_path"),
+        "round_count": soak.get("round_count"),
+        "ok_rounds": soak.get("ok_rounds"),
+        "failed_rounds": soak.get("failed_rounds"),
+        "intent_count_per_round": soak.get("intent_count_per_round"),
+        "expected_receipt_count": soak.get("expected_receipt_count"),
+        "total_receipt_count": soak.get("total_receipt_count"),
+        "pass_rate": soak.get("pass_rate"),
+        "receipt_chain_verified": soak.get("receipt_chain_verified") is True,
+        "sink_none_preserved": soak.get("sink_none_preserved") is True,
+        "raw_payload_leak_check": soak.get("raw_payload_leak_check") is True,
+        "not_release_soak_evidence": soak.get("not_release_soak_evidence") is True,
+        "not_production_authority": soak.get("not_production_authority") is True,
+        "evidence_scope": soak.get("evidence_scope"),
+        "stability_metrics": soak.get("stability_metrics", {}),
     }
 
 

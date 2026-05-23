@@ -102,6 +102,37 @@ def _minimal_v12_proof() -> dict[str, object]:
             "default_sink_required": False,
             "sink_none_preserved": True,
         },
+        "a4_autogrowth_soak_fixture": {
+            "available": True,
+            "ok": True,
+            "claim_label": "MEASURED_LOCAL_PARTIAL",
+            "runtime_path": (
+                "AutogrowthScheduler.run_until_idle -> "
+                "LowRiskGrower.grow_from_gap -> AutoPromotionEngine.evaluate_candidate"
+            ),
+            "round_count": 3,
+            "ok_rounds": 3,
+            "failed_rounds": 0,
+            "intent_count_per_round": 6,
+            "expected_receipt_count": 18,
+            "total_receipt_count": 18,
+            "pass_rate": 1.0,
+            "receipt_chain_verified": True,
+            "sink_none_preserved": True,
+            "raw_payload_leak_check": True,
+            "not_release_soak_evidence": True,
+            "not_production_authority": True,
+            "evidence_scope": (
+                "local repeated multi-intent AutogrowthScheduler soak fixture; "
+                "not release soak evidence; not long-running production "
+                "auto-promotion authority"
+            ),
+            "stability_metrics": {
+                "verifier_failures": 0,
+                "sink_none_failures": 0,
+                "raw_payload_leak_failures": 0,
+            },
+        },
         "governance_throughput": {
             "available": True,
             "metric_count": 8,
@@ -186,6 +217,23 @@ def test_build_baseline_locks_honest_magma_sprint_state() -> None:
     )
     assert (
         baseline["current_state"]["a4_autogrowth_lifecycle"]["sink_none_preserved"]
+        is True
+    )
+    assert (
+        baseline["current_state"]["a4_autogrowth_soak_fixture"]["claim_label"]
+        == "MEASURED_LOCAL_PARTIAL"
+    )
+    assert baseline["current_state"]["a4_autogrowth_soak_fixture"]["round_count"] == 3
+    assert (
+        baseline["current_state"]["a4_autogrowth_soak_fixture"][
+            "total_receipt_count"
+        ]
+        == 18
+    )
+    assert (
+        baseline["current_state"]["a4_autogrowth_soak_fixture"][
+            "not_release_soak_evidence"
+        ]
         is True
     )
     assert (
@@ -291,6 +339,36 @@ def test_baseline_fail_closes_on_a4_autogrowth_sink_none_regression() -> None:
     )
 
 
+def test_baseline_fail_closes_on_a4_autogrowth_soak_receipt_chain() -> None:
+    proof = _minimal_v12_proof()
+    proof["a4_autogrowth_soak_fixture"] = dict(
+        proof["a4_autogrowth_soak_fixture"]
+    )
+    proof["a4_autogrowth_soak_fixture"]["receipt_chain_verified"] = False
+
+    baseline = build_baseline(v12_proof=proof, generated_at_utc=FIXED_NOW)
+
+    assert baseline["ok"] is False
+    assert "a4_autogrowth_soak_fixture_receipt_chain_not_verified" in (
+        baseline["blockers"]
+    )
+
+
+def test_baseline_fail_closes_on_a4_autogrowth_soak_release_boundary() -> None:
+    proof = _minimal_v12_proof()
+    proof["a4_autogrowth_soak_fixture"] = dict(
+        proof["a4_autogrowth_soak_fixture"]
+    )
+    proof["a4_autogrowth_soak_fixture"]["not_release_soak_evidence"] = False
+
+    baseline = build_baseline(v12_proof=proof, generated_at_utc=FIXED_NOW)
+
+    assert baseline["ok"] is False
+    assert "a4_autogrowth_soak_fixture_release_boundary_ambiguous" in (
+        baseline["blockers"]
+    )
+
+
 def test_cli_writes_json_baseline(tmp_path: Path) -> None:
     output = tmp_path / "baseline.json"
 
@@ -316,6 +394,12 @@ def test_cli_writes_json_baseline(tmp_path: Path) -> None:
     assert (
         file_payload["current_state"]["a4_autogrowth_lifecycle"][
             "sink_none_preserved"
+        ]
+        is True
+    )
+    assert (
+        file_payload["current_state"]["a4_autogrowth_soak_fixture"][
+            "not_release_soak_evidence"
         ]
         is True
     )

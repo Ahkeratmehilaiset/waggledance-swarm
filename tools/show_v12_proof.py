@@ -18,6 +18,8 @@ It prints:
       synthetic A4 axis proof
     - A4 autogrowth scheduler lifecycle receipt proof, separated from the
       SolverProvenance lifecycle proof
+    - A4 autogrowth local soak fixture receipt proof, separated from release
+      soak evidence and production auto-promotion authority
     - Today's merged-PR count from `git log` (substrate velocity)
 
 Independently verifiable: each row cites the underlying tool that produced
@@ -60,6 +62,9 @@ A4_SOLVER_LIFECYCLE_PROOF = (
 )
 A4_AUTOGROWTH_LIFECYCLE_PROOF = (
     ROOT / "tools" / "run_autogrowth_promotion_receipt_emission_proof.py"
+)
+A4_AUTOGROWTH_SOAK_FIXTURE_PROOF = (
+    ROOT / "tools" / "run_autogrowth_receipt_soak_harness.py"
 )
 GOVERNANCE_REPORT = ROOT / "tools" / "governance_throughput_report.py"
 RIVAL_LOCAL_CHECK_MATRIX = ROOT / "tools" / "run_v12_rival_local_check_matrix.py"
@@ -134,6 +139,9 @@ def collect_proof(
     a4_autogrowth_report = _run_proof_tool_with_receipt(
         A4_AUTOGROWTH_LIFECYCLE_PROOF
     )
+    a4_autogrowth_soak_report = _run_proof_tool_with_receipt(
+        A4_AUTOGROWTH_SOAK_FIXTURE_PROOF
+    )
     governance_args = ["--json"]
     if governance_events is not None:
         governance_args.extend(["--events", str(governance_events)])
@@ -164,6 +172,7 @@ def collect_proof(
         and a4_report.get("ok") is True
         and a4_lifecycle_report.get("ok") is True
         and a4_autogrowth_report.get("ok") is True
+        and a4_autogrowth_soak_report.get("ok") is True
         and high_gap == 0
     )
 
@@ -208,6 +217,9 @@ def collect_proof(
         ),
         "a4_autogrowth_lifecycle": _summarize_a4_autogrowth_lifecycle(
             a4_autogrowth_report
+        ),
+        "a4_autogrowth_soak_fixture": _summarize_a4_autogrowth_soak_fixture(
+            a4_autogrowth_soak_report
         ),
         "governance_throughput": _summarize_governance_throughput(governance),
         "competitor_pilot": pilot,
@@ -389,6 +401,38 @@ def format_proof(report: dict[str, Any]) -> str:
         lines.append("")
         lines.append("A4 AUTOGROWTH LIFECYCLE RECEIPTS : tool unavailable")
 
+    soak = report["a4_autogrowth_soak_fixture"]
+    if soak["available"]:
+        lines.append("")
+        lines.append(
+            "A4 AUTOGROWTH SOAK FIXTURE RECEIPTS  "
+            "(tools/run_autogrowth_receipt_soak_harness.py)"
+        )
+        marker = "OK " if soak["ok"] else "** "
+        lines.append(f"  {marker}local soak fixture receipts: {soak['ok']}")
+        lines.append(f"     evidence scope                 : {soak['evidence_scope']}")
+        lines.append(f"     claim label                    : {soak['claim_label']}")
+        lines.append(f"     rounds                         : {soak['ok_rounds']}/{soak['round_count']}")
+        lines.append(
+            f"     intents per round              : {soak['intent_count_per_round']}"
+        )
+        lines.append(
+            f"     total receipt count            : {soak['total_receipt_count']}"
+        )
+        lines.append(f"     pass rate                      : {soak['pass_rate']}")
+        lines.append(
+            f"     receipt chains verified        : {soak['receipt_chain_verified']}"
+        )
+        lines.append(
+            f"     sink=None preserved            : {soak['sink_none_preserved']}"
+        )
+        lines.append(
+            f"     aggregate privacy check        : {soak['raw_payload_leak_check']}"
+        )
+    else:
+        lines.append("")
+        lines.append("A4 AUTOGROWTH SOAK FIXTURE       : tool unavailable")
+
     gov = report["governance_throughput"]
     lines.append("")
     if gov["available"]:
@@ -461,6 +505,10 @@ def format_proof(report: dict[str, Any]) -> str:
     )
     lines.append(
         "  python tools/run_autogrowth_promotion_receipt_emission_proof.py "
+        "--out-dir <new-output-dir> --json"
+    )
+    lines.append(
+        "  python tools/run_autogrowth_receipt_soak_harness.py "
         "--out-dir <new-output-dir> --json"
     )
     lines.append("  python tools/run_v12_supervisor_demo_pack.py --out-dir <new-output-dir>")
@@ -618,6 +666,71 @@ def _summarize_a4_autogrowth_lifecycle(report: dict[str, Any]) -> dict[str, Any]
             "real opt-in AutogrowthScheduler queue->grower->engine path; "
             "proof fixture only; not long-running production auto-promotion authority"
         ),
+    }
+
+
+def _summarize_a4_autogrowth_soak_fixture(
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    if report.get("ok") is None:
+        return {
+            "available": False,
+            "ok": False,
+            "claim_label": "unknown",
+            "runtime_path": "unknown",
+            "round_count": 0,
+            "ok_rounds": 0,
+            "failed_rounds": 0,
+            "intent_count_per_round": 0,
+            "expected_receipt_count": 0,
+            "total_receipt_count": 0,
+            "pass_rate": 0.0,
+            "receipt_chain_verified": False,
+            "sink_none_preserved": False,
+            "raw_payload_leak_check": False,
+            "not_release_soak_evidence": False,
+            "not_production_authority": False,
+            "evidence_scope": "unavailable",
+            "stability_metrics": {},
+        }
+    metrics = report.get("stability_metrics") or {}
+    scope = str(report.get("evidence_scope") or "")
+    guardrails = report.get("no_overclaim_guardrails") or {}
+    expected_receipts = int(report.get("expected_receipt_count") or 0)
+    total_receipts = int(report.get("total_receipt_count") or 0)
+    verifier_failures = int(metrics.get("verifier_failures") or 0)
+    sink_none_failures = int(metrics.get("sink_none_failures") or 0)
+    raw_payload_failures = int(metrics.get("raw_payload_leak_failures") or 0)
+    return {
+        "available": True,
+        "ok": report.get("ok") is True,
+        "claim_label": report.get("claim_label", "unknown"),
+        "runtime_path": report.get("runtime_path", "unknown"),
+        "round_count": int(report.get("round_count") or 0),
+        "ok_rounds": int(report.get("ok_rounds") or 0),
+        "failed_rounds": int(report.get("failed_rounds") or 0),
+        "intent_count_per_round": int(report.get("intent_count_per_round") or 0),
+        "expected_receipt_count": expected_receipts,
+        "total_receipt_count": total_receipts,
+        "pass_rate": report.get("pass_rate"),
+        "receipt_chain_verified": (
+            verifier_failures == 0 and total_receipts == expected_receipts
+        ),
+        "sink_none_preserved": sink_none_failures == 0,
+        "raw_payload_leak_check": (
+            report.get("aggregate_raw_payload_leak_check") is True
+            and raw_payload_failures == 0
+        ),
+        "not_release_soak_evidence": (
+            guardrails.get("not_release_soak_evidence") is True
+            and "not release soak evidence" in scope
+        ),
+        "not_production_authority": (
+            guardrails.get("not_production_authority") is True
+            and "not long-running production" in scope
+        ),
+        "evidence_scope": scope,
+        "stability_metrics": metrics,
     }
 
 

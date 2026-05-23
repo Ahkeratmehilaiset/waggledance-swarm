@@ -99,6 +99,11 @@ class StopCondition(str, Enum):
 # --------------------------------------------------------------------------
 
 
+def _canonical_payload_hash(payload: dict) -> str:
+    payload_canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload_canonical.encode("utf-8")).hexdigest()
+
+
 @dataclass
 class Intent:
     """A proposed write. Constructed by a tool or solver."""
@@ -124,12 +129,7 @@ class Intent:
                   connector_ref: Optional[str] = None,
                   provenance_chain: str = "") -> "Intent":
         intent_id = str(uuid.uuid4())
-        payload_canonical = json.dumps(
-            payload, sort_keys=True, separators=(",", ":")
-        )
-        payload_hash = hashlib.sha256(
-            payload_canonical.encode("utf-8")
-        ).hexdigest()
+        payload_hash = _canonical_payload_hash(payload)
         return cls(
             intent_id=intent_id,
             agent_id=agent_id,
@@ -150,6 +150,8 @@ class GateOutcome:
 
     intent_id: str
     risk_class: WriteRiskClass
+    payload_hash: str
+    intent_fingerprint: str
     approved: bool
     denial_reason: Optional[str] = None
     stop_condition: Optional[StopCondition] = None
@@ -170,6 +172,46 @@ class ExecutionResult:
     error_reason: Optional[str] = None
     elapsed_ms: int = 0
     rollback_executed: bool = False
+
+
+def _intent_approval_fingerprint(intent: Intent) -> str:
+    """Hash the immutable write-authority fields approved by route()."""
+    return sha256_digest({
+        "intent_id": intent.intent_id,
+        "agent_id": intent.agent_id,
+        "session_id": intent.session_id,
+        "tool_descriptor_id": intent.tool_descriptor_id,
+        "connector_ref": intent.connector_ref or "",
+        "target_state_ref": intent.target_state_ref,
+        "action": intent.action,
+        "payload_hash": intent.payload_hash,
+        "provenance_chain": intent.provenance_chain,
+    })
+
+
+def _new_gate_outcome(
+    intent: Intent,
+    *,
+    risk_class: WriteRiskClass,
+    approved: bool,
+    denial_reason: Optional[str] = None,
+    stop_condition: Optional[StopCondition] = None,
+    audit_event_ids: Optional[list[str]] = None,
+    diff_preview_uri: Optional[str] = None,
+    rollback_plan_ref: Optional[str] = None,
+) -> GateOutcome:
+    return GateOutcome(
+        intent_id=intent.intent_id,
+        risk_class=risk_class,
+        payload_hash=intent.payload_hash,
+        intent_fingerprint=_intent_approval_fingerprint(intent),
+        approved=approved,
+        denial_reason=denial_reason,
+        stop_condition=stop_condition,
+        audit_event_ids=list(audit_event_ids or []),
+        diff_preview_uri=diff_preview_uri,
+        rollback_plan_ref=rollback_plan_ref,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -390,8 +432,8 @@ class WriteRCOGate:
                 "stop_condition": stop.condition.value,
                 "reason": stop.reason,
             })
-            outcome = GateOutcome(
-                intent_id=intent.intent_id,
+            outcome = _new_gate_outcome(
+                intent,
                 risk_class=risk,
                 approved=False,
                 denial_reason=stop.reason,
@@ -406,6 +448,13 @@ class WriteRCOGate:
         if not outcome.approved:
             return ExecutionResult(intent_id=intent.intent_id, success=False,
                                     error_reason="gate did not approve intent")
+        binding_error = self._execution_binding_error(intent, outcome)
+        if binding_error:
+            return ExecutionResult(
+                intent_id=intent.intent_id,
+                success=False,
+                error_reason=binding_error,
+            )
 
         try:
             self._audit(AuditEventType.EFFECT_STARTED, intent, {})
@@ -453,6 +502,50 @@ class WriteRCOGate:
         return result
 
     # =========================================================================
+    # EXECUTION BINDING
+    # =========================================================================
+
+    def _execution_binding_error(
+        self,
+        intent: Intent,
+        outcome: GateOutcome,
+    ) -> Optional[str]:
+        if outcome.intent_id != intent.intent_id:
+            return (
+                "gate outcome intent_id does not match execute intent_id: "
+                f"{outcome.intent_id} != {intent.intent_id}"
+            )
+
+        try:
+            current_payload_hash = _canonical_payload_hash(intent.payload)
+        except Exception as exc:
+            return f"intent payload_hash recompute failed: {exc}"
+        if current_payload_hash != intent.payload_hash:
+            return "intent payload_hash does not match current payload"
+        if outcome.payload_hash != intent.payload_hash:
+            return "gate outcome payload_hash does not match intent payload_hash"
+
+        expected_fingerprint = _intent_approval_fingerprint(intent)
+        if outcome.intent_fingerprint != expected_fingerprint:
+            return (
+                "gate outcome intent_fingerprint does not match current "
+                "execute intent"
+            )
+
+        try:
+            current_risk = self.classify(intent)
+        except Exception as exc:
+            return f"execution risk reclassification failed: {exc}"
+        if outcome.risk_class != current_risk:
+            return (
+                "gate outcome risk_class does not match current "
+                f"classification: {outcome.risk_class.value} != "
+                f"{current_risk.value}"
+            )
+
+        return None
+
+    # =========================================================================
     # PRIVATE ROUTING
     # =========================================================================
 
@@ -483,8 +576,8 @@ class WriteRCOGate:
         approved_audit = self._audit(AuditEventType.INTENT_APPROVED, intent,
                                       {"risk_class": "informational",
                                        "target_plane": state.plane})
-        return GateOutcome(
-            intent_id=intent.intent_id,
+        return _new_gate_outcome(
+            intent,
             risk_class=WriteRiskClass.INFORMATIONAL,
             approved=True,
             audit_event_ids=[classify_audit_id, approved_audit],
@@ -495,8 +588,8 @@ class WriteRCOGate:
         # check at MemoryWriteProxy level. Gate emits the audit envelope.
         approved_audit = self._audit(AuditEventType.INTENT_APPROVED, intent,
                                       {"risk_class": "internal_memory"})
-        return GateOutcome(
-            intent_id=intent.intent_id,
+        return _new_gate_outcome(
+            intent,
             risk_class=WriteRiskClass.INTERNAL_MEMORY,
             approved=True,
             audit_event_ids=[classify_audit_id, approved_audit],
@@ -535,8 +628,8 @@ class WriteRCOGate:
         approved_audit = self._audit(AuditEventType.INTENT_APPROVED, intent,
                                       {"risk_class": "local_artifact",
                                        "target_plane": state.plane})
-        return GateOutcome(
-            intent_id=intent.intent_id,
+        return _new_gate_outcome(
+            intent,
             risk_class=WriteRiskClass.LOCAL_ARTIFACT,
             approved=True,
             audit_event_ids=[classify_audit_id, approved_audit],
@@ -636,8 +729,8 @@ class WriteRCOGate:
                     StopCondition.PEER_RCO_NONCONVERGENT,
                     f"peer RCO {peer_result.rounds} rounds without convergence",
                 )
-            return GateOutcome(
-                intent_id=intent.intent_id,
+            return _new_gate_outcome(
+                intent,
                 risk_class=WriteRiskClass.EXTERNAL_EFFECT,
                 approved=False,
                 denial_reason="peer RCO did not pass",
@@ -650,8 +743,8 @@ class WriteRCOGate:
             "decision": scope_result.decision,
         })
         if scope_result.decision == "denied":
-            return GateOutcome(
-                intent_id=intent.intent_id,
+            return _new_gate_outcome(
+                intent,
                 risk_class=WriteRiskClass.EXTERNAL_EFFECT,
                 approved=False,
                 denial_reason=f"operator scope policy denied: {scope_result.reason}",
@@ -677,8 +770,8 @@ class WriteRCOGate:
         approved_audit = self._audit(
             AuditEventType.INTENT_APPROVED, intent, approved_detail
         )
-        return GateOutcome(
-            intent_id=intent.intent_id,
+        return _new_gate_outcome(
+            intent,
             risk_class=WriteRiskClass.EXTERNAL_EFFECT,
             approved=True,
             audit_event_ids=[classify_audit_id, approved_audit],

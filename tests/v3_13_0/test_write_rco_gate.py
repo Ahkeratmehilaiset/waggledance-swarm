@@ -1527,6 +1527,109 @@ class TestExecution:
         assert AuditEventType.EFFECT_STARTED.value in event_types
         assert AuditEventType.EFFECT_COMPLETED.value in event_types
 
+    def test_execute_refuses_gate_outcome_for_different_intent(self):
+        audit = []
+        executed = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
+        intent_a = _make_intent(
+            target_state_ref="state:audit_log",
+            action="append",
+            payload={"key": "a"},
+        )
+        intent_b = _make_intent(
+            target_state_ref="state:audit_log",
+            action="append",
+            payload={"key": "b"},
+        )
+        outcome_a = gate.route(intent_a)
+        audit.clear()
+        gate.write_executor = lambda intent: (
+            executed.append(intent)
+            or ExecutionResult(intent_id=intent.intent_id, success=True)
+        )
+
+        result = gate.execute(intent_b, outcome_a)
+
+        assert result.success is False
+        assert "intent_id" in (result.error_reason or "")
+        assert executed == []
+        assert AuditEventType.EFFECT_STARTED.value not in [
+            e["event_type"] for e in audit
+        ]
+
+    def test_execute_refuses_payload_mutated_after_route(self):
+        audit = []
+        executed = []
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
+        intent = _make_intent(
+            target_state_ref="state:audit_log",
+            action="append",
+            payload={"key": "before"},
+        )
+        outcome = gate.route(intent)
+        intent.payload["key"] = "after"
+        audit.clear()
+        gate.write_executor = lambda current: (
+            executed.append(current)
+            or ExecutionResult(intent_id=current.intent_id, success=True)
+        )
+
+        result = gate.execute(intent, outcome)
+
+        assert result.success is False
+        assert "payload_hash" in (result.error_reason or "")
+        assert executed == []
+        assert AuditEventType.EFFECT_STARTED.value not in [
+            e["event_type"] for e in audit
+        ]
+
+    def test_execute_reclassifies_risk_before_effect_started(self):
+        audit = []
+        executed = []
+        states = {
+            "state:shared": StateInfo(
+                state_id="state:shared",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        }
+        gate = _make_gate(audit_collector=audit, states=states)
+        intent = _make_intent(target_state_ref="state:shared", action="append")
+        outcome = gate.route(intent)
+        states["state:shared"].plane = "filesystem_artifact"
+        audit.clear()
+        gate.write_executor = lambda current: (
+            executed.append(current)
+            or ExecutionResult(intent_id=current.intent_id, success=True)
+        )
+
+        result = gate.execute(intent, outcome)
+
+        assert result.success is False
+        assert "risk_class" in (result.error_reason or "")
+        assert executed == []
+        assert AuditEventType.EFFECT_STARTED.value not in [
+            e["event_type"] for e in audit
+        ]
+
     def test_execute_outcome_unknown_emits_outcome_unknown(self):
         audit = []
         gate = _make_gate(
@@ -1555,8 +1658,19 @@ class TestExecution:
 
     def test_execute_effect_started_audit_failure_returns_typed_result(self):
         audit = []
-        gate = _make_gate(audit_collector=audit)
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
         executed = []
+        intent = _make_intent(target_state_ref="state:audit_log", action="append")
+        outcome = gate.route(intent)
+        audit.clear()
 
         def audit_emit(envelope: dict) -> str:
             if envelope["event_type"] == AuditEventType.EFFECT_STARTED.value:
@@ -1569,12 +1683,6 @@ class TestExecution:
             executed.append(intent)
             or ExecutionResult(intent_id=intent.intent_id, success=True)
         )
-        intent = _make_intent()
-        outcome = GateOutcome(
-            intent_id=intent.intent_id,
-            risk_class=WriteRiskClass.INTERNAL_MEMORY,
-            approved=True,
-        )
 
         result = gate.execute(intent, outcome)
 
@@ -1585,8 +1693,19 @@ class TestExecution:
 
     def test_execute_effect_completed_audit_failure_returns_typed_result(self):
         audit = []
-        gate = _make_gate(audit_collector=audit)
+        gate = _make_gate(audit_collector=audit, states={
+            "state:audit_log": StateInfo(
+                state_id="state:audit_log",
+                plane="magma_history",
+                write_modes_allowed=["append"],
+                sensitive_class="internal",
+                single_writer_required=True,
+            ),
+        })
         executed = []
+        intent = _make_intent(target_state_ref="state:audit_log", action="append")
+        outcome = gate.route(intent)
+        audit.clear()
 
         def audit_emit(envelope: dict) -> str:
             if envelope["event_type"] == AuditEventType.EFFECT_COMPLETED.value:
@@ -1602,12 +1721,6 @@ class TestExecution:
                 success=True,
                 elapsed_ms=7,
             )
-        )
-        intent = _make_intent()
-        outcome = GateOutcome(
-            intent_id=intent.intent_id,
-            risk_class=WriteRiskClass.INTERNAL_MEMORY,
-            approved=True,
         )
 
         result = gate.execute(intent, outcome)

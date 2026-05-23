@@ -41,6 +41,7 @@ def test_default_text_output_includes_expected_sections() -> None:
         "ADVERSARIAL CORPUS",
         "A3 COUNTERFACTUAL AXIS",
         "A4 SOLVER-GROWTH AXIS",
+        "A4 SOLVER LIFECYCLE RECEIPTS",
         "GOVERNANCE THROUGHPUT",
         "COMPETITOR-AXIS PILOT",
         "SUBSTRATE VELOCITY",
@@ -59,6 +60,7 @@ def test_json_output_is_parseable_and_has_expected_keys() -> None:
     assert "adversarial_eval" in payload
     assert "a3_counterfactual_axis" in payload
     assert "a4_solver_growth_axis" in payload
+    assert "a4_solver_lifecycle" in payload
     assert "governance_throughput" in payload
     assert "competitor_pilot" in payload
     assert "substrate_velocity" in payload
@@ -179,6 +181,38 @@ def test_a4_solver_growth_axis_section_reports_measured_synthetic() -> None:
     # show_v12_proof now runs the A4 proof tool with --out-dir, so the
     # receipt bundle is built and verified end-to-end.
     assert a4["receipt_chain_verified"] is True
+
+
+def test_a4_solver_lifecycle_section_reports_opt_in_runtime_path() -> None:
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+    lifecycle = payload["a4_solver_lifecycle"]
+
+    assert lifecycle["available"] is True, lifecycle
+    assert lifecycle["ok"] is True, lifecycle
+    assert lifecycle["claim_label"] == "MEASURED_LOCAL_PARTIAL"
+    assert lifecycle["runtime_path"] == "SolverProvenance.{sign,activate,revoke}"
+    assert lifecycle["transitions"] == [
+        "activation_authorised",
+        "activation_revoked",
+    ]
+    assert lifecycle["receipt_count"] == 2
+    assert lifecycle["receipt_chain_verified"] is True
+    assert lifecycle["risk_class"] == "local_artifact"
+    assert lifecycle["operator_gate_required"] is False
+    assert lifecycle["external_writes_applied"] is False
+    assert lifecycle["receipt_emission_mode"] == "opt_in_disk_bundle_sink"
+    assert "not production auto-promotion" in lifecycle["evidence_scope"]
+
+
+def test_text_output_separates_synthetic_a4_axis_from_lifecycle_path() -> None:
+    result = _run()
+
+    assert result.returncode in {0, 1}, result.stderr
+    assert "evidence scope                 : synthetic Phase 18C dispatch fixture" in result.stdout
+    assert "A4 SOLVER LIFECYCLE RECEIPTS" in result.stdout
+    assert "real opt-in SolverProvenance sign/activate/revoke path" in result.stdout
+    assert "not production auto-promotion authority" in result.stdout
 
 
 def test_governance_throughput_section_reports_status_counts() -> None:

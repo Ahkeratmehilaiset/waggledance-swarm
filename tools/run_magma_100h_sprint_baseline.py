@@ -114,6 +114,9 @@ def build_baseline(
                 v12_proof.get("a4_solver_growth_axis", {}),
                 proven_field="solver_growth_proven",
             ),
+            "a4_solver_lifecycle": _a4_lifecycle_summary(
+                v12_proof.get("a4_solver_lifecycle", {}),
+            ),
             "governance_throughput": v12_proof.get("governance_throughput", {}),
             "competitor_pilot": _competitor_summary(v12_proof),
         },
@@ -199,6 +202,14 @@ def _baseline_blockers(v12_proof: dict[str, Any]) -> list[str]:
     if a4.get("receipt_chain_verified") is not True:
         blockers.append("a4_receipt_chain_not_verified")
 
+    a4_lifecycle = v12_proof.get("a4_solver_lifecycle", {})
+    if a4_lifecycle.get("available") is not True:
+        blockers.append("a4_solver_lifecycle_unavailable")
+    if a4_lifecycle.get("ok") is not True:
+        blockers.append("a4_solver_lifecycle_not_ok")
+    if a4_lifecycle.get("receipt_chain_verified") is not True:
+        blockers.append("a4_solver_lifecycle_receipt_chain_not_verified")
+
     competitor = v12_proof.get("competitor_pilot", {})
     if competitor.get("available") is not True:
         blockers.append("competitor_pilot_unavailable")
@@ -247,6 +258,21 @@ def _axis_summary(axis: dict[str, Any], *, proven_field: str) -> dict[str, Any]:
         summary["variants_with_kind_delta"] = axis.get("variants_with_kind_delta")
         summary["variants_with_gate_delta"] = axis.get("variants_with_gate_delta")
     return summary
+
+
+def _a4_lifecycle_summary(lifecycle: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "available": lifecycle.get("available") is True,
+        "ok": lifecycle.get("ok") is True,
+        "claim_label": lifecycle.get("claim_label"),
+        "runtime_path": lifecycle.get("runtime_path"),
+        "transitions": lifecycle.get("transitions", []),
+        "receipt_count": lifecycle.get("receipt_count"),
+        "receipt_chain_verified": lifecycle.get("receipt_chain_verified") is True,
+        "evidence_scope": lifecycle.get("evidence_scope"),
+        "external_writes_applied": lifecycle.get("external_writes_applied"),
+        "receipt_emission_mode": lifecycle.get("receipt_emission_mode"),
+    }
 
 
 def _competitor_summary(v12_proof: dict[str, Any]) -> dict[str, Any]:

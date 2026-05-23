@@ -245,6 +245,8 @@ def _baseline_blockers(v12_proof: dict[str, Any]) -> list[str]:
         blockers.append("competitor_pilot_unavailable")
     if competitor.get("consensus_grade") is True:
         blockers.append("competitor_pilot_overclaims_consensus_grade")
+    if competitor.get("rival_local_check_consensus_grade") is True:
+        blockers.append("rival_local_check_consensus_grade_must_be_false")
 
     return blockers
 

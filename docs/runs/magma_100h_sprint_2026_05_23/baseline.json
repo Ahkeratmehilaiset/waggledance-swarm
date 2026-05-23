@@ -48,7 +48,12 @@
         "A4 solver_growth_shadow_canary_live_lifecycle"
       ],
       "pilot_status": "scope_ready_not_consensus_grade",
-      "rival_local_checks_status": "all public_doc_claim, 0/4 rival local checks run yet",
+      "rival_local_check_blocked_count": 3,
+      "rival_local_check_consensus_grade": false,
+      "rival_local_check_matrix_available": true,
+      "rival_local_check_pass_count": 1,
+      "rival_local_check_required_count": 4,
+      "rival_local_checks_status": "1/4 rival local checks passed",
       "rivals": [
         "JamJet",
         "Asqav",
@@ -58,31 +63,24 @@
     },
     "governance_throughput": {
       "available": true,
-      "event_count_in_window": 0,
+      "event_count_in_window": 89,
       "metric_count": 8,
       "status_counts": {
         "deferred": 1,
         "insufficient_data": 7
       },
-      "task_count_in_window": 0,
-      "window_label": "last-7d (from 2026-05-16T02:31:32.384042+00:00)"
+      "task_count_in_window": 14,
+      "window_label": "last-7d (from 2026-05-16T03:46:03.847089+00:00)"
     },
     "receipt_adoption": {
-      "accepted_exception_count": 1,
+      "accepted_exception_count": 0,
       "action_required_gap_count": 0,
       "available": true,
       "high_criticality_gap_count": 0,
-      "medium_gap_targets": [
-        {
-          "accepted_exception": "accepted_observability_path",
-          "label": "Autonomy runtime MAGMA append path",
-          "path": "waggledance/core/autonomy/runtime.py",
-          "status": "magma_event_only"
-        }
-      ],
+      "medium_gap_targets": [],
       "status_counts": {
-        "magma_event_only": 1,
-        "receipt_bound": 6
+        "receipt_bound": 6,
+        "receipt_capable_opt_in": 1
       }
     }
   },
@@ -95,7 +93,7 @@
     "public cryptographic verification parity",
     "rival benchmark consensus-grade"
   ],
-  "generated_at_utc": "2026-05-23T02:31:32Z",
+  "generated_at_utc": "2026-05-23T03:46:04Z",
   "next_work_packages": [
     {
       "acceptance": "manifest verifies with tools/verify_magma_receipt.py and tests cover tampered payload/evaluation result",

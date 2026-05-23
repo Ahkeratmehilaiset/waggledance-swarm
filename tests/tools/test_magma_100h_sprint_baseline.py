@@ -64,7 +64,12 @@ def _minimal_v12_proof() -> dict[str, object]:
             "available": True,
             "pilot_status": "scope_ready_not_consensus_grade",
             "consensus_grade": False,
-            "rival_local_checks_status": "all public_doc_claim, 0/4 rival local checks run yet",
+            "rival_local_checks_status": "1/4 rival local checks passed",
+            "rival_local_check_matrix_available": True,
+            "rival_local_check_pass_count": 1,
+            "rival_local_check_required_count": 4,
+            "rival_local_check_blocked_count": 3,
+            "rival_local_check_consensus_grade": False,
             "must_win_axes": [
                 "A3 counterfactual_evaluation_delta",
                 "A4 solver_growth_shadow_canary_live_lifecycle",
@@ -107,6 +112,17 @@ def test_build_baseline_locks_honest_magma_sprint_state() -> None:
         "tag_creation": False,
     }
     assert baseline["current_state"]["competitor_pilot"]["consensus_grade"] is False
+    assert (
+        baseline["current_state"]["competitor_pilot"]["rival_local_checks_status"]
+        == "1/4 rival local checks passed"
+    )
+    assert baseline["current_state"]["competitor_pilot"]["rival_local_check_pass_count"] == 1
+    assert (
+        baseline["current_state"]["competitor_pilot"][
+            "rival_local_check_consensus_grade"
+        ]
+        is False
+    )
     assert "rival benchmark consensus-grade" in baseline["forbidden_claims"]
 
 

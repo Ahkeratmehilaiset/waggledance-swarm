@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from tools.run_v12_rival_local_check_matrix import (
     PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL,
     build_rival_local_check_matrix,
@@ -106,13 +108,13 @@ def test_init_evidence_templates_are_non_passing(tmp_path: Path) -> None:
     assert report["passed_count"] == 0
     assert report["blocked_count"] == 4
     assert report["consensus_grade"] is False
-    # Per Sprint 2 rival-axis hardening: JamJet + Preloop hard-block at
-    # not_configured/no_local_installable_surface_yet regardless of any
-    # template manifest, while AGT/Asqav templates surface as not_passed.
-    assert {row["local_status"] for row in report["checks"]} == {
-        "not_passed",
-        "not_configured",
-    }
+    # Per 2026-05-23 upstream verification (C2): JamJet + Preloop are
+    # both open_source_installable (Apache-2.0, github.com/jamjet-labs/jamjet
+    # python-sdk-v0.8.6 + github.com/preloop/preloop v0.9.3), so their
+    # template manifests with smoke_result=not_run surface as not_passed
+    # (same as AGT/Asqav templates). The {"not_configured"} entry only
+    # appeared while the registry hard-blocked JamJet/Preloop.
+    assert {row["local_status"] for row in report["checks"]} == {"not_passed"}
     for manifest_path in init["manifest_paths"]:
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         assert manifest["evidence_manifest_contract_version"] == (
@@ -139,10 +141,10 @@ def test_cli_init_evidence_templates_reports_non_consensus(tmp_path: Path) -> No
     assert payload["passed_count"] == 0
     assert payload["blocked_count"] == 4
     assert payload["consensus_grade"] is False
-    assert {row["local_status"] for row in payload["checks"]} == {
-        "not_passed",
-        "not_configured",
-    }
+    # Post-2026-05-23 upstream verification: JamJet + Preloop are
+    # open_source_installable; all four template manifests surface as
+    # not_passed (smoke_result=not_run), none hard-blocked.
+    assert {row["local_status"] for row in payload["checks"]} == {"not_passed"}
 
 
 def test_init_evidence_templates_refuse_overwrite_without_flag(tmp_path: Path) -> None:
@@ -175,10 +177,10 @@ def test_init_evidence_templates_overwrite_still_non_passing(tmp_path: Path) -> 
     assert payload["template_init"]["overwritten_count"] == 4
     assert payload["passed_count"] == 0
     assert payload["consensus_grade"] is False
-    assert {row["local_status"] for row in payload["checks"]} == {
-        "not_passed",
-        "not_configured",
-    }
+    # Post-2026-05-23 upstream verification: JamJet + Preloop are
+    # open_source_installable; all four template manifests surface as
+    # not_passed (smoke_result=not_run), none hard-blocked.
+    assert {row["local_status"] for row in payload["checks"]} == {"not_passed"}
     manifest = json.loads(jamjet_manifest.read_text(encoding="utf-8"))
     assert manifest["smoke_result"] == "not_run"
     assert manifest["local_artifact_sha256"] == "sha256:" + ("0" * 64)
@@ -895,18 +897,20 @@ def test_public_doc_claim_surface_registry_lists_every_required_rival() -> None:
         assert rival in PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL, rival
 
 
-def test_jamjet_and_preloop_surface_marked_as_no_local_installable() -> None:
-    """Per the 2026-05-20 competitor pilot doc, JamJet and Preloop have
-    no public pypi/oss installable surface that exercises their headline
-    feature -- so the registry must mark them as
-    no_local_installable_surface_yet."""
+def test_jamjet_and_preloop_surface_marked_as_open_source_installable() -> None:
+    """Per the 2026-05-23 upstream verification pass (C2 scout artifact
+    iterations/codex_scout_tasks/jamjet_preloop_oss_surface_scout_2026_05_23.md),
+    JamJet (github.com/jamjet-labs/jamjet, Apache-2.0, python-sdk-v0.8.6,
+    PyPI 'jamjet') and Preloop (github.com/preloop/preloop, Apache-2.0,
+    v0.9.3, PyPI 'preloop') are both fully OSS-installable with hosted
+    control planes explicitly optional. Registry must reflect this."""
     assert (
         PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL["JamJet"]
-        == "no_local_installable_surface_yet"
+        == "open_source_installable"
     )
     assert (
         PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL["Preloop"]
-        == "no_local_installable_surface_yet"
+        == "open_source_installable"
     )
 
 
@@ -924,21 +928,27 @@ def test_agt_and_asqav_surface_marked_as_installable() -> None:
     )
 
 
-def test_jamjet_default_call_reports_no_local_installable_surface_yet() -> None:
-    """Without --evidence-dir, JamJet reports the specific anti-overclaim
-    blocker rather than the generic 'no evidence_dir provided'."""
+def test_jamjet_default_call_reports_generic_blocker_after_upstream_verification() -> None:
+    """Post-2026-05-23 upstream verification: JamJet is open_source_installable
+    so without --evidence-dir the matrix surfaces the generic
+    'no evidence_dir provided' blocker. The anti-overclaim teeth move to
+    test_synthetic_hard_blocked_rival_manifest_cannot_bypass_block which
+    monkeypatches a synthetic no_local_installable_surface_yet rival."""
     report = build_rival_local_check_matrix()
     jamjet = next(r for r in report["checks"] if r["rival"] == "JamJet")
     assert jamjet["local_status"] == "not_configured"
-    assert jamjet["blocker"] == "no_local_installable_surface_yet"
+    assert jamjet["blocker"] == "no evidence_dir provided"
     assert jamjet["consensus_grade_contribution"] is False
 
 
-def test_preloop_default_call_reports_no_local_installable_surface_yet() -> None:
+def test_preloop_default_call_reports_generic_blocker_after_upstream_verification() -> None:
+    """Post-2026-05-23 upstream verification: Preloop is open_source_installable
+    so without --evidence-dir the matrix surfaces the generic
+    'no evidence_dir provided' blocker (same as AGT)."""
     report = build_rival_local_check_matrix()
     preloop = next(r for r in report["checks"] if r["rival"] == "Preloop")
     assert preloop["local_status"] == "not_configured"
-    assert preloop["blocker"] == "no_local_installable_surface_yet"
+    assert preloop["blocker"] == "no evidence_dir provided"
 
 
 def test_agt_default_call_keeps_generic_blocker() -> None:
@@ -952,13 +962,13 @@ def test_agt_default_call_keeps_generic_blocker() -> None:
     assert agt["blocker"] == "no evidence_dir provided"
 
 
-def test_evidence_dir_without_jamjet_manifest_keeps_specific_blocker(
+def test_evidence_dir_without_jamjet_manifest_reports_generic_missing_blocker(
     tmp_path: Path,
 ) -> None:
-    """Even when an evidence_dir is provided, if JamJet's manifest is
-    absent the specific 'no_local_installable_surface_yet' blocker
-    persists -- the anti-overclaim signal must not be silently
-    downgraded to a generic 'evidence manifest missing'."""
+    """Post-2026-05-23 upstream verification: with no JamJet manifest in
+    evidence_dir, JamJet (now open_source_installable) reports the
+    generic 'evidence manifest missing' blocker, not silently passes.
+    consensus_grade stays False."""
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
     # Provide an empty evidence_dir -- no JamJet manifest.
@@ -966,15 +976,18 @@ def test_evidence_dir_without_jamjet_manifest_keeps_specific_blocker(
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
     jamjet = next(r for r in report["checks"] if r["rival"] == "JamJet")
     assert jamjet["local_status"] == "not_configured"
-    assert jamjet["blocker"] == "no_local_installable_surface_yet"
+    assert jamjet["blocker"] == "evidence manifest missing"
     assert report["consensus_grade"] is False
 
 
-def test_repository_evidence_dir_jamjet_preloop_report_specific_blocker() -> None:
+def test_repository_evidence_dir_jamjet_preloop_report_missing_manifest_blocker() -> None:
     """Production smoke: against the real docs/benchmarks/rival_local_checks
-    evidence dir, JamJet + Preloop both report the new specific blocker
-    while AGT stays passed and Asqav stays cloud_dependent. Aggregate
-    consensus_grade stays False."""
+    evidence dir (which contains AGT + Asqav manifests but no JamJet or
+    Preloop yet), JamJet + Preloop both report 'evidence manifest missing'
+    (post-2026-05-23 upstream verification; previously they reported
+    'no_local_installable_surface_yet'). AGT stays passed, Asqav stays
+    cloud_dependent. Aggregate consensus_grade stays False because only
+    1/4 rivals has actually passed a local check (AGT)."""
     report = build_rival_local_check_matrix(
         evidence_dir=ROOT / "docs" / "benchmarks" / "rival_local_checks",
     )
@@ -984,22 +997,36 @@ def test_repository_evidence_dir_jamjet_preloop_report_specific_blocker() -> Non
     agt = next(r for r in report["checks"] if r["rival"] == "Microsoft AGT")
     asqav = next(r for r in report["checks"] if r["rival"] == "Asqav")
 
-    assert jamjet["blocker"] == "no_local_installable_surface_yet"
-    assert preloop["blocker"] == "no_local_installable_surface_yet"
+    assert jamjet["blocker"] == "evidence manifest missing"
+    assert preloop["blocker"] == "evidence manifest missing"
     assert agt["local_status"] == "passed"
     assert asqav["local_status"] == "cloud_dependent"
     assert report["consensus_grade"] is False
 
 
-def test_synthetic_jamjet_manifest_cannot_bypass_no_local_installable_block(
+def test_synthetic_manifest_cannot_bypass_no_local_installable_block(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ANTI-OVERCLAIM TEETH per Codex RCO on #607: even a fully-formed
-    synthetic manifest claiming cloud_dependency=false and smoke_result=passed
-    MUST NOT promote JamJet to passing while the registry says
-    no_local_installable_surface_yet. The block is structural, not
-    cosmetic. Updating PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL is the only
-    legitimate channel out of this state."""
+    """ANTI-OVERCLAIM TEETH (originally per Codex RCO on #607; re-targeted
+    2026-05-23 post-upstream-verification of JamJet+Preloop). Even a
+    fully-formed synthetic manifest claiming cloud_dependency=false and
+    smoke_result=passed MUST NOT promote a rival to passing while the
+    registry says no_local_installable_surface_yet. The block is
+    structural, not cosmetic. Updating PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL
+    is the only legitimate channel out of this state.
+
+    Because the live registry no longer hard-blocks any of the four
+    real rivals (post-2026-05-23 verification), this test monkeypatches
+    JamJet's value back to no_local_installable_surface_yet to exercise
+    the hard-block logic on a hypothetical synthetic future rival. The
+    test is renamed to reflect the registry-driven invariant rather than
+    a specific rival."""
+    monkeypatch.setitem(
+        PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL,
+        "JamJet",
+        "no_local_installable_surface_yet",
+    )
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
     artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
@@ -1033,9 +1060,35 @@ def test_synthetic_jamjet_manifest_cannot_bypass_no_local_installable_block(
     jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
 
     # Hard block: even with a perfectly-formed manifest the registry's
-    # surface assessment trumps it.
+    # monkeypatched no_local_installable_surface_yet surface assessment
+    # trumps it.
     assert jamjet["local_status"] == "not_configured"
     assert jamjet["blocker"] == "no_local_installable_surface_yet"
     assert jamjet["consensus_grade_contribution"] is False
+    assert report["passed_count"] == 0
+    assert report["consensus_grade"] is False
+
+
+def test_open_source_installable_rival_yields_not_passed_with_template_manifest(
+    tmp_path: Path,
+) -> None:
+    """Post-2026-05-23 verification: with JamJet/Preloop now
+    open_source_installable, an init template manifest (smoke_result=
+    not_run, cloud_dependency=False) surfaces as local_status='not_passed'
+    -- never silently 'passed'. This is the consensus_grade guard for the
+    new (more permissive) registry value."""
+    evidence_dir = tmp_path / "evidence"
+    write_evidence_manifest_templates(evidence_dir=evidence_dir)
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+    jamjet = next(r for r in report["checks"] if r["rival"] == "JamJet")
+    preloop = next(r for r in report["checks"] if r["rival"] == "Preloop")
+
+    assert jamjet["local_status"] == "not_passed"
+    assert jamjet["blocker"] == "smoke_result is not passed"
+    assert jamjet["consensus_grade_contribution"] is False
+    assert preloop["local_status"] == "not_passed"
+    assert preloop["blocker"] == "smoke_result is not passed"
+    assert preloop["consensus_grade_contribution"] is False
     assert report["passed_count"] == 0
     assert report["consensus_grade"] is False

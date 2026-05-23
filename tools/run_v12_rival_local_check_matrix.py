@@ -57,15 +57,30 @@ REQUIRED_OBSERVATIONS_BY_RIVAL = {
     "Preloop": ("mcp_allow_deny_approval_smoke",),
 }
 # Per-rival public-doc-claim surface assessment (sourced from
-# docs/benchmarks/2026_05_20_competitor_axis_pilot.md). Drives the
-# specific blocker reported in the matrix when no honest local-installable
-# surface exists for a rival. This is a HARD invariant against overclaim:
-# a rival flagged "no_local_installable_surface_yet" cannot be promoted
+# docs/benchmarks/2026_05_20_competitor_axis_pilot.md and from upstream
+# repository verification on 2026-05-23). Drives the specific blocker
+# reported in the matrix when no honest local-installable surface
+# exists for a rival. This is a HARD invariant against overclaim: a
+# rival flagged "no_local_installable_surface_yet" cannot be promoted
 # to passing even if a synthetic manifest is supplied later -- the
 # registry must be updated first with proof of an installable surface.
+#
+# Upstream evidence (2026-05-23 verification pass, see
+# iterations/codex_scout_tasks/jamjet_preloop_oss_surface_scout_2026_05_23.md):
+#   - JamJet: github.com/jamjet-labs/jamjet, Apache-2.0, latest tag
+#     python-sdk-v0.8.6 (2026-05-19), PyPI 'jamjet'. README:
+#     "Hosted control plane available at app.jamjet.dev ... Optional.
+#      The runtime, both SDKs, and Engram are Apache-2.0 with no usage
+#      limits." -> open_source_installable.
+#   - Preloop: github.com/preloop/preloop, Apache-2.0, latest tag v0.9.3
+#     (2026-05-19), PyPI 'preloop'. README: "All shipped as Apache 2.0
+#      software that runs on your infrastructure." -> open_source_installable.
+#   - Microsoft AGT: open-source (MIT) governance runtime, unchanged.
+#   - Asqav: PyPI-installable signer + cloud-dependent provenance
+#     headline, unchanged.
 PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL = {
-    "JamJet": "no_local_installable_surface_yet",
-    "Preloop": "no_local_installable_surface_yet",
+    "JamJet": "open_source_installable",
+    "Preloop": "open_source_installable",
     "Microsoft AGT": "open_source_installable",
     "Asqav": "pypi_installable_cloud_dependent_headline",
 }

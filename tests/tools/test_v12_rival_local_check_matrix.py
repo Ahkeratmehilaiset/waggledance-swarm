@@ -106,7 +106,13 @@ def test_init_evidence_templates_are_non_passing(tmp_path: Path) -> None:
     assert report["passed_count"] == 0
     assert report["blocked_count"] == 4
     assert report["consensus_grade"] is False
-    assert {row["local_status"] for row in report["checks"]} == {"not_passed"}
+    # Per Sprint 2 rival-axis hardening: JamJet + Preloop hard-block at
+    # not_configured/no_local_installable_surface_yet regardless of any
+    # template manifest, while AGT/Asqav templates surface as not_passed.
+    assert {row["local_status"] for row in report["checks"]} == {
+        "not_passed",
+        "not_configured",
+    }
     for manifest_path in init["manifest_paths"]:
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         assert manifest["evidence_manifest_contract_version"] == (
@@ -133,7 +139,10 @@ def test_cli_init_evidence_templates_reports_non_consensus(tmp_path: Path) -> No
     assert payload["passed_count"] == 0
     assert payload["blocked_count"] == 4
     assert payload["consensus_grade"] is False
-    assert {row["local_status"] for row in payload["checks"]} == {"not_passed"}
+    assert {row["local_status"] for row in payload["checks"]} == {
+        "not_passed",
+        "not_configured",
+    }
 
 
 def test_init_evidence_templates_refuse_overwrite_without_flag(tmp_path: Path) -> None:
@@ -150,7 +159,7 @@ def test_init_evidence_templates_refuse_overwrite_without_flag(tmp_path: Path) -
 def test_init_evidence_templates_overwrite_still_non_passing(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     write_evidence_manifest_templates(evidence_dir=evidence_dir)
-    jamjet_manifest = evidence_dir / "jamjet.json"
+    jamjet_manifest = evidence_dir / "microsoft-agt.json"
     jamjet_manifest.write_text('{"smoke_result": "passed"}\n', encoding="utf-8")
 
     result = _run_matrix(
@@ -166,7 +175,10 @@ def test_init_evidence_templates_overwrite_still_non_passing(tmp_path: Path) -> 
     assert payload["template_init"]["overwritten_count"] == 4
     assert payload["passed_count"] == 0
     assert payload["consensus_grade"] is False
-    assert {row["local_status"] for row in payload["checks"]} == {"not_passed"}
+    assert {row["local_status"] for row in payload["checks"]} == {
+        "not_passed",
+        "not_configured",
+    }
     manifest = json.loads(jamjet_manifest.read_text(encoding="utf-8"))
     assert manifest["smoke_result"] == "not_run"
     assert manifest["local_artifact_sha256"] == "sha256:" + ("0" * 64)
@@ -175,23 +187,23 @@ def test_init_evidence_templates_overwrite_still_non_passing(tmp_path: Path) -> 
 def test_valid_local_evidence_manifest_marks_one_rival_passed(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
     artifact.parent.mkdir()
     _write_valid_artifact(
         artifact,
-        rival="JamJet",
-        pinned_revision="jamjet-test-rev",
+        rival="Microsoft AGT",
+        pinned_revision="microsoft-agt-test-rev",
         evidence_type="local_smoke",
     )
-    (evidence_dir / "jamjet.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": (
                     "wd.v12.rival_local_evidence_manifest.v1"
                 ),
-                "rival": "JamJet",
-                "pinned_revision": "jamjet-test-rev",
-                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
                 "local_artifact_sha256": _sha256(artifact),
                 "smoke_command": "jamjet smoke --offline",
                 "smoke_result": "passed",
@@ -206,12 +218,12 @@ def test_valid_local_evidence_manifest_marks_one_rival_passed(tmp_path: Path) ->
 
     assert report["passed_count"] == 1
     assert report["blocked_count"] == 3
-    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
-    assert jamjet["local_status"] == "passed"
-    assert jamjet["consensus_grade_contribution"] is True
-    assert jamjet["local_artifact_sha256"] == _sha256(artifact)
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
+    assert agt["local_status"] == "passed"
+    assert agt["consensus_grade_contribution"] is True
+    assert agt["local_artifact_sha256"] == _sha256(artifact)
     assert (
-        jamjet["evidence_artifact_contract_version"]
+        agt["evidence_artifact_contract_version"]
         == "wd.v12.rival_local_evidence_artifact.v1"
     )
     assert report["consensus_grade"] is False
@@ -232,27 +244,27 @@ def test_repository_evidence_dir_keeps_microsoft_agt_passed() -> None:
 def test_local_artifact_digest_is_line_ending_stable(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
     artifact.parent.mkdir()
     _write_valid_artifact(
         artifact,
-        rival="JamJet",
-        pinned_revision="jamjet-test-rev",
+        rival="Microsoft AGT",
+        pinned_revision="microsoft-agt-test-rev",
         evidence_type="local_smoke",
     )
     lf_digest = _sha256(artifact)
     artifact.write_bytes(
         artifact.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8"),
     )
-    (evidence_dir / "jamjet.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": (
                     "wd.v12.rival_local_evidence_manifest.v1"
                 ),
-                "rival": "JamJet",
-                "pinned_revision": "jamjet-test-rev",
-                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
                 "local_artifact_sha256": lf_digest,
                 "smoke_command": "jamjet smoke --offline",
                 "smoke_result": "passed",
@@ -265,26 +277,26 @@ def test_local_artifact_digest_is_line_ending_stable(tmp_path: Path) -> None:
 
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
 
-    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
-    assert jamjet["local_status"] == "passed"
-    assert jamjet["local_artifact_sha256"] == lf_digest
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
+    assert agt["local_status"] == "passed"
+    assert agt["local_artifact_sha256"] == lf_digest
 
 
 def test_weak_local_evidence_artifact_does_not_pass(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
     artifact.parent.mkdir()
     artifact.write_text('{"ok": true, "offline": true}\n', encoding="utf-8")
-    (evidence_dir / "jamjet.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": (
                     "wd.v12.rival_local_evidence_manifest.v1"
                 ),
-                "rival": "JamJet",
-                "pinned_revision": "jamjet-test-rev",
-                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
                 "local_artifact_sha256": _sha256(artifact),
                 "smoke_command": "jamjet smoke --offline",
                 "smoke_result": "passed",
@@ -297,32 +309,32 @@ def test_weak_local_evidence_artifact_does_not_pass(tmp_path: Path) -> None:
 
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
 
-    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
-    assert jamjet["local_status"] == "invalid_artifact"
-    assert "local artifact missing required fields" in jamjet["blocker"]
+    assert agt["local_status"] == "invalid_artifact"
+    assert "local artifact missing required fields" in agt["blocker"]
 
 
 def test_local_evidence_artifact_must_match_manifest(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
     artifact.parent.mkdir()
     _write_valid_artifact(
         artifact,
-        rival="JamJet",
+        rival="Microsoft AGT",
         pinned_revision="different-rev",
         evidence_type="local_smoke",
     )
-    (evidence_dir / "jamjet.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": (
                     "wd.v12.rival_local_evidence_manifest.v1"
                 ),
-                "rival": "JamJet",
-                "pinned_revision": "jamjet-test-rev",
-                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
                 "local_artifact_sha256": _sha256(artifact),
                 "smoke_command": "jamjet smoke --offline",
                 "smoke_result": "passed",
@@ -335,32 +347,32 @@ def test_local_evidence_artifact_must_match_manifest(tmp_path: Path) -> None:
 
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
 
-    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
-    assert jamjet["local_status"] == "invalid_artifact"
-    assert jamjet["blocker"] == "local artifact pinned_revision does not match manifest"
+    assert agt["local_status"] == "invalid_artifact"
+    assert agt["blocker"] == "local artifact pinned_revision does not match manifest"
 
 
 def test_malformed_manifest_field_fails_closed(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
     artifact.parent.mkdir()
     _write_valid_artifact(
         artifact,
-        rival="JamJet",
-        pinned_revision="jamjet-test-rev",
+        rival="Microsoft AGT",
+        pinned_revision="microsoft-agt-test-rev",
         evidence_type="local_smoke",
     )
-    (evidence_dir / "jamjet.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": (
                     "wd.v12.rival_local_evidence_manifest.v1"
                 ),
                 "rival": ["JamJet"],
-                "pinned_revision": "jamjet-test-rev",
-                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
                 "local_artifact_sha256": _sha256(artifact),
                 "smoke_command": "jamjet smoke --offline",
                 "smoke_result": "passed",
@@ -373,16 +385,16 @@ def test_malformed_manifest_field_fails_closed(tmp_path: Path) -> None:
 
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
 
-    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
-    assert jamjet["local_status"] == "invalid_manifest"
-    assert jamjet["blocker"] == "manifest rival does not match pilot row"
+    assert agt["local_status"] == "invalid_manifest"
+    assert agt["blocker"] == "manifest rival does not match pilot row"
 
 
 def test_malformed_artifact_field_fails_closed(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
     artifact.parent.mkdir()
     artifact.write_text(
         json.dumps(
@@ -391,7 +403,7 @@ def test_malformed_artifact_field_fails_closed(tmp_path: Path) -> None:
                     "wd.v12.rival_local_evidence_artifact.v1"
                 ),
                 "rival": ["JamJet"],
-                "pinned_revision": "jamjet-test-rev",
+                "pinned_revision": "microsoft-agt-test-rev",
                 "smoke_result": "passed",
                 "offline": True,
                 "ok": True,
@@ -408,15 +420,15 @@ def test_malformed_artifact_field_fails_closed(tmp_path: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
-    (evidence_dir / "jamjet.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": (
                     "wd.v12.rival_local_evidence_manifest.v1"
                 ),
-                "rival": "JamJet",
-                "pinned_revision": "jamjet-test-rev",
-                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
                 "local_artifact_sha256": _sha256(artifact),
                 "smoke_command": "jamjet smoke --offline",
                 "smoke_result": "passed",
@@ -429,10 +441,10 @@ def test_malformed_artifact_field_fails_closed(tmp_path: Path) -> None:
 
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
 
-    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
-    assert jamjet["local_status"] == "invalid_artifact"
-    assert jamjet["blocker"] == "local artifact rival does not match manifest"
+    assert agt["local_status"] == "invalid_artifact"
+    assert agt["blocker"] == "local artifact rival does not match manifest"
 
 
 def test_cloud_dependent_manifest_does_not_pass(tmp_path: Path) -> None:
@@ -671,19 +683,23 @@ def test_missing_required_observation_does_not_pass(tmp_path: Path) -> None:
 
 
 def test_manifest_with_missing_local_artifact_does_not_pass(tmp_path: Path) -> None:
+    """Use an installable-surface rival (Microsoft AGT) so the matrix
+    exercises its invalid_artifact branch. Per Sprint 2 rival-axis
+    hardening, JamJet/Preloop short-circuit to not_configured regardless
+    of manifest contents, so cannot be used to test downstream branches."""
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    (evidence_dir / "preloop.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": (
                     "wd.v12.rival_local_evidence_manifest.v1"
                 ),
-                "rival": "Preloop",
-                "pinned_revision": "preloop-test-rev",
-                "local_artifact_path": "artifacts/preloop-smoke.json",
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
                 "local_artifact_sha256": "sha256:" + ("0" * 64),
-                "smoke_command": "preloop smoke --offline",
+                "smoke_command": "microsoft-agt smoke --offline",
                 "smoke_result": "passed",
                 "cloud_dependency": False,
                 "evidence_type": "local_smoke",
@@ -694,10 +710,10 @@ def test_manifest_with_missing_local_artifact_does_not_pass(tmp_path: Path) -> N
 
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
 
-    preloop = next(row for row in report["checks"] if row["rival"] == "Preloop")
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
-    assert preloop["local_status"] == "invalid_artifact"
-    assert preloop["blocker"] == "local_artifact_path does not name an existing file"
+    assert agt["local_status"] == "invalid_artifact"
+    assert agt["blocker"] == "local_artifact_path does not name an existing file"
 
 
 def test_manifest_with_digest_mismatch_does_not_pass(tmp_path: Path) -> None:
@@ -736,14 +752,14 @@ def test_manifest_with_digest_mismatch_does_not_pass(tmp_path: Path) -> None:
 def test_manifest_path_must_stay_under_evidence_dir(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    (evidence_dir / "jamjet.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": (
                     "wd.v12.rival_local_evidence_manifest.v1"
                 ),
-                "rival": "JamJet",
-                "pinned_revision": "jamjet-test-rev",
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
                 "local_artifact_path": "../outside.json",
                 "local_artifact_sha256": "sha256:" + ("0" * 64),
                 "smoke_command": "jamjet smoke --offline",
@@ -757,25 +773,25 @@ def test_manifest_path_must_stay_under_evidence_dir(tmp_path: Path) -> None:
 
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
 
-    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
-    assert jamjet["local_status"] == "invalid_artifact"
-    assert jamjet["blocker"] == "local_artifact_path escapes evidence_dir"
+    assert agt["local_status"] == "invalid_artifact"
+    assert agt["blocker"] == "local_artifact_path escapes evidence_dir"
 
 
 def test_manifest_contract_version_must_match_v1(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
-    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
     artifact.parent.mkdir()
     artifact.write_text('{"ok": true, "offline": true}\n', encoding="utf-8")
-    (evidence_dir / "jamjet.json").write_text(
+    (evidence_dir / "microsoft-agt.json").write_text(
         json.dumps(
             {
                 "evidence_manifest_contract_version": "legacy.v0",
-                "rival": "JamJet",
-                "pinned_revision": "jamjet-test-rev",
-                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
                 "local_artifact_sha256": _sha256(artifact),
                 "smoke_command": "jamjet smoke --offline",
                 "smoke_result": "passed",
@@ -788,10 +804,10 @@ def test_manifest_contract_version_must_match_v1(tmp_path: Path) -> None:
 
     report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
 
-    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
-    assert jamjet["local_status"] == "invalid_manifest"
-    assert jamjet["blocker"] == "evidence_manifest_contract_version does not match v1"
+    assert agt["local_status"] == "invalid_manifest"
+    assert agt["blocker"] == "evidence_manifest_contract_version does not match v1"
 
 
 def _sha256(path: Path) -> str:
@@ -972,4 +988,54 @@ def test_repository_evidence_dir_jamjet_preloop_report_specific_blocker() -> Non
     assert preloop["blocker"] == "no_local_installable_surface_yet"
     assert agt["local_status"] == "passed"
     assert asqav["local_status"] == "cloud_dependent"
+    assert report["consensus_grade"] is False
+
+
+def test_synthetic_jamjet_manifest_cannot_bypass_no_local_installable_block(
+    tmp_path: Path,
+) -> None:
+    """ANTI-OVERCLAIM TEETH per Codex RCO on #607: even a fully-formed
+    synthetic manifest claiming cloud_dependency=false and smoke_result=passed
+    MUST NOT promote JamJet to passing while the registry says
+    no_local_installable_surface_yet. The block is structural, not
+    cosmetic. Updating PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL is the only
+    legitimate channel out of this state."""
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "jamjet-smoke.json"
+    artifact.parent.mkdir()
+    _write_valid_artifact(
+        artifact,
+        rival="JamJet",
+        pinned_revision="jamjet-fake-rev",
+        evidence_type="local_smoke",
+    )
+    (evidence_dir / "jamjet.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "JamJet",
+                "pinned_revision": "jamjet-fake-rev",
+                "local_artifact_path": "artifacts/jamjet-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "jamjet smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+
+    # Hard block: even with a perfectly-formed manifest the registry's
+    # surface assessment trumps it.
+    assert jamjet["local_status"] == "not_configured"
+    assert jamjet["blocker"] == "no_local_installable_surface_yet"
+    assert jamjet["consensus_grade_contribution"] is False
+    assert report["passed_count"] == 0
     assert report["consensus_grade"] is False

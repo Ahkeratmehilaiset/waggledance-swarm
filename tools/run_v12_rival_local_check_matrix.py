@@ -364,39 +364,28 @@ def _build_check_row(
         "evidence_manifest": str(manifest_path) if manifest_path else None,
         "consensus_grade_contribution": False,
     }
+    # Anti-overclaim early exit (hard invariant per Codex RCO on #607):
+    # rivals whose public-doc-claim surface has no local-installable
+    # component cannot be promoted past not_configured regardless of
+    # any manifest someone might supply. Even a synthetic manifest
+    # with cloud_dependency=false and a "passing" smoke_result MUST
+    # NOT contribute to consensus_grade. Updating
+    # PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL is the only legitimate channel
+    # to unblock these rivals -- it forces the operator/agent to first
+    # prove the installable surface exists.
+    if PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL.get(rival) == "no_local_installable_surface_yet":
+        return {
+            **base,
+            "local_status": "not_configured",
+            "blocker": "no_local_installable_surface_yet",
+        }
     if manifest_path is None:
-        # No evidence_dir at all. If the rival's public-doc-claim
-        # surface has no local-installable component, surface that as
-        # the specific blocker -- the operator/agent now sees the real
-        # reason rather than a generic "no evidence_dir" message.
-        if (
-            PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL.get(rival)
-            == "no_local_installable_surface_yet"
-        ):
-            return {
-                **base,
-                "local_status": "not_configured",
-                "blocker": "no_local_installable_surface_yet",
-            }
         return {
             **base,
             "local_status": "not_configured",
             "blocker": "no evidence_dir provided",
         }
     if not manifest_path.exists():
-        # evidence_dir provided but the rival manifest is absent. For
-        # rivals whose surface has no installable component, the
-        # absence is structural: no honest manifest can yet exist for
-        # them. Report the specific anti-overclaim blocker.
-        if (
-            PUBLIC_DOC_CLAIM_SURFACE_BY_RIVAL.get(rival)
-            == "no_local_installable_surface_yet"
-        ):
-            return {
-                **base,
-                "local_status": "not_configured",
-                "blocker": "no_local_installable_surface_yet",
-            }
         return {
             **base,
             "local_status": "not_configured",

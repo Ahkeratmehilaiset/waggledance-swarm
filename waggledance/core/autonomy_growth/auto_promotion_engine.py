@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.solver_synthesis.declarative_solver_spec import SolverSpec
@@ -80,11 +80,28 @@ class PromotionOutcome:
     promotion_decision_digest: Optional[str] = None
 
 
+class AutoPromotionReceiptEmissionError(ControlPlaneError):
+    """Raised when an opt-in promotion receipt sink blocks a transaction.
+
+    The sink runs inside the promotion transaction so a sink failure can abort
+    the DB commit. Sinks must therefore be prompt local callbacks: append the
+    bundle to memory or another transactional sink, do not do slow disk/network
+    I/O, and do not re-enter ControlPlaneDB.
+    """
+
+
 class AutoPromotionEngine:
     """Closed loop: validate → shadow → decide → persist."""
 
-    def __init__(self, control_plane: ControlPlaneDB) -> None:
+    def __init__(
+        self,
+        control_plane: ControlPlaneDB,
+        *,
+        emit_receipt_bundle: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> None:
         self._cp = control_plane
+        self.emit_receipt_bundle = emit_receipt_bundle
+        self._last_emitted_receipt: Optional[dict[str, Any]] = None
 
     def evaluate_candidate(
         self, request: PromotionRequest
@@ -261,24 +278,28 @@ class AutoPromotionEngine:
                         sort_keys=True,
                     ),
                 )
+                outcome = PromotionOutcome(
+                    decided=True,
+                    decision="rolled_back",
+                    solver_id=existing.id,
+                    family_kind=family_kind,
+                    invariant_failed=None,
+                    validation=None,
+                    shadow=None,
+                    decision_record_id=decision.id,
+                    promotion_decision_artifact=decision_artifact,
+                    promotion_decision_digest=decision_digest,
+                )
+                self._emit_promotion_receipt_bundle(outcome)
                 self._cp._conn.execute("COMMIT")  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001
                 self._cp._conn.execute("ROLLBACK")  # type: ignore[attr-defined]
+                if isinstance(exc, AutoPromotionReceiptEmissionError):
+                    raise
                 raise ControlPlaneError(
                     f"rollback failed: {exc!r}"
                 ) from exc
-        return PromotionOutcome(
-            decided=True,
-            decision="rolled_back",
-            solver_id=existing.id,
-            family_kind=family_kind,
-            invariant_failed=None,
-            validation=None,
-            shadow=None,
-            decision_record_id=decision.id,
-            promotion_decision_artifact=decision_artifact,
-            promotion_decision_digest=decision_digest,
-        )
+        return outcome
 
     # -- internals -----------------------------------------------------
 
@@ -431,25 +452,29 @@ class AutoPromotionEngine:
                         "promotion_decision_digest": decision_digest,
                     }),
                 )
+                outcome = PromotionOutcome(
+                    decided=True,
+                    decision="auto_promoted",
+                    solver_id=solver.id,
+                    family_kind=family_kind,
+                    invariant_failed=None,
+                    validation=validation,
+                    shadow=shadow,
+                    decision_record_id=decision.id,
+                    promotion_decision_artifact=decision_artifact,
+                    promotion_decision_digest=decision_digest,
+                )
+                self._emit_promotion_receipt_bundle(outcome)
                 self._cp._conn.execute("COMMIT")  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001
                 self._cp._conn.execute("ROLLBACK")  # type: ignore[attr-defined]
+                if isinstance(exc, AutoPromotionReceiptEmissionError):
+                    raise
                 raise ControlPlaneError(
                     f"auto-promotion commit failed: {exc!r}"
                 ) from exc
 
-        return PromotionOutcome(
-            decided=True,
-            decision="auto_promoted",
-            solver_id=solver.id,
-            family_kind=family_kind,
-            invariant_failed=None,
-            validation=validation,
-            shadow=shadow,
-            decision_record_id=decision.id,
-            promotion_decision_artifact=decision_artifact,
-            promotion_decision_digest=decision_digest,
-        )
+        return outcome
 
     def _family_kind_for_solver(self, solver: SolverRecord) -> str:
         if solver.family_id is None:
@@ -460,6 +485,21 @@ class AutoPromotionEngine:
                 (solver.family_id,),
             ).fetchone()
         return str(row["name"]) if row is not None else "<unknown>"
+
+    def _emit_promotion_receipt_bundle(self, outcome: PromotionOutcome) -> None:
+        if self.emit_receipt_bundle is None:
+            return
+        try:
+            bundle = build_promotion_decision_receipt(
+                outcome,
+                previous_receipt=self._last_emitted_receipt,
+            )
+            self.emit_receipt_bundle(bundle)
+        except Exception as exc:  # noqa: BLE001
+            raise AutoPromotionReceiptEmissionError(
+                "auto-promotion receipt sink failed inside transaction"
+            ) from exc
+        self._last_emitted_receipt = bundle["receipt"]
 
 
 def build_promotion_decision_artifact(
@@ -628,6 +668,7 @@ def build_promotion_decision_receipt(
         previous_receipt=previous_receipt,
     )
     return {
+        "payload": payload,
         "promotion_decision_artifact": artifact,
         "evaluation_result": evaluation,
         "receipt": receipt,
@@ -725,6 +766,7 @@ __all__ = [
     "AutoPromotionEngine",
     "PromotionRequest",
     "PromotionOutcome",
+    "AutoPromotionReceiptEmissionError",
     "PROMOTION_DECIDED_BY",
     "build_promotion_decision_artifact",
     "build_promotion_decision_receipt",

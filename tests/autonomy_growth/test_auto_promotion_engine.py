@@ -8,6 +8,7 @@ import json
 import pytest
 
 from waggledance.core.autonomy_growth.auto_promotion_engine import (
+    AutoPromotionReceiptEmissionError,
     AutoPromotionEngine,
     PROMOTION_DECIDED_BY,
     PromotionRequest,
@@ -149,6 +150,86 @@ def test_auto_promotion_receipt_binding_is_payload_free(
     assert bundle["evaluation_result"]["subject_type"] == "promotion"
     assert bundle["evaluation_result"]["verdict"] == "pass"
     assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
+
+
+def test_auto_promotion_emits_chained_receipts_for_promote_and_rollback(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    bundles: list[dict] = []
+    eng = AutoPromotionEngine(
+        cp,
+        emit_receipt_bundle=lambda bundle: bundles.append(bundle),
+    )
+
+    outcome = eng.evaluate_candidate(PromotionRequest(
+        spec=_scalar_unit_conversion_spec("receipt_solver"),
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=_scalar_unit_conversion_oracle,
+        oracle_kind="formula_recompute",
+    ))
+    rollback = eng.rollback(
+        "receipt_solver",
+        rollback_reason="secret rollback reason",
+    )
+
+    assert outcome.decision == "auto_promoted"
+    assert rollback.decision == "rolled_back"
+    assert len(bundles) == 2
+    assert bundles[0]["payload"]["decision"] == "auto_promoted"
+    assert bundles[0]["receipt"]["prev_receipt_hash"] is None
+    assert bundles[1]["payload"]["decision"] == "rolled_back"
+    assert bundles[1]["receipt"]["prev_receipt_hash"] == sha256_digest(
+        bundles[0]["receipt"]
+    )
+    assert "secret rollback reason" not in json.dumps(bundles, sort_keys=True)
+
+
+def test_auto_promotion_receipt_sink_failure_rolls_back_and_preserves_head(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    bundles: list[dict] = []
+    attempts = 0
+
+    def first_emit_fails(bundle: dict) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("receipt boom")
+        bundles.append(bundle)
+
+    eng = AutoPromotionEngine(cp, emit_receipt_bundle=first_emit_fails)
+
+    with pytest.raises(
+        AutoPromotionReceiptEmissionError,
+        match="auto-promotion receipt sink failed",
+    ):
+        eng.evaluate_candidate(PromotionRequest(
+            spec=_scalar_unit_conversion_spec("sink_failure_solver"),
+            validation_cases=_validation_cases_for_celsius_to_kelvin(),
+            shadow_samples=_shadow_samples_simple(),
+            oracle=_scalar_unit_conversion_oracle,
+            oracle_kind="formula_recompute",
+        ))
+
+    assert cp.get_solver("sink_failure_solver") is None
+    assert cp.stats().table_counts["promotion_decisions"] == 0
+    assert eng._last_emitted_receipt is None
+
+    outcome = eng.evaluate_candidate(PromotionRequest(
+        spec=_scalar_unit_conversion_spec("sink_failure_solver"),
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=_scalar_unit_conversion_oracle,
+        oracle_kind="formula_recompute",
+    ))
+
+    assert outcome.decision == "auto_promoted"
+    assert len(bundles) == 1
+    assert bundles[0]["receipt"]["prev_receipt_hash"] is None
+    assert eng._last_emitted_receipt == bundles[0]["receipt"]
 
 
 def test_auto_promotion_artifact_failure_blocks_commit(

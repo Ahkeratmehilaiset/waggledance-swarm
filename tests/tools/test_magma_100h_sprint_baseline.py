@@ -302,6 +302,25 @@ def test_baseline_rejects_competitor_consensus_grade_overclaim() -> None:
     assert "competitor_pilot_overclaims_consensus_grade" in baseline["blockers"]
 
 
+def test_baseline_rejects_rival_local_check_consensus_grade_overclaim() -> None:
+    proof = _minimal_v12_proof()
+    proof["competitor_pilot"] = dict(proof["competitor_pilot"])
+    proof["competitor_pilot"]["rival_local_check_consensus_grade"] = True
+
+    baseline = build_baseline(v12_proof=proof, generated_at_utc=FIXED_NOW)
+
+    assert baseline["ok"] is False
+    assert "rival_local_check_consensus_grade_must_be_false" in (
+        baseline["blockers"]
+    )
+    assert (
+        baseline["current_state"]["competitor_pilot"][
+            "rival_local_check_consensus_grade"
+        ]
+        is True
+    )
+
+
 def test_baseline_fail_closes_on_missing_a4_lifecycle_receipt_chain() -> None:
     proof = _minimal_v12_proof()
     proof["a4_solver_lifecycle"] = dict(proof["a4_solver_lifecycle"])

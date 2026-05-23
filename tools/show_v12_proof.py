@@ -181,6 +181,7 @@ def collect_proof(
             "gate_accuracy": eval_report.get("gate_accuracy"),
             "verdict_accuracy": eval_report.get("verdict_accuracy"),
             "reason_code_accuracy": eval_report.get("reason_code_accuracy"),
+            "coverage": eval_report.get("coverage", {}),
             "ok": eval_report.get("ok"),
             "available": eval_report.get("ok") is not None,
         },
@@ -245,6 +246,14 @@ def format_proof(report: dict[str, Any]) -> str:
             f"     accuracy (gate / verdict / codes): {adv['gate_accuracy']} / "
             f"{adv['verdict_accuracy']} / {adv['reason_code_accuracy']}"
         )
+        coverage = adv.get("coverage") or {}
+        if coverage:
+            lines.append(
+                "     coverage                       : "
+                f"receipt_binding={coverage.get('receipt_binding_case_count')}, "
+                f"evaluation_result={coverage.get('evaluation_result_case_count')}, "
+                f"counterfactual={coverage.get('counterfactual_case_count')}"
+            )
     else:
         lines.append("")
         lines.append("ADVERSARIAL CORPUS               : tool unavailable")

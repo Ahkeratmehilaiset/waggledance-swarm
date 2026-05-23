@@ -57,7 +57,7 @@ def test_fixture_cases_validate_against_schema() -> None:
 
     corpus = _load_corpus()
     assert corpus["corpus_version"] == "magma.synthetic_adversarial_corpus.v0"
-    assert len(corpus["cases"]) >= 8
+    assert len(corpus["cases"]) >= 30
     for case in corpus["cases"]:
         validator.validate(case)
 
@@ -201,3 +201,4 @@ def test_validator_json_report_includes_coverage() -> None:
         "review",
         "require_approval",
     }
+    assert report["case_count"] >= 30

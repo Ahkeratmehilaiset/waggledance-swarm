@@ -53,6 +53,11 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["full_match_count"] == expected_case_count
     assert report["partial_match_count"] == 0
     assert report["mismatch_count"] == 0
+    assert report["coverage"]["evaluation_result_case_count"] >= 3
+    assert report["coverage"]["receipt_binding_case_count"] >= 2
+    assert report["coverage"]["counterfactual_case_count"] >= 3
+    assert report["coverage"]["operator_gate_case_count"] >= 2
+    assert report["coverage"]["clean_baseline_case_count"] >= 2
     assert report["corpus_digest"].startswith("sha256:")
     assert report["expectations_digest"].startswith("sha256:")
     assert report["catch_agent_bucket_status"] == "redacted_hidden_expectations_v0"
@@ -148,6 +153,7 @@ def test_opt_in_receipt_bundle_verifies_report(tmp_path: Path) -> None:
     assert receipt["canonical_payload_digest"] == sha256_digest(payload)
     assert receipt["evaluation_result_digest"] == sha256_digest(evaluation)
     assert payload["case_count"] == expected_case_count
+    assert payload["coverage"] == report["coverage"]
     assert len(payload["case_evaluation_result_digests"]) == expected_case_count
 
 

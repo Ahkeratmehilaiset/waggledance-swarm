@@ -139,6 +139,9 @@ def test_adversarial_corpus_section_reports_fixture_case_count() -> None:
     assert adv["pass_count"] == expected_case_count
     assert adv["fail_count"] == 0
     assert adv["ok"] is True
+    assert adv["coverage"]["evaluation_result_case_count"] >= 3
+    assert adv["coverage"]["receipt_binding_case_count"] >= 2
+    assert adv["coverage"]["counterfactual_case_count"] >= 3
 
 
 def test_a3_counterfactual_axis_section_reports_measured_partial() -> None:

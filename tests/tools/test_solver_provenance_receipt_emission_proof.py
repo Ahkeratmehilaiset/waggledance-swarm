@@ -223,6 +223,101 @@ def test_cli_refuses_existing_out_dir(tmp_path: Path) -> None:
     assert "out_dir must not exist" in result.stderr
 
 
+def test_failed_sink_leaves_chain_head_none_and_retry_emits_no_prev_hash() -> None:
+    """Per Codex RCO BLOCK on #614 head ae5427c8: if emit_receipt_bundle
+    raises, the chain head must NOT advance (bundle was never persisted).
+    A subsequent retry with a working sink must emit with
+    prev_receipt_hash=None as if the failed attempt never happened. The
+    candidate's activation_state must stay SIGNED after the failed activate
+    because the sink exception propagates and update_candidate is not
+    reached."""
+    from waggledance.core.v3_13_0.solver_provenance import (
+        ActivationState,
+        SigningRole,
+        SolverCandidateRecord,
+        SolverProvenance,
+        canonicalize_manifest,
+    )
+
+    canonical, digest = canonicalize_manifest(
+        {"candidate_id": "cand:failed_sink", "template_family": "X", "version": 1}
+    )
+    candidate = SolverCandidateRecord(
+        candidate_id="cand:failed_sink",
+        manifest_canonical_json=canonical,
+        manifest_sha256=digest,
+        target_domain="DOM-011",
+        target_write_risk="local_artifact",
+    )
+    store: dict[str, SolverCandidateRecord] = {candidate.candidate_id: candidate}
+    audit_events: list[dict] = []
+    bridge_events: list[dict] = []
+
+    def failing_sink(_bundle: dict) -> None:
+        raise RuntimeError("sink boom")
+
+    prov = SolverProvenance(
+        fetch_candidate=lambda cid: store.get(cid),
+        update_candidate=lambda rec: store.__setitem__(rec.candidate_id, rec),
+        emit_magma_event=lambda env: (
+            env.__setitem__("__id", f"evt_{len(audit_events):04d}")
+            or audit_events.append(env)
+            or env["__id"]
+        ),
+        emit_bridge_event=lambda env: bridge_events.append(env),
+        operator_scope_policy_active=lambda _ref: True,
+        emit_receipt_bundle=failing_sink,
+    )
+
+    # Owner + peer signing must succeed; sign() does not emit a transition
+    # receipt, so the failing sink is not yet invoked.
+    prov.sign(
+        candidate_id=candidate.candidate_id,
+        signing_agent_id="claude",
+        signing_role=SigningRole.OWNER.value,
+        bridge_event_ref="bridge:owner",
+        operator_scope_policy_ref="policy:home",
+    )
+    prov.sign(
+        candidate_id=candidate.candidate_id,
+        signing_agent_id="codex",
+        signing_role=SigningRole.PEER.value,
+        bridge_event_ref="bridge:peer",
+        operator_scope_policy_ref="policy:home",
+    )
+    assert store[candidate.candidate_id].activation_state == ActivationState.SIGNED.value
+    assert prov._last_emitted_receipt is None
+
+    # First activate(): failing sink raises -> candidate stays SIGNED,
+    # chain head must NOT advance.
+    raised = False
+    try:
+        prov.activate(candidate_id=candidate.candidate_id)
+    except RuntimeError as exc:
+        raised = True
+        assert "sink boom" in str(exc)
+    assert raised, "expected RuntimeError from failing sink"
+    assert store[candidate.candidate_id].activation_state == ActivationState.SIGNED.value
+    assert prov._last_emitted_receipt is None, (
+        "chain head must NOT advance on failed sink emission"
+    )
+
+    # Retry with a working sink: activate() succeeds; the emitted bundle's
+    # receipt has prev_receipt_hash=None because the prior failed attempt
+    # left chain head untouched.
+    captured_bundles: list[dict] = []
+    prov.emit_receipt_bundle = lambda bundle: captured_bundles.append(bundle)
+
+    final_state = prov.activate(candidate_id=candidate.candidate_id)
+    assert final_state == ActivationState.ACTIVATED
+    assert store[candidate.candidate_id].activation_state == ActivationState.ACTIVATED.value
+    assert len(captured_bundles) == 1
+    bundle = captured_bundles[0]
+    assert bundle["receipt"]["prev_receipt_hash"] is None
+    # And subsequent successful emissions DO chain off this receipt.
+    assert prov._last_emitted_receipt == bundle["receipt"]
+
+
 def test_cli_rejects_non_utc_now(tmp_path: Path) -> None:
     result = subprocess.run(
         [

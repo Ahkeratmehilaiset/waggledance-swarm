@@ -691,8 +691,13 @@ class SolverProvenance:
             new_state=new_state,
             previous_receipt=self._last_emitted_receipt,
         )
-        self._last_emitted_receipt = bundle["receipt"]
+        # Sink call first: if the sink raises, the chain head must NOT
+        # advance (the bundle was never persisted). Only commit chain
+        # head on successful sink return so a retry with a working sink
+        # emits with prev_receipt_hash=None as if the failed attempt
+        # never happened.
         self.emit_receipt_bundle(bundle)
+        self._last_emitted_receipt = bundle["receipt"]
 
     def _auto_quarantine(self, candidate: SolverCandidateRecord) -> None:
         audit_ref = self.emit_magma_event({

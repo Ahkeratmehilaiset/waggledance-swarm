@@ -113,8 +113,8 @@ def test_adoption_high_gap_count_is_zero_on_current_main() -> None:
     assert adoption["action_required_gap_count"] == 0, adoption
     assert adoption["accepted_exception_count"] == 0, adoption
     assert adoption["status_counts"] == {
-        "receipt_bound": 6,
-        "receipt_capable_opt_in": 1,
+        "receipt_bound": 4,
+        "receipt_capable_opt_in": 3,
     }
     assert adoption["medium_gap_targets"] == []
 

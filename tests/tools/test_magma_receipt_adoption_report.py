@@ -134,6 +134,44 @@ def test_opt_in_runtime_receipt_hook_is_not_action_required_gap(
     assert report["high_criticality_gap_count"] == 0
 
 
+def test_opt_in_magma_receipt_bundle_hook_is_not_overstated_as_bound(
+    tmp_path: Path,
+) -> None:
+    gate_path = tmp_path / "waggledance" / "core" / "v3_13_0" / "gate.py"
+    gate_path.parent.mkdir(parents=True)
+    gate_path.write_text(
+        "\n".join(
+            [
+                "emit_receipt_bundle: Optional[Callable[[dict], None]] = None",
+                "from waggledance.core.magma.evaluation_result import build_evaluation_result",
+                "from waggledance.core.magma.receipt import build_magma_receipt",
+                "evaluation = build_evaluation_result(...)",
+                "receipt = build_magma_receipt(...)",
+                "if self.emit_receipt_bundle is not None:",
+                "    self.emit_receipt_bundle({'evaluation': evaluation, 'receipt': receipt})",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_adoption_report(
+        root=tmp_path,
+        targets=(
+            AdoptionTarget(
+                "waggledance/core/v3_13_0/gate.py",
+                "gate",
+                "high",
+                "fixture",
+            ),
+        ),
+    )
+
+    entry = report["entries"][0]
+    assert entry["status"] == "receipt_capable_opt_in"
+    assert report["action_required_gap_count"] == 0
+    assert report["high_criticality_gap_count"] == 0
+
+
 def test_render_markdown_includes_gap_count(tmp_path: Path) -> None:
     report = build_adoption_report(
         root=tmp_path,

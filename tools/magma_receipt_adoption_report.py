@@ -25,6 +25,7 @@ RECEIPT_PATTERNS = (
     "write_receipt_bundle",
     "ReceiptBundleEntry",
     "runtime_receipt_sink",
+    "emit_receipt_bundle: Optional",
 )
 EVALUATION_PATTERNS = (
     "build_evaluation_result",
@@ -313,6 +314,8 @@ def _classify(pattern_hits: dict[str, dict[str, int]]) -> str:
     verifier_count = sum(pattern_hits.get("verifier", {}).values())
     magma_event_count = sum(pattern_hits.get("magma_event", {}).values())
     if receipt_count and evaluation_count:
+        if pattern_hits.get("receipt", {}).get("emit_receipt_bundle: Optional"):
+            return "receipt_capable_opt_in"
         if (
             pattern_hits.get("receipt", {}).get("runtime_receipt_sink")
             and pattern_hits.get("evaluation", {}).get(

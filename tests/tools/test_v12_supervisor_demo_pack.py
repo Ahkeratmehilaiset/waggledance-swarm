@@ -42,7 +42,10 @@ def test_build_demo_pack_writes_verified_evidence(tmp_path: Path) -> None:
     assert result["receipt_verifier_ok"] is True
     assert result["receipt_count"] == 1
     assert result["high_criticality_gap_count"] == 0
-    assert result["status_counts"]["receipt_bound"] >= 6
+    assert result["status_counts"] == {
+        "receipt_bound": 4,
+        "receipt_capable_opt_in": 3,
+    }
     assert result["a3_counterfactual_delta_proven"] is True
     assert result["a3_receipt_chain_verified"] is True
     assert result["a4_solver_growth_proven"] is True

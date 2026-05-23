@@ -97,6 +97,43 @@ def test_accepted_exception_marks_reviewed_observability_path(
     assert report["high_criticality_gap_count"] == 0
 
 
+def test_opt_in_runtime_receipt_hook_is_not_action_required_gap(
+    tmp_path: Path,
+) -> None:
+    runtime_path = tmp_path / "waggledance" / "core" / "autonomy" / "runtime.py"
+    runtime_path.parent.mkdir(parents=True)
+    runtime_path.write_text(
+        "\n".join(
+            [
+                "self.runtime_receipt_sink = runtime_receipt_sink",
+                "from waggledance.core.magma.runtime_summary_receipt import (",
+                "    build_handle_query_runtime_summary,",
+                ")",
+                "summary = build_handle_query_runtime_summary(...)",
+                "return self.runtime_receipt_sink(summary)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_adoption_report(
+        root=tmp_path,
+        targets=(
+            AdoptionTarget(
+                "waggledance/core/autonomy/runtime.py",
+                "runtime",
+                "medium",
+                "fixture",
+            ),
+        ),
+    )
+
+    entry = report["entries"][0]
+    assert entry["status"] == "receipt_capable_opt_in"
+    assert report["action_required_gap_count"] == 0
+    assert report["high_criticality_gap_count"] == 0
+
+
 def test_render_markdown_includes_gap_count(tmp_path: Path) -> None:
     report = build_adoption_report(
         root=tmp_path,

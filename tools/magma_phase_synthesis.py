@@ -114,6 +114,7 @@ def build_synthesis(
             "gate_accuracy": adv.get("gate_accuracy"),
             "verdict_accuracy": adv.get("verdict_accuracy"),
             "reason_code_accuracy": adv.get("reason_code_accuracy"),
+            "coverage": dict(adv.get("coverage") or {}),
         },
         "governance_throughput": {
             "metric_count": gov.get("metric_count"),
@@ -288,6 +289,7 @@ def render_markdown(synthesis: dict[str, Any]) -> str:
                 ("Gate accuracy", adv.get("gate_accuracy")),
                 ("Verdict accuracy", adv.get("verdict_accuracy")),
                 ("Reason-code accuracy", adv.get("reason_code_accuracy")),
+                ("Coverage", adv.get("coverage")),
             ]
         )
     )
@@ -407,16 +409,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     baseline = _read_json(args.baseline)
-    counter_read = (
-        _read_json(args.counter_read) if args.counter_read else None
-    )
-    if args.counter_read and counter_read is None:
+    if args.counter_read and not args.counter_read.exists():
         print(
-            f"magma_phase_synthesis: counter-read report unreadable: "
+            f"magma_phase_synthesis: counter-read report not found: "
             f"{args.counter_read}",
             file=sys.stderr,
         )
         return 2
+    counter_read = (
+        _read_json(args.counter_read) if args.counter_read else None
+    )
 
     synthesis = build_synthesis(baseline, counter_read=counter_read)
     if args.format == "json":

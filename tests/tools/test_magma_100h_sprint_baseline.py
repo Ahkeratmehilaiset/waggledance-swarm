@@ -42,6 +42,11 @@ def _minimal_v12_proof() -> dict[str, object]:
             "gate_accuracy": 1.0,
             "verdict_accuracy": 1.0,
             "reason_code_accuracy": 1.0,
+            "coverage": {
+                "evaluation_result_case_count": 3,
+                "receipt_binding_case_count": 2,
+                "counterfactual_case_count": 3,
+            },
         },
         "a3_counterfactual_axis": {
             "available": True,
@@ -116,6 +121,12 @@ def test_build_baseline_locks_honest_magma_sprint_state() -> None:
     }
     assert baseline["current_state"]["competitor_pilot"]["consensus_grade"] is False
     assert baseline["current_state"]["a3_counterfactual_axis"]["variant_count"] == 3
+    assert (
+        baseline["current_state"]["adversarial_corpus"]["coverage"][
+            "evaluation_result_case_count"
+        ]
+        == 3
+    )
     assert (
         baseline["current_state"]["competitor_pilot"]["rival_local_checks_status"]
         == "1/4 rival local checks passed"

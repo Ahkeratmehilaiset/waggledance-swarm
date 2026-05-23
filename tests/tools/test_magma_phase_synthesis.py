@@ -237,6 +237,19 @@ def test_main_exits_two_on_missing_baseline(tmp_path, capsys):
     assert "baseline not found" in capsys.readouterr().err
 
 
+def test_main_exits_two_on_missing_counter_read(tmp_path, capsys):
+    rc = main(
+        [
+            "--baseline",
+            str(ROOT / DEFAULT_BASELINE),
+            "--counter-read",
+            str(tmp_path / "missing-counter-read.json"),
+        ]
+    )
+    assert rc == 2
+    assert "counter-read report not found" in capsys.readouterr().err
+
+
 def test_main_writes_to_output_path(tmp_path):
     out_path = tmp_path / "synth.md"
     rc = main(

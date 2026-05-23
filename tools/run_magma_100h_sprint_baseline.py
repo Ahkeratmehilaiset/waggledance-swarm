@@ -231,6 +231,7 @@ def _adversarial_summary(v12_proof: dict[str, Any]) -> dict[str, Any]:
         "gate_accuracy": adversarial.get("gate_accuracy"),
         "verdict_accuracy": adversarial.get("verdict_accuracy"),
         "reason_code_accuracy": adversarial.get("reason_code_accuracy"),
+        "coverage": adversarial.get("coverage", {}),
     }
 
 

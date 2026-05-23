@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -165,6 +166,7 @@ def build_adversarial_eval_report(
         "verdict_accuracy": _ratio(verdict_matches, case_count),
         "reason_code_accuracy": _ratio(reason_matches, case_count),
         "catch_agent_bucket_status": "redacted_hidden_expectations_v0",
+        "coverage": _coverage_for_cases(corpus["cases"]),
         "cases": cases,
         "failures": failures,
     }
@@ -301,6 +303,7 @@ def _receipt_payload_for_report(report: dict[str, Any]) -> dict[str, Any]:
         "gate_accuracy": report["gate_accuracy"],
         "verdict_accuracy": report["verdict_accuracy"],
         "reason_code_accuracy": report["reason_code_accuracy"],
+        "coverage": report["coverage"],
         "case_evaluation_result_digests": [
             {
                 "case_id": case["case_id"],
@@ -327,6 +330,40 @@ def _receipt_reason_codes(report: dict[str, Any]) -> list[str]:
     if report["fail_count"]:
         codes.append(f"adversarial_eval:failures:{report['fail_count']}")
     return codes
+
+
+def _coverage_for_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    defect_counts = Counter(str(case.get("defect_type", "")) for case in cases)
+    risk_counts = Counter(str(case.get("risk_class", "")) for case in cases)
+
+    def tagged_count(*tags: str) -> int:
+        required = set(tags)
+        return sum(1 for case in cases if required <= set(case.get("tags") or []))
+
+    def tagged_any_count(*tag_sets: tuple[str, ...]) -> int:
+        return sum(
+            1
+            for case in cases
+            if any(set(tags) <= set(case.get("tags") or []) for tags in tag_sets)
+        )
+
+    return {
+        "defect_type_counts": dict(sorted(defect_counts.items())),
+        "risk_class_counts": dict(sorted(risk_counts.items())),
+        "privacy_canary_case_count": sum(
+            1 for case in cases if isinstance(case.get("privacy_canary"), str)
+        ),
+        "receipt_binding_case_count": tagged_count("receipt")
+        + tagged_count("receipt_digest"),
+        "evaluation_result_case_count": tagged_count("evaluation_result"),
+        "counterfactual_case_count": tagged_count("counterfactual"),
+        "operator_gate_case_count": tagged_count("operator_gate"),
+        "hidden_tool_case_count": tagged_count("hidden_tools"),
+        "clean_baseline_case_count": tagged_any_count(
+            ("clean_baseline",),
+            ("false_positive", "allow_gate"),
+        ),
+    }
 
 
 def _ratio(numerator: int, denominator: int) -> float:

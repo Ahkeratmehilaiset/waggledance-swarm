@@ -146,6 +146,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         nxt = report.get("next_action")
         if nxt:
             print(f"next_action: {nxt}")
+        profile = report.get("agent_profile")
+        if isinstance(profile, Mapping):
+            print(f"agent_profile: {_format_metadata(profile)}")
+        snapshot = report.get("claim_snapshot")
+        if isinstance(snapshot, Mapping):
+            own_count = len(snapshot.get("own", []))
+            foreign_count = len(snapshot.get("foreign_write", []))
+            print(f"claim_snapshot: own={own_count} foreign_write={foreign_count}")
         candidate = report.get("candidate")
         if candidate:
             print(f"candidate: {candidate.get('kind')} target={candidate.get('target')}")
@@ -221,6 +229,7 @@ def evaluate_agent_next_task(
             "exit_code": 0,
             "agent": agent,
             "bridge_recommendation": bridge_recommendation,
+            **_bridge_context(bridge_recommendation),
             "notes": [
                 (
                     f"bridge_next_action already produced a concrete recommendation "
@@ -249,6 +258,7 @@ def evaluate_agent_next_task(
                 "agent": agent,
                 "underlying_bridge_action": bridge_action,
                 "bridge_recommendation": bridge_recommendation,
+                **_bridge_context(bridge_recommendation),
                 "completed_substrate_smoke_task_ids": sorted(completed_task_ids),
                 "notes": [
                     (
@@ -277,6 +287,7 @@ def evaluate_agent_next_task(
             "agent": agent,
             "underlying_bridge_action": bridge_action,
             "bridge_recommendation": bridge_recommendation,
+            **_bridge_context(bridge_recommendation),
             "candidate": candidate,
             "notes": [
                 (
@@ -300,6 +311,7 @@ def evaluate_agent_next_task(
         "exit_code": 0,
         "agent": agent,
         "bridge_recommendation": bridge_recommendation,
+        **_bridge_context(bridge_recommendation),
         "notes": [
             (
                 f"bridge_next_action returned an unrecognized action "
@@ -307,6 +319,37 @@ def evaluate_agent_next_task(
             )
         ],
     }
+
+
+def _bridge_context(bridge_recommendation: Mapping[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    for key in ("agent_profile", "claim_snapshot"):
+        value = bridge_recommendation.get(key)
+        if value:
+            context[key] = value
+    return context
+
+
+def _format_metadata(metadata: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("role", "agent_uuid", "session_id"):
+        value = str(metadata.get(key) or "")
+        if value:
+            parts.append(f"{key}={value}")
+    capabilities = metadata.get("capabilities")
+    if isinstance(capabilities, str):
+        capability_items = [
+            item.strip() for item in capabilities.split(",") if item.strip()
+        ]
+    elif isinstance(capabilities, Sequence):
+        capability_items = [
+            str(item).strip() for item in capabilities if str(item).strip()
+        ]
+    else:
+        capability_items = []
+    if capability_items:
+        parts.append(f"capabilities={','.join(capability_items)}")
+    return " ".join(parts) if parts else "none"
 
 
 def _pick_substrate_smoke(

@@ -214,6 +214,44 @@ def test_picks_substrate_smoke_when_bridge_says_claim_unblocked_work(
     assert "pytest" in candidate["recommended_command"]
 
 
+def test_agent_next_task_lifts_bridge_agent_profile_to_top_level(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:55:00Z",
+                "agent": "claude-rco-1",
+                "type": "heartbeat",
+                "task_id": "heartbeat",
+                "status": "active",
+                "message": "background heartbeat",
+                "role": "rco",
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "capabilities": ["bridge_review", "rco"],
+            }
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="claude-rco-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_substrate_smoke"
+    assert report["agent_profile"]["role"] == "rco"
+    assert report["agent_profile"]["agent_uuid"] == (
+        "11111111-2222-3333-4444-555555555555"
+    )
+    assert report["agent_profile"]["capabilities"] == ["bridge_review", "rco"]
+    assert report["bridge_recommendation"]["agent_profile"] == report["agent_profile"]
+
+
 def test_picks_substrate_smoke_when_bridge_says_parallel_read_only(
     tmp_path: Path,
 ) -> None:

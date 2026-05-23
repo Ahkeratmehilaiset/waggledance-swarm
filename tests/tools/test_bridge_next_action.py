@@ -9,7 +9,7 @@ from tools.bridge_next_action import (
     read_events,
     recommend_next_action,
 )
-from waggledance.core.work_queue import claim_task
+from waggledance.core.work_queue import Claim, claim_task
 
 
 def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
@@ -433,6 +433,88 @@ def test_recommends_parallel_read_only_when_foreign_write_claim_exists(
     assert report["foreign_write_claim_count"] == 1
 
 
+def test_report_surfaces_agent_profile_and_claim_role_metadata() -> None:
+    claim = Claim(
+        agent="claude-rco-1",
+        task_id="foreign-write",
+        summary="other agent writes",
+        mode="write",
+        write_scope=("tools/bridge_next_action.py",),
+        run_id="claude-run",
+        claimed_at_utc="2026-05-23T15:00:00Z",
+        last_heartbeat_utc="2026-05-23T15:05:00Z",
+        lease_seconds=900,
+        claim_lease_expires_utc="2026-05-23T15:20:00Z",
+        role="rco",
+        agent_uuid="11111111-2222-3333-4444-555555555555",
+        capabilities=("bridge_review", "rco"),
+    )
+    events = [
+        {
+            "ts_utc": "2026-05-23T15:00:00Z",
+            "agent": "codex-impl-1",
+            "type": "heartbeat",
+            "task_id": "heartbeat",
+            "status": "active",
+            "message": "background heartbeat",
+            "role": "impl",
+            "agent_uuid": "22222222-3333-4444-5555-666666666666",
+            "session_id": "codex-session",
+            "capabilities": ["bridge_event", "work_queue"],
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-impl-1",
+        events=events,
+        claims=[claim],
+    )
+
+    assert report["action"] == "parallel_read_only"
+    assert report["agent_profile"] == {
+        "role": "impl",
+        "agent_uuid": "22222222-3333-4444-5555-666666666666",
+        "session_id": "codex-session",
+        "capabilities": ["bridge_event", "work_queue"],
+    }
+    assert report["claim_snapshot"]["own"] == []
+    foreign = report["claim_snapshot"]["foreign_write"][0]
+    assert foreign["agent"] == "claude-rco-1"
+    assert foreign["role"] == "rco"
+    assert foreign["agent_uuid"] == "11111111-2222-3333-4444-555555555555"
+    assert foreign["capabilities"] == ["bridge_review", "rco"]
+    assert foreign["claim_lease_expires_utc"] == "2026-05-23T15:20:00Z"
+
+
+def test_incoming_report_surfaces_requester_role_metadata() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-23T15:00:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-impl-1",
+            "type": "message",
+            "task_id": "review-request",
+            "status": "request",
+            "message": "please review",
+            "role": "rco",
+            "agent_uuid": "11111111-2222-3333-4444-555555555555",
+            "capabilities": ["code_review", "rco"],
+        }
+    ]
+
+    report = recommend_next_action(
+        agent="codex-impl-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["incoming"]["agent"] == "claude-rco-1"
+    assert report["incoming"]["role"] == "rco"
+    assert report["incoming"]["agent_uuid"] == "11111111-2222-3333-4444-555555555555"
+    assert report["incoming"]["capabilities"] == ["code_review", "rco"]
+
+
 def test_recommends_claiming_unblocked_work_when_bridge_is_clear() -> None:
     report = recommend_next_action(agent="codex", events=[], claims=[])
 
@@ -740,3 +822,25 @@ def test_private_marker_in_selected_output_is_refused() -> None:
         assert "private marker" in str(exc)
     else:
         raise AssertionError("private marker should refuse selected output")
+
+
+def test_private_marker_in_role_metadata_is_refused() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T10:10:00Z",
+            "agent": "codex-impl-1",
+            "type": "heartbeat",
+            "task_id": "heartbeat",
+            "status": "active",
+            "message": "background heartbeat",
+            "role": "PRIVATE_MARKER",
+        }
+    ]
+
+    try:
+        recommend_next_action(agent="codex-impl-1", events=events, claims=[])
+    except BridgeNextActionError as exc:
+        assert exc.report["decision"] == "bridge_next_action_refused"
+        assert "private marker" in exc.report["errors"][0]
+    else:
+        raise AssertionError("private marker in metadata should refuse output")

@@ -269,6 +269,7 @@ def recommend_next_action(
             task_id=claim.task_id,
             safe_mode=claim.mode,
             summary=f"continue active claim {claim.task_id}",
+            events=events,
             claims=claims,
             open_requests=open_requests,
             stale_open_requests=stale_open_requests,
@@ -285,6 +286,7 @@ def recommend_next_action(
             task_id=_task_id(request),
             safe_mode="read-only",
             summary=summary,
+            events=events,
             claims=claims,
             open_requests=open_requests,
             stale_open_requests=stale_open_requests,
@@ -300,6 +302,7 @@ def recommend_next_action(
             task_id="bridge-review-or-scout",
             safe_mode="read-only",
             summary=f"foreign write claim active; take read-only work outside scope: {scope}",
+            events=events,
             claims=claims,
             open_requests=open_requests,
             stale_open_requests=stale_open_requests,
@@ -311,6 +314,7 @@ def recommend_next_action(
         task_id="next-unclaimed-scout-or-implementation",
         safe_mode="write-or-read-only",
         summary="no active claim or incoming blocker; claim the highest-value unblocked work",
+        events=events,
         claims=claims,
         open_requests=open_requests,
         stale_open_requests=stale_open_requests,
@@ -431,6 +435,18 @@ def _event_agent(event: Mapping[str, Any]) -> str:
     return str(event.get("agent") or event.get("author") or "unknown").lower()
 
 
+def _event_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in ("role", "agent_uuid", "session_id"):
+        value = str(event.get(key) or "").strip()
+        if value:
+            metadata[key] = value
+    capabilities = _string_list(event.get("capabilities"))
+    if capabilities:
+        metadata["capabilities"] = capabilities
+    return metadata
+
+
 def _event_status(event: Mapping[str, Any]) -> str:
     return str(event.get("status") or "").lower()
 
@@ -480,6 +496,63 @@ def _payload(event: Mapping[str, Any]) -> Mapping[str, Any]:
     return payload if isinstance(payload, Mapping) else {}
 
 
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _latest_agent_metadata(
+    *,
+    agent: str,
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    for event in reversed(events):
+        if _event_agent(event) != agent:
+            continue
+        metadata = _event_metadata(event)
+        if metadata:
+            return metadata
+    return {}
+
+
+def _claim_metadata(claim: Claim) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "agent": claim.agent,
+        "task_id": claim.task_id,
+        "mode": claim.mode,
+        "write_scope": list(claim.write_scope),
+        "lease_seconds": claim.lease_seconds,
+    }
+    if claim.claim_lease_expires_utc:
+        metadata["claim_lease_expires_utc"] = claim.claim_lease_expires_utc
+    if claim.role:
+        metadata["role"] = claim.role
+    if claim.agent_uuid:
+        metadata["agent_uuid"] = claim.agent_uuid
+    if claim.capabilities:
+        metadata["capabilities"] = list(claim.capabilities)
+    return metadata
+
+
+def _claim_snapshot(
+    *,
+    agent: str,
+    claims: Sequence[Claim],
+    foreign_write_claims: Sequence[Claim],
+) -> dict[str, list[dict[str, Any]]]:
+    own_claims = [claim for claim in claims if claim.agent == agent]
+    snapshot: dict[str, list[dict[str, Any]]] = {
+        "own": [_claim_metadata(claim) for claim in own_claims],
+        "foreign_write": [
+            _claim_metadata(claim) for claim in foreign_write_claims
+        ],
+    }
+    return snapshot
+
+
 def _message(event: Mapping[str, Any], *, limit: int = 220) -> str:
     text = " ".join(str(event.get("message") or "").split())
     if len(text) <= limit:
@@ -494,6 +567,7 @@ def _report(
     task_id: str,
     safe_mode: str,
     summary: str,
+    events: Sequence[Mapping[str, Any]],
     claims: Sequence[Claim],
     open_requests: Sequence[Mapping[str, Any]],
     stale_open_requests: Sequence[Mapping[str, Any]],
@@ -513,18 +587,30 @@ def _report(
         "stale_incoming_count": len(stale_open_requests),
         "foreign_write_claim_count": len(foreign_write_claims),
     }
+    agent_profile = _latest_agent_metadata(agent=agent, events=events)
+    if agent_profile:
+        payload["agent_profile"] = agent_profile
+    claim_snapshot = _claim_snapshot(
+        agent=agent,
+        claims=claims,
+        foreign_write_claims=foreign_write_claims,
+    )
+    if claim_snapshot["own"] or claim_snapshot["foreign_write"]:
+        payload["claim_snapshot"] = claim_snapshot
     if stale_open_requests:
         payload["stale_incoming_task_ids"] = [
             _task_id(request) for request in stale_open_requests
         ]
     if request is not None:
-        payload["incoming"] = {
+        incoming = {
             "agent": _event_agent(request),
             "type": _event_type(request),
             "status": _event_status(request),
             "ts_utc": _event_ts(request),
             "message": _message(request),
         }
+        incoming.update(_event_metadata(request))
+        payload["incoming"] = incoming
     _assert_no_private_markers(payload)
     return payload
 
@@ -548,9 +634,17 @@ def _print_human(report: Mapping[str, Any]) -> None:
             print(f"- {error}", file=sys.stderr)
         return
     print(f"agent: {report.get('agent', '')}")
+    profile = report.get("agent_profile")
+    if isinstance(profile, Mapping):
+        print(f"agent_profile: {_format_metadata(profile)}")
     print(f"action: {report.get('action', '')}")
     print(f"task_id: {report.get('task_id', '')}")
     print(f"safe_mode: {report.get('safe_mode', '')}")
+    snapshot = report.get("claim_snapshot")
+    if isinstance(snapshot, Mapping):
+        own_count = len(snapshot.get("own", []))
+        foreign_count = len(snapshot.get("foreign_write", []))
+        print(f"claim_snapshot: own={own_count} foreign_write={foreign_count}")
     stale_count = int(report.get("stale_incoming_count", 0) or 0)
     if stale_count:
         print(f"stale_incoming_count: {stale_count}")
@@ -560,6 +654,18 @@ def _print_human(report: Mapping[str, Any]) -> None:
         if task_ids:
             print(f"stale_incoming_task_ids: {task_ids}")
     print(f"summary: {report.get('summary', '')}")
+
+
+def _format_metadata(metadata: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("role", "agent_uuid", "session_id"):
+        value = str(metadata.get(key) or "")
+        if value:
+            parts.append(f"{key}={value}")
+    capabilities = _string_list(metadata.get("capabilities"))
+    if capabilities:
+        parts.append(f"capabilities={','.join(capabilities)}")
+    return " ".join(parts) if parts else "none"
 
 
 if __name__ == "__main__":

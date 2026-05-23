@@ -337,6 +337,62 @@ def test_approved_decision_closes_review_requested_handoff() -> None:
     assert report["open_incoming_count"] == 0
 
 
+def test_review_feedback_block_closes_rco_requested_handoff() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-23T07:17:19Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "handoff",
+            "task_id": "rival-axis-hardening-pr-607",
+            "status": "rco_requested",
+            "message": "please RCO PR #607",
+        },
+        {
+            "ts_utc": "2026-05-23T07:21:20Z",
+            "agent": "codex",
+            "to": "claude,operator",
+            "type": "finding",
+            "task_id": "rival-axis-hardening-pr-607",
+            "status": "review_feedback_block",
+            "message": "RCO BLOCK with required fix",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+def test_rco_block_decision_closes_rco_requested_handoff() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-23T07:17:19Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "handoff",
+            "task_id": "rival-axis-hardening-pr-607",
+            "status": "rco_requested",
+            "message": "please RCO PR #607",
+        },
+        {
+            "ts_utc": "2026-05-23T07:21:20Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "decision",
+            "task_id": "rival-axis-hardening-pr-607",
+            "status": "rco_block",
+            "message": "RCO BLOCK with required fix",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_ack_status_with_already_substring_is_not_open_request() -> None:
     events = [
         {

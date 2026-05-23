@@ -277,6 +277,14 @@ class WriteRCOGate:
     """Actually perform the write. v1 is a stub; production wires to
     AuthenticatedConnector / MemoryWriteProxy / filesystem."""
 
+    emit_receipt_bundle: Optional[Callable[[dict[str, Any]], None]] = None
+    """Optional fail-closed MAGMA receipt sink for route decisions."""
+
+    resolve_external_effect_approval_id: Optional[
+        Callable[[Intent, GateOutcome], Optional[str]]
+    ] = None
+    """Resolve the explicit approval id required for external-effect receipts."""
+
     verify_solver_provenance: Optional[Callable[[str], VerificationResult]] = None
     """Optional SCH-005 SolverCandidateManifest provenance verifier.
 
@@ -370,6 +378,7 @@ class WriteRCOGate:
                 })
                 outcome.audit_event_ids.append(denied_audit)
             self._attach_rco_decision_artifact(intent, outcome)
+            self._emit_route_receipt_bundle(intent, outcome)
             return outcome
         except GateStopCondition as stop:
             denied_audit = self._audit(AuditEventType.DENIED, intent, {
@@ -718,6 +727,46 @@ class WriteRCOGate:
             ) from exc
         outcome.rco_decision_artifact = artifact
         outcome.rco_decision_digest = sha256_digest(artifact)
+
+    def _emit_route_receipt_bundle(
+        self,
+        intent: Intent,
+        outcome: GateOutcome,
+    ) -> None:
+        """Emit an opt-in receipt bundle for a completed route decision."""
+        if self.emit_receipt_bundle is None:
+            return
+        approval_id = None
+        if outcome.risk_class == WriteRiskClass.EXTERNAL_EFFECT:
+            if self.resolve_external_effect_approval_id is None:
+                raise GateStopCondition(
+                    intent.intent_id,
+                    StopCondition.AUDIT_WRITE_FAILED,
+                    "external_effect WriteRCOGate receipt requires "
+                    "resolve_external_effect_approval_id",
+                )
+            approval_id = self.resolve_external_effect_approval_id(intent, outcome)
+            if not approval_id:
+                raise GateStopCondition(
+                    intent.intent_id,
+                    StopCondition.AUDIT_WRITE_FAILED,
+                    "external_effect WriteRCOGate receipt requires approval_id",
+                )
+        try:
+            bundle = build_rco_decision_receipt_for_gate(
+                intent,
+                outcome,
+                approval_id=approval_id,
+            )
+            self.emit_receipt_bundle(bundle)
+        except GateStopCondition:
+            raise
+        except Exception as exc:
+            raise GateStopCondition(
+                intent.intent_id,
+                StopCondition.AUDIT_WRITE_FAILED,
+                f"receipt emit failed: {exc}",
+            ) from exc
 
 
 # --------------------------------------------------------------------------

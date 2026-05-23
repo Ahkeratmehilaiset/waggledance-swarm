@@ -71,6 +71,31 @@ SUBSTANTIVE_IDLE_MINUTES = 30.0
 PEER_ACTIVATION_RECENT_MINUTES = 30.0
 NON_SUBSTANTIVE_TYPES = {"heartbeat", "liveness"}
 
+# How recently a peer's substantive event must have happened to count as
+# an "active PR-producing claim" for wakeup-anticipation purposes. Tracks
+# the observed Codex self-merge timeout window (~5-10 min after CI green)
+# documented in docs/runs/magma_100h_sprint_2026_05_23/baseline.json::
+# claude_activation_contract.rco_timeout_minutes_after_ci_green.
+PEER_ACTIVE_CLAIM_MAX_AGE_MINUTES = 15.0
+
+# Event (type, status) pairs that indicate a peer is mid-task on work that
+# typically produces a PR. Used to keep Claude's wakeup tight even before
+# the peer's PR is open on GitHub. See feedback memory
+# heartbeat-short-while-peer-pr-awaits-rco for the lesson.
+PEER_PR_PRODUCING_SIGNALS = frozenset(
+    {
+        ("claim", "active"),
+        ("claim", "started"),
+        ("status", "active"),
+        ("handoff", "active_requested"),
+    }
+)
+
+# Statuses (on any event type) that terminally close a peer's PR-producing
+# claim for the same task_id. ``type=done`` (any status) is also terminal;
+# this set covers non-done terminal closures.
+PEER_TERMINAL_STATUSES = frozenset({"blocked", "abandoned", "released"})
+
 # Bridge rco_pass payloads commonly carry a short head (e.g. "862d34bd") while
 # gh pr view returns the full 40-char head_sha. Treat the approved head as an
 # unambiguous prefix of the full sha, with a sane minimum length.
@@ -221,6 +246,97 @@ def _latest_peer_activation_sent(
             continue
         return event
     return None
+
+
+def peer_has_active_pr_producing_claim(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    agent: str,
+    now_utc: datetime,
+    max_age_minutes: float = PEER_ACTIVE_CLAIM_MAX_AGE_MINUTES,
+) -> dict[str, Any]:
+    """Read-only check: is the peer mid-task on work that typically produces a PR?
+
+    Returns a structured dict (never raises). The check scans **backwards** for
+    the peer's most recent event whose ``(type, status)`` is in
+    ``PEER_PR_PRODUCING_SIGNALS`` and is within ``max_age_minutes`` of
+    ``now_utc``. The claim stays ``active=True`` even if the peer has emitted
+    later non-closing substantive events (decision/clarification/finding/etc.)
+    on the same or other tasks. It is cleared only when a strictly LATER peer
+    event for the SAME ``task_id`` is terminal — currently ``type=done`` (any
+    status) or ``status`` in ``PEER_TERMINAL_STATUSES``.
+
+    The intent is to keep Claude's wakeup tight (``WAKEUP_IN_FLIGHT``) so the
+    imminent peer PR catches a fresh RCO within the peer's self-merge timeout
+    window (~5-10 min after CI green; see ``PEER_ACTIVE_CLAIM_MAX_AGE_MINUTES``).
+    """
+
+    base: dict[str, Any] = {
+        "active": False,
+        "peer": PEER_AGENT.get(agent, ""),
+        "task_id": None,
+        "event_type": None,
+        "event_status": None,
+        "age_minutes": None,
+        "reason": "no_pr_producing_claim_event",
+    }
+    peer = base["peer"]
+    if not peer:
+        base["reason"] = "no_peer_for_agent"
+        return base
+
+    latest_claim: Mapping[str, Any] | None = None
+    for event in reversed(events):
+        if _event_agent(event) != peer:
+            continue
+        event_type = str(event.get("type", "")).lower()
+        event_status = str(event.get("status", "")).lower()
+        if (event_type, event_status) not in PEER_PR_PRODUCING_SIGNALS:
+            continue
+        if _parse_ts(str(event.get("ts_utc", ""))) is None:
+            continue
+        latest_claim = event
+        break
+
+    if latest_claim is None:
+        return base
+
+    event_type = str(latest_claim.get("type", "")).lower()
+    event_status = str(latest_claim.get("status", "")).lower()
+    task_id = str(latest_claim.get("task_id", "")) or None
+    age = _age_minutes(latest_claim, now_utc)
+    base["event_type"] = event_type
+    base["event_status"] = event_status
+    base["task_id"] = task_id
+    base["age_minutes"] = age
+
+    if age is None or age > max_age_minutes:
+        base["reason"] = "peer_claim_event_too_old"
+        return base
+
+    # Clear the claim only when a strictly later peer event for the SAME
+    # task_id is terminal (done/merged, done/closed, blocked, abandoned).
+    # Non-closing substantive events (decision/clarification/finding/etc.)
+    # on the same or other tasks DO NOT clear an active PR-producing claim.
+    if task_id:
+        claim_ts = _parse_ts(str(latest_claim.get("ts_utc", "")))
+        for event in events:
+            if _event_agent(event) != peer:
+                continue
+            if str(event.get("task_id", "")) != task_id:
+                continue
+            ev_ts = _parse_ts(str(event.get("ts_utc", "")))
+            if ev_ts is None or claim_ts is None or ev_ts <= claim_ts:
+                continue
+            et = str(event.get("type", "")).lower()
+            es = str(event.get("status", "")).lower()
+            if et == "done" or es in PEER_TERMINAL_STATUSES:
+                base["reason"] = "peer_claim_closed_by_done"
+                return base
+
+    base["active"] = True
+    base["reason"] = "peer_has_active_pr_producing_claim"
+    return base
 
 
 def _activation_task(
@@ -568,11 +684,17 @@ def _recommended_wakeup(
     merge_ready: Sequence[Mapping[str, Any]],
     open_packs_count: int,
     peer_activation: Mapping[str, Any] | None = None,
+    peer_active_claim: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if any(item.get("ready") for item in merge_ready) or next_action == "answer_incoming":
         return {"seconds": WAKEUP_ACT_NOW, "reason": "actionable merge/RCO work pending"}
     if peer_activation and peer_activation.get("needed"):
         return {"seconds": WAKEUP_ACT_NOW, "reason": "peer activation needed"}
+    if peer_active_claim and peer_active_claim.get("active"):
+        return {
+            "seconds": WAKEUP_IN_FLIGHT,
+            "reason": "peer has active PR-producing claim; anticipate",
+        }
     if next_action == "claim_unblocked_work" and open_packs_count:
         return {
             "seconds": WAKEUP_IN_FLIGHT,
@@ -622,11 +744,17 @@ def build_loop_tick(
         open_packs=packs["open"],
         now_utc=effective_now,
     )
+    peer_active_claim = peer_has_active_pr_producing_claim(
+        events,
+        agent=agent,
+        now_utc=effective_now,
+    )
     wakeup = _recommended_wakeup(
         next_action=next_action,
         merge_ready=merge_ready,
         open_packs_count=len(packs["open"]),
         peer_activation=peer_activation,
+        peer_active_claim=peer_active_claim,
     )
 
     return {
@@ -638,6 +766,7 @@ def build_loop_tick(
         "open_operator_packs": packs["open"],
         "invalid_operator_packs": packs["invalid"],
         "peer_activation": peer_activation,
+        "peer_active_claim": peer_active_claim,
         "recommended_wakeup_seconds": wakeup["seconds"],
         "wakeup_reason": wakeup["reason"],
     }

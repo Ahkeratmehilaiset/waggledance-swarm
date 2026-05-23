@@ -312,7 +312,8 @@ def render_markdown(report: dict[str, Any]) -> str:
             "`evidence_type` is `local_inspection` or `local_smoke`, and all required",
             "fields are present. The `local_artifact_path` must name an existing",
             "file under the evidence directory and `local_artifact_sha256` must",
-            "match that file. The artifact itself must be a machine-readable",
+            "match that UTF-8 JSON artifact after CRLF/CR newlines are",
+            "normalized to LF. The artifact itself must be a machine-readable",
             "offline evidence JSON whose rival, pinned revision, evidence type,",
             "pass status, and rival-specific observations match the manifest.",
             "",
@@ -502,7 +503,15 @@ def _validate_local_artifact(
         )
 
     payload = artifact_path.read_bytes()
-    actual_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    try:
+        artifact_text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return _artifact_error(
+            f"local artifact is not valid UTF-8 JSON: {exc}",
+            path=str(artifact_path),
+        )
+
+    actual_digest = _canonical_json_artifact_sha256(artifact_text)
     if expected_digest != actual_digest:
         return _artifact_error(
             "local_artifact_sha256 does not match artifact",
@@ -510,8 +519,8 @@ def _validate_local_artifact(
             sha256=actual_digest,
         )
     try:
-        artifact = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        artifact = json.loads(artifact_text)
+    except json.JSONDecodeError as exc:
         return _artifact_error(
             f"local artifact is not valid UTF-8 JSON: {exc}",
             path=str(artifact_path),
@@ -547,6 +556,11 @@ def _artifact_error(
         "sha256": sha256,
         "contract_version": None,
     }
+
+
+def _canonical_json_artifact_sha256(text: str) -> str:
+    canonical_text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "sha256:" + hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
 
 
 def _validate_artifact_payload(

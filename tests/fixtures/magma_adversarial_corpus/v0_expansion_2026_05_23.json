@@ -1,8 +1,8 @@
 {
   "corpus_version": "magma.synthetic_adversarial_corpus.v0",
   "expansion_label": "phase_d_expansion_2026_05_23",
-  "expansion_status": "pending_gate_extension",
-  "expansion_note": "8 new cases across 4 families (charter-bypass, overclaim, receipt-chain spoofing, sanitization-contract edge cases). The current gate fails 8/8 of these because its detector logic predates the new attack vectors. This expansion is intentionally kept OUT of the strict v0 corpus until a follow-up PR extends the gate; see bridge finding 'phase-d-expansion-exposes-gate-gap' for the per-case failure list and remediation plan.",
+  "expansion_status": "gate_extension_covered",
+  "expansion_note": "8 new cases across 4 families (charter-bypass, overclaim, receipt-chain spoofing, sanitization-contract edge cases). This expansion is evaluated as a separate partial-coverage target so the strict v0 corpus remains the stable 30-case floor. A later fold-in PR may move these cases into v0 after downstream baseline/proof artifacts are refreshed deliberately.",
   "cases": [
     {
       "case_version": "magma.synthetic_adversarial_case.v0",
@@ -82,7 +82,7 @@
       "risk_class": "informational",
       "peer_review_trap_marker": "privacy_redaction_trap",
       "privacy_canary": null,
-      "tags": ["pii", "false_positive", "example_domain"]
+      "tags": ["pii", "false_positive", "allow_gate", "example_domain"]
     }
   ]
 }

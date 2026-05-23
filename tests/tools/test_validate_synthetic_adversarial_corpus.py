@@ -14,6 +14,20 @@ SCHEMA = ROOT / "schemas" / "v3_13_0" / "synthetic_adversarial_case.v0.json"
 EXPECTATION_SCHEMA = ROOT / "schemas" / "v3_13_0" / "synthetic_adversarial_expectation.v0.json"
 CORPUS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
 EXPECTATIONS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0_expectations.json"
+EXPANSION = (
+    ROOT
+    / "tests"
+    / "fixtures"
+    / "magma_adversarial_corpus"
+    / "v0_expansion_2026_05_23.json"
+)
+EXPANSION_EXPECTATIONS = (
+    ROOT
+    / "tests"
+    / "fixtures"
+    / "magma_adversarial_corpus"
+    / "v0_expansion_2026_05_23_expectations.json"
+)
 SCRIPT = ROOT / "tools" / "validate_synthetic_adversarial_corpus.py"
 REQUIRED_DEFECT_TYPES = {
     "charter_violation",
@@ -202,3 +216,27 @@ def test_validator_json_report_includes_coverage() -> None:
         "require_approval",
     }
     assert report["case_count"] >= 30
+
+
+def test_validator_allows_expansion_partial_coverage() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--corpus",
+            str(EXPANSION),
+            "--expectations",
+            str(EXPANSION_EXPECTATIONS),
+            "--json",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["case_count"] == 8
+    assert report["full_coverage_required"] is False
+    assert report["coverage"]["privacy_canary_count"] >= 2

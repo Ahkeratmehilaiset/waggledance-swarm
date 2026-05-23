@@ -1,5 +1,5 @@
 {
-  "expectations_version": "magma.synthetic_adversarial_expectation.v0",
+  "expectations_version": "magma.synthetic_adversarial_expectations.v0",
   "expansion_label": "phase_d_expansion_2026_05_23",
   "expectations": [
     {

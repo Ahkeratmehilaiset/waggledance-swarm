@@ -16,6 +16,20 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "run_magma_adversarial_eval.py"
 CORPUS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0.json"
 EXPECTATIONS = ROOT / "tests" / "fixtures" / "magma_adversarial_corpus" / "v0_expectations.json"
+EXPANSION = (
+    ROOT
+    / "tests"
+    / "fixtures"
+    / "magma_adversarial_corpus"
+    / "v0_expansion_2026_05_23.json"
+)
+EXPANSION_EXPECTATIONS = (
+    ROOT
+    / "tests"
+    / "fixtures"
+    / "magma_adversarial_corpus"
+    / "v0_expansion_2026_05_23_expectations.json"
+)
 
 
 def _run_eval(*args: str) -> subprocess.CompletedProcess[str]:
@@ -63,6 +77,22 @@ def test_scores_fixture_corpus_against_hidden_expectations() -> None:
     assert report["catch_agent_bucket_status"] == "redacted_hidden_expectations_v0"
     assert "failure_buckets" not in report
     assert "receipt_bundle" not in report
+
+
+def test_scores_phase_d_expansion_as_separate_gate_target() -> None:
+    report = build_adversarial_eval_report(
+        corpus_path=EXPANSION,
+        expectations_path=EXPANSION_EXPECTATIONS,
+    )
+
+    assert report["ok"] is True
+    assert report["case_count"] == 8
+    assert report["pass_count"] == 8
+    assert report["fail_count"] == 0
+    assert report["gate_accuracy"] == 1.0
+    assert report["verdict_accuracy"] == 1.0
+    assert report["reason_code_accuracy"] == 1.0
+    assert report["coverage"]["clean_baseline_case_count"] == 1
 
 
 def test_external_effect_cases_are_scored_without_writes() -> None:

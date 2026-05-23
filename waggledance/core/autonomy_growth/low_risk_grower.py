@@ -27,7 +27,7 @@ provider budget.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from waggledance.core.solver_synthesis.declarative_solver_spec import (
     SolverSpec,
@@ -92,9 +92,13 @@ class LowRiskGrower:
         control_plane: ControlPlaneDB,
         *,
         registry: Optional[SolverFamilyRegistry] = None,
+        emit_receipt_bundle: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> None:
         self._cp = control_plane
-        self._engine = AutoPromotionEngine(control_plane)
+        self._engine = AutoPromotionEngine(
+            control_plane,
+            emit_receipt_bundle=emit_receipt_bundle,
+        )
         self._registry = (
             registry
             if registry is not None

@@ -17,6 +17,7 @@ from waggledance.core.autonomy_growth.solver_dispatcher import (
 from waggledance.core.solver_synthesis.llm_solver_generator import (
     _DEFAULT_PRIORITY_LIST,
 )
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.storage.control_plane import ControlPlaneDB
 
 
@@ -90,6 +91,36 @@ def test_grower_grows_a_real_candidate_end_to_end(cp: ControlPlaneDB) -> None:
     assert res.matched is True
     assert res.output == pytest.approx(273.15)
     assert res.solver_name == "celsius_to_kelvin_v1"
+
+
+def test_grower_threads_receipt_sink_to_auto_promotion_engine(
+    cp: ControlPlaneDB,
+) -> None:
+    bundles: list[dict] = []
+    g = LowRiskGrower(
+        cp,
+        emit_receipt_bundle=lambda bundle: bundles.append(bundle),
+    )
+    g.ensure_low_risk_policies()
+
+    out = g.grow_from_gap(_kelvin_gap("celsius_to_kelvin_receipt_v1"))
+
+    assert out.accepted is True
+    assert out.reason == "auto_promoted"
+    assert out.promotion and out.promotion.decision == "auto_promoted"
+    assert len(bundles) == 1
+    bundle = bundles[0]
+    assert bundle["payload"]["decision"] == "auto_promoted"
+    assert bundle["payload"]["decision_record_id"] == (
+        out.promotion.decision_record_id
+    )
+    assert bundle["receipt"]["prev_receipt_hash"] is None
+    assert bundle["receipt"]["canonical_payload_digest"] == sha256_digest(
+        bundle["payload"]
+    )
+    assert bundle["receipt"]["evaluation_result_digest"] == sha256_digest(
+        bundle["evaluation_result"]
+    )
 
 
 def test_grower_rejects_excluded_family_without_calling_provider(

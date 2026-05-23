@@ -23,6 +23,7 @@ from waggledance.core.autonomy_growth import (
     RuntimeGapDetector,
     digest_signals_into_intents,
 )
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.storage.control_plane import ControlPlaneDB
 
 
@@ -99,6 +100,42 @@ def test_tick_promotes_a_queued_low_risk_intent(cp: ControlPlaneDB) -> None:
     # Queue row completed (not 'claimed' anymore)
     queue_rows = cp.list_autogrowth_queue()
     assert all(r.status != "queued" for r in queue_rows)
+
+
+def test_scheduler_threads_receipt_sink_through_grower_to_engine(
+    cp: ControlPlaneDB,
+) -> None:
+    intent_id = _seed_intent(
+        cp,
+        "scalar_unit_conversion",
+        "suc:thermal:c_to_k_receipt",
+        _scalar_seed("celsius_to_kelvin_receipt"),
+    )
+    bundles: list[dict] = []
+    sched = AutogrowthScheduler(
+        cp,
+        emit_receipt_bundle=lambda bundle: bundles.append(bundle),
+    )
+
+    result = sched.tick()
+
+    assert result.claimed is True
+    assert result.outcome == OUTCOME_AUTO_PROMOTED
+    assert result.intent_id == intent_id
+    assert result.promotion_decision_id is not None
+    assert len(bundles) == 1
+    bundle = bundles[0]
+    assert bundle["payload"]["decision"] == OUTCOME_AUTO_PROMOTED
+    assert bundle["payload"]["decision_record_id"] == (
+        result.promotion_decision_id
+    )
+    assert bundle["receipt"]["prev_receipt_hash"] is None
+    assert bundle["receipt"]["canonical_payload_digest"] == sha256_digest(
+        bundle["payload"]
+    )
+    assert bundle["receipt"]["evaluation_result_digest"] == sha256_digest(
+        bundle["evaluation_result"]
+    )
 
 
 def test_runtime_dispatcher_serves_self_promoted_solver(

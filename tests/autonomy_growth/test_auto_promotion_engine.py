@@ -68,6 +68,29 @@ def _shadow_samples_simple():
     return [{"x": float(i) * 1.7} for i in range(20)]
 
 
+def _promotion_request(name: str) -> PromotionRequest:
+    return PromotionRequest(
+        spec=_scalar_unit_conversion_spec(name),
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=_scalar_unit_conversion_oracle,
+        oracle_kind="formula_recompute",
+    )
+
+
+class _CommitFailingConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, *args, **kwargs):
+        if str(sql).strip().upper() == "COMMIT":
+            raise RuntimeError("forced commit failure")
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None:
     cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
     eng = AutoPromotionEngine(cp)
@@ -186,7 +209,7 @@ def test_auto_promotion_emits_chained_receipts_for_promote_and_rollback(
     assert "secret rollback reason" not in json.dumps(bundles, sort_keys=True)
 
 
-def test_auto_promotion_receipt_sink_failure_rolls_back_and_preserves_head(
+def test_auto_promotion_receipt_sink_failure_preserves_commit_and_head(
     cp: ControlPlaneDB,
 ) -> None:
     cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
@@ -206,30 +229,126 @@ def test_auto_promotion_receipt_sink_failure_rolls_back_and_preserves_head(
         AutoPromotionReceiptEmissionError,
         match="auto-promotion receipt sink failed",
     ):
-        eng.evaluate_candidate(PromotionRequest(
-            spec=_scalar_unit_conversion_spec("sink_failure_solver"),
-            validation_cases=_validation_cases_for_celsius_to_kelvin(),
-            shadow_samples=_shadow_samples_simple(),
-            oracle=_scalar_unit_conversion_oracle,
-            oracle_kind="formula_recompute",
-        ))
+        eng.evaluate_candidate(_promotion_request("sink_failure_solver"))
 
-    assert cp.get_solver("sink_failure_solver") is None
-    assert cp.stats().table_counts["promotion_decisions"] == 0
+    solver = cp.get_solver("sink_failure_solver")
+    assert solver is not None
+    assert solver.status == "auto_promoted"
+    assert len(cp.list_promotion_decisions(solver_id=solver.id)) == 1
     assert eng._last_emitted_receipt is None
+    assert bundles == []
 
-    outcome = eng.evaluate_candidate(PromotionRequest(
-        spec=_scalar_unit_conversion_spec("sink_failure_solver"),
-        validation_cases=_validation_cases_for_celsius_to_kelvin(),
-        shadow_samples=_shadow_samples_simple(),
-        oracle=_scalar_unit_conversion_oracle,
-        oracle_kind="formula_recompute",
-    ))
+
+def test_auto_promotion_commit_failure_does_not_emit_receipt_or_advance_head(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    bundles: list[dict] = []
+    eng = AutoPromotionEngine(
+        cp,
+        emit_receipt_bundle=lambda bundle: bundles.append(bundle),
+    )
+    cp._conn = _CommitFailingConnection(cp._conn)  # type: ignore[assignment]
+
+    with pytest.raises(ControlPlaneError, match="auto-promotion commit failed"):
+        eng.evaluate_candidate(_promotion_request("commit_failure_solver"))
+
+    assert bundles == []
+    assert eng._last_emitted_receipt is None
+    assert cp.get_solver("commit_failure_solver") is None
+    assert cp.get_solver_family("scalar_unit_conversion") is None
+    stats = cp.stats()
+    assert stats.table_counts["promotion_decisions"] == 0
+
+
+def test_auto_promotion_receipt_sink_runs_after_sqlite_commit(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    observations: list[str] = []
+
+    def assert_committed(bundle: dict) -> None:
+        reader = ControlPlaneDB(cp._db_path)  # type: ignore[attr-defined]
+        try:
+            solver = reader.get_solver("receipt_after_commit_solver")
+            assert solver is not None
+            assert solver.status == "auto_promoted"
+            decisions = reader.list_promotion_decisions(solver_id=solver.id)
+            assert any(d.decision == "auto_promoted" for d in decisions)
+            observations.append(bundle["payload"]["decision"])
+        finally:
+            reader.close()
+
+    eng = AutoPromotionEngine(cp, emit_receipt_bundle=assert_committed)
+
+    outcome = eng.evaluate_candidate(
+        _promotion_request("receipt_after_commit_solver")
+    )
 
     assert outcome.decision == "auto_promoted"
-    assert len(bundles) == 1
-    assert bundles[0]["receipt"]["prev_receipt_hash"] is None
-    assert eng._last_emitted_receipt == bundles[0]["receipt"]
+    assert observations == ["auto_promoted"]
+    assert eng._last_emitted_receipt is not None
+
+
+def test_auto_promotion_rollback_commit_failure_does_not_emit_receipt_or_head(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    AutoPromotionEngine(cp).evaluate_candidate(
+        _promotion_request("rollback_commit_failure_solver")
+    )
+    bundles: list[dict] = []
+    eng = AutoPromotionEngine(
+        cp,
+        emit_receipt_bundle=lambda bundle: bundles.append(bundle),
+    )
+    cp._conn = _CommitFailingConnection(cp._conn)  # type: ignore[assignment]
+
+    with pytest.raises(ControlPlaneError, match="rollback failed"):
+        eng.rollback("rollback_commit_failure_solver", "forced commit failure")
+
+    assert bundles == []
+    assert eng._last_emitted_receipt is None
+    solver = cp.get_solver("rollback_commit_failure_solver")
+    assert solver is not None
+    assert solver.status == "auto_promoted"
+    assert cp.list_promotion_decisions(
+        solver_id=solver.id,
+        decision="rollback",
+    ) == []
+
+
+def test_auto_promotion_rollback_receipt_sink_runs_after_sqlite_commit(
+    cp: ControlPlaneDB,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    AutoPromotionEngine(cp).evaluate_candidate(
+        _promotion_request("rollback_after_commit_solver")
+    )
+    observations: list[str] = []
+
+    def assert_committed(bundle: dict) -> None:
+        reader = ControlPlaneDB(cp._db_path)  # type: ignore[attr-defined]
+        try:
+            solver = reader.get_solver("rollback_after_commit_solver")
+            assert solver is not None
+            assert solver.status == "deactivated"
+            decisions = reader.list_promotion_decisions(
+                solver_id=solver.id,
+                decision="rollback",
+            )
+            assert len(decisions) == 1
+            observations.append(bundle["payload"]["decision"])
+        finally:
+            reader.close()
+
+    eng = AutoPromotionEngine(cp, emit_receipt_bundle=assert_committed)
+
+    outcome = eng.rollback("rollback_after_commit_solver", "shadow drift")
+
+    assert outcome.decision == "rolled_back"
+    assert observations == ["rolled_back"]
+    assert eng._last_emitted_receipt is not None
 
 
 def test_auto_promotion_artifact_failure_blocks_commit(

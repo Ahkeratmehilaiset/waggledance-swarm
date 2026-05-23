@@ -81,12 +81,11 @@ class PromotionOutcome:
 
 
 class AutoPromotionReceiptEmissionError(ControlPlaneError):
-    """Raised when an opt-in promotion receipt sink blocks a transaction.
+    """Raised when an opt-in promotion receipt sink fails after commit.
 
-    The sink runs inside the promotion transaction so a sink failure can abort
-    the DB commit. Sinks must therefore be prompt local callbacks: append the
-    bundle to memory or another transactional sink, do not do slow disk/network
-    I/O, and do not re-enter ControlPlaneDB.
+    The sink runs after SQLite commit so emitted receipts and receipt-head
+    advancement only describe durable control-plane state. A sink failure does
+    not roll back the already-committed promotion or rollback decision.
     """
 
 
@@ -290,15 +289,13 @@ class AutoPromotionEngine:
                     promotion_decision_artifact=decision_artifact,
                     promotion_decision_digest=decision_digest,
                 )
-                self._emit_promotion_receipt_bundle(outcome)
                 self._cp._conn.execute("COMMIT")  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001
                 self._cp._conn.execute("ROLLBACK")  # type: ignore[attr-defined]
-                if isinstance(exc, AutoPromotionReceiptEmissionError):
-                    raise
                 raise ControlPlaneError(
                     f"rollback failed: {exc!r}"
                 ) from exc
+        self._emit_promotion_receipt_bundle(outcome)
         return outcome
 
     # -- internals -----------------------------------------------------
@@ -385,12 +382,11 @@ class AutoPromotionEngine:
                 f"auto-promotion artifact build failed: {exc!r}"
             ) from exc
 
-        # Ensure family exists in solver_families
-        self._cp.upsert_solver_family(family_kind, "1.0")
-
         with self._cp._lock:  # type: ignore[attr-defined]
             self._cp._conn.execute("BEGIN IMMEDIATE")  # type: ignore[attr-defined]
             try:
+                # Keep solver-family creation inside the promotion transaction.
+                self._cp.upsert_solver_family(family_kind, "1.0")
                 solver = self._cp.upsert_solver(
                     name=spec.solver_name,
                     version="1.0",
@@ -464,16 +460,14 @@ class AutoPromotionEngine:
                     promotion_decision_artifact=decision_artifact,
                     promotion_decision_digest=decision_digest,
                 )
-                self._emit_promotion_receipt_bundle(outcome)
                 self._cp._conn.execute("COMMIT")  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001
                 self._cp._conn.execute("ROLLBACK")  # type: ignore[attr-defined]
-                if isinstance(exc, AutoPromotionReceiptEmissionError):
-                    raise
                 raise ControlPlaneError(
                     f"auto-promotion commit failed: {exc!r}"
                 ) from exc
 
+        self._emit_promotion_receipt_bundle(outcome)
         return outcome
 
     def _family_kind_for_solver(self, solver: SolverRecord) -> str:
@@ -497,7 +491,7 @@ class AutoPromotionEngine:
             self.emit_receipt_bundle(bundle)
         except Exception as exc:  # noqa: BLE001
             raise AutoPromotionReceiptEmissionError(
-                "auto-promotion receipt sink failed inside transaction"
+                "auto-promotion receipt sink failed after durable commit"
             ) from exc
         self._last_emitted_receipt = bundle["receipt"]
 

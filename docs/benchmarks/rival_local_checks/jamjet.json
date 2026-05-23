@@ -1,0 +1,12 @@
+{
+  "evidence_manifest_contract_version": "wd.v12.rival_local_evidence_manifest.v1",
+  "rival": "JamJet",
+  "pinned_revision": "pypi:jamjet==0.8.6; wheel_sha256=sha256:188a229e5db1dbac9f7bbcbbde6a7afba35ec03506e055bfa954f2cbb90afeb3",
+  "local_artifact_path": "artifacts/jamjet-local-inspection-not-run.json",
+  "local_artifact_sha256": "sha256:9004288030d50c41da509d0e189a1f79aba5333e73c476f5ea3e817f64ba28bc",
+  "smoke_command": "static inspection only: Get-FileHash + tar -tf/-xOf against C:/tmp/rival-local-check-jamjet/wheel-only/jamjet-0.8.6-py3-none-any.whl; no import, install, or execution",
+  "smoke_result": "not_run",
+  "cloud_dependency": false,
+  "evidence_type": "local_inspection",
+  "notes": "JamJet 0.8.6 wheel is locally present and was statically inspected without executing rival code. This is audit-traceable evidence that the installable surface exists, but it deliberately does not pass the required JamJet local check because no policy/audit/replay smoke was run. It must not contribute to consensus_grade."
+}

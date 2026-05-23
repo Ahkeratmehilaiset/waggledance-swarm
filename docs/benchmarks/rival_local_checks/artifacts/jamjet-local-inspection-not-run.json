@@ -1,0 +1,51 @@
+{
+  "evidence_artifact_contract_version": "wd.v12.rival_local_evidence_artifact.v1",
+  "rival": "JamJet",
+  "pinned_revision": "pypi:jamjet==0.8.6; wheel_sha256=sha256:188a229e5db1dbac9f7bbcbbde6a7afba35ec03506e055bfa954f2cbb90afeb3",
+  "smoke_result": "not_run",
+  "offline": true,
+  "ok": false,
+  "evidence_type": "local_inspection",
+  "observations": {
+    "policy_audit_or_replay_smoke": {
+      "ok": false,
+      "offline": true,
+      "summary": "Not executed. Static wheel inspection found policy/audit/replay-related modules, but no local policy/audit/replay smoke was run in this artifact."
+    }
+  },
+  "static_inspection": {
+    "source": "C:/tmp/rival-local-check-jamjet/wheel-only/jamjet-0.8.6-py3-none-any.whl",
+    "wheel_sha256": "sha256:188a229e5db1dbac9f7bbcbbde6a7afba35ec03506e055bfa954f2cbb90afeb3",
+    "metadata": {
+      "name": "jamjet",
+      "version": "0.8.6",
+      "license": "Apache-2.0",
+      "requires_python": ">=3.12",
+      "repository": "https://github.com/jamjet-labs/jamjet",
+      "summary": "open-source safety layer for AI agents; block unsafe tool calls, require approval, enforce budgets, audit, replay"
+    },
+    "entry_points": [
+      "jamjet = jamjet.cli.main:app",
+      "jamjet-cloud = jamjet.cloud.cli:main"
+    ],
+    "inspected_files": [
+      "jamjet/gate.py",
+      "jamjet/policies/decider.py",
+      "jamjet/cloud/audit_verify.py",
+      "jamjet/cloud/replay.py",
+      "jamjet/runtime/local/replay.py",
+      "jamjet/runtime/local/checkpoint.py"
+    ],
+    "inspection_commands": [
+      "Get-FileHash C:/tmp/rival-local-check-jamjet/wheel-only/jamjet-0.8.6-py3-none-any.whl -Algorithm SHA256",
+      "tar -tf C:/tmp/rival-local-check-jamjet/wheel-only/jamjet-0.8.6-py3-none-any.whl",
+      "tar -xOf C:/tmp/rival-local-check-jamjet/wheel-only/jamjet-0.8.6-py3-none-any.whl jamjet-0.8.6.dist-info/METADATA",
+      "tar -xOf C:/tmp/rival-local-check-jamjet/wheel-only/jamjet-0.8.6-py3-none-any.whl jamjet/gate.py",
+      "tar -xOf C:/tmp/rival-local-check-jamjet/wheel-only/jamjet-0.8.6-py3-none-any.whl jamjet/policies/decider.py"
+    ],
+    "no_code_execution": true,
+    "no_install": true,
+    "no_network": true,
+    "why_not_passing": "The required JamJet rival check needs a policy/audit/replay smoke with no cloud dependency. This artifact only proves that a pinned wheel was inspected and that relevant modules are present."
+  }
+}

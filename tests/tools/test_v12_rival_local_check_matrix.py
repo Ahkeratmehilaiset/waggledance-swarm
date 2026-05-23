@@ -980,14 +980,13 @@ def test_evidence_dir_without_jamjet_manifest_reports_generic_missing_blocker(
     assert report["consensus_grade"] is False
 
 
-def test_repository_evidence_dir_jamjet_preloop_report_missing_manifest_blocker() -> None:
+def test_repository_evidence_dir_jamjet_static_artifact_stays_not_passing() -> None:
     """Production smoke: against the real docs/benchmarks/rival_local_checks
-    evidence dir (which contains AGT + Asqav manifests but no JamJet or
-    Preloop yet), JamJet + Preloop both report 'evidence manifest missing'
-    (post-2026-05-23 upstream verification; previously they reported
-    'no_local_installable_surface_yet'). AGT stays passed, Asqav stays
-    cloud_dependent. Aggregate consensus_grade stays False because only
-    1/4 rivals has actually passed a local check (AGT)."""
+    evidence dir, JamJet has a digest-verified static-inspection artifact but
+    remains not_passed because no policy/audit/replay smoke was run. Preloop
+    still reports 'evidence manifest missing'. AGT stays passed, Asqav stays
+    cloud_dependent. Aggregate consensus_grade stays False because only 1/4
+    rivals has actually passed a local check (AGT)."""
     report = build_rival_local_check_matrix(
         evidence_dir=ROOT / "docs" / "benchmarks" / "rival_local_checks",
     )
@@ -997,10 +996,19 @@ def test_repository_evidence_dir_jamjet_preloop_report_missing_manifest_blocker(
     agt = next(r for r in report["checks"] if r["rival"] == "Microsoft AGT")
     asqav = next(r for r in report["checks"] if r["rival"] == "Asqav")
 
-    assert jamjet["blocker"] == "evidence manifest missing"
+    assert jamjet["local_status"] == "not_passed"
+    assert jamjet["blocker"] == "smoke_result is not passed"
+    assert jamjet["blocked_artifact_reason"] == "smoke_result"
+    assert jamjet["artifact_proof"]["artifact_digest_verified"] is True
+    assert (
+        jamjet["artifact_proof"]["local_artifact_sha256"]
+        == "sha256:9004288030d50c41da509d0e189a1f79aba5333e73c476f5ea3e817f64ba28bc"
+    )
+    assert jamjet["consensus_grade_contribution"] is False
     assert preloop["blocker"] == "evidence manifest missing"
     assert agt["local_status"] == "passed"
     assert asqav["local_status"] == "cloud_dependent"
+    assert report["passed_count"] == 1
     assert report["consensus_grade"] is False
 
 
@@ -1090,5 +1098,57 @@ def test_open_source_installable_rival_yields_not_passed_with_template_manifest(
     assert preloop["local_status"] == "not_passed"
     assert preloop["blocker"] == "smoke_result is not passed"
     assert preloop["consensus_grade_contribution"] is False
+    assert report["passed_count"] == 0
+    assert report["consensus_grade"] is False
+
+
+def test_not_passed_manifest_can_surface_lightweight_artifact_proof(
+    tmp_path: Path,
+) -> None:
+    evidence_dir = tmp_path / "evidence"
+    artifact = evidence_dir / "artifacts" / "jamjet-static-inspection.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "rival": "JamJet",
+                "smoke_result": "not_run",
+                "ok": False,
+                "offline": True,
+                "notes": "static inspection only",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (evidence_dir / "jamjet.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "JamJet",
+                "pinned_revision": "pypi:jamjet==0.8.6",
+                "local_artifact_path": "artifacts/jamjet-static-inspection.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "static inspection only",
+                "smoke_result": "not_run",
+                "cloud_dependency": False,
+                "evidence_type": "local_inspection",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+    jamjet = next(row for row in report["checks"] if row["rival"] == "JamJet")
+
+    assert jamjet["local_status"] == "not_passed"
+    assert jamjet["blocker"] == "smoke_result is not passed"
+    assert jamjet["blocked_artifact_reason"] == "smoke_result"
+    assert jamjet["artifact_proof"]["artifact_digest_verified"] is True
+    assert jamjet["artifact_proof"]["local_artifact_sha256"] == _sha256(artifact)
+    assert jamjet["consensus_grade_contribution"] is False
     assert report["passed_count"] == 0
     assert report["consensus_grade"] is False

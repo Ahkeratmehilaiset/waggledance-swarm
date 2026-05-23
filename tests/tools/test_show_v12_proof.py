@@ -42,6 +42,7 @@ def test_default_text_output_includes_expected_sections() -> None:
         "A3 COUNTERFACTUAL AXIS",
         "A4 SOLVER-GROWTH AXIS",
         "A4 SOLVER LIFECYCLE RECEIPTS",
+        "A4 AUTOGROWTH LIFECYCLE RECEIPTS",
         "GOVERNANCE THROUGHPUT",
         "COMPETITOR-AXIS PILOT",
         "SUBSTRATE VELOCITY",
@@ -61,6 +62,7 @@ def test_json_output_is_parseable_and_has_expected_keys() -> None:
     assert "a3_counterfactual_axis" in payload
     assert "a4_solver_growth_axis" in payload
     assert "a4_solver_lifecycle" in payload
+    assert "a4_autogrowth_lifecycle" in payload
     assert "governance_throughput" in payload
     assert "competitor_pilot" in payload
     assert "substrate_velocity" in payload
@@ -205,6 +207,33 @@ def test_a4_solver_lifecycle_section_reports_opt_in_runtime_path() -> None:
     assert "not production auto-promotion" in lifecycle["evidence_scope"]
 
 
+def test_a4_autogrowth_lifecycle_section_reports_scheduler_runtime_path() -> None:
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+    autogrowth = payload["a4_autogrowth_lifecycle"]
+
+    assert autogrowth["available"] is True, autogrowth
+    assert autogrowth["ok"] is True, autogrowth
+    assert autogrowth["claim_label"] == "MEASURED_LOCAL_PARTIAL"
+    assert autogrowth["runtime_path"] == (
+        "AutogrowthScheduler.tick -> LowRiskGrower.grow_from_gap -> "
+        "AutoPromotionEngine.evaluate_candidate"
+    )
+    assert autogrowth["transitions"] == ["auto_promoted"]
+    assert autogrowth["receipt_count"] == 1
+    assert autogrowth["receipt_chain_verified"] is True
+    assert autogrowth["risk_class"] == "local_artifact"
+    assert autogrowth["operator_gate_required"] is False
+    assert autogrowth["external_writes_applied"] is False
+    assert autogrowth["receipt_emission_mode"] == "opt_in_disk_bundle_sink"
+    assert autogrowth["default_sink_required"] is False
+    assert autogrowth["sink_none_preserved"] is True
+    assert "proof fixture only" in autogrowth["evidence_scope"]
+    assert "not long-running production auto-promotion" in (
+        autogrowth["evidence_scope"]
+    )
+
+
 def test_text_output_separates_synthetic_a4_axis_from_lifecycle_path() -> None:
     result = _run()
 
@@ -213,6 +242,9 @@ def test_text_output_separates_synthetic_a4_axis_from_lifecycle_path() -> None:
     assert "A4 SOLVER LIFECYCLE RECEIPTS" in result.stdout
     assert "real opt-in SolverProvenance sign/activate/revoke path" in result.stdout
     assert "not production auto-promotion authority" in result.stdout
+    assert "A4 AUTOGROWTH LIFECYCLE RECEIPTS" in result.stdout
+    assert "real opt-in AutogrowthScheduler queue->grower->engine path" in result.stdout
+    assert "not long-running production auto-promotion authority" in result.stdout
 
 
 def test_governance_throughput_section_reports_status_counts() -> None:

@@ -81,6 +81,27 @@ def _minimal_v12_proof() -> dict[str, object]:
             "external_writes_applied": False,
             "receipt_emission_mode": "opt_in_disk_bundle_sink",
         },
+        "a4_autogrowth_lifecycle": {
+            "available": True,
+            "ok": True,
+            "claim_label": "MEASURED_LOCAL_PARTIAL",
+            "runtime_path": (
+                "AutogrowthScheduler.tick -> LowRiskGrower.grow_from_gap -> "
+                "AutoPromotionEngine.evaluate_candidate"
+            ),
+            "transitions": ["auto_promoted"],
+            "receipt_count": 1,
+            "receipt_chain_verified": True,
+            "evidence_scope": (
+                "real opt-in AutogrowthScheduler queue->grower->engine path; "
+                "proof fixture only; not long-running production auto-promotion "
+                "authority"
+            ),
+            "external_writes_applied": False,
+            "receipt_emission_mode": "opt_in_disk_bundle_sink",
+            "default_sink_required": False,
+            "sink_none_preserved": True,
+        },
         "governance_throughput": {
             "available": True,
             "metric_count": 8,
@@ -153,6 +174,19 @@ def test_build_baseline_locks_honest_magma_sprint_state() -> None:
     assert (
         baseline["current_state"]["a4_solver_lifecycle"]["transitions"]
         == ["activation_authorised", "activation_revoked"]
+    )
+    assert (
+        baseline["current_state"]["a4_autogrowth_lifecycle"]["claim_label"]
+        == "MEASURED_LOCAL_PARTIAL"
+    )
+    assert baseline["current_state"]["a4_autogrowth_lifecycle"]["receipt_count"] == 1
+    assert (
+        baseline["current_state"]["a4_autogrowth_lifecycle"]["transitions"]
+        == ["auto_promoted"]
+    )
+    assert (
+        baseline["current_state"]["a4_autogrowth_lifecycle"]["sink_none_preserved"]
+        is True
     )
     assert (
         baseline["current_state"]["competitor_pilot"]["rival_local_checks_status"]
@@ -231,6 +265,32 @@ def test_baseline_fail_closes_on_missing_a4_lifecycle_receipt_chain() -> None:
     assert "a4_solver_lifecycle_receipt_chain_not_verified" in baseline["blockers"]
 
 
+def test_baseline_fail_closes_on_missing_a4_autogrowth_receipt_chain() -> None:
+    proof = _minimal_v12_proof()
+    proof["a4_autogrowth_lifecycle"] = dict(proof["a4_autogrowth_lifecycle"])
+    proof["a4_autogrowth_lifecycle"]["receipt_chain_verified"] = False
+
+    baseline = build_baseline(v12_proof=proof, generated_at_utc=FIXED_NOW)
+
+    assert baseline["ok"] is False
+    assert "a4_autogrowth_lifecycle_receipt_chain_not_verified" in (
+        baseline["blockers"]
+    )
+
+
+def test_baseline_fail_closes_on_a4_autogrowth_sink_none_regression() -> None:
+    proof = _minimal_v12_proof()
+    proof["a4_autogrowth_lifecycle"] = dict(proof["a4_autogrowth_lifecycle"])
+    proof["a4_autogrowth_lifecycle"]["sink_none_preserved"] = False
+
+    baseline = build_baseline(v12_proof=proof, generated_at_utc=FIXED_NOW)
+
+    assert baseline["ok"] is False
+    assert "a4_autogrowth_lifecycle_sink_none_not_preserved" in (
+        baseline["blockers"]
+    )
+
+
 def test_cli_writes_json_baseline(tmp_path: Path) -> None:
     output = tmp_path / "baseline.json"
 
@@ -249,4 +309,13 @@ def test_cli_writes_json_baseline(tmp_path: Path) -> None:
     )
     assert file_payload["current_state"]["a4_solver_lifecycle"]["claim_label"] == (
         "MEASURED_LOCAL_PARTIAL"
+    )
+    assert file_payload["current_state"]["a4_autogrowth_lifecycle"]["claim_label"] == (
+        "MEASURED_LOCAL_PARTIAL"
+    )
+    assert (
+        file_payload["current_state"]["a4_autogrowth_lifecycle"][
+            "sink_none_preserved"
+        ]
+        is True
     )

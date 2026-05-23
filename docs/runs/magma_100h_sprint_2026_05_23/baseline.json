@@ -92,15 +92,15 @@
     },
     "governance_throughput": {
       "available": true,
-      "event_count_in_window": 345,
+      "event_count_in_window": 744,
       "metric_count": 8,
       "status_counts": {
         "deferred": 1,
         "insufficient_data": 6,
         "ok": 1
       },
-      "task_count_in_window": 51,
-      "window_label": "last-7d (from 2026-05-16T06:20:37.659393+00:00)"
+      "task_count_in_window": 95,
+      "window_label": "last-7d (from 2026-05-16T10:55:04.440435+00:00)"
     },
     "receipt_adoption": {
       "accepted_exception_count": 0,
@@ -109,8 +109,8 @@
       "high_criticality_gap_count": 0,
       "medium_gap_targets": [],
       "status_counts": {
-        "receipt_bound": 6,
-        "receipt_capable_opt_in": 1
+        "receipt_bound": 4,
+        "receipt_capable_opt_in": 3
       }
     }
   },
@@ -123,7 +123,7 @@
     "public cryptographic verification parity",
     "rival benchmark consensus-grade"
   ],
-  "generated_at_utc": "2026-05-23T06:20:37Z",
+  "generated_at_utc": "2026-05-23T10:55:04Z",
   "next_work_packages": [
     {
       "acceptance": "manifest verifies with tools/verify_magma_receipt.py and tests cover tampered payload/evaluation result",

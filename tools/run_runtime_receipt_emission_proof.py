@@ -28,6 +28,8 @@ from waggledance.core.domain.autonomy import (  # noqa: E402
 )
 from waggledance.core.magma.runtime_summary_receipt import (  # noqa: E402
     CHAIN_ID,
+    EVALUATION_VERSION_V0,
+    EVALUATION_VERSION_V1,
     PAYLOAD_VERSION,
     write_runtime_summary_receipt_bundle,
 )
@@ -80,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional UTC timestamp override such as 2026-05-23T07:00:00Z.",
     )
+    parser.add_argument(
+        "--evaluation-version",
+        choices=(EVALUATION_VERSION_V0, EVALUATION_VERSION_V1),
+        default=EVALUATION_VERSION_V1,
+        help="EvaluationResult version for the generated receipt bundle.",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -90,6 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = build_runtime_receipt_emission_proof(
             out_dir=args.out_dir,
             now_utc=_parse_utc(args.now) if args.now else None,
+            evaluation_version=args.evaluation_version,
         )
     except (OSError, ValueError) as exc:
         print(f"runtime receipt emission proof FAILED: {exc}", file=sys.stderr)
@@ -112,6 +121,7 @@ def build_runtime_receipt_emission_proof(
     *,
     out_dir: Path,
     now_utc: datetime | None = None,
+    evaluation_version: str = EVALUATION_VERSION_V1,
 ) -> dict[str, Any]:
     generated_at = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     out_dir = out_dir.resolve()
@@ -130,6 +140,7 @@ def build_runtime_receipt_emission_proof(
             summary_payload=summary,
             now_utc=generated_at,
             verify_manifest=verify_manifest,
+            evaluation_version=evaluation_version,
         )
         receipt_reports.append(report)
         return report
@@ -167,7 +178,7 @@ def build_runtime_receipt_emission_proof(
         blockers.append("raw_payload_marker_leaked")
     if payload.get("payload_version") != PAYLOAD_VERSION:
         blockers.append("payload_version_mismatch")
-    if evaluation.get("evaluation_version") != "magma.evaluation_result.v0":
+    if evaluation.get("evaluation_version") != evaluation_version:
         blockers.append("evaluation_version_mismatch")
 
     report = {
@@ -190,7 +201,9 @@ def build_runtime_receipt_emission_proof(
         "result_executed": result.get("executed") is True,
         "actual_gate": payload.get("actual_gate"),
         "verdict": payload.get("verdict"),
+        "requested_evaluation_version": evaluation_version,
         "evaluation_version": evaluation.get("evaluation_version"),
+        "evaluation_v1_metadata_present": _evaluation_v1_metadata_present(evaluation),
         "reason_codes": evaluation.get("reason_codes", []),
         "receipt_count": int(verifier_report.get("receipt_count", 0) or 0),
         "verifier_ok": verifier_report.get("ok") is True,
@@ -234,6 +247,19 @@ def _build_fixture_runtime(*, runtime_receipt_sink) -> AutonomyRuntime:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _evaluation_v1_metadata_present(evaluation: dict[str, Any]) -> bool:
+    if evaluation.get("evaluation_version") != EVALUATION_VERSION_V1:
+        return False
+    return all(
+        key in evaluation
+        for key in (
+            "confidence_basis",
+            "sanitization_audit",
+            "subject_payload_size_bytes",
+        )
+    )
 
 
 def _raw_payload_leak_free(out_dir: Path, result: dict[str, Any]) -> bool:

@@ -9,11 +9,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any
 
 from waggledance.core.magma.canonical import sha256_digest
-from waggledance.core.magma.evaluation_result import build_evaluation_result
+from waggledance.core.magma.evaluation_result import (
+    build_evaluation_result,
+    build_evaluation_result_v1,
+)
 from waggledance.core.magma.receipt import build_magma_receipt
 from waggledance.core.magma.receipt_bundle import (
     ReceiptBundleEntry,
@@ -23,6 +27,8 @@ from waggledance.core.magma.receipt_bundle import (
 
 PAYLOAD_VERSION = "magma.runtime_summary_receipt_payload.v0"
 CHAIN_ID = "magma:runtime_summary:handle_query:v0"
+EVALUATION_VERSION_V0 = "magma.evaluation_result.v0"
+EVALUATION_VERSION_V1 = "magma.evaluation_result.v1"
 
 
 def build_handle_query_runtime_summary(
@@ -95,32 +101,15 @@ def write_runtime_summary_receipt_bundle(
     now_utc: datetime,
     verify_manifest: Callable[[Path], dict[str, Any]],
     previous_receipt: dict[str, Any] | None = None,
+    evaluation_version: str = EVALUATION_VERSION_V0,
 ) -> dict[str, Any]:
     """Write and verify a one-entry runtime summary receipt bundle."""
     payload = dict(summary_payload)
     _validate_summary_payload(payload)
     now_utc = _coerce_utc(now_utc)
-    evaluation = build_evaluation_result(
-        case_id=str(payload["case_id"]),
-        subject_type="policy",
-        target_payload=payload,
-        risk_class="internal_memory",
-        expected_gate=str(payload["expected_gate"]),
-        actual_gate=str(payload["actual_gate"]),
-        verifier_path=[
-            "autonomy_runtime_handle_query",
-            "runtime_summary_payload_v0",
-            "magma_receipt_v1",
-            "offline_receipt_verifier",
-        ],
-        solver_selection=_solver_selection(payload),
-        policy_version=f"policy:autonomy_runtime:{payload['profile']}",
-        charter_version="charter:v1",
-        domain_threshold_version="threshold:autonomy_runtime:v1",
-        verdict=str(payload["verdict"]),
-        reason_codes=_reason_codes(payload),
-        confidence_score=_confidence(payload),
-        uncertainty_sources=_uncertainty_sources(payload),
+    evaluation = _build_runtime_evaluation(
+        payload=payload,
+        evaluation_version=evaluation_version,
     )
     receipt = build_magma_receipt(
         event_id=f"magma:runtime_summary:{payload['action_id']}",
@@ -169,6 +158,55 @@ def write_runtime_summary_receipt_bundle(
     )
 
 
+def _build_runtime_evaluation(
+    *,
+    payload: Mapping[str, Any],
+    evaluation_version: str,
+) -> dict[str, Any]:
+    kwargs = {
+        "case_id": str(payload["case_id"]),
+        "subject_type": "policy",
+        "target_payload": payload,
+        "risk_class": "internal_memory",
+        "expected_gate": str(payload["expected_gate"]),
+        "actual_gate": str(payload["actual_gate"]),
+        "verifier_path": [
+            "autonomy_runtime_handle_query",
+            "runtime_summary_payload_v0",
+            "magma_receipt_v1",
+            "offline_receipt_verifier",
+        ],
+        "solver_selection": _solver_selection(payload),
+        "policy_version": f"policy:autonomy_runtime:{payload['profile']}",
+        "charter_version": "charter:v1",
+        "domain_threshold_version": "threshold:autonomy_runtime:v1",
+        "verdict": str(payload["verdict"]),
+        "reason_codes": _reason_codes(payload),
+        "confidence_score": _confidence(payload),
+        "uncertainty_sources": _uncertainty_sources(payload),
+    }
+    if evaluation_version == EVALUATION_VERSION_V0:
+        return build_evaluation_result(**kwargs)
+    if evaluation_version == EVALUATION_VERSION_V1:
+        return build_evaluation_result_v1(
+            **kwargs,
+            confidence_basis={
+                "method": "point_estimate",
+                "sample_count": 1,
+                "methodology_reference": "runtime_summary_receipt_v0",
+            },
+            sanitization_audit={
+                "applied": ["reserved_domain_allowlist"],
+                "redaction_count": 0,
+            },
+            subject_payload_size_bytes=_payload_size_bytes(payload),
+        )
+    raise ValueError(
+        "runtime summary evaluation_version must be one of: "
+        f"{EVALUATION_VERSION_V0}, {EVALUATION_VERSION_V1}"
+    )
+
+
 def _validate_summary_payload(payload: Mapping[str, Any]) -> None:
     if payload.get("payload_version") != PAYLOAD_VERSION:
         raise ValueError("runtime summary payload_version mismatch")
@@ -184,6 +222,16 @@ def _validate_summary_payload(payload: Mapping[str, Any]) -> None:
     ):
         if not payload.get(key):
             raise ValueError(f"runtime summary missing required field: {key}")
+
+
+def _payload_size_bytes(payload: Mapping[str, Any]) -> int:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return len(encoded.encode("utf-8"))
 
 
 def _actual_gate(*, approved: bool, executed: bool, needs_approval: bool) -> str:

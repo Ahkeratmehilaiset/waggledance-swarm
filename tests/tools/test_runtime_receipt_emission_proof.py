@@ -61,6 +61,9 @@ def test_runtime_receipt_emission_proof_writes_verified_sanitized_bundle(
     assert report["result_executed"] is True
     assert report["actual_gate"] == "allow"
     assert report["verdict"] == "pass"
+    assert report["requested_evaluation_version"] == "magma.evaluation_result.v1"
+    assert report["evaluation_version"] == "magma.evaluation_result.v1"
+    assert report["evaluation_v1_metadata_present"] is True
     assert report["receipt_count"] == 1
     assert report["verifier_ok"] is True
     assert report["raw_payload_leak_check"] is True
@@ -151,7 +154,24 @@ def test_runtime_receipt_emission_proof_cli_json(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["verifier_ok"] is True
     assert payload["raw_payload_leak_check"] is True
+    assert payload["evaluation_version"] == "magma.evaluation_result.v1"
+    assert payload["evaluation_v1_metadata_present"] is True
     assert "DO_NOT_LEAK" not in result.stdout
+
+
+def test_runtime_receipt_emission_proof_can_still_emit_v0(tmp_path: Path) -> None:
+    out_dir = tmp_path / "v0-proof"
+
+    report = build_runtime_receipt_emission_proof(
+        out_dir=out_dir,
+        now_utc=FIXED_NOW,
+        evaluation_version="magma.evaluation_result.v0",
+    )
+
+    assert report["ok"] is True
+    assert report["requested_evaluation_version"] == "magma.evaluation_result.v0"
+    assert report["evaluation_version"] == "magma.evaluation_result.v0"
+    assert report["evaluation_v1_metadata_present"] is False
 
 
 def test_runtime_receipt_emission_proof_cli_rejects_non_utc_now(

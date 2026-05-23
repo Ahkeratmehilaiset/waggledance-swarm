@@ -24,11 +24,13 @@ RECEIPT_PATTERNS = (
     "build_magma_receipt",
     "write_receipt_bundle",
     "ReceiptBundleEntry",
+    "runtime_receipt_sink",
 )
 EVALUATION_PATTERNS = (
     "build_evaluation_result",
     "evaluation_result_digest",
     "EvaluationResult",
+    "build_handle_query_runtime_summary",
 )
 VERIFIER_PATTERNS = (
     "verify_manifest",
@@ -45,6 +47,7 @@ MAGMA_EVENT_PATTERNS = (
     "record_action_event",
     "record_policy_decision",
 )
+RECEIPT_OK_STATUSES = frozenset({"receipt_bound", "receipt_capable_opt_in"})
 
 
 @dataclass(frozen=True)
@@ -165,12 +168,14 @@ def build_adoption_report(
     high_gaps = [
         entry
         for entry in entries
-        if entry["criticality"] == "high" and entry["status"] != "receipt_bound"
+        if entry["criticality"] == "high"
+        and entry["status"] not in RECEIPT_OK_STATUSES
     ]
     action_required_gaps = [
         entry
         for entry in entries
-        if entry["status"] != "receipt_bound" and entry["accepted_exception"] is None
+        if entry["status"] not in RECEIPT_OK_STATUSES
+        and entry["accepted_exception"] is None
     ]
     accepted_exceptions = [
         entry
@@ -188,10 +193,12 @@ def build_adoption_report(
         "entries": entries,
         "interpretation": (
             "Static adoption signal only. A receipt_bound status means the "
-            "file contains direct receipt/bundle hooks; it does not prove every "
-            "runtime branch emits a valid verified receipt. An accepted_exception "
-            "marks a reviewed non-authority path where the current non-receipt "
-            "status is intentional rather than an action-required gap."
+            "file contains direct receipt/bundle hooks; receipt_capable_opt_in "
+            "means the file exposes a tested opt-in hook that can emit receipts "
+            "through a caller-provided sink. Neither status proves every runtime "
+            "branch emits a valid verified receipt. An accepted_exception marks "
+            "a reviewed non-authority path where the current non-receipt status "
+            "is intentional rather than an action-required gap."
         ),
     }
 
@@ -306,6 +313,14 @@ def _classify(pattern_hits: dict[str, dict[str, int]]) -> str:
     verifier_count = sum(pattern_hits.get("verifier", {}).values())
     magma_event_count = sum(pattern_hits.get("magma_event", {}).values())
     if receipt_count and evaluation_count:
+        if (
+            pattern_hits.get("receipt", {}).get("runtime_receipt_sink")
+            and pattern_hits.get("evaluation", {}).get(
+                "build_handle_query_runtime_summary"
+            )
+            and not pattern_hits.get("receipt", {}).get("build_magma_receipt")
+        ):
+            return "receipt_capable_opt_in"
         return "receipt_bound"
     if receipt_count or verifier_count:
         return "receipt_surface_only"

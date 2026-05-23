@@ -20,7 +20,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from waggledance.core.actions.action_bus import SafeActionBus
 from waggledance.core.autonomy import background_scheduler as bg
@@ -120,8 +120,10 @@ class AutonomyRuntime:
         resource_kernel=None,
         enable_magma: bool = True,
         enable_persistence: bool = True,
+        runtime_receipt_sink: Optional[Callable[[dict[str, Any]], Any]] = None,
     ):
         self.profile = profile
+        self.runtime_receipt_sink = runtime_receipt_sink
 
         # Core components — let WorldModel use _UNSET sentinel for proper
         # CognitiveGraph lazy-init when persistence is enabled. Dry-run-safe
@@ -352,6 +354,54 @@ class AutonomyRuntime:
         except Exception as exc:
             log.debug("Persist %s failed: %s", label, exc)
             return None
+
+    def _record_query_runtime_receipt(
+        self,
+        *,
+        query: str,
+        context: Dict[str, Any],
+        intent: str,
+        quality_path: str,
+        primary_cap,
+        action: Action,
+        action_result,
+        verifier_result,
+        snapshot_before,
+        case,
+        elapsed_ms: float,
+        result_keys: list[str],
+    ):
+        """Emit an opt-in sanitized runtime summary receipt."""
+        if self.runtime_receipt_sink is None:
+            return None
+        from waggledance.core.magma.runtime_summary_receipt import (
+            build_handle_query_runtime_summary,
+        )
+
+        summary = build_handle_query_runtime_summary(
+            query=query,
+            context=context,
+            profile=self.profile,
+            intent=intent,
+            quality_path=quality_path,
+            capability_id=primary_cap.capability_id,
+            action_id=action.action_id,
+            approved=action_result.decision.approved,
+            executed=action_result.executed,
+            needs_approval=action_result.decision.needs_approval,
+            decision_reason=action_result.decision.reason or "",
+            elapsed_ms=elapsed_ms,
+            snapshot_id=snapshot_before.snapshot_id,
+            case_id=f"case:autonomy_runtime:{case.trajectory_id}",
+            verifier_passed=(
+                verifier_result.passed if verifier_result is not None else None
+            ),
+            verifier_confidence=(
+                verifier_result.confidence if verifier_result is not None else None
+            ),
+            result_keys=result_keys,
+        )
+        return self.runtime_receipt_sink(summary)
 
     def _record_mission_lifecycle_audit(self, event: dict[str, Any]) -> None:
         """Project a mission-queue lifecycle event into MAGMA audit."""
@@ -757,6 +807,22 @@ class AutonomyRuntime:
         if capsule_match:
             result["capsule_decision"] = capsule_match.decision_id
             result["capsule_layer"] = capsule_match.layer
+        runtime_receipt = self._record_query_runtime_receipt(
+            query=query,
+            context=context,
+            intent=intent,
+            quality_path=route_result.quality_path,
+            primary_cap=primary_cap,
+            action=action,
+            action_result=action_result,
+            verifier_result=verifier_result,
+            snapshot_before=snapshot_before,
+            case=case,
+            elapsed_ms=elapsed,
+            result_keys=list(result.keys()),
+        )
+        if runtime_receipt is not None:
+            result["runtime_receipt"] = runtime_receipt
         return result
 
     # ── Mission path ──────────────────────────────────────

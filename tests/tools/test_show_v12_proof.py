@@ -103,24 +103,20 @@ def test_adoption_high_gap_count_is_zero_on_current_main() -> None:
     assert adoption["available"] is True, adoption
     assert adoption["high_criticality_gap_count"] == 0, adoption
     assert adoption["action_required_gap_count"] == 0, adoption
-    assert adoption["accepted_exception_count"] == 1, adoption
-    medium_paths = adoption["medium_gap_targets"]
-    assert medium_paths == [
-        {
-            "accepted_exception": "accepted_observability_path",
-            "label": "Autonomy runtime MAGMA append path",
-            "path": "waggledance/core/autonomy/runtime.py",
-            "status": "magma_event_only",
-        }
-    ]
+    assert adoption["accepted_exception_count"] == 0, adoption
+    assert adoption["status_counts"] == {
+        "receipt_bound": 6,
+        "receipt_capable_opt_in": 1,
+    }
+    assert adoption["medium_gap_targets"] == []
 
 
 def test_text_output_does_not_overstate_medium_non_receipt_paths() -> None:
     result = _run()
 
     assert result.returncode in {0, 1}, result.stderr
-    assert "medium non-receipt paths" in result.stdout
-    assert "accepted_observability_path" in result.stdout
+    assert "medium non-receipt paths" not in result.stdout
+    assert "accepted_observability_path" not in result.stdout
     assert "medium accepted-exception paths" not in result.stdout
 
 

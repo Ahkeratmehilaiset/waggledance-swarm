@@ -39,6 +39,7 @@ from typing import Any, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RECEIPT_OK_STATUSES = frozenset({"receipt_bound", "receipt_capable_opt_in"})
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -113,7 +114,7 @@ def collect_proof(*, repo_root: Path, since_days: int) -> dict[str, Any]:
             entry
             for entry in adoption.get("entries", [])
             if entry.get("criticality") == "medium"
-            and entry.get("status") != "receipt_bound"
+            and entry.get("status") not in RECEIPT_OK_STATUSES
         ]
         if adoption.get("ok") is not False
         else []

@@ -75,6 +75,10 @@ class Claim:
     claimed_at_utc: str
     last_heartbeat_utc: str
     lease_seconds: int
+    claim_lease_expires_utc: str = ""
+    role: str = ""
+    agent_uuid: str = ""
+    capabilities: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -165,6 +169,7 @@ def claim_task(
             )
 
     timestamp = _iso(now_utc or datetime.now(timezone.utc))
+    lease_expires = _iso(_parse_utc(timestamp) + timedelta(seconds=int(lease_seconds)))
     claim = Claim(
         agent=agent,
         task_id=task_id,
@@ -175,6 +180,7 @@ def claim_task(
         claimed_at_utc=timestamp,
         last_heartbeat_utc=timestamp,
         lease_seconds=int(lease_seconds),
+        claim_lease_expires_utc=lease_expires,
     )
     _write_claim_file(claim_path, claim, create_new=existing is None)
     return claim
@@ -248,6 +254,12 @@ def heartbeat(
         )
 
     timestamp = _iso(now_utc or datetime.now(timezone.utc))
+    refreshed_lease_seconds = (
+        int(lease_seconds) if lease_seconds else existing.lease_seconds
+    )
+    lease_expires = _iso(
+        _parse_utc(timestamp) + timedelta(seconds=refreshed_lease_seconds)
+    )
     refreshed = Claim(
         agent=existing.agent,
         task_id=existing.task_id,
@@ -257,7 +269,11 @@ def heartbeat(
         run_id=existing.run_id,
         claimed_at_utc=existing.claimed_at_utc,
         last_heartbeat_utc=timestamp,
-        lease_seconds=int(lease_seconds) if lease_seconds else existing.lease_seconds,
+        lease_seconds=refreshed_lease_seconds,
+        claim_lease_expires_utc=lease_expires,
+        role=existing.role,
+        agent_uuid=existing.agent_uuid,
+        capabilities=existing.capabilities,
     )
     _write_claim_file(claim_path, refreshed)
     return refreshed
@@ -382,10 +398,17 @@ def archive_stale_claims(
                 "claimed_at_utc": claim.claimed_at_utc,
                 "last_heartbeat_utc": claim.last_heartbeat_utc,
                 "lease_seconds": claim.lease_seconds,
+                "claim_lease_expires_utc": claim.claim_lease_expires_utc,
                 "released_at_utc": _iso(now),
                 "release_status": "stale_lease",
                 "release_reason": reason,
             }
+            if claim.role:
+                payload["role"] = claim.role
+            if claim.agent_uuid:
+                payload["agent_uuid"] = claim.agent_uuid
+            if claim.capabilities:
+                payload["capabilities"] = list(claim.capabilities)
             _write_json_file(archive_path, payload, create_new=True)
             claim_file = bridge / "work_queue" / "claims" / f"{safe_task}.json"
             try:
@@ -473,6 +496,10 @@ def _read_claim_file(path: Path) -> Claim:
         claimed_at_utc=str(data.get("claimed_at_utc", "")),
         last_heartbeat_utc=str(data.get("last_heartbeat_utc", "")),
         lease_seconds=int(data.get("lease_seconds", DEFAULT_LEASE_SECONDS)),
+        claim_lease_expires_utc=str(data.get("claim_lease_expires_utc", "")),
+        role=str(data.get("role", "")),
+        agent_uuid=str(data.get("agent_uuid", "")),
+        capabilities=tuple(str(s) for s in data.get("capabilities", []) if s),
     )
 
 
@@ -487,7 +514,14 @@ def _write_claim_file(path: Path, claim: Claim, *, create_new: bool = False) -> 
         "claimed_at_utc": claim.claimed_at_utc,
         "last_heartbeat_utc": claim.last_heartbeat_utc,
         "lease_seconds": claim.lease_seconds,
+        "claim_lease_expires_utc": claim.claim_lease_expires_utc,
     }
+    if claim.role:
+        payload["role"] = claim.role
+    if claim.agent_uuid:
+        payload["agent_uuid"] = claim.agent_uuid
+    if claim.capabilities:
+        payload["capabilities"] = list(claim.capabilities)
     _write_json_file(path, payload, create_new=create_new)
 
 

@@ -22,6 +22,9 @@ param(
     [string] $RuntimeRoot = 'C:\Python\project2-master\.agent-bridge',
     [string] $RepoRoot = '',
     [string] $RunId = '',
+    [string] $Role = '',
+    [string] $AgentUuid = '',
+    [string[]] $Capabilities = @(),
 
     [switch] $SkipBridgeRead,
     [switch] $SkipLiveness,
@@ -94,8 +97,32 @@ if (-not $RunId) {
     $RunId = "$Agent-$stamp"
 }
 
+if ($Role -and $Role -notmatch '^[a-z][a-z0-9_-]{1,32}$') {
+    throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
+}
+if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    throw "agent_uuid must be a UUID"
+}
+$Capabilities = @(
+    @($Capabilities) |
+        ForEach-Object { [string]$_ -split '[,;]' } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+foreach ($capability in @($Capabilities)) {
+    if ($capability -notmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+        throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
+    }
+}
+
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
 $env:AGENT_BRIDGE_RUN_ID = $RunId
+$env:AGENT_BRIDGE_SESSION_ID = $RunId
+if ($Role) { $env:AGENT_BRIDGE_ROLE = $Role }
+if ($AgentUuid) { $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid }
+if (@($Capabilities).Count -gt 0) {
+    $env:AGENT_BRIDGE_CAPABILITIES = ((@($Capabilities)) -join ',')
+}
 
 Set-Location -LiteralPath $repoFull
 
@@ -115,7 +142,10 @@ if (-not $SkipLiveness) {
         -Agent $Agent `
         -State active `
         -TaskId "$Agent-session-bootstrap-$((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd'))" `
-        -Message "$Agent session bootstrapped; runtime_root=$runtimeFull; repo_root=$repoFull; dedicated_worktree=$isDedicatedWorktree" |
+        -Message "$Agent session bootstrapped; runtime_root=$runtimeFull; repo_root=$repoFull; dedicated_worktree=$isDedicatedWorktree" `
+        -Role $Role `
+        -AgentUuid $AgentUuid `
+        -Capabilities $Capabilities |
         Out-Null
 }
 
@@ -200,9 +230,14 @@ if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
             $heartbeatJobName = "agent-bridge-heartbeat-$Agent"
             Stop-AgentBridgeExistingJob -Name $heartbeatJobName -EnvName 'AGENT_BRIDGE_HEARTBEAT_JOB'
             $job = Start-Job -Name $heartbeatJobName -ScriptBlock {
-                param($scriptPath, $agentArg, $runtimeArg)
-                & $scriptPath -Agent $agentArg -RuntimeRoot $runtimeArg
-            } -ArgumentList $heartbeatScript, $Agent, $runtimeFull
+                param($scriptPath, $agentArg, $runtimeArg, $roleArg, $agentUuidArg, $capabilitiesArg)
+                & $scriptPath `
+                    -Agent $agentArg `
+                    -RuntimeRoot $runtimeArg `
+                    -Role $roleArg `
+                    -AgentUuid $agentUuidArg `
+                    -Capabilities $capabilitiesArg
+            } -ArgumentList $heartbeatScript, $Agent, $runtimeFull, $Role, $AgentUuid, (,@($Capabilities))
             $heartbeatJobId = $job.Id
             $env:AGENT_BRIDGE_HEARTBEAT_JOB = [string]$heartbeatJobId
         } catch {
@@ -251,6 +286,9 @@ if (-not $cleanupAlreadyRegistered) {
     dedicated_worktree = $isDedicatedWorktree
     runtime_root   = $runtimeFull
     run_id         = $RunId
+    role           = $Role
+    agent_uuid     = $AgentUuid
+    capabilities   = @($Capabilities)
     git_branch     = $gitBranch
     wake_job_id    = $wakeJobId
     wake_enabled   = $wakeEnabled

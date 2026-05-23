@@ -45,6 +45,7 @@ $runtimeRoot = Join-Path $tempRootFull 'runtime'
 $savedRuntime = $env:AGENT_BRIDGE_RUNTIME_ROOT
 $savedRunId = $env:AGENT_BRIDGE_RUN_ID
 $savedLocation = (Get-Location).Path
+$agentUuid = '11111111-2222-3333-4444-555555555555'
 
 try {
     Write-Host 'Bridge worktree bootstrap smoke test' -ForegroundColor Cyan
@@ -81,6 +82,9 @@ try {
         -Base HEAD `
         -Branch 'waggledance/codex/smoke-bootstrap' `
         -RunId 'codex-worktree-bootstrap-smoke' `
+        -Role impl `
+        -AgentUuid $agentUuid `
+        -Capabilities @('bridge_event','work_queue') `
         -SkipBridgeRead `
         -SkipGitStatus `
         -SkipWakeWatcher `
@@ -107,6 +111,12 @@ try {
     Add-Check 'AGENT_BRIDGE_RUN_ID persisted' `
         ([string]$env:AGENT_BRIDGE_RUN_ID -eq 'codex-worktree-bootstrap-smoke') `
         $env:AGENT_BRIDGE_RUN_ID
+    Add-Check 'role metadata persisted' `
+        ([string]$bootstrap.role -eq 'impl') `
+        "role=$($bootstrap.role)"
+    Add-Check 'agent uuid metadata persisted' `
+        ([string]$bootstrap.agent_uuid -eq $agentUuid) `
+        "agent_uuid=$($bootstrap.agent_uuid)"
     Add-Check 'worktree branch is isolated' `
         ([string]$worktreeBranch -eq 'waggledance/codex/smoke-bootstrap') `
         $worktreeBranch
@@ -122,6 +132,10 @@ try {
         Add-Check 'liveness event carries run id' `
             ($tail -match 'codex-worktree-bootstrap-smoke') `
             ($tail.Substring(0, [Math]::Min(160, $tail.Length)))
+        Add-Check 'liveness event carries role metadata' `
+            ($tail -match '"role":"impl"')
+        Add-Check 'liveness event carries agent uuid metadata' `
+            ($tail -match $agentUuid)
     }
 } finally {
     Set-Location -LiteralPath $savedLocation

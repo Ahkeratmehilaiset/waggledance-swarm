@@ -411,3 +411,9 @@ def test_default_lease_seconds_applied(tmp_path: Path) -> None:
         bridge_root=bridge,
     )
     assert claim.lease_seconds == DEFAULT_LEASE_SECONDS
+    assert claim.claim_lease_expires_utc
+    expires = datetime.fromisoformat(
+        claim.claim_lease_expires_utc.replace("Z", "+00:00")
+    )
+    claimed = datetime.fromisoformat(claim.claimed_at_utc.replace("Z", "+00:00"))
+    assert expires - claimed == timedelta(seconds=DEFAULT_LEASE_SECONDS)

@@ -186,6 +186,44 @@ def test_regex_agent_id_writes_valid_event_and_outbox(tmp_path: Path) -> None:
     validate_event_line(line)
 
 
+def test_role_uuid_capability_metadata_is_optional_and_validated(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    agent_uuid = "11111111-2222-3333-4444-555555555555"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-impl-1",
+        "-Type",
+        "message",
+        "-To",
+        "claude-rco-1",
+        "-Message",
+        "metadata smoke",
+        "-Role",
+        "impl",
+        "-AgentUuid",
+        agent_uuid,
+        "-SessionId",
+        "codex-impl-1-20260523T140000Z",
+        "-Capabilities",
+        "bridge_event,work_queue",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    event = json.loads(line)
+    assert event["role"] == "impl"
+    assert event["agent_uuid"] == agent_uuid
+    assert event["session_id"] == "codex-impl-1-20260523T140000Z"
+    assert event["capabilities"] == ["bridge_event", "work_queue"]
+    validate_event_line(line)
+
+
 def test_invalid_agent_id_fails_before_runtime_write(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
@@ -202,6 +240,28 @@ def test_invalid_agent_id_fails_before_runtime_write(tmp_path: Path) -> None:
     )
 
     assert completed.returncode != 0
+    assert not runtime_root.exists()
+
+
+def test_invalid_agent_uuid_fails_before_runtime_write(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-Message",
+        "invalid uuid",
+        "-AgentUuid",
+        "not-a-uuid",
+    )
+
+    assert completed.returncode != 0
+    assert "agent_uuid must be a UUID" in completed.stderr
     assert not runtime_root.exists()
 
 
@@ -338,3 +398,49 @@ def test_claim_and_release_accept_regex_agent_id(tmp_path: Path) -> None:
     assert {json.loads(line)["agent"] for line in lines} == {"codex-2"}
     for line in lines:
         validate_event_line(line)
+
+
+def test_claim_records_role_uuid_capabilities_and_lease(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    agent_uuid = "11111111-2222-3333-4444-555555555555"
+
+    claim = _run_bridge_script(
+        root,
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex-impl-1",
+        "-TaskId",
+        "metadata-claim-smoke",
+        "-Summary",
+        "metadata claim smoke",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "tools/foo.py",
+        "-Role",
+        "impl",
+        "-AgentUuid",
+        agent_uuid,
+        "-Capabilities",
+        "bridge_event,work_queue",
+        "-LeaseSeconds",
+        "600",
+    )
+    assert claim.returncode == 0, claim.stderr
+
+    claim_path = runtime_root / "work_queue" / "claims" / "metadata-claim-smoke.json"
+    claim_payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert claim_payload["role"] == "impl"
+    assert claim_payload["agent_uuid"] == agent_uuid
+    assert claim_payload["capabilities"] == ["bridge_event", "work_queue"]
+    assert claim_payload["lease_seconds"] == 600
+    assert claim_payload["claim_lease_expires_utc"]
+
+    line = (runtime_root / "shared" / "events.jsonl").read_text(encoding="utf-8").strip()
+    event = json.loads(line)
+    assert event["role"] == "impl"
+    assert event["agent_uuid"] == agent_uuid
+    assert event["capabilities"] == ["bridge_event", "work_queue"]
+    validate_event_line(line)

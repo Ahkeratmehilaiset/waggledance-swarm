@@ -69,6 +69,24 @@ def test_regex_agent_ids_are_valid_for_multi_agent_bridge() -> None:
     assert model.to == "claude-1,gemini_1"
 
 
+def test_role_uuid_session_and_capabilities_are_valid_optional_metadata() -> None:
+    model = validate_event(
+        _good_event(
+            agent="codex-impl-1",
+            to="claude-rco-1",
+            role="impl",
+            agent_uuid="11111111-2222-3333-4444-555555555555",
+            session_id="codex-impl-1-20260523T140000Z",
+            capabilities=["bridge_event", "work_queue", "magma.receipt:v1"],
+        )
+    )
+
+    assert model.role == "impl"
+    assert model.agent_uuid == "11111111-2222-3333-4444-555555555555"
+    assert model.session_id == "codex-impl-1-20260523T140000Z"
+    assert model.capabilities == ["bridge_event", "work_queue", "magma.receipt:v1"]
+
+
 def test_custom_event_types_remain_valid_for_polymorphic_continuity() -> None:
     model = validate_event(_good_event(type="ownership_proposal", status="open"))
 
@@ -85,6 +103,10 @@ def test_custom_event_types_remain_valid_for_polymorphic_continuity() -> None:
         ({"type": "bad\ntype"}, "type"),
         ({"to": "claude,Gpt"}, "to"),
         ({"to": "claude,gpt.5"}, "to"),
+        ({"role": "Impl"}, "role"),
+        ({"agent_uuid": "not-a-uuid"}, "agent_uuid"),
+        ({"session_id": "bad session"}, "session_id"),
+        ({"capabilities": ["Bad Capability"]}, "capabilities"),
         ({"paths": "not-a-list"}, "paths"),
         ({"pid": True}, "pid"),
         ({"ts_utc": "2026-05-16T05:39:57"}, "ts_utc"),

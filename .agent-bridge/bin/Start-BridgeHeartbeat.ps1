@@ -20,7 +20,10 @@ param(
     [int] $IntervalSeconds = 60,
     [int] $IntervalMs = 0,
     [int] $MaxIterations = 0,
-    [string] $RuntimeRoot = ''
+    [string] $RuntimeRoot = '',
+    [string] $Role = '',
+    [string] $AgentUuid = '',
+    [string[]] $Capabilities = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,7 +61,10 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
             -Agent $Agent `
             -Heartbeat `
             -TaskId "$Agent-heartbeat-$((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd'))" `
-            -Message "$Agent background heartbeat" | Out-Null
+            -Message "$Agent background heartbeat" `
+            -Role $Role `
+            -AgentUuid $AgentUuid `
+            -Capabilities $Capabilities | Out-Null
     } catch {
         Write-Warning "Start-BridgeHeartbeat: heartbeat failed: $($_.Exception.Message)"
     }

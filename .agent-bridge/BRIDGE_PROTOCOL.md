@@ -92,6 +92,24 @@ separate. `Start-AgentBridgeSession.ps1 -RequireDedicatedWorktree` refuses to
 bootstrap from the primary shared repo (`C:\Python\project2-master`) and is
 the safest default for autonomous write loops.
 
+Optional role metadata is supported for multi-instance runs. Keep `-Agent`
+as the stable human-readable process id (`codex-impl-1`,
+`claude-rco-scout`) and use `-Role`, `-AgentUuid`, and `-Capabilities` for
+audit metadata:
+
+```powershell
+. .\.agent-bridge\bin\Start-AgentBridgeWorktreeSession.ps1 `
+  -Agent codex-impl-1 `
+  -Role impl `
+  -AgentUuid 11111111-2222-3333-4444-555555555555 `
+  -Capabilities bridge_event,work_queue
+```
+
+The C14 metadata path is declarative only: bridge readers display it and
+events/claims preserve it, but role-based scheduling and lease enforcement
+remain follow-up work. Existing `codex`/`claude` sessions without these
+parameters remain valid.
+
 Verify the substrate with:
 
 ```powershell

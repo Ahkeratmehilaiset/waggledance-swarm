@@ -23,6 +23,13 @@ HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION = (
 HEX_CELL_COMPETITION_AUTHORITY_STATUS = "non_authority_contract"
 HEX_CELL_COMPETITION_RANKING_RULE = "score_desc_candidate_id_asc"
 HEX_CELL_COMPETITION_DIGEST_ALGORITHM = "magma-jcs-subset-v1"
+HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION = (
+    "hex_cell_promotion_acceptance.v0"
+)
+HEX_CELL_PROMOTION_ACCEPTANCE_STATUS = "operator_gate_required"
+HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE = (
+    "solver_provenance_operator_activation"
+)
 
 
 @dataclass(frozen=True)
@@ -105,6 +112,54 @@ class HexCellCompetitionResult:
         }
 
 
+@dataclass(frozen=True)
+class HexCellPromotionAcceptance:
+    """Non-authority handoff from competition result to operator gate."""
+
+    schema_version: str
+    acceptance_id: str
+    competition_id: str
+    cell_id: str
+    capability_id: str
+    accepted_candidate_id: str
+    rejected_candidate_ids: tuple[str, ...]
+    competition_evidence_digest: str
+    acceptance_digest: str
+    evidence_digest_algorithm: str
+    promotion_acceptance_status: str
+    required_next_gate: str
+    operator_gate_required: bool
+    operator_gate_cleared: bool
+    runtime_authority_granted: bool
+    runtime_traffic_mutation_applied: bool
+    candidate_state_mutation_applied: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": self.schema_version,
+            "acceptance_id": self.acceptance_id,
+            "competition_id": self.competition_id,
+            "cell_id": self.cell_id,
+            "capability_id": self.capability_id,
+            "accepted_candidate_id": self.accepted_candidate_id,
+            "rejected_candidate_ids": list(self.rejected_candidate_ids),
+            "competition_evidence_digest": self.competition_evidence_digest,
+            "acceptance_digest": self.acceptance_digest,
+            "evidence_digest_algorithm": self.evidence_digest_algorithm,
+            "promotion_acceptance_status": self.promotion_acceptance_status,
+            "required_next_gate": self.required_next_gate,
+            "operator_gate_required": self.operator_gate_required,
+            "operator_gate_cleared": self.operator_gate_cleared,
+            "runtime_authority_granted": self.runtime_authority_granted,
+            "runtime_traffic_mutation_applied": (
+                self.runtime_traffic_mutation_applied
+            ),
+            "candidate_state_mutation_applied": (
+                self.candidate_state_mutation_applied
+            ),
+        }
+
+
 def build_hex_cell_competition_result(
     *,
     candidates: Iterable[SolverCandidate],
@@ -173,26 +228,18 @@ def build_hex_cell_competition_result(
     loser_ids = tuple(row.candidate_id for row in ranked[1:])
     candidate_scores = tuple(sorted(rows, key=lambda row: row.candidate_id))
 
-    evidence_payload = {
-        "schema_version": HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
-        "cell_id": cell_id,
-        "capability_id": normalized_capability,
-        "ranking_rule": HEX_CELL_COMPETITION_RANKING_RULE,
-        "candidate_scores": [
-            score.to_dict() for score in candidate_scores
-        ],
-        "winner_id": winner_id,
-        "loser_ids": list(loser_ids),
-        "authority_status": HEX_CELL_COMPETITION_AUTHORITY_STATUS,
-        "runtime_traffic_mutation_applied": False,
-        "candidate_state_mutation_applied": False,
-        "operator_gate_required_for_authority": True,
-    }
+    evidence_payload = _competition_evidence_payload(
+        cell_id=cell_id,
+        capability_id=normalized_capability,
+        candidate_scores=candidate_scores,
+        winner_id=winner_id,
+        loser_ids=loser_ids,
+    )
     evidence_digest = sha256_digest(evidence_payload)
-    competition_id = (
-        "hexcellcmp:"
-        f"{cell_id}:{normalized_capability}:"
-        f"{evidence_digest.removeprefix('sha256:')[:16]}"
+    competition_id = _competition_id(
+        cell_id,
+        normalized_capability,
+        evidence_digest,
     )
     return HexCellCompetitionResult(
         schema_version=HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
@@ -209,6 +256,73 @@ def build_hex_cell_competition_result(
         runtime_traffic_mutation_applied=False,
         candidate_state_mutation_applied=False,
         operator_gate_required_for_authority=True,
+    )
+
+
+def build_hex_cell_promotion_acceptance(
+    *,
+    competition: HexCellCompetitionResult,
+    accepted_candidate_id: str | None = None,
+) -> HexCellPromotionAcceptance:
+    """Build a non-authority acceptance handoff for the winning candidate.
+
+    This function is the boundary between evidence-only competition and later
+    operator-gated activation. It accepts only the deterministic winner, keeps
+    operator_gate_cleared false, grants no runtime authority, and does not
+    mutate candidate or runtime state.
+    """
+    _validate_competition_is_non_authority(competition)
+    accepted_id = _require_non_empty(
+        "accepted_candidate_id",
+        accepted_candidate_id or competition.winner_id,
+    )
+    if accepted_id != competition.winner_id:
+        raise ValueError(
+            "hex-cell promotion acceptance can only accept the competition "
+            f"winner {competition.winner_id!r}; got {accepted_id!r}"
+        )
+
+    rejected_ids = tuple(competition.loser_ids)
+    payload = {
+        "schema_version": HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
+        "competition_id": competition.competition_id,
+        "cell_id": competition.cell_id,
+        "capability_id": competition.capability_id,
+        "accepted_candidate_id": accepted_id,
+        "rejected_candidate_ids": list(rejected_ids),
+        "competition_evidence_digest": competition.evidence_digest,
+        "promotion_acceptance_status": HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+        "required_next_gate": HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+        "operator_gate_required": True,
+        "operator_gate_cleared": False,
+        "runtime_authority_granted": False,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+    }
+    acceptance_digest = sha256_digest(payload)
+    acceptance_id = (
+        "hexcellaccept:"
+        f"{competition.cell_id}:{competition.capability_id}:"
+        f"{acceptance_digest.removeprefix('sha256:')[:16]}"
+    )
+    return HexCellPromotionAcceptance(
+        schema_version=HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
+        acceptance_id=acceptance_id,
+        competition_id=competition.competition_id,
+        cell_id=competition.cell_id,
+        capability_id=competition.capability_id,
+        accepted_candidate_id=accepted_id,
+        rejected_candidate_ids=rejected_ids,
+        competition_evidence_digest=competition.evidence_digest,
+        acceptance_digest=acceptance_digest,
+        evidence_digest_algorithm=HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
+        promotion_acceptance_status=HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
+        required_next_gate=HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+        operator_gate_required=True,
+        operator_gate_cleared=False,
+        runtime_authority_granted=False,
+        runtime_traffic_mutation_applied=False,
+        candidate_state_mutation_applied=False,
     )
 
 
@@ -230,6 +344,152 @@ def _validate_candidate(
         )
 
 
+def _validate_competition_is_non_authority(
+    competition: HexCellCompetitionResult,
+) -> None:
+    if competition.schema_version != HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION:
+        raise ValueError(
+            "hex-cell promotion acceptance requires competition schema "
+            f"{HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION!r}; got "
+            f"{competition.schema_version!r}"
+        )
+    if competition.authority_status != HEX_CELL_COMPETITION_AUTHORITY_STATUS:
+        raise ValueError(
+            "hex-cell promotion acceptance requires non-authority "
+            f"competition; got {competition.authority_status!r}"
+        )
+    if competition.operator_gate_required_for_authority is not True:
+        raise ValueError(
+            "hex-cell promotion acceptance requires operator gate for "
+            "authority"
+        )
+    if competition.runtime_traffic_mutation_applied:
+        raise ValueError(
+            "hex-cell promotion acceptance refuses mutated runtime traffic"
+        )
+    if competition.candidate_state_mutation_applied:
+        raise ValueError(
+            "hex-cell promotion acceptance refuses mutated candidate state"
+        )
+    _validate_competition_evidence_integrity(competition)
+
+
+def _validate_competition_evidence_integrity(
+    competition: HexCellCompetitionResult,
+) -> None:
+    candidate_scores = tuple(competition.candidate_scores)
+    if len(candidate_scores) < 2:
+        raise ValueError(
+            "hex-cell promotion acceptance requires at least two "
+            "competition candidate scores"
+        )
+    sorted_scores = tuple(
+        sorted(candidate_scores, key=lambda row: row.candidate_id)
+    )
+    if candidate_scores != sorted_scores:
+        raise ValueError(
+            "hex-cell promotion acceptance requires candidate_scores sorted "
+            "by candidate_id"
+        )
+    candidate_ids = [row.candidate_id for row in candidate_scores]
+    duplicate_ids = sorted({
+        candidate_id for candidate_id in candidate_ids
+        if candidate_ids.count(candidate_id) > 1
+    })
+    if duplicate_ids:
+        raise ValueError(
+            "hex-cell promotion acceptance rejects duplicate candidate "
+            f"scores: {duplicate_ids}"
+        )
+    for row in candidate_scores:
+        if row.cell_id != competition.cell_id:
+            raise ValueError(
+                "hex-cell promotion acceptance requires candidate_scores "
+                "to match competition cell_id"
+            )
+        if row.capability_id != competition.capability_id:
+            raise ValueError(
+                "hex-cell promotion acceptance requires candidate_scores "
+                "to match competition capability_id"
+            )
+
+    ranked = sorted(
+        candidate_scores,
+        key=lambda row: (-row.score, row.candidate_id),
+    )
+    expected_winner_id = ranked[0].candidate_id
+    expected_loser_ids = tuple(row.candidate_id for row in ranked[1:])
+    if (
+        competition.winner_id != expected_winner_id
+        or tuple(competition.loser_ids) != expected_loser_ids
+    ):
+        raise ValueError(
+            "hex-cell promotion acceptance requires competition "
+            "winner/losers to match candidate_scores"
+        )
+
+    expected_digest = sha256_digest(_competition_evidence_payload(
+        cell_id=competition.cell_id,
+        capability_id=competition.capability_id,
+        candidate_scores=candidate_scores,
+        winner_id=competition.winner_id,
+        loser_ids=tuple(competition.loser_ids),
+    ))
+    if competition.evidence_digest != expected_digest:
+        raise ValueError(
+            "hex-cell promotion acceptance requires competition "
+            "evidence_digest to match current evidence"
+        )
+
+    expected_competition_id = _competition_id(
+        competition.cell_id,
+        competition.capability_id,
+        competition.evidence_digest,
+    )
+    if competition.competition_id != expected_competition_id:
+        raise ValueError(
+            "hex-cell promotion acceptance requires competition_id to "
+            "match evidence_digest"
+        )
+
+
+def _competition_evidence_payload(
+    *,
+    cell_id: str,
+    capability_id: str,
+    candidate_scores: tuple[CandidateCompetitionScore, ...],
+    winner_id: str,
+    loser_ids: tuple[str, ...],
+) -> dict:
+    return {
+        "schema_version": HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
+        "cell_id": cell_id,
+        "capability_id": capability_id,
+        "ranking_rule": HEX_CELL_COMPETITION_RANKING_RULE,
+        "candidate_scores": [
+            score.to_dict() for score in candidate_scores
+        ],
+        "winner_id": winner_id,
+        "loser_ids": list(loser_ids),
+        "authority_status": HEX_CELL_COMPETITION_AUTHORITY_STATUS,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+        "operator_gate_required_for_authority": True,
+    }
+
+
+def _competition_id(
+    cell_id: str,
+    capability_id: str,
+    evidence_digest: str,
+) -> str:
+    return (
+        "hexcellcmp:"
+        f"{cell_id}:{capability_id}:"
+        f"{evidence_digest.removeprefix('sha256:')[:16]}"
+    )
+
+
 def _require_non_empty(field_name: str, value: str) -> str:
     normalized = str(value).strip()
     if not normalized:
@@ -240,9 +500,14 @@ def _require_non_empty(field_name: str, value: str) -> str:
 __all__ = [
     "CandidateCompetitionScore",
     "HexCellCompetitionResult",
+    "HexCellPromotionAcceptance",
     "HEX_CELL_COMPETITION_AUTHORITY_STATUS",
     "HEX_CELL_COMPETITION_DIGEST_ALGORITHM",
     "HEX_CELL_COMPETITION_RANKING_RULE",
     "HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION",
+    "HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE",
+    "HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION",
+    "HEX_CELL_PROMOTION_ACCEPTANCE_STATUS",
     "build_hex_cell_competition_result",
+    "build_hex_cell_promotion_acceptance",
 ]

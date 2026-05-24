@@ -8,6 +8,7 @@ path.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -18,7 +19,11 @@ from waggledance.core.solver_synthesis.hex_cell_competition import (
     HEX_CELL_COMPETITION_DIGEST_ALGORITHM,
     HEX_CELL_COMPETITION_RANKING_RULE,
     HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
+    HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE,
+    HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION,
+    HEX_CELL_PROMOTION_ACCEPTANCE_STATUS,
     build_hex_cell_competition_result,
+    build_hex_cell_promotion_acceptance,
 )
 from waggledance.core.solver_synthesis.solver_candidate_store import (
     SolverCandidate,
@@ -173,6 +178,123 @@ def test_tie_breaks_by_candidate_id_after_score_descending():
 
     assert result.winner_id == "cand-a"
     assert result.loser_ids == ("cand-z",)
+
+
+def test_builds_operator_gated_promotion_acceptance_without_authority():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+
+    acceptance = build_hex_cell_promotion_acceptance(competition=result)
+
+    assert acceptance.schema_version == (
+        HEX_CELL_PROMOTION_ACCEPTANCE_SCHEMA_VERSION
+    )
+    assert acceptance.competition_id == result.competition_id
+    assert acceptance.cell_id == result.cell_id
+    assert acceptance.capability_id == result.capability_id
+    assert acceptance.accepted_candidate_id == result.winner_id
+    assert acceptance.rejected_candidate_ids == result.loser_ids
+    assert acceptance.competition_evidence_digest == result.evidence_digest
+    assert acceptance.evidence_digest_algorithm == (
+        HEX_CELL_COMPETITION_DIGEST_ALGORITHM
+    )
+    assert acceptance.promotion_acceptance_status == (
+        HEX_CELL_PROMOTION_ACCEPTANCE_STATUS
+    )
+    assert acceptance.required_next_gate == (
+        HEX_CELL_PROMOTION_ACCEPTANCE_NEXT_GATE
+    )
+    assert acceptance.operator_gate_required is True
+    assert acceptance.operator_gate_cleared is False
+    assert acceptance.runtime_authority_granted is False
+    assert acceptance.runtime_traffic_mutation_applied is False
+    assert acceptance.candidate_state_mutation_applied is False
+
+    as_dict = acceptance.to_dict()
+    assert as_dict["accepted_candidate_id"] == result.winner_id
+    assert as_dict["rejected_candidate_ids"] == list(result.loser_ids)
+    assert as_dict["operator_gate_cleared"] is False
+    assert as_dict["runtime_authority_granted"] is False
+    assert acceptance.acceptance_id.startswith("hexcellaccept:")
+    assert acceptance.acceptance_digest.startswith("sha256:")
+
+
+def test_promotion_acceptance_is_stable_when_competition_is_stable():
+    payload = _load_fixture()
+    _candidates, first_competition = _build_from_fixture(payload)
+    reversed_payload = dict(payload)
+    reversed_payload["candidates"] = list(reversed(payload["candidates"]))
+    _reversed_candidates, second_competition = _build_from_fixture(
+        reversed_payload
+    )
+
+    first = build_hex_cell_promotion_acceptance(
+        competition=first_competition
+    )
+    second = build_hex_cell_promotion_acceptance(
+        competition=second_competition
+    )
+
+    assert second.to_dict() == first.to_dict()
+
+
+def test_promotion_acceptance_rejects_loser_candidate():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+
+    with pytest.raises(ValueError, match="only accept the competition winner"):
+        build_hex_cell_promotion_acceptance(
+            competition=result,
+            accepted_candidate_id=result.loser_ids[0],
+        )
+
+
+def test_promotion_acceptance_rejects_winner_drift():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    drifted = replace(result, winner_id=result.loser_ids[0])
+
+    with pytest.raises(ValueError, match="winner/losers"):
+        build_hex_cell_promotion_acceptance(competition=drifted)
+
+
+def test_promotion_acceptance_rejects_evidence_digest_drift():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    drifted = replace(result, evidence_digest="sha256:" + "0" * 64)
+
+    with pytest.raises(ValueError, match="evidence_digest"):
+        build_hex_cell_promotion_acceptance(competition=drifted)
+
+
+def test_promotion_acceptance_rejects_authority_status_drift():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    drifted = replace(result, authority_status="runtime_authority_granted")
+
+    with pytest.raises(ValueError, match="non-authority competition"):
+        build_hex_cell_promotion_acceptance(competition=drifted)
+
+
+def test_promotion_acceptance_rejects_missing_operator_gate():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    drifted = replace(result, operator_gate_required_for_authority=False)
+
+    with pytest.raises(ValueError, match="requires operator gate"):
+        build_hex_cell_promotion_acceptance(competition=drifted)
+
+
+def test_promotion_acceptance_rejects_mutation_drift():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    runtime_drift = replace(result, runtime_traffic_mutation_applied=True)
+    candidate_drift = replace(result, candidate_state_mutation_applied=True)
+
+    with pytest.raises(ValueError, match="mutated runtime traffic"):
+        build_hex_cell_promotion_acceptance(competition=runtime_drift)
+    with pytest.raises(ValueError, match="mutated candidate state"):
+        build_hex_cell_promotion_acceptance(competition=candidate_drift)
 
 
 def test_requires_at_least_two_candidates():

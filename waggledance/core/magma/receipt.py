@@ -49,6 +49,8 @@ def build_magma_receipt(
         raise ValueError("pure MAGMA receipt helper refuses external_effect by default")
     if operator_gate_required and approval_id is None:
         raise ValueError("external_effect MAGMA receipt requires approval_id")
+    if not operator_gate_required and approval_id is not None:
+        raise ValueError("non-external MAGMA receipt must not include approval_id")
 
     payload_digest = sha256_digest(payload)
     if evaluation_result.get("target_digest") != payload_digest:

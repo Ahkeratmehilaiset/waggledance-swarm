@@ -200,6 +200,34 @@ def test_external_effect_forces_operator_gate_and_rejects_missing_approval() -> 
     assert receipt["operator_gate_required"] is True
 
 
+def test_non_external_receipt_rejects_stale_approval_id() -> None:
+    payload = {"action": "local_artifact_write"}
+    evaluation = build_evaluation_result(
+        case_id="case:magma:receipt-emitter:local-stale-approval",
+        subject_type="counterfactual",
+        target_payload=payload,
+        risk_class="local_artifact",
+        expected_gate="review",
+        actual_gate="review",
+        verifier_path=["unit_test"],
+        solver_selection=["fixture_solver"],
+        policy_version="policy:fixture:v1",
+        charter_version="charter:v1",
+        domain_threshold_version="threshold:fixture:v1",
+        verdict="pass",
+        reason_codes=["fixture:local_artifact"],
+        confidence_score=1.0,
+    )
+
+    with pytest.raises(ValueError, match="must not include approval_id"):
+        receipt_for(
+            payload,
+            evaluation,
+            risk_class="local_artifact",
+            approval_id="bridge:approval:stale",
+        )
+
+
 def test_signature_envelope_is_null_or_complete() -> None:
     payload = {"action": "signed"}
     evaluation = evaluation_for(payload)

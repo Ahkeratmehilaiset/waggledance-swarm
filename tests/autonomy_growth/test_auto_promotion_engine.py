@@ -224,6 +224,8 @@ def test_auto_promotion_receipt_sink_failure_preserves_commit_and_head(
         bundles.append(bundle)
 
     eng = AutoPromotionEngine(cp, emit_receipt_bundle=first_emit_fails)
+    prior_receipt = {"event_id": "magma:auto_promotion:seed"}
+    eng._last_emitted_receipt = prior_receipt
 
     with pytest.raises(
         AutoPromotionReceiptEmissionError,
@@ -235,7 +237,7 @@ def test_auto_promotion_receipt_sink_failure_preserves_commit_and_head(
     assert solver is not None
     assert solver.status == "auto_promoted"
     assert len(cp.list_promotion_decisions(solver_id=solver.id)) == 1
-    assert eng._last_emitted_receipt is None
+    assert eng._last_emitted_receipt == prior_receipt
     assert bundles == []
 
 
@@ -248,13 +250,15 @@ def test_auto_promotion_commit_failure_does_not_emit_receipt_or_advance_head(
         cp,
         emit_receipt_bundle=lambda bundle: bundles.append(bundle),
     )
+    prior_receipt = {"event_id": "magma:auto_promotion:seed"}
+    eng._last_emitted_receipt = prior_receipt
     cp._conn = _CommitFailingConnection(cp._conn)  # type: ignore[assignment]
 
     with pytest.raises(ControlPlaneError, match="auto-promotion commit failed"):
         eng.evaluate_candidate(_promotion_request("commit_failure_solver"))
 
     assert bundles == []
-    assert eng._last_emitted_receipt is None
+    assert eng._last_emitted_receipt == prior_receipt
     assert cp.get_solver("commit_failure_solver") is None
     assert cp.get_solver_family("scalar_unit_conversion") is None
     stats = cp.stats()
@@ -302,13 +306,15 @@ def test_auto_promotion_rollback_commit_failure_does_not_emit_receipt_or_head(
         cp,
         emit_receipt_bundle=lambda bundle: bundles.append(bundle),
     )
+    prior_receipt = {"event_id": "magma:auto_promotion:seed"}
+    eng._last_emitted_receipt = prior_receipt
     cp._conn = _CommitFailingConnection(cp._conn)  # type: ignore[assignment]
 
     with pytest.raises(ControlPlaneError, match="rollback failed"):
         eng.rollback("rollback_commit_failure_solver", "forced commit failure")
 
     assert bundles == []
-    assert eng._last_emitted_receipt is None
+    assert eng._last_emitted_receipt == prior_receipt
     solver = cp.get_solver("rollback_commit_failure_solver")
     assert solver is not None
     assert solver.status == "auto_promoted"

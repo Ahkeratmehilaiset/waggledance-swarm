@@ -145,7 +145,7 @@ def _validate_cases(
         canary = case.get("privacy_canary")
         if isinstance(canary, str):
             if canary in seen_canaries:
-                errors.append(f"{label}: duplicate privacy_canary {canary}")
+                errors.append(f"{label}: duplicate privacy_canary")
             seen_canaries.add(canary)
             coverage["privacy_canary_count"] += 1
             if canary in str(case.get("intent", "")):

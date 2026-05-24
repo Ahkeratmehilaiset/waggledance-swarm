@@ -166,6 +166,7 @@ def test_validator_rejects_duplicate_privacy_canaries(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "duplicate privacy_canary" in result.stderr
+    assert broken["cases"][0]["privacy_canary"] not in (result.stdout + result.stderr)
 
 
 def test_validator_redacts_schema_error_values(tmp_path: Path) -> None:

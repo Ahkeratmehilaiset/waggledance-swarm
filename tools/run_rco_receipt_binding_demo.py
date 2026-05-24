@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import sys
 from typing import Any, Sequence
 
@@ -201,12 +201,45 @@ def verify_rco_receipt_binding(manifest_path: Path) -> dict[str, Any]:
         rco_name = entry.get("rco_decision_artifact")
         receipt_name = entry.get("receipt")
         evaluation_name = entry.get("evaluation_result")
-        if not all(isinstance(value, str) and value for value in (rco_name, receipt_name, evaluation_name)):
-            errors.append(f"entry {index}: missing rco_decision_artifact/receipt/evaluation_result")
+        if not all(
+            isinstance(value, str) and value
+            for value in (rco_name, receipt_name, evaluation_name)
+        ):
+            errors.append(
+                f"entry {index}: missing "
+                "rco_decision_artifact/receipt/evaluation_result"
+            )
             continue
-        rco_artifact = _read_json(manifest_path.parent / str(rco_name))
-        receipt = _read_json(manifest_path.parent / str(receipt_name))
-        evaluation = _read_json(manifest_path.parent / str(evaluation_name))
+        rco_path = _entry_path(
+            manifest_path,
+            str(rco_name),
+            "rco_decision_artifact",
+            errors,
+            index,
+        )
+        receipt_path = _entry_path(
+            manifest_path, str(receipt_name), "receipt", errors, index
+        )
+        evaluation_path = _entry_path(
+            manifest_path,
+            str(evaluation_name),
+            "evaluation_result",
+            errors,
+            index,
+        )
+        if rco_path is None or receipt_path is None or evaluation_path is None:
+            continue
+        if (
+            not rco_path.is_file()
+            or not receipt_path.is_file()
+            or not evaluation_path.is_file()
+        ):
+            errors.append(f"entry {index}: referenced JSON artifact missing")
+            continue
+
+        rco_artifact = _read_json(rco_path)
+        receipt = _read_json(receipt_path)
+        evaluation = _read_json(evaluation_path)
         try:
             validate_rco_decision_artifact(rco_artifact)
         except ValueError as exc:
@@ -243,6 +276,37 @@ def _iso(value: datetime) -> str:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _entry_path(
+    manifest_path: Path,
+    raw_path: str,
+    field: str,
+    errors: list[str],
+    index: int,
+) -> Path | None:
+    context = f"entry {index}: {field}"
+    if "\\" in raw_path:
+        errors.append(f"{context} path must use POSIX separators")
+        return None
+    if (
+        PurePosixPath(raw_path).is_absolute()
+        or PureWindowsPath(raw_path).is_absolute()
+    ):
+        errors.append(f"{context} path must be relative")
+        return None
+    parts = PurePosixPath(raw_path).parts
+    if any(part in {"", ".", ".."} for part in parts):
+        errors.append(f"{context} unsafe relative path")
+        return None
+
+    path = (manifest_path.parent / Path(*parts)).resolve()
+    try:
+        path.relative_to(manifest_path.parent)
+    except ValueError:
+        errors.append(f"{context} path escapes manifest directory")
+        return None
+    return path
 
 
 def _write_json(path: Path, value: object) -> None:

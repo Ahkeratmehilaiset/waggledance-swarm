@@ -68,6 +68,7 @@ def test_markdown_output_preserves_no_benchmark_guardrail() -> None:
     assert "consensus_grade: `false`" in markdown
     assert "Required Evidence Artifact Fields" in markdown
     assert "Required Rival Observations" in markdown
+    assert "non-empty string `summary`" in markdown
 
 
 def test_cli_json_reports_non_consensus_grade() -> None:
@@ -721,6 +722,60 @@ def test_missing_required_observation_does_not_pass(tmp_path: Path) -> None:
     assert agt["local_status"] == "invalid_artifact"
     assert agt["blocker"] == (
         "local artifact missing required observations: fail_closed_error_path_smoke"
+    )
+
+
+def test_required_observation_summary_must_be_non_empty(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
+    artifact.parent.mkdir()
+    _write_valid_artifact(
+        artifact,
+        rival="Microsoft AGT",
+        pinned_revision="agt-test-rev",
+        evidence_type="local_smoke",
+        observations={
+            "policy_deny_smoke": {
+                "ok": True,
+                "offline": True,
+                "summary": "deny rule blocked a dangerous tool",
+            },
+            "fail_closed_error_path_smoke": {
+                "ok": True,
+                "offline": True,
+                "summary": "   ",
+            },
+        },
+    )
+    (evidence_dir / "microsoft-agt.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "Microsoft AGT",
+                "pinned_revision": "agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "agt policy smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
+    assert report["passed_count"] == 0
+    assert report["consensus_grade"] is False
+    assert agt["local_status"] == "invalid_artifact"
+    assert agt["blocker"] == (
+        "local artifact observation fail_closed_error_path_smoke "
+        "summary must be a non-empty string"
     )
 
 

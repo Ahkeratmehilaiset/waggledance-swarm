@@ -66,10 +66,23 @@ Acceptance:
 - Add a default-off `emit_receipt_bundle` or equivalent opt-in receipt sink to `AutoPromotionEngine`.
 - Preserve existing behavior when the sink is absent.
 - Wire the existing `build_promotion_decision_receipt` helper into the real `evaluate_candidate()` promotion path, with emit-before-chain-head-advance ordering if a chain head is introduced.
-- Add a focused proof CLI and tests covering sink absent, sink emits/verifies, tampered payload/evaluation rejection, and sink failure fail-closed behavior.
+- Add a focused proof CLI and tests covering sink absent, sink emits/verifies,
+  tampered payload/evaluation rejection, and post-commit sink failure behavior:
+  the durable promotion/rollback decision stays committed, the local receipt
+  chain head does not advance, and the raised error keeps the missing receipt
+  visible.
 - After landing, adoption classification should become more honest, likely `receipt_bound=3` and `receipt_capable_opt_in=4`, unless the implementation proves a stronger always-bound path.
 - `magma_slice_counter_read.py` must remain pass.
 - No label upgrade unless the proof source changes materially and counter-read permits it.
+
+Post-merge contract repair (2026-05-24): PR #632 chose commit-first receipt
+semantics for `AutoPromotionEngine`. This deliberately fixes the higher-risk
+ghost-head case by running the opt-in receipt sink only after SQLite `COMMIT`.
+If that post-commit sink raises, the already-committed promotion or rollback is
+not rolled back; `_last_emitted_receipt` remains unchanged and
+`AutoPromotionReceiptEmissionError` surfaces the receipt gap. A durable
+transactional outbox would be a separate future hardening step, not the C5
+acceptance contract landed by #632.
 
 Claude owns C6: RCO/adversarial review of AutoPromotionEngine sink wiring plus rival blocker plan.
 

@@ -506,6 +506,14 @@ class SolverProvenance:
                 new_state=ActivationState.UNACTIVATED.value,
                 reason="candidate_unknown",
             )
+        if candidate.activation_state == ActivationState.REVOKED.value:
+            return RevocationResult(
+                success=True,
+                candidate_id=candidate_id,
+                new_state=ActivationState.REVOKED.value,
+                audit_event_ref=candidate.revocation_audit_ref,
+                reason="already_revoked",
+            )
         audit_ref = self.emit_magma_event({
             "event_type": "solver.activation_revoked",
             "solver_candidate_id": candidate_id,

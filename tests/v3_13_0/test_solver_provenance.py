@@ -775,6 +775,7 @@ class TestProvenanceTransitionReceipts:
 
     def test_revocation_receipt_failure_preserves_head_after_state_update(self):
         cand = _make_candidate()
+        events = []
         bridge_events = []
         prior_receipt = {"event_id": "magma:solver_provenance:seed"}
 
@@ -783,6 +784,7 @@ class TestProvenanceTransitionReceipts:
 
         prov, store = _make_provenance(
             candidate=cand,
+            events=events,
             bridge_events=bridge_events,
             receipt_emit=boom,
         )
@@ -803,6 +805,33 @@ class TestProvenanceTransitionReceipts:
             ActivationState.REVOKED.value
         )
         assert prov._last_emitted_receipt == prior_receipt
+        assert not [
+            event for event in bridge_events
+            if event["status"] == "activation_revoked"
+        ]
+        revoked_audit_refs = [
+            event["__id"] for event in events
+            if event["event_type"] == "solver.activation_revoked"
+        ]
+        assert len(revoked_audit_refs) == 1
+
+        retry_bundles = []
+        prov.emit_receipt_bundle = _receipt_collector(retry_bundles)
+        retry = prov.revoke(
+            candidate_id=cand.candidate_id,
+            reason="retry after receipt sink recovery",
+        )
+
+        assert retry.success is True
+        assert retry.new_state == ActivationState.REVOKED.value
+        assert retry.audit_event_ref == revoked_audit_refs[0]
+        assert retry.reason == "already_revoked"
+        assert retry_bundles == []
+        assert prov._last_emitted_receipt == prior_receipt
+        assert len([
+            event for event in events
+            if event["event_type"] == "solver.activation_revoked"
+        ]) == 1
         assert not [
             event for event in bridge_events
             if event["status"] == "activation_revoked"

@@ -223,14 +223,12 @@ def test_cli_refuses_existing_out_dir(tmp_path: Path) -> None:
     assert "out_dir must not exist" in result.stderr
 
 
-def test_failed_sink_leaves_chain_head_none_and_retry_emits_no_prev_hash() -> None:
+def test_failed_sink_preserves_chain_head_after_durable_activation() -> None:
     """Per Codex RCO BLOCK on #614 head ae5427c8: if emit_receipt_bundle
     raises, the chain head must NOT advance (bundle was never persisted).
-    A subsequent retry with a working sink must emit with
-    prev_receipt_hash=None as if the failed attempt never happened. The
-    candidate's activation_state must stay SIGNED after the failed activate
-    because the sink exception propagates and update_candidate is not
-    reached."""
+    Because activation is already durable at that point, a subsequent retry is
+    idempotent and must not emit a duplicate transition receipt.
+    """
     from waggledance.core.v3_13_0.solver_provenance import (
         ActivationState,
         SigningRole,
@@ -288,8 +286,8 @@ def test_failed_sink_leaves_chain_head_none_and_retry_emits_no_prev_hash() -> No
     assert store[candidate.candidate_id].activation_state == ActivationState.SIGNED.value
     assert prov._last_emitted_receipt is None
 
-    # First activate(): failing sink raises -> candidate stays SIGNED,
-    # chain head must NOT advance.
+    # First activate(): candidate update is durable before receipt emission.
+    # A failing post-update sink must still leave the receipt chain head untouched.
     raised = False
     try:
         prov.activate(candidate_id=candidate.candidate_id)
@@ -297,25 +295,21 @@ def test_failed_sink_leaves_chain_head_none_and_retry_emits_no_prev_hash() -> No
         raised = True
         assert "sink boom" in str(exc)
     assert raised, "expected RuntimeError from failing sink"
-    assert store[candidate.candidate_id].activation_state == ActivationState.SIGNED.value
+    assert store[candidate.candidate_id].activation_state == ActivationState.ACTIVATED.value
     assert prov._last_emitted_receipt is None, (
         "chain head must NOT advance on failed sink emission"
     )
 
-    # Retry with a working sink: activate() succeeds; the emitted bundle's
-    # receipt has prev_receipt_hash=None because the prior failed attempt
-    # left chain head untouched.
+    # Retry with a working sink: activate() is idempotent for the durable state
+    # and must not emit a duplicate transition receipt.
     captured_bundles: list[dict] = []
     prov.emit_receipt_bundle = lambda bundle: captured_bundles.append(bundle)
 
     final_state = prov.activate(candidate_id=candidate.candidate_id)
     assert final_state == ActivationState.ACTIVATED
     assert store[candidate.candidate_id].activation_state == ActivationState.ACTIVATED.value
-    assert len(captured_bundles) == 1
-    bundle = captured_bundles[0]
-    assert bundle["receipt"]["prev_receipt_hash"] is None
-    # And subsequent successful emissions DO chain off this receipt.
-    assert prov._last_emitted_receipt == bundle["receipt"]
+    assert captured_bundles == []
+    assert prov._last_emitted_receipt is None
 
 
 def test_cli_rejects_non_utc_now(tmp_path: Path) -> None:

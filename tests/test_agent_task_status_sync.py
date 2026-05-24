@@ -25,6 +25,11 @@ class _NoneResponseLLM:
         return None
 
 
+class _EmptyResponseLLM:
+    async def generate(self, *args, **kwargs):
+        return LLMResponse(content="   ", model="stub-model", error=False)
+
+
 def test_execute_task_failure_restores_shared_agent_status(tmp_path) -> None:
     async def run() -> None:
         mem = SharedMemory(str(tmp_path / "agent_status.sqlite"))
@@ -64,6 +69,43 @@ def test_execute_task_failure_restores_shared_agent_status(tmp_path) -> None:
             assert agent.status == "idle"
             assert row["status"] == "idle"
             assert [task["id"] for task in tasks] == [task_id]
+        finally:
+            await mem.close()
+
+    asyncio.run(run())
+
+
+def test_think_fails_closed_on_empty_llm_response(tmp_path) -> None:
+    async def run() -> None:
+        mem = SharedMemory(str(tmp_path / "agent_llm_empty.sqlite"))
+        await mem.initialize()
+        try:
+            agent = Agent(
+                name="Status Agent",
+                agent_type="status_agent",
+                system_prompt="system",
+                llm=_EmptyResponseLLM(),
+                memory=mem,
+            )
+            await agent.initialize()
+
+            try:
+                await agent.think("query")
+            except RuntimeError as exc:
+                assert "LLM generation returned empty content" in str(exc)
+            else:  # pragma: no cover - defensive assertion clarity
+                raise AssertionError("expected empty LLM response to fail")
+
+            cursor = await mem._db.execute(  # type: ignore[union-attr]
+                "SELECT status FROM agents WHERE id = ?",
+                (agent.id,),
+            )
+            row = await cursor.fetchone()
+            memories = await mem.get_recent_memories(agent_id=agent.id)
+
+            assert agent.status == "error"
+            assert row["status"] == "error"
+            assert memories == []
         finally:
             await mem.close()
 

@@ -127,6 +127,12 @@ class Agent:
                     f"LLM generation failed"
                     f"{f' for model {model}' if model else ''}"
                 )
+            if not str(getattr(response, "content", "")).strip():
+                model = getattr(response, "model", "")
+                raise RuntimeError(
+                    f"LLM generation returned empty content"
+                    f"{f' for model {model}' if model else ''}"
+                )
 
             # 5b. Monitoroi ajattelu
             if self.monitor:

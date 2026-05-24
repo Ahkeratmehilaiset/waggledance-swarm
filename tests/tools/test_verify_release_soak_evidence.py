@@ -42,6 +42,11 @@ def test_verifier_passes_reproducible_fail_closed_evidence(tmp_path) -> None:
     assert report["verified"] is True
     assert report["blockers"] == []
     assert report["mismatched_fields"] == []
+    assert report["soak_evidence"] == "<redacted>"
+    assert report["release_readiness"] == "<redacted>"
+    assert report["evidence_root"] == "<redacted>"
+    assert report["release_notes"] == "<redacted>"
+    assert str(tmp_path) not in json.dumps(report)
 
 
 def test_verifier_blocks_manual_status_stub(tmp_path) -> None:
@@ -212,3 +217,4 @@ def test_verifier_cli_writes_report(tmp_path) -> None:
     report = json.loads(output.read_text(encoding="utf-8"))
     assert rc == 0
     assert report["verified"] is True
+    assert str(tmp_path) not in json.dumps(report)

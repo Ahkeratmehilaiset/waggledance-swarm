@@ -117,6 +117,11 @@ def test_default_round_one_payload_passes_quality_validator() -> None:
     assert payload["event_type"] == "idle_proposal"
     assert "auto_execute" not in payload
     assert "operator_gate_required" not in payload
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "DREAM_MODE_AGENDA.md" in serialized
+    assert "COMPETITIVE_EVIDENCE_MATRIX_2026.md" in serialized
+    assert "rival_local_checks" in serialized
+    assert "consensus_grade" in serialized
 
 
 def test_active_bridge_is_noop_even_when_emit_requested(tmp_path: Path) -> None:

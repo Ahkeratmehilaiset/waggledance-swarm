@@ -820,6 +820,8 @@ def _validate_artifact_payload(
                 f"local artifact observation {name} summary must be "
                 "a non-empty string"
             )
+        if _looks_like_placeholder(summary):
+            return f"local artifact observation {name} summary must not be a placeholder"
     return None
 
 

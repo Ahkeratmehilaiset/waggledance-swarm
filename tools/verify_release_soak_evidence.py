@@ -94,10 +94,10 @@ def build_report(
         "verified": not blockers,
         "blockers": blockers,
         "mismatched_fields": mismatched_fields,
-        "soak_evidence": soak_evidence.as_posix(),
-        "release_readiness": release_readiness.as_posix(),
-        "evidence_root": evidence_root.as_posix(),
-        "release_notes": release_notes.as_posix(),
+        "soak_evidence": "<redacted>",
+        "release_readiness": "<redacted>",
+        "evidence_root": "<redacted>",
+        "release_notes": "<redacted>",
     }
 
 

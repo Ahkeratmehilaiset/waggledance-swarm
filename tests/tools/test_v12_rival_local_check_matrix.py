@@ -231,6 +231,46 @@ def test_valid_local_evidence_manifest_marks_one_rival_passed(tmp_path: Path) ->
     assert report["consensus_grade"] is False
 
 
+def test_manifest_required_field_types_fail_closed_before_pass(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
+    artifact.parent.mkdir()
+    _write_valid_artifact(
+        artifact,
+        rival="Microsoft AGT",
+        pinned_revision="microsoft-agt-test-rev",
+        evidence_type="local_smoke",
+    )
+    (evidence_dir / "microsoft-agt.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": ["microsoft-agt", "smoke", "--offline"],
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
+    assert report["passed_count"] == 0
+    assert report["consensus_grade"] is False
+    assert agt["local_status"] == "invalid_manifest"
+    assert agt["blocker"] == "manifest field smoke_command must be str; got list"
+    assert agt["consensus_grade_contribution"] is False
+
+
 def test_repository_evidence_dir_keeps_microsoft_agt_passed() -> None:
     report = build_rival_local_check_matrix(
         evidence_dir=ROOT / "docs" / "benchmarks" / "rival_local_checks",
@@ -390,7 +430,7 @@ def test_malformed_manifest_field_fails_closed(tmp_path: Path) -> None:
     agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
     assert agt["local_status"] == "invalid_manifest"
-    assert agt["blocker"] == "manifest rival does not match pilot row"
+    assert agt["blocker"] == "manifest field rival must be str; got list"
 
 
 def test_malformed_artifact_field_fails_closed(tmp_path: Path) -> None:
@@ -446,7 +486,7 @@ def test_malformed_artifact_field_fails_closed(tmp_path: Path) -> None:
     agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
     assert report["passed_count"] == 0
     assert agt["local_status"] == "invalid_artifact"
-    assert agt["blocker"] == "local artifact rival does not match manifest"
+    assert agt["blocker"] == "local artifact field rival must be str; got list"
 
 
 def test_cloud_dependent_manifest_does_not_pass(tmp_path: Path) -> None:

@@ -116,7 +116,7 @@ jsonschema-specifications==2025.4.1
 keras==3.13.2
 kfst==4.2.3
 kubernetes==35.0.0
-lazy_loader==0.4
+lazy_loader==0.5
 Levenshtein==0.27.1
 libclang==18.1.1
 libpff-python==20231205

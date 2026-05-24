@@ -218,17 +218,22 @@ def build_round_one_payload(*, proposal_id: str) -> dict[str, Any]:
         "round_number": 1,
         "proposes_substrate_change": True,
         "problem_statement": (
-            "Strategic bridge deliberation can stall during idle windows when no "
-            "implementation PR or RCO vehicle exists."
+            "Idle dream rounds can drift into generic bridge meta-work and skip "
+            "the operator-authorized competitor tracking cadence from "
+            "docs/architecture/DREAM_MODE_AGENDA.md."
         ),
         "proposal": (
-            "Start one operator-gated idle-protocol deliberation round so the peer "
-            "agent must answer with a concrete counter-proposal before any "
-            "implementation task is created."
+            "Start one operator-gated idle-protocol round that asks the peer agent "
+            "to choose a WD-lens competitor evidence refresh: inspect "
+            "docs/benchmarks/COMPETITIVE_EVIDENCE_MATRIX_2026.md and "
+            "docs/benchmarks/rival_local_checks, identify one stale or "
+            "public-doc-only axis, and propose the smallest read-only evidence "
+            "or local-check step. The round must not make superiority claims, "
+            "advance consensus_grade, or create implementation work."
         ),
         "tradeoff_axis": (
-            "Manual opt-in bridge activation versus unattended cron-based strategic "
-            "deliberation."
+            "Competitor-awareness cadence versus keeping idle activation "
+            "read-only, evidence-bound, and operator-gated."
         ),
         "simulation_evidence": {
             "kind": "scenario_simulation",
@@ -236,15 +241,16 @@ def build_round_one_payload(*, proposal_id: str) -> dict[str, Any]:
                 "When evaluate_idle_state reports no pending CI, open claims, "
                 "fresh scout or RCO requests, recent merges, recent agent messages, "
                 "or recent operator activity, this runner prepares one round-one "
-                "proposal; when any blocker exists it emits nothing."
+                "competitor-tracking proposal; when any blocker exists it emits "
+                "nothing and performs no repository or external writes."
             ),
         },
         "charter_alignment": {
             "compatible": True,
             "reasoning": (
                 "The runner emits only local bridge deliberation, keeps convergence "
-                "operator-gated, never executes external effects, and never converts "
-                "agreement into work."
+                "operator-gated, never executes external effects, never overclaims "
+                "rival results, and never converts agreement into work."
             ),
         },
     }

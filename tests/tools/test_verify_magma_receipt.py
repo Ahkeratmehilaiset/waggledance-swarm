@@ -381,6 +381,56 @@ def test_cli_rejects_changed_evaluation_result(tmp_path: Path) -> None:
     assert "evaluation_result_digest mismatch" in result.stderr
 
 
+def test_cli_rejects_non_external_receipt_with_stale_approval_id(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "chain"
+    root.mkdir()
+    payload = {"action": "local_artifact", "index": 1}
+    payload_digest = sha256_digest(payload)
+    evaluation = _evaluation(
+        case_id="case:magma:fixture:local-stale-approval",
+        payload_digest=payload_digest,
+    )
+    evaluation["risk_class"] = "local_artifact"
+    evaluation["expected_gate"] = "review"
+    evaluation["actual_gate"] = "review"
+    evaluation["verifier_path"] = ["schema", "local_artifact"]
+    evaluation["reason_codes"] = ["local_artifact_no_operator_approval"]
+    evaluation["operator_required"] = False
+    receipt = _receipt(
+        event_id="magma:receipt:fixture:local-stale-approval",
+        payload_digest=payload_digest,
+        evaluation_digest=sha256_digest(evaluation),
+        prev_hash=None,
+    )
+    receipt["risk_class"] = "local_artifact"
+    receipt["operator_gate_required"] = False
+
+    _write_json(root / "payload.json", payload)
+    _write_json(root / "evaluation.json", evaluation)
+    _write_json(root / "receipt.json", receipt)
+    _write_json(
+        root / "manifest.json",
+        {
+            "chain_id": "magma:fixture:stale_approval",
+            "entries": [
+                {
+                    "payload": "payload.json",
+                    "evaluation_result": "evaluation.json",
+                    "receipt": "receipt.json",
+                }
+            ],
+        },
+    )
+
+    result = _run_verify(root / "manifest.json", "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "approval_id" in combined
+
+
 def test_cli_rejects_intermediate_receipt_tamper(tmp_path: Path) -> None:
     manifest = _write_chain(tmp_path / "chain")
     receipt_path = manifest.parent / "receipt-001.json"

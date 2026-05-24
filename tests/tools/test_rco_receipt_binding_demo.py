@@ -109,6 +109,39 @@ def test_rejects_rco_artifact_path_escape(tmp_path: Path) -> None:
     assert str(outside) not in "\n".join(report["errors"])
 
 
+def test_rejects_rco_artifact_raw_unsafe_segments(tmp_path: Path) -> None:
+    unsafe_templates = (
+        "./{name}",
+        "{name}/",
+        "{name}/.",
+        "nested//{name}",
+    )
+    for index, template in enumerate(unsafe_templates):
+        out_dir = tmp_path / f"rco-demo-{index}"
+        build_rco_receipt_binding_demo(
+            out_dir=out_dir,
+            now_utc=datetime.fromisoformat("2026-05-20T12:00:00+00:00"),
+        )
+        manifest_path = out_dir / "manifest.json"
+        manifest = _read_json(manifest_path)
+        entry = manifest["entries"][0]
+        entry["rco_decision_artifact"] = template.format(
+            name=entry["rco_decision_artifact"],
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        report = verify_rco_receipt_binding(manifest_path)
+
+        assert report["ok"] is False
+        assert any(
+            "rco_decision_artifact unsafe relative path" in error
+            for error in report["errors"]
+        )
+
+
 def test_cli_emits_json_and_does_not_leak_private_marker(tmp_path: Path) -> None:
     out_dir = tmp_path / "rco-demo"
 

@@ -38,6 +38,17 @@ REQUIRED_EVIDENCE_FIELDS = (
     "cloud_dependency",
     "evidence_type",
 )
+REQUIRED_EVIDENCE_FIELD_TYPES = {
+    "evidence_manifest_contract_version": str,
+    "rival": str,
+    "pinned_revision": str,
+    "local_artifact_path": str,
+    "local_artifact_sha256": str,
+    "smoke_command": str,
+    "smoke_result": str,
+    "cloud_dependency": bool,
+    "evidence_type": str,
+}
 REQUIRED_EVIDENCE_ARTIFACT_FIELDS = (
     "evidence_artifact_contract_version",
     "rival",
@@ -48,6 +59,16 @@ REQUIRED_EVIDENCE_ARTIFACT_FIELDS = (
     "evidence_type",
     "observations",
 )
+REQUIRED_EVIDENCE_ARTIFACT_FIELD_TYPES = {
+    "evidence_artifact_contract_version": str,
+    "rival": str,
+    "pinned_revision": str,
+    "smoke_result": str,
+    "offline": bool,
+    "ok": bool,
+    "evidence_type": str,
+    "observations": dict,
+}
 PASSING_SMOKE_RESULT = "passed"
 ALLOWED_EVIDENCE_TYPES = {"local_inspection", "local_smoke"}
 REQUIRED_OBSERVATIONS_BY_RIVAL = {
@@ -426,6 +447,17 @@ def _build_check_row(
             "local_status": "invalid_manifest",
             "blocker": "missing required fields: " + ", ".join(missing),
         }
+    type_error = _required_field_type_error(
+        manifest,
+        REQUIRED_EVIDENCE_FIELD_TYPES,
+        "manifest field",
+    )
+    if type_error:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": type_error,
+        }
     if str(manifest.get("rival")) != rival:
         return {
             **base,
@@ -726,6 +758,13 @@ def _validate_artifact_payload(
     ]
     if missing:
         return "local artifact missing required fields: " + ", ".join(missing)
+    type_error = _required_field_type_error(
+        artifact,
+        REQUIRED_EVIDENCE_ARTIFACT_FIELD_TYPES,
+        "local artifact field",
+    )
+    if type_error:
+        return type_error
     if artifact.get("evidence_artifact_contract_version") != EVIDENCE_ARTIFACT_CONTRACT_VERSION:
         return "evidence_artifact_contract_version does not match v1"
     if artifact.get("rival") != manifest.get("rival"):
@@ -769,6 +808,23 @@ def _validate_artifact_payload(
 
 def _is_missing_required_value(value: Any) -> bool:
     return value is None or value == ""
+
+
+def _required_field_type_error(
+    payload: dict[str, Any],
+    expected_types: dict[str, type],
+    label: str,
+) -> str | None:
+    for field, expected_type in expected_types.items():
+        value = payload.get(field)
+        if _is_missing_required_value(value):
+            continue
+        if type(value) is not expected_type:
+            return (
+                f"{label} {field} must be "
+                f"{expected_type.__name__}; got {type(value).__name__}"
+            )
+    return None
 
 
 def _slugify(value: str) -> str:

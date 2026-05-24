@@ -383,6 +383,22 @@ def test_run_writes_report_file(tmp_path):
     assert "C:\\Users" not in text
 
 
+def test_run_sanitizes_invalid_proposal_id_before_report_write(tmp_path):
+    reports = tmp_path / "reports"
+    (reports / "proposal_gate_x").mkdir(parents=True)
+    p = {"proposal_id": "x\\..\\..\\escape", "cell_id": "thermal"}
+    p_path = tmp_path / "proposal.json"
+    p_path.write_text(json.dumps(p), encoding="utf-8")
+
+    out = mod.run(p_path, reports)
+    report_path = Path(out["report_path"])
+
+    assert report_path.exists()
+    assert report_path.parent == reports
+    assert report_path.name.startswith("proposal_gate_invalid-")
+    assert not list(tmp_path.glob("escape_*.md"))
+
+
 def test_all_14_gates_run_and_reported(tmp_path):
     axioms = tmp_path / "axioms"; axioms.mkdir()
     result = mod.evaluate_proposal(_proposal(), axioms_dir=axioms)

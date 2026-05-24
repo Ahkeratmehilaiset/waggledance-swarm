@@ -272,6 +272,102 @@ def test_manifest_required_field_types_fail_closed_before_pass(tmp_path: Path) -
     assert agt["consensus_grade_contribution"] is False
 
 
+def test_passing_manifest_placeholder_values_fail_closed(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
+    artifact.parent.mkdir()
+    _write_valid_artifact(
+        artifact,
+        rival="Microsoft AGT",
+        pinned_revision="TODO_PINNED_REVISION",
+        evidence_type="local_smoke",
+    )
+    (evidence_dir / "microsoft-agt.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "Microsoft AGT",
+                "pinned_revision": "TODO_PINNED_REVISION",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "TODO_OFFLINE_LOCAL_COMMAND",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
+    assert report["passed_count"] == 0
+    assert report["consensus_grade"] is False
+    assert agt["local_status"] == "invalid_manifest"
+    assert agt["blocker"] == (
+        "passing manifest field pinned_revision must not be a placeholder"
+    )
+    assert agt["consensus_grade_contribution"] is False
+
+
+def test_passing_artifact_placeholder_summary_fails_closed(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    artifact = evidence_dir / "artifacts" / "microsoft-agt-smoke.json"
+    artifact.parent.mkdir()
+    _write_valid_artifact(
+        artifact,
+        rival="Microsoft AGT",
+        pinned_revision="microsoft-agt-test-rev",
+        evidence_type="local_smoke",
+        observations={
+            "policy_deny_smoke": {
+                "ok": True,
+                "offline": True,
+                "summary": "TODO_OBSERVATION_SUMMARY",
+            },
+            "fail_closed_error_path_smoke": {
+                "ok": True,
+                "offline": True,
+                "summary": "forced evaluator error denied",
+            },
+        },
+    )
+    (evidence_dir / "microsoft-agt.json").write_text(
+        json.dumps(
+            {
+                "evidence_manifest_contract_version": (
+                    "wd.v12.rival_local_evidence_manifest.v1"
+                ),
+                "rival": "Microsoft AGT",
+                "pinned_revision": "microsoft-agt-test-rev",
+                "local_artifact_path": "artifacts/microsoft-agt-smoke.json",
+                "local_artifact_sha256": _sha256(artifact),
+                "smoke_command": "microsoft-agt smoke --offline",
+                "smoke_result": "passed",
+                "cloud_dependency": False,
+                "evidence_type": "local_smoke",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_rival_local_check_matrix(evidence_dir=evidence_dir)
+
+    agt = next(row for row in report["checks"] if row["rival"] == "Microsoft AGT")
+    assert report["passed_count"] == 0
+    assert report["consensus_grade"] is False
+    assert agt["local_status"] == "invalid_artifact"
+    assert agt["blocker"] == (
+        "local artifact observation policy_deny_smoke summary must not be a placeholder"
+    )
+    assert agt["consensus_grade_contribution"] is False
+
+
 def test_repository_evidence_dir_keeps_microsoft_agt_passed() -> None:
     report = build_rival_local_check_matrix(
         evidence_dir=ROOT / "docs" / "benchmarks" / "rival_local_checks",

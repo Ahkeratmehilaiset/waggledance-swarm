@@ -514,6 +514,13 @@ def _build_check_row(
                 manifest=manifest,
             ),
         }
+    placeholder_error = _passing_manifest_placeholder_error(manifest)
+    if placeholder_error:
+        return {
+            **base,
+            "local_status": "invalid_manifest",
+            "blocker": placeholder_error,
+        }
     artifact_result = _validate_local_artifact(
         evidence_root=evidence_root,
         local_artifact_path=str(manifest.get("local_artifact_path")),
@@ -813,11 +820,31 @@ def _validate_artifact_payload(
                 f"local artifact observation {name} summary must be "
                 "a non-empty string"
             )
+        if _looks_like_placeholder(summary):
+            return f"local artifact observation {name} summary must not be a placeholder"
     return None
 
 
 def _is_missing_required_value(value: Any) -> bool:
     return value is None or value == ""
+
+
+def _passing_manifest_placeholder_error(manifest: dict[str, Any]) -> str | None:
+    for field in ("pinned_revision", "smoke_command"):
+        value = str(manifest.get(field, "")).strip()
+        if _looks_like_placeholder(value):
+            return f"passing manifest field {field} must not be a placeholder"
+    return None
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        not normalized
+        or normalized.startswith("todo")
+        or "todo_" in normalized
+        or normalized in {"placeholder", "unknown", "tbd", "n/a"}
+    )
 
 
 def _required_field_type_error(

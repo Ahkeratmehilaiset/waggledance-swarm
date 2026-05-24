@@ -377,6 +377,10 @@ def render_markdown(report: dict[str, Any]) -> str:
                 for rival, observations in REQUIRED_OBSERVATIONS_BY_RIVAL.items()
             ),
             "",
+            "Each required observation must set `ok=true`, `offline=true`,",
+            "and include a non-empty string `summary` describing the local",
+            "evidence that was inspected or smoked.",
+            "",
         ]
     )
     return "\n".join(lines)
@@ -803,6 +807,12 @@ def _validate_artifact_payload(
             return f"local artifact observation {name} ok is not true"
         if observation.get("offline") is not True:
             return f"local artifact observation {name} offline is not true"
+        summary = observation.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            return (
+                f"local artifact observation {name} summary must be "
+                "a non-empty string"
+            )
     return None
 
 

@@ -75,6 +75,26 @@ def test_derive_branch_name_format():
     assert name.startswith("phase9-builder/")
 
 
+def test_worktree_allocation_rejects_path_like_request_id(tmp_path):
+    with pytest.raises(ValueError, match="request_id must match"):
+        wa.allocate(request_id="../../escape", root=tmp_path)
+
+    assert not (tmp_path / "escape").exists()
+
+
+def test_worktree_allocation_rejects_branch_unsafe_request_id(tmp_path):
+    for request_id in (
+        "../escape000",
+        "ABC123DEF456",
+        "abc123def45:",
+        "abc123def45",
+    ):
+        with pytest.raises(ValueError, match="request_id must match"):
+            wa.derive_branch_name(request_id=request_id)
+        with pytest.raises(ValueError, match="request_id must match"):
+            wa.derive_worktree_path(request_id=request_id, root=tmp_path)
+
+
 def test_allocate_returns_full_record():
     alloc = wa.allocate(request_id="abc123def456", root="/tmp")
     assert alloc.request_id == "abc123def456"

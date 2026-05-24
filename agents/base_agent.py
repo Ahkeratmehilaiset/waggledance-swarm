@@ -121,6 +121,12 @@ class Agent:
                 prompt=full_context,
                 system=self.system_prompt
             )
+            if response is None or getattr(response, "error", False):
+                model = getattr(response, "model", "") if response is not None else ""
+                raise RuntimeError(
+                    f"LLM generation failed"
+                    f"{f' for model {model}' if model else ''}"
+                )
 
             # 5b. Monitoroi ajattelu
             if self.monitor:
@@ -234,6 +240,7 @@ class Agent:
             await self.memory.log_event(self.id, "task_failed", f"{task['title']}: {e}")
             self.status = "idle"
             self.current_task = None
+            await self.memory.update_agent_status(self.id, "idle")
             raise
 
     async def generate_insight(self, topic: str = "") -> Optional[str]:

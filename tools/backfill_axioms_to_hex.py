@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import time
 import unicodedata
@@ -80,6 +81,8 @@ _CELL_KEYWORDS = {
     "learning": ["learn", "train", "dream", "insight", "adapt"],
     "general":  [],
 }
+KNOWN_CELLS = frozenset(_CELL_KEYWORDS)
+SAFE_LEDGER_SEGMENT = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 # FI aliases for common axiom terms — used to generate canonical_fi view
 _FI_ALIASES = {
@@ -166,6 +169,29 @@ def load_centroids() -> dict:
     return {}
 
 
+def _validate_ledger_cell(cell: str) -> str:
+    if (
+        not isinstance(cell, str)
+        or not SAFE_LEDGER_SEGMENT.fullmatch(cell)
+        or cell not in KNOWN_CELLS
+    ):
+        raise ValueError("cell_id must be a known filename-safe cell")
+    return cell
+
+
+def _validate_ledger_source(source: str) -> str:
+    if not isinstance(source, str) or not SAFE_LEDGER_SEGMENT.fullmatch(source):
+        raise ValueError("source must be a filename-safe identifier")
+    return source
+
+
+def _timestamp_slug(timestamp: str) -> str:
+    slug = re.sub(r"[^0-9A-Za-z]", "", str(timestamp))[:15]
+    if not slug:
+        raise ValueError("timestamp must contain filename-safe characters")
+    return slug
+
+
 # ── Multi-view generation ─────────────────────────────────────────
 
 
@@ -247,6 +273,10 @@ def audit_placement(axiom: dict, first_view_vec, centroids: dict) -> tuple[bool,
     declared = axiom.get("cell_id")
     if not declared:
         return False, {"error": "missing cell_id (v3 requirement)"}
+    try:
+        _validate_ledger_cell(declared)
+    except ValueError as exc:
+        return False, {"error": str(exc), "declared_cell": declared}
 
     keyword = classify_keyword_cell(axiom)
     centroid = compute_centroid_cell_top1(first_view_vec, centroids) if first_view_vec is not None else None
@@ -288,7 +318,7 @@ def audit_placement(axiom: dict, first_view_vec, centroids: dict) -> tuple[bool,
 
 def next_seq_for_cell(cell: str) -> int:
     """Monotonic seq number per cell. Scan existing ledger files."""
-    cell_dir = LEDGER_DIR / cell
+    cell_dir = LEDGER_DIR / _validate_ledger_cell(cell)
     if not cell_dir.exists():
         return 1
     max_seq = 0
@@ -309,15 +339,17 @@ def next_seq_for_cell(cell: str) -> int:
 
 def write_ledger_entries(cell: str, entries: list[dict], source: str, timestamp: str):
     """Append entries to a fresh per-cell ledger file."""
-    cell_dir = LEDGER_DIR / cell
-    cell_dir.mkdir(parents=True, exist_ok=True)
+    safe_cell = _validate_ledger_cell(cell)
+    safe_source = _validate_ledger_source(source)
+    ts_slug = _timestamp_slug(timestamp)
+    cell_dir = LEDGER_DIR / safe_cell
 
     # Filename: {first_seq}_{source}_{timestamp}.jsonl
     first_seq = entries[0]["seq"] if entries else next_seq_for_cell(cell)
-    ts_slug = timestamp.replace(":", "").replace("-", "").replace(".", "")[:15]
-    fname = f"{first_seq:06d}_{source}_{ts_slug}.jsonl"
+    fname = f"{first_seq:06d}_{safe_source}_{ts_slug}.jsonl"
     fpath = cell_dir / fname
 
+    cell_dir.mkdir(parents=True, exist_ok=True)
     with open(fpath, "w", encoding="utf-8") as f:
         for e in entries:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")

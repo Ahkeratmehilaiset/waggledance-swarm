@@ -189,6 +189,19 @@ def test_validator_redacts_schema_error_values(tmp_path: Path) -> None:
     assert "is not one of" not in combined
 
 
+def test_validator_invalid_json_error_redacts_input_path(tmp_path: Path) -> None:
+    path = tmp_path / "invalid_corpus_DO_NOT_LEAK.json"
+    path.write_text("{ malformed\n", encoding="utf-8")
+
+    result = _run_validator(path)
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "corpus: invalid JSON" in combined
+    assert str(path) not in combined
+    assert path.name not in combined
+
+
 def test_validator_json_report_includes_coverage() -> None:
     result = subprocess.run(
         [
@@ -207,7 +220,10 @@ def test_validator_json_report_includes_coverage() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+    assert str(ROOT) not in result.stdout
     report = json.loads(result.stdout)
+    assert report["corpus"] == "<redacted>"
+    assert report["expectations"] == "<redacted>"
     assert report["coverage"]["privacy_canary_count"] >= 2
     assert report["coverage"]["peer_review_trap_count"] >= 2
     assert set(report["coverage"]["expected_gate"]) == {

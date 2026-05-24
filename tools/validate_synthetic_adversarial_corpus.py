@@ -99,8 +99,8 @@ def validate_corpus(corpus_path: Path, expectations_path: Path) -> dict[str, Any
 
     return {
         "ok": not errors,
-        "corpus": str(corpus_path),
-        "expectations": str(expectations_path),
+        "corpus": "<redacted>",
+        "expectations": "<redacted>",
         "case_count": len(cases),
         "full_coverage_required": full_coverage_required,
         "coverage": _coverage_report(coverage),
@@ -253,9 +253,9 @@ def _read_json(path: Path, errors: list[str], label: str) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        errors.append(f"{label}: cannot read {path}: {exc}")
+        errors.append(f"{label}: cannot read JSON file ({exc.__class__.__name__})")
     except json.JSONDecodeError as exc:
-        errors.append(f"{label}: invalid JSON in {path}: {exc}")
+        errors.append(f"{label}: invalid JSON at line {exc.lineno} column {exc.colno}")
     return None
 
 

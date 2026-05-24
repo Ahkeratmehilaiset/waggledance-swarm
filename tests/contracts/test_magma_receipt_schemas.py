@@ -133,6 +133,17 @@ def test_external_effect_receipt_requires_operator_gate() -> None:
     assert list(_validator("magma_receipt.v1.json").iter_errors(receipt))
 
 
+def test_non_external_receipt_requires_null_approval_id() -> None:
+    receipt = good_magma_receipt()
+    receipt["risk_class"] = "local_artifact"
+    receipt["operator_gate_required"] = False
+
+    assert list(_validator("magma_receipt.v1.json").iter_errors(receipt))
+
+    receipt["approval_id"] = None
+    _validator("magma_receipt.v1.json").validate(receipt)
+
+
 def test_signature_envelope_is_null_or_complete() -> None:
     validator = _validator("magma_receipt.v1.json")
     signed = good_magma_receipt()

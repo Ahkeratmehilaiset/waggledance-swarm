@@ -228,26 +228,18 @@ def build_hex_cell_competition_result(
     loser_ids = tuple(row.candidate_id for row in ranked[1:])
     candidate_scores = tuple(sorted(rows, key=lambda row: row.candidate_id))
 
-    evidence_payload = {
-        "schema_version": HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
-        "cell_id": cell_id,
-        "capability_id": normalized_capability,
-        "ranking_rule": HEX_CELL_COMPETITION_RANKING_RULE,
-        "candidate_scores": [
-            score.to_dict() for score in candidate_scores
-        ],
-        "winner_id": winner_id,
-        "loser_ids": list(loser_ids),
-        "authority_status": HEX_CELL_COMPETITION_AUTHORITY_STATUS,
-        "runtime_traffic_mutation_applied": False,
-        "candidate_state_mutation_applied": False,
-        "operator_gate_required_for_authority": True,
-    }
+    evidence_payload = _competition_evidence_payload(
+        cell_id=cell_id,
+        capability_id=normalized_capability,
+        candidate_scores=candidate_scores,
+        winner_id=winner_id,
+        loser_ids=loser_ids,
+    )
     evidence_digest = sha256_digest(evidence_payload)
-    competition_id = (
-        "hexcellcmp:"
-        f"{cell_id}:{normalized_capability}:"
-        f"{evidence_digest.removeprefix('sha256:')[:16]}"
+    competition_id = _competition_id(
+        cell_id,
+        normalized_capability,
+        evidence_digest,
     )
     return HexCellCompetitionResult(
         schema_version=HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
@@ -379,6 +371,123 @@ def _validate_competition_is_non_authority(
         raise ValueError(
             "hex-cell promotion acceptance refuses mutated candidate state"
         )
+    _validate_competition_evidence_integrity(competition)
+
+
+def _validate_competition_evidence_integrity(
+    competition: HexCellCompetitionResult,
+) -> None:
+    candidate_scores = tuple(competition.candidate_scores)
+    if len(candidate_scores) < 2:
+        raise ValueError(
+            "hex-cell promotion acceptance requires at least two "
+            "competition candidate scores"
+        )
+    sorted_scores = tuple(
+        sorted(candidate_scores, key=lambda row: row.candidate_id)
+    )
+    if candidate_scores != sorted_scores:
+        raise ValueError(
+            "hex-cell promotion acceptance requires candidate_scores sorted "
+            "by candidate_id"
+        )
+    candidate_ids = [row.candidate_id for row in candidate_scores]
+    duplicate_ids = sorted({
+        candidate_id for candidate_id in candidate_ids
+        if candidate_ids.count(candidate_id) > 1
+    })
+    if duplicate_ids:
+        raise ValueError(
+            "hex-cell promotion acceptance rejects duplicate candidate "
+            f"scores: {duplicate_ids}"
+        )
+    for row in candidate_scores:
+        if row.cell_id != competition.cell_id:
+            raise ValueError(
+                "hex-cell promotion acceptance requires candidate_scores "
+                "to match competition cell_id"
+            )
+        if row.capability_id != competition.capability_id:
+            raise ValueError(
+                "hex-cell promotion acceptance requires candidate_scores "
+                "to match competition capability_id"
+            )
+
+    ranked = sorted(
+        candidate_scores,
+        key=lambda row: (-row.score, row.candidate_id),
+    )
+    expected_winner_id = ranked[0].candidate_id
+    expected_loser_ids = tuple(row.candidate_id for row in ranked[1:])
+    if (
+        competition.winner_id != expected_winner_id
+        or tuple(competition.loser_ids) != expected_loser_ids
+    ):
+        raise ValueError(
+            "hex-cell promotion acceptance requires competition "
+            "winner/losers to match candidate_scores"
+        )
+
+    expected_digest = sha256_digest(_competition_evidence_payload(
+        cell_id=competition.cell_id,
+        capability_id=competition.capability_id,
+        candidate_scores=candidate_scores,
+        winner_id=competition.winner_id,
+        loser_ids=tuple(competition.loser_ids),
+    ))
+    if competition.evidence_digest != expected_digest:
+        raise ValueError(
+            "hex-cell promotion acceptance requires competition "
+            "evidence_digest to match current evidence"
+        )
+
+    expected_competition_id = _competition_id(
+        competition.cell_id,
+        competition.capability_id,
+        competition.evidence_digest,
+    )
+    if competition.competition_id != expected_competition_id:
+        raise ValueError(
+            "hex-cell promotion acceptance requires competition_id to "
+            "match evidence_digest"
+        )
+
+
+def _competition_evidence_payload(
+    *,
+    cell_id: str,
+    capability_id: str,
+    candidate_scores: tuple[CandidateCompetitionScore, ...],
+    winner_id: str,
+    loser_ids: tuple[str, ...],
+) -> dict:
+    return {
+        "schema_version": HEX_CELL_COMPETITION_RESULT_SCHEMA_VERSION,
+        "cell_id": cell_id,
+        "capability_id": capability_id,
+        "ranking_rule": HEX_CELL_COMPETITION_RANKING_RULE,
+        "candidate_scores": [
+            score.to_dict() for score in candidate_scores
+        ],
+        "winner_id": winner_id,
+        "loser_ids": list(loser_ids),
+        "authority_status": HEX_CELL_COMPETITION_AUTHORITY_STATUS,
+        "runtime_traffic_mutation_applied": False,
+        "candidate_state_mutation_applied": False,
+        "operator_gate_required_for_authority": True,
+    }
+
+
+def _competition_id(
+    cell_id: str,
+    capability_id: str,
+    evidence_digest: str,
+) -> str:
+    return (
+        "hexcellcmp:"
+        f"{cell_id}:{capability_id}:"
+        f"{evidence_digest.removeprefix('sha256:')[:16]}"
+    )
 
 
 def _require_non_empty(field_name: str, value: str) -> str:

@@ -249,6 +249,24 @@ def test_promotion_acceptance_rejects_loser_candidate():
         )
 
 
+def test_promotion_acceptance_rejects_winner_drift():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    drifted = replace(result, winner_id=result.loser_ids[0])
+
+    with pytest.raises(ValueError, match="winner/losers"):
+        build_hex_cell_promotion_acceptance(competition=drifted)
+
+
+def test_promotion_acceptance_rejects_evidence_digest_drift():
+    payload = _load_fixture()
+    _candidates, result = _build_from_fixture(payload)
+    drifted = replace(result, evidence_digest="sha256:" + "0" * 64)
+
+    with pytest.raises(ValueError, match="evidence_digest"):
+        build_hex_cell_promotion_acceptance(competition=drifted)
+
+
 def test_promotion_acceptance_rejects_authority_status_drift():
     payload = _load_fixture()
     _candidates, result = _build_from_fixture(payload)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import sys
 from typing import Any, Sequence
 
@@ -106,13 +106,17 @@ def verify_manifest(
 
     for index, entry in enumerate(entries, 1):
         label = f"entry {index}"
-        receipt = _read_json(_entry_path(manifest_path, entry, "receipt"), errors, label)
-        payload = _read_json(_entry_path(manifest_path, entry, "payload"), errors, label)
-        evaluation = _read_json(
-            _entry_path(manifest_path, entry, "evaluation_result"),
-            errors,
-            label,
+        receipt_path = _entry_path(manifest_path, entry, "receipt", errors, label)
+        payload_path = _entry_path(manifest_path, entry, "payload", errors, label)
+        evaluation_path = _entry_path(
+            manifest_path, entry, "evaluation_result", errors, label
         )
+        if receipt_path is None or payload_path is None or evaluation_path is None:
+            continue
+
+        receipt = _read_json(receipt_path, errors, label)
+        payload = _read_json(payload_path, errors, label)
+        evaluation = _read_json(evaluation_path, errors, label)
         if (
             not isinstance(receipt, dict)
             or not isinstance(payload, dict)
@@ -273,8 +277,36 @@ def _entries(manifest: Any, errors: list[str]) -> list[dict[str, str]]:
     return normalized
 
 
-def _entry_path(manifest_path: Path, entry: dict[str, str], field: str) -> Path:
-    return (manifest_path.parent / entry[field]).resolve()
+def _entry_path(
+    manifest_path: Path,
+    entry: dict[str, str],
+    field: str,
+    errors: list[str],
+    label: str,
+) -> Path | None:
+    raw_path = entry[field]
+    context = f"{label}: {field}"
+    if "\\" in raw_path:
+        errors.append(f"{context} path must use POSIX separators")
+        return None
+    if (
+        PurePosixPath(raw_path).is_absolute()
+        or PureWindowsPath(raw_path).is_absolute()
+    ):
+        errors.append(f"{context} path must be relative")
+        return None
+    parts = PurePosixPath(raw_path).parts
+    if any(part in {"", ".", ".."} for part in parts):
+        errors.append(f"{context} unsafe relative path")
+        return None
+
+    path = (manifest_path.parent / Path(*parts)).resolve()
+    try:
+        path.relative_to(manifest_path.parent)
+    except ValueError:
+        errors.append(f"{context} path escapes manifest directory")
+        return None
+    return path
 
 
 def _validate_chain_topology(

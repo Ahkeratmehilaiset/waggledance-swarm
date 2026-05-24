@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -182,6 +183,25 @@ def test_cli_verifies_manifest_entries_out_of_chain_order(tmp_path: Path) -> Non
     result = _run_verify(manifest)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_cli_rejects_manifest_entry_path_escape(tmp_path: Path) -> None:
+    manifest = _write_chain(tmp_path / "chain")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    first = manifest_json["entries"][0]
+    for field in ("receipt", "payload", "evaluation_result"):
+        shutil.copy2(manifest.parent / first[field], outside / first[field])
+        first[field] = "../outside/" + first[field]
+    _write_json(manifest, manifest_json)
+
+    result = _run_verify(manifest, "--json")
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert "unsafe relative path" in combined
+    assert str(outside) not in combined
 
 
 def test_cli_can_check_expected_charter_and_policy_digests(tmp_path: Path) -> None:

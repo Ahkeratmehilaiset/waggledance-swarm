@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import math
 import re
@@ -115,6 +116,7 @@ V_REJECT_CONTRADICTION = "REJECT_CONTRADICTION"
 V_REJECT_LOW_VALUE = "REJECT_LOW_VALUE"
 V_ACCEPT_SHADOW_ONLY = "ACCEPT_SHADOW_ONLY"
 V_ACCEPT_CANDIDATE = "ACCEPT_CANDIDATE"
+SAFE_REPORT_PROPOSAL_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{2,63}$")
 
 
 # ── Proposal loading ───────────────────────────────────────────────
@@ -971,6 +973,14 @@ def _short(s: str, n: int = 80) -> str:
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
+def _safe_report_proposal_id(value: object) -> str:
+    raw = str(value or "unknown")
+    if SAFE_REPORT_PROPOSAL_ID.fullmatch(raw):
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"invalid-{digest}"
+
+
 def run(proposal_path: Path, report_dir: Path = REPORT_DIR,
         coverage_threshold: float = DEFAULT_COVERAGE_ACCEPT_THRESHOLD,
         latency_budget_ms: float = DEFAULT_LATENCY_BUDGET_MS,
@@ -983,7 +993,7 @@ def run(proposal_path: Path, report_dir: Path = REPORT_DIR,
         reject_low_value_threshold=reject_low_value_threshold,
     )
 
-    pid = str(result.get("proposal_id") or "unknown").replace("/", "_")
+    pid = _safe_report_proposal_id(result.get("proposal_id"))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / f"proposal_gate_{pid}_{stamp}.md"

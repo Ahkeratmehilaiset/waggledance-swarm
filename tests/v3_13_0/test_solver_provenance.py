@@ -14,6 +14,7 @@ Covers acceptance criteria from solver_rco_provenance_signing_spec.md:
 """
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -128,6 +129,26 @@ def _bundle_for_transition(bundles: list[dict], transition: str) -> dict:
     ]
     assert matches
     return matches[-1]
+
+
+class _CopyOnReadCandidateStore:
+    def __init__(
+        self,
+        candidate: SolverCandidateRecord,
+        *,
+        fail_states: set[str] | None = None,
+    ) -> None:
+        self.records = {candidate.candidate_id: copy.deepcopy(candidate)}
+        self.fail_states = fail_states or set()
+
+    def fetch(self, candidate_id: str) -> SolverCandidateRecord | None:
+        candidate = self.records.get(candidate_id)
+        return copy.deepcopy(candidate) if candidate is not None else None
+
+    def update(self, candidate: SolverCandidateRecord) -> None:
+        if candidate.activation_state in self.fail_states:
+            raise RuntimeError("forced update failure")
+        self.records[candidate.candidate_id] = copy.deepcopy(candidate)
 
 
 # --------------------------------------------------------------------------
@@ -664,9 +685,10 @@ class TestProvenanceTransitionReceipts:
             bundle["evaluation_result"]["reason_codes"]
         )
 
-    def test_activation_receipt_failure_blocks_state_transition(self):
+    def test_activation_receipt_failure_preserves_head_after_state_update(self):
         cand = _make_candidate()
         bridge_events = []
+        prior_receipt = {"event_id": "magma:solver_provenance:seed"}
 
         def boom(_bundle: dict) -> None:
             raise RuntimeError("receipt boom")
@@ -677,13 +699,49 @@ class TestProvenanceTransitionReceipts:
             receipt_emit=boom,
         )
         _sign_owner_peer(prov, cand)
+        prov._last_emitted_receipt = prior_receipt
 
         with pytest.raises(RuntimeError, match="receipt boom"):
             prov.activate(candidate_id=cand.candidate_id)
 
         assert store[cand.candidate_id].activation_state == (
+            ActivationState.ACTIVATED.value
+        )
+        assert prov._last_emitted_receipt == prior_receipt
+        assert not [
+            event for event in bridge_events
+            if event["status"] == "activation_authorised"
+        ]
+
+    def test_activation_receipt_head_advances_only_after_candidate_update(self):
+        cand = _make_candidate()
+        candidate_store = _CopyOnReadCandidateStore(
+            cand,
+            fail_states={ActivationState.ACTIVATED.value},
+        )
+        events = []
+        bridge_events = []
+        bundles = []
+        prov = SolverProvenance(
+            fetch_candidate=candidate_store.fetch,
+            update_candidate=candidate_store.update,
+            emit_magma_event=_emit_collector(events),
+            emit_bridge_event=_bridge_collector(bridge_events),
+            operator_scope_policy_active=lambda _ref: True,
+            emit_receipt_bundle=_receipt_collector(bundles),
+        )
+        _sign_owner_peer(prov, cand)
+        prior_receipt = {"event_id": "magma:solver_provenance:seed"}
+        prov._last_emitted_receipt = prior_receipt
+
+        with pytest.raises(RuntimeError, match="forced update failure"):
+            prov.activate(candidate_id=cand.candidate_id)
+
+        assert candidate_store.records[cand.candidate_id].activation_state == (
             ActivationState.SIGNED.value
         )
+        assert bundles == []
+        assert prov._last_emitted_receipt == prior_receipt
         assert not [
             event for event in bridge_events
             if event["status"] == "activation_authorised"
@@ -715,15 +773,18 @@ class TestProvenanceTransitionReceipts:
         assert bundle["evaluation_result"]["actual_gate"] == "allow"
         assert "secret operator text" not in json.dumps(bundle, sort_keys=True)
 
-    def test_revocation_receipt_failure_blocks_revocation(self):
+    def test_revocation_receipt_failure_preserves_head_after_state_update(self):
         cand = _make_candidate()
+        events = []
         bridge_events = []
+        prior_receipt = {"event_id": "magma:solver_provenance:seed"}
 
         def boom(_bundle: dict) -> None:
             raise RuntimeError("receipt boom")
 
         prov, store = _make_provenance(
             candidate=cand,
+            events=events,
             bridge_events=bridge_events,
             receipt_emit=boom,
         )
@@ -732,6 +793,7 @@ class TestProvenanceTransitionReceipts:
                     signing_role=SigningRole.OWNER.value,
                     bridge_event_ref="b1",
                     operator_scope_policy_ref="policy:home")
+        prov._last_emitted_receipt = prior_receipt
 
         with pytest.raises(RuntimeError, match="receipt boom"):
             prov.revoke(
@@ -739,9 +801,78 @@ class TestProvenanceTransitionReceipts:
                 reason="superseded by v2",
             )
 
-        assert store[cand.candidate_id].activation_state != (
+        assert store[cand.candidate_id].activation_state == (
             ActivationState.REVOKED.value
         )
+        assert prov._last_emitted_receipt == prior_receipt
+        assert not [
+            event for event in bridge_events
+            if event["status"] == "activation_revoked"
+        ]
+        revoked_audit_refs = [
+            event["__id"] for event in events
+            if event["event_type"] == "solver.activation_revoked"
+        ]
+        assert len(revoked_audit_refs) == 1
+
+        retry_bundles = []
+        prov.emit_receipt_bundle = _receipt_collector(retry_bundles)
+        retry = prov.revoke(
+            candidate_id=cand.candidate_id,
+            reason="retry after receipt sink recovery",
+        )
+
+        assert retry.success is True
+        assert retry.new_state == ActivationState.REVOKED.value
+        assert retry.audit_event_ref == revoked_audit_refs[0]
+        assert retry.reason == "already_revoked"
+        assert retry_bundles == []
+        assert prov._last_emitted_receipt == prior_receipt
+        assert len([
+            event for event in events
+            if event["event_type"] == "solver.activation_revoked"
+        ]) == 1
+        assert not [
+            event for event in bridge_events
+            if event["status"] == "activation_revoked"
+        ]
+
+    def test_revocation_receipt_head_advances_only_after_candidate_update(self):
+        cand = _make_candidate()
+        candidate_store = _CopyOnReadCandidateStore(
+            cand,
+            fail_states={ActivationState.REVOKED.value},
+        )
+        events = []
+        bridge_events = []
+        bundles = []
+        prov = SolverProvenance(
+            fetch_candidate=candidate_store.fetch,
+            update_candidate=candidate_store.update,
+            emit_magma_event=_emit_collector(events),
+            emit_bridge_event=_bridge_collector(bridge_events),
+            operator_scope_policy_active=lambda _ref: True,
+            emit_receipt_bundle=_receipt_collector(bundles),
+        )
+        prov.sign(candidate_id=cand.candidate_id,
+                    signing_agent_id="claude",
+                    signing_role=SigningRole.OWNER.value,
+                    bridge_event_ref="b1",
+                    operator_scope_policy_ref="policy:home")
+        prior_receipt = {"event_id": "magma:solver_provenance:seed"}
+        prov._last_emitted_receipt = prior_receipt
+
+        with pytest.raises(RuntimeError, match="forced update failure"):
+            prov.revoke(
+                candidate_id=cand.candidate_id,
+                reason="superseded by v2",
+            )
+
+        assert candidate_store.records[cand.candidate_id].activation_state != (
+            ActivationState.REVOKED.value
+        )
+        assert bundles == []
+        assert prov._last_emitted_receipt == prior_receipt
         assert not [
             event for event in bridge_events
             if event["status"] == "activation_revoked"
@@ -776,6 +907,51 @@ class TestProvenanceTransitionReceipts:
             sort_keys=True,
         )
         assert "art:div_4" not in json.dumps(bundle, sort_keys=True)
+
+    def test_quarantine_receipt_head_advances_only_after_candidate_update(self):
+        cand = _make_candidate()
+        cand.activation_state = ActivationState.ACTIVATED.value
+        candidate_store = _CopyOnReadCandidateStore(
+            cand,
+            fail_states={ActivationState.QUARANTINED.value},
+        )
+        events = []
+        bridge_events = []
+        bundles = []
+        prov = SolverProvenance(
+            fetch_candidate=candidate_store.fetch,
+            update_candidate=candidate_store.update,
+            emit_magma_event=_emit_collector(events),
+            emit_bridge_event=_bridge_collector(bridge_events),
+            operator_scope_policy_active=lambda _ref: True,
+            emit_receipt_bundle=_receipt_collector(bundles),
+        )
+        prior_receipt = {"event_id": "magma:solver_provenance:seed"}
+        prov._last_emitted_receipt = prior_receipt
+
+        for i in range(4):
+            state = prov.record_run_result(
+                candidate_id=cand.candidate_id,
+                divergence_score=0.5,
+                evidence_ref=f"art:div_{i}",
+            )
+            assert state == ActivationState.ACTIVATED
+        with pytest.raises(RuntimeError, match="forced update failure"):
+            prov.record_run_result(
+                candidate_id=cand.candidate_id,
+                divergence_score=0.5,
+                evidence_ref="art:div_4",
+            )
+
+        stored = candidate_store.records[cand.candidate_id]
+        assert stored.activation_state == ActivationState.ACTIVATED.value
+        assert stored.consecutive_divergent_runs == 4
+        assert bundles == []
+        assert prov._last_emitted_receipt == prior_receipt
+        assert not [
+            event for event in bridge_events
+            if event["status"] == "quarantined"
+        ]
 
 
 # --------------------------------------------------------------------------

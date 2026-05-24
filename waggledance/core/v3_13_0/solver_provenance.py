@@ -179,9 +179,10 @@ class SolverProvenance:
     emit_receipt_bundle: Optional[Callable[[dict], None]] = None
     """Optional hook for MAGMA receipt-bound transition bundles.
 
-    If configured, authority transitions build and emit a payload-free
-    RCO/EvaluationResult/receipt bundle before durable state changes.
-    Hook failure propagates so the transition fails closed.
+    If configured, authority transitions build a payload-free
+    RCO/EvaluationResult/receipt bundle before durable state changes, then
+    emit it only after update_candidate succeeds. Hook failure propagates after
+    the durable transition and does not advance the local receipt chain head.
 
     Successive emissions are chained via prev_receipt_hash so the sink
     receives a verifiable receipt chain (single-genesis per provenance
@@ -471,7 +472,8 @@ class SolverProvenance:
                 and candidate.activation_state
                 != ActivationState.REVOKED.value):
             self._auto_quarantine(candidate)
-        self.update_candidate(candidate)
+        else:
+            self.update_candidate(candidate)
         return ActivationState(candidate.activation_state)
 
     def revoke(self, *, candidate_id: str, reason: str,
@@ -504,6 +506,14 @@ class SolverProvenance:
                 new_state=ActivationState.UNACTIVATED.value,
                 reason="candidate_unknown",
             )
+        if candidate.activation_state == ActivationState.REVOKED.value:
+            return RevocationResult(
+                success=True,
+                candidate_id=candidate_id,
+                new_state=ActivationState.REVOKED.value,
+                audit_event_ref=candidate.revocation_audit_ref,
+                reason="already_revoked",
+            )
         audit_ref = self.emit_magma_event({
             "event_type": "solver.activation_revoked",
             "solver_candidate_id": candidate_id,
@@ -516,7 +526,7 @@ class SolverProvenance:
         bridge_event_ref = _transition_bridge_ref(
             "activation_revoked", candidate_id, audit_ref
         )
-        self._emit_transition_receipt_bundle(
+        receipt_bundle = self._build_transition_receipt_bundle(
             candidate=candidate,
             transition="activation_revoked",
             audit_event_ref=audit_ref,
@@ -528,6 +538,7 @@ class SolverProvenance:
         candidate.activation_state = ActivationState.REVOKED.value
         candidate.revocation_audit_ref = audit_ref
         self.update_candidate(candidate)
+        self._emit_built_transition_receipt_bundle(receipt_bundle)
         # Bridge event per spec edit E16 (decision/activation_revoked)
         self.emit_bridge_event({
             "type": "decision",
@@ -608,7 +619,7 @@ class SolverProvenance:
         bridge_event_ref = _transition_bridge_ref(
             "activation_authorised", candidate_id, audit_ref
         )
-        self._emit_transition_receipt_bundle(
+        receipt_bundle = self._build_transition_receipt_bundle(
             candidate=candidate,
             transition="activation_authorised",
             audit_event_ref=audit_ref,
@@ -618,6 +629,7 @@ class SolverProvenance:
         )
         candidate.activation_state = ActivationState.ACTIVATED.value
         self.update_candidate(candidate)
+        self._emit_built_transition_receipt_bundle(receipt_bundle)
         self.emit_bridge_event({
             "type": "handoff",
             "status": "activation_authorised",
@@ -677,9 +689,36 @@ class SolverProvenance:
         reason: str = "",
         new_state: str | None = None,
     ) -> None:
+        self._emit_built_transition_receipt_bundle(
+            self._build_transition_receipt_bundle(
+                candidate=candidate,
+                transition=transition,
+                audit_event_ref=audit_event_ref,
+                bridge_event_ref=bridge_event_ref,
+                verification=verification,
+                reason_codes=reason_codes,
+                revoked_by=revoked_by,
+                reason=reason,
+                new_state=new_state,
+            )
+        )
+
+    def _build_transition_receipt_bundle(
+        self,
+        *,
+        candidate: SolverCandidateRecord,
+        transition: str,
+        audit_event_ref: str,
+        bridge_event_ref: str = "",
+        verification: VerificationResult | None = None,
+        reason_codes: list[str] | None = None,
+        revoked_by: str = "",
+        reason: str = "",
+        new_state: str | None = None,
+    ) -> Optional[dict]:
         if self.emit_receipt_bundle is None:
-            return
-        bundle = build_solver_provenance_transition_receipt(
+            return None
+        return build_solver_provenance_transition_receipt(
             candidate=candidate,
             transition=transition,
             audit_event_ref=audit_event_ref,
@@ -691,6 +730,13 @@ class SolverProvenance:
             new_state=new_state,
             previous_receipt=self._last_emitted_receipt,
         )
+
+    def _emit_built_transition_receipt_bundle(
+        self,
+        bundle: Optional[dict],
+    ) -> None:
+        if bundle is None:
+            return
         # Sink call first: if the sink raises, the chain head must NOT
         # advance (the bundle was never persisted). Only commit chain
         # head on successful sink return so a retry with a working sink
@@ -711,7 +757,7 @@ class SolverProvenance:
         bridge_event_ref = _transition_bridge_ref(
             "quarantined", candidate.candidate_id, audit_ref
         )
-        self._emit_transition_receipt_bundle(
+        receipt_bundle = self._build_transition_receipt_bundle(
             candidate=candidate,
             transition="quarantined",
             audit_event_ref=audit_ref,
@@ -720,6 +766,8 @@ class SolverProvenance:
             new_state=ActivationState.QUARANTINED.value,
         )
         candidate.activation_state = ActivationState.QUARANTINED.value
+        self.update_candidate(candidate)
+        self._emit_built_transition_receipt_bundle(receipt_bundle)
         self.emit_bridge_event({
             "type": "decision",
             "status": "quarantined",
